@@ -38,11 +38,11 @@ func roleRow(t *testing.T, pool *pgxpool.Pool, role claim.Role) record.PhaseRow 
 }
 
 // reviewTestedAt is when each review of these tests is submitted: just after the one moment the
-// test engine's clock reads (testEngine), at which every entry these tests raise is raised, since a
-// real review is submitted after its round's entry, and only such a review moves the commit the
-// reviewer read (workflow's review). It is within answerSkew of a completion that clock applies, so
-// it is no answer of the reviewer's to a round it completed, as a review submitted before the
-// completion is not.
+// test engine's clock reads (testEngine), at which every entry these tests raise is raised, as a
+// real review is submitted after its round's entry. No time decides whether a review moves the
+// commit the reviewer read: the entry its footer names does (workflow's review). It is within
+// answerSkew of a completion that clock applies, so it is no answer of the reviewer's to a round it
+// completed, as a review submitted before the completion is not.
 var reviewTestedAt = time.Date(2026, 9, 23, 0, 0, 5, 0, time.UTC)
 
 // reviewAt is the review App's review of state as the reviewer posts it for the round that
@@ -66,9 +66,9 @@ func backToReviewing(t *testing.T, apply func(string, intake.Fact) intake.Result
 		Summary: "tested", Verdict: "pass", HandoffRecord: "test-" + n, HandoffVersion: round})
 }
 
-// The reviewer's own deciding review writes the commit it read on the reviewer's row beside the
-// round's decision (record.PhaseRow.ReviewedHead), and the entry into the next round, which
-// clears the decision (clearHandoff), leaves that commit where it stands.
+// The reviewer's own deciding review of the entry that stands writes the commit it read on the
+// reviewer's row beside the round's decision (record.PhaseRow.ReviewedHead), and the entry into
+// the next round, which clears the decision (clearHandoff), leaves that commit where it stands.
 func TestADecidingReviewRecordsTheCommitItRead(t *testing.T) {
 	pool := migratedPool(t)
 	seedReviewOf(t, pool, headOne, "green")
@@ -219,7 +219,7 @@ func TestAReviewThatDecidesNothingKeepsTheCommitAnEarlierReviewRecorded(t *testi
 
 // A person's review decides a round as it always has, on the commit_id its webhook carried, and
 // the round's decision is the person's. The commit the reviewer's next round is told is still the
-// one the reviewer's own last deciding review read: the reviewer never read the person's.
+// one the reviewer's newest recorded review read: the reviewer never read the person's.
 func TestAPersonsReviewDoesNotMoveTheReviewersCommit(t *testing.T) {
 	pool := migratedPool(t)
 	seedReviewOf(t, pool, headOne, "green")
@@ -259,7 +259,7 @@ func TestAPersonsReviewDoesNotMoveTheReviewersCommit(t *testing.T) {
 // review App submitted (byReviewApp): the controller, an architect and a sibling tree's role post
 // under the same login. A deciding review-App review whose footer names another session decides the
 // round when its author can write (DecidesRound), and the round's decision is that review's; the
-// commit is still the one the reviewer's own last deciding review read. The daemon never reads
+// commit is still the one the reviewer's newest recorded review read. The daemon never reads
 // write access for the review App's own login (daemon's reviewerCanWrite), so production never
 // delivers this review with AuthorCanWrite set: the fixture sets it so that a review of another
 // session reaches the write of the commit while the reviewer's session is recorded, the one case
@@ -335,7 +335,7 @@ func TestAReviewFromAnotherReviewAppSessionMovesNoCommitInTheReviewersFirstRound
 }
 
 // reviewedPartOf is the part of a later round's task that names head as the commit the
-// reviewer's own last deciding review read.
+// reviewer's newest recorded review read.
 func reviewedPartOf(head string) string {
 	return " " + ReviewedCommitLabel + ": " + head + "."
 }
@@ -426,10 +426,11 @@ func onlyReviewerStart(t *testing.T, pool *pgxpool.Pool) record.SuperviseRequest
 }
 
 // A later review round is told the commit the review before it read (v-review-range): the
-// reviewer's own deciding review in round 1 recorded the commit it read on the reviewer's row
-// (record.PhaseRow.ReviewedHead), and the start of round 2 names it in its task
-// (reviewedPart), after the pull request and before any reason. The first round of a generation
-// has no earlier review, and its task names no commit; nor does a task of any other role.
+// reviewer's own deciding review in round 1, which names round 1's entry, recorded the commit it
+// read on the reviewer's row (record.PhaseRow.ReviewedHead), and the start of round 2 names it in
+// its task (reviewedPart), after the pull request and before any reason. The first round of a
+// generation has no earlier review, and its task names no commit; nor does a task of any other
+// role.
 func TestALaterReviewRoundIsToldTheCommitTheReviewBeforeItRead(t *testing.T) {
 	pool, _, apply := reviewRoundOne(t)
 	first := reviewerRow(t, pool)
@@ -767,7 +768,8 @@ func TestAGenerationThatClearsItsRowsNamesNoCommit(t *testing.T) {
 // clockReads sets engine's clock to at for every fact it applies from here on. The test engine's
 // clock reads one moment (testEngine), where each fact of a live tree comes at a moment of its own,
 // and an entry is raised at the moment its start reads (record.PhaseRow.EntryRaisedAt, which enter
-// writes from this clock).
+// writes from this clock). The review rule compares no such moment: a review moves the commit the
+// reviewer read by the entry its footer names.
 func clockReads(engine *Engine, at time.Time) {
 	engine.cfg.Clock = func() time.Time { return at }
 }

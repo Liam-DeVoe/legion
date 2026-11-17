@@ -180,8 +180,8 @@ func TestAMergedRootWaitsForItsChildrenAndClosesWhenTheLastLeaves(t *testing.T) 
 // role that owns a worked phase. A child in accepting waits on its architect, now its own tree's,
 // which promotion starts with no phase named, and no phase worker. Every phase resumes as itself
 // (workflow.ResumePhase): the merger merges, so a carried merging child's merger is started again
-// to merge. A child carried in reviewing keeps the commit its reviewer's last deciding review read
-// (record.PhaseRow.ReviewedHead) on the reviewer's carried row, since readmit's carry returns
+// to merge. A child carried in reviewing keeps the commit its reviewer's newest recorded review
+// read (record.PhaseRow.ReviewedHead) on the reviewer's carried row, since readmit's carry returns
 // before the generation's clear, and the promoted reviewer's task names it.
 func TestAHandedOverChildCarriesItsPhaseGateAndPullRequest(t *testing.T) {
 	for _, tc := range []struct {

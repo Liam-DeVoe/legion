@@ -970,13 +970,13 @@ func TestClearGenerationClearsTheHandoffRecordAndKeepsTheLastNamed(t *testing.T)
 	})
 }
 
-// The reviewer's row keeps the commit its newest deciding review read (PhaseRow.ReviewedHead),
+// The reviewer's row keeps the commit its newest recorded review read (PhaseRow.ReviewedHead),
 // which the task of a later review round names. A row the release before wrote names no such
 // column and reads back with none. A new generation clears it with the rest of the generation's
 // facts, for one issue (ClearGeneration: the rerun of a child, an adoption) and for a whole tree
 // (ClearTreeGeneration: the re-admission of a root), so the first review of a new generation is
 // told no commit.
-func TestAPhaseRowKeepsTheCommitItsLastReviewRead(t *testing.T) {
+func TestAPhaseRowKeepsTheReviewedCommitUntilANewGeneration(t *testing.T) {
 	ctx := context.Background()
 	const reviewed = "aaa111"
 	reviewerOf := func(t *testing.T, st *store.Store, issue string) PhaseRow {

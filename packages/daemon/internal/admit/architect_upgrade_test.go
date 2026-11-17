@@ -727,7 +727,7 @@ func TestTheArchitectUpgradeRunsAgainAfterTheWayBackAndARollForward(t *testing.T
 }
 
 // phaseReviewedHeadVersion is the version of the migration that keeps the commit the reviewer's
-// own newest deciding review read (20261116234034_phase_reviewed_head.up.sql,
+// newest recorded review read (20261116234034_phase_reviewed_head.up.sql,
 // record.PhaseRow.ReviewedHead).
 const phaseReviewedHeadVersion = 20261116234034
 
