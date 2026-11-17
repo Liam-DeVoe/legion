@@ -78,7 +78,7 @@ test("the palette lists the issue page's actions, guarded like their buttons, an
     await expect.poll(() => getIssue(issue.key).then((read) => read.status)).toBe("done");
 
     // The guards follow the buttons: the closed issue offers Reopen and neither Close nor a
-    // priority, exactly as its header renders Reopen and disables the priority select.
+    // priority, exactly as its header renders Reopen and disables the priority menu's trigger.
     await page.reload();
     await expect(page.getByRole("button", { name: "Reopen issue" })).toBeVisible();
     await page.locator("body").focus();
@@ -94,9 +94,9 @@ test("the palette lists the issue page's actions, guarded like their buttons, an
     await expect.poll(() => getIssue(issue.key).then((read) => read.status)).toBe("backlog");
 
     // A filtered action runs the same write its control does. The rows are taken when the palette
-    // opens, and the Set priority rows, like the priority select, are withheld until the page has
+    // opens, and the Set priority rows, like the priority menu, are withheld until the page has
     // taken in the Reopen answer, which under load can come after the server already reads
-    // `backlog`: so open once the select takes a pick again.
+    // `backlog`: so open once the menu's trigger takes a press again.
     await expect(page.getByLabel(`Priority of ${issue.key}`)).toBeEnabled();
     await page.locator("body").focus();
     await page.keyboard.press("Control+k");
@@ -116,7 +116,9 @@ test("the palette lists the issue page's actions, guarded like their buttons, an
     );
     await input.press("Enter");
     await expect(dialog).toHaveCount(0);
-    await expect(page.getByLabel(`Priority of ${issue.key}`)).toHaveValue("2");
+    await expect(
+      page.getByRole("button", { exact: true, name: `Priority of ${issue.key}` })
+    ).toHaveText("P2");
     await expect.poll(() => getIssue(issue.key).then((read) => read.priority)).toBe(2);
   } finally {
     await context.close();
@@ -376,15 +378,16 @@ test("a Set priority row the server refuses is reported by the header, in the di
     await expect(dialog).toHaveCount(0);
 
     // The row writes through the page's one priority write, so the header reports its refusal
-    // and the badge rolls back, exactly as for the picker and the digit keys.
+    // and the badge rolls back, exactly as for the menu and the digit keys.
     const header = page.getByTestId("issue-header");
+    const priority = header.getByRole("button", { exact: true, name: `Priority of ${issue.key}` });
     const failure = header
       .getByRole("alert")
       .filter({ hasText: `Could not update the priority of ${issue.key}.` });
     await expect(failure).toBeVisible();
     await expect(failure).toHaveCount(1);
     await expect(failure.getByRole("button", { name: "Retry" })).toBeVisible();
-    await expect(header.locator("span", { hasText: /^Priority$/ })).toBeVisible();
+    await expect(priority).toHaveText("Priority");
     await expect.poll(() => getIssue(issue.key)).toMatchObject({ priority: null });
     expect(patches).toBe(1);
 
@@ -393,7 +396,7 @@ test("a Set priority row the server refuses is reported by the header, in the di
     await page.keyboard.press("3");
     await expect.poll(() => patches).toBe(2);
     await expect(failure).toHaveCount(1);
-    await expect(header.locator("span", { hasText: /^Priority$/ })).toBeVisible();
+    await expect(priority).toHaveText("Priority");
   } finally {
     await context.close();
   }

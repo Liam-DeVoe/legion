@@ -3,13 +3,21 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { createIssue, createProject, getIssue, listIssues, patchIssue, putIssueState } from "./api";
 import { pickFilterOption } from "./filters";
 import { nextFrames } from "./frames";
+import { pickFromMenu } from "./menus";
 import { expect, type Locator, type Page, test } from "./test";
 import { centerOf, pressFinger, touchDrag, touchHold } from "./touch";
 import { asUser } from "./users";
 
-/** The visible priority tag inside a card or row - the `<select>` options carry the same text. */
+/** The visible priority tag of a card or row: the text its priority menu's trigger shows. */
 function priorityBadge(scope: Locator, label: string): Locator {
-  return scope.locator("span", { hasText: new RegExp(`^${label}$`) });
+  return scope
+    .getByRole("button", { name: /^Priority of / })
+    .filter({ hasText: new RegExp(`^${label}$`) });
+}
+
+/** The trigger of the priority menu of the issue `key`, inside `scope`. */
+function priorityMenu(scope: Locator, key: string): Locator {
+  return scope.getByRole("button", { exact: true, name: `Priority of ${key}` });
 }
 
 function patchOf(page: Page, key: string) {
@@ -340,15 +348,18 @@ test("v toggles List and Board; Shift+J/K rank a focused card through the one mo
     // Going back is the second navigation; a doubled Enter would have made one in between.
     expect(navigations).toBe(2);
 
-    // `p` reaches the priority select through the focused card; a letter typed there is
-    // typing, not a shortcut; Escape returns to the card, then out of the board.
+    // `p` opens the focused card's priority menu on its checked choice; a letter pressed there
+    // is no page key; Escape closes the menu back onto the card, then leaves the board.
     await alphaCard.focus();
     await page.keyboard.press("p");
-    const select = alphaCard.getByLabel(`Priority of ${alpha.key}`);
-    await expect(select).toBeFocused();
+    const menu = page.getByRole("menu", { name: `Priority of ${alpha.key}` });
+    const unset = menu.getByRole("menuitemradio", { exact: true, name: "Unset" });
+    await expect(unset).toBeFocused();
+    await expect(unset).toHaveAttribute("aria-checked", "true");
     await page.keyboard.press("j");
-    await expect(select).toBeFocused();
+    await expect(unset).toBeFocused();
     await page.keyboard.press("Escape");
+    await expect(menu).toHaveCount(0);
     await expect(alphaCard).toBeFocused();
     await page.keyboard.press("Escape");
     await expect
@@ -487,7 +498,7 @@ test("project list rows and board cards set an issue's priority in place", async
     const page = await context.newPage();
     await page.goto("/projects/CORE");
     const listRow = page.getByRole("row", { name: `${issue.key} Prioritized card`, exact: true });
-    const listControl = listRow.getByLabel(`Priority of ${issue.key}`);
+    const listControl = priorityMenu(listRow, issue.key);
     await expect(priorityBadge(listRow, "P1")).toBeVisible();
     // The badge stays small; the tap target around it is 32 px from md.
     const listBox = await listControl.boundingBox();
@@ -497,7 +508,7 @@ test("project list rows and board cards set an issue's priority in place", async
         request.method() === "PATCH" &&
         new URL(request.url()).pathname === `/api/v1/issues/${issue.key}`
     );
-    await listControl.selectOption("3");
+    await pickFromMenu(listControl, "P3");
     expect((await listPatch).postDataJSON()).toEqual({ priority: 3 });
     await expect(priorityBadge(listRow, "P3")).toBeVisible();
     await expect.poll(() => getIssue(issue.key)).toMatchObject({ priority: 3 });
@@ -505,14 +516,13 @@ test("project list rows and board cards set an issue's priority in place", async
     await page.getByRole("button", { name: "Board" }).click();
     const card = page.getByRole("article", { name: `${issue.key} Prioritized card` });
     await expect(priorityBadge(card, "P3")).toBeVisible();
-    const cardControl = card.getByLabel(`Priority of ${issue.key}`);
-    await cardControl.focus();
+    const cardControl = priorityMenu(card, issue.key);
     const cardPatch = page.waitForRequest(
       (request) =>
         request.method() === "PATCH" &&
         new URL(request.url()).pathname === `/api/v1/issues/${issue.key}`
     );
-    await cardControl.selectOption("2");
+    await pickFromMenu(cardControl, "P2");
     expect((await cardPatch).postDataJSON()).toEqual({ priority: 2 });
     await expect(priorityBadge(card, "P2")).toBeVisible();
     await expect.poll(() => getIssue(issue.key)).toMatchObject({ priority: 2 });
@@ -531,19 +541,19 @@ test("project list rows and board cards set an issue's priority in place", async
         request.method() === "PATCH" &&
         new URL(request.url()).pathname === `/api/v1/issues/${unset.key}`
     );
-    await unsetCard.getByLabel(`Priority of ${unset.key}`).selectOption("0");
+    await pickFromMenu(priorityMenu(unsetCard, unset.key), "P0");
     expect((await unsetPatch).postDataJSON()).toEqual({ priority: 0 });
     await expect(priorityBadge(unsetCard, "P0")).toBeVisible();
     await expect.poll(() => getIssue(unset.key)).toMatchObject({ priority: 0 });
 
     // Tab order inside a card: the card itself (the drag activator), its title link, then the
-    // priority control, so a keyboard shortcut can focus it too; the screenshot shows the
+    // priority control, so a keyboard shortcut can reach it too; the screenshot shows the
     // focus ring on the badge.
     await unsetCard.focus();
     await page.keyboard.press("Tab");
     await expect(unsetCard.getByRole("link")).toBeFocused();
     await page.keyboard.press("Tab");
-    await expect(unsetCard.getByLabel(`Priority of ${unset.key}`)).toBeFocused();
+    await expect(priorityMenu(unsetCard, unset.key)).toBeFocused();
     const shot = testInfo.outputPath(`board-priority-${testInfo.project.name}.png`);
     await page.screenshot({ path: shot });
     await testInfo.attach(`board priority (${testInfo.project.name})`, {
@@ -796,13 +806,15 @@ test("on the phone a finger drives the board: hold lifts, tap opens, swipes scro
     await page.evaluate(() => window.scrollTo(0, 0));
     await backAtTop();
 
-    // A tap on the priority badge opens the picker without lifting the card...
-    const select = alphaCard.getByLabel(`Priority of ${alpha.key}`);
-    await touchHold(page, await centerOf(select), 0);
-    await expect(select).toBeFocused();
+    // A tap on the priority badge opens its menu without lifting the card...
+    const badge = priorityMenu(alphaCard, alpha.key);
+    const menu = page.getByRole("menu", { name: `Priority of ${alpha.key}` });
+    await touchHold(page, await centerOf(badge), 0);
+    await expect(menu).toBeVisible();
     await expect(alphaCard).not.toHaveClass(/opacity-50/);
-    // ...and neither does a long press on it.
-    await touchHold(page, await centerOf(select), 300);
+    // ...and neither does a long press on it, which closes that menu again.
+    await touchHold(page, await centerOf(badge), 300);
+    await expect(menu).toHaveCount(0);
     await expect(alphaCard).not.toHaveClass(/opacity-50/);
     // The press ran twice the sensor's 150 ms delay (`IssueBoard.tsx`), so a lift would be on the
     // card by now; the margin is for a navigation the release could still be sending.

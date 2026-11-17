@@ -56,6 +56,9 @@ const conversation = (journey: LegionJourney) => `/issues/${journey.key}/convers
 /** The issue's event history: what the Conversation leaves out now that it lists conversations. */
 const activity = (journey: LegionJourney) => `/issues/${journey.key}/activity`;
 const turns = (page: Page) => page.getByRole("list", { name: "Conversation turns" });
+/** The header's Status: the trigger of its menu, which shows the status the issue is in. */
+const statusControl = (page: Page) =>
+  page.getByTestId("issue-header").getByRole("button", { exact: true, name: "Status" });
 /** Waits for the issue's own title in the header. An `h1` on an issue page is not the title alone:
  *  the shell shows a loading skeleton `h1` before the issue arrives, and a rendered document whose
  *  text opens on a top-level heading puts that heading on the page as a second one. Naming the
@@ -211,7 +214,7 @@ const legion: ShotSet<LegionJourney> = {
       prepare: (journey) => closeAtMerge(journey),
       ready: async (page) => {
         await expect(turns(page)).toContainText("Signed off.");
-        await expect(page.getByRole("combobox", { name: "Status" })).toHaveValue("done");
+        await expect(statusControl(page)).toHaveText("Done");
       },
       steps: headerOnTop,
     },
@@ -226,7 +229,7 @@ const legion: ShotSet<LegionJourney> = {
       },
       ready: async (page) => {
         await titled(page, "Legion daily report");
-        await expect(page.getByRole("combobox", { name: "Status" })).toHaveValue("icebox");
+        await expect(statusControl(page)).toHaveText("Icebox");
         await expect(turns(page)).toContainText("Finished:");
       },
     },

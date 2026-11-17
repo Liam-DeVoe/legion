@@ -390,10 +390,15 @@ inboxTest(
     await expect(snooze).toHaveCount(1);
     await expect.soft(actions.getByRole("option", { name: "Clear the selection" })).toHaveCount(0);
 
-    // It runs on the page the palette opened over: the bulk picker takes focus, the mark kept.
+    // It runs on the page the palette opened over: the bulk Snooze menu opens on its first
+    // choice, the mark kept.
     await snooze.click();
     await expect(dialog).toHaveCount(0);
-    await expect(bar.getByRole("combobox", { name: "Snooze selected asks" })).toBeFocused();
+    await expect(
+      page
+        .getByRole("menu", { name: "Snooze selected asks" })
+        .getByRole("menuitem", { exact: true, name: "Later today" })
+    ).toBeFocused();
     await expect(bar).toContainText("1 selected");
   }
 );

@@ -181,6 +181,8 @@ export const realStackReasons: Record<string, string> = {
   "keyboard-agents-pin.e2e.ts": "sends, uploads and read marks in flight across the pin",
   "keyboard-agents.e2e.ts":
     "the upload's target is the server's record; upload and send against the server; the delivered mention is the assertion",
+  "keyboard-complete.e2e.ts":
+    "the snooze, review, priority, status, answer and dismiss writes each key sends, counted at the server's routes and read back; the live document; the Inbox drawer over another page; two tabs of one browser",
   "keyboard-document.e2e.ts": "comments made from the live document editor",
   "keyboard-inbox.e2e.ts": "snooze write; server refusal; server refusals",
   "keyboard-issue.e2e.ts":

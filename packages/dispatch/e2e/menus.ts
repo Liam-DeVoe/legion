@@ -1,0 +1,32 @@
+/** The menus a menu button opens - the Snooze, the priority and the status (dispatch://INFRA-2160)
+ *  - as the rows reach them. The trigger is a button named as its menu is ("Snooze <name>",
+ *  "Snooze selected asks", "Priority of <KEY>", "Status"). The menu is portalled to the body, so
+ *  it is found by the id its trigger's `aria-controls` names while it is open, never under the
+ *  trigger. A Snooze choice is an action (`menuitem`); a priority or a status is a value
+ *  (`menuitemradio`, the current one checked). Nothing here reads the app's own modules. */
+import { expect, type Locator } from "@playwright/test";
+
+/** The menu `trigger` holds open: the element its `aria-controls` names. */
+export async function menuOf(trigger: Locator): Promise<Locator> {
+  await expect(trigger, "the menu button holds its menu open").toHaveAttribute(
+    "aria-expanded",
+    "true"
+  );
+  const id = await trigger.getAttribute("aria-controls");
+  if (id === null) throw new Error("the open menu button names no menu in aria-controls");
+  return trigger.page().locator(`[id="${id}"]`);
+}
+
+/** The choice of `menu` named `name`, an action or a value. */
+export function choiceOf(menu: Locator, name: string): Locator {
+  return menu
+    .getByRole("menuitem", { exact: true, name })
+    .or(menu.getByRole("menuitemradio", { exact: true, name }));
+}
+
+/** A pointer's pick: a click on `trigger` opens its menu, and a click on the choice `name`
+ *  writes it. */
+export async function pickFromMenu(trigger: Locator, name: string): Promise<void> {
+  await trigger.click();
+  await choiceOf(await menuOf(trigger), name).click();
+}

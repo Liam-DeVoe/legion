@@ -224,6 +224,37 @@ export function unsnoozeWrites(page: Page, askId: string): KeyedWrite<unknown>[]
   return watchWrites(page, "DELETE", `/api/v1/me/asks/${encodeURIComponent(askId)}/snooze`);
 }
 
+/** The moment a snooze write names, its `snoozed_until`, in milliseconds since the epoch. */
+export function snoozedUntil(write: KeyedWrite<unknown> | undefined): number {
+  const input = write?.input;
+  if (
+    typeof input !== "object" ||
+    input === null ||
+    !("snoozed_until" in input) ||
+    typeof input.snoozed_until !== "string"
+  ) {
+    throw new Error(`the snooze write names no moment: ${JSON.stringify(input)}`);
+  }
+  return Date.parse(input.snoozed_until);
+}
+
+/** The two mornings a Snooze menu offers, as the page's own clock and timezone read them at the
+ *  call: 9:00 on the next day (Tomorrow), and 9:00 on the next Monday (Next week), a Monday
+ *  naming the Monday after. Worked out here rather than read from the app, since the merge base
+ *  the rows also run on offers no such menu. */
+export async function returnMornings(page: Page): Promise<{ nextWeek: number; tomorrow: number }> {
+  return page.evaluate(() => {
+    const now = new Date();
+    const morning = (days: number) => {
+      const at = new Date(now);
+      at.setDate(at.getDate() + days);
+      at.setHours(9, 0, 0, 0);
+      return at.getTime();
+    };
+    return { nextWeek: morning(7 - ((now.getDay() + 6) % 7)), tomorrow: morning(1) };
+  });
+}
+
 /** Every review `page` posts of the document `artifactId` at whichever version the server takes
  *  for its latest: `POST /api/v1/artifacts/{id}/reviews`, which the merge base's Approve posts
  *  to. */

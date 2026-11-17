@@ -12,6 +12,7 @@ import {
 } from "./api";
 import { chooseDisplay, controlRow, displayChoice, filterPicker, openDisplayMenu } from "./filters";
 import { dropFirstAnswer, watchWrites } from "./keyed-writes";
+import { pickFromMenu } from "./menus";
 import { expect, test } from "./test";
 import { asUser } from "./users";
 
@@ -102,18 +103,18 @@ test("the table sorts, searches facets and fuzzy text, groups, pages and receive
     const second = await context.newPage();
     await second.goto(`/issues/${target.key}`);
     await expect(second.getByRole("heading", { level: 1, name: target.title })).toBeVisible();
-    const priority = second.getByRole("combobox", { name: `Priority of ${target.key}` });
-    const before = await priority.inputValue();
-    const next = before === "0" ? "1" : "0";
-    await priority.selectOption(next);
+    const priority = second.getByRole("button", { exact: true, name: `Priority of ${target.key}` });
+    const before = (await priority.textContent())?.trim();
+    const next = before === "P0" ? "1" : "0";
+    await pickFromMenu(priority, `P${next}`);
     await expect
       .poll(() => getIssue(target.key).then((issue) => issue.priority))
       .toBe(Number(next));
     await expect(
       page
         .locator(`[data-issue-row="${target.key}"]`)
-        .getByRole("combobox", { name: `Priority of ${target.key}` })
-    ).toHaveValue(next);
+        .getByRole("button", { exact: true, name: `Priority of ${target.key}` })
+    ).toHaveText(`P${next}`);
     await expect(page.getByText("Page 2 of 2", { exact: true })).toBeVisible();
     await expect(targetSelection).toBeChecked();
     expect(

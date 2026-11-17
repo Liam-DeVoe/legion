@@ -57,6 +57,7 @@ import {
 } from "./inbox-view";
 import { leaveFocus } from "./keyboard-issue";
 import { searchPath } from "./keyboard-palette";
+import { choiceOf, menuOf } from "./menus";
 import { sql } from "./psql";
 import { sessionIds } from "./session-ids";
 import {
@@ -921,12 +922,18 @@ test("the selection bar gone from the keyboard hands the focus to the row marked
       (await inboxBox(3).getAttribute("aria-label")) ?? ""
     );
     // A snooze picked in the bar folds every marked row into Later, the row marked last with
-    // them, and the bar goes once the write lands: the focus goes to the first row.
+    // them, and the bar goes once the write lands: the focus goes to the first row. The pick is
+    // the keyboard's: Enter on the bar's Snooze opens its menu on Later today, and Enter writes it.
     await mark(inboxBox(2));
     await mark(inboxBox(1));
-    const picker = inboxBar.getByRole("combobox", { name: "Snooze selected asks" });
+    const picker = inboxBar.getByRole("button", { exact: true, name: "Snooze selected asks" });
     await picker.focus();
-    await picker.selectOption("later-today");
+    await page.keyboard.press("Enter");
+    await expect(
+      choiceOf(await menuOf(picker), "Later today"),
+      `${where}: Enter on the bar's Snooze opened no menu`
+    ).toBeFocused();
+    await page.keyboard.press("Enter");
     await expect(inboxBar, `${where}: the snooze left the bar up`).toHaveCount(0);
     await focusOn(
       where,
@@ -2691,14 +2698,20 @@ test("no page-own press drops the keyboard focus onto the page, on any page of R
     await page.unroute("**/api/v1/inbox", unassign);
     await after(where, "Enter on Assign to me");
 
-    // A Snooze pick: the row moves into Later, which starts folded, and leaves the list once
+    // A Snooze pick from the keyboard: Enter on the Snooze opens its menu on Later today, and
+    // Enter writes it. The row moves into Later, which starts folded, and leaves the list once
     // the snooze lands.
     await page.goto("/");
-    const snooze = (await askControls(page, snoozed.askId)).getByRole("combobox", {
+    const snooze = (await askControls(page, snoozed.askId)).getByRole("button", {
       name: /^Snooze /,
     });
     await snooze.focus();
-    await snooze.selectOption({ index: 1 });
+    await page.keyboard.press("Enter");
+    await expect(
+      choiceOf(await menuOf(snooze), "Later today"),
+      `${where}: Enter on the Snooze opened no menu`
+    ).toBeFocused();
+    await page.keyboard.press("Enter");
     await expect(inboxRow(page, snoozed.askId), `${where}: the snooze kept its row`).toHaveCount(0);
     await after(where, "a Snooze pick");
 
@@ -2749,18 +2762,27 @@ test("no page-own press drops the keyboard focus onto the page, on any page of R
     await page.unroute("**/api/v1/issues", keyCommitted);
 
     // The project Board in swimlanes: a priority pick moves the card into another lane, where it
-    // is drawn again under a new parent.
+    // is drawn again under a new parent. The pick is the keyboard's: Enter on the card's
+    // priority opens its menu, and the lane's digit writes it.
     where = `project Board at ${at}`;
     await openIssuesTab(page, "CORE", "Board");
     const showLanes = page.getByRole("button", { name: "Show lanes" });
     if ((await showLanes.count()) > 0) await showLanes.click();
     await expect(page.getByRole("button", { name: "Hide lanes" })).toBeVisible();
     const lane = `P${step + 1}`;
-    const priority = page.getByLabel(`Priority of ${boardCard.key}`);
+    const priorityName = `Priority of ${boardCard.key}`;
+    const priority = page.getByRole("button", { exact: true, name: priorityName });
     await priority.focus();
-    await priority.selectOption(String(step + 1));
+    await page.keyboard.press("Enter");
     await expect(
-      page.getByRole("region", { name: `${lane} lane` }).getByLabel(`Priority of ${boardCard.key}`),
+      choiceOf(await menuOf(priority), `P${step}`),
+      `${where}: Enter on ${boardCard.key}'s priority opened no menu on its own P${step}`
+    ).toBeFocused();
+    await page.keyboard.press(String(step + 1));
+    await expect(
+      page
+        .getByRole("region", { name: `${lane} lane` })
+        .getByRole("button", { exact: true, name: priorityName }),
       `${where}: the pick left ${boardCard.key} outside the ${lane} lane`
     ).toHaveCount(1);
     await after(where, `a pick of ${lane} on ${boardCard.key}`);

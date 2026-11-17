@@ -188,7 +188,8 @@ closedTest(
     // The title heading takes no focus while the issue is closed, so `e` is greyed with the
     // controls the header disables; pinning a closed issue still works, so Shift+P is not.
     await expect(row("Edit the title")).toHaveAttribute("data-enabled", "false");
-    await expect(row("Focus the status")).toHaveAttribute("data-enabled", "false");
+    await expect(row("Open the status menu")).toHaveAttribute("data-enabled", "false");
+    await expect(row("Open the priority menu")).toHaveAttribute("data-enabled", "false");
     await expect(row("Edit labels")).toHaveAttribute("data-enabled", "false");
     await expect(row("Set priority P0–P3")).toHaveAttribute("data-enabled", "false");
     await expect(row("Pin or unpin the issue")).toHaveAttribute("data-enabled", "true");
