@@ -273,11 +273,14 @@ type parseRow struct {
 }
 
 // Each kind of problem of Parse is in one of two columns: it can lose a node of the files or change
-// one, so a comparison of the tree misses that text (LosesNode), or it leaves each node as the files
-// write it (KeepsEachNode). For each kind that Parse declares (problemKinds), the table has a row,
-// and Parse gives that kind's problem for the row's file with the row's Effect, so a new kind fails
-// the test until it has a row. Every problem that Parse gives for those files has one of the two
-// Effects: a problem with no Effect fails, so no kind reads as one that keeps each node by default.
+// one, so a comparison of the tree misses that text (LosesNode), or it keeps each node
+// (KeepsEachNode): each node holds the text that the files write, except a raw 0xA0 or 0x85 byte
+// where its opening line's attributes take white space (after {, between two attributes or before
+// }), which it drops as white space. For each kind that Parse declares (problemKinds), the table
+// has a row, and Parse gives that kind's problem for the row's file with the row's Effect, so a new
+// kind fails the test until it has a row. Every problem that Parse gives for those files has one of
+// the two Effects: a problem with no Effect fails, so no kind reads as one that keeps each node by
+// default.
 func TestEachProblemOfParseSaysWhetherItLosesANode(t *testing.T) {
 	t.Parallel()
 	check := func(attributes, body string) string {

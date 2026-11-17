@@ -17,8 +17,8 @@ var commandName = []byte("spec-check")
 // starts with another character than a letter, a digit, _, - or a separator (".exe", "@v1", the
 // ").arg" of a builder), then white space (a line break too), commas, ( and [, as a list of
 // arguments in a script holds them, and the word compare. So spec-checker, spec-check-linux and
-// spec-check's, with the ASCII apostrophe, which textHits drops, are other words. nameStart holds
-// the name's other end, and compareEnds the end of compare.
+// spec-check's, with the ASCII apostrophe, which textHits drops, are other words. nameStart reads
+// the bound before the name, and compareEnds the bound after compare.
 var compareCall = regexp.MustCompile(regexp.QuoteMeta(string(commandName)) + `(?:[^\w\s,\[(-][^\s,\[(]*)?[\s,\[(]+compare`)
 
 // ciFilesThatCompare is "<path>:<line>" for each place of files where the comparison of the spec
@@ -29,15 +29,23 @@ var compareCall = regexp.MustCompile(regexp.QuoteMeta(string(commandName)) + `(?
 // backslashes, and line breaks with the indentation after them ignored. So it also names a comment
 // or a quoted text that no shell runs, and the author rewords that line. The name is spec-check,
 // under any path, as a word of its own: a word that only holds it, such as envoy-spec-check or
-// spec-checker, is another name. compare is a word of its own too: a letter, a digit, _, -, . or /
-// right after it makes another word or a path, such as compare-all, compare.sh or compare/. A
-// letter right after a backslash ends an escape, such as the \n of a double-quoted text, so it is no
-// byte of a word before the name, and after compare a \n or a \t ends the word. It does not find a
-// command that an expansion, an escape or an alias builds, a name right after an escape that ends
-// in a digit or that another character starts, such as \x20, PowerShell's `n or a batch file's
-// %~dp0, or one with another word between the two, and it is no defence against an author who
-// hides the command: compare itself refuses to run in a CI job. It reads each file as text
-// (textHits), and knows nothing of shell or of YAML.
+// spec-checker, is another name, and compare is a word of its own too. Each bound reads the
+// file's own bytes. Right before the name, a letter, a digit, _ or - makes the name part of
+// another word. Right after compare, a letter, a digit, _, -, . or / makes compare part of another
+// word or a path, such as compare-all, compare.sh or compare/. Each other byte ends the word: white
+// space, a quote, ;, |, &, (, ), <, >, a comma, a bracket, and the start or the end of the file.
+// A backslash right after compare is an escape, and the byte after it takes its place. After a
+// backslash, n, t and r stand for white space, so \n, \t and \r end the word on each side, as a
+// backslash before a space or a line break does after compare. So a name right after \7 or \- is
+// not named, nor compare before \x20 or \x64. The rule reads the file's bytes and runs no shell
+// expansion, so it does not find a command that an expansion, an escape or an alias builds, one
+// with another word between the two, such as a redirection, a here-document or an image, or a
+// run: | block whose two line continuations need the indentation after one kept and after the
+// other removed. Before the name, only \n, \t and \r of the escapes stand for white space; each
+// other escape or expansion of one language that builds the boundary is outside the claim (\x20,
+// \x0a, \012, \u000a, PowerShell's `n, a batch file's %~dp0, $1). It is no defence against an
+// author who hides the command: compare itself refuses to run in a CI job. It reads each file as
+// text (textHits), and knows nothing of shell or of YAML.
 //
 // The keys are the repository paths of the files that guard reads (ciDirs): every file under
 // .github/workflows/, .github/actions/, .github/scripts/ and scripts/, which hold the workflows
@@ -81,9 +89,9 @@ func textHits(content []byte) []int {
 // indentation is true (joined). Then each quote character, ' and ", each other backslash, and each
 // $ that stands right before a quote character once those backslashes are gone (quoteAfter) go.
 // Each byte that is left keeps its index in content, so a place is named at the line where the
-// command's name stands, and the byte right before the name is the file's (nameStart): a line that
-// a backslash and a line break join onto the word before it, such as a here-document's delimiter
-// END\, keeps the line break before spec-check.
+// command's name stands, and the two bounds read the file's own bytes beside the two words
+// (nameStart, compareEnds): a line that a backslash and a line break join onto the word before it,
+// such as a here-document's delimiter END\, keeps the line break before spec-check.
 func placesIn(content []byte, indentation bool) []int {
 	kept := make([]byte, 0, len(content))
 	at := make([]int32, 0, len(content)) // the index in content of each byte of kept
@@ -104,7 +112,7 @@ func placesIn(content []byte, indentation bool) []int {
 	line, counted := 1, 0 // the line of content at the index counted
 	for _, match := range compareCall.FindAllIndex(kept, -1) {
 		start := nameStart(content, kept, at, match)
-		if start < 0 || !compareEnds(content, kept, at, match[1]) {
+		if start < 0 || !compareEnds(content, int(at[match[1]-1])+1) {
 			continue
 		}
 		from := int(at[start])
@@ -115,18 +123,21 @@ func placesIn(content []byte, indentation bool) []int {
 }
 
 // nameStart is the index in kept of the command's name that starts the comparison in match, a
-// match of compareCall in kept, or -1 when no name does. The name at the start of the match is
-// another word when a letter, a digit, _ or - stands right before it in content, such as the
-// envoy- of envoy-spec-check, unless a backslash stands right before that byte: then it ends an
-// escape, such as the \n of "set -e\nspec-check compare" in a double-quoted text, which the shell
-// gets as a line break. A later spec-check inside the match can then start the comparison, as the
-// name of a file in a directory named envoy-spec-check does: it lies in the suffix of the first
-// name, which holds no separator, so it runs on to the match's end whenever the byte after it is no
-// letter, digit, _ or -, as compareCall holds for the name that starts the match.
+// match of compareCall in kept, or -1 when no name does. It reads the bound before the name in the
+// file's own bytes, by the rule of the two bounds (ciFilesThatCompare): right before the name, a
+// letter, a digit, _ or - makes the name part of another word, such as the envoy- of
+// envoy-spec-check. Each other byte ends the word: white space, a quote, ;, |, &, (, ), <, >, a
+// comma, a bracket, and the start of the file. After a backslash, n, t and r stand for white space,
+// so \n, \t and \r end the word, as the \n of "set -e\nspec-check compare" in a double-quoted text
+// does, and a name right after \x20, \012, \7 or \- is not named. A later spec-check inside the
+// match can then start the comparison, as the name of a file in a directory named envoy-spec-check
+// does: it lies in the suffix of the first name, which holds no separator, so it runs on to the
+// match's end whenever the byte after it is no letter, digit, _ or -, as compareCall holds for the
+// name that starts the match.
 func nameStart(content, kept []byte, at []int32, match []int) int {
 	for start := match[0]; ; {
 		from := at[start]
-		before := from == 0 || !wordByte(content[from-1]) || from >= 2 && content[from-2] == '\\'
+		before := from == 0 || !wordByte(content[from-1]) || from >= 2 && content[from-2] == '\\' && spaceEscape(content[from-1])
 		if before && (start == match[0] || !wordByte(kept[start+len(commandName)])) {
 			return start
 		}
@@ -138,21 +149,33 @@ func nameStart(content, kept []byte, at []int32, match []int) int {
 	}
 }
 
-// compareEnds reports whether the word compare of a match of compareCall, which ends at end of
-// kept, ends there: kept ends there, or its byte there is no letter, digit, _, -, . or /, each of
-// which makes another word or a path (compare-all, compare.sh, compare/). After a backslash in
-// content, the byte starts an escape, and only \n and \t, the line break and the tab of a
-// double-quoted text, end the word: Bash reads $'compare\x64' as the word compared, and a \x20
-// after compare is outside the claim, as it is before the name.
-func compareEnds(content, kept []byte, at []int32, end int) bool {
-	if end == len(kept) {
+// compareEnds reports whether the word compare whose e stands right before after in content ends
+// there, by the rule of the two bounds (ciFilesThatCompare), which reads the file's own bytes:
+// right after compare, a letter, a digit, _, -, . or / makes compare part of another word or a
+// path, such as compare-all, compare.sh or compare/. Each other byte ends the word: white space, a
+// quote, ;, |, &, (, ), <, >, a comma, a bracket, and the end of the file. A backslash right after
+// compare is an escape, and the byte after it takes its place. After a backslash, n, t and r stand
+// for white space, so \n, \t and \r end the word, as a backslash before a space or a line break
+// does, and compare before \x20 or \x64 is not named.
+func compareEnds(content []byte, after int) bool {
+	escape := after < len(content) && content[after] == '\\'
+	if escape {
+		after++
+	}
+	if after == len(content) {
 		return true
 	}
-	c := kept[end]
-	if content[at[end]-1] == '\\' {
-		return c == 'n' || c == 't'
+	c := content[after]
+	if escape && spaceEscape(c) {
+		return true
 	}
 	return !wordByte(c) && c != '.' && c != '/'
+}
+
+// spaceEscape reports whether c, right after a backslash, makes an escape that stands for white
+// space in the rule of the two bounds: the n, t and r of \n, \t and \r.
+func spaceEscape(c byte) bool {
+	return c == 'n' || c == 't' || c == 'r'
 }
 
 // wordByte reports whether c is an ASCII letter, a digit, _ or -: a byte of a word that holds the
