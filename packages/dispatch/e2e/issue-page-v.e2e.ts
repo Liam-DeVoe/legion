@@ -1107,7 +1107,7 @@ test("the Verification view keeps its rows when its document's blocks read fails
 
     // From here on the Verification document's blocks read is refused, as many times as the page
     // asks it.
-    const blocksRoute = `**/api/v1/artifacts/${seeded.verificationArtifactId}/blocks`;
+    const blocksRoute = `**/api/v1/issues/${seeded.key}/tree`;
     let refusals = 0;
     const refuse = async (route: Route) => {
       await route.fulfill({ json: { code: "INTERNAL", error: "boom" }, status: 500 });
@@ -1186,7 +1186,7 @@ test("the Verification view says nothing of a check's statements before the Veri
       statement: blockNodeId(specSlug, requirementBlockId(at + 1)),
     }));
     const ids = served.map((one) => one.statement);
-    const blocksRoute = `**/api/v1/artifacts/${seeded.verificationArtifactId}/blocks`;
+    const blocksRoute = `**/api/v1/issues/${seeded.key}/tree`;
     const answered = (path: string) =>
       page.waitForResponse((response) => new URL(response.url()).pathname === path);
     const readsAnswered = () =>

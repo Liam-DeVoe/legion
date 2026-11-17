@@ -1,9 +1,7 @@
-import { useQueries } from "@tanstack/react-query";
 import { type ReactNode, useMemo, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 
 import { primarySpec } from "../../../api/issue-cache";
-import { artifactBlocksQuery } from "../../../api/queries";
 import { buildIssuePath } from "../../refs/routes";
 import { useAddressTarget } from "../address-target";
 import { IssuePresetPanels } from "../IssuePresetPanels";
@@ -13,7 +11,6 @@ import { NoTooltips } from "../NoTooltips";
 import { useOutlineRequest } from "../outline-request";
 import { EMPTY_STATE_LINES } from "../page-words";
 import { PlanFilterBody } from "../plan-filter/PlanFilterBody";
-import { planDocumentIds } from "../plan-filter/plan-order";
 import { presetView } from "../presets";
 import type { SlotProps } from "../slot-props";
 import { useToolbarSink } from "../useDocumentToolbars";
@@ -34,7 +31,7 @@ export function ViewPlanSlot({ issue, route }: SlotProps): ReactNode {
   const { hash, search } = useLocation();
   const specSlug = primarySpec(issue)?.slug;
   const address = issueAddress(route, search, hash, specSlug);
-  const { root } = useIssueTree(issue);
+  const { blocksHeld: drawn, blocksOf, root } = useIssueTree(issue);
   // The address's own node, resolved against the whole tree as the outline resolves it
   // (`useAddressTarget`, decision 94 of dispatch://INFRA-1196; `slots/body.tsx`): a step it names
   // takes the focus (R7).
@@ -75,30 +72,22 @@ export function ViewPlanSlot({ issue, route }: SlotProps): ReactNode {
       ? undefined
       : issue.artifacts?.find((artifact) => artifact.id === editing);
   const isClosed = issue.closed_at !== null;
-  // The view is drawn once every blocks read of the documents it draws from holds data: the
+  // The view is drawn once the tree read holds the blocks of the documents it draws from: the
   // issue's spec, whose statements the tasks serve, and its plan, whose blocks are the tasks,
-  // each the one the issue read names by its id, as the tree chooses them (`planDocumentIds`,
-  // `useIssueTree.ts`'s `treeDocumentIds`). Before then the plan holds no task, or tasks that
+  // each the one the issue read names by its id, else the one the tree read names for its role
+  // (`tree-read/tree-nodes.ts`'s `blocksOfRole`). Before then the plan holds no task, or tasks that
   // serve no statement, and the view would say the issue has no task and draw no switch
   // (dispatch://INFRA-3938 R1; root dispatch://INFRA-1196 R26); a first read that failed holds
   // no data either, so the box stays empty rather than say that. The rule reads the blocks held,
-  // not the last read's success: a blocks query keeps its data while it reads again, and after a
+  // not the last read's success: the tree query keeps its data while it reads again, and after a
   // background read fails, which TanStack marks as no success while it keeps the data. So no
   // such read takes the view down, with the reader's press of "Steps" and the focus (R6, R7),
-  // and the view drawn again on a return to Plan draws the blocks held. The reads are
-  // `useIssueTree`'s, under the same keys and for the same documents, so the view sends no
-  // request of its own (dispatch://INFRA-3938 R2). An issue with neither document has no read
-  // to wait for, so its view is drawn at once and draws its empty line.
+  // and the view drawn again on a return to Plan draws the blocks held. The tree read is
+  // `useIssueTree`'s, so the view sends no request of its own (dispatch://INFRA-3938 R2); an
+  // issue with neither document waits on it too, since its tasks are the tree read's as well.
   //
-  // This reading is the Plan view's stopgap for decision 98 of dispatch://INFRA-1196, under
-  // which a view draws from part F's `IssueTreeView.blocksHeld`, true while every blocks query
-  // of the tree holds data, and keeps no reading of its own. That field does not exist at part
-  // K's base, so `useIssueTree(issue).blocksHeld` replaces this reading once part F's commit
-  // 74b90a32 is under that base.
-  const drawn = useQueries({
-    combine: (answers) => answers.every((answer) => answer.data !== undefined),
-    queries: planDocumentIds(issue).map((id) => artifactBlocksQuery(id)),
-  });
+  // The reading is part F's `IssueTreeView.blocksHeld`, true while the tree read holds an answer,
+  // as decision 98 of dispatch://INFRA-1196 asks: the view keeps no reading of its own.
   return (
     <NoTooltips>
       {/* The view's box, the prototype's `.plan`: at most 1300 px, in the middle of the column,
@@ -119,6 +108,7 @@ export function ViewPlanSlot({ issue, route }: SlotProps): ReactNode {
             isClosed={isClosed}
             onEditing={setEditing}
             plan={plan}
+            planBlocks={blocksOf("plan").data}
             {...(request === undefined ? {} : { request })}
             reveal={reveal}
             root={view.root}
