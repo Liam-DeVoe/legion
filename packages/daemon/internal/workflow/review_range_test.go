@@ -1,7 +1,10 @@
 package workflow
 
 import (
+	"bytes"
 	"context"
+	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
 	"testing"
@@ -832,35 +835,48 @@ func TestAReviewFromBeforeAReadmissionAppliedBeforeThePromotionMovesNoCommit(t *
 	}
 }
 
-// The same review applied after the promotion started the reviewer moves no commit either: the
-// promotion raised the reviewer's entry after the review was submitted (record.PhaseRow.Entry and
-// EntryRaisedAt), so the review is of the round before it. A review of the reviewer's session
-// submitted after that entry is a review of the round that stands and records its head, which is
-// the control that the review's time alone tells the two apart. A person's request for changes
-// then ends the promoted round (it decides the round and moves no commit), and the next round's
-// task names the commit the row holds: none after the late review, the head after the control.
+// The same review applied after the promotion started the reviewer moves no commit either: it
+// names the entry the re-admission ended (record.PhaseRow.Entry), and the promotion raised the
+// next one, so the review is of the round before it. A review of the reviewer's session that
+// names the promoted entry is a review of the round that stands and records its head, though
+// GitHub gives it the very moment the daemon raised that entry at: no time is compared, so a
+// review the daemon's clock would put at or before its entry still moves the commit. A person's
+// request for changes then ends the promoted round (it decides the round and moves no commit), and
+// the next round's task names the commit the row holds: none after the late review, the head
+// after the control.
 func TestAReviewFromBeforeAReadmissionAppliedAfterThePromotionMovesNoCommit(t *testing.T) {
 	for _, tc := range []struct {
-		name      string
+		name string
+		// promoted is whether the review names the promoted entry rather than the one before.
+		promoted  bool
 		submitted time.Duration
 		want      string
 	}{
-		{name: "submitted before the re-admission", submitted: time.Hour, want: ""},
-		{name: "submitted after the promotion's entry", submitted: 4 * time.Hour, want: headOne},
+		{name: "a review of the entry before the re-admission", submitted: time.Hour, want: ""},
+		{name: "a review of the promoted entry at that entry's own moment", promoted: true, submitted: 3 * time.Hour, want: headOne},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool, engine, apply := reviewedChild(t)
 			mergeStateUnknown(t, apply)
 			entered := engine.now()
+			entry := reviewerRow(t, pool).Entry
 			readmitsTheTree(t, pool, engine, entered.Add(2*time.Hour))
 			promotesTheReviewer(t, pool, engine, entered.Add(3*time.Hour))
-			apply("approval", reviewAt(t, pool, 2, "approved", headOne, entered.Add(tc.submitted)))
+			promoted := reviewerRow(t, pool)
+			if promoted.Entry != entry+1 || !promoted.EntryRaisedAt.Equal(entered.Add(3*time.Hour)) {
+				t.Fatalf("the promoted reviewer is on entry %d raised at %s, want entry %d raised at %s", promoted.Entry, promoted.EntryRaisedAt, entry+1, entered.Add(3*time.Hour))
+			}
+			if tc.promoted {
+				entry = promoted.Entry
+			}
+			approval := reviewAt(t, pool, 2, "approved", headOne, entered.Add(tc.submitted))
+			approval.Body = reviewBodyOfEntry("the review", "ses-reviewer", headOne, entry)
+			apply("approval", approval)
 			if got := issuePhase(t, pool); got != phase.Reviewing {
 				t.Fatalf("after the approval the issue is in %s, want reviewing: the approval waits on GitHub's merge state", got)
 			}
 			if got := reviewerRow(t, pool).ReviewedHead; got != tc.want {
-				t.Fatalf("after the approval submitted %s after round 2's entry the reviewer's row reads the reviewed commit %q, want %q: the promotion's entry was raised %s after it",
-					tc.submitted, got, tc.want, 3*time.Hour)
+				t.Fatalf("after the approval of entry %d the reviewer's row on entry %d reads the reviewed commit %q, want %q", entry, promoted.Entry, got, tc.want)
 			}
 			apply("person-requests-changes", intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, ID: 3, State: "changes_requested", CommitID: headOne,
 				Author: "a-writer", AuthorCanWrite: true, Body: "rename it", SubmittedAt: entered.Add(5 * time.Hour)})
@@ -880,46 +896,107 @@ func TestAReviewFromBeforeAReadmissionAppliedAfterThePromotionMovesNoCommit(t *t
 	}
 }
 
-// A review with no submission time moves no commit: nothing says it was submitted after its
-// round's entry (record.PhaseRow.EntryRaisedAt), so the commit stays where it stands and the next
-// round reads more. It still decides the round, as an untimed review always has. The same review
-// with its time records its head, which is the control.
-func TestAReviewWithNoSubmissionTimeMovesNoCommit(t *testing.T) {
+// A review the reviewer's own session submitted in the round a re-admission ended names that
+// round's entry (ReviewEntryLabel), and it moves no commit however late it is applied and
+// whatever time GitHub gives it: here GitHub's clock is ahead of the daemon's, so the review's
+// submission time sorts after the entry the promotion raised, though the review was submitted
+// before the re-admission. Only the entry the review names tells the two rounds apart; no time is
+// compared. The re-admission clears the reviewed commit and the task, the promotion raises the
+// next entry with a task that names no commit, and the old review, applied after the promotion at
+// the head the pull request still stands at, leaves the commit cleared, so the next round's task
+// names none.
+func TestAReviewOfTheRoundBeforeAReadmissionMovesNoCommitWhateverTimeGitHubGivesIt(t *testing.T) {
+	pool, engine, apply := reviewedChild(t)
+	mergeStateUnknown(t, apply)
+	entered := engine.now()
+	old := reviewerRow(t, pool)
+	if old.ReviewedHead != headOne || old.EntryTask == "" {
+		t.Fatalf("round 2's reviewer row reads the reviewed commit %q and the task %q, want %s and a task: the clear would prove nothing", old.ReviewedHead, old.EntryTask, headOne)
+	}
+	readmitsTheTree(t, pool, engine, entered.Add(2*time.Hour))
+	if cleared := reviewerRow(t, pool); cleared.ReviewedHead != "" || cleared.EntryTask != "" {
+		t.Fatalf("after the re-admission the reviewer's row reads the reviewed commit %q and the task %q, want neither: the re-admission clears the generation", cleared.ReviewedHead, cleared.EntryTask)
+	}
+	promotesTheReviewer(t, pool, engine, entered.Add(3*time.Hour))
+	promoted := reviewerRow(t, pool)
+	if promoted.Entry != old.Entry+1 || strings.Contains(promoted.EntryTask, ReviewedCommitLabel) {
+		t.Fatalf("the promoted reviewer is on entry %d with the task %q, want entry %d and no reviewed commit", promoted.Entry, promoted.EntryTask, old.Entry+1)
+	}
+	late := reviewAt(t, pool, 2, "approved", headOne, entered.Add(4*time.Hour))
+	late.Body = reviewBodyOfEntry("the review", "ses-reviewer", headOne, old.Entry)
+	apply("late-approval", late)
+	if got := issuePhase(t, pool); got != phase.Reviewing {
+		t.Fatalf("after the late approval the issue is in %s, want reviewing: the approval waits on GitHub's merge state", got)
+	}
+	if got := reviewerRow(t, pool).ReviewedHead; got != "" {
+		t.Fatalf("after the late approval of entry %d the reviewer's row on entry %d reads the reviewed commit %q, want none: the approval is of the round the re-admission ended",
+			old.Entry, promoted.Entry, got)
+	}
+	apply("person-requests-changes", intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, ID: 3, State: "changes_requested", CommitID: headOne,
+		Author: "a-writer", AuthorCanWrite: true, Body: "rename it", SubmittedAt: entered.Add(5 * time.Hour)})
+	if got := issuePhase(t, pool); got != phase.Implementing {
+		t.Fatalf("after the person's request for changes the issue is in %s, want implementing", got)
+	}
+	backToReviewing(t, apply, 3)
+	task := reviewerRow(t, pool).EntryTask
+	readsReviewingTask(t, "the next round", task, 3)
+	if strings.Contains(task, ReviewedCommitLabel) {
+		t.Fatalf("the next round's task = %q, want no reviewed commit: no review of the new generation's reviewer decided", task)
+	}
+}
+
+// A review with no submission time moves the commit when it names the entry that stands: no time
+// is compared, so nothing about it holds the commit back. It still decides the round, as an
+// untimed review always has. The same untimed review naming no entry decides the round and moves
+// nothing, which is the control.
+func TestAReviewWithNoSubmissionTimeMovesTheCommitWhenItNamesItsEntry(t *testing.T) {
 	for _, tc := range []struct {
-		name      string
-		submitted time.Time
-		want      string
+		name string
+		// namesEntry is whether the review's footer names the entry the row holds.
+		namesEntry bool
+		want       string
 	}{
-		{name: "no submission time", want: ""},
-		{name: "submitted after the round's entry", submitted: reviewTestedAt, want: headOne},
+		{name: "no submission time, the entry that stands", namesEntry: true, want: headOne},
+		{name: "no submission time, no entry", want: ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool, _, apply := reviewRoundOne(t)
-			apply("request-changes", reviewAt(t, pool, 1, "changes_requested", headOne, tc.submitted))
+			review := reviewAt(t, pool, 1, "changes_requested", headOne, time.Time{})
+			if !tc.namesEntry {
+				review.Body = reviewBody("the review", headOne)
+			}
+			apply("request-changes", review)
 			if got := issuePhase(t, pool); got != phase.Implementing {
 				t.Fatalf("after the request for changes the issue is in %s, want implementing: it decides the round", got)
 			}
 			if got := reviewerRow(t, pool).ReviewedHead; got != tc.want {
-				t.Fatalf("after the request for changes submitted at %s the reviewer's row reads the reviewed commit %q, want %q", tc.submitted, got, tc.want)
+				t.Fatalf("after the untimed request for changes the reviewer's row reads the reviewed commit %q, want %q", got, tc.want)
 			}
 		})
 	}
 }
 
 // A carried hand-over keeps its rows (admit's readmit returns before the clear), and its
-// promotion raises the reviewer's entry in the middle of the round that stands. A review the
-// reviewer submitted before that entry and that is applied after it moves no commit: the commit
+// promotion raises the reviewer's entry in the middle of the round that stands. A review that
+// names the entry before the promotion moves no commit, whatever time GitHub gives it: the commit
 // stays where the round before left it, and the next round reads more, which is the safe side. A
-// review submitted after that entry records its head. Round 2 here stands at headTwo, and the
-// commit round 1 read is headOne.
-func TestACarriedReviewersReviewMovesTheCommitOnlyWhenSubmittedAfterThePromotionsEntry(t *testing.T) {
+// review that names the promotion's entry records its head, though GitHub times it before the
+// daemon raised that entry. Two promotions in a row write the same task text before the sentence
+// that names each entry, and a review of the first, applied after the second, moves nothing:
+// only the number tells the two entries apart. Round 2 here stands at headTwo, and the commit
+// round 1 read is headOne.
+func TestACarriedReviewersReviewMovesTheCommitOnlyWhenItNamesThePromotionsEntry(t *testing.T) {
 	for _, tc := range []struct {
-		name      string
+		name string
+		// names is the entry the review's footer names: "before" the promotion, the "promoted"
+		// one, or the "first" of two promotions.
+		names     string
 		submitted time.Duration
 		want      string
 	}{
-		{name: "submitted before the promotion's entry", submitted: 2 * time.Hour, want: headOne},
-		{name: "submitted after the promotion's entry", submitted: 4 * time.Hour, want: headTwo},
+		{name: "a review of the entry before the promotion, timed after it", names: "before", submitted: 4 * time.Hour, want: headOne},
+		{name: "a review of the promotion's entry, timed before it", names: "promoted", submitted: 2 * time.Hour, want: headTwo},
+		{name: "a review of the first of two promotions whose task text is the same", names: "first", submitted: 5 * time.Hour, want: headOne},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool, engine, apply := reviewRoundOne(t)
@@ -927,8 +1004,9 @@ func TestACarriedReviewersReviewMovesTheCommitOnlyWhenSubmittedAfterThePromotion
 			apply("request-changes-1", reviewAt(t, pool, 1, "changes_requested", headOne, reviewTestedAt))
 			mergesForward(t, pool, engine, headOne, headTwo, reviewTestedAt.Add(time.Hour))
 			backToReviewing(t, apply, 2)
-			if got := reviewerRow(t, pool).ReviewedHead; got != headOne {
-				t.Fatalf("round 2's reviewer row reads the reviewed commit %q, want %s", got, headOne)
+			before := reviewerRow(t, pool)
+			if before.ReviewedHead != headOne {
+				t.Fatalf("round 2's reviewer row reads the reviewed commit %q, want %s", before.ReviewedHead, headOne)
 			}
 			// The carried orphan's re-admission raises its generation and keeps its phase and its
 			// rows, as the subtest "a carried hand-over's promotion" of
@@ -937,13 +1015,108 @@ func TestACarriedReviewersReviewMovesTheCommitOnlyWhenSubmittedAfterThePromotion
 			carried.Generation++
 			seedIssue(t, pool, *carried)
 			promotesTheReviewer(t, pool, engine, entered.Add(3*time.Hour))
-			apply("request-changes-2", reviewAt(t, pool, 2, "changes_requested", headTwo, entered.Add(tc.submitted)))
+			first := reviewerRow(t, pool)
+			entry := map[string]int64{"before": before.Entry, "promoted": first.Entry, "first": first.Entry}[tc.names]
+			if tc.names == "first" {
+				promotesTheReviewer(t, pool, engine, entered.Add(4*time.Hour))
+				second := reviewerRow(t, pool)
+				if strings.TrimSuffix(first.EntryTask, reviewEntryPartOf(first.Entry)) != strings.TrimSuffix(second.EntryTask, reviewEntryPartOf(second.Entry)) ||
+					second.Entry != first.Entry+1 {
+					t.Fatalf("the two promotions wrote the tasks %q at entry %d and %q at entry %d, want one text before the sentence that names each entry",
+						first.EntryTask, first.Entry, second.EntryTask, second.Entry)
+				}
+			}
+			review := reviewAt(t, pool, 2, "changes_requested", headTwo, entered.Add(tc.submitted))
+			review.Body = reviewBodyOfEntry("the review", "ses-reviewer", headTwo, entry)
+			apply("request-changes-2", review)
 			if got := issuePhase(t, pool); got != phase.Implementing {
 				t.Fatalf("after the carried reviewer's request for changes the issue is in %s, want implementing: the review decides the round", got)
 			}
 			if got := reviewerRow(t, pool).ReviewedHead; got != tc.want {
-				t.Fatalf("after the review submitted %s after round 2's entry the reviewer's row reads the reviewed commit %q, want %q: the promotion's entry was raised %s after it",
-					tc.submitted, got, tc.want, 3*time.Hour)
+				t.Fatalf("after the review of entry %d the reviewer's row reads the reviewed commit %q, want %q", entry, got, tc.want)
+			}
+		})
+	}
+}
+
+// Only the reviewer's own deciding review that names the entry that stands moves the commit, in
+// either deciding state, and each review of the reviewer's own that decides the round and moves
+// nothing says why in one log line: the row holds no entry's task, the footer names no entry, or
+// it names another entry than the row's. Round 2 here stands at headTwo, the commit round 1 read
+// is headOne, and each review is at headTwo. Round 1's entry is an older entry of the same issue
+// generation. Another review-App session's review of the entry that stands moves nothing either,
+// and logs no such line, since it is not the reviewer's.
+func TestOnlyAReviewOfTheEntryThatStandsMovesTheCommit(t *testing.T) {
+	const why = "workflow: the reviewer's own review moves no reviewed commit: "
+	for _, tc := range []struct {
+		name  string
+		state string
+		// session is the session the footer names; entry is "standing", "first", or "none".
+		session, entry string
+		// taskless takes the entry's task off the reviewer's row before the review.
+		taskless bool
+		want     string
+		logged   func(first, standing int64) string
+	}{
+		{name: "an approval of the entry that stands", state: "approved", session: "ses-reviewer", entry: "standing", want: headTwo},
+		{name: "a request for changes of the entry that stands", state: "changes_requested", session: "ses-reviewer", entry: "standing", want: headTwo},
+		{name: "a footer that names no entry", state: "changes_requested", session: "ses-reviewer", entry: "none", want: headOne,
+			logged: func(int64, int64) string { return why + "its footer names no entry" }},
+		{name: "an older entry of the same generation", state: "changes_requested", session: "ses-reviewer", entry: "first", want: headOne,
+			logged: func(first, standing int64) string {
+				return fmt.Sprintf(why+"its footer names entry %d and the reviewer's row stands at entry %d", first, standing)
+			}},
+		{name: "a row that holds no entry's task", state: "changes_requested", session: "ses-reviewer", entry: "standing", taskless: true, want: headOne,
+			logged: func(int64, int64) string { return why + "the reviewer's row holds no entry's task" }},
+		{name: "another session's review of the entry that stands", state: "changes_requested", session: "ses-controller", entry: "standing", want: headOne},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			seedReviewOf(t, pool, headOne, "green")
+			standsIn(t, pool, phase.Testing, "testing")
+			var logs bytes.Buffer
+			engine := testEngine(config.DesignGateRootIssues, slog.New(slog.NewTextHandler(&logs, nil)))
+			apply := applyFacts(t, pool, engine)
+			apply("round-one-tester", intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleTester, Claim: "test-claim",
+				Summary: "tested", Verdict: "pass", HandoffRecord: "test-1", HandoffVersion: 1})
+			first := reviewerRow(t, pool).Entry
+			apply("request-changes-1", reviewAt(t, pool, 1, "changes_requested", headOne, reviewTestedAt))
+			mergesForward(t, pool, engine, headOne, headTwo, reviewTestedAt.Add(time.Hour))
+			backToReviewing(t, apply, 2)
+			standing := reviewerRow(t, pool)
+			if standing.ReviewedHead != headOne || standing.Entry <= first {
+				t.Fatalf("round 2's reviewer row reads the reviewed commit %q on entry %d, want %s on an entry above round 1's %d", standing.ReviewedHead, standing.Entry, headOne, first)
+			}
+			if tc.taskless {
+				if _, err := pool.Exec(context.Background(), "update phases set entry_task = '' where issue = 'LEGION-208' and role = 'reviewer'"); err != nil {
+					t.Fatalf("take the task off the reviewer's row: %v", err)
+				}
+			}
+			body := roundReviewBody(t, pool, tc.session, "the review", headTwo)
+			switch tc.entry {
+			case "none":
+				body = reviewBody("the review", headTwo)
+			case "first":
+				body = reviewBodyOfEntry("the review", tc.session, headTwo, first)
+			}
+			logs.Reset()
+			apply("review-2", intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, ID: 2, State: tc.state, CommitID: headTwo,
+				Author: testReviewApp, AuthorCanWrite: true, Body: body, SubmittedAt: reviewTestedAt.Add(2 * time.Hour)})
+			if row := reviewerRow(t, pool); row.Decision == nil || row.Decision.State != tc.state || row.Decision.Head != headTwo {
+				t.Fatalf("round 2's decision = %+v, want the review's %s at %s: who decides the round does not change", row.Decision, tc.state, headTwo)
+			}
+			if got := reviewerRow(t, pool).ReviewedHead; got != tc.want {
+				t.Fatalf("the reviewer's row reads the reviewed commit %q, want %q", got, tc.want)
+			}
+			lines := strings.Count(logs.String(), why)
+			if tc.logged == nil {
+				if lines != 0 {
+					t.Fatalf("logs = %s, want no line that the review moves no reviewed commit", logs.String())
+				}
+				return
+			}
+			if want := tc.logged(first, standing.Entry); lines != 1 || !strings.Contains(logs.String(), want) {
+				t.Fatalf("logs = %s, want the one line %q", logs.String(), want)
 			}
 		})
 	}

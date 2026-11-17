@@ -1039,7 +1039,7 @@ func TestAReviewWhileHeldFromReviewingDecidesTheRound(t *testing.T) {
 			engine := testEngine(config.DesignGateRootIssues, nil)
 			for i, fact := range []intake.Fact{
 				intake.ClaimFailed{Issue: "LEGION-208", Role: claim.RoleReviewer},
-				intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, ID: 11, State: tc.state, CommitID: headOne, Author: testReviewApp, Body: reviewBody("the review", headOne),
+				intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, ID: 11, State: tc.state, CommitID: headOne, Author: testReviewApp, Body: roundReviewBody(t, pool, "ses-reviewer", "the review", headOne),
 					SubmittedAt: reviewTestedAt},
 				intake.RetryOrEscalate{Issue: "LEGION-208", Decision: intake.RetryDecision},
 				intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: reviewClaim, Summary: "reviewed", HandoffRecord: "review-1", HandoffVersion: 1},

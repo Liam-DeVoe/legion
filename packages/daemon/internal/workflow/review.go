@@ -594,7 +594,8 @@ func (e *Engine) review(ctx context.Context, tx pgx.Tx, fact intake.PullRequestR
 	// The commit the reviewer's own review read outlives the round, where the decision does not
 	// (record.PhaseRow.ReviewedHead): the task of the reviewer's next round names it
 	// (reviewedPart). Two rules say which deciding review moves it. Where either fails, the commit
-	// stays where it stands, and the cost is a next round that reads more.
+	// stays where it stands, and the cost is a next round that reads more: from an older commit,
+	// or the whole change.
 	//
 	// The review is the reviewer's own: a review-App review whose Legion footer names the session
 	// the reviewer's claim records (byReviewer). A person's review decides the round and leaves the
@@ -602,21 +603,32 @@ func (e *Engine) review(ctx context.Context, tx pgx.Tx, fact intake.PullRequestR
 	// reviewer's claim records no session, no review-App review gets here: it waits
 	// (RoundRefusal.Waits).
 	//
-	// And it is a review of the round that stands. The reviewer's row holds the task of an entry,
-	// which a new generation's clear empties until the promotion raises the entry again
-	// (record.Store.ClearTreeGeneration, StartPromotedWorker), and the review was submitted after
-	// that entry was raised (record.PhaseRow.EntryRaisedAt). So a review submitted before a
-	// re-admission and applied after it, however late, leaves the cleared commit cleared, and the
-	// first review of the new generation reads the whole change. A review with no submission time
-	// moves nothing. There is no allowance for the skew of GitHub's clock against the daemon's: a
-	// review comes minutes after its round's entry. A carried hand-over's promotion raises a new
-	// entry in the middle of the round, so a review submitted before that entry and applied after
-	// it moves nothing. A row that the entry upgrade filled (20261111225552_phase_entry) can hold no
-	// task, or an entry time later than the reviews of its round, and a review of that round moves
-	// nothing.
-	if head := reviewer.Decision.Head; head != "" && e.byReviewer(fact, reviewerSession) &&
-		reviewer.EntryTask != "" && fact.SubmittedAt.After(reviewer.EntryRaisedAt) {
-		reviewer.ReviewedHead = head
+	// And it is a review of the entry that stands. The reviewer's row holds the task of an entry,
+	// which a new generation's clear empties until the next entry is raised
+	// (record.Store.ClearTreeGeneration, StartPromotedWorker), and the review's footer names that
+	// entry (intake.PullRequestReview.LegionEntry), the number every task the reviewer is given in
+	// reviewing ends with (ReviewEntryLabel). The number is never reset and each entry raises it,
+	// so a review of an earlier entry - submitted before a re-admission and applied after it,
+	// however late, or before a carried hand-over's promotion and applied after it - names a
+	// number the row has left and moves nothing, and the first review of a new generation reads
+	// the whole change. No time is compared: a review's submission time is GitHub's clock and an
+	// entry's is the daemon's, and nothing orders the two. A row that the entry upgrade filled
+	// (20261111225552_phase_entry) can hold no task, and a review of that round moves nothing.
+	// Who decides the round is not changed by any of this.
+	if head := reviewer.Decision.Head; head != "" && e.byReviewer(fact, reviewerSession) {
+		switch named := fact.LegionEntry(); {
+		case reviewer.EntryTask == "":
+			e.logOnCommit(ctx, "workflow: the reviewer's own review moves no reviewed commit: the reviewer's row holds no entry's task",
+				"issue", issue.Key, "pull_request", pr.Number, "head", head, "footer_entry", named, "entry", reviewer.Entry)
+		case named == 0:
+			e.logOnCommit(ctx, "workflow: the reviewer's own review moves no reviewed commit: its footer names no entry",
+				"issue", issue.Key, "pull_request", pr.Number, "head", head, "entry", reviewer.Entry)
+		case named != reviewer.Entry:
+			e.logOnCommit(ctx, fmt.Sprintf("workflow: the reviewer's own review moves no reviewed commit: its footer names entry %d and the reviewer's row stands at entry %d", named, reviewer.Entry),
+				"issue", issue.Key, "pull_request", pr.Number, "head", head, "footer_entry", named, "entry", reviewer.Entry)
+		default:
+			reviewer.ReviewedHead = head
+		}
 	}
 	if err := e.store.PutPhase(ctx, tx, reviewer); err != nil {
 		return intake.Result{}, err

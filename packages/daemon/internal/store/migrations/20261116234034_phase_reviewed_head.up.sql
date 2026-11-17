@@ -1,20 +1,20 @@
--- 20261116234034_phase_reviewed_head.up.sql — the commit the reviewer's own newest deciding review
--- read, kept on the reviewer's phases row across its rounds.
+-- 20261116234034_phase_reviewed_head.up.sql — the commit the daemon last recorded as read by the
+-- reviewer's own deciding review, kept on the reviewer's phases row across its rounds.
 --
 -- phases.reviewed_head is record.PhaseRow.ReviewedHead. A review that approves or requests changes
 -- and decides its round, submitted as the review App from the session the claims record holds for
 -- the claim the daemon starts the reviewer under, writes the head its Legion footer names
 -- (workflow's review, byReviewer); a person's review and a review of any other session write
 -- nothing, in the first round as in every later one, and while that claim records no session no
--- review of the review App decides, so none writes it. Only a review of the round
--- that stands writes it: the reviewer's row holds the task of an entry, and the review was
--- submitted after that entry was raised (phases.entry_task and phases.entry_raised_at), so a review
--- submitted before a new generation's clear writes nothing, however late it is applied. No entry
--- into a phase clears it, unlike the round's decision beside it (workflow's clearHandoff), so the
--- task of the reviewer's next round names it as
--- `Last reviewed commit: <sha>.` and the reviewer reads the difference from that commit to the
--- head. A new generation clears it with the decision (record.Store.ClearGeneration and
--- ClearTreeGeneration).
+-- review of the review App decides, so none writes it. Only a review of the entry that stands
+-- writes it: the reviewer's row holds the task of an entry, and the review's footer names that
+-- entry's number (phases.entry_task and phases.entry), which each task of the reviewer in
+-- reviewing ends with. No time is compared. The number is never reset, so a review of an entry
+-- before a new generation's clear writes nothing, however late it is applied. No entry into a
+-- phase clears it, unlike the round's decision beside it (workflow's clearHandoff), so the task
+-- of the reviewer's next round names it as `Last reviewed commit: <sha>.` and the reviewer reads
+-- the difference from that commit to the head. A new generation clears it with the decision
+-- (record.Store.ClearGeneration and ClearTreeGeneration).
 --
 -- Every row the table already holds takes the default, the empty string, and nothing fills it: the
 -- release before this one kept no such commit, since the decision that held one was cleared at each

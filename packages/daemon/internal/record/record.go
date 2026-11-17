@@ -553,24 +553,27 @@ type PhaseRow struct {
 	// one (workflow's DecidesRound), kept until the round ends, since the reviewer's completion can
 	// come after the review it posted. Nil until a review decides.
 	Decision *ReviewDecision
-	// ReviewedHead is the commit the reviewer's own newest deciding review read: the head named in
-	// the Legion footer of a review that approved or requested changes, submitted as the review App
-	// from the session the claims record holds for the claim the daemon starts the reviewer under
-	// (workflow's review, byReviewer and reviewersClaim), in the first round as in every later one.
-	// Only the reviewer's row holds it. A person's review does not move it, since the reviewer did
-	// not read that commit; neither does another review-App session's review or a review that
-	// decides nothing, and while the reviewer's claim records no session no review-App review
-	// decides the round or moves it (workflow's RoundRefusal.Waits). Unlike Decision
-	// it outlives its round: no entry into a phase clears it (workflow's clearHandoff, whose list
-	// of fields does not hold it), so the task of the reviewer's next round names it (workflow's
-	// reviewedPart) and the reviewer reads the difference from it to the head. Only a review of the
-	// round that stands moves it: the row holds the task of an entry (EntryTask), and the review was
-	// submitted after that entry was raised (EntryRaisedAt). A new generation clears it
+	// ReviewedHead is the commit the daemon last recorded as read by the reviewer's own deciding
+	// review of the entry that stood: the head named in the Legion footer of a review that
+	// approved or requested changes, submitted as the review App from the session the claims
+	// record holds for the claim the daemon starts the reviewer under (workflow's review,
+	// byReviewer and reviewersClaim), in the first round as in every later one. Only the
+	// reviewer's row holds it. A person's review does not move it, since the reviewer did not read
+	// that commit; neither does another review-App session's review or a review that decides
+	// nothing, and while the reviewer's claim records no session no review-App review decides the
+	// round or moves it (workflow's RoundRefusal.Waits). Unlike Decision it outlives its round: no
+	// entry into a phase clears it (workflow's clearHandoff, whose list of fields does not hold
+	// it), so the task of the reviewer's next round names it (workflow's reviewedPart) and the
+	// reviewer reads the difference from it to the head. Only a review of the entry that stands
+	// moves it: the row holds the task of an entry (EntryTask), and the review's footer names that
+	// entry (Entry, intake.PullRequestReview.LegionEntry). No time is compared. A review that names
+	// no entry, or another one, decides its round and leaves the commit where it stands, so the
+	// next round reads more: from an older commit, or the whole change. A new generation clears it
 	// (ClearGeneration), and the clear empties the entry's task until the next start raises an
 	// entry, so the first review of a re-admitted root, of a child run again and of an adopted
-	// member reads the whole change, and a review submitted before the clear moves nothing, however
-	// late it is applied; a carried hand-over keeps its rows, and the commit with them. Empty until
-	// such a review, and on every row the release before the column wrote.
+	// member reads the whole change, and a review of an entry before the clear moves nothing,
+	// however late it is applied; a carried hand-over keeps its rows, and the commit with them.
+	// Empty until such a review, and on every row the release before the column wrote.
 	ReviewedHead string
 	// CompletedAt is when the workflow applied the role's completion of its current phase, zero until
 	// then. The reviewer's orders the reviews its round receives against the completion (workflow's
@@ -593,7 +596,11 @@ type PhaseRow struct {
 	// ClearGeneration leaves the entry and clears the task below. Zero on a row no entry has been
 	// raised on: a role the issue's phases have not reached, and every row of a daemon upgraded
 	// in place that the upgrade found with no work handed out, which the completion route reads
-	// as nothing to compare.
+	// as nothing to compare. The reviewer's row has a second reader: each task the reviewer is
+	// given in reviewing ends naming this number (workflow's ReviewEntryLabel), its review's
+	// footer names it back, and only a review that names the number the row holds moves
+	// ReviewedHead. Because the number is never reset and each entry raises it, a review of an
+	// earlier entry can never name the entry that stands.
 	Entry int64
 	// EntryTask is the work of that entry, the task text the role is told, written beside the
 	// number in the same transaction. It is what makes the work a durable fact of the record
@@ -616,7 +623,9 @@ type PhaseRow struct {
 	EntryVerbatim bool
 	// EntryRaisedAt is when the entry was raised, read from the transition's own clock. It is
 	// what tells how long a role has been owed the work its entry names, for a reader weighing a
-	// difference that has stood. Zero on a row no entry has been raised on.
+	// difference that has stood. Zero on a row no entry has been raised on. The write of
+	// ReviewedHead does not read it: the daemon's clock and GitHub's, which times a review, are not
+	// ordered, so the entry number, not this time, tells a review of the entry that stands.
 	EntryRaisedAt time.Time
 	// EntryMovedBack is whether the start that raised that entry was a move back to an earlier
 	// phase, written beside the three fields above in the same transaction from the move the
