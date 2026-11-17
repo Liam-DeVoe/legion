@@ -11,8 +11,8 @@ import { api } from "../../../api/client";
 import { issueCoverageQuery, issueResultsQuery } from "../../../api/queries";
 import type {
   Actor,
-  AskWithTrees,
   CheckBlock,
+  IssueAskRow,
   IssueCheckResults,
   IssueDetails,
 } from "../../../api/types";
@@ -304,10 +304,13 @@ function drawBody(
     client.setQueryData(viewKey(KEY, "spec"), treeAnswers.specView);
   }
   // The issue's asks, which say which question a person answered (`decisionNodes`). The fixtures
-  // carry the members of an ask the page reads (`TreeAsk`), not every member the route answers.
+  // carry the members of an ask the page reads (`TreeAsk`), not every member the route answers,
+  // so a read of them again answers what the cache holds.
   settle(asksRead, spies.asks, () => {
     client.setQueryData(["asks", KEY], [...asks]);
-    spies.asks.mockResolvedValue([...asks] as AskWithTrees[]);
+    spies.asks.mockImplementation(
+      async () => client.getQueryData<IssueAskRow[]>(["asks", KEY]) ?? []
+    );
   });
   settle(results, spies.results, () => {
     client.setQueryData(issueResultsQuery(KEY).queryKey, resultsOf(checks));
