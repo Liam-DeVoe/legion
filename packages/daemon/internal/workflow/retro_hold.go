@@ -86,10 +86,7 @@ func (e *Engine) startHeldRetro(ctx context.Context, tx pgx.Tx, parent record.Is
 	if err := e.status(ctx, tx, parent, status, ""); err != nil {
 		return err
 	}
-	parent.Phase, parent.Hold = phase.Retro, nil
-	if status != "" {
-		parent.Status = status
-	}
+	parent.Phase, parent.Hold, parent.Status = phase.Retro, nil, status
 	if err := e.putIssue(ctx, tx, parent); err != nil {
 		return err
 	}

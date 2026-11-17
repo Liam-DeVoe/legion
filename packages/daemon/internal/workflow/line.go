@@ -206,9 +206,9 @@ func returnsWork(trigger TriggerKind) bool {
 // effects become the effects of a move into target (effectsInto). A target that is not a step of
 // the task before from returns nothing.
 func (w Walk) returnRow(from phase.Phase, trigger TriggerKind, target phase.Phase, snapshot Snapshot) (Row, bool) {
-	at, ok := w.PlaceOf(from)
-	to, before := w.PlaceOf(target)
-	if !ok || !before || at.Kind != record.PlaceStep || to.Kind != record.PlaceStep || to.Position >= at.Position {
+	at, _ := w.PlaceOf(from)
+	to, _ := w.PlaceOf(target)
+	if at.Kind != record.PlaceStep || to.Kind != record.PlaceStep || to.Position >= at.Position {
 		return Row{}, false
 	}
 	for _, row := range w.table() {
@@ -227,8 +227,8 @@ func (w Walk) returnRow(from phase.Phase, trigger TriggerKind, target phase.Phas
 // hold comes after its implementer (plan.Supported), so only a stored type that no plan gives
 // reaches that answer.
 func (w Walk) returnTarget(from phase.Phase) (phase.Phase, bool) {
-	at, ok := w.PlaceOf(from)
-	if !ok || at.Kind != record.PlaceStep {
+	at, _ := w.PlaceOf(from)
+	if at.Kind != record.PlaceStep {
 		return "", false
 	}
 	for i, step := range w.Steps[:at.Position-1] {
@@ -253,8 +253,8 @@ func returnStep(issue record.Issue, w Walk, failed phase.Phase, n int) (phase.Ph
 		return "", fmt.Sprintf("returnTo is %d, and %s has no plan of tasks in Legion's record, so it has no step to name; send the fail again without returnTo; nothing was recorded",
 			n, issue.Key), nil
 	}
-	at, ok := w.PlaceOf(failed)
-	if !ok || at.Kind != record.PlaceStep {
+	at, _ := w.PlaceOf(failed)
+	if at.Kind != record.PlaceStep {
 		return "", "", fmt.Errorf("judge returnTo %d of %s: the failed phase %s is no step of the line %v of its task %s", n, issue.Key, failed, w.Line, w.Task)
 	}
 	role := w.Steps[at.Position-1].Role

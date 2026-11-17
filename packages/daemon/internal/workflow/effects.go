@@ -953,7 +953,7 @@ func (e *Engine) standingPart(ctx context.Context, tx pgx.Tx, issue record.Issue
 		return "", err
 	}
 	var rows []record.PhaseRow
-	if place, ok := w.PlaceOf(issue.Phase); w.Stored && ok && place.Kind == record.PlaceStep {
+	if place, _ := w.PlaceOf(issue.Phase); w.Stored && place.Kind == record.PlaceStep {
 		if rows, err = e.store.Phases(ctx, tx, issue.Key); err != nil {
 			return "", err
 		}

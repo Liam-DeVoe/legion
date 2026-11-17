@@ -310,15 +310,15 @@ func (e *Engine) lateReport(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	if err != nil || !w.Stored {
 		return nil, err
 	}
-	at, ok := w.PlaceOf(reported)
-	if !ok || at.Kind != record.PlaceStep {
+	at, _ := w.PlaceOf(reported)
+	if at.Kind != record.PlaceStep {
 		return nil, nil
 	}
 	ended := w.Steps[at.Position-1].Role
 	named := fact.HandoffRecord != ""
 	if left {
-		now, ok := w.PlaceOf(issue.Phase)
-		if !ok || now.Kind != record.PlaceStep {
+		now, _ := w.PlaceOf(issue.Phase)
+		if now.Kind != record.PlaceStep {
 			return nil, nil
 		}
 		return intake.LateReportOfEndedStep(issue.Key, w.Task, at.Position, ended, now.Position, w.Steps[now.Position-1].Role, named), nil
@@ -511,7 +511,7 @@ func (e *Engine) restartTask(ctx context.Context, tx pgx.Tx, issue record.Issue,
 	}
 	from, first := record.StandsAt(issue), steps[0]
 	status := PhaseStatus(first)
-	if status != "" && status != issue.DispatchStatus {
+	if status != issue.DispatchStatus {
 		if err := e.enqueue(ctx, tx, issue.Key, record.OrdinaryStatusWrite(status, issue.DispatchStatus, "")); err != nil {
 			return nil, err
 		}
@@ -519,10 +519,7 @@ func (e *Engine) restartTask(ctx context.Context, tx pgx.Tx, issue record.Issue,
 	if err := e.moveTask(ctx, tx, &issue, &w, first, record.TaskRunning); err != nil {
 		return nil, err
 	}
-	issue.Hold = nil
-	if status != "" {
-		issue.Status = status
-	}
+	issue.Hold, issue.Status = nil, status
 	if err := e.putIssue(ctx, tx, issue); err != nil {
 		return nil, err
 	}
