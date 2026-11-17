@@ -46,8 +46,10 @@ const (
 // Postgres refuses a btree entry over about 2,700 bytes, so an id with no bound reached the
 // insert inside prioritystore.Create and failed it as a 500. 200 is far under that bound with
 // every other column of the inbound entry beside it, and well over any name a person reads at a
-// glance; a longer title derives a longer id, and the create then asks the caller to name one.
-const priorityIDMax = 200
+// glance. It is contracts.PriorityIDMax, so the refusal of an id the caller names
+// (priorityIDRefusal), the cut of an id a create derives from a title (priorityIDFromTitle) and
+// the cut the priorities seed makes of the ids it sends read one number.
+const priorityIDMax = contracts.PriorityIDMax
 
 // priorityIDPattern is the grammar of a priority id: lowercase letters and digits in groups
 // joined by single hyphens, which is the slug spelling a document's id already takes
@@ -59,14 +61,16 @@ const priorityIDMax = 200
 var priorityIDPattern = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
 
 // priorityIDRefusal answers why id can be no priority's id, or "" when it can be one. derived
-// says the create took it from the title, so the answer says so and asks for an id in id.
+// says the create took it from the title, so the answer says so and asks for an id in id. A
+// derived id is a slug cut to priorityIDMax (priorityIDFromTitle), so of the refusals below the
+// two keywords are the only ones it can meet.
 //
-// An id over priorityIDMax is refused before the grammar is read, so the answer names its length
-// rather than quoting it. noAdvancesFilter and anyAdvancesFilter are refused although the grammar
-// spells them, because the issue listing reads `advances=none` as the work under no priority and
-// `advances=any` as the work under any (parseAdvancesFilter): a priority of either id would have
-// its own page and row list the work the keyword reads, and no filter could ask for the work
-// under it.
+// An id over priorityIDMax, which only an id the caller names can be, is refused before the
+// grammar is read, so the answer names its length rather than quoting it. noAdvancesFilter and
+// anyAdvancesFilter are refused although the grammar spells them, because the issue listing reads
+// `advances=none` as the work under no priority and `advances=any` as the work under any
+// (parseAdvancesFilter): a priority of either id would have its own page and row list the work
+// the keyword reads, and no filter could ask for the work under it.
 func priorityIDRefusal(id string, derived bool) string {
 	var reason string
 	switch {
@@ -92,7 +96,8 @@ func priorityIDRefusal(id string, derived bool) string {
 // refusePriorityTitle refuses a title longer than an issue title may be, counted as an issue
 // title is (contracts.IssueTitleMax, in UTF-16 units after the trim), on a create and a rename
 // alike. A title is one line a page heads itself with, and the id a create derives from it is
-// bounded apart (priorityIDMax).
+// cut to priorityIDMax apart (priorityIDFromTitle), so a title this allows never fails a create
+// for the length of the id it derives.
 func refusePriorityTitle(w http.ResponseWriter, title string) bool {
 	length := itemblocks.Units16(title)
 	if length <= contracts.IssueTitleMax {
@@ -159,9 +164,10 @@ func (s *server) listPriorities(w http.ResponseWriter, r *http.Request) {
 // createPriorityInput is the body of POST /api/v1/priorities.
 type createPriorityInput struct {
 	// ID is the priority's own id, the spelling every address of it carries. A body that names
-	// none takes the title written as a slug (priorityIDFromTitle), as nothing in the store
-	// makes an id: it is the caller's, as an issue key is. Given or derived, it is held to
-	// priorityIDRefusal.
+	// none takes the title written as a slug and cut to priorityIDMax at the end of a word
+	// (priorityIDFromTitle), as nothing in the store makes an id: it is the caller's, as an issue
+	// key is. Given or derived, it is held to priorityIDRefusal, and only a given one can be
+	// refused for its length.
 	ID string `json:"id"`
 	// Title is what the priority is called, one line, and is required; it is at most
 	// contracts.IssueTitleMax UTF-16 units, as an issue title is (refusePriorityTitle).
@@ -502,8 +508,19 @@ func (s *server) refusePriorityWrite(w http.ResponseWriter, id string, err error
 
 // priorityIDFromTitle is the id a create takes when its body names none: the title written as a
 // slug, by the rule artifactSlug writes one, so one spelling names every slug this deployment
-// stores. A title holding no ASCII letter or digit derives nothing — artifactSlug would answer
-// its own fallback word, which is no name of that title — and the create then asks for an id.
+// stores, and then cut to priorityIDMax. A title holding no ASCII letter or digit derives nothing
+// — artifactSlug would answer its own fallback word, which is no name of that title — and the
+// create then asks for an id.
+//
+// A slug of at most priorityIDMax characters is the id whole. A longer one is cut to its longest
+// start of at most priorityIDMax characters that ends at the end of a word, which is where the
+// next character of the slug is a hyphen; when the first word is longer than priorityIDMax, no
+// start ends a word and the id is the first priorityIDMax characters. So a title of any length
+// refusePriorityTitle allows derives an id, and the title itself is written whole. The slug is
+// ASCII, so a byte is a character. artifactSlug is not cut, because a document's slug is written
+// by it too. An id the cut leaves as noAdvancesFilter or anyAdvancesFilter is refused after it
+// (priorityIDRefusal). The cases of the rule, at the bound and for U+0130 and U+212A, are
+// packages/contracts/fixtures/priority-ids.json, which the priorities seed is held to as well.
 func priorityIDFromTitle(title string) string {
 	if !strings.ContainsFunc(title, func(character rune) bool {
 		return ('a' <= character && character <= 'z') ||
@@ -512,5 +529,14 @@ func priorityIDFromTitle(title string) string {
 	}) {
 		return ""
 	}
-	return artifactSlug(title)
+	slug := artifactSlug(title)
+	if len(slug) <= priorityIDMax {
+		return slug
+	}
+	// slug[priorityIDMax] is the character after the longest start that fits, so the last hyphen
+	// at it or before it ends the last word within the bound. The slug never begins with one.
+	if end := strings.LastIndexByte(slug[:priorityIDMax+1], '-'); end > 0 {
+		return slug[:end]
+	}
+	return slug[:priorityIDMax]
 }

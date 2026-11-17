@@ -1195,7 +1195,8 @@ export class DispatchApiClient {
   }
 
   /** `POST /api/v1/priorities`: one new priority, which takes the last place of the order. Its
-   *  id defaults to its title as a slug. */
+   *  id defaults to its title as a slug, cut to `PRIORITY_ID_MAX` (200) characters at the end of
+   *  a word when it is longer, so a long title is written whole under a cut id. */
   createPriority(input: Body<"/api/v1/priorities", "post">, bounds: WriteBounds) {
     return this.post("/api/v1/priorities", {}, input, bounds);
   }

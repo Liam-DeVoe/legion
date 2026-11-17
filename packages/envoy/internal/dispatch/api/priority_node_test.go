@@ -456,9 +456,10 @@ func TestPriorityIDRefusesTheAnyKeyword(t *testing.T) {
 
 // TestPriorityTitleAndIDAreBounded reads the two bounds a priority write holds its text to. The
 // title is at most contracts.IssueTitleMax, as an issue title is, on a create and a rename alike.
-// The id is at most priorityIDMax, whether given or derived from the title: it is a btree key, so
-// an id with no bound reached the insert and failed it as a 500. Each is refused 400
-// PRIORITY_INPUT naming its bound, and a refused write leaves the store as it was.
+// The id is at most priorityIDMax: it is a btree key, so an id with no bound reached the insert
+// and failed it as a 500. Each is refused 400 PRIORITY_INPUT naming its bound, and a refused
+// write leaves the store as it was. An id derived from a longer title is cut to the bound, so
+// that create is written.
 func TestPriorityTitleAndIDAreBounded(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 	ctx := context.Background()
@@ -488,8 +489,8 @@ func TestPriorityTitleAndIDAreBounded(t *testing.T) {
 		t.Fatalf("the refused rename left a title of %d characters, want the %d it had", len(got.Title), contracts.IssueTitleMax)
 	}
 
-	// An id at the bound is written. One past it, one far past the btree's own bound, and one
-	// derived from a title past it are each refused, and none is a 500.
+	// An id at the bound is written. One past it and one far past the btree's own bound are each
+	// refused, and neither is a 500. A title past it derives an id cut to the bound and is written.
 	if atBound := strings.Repeat("b", priorityIDMax); createTestPriority(t, handler,
 		map[string]any{"id": atBound, "title": "At the bound"}, "alice").ID != atBound {
 		t.Fatalf("the id of %d characters was not written as it was sent", priorityIDMax)
@@ -498,16 +499,22 @@ func TestPriorityTitleAndIDAreBounded(t *testing.T) {
 		map[string]any{"id": strings.Repeat("c", priorityIDMax+1), "title": "One past"}, "alice"), priorityIDMax)
 	refuse("a create whose id is past the btree's bound", dispatchRequest(t, handler, http.MethodPost, "/api/v1/priorities",
 		map[string]any{"id": strings.Repeat("d", 3000), "title": "Far past"}, "alice"), priorityIDMax)
-	refuse("a create whose title derives an id past the bound", dispatchRequest(t, handler, http.MethodPost, "/api/v1/priorities",
-		map[string]any{"title": strings.Repeat("e", priorityIDMax+1)}, "alice"), priorityIDMax)
+	pastBound := strings.Repeat("e", priorityIDMax+1)
+	cut := strings.Repeat("e", priorityIDMax)
+	if derived := createTestPriority(t, handler, map[string]any{"title": pastBound}, "alice"); derived.ID != cut {
+		t.Fatalf("a title of %d letters derives an id of %d characters, want its first %d", len(pastBound), len(derived.ID), priorityIDMax)
+	}
+	if got := readTestPriority(t, handler, cut); got.Title != pastBound {
+		t.Fatalf("the priority under the cut id has a title of %d characters, want the %d it was sent", len(got.Title), len(pastBound))
+	}
 
 	var written int
 	if err := database.Pool.QueryRow(ctx, `select count(*) from priority_nodes where kind = $1`,
 		prioritystore.KindPriority).Scan(&written); err != nil {
 		t.Fatalf("count the priorities: %v", err)
 	}
-	if written != 2 {
-		t.Fatalf("the store holds %d priorities, want the 2 within the bounds", written)
+	if written != 3 {
+		t.Fatalf("the store holds %d priorities, want the 3 within the bounds", written)
 	}
 }
 
