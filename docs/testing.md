@@ -36,10 +36,15 @@ Each bullet says what the helper does not do, so a site that must keep its own b
   It replaces the address of a server or listener the test closed: a freed port is any program's to take, and on a shared machine one took it and answered HTTP (dispatch://INFRA-3904).
   It holds no listening socket and hands nothing to a child: a process the test starts takes a socket the test holds (`cmdtest.HoldPort` and `Pass`, `DISPATCH_LISTEN_FD`, `ENVOY_LISTEN_FD`, `LEGION_LISTEN_FD`) or binds port 0 and names its port, never a port the test picked and let go of.
 
+- A test that a command line keeps the rules of a cobra command line takes `packages/envoy/clitest`, one body for both modules: `packages/daemon` can import it through its `replace` of `packages/envoy`, and it imports the standard library alone.
+  `Conformance` runs the built binary, of any framework, and checks help on every command; a typo, an unknown flag at the root and on each command, an unknown shell for `completion` and an unknown topic for `help` that each exit 2, print the word they refuse, are no Go runtime crash and make no contact with its `Recorder`; a flag read after a positional; the completion script of each shell; and `__complete`.
+  The package documentation is the whole list and the rule each check holds.
+  It does not check what a command does with its arguments, its other exit codes or the shape of its tree, which each conversion's own tests hold, and it builds no binary: the caller hands it one.
+
 ## Test helpers the two Go modules share
 
 `packages/daemon` is a Go module of its own, and Go's internal-package rule keeps it from importing `github.com/sjawhar/envoy/internal/...`.
-So a test helper both modules use is a public package of `packages/envoy`, which the daemon imports through its `go.mod`'s `require` of `github.com/sjawhar/envoy` and `replace` of it with `../envoy`: `testtmp`, `testwait`, `githubtest`, `logtest`, `fixtureenv`'s `Unset`, `testnkeys`, `sourcecheck`, `doctext`, `testnatsimages` and `brokertest`.
+So a test helper both modules use is a public package of `packages/envoy`, which the daemon imports through its `go.mod`'s `require` of `github.com/sjawhar/envoy` and `replace` of it with `../envoy`: `testtmp`, `testwait`, `githubtest`, `logtest`, `fixtureenv`'s `Unset`, `testnkeys`, `sourcecheck`, `doctext`, `clitest`, `testnatsimages` and `brokertest`.
 A text check that holds a guide's text to something reads the guide through `doctext.VisibleMarkdown`, which takes out every HTML comment, so a passage no reader sees is no passage to the check.
 A helper of `packages/envoy/internal` that the daemon needs moves out of `internal/` first, and its callers in both modules import it from there; it is never copied.
 The daemon's own `internal/fixtureenv`, the guard that keeps its git and jj off a Legion pod's workspace, shares only a name with Envoy's, so a daemon file that needs both imports Envoy's under another name.
