@@ -137,9 +137,12 @@ func (r *reviewRangeLive) roundTwoNamesTheCommitOfRoundOne() {
 	r.note("the task holds %q, the head round 1's review read, while the pull request is at %s", want, issue.second)
 }
 
-// Check control-no-record-no-commit. The control issue walks the same first round and review, then
-// the commit is cleared from the reviewer's phases row in the daemon's database; the task of round
-// 2 names no reviewed commit. The check before it is this run with the clear left out.
+// Check control-no-record-no-commit. The control issue walks the same first round and review, and
+// its reviewer's phases row holds the commit that review read; then the commit is cleared from that
+// row in the daemon's database, and the task of round 2 names no reviewed commit. The check before
+// it is this run with the clear left out. The read before the clear is what lets the control fail
+// on a first review that recorded nothing: PostgreSQL counts a row the clear matches even when it
+// already holds the empty string, so the clear's one row says nothing of what the row held.
 func (r *reviewRangeLive) controlNoRecordNoCommit() {
 	issue := r.control
 	task := r.roundOne(issue)
@@ -147,6 +150,9 @@ func (r *reviewRangeLive) controlNoRecordNoCommit() {
 		r.t.Fatalf("the control's reviewer task of round 1 = %q, want no %q in it", task, lastReviewed)
 	}
 	r.requestChanges(issue)
+	if got := r.reviewedHead(issue.key); got != issue.first {
+		r.t.Fatalf("phases.reviewed_head of %s's reviewer before the clear = %q, want %s, the head its review of round 1 read", issue.key, got, issue.first)
+	}
 	tag, err := r.st.Pool().Exec(context.Background(), "update phases set reviewed_head = '' where issue = $1 and role = 'reviewer'", issue.key)
 	if err != nil || tag.RowsAffected() != 1 {
 		r.t.Fatalf("clear phases.reviewed_head of %s's reviewer = %v rows, %v; want 1 row and no error", issue.key, tag.RowsAffected(), err)

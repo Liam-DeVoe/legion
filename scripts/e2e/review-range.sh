@@ -19,9 +19,10 @@
 #     X, its footer naming the session its claim registered; the implementer pushes a new head and
 #     completes at it, and the tester passes; the reviewer's task holds ` Last reviewed commit: X.`;
 #   - control-no-record-no-commit: on a second issue, after the same first round and review, the
-#     driver clears phases.reviewed_head of the reviewer's row in the daemon's database, and the
-#     reviewer's task of round 2 holds no `Last reviewed commit`. The check before it is the same
-#     run with the clear left out, so the control can fail.
+#     driver reads that phases.reviewed_head of the reviewer's row holds the head the review read,
+#     clears it in the daemon's database, and the reviewer's task of round 2 holds no
+#     `Last reviewed commit`. The check before it is the same run with the clear left out, so the
+#     control can fail.
 #
 # Run it from a checkout on a Linux host with go, bun (after `bun install` at the checkout's
 # root), awk and python3, as
