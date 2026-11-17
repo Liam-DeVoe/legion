@@ -89,8 +89,8 @@ function driversOf(rows: readonly ListedRow[]): Driver[] {
 // rather than in the first test that awaits it, and its rejection waits for that test rather
 // than being reported as unhandled before it runs (`retained`).
 const drivers = retained(
-  listing("e2e/playwright.config.ts", {}, READING_LISTING_ARGUMENTS).then((report) =>
-    driversOf(rowsOfListing(report))
+  listing(import.meta.url, "e2e/playwright.config.ts", {}, READING_LISTING_ARGUMENTS).then(
+    (report) => driversOf(rowsOfListing(report))
   )
 );
 
