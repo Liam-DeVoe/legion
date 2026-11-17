@@ -72,7 +72,7 @@ func (s *server) putIssuePlan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
-	issue, project, ok := s.lockRecordedIssue(w, r, tx, key)
+	project, ok := s.lockRecordedIssue(w, r, tx, key)
 	if !ok {
 		return
 	}
@@ -86,7 +86,7 @@ func (s *server) putIssuePlan(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	written, err := workflowstore.PutPlan(r.Context(), tx, workflowstore.PlanWrite{
-		ID: r.PathValue("id"), Issue: issue, Project: &project, Source: input.Source,
+		ID: r.PathValue("id"), Issue: key, Project: &project, Source: input.Source,
 		Generation: input.Generation, Document: input.document(), Tasks: tasks,
 	}, actor, time.Now())
 	switch {

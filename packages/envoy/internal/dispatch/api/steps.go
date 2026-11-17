@@ -151,11 +151,11 @@ func (s *server) writeIssueStep(w http.ResponseWriter, r *http.Request, write wo
 		return
 	}
 	defer tx.Rollback(r.Context())
-	issue, project, ok := s.lockRecordedIssue(w, r, tx, key)
+	project, ok := s.lockRecordedIssue(w, r, tx, key)
 	if !ok {
 		return
 	}
-	write.ID, write.Issue, write.Project = r.PathValue("id"), issue, &project
+	write.ID, write.Issue, write.Project = r.PathValue("id"), key, &project
 	written, err := workflowstore.PutStep(r.Context(), tx, write, actor, time.Now())
 	switch {
 	case errors.Is(err, workflowstore.ErrStepInput):
@@ -171,14 +171,14 @@ func (s *server) writeIssueStep(w http.ResponseWriter, r *http.Request, write wo
 	// The attempt is the run's place among the issue's runs, which no write stores, so the
 	// answer reads the issue's runs in the write's own transaction, as GET would after it. That
 	// read lists the run: the write made it part of the issue, or found it part of the issue.
-	steps, err := workflowstore.IssueSteps(r.Context(), tx, issue)
+	steps, err := workflowstore.IssueSteps(r.Context(), tx, key)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
 	index := slices.IndexFunc(steps, func(step workflowstore.StepRead) bool { return step.ID == written.ID })
 	if index < 0 {
-		s.writeHandlerError(w, fmt.Errorf("the read of %s does not list step %s, which this write holds", issue, written.ID))
+		s.writeHandlerError(w, fmt.Errorf("the read of %s does not list step %s, which this write holds", key, written.ID))
 		return
 	}
 	record := stepRecord(steps[index])
@@ -210,24 +210,24 @@ func (s *server) requireIssueDaemon(w http.ResponseWriter, r *http.Request, supp
 	return actor, key, true
 }
 
-// lockRecordedIssue reads the issue a record is written to, under the key-share lock and with no
-// open check, as the design gates' publish reads it, and answers its key and project. An issue
-// Dispatch does not hold is refused with a code of its own rather than loadIssue's NOT_FOUND: the
-// daemon must tell a Dispatch that holds no such issue from one that does not serve the route,
-// whose router answers NOT_FOUND.
-func (s *server) lockRecordedIssue(w http.ResponseWriter, r *http.Request, tx pgx.Tx, key string) (string, string, bool) {
-	var issue, project string
+// lockRecordedIssue reads the issue key a record is written to, under the key-share lock and with
+// no open check, as the design gates' publish reads it, and answers its project. An issue Dispatch
+// does not hold is refused with a code of its own rather than loadIssue's NOT_FOUND: the daemon
+// must tell a Dispatch that holds no such issue from one that does not serve the route, whose
+// router answers NOT_FOUND.
+func (s *server) lockRecordedIssue(w http.ResponseWriter, r *http.Request, tx pgx.Tx, key string) (string, bool) {
+	var project string
 	if err := tx.QueryRow(r.Context(), `
-		select key, project_key from issues where key = $1 for key share
-	`, key).Scan(&issue, &project); err != nil {
+		select project_key from issues where key = $1 for key share
+	`, key).Scan(&project); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeError(w, "ISSUE_NOT_FOUND", http.StatusNotFound, fmt.Sprintf("no issue %s", key))
-			return "", "", false
+			return "", false
 		}
 		s.writeHandlerError(w, err)
-		return "", "", false
+		return "", false
 	}
-	return issue, project, true
+	return project, true
 }
 
 // listIssueSteps is every run of every step of one issue, task by task in the order of each
