@@ -29,6 +29,7 @@ import {
   createComment,
   createIssue,
   createIssueArtifact,
+  createNamedVersion,
   createPriority,
   createProject,
   createProjectDocument,
@@ -909,10 +910,11 @@ test("the selection bar gone from the keyboard hands the focus to the row marked
     });
   /** Records a focus that is not on `wanted`, or is on it out of the reader's sight. The bar
    *  hands the focus on once the commit that took it away has settled, which for a write that
-   *  lands rather than a key pressed is a moment after the bar is seen gone. */
+   *  lands rather than a key pressed is a moment after the bar is seen gone; the focus is read
+   *  until it is there, for the suite's expect timeout (`playwright.config.ts`). */
   const focusOn = async (where: string, after: string, wanted: string) => {
     const landed = await expect
-      .poll(async () => (await focusNow()).label, { timeout: 2_000 })
+      .poll(async () => (await focusNow()).label)
       .toBe(wanted)
       .then(() => true)
       .catch(() => false);
@@ -3883,6 +3885,11 @@ test.describe("R8's rows and cards", () => {
   test("the Board's cards and the rows of the Agents page, the project List and the Delivery list draw the parts and the size they had at the base @phone", async ({
     page,
   }, testInfo) => {
+    // Measured in an issue pod (two cores), one worker: the row took 23.6 s in Chromium. A list
+    // that never draws what the base drew is read for the suite's 15 s expect timeout before it
+    // is named, so the four lists can add a minute, which the config's 60 s budget would cut off
+    // before the row named them; two minutes holds both.
+    test.setTimeout(120_000);
     const atTheBase = ITEMS_AT_THE_BASE[testInfo.project.name];
     if (atTheBase === undefined) {
       throw new Error(`no reading at the base for the ${testInfo.project.name} project`);
@@ -3975,22 +3982,20 @@ test.describe("R8's rows and cards", () => {
         return differs;
       };
       // An item's parts arrive in turns - the read state, the asks, the live link - so the list
-      // is read again until it is what the base drew or the wait runs out, and what differs
-      // then is named below; a list no read reached is named for that.
+      // is read again until it is what the base drew or the suite's expect timeout runs out
+      // (`playwright.config.ts`), and what differs then is named below; a list no read reached
+      // is named for that.
       let found = [`the ${name} was never read`];
       await expect
-        .poll(
-          async () => {
-            const drawn = await drawnItems(items, list);
-            const heights =
-              lined && (name === "project Board" || name === "Agents page")
-                ? await linedHeights(items, name)
-                : [];
-            found = differences(drawn, heights);
-            return found;
-          },
-          { timeout: 5_000 }
-        )
+        .poll(async () => {
+          const drawn = await drawnItems(items, list);
+          const heights =
+            lined && (name === "project Board" || name === "Agents page")
+              ? await linedHeights(items, name)
+              : [];
+          found = differences(drawn, heights);
+          return found;
+        })
         .toEqual([])
         .catch(() => undefined);
       changed.push(...found);
@@ -4086,7 +4091,8 @@ test("no press in the shared controls drops the keyboard focus onto the page, at
   const row = controlRow(main);
   const wrong: string[] = [];
   /** Where each target has already been missed: a target missed once at a width is not waited
-   *  for again there, so a row whose every hand-off is gone still ends inside its budget. */
+   *  for again there, so a hand-off that is gone costs the row one wait at each width rather
+   *  than one for each press that misses it. */
   const missed = new Set<string>();
   /** Holds every issue write until `release`, as a slow server would, so a control can be read
    *  while its write is out; `stop` takes the hold off once the writes have landed. */
@@ -4114,10 +4120,10 @@ test("no press in the shared controls drops the keyboard focus onto the page, at
         "";
       return `"${label === "" ? focused.tagName : label}"`;
     });
-  /** Records a focus that has not landed on `wanted` within a second: the element named, or
-   *  whatever a check reads off the page. Each check follows the change it is about - the
-   *  control gone, the page turned, the bar gone - and a hand-off lands in that same commit or
-   *  the frame after it, so a second is ample. */
+  /** Records a focus that has not landed on `wanted` within the suite's expect timeout
+   *  (`playwright.config.ts`): the element named, or whatever a check reads off the page. Each
+   *  check follows the change it is about - the control gone, the page turned, the bar gone -
+   *  and a hand-off lands in that same commit or the frame after it. */
   const focusOn = async (
     where: string,
     press: string,
@@ -4126,8 +4132,8 @@ test("no press in the shared controls drops the keyboard focus onto the page, at
   ) => {
     if (missed.has(`${where} ${name}`)) return;
     const landed = await (typeof wanted === "function"
-      ? expect.poll(wanted, { timeout: 1_000 }).toBe(true)
-      : expect(wanted).toBeFocused({ timeout: 1_000 })
+      ? expect.poll(wanted).toBe(true)
+      : expect(wanted).toBeFocused()
     ).then(
       () => true,
       () => false
@@ -4348,9 +4354,11 @@ test("no press in the shared controls drops the keyboard focus onto the page, at
 test("no page-own press drops the keyboard focus onto the page, on any page of R2, at 1440 and 390 @firefox @webkit", async ({
   page,
 }) => {
-  // Seven pages at two widths take about 40 s on one worker. Each of the 24 presses that loses
-  // the focus waits out its 2 s read, so with every hand-off gone the row spends up to 48 s more,
-  // and it still ends by naming each press it lost rather than at the budget.
+  // Seven pages at two widths: measured in an issue pod (two cores), one worker, the row took
+  // 61.1 s in Chromium. A press that loses the focus waits out the suite's 15 s expect timeout
+  // (`playwright.config.ts`) for the focus to come back, so the row names each press it lost
+  // while at most five of the 24 lose it, and ends at the budget, on the press it is waiting on,
+  // where more do.
   test.setTimeout(150_000);
   const issue = await seedAgents();
   await seedDeliveryFixture();
@@ -4367,7 +4375,7 @@ test("no page-own press drops the keyboard focus onto the page, on any page of R
   /** Reads where the focus went once a press settles, and keeps the ones it lost. */
   const after = async (where: string, press: string) => {
     await expect
-      .poll(async () => (await focusOutcome(page)).lost, { timeout: 2_000 })
+      .poll(async () => (await focusOutcome(page)).lost)
       .toBe(false)
       .catch(() => undefined);
     const outcome = await focusOutcome(page);
@@ -4765,7 +4773,8 @@ test("a table that holds the keyboard focus scrolls freely, and the focus moves 
 // Shift+Tab out of the search bar's Project list every Escape was refused while the list stood
 // open, so the bar could not be closed from the keyboard. `@firefox` and `@webkit`: each engine
 // keeps a Tab order of its own - a stop for each field of a date box, one for a radio group - and
-// the panel follows the engine's.
+// the panel follows the engine's, the clause of `playwright.config.ts` on the engine's own Tab
+// order.
 test("Tab and Escape never leave a panel for the page behind it, in a dialog or on a page @firefox @webkit", async ({
   page,
 }) => {
@@ -5001,7 +5010,8 @@ test("with a field narrowing and a search on, a press of Blocked on you lists ex
 // that layout's, after every render and at every scroll, the panel's own included: the wheel's
 // scroll was pushed back at each step, and a Tab onto a control below the cut scrolled it into
 // view only for the clamp to hide it again. `@firefox` and `@webkit`: each engine lays out a
-// scroll box, and clamps its scroll, its own way.
+// scroll box, lands a wheel step's scroll and clamps its scroll its own way, the clause of
+// `playwright.config.ts` on how the engine lays out a scroll box.
 test("a filter panel cut to a short window scrolls to its last control @firefox @webkit", async ({
   page,
 }) => {
@@ -5110,7 +5120,8 @@ test("a column filter is visible and removable from the row even while its colum
 // update removes, with no press of the reader's on it, hands the focus to no other row and scrolls
 // nothing. The reader's last press is on the page's heading, outside the row, so the press window
 // does not cover the removal. `@firefox` and `@webkit`: a focused row taken away fires no `focusout`
-// in these engines, so the rescue sees the loss only by watching the page.
+// in these engines, so the rescue sees the loss only by watching the page, the clause of
+// `playwright.config.ts` on a focused control taken away.
 test("a row a live update removes while it holds the focus hands the focus to no other row and scrolls nothing @firefox @webkit", async ({
   page,
 }) => {
@@ -5176,11 +5187,11 @@ test("a row a live update removes while it holds the focus hands the focus to no
 // grouping select, where `j` and `k` did nothing, with radios, which take no text, so `j` on one
 // of them walked the table behind the open menu. At 1440 px the Inbox's `j` steps its reading
 // column's selection rather than the focus, so there it is the selection that must not move.
-// `@firefox` and `@webkit`: the rule reads the key's target, which is whatever element each
-// engine holds the focus on when the key is pressed.
-test("a page's single-key shortcuts do not act from inside an open panel @firefox @webkit", async ({
-  page,
-}) => {
+// No engine tag: the rule reads the element the key is pressed on, which is the focused element in
+// every engine, and the row reads that the focus is on the menu's radio before it presses `j`, so
+// another engine would repeat what Chromium shows (`playwright.config.ts`, the comment above
+// `tagged`).
+test("a page's single-key shortcuts do not act from inside an open panel", async ({ page }) => {
   await page.setViewportSize({ height: 900, width: 1440 });
   // Written one after another, since each takes the last place of the one order.
   for (const title of ["Ship the daemon", "Cut the review queue", "Retire the old ledger"]) {
@@ -5616,14 +5627,18 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
 // header's Assignee (`AssigneeControl`), Repository (`RepoControl`) and Priority to advance
 // (`IssuePriorityLine`), and the Create issue dialog's Project (`CreateIssueDialog`). The short
 // fixed lists - Priority (`PriorityControl`), Snooze (`SnoozeControl`), the Inbox's bulk Snooze,
-// the issue header's Status and the Agents page's Delivery mode - stay native selects by the
-// architect's ruling of 2026-11-17, and the row opens none of them. At each width each list is
-// opened from its trigger: exactly one text box is in the list's own panel, a typed word leaves
-// only the options it matches, Escape picks nothing and changes no value, Tab out of the text box
-// (Shift+Tab at the second width) picks nothing and leaves the reader on the trigger, and Enter
-// picks the option the word left - the trigger shows it with the focus back on it, or where the
-// pick takes the trigger away the panel hands the focus on. A list that holds no text box is
-// named and the row goes on, so one run names every such list.
+// the issue header's Status, the Agents page's Delivery mode, a table pager's Rows per page
+// (`Pager`), and the Delivery page's Color merges by and Window (`DeliveryPage`,
+// `WindowControl`) - stay native selects by the architect's ruling of 2026-11-17, and the row
+// opens none of them. At each width each list is opened from its trigger: exactly one text box is
+// in the list's own panel - at 390 an `input` of 16 px, the size `styles.css` gives every input
+// below 1280 px and under which iOS Safari zooms the page onto the box - the option a typed word
+// leaves is not the value the list starts on, the word leaves only the options it matches,
+// Escape picks nothing and changes no value, Tab out of the text box (Shift+Tab at the second
+// width) picks nothing and leaves the reader on the trigger, and Enter picks the option the word
+// left - the trigger shows it with the focus back on it, or where the pick takes the trigger away
+// the panel hands the focus on. A list that holds no text box is named and the row goes on, so
+// one run names every such list.
 // `@firefox` and `@webkit`: the keys a text box takes - the typed word, Enter, Escape and Tab - as
 // each engine delivers them, the clause of `playwright.config.ts` the composer's Issue list is run
 // under; and the close a Tab makes, which an engine that moves the focus off a removed element
@@ -5658,6 +5673,12 @@ test("every list of options a reader picks from holds a text box that narrows it
       const boxes = await box.count();
       if (boxes === 1) {
         await expect(box, `${at}: the open list left the focus outside its text box`).toBeFocused();
+        if ((page.viewportSize()?.width ?? Number.POSITIVE_INFINITY) < 1280) {
+          expect(
+            await box.evaluate((node) => `${node.tagName} ${getComputedStyle(node).fontSize}`),
+            `${at}: the list's text box is not an input of 16 px`
+          ).toBe("INPUT 16px");
+        }
         return panel.getByRole("option");
       }
       missing.push(`${at}: the list its trigger opens holds ${boxes} text boxes, not one`);
@@ -5687,6 +5708,10 @@ test("every list of options a reader picks from holds a text box that narrows it
         continue;
       }
       const before = await list.value();
+      expect(
+        before,
+        `${at}: the list starts on the option "${list.word}" leaves, so no pick could change it`
+      ).not.toMatch(list.picked);
 
       // The word makes an option other than the value the active one, and Escape picks nothing.
       const escaped = await open(list, at);
@@ -5741,4 +5766,148 @@ test("every list of options a reader picks from holds a text box that narrows it
     }
   }
   expect(missing, missing.join("; ")).toEqual([]);
+});
+
+/** A title wider than any list's trigger is at 1024x768, given to an epic, a priority and a named
+ *  version, each of which a list then picks. */
+const LONG_TITLE =
+  "Retire the ledger mirror and hand every lease it still holds to the regional daemons";
+
+/** What is wrong with how a list's trigger draws a value longer than it: the element the value's
+ *  text is in has to be the box that cuts it (its `scrollWidth` past its `clientWidth`) and end
+ *  it in an ellipsis, and the trigger's chevron has to be drawn whole, 16 px wide, at the end of
+ *  the trigger's content box. A value that fits is named, since then the read shows nothing. */
+function longValueDrawing(trigger: Locator): Promise<string[]> {
+  return trigger.evaluate((node) => {
+    const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
+    let text = walker.nextNode();
+    while (text !== null && (text.textContent ?? "").trim() === "") text = walker.nextNode();
+    const holder = text?.parentElement;
+    if (text === null || holder === null || holder === undefined) return ["it holds no text"];
+    const style = getComputedStyle(node);
+    const box = node.getBoundingClientRect();
+    const contentRight =
+      box.right - Number.parseFloat(style.borderRightWidth) - Number.parseFloat(style.paddingRight);
+    const room =
+      node.clientWidth -
+      Number.parseFloat(style.paddingLeft) -
+      Number.parseFloat(style.paddingRight);
+    const range = document.createRange();
+    range.selectNodeContents(text);
+    const width = range.getBoundingClientRect().width;
+    if (width <= room) {
+      return [`its value is ${Math.round(width)} px wide, which fits its ${Math.round(room)} px`];
+    }
+    const wrong: string[] = [];
+    const element = `the value's own element, a ${holder.tagName.toLowerCase()}`;
+    if (!(holder.scrollWidth > holder.clientWidth)) {
+      wrong.push(
+        `${element}, is as wide as the value, so a box around it cuts it with no ellipsis`
+      );
+    }
+    const ending = getComputedStyle(holder).textOverflow;
+    if (ending !== "ellipsis") wrong.push(`${element}, ends it in "${ending}", not an ellipsis`);
+    const chevron = node.querySelector("svg");
+    if (chevron === null) {
+      wrong.push("it draws no chevron");
+    } else {
+      const own = chevron.getBoundingClientRect();
+      if (Math.abs(own.width - 16) > 0.5 || Math.abs(own.right - contentRight) > 1) {
+        wrong.push(
+          `its chevron is ${own.width} px wide at ${Math.round(own.left)}-${Math.round(own.right)} px, not whole at the trigger's end, ${Math.round(contentRight)} px`
+        );
+      }
+    }
+    return wrong;
+  });
+}
+
+// SLOW(>=2s): three pages and a document version, four lists each picked from at 1024x768.
+// INFRA-3135, round 12: below 1280 px `styles.css` makes every button a flex box, whose own text
+// ends in no ellipsis (`TruncatedText`), so a list's trigger cut a long picked value mid-word; no
+// trigger showed that it opens a list, as a `<select>`'s arrow did; and Priority to advance was
+// as wide as the words it showed, so the Add and Cancel beside it moved at each pick. At 1024x768,
+// between `md` and `xl`, four lists of the shared list (`components/MultiSelect.tsx`) each pick a
+// value longer than their trigger - the List's Move to epic, an epic's Merge into another epic,
+// the Spec tab's Version and the issue header's Priority to advance: the element holding the
+// value cuts it and ends it in an ellipsis, and the chevron is whole at the trigger's end. And
+// Priority to advance is one width before a pick, after a short one and after a long one.
+test("a picked value too long for its list's trigger ends in an ellipsis before a whole chevron, and Priority to advance keeps its width across picks, at 1024x768", async ({
+  page,
+}) => {
+  await page.setViewportSize({ height: 768, width: 1024 });
+  await createProject({ key: "CORE", name: "Core" });
+  const longEpic = await createIssue({ project: "CORE", title: LONG_TITLE });
+  const shortEpic = await createIssue({ project: "CORE", title: "Short epic" });
+  for (const epic of [longEpic, shortEpic]) await patchIssue(epic.key, { labels: ["epic"] });
+  const member = await createIssue({
+    project: "CORE",
+    parent: shortEpic.key,
+    title: "Handover step",
+  });
+  const documented = await createIssue({
+    project: "CORE",
+    spec: "The lease passes at noon.\n",
+    title: "Lease handover",
+  });
+  await createNamedVersion(documented.primary_artifact_id, LONG_TITLE);
+  for (const title of ["Ship", LONG_TITLE]) await createPriority({ owner: "alice", title });
+  const wrong: string[] = [];
+  /** Opens `trigger`'s list, types `word`, and takes the one option the word leaves with Enter. */
+  const pick = async (trigger: Locator, word: string) => {
+    await trigger.click();
+    await expect(listOf(trigger).getByRole("combobox")).toBeFocused();
+    await page.keyboard.type(word);
+    await expect(listOf(trigger).getByRole("option")).toHaveCount(1);
+    await page.keyboard.press("Enter");
+    await expect(trigger).toHaveAttribute("aria-expanded", "false");
+  };
+  /** Records what is wrong with how `trigger` draws the long value just picked. */
+  const read = async (name: string, trigger: Locator) => {
+    await expect(trigger, `${name} does not show the value picked`).toContainText(LONG_TITLE);
+    for (const what of await longValueDrawing(trigger)) wrong.push(`${name}: ${what}`);
+  };
+
+  await openIssuesTab(page, "CORE", "List");
+  await page
+    .getByTestId("main-content")
+    .getByRole("checkbox", { exact: true, name: `Select ${member.key}` })
+    .check();
+  const moveTo = listTrigger(page, "Move to epic");
+  await pick(moveTo, "regional");
+  await read("the List's Move to epic", moveTo);
+
+  await page.goto("/projects/CORE/issues?group=epic");
+  await page
+    .getByRole("row")
+    .filter({ has: page.getByRole("button", { name: /Short epic/ }) })
+    .getByRole("button", { name: "Epic actions ▾" })
+    .click();
+  const mergeInto = listTrigger(page, "Merge into another epic");
+  await pick(mergeInto, "regional");
+  await read("an epic's Merge into another epic", mergeInto);
+
+  await page.goto(`/issues/${documented.key}/spec`);
+  const version = listTrigger(page, "Version");
+  await pick(version, "regional");
+  await read("the Spec tab's Version", version);
+
+  await page.goto(`/issues/${member.key}`);
+  await page.getByRole("button", { exact: true, name: `Add a priority to ${member.key}` }).click();
+  const advance = listTrigger(page, "Priority to advance");
+  const width = () => advance.evaluate((node) => node.getBoundingClientRect().width);
+  await expect(advance).toHaveText("Choose a priority");
+  const widths = [await width()];
+  await pick(advance, "ship");
+  await expect(advance).toHaveText(/^P\d+ Ship$/);
+  widths.push(await width());
+  await pick(advance, "regional");
+  await read("the issue header's Priority to advance", advance);
+  widths.push(await width());
+  if (widths.some((each) => Math.abs(each - widths[0]) > 0.5)) {
+    wrong.push(
+      `the issue header's Priority to advance is ${widths.join(", ")} px wide before a pick, after a short one and after a long one`
+    );
+  }
+  expect(wrong, wrong.join("; ")).toEqual([]);
 });

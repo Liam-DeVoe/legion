@@ -350,9 +350,17 @@ const parallelProjects = [
   // socket the engine reconnects and the paint after it.
   // A focused control taken away, itself or with a parent, which the HTML spec's focus fixup
   // does with no `focusout`, so the page's focus rescue sees it only by watching the page:
-  // `table-controls`'s page-own focus row. Measured in WebKit as well as Firefox: neither fires
-  // a `focusout` for it. And a table scrolled while one of its rows holds the focus, whose row
-  // the virtual list takes away out of sight: `table-controls`'s scrolling-table row.
+  // `table-controls`'s page-own focus row, and its row whose focused row a live update takes
+  // away. Measured in WebKit as well as Firefox: neither fires a `focusout` for it. And a table
+  // scrolled while one of its rows holds the focus, whose row the virtual list takes away out of
+  // sight: `table-controls`'s scrolling-table row.
+  // The engine's own Tab order - a stop for each field of a date box, one for a radio group -
+  // which decides when a Tab leaves a panel's last control, where the panel puts the focus on its
+  // trigger: `table-controls`'s row that Tab and Escape never leave a panel for the page behind
+  // it.
+  // How the engine lays out a scroll box, lands a wheel step's scroll and clamps a scroll, which
+  // a panel cut to a short window is scrolled by: `table-controls`'s row that such a panel
+  // scrolls to its last control, by the wheel and by Tab.
   // How the engine names a download from the `filename*` and `filename` of its
   // `Content-Disposition`, and whether it asks the server again for a download address it holds,
   // where an older version's name changes once a newer one exists: `download-names`'s six rows.
@@ -432,7 +440,15 @@ const parallelProjects = [
   // The reload line a read-only admission names: `doc-reload-line`'s one row.
   // A focused control taken away, itself or with a parent, for which this engine fires no
   // `focusout`, so the page's focus rescue sees it only by watching the page: `table-controls`'s
-  // page-own focus row, and its scrolling-table row, whose focused row a scroll takes away.
+  // page-own focus row, its row whose focused row a live update takes away, and its
+  // scrolling-table row, whose focused row a scroll takes away.
+  // The engine's own Tab order - a stop for each field of a date box, one for a radio group -
+  // which decides when a Tab leaves a panel's last control, where the panel puts the focus on its
+  // trigger: `table-controls`'s row that Tab and Escape never leave a panel for the page behind
+  // it.
+  // How the engine lays out a scroll box, lands a wheel step's scroll and clamps a scroll, which
+  // a panel cut to a short window is scrolled by: `table-controls`'s row that such a panel
+  // scrolls to its last control, by the wheel and by Tab.
   // How the engine names a download from the `filename*` and `filename` of its
   // `Content-Disposition`, and whether it asks the server again for a download address it holds,
   // where an older version's name changes once a newer one exists: `download-names`'s six rows.
