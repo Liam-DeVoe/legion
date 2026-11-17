@@ -735,20 +735,16 @@ func (s *server) listBroadcasts(w http.ResponseWriter, r *http.Request) {
 // `urn:uuid:<uuid>` on the uuid column, and the raw value would answer 500 where the canonical
 // one answers this route's own 404. A broadcast the caller may not read answers that same 404.
 func (s *server) getBroadcast(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.actingPerson(w, r); !ok {
-		return
-	}
-	who, ok := s.readerOf(w, r)
+	// The reply blocks are read for the person the request acts for, as they always were, with
+	// the viewer of the request's credential (readerAs), so they show only what the caller sees.
+	person, ok := s.actingPerson(w, r)
 	if !ok {
 		return
 	}
-	reader, ok := s.readerOf(w, r)
+	who, ok := s.readerAs(w, r, person)
 	if !ok {
 		return
 	}
-	// The reply blocks are read for the person the request acts for, as they always were, and
-	// for what the caller sees.
-	who.Viewer = reader.Viewer
 	id := r.PathValue("id")
 	if _, err := uuid.Parse(id); err != nil {
 		writeError(w, "BROADCAST_NOT_FOUND", http.StatusNotFound, "broadcast not found")
