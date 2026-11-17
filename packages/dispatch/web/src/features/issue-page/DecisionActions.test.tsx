@@ -1,4 +1,5 @@
 import { beforeAll, expect, type Mock, spyOn, test } from "bun:test";
+import { dispatchWritingBox } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -7,8 +8,10 @@ import type { ReactNode } from "react";
 import { displayTree } from "../../__tests__/display-trees";
 import { ApiError, api } from "../../api/client";
 import type { Artifact, ArtifactText, Decision, IssueDecisions } from "../../api/types";
+import { pageInkText, pagePaperBg, pageQuietText } from "../../theme/classes";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { ChangeDraftsProvider, DecisionActions } from "./DecisionActions";
+import { NoTooltips } from "./NoTooltips";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
 
 /**
@@ -77,16 +80,22 @@ function spyDocumentText(markdown: string | Error): DocumentTextSpy {
   });
 }
 
+/** Draws the decision's controls over `answer`, with the decisions document's text read answered
+ *  by `documentText`; inside the page's `NoTooltips` where `page` says so, as the issue page
+ *  draws them. */
 function renderActions(
   answer: IssueDecisions = read,
-  documentText: string | Error = DOCUMENT_TEXT
+  documentText: string | Error = DOCUMENT_TEXT,
+  { page = false }: { page?: boolean } = {}
 ): { text: DocumentTextSpy; unmount: () => void } {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   client.setQueryData(["decisions", KEY], answer);
   const decisions = spyOn(api, "getIssueDecisions").mockResolvedValue(answer);
   const text = spyDocumentText(documentText);
   const wrapper = ({ children }: { children: ReactNode }) => (
-    <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    <QueryClientProvider client={client}>
+      {page ? <NoTooltips>{children}</NoTooltips> : children}
+    </QueryClientProvider>
   );
   const view = render(
     <DecisionActions document={document_} isClosed={false} nodeReference={REFERENCE} />,
@@ -117,6 +126,32 @@ test("the change form opens with the caret in its field", async () => {
       document.activeElement,
       "the form opened with the caret somewhere other than the field a reader opened it to type in"
     ).toBe(field);
+  } finally {
+    unmount();
+  }
+});
+
+// The reviewer's finding PRRT_kwDORFy7ds64Sg5E: the Change field is the field's own box, as the
+// Decisions panel's is (`features/issue/DecisionsPanel.tsx`), drawn in the page's colours inside
+// `NoTooltips`: the hint under it and the list of the targets its words name are on screen, and
+// the box keeps the height the reader gives it rather than one fitted to what it holds.
+test("the change field is its own box in the page's colours, with its hint and its targets", async () => {
+  const user = userEvent.setup();
+  const { unmount } = renderActions(read, DOCUMENT_TEXT, { page: true });
+  try {
+    await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.change_decision }));
+    const field = screen.getByLabelText<HTMLTextAreaElement>(CONTROL_LABELS.your_change);
+    expect(field).toHaveClass(pagePaperBg, pageInkText);
+    const hint = screen.getByText(dispatchWritingBox("issue-page-decision-change", "comment").hint);
+    expect(field.getAttribute("aria-describedby")?.split(" ")).toContain(hint.id);
+    expect(hint).not.toHaveClass("sr-only");
+    expect(hint).toHaveClass(pageQuietText);
+
+    await user.paste("[@Old](dispatch://agent/planner-session) ");
+    const targets = screen.getByRole("list", { name: "Mention targets" });
+    expect(targets).not.toHaveClass("sr-only");
+    expect(targets).toHaveTextContent("session:planner-session");
+    expect(field.style.height, "the box was fitted to what it holds").toBe("");
   } finally {
     unmount();
   }
