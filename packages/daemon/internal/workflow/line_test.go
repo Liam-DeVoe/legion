@@ -202,13 +202,16 @@ func TestTheTaskPlaceAndThePhaseMoveInOneWrite(t *testing.T) {
 		}
 	})
 
-	// The same park of a child whose run has no plan rows writes its phase done, as today, and no
-	// task row (R20).
-	t.Run("a child with no plan rows parked at backlog stands done, as today", func(t *testing.T) {
+	// The same park of a child that started its work before Legion took plans, whose run has no
+	// plan rows, writes its phase done and no task row.
+	t.Run("a child with no plan rows parked at backlog stands done with no task row", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := stepEngine(nil)
+		// The child stands in planning with no plan rows, as a child whose planning started before
+		// Legion took plans stands: every first step of this release writes them (planFirstStep).
 		issue := child(t, pool)
-		move(t, pool, engine, issue.Key, TriggerGateOpened, "", record.PhaseRow{})
+		issue.Phase = phase.Planning
+		seedIssue(t, pool, issue)
 		leaveAs(t, pool, engine, issue.Key, "backlog")
 		var got string
 		var tasks int

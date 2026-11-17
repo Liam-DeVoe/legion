@@ -80,9 +80,10 @@ func planWrites(t *testing.T, pool *pgxpool.Pool, issue string) []record.PlanRec
 	return got
 }
 
-// The work of an issue starts at its move out of admitted, and that move writes the plan the run
-// carries out: one plan record of the issue, with the source default and one task, default, whose
-// steps are the default steps of a project that names none (config.Project.RunsByDefault). Its id
+// The work of an issue starts at its move out of admitted, through the admission's own start
+// (StartFirstPhase), and that move writes the plan the run carries out: one plan record of the
+// issue, with the source default and one task, default, whose steps are the default steps of a
+// project that names none (config.Project.RunsByDefault). Its id
 // is a version 5 uuid of the issue and its run, in the plan records' own namespace, so a write
 // sent again lands on the same plan and the next run gets a plan of its own. No later move of the
 // run writes another.
@@ -96,7 +97,7 @@ func TestTheWorkStartsWithTheDefaultPlan(t *testing.T) {
 	pool := migratedPool(t)
 	root := stepRoot(t, pool, phase.Admitted)
 	engine := stepEngine(nil)
-	move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{Issue: root.Key, Role: claim.RoleArchitect})
+	firstStep(t, pool, engine, root.Key)
 
 	namespace := uuid.NewSHA1(uuid.NameSpaceOID, []byte("legion-plan-record"))
 	planOf := func(name string, generation uint64) record.PlanRecord {

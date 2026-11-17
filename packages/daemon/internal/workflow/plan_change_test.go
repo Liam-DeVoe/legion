@@ -162,8 +162,8 @@ func architectOf(t *testing.T) claim.Token {
 // The version taken while the task runs queues one row, the run's plan node at that version (C9).
 // An issue that started its work before Legion took plans is refused and walks today's line, and
 // so is a plan given at a generation the issue has left, and one in a lingering tree; each refusal
-// writes nothing and leaves the fact unspent. The twin (R20): a root given no plan opens to
-// planning, with no plan rows, as today.
+// writes nothing and leaves the fact unspent. The twin: a root given no plan opens to planning, the
+// first of the default steps, in the rows of the task default that its first step writes.
 func TestAPlanGivenIsStoredWhereItsTaskHasNotStarted(t *testing.T) {
 	t.Run("a root at admitted takes it, and its gate opens to the plan's first step", func(t *testing.T) {
 		pool := migratedPool(t)
@@ -209,16 +209,14 @@ func TestAPlanGivenIsStoredWhereItsTaskHasNotStarted(t *testing.T) {
 		}
 	})
 
-	t.Run("the twin: a root given no plan opens to planning with no plan rows", func(t *testing.T) {
+	t.Run("the twin: a root given no plan opens to planning, the first step of the task default", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := returnEngine()
 		root := stepRoot(t, pool, phase.Admitted)
-		move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
-		if issue := issueOf(t, pool, engine, root.Key); issue.Phase != phase.Planning {
-			t.Fatalf("%s with no plan after its gate opened stands in %s, want planning, as today", root.Key, issue.Phase)
-		}
-		if now := planStandingOf(t, pool, engine, root.Key, root.Generation); now.plan != nil || len(now.versions) != 0 {
-			t.Fatalf("%s given no plan holds the plan %+v, want no plan rows", root.Key, now.plan)
+		firstStep(t, pool, engine, root.Key)
+		want := walkStanding{phase.Planning, record.TaskPlace{Kind: record.PlaceStep, Position: 1}, record.TaskRunning, []string{"0 default"}, todaysDefaultSteps}
+		if got := walkStandingOf(t, pool, engine, root.Key, root.Generation); !reflect.DeepEqual(got, want) {
+			t.Fatalf("%s given no plan after its gate opened stands at %+v, want %+v", root.Key, got, want)
 		}
 	})
 
@@ -557,8 +555,8 @@ func seedDefaultPlan(t *testing.T, pool *pgxpool.Pool, key string, generation ui
 // implementer's, and the implementer is started at a raised entry and told which version started
 // it. A version that keeps default and adds a is a plan of two tasks, which the route refuses
 // (api's TestRegisterPlanTakesAPlanAndRefusesWithReasons), so the workflow never takes it. The
-// twin (R20): an issue with no plan rows that stands in planning takes no plan, and stays where it
-// stands.
+// twin: an issue that started its work before Legion took plans, which stands in planning with no
+// plan rows, takes no plan, and stays where it stands.
 func TestAVersionThatReplacesTheStoppedDefaultTaskStartsTheNewTask(t *testing.T) {
 	t.Run("the stopped task default is replaced by a, which starts at its first step", func(t *testing.T) {
 		pool := migratedPool(t)
@@ -656,15 +654,13 @@ func TestAVersionThatReplacesTheStoppedDefaultTaskStartsTheNewTask(t *testing.T)
 		}
 	})
 
-	t.Run("the twin: an issue with no plan rows in planning takes no plan", func(t *testing.T) {
+	t.Run("the twin: an issue in planning that started before Legion took plans takes no plan", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := returnEngine()
-		root := stepRoot(t, pool, phase.Admitted)
-		move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
+		// An issue whose planning started before Legion took plans stands in planning with no plan
+		// rows: every first step of this release writes them (planFirstStep).
+		root := stepRoot(t, pool, phase.Planning)
 		before := planStandingOf(t, pool, engine, root.Key, root.Generation)
-		if before.issue.Phase != phase.Planning || before.plan != nil {
-			t.Fatalf("%s with no plan stands in %s with the plan %+v, want planning with no plan rows", root.Key, before.issue.Phase, before.plan)
-		}
 		id := planID(root.Key, root.Generation, 1)
 		assertPlanRefusal(t, pool, engine, root.Key, root.Generation, id,
 			applyFacts(t, pool, engine)(id, ownersPlan(t, root.Key, root.Generation, 1, givenTask(t, "Build the widget.", "implementer", "reviewer"))),
@@ -701,8 +697,9 @@ func walkStandingOf(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string
 // walks the line of version 1, implementing, reviewing, retro, merging and done, and its run's plan
 // holds version 1 alone at each move. With the daemon booted in the middle of the walk, the engine
 // built again on the same store, the walk is the same. The control: version 2 given while the
-// task waits, before its first step, is taken, and the walk starts planning. The twin (R20): an
-// issue given no plan walks today's line, and its walk writes no plan rows.
+// task waits, before its first step, is taken, and the walk starts planning. The twin: an issue
+// that started its work before Legion took plans walks today's line, and its walk writes no plan
+// rows.
 func TestAVersionNobodyGaveChangesNothing(t *testing.T) {
 	const merged = "merge-42"
 	versionOne := []string{"implementer/implementation", "reviewer/review"}
@@ -780,14 +777,15 @@ func TestAVersionNobodyGaveChangesNothing(t *testing.T) {
 		}
 	})
 
-	t.Run("the twin: an issue given no plan walks today's line and writes no plan rows", func(t *testing.T) {
+	t.Run("the twin: an issue that started before Legion took plans walks today's line and writes no plan rows", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := returnEngine()
-		root := stepRoot(t, pool, phase.Admitted)
-		move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
+		// It stands in planning with no plan rows, as an issue whose planning started before
+		// Legion took plans stands: every first step of this release writes them (planFirstStep).
+		root := stepRoot(t, pool, phase.Planning)
 		move(t, pool, engine, root.Key, TriggerPlannerCompleted, "", record.PhaseRow{})
 		if got := walkStandingOf(t, pool, engine, root.Key, root.Generation); !reflect.DeepEqual(got, walkStanding{phase: phase.Implementing}) {
-			t.Fatalf("%s given no plan stands at %+v after planning, want implementing with no plan rows", root.Key, got)
+			t.Fatalf("%s with no plan rows stands at %+v after planning, want implementing with no plan rows", root.Key, got)
 		}
 	})
 }
