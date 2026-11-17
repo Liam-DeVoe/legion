@@ -127,13 +127,19 @@ var stepStopped = StepEnd{Result: ResultStopped}
 // start counted at its place (record.Store.RaiseStepStarts), and a step record row, committed with
 // the start, carrying every identity field and the moment it started, and no session: Dispatch
 // keeps the first value it is given of each field and only the end names the model, so the end
-// writes the session and the model as one read's pair (endStep). The record never makes the start
-// wait: the row reaches Dispatch on a lane of its own (record.LaneRecord). A phase that runs no
-// step writes nothing, and neither does a record key that is no issue key (recordsSteps).
+// writes the session and the model as one read's pair (endStep). The start first ends each run of
+// the issue that is over, the run of its own place among them (settleStart), so the end of the run
+// the issue leaves, or that its place held, reaches Dispatch before this start. The record never
+// makes the start wait: the row reaches Dispatch on a lane of its own (record.LaneRecord). A phase
+// that runs no step writes nothing, and neither does a record key that is no issue key
+// (recordsSteps).
 func (e *Engine) startStep(ctx context.Context, tx pgx.Tx, issue record.Issue, agent claim.Token) error {
 	place, role, typ, ok := stepOf(record.StandsAt(issue))
 	if !ok || !recordsSteps(issue) {
 		return nil
+	}
+	if err := e.settleStart(ctx, tx, issue.Key, place); err != nil {
+		return err
 	}
 	// The moment is the one the count of starts keeps, which PostgreSQL holds to the microsecond
 	// and the end reads back, so the start and the end write one moment (endStep).

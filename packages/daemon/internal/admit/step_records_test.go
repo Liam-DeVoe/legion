@@ -94,13 +94,19 @@ func assertStepWrites(t *testing.T, pool *pgxpool.Pool, key string, want ...step
 }
 
 // countStart writes the start of the step key stands in, as the transition or the promotion that
-// started it would have (workflow.Engine.StartStepRecord): its count raised and its start queued.
+// started it would have (workflow.Engine.StartStepRecord), in a fact of its own: its count raised
+// and its start queued.
 func countStart(t *testing.T, pool *pgxpool.Pool, engine intake.Handler, key string) {
 	t.Helper()
 	stored := issue(t, pool, key)
+	workflowEngine := engine.(*workflow.Engine)
+	ctx := workflowEngine.OpenFact(context.Background())
 	inTx(t, pool, func(tx pgx.Tx) {
-		if err := engine.(*workflow.Engine).StartStepRecord(context.Background(), tx, stored); err != nil {
+		if err := workflowEngine.StartStepRecord(ctx, tx, stored); err != nil {
 			t.Fatalf("start the step of %s: %v", key, err)
+		}
+		if err := workflowEngine.SettleFact(ctx, tx); err != nil {
+			t.Fatalf("settle the start of %s: %v", key, err)
 		}
 	})
 }

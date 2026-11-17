@@ -185,6 +185,23 @@ func (a *Admission) Apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (int
 	return intake.Result{Refusal: refusal}, a.wakeForFreeSlot(ctx, tx, released)
 }
 
+// OpenFact and SettleFact are the engine's (intake.Settler): admission writes issues through it —
+// a re-admission's new generation, a promotion's starts — so the runs those writes end are settled
+// whichever of the two a fact applies through, once.
+func (a *Admission) OpenFact(ctx context.Context) context.Context {
+	if a.engine == nil {
+		return ctx
+	}
+	return a.engine.OpenFact(ctx)
+}
+
+func (a *Admission) SettleFact(ctx context.Context, tx pgx.Tx) error {
+	if a.engine == nil {
+		return nil
+	}
+	return a.engine.SettleFact(ctx, tx)
+}
+
 // applyFact is Apply's work, and reports the issues whose slots it released and the refusal of a
 // release's adoption.
 func (a *Admission) applyFact(ctx context.Context, tx pgx.Tx, fact intake.Fact) ([]string, *intake.Refusal, error) {

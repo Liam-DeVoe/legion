@@ -1472,6 +1472,7 @@ func ApplyFact(ctx context.Context, pool Pool, source, eventID string, fact Fact
 		handlers = nil
 	}
 	ctx, committedHooks := WithCommitHooks(ctx)
+	ctx, settle := OpenSettlers(ctx, handlers...)
 	var result Result
 	for _, handler := range handlers {
 		candidate, err := handler.Apply(ctx, tx, fact)
@@ -1482,6 +1483,9 @@ func ApplyFact(ctx context.Context, pool Pool, source, eventID string, fact Fact
 			result.Refusal = candidate.Refusal
 		}
 		result.Unspent = result.Unspent || candidate.Unspent
+	}
+	if err := settle(ctx, tx); err != nil {
+		return Result{}, err
 	}
 	// A refused report of a production check leaves its event unmarked, so a report sent again —
 	// the same look and verdict, which is the same fact id its route mints (api's checkReport) —

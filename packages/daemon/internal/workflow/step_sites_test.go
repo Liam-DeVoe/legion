@@ -84,10 +84,11 @@ func holdFrom(t *testing.T, pool *pgxpool.Pool, key string, from phase.Phase) {
 	seedIssue(t, pool, *held)
 }
 
-// onStored runs write in one transaction on key's record as the store holds it.
+// onStored runs write in one transaction on key's record as the store holds it, as a fact applies
+// it (applyInTx).
 func onStored(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, write func(ctx context.Context, tx pgx.Tx, issue record.Issue) error) {
 	t.Helper()
-	applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
 		issue, err := engine.store.Issue(ctx, tx, key)
 		if err != nil {
 			return err
@@ -769,7 +770,7 @@ func TestALingerCloseEndsAMergeThatItDoesNotHandOver(t *testing.T) {
 					t.Fatalf("merge end id %s differs from its start %s", writes[2].ID, writes[1].ID)
 				}
 			}
-			applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+			applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
 				handover, err := engine.store.Handover(ctx, tx, "LEGION-209")
 				if err == nil && (handover != nil) != tc.handed {
 					t.Fatalf("handover = %+v, want a handover only for the open, unheld merger", handover)
@@ -907,7 +908,7 @@ func TestAReenteredChildEndsItsOldRun(t *testing.T) {
 	child := stepChild(t, pool, "LEGION-209", phase.Implementing, nil)
 	child.Status = "todo"
 	engine := stepEngine(nil)
-	applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
 		return engine.ReenterChild(ctx, tx, child, RecordedFact(child))
 	})
 	writes := stepWrites(t, pool, "LEGION-209")
@@ -929,7 +930,7 @@ func TestAnAdoptedMemberEndsItsOldRun(t *testing.T) {
 		Title: "queued", Phase: phase.Implementing, Generation: 2, Status: "in_progress", Rank: "W", LastDispatchSeq: 1}
 	seedIssue(t, pool, member)
 	engine := stepEngine(nil)
-	applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
 		return engine.moveIntoTree(ctx, tx, member, root, intake.AdoptedChild{})
 	})
 	writes := stepWrites(t, pool, "LEGION-300")
@@ -1019,7 +1020,7 @@ func TestAnIssueAtAdmittedRunsNoStep(t *testing.T) {
 	pool := migratedPool(t)
 	root := stepRoot(t, pool, phase.Admitted)
 	engine := stepEngine(nil)
-	applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
 		if err := engine.EndRunningStep(ctx, tx, root); err != nil {
 			return err
 		}

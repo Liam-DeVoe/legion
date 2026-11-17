@@ -1043,8 +1043,10 @@ func (w *workflowRuntime) reconcileListing(ctx context.Context, issues []dispatc
 	// The reconcile is its own transaction, so it owns the commit hooks its admission and workflow
 	// changes register (intake.OnCommit), as ApplyFact does for a fact, and it records issues, so it
 	// takes the lock every fact applies under: a mapping refresh never unsubscribes a repository it
-	// is recording an issue on.
+	// is recording an issue on. It settles the runs its writes end as a fact does
+	// (intake.OpenSettlers), before it commits.
 	scoped, committed := intake.WithCommitHooks(ctx)
+	scoped, settle := intake.OpenSettlers(scoped, w.handlers...)
 	if err := pgx.BeginFunc(scoped, w.pool, func(tx pgx.Tx) error {
 		if err := intake.SerializeFacts(scoped, tx); err != nil {
 			return fmt.Errorf("serialize the reconcile with every fact: %w", err)
@@ -1067,7 +1069,10 @@ func (w *workflowRuntime) reconcileListing(ctx context.Context, issues []dispatc
 				return err
 			}
 		}
-		return w.admission.Reconcile(scoped, tx, listed, target, position)
+		if err := w.admission.Reconcile(scoped, tx, listed, target, position); err != nil {
+			return err
+		}
+		return settle(scoped, tx)
 	}); err != nil {
 		return fmt.Errorf("reconcile admission: %w", err)
 	}
