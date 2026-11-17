@@ -114,9 +114,9 @@ type Problem struct {
 }
 
 // Effect is what a problem of Parse does to the tree that Parse gives with it: LosesNode or
-// KeepsEachNode. Parse sets one of the two on each of its problems. The zero value is no Effect, as
-// on a problem of Validate or of Compare, and a caller that compares the tree reads it as
-// LosesNode, so no problem reads as one that keeps each node by default.
+// KeepsEachNode. Parse sets on each of its problems the Effect of its kind (problemKinds). The zero
+// value is no Effect, as on a problem of Validate or of Compare, and a caller that compares the
+// tree reads it as LosesNode, so no problem reads as one that keeps each node by default.
 type Effect uint8
 
 const (
@@ -129,9 +129,10 @@ const (
 	LosesNode Effect = iota + 1
 	// KeepsEachNode is the Effect of a problem of form after which the tree holds each node in the
 	// text that the files write: a heading that names code, a claim of more than one line or
-	// sentence, or a byte that Dispatch cannot store. A node keeps such a byte in its text, and a raw
-	// 0xA0 or 0x85 byte between two attributes, which the reader of the opening line takes as white
-	// space, changes no node's text. The comparison of the files' own text decides.
+	// sentence, or a byte that Dispatch cannot store. A node keeps such a byte in its text, except a
+	// raw 0xA0 or 0x85 byte between two attributes: the reader of the opening line takes it as white
+	// space, so the node drops it and is byte for byte the node of the same line without it. The
+	// comparison of the files' own text decides.
 	KeepsEachNode
 )
 

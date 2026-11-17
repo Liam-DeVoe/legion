@@ -86,16 +86,20 @@
 // the command that compares the files". The guard names each place of a CI file where the
 // command's name and then the word compare follow each other with only white space, commas, ( or [
 // between them, and with quote characters (also a $ before one), backslashes, and line breaks with
-// the indentation after them ignored. The name is spec-check, under any path, as a word of its own:
-// a word that only holds it, such as envoy-spec-check or spec-checker, is another name. compare is
-// a word of its own too: a letter, a digit, _, -, . or / right after it makes another word or a
-// path, such as compare-all, compare.sh or compare/. So it also names a comment or a quoted text
-// that no shell runs, and the author rewords that line. It does not find a command that an
-// expansion, an escape or an alias builds, or one with another word between the two, and it is no
-// defence against an author who hides the command: compare itself refuses to run in a CI job. A
-// step can run the comparison from a file it does not read, such as a package script or a make
-// target: compare's refusal covers that route when the step passes the runner's environment on,
-// and nothing covers it when the step does not.
+// the indentation after them ignored. So it also names a comment or a quoted text that no shell
+// runs, and the author rewords that line. The name is spec-check, under any path, as a word of its
+// own: a word that only holds it, such as envoy-spec-check or spec-checker, is another name.
+// compare is a word of its own too: a letter, a digit, _, -, . or / right after it makes another
+// word or a path, such as compare-all, compare.sh or compare/. A letter right after a backslash
+// ends an escape, such as the \n of a double-quoted text, so it is no byte of a word before the
+// name, and after compare a \n or a \t ends the word.
+// It does not find a command that an expansion, an escape or an alias builds, a name right after an
+// escape that ends in a digit or that another character starts, such as \x20, PowerShell's `n or a
+// batch file's %~dp0, or one with another word between the two, and it is no defence against an
+// author who hides the command: compare itself refuses to run in a CI job. A step can run the
+// comparison from a file it does not read, such as a package script or a make target: compare's
+// refusal covers that route when the step passes the runner's environment on, and nothing covers it
+// when the step does not.
 // The guard follows no symbolic link at or under the four directories (the path to them, --root
 // and .github included, resolves as the system resolves it), and it reads each file whole, with
 // no bound on its size.

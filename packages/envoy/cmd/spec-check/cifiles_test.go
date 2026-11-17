@@ -308,7 +308,8 @@ func TestCIFilesThatCompareNamesAListOfArguments(t *testing.T) {
 }
 
 // wordsThatOnlyHoldTheName is each line whose word only holds the command's name, as a job, a key,
-// a tool, a possessive or a plural does, before compare: none names the command.
+// a tool, a possessive with the ASCII apostrophe or a plural does, before compare: none names the
+// command.
 var wordsThatOnlyHoldTheName = []string{
 	"needs: [envoy-spec-check, compare-baselines]",
 	"myspec-check compare --dir a",
@@ -321,7 +322,9 @@ var wordsThatOnlyHoldTheName = []string{
 
 // The command's name is a word of its own: no letter, digit, _ or - stands right before spec-check
 // in the file, and a suffix right after it starts with another character, such as .exe, @v1 or
-// ).arg(. So no line of wordsThatOnlyHoldTheName is named. A path keeps the name, also under a
+// ).arg(. So no line of wordsThatOnlyHoldTheName is named: the ASCII apostrophe of spec-check's is a
+// quote character, which the rule ignores, so the s stands right after the name. A possessive with
+// U+2019 is a suffix that keeps the name, so that line is named. A path keeps the name, also under a
 // directory whose name holds it, where spec-checker is still another word, and so does a line that
 // a backslash and a line break join onto a here-document's delimiter, since the file has a line
 // break right before spec-check.
@@ -338,6 +341,7 @@ func TestCIFilesThatCompareReadsTheCommandsNameAsAWordOfItsOwn(t *testing.T) {
 		{"go build -o x-spec-check/spec-check ./cmd/spec-check && x-spec-check/spec-check compare --dir a", []int{1}},
 		{": <<'END\\'\n\" \\\nEND\\\nspec-check compare --dir a", []int{4}},
 		{"$RUNNER_TEMP/envoy-spec-check/spec-checker compare --dir a", nil},
+		{"the spec-check\u2019s compare step", []int{1}},
 	}
 	for _, text := range wordsThatOnlyHoldTheName {
 		rows = append(rows, row{text, nil})
@@ -346,6 +350,44 @@ func TestCIFilesThatCompareReadsTheCommandsNameAsAWordOfItsOwn(t *testing.T) {
 		t.Run(row.text, func(t *testing.T) {
 			t.Parallel()
 			expectScriptAndBlock(t, row.text, row.at)
+		})
+	}
+}
+
+// A double-quoted YAML value, and a string of JavaScript or Python, turn \n and \t into a line
+// break and a tab. A letter right after a backslash ends an escape and is no byte of a word, so the
+// comparison right after such an escape is named; after compare, a \n or a \t ends the word, so
+// that comparison is named too, as Bash runs each. An escape that ends in a digit, or that another
+// character starts, is outside the claim: \x20, PowerShell's `n and the %~dp0 of a batch file each
+// stand right before the name unseen, and a \x20 after compare makes no end of it.
+func TestCIFilesThatCompareReadsAnEscapeAsTheEndOfAWord(t *testing.T) {
+	t.Parallel()
+	for _, row := range []struct {
+		name, path, text string
+		named            bool
+	}{
+		{"a double-quoted run: value with \\n before the name", ".github/workflows/a.yaml", `      - run: "set -e\nspec-check compare --dir .dispatch/spec --approved a.json"`, true},
+		{"a double-quoted run: value with \\t before the name", ".github/workflows/a.yaml", `      - run: "set -e;\tspec-check compare --dir a"`, true},
+		{"execSync with \\n before the name", "scripts/a.ts", `execSync("set -e\nspec-check compare --dir a");`, true},
+		{"a double-quoted run: value with \\n after compare", ".github/workflows/a.yaml", `      - run: "spec-check compare\n--dir .dispatch/spec --approved a.json"`, true},
+		{"execSync with \\n after compare", "scripts/a.ts", `execSync("spec-check compare\n");`, true},
+		{"a double-quoted run: value with \\t after compare", ".github/workflows/a.yaml", `      - run: "spec-check compare\t--dir a"`, true},
+		{"outside the claim: \\x20 after compare", ".github/workflows/a.yaml", `      - run: "spec-check compare\x20--dir a"`, false},
+		{"outside the claim: \\x20 before the name", ".github/workflows/a.yaml", `      - run: "set -e;\x20spec-check compare --dir a"`, false},
+		{"outside the claim: PowerShell's `n before the name", "scripts/a.ps1", "Invoke-Expression \"Set-Location a`nspec-check compare --dir a\"", false},
+		{"outside the claim: a batch file's %~dp0 before the name", "scripts/a.cmd", `%~dp0spec-check compare --dir a`, false},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			content, line := row.text+"\n", 1
+			if strings.HasPrefix(row.path, ".github/workflows/") {
+				content, line = workflowSteps+content, 4
+			}
+			var want []string
+			if row.named {
+				want = []string{fmt.Sprintf("%s:%d", row.path, line)}
+			}
+			expectFiles(t, map[string]string{row.path: content}, want)
 		})
 	}
 }
