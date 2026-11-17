@@ -8,28 +8,49 @@
 import { IDEMPOTENCY_KEY_COMMITTED } from "@legion/contracts";
 import type { Locator, Route } from "@playwright/test";
 import { CONTROL } from "../web/src/components/control-names";
-import { agentRow, plannerSession, reviewerSession, seedAgents, setLiveSessions } from "./agents";
 import {
+  agentFilter,
+  agentGroupToggle,
+  agentRow,
+  type FakeSession,
+  getSentMessages,
+  issueListOf,
+  pickAgentFilter,
+  plannerSession,
+  reviewerSession,
+  seedAgents,
+  setLiveSessions,
+  shownAgentRows,
+  toggleAgentGroup,
+} from "./agents";
+import {
+  createAgentMessage,
   createAsk,
   createComment,
   createIssue,
   createIssueArtifact,
   createPriority,
   createProject,
+  createProjectDocument,
   editArtifact,
   getArtifact,
+  getInbox,
+  listIssueArtifacts,
+  listMyReplies,
   mintAgentToken,
   patchIssue,
   putArchitectureSource,
   putRepoProject,
+  replyToMessageDelivery,
 } from "./api";
+import { recordClipboard } from "./clipboard";
 import {
   PIPELINE_AT,
   seedDeliveryFixture,
   seedPipelineFixture,
   seedSessionGroupsFixture,
 } from "./delivery-seed";
-import { connectedDot, documentEditor } from "./editor";
+import { connectedDot, documentEditor, placeCaret } from "./editor";
 import {
   setCredentialGrants,
   setPendingCredentialRequests,
@@ -56,6 +77,7 @@ import {
   lastActivity,
   seedEveryField,
   sortedIds,
+  type ViewRow,
   valuesOf,
 } from "./inbox-view";
 import { leaveFocus } from "./keyboard-issue";
@@ -2149,6 +2171,1114 @@ test("the Delivery list still answers the keyboard and stays windowed, and each 
     "aria-pressed",
     boardBefore ?? "false"
   );
+});
+
+/** The Agents page's keep row's sessions, by id: UUIDs, which Dispatch's agent routes require. */
+const KEPT_AGENT = {
+  auditor: "01a0e812-3135-7000-8000-000000000003",
+  planner: "01a0e812-3135-7000-8000-000000000001",
+  reviewer: "01a0e812-3135-7000-8000-000000000002",
+  sleeper: "01a0e812-3135-7000-8000-000000000005",
+  tester: "01a0e812-3135-7000-8000-000000000004",
+} as const;
+
+/** The Agents page's four groups, in the order it draws them. */
+const AGENT_GROUP_ORDER = ["needs-you", "active", "idle", "quiet"] as const;
+
+/** A live session of that row. `last_seen` is taken when the row seeds, never at this module's
+ *  scope, which a worker evaluates once and every later row of that worker ages. */
+function keptAgent(
+  sessionID: string,
+  title: string,
+  machine: string,
+  role: string,
+  silentFor = 5_000
+): FakeSession {
+  return {
+    capabilities: ["aside", "btw"],
+    dir: `/srv/${title.toLowerCase()}`,
+    last_seen: Date.now() - silentFor,
+    machine_id: machine,
+    roles: [role],
+    session_id: sessionID,
+    title,
+  };
+}
+
+/**
+ * Five sessions over two machines and three roles, one in each group but Idle, which holds two
+ * so a pin has an order to change: the Planner needs the reader (an open ask of its own waits on
+ * them), has a question whose next move is its own and a reply the reader has not read; the
+ * Reviewer wrote a comment a moment ago; the Auditor and the Tester have done nothing in
+ * Dispatch; the Sleeper has not been heard from for an hour. Returns the issue the Planner's asks
+ * name, which the search box finds it by.
+ */
+async function seedKeptAgents(): Promise<string> {
+  await setLiveSessions([
+    keptAgent(KEPT_AGENT.planner, "Planner", "box-1", "planner"),
+    keptAgent(KEPT_AGENT.reviewer, "Reviewer", "box-1", "reviewer"),
+    keptAgent(KEPT_AGENT.auditor, "Auditor", "box-2", "tester"),
+    keptAgent(KEPT_AGENT.tester, "Tester", "box-2", "tester"),
+    keptAgent(KEPT_AGENT.sleeper, "Sleeper", "box-2", "tester", 60 * 60_000),
+  ]);
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "Agents kept" });
+  const asPlanner = {
+    actor: { id: KEPT_AGENT.planner, kind: "session" as const },
+    as: "agent" as const,
+  };
+  await createAsk(issue.key, { question: "Which release?" }, asPlanner);
+  // The reader has answered the second, so its next move is the Planner's.
+  const answered = await createAsk(issue.key, { question: "Which branch?" }, asPlanner);
+  await createComment(issue.key, { ask_id: answered.id, body: "Which one do you mean?" });
+  await createComment(
+    issue.key,
+    { body: "Reviewing the diff." },
+    { actor: { id: KEPT_AGENT.reviewer, kind: "session" }, as: "agent" }
+  );
+  const asked = await createAgentMessage(KEPT_AGENT.planner, {
+    body: "How far along?",
+    delivery: "aside",
+  });
+  await replyToMessageDelivery(
+    asked.id,
+    { attempt: 1, body: "Nearly there." },
+    { id: KEPT_AGENT.planner, kind: "session" }
+  );
+  return issue.key;
+}
+
+/** Reads each of the four group headings' names and counts, in the order the page draws them. */
+async function expectAgentGroups(
+  page: Page,
+  headings: readonly [string, string, string, string],
+  what: string
+): Promise<void> {
+  for (const [index, group] of AGENT_GROUP_ORDER.entries()) {
+    await expect(
+      agentGroupToggle(page, group),
+      `${what}: the ${group} group's heading and count`
+    ).toHaveAccessibleName(headings[index] ?? "");
+  }
+}
+
+// R6 on the Agents page. What the page offered at the merge base, dccaf8369449
+// (`fork_point(main@origin | @)`), paths under `web/src/`, and how the row drives each:
+// - Fields: the group (`features/agents/AgentsPage.tsx:932-949`), the machine (:950-962) and the
+//   role (:963-975), each a multi-select, and the search box (:978-990), which matches a
+//   session's title, directory, machine, id and the issues its open asks name
+//   (`features/agents/agent-search.ts:67-76`). Each is put on and the rows it leaves read, with
+//   the group counts under it, and its chip taken off again.
+// - Sort: no control. In a group, pinned rows first, then who needs the reader, open asks, newest
+//   activity and title (`AgentsPage.tsx:114-144`). Read as the rows' order, and again after a pin.
+// - Grouping: Needs you, Active, Idle and Quiet (`features/agents/agent-groups.ts:21-67`,
+//   `AgentsPage.tsx:146-173`), each folding (:854-895, :1523-1540). Each group's place is read,
+//   and one is folded and opened.
+// - Counts: each group heading's `(N)` and `(N, K selected)` (`AgentsPage.tsx:885-887`,
+//   `features/agents/selection.ts:61-66`); the select-all header's `N matching` and
+//   `K of N matching selected` (`AgentsPage.tsx:1032-1034`, `selection.ts:45-59`); a row's
+//   `New reply N` (`AgentsPage.tsx:721-735`), `Needs you N` (:736-744) and `Waiting on agent N`
+//   (:745-760); the composer's `Broadcast to N of M selected` (:1136). Each is read.
+// - Views: none; the page offers no choice of view.
+// - Bulk action: a row's checkbox (`AgentsPage.tsx:631-638`), select-all (:1022-1031), Clear
+//   selection (:1035-1043) and the broadcast composer's Send (:1048-1219). Driven to a send, and
+//   the fake Envoy read for the one message each selected session was sent.
+// - Keys (`features/agents/keyboard.ts:148-244`): `/` (:155-161), `j` (:164-171), `k`
+//   (:172-179), Enter (:180-189), `i` (:190-217), Shift+P (:218-224), `x` (:225-232) and Escape
+//   (:233-243); and `g a`, the global binding that opens the page (`app.tsx:576`). Each pressed
+//   and what it did read.
+// - Stored for the reader: the pins (`features/agents/pins.ts:61-125`) and the read mark an
+//   opened row writes (`features/agents/unread.ts:128-145`), both the reader's agent state in
+//   Dispatch; the page kept nothing in the browser (no `useUserPreference`, no storage). Both are
+//   found again after a reload.
+// SLOW(>=2s): five seeded sessions worked through every narrowing, count, key, pin and a send.
+test("the Agents page keeps every narrowing, grouping, count, key, pin and broadcast it had @phone", async ({
+  page,
+}, testInfo) => {
+  const phone = isPhoneProject(testInfo);
+  if (!phone) await page.setViewportSize({ height: 900, width: 1440 });
+  const issue = await seedKeptAgents();
+  const main = page.getByTestId("main-content");
+  const titles = shownAgentRows(page).locator("h2");
+  const planner = agentRow(page, KEPT_AGENT.planner);
+  const reviewer = agentRow(page, KEPT_AGENT.reviewer);
+  const tester = agentRow(page, KEPT_AGENT.tester);
+  const everyRow = ["Planner", "Reviewer", "Auditor", "Tester", "Sleeper"];
+  const opened = ["Needs you (1)", "Active (1)", "Idle (2)", "Quiet (1)"] as const;
+
+  // `g a`, from another page.
+  await page.goto("/");
+  await expect(page.getByRole("heading", { level: 1, name: "Inbox" })).toBeVisible();
+  await page.locator("body").focus();
+  await page.keyboard.press("g");
+  await page.keyboard.press("a");
+  await expect(
+    page.getByRole("heading", { level: 1, name: "Agents" }),
+    "the g a key opened no Agents page"
+  ).toBeVisible();
+  await expect(planner).toBeVisible();
+  if (phone) await assertPageFits(page);
+
+  // The four groups with their counts, and the order inside them.
+  await expectAgentGroups(page, opened, "the page as it opens");
+  await expect(titles, "the rows' order").toHaveText(everyRow);
+  await expect(
+    main.getByText("5 matching", { exact: true }),
+    "the select-all header's count"
+  ).toBeVisible();
+  await expect(
+    planner.getByRole("link", { exact: true, name: "Needs you 1" }),
+    "the row's Needs you count"
+  ).toBeVisible();
+  await expect(
+    planner.getByRole("link", { exact: true, name: "Waiting on agent 1" }),
+    "the row's Waiting on agent count"
+  ).toBeVisible();
+  const unread = planner.getByRole("button", { exact: true, name: "New reply 1 from Planner" });
+  await expect(unread, "the row's count of replies not read").toBeVisible();
+
+  // A group's fold.
+  await toggleAgentGroup(page, "idle");
+  await expect(titles, "the Idle group's fold").toHaveText(["Planner", "Reviewer", "Sleeper"]);
+  await toggleAgentGroup(page, "idle");
+  await expect(titles).toHaveText(everyRow);
+
+  // The search box, by a title and by the issue an open ask names.
+  const search = control(controlRow(main), CONTROL.searchBox);
+  await search.fill("reviewer");
+  await expect(titles, "the search box, by a title").toHaveText(["Reviewer"]);
+  await expectAgentGroups(
+    page,
+    ["Needs you (0)", "Active (1)", "Idle (0)", "Quiet (0)"],
+    "the search box"
+  );
+  await expect(
+    main.getByText("1 matching", { exact: true }),
+    "the select-all header's count under the search box"
+  ).toBeVisible();
+  await search.fill(issue);
+  await expect(titles, "the search box, by an open ask's issue").toHaveText(["Planner"]);
+  await search.fill("");
+  await expect(titles).toHaveText(everyRow);
+
+  // The three multi-selects, each with its chip.
+  const chips = control(controlRow(main), CONTROL.chip);
+  for (const [field, option, shown, headings] of [
+    ["group", "Quiet", ["Sleeper"], ["Needs you (0)", "Active (0)", "Idle (0)", "Quiet (1)"]],
+    [
+      "machine",
+      "box-2",
+      ["Auditor", "Tester", "Sleeper"],
+      ["Needs you (0)", "Active (0)", "Idle (2)", "Quiet (1)"],
+    ],
+    ["role", "reviewer", ["Reviewer"], ["Needs you (0)", "Active (1)", "Idle (0)", "Quiet (0)"]],
+  ] as const) {
+    await openFilterPanel(page, main);
+    await expect(agentFilter(page, field), `the ${field} narrowing`).toBeVisible();
+    await pickAgentFilter(page, field, option);
+    await expect(titles, `the ${field} narrowing`).toHaveText(shown);
+    await expectAgentGroups(page, headings, `the ${field} narrowing`);
+    await expect(chips, `the ${field} narrowing's chip`).toHaveCount(1);
+    await chips.click();
+    await expect(titles, `the ${field} narrowing's chip taken off`).toHaveText(everyRow);
+  }
+
+  // The read mark: the count's own press opens the conversation, which reads it. The row is
+  // shut again, and the focus left in it.
+  await unread.click();
+  await expect(unread, "opening the row left its replies unread").toHaveCount(0);
+  await planner.getByRole("button", { exact: true, name: "Planner" }).click();
+
+  // The page's own keys. `/` is the page's search box, shadowing the global search bar; `j` from
+  // the box takes the first row, the one the press above left the focus in.
+  await page.keyboard.press("/");
+  await expect(search, "the / key").toBeFocused();
+  await expect(page.getByRole("dialog", { name: "Search" })).toHaveCount(0);
+  await search.blur();
+  await page.keyboard.press("j");
+  await expect(planner, "the j key").toBeFocused();
+  await page.keyboard.press("j");
+  await expect(reviewer, "the j key, again").toBeFocused();
+  await page.keyboard.press("k");
+  await expect(planner, "the k key").toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(
+    planner.getByRole("textbox", { name: "Comment" }),
+    "the Enter key, into the row's composer"
+  ).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(planner, "the Escape key, out of the composer").toBeFocused();
+  const plannerMark = planner.getByRole("checkbox", { name: "Select Planner for broadcast" });
+  await page.keyboard.press("x");
+  await expect(plannerMark, "the x key").toBeChecked();
+  await page.keyboard.press("x");
+  await expect(plannerMark).not.toBeChecked();
+  await page.keyboard.press("j");
+  await expect(reviewer).toBeFocused();
+  await page.keyboard.press("i");
+  const picker = reviewer.getByRole("button", { name: "Choose issue" });
+  await expect(picker, "the i key").toHaveAttribute("aria-expanded", "true");
+  await expect(issueListOf(reviewer).getByRole("combobox", { name: "Issue" })).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(picker, "the Escape key, out of the Issue list").toHaveAttribute(
+    "aria-expanded",
+    "false"
+  );
+  await expect(reviewer).toBeFocused();
+  await page.keyboard.press("j");
+  await page.keyboard.press("j");
+  await expect(tester).toBeFocused();
+  await page.keyboard.press("Shift+P");
+  await expect(
+    tester.getByRole("button", { name: "Unpin Tester" }),
+    "the Shift+P key"
+  ).toBeVisible();
+  const pinned = ["Planner", "Reviewer", "Tester", "Auditor", "Sleeper"];
+  await expect(titles, "the pin's place at the head of its group").toHaveText(pinned);
+
+  // What the page stores for the reader, found again after a reload.
+  await page.reload();
+  await expect(
+    tester.getByRole("button", { name: "Unpin Tester" }),
+    "the pin, after a reload"
+  ).toBeVisible();
+  await expect(titles, "the pinned order, after a reload").toHaveText(pinned);
+  await expect(
+    planner.getByRole("button", { name: /^New repl/ }),
+    "the read mark, after a reload"
+  ).toHaveCount(0);
+
+  // The bulk action: select-all over a narrowing, Clear selection, then two rows and a send.
+  await pickAgentFilter(page, "role", "tester");
+  await main.getByRole("checkbox", { exact: true, name: "Select all matching agents" }).check();
+  await expect(
+    main.getByText("3 of 3 matching selected", { exact: true }),
+    "select-all"
+  ).toBeVisible();
+  await expectAgentGroups(
+    page,
+    ["Needs you (0)", "Active (0)", "Idle (2, 2 selected)", "Quiet (1, 1 selected)"],
+    "select-all"
+  );
+  const composer = page.getByRole("region", { name: "Broadcast" });
+  await expect(composer, "select-all drew no broadcast composer").toBeVisible();
+  await main.getByRole("button", { exact: true, name: "Clear selection" }).click();
+  await expect(composer, "Clear selection").toHaveCount(0);
+  await chips.click();
+  await expect(titles).toHaveText(pinned);
+  await reviewer.getByRole("checkbox", { name: "Select Reviewer for broadcast" }).check();
+  await tester.getByRole("checkbox", { name: "Select Tester for broadcast" }).check();
+  await expect(
+    main.getByText("2 of 5 matching selected", { exact: true }),
+    "two rows' checkboxes"
+  ).toBeVisible();
+  await expect(
+    composer.getByRole("heading", { name: "Broadcast to 2 of 2 selected" }),
+    "the composer's count"
+  ).toBeVisible();
+  await composer.getByRole("textbox", { name: "Broadcast message" }).fill("Report status.");
+  await composer.getByRole("button", { name: "Send to 2" }).click();
+  await page.waitForURL(/\/agents\/broadcasts\/[0-9a-f-]+$/);
+  await expect
+    .poll(
+      async () =>
+        (await getSentMessages())
+          .filter((sent) => sent.message === "Report status.")
+          .map((sent) => String(sent.target_session))
+          .sort(),
+      { message: "the broadcast sent no message to each selected session" }
+    )
+    .toEqual([KEPT_AGENT.reviewer, KEPT_AGENT.tester].sort());
+});
+
+// R6 on an issue's Artifacts tab. What the tab offered at the merge base, dccaf8369449
+// (`fork_point(main@origin | @)`), paths under `web/src/`, and how the row drives each:
+// - Field: the one text box, which keeps an artifact whose name or kind holds the words
+//   (`features/artifacts/ArtifactsTab.tsx:243`, :281-289, :306-317) and says so when none does
+//   (:333-338). Worked by a name, by a kind and by words nothing holds.
+// - Sort: no control. The primary document first, then the newest written, then the id
+//   (:269-280). Read as the rows' order, and again once an upload is the newest.
+// - Grouping: none.
+// - Counts: each row's `N versions` (:196-202) and the references' `References (N)` (:116-150).
+//   Both read; the references opened and their rows counted against the number.
+// - Views: the references, shut until opened (:121-127). Opened.
+// - Bulk action: none; a row's own controls (copy, approval, Download, Remove, :211-231) act on
+//   that row alone.
+// - The strip's two controls that add to the list: New document (:318-323,
+//   `features/artifacts/CreateDocument.tsx`) and Upload (:324, `features/artifacts/ArtifactUpload.tsx`).
+//   Each used, and what it added read in the list.
+// - Keys: the tab's list answers none; `t a`, the issue page's binding that opens the tab
+//   (`features/issue/IssuePage.tsx:153`, :324-330). Pressed.
+// - Stored for the reader: nothing; the words were the tab's own state (:243), kept nowhere.
+// SLOW(>=2s): four seeded documents, an upload and a new document, read in the tab.
+test("an issue's Artifacts tab keeps its narrowing, its order, its counts, its strip and its key @phone", async ({
+  page,
+}, testInfo) => {
+  const phone = isPhoneProject(testInfo);
+  if (!phone) await page.setViewportSize({ height: 900, width: 1440 });
+  await createProject({ key: "CORE", name: "Core" });
+  const home = await createIssue({ project: "CORE", title: "Runbook home" });
+  const runbook = await createIssueArtifact(home.key, {
+    content: "# Runbook\n\nThe steps, in order.\n",
+    name: "runbook.md",
+  });
+  const issue = await createIssue({
+    project: "CORE",
+    spec: `# Kept spec\n\nThe steps are dispatch://${home.key}/artifact/${runbook.artifact.slug}.\n`,
+    title: "Artifacts kept",
+  });
+  const plan = await createIssueArtifact(issue.key, {
+    content: "# Plan\n\nThe first draft.\n",
+    name: "plan.md",
+  });
+  const notes = await createIssueArtifact(issue.key, {
+    content: "# Notes\n\nKept as written.\n",
+    name: "notes.md",
+  });
+  // The plan takes a second version after the notes were written, so it is the newer of the two.
+  await editArtifact(
+    plan.artifact.id,
+    { ops: [{ find: "first draft", op: "replace", with: "second draft" }] },
+    { as: "agent" }
+  );
+  await expect
+    .poll(async () => ((await getArtifact(plan.artifact.id)).versions ?? []).length)
+    .toBe(2);
+  const spec = (await listIssueArtifacts(issue.key)).find((artifact) => artifact.primary);
+  if (spec === undefined) throw new Error("the issue holds no primary document");
+
+  // `t a`, from the issue's own page. On a phone the review panel opens over the page as a
+  // dialog, which holds the keyboard, so it is shut first.
+  await page.goto(`/issues/${issue.key}`);
+  await expect(page.getByTestId("issue-header")).toBeVisible();
+  if (phone) {
+    const reviewPanel = page.getByRole("button", { name: /review panel/i });
+    if ((await reviewPanel.getAttribute("aria-expanded")) === "true") await reviewPanel.click();
+  }
+  await page.locator("body").focus();
+  await page.keyboard.press("t");
+  await page.keyboard.press("a");
+  await expect(page, "the t a key").toHaveURL(new RegExp(`/issues/${issue.key}/artifacts$`));
+  const main = page.getByTestId("main-content");
+  const rows = main.locator('[data-testid^="artifact-"]');
+  const order = () =>
+    rows.evaluateAll((nodes) => nodes.map((node) => node.getAttribute("data-testid") ?? ""));
+  await expect(rows).toHaveCount(3);
+  if (phone) await assertPageFits(page);
+
+  // The order, and each row's count of versions.
+  expect(await order(), "the order: the primary document, then the newest written").toEqual([
+    `artifact-${spec.slug}`,
+    `artifact-${plan.artifact.slug}`,
+    `artifact-${notes.artifact.slug}`,
+  ]);
+  await expect(rows.first().getByText("Primary", { exact: true })).toBeVisible();
+  await expect(
+    main.getByTestId(`artifact-${plan.artifact.slug}`),
+    "a row's count of versions"
+  ).toContainText("doc · 2 versions");
+  await expect(main.getByTestId(`artifact-${notes.artifact.slug}`)).toContainText(
+    "doc · 1 version"
+  );
+
+  // The references' count, which is the number of rows they open on.
+  const references = main.getByText(/^References \(\d+\)$/);
+  await expect(references, "the references' count").toBeVisible();
+  const counted = Number(/\((\d+)\)/.exec((await references.textContent()) ?? "")?.[1]);
+  await references.click();
+  const referenced = main.getByRole("region", { name: "References" });
+  await expect(referenced.getByRole("listitem"), "the references' count").toHaveCount(counted);
+  await expect(referenced.getByRole("link", { exact: true, name: "runbook.md" })).toBeVisible();
+
+  // Upload, which adds a file - a kind the text box narrows by.
+  await page.getByLabel("Upload artifact").setInputFiles({
+    buffer: Buffer.from("one line\n"),
+    mimeType: "text/plain",
+    name: "trace.log",
+  });
+  await main.getByRole("button", { exact: true, name: "Upload" }).click();
+  const trace = main.getByTestId("artifact-trace-log");
+  await expect(trace, "Upload").toContainText("file · 1 version");
+  expect(await order(), "the order, with the upload the newest written").toEqual([
+    `artifact-${spec.slug}`,
+    "artifact-trace-log",
+    `artifact-${plan.artifact.slug}`,
+    `artifact-${notes.artifact.slug}`,
+  ]);
+
+  // The text box, by a name, by a kind, and by words no artifact holds.
+  const filter = control(controlRow(main), CONTROL.searchBox);
+  await filter.fill("plan");
+  await expect(rows, "the text box, by a name").toHaveCount(1);
+  await expect(rows).toHaveAttribute("data-testid", `artifact-${plan.artifact.slug}`);
+  await filter.fill("file");
+  await expect(rows, "the text box, by a kind").toHaveCount(1);
+  await expect(rows).toHaveAttribute("data-testid", "artifact-trace-log");
+  await filter.fill("nothing holds this");
+  await expect(rows).toHaveCount(0);
+  await expect(
+    main.getByText("No artifacts match this filter.", { exact: true }),
+    "the text box's empty state"
+  ).toBeVisible();
+  await filter.fill("");
+  await expect(rows).toHaveCount(4);
+
+  // New document, which opens what it made; the tab then lists it.
+  await main.getByRole("button", { exact: true, name: "New document" }).click();
+  const form = page.getByRole("form", { name: "New document" });
+  await form.getByRole("textbox", { exact: true, name: "Title" }).fill("Drafted");
+  await form.getByRole("button", { exact: true, name: "Create" }).click();
+  await expect(page, "New document").toHaveURL(
+    new RegExp(`/issues/${issue.key}/artifacts/drafted`)
+  );
+  await page.goto(`/issues/${issue.key}/artifacts`);
+  await expect(rows, "New document's row").toHaveCount(5);
+  await expect(rows.nth(1), "New document's row").toContainText("Drafted");
+});
+
+/** The search bar's keep row's seed: four issues and a comment holding `harbour`, over two
+ *  projects, two authors and two statuses; a project document holding it too, whose paragraph
+ *  the writing cursor goes into; and twenty-two `beacon` issues, more than the bar lists at once
+ *  (`searchDefaultLimit`, `packages/envoy/internal/dispatch/api/search.go`). */
+async function seedKeptSearch(): Promise<{ documentSlug: string; rollout: string }> {
+  await createProject({ key: "CORE", name: "Core" });
+  await createProject({ key: "OPS", name: "Ops" }, { login: "bob" });
+  const rollout = await createIssue({ project: "CORE", title: "Harbour rollout" });
+  await createComment(rollout.key, { body: "The harbour tide decides the day." });
+  const lights = await createIssue({ project: "CORE", title: "Harbour lights" });
+  await patchIssue(lights.key, { status: "in_progress" });
+  await createIssue({ project: "CORE", title: "Harbour pilot" }, { login: "bob" });
+  await createIssue({ project: "OPS", title: "Harbour crane" }, { login: "bob" });
+  const document = await createProjectDocument("CORE", {
+    content: "# Harbour notes\n\nThe sextant sights the horizon.\n",
+    name: "Harbour notes",
+  });
+  for (let index = 1; index <= 22; index++) {
+    await createIssue({ project: "CORE", title: `Beacon ${index}` });
+  }
+  return { documentSlug: document.artifact.slug, rollout: rollout.key };
+}
+
+/** The owners the bar's hits are grouped under, each as its group is named: `KEY: title`. */
+function hitOwners(bar: Locator): Promise<string[]> {
+  return bar
+    .locator(
+      '#search-results [id^="search-group-issue:"], #search-results [id^="search-group-document:"]'
+    )
+    .evaluateAll((heads) => heads.map((head) => head.getAttribute("aria-label") ?? "").sort());
+}
+
+// R6 on the search bar. What the bar offered at the merge base, dccaf8369449
+// (`fork_point(main@origin | @)`), paths under `web/src/`, and how the row drives each:
+// - Fields: the words in the box (`features/search/SearchPalette.tsx:724-742`); Project
+//   (`features/search/SearchFilterBar.tsx:149-156`), Status (:157-164), Author, taken on Enter
+//   (:165-181), and Updated since (:182-198), each a removable chip once set (:137-148,
+//   `features/search/search-filters.ts:65-89`) and each a parameter of the search (:91-104). Each
+//   is set, the hits it leaves read, and its chip taken off again.
+// - Sort: none to choose; the hits come in the order the search ranks them.
+// - Grouping: the hits under the issue or document they belong to (`SearchPalette.tsx:472`,
+//   :780-851, `features/search/search-model.ts:25-44`); the Recent, Actions and Projects groups
+//   above them (:546-574), and More actions, This issue's agent and New issue below (:575-596).
+//   The hits' groups, Recent, Actions, Projects and New issue are read. More actions holds what
+//   the page's keys offer, and This issue's agent only a live session holding the issue.
+// - Count: `Showing the best N of M matches` (:891-896). Read.
+// - Views: the recent items while the box is empty, the hits while it holds words (:507-524).
+//   Both read.
+// - Bulk action: none.
+// - Keys: in the box, ArrowDown and ArrowUp move the highlight (:685-700) and Enter opens it
+//   (:701-704); Tab narrows the scope to the block being written in and Backspace on an empty
+//   box widens it to the project (`features/search/useBarScope.tsx:72-90`); `$mod+k` shuts the
+//   bar (`SearchPalette.tsx:433-441`) and so does Escape (`features/shell/useDialog.ts:124-137`);
+//   and the three global bindings that open it, `$mod+k`, `/` and `g p` (`app.tsx:547-597`).
+//   Each pressed and what it did read.
+// - Stored for the reader: the recent items, in local storage under `search.recents`
+//   (`features/search/recents.ts:26-87`). Found again after a reload.
+// SLOW(>=2s): twenty-six seeded issues and a document, the bar opened six times over four pages.
+test("the search bar keeps its narrowings, its groups, its count, its recent items and its keys @phone", async ({
+  page,
+}, testInfo) => {
+  const phone = isPhoneProject(testInfo);
+  if (!phone) await page.setViewportSize({ height: 900, width: 1440 });
+  const seed = await seedKeptSearch();
+  const bar = page.getByRole("dialog", { name: "Search" });
+  const box = bar.getByRole("combobox", { name: "Search" });
+  const scope = bar.getByTestId("search-scope");
+  // Four issues, and the project document, which is grouped under its own name.
+  const harbour = [
+    "CORE-1: Harbour rollout",
+    "CORE-2: Harbour lights",
+    "CORE-3: Harbour pilot",
+    "CORE: Harbour notes",
+    "OPS-1: Harbour crane",
+  ].sort();
+
+  // The three keys that open the bar, and the two that shut it.
+  await page.goto("/");
+  await expect(page.getByRole("heading", { level: 1, name: "Inbox" })).toBeVisible();
+  for (const [keys, shut] of [
+    [["/"], "Escape"],
+    [["g", "p"], "Control+k"],
+    [["Control+k"], "Escape"],
+  ] as const) {
+    await page.locator("body").focus();
+    for (const key of keys) await page.keyboard.press(key);
+    await expect(bar, `the ${keys.join(" ")} key`).toBeVisible();
+    await expect(box).toBeFocused();
+    await page.keyboard.press(shut);
+    await expect(bar, `the ${shut} key in the bar`).toHaveCount(0);
+  }
+
+  // The words, and the hits grouped under what they belong to.
+  await page.keyboard.press("Control+k");
+  await box.fill("harbour");
+  await expect.poll(() => hitOwners(bar), { message: "the words' hits" }).toEqual(harbour);
+  await expect(
+    bar.getByRole("group", { name: "CORE-1: Harbour rollout" }).getByRole("option"),
+    "an issue's group, holding the issue and its comment"
+  ).toHaveCount(2);
+  if (phone) await assertPageFits(page);
+
+  // The four narrowings, each from the one panel and each a chip.
+  const chips = control(controlRow(bar), CONTROL.chip);
+  const filters = page.getByRole("dialog", { name: "Filter" });
+  const tomorrow = await page.evaluate(() => {
+    const day = new Date();
+    day.setDate(day.getDate() + 1);
+    const pad = (value: number) => String(value).padStart(2, "0");
+    return `${day.getFullYear()}-${pad(day.getMonth() + 1)}-${pad(day.getDate())}`;
+  });
+  const pick = async (list: string, option: string) => {
+    await filters.getByRole("button", { exact: true, name: list }).click();
+    await page
+      .getByRole("listbox", { name: `${list} options` })
+      .getByRole("option", { exact: true, name: option })
+      .click();
+  };
+  for (const [narrowing, field, set, left] of [
+    [
+      "Project",
+      filters.getByRole("button", { exact: true, name: "Project" }),
+      () => pick("Project", "OPS"),
+      ["OPS-1: Harbour crane"],
+    ],
+    [
+      "Status",
+      filters.getByRole("button", { exact: true, name: "Status" }),
+      () => pick("Status", "In progress"),
+      ["CORE-2: Harbour lights"],
+    ],
+    [
+      "Author",
+      filters.getByRole("searchbox", { name: "Author" }),
+      async () => {
+        await filters.getByRole("searchbox", { name: "Author" }).fill("bob");
+        await page.keyboard.press("Enter");
+      },
+      ["CORE-3: Harbour pilot", "OPS-1: Harbour crane"],
+    ],
+    [
+      "Updated since",
+      filters.getByLabel("Updated since"),
+      () => filters.getByLabel("Updated since").fill(tomorrow),
+      [],
+    ],
+  ] as const) {
+    await openFilterPanel(page, bar);
+    await expect(field, `the ${narrowing} narrowing`).toBeVisible();
+    await set();
+    await closeControlPanel(bar);
+    await expect(
+      chips.filter({ hasText: new RegExp(`^${narrowing} `) }),
+      `the ${narrowing} narrowing's chip`
+    ).toHaveCount(1);
+    await expect
+      .poll(() => hitOwners(bar), { message: `the ${narrowing} narrowing` })
+      .toEqual([...left].sort());
+    await chips.click();
+    await expect(chips).toHaveCount(0);
+    await expect.poll(() => hitOwners(bar)).toEqual(harbour);
+  }
+
+  // The count of what the bar holds back, and the projects the words name.
+  await box.fill("beacon");
+  await expect(
+    bar.getByText("Showing the best 20 of 22 matches", { exact: true }),
+    "the count of matches"
+  ).toBeVisible();
+  await box.fill("ops");
+  await expect(
+    bar.getByRole("group", { name: "Projects" }).getByRole("option"),
+    "the Projects group"
+  ).toContainText(["Ops"]);
+
+  // The arrows move the highlight over the hits, and Enter opens the one it is on.
+  await box.fill("harbour");
+  await expect.poll(() => hitOwners(bar)).toEqual(harbour);
+  const first = await box.getAttribute("aria-activedescendant");
+  await page.keyboard.press("ArrowDown");
+  await expect(box, "the ArrowDown key").not.toHaveAttribute("aria-activedescendant", first ?? "");
+  await page.keyboard.press("ArrowUp");
+  await expect(box, "the ArrowUp key").toHaveAttribute("aria-activedescendant", first ?? "");
+  await page.keyboard.press("Enter");
+  await expect(bar, "the Enter key").toHaveCount(0);
+  await expect(page, "the Enter key").toHaveURL(/\/(issues|projects)\//);
+
+  // Over an issue: the page's actions on an empty box, Backspace widening the scope from the
+  // issue to its project, and the new issue the bar offers words nothing holds, which it files
+  // in the page's project.
+  await page.goto(`/issues/${seed.rollout}`);
+  await expect(page.getByTestId("issue-header")).toBeVisible();
+  await page.locator("body").focus();
+  await page.keyboard.press("Control+k");
+  await expect(scope).toHaveText(new RegExp(`Acting on ${seed.rollout}`));
+  await expect(
+    bar.getByRole("group", { name: "Actions" }).getByRole("option"),
+    "the Actions group"
+  ).not.toHaveCount(0);
+  await page.keyboard.press("Backspace");
+  await expect(scope, "the Backspace key").toHaveText(/Acting on the project CORE/);
+  await box.fill("zebrafish");
+  await expect(
+    bar.getByRole("group", { name: "New issue" }).getByRole("option", {
+      name: /Make a new issue from .zebrafish./,
+    }),
+    "the New issue group"
+  ).toHaveCount(1);
+  await page.keyboard.press("Escape");
+
+  // Tab narrows it to the block the writing cursor is in.
+  await page.goto(`/projects/CORE/documents/${seed.documentSlug}`);
+  await expect(documentEditor(page)).toContainText("The sextant sights the horizon.");
+  await placeCaret(page, "after", "sextant");
+  await expect(documentEditor(page)).toBeFocused();
+  await page.keyboard.press("Control+k");
+  await expect(scope).toHaveText(/Harbour notes/);
+  await page.keyboard.press("Tab");
+  await expect(scope, "the Tab key").toHaveText(/The sextant sights the horizon/);
+  await page.keyboard.press("Escape");
+
+  // The recent items, kept in the browser and listed again after a reload.
+  await page.goto("/");
+  await expect(page.getByRole("heading", { level: 1, name: "Inbox" })).toBeVisible();
+  await page.locator("body").focus();
+  await page.keyboard.press("Control+k");
+  await expect(box).toHaveValue("");
+  const recent = bar.getByRole("group", { name: "Recent" });
+  await expect(
+    recent.getByRole("option", { name: new RegExp(seed.rollout) }),
+    "a recent issue, after a reload"
+  ).toHaveCount(1);
+  await expect(
+    recent.getByRole("option", { name: /Harbour notes/ }),
+    "a recent document, after a reload"
+  ).toHaveCount(1);
+  expect(
+    await page.evaluate(() => localStorage.getItem("dispatch.search.recents:alice")),
+    "the recent items' stored value"
+  ).toContain(`/issues/${seed.rollout}`);
+});
+
+/** The ids a list inside `root` draws, top to bottom: the drawer's own, never the page's under it
+ *  (`drawnIds` reads the page's). */
+function idsIn(root: Locator): Promise<string[]> {
+  return root
+    .locator("[data-inbox-row]")
+    .evaluateAll((nodes) => nodes.map((node) => node.getAttribute("data-inbox-row") ?? ""));
+}
+
+/** Every band heading a list inside `root` draws, top to bottom, with its count. */
+function bandsIn(root: Locator): Promise<string[]> {
+  return root
+    .getByTestId("inbox-list")
+    .locator("h2 button")
+    .evaluateAll((nodes) => nodes.map((node) => (node.textContent ?? "").trim()));
+}
+
+/** Shuts the surface's display menu by pressing its trigger again. Escape would be the drawer's
+ *  too once the focus has left the menu, and would shut the drawer with it. */
+async function shutDisplay(root: Locator): Promise<void> {
+  const trigger = control(controlRow(root), CONTROL.displayMenu);
+  if ((await trigger.getAttribute("aria-expanded")) === "true") await trigger.click();
+  await expect(trigger).toHaveAttribute("aria-expanded", "false");
+}
+
+// R6 on the Inbox drawer. At the merge base, dccaf8369449 (`fork_point(main@origin | @)`), the
+// drawer is the Inbox's own list in a dialog, its narrowing its own state rather than the
+// address (`features/inbox/InboxDrawer.tsx:39`, :68-74), so it offered what the Inbox offered.
+// Paths under `web/src/`, and how the row drives each:
+// - Fields: priority, urgency, type and project (`features/inbox/InboxBar.tsx:227-249`), the
+//   assignee control (:250-257, `features/inbox/AssigneeFilter.tsx:26-87`) and the search box
+//   (`features/inbox/Inbox.tsx:1513-1522`); a chip for each value that is on
+//   (`InboxBar.tsx:149-181`, :260-275); and Clear filters (:183-187, :276-283). Each put on, the
+//   rows it leaves read, and its chip taken off; Clear filters read for what it takes off and
+//   what it leaves.
+// - Sorts: newest, priority, urgency, type, project and assignee (`features/inbox/ViewMenu.tsx:169-180`,
+//   `features/refs/routes.ts:76`, :84). Each chosen and the order read.
+// - Groupings: the five fields, Waiting on and None (`ViewMenu.tsx:181-192`, `routes.ts:91`). Each
+//   chosen and its bands read.
+// - Counts: each value's rows in its field's list, taken under the other narrowings
+//   (`InboxBar.tsx:133-141`, :231, :240-241, `AssigneeFilter.tsx:74-77`); each band's
+//   (`features/inbox/InboxGroups.tsx:53`); what waits on the reader, `Blocked on you: N items`
+//   (`Inbox.tsx:1558-1563`, `features/inbox/BlockedOnYou.tsx:111-137`); and the selection's
+//   `N selected` (`features/inbox/BulkBar.tsx:68-82`). Each read.
+// - Views: the Inbox and Dismissed (`ViewMenu.tsx:193-204`), and the thread order (:205-216). Each
+//   chosen and read.
+// - Bulk actions: Snooze selected asks, Dismiss and Move to Inbox selected threads, Select all
+//   and Clear selection (`BulkBar.tsx:98-147`); and Mark all read (`InboxBar.tsx:201-212`). Each
+//   pressed and its write read.
+// - Keys, on the drawer's own dialog scope (`Inbox.tsx:1162-1416`): `j` and `k` (:1167-1182),
+//   the arrows (:1183-1189), Enter (:1190-1221), 1-9 (:1222-1231), `o` (:1232-1238), `y`
+//   (:1239-1247), Escape back to the row (:1248-1280), `l` (:1281-1309), which stands down in a
+//   list with no reading pane, `x` (:1310-1321), `e` (:1322-1338), `h` (:1339-1362), Escape out
+//   of the bulk picker (:1363-1374), Escape clearing the selection (:1375-1390), `f`
+//   (:1391-1401) and Escape out of the search box (:1402-1415); the dialog's own Escape
+//   (`features/shell/useDialog.ts:124-137`); and `i`, the global binding that opens the drawer
+//   (`app.tsx:598-606`). Each pressed and what it did read.
+// - Stored for the reader, in local storage and read by the page and the drawer alike: the thread
+//   order (`features/threads/thread-order.ts:23-30`) and the folded bands
+//   (`features/inbox/preferences.ts:41-62`). Each set, and found again after a reload.
+// SLOW(>=2s): eleven seeded rows worked through every field, sort, grouping, key and bulk action.
+test("the Inbox drawer keeps every field, sort, grouping, count, view, bulk action, key and stored choice it had @phone", async ({
+  page,
+}, testInfo) => {
+  // Measured in an issue pod (two cores), one worker: the row took 46.4 s in Chromium and 41.2 s
+  // in the iPhone project, against the config's 60 s, and with the `e` binding taken out it ran
+  // out of that budget while its 15 s expectation was naming the key. Twice the budget keeps a
+  // step that fails late naming itself rather than the budget.
+  test.setTimeout(120_000);
+  const phone = isPhoneProject(testInfo);
+  if (!phone) await page.setViewportSize({ height: 900, width: 1440 });
+  const copied = await recordClipboard(page);
+  const { rows } = await seedEveryField();
+  const at = await lastActivity();
+  const peek = drawer(page);
+  const listed = peek.locator("[data-inbox-row]");
+  const chips = control(controlRow(peek), CONTROL.chip);
+  const rowOf = (id: string) => peek.locator(`[data-inbox-row="${id}"]`);
+  const idsOf = (match: (row: ViewRow) => boolean) =>
+    rows
+      .filter(match)
+      .map((row) => row.id)
+      .sort();
+  const seeded = (match: (row: ViewRow) => boolean): ViewRow => {
+    const found = rows.find(match);
+    if (found === undefined) throw new Error("the seed holds no such row");
+    return found;
+  };
+  const alices = idsOf((row) => row.assignee === "alice");
+
+  // `i`, over the project List, and the dialog's own Escape.
+  await openIssuesTab(page, "CORE", "List");
+  await expect(page.locator("[data-issue-row]").first()).toBeVisible();
+  await page.locator("body").focus();
+  await page.keyboard.press("i");
+  await expect(peek, "the i key").toBeVisible();
+  await expect(listed).toHaveCount(alices.length);
+  expect((await idsIn(peek)).sort(), "the drawer as it opens, on the reader's own").toEqual(alices);
+  await page.keyboard.press("Escape");
+  await expect(peek, "the drawer's own Escape").toHaveCount(0);
+  await peekTrigger(page).click();
+  await expect(listed).toHaveCount(alices.length);
+  if (phone) await assertPageFits(page);
+
+  // The assignee control, with the count beside each person, cleared to everyone.
+  await openFilterPanel(page, peek);
+  const assignee = page.getByRole("button", { name: "Filter by assignee" });
+  await assignee.click();
+  const people = page.getByRole("listbox", { name: "Assignee options" });
+  await expect(
+    people.getByRole("option", { exact: true, name: "bob, 1 rows" }),
+    "the count beside a person"
+  ).toHaveCount(1);
+  await people
+    .getByRole("option", { exact: true, name: `alice, you, ${alices.length} rows` })
+    .click();
+  await assignee.click();
+  await closeControlPanel(peek);
+  await expect(listed, "the assignee control").toHaveCount(rows.length);
+  await expect(chips.filter({ hasText: "Assignee: everyone" })).toHaveCount(1);
+
+  // The four fields, each with its chip.
+  for (const [field, value, chip, matches] of [
+    ["type", /^Question,/, "Type: Question", (row: ViewRow) => row.type === "question"],
+    ["priority", /^P0,/, "Priority: P0", (row: ViewRow) => row.priority === "P0"],
+    ["urgency", /^Blocking,/, "Urgency: Blocking", (row: ViewRow) => row.urgency === "blocking"],
+    ["project", /^CORE,/, "Project: CORE", (row: ViewRow) => row.project === "CORE"],
+  ] as const) {
+    await pickInboxField(page, field, value, peek);
+    const expected = idsOf(matches);
+    await expect(listed, `the drawer's ${field} field`).toHaveCount(expected.length);
+    expect((await idsIn(peek)).sort(), `the drawer's ${field} field`).toEqual(expected);
+    await expect(chips.filter({ hasText: chip }), `the ${field} field's chip`).toHaveCount(1);
+    await chips.filter({ hasText: chip }).click();
+    await expect(listed).toHaveCount(rows.length);
+  }
+
+  // The count beside each value of a field is taken under the narrowing on another.
+  await pickInboxField(page, "priority", /^P0,/, peek);
+  await openFilterPanel(page, peek);
+  const typeTrigger = page.getByRole("button", { name: "Filter by type" });
+  await typeTrigger.click();
+  await expect(
+    page.getByRole("listbox", { name: "Type options" }).getByRole("option", { name: /^Question,/ }),
+    "the Type counts under the priority narrowing"
+  ).toHaveAccessibleName(
+    `Question, ${idsOf((row) => row.priority === "P0" && row.type === "question").length} rows`
+  );
+  await typeTrigger.click();
+  await closeControlPanel(peek);
+  await chips.filter({ hasText: "Priority: P0" }).click();
+  await expect(listed).toHaveCount(rows.length);
+
+  // The six sorts, under no banding, and the seven groupings.
+  const assigneeOf = new Map(rows.map((row) => [row.id, row.assignee]));
+  await (await openDisplay(page, peek))
+    .getByRole("group", { name: "Group by" })
+    .locator('input[value="none"]')
+    .click();
+  for (const sort of ["newest", "priority", "urgency", "type", "project", "assignee"] as const) {
+    const menu = await openDisplay(page, peek);
+    await menu.getByRole("group", { name: "Sort by" }).locator(`input[value="${sort}"]`).click();
+    await expect(
+      menu.getByRole("group", { name: "Sort by" }).locator(`input[value="${sort}"]`)
+    ).toBeChecked();
+    if (sort !== "assignee") {
+      await expect
+        .poll(() => idsIn(peek), { message: `the drawer's ${sort} sort` })
+        .toEqual(sortedIds(rows, sort, at));
+      continue;
+    }
+    // Each person's rows together, the order of the people being the server's.
+    const runs = (await idsIn(peek))
+      .map((id) => assigneeOf.get(id))
+      .filter((person, index, all) => index === 0 || person !== all[index - 1]);
+    expect(runs, "the drawer's assignee sort").toEqual([...new Set(runs)]);
+  }
+  for (const group of [
+    "priority",
+    "urgency",
+    "type",
+    "project",
+    "assignee",
+    "waiting-on",
+    "none",
+  ] as const) {
+    const menu = await openDisplay(page, peek);
+    await menu.getByRole("group", { name: "Group by" }).locator(`input[value="${group}"]`).click();
+    const expected =
+      group === "none"
+        ? []
+        : group === "waiting-on"
+          ? [`Waiting on a person (${rows.length - 1})`, "Waiting on agents (1)"]
+          : valuesOf(rows, group).map(
+              (value) => `${bandLabel(group, value)} (${countsOf(rows, group).get(value)})`
+            );
+    await expect
+      .poll(() => bandsIn(peek), { message: `the drawer's ${group} grouping` })
+      .toEqual(expected);
+  }
+  await (await openDisplay(page, peek))
+    .getByRole("group", { name: "Sort by" })
+    .locator('input[value="newest"]')
+    .click();
+  await shutDisplay(peek);
+  await expect.poll(() => idsIn(peek)).toEqual(sortedIds(rows, "newest", at));
+
+  // The keys over the rows: `f` and the Escape out of the box, `j`, `k` and the arrows.
+  const order = sortedIds(rows, "newest", at);
+  const search = control(controlRow(peek), CONTROL.searchBox);
+  await page.keyboard.press("f");
+  await expect(search, "the f key").toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(rowOf(order[0] ?? ""), "the Escape key, out of the search box").toBeFocused();
+  await page.keyboard.press("j");
+  await expect(rowOf(order[1] ?? ""), "the j key").toBeFocused();
+  await page.keyboard.press("k");
+  await expect(rowOf(order[0] ?? ""), "the k key").toBeFocused();
+  await page.keyboard.press("ArrowDown");
+  await expect(rowOf(order[1] ?? ""), "the ArrowDown key").toBeFocused();
+  await page.keyboard.press("ArrowUp");
+  await expect(rowOf(order[0] ?? ""), "the ArrowUp key").toBeFocused();
+
+  // The keys on one question: Enter into its answer, Escape back, `h` to its Snooze, `y`, and
+  // `l`, which has no reading pane to go to here.
+  const ledger = seeded((row) => row.type === "question" && row.priority === "P0");
+  const ask = rowOf(ledger.id);
+  await ask.focus();
+  await page.keyboard.press("Enter");
+  await expect(ask.locator("[data-ask-answer]"), "the Enter key").toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(ask, "the Escape key, back to the row").toBeFocused();
+  await page.keyboard.press("h");
+  await expect(ask.locator("[data-inbox-snooze]"), "the h key").toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(ask).toBeFocused();
+  await page.keyboard.press("y");
+  await expect
+    .poll(async () => (await copied()).join(" "), { message: "the y key" })
+    .toContain(ledger.issueKey ?? "");
+  await page.keyboard.press("l");
+  await expect(ask, "the l key moved the focus with no reading pane to take it").toBeFocused();
+
+  // A number key picks that option of the decision in hand.
+  const decision = rowOf(seeded((row) => row.type === "decision").id);
+  await decision.focus();
+  await page.keyboard.press("1");
+  await expect(decision.locator("[data-ask-option]").first(), "the 1 key").toBeChecked();
+
+  // `x`, `h` with a row marked, and the three Escapes out: the bulk picker, the row, the marks.
+  const bar = control(peek, CONTROL.selectionBar);
+  await ask.focus();
+  await page.keyboard.press("x");
+  await expect(bar, "the x key").toContainText("1 selected");
+  await page.keyboard.press("h");
+  await expect(
+    peek.getByRole("combobox", { name: "Snooze selected asks" }),
+    "the h key, with a row marked"
+  ).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(ask, "the Escape key, out of the bulk picker").toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(ask).not.toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(bar, "the Escape key that clears the marks").toHaveCount(0);
+  await expect(peek).toBeVisible();
+
+  // Mark all read, while threads are unread.
+  await controlRow(peek).getByRole("button", { exact: true, name: "Mark all read" }).click();
+  await expect(
+    controlRow(peek).getByRole("button", { exact: true, name: "Mark all read" })
+  ).toHaveCount(0);
+  await expect
+    .poll(
+      async () =>
+        ((await listMyReplies({ kind: ["reply", "agent"], state: "unread" })).rows ?? []).length,
+      { message: "Mark all read" }
+    )
+    .toBe(0);
+
+  // The selection bar: two marks, Select all, Clear selection.
+  const clock = seeded((row) => row.type === "question" && row.priority === "P3");
+  const comment = seeded((row) => row.type === "reply" && row.priority === "P3");
+  const message = seeded((row) => row.type === "reply" && row.project === "MIRROR");
+  await rowOf(clock.id).getByRole("checkbox").first().check();
+  await rowOf(comment.id).getByRole("checkbox").first().check();
+  await expect(bar, "two marks").toContainText("2 selected");
+  await bar.getByRole("button", { exact: true, name: "Select all" }).click();
+  await expect(bar, "Select all").toContainText("Every row selected");
+  await bar.getByRole("button", { exact: true, name: "Clear selection" }).click();
+  await expect(bar, "Clear selection").toHaveCount(0);
+
+  // Snooze selected asks, Dismiss selected threads, and `e` on a thread.
+  await rowOf(clock.id).getByRole("checkbox").first().check();
+  await bar.getByRole("combobox", { name: "Snooze selected asks" }).selectOption("tomorrow");
+  await expect(rowOf(clock.id), "Snooze selected asks").toHaveCount(0);
+  await expect
+    .poll(
+      async () => (await getInbox()).find((row) => row.id === clock.id)?.snoozed_until ?? null,
+      { message: "Snooze selected asks wrote no snooze" }
+    )
+    .not.toBeNull();
+  await rowOf(comment.id).getByRole("checkbox").first().check();
+  await bar.getByRole("button", { exact: true, name: "Dismiss selected threads" }).click();
+  await expect(rowOf(comment.id), "Dismiss selected threads").toHaveCount(0);
+  await rowOf(message.id).focus();
+  await page.keyboard.press("e");
+  await expect(rowOf(message.id), "the e key").toHaveCount(0);
+  const dismissed = async () =>
+    ((await listMyReplies({ kind: ["reply", "agent"], state: "dismissed" })).rows ?? [])
+      .map((thread) => `reply:${thread.thread_id}`)
+      .sort();
+  await expect
+    .poll(dismissed, { message: "the two dismissals" })
+    .toEqual([comment.id, message.id].sort());
+
+  // The Dismissed view, and Move to Inbox from it.
+  await (await openDisplay(page, peek))
+    .getByRole("group", { name: "Show" })
+    .locator('input[value="dismissed"]')
+    .click();
+  await shutDisplay(peek);
+  await expect
+    .poll(async () => (await idsIn(peek)).sort(), { message: "the Dismissed view" })
+    .toEqual([comment.id, message.id].sort());
+  await rowOf(comment.id).getByRole("checkbox").first().check();
+  await bar.getByRole("button", { exact: true, name: "Move to Inbox selected threads" }).click();
+  await expect(rowOf(comment.id), "Move to Inbox selected threads").toHaveCount(0);
+  await expect.poll(dismissed, { message: "Move to Inbox" }).toEqual([message.id]);
+  await (await openDisplay(page, peek))
+    .getByRole("group", { name: "Show" })
+    .locator('input[value="inbox"]')
+    .click();
+  await shutDisplay(peek);
+  await expect(rowOf(comment.id)).toHaveCount(1);
+
+  // What waits on the reader, counted, and its press narrowing the list to exactly that.
+  const needsYou = peek.locator("[data-inbox-needs-you]");
+  await expect(needsYou, "the count of what waits on the reader").toHaveText(
+    /^Blocked on you · \d+$/
+  );
+  const waiting = Number((await needsYou.textContent())?.replace(/\D+/g, ""));
+  await needsYou.click();
+  await expect(listed, "the count of what waits on the reader").toHaveCount(waiting);
+  await expect(chips.filter({ hasText: "Waiting on you" })).toHaveCount(1);
+
+  // Clear filters takes off the fields, the assignee and the needs-you narrowing, and leaves the
+  // words, the sort, the grouping and the view.
+  await search.fill("rule");
+  await pickInboxField(page, "type", /^Question,/, peek);
+  const menu = await openDisplay(page, peek);
+  for (const [section, value] of [
+    ["Sort by", "priority"],
+    ["Group by", "type"],
+    ["Show", "dismissed"],
+  ] as const) {
+    await menu.getByRole("group", { name: section }).locator(`input[value="${value}"]`).click();
+  }
+  await shutDisplay(peek);
+  await controlRow(peek).getByRole("button", { exact: true, name: "Clear filters" }).click();
+  await expect(chips, "Clear filters left a narrowing on").toHaveCount(0);
+  await expect(search, "Clear filters took the words").toHaveValue("rule");
+  const kept = await openDisplay(page, peek);
+  for (const [section, value] of [
+    ["Sort by", "priority"],
+    ["Group by", "type"],
+    ["Show", "dismissed"],
+  ] as const) {
+    await expect(
+      kept.getByRole("group", { name: section }).locator(`input[value="${value}"]`),
+      `Clear filters took the ${section}`
+    ).toBeChecked();
+  }
+
+  // The thread order and a folded band, stored for the reader and found again after a reload.
+  await kept.getByRole("group", { name: "Show" }).locator('input[value="inbox"]').click();
+  await kept.getByRole("group", { name: "Group by" }).locator('input[value="priority"]').click();
+  await kept.getByRole("group", { name: "Thread order" }).locator('input[value="newest"]').click();
+  await shutDisplay(peek);
+  await search.fill("");
+  const p0 = peek.getByTestId("inbox-list").locator("h2 button").filter({ hasText: /^P0 / });
+  await p0.click();
+  await expect(p0).toHaveAttribute("aria-expanded", "false");
+  await page.reload();
+  await expect(page.locator("[data-issue-row]").first()).toBeVisible();
+  await peekTrigger(page).click();
+  await expect(listed.first()).toBeVisible();
+  await expect(p0, "the folded band, after a reload").toHaveAttribute("aria-expanded", "false");
+  await expect(
+    (await openDisplay(page, peek))
+      .getByRole("group", { name: "Thread order" })
+      .locator('input[value="newest"]'),
+    "the thread order, after a reload"
+  ).toBeChecked();
+  await shutDisplay(peek);
+
+  // `o` opens the row's issue, which takes the reader out of the drawer.
+  const mirror = seeded((row) => row.type === "question" && row.priority === "P1");
+  await rowOf(mirror.id).focus();
+  await page.keyboard.press("o");
+  await expect(page, "the o key").toHaveURL(new RegExp(`/issues/${mirror.issueKey}`));
+  await expect(peek).toHaveCount(0);
 });
 
 // SLOW(>=2s): a seeded inbox of asks, threads and one credential request, read twice.
