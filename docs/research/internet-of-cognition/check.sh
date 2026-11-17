@@ -1623,7 +1623,7 @@ prepare_env() {
 #   form                            rows  what it is
 #   &&                               177  runs the next pipeline when this one exits 0
 #   ||                                 6  runs the next pipeline when this one fails
-#   |                                412  joins the commands of a pipeline
+#   |                                413  joins the commands of a pipeline
 #   ;                                 53  ends a pipeline
 #   newline                            3  an unquoted newline, ending a pipeline as ; does
 #   >                                  8  writes the output to a file
@@ -1638,7 +1638,7 @@ prepare_env() {
 #   do                                17  comes before a for loop's body
 #   done                              17  closes a for loop
 #   simple command                   594  a command word and its arguments
-#   pipeline                         412  two or more commands joined by |
+#   pipeline                         413  two or more commands joined by |
 #   list                             202  two or more pipelines joined by ;, &&, || or newline
 #   group                             25  { list; }, whose status is its last command's
 #   subshell                           2  ( list ), whose status is its last command's
@@ -1679,7 +1679,7 @@ prepare_env() {
 #   program printf                    12  wrapped in a function that records its status
 #   program python3                   35  wrapped in a function that records its status
 #   program rm                         2  wrapped in a function that records its status
-#   program sed                      271  wrapped in a function that records its status
+#   program sed                      272  wrapped in a function that records its status
 #   program sh                         1  wrapped in a function that records its status
 #   program sha256sum                  7  wrapped in a function that records its status
 #   program sort                      29  wrapped in a function that records its status
