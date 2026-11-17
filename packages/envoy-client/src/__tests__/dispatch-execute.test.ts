@@ -16523,12 +16523,17 @@ const runWithFixture = async (
 const commentIdArgs = (tool: string, comment: string): Record<string, unknown> =>
   tool === "dispatch_edit_comment" ? { comment, body: "x" } : { comment };
 
-/** What the fixture's no-route answer makes each command say: the two corrections say that the
+/** The arguments a command takes for one post by `id`. */
+const postIdArgs = (tool: string, id: string): Record<string, unknown> =>
+  tool === "dispatch_delete_message" ? { message: id } : commentIdArgs(tool, id);
+
+/** What the fixture's no-route answer makes each command say: the corrections say that the
  *  server predates post corrections, and `dispatch resolve-comment`, which no older-server
  *  wrapper covers, says the client's own rolling-release sentence. */
 const noRouteSentence = {
   dispatch_edit_comment: "predates post corrections",
   dispatch_delete_comment: "predates post corrections",
+  dispatch_delete_message: "predates post corrections",
   dispatch_resolve_comment: "a new release of Dispatch is in progress",
 } as const;
 
@@ -16550,24 +16555,30 @@ for (const value of [".", "..", "../..", "not-a-uuid", "1234"]) {
   }
 }
 
-// The positive control of the five rows above, for each of the three commands: an id of the
-// right shape reaches that same fixture, whose no-route answer is what a server without the
-// route gives, and the command then says exactly the sentence those rows say is absent.
+// The positive control of the five rows above and of the bare-id rows below, for each command:
+// an id of the right shape reaches that same fixture, whose no-route answer is what a server
+// without the route gives, and the command then says exactly the sentence those rows say is
+// absent. No older-server wrapper covers the resolve, so a router's no-route answer is read
+// nowhere before its not-found rewrite, which must not take it for a missing comment.
 for (const tool of [
   "dispatch_edit_comment",
   "dispatch_delete_comment",
+  "dispatch_delete_message",
   "dispatch_resolve_comment",
 ] as const) {
   test(`${tool} with an id of the right shape reaches the fixture, which answers as a server without the route`, async () => {
     const { requests, fetchImpl } = noRouteFixture();
     const error = await runWithFixture(
       tool,
-      commentIdArgs(tool, "11111111-2222-4333-8444-555555555555"),
+      postIdArgs(tool, "11111111-2222-4333-8444-555555555555"),
       fetchImpl
     );
 
     expect(error).toBeInstanceOf(Error);
     expect((error as Error).message).toContain(noRouteSentence[tool]);
+    if (tool === "dispatch_resolve_comment") {
+      expect((error as Error).message).not.toContain("holds no comment");
+    }
     expect(requests).not.toEqual([]);
   });
 }
@@ -16724,10 +16735,11 @@ const ownerReadFailures = {
   },
 } as const;
 
-for (const [tool, args, ownerName, kind, ownerPath, standing] of [
+for (const [tool, args, ownerKind, ownerName, kind, ownerPath, standing] of [
   [
     "dispatch_edit_comment",
     { comment: "dispatch://NOPE-9/comment/11111111-2222-4333-8444-555555555555", body: "x" },
+    "issue",
     "NOPE-9",
     "comment",
     /^\/api\/v1\/issues\/NOPE-9$/,
@@ -16736,6 +16748,7 @@ for (const [tool, args, ownerName, kind, ownerPath, standing] of [
   [
     "dispatch_delete_message",
     { message: "dispatch://NOPE-9/message/11111111-2222-4333-8444-555555555555" },
+    "issue",
     "NOPE-9",
     "message",
     /^\/api\/v1\/issues\/NOPE-9$/,
@@ -16744,6 +16757,7 @@ for (const [tool, args, ownerName, kind, ownerPath, standing] of [
   [
     "dispatch_read",
     { ref: "dispatch://NOPE-9/ask/11111111-2222-4333-8444-555555555555" },
+    "issue",
     "NOPE-9",
     "ask",
     /^\/api\/v1\/issues\/NOPE-9$/,
@@ -16752,6 +16766,7 @@ for (const [tool, args, ownerName, kind, ownerPath, standing] of [
   [
     "dispatch_read",
     { ref: "dispatch://CORE/artifact/runbook/comment/11111111-2222-4333-8444-555555555555" },
+    "document",
     "CORE/runbook",
     "comment",
     /^\/api\/v1\/projects\/CORE\/artifacts(\/runbook)?$/,
@@ -16760,24 +16775,17 @@ for (const [tool, args, ownerName, kind, ownerPath, standing] of [
 ] as const) {
   const claim = `${ownerName} holds no ${kind} 11111111-2222-4333-8444-555555555555`;
   const fixture =
-    (ownerRead: keyof typeof ownerReadFailures | "stands") =>
+    (ownerRead: (pathname: string) => Response) =>
     async (url: RequestInfo | URL): Promise<Response> => {
       const { pathname } = new URL(String(url));
-      if (ownerPath.test(pathname)) {
-        return ownerRead === "stands"
-          ? response(standing)
-          : ownerReadFailures[ownerRead].answer(pathname);
-      }
-      return response({ code: "NOT_FOUND", error: "not found" }, 404);
+      return ownerPath.test(pathname)
+        ? ownerRead(pathname)
+        : response({ code: "NOT_FOUND", error: "not found" }, 404);
     };
 
-  for (const [failure, { words }] of Object.entries(ownerReadFailures)) {
+  for (const [failure, { answer, words }] of Object.entries(ownerReadFailures)) {
     test(`${tool} on ${ownerName} claims nothing of an owner whose read met a ${failure}`, async () => {
-      const error = await runWithFixture(
-        tool,
-        args,
-        fixture(failure as keyof typeof ownerReadFailures)
-      );
+      const error = await runWithFixture(tool, args, fixture(answer));
 
       expect(error).toBeInstanceOf(Error);
       const message = (error as Error).message;
@@ -16785,12 +16793,16 @@ for (const [tool, args, ownerName, kind, ownerPath, standing] of [
       expect(message).toContain(words);
       expect(message).not.toContain(claim);
       // An issue's own missing record is the one answer that names it; a document owner has none.
-      if (!ownerName.includes("/")) expect(message).not.toContain("holds no issue");
+      if (ownerKind === "issue") expect(message).not.toContain("holds no issue");
     });
   }
 
   test(`${tool} on ${ownerName} names the ${kind} an owner it read holds none of`, async () => {
-    const error = await runWithFixture(tool, args, fixture("stands"));
+    const error = await runWithFixture(
+      tool,
+      args,
+      fixture(() => response(standing))
+    );
 
     expect(error).toBeInstanceOf(Error);
     expect((error as Error).message).toContain(claim);
@@ -16868,50 +16880,25 @@ for (const [tool, args, kind, listed] of [
 // Dispatch answers a call on a post it does not hold `404 NOT_FOUND` with the word "not found",
 // which names neither the post nor the id, so a reader cannot tell a post that is gone from an
 // issue or a route that is not there. The refusal names the id the call used: the corrections
-// and `dispatch resolve-comment` alike.
-for (const [tool, args, named, noRoute, misread] of [
-  [
-    "dispatch_edit_comment",
-    { comment: "11111111-2222-4333-8444-555555555555", body: "corrected text" },
-    "comment 11111111-2222-4333-8444-555555555555",
-    "predates post corrections",
-    undefined,
-  ],
-  [
-    "dispatch_delete_message",
-    { message: "11111111-2222-4333-8444-555555555555" },
-    "message 11111111-2222-4333-8444-555555555555",
-    "predates post corrections",
-    undefined,
-  ],
-  // No older-server wrapper covers the resolve, so a router's no-route answer is read nowhere
-  // before its not-found rewrite, which must not take it for a missing comment.
-  [
-    "dispatch_resolve_comment",
-    { comment: "11111111-2222-4333-8444-555555555555" },
-    "comment 11111111-2222-4333-8444-555555555555",
-    "a new release of Dispatch is in progress",
-    "holds no comment",
-  ],
+// and `dispatch resolve-comment` alike. The no-route control of these rows is the loop that
+// drives each command against `noRouteFixture` above.
+for (const [tool, kind] of [
+  ["dispatch_edit_comment", "comment"],
+  ["dispatch_delete_message", "message"],
+  ["dispatch_resolve_comment", "comment"],
 ] as const) {
   test(`${tool} names the post Dispatch does not hold`, async () => {
-    const error = await runWithFixture(tool, args, async () =>
-      response({ code: "NOT_FOUND", error: "not found" }, 404)
+    const error = await runWithFixture(
+      tool,
+      postIdArgs(tool, "11111111-2222-4333-8444-555555555555"),
+      async () => response({ code: "NOT_FOUND", error: "not found" }, 404)
     );
 
     expect(error).toBeInstanceOf(Error);
-    expect((error as Error).message).toContain(`this Dispatch holds no ${named}`);
-    expect((error as Error).message).not.toContain(noRoute);
-  });
-
-  // The positive control of the row above: the same call, answered as a server without the
-  // route answers it, says the sentence that row says is absent.
-  test(`${tool} answered no route says so and names no missing post`, async () => {
-    const error = await runWithFixture(tool, args, noRouteFixture().fetchImpl);
-
-    expect(error).toBeInstanceOf(Error);
-    expect((error as Error).message).toContain(noRoute);
-    if (misread !== undefined) expect((error as Error).message).not.toContain(misread);
+    expect((error as Error).message).toContain(
+      `this Dispatch holds no ${kind} 11111111-2222-4333-8444-555555555555`
+    );
+    expect((error as Error).message).not.toContain(noRouteSentence[tool]);
   });
 }
 

@@ -167,8 +167,8 @@ function dispatchNotFound(error: unknown): error is DispatchServiceError {
 
 /**
  * A document reference that names no document of its owner: the answer of a read that answered,
- * so an answer about the document. Its message names the reference and lists the owner's
- * documents nearest it.
+ * so an answer about the document. Its message is `documentReferenceProblem`'s
+ * (`document-targets.ts`).
  */
 export class DocumentNotFoundError extends Error {}
 
