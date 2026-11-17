@@ -334,24 +334,18 @@ func (e *Engine) readAgent(agent claim.Token) StepAgent {
 	return e.cfg.StepAgent(agent)
 }
 
-// endOfTransition is how a transition on trigger ends the step before stands in, moving the issue
-// into to with handoff as the completion's row: endOf's result, the step of to where the work goes
-// back, and the handoff record handoff names when its role is the role of that step's phase. The
-// step is where before stands (record.StandsAt), the step endStep ends, so the two read one
-// position; no row of the table leaves held, so before is never a held issue here (transition
-// returns first). A phase that runs no step, admitted among them, whose role is the architect's,
-// ends no step and names no report.
-func endOfTransition(trigger TriggerKind, before record.Issue, to phase.Phase, handoff record.PhaseRow) StepEnd {
-	from := record.StandsAt(before)
+// endOfTransition is how a transition on trigger ends the step from, where the issue stood, moving
+// it into to with handoff as the completion's row: endOf's result, the step of to where the work
+// goes back, and the handoff record handoff names when its role is the role of from's phase. Its
+// one caller names it for the step it found the issue in (nameMoveEnd), so from runs a step, whose
+// phase has a role, and a completion of no role names no report.
+func endOfTransition(trigger TriggerKind, from, to phase.Phase, handoff record.PhaseRow) StepEnd {
 	result, returns := endOf(trigger)
 	end := StepEnd{Result: result}
-	if _, _, _, ok := stepOf(from); !ok {
-		return end
-	}
 	if into, _, _, ok := stepOf(to); returns && ok {
 		end.ReturnedTo = new(into.Place)
 	}
-	if handoff.Role != "" && handoff.Role == phase.RoleFor(from) {
+	if handoff.Role == phase.RoleFor(from) {
 		end.Report = handoff.HandoffRecord
 	}
 	return end

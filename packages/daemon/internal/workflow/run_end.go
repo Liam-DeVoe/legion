@@ -32,8 +32,9 @@ import (
 // start of the run it moves into.
 //
 // What the record does not hold, a fact names: the result of a move of the table and the step its
-// work returns to, and the close of a tree's linger, which writes no record of its own. Every
-// other end is stopped, so a way out added later that names nothing still ends its run.
+// work returns to (nameMoveEnd), and the close of a tree's linger (closeLinger), which writes no
+// record of its own. Every other end is stopped, so a way out added later that names nothing still
+// ends its run.
 
 // runAt is one run of a step: its issue, the issue's generation, and the place of its step.
 type runAt struct {
@@ -101,6 +102,34 @@ func (e *Engine) SettleFact(ctx context.Context, tx pgx.Tx) error {
 		keys = append(keys, written.Key)
 	}
 	return e.settleRuns(ctx, tx, runs, keys, true, nil)
+}
+
+// nameMoveEnd names the end of the run issue stands in that a move on trigger into to ends: the
+// table's own result for the trigger, the step the work returns to, and the report handoff names
+// (endOfTransition). The move names it on the issue as it stood, before the write that moves it.
+func (e *Engine) nameMoveEnd(ctx context.Context, issue record.Issue, trigger TriggerKind, to phase.Phase, handoff record.PhaseRow) error {
+	place, ok := recordedPlace(issue)
+	if !ok {
+		return nil
+	}
+	runs, err := factRunsOf(ctx)
+	if err != nil {
+		return err
+	}
+	runs.ends[runAt{issue: issue.Key, generation: issue.Generation, place: place}] = endOfTransition(trigger, record.StandsAt(issue), to, handoff)
+	return nil
+}
+
+// closeLinger names tree's linger closed by this fact, which the record keeps no mark of: the
+// merge of a member it neither hands over nor leaves an open pull request can no longer land
+// (mergeCanLand).
+func (e *Engine) closeLinger(ctx context.Context, tree string) error {
+	runs, err := factRunsOf(ctx)
+	if err != nil {
+		return err
+	}
+	runs.closed[tree] = true
+	return nil
 }
 
 // settleStart ends, before a start of place on issue, each of the issue's runs that is over, the
