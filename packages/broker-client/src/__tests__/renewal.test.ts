@@ -5,7 +5,7 @@
 // issuer that is merely down, stops with a plain error rather than handing out no identity or one
 // that has been ended, and trades afresh when a caller is told the token in hand is dead.
 
-import { expect, test } from "bun:test";
+import { expect, jest, test } from "bun:test";
 import { signedIn, stubIssuer } from "../../test/sign-ins";
 import { newDpopKey } from "../dpop";
 import { personIdentity } from "../person-identity";
@@ -157,7 +157,10 @@ test("the starter's signal ends its own wait, and never the trade another caller
 
 // A trade every caller left still ends, at the exchange's own bound: the callers that still wait
 // on a broker that took the trade and never answers it fail there, with a trade that timed out,
-// and the next caller trades afresh. The bound is a real timer, since it is what the row tests.
+// and the next caller trades afresh. The bound runs on the test runner's fake timers, moved only
+// once the broker holds the trade, so the row judges when on that clock the trade ended, which
+// the machine's load cannot change: it is still waited on a moment before its 300 ms, and has
+// ended at them.
 test("a trade its starter left ends at the exchange's own bound", async () => {
   const { promise: arrived, resolve: arrive } = Promise.withResolvers<void>();
   const { promise: never } = Promise.withResolvers<never>();
@@ -174,6 +177,7 @@ test("a trade its starter left ends at the exchange's own bound", async () => {
     subject: countingSource(),
     exchangeBackstopMs: 300,
   });
+  jest.useFakeTimers();
   try {
     const started = performance.now();
     const ended = new AbortController();
@@ -181,23 +185,42 @@ test("a trade its starter left ends at the exchange's own bound", async () => {
     await arrived;
     ended.abort(new DOMException("The operation was aborted.", "AbortError"));
     const left = await refusalOf(() => starter);
-    const joined = await refusalOf(() => client.token());
-    const joinedAfter = performance.now() - started;
-    const next = await client.token();
+    let joinedAfter: number | undefined;
+    const joining = refusalOf(() => client.token()).finally(() => {
+      joinedAfter = performance.now() - started;
+    });
+    // The trade's failure reaches the waiting caller on the event loop alone, with no time.
+    const turns = async (): Promise<void> => {
+      for (let turn = 0; turn < 50 && joinedAfter === undefined; turn++) {
+        const { promise, resolve } = Promise.withResolvers<void>();
+        setImmediate(resolve);
+        await promise;
+      }
+    };
+    jest.advanceTimersByTime(299);
+    await turns();
+    const waitedBefore = joinedAfter === undefined;
+    jest.advanceTimersByTime(1);
+    await turns();
+    const joined = joinedAfter === undefined ? undefined : await joining;
+    const next = joined === undefined ? undefined : await client.token();
     expect({
       left: left?.name,
       timedOut: joined instanceof BrokerTradeFailedError && joined.timedOut,
-      atTheBound: joinedAfter >= 300 && joinedAfter < 2_000,
-      next: next.accessToken,
+      waitedBefore,
+      endedAt: joinedAfter,
+      next: next?.accessToken,
       trades: broker.trades.length,
     }).toEqual({
       left: "AbortError",
       timedOut: true,
-      atTheBound: true,
+      waitedBefore: true,
+      endedAt: 300,
       next: "token-2",
       trades: 2,
     });
   } finally {
+    jest.useRealTimers();
     broker.stop();
   }
 });

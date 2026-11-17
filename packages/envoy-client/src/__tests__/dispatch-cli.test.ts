@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, beforeEach, describe, expect, jest, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -30,7 +30,12 @@ import {
 } from "../dispatch-cli";
 import { ownIdentityDispatch } from "../dispatch-config";
 import { resetAdviceMemory } from "../dispatch-execute";
-import { DispatchClient, forgetKeyedLayerMemory, KEYED_LAYER_MEMORY_MS } from "../dispatch-http";
+import {
+  DISPATCH_WRITE_RETRY,
+  DispatchClient,
+  forgetKeyedLayerMemory,
+  KEYED_LAYER_MEMORY_MS,
+} from "../dispatch-http";
 import { forgetShownPictures } from "../dispatch-picture-tools";
 
 interface Recorded {
@@ -1874,6 +1879,7 @@ describe("dispatch result --project, as a CI job writes it", () => {
         authorization: request.headers.get("Authorization"),
         audience: new URL(request.url).searchParams.get("audience"),
       });
+      asked();
       if (!(await runnerHold)) return new Response("unavailable", { status: 503 });
       return Response.json({ count: 1, value: OIDC_TOKEN });
     },
@@ -1886,6 +1892,7 @@ describe("dispatch result --project, as a CI job writes it", () => {
         form: new URLSearchParams(await request.text()),
         proof: request.headers.get("DPoP") ?? "",
       });
+      asked();
       return brokerAnswer();
     },
   });
@@ -1902,13 +1909,18 @@ describe("dispatch result --project, as a CI job writes it", () => {
         dpop: request.headers.get("DPoP"),
         body: text === "" ? undefined : JSON.parse(text),
       });
+      asked();
       return dispatchAnswer();
     },
   });
   afterAll(() => {
     for (const stub of [runner, broker, dispatch]) stub.stop(true);
   });
+  // A row on the fake clock that never ended left its timers faked: the next row starts real.
+  const realSetTimeout = globalThis.setTimeout;
   beforeEach(() => {
+    globalThis.setTimeout = realSetTimeout;
+    jest.useRealTimers();
     runnerAsked.length = 0;
     trades.length = 0;
     written.length = 0;
@@ -1971,11 +1983,12 @@ describe("dispatch result --project, as a CI job writes it", () => {
   }
 
   /** The command in this process, under exactly `env`, with its one bound `bound` where a test
-   *  shortens it: every wait runs on the real clock, as in a job. */
+   *  shortens it, and the write client's `fetchImpl` where a test watches its answers. */
   async function runJob(
     argv: readonly string[],
     env: Record<string, string | undefined>,
-    bound?: ResultBound
+    bound?: ResultBound,
+    fetchImpl?: typeof fetch
   ): Promise<{ code: number; stdout: string; stderr: string }> {
     let stdout = "";
     let stderr = "";
@@ -1989,19 +2002,127 @@ describe("dispatch result --project, as a CI job writes it", () => {
       readText: (path) => readFileSync(path, "utf-8"),
       cwd: stateDir,
       ...(bound === undefined ? {} : { resultBound: bound }),
+      ...(fetchImpl === undefined ? {} : { fetchImpl }),
     });
     return { code, stdout, stderr };
   }
 
-  /** `runJob` with how long it took, in milliseconds of the real clock. */
-  async function timedJob(
+  /** Each row's wait on what the stand-ins were asked (`arrived`); every stand-in calls `asked`
+   *  once it has recorded a request, and so does the write client's fetch once an answer's
+   *  headers came (`answersHeard`). */
+  const watches = new Set<{ readonly met: () => boolean; readonly resolve: () => void }>();
+  let answersHeard = 0;
+  function asked(): void {
+    for (const watch of watches) {
+      if (!watch.met()) continue;
+      watches.delete(watch);
+      watch.resolve();
+    }
+  }
+  /** Settles once `met` holds of what the stand-ins were asked. */
+  function arrived(met: () => boolean): Promise<void> {
+    if (met()) return Promise.resolve();
+    const { promise, resolve } = Promise.withResolvers<void>();
+    watches.add({ met, resolve });
+    return promise;
+  }
+
+  /** Lets the event loop run `count` turns, moving no clock. */
+  async function turns(count: number): Promise<void> {
+    for (let turn = 0; turn < count; turn++) {
+      const { promise, resolve } = Promise.withResolvers<void>();
+      setImmediate(resolve);
+      await promise;
+    }
+  }
+
+  /** The fake clock a row moves (`onFakeClock`). */
+  interface FakeClock {
+    /** Moves the clock `ms` on, firing each timer due by then. */
+    readonly advance: (ms: number) => void;
+    /** The delay of the timer the code sets `index`th (from 0) since the clock started, once it
+     *  has set it: each wait the call takes (`sleep`, a write's pause, its 20 s silence cut). */
+    readonly timerSet: (index: number) => Promise<number>;
+    /** Settles once the call has ended. */
+    readonly ended: Promise<void>;
+    /** How far the clock has moved since the call started. */
+    readonly elapsed: () => number;
+  }
+
+  /**
+   * `runJob` on the test runner's fake timers, with how far that clock had moved when the call
+   * ended (`ms`, undefined where it had not ended). The command's bound, the trade's own bound and
+   * each wait of the call run on a clock that moves only when `drive` moves it, so a row judges
+   * when on that clock the call ended, which the machine's load cannot change: on the real clock
+   * the 60 s bound once read 246,969 ms on a loaded host. The stand-ins answer on real sockets,
+   * and the clock stands still while they do, so `drive` moves it only once the call waits on
+   * it: a stand-in holds its request (`arrived`), or the call has set the timer of a wait
+   * (`timerSet`). After `drive`, the call has the event loop's turns to end in, and no time.
+   */
+  async function onFakeClock(
     argv: readonly string[],
     env: Record<string, string | undefined>,
-    bound: ResultBound
-  ): Promise<{ code: number; stdout: string; stderr: string; ms: number }> {
+    bound: ResultBound | undefined,
+    drive: (clock: FakeClock) => Promise<void> = (clock) => clock.ended
+  ): Promise<{ code: number; stdout: string; stderr: string; ms: number | undefined }> {
+    jest.useFakeTimers();
+    const faked = globalThis.setTimeout;
+    const delays: number[] = [];
+    const timerWatches = new Set<{ readonly index: number; readonly resolve: () => void }>();
+    globalThis.setTimeout = ((handler: TimerHandler, delay?: number, ...rest: unknown[]) => {
+      delays.push(delay ?? 0);
+      for (const watch of timerWatches) {
+        if (watch.index >= delays.length) continue;
+        timerWatches.delete(watch);
+        watch.resolve();
+      }
+      return faked(handler, delay, ...rest);
+    }) as unknown as typeof setTimeout;
+    answersHeard = 0;
+    const heard = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const response = await fetch(input, init);
+      answersHeard += 1;
+      asked();
+      return response;
+    }) as typeof fetch;
     const started = performance.now();
-    const ran = await runJob(argv, env, bound);
-    return { ...ran, ms: performance.now() - started };
+    const elapsed = () => performance.now() - started;
+    let ms: number | undefined;
+    const job = runJob(argv, env, bound, heard).finally(() => {
+      ms = elapsed();
+    });
+    try {
+      await drive({
+        advance: (step) => jest.advanceTimersByTime(step),
+        timerSet: async (index) => {
+          if (index >= delays.length) {
+            const { promise, resolve } = Promise.withResolvers<void>();
+            timerWatches.add({ index, resolve });
+            await promise;
+          }
+          return delays[index] as number;
+        },
+        ended: job.then(() => undefined),
+        elapsed,
+      });
+      const ran = await Promise.race([job, turns(50).then(() => undefined)]);
+      return ran === undefined
+        ? { code: Number.NaN, stdout: "", stderr: "", ms: undefined }
+        : { ...ran, ms };
+    } finally {
+      globalThis.setTimeout = faked;
+      jest.useRealTimers();
+    }
+  }
+
+  /** Moves the clock over each wait the call sets, as it sets it, until the call ends: a wait is
+   *  every timer but the write's 20 s silence cut, which no row here reaches. */
+  async function eachWait(clock: FakeClock): Promise<void> {
+    for (let index = 0; ; index++) {
+      const delay = await Promise.race([clock.ended.then(() => undefined), clock.timerSet(index)]);
+      if (delay === undefined) return;
+      if (delay !== DISPATCH_WRITE_RETRY.silenceMs) clock.advance(delay);
+    }
   }
 
   /** One part of a compact JWS, as JSON. */
@@ -2285,8 +2406,8 @@ describe("dispatch result --project, as a CI job writes it", () => {
   // exits 0, whether the body is cut, stalls until the bound (B4 of the review of 2f29345b8d, its
   // two rows) or comes whole and is not the JSON it says it is. The stand-in Dispatch is a raw
   // socket, so the status line and the first bytes of the body surely reach the job before the
-  // connection closes or goes silent. The stall is ended by the command's own bound, a real timer
-  // as in the bound rows below, since that bound is what the row tests.
+  // connection closes or goes silent. The stall is ended by the command's own bound, on the fake
+  // clock (`onFakeClock`), moved once the 201's headers came, since that bound is what the row tests.
   const bodyStart = '{"id":"00000000-0000-4000-8000-';
   /** The `Idempotency-Key` a raw request carries, which a stand-in of Dispatch names back. */
   const keyOf = (request: Buffer): string =>
@@ -2315,17 +2436,22 @@ describe("dispatch result --project, as a CI job writes it", () => {
         },
       });
       try {
-        const ran = await timedJob(
+        const ran = await onFakeClock(
           record,
           { ...jobEnvironment(), DISPATCH_URL: `http://127.0.0.1:${lost.port}` },
-          shortBound(1_000, 200)
+          shortBound(1_000, 200),
+          async (clock) => {
+            await Promise.race([clock.ended, arrived(() => answersHeard >= 1)]);
+            clock.advance(1_000);
+            await clock.ended;
+          }
         );
         expect({
           code: ran.code,
           stdout: ran.stdout,
           stderr: ran.stderr,
           posts,
-          withinTheBound: ran.ms < 1_500,
+          withinTheBound: ran.ms !== undefined && ran.ms <= 1_000,
         }).toEqual({
           code: 0,
           stdout: `${JSON.stringify({ landed_without_answer: "ANSWER_LOST" })}\n`,
@@ -2386,7 +2512,7 @@ describe("dispatch result --project, as a CI job writes it", () => {
     test(`a 201 whose whole body ${name} prints landed_without_answer and exits 0`, async () => {
       const { seen, server } = answeringWhole("201 Created", type, body);
       try {
-        const ran = await timedJob(
+        const ran = await onFakeClock(
           record,
           { ...jobEnvironment(), DISPATCH_URL: `http://127.0.0.1:${server.port}` },
           shortBound(1_000, 200)
@@ -2417,7 +2543,7 @@ describe("dispatch result --project, as a CI job writes it", () => {
       JSON.stringify(stored)
     );
     try {
-      const ran = await timedJob(
+      const ran = await onFakeClock(
         record,
         { ...jobEnvironment(), DISPATCH_URL: `http://127.0.0.1:${server.port}` },
         shortBound(1_000, 200)
@@ -2447,7 +2573,7 @@ describe("dispatch result --project, as a CI job writes it", () => {
     test(`a 409 whose body is ${name} stays a refusal, exit 1, and no landing`, async () => {
       const { server } = answeringWhole("409 Conflict", type, body);
       try {
-        const ran = await timedJob(
+        const ran = await onFakeClock(
           record,
           { ...jobEnvironment(), DISPATCH_URL: `http://127.0.0.1:${server.port}` },
           shortBound(1_000, 200)
@@ -2602,12 +2728,18 @@ describe("dispatch result --project, as a CI job writes it", () => {
   test("a trade the broker's rate limit refuses is asked again after its Retry-After, and the result is stored", async () => {
     const answer = brokerAnswer;
     brokerAnswer = () => (trades.length <= 2 ? rateLimited("1") : answer());
-    const { code, stdout, stderr, ms } = await timedJob(
+    const { code, stdout, stderr, ms } = await onFakeClock(
       record,
       jobEnvironment(),
-      shortBound(5_000, 1_000)
+      shortBound(5_000, 1_000),
+      eachWait
     );
-    expect({ code, stderr, trades: trades.length, waited: ms >= 2_000 }).toEqual({
+    expect({
+      code,
+      stderr,
+      trades: trades.length,
+      waited: ms !== undefined && ms >= 2_000,
+    }).toEqual({
       code: 0,
       stderr: "",
       trades: 3,
@@ -2630,12 +2762,18 @@ describe("dispatch result --project, as a CI job writes it", () => {
       trades.length = 0;
       forgetBrokerClients();
       brokerAnswer = () => rateLimited(retryAfter);
-      const { code, stdout, stderr, ms } = await timedJob(
+      const { code, stdout, stderr, ms } = await onFakeClock(
         record,
         jobEnvironment(),
-        shortBound(3_000, 500)
+        shortBound(3_000, 500),
+        eachWait
       );
-      expect({ code, stderr, trades: trades.length, withinTheBound: ms < 3_000 }).toEqual({
+      expect({
+        code,
+        stderr,
+        trades: trades.length,
+        withinTheBound: ms !== undefined && ms < 3_000,
+      }).toEqual({
         code: 1,
         stderr: "",
         trades: wanted,
@@ -2711,13 +2849,19 @@ describe("dispatch result --project, as a CI job writes it", () => {
       trades.length = 0;
       forgetBrokerClients();
       setUp(2);
-      const { code, stdout, stderr, ms } = await timedJob(
+      const { code, stdout, stderr, ms } = await onFakeClock(
         record,
         jobEnvironment(),
-        shortBound(5_000, 1_000)
+        shortBound(5_000, 1_000),
+        eachWait
       );
       expect(
-        { code, stderr, waited: ms >= 2_000, stored: code === 0 ? JSON.parse(stdout) : stdout },
+        {
+          code,
+          stderr,
+          waited: ms !== undefined && ms >= 2_000,
+          stored: code === 0 ? JSON.parse(stdout) : stdout,
+        },
         name
       ).toEqual({ code: 0, stderr: "", waited: true, stored });
       expect(posts(), name).toBe(name.startsWith("the broker") ? 1 : 3);
@@ -2744,13 +2888,19 @@ describe("dispatch result --project, as a CI job writes it", () => {
       trades.length = 0;
       forgetBrokerClients();
       setUp(Number.POSITIVE_INFINITY);
-      const { code, stdout, stderr, ms } = await timedJob(
+      const { code, stdout, stderr, ms } = await onFakeClock(
         record,
         jobEnvironment(),
-        shortBound(3_000, 500)
+        shortBound(3_000, 500),
+        eachWait
       );
       expect(
-        { code, stderr, lines: stdout.split("\n").length, withinTheBound: ms < 3_000 },
+        {
+          code,
+          stderr,
+          lines: stdout.split("\n").length,
+          withinTheBound: ms !== undefined && ms < 3_000,
+        },
         name
       ).toEqual({
         code: 1,
@@ -2778,7 +2928,7 @@ describe("dispatch result --project, as a CI job writes it", () => {
         written.at(-1)?.path === "/healthz"
           ? Response.json({ status: "degraded", idempotency_keys: true })
           : answer();
-      const ran = await timedJob(record, jobEnvironment(), shortBound(8_000, 1_000));
+      const ran = await onFakeClock(record, jobEnvironment(), shortBound(8_000, 1_000), eachWait);
       expect(
         {
           code: ran.code,
@@ -2790,7 +2940,7 @@ describe("dispatch result --project, as a CI job writes it", () => {
           namesTheCode: ran.stdout.includes(`: ${code}: `),
           outcomeUnknown: ran.stdout.includes("write_outcome_unknown"),
           askedAgainUnderTheKey: posts() > 2,
-          withinTheBound: ran.ms < 8_000,
+          withinTheBound: ran.ms !== undefined && ran.ms < 8_000,
         },
         ran.stdout
       ).toEqual({
@@ -2811,12 +2961,22 @@ describe("dispatch result --project, as a CI job writes it", () => {
   test("a Dispatch that never answers ends the call at the one bound as an outcome unknown", async () => {
     const { promise: never } = Promise.withResolvers<Response>();
     dispatchAnswer = () => never;
-    const ran = await timedJob(record, jobEnvironment(), shortBound(3_000, 500));
+    const ran = await onFakeClock(
+      record,
+      jobEnvironment(),
+      shortBound(3_000, 500),
+      async (clock) => {
+        await arrived(() => written.length >= 1);
+        clock.advance(3_000);
+        // The bound aborts the write's request, which ends on the event loop's own time.
+        await clock.ended;
+      }
+    );
     expect({
       code: ran.code,
       stdout: ran.stdout,
       stderr: ran.stderr,
-      atTheBound: ran.ms >= 3_000 && ran.ms < 4_500,
+      atTheBound: ran.ms === 3_000,
     }).toEqual({
       code: 1,
       stdout: `${JSON.stringify({ write_outcome_unknown: "TimeoutError" })}\n`,
@@ -2829,18 +2989,20 @@ describe("dispatch result --project, as a CI job writes it", () => {
   // broker's exchange under the same signal as the write, so a runner or a broker that takes the
   // request and never answers it ends the call at the bound, with a line that names which of the
   // two it was and says nothing was written, and Dispatch is sent nothing. The answer is held on a
-  // promise the test settles only once the call has ended; the bound itself is a real timer, since
-  // it is what the rows test (a stopped clock is how the fault of D-A hid), so the call waits the
-  // 400 ms of its bound. The trade runs on under its own bound after the call ended, so the held
-  // runner fails it once it is let go, and it sends a later row's broker nothing. The immediate
-  // case is the control: with nothing held, the same bound stores the result.
-  for (const [name, hold, lead] of [
+  // promise the test settles only once the call has ended. The bound runs on the fake clock, whose
+  // timers all move together (one part's stopped clock is how the fault of D-A hid), moved its
+  // 400 ms once the held request arrived. The trade runs on under its own bound after the call
+  // ended, so the held runner fails it once it is let go, and it sends a later row's broker
+  // nothing. The immediate case is the control: with nothing held, the same bound stores the
+  // result.
+  for (const [name, hold, lead, heldThere] of [
     [
       "the runner's token request",
       (held: Promise<void>) => {
         runnerHold = held.then(() => false);
       },
       "this command's 0.4 s ended while it read the job's own token for the secrets broker, and nothing was written: ",
+      () => runnerAsked.length >= 1,
     ],
     [
       "the broker's exchange",
@@ -2852,13 +3014,23 @@ describe("dispatch result --project, as a CI job writes it", () => {
         };
       },
       "this command's 0.4 s ended while the secrets broker traded the job's token, and nothing was written: ",
+      () => trades.length >= 1,
     ],
   ] as const) {
     test(`${name} that never answers ends the call at the bound, naming it`, async () => {
       const { promise: held, resolve: release } = Promise.withResolvers<void>();
       hold(held);
       try {
-        const ran = await timedJob(record, jobEnvironment(), shortBound(400, 50));
+        const ran = await onFakeClock(
+          record,
+          jobEnvironment(),
+          shortBound(400, 50),
+          async (clock) => {
+            await arrived(heldThere);
+            clock.advance(400);
+            await clock.ended;
+          }
+        );
         expect(
           {
             code: ran.code,
@@ -2867,7 +3039,7 @@ describe("dispatch result --project, as a CI job writes it", () => {
             namesTheTrade: ran.stdout.startsWith(lead),
             outcomeUnknown: ran.stdout.includes("write_outcome_unknown"),
             sentToDispatch: written.length,
-            withinTheBound: ran.ms < 800,
+            withinTheBound: ran.ms === 400,
           },
           ran.stdout
         ).toEqual({
@@ -2886,8 +3058,8 @@ describe("dispatch result --project, as a CI job writes it", () => {
   }
 
   test("the immediate trade, the control, stores the result inside the same bound", async () => {
-    const ran = await timedJob(record, jobEnvironment(), shortBound(400, 50));
-    expect({ code: ran.code, stderr: ran.stderr, withinTheBound: ran.ms < 400 }).toEqual({
+    const ran = await onFakeClock(record, jobEnvironment(), shortBound(400, 50));
+    expect({ code: ran.code, stderr: ran.stderr, withinTheBound: ran.ms === 0 }).toEqual({
       code: 0,
       stderr: "",
       withinTheBound: true,
@@ -2915,9 +3087,9 @@ describe("dispatch result --project, as a CI job writes it", () => {
   // The same at the real bound of 60 s, the case of the reviewer's B1 and the tester's D-C at
   // 462bc83094, where a broker that took the trade and never answered held the call for 360 s: the
   // call ends at its bound, names the trade, and sends Dispatch nothing. The trade's own 30 s bound
-  // ends the first trade, which got no answer, and the call trades again inside its bound, so it
-  // is the call's bound that ends the second. It waits the whole real bound, since what it tests
-  // is that bound.
+  // ends the first trade, which got no answer, and the call trades again after a second, so it is
+  // the call's bound that ends the second. It runs on the fake clock, moved only while the call
+  // waits on it: the call has not ended a moment before its 60 s, and has ended at them.
   test("a broker that never answers the trade ends the call at the real 60 s bound", async () => {
     const { promise: held, resolve: release } = Promise.withResolvers<void>();
     const answer = brokerAnswer;
@@ -2925,10 +3097,25 @@ describe("dispatch result --project, as a CI job writes it", () => {
       await held;
       return answer();
     };
+    let before: number | undefined;
     try {
-      const started = performance.now();
-      const ran = await runJob(record, jobEnvironment());
-      const ms = performance.now() - started;
+      const ran = await onFakeClock(record, jobEnvironment(), undefined, async (clock) => {
+        let over = false;
+        void clock.ended.then(() => {
+          over = true;
+        });
+        await arrived(() => trades.length >= 1);
+        clock.advance(30_000);
+        // The trade's own bound ended the first trade, and the call waits a second to trade again.
+        let index = 0;
+        while ((await clock.timerSet(index)) !== 1_000) index++;
+        clock.advance(1_000);
+        await arrived(() => trades.length >= 2);
+        clock.advance(60_000 - 1 - clock.elapsed());
+        await Promise.race([clock.ended, turns(50)]);
+        before = over ? undefined : clock.elapsed();
+        clock.advance(1);
+      });
       expect(
         {
           code: ran.code,
@@ -2937,14 +3124,22 @@ describe("dispatch result --project, as a CI job writes it", () => {
           ),
           sentToDispatch: written.length,
           trades: trades.length,
-          atTheBound: ms >= 59_000 && ms < 63_000,
+          runningAt: before,
+          endedAt: ran.ms,
         },
-        `${Math.round(ms)} ms: ${ran.stdout}`
-      ).toEqual({ code: 1, namesTheTrade: true, sentToDispatch: 0, trades: 2, atTheBound: true });
+        ran.stdout
+      ).toEqual({
+        code: 1,
+        namesTheTrade: true,
+        sentToDispatch: 0,
+        trades: 2,
+        runningAt: 59_999,
+        endedAt: 60_000,
+      });
     } finally {
       release();
     }
-  }, 90_000);
+  }, 30_000);
 
   // Two Dispatch clients that share the job's broker credential share its one trade, and the end
   // of one is no end of the other: client A starts the trade and is cancelled while it runs, and
