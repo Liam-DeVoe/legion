@@ -43,11 +43,11 @@ const whole = [
 // answer is whole with the lines that match drop taken out, the header's count following.
 function without(drop: RegExp): string {
   const lines = whole.slice(1).filter((line) => !drop.test(line));
-  return [`${key}: ${lines.length} steps in 1 tasks`, ...lines].join("\n") + "\n";
+  return `${[`${key}: ${lines.length} steps in 1 tasks`, ...lines].join("\n")}\n`;
 }
 // changed is whole with the line that matches pick replaced by its edit.
 function changed(pick: RegExp, edit: (line: string) => string): string {
-  return whole.map((line) => (pick.test(line) ? edit(line) : line)).join("\n") + "\n";
+  return `${whole.map((line) => (pick.test(line) ? edit(line) : line)).join("\n")}\n`;
 }
 
 // bash is the shell the script runs under, found once where read's own PATH finds it, so a case
@@ -79,7 +79,7 @@ function read(out: string, args: string[] = [key], exit = 0, path = `${dir}:/usr
 
 describe("step-records-read.sh", () => {
   test("a whole answer passes, exit 0, read once with dispatch steps --issue", () => {
-    const { code, stdout, calls } = read(whole.join("\n") + "\n");
+    const { code, stdout, calls } = read(`${whole.join("\n")}\n`);
     expect(calls).toBe(`steps --issue ${key}\n`);
     expect(stdout).toContain(whole[0]);
     expect(stdout).toContain(
@@ -232,7 +232,7 @@ describe("step-records-read.sh", () => {
       "UNKNOWN: the first line of the answer is no header of INFRA-42"
     );
     expect(header.code).toBe(2);
-    const short = read(`${key}: 11 steps in 1 tasks\n` + whole.slice(1).join("\n") + "\n");
+    const short = read(`${key}: 11 steps in 1 tasks\n${whole.slice(1).join("\n")}\n`);
     expect(short.stdout).toContain(
       "UNKNOWN: the header says 11 records and 10 lines of runs follow it"
     );
@@ -257,7 +257,7 @@ describe("step-records-read.sh", () => {
 
   test("no issue, two issues or a malformed key is refused, exit 2, reading nothing", () => {
     for (const args of [[], [key, "INFRA-43"], ["infra-42"]]) {
-      const { code, stderr, calls } = read(whole.join("\n") + "\n", args);
+      const { code, stderr, calls } = read(`${whole.join("\n")}\n`, args);
       expect(stderr).toContain("usage: scripts/e2e/step-records-read.sh <ISSUE>");
       expect(calls).toBe("");
       expect(code).toBe(2);
