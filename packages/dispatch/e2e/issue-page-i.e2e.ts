@@ -2467,8 +2467,9 @@ test("Tab enters and leaves the tree at one stop and every move keeps the row on
     await pressToOutlineEnd(page, "Home");
     await expectFocusedRowClear(page, "Home");
     // Home on the first row while it already holds the focus, after the reader scrolled it off
-    // the screen: the move moves no focus, and still brings the row back on screen (decision
-    // 177). Before it the row stayed where the scroll left it, thousands of pixels above.
+    // the screen: the move moves no focus, and still brings the row back on screen, since a key
+    // that leaves the reader on a row they cannot see has taken them nowhere. Before it the row
+    // stayed where the scroll left it, thousands of pixels above.
     const first = (await focusedNodeId(page)) ?? "";
     await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
     await expect

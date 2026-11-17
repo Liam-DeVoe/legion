@@ -1795,6 +1795,82 @@ test("an address's node takes the focus back from what holds the tree", async ()
   );
 });
 
+// A row the page takes the reader to of its own accord - the node an address names, the open
+// question the page opens on - takes the focus in the frame after the commit that draws it, not
+// in that commit: a focus given there made the browser lay the whole new page out inside the
+// reader's press, 831 ms of a 3.9 s press that changed the view on a large issue. It is focused
+// without a scroll, and the page's one rule places it after. A reader who acts before that frame
+// keeps the focus where they put it.
+test("a row the page lands on takes the focus in the next frame, without a scroll, unless the reader acted first", async () => {
+  setViewport(1440);
+  const first = node({ id: "comment-1", text: "The first words.", type: "comment" });
+  const named = node({ id: "comment-2", text: "The second words.", type: "comment" });
+  const question = node({
+    id: "ask-1",
+    question: true,
+    text: "Which flag?",
+    type: "ask",
+    waiting: true,
+  });
+  const addressed = node({ children: [first, named], id: KEY, type: "issue" });
+  const asking = node({ children: [first, question], id: KEY, type: "issue" });
+  const realFocus = HTMLElement.prototype.focus;
+  const focuses: { readonly element: HTMLElement; readonly options: FocusOptions | undefined }[] =
+    [];
+  const focus = spyOn(HTMLElement.prototype, "focus").mockImplementation(function (
+    this: HTMLElement,
+    options?: FocusOptions
+  ) {
+    focuses.push({ element: this, options });
+    realFocus.call(this, options);
+  });
+  const focusesOf = (row: HTMLElement | undefined) =>
+    focuses.filter(({ element }) => element === row).map(({ options }) => options);
+  const nextFrame = async () => {
+    const frame = Promise.withResolvers<void>();
+    requestAnimationFrame(() => frame.resolve());
+    await act(async () => frame.promise);
+  };
+  try {
+    for (const [what, root, reveal, landsOn] of [
+      ["the node an address names", addressed, [addressed, named], "comment-2"],
+      ["the open question the page opens on", asking, undefined, "ask-1"],
+    ] as const) {
+      focuses.length = 0;
+      const view = renderTree(root, reveal === undefined ? {} : { reveal });
+      const row = rowsFor(view.container, landsOn)[0];
+      expect(row, `${what} draws no row`).toBeDefined();
+      expect(focusesOf(row), `${what} took the focus in the commit that drew it`).toEqual([]);
+      expect(document.activeElement).toBe(document.body);
+
+      await nextFrame();
+      expect(focusedRow(view.container), `${what} has no focus after the next frame`).toBe(landsOn);
+      expect(focusesOf(row), `${what} was focused with a scroll, or more than once`).toEqual([
+        { preventScroll: true },
+      ]);
+      view.unmount();
+    }
+
+    // The reader presses a key and puts the focus on a control before the frame: the landing
+    // leaves it there.
+    focuses.length = 0;
+    const { control } = controlOutside();
+    const view = renderTree(addressed, { reveal: [addressed, named] });
+    await act(async () => {
+      control.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Shift" }));
+      control.focus();
+    });
+    await nextFrame();
+    expect(document.activeElement, "the landing took the focus from where the reader put it").toBe(
+      control
+    );
+    expect(focusesOf(rowsFor(view.container, "comment-2")[0])).toEqual([]);
+    view.unmount();
+  } finally {
+    focus.mockRestore();
+  }
+});
+
 // Where no question waits on the reader the page opens on the outline's first row, whose body
 // opens with the focus, and scrolls nothing - not even for a first row taller than the window,
 // which the page's one rule (`identity-block.ts`'s `bringOnScreen`) would put at the top under

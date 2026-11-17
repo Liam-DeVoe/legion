@@ -52,13 +52,18 @@ const VIEW_SLOTS: Readonly<Record<Preset, ((props: SlotProps) => ReactNode) | un
  *  drawing of the page imports it to find the view's tab-stop row. */
 export const TAB_STOP_ROW = '[role="tree"] [role="treeitem"][tabindex="0"]';
 
+/** The Retry of a read the view could not make: the one control of a refused read's error line
+ *  (`components/QueryError.tsx`), an alert, while a retry under way does not disable it. */
+const REFUSED_READ_RETRY = '[role="alert"] button:not(:disabled)';
+
 /**
  * One view, drawn where the outline is, which takes the keyboard focus on its tree's tab-stop
  * row once that row is drawn, where the tester found the focus left on the page's body: a page
  * opened at a view's address, or a view turned on while the focus was on the outline it
- * replaced, leaves the focus on the view and never on the page's body. The focus is taken only
- * while nothing holds it, so a reader who pressed a control keeps it there, and once it is taken
- * this does nothing more for that view.
+ * replaced, leaves the focus on the view and never on the page's body. A view whose read is
+ * refused draws its Retry and no row, which left the focus on the body all the same, so there
+ * the Retry takes it. The focus is taken only while nothing holds it, so a reader who pressed a
+ * control keeps it there, and once it is taken this does nothing more for that view.
  *
  * It adds no box (`display: contents`): it is a place to look for the tree, and the view draws
  * its own measure.
@@ -73,9 +78,11 @@ export function ViewStage({ children, view }: { children: ReactNode; view: Prese
     const take = (): boolean => {
       const active = document.activeElement;
       if (active !== null && active !== document.body) return true;
-      const row = stage.querySelector<HTMLElement>(TAB_STOP_ROW);
-      if (row === null) return false;
-      row.focus({ preventScroll: true });
+      const to =
+        stage.querySelector<HTMLElement>(TAB_STOP_ROW) ??
+        stage.querySelector<HTMLElement>(REFUSED_READ_RETRY);
+      if (to === null) return false;
+      to.focus({ preventScroll: true });
       return true;
     };
     if (take()) return;

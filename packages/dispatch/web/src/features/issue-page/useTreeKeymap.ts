@@ -81,7 +81,9 @@ export interface TreeKeyboard {
    *  nothing, and never undefined where the tree is read one node at a time. */
   readonly zoom: string | undefined;
   /** Where the reader writes, which `r` and `a` set to reply to the focused row and to answer
-   *  the focused open question; undefined where the page draws no line to write in. */
+   *  the focused open question. It is provided wherever the page's writer provider stands above
+   *  the tree (`slots/providers.tsx`), a page that draws no line to write in yet included, and
+   *  undefined only for a tree drawn with no such provider above it. */
   readonly writer: OutlineWriter | undefined;
 }
 
