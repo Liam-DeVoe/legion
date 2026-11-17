@@ -4,6 +4,7 @@ package record
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"slices"
 	"strconv"
 	"strings"
@@ -1794,9 +1795,9 @@ type Store interface {
 	// OwnersNewestPlan is the newest plan in force that owner gave for issue, of any generation,
 	// generation 0 included; nil where owner gave none in force.
 	OwnersNewestPlan(ctx context.Context, tx pgx.Tx, issue string, owner claim.Token) (*StoredPlan, error)
-	// PlansOfOtherGivers is the version in force of each generation of issue that an owner
-	// other than owner gave.
-	PlansOfOtherGivers(ctx context.Context, tx pgx.Tx, issue string, owner claim.Token) ([]PlanVersion, error)
+	// PlansOfEarlierOwners is the version in force of each generation of issue whose giver is no
+	// architect of the issue's tree now (ArchitectOfTree): the plans its first step passes over.
+	PlansOfEarlierOwners(ctx context.Context, tx pgx.Tx, issue Issue) ([]PlanVersion, error)
 	// CarryPlan copies the plan of issue at from to to: with carried, each task where it stands;
 	// without, each task waiting at no act with its counts at 0. It writes nothing where from has
 	// no plan rows, and gives the pull request row of issue the id of the new plan's one task.
@@ -2256,6 +2257,38 @@ type RoleClaim struct {
 func TreeLingers(ctx context.Context, store Store, tx pgx.Tx, tree string) (bool, error) {
 	root, err := store.Issue(ctx, tx, tree)
 	return root != nil && root.Lingers(), err
+}
+
+// ArchitectOfTree says whether architect is an architect of issue's tree now: the architect of the
+// tree's root (issue.Tree), or of a member the record holds in that tree, a sub-architect. It is
+// the one rule of who owns an issue, and both readers of that hold to it: an architect's call on a
+// recorded issue (api's architectForIssue and register_plan) and the giver of a stored plan at the
+// issue's first step (PlansOfEarlierOwners, which the workflow's gateOpened reads). So an
+// architect whose issue moved to another tree, or whose tree the issue left, is no owner of it any
+// longer, whatever tree its claim was registered in. A claim that ends in no architect role is
+// none; a member whose key yields no claim token holds no claim, so it matches nothing. The tree
+// root's architect, the owner of most issues, is answered from issue alone; only another
+// architect costs the read of the tree.
+func ArchitectOfTree(ctx context.Context, store Store, tx pgx.Tx, architect claim.Token, issue Issue) (bool, error) {
+	if _, role, ok := architect.Cut(); !ok || role != claim.RoleArchitect {
+		return false, nil
+	}
+	project, err := claim.ProjectToken(issue.Project)
+	if err != nil {
+		return false, fmt.Errorf("the architects of the tree of %s: %w", issue.Key, err)
+	}
+	architectOf := func(key string) bool {
+		token, err := claim.NewToken(project, key, claim.RoleArchitect)
+		return err == nil && token == architect
+	}
+	if architectOf(issue.Tree) {
+		return true, nil
+	}
+	members, err := store.TreeIssues(ctx, tx, issue.Tree)
+	if err != nil {
+		return false, err
+	}
+	return slices.ContainsFunc(members, func(member Issue) bool { return architectOf(member.Key) }), nil
 }
 
 // PhaseRowOf is role's row among rows, and the zero row where the record holds no row of that

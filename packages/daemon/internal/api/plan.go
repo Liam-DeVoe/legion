@@ -144,25 +144,25 @@ func (s *server) registerPlan(w http.ResponseWriter, r *http.Request) {
 		PlanRegisterResponse{Plan: registeredPlan(given)})
 }
 
-// planOwner authorizes register_plan for the architect whose grant serves the issue's tree, and
-// answers the generation the plan is given at. A recorded issue is the tree's when its record
-// says so, as every architect operation holds it (architectForIssue), and its plan is given at
-// its generation. One the daemon has not recorded — a child before release_children records it
-// (C2-2) — is the tree's when Dispatch's parent chain reaches the tree (dispatchTreeMember) and it
-// has not entered the workflow, triage, backlog, icebox or todo, and its plan is given at
-// generation 0, where it waits for the issue's first step.
+// planOwner authorizes register_plan for an architect of the issue's tree, and answers the
+// generation the plan is given at. A recorded issue is its tree's architects' (record.ArchitectOfTree,
+// the rule every architect operation holds it to, architectForIssue), the root's or a
+// sub-architect's, and its plan is given at its generation. One the daemon has not recorded — a
+// child before release_children records it (C2-2) — is the tree's when Dispatch's parent chain
+// reaches the tree (dispatchTreeMember) and it has not entered the workflow, triage, backlog,
+// icebox or todo, and its plan is given at generation 0, where it waits for the issue's first step.
 func (s *server) planOwner(w http.ResponseWriter, r *http.Request, grantID, issue string) (credential.Grant, uint64, bool) {
 	grant, ok := s.architectGrant(w, r, grantID)
 	if !ok {
 		return credential.Grant{}, 0, false
 	}
-	recorded, err := s.recordedIssue(r.Context(), issue)
+	recorded, owned, err := s.ownedIssue(r.Context(), issue, grant.Claim)
 	if err != nil {
 		writeFailure(w, http.StatusInternalServerError, "RECORD_UNAVAILABLE", "could not read issue tree membership")
 		return credential.Grant{}, 0, false
 	}
 	if recorded != nil {
-		if recorded.Tree != grant.Tree {
+		if !owned {
 			writeFailure(w, http.StatusForbidden, "ISSUE_OUTSIDE_TREE", "issue is outside the architect tree")
 			return credential.Grant{}, 0, false
 		}

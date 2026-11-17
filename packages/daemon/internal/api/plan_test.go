@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -9,11 +10,14 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/plan"
+	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
 // planDoc is the plan document of the tree root LEGION-208 these tests give Legion, and childDoc
@@ -298,6 +302,57 @@ func TestAPlanOfAnEarlierOwnerIsNotTaken(t *testing.T) {
 	}
 	if got := facts.recorded(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("facts = %#v, want %#v: each plan naming the owner that gave it", got, want)
+	}
+}
+
+// seedMember records key in tree at admitted in its first run, a child of the tree's root.
+func seedMember(t *testing.T, h *harness, key, tree string) {
+	t.Helper()
+	parent := tree
+	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+		return record.NewStore().PutIssue(context.Background(), tx, record.Issue{
+			Key: key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: tree, Project: testProject, Title: key,
+			Parent: &parent, Phase: phase.Admitted, Generation: 1, Status: "in_progress",
+		})
+	}); err != nil {
+		t.Fatalf("seed %s in the tree %s: %v", key, tree, err)
+	}
+}
+
+// Who owns a recorded issue is one rule, record.ArchitectOfTree: an architect of the issue's tree
+// now, the root's or a sub-architect's, the rule the workflow holds the giver of a stored plan to
+// at the issue's first step. A sub-architect, the architect of LEGION-211, gives a plan for
+// LEGION-209 while LEGION-211 stands in the tree LEGION-208. Once LEGION-211 stands in a tree of
+// its own it is no architect of that tree, whatever tree its claim was registered in:
+// register_plan and stop_task both refuse it, and the root's architect is still taken.
+func TestAnArchitectWhoseIssueLeftTheTreeOwnsNoIssueOfIt(t *testing.T) {
+	h, facts, statuses := planHarness(t)
+	seedMember(t, h, "LEGION-209", "LEGION-208")
+	seedMember(t, h, "LEGION-211", "LEGION-208")
+	sub := newLiveClaimIn(t, h, "LEGION-208", "LEGION-211", claim.RoleArchitect)
+	root := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
+	for version := 1; version <= 3; version++ {
+		statuses.givePlan(childDoc, version, taskBlock("a", "implementer reviewer"))
+	}
+	if recorder := registerPlan(h, sub.grant(t), "LEGION-209", childDoc, 1); recorder.Code != http.StatusOK {
+		t.Fatalf("the sub-architect's plan while its issue stands in the tree = %d %s, want 200", recorder.Code, recorder.Body)
+	}
+
+	seedIssueAt(t, h, "LEGION-211", phase.Admitted)
+	assertRefusalText(t, registerPlan(h, sub.grant(t), "LEGION-209", childDoc, 2), http.StatusForbidden, "ISSUE_OUTSIDE_TREE",
+		"issue is outside the architect tree")
+	assertRefusalText(t, stopTask(h, sub.grant(t), "LEGION-209", "a"), http.StatusForbidden, "ISSUE_OUTSIDE_TREE",
+		"issue is outside the architect tree")
+	if recorder := registerPlan(h, root.grant(t), "LEGION-209", childDoc, 3); recorder.Code != http.StatusOK {
+		t.Fatalf("the root's architect's plan = %d %s, want 200", recorder.Code, recorder.Body)
+	}
+
+	want := []intake.Fact{
+		givenPlan("LEGION-209", 1, sub.token, childDoc, 1, implementerReviewer...),
+		givenPlan("LEGION-209", 1, root.token, childDoc, 3, implementerReviewer...),
+	}
+	if got := facts.recorded(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("facts = %#v, want %#v: the sub-architect's plan while it owned the issue, then the root's, and no fact of the refused calls", got, want)
 	}
 }
 

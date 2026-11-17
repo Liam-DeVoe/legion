@@ -317,31 +317,74 @@ func TestOwnersNewestPlanReadsOnlyTheOwnersGift(t *testing.T) {
 	})
 }
 
-// The plans a first step passes over are each plan of the issue in force that an owner other than
-// the current one gave, with its version and its giver: the current owner's own plan is not among
-// them, and neither is a plan of the default steps.
-func TestPlansOfOtherGiversLeavesOutTheOwnersOwn(t *testing.T) {
+// An architect of an issue's tree now is the architect of the tree's root, or of a member the
+// record holds in that tree, a sub-architect: the one rule of who owns an issue, which an
+// architect's call on a recorded issue and the giver of a plan at the issue's first step are both
+// held to. The architect of another tree is not, nor the architect of an issue that stood in the
+// tree and now stands in a tree of its own, nor a claim that is no architect's.
+func TestArchitectOfTreeIsTheRootsOrAMembersArchitect(t *testing.T) {
 	st := migratedStore(t)
 	ctx := context.Background()
-	earlier, earlierTasks, earlierSteps := ownersPlan(planIssue, 0, 2, otherOwner, planGivenAt)
-	own, ownTasks, ownSteps := ownersPlan(planIssue, 1, 3, planOwner, planGivenAt.Add(time.Hour))
-	defaults := PlanVersion{Issue: planIssue, Generation: 2, Version: 0, Source: PlanSourceDefault, GivenAt: planGivenAt.Add(2 * time.Hour)}
-	defaultTasks := []PlanTask{{Issue: planIssue, Generation: 2, Task: "default", BlockText: "The project's default steps.", State: TaskWaiting}}
+	member, moved, issue := issueFixture("LEGION-209"), issueFixture("LEGION-210"), issueFixture("LEGION-211")
+	member.Tree, issue.Tree = planIssue, planIssue
 	inTx(t, st, func(tx pgx.Tx) {
+		for _, recorded := range []Issue{issueFixture(planIssue), member, moved, issue} {
+			must(t, NewStore().PutIssue(ctx, tx, recorded))
+		}
+		for architect, want := range map[claim.Token]bool{
+			planOwner:                              true,
+			"legion-legion-legion-209-architect":   true,
+			"legion-legion-legion-210-architect":   false,
+			otherOwner:                             false,
+			"legion-legion-legion-208-implementer": false,
+			"":                                     false,
+		} {
+			got, err := ArchitectOfTree(ctx, NewStore(), tx, architect, issue)
+			must(t, err)
+			if got != want {
+				t.Errorf("ArchitectOfTree(%q, LEGION-211 of the tree %s) = %t, want %t", architect, planIssue, got, want)
+			}
+		}
+	})
+}
+
+// The plans a first step passes over are each plan of the issue in force whose giver is no
+// architect of the issue's tree now (ArchitectOfTree), with its version and its giver, in the order
+// they were given: a plan of the tree root's architect is not among them, nor a plan of a
+// sub-architect, nor a plan of the default steps, which nobody gave. Once the issue stands in a
+// tree of its own, each of those owners' plans is an earlier owner's.
+func TestPlansOfEarlierOwnersLeaveOutEachArchitectOfTheTree(t *testing.T) {
+	st := migratedStore(t)
+	ctx := context.Background()
+	const key = "LEGION-210"
+	member, issue := issueFixture("LEGION-209"), issueFixture(key)
+	member.Tree, issue.Tree = planIssue, planIssue
+	earlier, earlierTasks, earlierSteps := ownersPlan(key, 0, 2, otherOwner, planGivenAt)
+	bySub, bySubTasks, bySubSteps := ownersPlan(key, 1, 3, "legion-legion-legion-209-architect", planGivenAt.Add(time.Hour))
+	own, ownTasks, ownSteps := ownersPlan(key, 2, 4, planOwner, planGivenAt.Add(2*time.Hour))
+	defaults := PlanVersion{Issue: key, Generation: 3, Version: 0, Source: PlanSourceDefault, GivenAt: planGivenAt.Add(3 * time.Hour)}
+	defaultTasks := []PlanTask{{Issue: key, Generation: 3, Task: "default", BlockText: "The project's default steps.", State: TaskWaiting}}
+	inTx(t, st, func(tx pgx.Tx) {
+		for _, recorded := range []Issue{issueFixture(planIssue), member, issue} {
+			must(t, NewStore().PutIssue(ctx, tx, recorded))
+		}
 		putPlan(t, tx, earlier, earlierTasks, earlierSteps)
+		putPlan(t, tx, bySub, bySubTasks, bySubSteps)
 		putPlan(t, tx, own, ownTasks, ownSteps)
 		putPlan(t, tx, defaults, defaultTasks, nil)
 	})
 	inTx(t, st, func(tx pgx.Tx) {
-		got, err := NewStore().PlansOfOtherGivers(ctx, tx, planIssue, planOwner)
+		got, err := NewStore().PlansOfEarlierOwners(ctx, tx, issue)
 		must(t, err)
 		if want := []PlanVersion{earlier}; !reflect.DeepEqual(got, want) {
-			t.Fatalf("the plans of other givers = %#v, want the earlier owner's alone: %#v", got, want)
+			t.Fatalf("the plans of earlier owners of %s in the tree %s = %#v, want the other tree's alone: %#v", key, planIssue, got, want)
 		}
-		got, err = NewStore().PlansOfOtherGivers(ctx, tx, planIssue, otherOwner)
+		alone := issue
+		alone.Tree = key
+		got, err = NewStore().PlansOfEarlierOwners(ctx, tx, alone)
 		must(t, err)
-		if want := []PlanVersion{own}; !reflect.DeepEqual(got, want) {
-			t.Fatalf("the plans of givers other than the earlier owner = %#v, want %#v", got, want)
+		if want := []PlanVersion{earlier, bySub, own}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("the plans of earlier owners of %s in a tree of its own = %#v, want every owner's: %#v", key, got, want)
 		}
 	})
 }

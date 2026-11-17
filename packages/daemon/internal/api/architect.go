@@ -200,6 +200,28 @@ func (s *server) recordedIssue(ctx context.Context, issue string) (*record.Issue
 	return recorded, tx.Commit(ctx)
 }
 
+// ownedIssue reads the issue record and whether architect owns it, an architect of its tree now
+// (record.ArchitectOfTree), in one read-only transaction: the one rule of who owns an issue, which
+// the workflow holds the giver of a stored plan to at the issue's first step. owned is false where
+// the daemon has not recorded the issue.
+func (s *server) ownedIssue(ctx context.Context, issue string, architect claim.Token) (recorded *record.Issue, owned bool, err error) {
+	if s.pool == nil || s.records == nil {
+		return nil, false, errors.New("record dependencies are unavailable")
+	}
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return nil, false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if recorded, err = s.records.Issue(ctx, tx, issue); err != nil || recorded == nil {
+		return nil, false, err
+	}
+	if owned, err = record.ArchitectOfTree(ctx, s.records, tx, architect, *recorded); err != nil {
+		return nil, false, err
+	}
+	return recorded, owned, tx.Commit(ctx)
+}
+
 // treeMembers is every record of tree, read in one short read-only transaction: what a handler
 // that judges work against the tree it enters reads once and asks record.AcceptedAncestorIn of,
 // rather than opening a transaction and reading the tree again per child it answers for
@@ -232,14 +254,15 @@ func childUnderAcceptedParent(child, ancestor, operation string) string {
 		child, ancestor, ancestor, operation, ancestor, ancestor)
 }
 
-// architectForIssue authorizes an architect's operation on a recorded issue of its tree, and
-// returns the grant and that record.
+// architectForIssue authorizes an architect's operation on a recorded issue it owns, an architect
+// of the issue's tree now (ownedIssue, record.ArchitectOfTree), and returns the grant and that
+// record.
 func (s *server) architectForIssue(w http.ResponseWriter, r *http.Request, grantID, issue string) (credential.Grant, record.Issue, bool) {
 	grant, ok := s.architectGrant(w, r, grantID)
 	if !ok {
 		return credential.Grant{}, record.Issue{}, false
 	}
-	recorded, err := s.recordedIssue(r.Context(), issue)
+	recorded, owned, err := s.ownedIssue(r.Context(), issue, grant.Claim)
 	if err != nil {
 		writeFailure(w, http.StatusInternalServerError, "RECORD_UNAVAILABLE", "could not read issue tree membership")
 		return credential.Grant{}, record.Issue{}, false
@@ -248,7 +271,7 @@ func (s *server) architectForIssue(w http.ResponseWriter, r *http.Request, grant
 		writeFailure(w, http.StatusNotFound, "ISSUE_NOT_FOUND", "issue is not recorded")
 		return credential.Grant{}, record.Issue{}, false
 	}
-	if recorded.Tree != grant.Tree {
+	if !owned {
 		writeFailure(w, http.StatusForbidden, "ISSUE_OUTSIDE_TREE", "issue is outside the architect tree")
 		return credential.Grant{}, record.Issue{}, false
 	}

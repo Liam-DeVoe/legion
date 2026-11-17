@@ -333,29 +333,34 @@ func (s *Postgres) OwnersNewestPlan(ctx context.Context, tx pgx.Tx, issue string
 	return s.Plan(ctx, tx, issue, uint64(generation))
 }
 
-// PlansOfOtherGivers is the version in force of each generation of issue that an owner other than
-// owner gave, in the order they were given: the plans the current owner's first step passes over.
-// A default plan is nobody's, so none is among them.
-func (s *Postgres) PlansOfOtherGivers(ctx context.Context, tx pgx.Tx, issue string, owner claim.Token) ([]PlanVersion, error) {
-	describe := fmt.Sprintf("read the plans of %s that givers other than %s gave", issue, owner)
-	rows, err := tx.Query(ctx, "select "+planVersionColumns+` from issue_plans where `+inForce+` and given_by <> $2
-		order by given_at, generation`, issue, string(owner))
+// PlansOfEarlierOwners is the version in force of each generation of issue whose giver is no
+// architect of the issue's tree now (ArchitectOfTree), in the order they were given: the plans an
+// earlier owner gave, which the issue's first step passes over. The architect of the tree's root
+// and each sub-architect of the tree are owners, so none of their plans is among them, and a
+// default plan is nobody's, so none is either. The versions are read, and their rows closed,
+// before each giver is judged, since a transaction runs one statement at a time.
+func (s *Postgres) PlansOfEarlierOwners(ctx context.Context, tx pgx.Tx, issue Issue) ([]PlanVersion, error) {
+	describe := fmt.Sprintf("read the plans of %s that earlier owners gave", issue.Key)
+	rows, err := tx.Query(ctx, "select "+planVersionColumns+` from issue_plans where `+inForce+`
+		order by given_at, generation`, issue.Key)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", describe, err)
 	}
-	defer rows.Close()
-	var versions []PlanVersion
-	for rows.Next() {
-		version, err := scanPlanVersion(rows)
+	given, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (PlanVersion, error) { return scanPlanVersion(row) })
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", describe, err)
+	}
+	var earlier []PlanVersion
+	for _, version := range given {
+		owner, err := ArchitectOfTree(ctx, s, tx, version.GivenBy, issue)
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", describe, err)
 		}
-		versions = append(versions, version)
+		if !owner {
+			earlier = append(earlier, version)
+		}
 	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("%s: %w", describe, err)
-	}
-	return versions, nil
+	return earlier, nil
 }
 
 // CarryPlan copies the plan of issue at generation from to generation to: every version, every task
