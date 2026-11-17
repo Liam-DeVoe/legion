@@ -1779,3 +1779,61 @@ test("a reply after the load's comments read failed reads the tree again", async
     client.clear();
   }
 });
+
+// A keyboard reader presses Retry on the line of a refused tree read. While the read runs again
+// the focus stays on the line's Retry, or on what takes its place, and never falls to the page's
+// body, from which the reader has to find the way back to the outline.
+test("a Retry of a refused tree read keeps the focus off the page's body while the read runs again", async () => {
+  const stubs = stubTreeReads(async (refs) => namedTargets(refs));
+  const again = Promise.withResolvers<TreeAnswer>();
+  let reads = 0;
+  (api.getIssueTree as Mock<typeof api.getIssueTree>).mockImplementation(async () => {
+    reads += 1;
+    if (reads === 1) throw new Error("the tree read was refused");
+    return again.promise;
+  });
+  const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  const route = { key: KEY, kind: "issue" } as const;
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <MemoryRouter>
+      <QueryClientProvider client={client}>
+        <KeymapProvider>
+          <MarginProvider>
+            <ProvidersSlot issue={issue} route={route}>
+              <BodySlot issue={issue} route={route} />
+              {children}
+            </ProvidersSlot>
+          </MarginProvider>
+        </KeymapProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  try {
+    const view = renderHook(() => useIssueTree(issue), { wrapper });
+    const retry = await waitFor(() => {
+      const found = [...(failedTreeLine()?.querySelectorAll("button") ?? [])].find(
+        (one) => one.textContent === "Retry"
+      );
+      if (found === undefined) throw new Error("the body drew no Retry for the refused tree read");
+      return found;
+    });
+    act(() => retry.focus());
+    expect(document.activeElement).toBe(retry);
+
+    await act(async () => retry.click());
+    await waitFor(() => expect(reads).toBe(2));
+    await act(async () => {
+      await Bun.sleep(20);
+    });
+    const focused = document.activeElement;
+    expect(
+      focused !== null && focused !== document.body && focused.isConnected,
+      "the focus stays off the page's body while the read runs again"
+    ).toBe(true);
+    view.unmount();
+  } finally {
+    again.resolve(treeAnswer([]));
+    for (const stub of stubs) stub.mockRestore();
+    client.clear();
+  }
+});
