@@ -93,8 +93,10 @@ func sweepAfterAClosedEdit(t *testing.T, requestBeforeClose bool) keptEditorSwee
 		if _, err := service.WriteIssueAskStates(ctx, "DOC-1", []model.Ask{withdrawnAsk(f.decision, closer)}, closer, true); err != nil {
 			return err
 		}
+		// The sweep's ask.resolved events are no part of what this test reads, so each withdrawal
+		// states its facts on the ask's node at the sentinel (nil held, asks.Settle).
 		for _, id := range withdrawn {
-			if _, err := WriteAskResolution(ctx, tx, model.Ask{ID: id}, model.AskResolutionWithdrawn, "Withdrawn by the close of DOC-1.", closer); err != nil {
+			if _, err := WriteAskResolution(ctx, tx, model.Ask{ID: id}, model.AskResolutionWithdrawn, "Withdrawn by the close of DOC-1.", closer, nil); err != nil {
 				return err
 			}
 		}

@@ -71,17 +71,21 @@ function drawnAttributes(
     ) {
       return [];
     }
-    if (type?.attributes[name]?.kind !== "block[]") {
+    const declared = type?.attributes[name];
+    if (declared?.kind !== "block[]") {
       return [{ children: [attributeValue(value)], name }];
     }
     // The node's value is the array the editor's own parser made of the attribute as markdown
     // wrote it (`parseAttribute`, `@legion/proof-editor`), and markdown and HTML carry those
     // same references joined by exactly one space, so reading the joined value serves either
-    // shape through the parser the editor, the document service and the Plan tab share, and
-    // accepts exactly the values a writer is allowed to store. One it refuses, which no stored
-    // block holds, points at nothing.
+    // shape through the parser the editor, the document service and the Plan tab share, under
+    // the item kinds the attribute declares, and accepts exactly the values a writer is allowed
+    // to store. One it refuses, which no stored block holds, points at nothing.
     const pointers =
-      parseBlockPointerValue(Array.isArray(value) ? value.join(" ") : String(value)) ?? [];
+      parseBlockPointerValue(
+        Array.isArray(value) ? value.join(" ") : String(value),
+        declared.items
+      ) ?? [];
     return pointers.length === 0
       ? []
       : [
@@ -192,11 +196,20 @@ export interface AskBlockFacts {
   readonly urgency: AskUrgency;
 }
 
+/**
+ * What `node`, an ask, says about itself: the question its first child holds and the options the
+ * list its own content ends with holds, passing over the blocks it closes with (a reading, whose
+ * schema `parents` name `ask`), which are no part of what it asks.
+ */
 export function askBlockFacts(node: ProseMirrorNode): AskBlockFacts {
   const options: AskOption[] = [];
   let blankOption: number | undefined;
-  if (node.lastChild?.type.name === "bullet_list") {
-    node.lastChild.forEach((item, _offset, index) => {
+  const own = node.children.filter(
+    (child) => (child.type.spec.parents as readonly string[] | undefined)?.includes("ask") !== true
+  );
+  const list = own.at(-1);
+  if (list?.type.name === "bullet_list") {
+    list.forEach((item, _offset, index) => {
       const text = item.textContent;
       const separator = text.indexOf(": ");
       const label = (separator < 0 ? text : text.slice(0, separator)).trim();

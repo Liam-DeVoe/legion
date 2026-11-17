@@ -14,6 +14,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/rank"
@@ -384,10 +385,24 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	}
 	issueRank := rank.Between(lastRank, "")
 
+	// The issue's node and its spec's node go in before the two rows, in one write that takes
+	// them in the store's order, each in the issue's project, with the spec's part_of the issue
+	// (R16 of dispatch://INFRA-1253); what that write states waits for the issue.created event
+	// below (graphstore.Caused). Each row names its node in the same transaction.
+	createdAt := time.Now().UTC()
+	specRefKey := graphstore.ArtifactRefKey(key, input.Project, "", "spec")
+	issueNodes, err := graphstore.WriteUncaused(r.Context(), tx, []graphstore.Node{
+		graphstore.IssueNode(key, input.Project, actor, createdAt),
+		graphstore.ArtifactNode(specRefKey, input.Project, "", actor, createdAt),
+	}, []graphstore.Tuple{graphstore.ArtifactPartOf(specRefKey, key, actor, createdAt)})
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	if _, err := tx.Exec(r.Context(), `
-		insert into issues (key, project_key, number, title, parent_key, created_by, labels, priority, rank, assignee, repo)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-	`, key, input.Project, number, input.Title, parent, actorJSON, labels, priority, issueRank, assignee, repo); err != nil {
+		insert into issues (key, project_key, number, title, parent_key, created_by, labels, priority, rank, assignee, repo, node_kind, node_address)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $1)
+	`, key, input.Project, number, input.Title, parent, actorJSON, labels, priority, issueRank, assignee, repo, graphstore.KindIssue); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -432,10 +447,10 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 
 	var artifactID string
 	if err := tx.QueryRow(r.Context(), `
-		insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by)
-		values ($1, $2, 'spec', 'spec.md', 'doc', true, $3)
+		insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by, node_kind, node_address)
+		values ($1, $2, 'spec', 'spec.md', 'doc', true, $3, $4, $5)
 		returning id::text
-	`, key, input.Project, actorJSON).Scan(&artifactID); err != nil {
+	`, key, input.Project, actorJSON, graphstore.KindArtifact, specRefKey).Scan(&artifactID); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -460,11 +475,13 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	// from (docs.Ledger.RenderStampOf): a text read of a document still standing there serves the
 	// stored markdown rather than rendering the document again.
 	stamp := ledger.RenderStampOf(artifactID, markdown)
-	if _, err := tx.Exec(r.Context(), docs.RenderStampHead+`
+	var specCreated time.Time
+	if err := tx.QueryRow(r.Context(), docs.RenderStampHead+`
 		insert into artifact_versions (artifact_id, number, markdown, authors, doc_update_version, `+docs.RenderStampColumns+`)
 		values ($1, 1, $2, $3, coalesce((select max(version) from doc_updates where artifact_id = $1), 0),
 			`+docs.RenderStampValues+`, $4, $5)
-	`, artifactID, markdown, authors, stamp.Token, stamp.Renderer); err != nil {
+		returning created_at
+	`, artifactID, markdown, authors, stamp.Token, stamp.Renderer).Scan(&specCreated); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -481,11 +498,21 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	specChanges, err := s.deps.Docs.IndexDocumentReferences(documentCtx, artifactID, 1, markdown)
+	specChanges, specBlocks, err := s.deps.Docs.IndexDocumentReferences(documentCtx, artifactID, 1, markdown)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
+	// The spec's first version is the projection of its version node, written after the spec's
+	// block nodes and caused by the issue's own event with them (docs.WriteVersionNode). The spec's
+	// node was written above as a document's.
+	specVersion, err := docs.WriteVersionNode(r.Context(), tx, graphstore.VersionOwner{RefKey: specRefKey, Project: input.Project},
+		1, actor, specCreated)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	specBlocks = graphstore.Joined(specBlocks, specVersion)
 	issue, err := s.loadIssue(r.Context(), tx, key)
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -511,6 +538,16 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := refs.Stamp(r.Context(), tx, "artifact", artifactID, event.ID); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	// What the spec's block index stated waits for the issue's own event: it is the cause every
+	// node and tuple of that pass carries (graphstore.Caused).
+	if err := graphstore.Caused(r.Context(), tx, specBlocks, event.ID); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if err := graphstore.Caused(r.Context(), tx, issueNodes, event.ID); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}

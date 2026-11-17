@@ -19,6 +19,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -26,6 +27,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/files"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -398,32 +400,36 @@ func (s *server) multipartArtifactUpload(w http.ResponseWriter, r *http.Request)
 }
 
 // writeDocumentVersion stores the document-version row uploads write directly, returning the same
-// decoded version the route returns to its caller. Uploads keep this separate from
-// docs.writeVersionTx because they own their artifact event and approval move. stamp is what the
-// markdown was rendered from (docs.Ledger.RenderStampOf), stored with the head this transaction's
-// own write left, so a text read of a document still standing there serves the stored markdown
-// rather than rendering the document again.
-func writeDocumentVersion(ctx context.Context, tx pgx.Tx, artifactID string, number int, markdown string, authors []model.Actor, summary *string, stamp docs.RenderStamp) (model.Version, error) {
+// decoded version the route returns to its caller, and what the row returned beside itself of its
+// document for the version's node (graphstore.VersionOwnerColumns), which the caller writes once
+// the version's block index has written its block nodes (docs.WriteVersionNode). Uploads keep this
+// separate from docs.writeVersionTx because they own their artifact event and approval move. stamp
+// is what the markdown was rendered from (docs.Ledger.RenderStampOf), stored with the head this
+// transaction's own write left, so a text read of a document still standing there serves the
+// stored markdown rather than rendering the document again.
+func writeDocumentVersion(ctx context.Context, tx pgx.Tx, artifactID string, number int, markdown string, authors []model.Actor, summary *string, stamp docs.RenderStamp) (model.Version, graphstore.VersionOwner, error) {
 	encodedAuthors, err := json.Marshal(authors)
 	if err != nil {
-		return model.Version{}, fmt.Errorf("encode document version authors: %w", err)
+		return model.Version{}, graphstore.VersionOwner{}, fmt.Errorf("encode document version authors: %w", err)
 	}
 	var version model.Version
 	var authorsRaw []byte
+	var owner graphstore.VersionOwner
 	if err := tx.QueryRow(ctx, docs.RenderStampHead+`
 		insert into artifact_versions as v (artifact_id, number, markdown, authors, named, summary, doc_update_version, `+docs.RenderStampColumns+`)
 		values ($1, $2, $3, $4, $5, $6, coalesce((select max(version) from doc_updates where artifact_id = $1), 0),
 			`+docs.RenderStampValues+`, $7, $8)
-		returning number, named, summary, authors, created_at, `+model.VersionSize+`
+		returning number, named, summary, authors, created_at, `+model.VersionSize+`, `+graphstore.VersionOwnerColumns("v.artifact_id")+`
 	`, artifactID, number, markdown, encodedAuthors, summary != nil, summary, stamp.Token, stamp.Renderer).Scan(
-		&version.Number, &version.Named, &version.Summary, &authorsRaw, &version.CreatedAt, &version.Size,
+		append([]any{&version.Number, &version.Named, &version.Summary, &authorsRaw, &version.CreatedAt, &version.Size},
+			owner.Targets()...)...,
 	); err != nil {
-		return model.Version{}, fmt.Errorf("write document version: %w", err)
+		return model.Version{}, graphstore.VersionOwner{}, fmt.Errorf("write document version: %w", err)
 	}
 	if err := json.Unmarshal(authorsRaw, &version.Authors); err != nil {
-		return model.Version{}, fmt.Errorf("decode document version authors: %w", err)
+		return model.Version{}, graphstore.VersionOwner{}, fmt.Errorf("decode document version authors: %w", err)
 	}
-	return version, nil
+	return version, owner, nil
 }
 
 // recordDocumentTaskProgress records the task count of the document a write just stored.
@@ -435,6 +441,28 @@ func recordDocumentTaskProgress(ctx context.Context, tx pgx.Tx, artifactID strin
 		return docs.RecordTaskProgress(ctx, tx, artifactID, readBack)
 	}
 	return docs.RecordTaskProgressMarkdown(ctx, tx, artifactID, markdown)
+}
+
+// statedVersionBytes states, on the node an image's or a file's row names, the bytes a later
+// version of it holds (graphstore.ArtifactBytes), held for the event the upload appends
+// (graphstore.Caused), so the node's current values are its newest version's (R16 of
+// dispatch://INFRA-1253). A row an older build wrote names no node and states nothing here: the
+// backfill gives it its node and its newest version's bytes in the transaction that names the node
+// on the row (graphcensus' writeObjectBatch). The read takes the row FOR SHARE, which conflicts
+// with the backfill's lock of the row, so the two cannot both miss this version: either the
+// backfill named the node first and this read waits for it, sees the node and states these bytes
+// after the backfill's, or this upload holds the row first, the backfill waits for it to commit,
+// and then reads this version as the row's newest.
+func statedVersionBytes(ctx context.Context, tx pgx.Tx, artifactID, mime string, size int, digest string, who model.Actor) (graphstore.Uncaused, error) {
+	var address *string
+	if err := tx.QueryRow(ctx, `select node_address from artifacts where id = $1 for share`, artifactID).Scan(&address); err != nil {
+		return graphstore.Uncaused{}, fmt.Errorf("read the node artifact %s names: %w", artifactID, err)
+	}
+	if address == nil {
+		return graphstore.Uncaused{}, nil
+	}
+	return graphstore.WriteUncaused(ctx, tx, nil,
+		graphstore.ArtifactBytes(nil, *address, mime, int64(size), digest, who, time.Now().UTC()))
 }
 
 func (s *server) storeArtifact(
@@ -491,6 +519,17 @@ func (s *server) storeArtifact(
 	}
 	var artifact model.Artifact
 	var created bool
+	// The node of a document this upload creates: written before its row, in the project of the
+	// issue or the project that owns it, or between the parties of the conversation that does,
+	// and stated under the event the upload appends, or at the sentinel where its owner records
+	// none (agentArtifactTarget.ownsEvents). It states beside it the facts the row projects: its
+	// part_of the issue that owns it, and an image's or a file's bytes (R16 of
+	// dispatch://INFRA-1253); a project's document and a conversation's file hang under no issue.
+	// The row names the node in the same transaction. A ref_key past the store's address bound is
+	// no node of it (graphstore.AddressFits), as every writer of the store leaves such an address
+	// out, and its row names none. An image's or a file's later version states its bytes on the
+	// node its row names (statedVersionBytes).
+	var documentNode graphstore.Uncaused
 	artifact, err = s.findArtifactByNameOrSlug(r.Context(), tx, target, input.name)
 	if errors.Is(err, pgx.ErrNoRows) {
 		created = true
@@ -520,11 +559,30 @@ func (s *server) storeArtifact(
 			s.writeHandlerError(w, err)
 			return
 		}
+		var nodeKind, nodeAddress *string
+		if refKey := graphstore.ArtifactRefKey(deref(target.IssueKey), deref(project), deref(session), slug); graphstore.AddressFits(refKey) {
+			at := time.Now().UTC()
+			var facts []graphstore.Tuple
+			if target.IssueKey != nil {
+				facts = append(facts, graphstore.ArtifactPartOf(refKey, *target.IssueKey, actor, at))
+			}
+			if kind != "doc" {
+				facts = graphstore.ArtifactBytes(facts, refKey, input.contentType, int64(len(input.content)), sha, actor, at)
+			}
+			documentNode, err = graphstore.WriteUncaused(r.Context(), tx, []graphstore.Node{graphstore.ArtifactNode(
+				refKey, deref(project), deref(session), actor, at)}, facts)
+			if err != nil {
+				s.writeHandlerError(w, err)
+				return
+			}
+			storeKind := graphstore.KindArtifact
+			nodeKind, nodeAddress = &storeKind, &refKey
+		}
 		artifact, err = scanArtifact(tx.QueryRow(r.Context(), `
-			insert into artifacts (issue_key, project_key, session_id, slug, name, kind, is_primary, role, created_by)
-			values ($1, $2, $3, $4, $5, $6, false, $7, $8)
+			insert into artifacts (issue_key, project_key, session_id, slug, name, kind, is_primary, role, created_by, node_kind, node_address)
+			values ($1, $2, $3, $4, $5, $6, false, $7, $8, $9, $10)
 			returning `+artifactColumns,
-			target.IssueKey, project, session, slug, input.name, kind, role, actorJSON))
+			target.IssueKey, project, session, slug, input.name, kind, role, actorJSON, nodeKind, nodeAddress))
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
@@ -588,6 +646,10 @@ func (s *server) storeArtifact(
 	// the same markdown again (recordDocumentTaskProgress, documentBlocksFor).
 	var documentReadBack *pmdoc.Node
 	var documentChanges model.ReferenceChanges
+	// indexedBlocks is what the block index stated in the node and tuple store, which waits for
+	// the event this upload appends below: that event is the cause every node and tuple of the
+	// pass carries, and no tuple may be updated once appended.
+	var indexedBlocks graphstore.Uncaused
 	var movedEvents []model.Event
 	if kind == "doc" {
 		if created {
@@ -599,7 +661,8 @@ func (s *server) storeArtifact(
 			s.writeHandlerError(w, err)
 			return
 		}
-		version, err = writeDocumentVersion(r.Context(), tx, artifact.ID, nextNumber, documentMarkdown, []model.Actor{actor}, documentSummary, ledger.RenderStampOf(artifact.ID, documentMarkdown))
+		var owner graphstore.VersionOwner
+		version, owner, err = writeDocumentVersion(r.Context(), tx, artifact.ID, nextNumber, documentMarkdown, []model.Actor{actor}, documentSummary, ledger.RenderStampOf(artifact.ID, documentMarkdown))
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
@@ -616,11 +679,19 @@ func (s *server) storeArtifact(
 			s.writeHandlerError(w, err)
 			return
 		}
-		documentChanges, err = s.deps.Docs.IndexDocumentReferences(documentCtx, artifact.ID, version.Number, documentMarkdown)
+		documentChanges, indexedBlocks, err = s.deps.Docs.IndexDocumentReferences(documentCtx, artifact.ID, version.Number, documentMarkdown)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
+		// The version's node, after its block index's block nodes, held for the event below with
+		// the document's own node (docs.WriteVersionNode).
+		versionNode, err := docs.WriteVersionNode(r.Context(), tx, owner, version.Number, actor, version.CreatedAt)
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		documentNode = graphstore.Joined(documentNode, versionNode)
 	} else {
 		authors, err := encodeJSON([]model.Actor{actor})
 		if err != nil {
@@ -639,14 +710,24 @@ func (s *server) storeArtifact(
 				content = nil
 			}
 		}
+		// A later version moves the node's bytes to its own, held for the event this upload
+		// appends below; a version this upload creates the document with was stated with the node.
+		if !created {
+			documentNode, err = statedVersionBytes(r.Context(), tx, artifact.ID, input.contentType, size, sha, actor)
+			if err != nil {
+				s.writeHandlerError(w, err)
+				return
+			}
+		}
 		var versionAuthors []byte
+		var owner graphstore.VersionOwner
 		if err := tx.QueryRow(r.Context(), `
-			insert into artifact_versions (artifact_id, number, content, mime, size, sha256, authors, named, summary)
+			insert into artifact_versions as v (artifact_id, number, content, mime, size, sha256, authors, named, summary)
 			values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-			returning number, named, summary, authors, created_at, size, mime, sha256
+			returning number, named, summary, authors, created_at, size, mime, sha256, `+graphstore.VersionOwnerColumns("v.artifact_id")+`
 		`, artifact.ID, nextNumber, content, input.contentType, size, sha, authors, input.summary != "", summaryValue).Scan(
-			&version.Number, &version.Named, &version.Summary, &versionAuthors, &version.CreatedAt,
-			&version.Size, &version.MIME, &version.SHA256,
+			append([]any{&version.Number, &version.Named, &version.Summary, &versionAuthors, &version.CreatedAt,
+				&version.Size, &version.MIME, &version.SHA256}, owner.Targets()...)...,
 		); err != nil {
 			s.writeHandlerError(w, err)
 			return
@@ -655,6 +736,14 @@ func (s *server) storeArtifact(
 			s.writeHandlerError(w, err)
 			return
 		}
+		// The version's node, held for the event below with the facts its bytes stated
+		// (docs.WriteVersionNode).
+		versionNode, err := docs.WriteVersionNode(r.Context(), tx, owner, version.Number, actor, version.CreatedAt)
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		documentNode = graphstore.Joined(documentNode, versionNode)
 	}
 	var diff *string
 	if !created && kind == "doc" {
@@ -696,6 +785,9 @@ func (s *server) storeArtifact(
 		payload = artifactCreatedEventPayload(artifact, documentChanges)
 	}
 	published := movedEvents
+	// The cause the block index's facts carry: the event this upload appends, or the sentinel
+	// where its owner records none of its own (an agent's workspace document).
+	blockCause := graphstore.NoEvent
 	if target.ownsEvents() {
 		event, err := s.appendEvent(r.Context(), tx, ownerForArtifact(artifact).event(eventType, actor, payload))
 		if err != nil {
@@ -708,7 +800,16 @@ func (s *server) storeArtifact(
 				return
 			}
 		}
+		blockCause = event.ID
 		published = append(published, event)
+	}
+	if err := graphstore.Caused(r.Context(), tx, indexedBlocks, blockCause); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if err := graphstore.Caused(r.Context(), tx, documentNode, blockCause); err != nil {
+		s.writeHandlerError(w, err)
+		return
 	}
 	// The approval this upload's own version superseded, read in its transaction as the edit
 	// route reads it: an upload to an existing document always writes a version, so a
@@ -1091,7 +1192,9 @@ func deref(value *string) string {
 
 // commitArtifactVersionEvent appends the artifact.version event of a version the transaction wrote
 // and stamps the document's new mention edges with it (refs.Stamp), after the append so stamping
-// never touches sequence allocation.
+// never touches sequence allocation. It then appends what that version's block index stated in
+// the node and tuple store (written.Blocks), which waited for this event: the pass ran before
+// the event existed, and no tuple may be updated once it is appended.
 func (s *server) commitArtifactVersionEvent(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -1110,6 +1213,9 @@ func (s *server) commitArtifactVersionEvent(
 		return model.Event{}, err
 	}
 	if err := refs.Stamp(ctx, tx, "artifact", artifactID, event.ID); err != nil {
+		return model.Event{}, err
+	}
+	if err := graphstore.Caused(ctx, tx, written.Blocks, event.ID); err != nil {
 		return model.Event{}, err
 	}
 	return event, nil
@@ -2054,8 +2160,8 @@ func artifactSlug(name string) string {
 // (documentRolePredicate), documentPlays, which asks the same of a row already read, and
 // documentRoleOf, which names the part one row plays.
 var roleSlugs = map[string]string{
-	model.ArtifactRoleVerification: "verification-md",
-	model.ArtifactRolePlan:         "plan-md",
+	model.ArtifactRoleVerification: model.ArtifactSlugVerification,
+	model.ArtifactRolePlan:         model.ArtifactSlugPlan,
 	// The Decisions view already spells the decisions document's slug, which a reference to it
 	// names, so the role takes that constant rather than a second copy of the same word.
 	model.ArtifactRoleDecisions: decisionsDocumentSlug,
@@ -2082,25 +2188,27 @@ func documentRole(target artifactTarget, kind, slug string) *string {
 }
 
 // documentPlays reports whether an artifact already read plays role: it carries that role, or it
-// is an issue's document that carries none and its slug is the role's, for a row a rolling deploy
-// left with no role because the build that created it did not know the column. A role belongs to
-// an issue's documents alone - documentRole gives none to any other, and the constraint
-// artifacts_role_is_an_issue_document (migration 20261102110000_artifact_document_roles) holds the
-// column to them - so a project document whose slug is a role's, a project's plan.md, plays no
-// role and is a plain document. It is documentRolePredicate's answer about one row, so every
-// reader — the queries that find a document by its role and the routes that judge the document in
-// hand — agrees about the same row.
+// is an issue's markdown document that carries none and its slug is the role's, for a row a
+// rolling deploy left with no role because the build that created it did not know the column. A
+// role belongs to an issue's markdown documents alone - documentRole gives none to any other, and
+// the constraint artifacts_role_is_an_issue_document (migration
+// 20261102110000_artifact_document_roles) holds the column to them - so a project document whose
+// slug is a role's, a project's plan.md, plays no role and is a plain document, and neither does a
+// file or a picture uploaded under a role's name, a file plan.md whose bytes are not markdown. It
+// is documentRolePredicate's answer about one row, so every reader — the queries that find a
+// document by its role and the routes that judge the document in hand — agrees about the same row.
 func documentPlays(artifact model.Artifact, role string) bool {
-	return artifact.Role == role || (artifact.Role == "" && artifact.IssueKey != nil && artifact.Slug == roleSlugs[role])
+	return artifact.Role == role ||
+		(artifact.Role == "" && artifact.IssueKey != nil && artifact.Kind == "doc" && artifact.Slug == roleSlugs[role])
 }
 
 // documentRoleOf is the part a document plays: the role of roleSlugs that documentPlays answers
 // true for, asked of the row as every other reader asks it. A row plays at most one of them - a
-// row that carries a role carries one of them, and an issue's row that carries none falls back to
-// its slug, which the map pairs with a single role - so the order this walks the map in cannot
-// change the answer. Asking documentPlays rather than reading artifacts.role is what gives a row
-// whose role column is still null the role its slug decides, which is the state a rolling deploy
-// leaves behind. A document that plays none of them answers "", which omits the field of a
+// row that carries a role carries one of them, and an issue's doc row that carries none falls
+// back to its slug, which the map pairs with a single role - so the order this walks the map in
+// cannot change the answer. Asking documentPlays rather than reading artifacts.role is what gives
+// a row whose role column is still null the role its slug decides, which is the state a rolling
+// deploy leaves behind. A document that plays none of them answers "", which omits the field of a
 // report that carries it (movedApprovalDocument).
 func documentRoleOf(artifact model.Artifact) string {
 	for role := range roleSlugs {
@@ -2121,15 +2229,16 @@ func isSpecDocument(artifact model.Artifact) bool {
 }
 
 // documentRolePredicate holds the artifacts row of the table aliased `alias` to the issue's
-// document of one role: the role itself, or, for an issue's row a rolling deploy left with no
-// role, the slug a document of that name carries. A project document never plays a role
-// (documentPlays), whatever its slug. `alias` is empty where the query names no alias.
+// document of one role: the role itself, or, for an issue's markdown document a rolling deploy
+// left with no role, the slug a document of that name carries. A project document, a file and a
+// picture never play a role (documentPlays), whatever their slug. `alias` is empty where the query
+// names no alias.
 func documentRolePredicate(alias, role string) string {
 	if alias != "" {
 		alias += "."
 	}
 	return `(` + alias + `role = '` + role + `' or (` + alias + `role is null and ` + alias + `issue_key is not null and ` +
-		alias + `slug = '` + roleSlugs[role] + `'))`
+		alias + `kind = 'doc' and ` + alias + `slug = '` + roleSlugs[role] + `'))`
 }
 
 // verificationRolePredicate is documentRolePredicate for the Verification document of a query

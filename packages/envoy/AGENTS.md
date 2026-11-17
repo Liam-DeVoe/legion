@@ -323,7 +323,8 @@ Each item below names a task and where its code is, then notes on it.
 - **The server fleet's build on the bus**: `internal/dispatch/startup/`
 
   `server.started`: one envelope on `notifications.dispatch.server.started` each time every live server process (`internal/dispatch/processes`) comes to serve one stamped commit, published once per change.
-  Any process that finds the fleet agreeing on a commit the latest row of `server_build_announcements` does not name inserts a row, under an advisory lock;
+  Any process that finds the fleet agreeing on a commit that is its own and that the latest row of `server_build_announcements` does not name inserts a row, under an advisory lock, with `tuple_kinds` the relation kinds its build writes as tuples (`refs.TupleKinds`, the list `graph_edges`' tuple arm renders; migration `20261115051200`);
+  a process whose heartbeat lapsed is no live process and can find the fleet agreeing on another build's commit, so it never announces a commit it does not serve, and a row a build of an earlier release inserted lists no kinds;
   any process whose bus is connected publishes each unpublished row, directly through the bus client rather than the outbox, with event id `dispatch-server-started-<commit>-<seq>` and `started_at` the database's time of the announcement.
   A restart on the announced commit announces nothing; a rollback announces again.
   `/healthz` reports the latest announcement's commit as `fleet_commit`.
@@ -604,7 +605,7 @@ The bound decides only which blocks the graph keys, never whether a write is tak
 a seeded spec, an upload, an `insert`, a rebuild from markdown, an accepted suggestion or a browser's edit naming a longer id is written, and the document stores, renders and versions it as any other;
 its block is no graph node (`refs.IndexBlocks`, below).
 A reference is bounded as a whole too: its target id (`text.TargetID`:
-an issue's key, a document's `<KEY or PROJECT>/<slug>` or `agent/<session id>/<slug>`, a document block's `<KEY or PROJECT>/<slug>#<block id>`, a comment's or message's block's or an ask's part's `<item kind>/<item id>#<block id>` (`ask/<ask uuid>#<part id>`), an ask's, a comment's or a message's id, a component's `<project>/<id>`), which `refs.to_id`, `block_refs.to_id` and the item block mentions' `to_id` hold in B-tree keys, is at most `text.MaxTargetBytes`, 2048 bytes (`MAX_REFERENCE_TARGET_BYTES`, `referenceTargetFits` in `@legion/contracts`), since neither a slug nor an item id has a bound of its own.
+an issue's key, a document's `<KEY or PROJECT>/<slug>` or `agent/<session id>/<slug>`, a document block's `<KEY or PROJECT>/<slug>#<block id>`, a comment's or message's block's, an ask's part's or a lens's finding's `<item kind>/<item id>#<block id>` (`ask/<ask uuid>#<part id>`, `lens/<lens uuid>#<block id>`), an ask's, a comment's or a message's id, a component's `<project>/<id>`, and the uuid of an interaction, a lens, a risk or a constraint and the slug of a lens kind, each the id the store keys that node by), which `refs.to_id`, `block_refs.to_id` and the item block mentions' `to_id` hold in B-tree keys, is at most `text.MaxTargetBytes`, 2048 bytes (`MAX_REFERENCE_TARGET_BYTES`, `referenceTargetFits` in `@legion/contracts`), since neither a slug nor an item id has a bound of its own.
 Both bounds hold only what text cites: `text.Extract` drops a reference past either (`inBound`), so the text citing it is written with no edge.
 A request's reference is read whatever its length (`text.ParseRef`):
 `?to=`, `?from=` and `GET /api/v1/block-links` read a node of any name, a block whose id is past `text.MaxBlockIDBytes` is `404 NOT_FOUND`, no node, and no route answers `400` for a reference's length.
@@ -1714,7 +1715,14 @@ an edge that survives keeps its `created_at` and `source_seq` (the `events.id` t
 Structural relations stay in the columns that own them and the `graph_edges` view (migration 0032) unions both into one typed edge relation:
 `mentions`, `child_of` (`issues.parent_key`), `blocked_by` (`issue_links`), `attached_to` (`artifacts.issue_key`), `anchored_to` (ask/comment anchors), `owned_by` (project-document asks/comments), `replies_to` (comment and message threads), `followed_by` (`ask_followers`), since migration 0121 a block's `mentions` (`block_refs`) and its `part_of` edge to its document (`document_blocks`), since migration 0142 the same two for a block of a comment or message (`comment_block_refs` and `message_block_refs`, `comment_blocks` and `message_blocks`) and a reply's `replies_to` edge to the block it names (`replies_to_block`), since migration 20261101143211 the same two for a part of an ask (`ask_block_refs` and `ask_blocks`), which a reply naming the ask answers (`ask_id` with `reply_to_block`), since migration 20261101144855 a typed block's `block[]` attribute makes `block_refs` edges of a kind named by the attribute (below the typed block rules), and since migration 20261105014808 `answers` (`comments.answers`), a reply's edge to the comment it answers;
 20261101143211 splits the reply arm by the node id `replies_to_block` holds, so one starting `ask/` is an edge to an `ask_block` and every other to a `comment_block`.
-20261101143211 and 20261101144855 each re-stated the view from 0142's arms, so the later of the two dropped the other's; 20261101183525 states it once with every arm of both, and 20261105014808 re-states that list with the `answers` arm added, so it is the arm list a later migration re-states from.
+20261101143211 and 20261101144855 each re-stated the view from 0142's arms, so the later of the two dropped the other's; 20261101183525 states it once with every arm of both, and 20261105014808 re-states that list with the `answers` arm added.
+Migration 20261109215947 re-states that list once more and is the arm list a later migration re-states from:
+each of the four arms over a kind the node and tuple store writes — a comment's `anchored_to` and `owned_by`, a block's links (`block_refs`) and its `part_of` its document (`document_blocks`) — answers only the rows of its own table whose `node_kind` is null, and one arm over the current tuples answers an edge of those kinds only while the projection row that names it carries its node (the block's `document_blocks` row for `in_document`, the pair's `block_refs` row for a link, the comment's `comments` row), so the view answers each row exactly once at every instant, during the backfill as well as after it, and a row a build of the previous release deletes, retracting nothing, answers from neither arm.
+That arm is the newest tuple of each `(from_kind, from_id, kind, to_kind, to_id)` while it asserts, rendering `in_document` as the `part_of` to the document, `legacy_source_seq` as `source_seq` and `at` as `created_at`;
+it answers no row for a node whose state is `gone`, leaves out a `part_of` whose source is a block, which is no edge of this view, and carries no other kind the store writes (`authored_by`, `delivered_to`, `held_by`, the alias tuples, `attribute_of`), each of which joins the view with the child that owns it.
+Migration 20261116091932 re-states that list once more, arm for arm: the tuple arm gains the class `store`, which consults no projection row and answers from the tuples alone `changed_by_run`, `has_kind`, `triggered_by`, `constrained_by` and `prevented_by` out of any node and `part_of` and `authored_by` out of an `interaction`, a `lens`, a `risk` or a `constraint` (dispatch://INFRA-1950);
+it is tested before the block-reference class, so a requirement block's `constrained_by` is not read as a block reference, and a comment's `authored_by` and a session's, a page's or a block's `part_of` stay out of the view.
+Migration 20261116160000 re-states it once more, with one arm more over the current tuples: every relation of the class `store` out of a finding of a lens, a block node whose id names its lens (`lens/<uuid>#<block id>`), answered with the literal from_kind `lens_block`, which the tuple arm's class `store` leaves out, so each such relation is answered once and under the kind the read registry knows a finding by.
 An issue may wait on an issue of any project through `blocked_by`, so a wait on work tracked elsewhere is recorded where the waiting issue is.
 A caller whose credential names one project is refused a target outside it with `403 PROJECT_SCOPE`, written inside the write rather than in the pre-handler project-scope check, which reads the project of the object the path names and no key in the body.
 For cycle checks an issue has two halves:
@@ -1769,11 +1777,90 @@ A mention starts at the innermost block holding its start: a list item's paragra
 A new pair takes the version and its time, and `refs.Stamp` gives it the version event's id;
 on a document's first indexing, a pair takes the `created_at` and `source_seq` of the document's own `refs` row for that target when there is one.
 
+Each of those blocks is a node of the node and tuple store beside its row, and both `document_blocks` and `block_refs` are the projection of that node's tuples (`store/migrations/20261109022248_graph_projections.up.sql`).
+`refs.IndexBlocks` writes the node first, because the foreign key on `(node_kind, node_address)` is checked inside the statement that writes the projection row, and states one `part_of` tuple per block to the innermost block that holds it — the document's own artifact address for a block no block holds — which `document_blocks.parent_block_id` projects in a statement of its own, so a block that only moved keeps its `changed_version` and `changed_at`.
+Beside it an `in_document` tuple carries the membership of each row the pass inserts afresh, dated that row's `created_at`, and a block a version no longer holds has its node's `state` stated `gone`.
+Each `block_refs` row the pass inserts or drops states one tuple under that pair's own kind, told apart from a surviving pair by `xmax = 0` in the statement's `returning` list.
+Nothing here updates or deletes a tuple, so the pass appends only where the render disagrees with what the store asserts, and a re-index of a document nothing moved appends nothing at all.
+The cause every one of them carries is the event that recorded the version, which on the request path does not exist while the pass runs: the pass returns the facts (`refs.BlockIndexWrite`) and the caller appends them under that event in the same transaction, where `refs.Stamp` already runs (`api`'s `commitArtifactVersionEvent`, its upload path and `issue_create.go`, and the settlement's own version event);
+the block-index reconciliation reads the event before the pass instead (`docs.versionEventID`) and appends them itself, and a version no event recorded takes the `source_event` sentinel 0.
+A pass whose `document_block_versions` row did not move forward writes neither a projection row nor a tuple: the fence is that row's conditional write, the first write the pass makes (`refs.standsAtVersion`).
+
+Every node of an object a project owns names that project, and a node of an object no project owns names the parties it is between (dispatch://INFRA-3862): `graphstore.Node`'s `Project` and `Parties`, two base attributes beside `visibility` and `state`, stated by the write that stores the node and projected to `graph_nodes.project_key` and `graph_nodes.parties`.
+A block's node takes its document's project (`refs.blockNode`); a comment's takes its issue's or its document's (`graphstore.CommentFacts`, `graphstore.ScopeOf`).
+An issue, a document, an ask and a message each write their node at their own create site, before their row and in the create's transaction (`graphstore.WriteUncaused`, then `graphstore.Caused` once the event exists): `api`'s `createIssue`, `storeArtifact`, `createAskFor`, `openApprovalAsk`, `docs`' `createAskBlock`, and `writeMessageNode` for every message, a broadcast's copies and a session's replies among them.
+A message on no issue is between the parties of its thread's root (`graphstore.ThreadParties`): who wrote the root, and the session it was sent to.
+A node's project never moves once stated: a write naming another fails with `graphstore.ErrProjectMoved`.
+A create route that stores an object of these kinds without its node fails `api`'s `TestEveryCreateStoresItsNode`, which calls every `POST` row of `writeClasses` and reads `graphcensus.ProjectComplete`; `envoy-dispatch census --store` prints the same classes per kind (`census: project kind=`), and `backfill-graph-store` writes the nodes and the projects of the rows written before.
+
+An ask's node holds the ask's relations and its answer, and `asks` and `ask_followers` are their projection (dispatch://INFRA-1150 R3, migrations 20261116094058 to 20261116094101).
+The ask's create writes, with its node, its `anchored_to` (the document holding its block, else the document its anchor quotes), its `owned_by` (the document an ask on no issue belongs to), its `part_of` (the document holding its block) and its `authored_by`, all dated at the row's `created_at` (`graphstore.AskFacts`), and stamps the row's `node_kind` and `node_address`.
+An ask any of whose documents' addresses is past the store's bound keeps its node but states none of its three relations, and its row names no node.
+`asks.Settle` is the one writer of an ask's answer state: it appends `answer_state` (`open`, `answered` or `resolved`, never the node's own `state`), the answer's `answer`, `selected` and `answered_at` values, its person as the far end of `answered_by` and `decided_by`, and the `resolution` value, then writes the row from them in the same transaction.
+A request's facts wait for its event (`Change.Held`, then `graphstore.Caused`); the answer, resolve and decline routes, an issue's close and reopen, the approval carry's answer and settlement's retraction and restoration all write through it, and `TestEveryWriterOfAnAnswerWritesItOnTheNode` holds each to a node and a row that agree.
+A row that names no node is written alone and left to the backfill.
+A follow (`asks.Follow`) stamps the follower row's marker in its statement and states the ask's `followed_by` to the session, dated at the row's `since`, only when it marks the row; `asks.Unfollow` holds the retraction for its event.
+Settlement claims a copy's `copied_from` to the ask it copies (`claimCopies`), and a reader takes the source's document from the source ask's `part_of`.
+A reading's check of its ask (`docs.askAnswers`) and the decisions step's count read whether an ask is answered from the node's `answer_state`, and a node holding none reads `open`.
+Every other read of an ask's state - `docs.AskColumns`, `transitionAskTx`, the lists and the Inbox - still reads `asks.state`, the projection `asks.Settle` writes beside the node.
+
+`graph_edges`' three arms over those rows - an ask's `anchored_to` and `owned_by` over `asks`, and `followed_by` over `ask_followers` - answer only the rows whose `node_kind` is null, and the tuple arm answers those relations from an ask's node only while the row that names the node carries it (for a follower, the row of that ask and that session), as it does for a comment's; it also renders an answered ask's `shaped` through the `block_refs` row marked `('ask', <ask id>)`.
+`TestTheAsksArmsAnswerEachRowOnce` holds the three arms to that, and the root's own pull request (dispatch://INFRA-1098) deletes them.
+dispatch://INFRA-1950 re-stated the view from the same text to give its tuple arm the class `store` (20261116091932) and a finding's arm (20261116160000), so neither child's re-statements hold the other's changes and the one applied last would drop the other's; dispatch://INFRA-1253's `20261116184707_issue_tree_graph_edges_both_arms` states the view with all of them, and a later re-statement starts from its text.
+
+The decisions step (`docs.DecisionStep`) brings what the release before wrote onto the ask's node.
+Its first phase runs at boot, after `schemanodes.InstallFromStore` and before the server serves, and stops the boot on a failure: the object nodes (`graphcensus.BackfillAsks` runs `backfillObjectNodes` first), then every unmarked `asks` and `ask_followers` row, stated and marked in transactions of 200 rows.
+Each such transaction takes the owner row of every ask of its batch first, once and in ascending owner key (`events.LockOwnerRows`, as `lockBlockDocuments` takes a block batch's owners), then locks its rows and reads them again, leaving out a row marked since, so it takes the store's lock order (`markInboxReadThreads`) as every writer of an answer, a follower or a document's asks does; `TestTheAskBatchesTakeEveryOwnerRowBeforeTheirRows` holds both batches to it.
+Its second phase catches up the `ask.answered`, `ask.resolved`, `ask.opened`, `ask.follower_added` and `ask.follower_removed` events that no tuple of their ask names as `source_event`, from the newest `server_build_announcements` row naming another commit, applying each event's payload under that event and skipping an event older than the node's newest tuple of the same attribute.
+A pass reads those events once, through the events' primary key, and applies each ask's in a transaction that takes the ask's owner row before the ask's row (`TestTheCatchUpTakesTheAsksOwnerRowBeforeItsRow`).
+Under those two locks it also reads the events the ask's owner appended since the pass's read, from the owner's `last_seq` that read saw, through the owner's unique `(key, seq)` index, and applies them after the ones read, so a write committed between the read and the lock is never overwritten by an older event (`TestTheCatchUpStatesAWriteCommittedBetweenItsReadAndItsLock`).
+The process keeps a high-water mark of what its passes read: after a pass on which no ask failed, every event at or below the floor that pass read from (`events.Horizon.WriterFloor`) is done, an event that needs nothing among them, and no later pass reads it again.
+The second phase runs on each tick while `processes.Live` lists a process of another build, once more on the first tick that finds one build, and again after any pass on which an ask failed.
+The step ticks at `docs.BlockIndexReconcileInterval` for as long as the process runs, since another build can go live after a tick found nothing to do.
+A tick with nothing owed and no other build live reads the live processes, the newest event and whether any block index is owed, each one probe of an index, on the shared pool, and dials no connection (`TestATickWithNothingOwedReadsNoTableWhole`).
+`graphcensus.AsksOwed` reads its tables to the end when nothing is owed, so it runs at boot, on a tick that owes a catch-up and after a tick that saw another build live, until it finds nothing: this build's create sites write their nodes and markers, so only another build writes a row it finds.
+A session advisory lock keeps two processes from running it together: a booting process waits for it, and a tick that finds it held skips.
+The count of what the restore and the conversion still owe, which `/healthz` answers as `decisions_step_owed` once a pass has run, reads whole tables, so where it read nothing it is read again only after another build was live, a phase ran, an event was appended above the writer floor read before it, or while a block index is owed and once after.
+`DISPATCH_TEST_HOLD_DECISIONS_STEP=1`, beside `DISPATCH_TEST_HOOKS=1`, keeps every phase from running, and `backfill-graph-store` runs the first phase.
+
+A node's `state` takes five values (`graphstore.NodeStates`): `live`, `gone`, `proposed`, `settled` and `overtaken`, and its `visibility` two, `project` and `author`.
+Every write of the store holds the state and the visibility of each node it writes, and each value tuple and claim of either that it states, to those values before its first statement (`graphstore.CheckAttributeValue`), so a write naming any other is refused with a `graphstore.InvalidAttributeValueError` naming the attribute, the value and the values it takes (`400 INVALID_ATTRIBUTE_VALUE` on a route) and stores nothing.
+A write asks for `author` through `graphstore.VisibilityFor`, which gives it only on a credential that proves an author and refuses it on the deployment's shared bearer, whose every holder presents one value, with `graphstore.ErrAuthorNamesNobody` (`403 AUTHOR_NAMES_NOBODY`).
+The store then takes a node at `author` only of a kind the read registry flags as one every read of which binds the visibility predicate (`nodeKind.authorOnly`), the kinds `refs`' `init` hands it once (`graphstore.AdmitAuthorOnly`);
+a node of any other kind at `author` is refused before the write's first statement with a `graphstore.VisibilityNotAdmittedError` naming the kind as the graph addresses it (`graphstore.AddressKind`, which reads a `block` whose id begins `lens/` as a `lens_block`), `400 VISIBILITY_NOT_ADMITTED`, and nothing of the write is stored.
+Only the two constructors of the kinds dispatch://INFRA-1950 adds that take `author` set the flag (`personAuthoredKind` and `credentialAuthoredKind`: an `interaction`, a `lens`, a `lens_block`, a `risk` and a `constraint`, while a `lens_kind` is always `project`), and a program that never loads `refs` admits no kind, so no kind registered before them takes a node at `author`.
+A comment is such a kind: `POST /api/v1/issues/{key}/comments` and `POST /api/v1/artifacts/{id}/comments` take an optional `visibility`, write `project` as before, and refuse `author` that way, a comment past the store's address bound included (`graphstore.CheckVisibilityAdmitted`, `api`'s `commentStored`).
+
+`api`'s `writeReasoningNodes` is the one write path of a lens, a finding, a risk and a constraint (dispatch://INFRA-1950).
+In the caller's transaction it takes the issue's row `for no key update`, then writes in one `graphstore.Write`, at `graphstore.NoEvent` and appending no event, each node `live` in the issue's project, its `part_of` to the node it stands under, the tuples the request states with it, and, where the proving credential proves an author, its `authored_by` with the author's own `person` or `session` node and alias tuples (`graphstore.AuthorFacts`).
+Each node's visibility is `graphstore.VisibilityFor` of what it asked for and the proving credential: a node at `author` is made by the proving credential, so its author's reads match it, and one at `project` by the recorded actor, the session a bearer's body names, as a comment's is;
+a node written on the shared bearer states no `authored_by` and makes no node of the session its body claims.
+`envoy-dispatch census --store` owes a `person` or `session` node to the author of each such node that holds an asserted `authored_by` (`graphcensus`'s `reasoningAuthored`).
+
+The pointer tuples of those kinds and a risk's place are held to one table of type rules (`graphstore`'s `pointerRules`, dispatch://INFRA-1950/spec#b-r-constraint-risk):
+
+| Tuple | From | To | Also |
+| --- | --- | --- | --- |
+| `has_kind` | a `lens` | a `lens_kind` | exactly one asserted at a time |
+| `triggered_by` | a `lens` | another `lens` | never the lens itself |
+| `constrained_by` | a `requirement` block, or a `lens_kind` | a `constraint` | |
+| `prevented_by` | a `risk` | a `check` block | |
+| `part_of` | a `risk` | a `lens` whose `has_kind` is `pre-mortem` | a `part_of` out of any other node is ruled by none |
+
+A block carries the supertag `block` alone, so a rule that names a block type reads the block's type off its `document_blocks` row, and a block no document holds, a finding or a removed block, is of no type.
+`graphstore.Write` and `graphstore.Caused` hold every relation they append that the table rules to its rule, in the write's own transaction, once the nodes are written and before the first tuple is appended (`checkPointers`), so a write that breaks one stores nothing, and `graphstore.WriteArms` refuses such a relation outright, since an arm reads none of the nodes a rule names.
+A breach is a `graphstore.InvalidPointerError` naming the tuple kind, its near end, its far end's kind and what the rule allows (`400 INVALID_POINTER`), and so is a lens's `has_kind` retracted with none asserted in its place.
+A second `has_kind` while the lens holds one (`graphstore.ErrLensKindAsserted`), and a retraction of a lens's `pre-mortem` kind, which a lens of that kind keeps (`graphstore.ErrLensKindKept`), are `409 POINTER_ALREADY_ASSERTED`, each with one body whatever hangs under the lens, so the refusal tells nothing of a risk a reader may not see;
+a move to `pre-mortem` is taken.
+`graphstore.Retarget` moves a pointer: it takes its near end's `graph_nodes` row `for no key update`, appends the old far end's retraction and the new one's assertion through `Write`, never moves a `part_of`, and answers a pointer the node does not hold with `graphstore.ErrPointerNotHeld` (`404 NOT_FOUND`).
+A write that states a lens's `has_kind` without writing that lens takes the lens's `graph_nodes` row `for no key update` before it reads the kind, so two such writes queue there (the lock order on `api`'s `markInboxReadThreads`).
+The table rules types alone: that a far end exists, is not `gone` and may be seen by the caller is the route's to check, through the read registry's loader for its kind, so a far end the caller may not see answers as one that does not exist.
+
 The document keeps its own `refs` rows, which the closure and the older `GET /api/v1/artifacts/{id}/references` read, but a document's mention of a target that one of its blocks holds a link of any kind to, listed or not, is listed and counted from that block alone (`heldByABlock`, in `refs.Edges` and `refs.BacklinkCounts`), so a node is counted once for each block link to it and each link shows once, where its block holds it.
 A document's own read (`?to=` or `?from=` a document reference) also lists the edges at its current blocks, each naming that block as the edge's `block`;
 its `part_of` edges are left out unless `?kind=` names them.
 A link to a block counts only while its block is a current `document_blocks` row:
-a deleted block has none, so `loadBlockNodes` (the `block` entry of `nodeLoaders`) resolves nothing and the edge drops out of `refs.Edges` and `refs.BacklinkCounts`, `refs.Outgoing` omits the target, `refs.Closure` does not follow it, and `refs.BlockLinks` drops the link.
+a deleted block has none, so `loadBlockNodes` (the `block` entry of `nodeRegistry`) resolves nothing and the edge drops out of `refs.Edges` and `refs.BacklinkCounts`, `refs.Outgoing` omits the target, `refs.Closure` does not follow it, and `refs.BlockLinks` drops the link.
 The mentions at it stay in their sources' `refs`, so a version holding the id again brings each link back.
 The older route keeps every source: `refs.ReferencedBy` lists each item and document that cites the document or one of its current blocks once, a document, comment, message or ask by its own row, an ask that cites it from an option or from the answer it was given listed as that ask (`asksCitingTheDocument`), and `refs.Outgoing` lists a block target with its document as the artifact and omits a block of a comment or a message and a part of an ask, which its shape has no field for.
 
@@ -1849,7 +1936,7 @@ The API names the node kind `block`, id `<item kind>/<item uuid>#<block id>` (`c
 As a document block's, only the node a reference read names carries `text`, its whole text (`refs.CurrentItemBlockText`:
 a comment block's latest `comment_block_texts` row, a message block's slice of the stored body);
 an edge's block node carries none, and the edge its stored excerpt.
-`graph_edges` and `refs.to_kind` store it under the kind `comment_block` or `message_block` (`refs.TargetOf`, `ItemKind.BlockKind`), both of which `nodeLoaders` resolves through `loadCommentBlockNodes` and `loadMessageBlockNodes` to a `block` node:
+`graph_edges` and `refs.to_kind` store it under the kind `comment_block` or `message_block` (`refs.TargetOf`, `ItemKind.BlockKind`), both of which `nodeRegistry` resolves through `loadCommentBlockNodes` and `loadMessageBlockNodes` to a `block` node:
 a build without item blocks skips both as unknown kinds (`resolveNodes`) where it would count a `block` row and resolve it through `document_blocks`, so during the roll, and after a rollback, it neither doubles a count nor fails a read, and lists the item's own edge as before, its `heldByABlock` reading no item's blocks.
 An edge at an item block counts only while a current revision holds the block, as at a document's.
 `refs.Closure` reaches an item block's links through its item's own `refs` rows, so the member's `via` is the item, and a reference to an item block, as to its item, reaches no document.
@@ -1910,17 +1997,19 @@ The message route reads under `GET /api/v1/messages/{id}`'s rule (`readableMessa
 A read never indexes: an item owed an index, indexed from another body than it stores, or whose stored body the parser now splits otherwise answers `indexed: false` and no blocks.
 The dashboard's comment editor (`MentionComposer`, `block-spans.ts`) reads the comment's route when an edit opens, follows each block's span through every edit of its text (a block a cut or a drag took out is held and comes back where the same text is pasted or dropped), and saves `{body, base_revision, blocks}`, or `{body}` alone when the route answered `indexed: false` or failed.
 
-Every node carries six facts, whatever its kind, always present on the wire (`model.GraphNode`):
+Every node carries eight facts, whatever its kind, always present on the wire (`model.GraphNode`):
 `made_by` and `made_at`, who made it and when;
 `changed_by` and `changed_at`, who last changed its own text or fields and when, its maker while nothing has changed it since;
 `parent` (`model.NodeParent`), the node it belongs to, by `kind`, `id` (the parent node's own id:
 an artifact's uuid, an issue's key, a component's `<project>/<id>`) and `ref`, absent for a parent with none (a session, a direct message, a document no project owns);
-and `parent_version`, the version of the parent it belongs to.
-A fact Dispatch never recorded is empty: `made_by` and `changed_by` are then `[]`, never null, and the others null.
+`parent_version`, the version of the parent it belongs to;
+and `state` and `visibility`, the node state and the visibility the node and tuple store holds for the node (`graphstore.NodeStates`; `project` or `author`), which are `live` and `project` for a node the store holds no row of (`refs.StoredStateAndVisibility`).
+A fact Dispatch never recorded is empty: `made_by` and `changed_by` are then `[]`, never null, and `made_at`, `changed_at`, `parent` and `parent_version` null;
+`state` and `visibility` always hold a value.
 `refs.storedActor` reads a single-actor column (a creator, an author, an event's actor, an edit's editor) and `refs.storedActors` a list column (a version's authors):
 SQL NULL (a left join that found no row, an edit that names no editor) and JSON null are nobody recorded, and any other value that does not decode as a `model.Actor` (a list of them) fails the read.
 `GET /api/v1/references` carries them on `node`, each `edges[].node` and each `edges[].block`, and `GET /api/v1/block-links` on `from`, `to` and both blocks of each link.
-Each entry of `nodeLoaders` reads its own kind's (`refs/graph.go`).
+Each entry of `nodeRegistry` reads its own kind's, and carries that kind's visibility predicate beside the loader (`refs/graph.go`).
 An issue is made by `issues.created_by` at `created_at`, last changed by the actor of its latest `issue.created`, `issue.updated` or `issue.closed` event at that event's time, and part of its parent issue.
 An artifact (a document, a file, a picture) is made by `artifacts.created_by` at `created_at`, last changed by the authors of its latest version at that version's time, and part of its issue, else of the session whose conversation owns it, else (a project document) of no node.
 A message is made by its author, and last changed by its maker when it was made, since no route edits one;
@@ -1967,6 +2056,14 @@ a component with no row is made and changed now, a row with a null digest gains 
 It then deletes each row of the project whose component no source projects any more (`architecture.DeleteOrphanComponentFacts`), which the source delete route also runs after its cascade, so a component retired and imported again later is made again.
 An earlier build's import during the roll leaves `component_facts` alone, so recorded times survive it, and a component that build imports first has no row until this build's next import records it.
 
+A node's `kind` is one of the kinds `nodeRegistry` holds, and the OpenAPI document closes `GraphNode.kind` over them (`api`'s `TestTheGraphNodeKindEnumIsTheRegistrysKinds`), so a kind a later build registers is a member that build adds;
+a reader that meets a kind it does not know skips that node rather than failing on it.
+A node at `project` is read by every reader the read's other rules let read it, and a node at `author` by its author alone, so only its author ever reads `visibility` `author`, and a reader whose credential proves no author (the deployment's shared bearer, `graphstore.ProvesAuthor`) reads no author-only node at all.
+A kind's predicate compares that author one of two ways (`nodeVisibility.compares`): the whole credential, the four fields `graphstore.AuthorIsSQL` compares (`kind`, `id`, `owner`, `service`), for every kind dispatch://INFRA-1149 registers and for an `interaction`;
+or, for a `lens`, a lens's finding (`lens_block`), a `risk` and a `constraint`, the person the credential proves where the node's `made_by` names a person — a user's login or a token's owner, by `model.CanonicalLogin` — and the whole credential where it names none (`graphstore.AuthorPersonIsSQL`).
+One argument binds both (`refs.VisibilityArg`, `graphstore.ActingCredential`): the credential's four fields and, beside them, `person`, which `AuthorIsSQL` takes off before it compares.
+So on those four kinds a person's personal token reads what that person's cookie wrote and another person's token reads none of it, and on every kind a node whose `made_by` names nobody is read by nobody.
+
 What no block-aware write indexed, the server indexes itself.
 Migration 0121 marks every document owed;
 0122's trigger marks a document owed on every markdown version any build inserts, which a block-aware writer's own index settles later in the same transaction;
@@ -1976,7 +2073,9 @@ Each of those three triggers sets `windows_owed_at` beside `owed_at` (migration 
 An index of an item's blocks clears `owed_at` alone and writes no window, so every item an index records stays listed for the window arm until that arm writes the windows those blocks stand in.
 A document's own marker is `document_block_versions.windows_owed_at` (migration 20261108070000, backfilled by 20261108070100), set by the version write in the transaction that records the blocks and by 0122's trigger for a version any older build writes, cleared by `refs.WriteDocumentWindows` and read by `refs.DocumentsOwedWindows` through a partial index on it.
 `cmd/dispatch` runs `docs.Service.RunBlockIndexReconciliation` under the lease `block-index`:
-each tick indexes up to 20 owed documents, by a keyset cursor, up to 200 owed items, oldest first, then up to 200 comments, messages and asks owed their own blocks, oldest `owed_at` first (`refs.OwedItemBlocks`, one arm per kind), and last up to 200 sources owed an index with the whole grammar, oldest first, every 2 s while a batch is full and every 30 s after, and logs `dispatch: block index` with `documents=`, `items=`, `item_blocks=`, `texts=`, `owed_documents=`, `owed_items=`, `owed_item_blocks=`, `owed_texts=` and `live_ahead=`.
+each tick indexes up to 20 owed documents, by a keyset cursor, up to 200 owed items, oldest first, then up to 200 comments, messages and asks owed their own blocks, oldest `owed_at` first (`refs.OwedItemBlocks`, one arm per kind), and last up to 200 sources owed an index with the whole grammar, oldest first, every 2 s while a batch is full and every 30 s after, and logs `dispatch: block index` with `documents=`, `items=`, `item_blocks=`, `texts=`, `owed_documents=`, `owed_items=`, `owed_item_blocks=`, `owed_texts=`, `live_ahead=`, `oldest_owed_at=` and `oldest_owed_age_seconds=`.
+The last two are the backlog: no column dates a debt (`document_block_versions` is `(artifact_id, version)` and no more), so the oldest debt is dated by the write that owed it — the `created_at` of the latest markdown version the document holds, or its own `created_at` where it holds none, which is a document no tick can ever settle.
+The line is written when a count or the oldest debt changes, never as that debt ages, so a stuck backlog costs one line and not one every 30 s; `envoy-dispatch census --store --sizing` reads the same two figures straight from the database (`graphcensus`'s `census: sizing backlog ` lines).
 It reads a document (`TextWithBlocks`) with no transaction held, then, under the document's owner lock, indexes it only while its latest version and its owed mark are the ones it listed, taking the version's time and the `source_seq` of the event that recorded the version (`stampVersionEvent`).
 A document that owes a settlement and whose live markdown differs from its latest version's is skipped, counted `live_ahead` and left owed, whatever its issue's status.
 A closed issue's document settles as an open one's does, and each settlement indexes the version that it writes, so a block is first indexed at the first version that holds it.
@@ -2095,7 +2194,19 @@ So every document this accepts draws in a browser as it reads here, and a list o
 The browser counts no footnote definition, which only lets it draw deeper than this accepts, never shallower.
 
 Typed document blocks are declared only in `internal/dispatch/pmdoc/schema/blocks.json`.
-The embedded file is the server-owned schema, `GET /api/v1/schema/blocks` returns its exact JSON, and the fixture generator reads that checked-in file.
+The embedded file seeds the store's type nodes, and the fixture generator reads that checked-in file; `GET /api/v1/schema/blocks` serves the schema the server built from those nodes (`pmdoc.SchemaJSON`), not the file's own bytes.
+The store holds each of those types as nodes: one `supertag` node per type and one `attribute` node per attribute, tied to its type by an `attribute_of` tuple (migration `20261109051232`, which seeded them from this file).
+An attribute node's id is `<supertag>/<store name>` and it carries that store name as `store_name`: the kind of the tuple that states one of the attribute's values, which `schemanodes.StoreName` gives and which is never a base attribute (`visibility`, `state`) every node carries.
+So `ask`'s `state` is the node `ask/answer_state` while documents, the editor and the served schema still call it `state`, and `TestNoAttributeNodeStoresItsValuesUnderABaseAttribute` fails on an attribute node whose store name is a base attribute.
+The file's `nodes` and `marks` are the Proof schema's, which each build carries in its own code, so the store holds no node for them: the server installs the store's types beside the build's own nodes and marks (`pmdoc.Install`).
+A type's or an attribute's `since` and `creatable_since` are values its node carries and the tuples that state them, where the file gives them (migration `20261115130000_graph_supertags_element_versions`).
+The server installs the schema it builds from those nodes (`pmdoc/schemanodes`), so it serves the file's schema only while the store's type migrations match the file.
+A change to `blocks.json` therefore ships with a store migration that writes the node of each type or attribute the change adds or alters and moves every block type's supertag node to the file's new version;
+that migration appends each value it states, the moved version included, as a `value` tuple at the `source_event` sentinel 0, since a node row's attributes are the projection of its tuples, and `TestEveryBlockTypeIsASupertagNodeAndValidationReadsIt` fails on a value the row carries and no tuple states.
+Migration `20261113230000_graph_supertags_check_ci_check`, which added `check`'s `ci_check` at version 4, is the example.
+Without one, `TestEveryBlockTypeIsASupertagNodeAndValidationReadsIt` fails, and a binary built for the new version installs the old one.
+That test runs every type migration a second time (`typeMigrations` in `cmd/dispatch/supertag_nodes_test.go`), so a new one joins that list.
+A store above the version a build was made for, which the next release's type migration leaves while the previous build still serves, is installed by that build at its own version, with the elements whose `since` is at or below it and nothing else (`pmdoc.Install`); the build keeps serving, and neither its boot nor `/healthz` reads the store's version as a failure (`TestAnOlderBuildServesOverANewerStoreSchema`).
 A typed block is CommonMark generic-directive syntax: `:::name{#block-id key="value"}` followed by block children and a closing line of colons.
 The renderer writes the id so that both parsers read it back as the tree holds it, whatever id a browser set (`pmdoc.TypedBlockIDAttribute`):
 `#block-id` when the browser editor's parser reads all of it as that shortcut and it holds no `&` - no space, tab or line ending, `#`, `.` or `}`, which end the shortcut, and no `"`, `'`, `<`, `=`, `>` or backtick, which make the editor read the line as no directive - and `id="…"` otherwise, its `&`, `"`, line feeds and carriage returns written as character references (`a b` is written `id="a b"`, `q:1` `#q:1`);
@@ -2349,40 +2460,60 @@ no markdown makes such an href, so no write is refused.
 An `&` that opens none, as in `&foo;` or `AT&T`, is written as it is.
 
 A typed block renders its `blockId`, defaulted attributes, and every explicitly set optional attribute.
-An attribute's kind is `string`, `bool`, `enum`, `string[]`, `block[]`, `actor` or `timestamp` (`validateAttributeSchema`).
+An attribute's kind is `string`, `bool`, `enum`, `string[]`, `block[]`, `actor`, `timestamp`, `ask` or `days` (`validateAttributeSchema`).
+An `ask` attribute names one ask of an issue, written whole as `dispatch://<ISSUE>/ask/<id>`, and a part of an ask (`…#b-<id>`) is refused with a reason of its own (`validateAskReference`).
+A `days` attribute holds a duration in days as its author wrote it: a positive decimal with at most two digits after its point, no sign, no exponent and no leading zero but the one before a point (`0.25`, `1`, `2.5`; `0`, `1.234`, `01`, `.5` are refused, `validateDays`, proof-editor's `daysValueProblem`).
+An attribute declared `markdown: false` (true when the schema names none) is never rendered, and markdown that names it is read as if it did not (`BlockAttributeSchema.InMarkdown`), since its value lives on the block's node:
+`ask`'s `invalid` and a decision's `decided_by`, `kept_by` and `kept_text_sum` are such.
+A type declaring `parents` stands only at the end of a block of one of them, after that block's own content, and in no node group (`pmdoc.TypedContent`, `isBlockNodeType`);
+the browser editor appends `<name>*` to each parent's content expression (proof-editor's `typedBlockContent`).
 Parsing mints an omitted id, while live document reads and writes validate each node against its schema content rule.
 Schema changes are additive: add a type, add a defaulted attribute, add an enum choice, or widen a content rule.
 Tightening content, removing or renaming a type or attribute, or requiring a new attribute requires a document migration and version bump.
 
-The shipped types are `callout`, `ask`, `requirement`, `plan_task` and `check` (`pmdoc/schema/blocks.json`, version 4, which added `ci_check` to `check`), the last three each holding `paragraph+`:
-`requirement`, one requirement of an issue's spec, with no attribute of its own;
-`plan_task`, one task of a plan, with the `block[]` attributes `serves` (the requirements it serves) and `needs` (the tasks of the same plan it needs first);
-and `check`, one thing that must be proved, with `serves`, the enum `surface` (`browser`, `cli`, `api`), the strings `run`, `negative_control` and `ci_check` (the GitHub check run that proves the check), and the enum `when` (`before_merge`, `after_merge`, `default_branch`, defaulted `before_merge`).
+The shipped types are `callout`, `ask`, `requirement`, `plan_task`, `check`, `decision`, `reading` and `criterion` (`pmdoc/schema/blocks.json`, version 6, which added `criterion`, `parent`, `requirement`'s `serves`, `plan_task`'s `size`, widened `plan_task`'s `needs` and gave `block[]` its `items`), `requirement`, `plan_task`, `check` and `criterion` each holding `paragraph+`:
+`requirement`, one requirement of an issue's spec, with the `block[]` `serves` (the criteria and requirements it serves) and `parent`;
+`plan_task`, one task of a plan, with the `block[]` attributes `serves` (the requirements it serves) and `needs` (the plan tasks of its issue or of an issue above it it needs first, and the issues under its issue it waits on, as `dispatch://<KEY>`), the `days` `size` (absent where its author gives none) and `parent`;
+`check`, one thing that must be proved, with `serves`, the enum `surface` (`browser`, `cli`, `api`), the strings `run`, `negative_control` and `ci_check` (the GitHub check run that proves the check), the enum `when` (`before_merge`, `after_merge`, `default_branch`, defaulted `before_merge`) and `parent`;
+`decision`, an agent's decision, holding `block+`, with the enum `uncertainty` (`low`, `medium`, `high`, no default), the string `uncertainty_reason`, the `block[]` `shaped` with no targets, the `ask` attribute `from_ask`, the bool `replaced` (defaulted `false`) and the server's `decided_by`, `kept_by` and `kept_text_sum`, which markdown never carries;
+`reading`, an agent's reading of a decision, holding `paragraph+`, whose `parents` are `decision` and `ask`;
+and `criterion`, what a person wants to be able to do, with `parent` alone.
+`parent` (`pmdoc.ParentAttribute`) places a node in its issue's tree where its rendering cannot: a `block[]` with no targets and the `items` ask, comment and message, holding at most one reference, because a node has one parent (`parentCount`, proof-editor's `parentProblem`); it is the one attribute whose items name the conversation's kinds.
+An item kind an attribute every build has read takes from a later version carries its own versions (`item_versions`, as an enum's choices carry `choice_versions`): `needs`' `issue` is read and created from version 6, so it is an element of the manifest (`pmdoc.ItemElement`, counted by `DocumentSince` and dropped by `asOfVersion` below its version), the editor writes one only from that version (proof-editor's `creatableValue`), and a server's write introduces one only while every live process reads it (below), since a build of version 5 reads such a value as outside the schema rather than as newer content.
+A reading inside an ask with no answer (its `asks` row, `askAnswers`) is refused on every write that takes markdown, `400 INVALID_ASK_BLOCK` naming the reading and `dispatch://KEY/ask/<id>` (`refuseReadingsWithoutAnswers`), and settlement flags such an ask block `invalid` with the same reason (`flagReadingsWithoutAnswers`).
 A document holding them is an ordinary document: the role its name gave it (`verification`, `plan`) says which blocks a reader expects, and nothing refuses a `check` block in another document.
 A check whose `ci_check` names a run carries no `run`, keeps `when` `before_merge`, names its `negative_control` and holds no recorded result (`docs.CICheckRuleIn`), and no rule of `blocks.json` can say so, since an attribute there declares only itself:
 an API write that adds a check block, or changes a check's `ci_check`, `run`, `when` or `negative_control`, so that it breaks one is `400 INVALID_CI_CHECK` (`refuseCICheckBlocks`), and settlement repairs what a browser writes (below).
 
-A `block[]` attribute points at blocks; the shipped ones are a plan task's `serves` and `needs` and a check's `serves`.
-Its value is the empty string (no pointers) or canonical block references joined by exactly one space, none leading or trailing, no other whitespace and none repeated (`pmdoc.ParseBlockPointerValue`, and the renderer joins them with one space);
+A `block[]` attribute points at blocks; the shipped ones are a plan task's `serves` and `needs`, a check's and a requirement's `serves`, a decision's and an ask's `shaped`, and the `parent` of a criterion, a requirement, a check and a plan task.
+Its value is the empty string (no pointers) or references joined by exactly one space, none leading or trailing, no other whitespace and none repeated (`pmdoc.ParseBlockPointerValue`, which takes the attribute's `items`, and the renderer joins them with one space);
 anything else is refused, never normalised.
-A canonical reference is one `text.FormatBlockRef` writes back byte for byte (`text.CanonicalBlockRef`):
+A reference to a block of a document is canonical where `text.FormatBlockRef` writes it back byte for byte (`text.CanonicalBlockRef`):
 `dispatch://<ISSUE>/spec#b-<id>` for a block of an issue's primary document, `dispatch://<ISSUE or PROJECT>/artifact/<slug>#b-<id>` for one of any other document (a project's document whose slug is `spec` included), the id as `text.EncodeBlockID` writes it, optionally pinned `@v<N>`;
 so lower-case or needless percent-encoding, an issue's `artifact/spec` and anything trailing the reference are refused.
-A part of an ask, or a block of a comment or a message (`text.Ref.Item`), is refused with a reason of its own, which names the kind with the article it takes (`"…" is a block of an ask: …`, `of a comment`, `of a message`):
-the attribute points only at blocks of documents, whose types its targets limit.
-Go and `@legion/contracts`' `parseBlockPointerValue` are both tested against `DISPATCH_BLOCK_POINTER_VALUES`, whose Go copy is `pmdoc/testdata/block-pointer-values.json`.
+An attribute's `items` (`ask`, `comment`, `message`, `issue`; only a `block[]` carries them, each named once) admit more:
+an issue's ask, comment or message, or a block of one, written as `text.FormatItemBlockRef` writes it (`text.CanonicalItemBlockRef`), `dispatch://<ISSUE>/<kind>/<full lower-case uuid>`, with `#b-<id>` for a block and never pinned, since a parent is a place and not a quotation (a project document's item, a uuid prefix or an upper-case uuid is refused);
+and an issue, written exactly `dispatch://<ISSUE>`.
+A part of an ask, or a block of a comment or a message (`text.Ref.Item`), of a kind the attribute does not declare is refused with a reason of its own, which names the kind with the article it takes (`"…" is a block of an ask: …`, `of a comment`, `of a message`), and so is one of a kind it declares written otherwise.
+Go and `@legion/contracts`' `parseBlockPointerValue` are both tested against `DISPATCH_BLOCK_POINTER_VALUES`, each row read under the `items` it names, whose Go copy is `pmdoc/testdata/block-pointer-values.json`.
 The attribute's name is the kind of the edges it makes:
 it matches `^[a-z][a-z0-9_]*$` and is none of `model.GraphEdgeKinds`, and two types declaring one name make one edge kind (`pmdoc.LinkKinds`, which `GET /api/v1/references?kind=` accepts beside the structural kinds; any other name has no edges there and is listed in the answer's `unknown_kinds`, which the read still answers `200` with the edges of the kinds it knows).
-Its `targets`, which no other kind may carry, limit the types of the blocks it points at, each a type the schema declares or a built-in block the link graph holds (`builtInBlockNode`:
-not a list item or a table's row or cell); absent or empty, it points at any block.
+Its `targets`, which no other kind may carry, limit the types of the blocks of documents it points at, each a type the schema declares or a built-in block the link graph holds (`builtInBlockNode`:
+not a list item or a table's row or cell); absent or empty, it points at any block of a document.
+They limit no item its `items` admit.
 Its default is absent or `[]`.
 
-Three rules enforce `targets`.
-An agent's or API write is refused when a pointer it introduces names a block the attribute may not name (`pmdoc.CheckBlockPointers`, called by `docs.refuseBlockPointers` from `applyLive`, `SeedText`, and `RebuildDocument` given markdown):
+Three rules enforce `targets` and `items`.
+An agent's or API write is refused when a pointer it introduces names a target the attribute may not name (`pmdoc.CheckBlockPointers`, called by `docs.refuseBlockPointers` from `applyLive`, `SeedText`, and `RebuildDocument` given markdown); a pointer of an attribute declaring neither is never looked up:
 a pointer is introduced when the tree before the write holds no pointer with the same typed block id, typed block type, attribute and reference (a new pointer, a changed value, or a block retyped into a type declaring the attribute, whatever the type before declared under that name), and every pointer is when there is no such tree (a new document, a repair of a tree outside the schema, a rebuild whose latest version does not read back).
 `refs.BlockTargets` reads each target as the block index will hold it, with the writing document's own issue and that issue's ancestors (`refs.IssueAncestors`, the server's one recursive `child_of` walk, bounded by the same depth cap as every other issue walk):
-a target in the written document from the blocks the write's render leaves (the first holder of a repeated id, as `refs.IndexBlocks` takes it), any other from its current `document_blocks` rows, each with its document and that document's issue (one query for all of a write's introduced pointers).
-The write is refused when the pointer names a block no document holds, a block of a type the attribute's targets do not allow, a block of an issue that is neither the writing document's own issue nor an ancestor of it, a block of another document where a project holds the writing document and no issue does, or a block of another document under `needs`, which orders the tasks of one plan and so points only inside its own document.
+a target in the written document from the blocks the write's render leaves (the first holder of a repeated id, as `refs.IndexBlocks` takes it), any other from its current `document_blocks` rows, each with its document and that document's issue (one query for all of a write's introduced pointers);
+an ask, a comment or a message, or a current block of one, with its item's own issue and whether it is a conversation node at the write's time (`refs.IsConversationNode`, dispatch://INFRA-1253/spec R2: an ask always, a comment or a message a person wrote or one in a thread a person wrote in, never a message of the Legion daemon's `legion-daemon:<PROJECT>` session; `refs.ConversationNodes` lists an issue's);
+and an issue by its key, with the issues under the writing issue (`refs.IssueDescendants`).
+The write is refused when the pointer names a block no document holds, a block of a type the attribute's targets do not allow, a block of an issue that is neither the writing document's own issue nor an ancestor of it, a block of another document where a project holds the writing document and no issue does, or a block of another document under an attribute scoped `document` (no shipped attribute is);
+an item or item block no row holds under the issue its reference spells, one of an issue neither the writing issue nor above it, or one that is no conversation node;
+and an issue no row holds, or one not under the writing issue;
+and an item of a kind its attribute gives a `creatable_since` above 1 while the processes serving the database cannot all create it (`BlockWriting.Creatable`, which `docs.refuseBlockPointers` answers with `schemaFleet.creatable`, the bound a page is admitted writable under), in the words of `refuseUncreatable` (`this Dispatch build reads item "issue" of attribute "needs" of typed block "plan_task" but cannot write it yet. …`); a pointer the document already holds is never refused for it.
 The refusal is `400 INVALID_OP` on `attributes` on the edit route and `400 INVALID_MARKDOWN` on every other;
 a pointer the write leaves unchanged is never refused.
 A browser's write and the block-index reconciliation are never refused, and store the pointer as any other.
@@ -2390,6 +2521,8 @@ Every block-aware read lists a pointer's edge only while its target has an allow
 each `block_refs` row a pointer writes carries the attribute's targets as `to_types` (null:
 no limit), and the `graph_edges` block arm, `readEdgeRows`' document `?from=` arm and `refs.BlockLinks` list a row only while `block_ref_listed(to_types, to_id)` holds, true when no current `document_blocks` row of the target has a type outside `to_types` (migration 20261101144855).
 Retyping a target hides or shows the edge with no rewrite of the citing document, a pinned pointer is limited by its target's current type, and the index refreshes `to_types` on every row it keeps, so a change of an attribute's targets reaches a document's rows at its next index (a version write, or `rebuild-refs`).
+For a row that names its node the store's own arm of `graph_edges` makes the same test over the same links, with the targets the attribute node declares now in place of the `to_types` the row carries (`block_pointer_targets`, migration 20261109215947), the block's own type read from its `document_blocks` row as the target's is:
+a change of an attribute's targets then reaches every link of that attribute at once, with no pass over documents nobody edits.
 The editor's typed-block commands refuse what they can see:
 a value that is not canonical, and a pointer to a block of their own document of a disallowed type (`packages/proof-editor/AGENTS.md`).
 
@@ -2541,7 +2674,7 @@ A later answer is a new part, so a reference to the answer it replaced reads `re
 `ask_blocks`, `ask_block_texts`, `ask_block_refs` and `ask_block_state` hold them as a comment's four tables hold its blocks, `made_by` the answerer on an answer part and null on the question and the options, which the ask's author made (`askPartMakers`);
 an ask has no body to hash, so the state row's `body_sha256` is the hash of its parts' identity hashes (`askPartsSum`).
 A part's node is kind `block`, id `ask/<ask uuid>#<part id>`, its `parent` the ask and its `changed_version` the revision of the ask's parts its text last changed in;
-`graph_edges` and `refs.to_kind` store it under the kind `ask_block` (`ItemKind.BlockKind`), which `nodeLoaders` resolves through `loadAskBlockNodes` and a build without ask parts skips as an unknown kind.
+`graph_edges` and `refs.to_kind` store it under the kind `ask_block` (`ItemKind.BlockKind`), which `nodeRegistry` resolves through `loadAskBlockNodes` and a build without ask parts skips as an unknown kind.
 Its reference is the ask's with `#b-` and the part id - `dispatch://KEY/ask/<id>#b-<part>`, or `dispatch://PROJECT/artifact/<slug>/ask/<id>#b-<part>` on a project document's ask - pinned with `@v<N>` to a revision of the ask's parts, which reads the part as that revision held it (`refs.ItemBlockAt`, `refs.RemovedItemBlockNode`).
 A part no current revision holds is `404 NOT_FOUND` `no part "<part>" in ask <id>` (`itemBlockNoun`; a comment's and a message's say `block`), and a pin past the ask's current revision or to a revision that did not hold the part says which.
 The part id of each option and of the answer, with the ask's `revision`, is batched onto an ask's detail read, its owner's ask list, the Inbox and every ask payload the events route serves (`attachAskPartIDs`, read beside the backlink count;
@@ -2944,7 +3077,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
 - Every ask read also carries `referenced_by_count`:
   how many edges point at that ask from a node kind this build reads (`refs.BacklinkCounts` unions only the arms of `graph_edges` that can point at a node of the kind asked for — the view's own `to_kind` is a parameter, so reading the view itself makes a custom plan plan every arm on every call — and reads each of those arms through its own index;
   the counts are the view's, arm for arm, and `refs/backlink_counts_test.go` holds them to it arm by arm, failing when the view gains an arm the count does not declare, while a node kind with no declared arms is refused rather than counted low;
-  it binds the kinds `nodeLoaders` resolves, so a newer build's row is left out of the count as it is out of the list;
+  it binds the kinds `nodeRegistry` resolves, so a newer build's row is left out of the count as it is out of the list;
   a document's, comment's, message's or ask's mention that one of its blocks holds counts once for each citing block, in place of the item's own row, `heldByABlock`;
   an edge at a current part of the ask counts as the ask's, since the ask's own read lists it, so a comment citing one of its parts counts 1), counted for the whole page in one grouped query (`refs.QueueBacklinkCounts` through `queueAskDetails`, `api/ask_rows.go`, beside that page's identity events and the part ids of its asks' options; `attachAskReadFields` counts the one ask `GET /api/v1/asks/{id}` answers) rather than one request per card.
   It is on `GET /api/v1/inbox` rows, `GET /api/v1/asks/{id}`, `GET /api/v1/issues/{key}/asks`, `GET /api/v1/artifacts/{id}/asks`, and the issue detail's `open_asks`;
