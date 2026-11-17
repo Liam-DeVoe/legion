@@ -1610,6 +1610,13 @@ func (b *Broker) revokeUnder(ctx context.Context, authority *brokerclient.Author
 	}
 	req.Header.Set("Proof", compact)
 	if err := b.do(req, []int{http.StatusNoContent, http.StatusNotFound}, nil); err != nil {
+		var refused *BrokerError
+		if !errors.As(err, &refused) {
+			// A failed exchange names its request URL, and this one ends in the id the caller
+			// gave, which for `unenroll --enrollment` is typed and was never accepted by the
+			// broker: a credential pasted in its place would print. The route prints without it.
+			err = &routeFailure{http.MethodDelete + " " + b.URL.String() + "/v1/enrollments/(the enrollment id, not printed): " + b.URL.Cause(err).Error(), err}
+		}
 		err = reach.settle(err)
 		if cred == nil {
 			return err
@@ -1618,6 +1625,16 @@ func (b *Broker) revokeUnder(ctx context.Context, authority *brokerclient.Author
 	}
 	return nil
 }
+
+// routeFailure is a failed request named by its route, with the part of its URL that a caller
+// typed left out, unwrapping to the failure so errors.Is and errors.As still classify it.
+type routeFailure struct {
+	text string
+	err  error
+}
+
+func (e *routeFailure) Error() string { return e.text }
+func (e *routeFailure) Unwrap() error { return e.err }
 
 // do sends req and decodes the broker's answer. A failed exchange - the request, or the read of
 // its answer - goes through the address's Error (brokeraddr.Address.Error). A refusal is a
