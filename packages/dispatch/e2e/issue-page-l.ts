@@ -168,19 +168,22 @@ export function endPlace(
   }, lastRow);
 }
 
-/** Scrolls the page so the outline's end stands in the middle of the box at the foot: where the
- *  mark would be with no box, which the box covers. The mark is drawn moved down by the box's
- *  height (`slots/foot.tsx`), so that place is the mark's drawn top less that height. */
-export async function scrollEndUnderBox(page: Page): Promise<void> {
-  await page.evaluate(() => {
-    const end = document.querySelector("[data-outline-end]");
+/** Scrolls the page so the outline's last row, `lastRow`, ends in the middle of the box at the
+ *  foot: under the box, where the reader cannot read it. The place is the row's own, never the
+ *  read mark's: where the mark is drawn against the box (`slots/foot.tsx`) is what a row reads
+ *  after this, so it is no measure of where to scroll. */
+export async function scrollEndUnderBox(page: Page, lastRow: string): Promise<void> {
+  await page.evaluate((id) => {
+    const last = document.querySelector(`[data-issue-page] [data-node-row][data-node-id="${id}"]`);
     const box = document.querySelector('[data-testid="issue-composer"]');
-    if (end === null || box === null) throw new Error("the page draws no read mark or no box");
+    if (last === null || box === null) throw new Error("the page draws no last row or no box");
     const boxTop = box.getBoundingClientRect().top;
     const height = window.innerHeight - boxTop;
-    const unmoved = end.getBoundingClientRect().top - height;
-    window.scrollBy({ behavior: "instant", top: unmoved - (boxTop + height / 2) });
-  });
+    window.scrollBy({
+      behavior: "instant",
+      top: last.getBoundingClientRect().bottom - (boxTop + height / 2),
+    });
+  }, lastRow);
 }
 
 // ---------------------------------------------------------------------------------------------

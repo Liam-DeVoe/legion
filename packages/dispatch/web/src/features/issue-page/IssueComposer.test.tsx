@@ -34,7 +34,7 @@ import {
   type ReplyItem,
   useOutlineWriter,
 } from "./outline-writer";
-import { CONTROL_LABELS, type NodeType } from "./page-words";
+import { ANSWER_LINES, CONTROL_LABELS, type NodeType } from "./page-words";
 
 /**
  * The new issue page's one box to write in (dispatch://INFRA-3949 R1 to R7 and R11), drawn as
@@ -288,14 +288,18 @@ function Page({
 
 /** The page signed in as the reader, every read the writer and the box make answered from
  *  `reads` before it mounts. `redraw` moves the box to another place on the same mount: a view
- *  turned on or off, a document opened, the issue closed. */
-function renderPage(place: Place = {}, root: TreeNode = outline()) {
-  const client = new QueryClient({
+ *  turned on or off, a document opened, the issue closed. A page drawn with an earlier page's
+ *  `client` is that page mounted again in the same tab, its held sends with it. */
+function renderPage(
+  place: Place = {},
+  root: TreeNode = outline(),
+  client = new QueryClient({
     defaultOptions: {
       mutations: { retry: false },
       queries: { retry: false, staleTime: Number.POSITIVE_INFINITY },
     },
-  });
+  })
+) {
   client.setQueryData(["whoami"], { kind: "user", login: READER });
   client.setQueryData(["asks", KEY], reads.asks);
   client.setQueryData(["comments", KEY], reads.comments);
@@ -539,6 +543,8 @@ test("under a view or a document the box is hidden until the reader asks to writ
   await page.press(user, "comment-1", "r");
   await waitFor(() => expect(writeField()).toHaveFocus());
   expect(composerBox()).not.toHaveAttribute("hidden");
+  // The Reply keeps the words the box held: it is the page's one draft.
+  expect(writeField().value).toBe("Half a thought");
   await user.keyboard("{Escape}");
   await waitFor(() => expect(composerBox()).toHaveAttribute("hidden"));
 
@@ -554,6 +560,49 @@ test("under a view or a document the box is hidden until the reader asks to writ
   expect(composerBox()).not.toHaveAttribute("hidden");
   await act(async () => out.resolve(commentRecord("comment-9", ALICE, "Sent at rest")));
   await waitFor(() => expect(composerBox()).toHaveAttribute("hidden"));
+});
+
+// The reviewer's finding 4593511272: the box is the page's one draft at every width, so a Reply
+// keeps what the reader has typed in it: here a comment half-typed at rest, under the target the
+// Reply names.
+test("a Reply keeps a comment half-typed in the box at rest", async () => {
+  const user = userEvent.setup();
+  const page = renderPage();
+  await user.click(writeField());
+  await user.keyboard("Half a thought");
+  await page.press(user, "comment-1", "r");
+  await waitFor(() => expect(targetWords()).toContain("Earlier words"));
+  await waitFor(() => expect(writeField()).toHaveFocus());
+  expect(writeField().value).toBe("Half a thought");
+});
+
+// The same finding: a reply typed to one row is still the box's draft when the reader turns the
+// box to another row with its Reply, or with `r` after a statement, each named above the words.
+test("a Reply on another row keeps the reply typed in the box", async () => {
+  const user = userEvent.setup();
+  const page = renderPage();
+  await page.press(user, "comment-1", "r");
+  await waitFor(() => expect(targetWords()).toContain("Earlier words"));
+  await waitFor(() => expect(writeField()).toHaveFocus());
+  await user.keyboard("My reply to bob");
+
+  // The Reply of the question the reader answered, pressed.
+  await act(async () => rowOf("ask-2").focus());
+  const reply = rowOf("ask-2").querySelector<HTMLElement>('[data-row-act="reply"]');
+  if (reply === null) throw new Error("the question's row drew no Reply");
+  await user.click(reply);
+  await waitFor(() => expect(targetWords()).toContain("Question ask-2?"));
+  await waitFor(() => expect(writeField()).toHaveFocus());
+  expect(page.writer().reply?.id).toBe("ask-2");
+  expect(writeField().value).toBe("My reply to bob");
+
+  // `r` on a statement, and back to bob's comment.
+  await page.press(user, "spec#b-r1", "r");
+  await waitFor(() => expect(targetWords()).toContain("The page draws one box."));
+  expect(writeField().value).toBe("My reply to bob");
+  await page.press(user, "comment-1", "r");
+  await waitFor(() => expect(targetWords()).toContain("Earlier words"));
+  expect(writeField().value).toBe("My reply to bob");
 });
 
 // R5: an answer sends the options picked and the reader's words, and a change of the reader's own
@@ -1060,6 +1109,87 @@ test("a statement's target line names its first line, and its send carries its w
     to: "newest",
     under: { id: "spec#b-r1", kind: "statement" },
   });
+});
+
+// The reviewer's finding 4593511280: a comment on a statement Dispatch refused holds the box on
+// the statement - a Reply on another row, or an Answer, puts the caret back in it on that
+// statement, its refused words kept - and a box that mounts again over the refused send, as one
+// does when the reader leaves the issue and comes back, names the statement from the send and
+// sends the words to it again. The send keeps the statement's document and words alone, so the
+// line names it by those words, and a write to it lands on no row.
+test("a refused comment on a statement keeps its words and its statement, through a Reply elsewhere and a new mount", async () => {
+  const user = userEvent.setup();
+  const createComment = stub(
+    spyOn(api, "createComment")
+      .mockRejectedValueOnce(
+        new ApiError(400, { code: "INVALID_INPUT", error: "The comment was refused." })
+      )
+      .mockResolvedValue(commentRecord("comment-9", ALICE, "Agreed"))
+  );
+  const first = renderPage();
+  await first.press(user, "spec#b-r1", "r");
+  await waitFor(() => expect(writeField()).toHaveFocus());
+  await user.keyboard("Agreed{Enter}");
+  await waitFor(() =>
+    expect(within(composerBox()).getByRole("alert")).toHaveTextContent("The comment was refused.")
+  );
+
+  // `r` on bob's comment, and `a` on the open question.
+  const named = `${CONTROL_LABELS.replying_to} The page draws one box.`;
+  for (const [row, key] of [
+    ["comment-1", "r"],
+    ["ask-1", "a"],
+  ] as const) {
+    await first.press(user, row, key);
+    await waitFor(() => expect(writeField()).toHaveFocus());
+    expect(targetWords(), `${key} on ${row}`).toBe(named);
+    expect(writeField().value, `${key} on ${row}`).toBe("Agreed");
+    expect(first.writer().reply, `${key} on ${row}`).toBeNull();
+    expect(first.writer().answer, `${key} on ${row}`).toBeUndefined();
+  }
+
+  // The box mounted again in the same tab, over the send it refused: the statement named by the
+  // first line of its words, as its row names it.
+  first.view.unmount();
+  const again = renderPage({}, outline(), first.client);
+  await waitFor(() => expect(targetWords()).toBe(named));
+  expect(again.writer().statement).toEqual({ artifact: "spec", quote: STATEMENT_QUOTE });
+  expect(writeField().value).toBe("Agreed");
+  await user.click(within(composerBox()).getByRole("button", { name: "Retry" }));
+  await waitFor(() => expect(createComment).toHaveBeenCalledTimes(2));
+  expect(createComment.mock.calls[1]?.[1]).toEqual({
+    anchor: { artifact: "spec", quote: STATEMENT_QUOTE },
+    body: "Agreed",
+  });
+  await waitFor(() => expect(again.writer().statement).toBeUndefined());
+  expect(again.writer().landing).toBeUndefined();
+});
+
+// The reviewer's finding 4593511306: a statement whose words its document holds twice is
+// refused with `TARGET_AMBIGUOUS`, whose own words ask for an occurrence the box has no control
+// for: the box says in the page's words why the comment cannot be placed, draws no Retry, which
+// would send the same words to the same refusal, and keeps the draft and its statement.
+test("a statement held twice is refused in the page's words, with no Retry and the draft kept", async () => {
+  const user = userEvent.setup();
+  const createComment = stub(
+    spyOn(api, "createComment").mockRejectedValue(
+      new ApiError(409, {
+        code: "TARGET_AMBIGUOUS",
+        error: `"${STATEMENT_QUOTE}" matches 2 places; pass a zero-based occurrence, or quote more of the surrounding text`,
+      })
+    )
+  );
+  const page = renderPage();
+  await page.press(user, "spec#b-r1", "r");
+  await waitFor(() => expect(writeField()).toHaveFocus());
+  await user.keyboard("Agreed{Enter}");
+  await waitFor(() => expect(createComment).toHaveBeenCalledTimes(1));
+  const alert = await within(composerBox()).findByRole("alert");
+  expect(alert).toHaveTextContent(ANSWER_LINES.statement_twice);
+  expect(alert.textContent).not.toContain("occurrence");
+  expect(within(composerBox()).queryByRole("button", { name: "Retry" })).toBeNull();
+  expect(writeField().value).toBe("Agreed");
+  expect(targetWords()).toBe(`${CONTROL_LABELS.replying_to} The page draws one box.`);
 });
 
 // The reading list's `issue-page-composer-target`: the target line and the answer's options draw

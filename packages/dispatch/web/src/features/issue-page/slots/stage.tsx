@@ -52,6 +52,8 @@ const VIEW_SLOTS: Readonly<Record<Preset, ((props: SlotProps) => ReactNode) | un
 /** The row of a view's tree that holds its one tab stop (the WAI-ARIA tree pattern, R9). */
 const TAB_STOP_ROW = '[role="tree"] [role="treeitem"][tabindex="0"]';
 
+export { TAB_STOP_ROW };
+
 /**
  * One view, drawn where the outline is, which takes the keyboard focus on its tree's tab-stop
  * row once that row is drawn (the tester's finding F23): a page opened at a view's address, or
