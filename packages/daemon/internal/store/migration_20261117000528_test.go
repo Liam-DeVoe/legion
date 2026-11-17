@@ -19,12 +19,13 @@ const stepRecordKindVersion = 20261117000528
 // outbox refuses a kind its constraint does not name, so the row could not be queued before this
 // migration, and the transaction that started or ended the step would fail with it: the negative
 // control is that refusal, read before the migration, on a database that already carries the
-// merge-queue kinds' list (20261114031356), which this version stands above. After it the row is
-// queued, and so is every kind the constraint already named, since the migration rewrites the list
-// whole and a kind left out would stop its own effect. A kind that is none is still refused, with
-// the check's own SQLSTATE. The rows the release before it left pending — the merge-queue kinds
-// its list added among them, each on an issue and with a payload of its own — come through the
-// migration whole: the same id, kind, issue, payload, attempts, due time and error.
+// role-holders publication's list (20261116165926), which this version stands above. After it the
+// row is queued, and so is every kind the constraint already named, since the migration rewrites
+// the list whole and a kind left out would stop its own effect. A kind that is none is still
+// refused, with the check's own SQLSTATE. The rows the release before it left pending — the
+// role-holders publication and the merge-queue kinds its lists added among them, each on an issue
+// and with a payload of its own — come through the migration whole: the same id, kind, issue,
+// payload, attempts, due time and error.
 func TestTheOutboxCheckTakesTheStepRecord(t *testing.T) {
 	ctx := context.Background()
 	store := emptyStore(t)
@@ -69,7 +70,7 @@ func TestTheOutboxCheckTakesTheStepRecord(t *testing.T) {
 		}
 		return all
 	}
-	for i, kind := range []string{"merge_queue_removal", "merge_queue_read", "update_ask", "supervise", "dispatch_status"} {
+	for i, kind := range []string{"role_holders_publish", "merge_queue_removal", "merge_queue_read", "update_ask", "supervise", "dispatch_status"} {
 		if _, err := store.Pool().Exec(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error)
 			values ($1, $2, jsonb_build_object('pending', $1::text), $3, now() + make_interval(mins => $3), $4)`,
 			kind, fmt.Sprintf("LEGION-%d", 300+i), i, fmt.Sprintf("attempt %d failed", i)); err != nil {
@@ -77,8 +78,8 @@ func TestTheOutboxCheckTakesTheStepRecord(t *testing.T) {
 		}
 	}
 	before := readPending()
-	if len(before) != 5 {
-		t.Fatalf("the outbox holds %d rows before the migration, want the five pending rows of the release before", len(before))
+	if len(before) != 6 {
+		t.Fatalf("the outbox holds %d rows before the migration, want the six pending rows of the release before", len(before))
 	}
 	if _, err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate through the step record's kind: %v", err)
@@ -91,7 +92,7 @@ func TestTheOutboxCheckTakesTheStepRecord(t *testing.T) {
 		"linger_close", "workspace_remove", "issue_branch", "issue_suspend", "check_wake",
 		"check_look", "check_bound", "role_message", "phase_ended", "issue_bundle", "issue_release",
 		"gated_steps_publish", "claim_release", "hook_prompt", "design_gates_publish", "update_ask",
-		"merge_queue_read", "merge_queue_removal", "step_record",
+		"merge_queue_read", "merge_queue_removal", "role_holders_publish", "step_record",
 	} {
 		if err := queue(kind); err != nil {
 			t.Fatalf("queue a %s row after the migration: %v", kind, err)
