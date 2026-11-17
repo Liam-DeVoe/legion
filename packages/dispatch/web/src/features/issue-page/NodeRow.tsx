@@ -168,8 +168,10 @@ export function NodeRow({
   ownAnswer: boolean;
   pinned: boolean;
   /** Whether the row brings itself on screen while it has the focus (`useRowOnScreen`), which
-   *  every row does but the outline's first row as the page opens on it with no question waiting
-   *  on the reader: that row stays where it stands until the reader acts (R8, `IssueTree.tsx`). */
+   *  every row does but two of the outline's: its first row as the page opens on it with no
+   *  question waiting on the reader, which stays where it stands until the reader acts (R8), and
+   *  the row the reader is editing, which the editor's own caret keeps in view while it grows
+   *  (decision 123). Both are `IssueTree.tsx`'s to set. */
   placesItself?: boolean;
   /** What a key pressed on this row answers, where it answers in words (`ANSWER_LINES`): drawn at
    *  the row, last, until the next key, a focus move or leaving the tree clears it (R22). */

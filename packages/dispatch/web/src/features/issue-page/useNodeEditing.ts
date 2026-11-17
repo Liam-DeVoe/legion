@@ -1,10 +1,9 @@
 import { type RefObject, useCallback, useEffect, useRef, useState } from "react";
 
 import type { Artifact } from "../../api/types";
-import { useMargin } from "../margin/margin-context";
 import { documentOfNode } from "./issue-artifacts";
 import type { TreeNode } from "./issue-tree";
-import { caretInBlock } from "./node-caret";
+import { caretInBlock, caretOutOfBlock, holdEditorAtBlock } from "./node-caret";
 import { KEY_REPORTS } from "./page-structure";
 
 /** One row the reader is editing in: the document its node's text lives in, the block of that
@@ -25,6 +24,11 @@ export interface NodeEditing {
   readonly stopEditing: () => void;
 }
 
+/** A reader's own acts, any of which ends the page's own placing of the focus - the tree's
+ *  (`IssueTree.tsx`), and the caret's in the row being edited below: a key, a press, a wheel and
+ *  a touch. */
+export const READER_ACTS = ["keydown", "pointerdown", "wheel", "touchstart"] as const;
+
 /**
  * The caret in a node's own text, where that text lives: the node's block of its own document,
  * with the collaborative cursors and the comment chord it has there (dispatch://INFRA-1196 R9,
@@ -32,10 +36,12 @@ export interface NodeEditing {
  *
  * The tree holds no editor of its own. The page draws the one editor of whichever document a
  * row is editing (`slots/body.tsx`, through `onEditing`), `document-stage.tsx` moves it onto the
- * row, and this places the caret in the node's own block of it (`node-caret.ts`) the moment the
- * row holds it: the page mounts that editor in the commit after the row asked for it, and the
- * editor draws the document's text once it has read it. A node whose text no document of this
- * issue holds has nothing to put a caret in, and the key says so.
+ * row, and this places the caret in the node's own block of it and opens the editor's box at
+ * that block, no taller than the window (`node-caret.ts`), the moment the row holds it: the page
+ * mounts that editor in the commit after the row asked for it, and the editor draws the
+ * document's text once it has read it. The editor's own redrawing can drop that caret before the
+ * reader has done anything, and this puts it back until they have. A node whose text no
+ * document of this issue holds has nothing to put a caret in, and the key says so.
  *
  * Escape leaves the caret for the row it came from. The editor calls `preventDefault` on the
  * key before it reaches the page's keyboard registry, which drops every binding of the press
@@ -64,7 +70,6 @@ export function useNodeEditing({
   const [editing, setEditing] = useState<EditedRow | undefined>(undefined);
   // The row the reader has just left the caret in, so that row takes the focus back.
   const leaving = useRef<string | undefined>(undefined);
-  const { documentBridge } = useMargin();
 
   const edit = useCallback(
     (row: string, node: TreeNode) => {
@@ -103,31 +108,63 @@ export function useNodeEditing({
     const box = container.current;
     if (editingRow === undefined || box === null) return;
     // The row's stage is in its words (`NodeRow.tsx`), so the row as a whole is where the
-    // editor is looked for; it arrives over several commits, so the caret is placed the first
-    // time the row holds an editable one, and once.
+    // editor is looked for. It arrives over several commits, and is ready for the caret once it
+    // has drawn the document's text (`caretInBlock`), so the caret is placed the first time the
+    // row holds one that has, and the editor opened at the block then, and only then.
+    //
+    // The row is watched on after that, until the reader's first act (`READER_ACTS`), for two
+    // things the editor does to the caret before the reader has done anything. It changes its
+    // plugins after it has drawn the text - Dispatch's own block views as it binds
+    // (`doc/editor.ts`'s `installTypedBlocks`), its collaborators' cursors once the room has
+    // synced (`@legion/proof-editor`'s `lib.ts`) - and ProseMirror then makes every plugin's view
+    // again, Milkdown's among them, which takes the editable out of the box it wraps it in and
+    // wraps it in a new one. The browser drops the focus to the page as the editable leaves it:
+    // measured in Chromium, a `focusout` with no related target 45 ms after the caret was placed,
+    // and the focus on the page's body after. And the editor writes its own selection back over
+    // the caret while it has not read the caret yet (`caretOutOfBlock`). So while the reader has
+    // not acted, a focus fallen to nothing and a caret moved out of the node's block go back to
+    // the block; from their first act the focus and the caret are theirs.
+    let settled: (() => void) | undefined;
+    const acts = new AbortController();
+    // Places the caret, or places it again where the focus has fallen to nothing or the caret
+    // has left the block, and answers whether the row is done with: the caret placed and the
+    // reader acted since.
     const place = (): boolean => {
       const row = box.querySelector<HTMLElement>(
         `[data-node-row][data-row-key="${CSS.escape(editingRow)}"]`
       );
-      if (row === null || !caretInBlock(row, editingBlock)) return false;
-      // The block is scrolled into view and pulsed by the document's own editor, where that
-      // editor is the one the margin holds; the caret above is the row's doing either way.
-      const bridge = documentBridge;
-      if (
-        editingBlock !== undefined &&
-        bridge !== undefined &&
-        bridge.artifactId === editingArtifact
+      if (row === null) return false;
+      if (settled === undefined) {
+        if (!caretInBlock(row, editingBlock)) return false;
+        settled = holdEditorAtBlock(row, editingBlock);
+        // Only a selection moved after the caret was placed is the editor's doing.
+        document.addEventListener("selectionchange", changed, { signal: acts.signal });
+      } else if (
+        document.activeElement === null ||
+        document.activeElement === document.body ||
+        caretOutOfBlock(row, editingBlock)
       ) {
-        bridge.focusBlock(editingBlock);
+        caretInBlock(row, editingBlock);
       }
-      return true;
+      return acts.signal.aborted;
     };
-    const arrivals = new MutationObserver(() => {
-      if (place()) arrivals.disconnect();
-    });
+    const changed = () => {
+      if (place()) watch.disconnect();
+    };
+    const watch = new MutationObserver(changed);
+    for (const type of READER_ACTS) {
+      window.addEventListener(
+        type,
+        () => {
+          acts.abort();
+          if (settled !== undefined) watch.disconnect();
+        },
+        { capture: true, signal: acts.signal }
+      );
+    }
     const frame = requestAnimationFrame(() => {
       if (place()) return;
-      arrivals.observe(box, {
+      watch.observe(box, {
         attributeFilter: ["contenteditable"],
         attributes: true,
         childList: true,
@@ -136,9 +173,11 @@ export function useNodeEditing({
     });
     return () => {
       cancelAnimationFrame(frame);
-      arrivals.disconnect();
+      acts.abort();
+      watch.disconnect();
+      settled?.();
     };
-  }, [container, documentBridge, editingArtifact, editingBlock, editingRow]);
+  }, [container, editingBlock, editingRow]);
 
   useEffect(() => {
     const box = container.current;

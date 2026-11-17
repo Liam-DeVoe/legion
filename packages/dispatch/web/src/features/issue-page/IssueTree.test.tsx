@@ -16,9 +16,12 @@ import { buildDispatchReference, buildIssuePath } from "../refs/routes";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { useKeymapScope } from "../shell/keymap";
 import { issueDetails } from "./decisions-filter/decisions-fixtures";
+import { DocumentStage, DocumentStages } from "./document-stage";
 import { type FocusedNode, FocusedNodeProvider, useFocusedNode } from "./focused-node";
 import { IssueTree, LANDING_WAIT_MS, ZOOMED_TREE_QUERY } from "./IssueTree";
+import { FOOT_HEIGHT_PROPERTY, IDENTITY_HEIGHT_PROPERTY } from "./identity-block";
 import type { TreeNode } from "./issue-tree";
+import { EDITOR_BOX_ATTRIBUTE } from "./node-caret";
 import {
   OutlineRequestProvider,
   useAskOutline,
@@ -33,6 +36,7 @@ import {
 } from "./outline-writer";
 import { KEY_REPORTS } from "./page-structure";
 import { CONTROL_LABELS, EMPTY_STATE_LINES, NODE_TYPE_NAMES, type NodeType } from "./page-words";
+import { EditorBox } from "./StagedDocument";
 import { BodySlot } from "./slots/body";
 import { ProvidersSlot } from "./slots/providers";
 import { addressesAsShortForms } from "./tree-drafts";
@@ -142,22 +146,51 @@ function FocusedNodeProbe({ seen }: { seen: { node?: FocusedNode } }): ReactNode
   return null;
 }
 
+/** The page's one editor of the document a row of the tree is editing in, as `IssuePresetPanels`
+ *  draws it for the row to take onto its stage, in the box it scrolls in there, with `editor`
+ *  standing in for the document's own editor. `held.set` is how the tree's `onEditing` reaches
+ *  it. */
+function EditedDocument({
+  editor,
+  held,
+}: {
+  editor: ReactNode;
+  held: { set?: (artifactId: string | undefined) => void };
+}): ReactNode {
+  const [artifactId, setArtifactId] = useState<string | undefined>(undefined);
+  held.set = setArtifactId;
+  return artifactId === undefined ? null : (
+    <DocumentStage artifactId={artifactId}>
+      <EditorBox>{editor}</EditorBox>
+    </DocumentStage>
+  );
+}
+
 /** The tree alone, under the page's keymap and the focused node it sets. `reveal` is the chain
  *  down to the node an address names, which the tree is then to put the focus on
- *  (`slots/body.tsx`); `redraw` draws the same tree again, as a read answering does. */
+ *  (`slots/body.tsx`); `editor` stands in for the editor of the document a row is editing in,
+ *  which the page draws on that row's stage; `redraw` draws the same tree again, as a read
+ *  answering does. */
 function renderTree(
   root: TreeNode,
   {
     artifacts = [],
     decisions,
+    editor,
     reveal,
-  }: { artifacts?: Artifact[]; decisions?: IssueDecisions; reveal?: readonly TreeNode[] } = {}
+  }: {
+    artifacts?: Artifact[];
+    decisions?: IssueDecisions;
+    editor?: ReactNode;
+    reveal?: readonly TreeNode[];
+  } = {}
 ) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
   if (decisions !== undefined) client.setQueryData(["decisions", KEY], decisions);
   const edited: (string | undefined)[] = [];
+  const editedDocument: { set?: (artifactId: string | undefined) => void } = {};
   const seen: { path?: string } = {};
   const focused: { node?: FocusedNode } = {};
   const draw = () => (
@@ -167,21 +200,29 @@ function renderTree(
         <KeymapProvider>
           <MarginProvider>
             <FocusedNodeProvider>
-              <IssueScope />
-              <FocusedNodeProbe seen={focused} />
-              <IssueTree
-                artifacts={new Map(artifacts.map((artifact) => [artifact.slug, artifact]))}
-                context={new Set()}
-                emptyLine="Nothing here."
-                filtering={false}
-                focusReveal={reveal !== undefined}
-                holdsEscape={false}
-                isClosed={false}
-                onEditing={(artifactId) => edited.push(artifactId)}
-                reveal={reveal}
-                root={root}
-                rootRow
-              />
+              <DocumentStages>
+                <IssueScope />
+                <FocusedNodeProbe seen={focused} />
+                <IssueTree
+                  artifacts={new Map(artifacts.map((artifact) => [artifact.slug, artifact]))}
+                  context={new Set()}
+                  emptyLine="Nothing here."
+                  filtering={false}
+                  focusReveal={reveal !== undefined}
+                  holdsEscape={false}
+                  isClosed={false}
+                  onEditing={(artifactId) => {
+                    edited.push(artifactId);
+                    editedDocument.set?.(artifactId);
+                  }}
+                  reveal={reveal}
+                  root={root}
+                  rootRow
+                />
+                {editor === undefined ? null : (
+                  <EditedDocument editor={editor} held={editedDocument} />
+                )}
+              </DocumentStages>
             </FocusedNodeProvider>
           </MarginProvider>
         </KeymapProvider>
@@ -392,6 +433,7 @@ test("Enter sends the change the reader typed, instead of putting a caret in the
   setViewport(1440);
   const user = userEvent.setup();
   const sent = spyOn(api, "createComment").mockResolvedValue({ id: "comment-1" } as never);
+  const read = readDecisionsText();
   const root = node({
     children: [
       node({
@@ -425,6 +467,7 @@ test("Enter sends the change the reader typed, instead of putting a caret in the
     expect(view.edited.filter((artifactId) => artifactId !== undefined)).toEqual([]);
   } finally {
     sent.mockRestore();
+    read.mockRestore();
   }
 });
 
@@ -436,6 +479,16 @@ function decisionTree(): TreeNode {
     ],
     id: KEY,
     type: "issue",
+  });
+}
+
+/** Answers the decisions document's text, which a Change reads as it is sent to count its
+ *  quote's places over (`DecisionActions.tsx`). */
+function readDecisionsText() {
+  return spyOn(api, "getArtifactText").mockResolvedValue({
+    markdown: decision.text,
+    token: "sha256:decisions-text",
+    version: null,
   });
 }
 
@@ -480,6 +533,7 @@ test("Send change keeps the focus on its decision's row while the comment is out
   const user = userEvent.setup();
   const answer = Promise.withResolvers<never>();
   const sent = spyOn(api, "createComment").mockReturnValue(answer.promise);
+  const read = readDecisionsText();
   const view = renderTree(decisionTree(), {
     artifacts: [decisionsDocument],
     decisions: { decisions: [decision], document: null, open_questions: [] },
@@ -506,6 +560,7 @@ test("Send change keeps the focus on its decision's row while the comment is out
     expect(view.getByRole("button", { name: "Change" })).toBeTruthy();
   } finally {
     sent.mockRestore();
+    read.mockRestore();
   }
 });
 
@@ -957,6 +1012,236 @@ test("the row the reader is editing in places nothing of its own as it grows", a
     boxes.mockRestore();
     scrolled.mockRestore();
   }
+});
+
+// Decision 124, the tester's red row on c-keys (`a row that edits a statement is no taller than
+// the window, and the page around it stays put`): the editor a row takes holds the whole
+// document, and drawn whole in the row it made the row as tall as the document. Its box reaches
+// from where it stands down to the box at the foot of the window, and is scrolled - the box, not
+// the page - to the node's block, with the caret there; a row so low that less than half the
+// room is left under it gets half the room, and the page is scrolled just far enough to show it.
+// The editor is made editable before it has read its document, and holds no block for the caret
+// or the box until then, so nothing is placed until it has drawn the document's blocks.
+// happy-dom lays nothing out, so the box, and the block 1,500 px down the document it scrolls,
+// are given, under a band of 60 px at the top and over a box of 100 px at the foot.
+test("the row's editor opens at the node's block, in a box that ends at the foot of the window", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const spec: Artifact = { ...decisionsDocument, id: "artifact-spec", name: "Spec", slug: "spec" };
+  const root = node({
+    children: [
+      node({ id: "comment-1", text: "The first words.", type: "comment" }),
+      node({ id: "spec#b-r1", text: "A statement of the spec.", type: "requirement" }),
+    ],
+    id: KEY,
+    type: "issue",
+  });
+  const documentHeight = 3000;
+  let stands = 200;
+  const boxes = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: HTMLElement
+  ) {
+    const box = this.closest<HTMLElement>(`[${EDITOR_BOX_ATTRIBUTE}]`);
+    if (box === null) return new DOMRect();
+    if (box === this) {
+      const cap = Number.parseFloat(box.style.maxHeight);
+      return new DOMRect(0, stands, 800, Number.isNaN(cap) ? documentHeight : cap);
+    }
+    return this.dataset.blockId === "r1"
+      ? new DOMRect(0, stands + 1500 - box.scrollTop, 800, 24)
+      : new DOMRect();
+  });
+  // The second look after the drawing above the block settles watches the editor's size.
+  const RealResizeObserver = globalThis.ResizeObserver;
+  globalThis.ResizeObserver = class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  } as unknown as typeof ResizeObserver;
+  const scrolled = spyOn(window, "scrollBy").mockImplementation(() => {});
+  const published = document.documentElement.style;
+  published.setProperty(IDENTITY_HEIGHT_PROPERTY, "60px");
+  published.setProperty(FOOT_HEIGHT_PROPERTY, "100px");
+  const floor = window.innerHeight - 100;
+  const room = floor - 60;
+  try {
+    const view = renderTree(root, {
+      artifacts: [spec],
+      editor: <div contentEditable suppressContentEditableWarning />,
+    });
+    await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
+    await user.keyboard("j");
+    await waitFor(() => expect(focusedRow(view.container)).toBe("spec#b-r1"));
+    // The row's editor, and then the document's text in it, once the editor has read it.
+    const drawText = async (): Promise<void> => {
+      let editable: HTMLElement | null | undefined;
+      await waitFor(() => {
+        editable = rowsFor(view.container, "spec#b-r1")[0]?.querySelector<HTMLElement>(
+          '[contenteditable="true"]'
+        );
+        expect(editable, "the row took no editor").toBeTruthy();
+      });
+      const frame = Promise.withResolvers<void>();
+      requestAnimationFrame(() => frame.resolve());
+      await act(async () => frame.promise);
+      expect(
+        editable?.closest<HTMLElement>(`[${EDITOR_BOX_ATTRIBUTE}]`)?.style.maxHeight,
+        "the editor was opened before it had drawn the document's text"
+      ).toBe("");
+      await act(async () => {
+        for (const [id, words] of [
+          ["r0", "The words above the statement."],
+          ["r1", "A statement of the spec."],
+        ] as const) {
+          const block = document.createElement("p");
+          block.dataset.blockId = id;
+          block.textContent = words;
+          editable?.append(block);
+        }
+      });
+    };
+    const editorBox = async (): Promise<HTMLElement> => {
+      let box: HTMLElement | null | undefined;
+      await waitFor(() => {
+        box = rowsFor(view.container, "spec#b-r1")[0]?.querySelector<HTMLElement>(
+          `[${EDITOR_BOX_ATTRIBUTE}]`
+        );
+        expect(box?.style.maxHeight, "the row's editor was not held to the window").not.toBe("");
+      });
+      if (box === null || box === undefined) throw new Error("the row holds no editor");
+      return box;
+    };
+
+    scrolled.mockClear();
+    await user.keyboard("{Enter}");
+    await drawText();
+    const box = await editorBox();
+    expect(box.style.maxHeight, "the box does not end at the foot of the window").toBe(
+      `${floor - stands}px`
+    );
+    expect(box.scrollTop, "the box was not scrolled to the statement's block").toBe(1500);
+    expect(scrolled, "the page around the row moved").not.toHaveBeenCalled();
+    expect(
+      window.getSelection()?.anchorNode?.parentElement?.getAttribute("data-block-id"),
+      "the caret is not in the statement's block"
+    ).toBe("r1");
+
+    // Low on the screen, with less than half the room under it.
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(view.edited.at(-1)).toBeUndefined());
+    stands = floor - 40;
+    await user.keyboard("{Enter}");
+    await drawText();
+    const low = await editorBox();
+    const cap = Math.floor(room / 2);
+    expect(low.style.maxHeight, "the box of a row low on the screen is not half the room").toBe(
+      `${cap}px`
+    );
+    expect(scrolled, "the page did not bring the low row's box on screen").toHaveBeenCalledTimes(1);
+    expect(
+      (scrolled.mock.calls[0]?.[0] as ScrollToOptions | undefined)?.top ?? 0,
+      "the page did not bring the low row's box over the foot"
+    ).toBeGreaterThanOrEqual(stands + cap - floor);
+  } finally {
+    globalThis.ResizeObserver = RealResizeObserver;
+    boxes.mockRestore();
+    scrolled.mockRestore();
+    published.removeProperty(IDENTITY_HEIGHT_PROPERTY);
+    published.removeProperty(FOOT_HEIGHT_PROPERTY);
+  }
+});
+
+// Two things the editor does to the caret Enter put in a node before the reader has done
+// anything. It changes its plugins after it has drawn the document's text - Dispatch's block
+// views as it binds, its collaborators' cursors once the room has synced - and ProseMirror then
+// makes Milkdown's view again, which takes the editable out of the box it wraps it in and wraps
+// it in a new one: the focus falls to the page's body as the editable leaves the page (measured
+// in Chromium, 45 ms after Enter had put the caret in a statement). And it writes its own
+// selection back over a caret it has not read yet: measured in Chromium, the caret was in the
+// spec's summary 60 ms after it was put in a statement, and the words typed went there. Until
+// the reader acts the row puts the caret back in the node's block; from their first act the
+// focus and the caret are where the editor left them. happy-dom drops the focus of an element
+// taken out of the page, as Chromium does.
+test("a caret the editor drops or moves goes back to the node's block until the reader acts", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const spec: Artifact = { ...decisionsDocument, id: "artifact-spec", name: "Spec", slug: "spec" };
+  const root = node({
+    children: [
+      node({ id: "comment-1", text: "The first words.", type: "comment" }),
+      node({ id: "spec#b-r1", text: "A statement of the spec.", type: "requirement" }),
+    ],
+    id: KEY,
+    type: "issue",
+  });
+  const view = renderTree(root, {
+    artifacts: [spec],
+    editor: <div contentEditable suppressContentEditableWarning />,
+  });
+  await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
+  await user.keyboard("j");
+  await waitFor(() => expect(focusedRow(view.container)).toBe("spec#b-r1"));
+  await user.keyboard("{Enter}");
+  let found: HTMLElement | null | undefined;
+  await waitFor(() => {
+    found = rowsFor(view.container, "spec#b-r1")[0]?.querySelector<HTMLElement>(
+      '[contenteditable="true"]'
+    );
+    expect(found, "the row took no editor").toBeTruthy();
+  });
+  const editable = found as HTMLElement;
+  await act(async () => {
+    for (const [id, words] of [
+      ["r0", "The words above the statement."],
+      ["r1", "A statement of the spec."],
+    ] as const) {
+      const block = document.createElement("p");
+      block.dataset.blockId = id;
+      block.textContent = words;
+      editable.append(block);
+    }
+  });
+  const caretInStatement = () =>
+    document.activeElement === editable &&
+    window.getSelection()?.anchorNode?.parentElement?.getAttribute("data-block-id") === "r1";
+  await waitFor(() =>
+    expect(caretInStatement(), "Enter did not put the caret in the statement").toBe(true)
+  );
+  // Milkdown's view made again: its wrapper put back in the editable's place, and a new one
+  // around it.
+  const wrapAgain = () =>
+    act(async () => {
+      const wrapper = document.createElement("div");
+      editable.parentElement?.replaceChild(wrapper, editable);
+      wrapper.append(editable);
+    });
+  // The editor's own selection, from before the caret went into the statement, written back,
+  // and the browser reporting it.
+  const selectAbove = () =>
+    act(async () => {
+      const words = editable.querySelector('[data-block-id="r0"]')?.firstChild;
+      if (words === null || words === undefined) throw new Error("the editor draws no r0");
+      window.getSelection()?.collapse(words, 0);
+      document.dispatchEvent(new Event("selectionchange"));
+    });
+
+  await wrapAgain();
+  expect(caretInStatement(), "the caret the editor dropped was not put back").toBe(true);
+  await selectAbove();
+  expect(caretInStatement(), "the caret the editor moved was not put back").toBe(true);
+
+  // The reader presses a key: the focus and the caret are theirs from then on.
+  await user.keyboard("{Shift}");
+  await wrapAgain();
+  expect(document.activeElement, "the caret was put back after the reader acted").toBe(
+    document.body
+  );
+  editable.focus();
+  await selectAbove();
+  expect(
+    window.getSelection()?.anchorNode?.parentElement?.getAttribute("data-block-id"),
+    "the caret was moved back after the reader acted"
+  ).toBe("r0");
 });
 
 test("q reaches every open question while the tree is read one node at a time", async () => {

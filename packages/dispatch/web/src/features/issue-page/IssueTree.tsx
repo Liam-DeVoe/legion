@@ -30,7 +30,7 @@ import {
   zoomBreadcrumb,
 } from "./tree-fold";
 import { everythingOpened, nodesInOrder, rowKeyOf } from "./tree-keys";
-import { useNodeEditing } from "./useNodeEditing";
+import { READER_ACTS, useNodeEditing } from "./useNodeEditing";
 import { useTreeKeymap } from "./useTreeKeymap";
 
 /**
@@ -786,10 +786,6 @@ export function IssueTree({
     </div>
   );
 }
-
-/** A reader's own acts, any of which ends the page's own placing of the focus: a key, a press,
- *  a wheel and a touch. */
-export const READER_ACTS = ["keydown", "pointerdown", "wheel", "touchstart"] as const;
 
 /** What ends a press in the tree: its mouseup, which the click follows in the same task; the
  *  drag a press on a picture or a link starts instead, which sends no mouseup; a pointer the
