@@ -16,7 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// The two projects and the three people of verification v16's seed (dispatch://INFRA-3862,
+// The two projects and the three people of verification v16's seed (the private-projects
 // live-verification.md): PUB is public and PRIV private; alice is a full member no access list
 // names, bob a restricted member PRIV's list names, and carol a full member PRIV's list names.
 // carol made both projects, so she owns both. bob and carol are emails because an access list

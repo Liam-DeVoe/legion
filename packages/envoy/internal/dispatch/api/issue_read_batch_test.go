@@ -345,7 +345,7 @@ func readsOwnStatements(t *testing.T, statements []string) []string {
 // for, where the sequential loaders spent a statement on each part of the answer. The request
 // makes one more before the read, every read request's own: it resolves its caller's viewer
 // once (readerOf, access.Resolve), which every statement of the read then binds; that round trip
-// is held to being exactly that one statement, and the read to its two (dispatch://INFRA-3862).
+// is held to being exactly that one statement, and the read to its two.
 func TestIssueReadCostsTwoRoundTrips(t *testing.T) {
 	database := storetest.Open(t)
 	counter := &roundTrips{}

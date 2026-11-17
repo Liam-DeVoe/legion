@@ -1,15 +1,15 @@
 -- 20261116081157_session_projects_proven.up.sql — session_projects holds only sessions a
 -- credential proved.
 --
--- INFRA-3862 R4: a session is one of a project's agents when session_projects records that it acted
--- in the project (access.SessionClause), which shows it to the project's restricted and listed
+-- Private projects' R4: a session is one of a project's agents when session_projects records that it
+-- acted in the project (access.SessionClause), which shows it to the project's restricted and listed
 -- viewers. Migration 20261116015736_project_access recorded every session an event's actor named,
 -- and a credential that proves no session (the deployment's shared token, a personal token) names
 -- the session in the request body (api.bearerSessionActor), so one holder of a project's token could
 -- make any other session look like one of that project's agents. From this release on, the live
 -- insert (events.queueSessionProjects) and `envoy-dispatch backfill-session-projects` record only a
--- session the event's credential proved: an act naming the actor's own session and no personal
--- token (events.provedSession).
+-- session the event's credential proved: an act naming the actor's own session and no personal token
+-- (events.provedSession).
 --
 -- The rows recorded under the earlier rule cannot be told apart once written, so every row goes,
 -- and the marker with them: the operator runs `envoy-dispatch backfill-session-projects` again after

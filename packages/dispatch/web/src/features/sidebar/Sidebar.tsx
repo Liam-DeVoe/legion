@@ -153,7 +153,7 @@ export function Sidebar({
   user: AuthenticatedUser;
 }): ReactNode {
   const location = useLocation();
-  // A restricted member reads only the projects that name them (dispatch://INFRA-3862/spec#b-r-cross-project-reads),
+  // A restricted member reads only the projects that name them (R4 of the private-projects spec),
   // so their rail draws none of the views over every project - Priorities, Delivery and
   // Pipeline - and no Peek, and never reads the priorities. `app.tsx` answers those pages
   // NotFound for them.

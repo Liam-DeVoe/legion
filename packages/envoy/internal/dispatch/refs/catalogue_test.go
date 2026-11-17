@@ -17,11 +17,11 @@ import (
 
 // withTestOnlyKinds installs a registry entry for each of kinds the real registry does not hold,
 // for the length of the test, as TestAnOlderBuildSkipsItemBlockRows swaps nodeRegistry: each with
-// the project scope and a loader over graph_nodes (loadStoreNodes), which is how INFRA-1950's T7
-// registers lens_kind and constraint ("Contracts / INFRA-1950's kinds" of dispatch://INFRA-3862's
-// plan). It adds nothing for a kind the registry holds, so once T7 is in the build these tests read
-// its entries, and it logs each entry it installs, so a run says which kinds it could not read from
-// the real registry.
+// the project scope and a loader over graph_nodes (loadStoreNodes), which is how the node-types
+// work's T7 registers lens_kind and constraint (the private-projects plan's contract on that work's
+// kinds). It adds nothing for a kind the registry holds, so once T7 is in the build these tests
+// read its entries, and it logs each entry it installs, so a run says which kinds it could not
+// read from the real registry.
 func withTestOnlyKinds(t *testing.T, kinds ...string) {
 	t.Helper()
 	registry, resolved := nodeRegistry, nodeKinds
@@ -31,20 +31,20 @@ func withTestOnlyKinds(t *testing.T, kinds ...string) {
 			continue
 		}
 		extended[kind] = resolvedKind(loadStoreNodes, nodeVisibility{scope: projectScope})
-		t.Logf("test-only registry entry: %s (INFRA-1950 T7 not in this build)", kind)
+		t.Logf("test-only registry entry: %s (the node-types work's T7 not in this build)", kind)
 	}
 	nodeRegistry = extended
 	nodeKinds = resolvedNodeKinds()
 	t.Cleanup(func() { nodeRegistry, nodeKinds = registry, resolved })
 }
 
-// catalogueSeeder is the writer INFRA-1950's seed migration writes the catalogue as: a system
-// actor, at the sentinel event a migration's writes carry.
+// catalogueSeeder is the writer the node-types work's seed migration writes the catalogue as: a
+// system actor, at the sentinel event a migration's writes carry.
 var catalogueSeeder = model.Actor{Kind: "system", ID: "lens-kind-seed"}
 
 // seedLensKind writes a lens_kind node of slug and the constraint node its primary source is, with
-// the constrained_by tuple between them, as INFRA-1950's seed writes them: neither names a project
-// or parties. project, when not empty, writes the constraint in that project instead.
+// the constrained_by tuple between them, as the node-types work's seed writes them: neither names
+// a project or parties. project, when not empty, writes the constraint in that project instead.
 func seedLensKind(t *testing.T, tx pgx.Tx, slug, constraint, project string) {
 	t.Helper()
 	at := time.Now()
@@ -80,11 +80,11 @@ func readCatalogueNode(t *testing.T, tx pgx.Tx, reader model.Actor, kind, id str
 }
 
 // TestACatalogueNodeIsVisibleToEveryViewer: a lens_kind node and the constraint its
-// constrained_by tuple reaches, both of no project and written as INFRA-1950's seed writes them,
-// are read through refs by every caller of verification v16 - bob (a restricted member), carol's
-// token that lists PRIV, alice, the shared token and the rest - and by the closed viewer, and each
-// read finds both. Spec v34: a node the system seeds for every project, which holds no project's
-// content, is visible to every viewer.
+// constrained_by tuple reaches, both of no project and written as the node-types work's seed
+// writes them, are read through refs by every caller of verification v16 - bob (a restricted
+// member), carol's token that lists PRIV, alice, the shared token and the rest - and by the closed
+// viewer, and each read finds both. Spec v34: a node the system seeds for every project, which
+// holds no project's content, is visible to every viewer.
 func TestACatalogueNodeIsVisibleToEveryViewer(t *testing.T) {
 	withTestOnlyKinds(t, "lens_kind", "constraint")
 	tx := beginSeed(t)

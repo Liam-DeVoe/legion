@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# c-blob-unchanged (dispatch://INFRA-3862, verification v17; plan task t-a-22): with no private
+# c-blob-unchanged (private projects, verification v17; plan task t-a-22): with no private
 # project, every caller reads at this build, byte for byte, what it reads at the merge base.
 #
 # It builds the merge base and this checkout through scripts/e2e/lib/two-builds.sh and starts each
@@ -40,7 +40,7 @@
 # The harness is not needed: the run starts its own servers and its own fake Envoy, and reads
 # DATABASE_URL only for the server it names, whose database must hold the vector extension (the
 # harness's does: its server migrated it). --base-commit names the merge base; left out, it is
-# HEAD's merge base with origin/legion/INFRA-1149, the branch this stack is built on, or with
+# HEAD's merge base with the branch this stack is built on (`target` below), or with
 # origin/main once that branch is gone, chosen as base_branch_merge_base says. --control
 # private-pub is the negative control: it
 # makes PUB private in the head's database after the seed, and the run must fail naming a route.

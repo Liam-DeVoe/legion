@@ -17,10 +17,10 @@ import (
 )
 
 // TestTheVisibilityArgumentCarriesTheViewer: VisibilityArg is the one conversion from a reader to
-// the argument every predicate binds, "Contracts / K2, the visibility argument" of
-// dispatch://INFRA-3862's plan: the acting credential as the author rule compares it, beside what
-// the reader's viewer sees. A reader with no viewer is the closed viewer, which sees nothing and
-// reads as though some project were private.
+// the argument every predicate binds, "Contracts / K2, the visibility argument" of the
+// private-projects plan: the acting credential as the author rule compares it, beside what the
+// reader's viewer sees. A reader with no viewer is the closed viewer, which sees nothing and reads
+// as though some project were private.
 func TestTheVisibilityArgumentCarriesTheViewer(t *testing.T) {
 	carol := "carol@example.com"
 	for _, test := range []struct {
@@ -78,7 +78,7 @@ func TestTheVisibilityArgumentCarriesTheViewer(t *testing.T) {
 	}
 }
 
-// The projects and people of verification v16's seed (dispatch://INFRA-3862, live-verification.md):
+// The projects and people of verification v16's seed (the private-projects live-verification.md):
 // PUB is public and PRIV private; alice is a full member no access list names, bob a restricted
 // member PRIV's list names, and carol a full member PRIV's list names, who owns both projects.
 const (

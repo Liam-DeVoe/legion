@@ -144,7 +144,7 @@ var (
 // the state once and no other row. The second fetches the rows the cut kept, by their primary
 // key. One step would be neither: with the Inbox's own read taking every undismissed row, a plan
 // that fetches each row as it walks the index costs more than one that scans the table, so the
-// planner scans it - 101,540 rows read to answer 1,540 of them at INFRA-450's a14 seed - and sorts
+// planner scans it - 101,540 rows read to answer 1,540 of them at a14's seed - and sorts
 // what it keeps.
 //
 // Neither step carries an order over the joins: the route sorts the two kinds of row together

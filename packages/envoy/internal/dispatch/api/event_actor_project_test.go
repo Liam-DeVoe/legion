@@ -7,13 +7,13 @@ import (
 	"testing"
 )
 
-// TestAStoredActorsProjectIsNotAnswered: servers before private projects (dispatch://INFRA-3862)
-// wrote `project` on the actor of a write a named broker token made, and their stored events
-// keep it. This server's model.Actor has no such field, so every route that reads a stored event
-// decodes its actor into model.Actor and answers it without `project`: the event log, and an
-// owner's event feed (an issue's here; a document's feed is the same read, readEvents). After this
-// server is deployed, only a reader talking to an older server (version skew) can be handed an
-// actor `project`, and the contract's ActorSchema keeps the field optional for that case alone.
+// TestAStoredActorsProjectIsNotAnswered: servers before private projects wrote `project` on the
+// actor of a write a named broker token made, and their stored events keep it. This server's
+// model.Actor has no such field, so every route that reads a stored event decodes its actor into
+// model.Actor and answers it without `project`: the event log, and an owner's event feed (an
+// issue's here; a document's feed is the same read, readEvents). After this server is deployed,
+// only a reader talking to an older server (version skew) can be handed an actor `project`, and
+// the contract's ActorSchema keeps the field optional for that case alone.
 func TestAStoredActorsProjectIsNotAnswered(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "CORE", "An older server's write", "A spec")

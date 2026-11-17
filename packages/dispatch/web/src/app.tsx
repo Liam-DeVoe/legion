@@ -222,9 +222,8 @@ function IssuePageFallback(): ReactNode {
 /** The pages that show only the deployment's own rows - Priorities, Delivery and Pipeline, the
  *  broadcasts, and the machine-login page - which Dispatch refuses a restricted member (403
  *  DEPLOYMENT_READ_REFUSED, `readclass.Deployment` in `api/read_classes.go`). Such a person reads
- *  only the projects that name them (dispatch://INFRA-3862/spec#b-r-cross-project-reads), so
- *  these are no page of theirs, and their addresses answer as an unknown one does, before any
- *  read. */
+ *  only the projects that name them (R4 of the private-projects spec), so these are no page of
+ *  theirs, and their addresses answer as an unknown one does, before any read. */
 function DeploymentPages({ restricted }: { restricted: boolean }): ReactNode {
   return restricted ? <NotFoundPage /> : <Outlet />;
 }

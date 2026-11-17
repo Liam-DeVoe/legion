@@ -1,5 +1,5 @@
 /** Which base `e2e/acceptance/project-access-blob.sh` (c-blob-unchanged) compares against when it
- *  is not given one: HEAD's merge base with the base branch (origin/legion/INFRA-1149). A history
+ *  is not given one: HEAD's merge base with the base branch (the driver's `target`). A history
  *  that merged both ways has two merge bases, and `git merge-base` alone can answer main's, which
  *  holds none of the base branch's routes. The driver takes the newest merge base on the base
  *  branch's first-parent line, and when none is on it, it stops with UNKNOWN naming every

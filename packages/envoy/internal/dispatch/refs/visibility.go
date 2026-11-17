@@ -411,9 +411,9 @@ func kindHeldScope(kind, alias, param string) string {
 // zero scope is one nobody stated, which answers every node to the server's own viewer alone and
 // which TestEveryNodeKindAnswersAVisibilityPredicate refuses, naming the kind.
 //
-// Each is v34's rule (dispatch://INFRA-3862/spec): a node of a project to whoever sees that
-// project, and a node of no project as today for an open viewer, and otherwise only one's own or
-// a party of a project one sees. Every clause is the access package's, so the rule has one home.
+// Each is the private-projects spec's v34 rule: a node of a project to whoever sees that project,
+// and a node of no project as today for an open viewer, and otherwise only one's own or a party of
+// a project one sees. Every clause is the access package's, so the rule has one home.
 type nodeScope struct {
 	// name says which rule it is, as a failure names it.
 	name string

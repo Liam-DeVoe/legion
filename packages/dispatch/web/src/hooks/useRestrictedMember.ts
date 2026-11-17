@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { whoAmIQuery } from "../api/queries";
 
 /** Whether the signed-in person is a restricted member (`/auth/whoami`'s `member_kind`), who reads
- *  only the projects that name them (dispatch://INFRA-3862/spec#b-r-cross-project-reads).
+ *  only the projects that name them (R4 of the private-projects spec).
  *  Dispatch refuses such a person every read of the deployment's own rows - the priorities,
  *  Delivery, the broadcasts, the credential requests and machine logins, the groups, the delivery
  *  and new-issue settings (403 DEPLOYMENT_READ_REFUSED, `readclass.Deployment` in
