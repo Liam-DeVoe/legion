@@ -5,7 +5,7 @@
 // draw and what today's model holds are recorded in `issue-layout-seed.ts`'s doc comment.
 
 import type { Actor } from "../web/src/api/types";
-import { checkState } from "../web/src/features/issue-page/tree-drafts";
+import { checkStanding } from "../web/src/features/issue-page/tree-drafts";
 import { setInterests, setLiveSessions } from "./agents";
 import {
   answerAsk,
@@ -92,7 +92,7 @@ export async function pause(milliseconds: number): Promise<void> {
 /** The state a check seeded in `state` must read. `unmarked` reads itself only while the App is
  *  installed on no repository that covers the check's issue, since a check whose repository
  *  Dispatch cannot read is the one it can judge nothing of; with one installed, a result at a
- *  commit no pull request names stands at another commit and reads `older` instead
+ *  commit the default branch does not hold stands at another commit and reads `older` instead
  *  (results_comparison.go's `passStandsOf`). `no-control` is a pass like any other. */
 function wantedState(state: SeededCheckState, repositoryInstalled: boolean): string {
   if (state === "no-control") return "passed";
@@ -101,22 +101,27 @@ function wantedState(state: SeededCheckState, repositoryInstalled: boolean): str
 
 /** Waits until every check of the issue reads the state its seeding implies, so a fixture that
  *  came out in four states fails here and not inside the test that reads the fifth. The state is
- *  read with the page's own rule (`checkState` in `web/src/features/issue-page/tree-drafts.ts`), so
+ *  read with the page's own rule (`checkStanding` in `web/src/features/issue-page/tree-drafts.ts`), so
  *  the seed waits for what the page draws and never for a copy of that rule that has fallen
- *  behind it. */
+ *  behind it. With `only`, it waits for the checks seeded in that one state alone. */
 export async function awaitSeededCheckStates(
   issueKey: string,
   checks: number,
-  repositoryInstalled: boolean
+  repositoryInstalled: boolean,
+  only?: SeededCheckState
 ): Promise<void> {
   const wanted = new Map<string, string>();
   for (let index = 1; index <= checks; index += 1) {
-    wanted.set(checkBlockId(index), wantedState(checkStateOf(index), repositoryInstalled));
+    const state = checkStateOf(index);
+    if (only !== undefined && state !== only) continue;
+    wanted.set(checkBlockId(index), wantedState(state, repositoryInstalled));
   }
   const deadline = Date.now() + 20_000;
   for (;;) {
     const read = await getIssueResults(issueKey);
-    const seen = new Map((read.checks ?? []).map((check) => [check.block_id, checkState(check)]));
+    const seen = new Map(
+      (read.checks ?? []).map((check) => [check.block_id, checkStanding(check).state])
+    );
     if ([...wanted].every(([block, state]) => seen.get(block) === state)) return;
     if (Date.now() > deadline) {
       throw new Error(
@@ -147,11 +152,13 @@ async function seedProjectSurroundings(issueKey: string, repository: string): Pr
   await seedFakeGithub({
     [ARCHITECTURE_REPO]: { contents: "read", files: ARCHITECTURE_MODEL, installation_id: 311 },
     [repository]: {
-      // `STRAY_SHA` is a commit the repository holds and no pull request heads: while this
-      // repository is installed a result recorded at it reads `older` (`wantedState`), and once
-      // the App is installed on nothing, as `seedWholeIssue` leaves it, it reads `unmarked`,
-      // drawn `Cannot tell`. A commit the repository holds nowhere at all is refused
-      // `400 RESULT_COMMIT_UNKNOWN`, so it is named here.
+      // `STRAY_SHA` is a commit the repository holds and neither a pull request nor the default
+      // branch heads: while this repository is installed a result recorded at it reads `older`
+      // (`wantedState`), and once the App is installed on nothing, as `seedWholeIssue` leaves it,
+      // it reads `unmarked`, drawn `Cannot tell`. A commit the repository holds nowhere at all is
+      // refused `400 RESULT_COMMIT_UNKNOWN`, so it is named here. The `after_merge` checks compare
+      // with the default branch, which holds the pull request's head.
+      branch_commits: { main: [HEAD_SHA] },
       commit_pulls: { [HEAD_SHA]: [PULL_NUMBER] },
       commits: [STRAY_SHA],
       contents: "read",
@@ -201,15 +208,21 @@ async function decisionBlockIds(artifactId: string, count: number): Promise<stri
 
 /** One result per check, in the state `checkStateOf` names: a pass and a fail at the pull
  *  request's head, nothing at all for the check nobody ran, a pass whose check is then reworded,
- *  a pass at a commit no pull request names, and a pass recording no negative control. */
+ *  a pass at a commit no pull request names, and a pass recording no negative control.
+ *
+ *  The last two are `after_merge` checks (`verificationDocument`), compared with the default
+ *  branch, and the order of the writes is what seeds their states. The pass stands once a read
+ *  with the App installed has named that branch and found its commit there, an answer the
+ *  server keeps, so it stands with the App installed on nothing too. The result at a commit no
+ *  branch holds is recorded after that read, since the server keeps an answer of "not there"
+ *  as well: no read with the App installed compares it, and once the App is gone nothing can
+ *  say where it stands. */
 async function recordSeededResults(
   issueKey: string,
   checks: number,
   verificationArtifactId: string
 ): Promise<void> {
-  for (let index = 1; index <= checks; index += 1) {
-    const state = checkStateOf(index);
-    if (state === "no-result") continue;
+  const record = async (index: number, state: SeededCheckState): Promise<void> => {
     await recordCheckResult(
       issueKey,
       {
@@ -231,7 +244,16 @@ async function recordSeededResults(
         ops: [{ find: checkText(index), op: "replace", with: rewordedCheckText(index) }],
       });
     }
+  };
+  const unmarked: number[] = [];
+  for (let index = 1; index <= checks; index += 1) {
+    const state = checkStateOf(index);
+    if (state === "no-result") continue;
+    if (state === "unmarked") unmarked.push(index);
+    else await record(index, state);
   }
+  await awaitSeededCheckStates(issueKey, checks, true, "no-control");
+  for (const index of unmarked) await record(index, "unmarked");
 }
 
 export interface IssueShape {
