@@ -228,7 +228,7 @@ func (s *roleSend) delivered(outcome sendOutcome) {
 func (s *roleSend) noHolder(result roles.Resolution) {
 	reportRoleWake(s.d, s.d.delivery.logger, s.role)
 	if s.keep && roleKeepable(result) {
-		if kept, ok := keepForNextHolder(*s.d.delivery, s.role, s.item); ok {
+		if kept, err := keepForNextHolder(*s.d.delivery, s.role, s.item); err == nil {
 			s.kept(result, kept)
 			return
 		}

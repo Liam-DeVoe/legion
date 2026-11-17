@@ -1509,7 +1509,7 @@ func main() {
 	met.NewGaugeFunc("envoy_role_lane_slow_consumers", "Slow-consumer errors the role lane's connection has reported", func() int64 {
 		return int64(roleLaneClient.SlowConsumers())
 	})
-	met.NewGaugeFunc("envoy_role_forwards_outstanding", "Role forwards queued behind their holder or waiting for their outcome", func() int64 {
+	met.NewGaugeFunc("envoy_role_forwards_outstanding", "Role messages queued behind their holder, waiting for their forward's outcome, or held for another delivery attempt", func() int64 {
 		return int64(roleForwards.outstanding())
 	})
 	roleLaneWatchCtx, roleLaneWatchCancel := context.WithCancel(context.Background())

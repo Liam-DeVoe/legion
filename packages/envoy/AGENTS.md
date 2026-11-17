@@ -3684,14 +3684,14 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   each listener holds one core subscription to `notifications.role.>`, on a connection of its own (`bus.ConnectRoleLane`), in the queue group every listener shares, `envoy-roles` (`bus.RoleLaneQueue`), so NATS hands each role message to one listener of all of them.
   A server whose grant lacks that group refuses the subscription before the flush answers;
   the listener then logs it once and subscribes in its machine's group, `envoy-listener-<machine id>` (`bus.ListenerQueue`), as a listener of an earlier release does.
-  The lane's pending limits are 1,000,000 messages and 1 GiB (`bus.RoleLanePendingMsgs`, `bus.RoleLanePendingBytes`), far above the backlog its handler builds while the role bucket answers -- the handler blocks on its forwards only once 4,096 are open and every one ends within its 2 s store window, so about 80 messages queue at the measured 40 a second -- so nats.go queues every role message however far the handler falls behind and drops none under any load the lane meets, while the buffer it may grow to stays bounded.
+  The lane's pending limits are 1,000,000 messages and 1 GiB (`bus.RoleLanePendingMsgs`, `bus.RoleLanePendingBytes`), far above the backlog its handler builds while the role bucket answers -- the handler blocks on its forwards only once 4,096 are open and, while NATS answers, every one ends within its 2 s store window, so about 80 messages queue at the measured 40 a second -- so nats.go queues every role message however far the handler falls behind and drops none under any load the lane meets, while the buffer it may grow to stays bounded.
   The handler also waits on each message's read of the role's claim record from `envoy_roles` (`resolveCoreRoleHolder`), up to 2 s when the bucket does not answer (`roleHolderReadTimeout`, which bounds that read alone, `roleLaneClaims`).
   That is one read per message, so while the bucket does not answer the handler takes at most about one message every 2 s, and at 40 a second the queue reaches 1,000,000 messages in about seven hours;
   `envoy_role_lane_slow_consumers` counts any slow-consumer error the connection still reports, and each change of the count is logged.
   The holder's session read has its own 2 s bound (`roleHolderSessions.Holder`), so a claim read answering just inside its bound, then a session read that runs to its own, holds the handler about 4 s.
   The handler only decodes the message, resolves the live holder (`roles.ResolveHolder`, which reads the role's claim record from `envoy_roles` itself and never the registry's watched copy of it, under `context.Background()`, each of its two reads under its own bound as above) and hands the forward to `roleForwarder`, then returns:
   the forwarder publishes each holder's forwards in the order they arrived and waits for each one's outcome on a goroutine of its own, so a holder whose forward is slow to be stored, or never is, holds up no other role message.
-  At most 4,096 forwards are queued or waiting at once (`roleForwardWaitLimit`, `envoy_role_forwards_outstanding`);
+  At most 4,096 role messages are queued, waiting for their forward's outcome or held for another attempt at once (`roleForwardWaitLimit`, `envoy_role_forwards_outstanding`);
   at that bound the handler waits, which only holds role messages in the lane's queue, up to the pending limits above.
   The forward is published to the holder's agent subject (`bus.Client.StartRequestStoredTo`, `startRoleForward`, the same call the publish route makes) under the `Nats-Msg-Id` the lane chooses (`roleForward.msgID`):
   the forward's dedupe key, a `:` and the subject (`bus.ForwardMsgID`, which the publish route's forwards set too) when the original envelope's key names its event (`contracts.DedupeKeyNamesTheUpstreamEvent`, asked of the envelope as it arrived, before the forward is keyed: the forward's prefix hides a webhook key's shape), and the envelope's `event_id`, a `:` and the subject otherwise, since two distinct envelopes can share a key their sender chose and each of them is a message of its own.
@@ -3700,13 +3700,20 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   — the holder's session consumer relays it, across a restart or a dropped connection ("Session consumers" below).
 
 - No holder answers a receipt, so a forward's whole outcome is the stream's acknowledgement that it stored it, within two seconds (`roleForwardTimeout`).
-  One the stream did not acknowledge storing (`bus.ErrForwardNotStored`), and one not known to have left this process (the publish failed, the flush timed out or failed on a stalled connection, or the server denied it under the listener's grant, `bus.ErrPublishDenied`), are both `delivery_failed`, as a stale holder and an unadvertised or unreadable delivery mode are (`finishRoleForward`); `no_holder` is no claim at all.
+  The lane holds every message it takes until the stream holds a copy of it, or a rule ends it: once the lane takes a role message, the stream holds a copy on the holder's agent subject or on the role's kept lane, or the forwarder holds the message itself, and no branch gives up on a NATS step that failed while it holds neither.
+  A forward ends for good only under a rule no other attempt changes (`roleForwardEnded`): NATS refuses the envelope or the subject (`bus.ErrRefused`), the listener's grant denies it (`bus.ErrPublishDenied`), the server answers no responders or the stream answers with its error, or no acknowledgement came for a confirmed publish and a read of the deployed stream made then says it does not capture the subject (`bus.Client.ReadDeployedStreamCaptures`).
+  Such a forward is `delivery_failed`, as a stale holder and an unadvertised or unreadable delivery mode are (`finishRoleForward`); `no_holder` is no claim at all.
+  Every other failure leaves the listener not knowing whether the stream holds a copy — a window spent before the publish, a flush that failed or ran out on a stalled or dropped connection, a publish not known to have been accepted, an acknowledgement that did not come for a subject the stream captures — so the forwarder holds the message (`roleForwarder.hold`).
+  A held message keeps its slot, so `envoy_role_forwards_outstanding` counts it; it logs `listener role message held for another delivery attempt` at WARN with `delivery_status` `held` and publishes no exception; and after a wait that starts at 100 ms and doubles to 5 s (`roleHoldFirst`, `roleHoldMax`) its whole delivery runs again, the holder resolved again.
+  Every forward of one message to one holder carries the same `Nats-Msg-Id`, and the stream's duplicate window is 72 hours, so a forward that did reach the stream before its retry leaves one copy, and the retry is acknowledged as the duplicate it is.
+  At shutdown the role lane's drain stops the forwarder's attempts (`roleForwarder.stopHolding`): each held message gets one keep on its role's kept lane under the reason `held_at_shutdown`, and one that keep cannot store is logged `listener role message held at shutdown was not kept` at ERROR with its event id.
   There is no `receipt_timeout` reason here any more.
   `bus.confirmPublished` holds how an accepted forward is told from one that is not.
-  Both of the lane's own give-up branches keep the message for the role's next live holder first (`keepRoleLaneMessage`, `resolveCoreRoleHolder`, `roleKeptReason`).
+
+- Both of the lane's own give-up branches keep the message for the role's next live holder first (`keepRoleLaneMessage`, `resolveCoreRoleHolder`, `roleKeptReason`).
   An unclaimed role keeps it under the reason `unclaimed`, and a holder that is not live keeps it under `holder_lapsed`, with that holder named on the kept line, and its claim stands.
   A message that was kept publishes no delivery exception, because it is not lost, and it counts and logs as `kept`.
-  A keep that failed leaves each branch exactly as it was: `no_holder` for an unclaimed role, and `delivery_failed` for a holder that is not live.
+  A keep that failed on NATS holds the message for another attempt; a keep a rule refuses (a role token no claim can name, a refused envelope, a denied subject; `keepFailureHolds`) leaves each branch as it was: `no_holder` for an unclaimed role, and `delivery_failed` for a holder that is not live.
   A claim read that did not answer keeps the message too, under the reason `claim_unread` (`roleClaimUnread`), and forwards nothing:
   a failed read is no evidence that the role has no holder, nor that it has the holder a copy of the bucket names, and the lane has no redelivery, so a kept copy is how the message waits for a read that answers.
   The handover that keep starts resolves the holder again once a read answers and forwards the copy only to a live holder, and the kept-role sweep starts a handover when that one could not.
@@ -3714,7 +3721,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   the copy waits on the kept lane, with no delivery exception published for it, until a handover finds a live holder, the holder answering again or a successor that claimed the role: a claim's, a keep's, the one a registration that makes the holder's session live again starts for each role whose claim record it read for that session, renewed or not, so a session a new process resumed under its old claim is handed its copies too (`subscribeHandler`), the one the claim route's refresh of a claimant it read not live starts for each role the session holds, whatever the claim's answer (`roleSetHandler`), or, as the fallback, the sweep's.
   That handover forwards the copy while it is inside its hour (`roleKeepWindow`).
   Once the copy is older, the first walk that reads it drops it with a WARN, whether or not a session holds the role, and sends the dead letter above when the copy names a sender session.
-  A claim read whose keep failed is `delivery_failed`, as before.
+  A claim read whose keep failed on NATS, and a holder's session read that failed, hold the message for another attempt; a claim read whose keep a rule refused is `delivery_failed`, as before.
   Every other reason emits an exception.
 
 - The role lane reads no `keep` field, because a raw role publish carries none and the envelope has no such field:
@@ -3722,7 +3729,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   The lane's attempt cache holds an entry only while a forward is in flight and a failure rolls it back, while the dedupe cache, which the route shares, records a forward only once the stream stored it
   — so a publish that re-uses a `dedupe_key` after a failure is forwarded again, while one after a stored forward is skipped.
   An agent delivery this listener cannot place clears its own attempt entry before each NAK (`clearAttempt`, `agentSubjectDelivery`), because the redelivery that NAK asks for would otherwise find the entry still there and be dropped as `listener attempt-dedupe skip` before it reached the session at all.
-  The route's bounded retry inside its window is the one retry a role message gets:
+  The role lane's held retry (`roleForwarder.hold`) and the route's bounded retry inside its window are the retries a role message gets:
   do not add a durable role consumer, or retry role messages anywhere else
   — the role lane stays core, and a holder's stored forward is its own session consumer's to deliver.
 

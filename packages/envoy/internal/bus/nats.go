@@ -1666,6 +1666,38 @@ func (c *Client) DeployedStreamCaptures(topic string) bool {
 	return StreamCaptures(topic)
 }
 
+// ReadDeployedStreamCaptures reads the deployed stream's subjects now, within timeout, keeps them
+// for DeployedStreamCaptures, and reports whether the stream captures topic as
+// DeployedStreamCaptures judges it. read is false when no connection is up, the server refuses the
+// read (subjectsRefused), or the read does not answer; captures is then the judgement on the
+// subjects the client already held. It is for a caller that must tell a publish the stream will
+// never acknowledge from one whose acknowledgement was lost: an operator can change the stream's
+// subjects after the client last read them, and only a read made after the loss tells the two
+// apart. A nil client has no connection to read on, and answers as DeployedStreamCaptures does.
+func (c *Client) ReadDeployedStreamCaptures(topic string, timeout time.Duration) (captures, read bool) {
+	if c == nil {
+		return c.DeployedStreamCaptures(topic), false
+	}
+	c.mu.Lock()
+	conn := c.Conn
+	c.mu.Unlock()
+	if conn == nil || !conn.IsConnected() || c.subjectsRefused.Load() {
+		return c.DeployedStreamCaptures(topic), false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	js, err := conn.JetStream(nats.MaxWait(timeout))
+	if err != nil {
+		return c.DeployedStreamCaptures(topic), false
+	}
+	subjects, err := readStreamSubjects(requestsUnder(ctx, js))
+	if err != nil {
+		return c.DeployedStreamCaptures(topic), false
+	}
+	c.deployedSubjects.Store(&subjects)
+	return c.DeployedStreamCaptures(topic), true
+}
+
 // ReachesNoSession reports whether a topic a caller names would deliver to no session at all: a
 // notification topic the deployed stream does not capture (UsesCoreTransport) that is not a role
 // lane. A session receives what its own consumer delivers, which is what the stream stored, so a
