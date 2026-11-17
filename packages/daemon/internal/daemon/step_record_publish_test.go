@@ -92,7 +92,9 @@ func (d *stepRecordDispatch) statusWrites() []string {
 	return slices.Clone(d.statuses)
 }
 
-// stepRecordOf is the end of a review that asked for changes, the record with every field set.
+// stepRecordOf is the end of a review that asked for changes, with every field the end of a step
+// carries set: all but the rating and its reason, which only the retro's rating carries
+// (ratingRecordOf).
 func stepRecordOf() record.StepRecord {
 	started := time.Date(2026, 11, 16, 22, 0, 0, 0, time.UTC)
 	ended := started.Add(time.Hour)
@@ -191,8 +193,11 @@ func TestAStepRecordRetriesUntilDispatchHasTheRoute(t *testing.T) {
 // publication copies them one by one (publishStepRecord), since the dispatch package imports no
 // record of the daemon's. A field added to both types and left out of the copy compiles and drops
 // that field from every write. So the two types are held to one set of fields, each of the same
-// type under the same JSON name; the fixture to a value in every field, which a new field must
-// get; and the write to the record's own value of each.
+// type under the same JSON name; the fixtures, the two writes production makes, to a value in
+// every field between them, which a new field must get in the write that carries it: the end of a
+// step carries every field but the rating and its reason, and the retro's rating (workflow's
+// rateRetro) carries the step's identity, the rating and its reason; and each write to its own
+// record's value of each field.
 func TestAStepRecordReachesDispatchWithEveryField(t *testing.T) {
 	recordType, writeType := reflect.TypeFor[record.StepRecord](), reflect.TypeFor[dispatch.StepWrite]()
 	recordFields := map[string]reflect.StructField{}
@@ -214,28 +219,26 @@ func TestAStepRecordReachesDispatchWithEveryField(t *testing.T) {
 				field.Type, field.Tag.Get("json"), mirror.Type, mirror.Tag.Get("json"), ok)
 		}
 	}
-	rec := stepRecordOf()
-	value := reflect.ValueOf(rec)
+	fixtures := []struct {
+		name string
+		rec  record.StepRecord
+	}{
+		{"the end of a review that asked for changes", stepRecordOf()},
+		{"the rating of a retro", ratingRecordOf()},
+	}
 	for i := range recordType.NumField() {
-		field := recordType.Field(i)
-		if value.Field(i).IsZero() {
-			t.Errorf("stepRecordOf leaves %s unset, so a write that dropped it would pass", field.Name)
+		set := false
+		for _, fixture := range fixtures {
+			set = set || !reflect.ValueOf(fixture.rec).Field(i).IsZero()
+		}
+		if !set {
+			t.Errorf("no fixture sets %s, so a write that dropped it would pass", recordType.Field(i).Name)
 		}
 	}
 	if t.Failed() {
 		t.FailNow()
 	}
 
-	client := &stepRecordDispatch{outboxDispatch: &outboxDispatch{}}
-	runner := &outbox{dispatch: client, log: quietLogger()}
-	if err := runner.publishStepRecord(context.Background(), mustOutboxRow(t, stepIssue, rec, time.Now()), rec); err != nil {
-		t.Fatalf("publish the record: %v", err)
-	}
-	puts := client.received()
-	if len(puts) != 1 || puts[0].Issue != stepIssue || puts[0].ID != rec.ID {
-		t.Fatalf("PUTs = %+v, want the one of record %s under %s", puts, rec.ID, stepIssue)
-	}
-	written := reflect.ValueOf(puts[0].Write)
 	// shown reads a pointer through, so a failure prints the value rather than an address.
 	shown := func(v reflect.Value) any {
 		if v.Kind() == reflect.Pointer && !v.IsNil() {
@@ -243,12 +246,27 @@ func TestAStepRecordReachesDispatchWithEveryField(t *testing.T) {
 		}
 		return v.Interface()
 	}
-	for i := range writeType.NumField() {
-		field := writeType.Field(i)
-		got, want := written.Field(i), value.FieldByName(field.Name)
-		if !reflect.DeepEqual(got.Interface(), want.Interface()) {
-			t.Errorf("the write's %s = %v, want the record's %v", field.Name, shown(got), shown(want))
-		}
+	for _, fixture := range fixtures {
+		t.Run(fixture.name, func(t *testing.T) {
+			rec := fixture.rec
+			client := &stepRecordDispatch{outboxDispatch: &outboxDispatch{}}
+			runner := &outbox{dispatch: client, log: quietLogger()}
+			if err := runner.publishStepRecord(context.Background(), mustOutboxRow(t, stepIssue, rec, time.Now()), rec); err != nil {
+				t.Fatalf("publish the record: %v", err)
+			}
+			puts := client.received()
+			if len(puts) != 1 || puts[0].Issue != stepIssue || puts[0].ID != rec.ID {
+				t.Fatalf("PUTs = %+v, want the one of record %s under %s", puts, rec.ID, stepIssue)
+			}
+			written, value := reflect.ValueOf(puts[0].Write), reflect.ValueOf(rec)
+			for i := range writeType.NumField() {
+				field := writeType.Field(i)
+				got, want := written.Field(i), value.FieldByName(field.Name)
+				if !reflect.DeepEqual(got.Interface(), want.Interface()) {
+					t.Errorf("the write's %s = %v, want the record's %v", field.Name, shown(got), shown(want))
+				}
+			}
+		})
 	}
 }
 
