@@ -172,7 +172,12 @@ function ItemControls({
   // The reader's own words by the page's one rule, as the outline's row tells them.
   const own = isReader(comment?.author, viewer);
   const pending = actions.pendingActionIds.has(item.id);
-  const control = `${pageHeaderControl} disabled:opacity-50`;
+  // A control whose write is out stays enabled, marked busy, as the margin's thread cards keep
+  // theirs (`ThreadCard.tsx`): Chromium drops the focus of a focused button that turns disabled
+  // to the page, and enabling it again does not bring it back. A repeat press does nothing:
+  // the queue ignores a repeat of the action it is sending (`useCommentActionQueue`), and a
+  // delivery's Retry returns while one is out.
+  const control = `${pageHeaderControl} aria-busy:opacity-50`;
   const deliveries: Delivery[] = [
     ...(comment?.deliveries ?? []).map((row) => {
       const mode = deliveryMode(row.delivery) ?? "steer";
@@ -211,16 +216,13 @@ function ItemControls({
   // failure's Retry once what it sent again is out, each under the reader's own press, and the
   // focus would fall to the page with them: it goes to the thread's Resolve or Reopen instead,
   // else to Pin, as Unpin in Pinned hands it on (`IssuePins.tsx`). Pin, Resolve and Reopen, and
-  // the hand-on, stay drawn when pressed.
+  // the hand-on, stay drawn when pressed, and none of them is disabled.
   const held = useRef<Element | null>(null);
   useLayoutEffect(() => {
     if (held.current === null || held.current.isConnected) return;
     held.current = null;
     if (document.activeElement === null || document.activeElement === document.body) {
-      // Resolve or Reopen is disabled while its own write is out, as after a failure's Retry.
-      [threadControl.current, pinControl.current]
-        .find((control) => control !== null && !control.disabled)
-        ?.focus();
+      (threadControl.current ?? pinControl.current)?.focus();
     }
   });
   return (
@@ -249,8 +251,8 @@ function ItemControls({
         </button>
         {head && comment !== undefined ? (
           <button
+            aria-busy={pending || undefined}
             className={control}
-            disabled={pending}
             onClick={() =>
               actions.mutateItem({ id: item.id, kind: comment.resolved ? "reopen" : "resolve" })
             }
@@ -264,8 +266,8 @@ function ItemControls({
         {head && undecided ? (
           <>
             <button
+              aria-busy={pending || undefined}
               className={control}
-              disabled={pending}
               onClick={() => actions.mutateItem({ id: item.id, kind: "accept" })}
               type="button"
               {...pageChrome}
@@ -273,8 +275,8 @@ function ItemControls({
               {CONTROL_LABELS.accept}
             </button>
             <button
+              aria-busy={pending || undefined}
               className={control}
-              disabled={pending}
               onClick={() => actions.mutateItem({ id: item.id, kind: "reject" })}
               type="button"
               {...pageChrome}
@@ -329,9 +331,11 @@ function ItemControls({
                 </span>
                 {isSafeRetry(delivery) ? (
                   <button
+                    aria-busy={retry.isPending || undefined}
                     className={control}
-                    disabled={retry.isPending}
-                    onClick={() => retry.mutate(delivery)}
+                    onClick={() => {
+                      if (!retry.isPending) retry.mutate(delivery);
+                    }}
                     type="button"
                     {...pageChrome}
                   >

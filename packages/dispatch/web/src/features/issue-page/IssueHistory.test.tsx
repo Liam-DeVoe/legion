@@ -10,6 +10,7 @@ import { prependEventToLog } from "../../api/event-feed";
 import type { Artifact, DispatchEvent, IssueDetails, MessageRead } from "../../api/types";
 import { linkText, pageInkText } from "../../theme/classes";
 import { dateKey, dayLabel } from "../activity/activity-model";
+import { emulateChromiumFocusFixup } from "./chromium-focus-fixup";
 import { IssueHistory } from "./IssueHistory";
 import { type OutlineWriter, OutlineWriterProvider, useOutlineWriter } from "./outline-writer";
 import { CONTROL_LABELS } from "./page-words";
@@ -773,6 +774,83 @@ test("the Retry of a failed next page hands the focus to the page it read, as Lo
       "the Retry of the next page went away once it landed and the focus did not go to the page it read"
     ).toBe(true);
   } finally {
+    unmount?.();
+    for (const read of reads) read.mockRestore();
+  }
+});
+
+// A read of the log that fails once the history holds it keeps its line and its Retry drawn
+// while that Retry reads again - the next page's where Load older stood, the log's under the
+// heading - so neither is disabled then: Chromium would drop its focus to the page
+// (`chromium-focus-fixup.ts`). A keyboard reader stays on the Retry while it reads, and when its
+// read fails again.
+test("a history Retry pressed by keyboard keeps the focus while it reads and when its read fails again", async () => {
+  const firstPage = Array.from({ length: 200 }, (_, index) => claimAgo(400 - index, index + 1));
+  let readLog = async (): Promise<DispatchEvent[]> => [...firstPage];
+  let readOlder = async (): Promise<DispatchEvent[]> => {
+    throw new Error("the next page is down");
+  };
+  const reads = [
+    spyOn(api, "getIssueEvents").mockImplementation((_key, options) =>
+      options?.before === undefined ? readLog() : readOlder()
+    ),
+    spyOn(api, "listComments").mockResolvedValue([]),
+    spyOn(api, "listIssueMessages").mockResolvedValue([]),
+    spyOn(api, "listIssueAsks").mockResolvedValue([]),
+  ];
+  let unmount: (() => void) | undefined;
+  let restoreFocus: (() => void) | undefined;
+
+  try {
+    const drawn = drawHistory(undefined);
+    unmount = drawn.unmount;
+    const fetchStatus = () => drawn.queryClient.getQueryState(["events", KEY])?.fetchStatus;
+    (await screen.findByRole("button", { name: CONTROL_LABELS.load_older })).focus();
+    await userEvent.keyboard("{Enter}");
+    const older = await screen.findByRole("button", { name: CONTROL_LABELS.retry });
+    restoreFocus = emulateChromiumFocusFixup();
+    // The read each Retry sends is held out until the case fails it.
+    const olderAgain = Promise.withResolvers<DispatchEvent[]>();
+    readOlder = () => olderAgain.promise;
+    older.focus();
+    await userEvent.keyboard("{Enter}");
+    await waitFor(() => expect(fetchStatus()).toBe("fetching"));
+    expect(
+      document.activeElement,
+      "the next page's Retry left the focus on the page while it read"
+    ).toBe(older);
+    olderAgain.reject(new Error("the next page is down again"));
+    await waitFor(() => expect(fetchStatus()).toBe("idle"));
+    expect(screen.getByRole("button", { name: CONTROL_LABELS.retry })).toBe(older);
+    expect(
+      document.activeElement,
+      "the next page's Retry whose read failed again did not keep the focus"
+    ).toBe(older);
+
+    readLog = async () => {
+      throw new Error("the log is down");
+    };
+    await act(async () => {
+      await drawn.queryClient.refetchQueries({ queryKey: ["events", KEY] });
+    });
+    const log = await screen.findByRole("button", { name: CONTROL_LABELS.retry });
+    const logAgain = Promise.withResolvers<DispatchEvent[]>();
+    readLog = () => logAgain.promise;
+    log.focus();
+    await userEvent.keyboard("{Enter}");
+    await waitFor(() => expect(fetchStatus()).toBe("fetching"));
+    expect(document.activeElement, "the log's Retry left the focus on the page while it read").toBe(
+      log
+    );
+    logAgain.reject(new Error("the log is down again"));
+    await waitFor(() => expect(fetchStatus()).toBe("idle"));
+    expect(screen.getByRole("button", { name: CONTROL_LABELS.retry })).toBe(log);
+    expect(
+      document.activeElement,
+      "the log's Retry whose read failed again did not keep the focus"
+    ).toBe(log);
+  } finally {
+    restoreFocus?.();
     unmount?.();
     for (const read of reads) read.mockRestore();
   }

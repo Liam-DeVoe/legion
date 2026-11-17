@@ -3,7 +3,7 @@ import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-quer
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { type ReactNode, useEffect, useState } from "react";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, type NavigateFunction, useNavigate } from "react-router-dom";
 
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
@@ -21,6 +21,8 @@ import type {
 } from "../../api/types";
 import { answeredWithErrorGuidance, queuedWait } from "../conversation/delivery";
 import { conversationItemId, pinnedItemMarker } from "../issue/pins";
+import { buildIssuePath } from "../refs/routes";
+import { emulateChromiumFocusFixup } from "./chromium-focus-fixup";
 import { DetailsFocusedNode, DetailsHistory, DetailsPeople } from "./details-more";
 import { type FocusedNode, FocusedNodeProvider, useSetFocusedNode } from "./focused-node";
 import { type MarginDrawer, MarginSlotProvider } from "./margin-slot";
@@ -334,6 +336,98 @@ test("a failed Unsubscribe says so, with Retry", async () => {
   }
 });
 
+// With the agents held, a failed read of them keeps its line and its Retry drawn while that
+// Retry reads them again, so the Retry is never disabled then: Chromium would drop its focus to
+// the page (`chromium-focus-fixup.ts`), and a read that failed again would leave it there.
+test("a subscribers' Retry pressed by keyboard over the agents held keeps the focus when its read fails again", async () => {
+  const refusal = () =>
+    new ApiError(503, { code: "ENVOY_UNAVAILABLE", error: "envoy listener unreachable" });
+  const getIssueSubscribers = spyOn(api, "getIssueSubscribers").mockResolvedValue([SUBSCRIBER]);
+  const restoreFocus = emulateChromiumFocusFixup();
+  const view = renderPeople();
+  try {
+    const subscribers = await screen.findByRole("button", { name: SUBSCRIBERS });
+    await waitFor(() => expect(subscribers.textContent).toBe(`${PROPERTY_LABELS.subscribers}:1`));
+    await userEvent.click(subscribers);
+    await screen.findByRole("button", { name: "Unsubscribe" });
+    getIssueSubscribers.mockRejectedValueOnce(refusal());
+    await act(() => view.client.invalidateQueries({ queryKey: ["subscribers", KEY] }));
+    const retry = await screen.findByRole("button", { name: CONTROL_LABELS.retry });
+    // The read the Retry sends is held out until the case fails it.
+    const again = Promise.withResolvers<Subscriber[]>();
+    getIssueSubscribers.mockImplementationOnce(() => again.promise);
+
+    retry.focus();
+    await userEvent.keyboard("{Enter}");
+    await waitFor(() => expect(getIssueSubscribers).toHaveBeenCalledTimes(3));
+    expect(
+      document.activeElement,
+      "the subscribers' Retry left the focus on the page while it read"
+    ).toBe(retry);
+
+    again.reject(refusal());
+    await waitFor(() =>
+      expect(view.client.getQueryState(["subscribers", KEY])?.fetchStatus).toBe("idle")
+    );
+    expect(screen.getByRole("alert").textContent).toBe(STATE_LINES.subscribers_unreadable);
+    expect(screen.getByRole("button", { name: CONTROL_LABELS.retry })).toBe(retry);
+    expect(
+      document.activeElement,
+      "the subscribers' Retry whose read failed again left the focus on the page"
+    ).toBe(retry);
+    expect(screen.queryByRole("button", { name: "Unsubscribe" })).not.toBeNull();
+  } finally {
+    restoreFocus();
+    view.unmount();
+    getIssueSubscribers.mockRestore();
+  }
+});
+
+// `/issues/<key>/collaborators` opens Details once per arrival at it (`DetailsHistory`), and
+// the collaborators' list with it: a reader who closed the list there and arrives at the same
+// address again - `t o`, or a link to the address they are on - finds it open.
+test("each arrival at the collaborators' address opens their list, though the reader closed it", async () => {
+  const getIssueSubscribers = spyOn(api, "getIssueSubscribers").mockResolvedValue([]);
+  const getIssueCollaborators = spyOn(api, "getIssueCollaborators").mockResolvedValue({
+    agents: [],
+    issue_key: KEY,
+    legion_registry: "ok",
+    people: [],
+  });
+  const address = buildIssuePath({ key: KEY, kind: "collaborators" });
+  let navigate: NavigateFunction | undefined;
+  function Navigator(): ReactNode {
+    navigate = useNavigate();
+    return null;
+  }
+  const view = render(
+    <MemoryRouter initialEntries={[address]}>
+      <QueryClientProvider client={readsHeld()}>
+        <Navigator />
+        <DetailsPeople issue={issue} state={undefined} />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  try {
+    const collaborators = screen.getByRole("button", { name: PROPERTY_LABELS.collaborators });
+    expect(collaborators.getAttribute("aria-expanded")).toBe("true");
+    await userEvent.click(collaborators);
+    expect(collaborators.getAttribute("aria-expanded")).toBe("false");
+
+    // A link to the address the reader is on replaces it with itself (`RowText.tsx`): the same
+    // address, under a key of its own.
+    act(() => navigate?.(address, { replace: true }));
+    expect(
+      collaborators.getAttribute("aria-expanded"),
+      "an arrival at the collaborators' address again left their list shut"
+    ).toBe("true");
+  } finally {
+    view.unmount();
+    getIssueSubscribers.mockRestore();
+    getIssueCollaborators.mockRestore();
+  }
+});
+
 // Under "The row you are on", the facts of the row the reader is on:
 // its kind with its first line, its state where its kind has one, and who wrote it.
 test("the facts name the focused node's kind, first line, state and author", async () => {
@@ -438,7 +532,7 @@ test("a comment's facts pin it, resolve its thread and accept its suggestion", a
     seq: input.seq ?? 0,
   }));
   // The first Resolve is refused; the second, the facts' own Retry, is held out until the case
-  // lets it land, so the case reads where the focus went while Resolve is disabled.
+  // lets it land, so the case reads where the focus went while that write is out.
   let resolves = 0;
   const held = Promise.withResolvers<void>();
   const resolveComment = spyOn(api, "resolveComment").mockImplementation(async () => {
@@ -493,19 +587,27 @@ test("a comment's facts pin it, resolve its thread and accept its suggestion", a
     await userEvent.click(within(controls).getByRole("button", { name: CONTROL_LABELS.resolve }));
     await waitFor(() => expect(resolveComment).toHaveBeenCalledWith("comment-3", keyedAttempt));
     // The refused Resolve says so with the facts' own Retry, which goes as it sends the write
-    // again: Resolve is disabled while that write is out, so the focus goes to Unpin.
+    // again: Resolve stays enabled while that write is out, marked busy, so the focus goes to it.
     const retry = await screen.findByRole("button", { name: CONTROL_LABELS.retry });
     await userEvent.click(retry);
     await waitFor(() => expect(resolveComment).toHaveBeenCalledTimes(2));
     await waitFor(() =>
       expect(screen.queryByRole("button", { name: CONTROL_LABELS.retry })).toBeNull()
     );
-    expect(control(CONTROL_LABELS.resolve)).toHaveProperty("disabled", true);
+    const resolve = control(CONTROL_LABELS.resolve);
+    expect(resolve).toHaveProperty("disabled", false);
+    expect(resolve?.getAttribute("aria-busy")).toBe("true");
     expect(document.activeElement, "the focus fell to the page with the facts' Retry").toBe(
-      control(CONTROL_LABELS.unpin)
+      resolve
     );
     held.resolve();
-    await within(controls).findByRole("button", { name: CONTROL_LABELS.reopen_thread });
+    const reopen = await within(controls).findByRole("button", {
+      name: CONTROL_LABELS.reopen_thread,
+    });
+    // Reopen is the control Resolve was, so the focus is still on it.
+    expect(document.activeElement, "the focus left the thread's control as it read Reopen").toBe(
+      reopen
+    );
     expect(control(CONTROL_LABELS.resolve)).toBeNull();
     expect(control(CONTROL_LABELS.reject)).not.toBeNull();
 
@@ -527,6 +629,62 @@ test("a comment's facts pin it, resolve its thread and accept its suggestion", a
     putIssueState.mockRestore();
     resolveComment.mockRestore();
     acceptComment.mockRestore();
+  }
+});
+
+// Chromium moves the focus of a focused button that turns disabled to the page, and enabling it
+// again does not bring it back (`chromium-focus-fixup.ts` does the same here). A thread's
+// Resolve therefore stays enabled while its write is out, marked busy: a keyboard reader who
+// pressed it is still on it then, and on the same control once the thread is resolved and it
+// reads Reopen.
+test("a keyboard Resolve keeps the focus on its control while its write is out and once it reads Reopen", async () => {
+  const open = bobsComment("comment-5");
+  let comments = [open];
+  const listComments = spyOn(api, "listComments").mockImplementation(async () => comments);
+  // The write is held out until the case lets it land.
+  const held = Promise.withResolvers<void>();
+  const resolveComment = spyOn(api, "resolveComment").mockImplementation(async () => {
+    await held.promise;
+    const resolved = { ...open, resolved: true };
+    comments = [resolved];
+    return resolved;
+  });
+  const client = readsHeld();
+  client.setQueryData(["comments", KEY], comments);
+  const restoreFocus = emulateChromiumFocusFixup();
+  const view = render(
+    <MemoryRouter>
+      <QueryClientProvider client={client}>
+        <FocusedNodeProvider>
+          <Focus node={commentNode(open)} />
+          <DetailsFocusedNode issue={issue} state={undefined} />
+        </FocusedNodeProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  try {
+    const resolve = await screen.findByRole("button", { name: CONTROL_LABELS.resolve });
+    resolve.focus();
+    await userEvent.keyboard("{Enter}");
+    await waitFor(() => expect(resolveComment).toHaveBeenCalledWith("comment-5", keyedAttempt));
+    // Resolve as the page draws it while its write is out, whichever way it draws that.
+    await waitFor(() => expect(resolve.matches(":disabled, [aria-busy='true']")).toBe(true));
+    expect(
+      document.activeElement,
+      "a keyboard Resolve left the focus on the page while its write was out"
+    ).toBe(resolve);
+
+    held.resolve();
+    const reopen = await screen.findByRole("button", { name: CONTROL_LABELS.reopen_thread });
+    expect(reopen, "Reopen is not the control Resolve was").toBe(resolve);
+    expect(document.activeElement, "the focus left Reopen once the thread was resolved").toBe(
+      reopen
+    );
+  } finally {
+    restoreFocus();
+    view.unmount();
+    listComments.mockRestore();
+    resolveComment.mockRestore();
   }
 });
 

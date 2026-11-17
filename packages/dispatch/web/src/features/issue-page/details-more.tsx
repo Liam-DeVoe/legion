@@ -53,17 +53,19 @@ const DRAWING_FRAMES = 20;
  * so the People section costs the page one request on any other address: the subscribers' count.
  */
 export function DetailsPeople({ issue }: DetailsMoreProps): ReactNode {
-  const { pathname } = useLocation();
+  const { key, pathname, search } = useLocation();
   const opensCollaborators = parseIssuePath(pathname)?.kind === "collaborators";
   const subscribers = useIssueSubscribers(issue.key);
   // The session the last Unsubscribe was for: where Dispatch refused it, Retry sends it again.
   const refused = subscribers.unsubscribe.variables;
   const [subscribersOpen, setSubscribersOpen] = useState(false);
   const [collaboratorsOpen, setCollaboratorsOpen] = useState(opensCollaborators);
-  // The address opens the list; closing it again is the reader's, so this only ever opens.
+  // Each arrival at the address opens the list, as it opens Details (`DetailsHistory`), with the
+  // same arrival; closing it again is the reader's until the next, so this only ever opens.
+  const arrival = arrivalAt(key, opensCollaborators ? `${pathname}${search}` : undefined);
   useEffect(() => {
-    if (opensCollaborators) setCollaboratorsOpen(true);
-  }, [opensCollaborators]);
+    if (arrival !== undefined) setCollaboratorsOpen(true);
+  }, [arrival]);
   const subscribersRow = useRef<HTMLDivElement>(null);
   const subscribersControl = useRef<HTMLButtonElement>(null);
   const collaboratorsControl = useRef<HTMLButtonElement>(null);
@@ -125,21 +127,27 @@ export function DetailsPeople({ issue }: DetailsMoreProps): ReactNode {
             subscribers={subscribers.rows}
           />
         ) : null}
+        {/* Neither Retry is disabled while what it sent is out, since Chromium drops the focus of
+            a focused button that turns disabled to the page; a press then does nothing. */}
         {subscribers.error ? (
           <DetailsErrorLine
             error={subscribers.failure}
             message={STATE_LINES.subscribers_unreadable}
-            onRetry={subscribers.refetch}
-            retrying={subscribers.fetching}
+            onRetry={() => {
+              if (!subscribers.fetching) subscribers.refetch();
+            }}
           />
         ) : null}
         {subscribers.unsubscribe.isError ? (
           <DetailsErrorLine
             message={ANSWER_LINES.unsubscribe_failed}
             onRetry={
-              refused === undefined ? undefined : () => subscribers.unsubscribe.mutate(refused)
+              refused === undefined
+                ? undefined
+                : () => {
+                    if (!subscribers.unsubscribe.isPending) subscribers.unsubscribe.mutate(refused);
+                  }
             }
-            retrying={subscribers.unsubscribe.isPending}
           />
         ) : null}
       </WideRow>
@@ -248,12 +256,9 @@ export function DetailsHistory({ issue, state }: DetailsMoreProps): ReactNode {
   const openDetails = drawer?.setOpen;
   const openDetailsAt = useOpenDetailsAt();
   const panelAddress = opensCollaborators || opensHistory ? `${pathname}${search}` : undefined;
-  // One arrival at such an address is one navigation to it: the address with the key
-  // react-router gives each navigation (`location.key`), so a link the reader follows to the
-  // address they are on, which replaces it with itself (`RowText.tsx`), is an arrival too and
-  // opens Details again. The address is part of it because a load, and a history entry the
-  // router did not write, all carry the key "default".
-  const arrival = panelAddress === undefined ? undefined : `${key} ${panelAddress}`;
+  // Details opens once per arrival at such an address (`arrivalAt`), so a link the reader
+  // follows to the address they are on opens it again.
+  const arrival = arrivalAt(key, panelAddress);
   const openedFor = useRef<string | undefined>(undefined);
   useEffect(() => {
     if (arrival === undefined || openDetails === undefined) {
@@ -315,6 +320,17 @@ export function DetailsHistory({ issue, state }: DetailsMoreProps): ReactNode {
       visitMark={visitMark.current?.issue === issue.key ? visitMark.current.seq : lastReadSeq}
     />
   );
+}
+
+/**
+ * One arrival at `address`, an address that opens Details, which is one navigation to it: the
+ * address with the key react-router gives each navigation (`location.key`), so a link the
+ * reader follows to the address they are on, which replaces it with itself (`RowText.tsx`), is
+ * an arrival too. The address is part of it because a load, and a history entry the router did
+ * not write, all carry the key "default". `undefined` while the reader is at no such address.
+ */
+function arrivalAt(locationKey: string, address: string | undefined): string | undefined {
+  return address === undefined ? undefined : `${locationKey} ${address}`;
 }
 
 /**

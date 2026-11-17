@@ -9,6 +9,7 @@ import { MemoryRouter } from "react-router-dom";
 import { api } from "../../api/client";
 import type { Agent, IssueCollaboratorAgent, IssueCollaborators } from "../../api/types";
 import { collaboratorSections } from "../issue/CollaboratorsTab";
+import { emulateChromiumFocusFixup } from "./chromium-focus-fixup";
 import { IssueCollaboratorList } from "./IssueCollaboratorList";
 import { PROPERTY_LABELS } from "./page-structure";
 import { ANSWER_LINES, CONTROL_LABELS, EMPTY_STATE_LINES, STATE_LINES } from "./page-words";
@@ -222,6 +223,52 @@ test("the collaborators say when Legion's record could not be read, and when nob
     expect(empty.read).toHaveBeenCalledWith("CORE-1");
   } finally {
     empty.restore();
+  }
+});
+
+// With the list held, a failed read of it keeps its line and its Retry drawn while that Retry
+// reads it again, so the Retry is never disabled then: Chromium would drop its focus to the page
+// (`chromium-focus-fixup.ts`), and a read that failed again would leave it there.
+test("the collaborators' Retry pressed by keyboard over the list held keeps the focus when its read fails again", async () => {
+  const list = renderCollaborators({
+    agents: [otherAgent("writer", "2026-10-26T01:00:00Z")],
+    issue_key: "CORE-1",
+    legion_registry: "ok",
+    people: [],
+  });
+  const restoreFocus = emulateChromiumFocusFixup();
+  const key = ["issue", "CORE-1", "collaborators"];
+  try {
+    await screen.findByRole("region", { name: CONTROL_LABELS.collaborators_others });
+    list.read.mockRejectedValueOnce(new Error("the collaborators' read failed"));
+    await act(() => list.client.invalidateQueries({ queryKey: key }));
+    const retry = await screen.findByRole("button", { name: CONTROL_LABELS.retry });
+    // The read the Retry sends is held out until the case fails it.
+    const again = Promise.withResolvers<IssueCollaborators>();
+    list.read.mockImplementationOnce(() => again.promise);
+
+    retry.focus();
+    await userEvent.keyboard("{Enter}");
+    await waitFor(() => expect(list.read).toHaveBeenCalledTimes(3));
+    expect(
+      document.activeElement,
+      "the collaborators' Retry left the focus on the page while it read"
+    ).toBe(retry);
+
+    again.reject(new Error("the collaborators' read failed again"));
+    await waitFor(() => expect(list.client.getQueryState(key)?.fetchStatus).toBe("idle"));
+    expect(screen.getByRole("alert").textContent).toBe(ANSWER_LINES.collaborators_unreadable);
+    expect(screen.getByRole("button", { name: CONTROL_LABELS.retry })).toBe(retry);
+    expect(
+      document.activeElement,
+      "the collaborators' Retry whose read failed again left the focus on the page"
+    ).toBe(retry);
+    expect(
+      sessionsIn(screen.getByRole("region", { name: CONTROL_LABELS.collaborators_others }))
+    ).toEqual(["writer"]);
+  } finally {
+    restoreFocus();
+    list.restore();
   }
 });
 

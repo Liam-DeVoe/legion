@@ -135,7 +135,9 @@ export function NodeReferences({
   // The control of the list the focus was last on (`onFocus` below). Retry goes with its line
   // once the read it sent lands, under the reader's own press, and the focus would fall to the
   // page with it: it goes back to the list's own control instead, as Unpin in Pinned hands it on
-  // (`IssuePins.tsx`).
+  // (`IssuePins.tsx`). Retry is never disabled while it reads again, since Chromium drops the
+  // focus of a focused button that turns disabled to the page, so a read that fails again
+  // leaves the focus on it; a press while the list is read does nothing.
   const held = useRef<Element | null>(null);
   useLayoutEffect(() => {
     if (held.current === null || held.current.isConnected) return;
@@ -179,8 +181,9 @@ export function NodeReferences({
               <DetailsErrorLine
                 error={query.error}
                 message={ANSWER_LINES.references_unreadable}
-                onRetry={() => void query.refetch()}
-                retrying={query.isFetching}
+                onRetry={() => {
+                  if (!query.isFetching) void query.refetch();
+                }}
               />
             </div>
           ) : null}

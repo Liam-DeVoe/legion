@@ -376,15 +376,18 @@ export function IssueHistory({
         message={ANSWER_LINES.history_unreadable}
         onRetry={() => {
           // The next page's Retry stands where Load older stood, and hands the focus on as it
-          // does; the log's Retry, under the heading, to the heading.
+          // does; the log's Retry, under the heading, to the heading. Neither is disabled while
+          // it reads again, since Chromium drops the focus of a focused button that turns
+          // disabled to the page, so a read that fails again leaves the focus on it; a press
+          // while the log is read sends nothing.
           if (failure.current?.contains(document.activeElement) === true) {
             pressed.current = log.isFetchNextPageError
               ? { before: new Set(controlsOfList()), kind: "older" }
               : { kind: "retry" };
           }
+          if (log.isFetching) return;
           void (log.isFetchNextPageError ? log.fetchNextPage() : log.refetch());
         }}
-        retrying={log.isFetching}
       />
     </div>
   ) : null;

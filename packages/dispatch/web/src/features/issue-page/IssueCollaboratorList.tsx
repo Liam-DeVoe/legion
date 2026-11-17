@@ -95,7 +95,9 @@ export function IssueCollaboratorList({
   const query = useQuery(issueCollaboratorsQuery(issueKey));
   // The Retry the reader pressed goes with its line once the read lands, and the focus with it:
   // the focus goes to the control that opens the list rather than fall to the page, as Unpin in
-  // Pinned hands it on (`IssuePins.tsx`).
+  // Pinned hands it on (`IssuePins.tsx`). It is never disabled while it reads again, so a read
+  // that fails again leaves the focus on it: Chromium drops the focus of a focused button that
+  // turns disabled to the page. A press while the list is read does nothing.
   const retried = useRef<Element | null>(null);
   useLayoutEffect(() => {
     if (retried.current === null || retried.current.isConnected) return;
@@ -109,9 +111,8 @@ export function IssueCollaboratorList({
       message={ANSWER_LINES.collaborators_unreadable}
       onRetry={() => {
         retried.current = document.activeElement;
-        void query.refetch();
+        if (!query.isFetching) void query.refetch();
       }}
-      retrying={query.isFetching}
     />
   ) : null;
   if (query.data === undefined) {
