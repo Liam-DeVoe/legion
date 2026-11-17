@@ -300,10 +300,31 @@ func SessionNameTooLong(what string, bytes int) Refusal {
 		"the %s is %d bytes; a session id, and a session file's name, are at most %d bytes", what, bytes, MaxSessionNameBytes)}
 }
 
+// SessionFileNotClean refuses a registration whose session file is not the clean path it names
+// (filepath.Clean of it differs): a last part of `.` or `..`, a doubled or trailing `/`. Such a
+// path's base name is not the session's file name, so the file-name hold would hold the wrong
+// name, and a resume could reach another session's file. It is a 400: the plugins send the clean
+// path of the file they wrote.
+func SessionFileNotClean(file string) Refusal {
+	return Refusal{Status: http.StatusBadRequest, Message: fmt.Sprintf(
+		"the session file %q is not a clean path; a session file is the path of the file the agent writes, with no `.` or `..` part and no doubled or trailing `/`", file)}
+}
+
+// SessionNameUnheldRefusal refuses a claim that records a session name the daemon cannot hold: one
+// longer than MaxSessionNameBytes, or a session file that is not a clean path, which only a daemon
+// from before the hold could have recorded. Nothing holds such a name, so it is treated as held for
+// no claim: the claim resumes, enrolls and registers nothing under it until an operator gives it a
+// new session (`legion claims forget-session`). It is a 409, as SessionHeldRefusal is.
+func SessionNameUnheldRefusal(what string) Refusal {
+	return Refusal{Status: http.StatusConflict, Message: fmt.Sprintf(
+		"this claim records a %s this daemon cannot hold, so it takes nothing under it; an operator gives the claim a new session", what)}
+}
+
 // HeldNamesCapRefusal refuses a registration whose new session names would take its claim past
-// the most one claim may hold, max (supervise.MaxHeldNamesPerClaim): nothing deletes a hold, so
-// without a bound one role could grow the daemon's record of held names without end. It is a 409,
-// as SessionHeldRefusal is: the request is well formed, but the claim's own record refuses it.
+// the most one claim may hold, max (supervise.MaxHeldNamesPerClaim): only an operator's release
+// statement deletes a hold, so without a bound one role could grow the daemon's record of held
+// names without end. It is a 409, as SessionHeldRefusal is: the request is well formed, but the
+// claim's own record refuses it.
 // Nothing of the registration is recorded, and the claim keeps every name it holds. So a claim that
 // records a session still resumes that one, but a claim that needs a new session, one that records
 // none after a fresh start, starts none until an operator frees the names of its older sessions

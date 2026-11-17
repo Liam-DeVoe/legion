@@ -734,8 +734,9 @@ type Store interface {
 	// the project has recorded it, and answers, in holds' order, the claim that holds each: token
 	// itself when it recorded the name before or none had, another claim when that one recorded it
 	// first, and the empty token for a name held for no claim. It records all of holds or none: a
-	// name another claim holds leaves every other name unrecorded. A hold is never released,
-	// whatever becomes of the claim holding it (holdRecorded).
+	// name another claim holds leaves every other name unrecorded. Only an operator's release
+	// statement deletes a hold (ReleaseOldNamesStatement), whatever becomes of the claim holding it
+	// (holdRecorded).
 	HoldSessions(ctx context.Context, project string, token claim.Token, holds []Hold) ([]claim.Token, error)
 }
 
