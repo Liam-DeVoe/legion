@@ -34,10 +34,10 @@
 # Each case builds a miniature repository under a temporary directory - a go.work binding one
 # module, a ci.yaml whose `changes` job gates one job, a root package.json with one workspace, and
 # a ci_job_reads.py describing them - and symlinks the real script, its engine
-# (ci_filter_coverage.py), the rules of ci.yaml it runs
-# (ci_workflow_rules.py) and the path model they import (workflow_paths.py) into it, so the code
-# under test is the code CI runs. It needs go and a
-# python3 with PyYAML.
+# (ci_filter_coverage.py), the rules of ci.yaml it runs (ci_workflow_rules.py), the path model
+# they import (workflow_paths.py) and the tie producer that runs the engine (go-test-reads.sh)
+# into it, so the code under test is the code CI runs. It needs go and a python3 with
+# PyYAML.
 #
 # Run from anywhere: .github/scripts/check-ci-filters.test.sh
 # CI runs it in ci.yaml's test job.

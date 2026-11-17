@@ -129,9 +129,15 @@ func runCitations(args []string, stdout, stderr io.Writer) int {
 	} else {
 		tie = newDerivedTies(*repo).tie
 		if *changedFile != "" {
-			base := &baseCheckout{repo: *repo, commit: baseCommit}
-			defer base.close()
-			baseTie = base.tie
+			if head, ok := commitName(*repo, "HEAD"); ok && head == baseCommit {
+				// The base is the commit itself, whose tie is the one at the commit (R8: a result counts
+				// at its own commit), so no checkout is made.
+				baseTie = tie
+			} else {
+				base := &baseCheckout{repo: *repo, commit: baseCommit}
+				defer base.close()
+				baseTie = base.tie
+			}
 		}
 	}
 

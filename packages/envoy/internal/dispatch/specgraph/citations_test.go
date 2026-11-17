@@ -279,6 +279,20 @@ func TestCitations(t *testing.T) {
 			c.changed = []string{"docs/x.md"}
 			c.outcome("skip")
 		}, want: fault(notRun, "test-not-run: its tie at the base commit is unknown (no tie at the base commit was given), and go-checks did not run example.com/citations/a TestA (its report shows it skipped)")},
+		// A result carries from the base only when the tie is known at both ends (R8), so a tie at the
+		// base that is not known counts as changed also when no path changed. The control: both ties
+		// known and nothing changed, and the skipped test is cited.
+		{name: "nothing changed, the job skipped the test, and the tie at the base is unknown", change: func(c *citationCase) {
+			c.baseTies[citationCheck.ID] = Tie{Why: "go list failed at the base"}
+			c.outcome("skip")
+		}, want: fault(notRun, "test-not-run: its tie at the base commit is unknown (go list failed at the base), and go-checks did not run example.com/citations/a TestA (its report shows it skipped)")},
+		{name: "nothing changed, the job skipped the test, and no tie at the base is given", change: func(c *citationCase) {
+			c.baseTies = nil
+			c.outcome("skip")
+		}, want: fault(notRun, "test-not-run: its tie at the base commit is unknown (no tie at the base commit was given), and go-checks did not run example.com/citations/a TestA (its report shows it skipped)")},
+		{name: "control: nothing changed, the job skipped the test, and both ties are known", change: func(c *citationCase) {
+			c.outcome("skip")
+		}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
@@ -299,7 +313,7 @@ func known(paths ...string) Tie {
 // Deriving a tie runs the repository's own tools in production, and the tie at the base needs a
 // checkout of the base commit, so Citations asks for each only when it decides: the tie at this
 // commit when the check's test did not run, and the tie at the base when, besides, the tie at this
-// commit covers no changed path.
+// commit covers no changed path, also when nothing changed.
 func TestCitationsAsksForEachTieOnlyWhenItDecides(t *testing.T) {
 	t.Parallel()
 	for _, row := range []struct {
@@ -308,7 +322,7 @@ func TestCitationsAsksForEachTieOnlyWhenItDecides(t *testing.T) {
 		asked, askedBase bool
 	}{
 		{"the test ran", func(c *citationCase) { c.changed = []string{"docs/x.md"} }, false, false},
-		{"nothing changed", func(c *citationCase) { c.outcome("skip") }, true, false},
+		{"nothing changed", func(c *citationCase) { c.outcome("skip") }, true, true},
 		{"the tie at this commit covers a changed path", func(c *citationCase) {
 			c.changed = []string{"a/a.go"}
 			c.outcome("skip")

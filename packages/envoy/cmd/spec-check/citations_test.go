@@ -38,8 +38,9 @@ func testPart(selector, job string) string {
 // goReport is a go test -json report of TestA of package a with outcome, pass, fail or skip, or a
 // run with no end for "", as go test of Go 1.27 writes it: the run and its end each with go test's
 // own line, a frame, before the end event (testdata/gotest/pass.jsonl of specgraph is one such
-// report). A report of a Go before 1.27 has no frame, and ReadGoTestJSON refuses it. "cached" is
-// a pass that go test replayed from its cache, with the package's summary line that says so
+// report), and last the package's own end event, without which no run of the package counts. A
+// report of a Go before 1.27 has no frame, and ReadGoTestJSON refuses it. "cached" is a pass that
+// go test replayed from its cache, with the package's summary line that says so
 // (testdata/gotest/cached/cached.jsonl of specgraph).
 func goReport(outcome string) string {
 	const pkg = `"Package":"example.com/citations/a","Test":"TestA"`
@@ -56,7 +57,16 @@ func goReport(outcome string) string {
 	if outcome == "cached" {
 		report += `{"Action":"output","Package":"example.com/citations/a","Output":"ok  \texample.com/citations/a\t(cached)\n"}` + "\n"
 	}
-	return report
+	if end == "fail" || end == "" {
+		return report + packageEnd("fail")
+	}
+	return report + packageEnd("pass")
+}
+
+// packageEnd is the end event of package a with action, the last event that go test writes of a
+// package.
+func packageEnd(action string) string {
+	return `{"Action":"` + action + `","Package":"example.com/citations/a","Elapsed":0.01}` + "\n"
 }
 
 // needsOf is toJSON(needs) of a run where changes succeeded and go-checks ended with result.
@@ -279,6 +289,13 @@ func TestCitationsCommand(t *testing.T) {
 			r.changed = "docs/x.md\n"
 			r.reports["spec-report--go-checks"] = goReport("cached")
 		}},
+		// A run counts only when the report holds the end of its package, after which go test writes
+		// nothing of it: a report cut before that end can lack the line that says the run was cached.
+		// Its control is the whole report, the row "code of the tie changed and the test ran".
+		{name: "code of the tie changed and the report ends before its package's end", change: func(r *citationRun) {
+			r.changed = "a/a.go\n"
+			r.reports["spec-report--go-checks"] = strings.TrimSuffix(goReport("pass"), packageEnd("pass"))
+		}, rule: "test-not-run", detail: notRun + "a/a.go changed, and go-checks did not run example.com/citations/a TestA (it could not run)"},
 		// A changed path counts when the tie at either end holds it.
 		{name: "the change deleted the test's testdata directory, which only the tie at the base holds", change: func(r *citationRun) {
 			r.baseTies = `{"` + citedCheck + `":["a/*","a/testdata/**","fixtures/a.json"]}`
@@ -290,6 +307,15 @@ func TestCitationsCommand(t *testing.T) {
 			r.changed = "docs/x.md\n"
 			r.reports["spec-report--go-checks"] = goReport("skip")
 		}, rule: "test-not-run", detail: notRun + "its tie at the base commit is unknown (--ties holds no ties of commit {base}), and go-checks did not run example.com/citations/a TestA (its report shows it skipped)"},
+		// A result carries from the base only while the tie is known at both ends, also when no path
+		// changed. The control: both ties known, nothing changed, and the skipped test is cited.
+		{name: "--ties holds no ties of the base commit, and nothing changed", change: func(r *citationRun) {
+			r.baseTies = "-"
+			r.reports["spec-report--go-checks"] = goReport("skip")
+		}, rule: "test-not-run", detail: notRun + "its tie at the base commit is unknown (--ties holds no ties of commit {base}), and go-checks did not run example.com/citations/a TestA (its report shows it skipped)"},
+		{name: "control: --ties holds both ties, and nothing changed", change: func(r *citationRun) {
+			r.reports["spec-report--go-checks"] = goReport("skip")
+		}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
@@ -720,16 +746,19 @@ func TestCitationsFromTheMergeBase(t *testing.T) {
 // each test ran starts no go-test-reads.sh and makes no checkout of the base. The script of the
 // fixture writes a line to a file of the test each time it runs, at the head and at the base. The
 // control is the same run with the test skipped, where only docs/readme.md changed: the tie at the
-// head covers no changed path, so citations asks the script at the head and then at the base.
+// head covers no changed path, so citations asks the script at the head and then at the base. A
+// list from the head itself has the head as its base, whose tie is the one at the head: the script
+// runs once, and no checkout is made.
 func TestCitationsDerivesATieOnlyForATestThatDidNotRun(t *testing.T) {
 	t.Parallel()
 	binary := cmdtest.Build(t, "spec-check")
 	workflow := fixture(t, "citations", "workflow.yaml")
 	for _, row := range []struct {
-		outcome string
-		runs    int
-	}{{"pass", 0}, {"skip", 2}} {
-		t.Run(row.outcome, func(t *testing.T) {
+		name, outcome string
+		fromHead      bool // the list's base is the head itself
+		runs          int
+	}{{"pass", "pass", false, 0}, {"skip", "skip", false, 2}, {"skip, from the head itself", "skip", true, 1}} {
+		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
 			g := newGitCase(t, `["a/*"]`)
 			runs := filepath.Join(t.TempDir(), "runs")
@@ -742,7 +771,9 @@ func TestCitationsDerivesATieOnlyForATestThatDidNotRun(t *testing.T) {
 			writeFile(t, filepath.Join(g.repo, "docs", "readme.md"), []byte("The answer.\n"))
 			base := commitAll(t, g.repo, "", "base")
 			writeFile(t, filepath.Join(g.repo, "docs", "readme.md"), []byte("The answer, again.\n"))
-			commitAll(t, g.repo, base, "docs")
+			if head := commitAll(t, g.repo, base, "docs"); row.fromHead {
+				base = head
+			}
 			dir := filepath.Join(g.repo, ".dispatch", "spec")
 			expect(t, g.cite(t, binary, workflow, base), result{stdout: "spec-check: " + dir + ": 1 program check; each is cited\n"})
 			content, err := os.ReadFile(runs)

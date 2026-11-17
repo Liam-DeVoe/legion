@@ -117,7 +117,8 @@ func (d *derivedTies) once(workdir string, pkgs, env []string) ([]string, error)
 // that the first ask makes and close removes. A file that the change deleted or moved out of a tie
 // is in no tie at the head, so a result carries from the base only while no file of the base's
 // tie changed either (specgraph.Citations), which asks only for a check whose test did not run and
-// whose tie at the head covers no changed path: a run where each test ran makes no checkout.
+// whose tie at the head covers no changed path: a run where each test ran makes no checkout, and
+// citations makes none for a base that is the head, whose tie is the one at the head.
 type baseCheckout struct {
 	repo, commit string
 	dir          string // the checkout's directory, once made

@@ -137,33 +137,38 @@
 // in <root>), the code cannot be searched for it, its selector picks two tests, its job is not in
 // the workflow or spec-citations does not wait for it, or code that its test reads changed and the
 // job did not run the test. A result that go test replayed from its cache, the package's line "ok
-// <package> (cached)", is no run at the commit. --changed is the list that changed prints: its
-// first line, "base <commit>", names the commit where each result that the commit carries stands,
-// which for a change's branch is its merge base with the default branch and never the branch's
-// push before, since a list from that push holds no change of the pushes before it; the paths
-// after it changed since that commit. --all-changed says that there is no base commit. A path of
-// the list is a change of a check's code when the tie at the commit or the tie at the base holds
-// it, so a file that the change deleted, or moved out of the tie, counts. --reports holds one
-// directory per report artifact of the run, spec-report--<job> or spec-report--<job>--<leg>, each
-// with the go test -json report.jsonl; --needs holds toJSON(needs) of the spec-citations job, the
-// result of each job it waits for. The tie of a check whose test did not run, the one check whose
-// tie the rules read, is at the commit what <root>'s .github/scripts/go-test-reads.sh says its
-// test reads (GoTies), and at the base what the base's own script says, in a checkout of the base
-// commit that the command makes in a new temporary directory when a check needs it and removes
-// when it ends. --ties, which may be given more than once, names a file of ties by commit,
-// {"<commit>":{"<check>":["<path or pattern>",...]}} (ReadCommitTies), each commit by its full
-// object name; with it, the ties at the commit are the files' ties of the commit that HEAD of
-// <root> names (exit 2 when git cannot read it) and those at the base the files' ties of the base
-// line's commit. A commit or a check that the files do not hold reads as a tie that is not known,
-// and a commit key that is no full object name, or that two of the files hold, is exit 2. Each
-// refused check is one line on standard error, "spec-check: <dir>/<file>:<line>: <check>:
-// <detail>", where the detail begins with the rule, with "spec-check: <dir>: <n> program checks;
-// <k> refused" on standard output, exit 1; none is "spec-check: <dir>: <n> program checks; each is
-// cited", exit 0. --json writes the faults to a file as one line of JSON, as checks and state
-// write theirs, [{"check","rule","detail"}], [] for none, making its directory. With
-// --allow-empty, a directory that does not exist or holds no spec file is "spec-check: <dir>:
-// holds no spec file; no check to cite", exit 0. A spec file that does not parse is exit 2 with
-// its problems.
+// <package> (cached)", is no run at the commit, and neither is a run in a report that ends before
+// its package's own end event. --changed is the list that changed prints: its first line, "base
+// <commit>", names the commit where each result that the commit carries stands, which for a
+// change's branch is its merge base with the default branch and never the branch's push before,
+// since a list from that push holds no change of the pushes before it; the paths after it changed
+// since that commit. So after a rebase onto a default branch whose commits changed a test's code,
+// a push that changes only docs is cited with no run of that test: the result that counts is then
+// the one at that base commit, and the check's state reads unknown when no result stands there.
+// --all-changed says that there is no base commit. A result carries from the base only while the
+// check's tie is known at the commit and at the base and holds no path of the list, so a file that
+// the change deleted, or moved out of the tie, counts, and a tie that is not known at either end
+// counts as a change also when no path changed. --reports holds one directory per report artifact
+// of the run, spec-report--<job> or spec-report--<job>--<leg>, each with the go test -json
+// report.jsonl; --needs holds toJSON(needs) of the spec-citations job, the result of each job it
+// waits for. The tie of a check whose test did not run, the one check whose tie the rules read, is
+// at the commit what <root>'s .github/scripts/go-test-reads.sh says its test reads (GoTies), and at
+// the base what the base's own script says, in a checkout of the base commit that the command makes
+// in a new temporary directory when a check needs it and removes when it ends; a base that is the
+// commit itself has the tie at the commit. --ties, which may be given more than once, names a file
+// of ties by commit, {"<commit>":{"<check>":["<path or pattern>",...]}} (ReadCommitTies), each
+// commit by its full object name; with it, the ties at the commit are the files' ties of the
+// commit that HEAD of <root> names (exit 2 when git cannot read it) and those at the base the
+// files' ties of the base line's commit. A commit or a check that the files do not hold reads as a
+// tie that is not known, and a commit key that is no full object name, or that two of the files
+// hold, is exit 2. Each refused check is one line on standard error, "spec-check:
+// <dir>/<file>:<line>: <check>: <detail>", where the detail begins with the rule, with
+// "spec-check: <dir>: <n> program checks; <k> refused" on standard output, exit 1; none is
+// "spec-check: <dir>: <n> program checks; each is cited", exit 0. --json writes the faults to a
+// file as one line of JSON, as checks and state write theirs, [{"check","rule","detail"}], [] for
+// none, making its directory. With --allow-empty, a directory that does not exist or holds no spec
+// file is "spec-check: <dir>: holds no spec file; no check to cite", exit 0. A spec file that does
+// not parse is exit 2 with its problems.
 //
 // changed prints the line "base <commit>", with the full object name of the base, then the paths
 // whose content differs between the trees of the two commits of the git clone at <root>, both

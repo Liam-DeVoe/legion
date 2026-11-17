@@ -4,6 +4,9 @@
 # example.com/acme/gotest with a test cache of its own. The cache starts empty on each run of the
 # script, so a run is replayed from it exactly when an earlier go test of the same run filled it:
 #   - first.jsonl: `go test -json -trimpath ./cached/`, run once, before the cache holds it.
+#   - first-long.jsonl: the same of the package long, run once, before the cache holds it. The
+#     script moves cases/long to long/<five directories of 220 bytes>, an import path of 1,133
+#     bytes, so go test's converter writes the package's summary line in two output events.
 # Each of the other commands runs two times, GOTEST_RUN=1 and then GOTEST_RUN=2, and the second
 # report is kept:
 #   - cached.jsonl: `go test -json -trimpath ./cached/`, replayed: "ok  \t<path>\t(cached)".
@@ -11,6 +14,8 @@
 #   - cached-norun.jsonl: with -run '^TestNone$': "(cached) [no tests to run]".
 #   - cached-two.jsonl: `./cached/ ./fresh/`: cached is replayed, and fresh runs again, because its
 #     test reads GOTEST_RUN.
+#   - cached-long.jsonl: the package long, replayed: "(cached)" is in the second event of its
+#     summary line.
 # Run it when that Go moves or a case changes, and then read each new report and the rows of
 # cached_test.go that read it. The script refuses a report that names one of its scratch
 # directories.
@@ -20,6 +25,10 @@ here=$(cd "$(dirname "$0")" && pwd)
 module=$(mktemp -d)
 trap 'rm -rf "$module"' EXIT
 cp -R "$here/cases/." "$module/"
+dir=x$(printf 'y%.0s' $(seq 219))
+long=long/$dir/$dir/$dir/$dir/$dir
+mkdir -p "$module/$long"
+mv "$module/long/long_test.go" "$module/$long/"
 printf 'module example.com/acme/gotest\n\ngo 1.27\n' >"$module/go.mod"
 unset GOROOT
 export GOTOOLCHAIN=$version GOWORK=off GOFLAGS= GOCACHE=$module/.gocache
@@ -47,7 +56,11 @@ report() {
 GOTEST_RUN=1 go test -json -trimpath ./cached/ >"$here/first.jsonl"
 refuse "$here/first.jsonl"
 echo "go test -json -trimpath ./cached/, the first run: $(wc -l <"$here/first.jsonl") events"
+GOTEST_RUN=1 go test -json -trimpath "./$long/" >"$here/first-long.jsonl"
+refuse "$here/first-long.jsonl"
+echo "go test -json -trimpath ./long/<five directories>/, the first run: $(wc -l <"$here/first-long.jsonl") events"
 report cached ./cached/
 report cached-cover -cover ./cached/
 report cached-norun -run '^TestNone$' ./cached/
 report cached-two ./cached/ ./fresh/
+report cached-long "./$long/"

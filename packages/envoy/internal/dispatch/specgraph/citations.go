@@ -72,18 +72,20 @@ type CitationInput struct {
 //     runs a check again when that code changed"). Each report of the job, one per leg, must hold
 //     the test as a pass or a failure: a job that did not run, left no report, skipped the test,
 //     does not hold it, could not run it or replayed it from go test's cache did not run it. The
-//     code changed when the check's tie at the commit is not known (R8: "A check whose tie to its
-//     code is unknown runs on each push to the branch"), when AllChanged says that the commit has
-//     no base commit, or when a path of Changed is in the tie at either end, the tie at the commit
-//     or the tie at the base commit (the first in sorted order named). A result carries from the
-//     base only while no file that its test read there changed, so a file that the change deleted
-//     or moved, which the tie at the commit no longer holds, counts by the base's tie; while
-//     Changed holds a path that the tie at the commit does not cover, a tie at the base that is not
-//     known counts as changed too.
+//     code did not change only when the check's tie is known at the commit and at the base commit
+//     and no path of Changed is in either, the rule by which a result carries from one commit to
+//     another (R8): a result carries from the base only while no file that its test read there
+//     changed, so a file that the change deleted or moved, which the tie at the commit no longer
+//     holds, counts by the base's tie. So it changed when the tie at the commit is not known (R8:
+//     "A check whose tie to its code is unknown runs on each push to the branch"), when AllChanged
+//     says that the commit has no base commit, when a path of Changed is in the tie at either end
+//     (the first in sorted order named), and when the tie at the base is not known, also while
+//     Changed is empty.
 //
 // Deriving a tie can run the repository's own tools, so Citations asks for the tie at the commit
 // only for a check whose test did not run, and for the tie at the base only when, besides, the tie
-// at the commit is known and covers no path of Changed.
+// at the commit is known and covers no path of Changed: a tie at the commit that is not known, or
+// that covers a changed path, decides alone, so the answer is the one of asking for both first.
 func Citations(t Tree, in CitationInput) CitationFaults {
 	var faults CitationFaults
 	for _, c := range t.Checks {
@@ -143,9 +145,6 @@ func (in CitationInput) changeCause(c Check) string {
 	}
 	if path := in.firstCovered(tie); path != "" {
 		return path + " changed"
-	}
-	if len(in.Changed) == 0 {
-		return ""
 	}
 	base := Tie{Why: "no tie at the base commit was given"}
 	if in.BaseTie != nil {

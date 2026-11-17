@@ -12,15 +12,21 @@ import (
 // replays the run's events as they were, frames and all. Each report is a real run of Go 1.27.3
 // that testdata/gotest/cached/make-reports.sh makes: each run of a replayed package reads cached,
 // in each form of the line, and a package of the same report that ran again reads its outcome. The
-// control is first.jsonl, the first run of the same package, which reads pass and skip.
+// control is first.jsonl, the first run of the same package, which reads pass and skip. The
+// package of cached-long.jsonl has an import path of 1,133 bytes, so go test's converter writes
+// its summary line in two output events, and "(cached)" is in the second; its control,
+// first-long.jsonl, is the first run of that package, whose summary line comes in two events too.
 func TestARunThatGoTestReplaysFromItsCacheIsCached(t *testing.T) {
 	t.Parallel()
 	const cached = "example.com/acme/gotest/cached "
+	long := "example.com/acme/gotest/long" + strings.Repeat("/x"+strings.Repeat("y", 219), 5) + " "
 	readReports(t, []reportRow{
 		{"cached/first.jsonl", []string{cached + "TestA pass", cached + "TestB skip"}},
 		{"cached/cached.jsonl", []string{cached + "TestA cached", cached + "TestB cached"}},
 		{"cached/cached-cover.jsonl", []string{cached + "TestA cached", cached + "TestB cached"}},
 		{"cached/cached-two.jsonl", []string{cached + "TestA cached", cached + "TestB cached", "example.com/acme/gotest/fresh TestFresh pass"}},
+		{"cached/first-long.jsonl", []string{long + "TestA pass"}},
+		{"cached/cached-long.jsonl", []string{long + "TestA cached"}},
 	})
 	// The form " [no tests to run]" holds no run, so it gives no entry.
 	if got := readReport(t, "cached/cached-norun.jsonl"); len(got) != 0 {
@@ -29,7 +35,8 @@ func TestARunThatGoTestReplaysFromItsCacheIsCached(t *testing.T) {
 }
 
 // The summary line has no marker, so a test can print it. For its own package that reads as not
-// run, the safe direction; for another package it marks nothing.
+// run, the safe direction; for another package it marks nothing. Each report ends with the
+// package's own end event, as go test writes it.
 func TestAPrintedCachedLineMarksOnlyItsOwnPackage(t *testing.T) {
 	t.Parallel()
 	run := func(pkg, line string) string {
@@ -38,7 +45,8 @@ func TestAPrintedCachedLineMarksOnlyItsOwnPackage(t *testing.T) {
 			`{"Action":"output","Package":"` + pkg + `","Test":"TestA","Output":"=== RUN   TestA\n","OutputType":"frame"}` + "\n" +
 			event +
 			`{"Action":"output","Package":"` + pkg + `","Test":"TestA","Output":"--- PASS: TestA (0.00s)\n","OutputType":"frame"}` + "\n" +
-			`{"Action":"pass","Package":"` + pkg + `","Test":"TestA","Elapsed":0}` + "\n"
+			`{"Action":"pass","Package":"` + pkg + `","Test":"TestA","Elapsed":0}` + "\n" +
+			`{"Action":"pass","Package":"` + pkg + `","Elapsed":0}` + "\n"
 	}
 	for _, row := range []struct {
 		name, report string

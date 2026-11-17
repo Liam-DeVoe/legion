@@ -19,7 +19,9 @@ header says what is proved).
             _test.go file counts when go list lists it in a tested package under the job's tags;
             any other file when it is compiled into a test run's closure. These are found by
             reading the tests, not by the check: a new read through `..` or a new go command a
-            test starts is added here by the change that makes it.
+            test starts is added here by the change that makes it. A read through a symbolic link
+            whose target is outside the package needs a row too, naming the target: the closure
+            holds the link's path, not its target's.
   EXCLUDED  filters the check leaves to another: worker_image gates worker-image.yaml's image
             build, whose every input .github/scripts/check-image-trigger-paths.sh proves its
             filter covers. (envoy_smoke's image inputs are that check's too, but its job's go
@@ -1845,9 +1847,11 @@ PRIVATE_NAMES_PORT_BUILD = script_run(
 SCRIPT_TEST_GATES = [
     harness("release_push_test", "Test release scripts", f"{SCRIPTS}/release-push.test.sh", [
         (f"{SCRIPTS}/release-push.sh", "the script under test"),
-        (f"{SCRIPTS}/release-bump.sh", "release-push.sh:778 runs it for `version`, and the version cases read its refusals"),
-        (".github/workflows/release.yaml", "release-push.test.sh:1005 reads it for the checkout-before-push case"),
-        ("packages/pi-legion/.changie.yaml", "release-push.test.sh:1928 copies the shipped configuration into its fold-notes fixture"),
+        (f"{SCRIPTS}/release-bump.sh", "release-push.sh:914 runs it for `version`, and the version cases read its refusals"),
+        (".github/workflows/release.yaml", "release-push.test.sh:1079 reads it for the checkout-before-push case"),
+        ("packages/pi-legion/.changie.yaml", "release-push.test.sh:2211 copies the shipped configuration into its fold-notes fixture"),
+        ("packages/daemon/internal/leakguard/private-names.toml",
+         "release-push.test.sh:172-175 copy the rule file into each fixture tree, and release-push.sh:379 reads it there"),
     ]),
     harness("release_bump_test", "Test the release version bump", f"{SCRIPTS}/release-bump.test.sh", [
         (f"{SCRIPTS}/release-bump.sh", "the script under test"),
@@ -2025,12 +2029,13 @@ SCRIPT_TEST_GATES = [
         ("scripts/priorities-seed-check.sh", "the script under test (scripts/priorities-seed-check.test.sh:14 names it)"),
     ], lib=False),
     harness("check_ci_filters_test", "Test the CI filter check", f"{SCRIPTS}/check-ci-filters.test.sh", [
-        (f"{SCRIPTS}/check-ci-filters.sh", "the script under test, symlinked into every fixture (check-ci-filters.test.sh:75-76)"),
+        (f"{SCRIPTS}/check-ci-filters.sh", "the script under test, symlinked into every fixture (check-ci-filters.test.sh:76-77)"),
         (f"{SCRIPTS}/ci_filter_coverage.py", "the engine the fixtures link in beside it"),
         (f"{SCRIPTS}/ci_workflow_rules.py", "the rules the fixtures link in beside it"),
         (f"{SCRIPTS}/workflow_paths.py", "the path model the fixtures link in beside it"),
-        (f"{SCRIPTS}/ci_job_reads.py", "check-ci-filters.test.sh:2172 imports this table to derive the plain step's -run lists"),
-        ("AGENTS.md", "check-ci-filters.test.sh:2579 holds the guide's slow-suite list to the jobs the full-ci label gates"),
+        (f"{SCRIPTS}/go-test-reads.sh", "the tie producer the fixtures link in beside the engine, which the case at check-ci-filters.test.sh:821 runs"),
+        (f"{SCRIPTS}/ci_job_reads.py", "check-ci-filters.test.sh:2324 imports this table to derive the plain step's -run lists"),
+        ("AGENTS.md", "check-ci-filters.test.sh:2778 holds the guide's slow-suite list to the jobs the full-ci label gates"),
     ]),
     harness("check_ts_filters_test", "Test the TypeScript filter check", f"{SCRIPTS}/check-ts-filters.test.sh", [
         (f"{SCRIPTS}/check-ts-filters.sh", "the script under test, symlinked into every fixture (check-ts-filters.test.sh:47)"),

@@ -1238,12 +1238,14 @@ jobs:
               - '.github/scripts/test-lib.sh'
               - '.github/scripts/release-push.test.sh'
               - '.github/scripts/release-push.sh'
-              # release-push.sh:778 runs release-bump.sh for `version`.
+              # release-push.sh:914 runs release-bump.sh for `version`.
               - '.github/scripts/release-bump.sh'
-              # Its checkout-before-push case reads the real release workflow (:1005), and its
-              # fold-notes case copies the shipped changie configuration (:1928).
+              # Its checkout-before-push case reads the real release workflow (:1079), its
+              # fold-notes case copies the shipped changie configuration (:2211), and :172-175
+              # copy the leak rule file, which release-push.sh:379 reads, into its fixtures.
               - '.github/workflows/release.yaml'
               - 'packages/pi-legion/.changie.yaml'
+              - 'packages/daemon/internal/leakguard/private-names.toml'
             release_bump_test: &release_bump_test
               - *ci_router
               - '.github/workflows/ci-job-test.yaml'
@@ -1530,12 +1532,14 @@ jobs:
               - '.github/workflows/ci-job-test.yaml'
               - '.github/scripts/test-lib.sh'
               - '.github/scripts/check-ci-filters.test.sh'
-              # :75-76 symlink the script and the three modules it runs on into every fixture.
+              # :76-77 symlink the script, the three modules it runs on and go-test-reads.sh, the
+              # tie producer that the case at :821 runs, into every fixture.
               - '.github/scripts/check-ci-filters.sh'
               - '.github/scripts/ci_filter_coverage.py'
               - '.github/scripts/ci_workflow_rules.py'
               - '.github/scripts/workflow_paths.py'
-              # :2172 imports the table to derive the plain step's -run lists, and :2579 holds
+              - '.github/scripts/go-test-reads.sh'
+              # :2324 imports the table to derive the plain step's -run lists, and :2778 holds
               # the guide's slow-suite list to the jobs the full-ci label gates.
               - '.github/scripts/ci_job_reads.py'
               - 'AGENTS.md'
