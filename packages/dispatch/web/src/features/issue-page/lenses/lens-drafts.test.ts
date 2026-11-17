@@ -3,6 +3,7 @@ import type { LensInvoked } from "@legion/contracts";
 
 import type { Artifact, DisplayTree } from "../../../api/types";
 import { buildDispatchReference } from "../../refs/routes";
+import { artifact, READER_ACTOR } from "../decisions-filter/decisions-fixtures";
 import { issueAddress, pathToTarget } from "../issue-address";
 import {
   buildIssueTree,
@@ -14,7 +15,7 @@ import {
   type TreeNode,
 } from "../issue-tree";
 import { chipWords } from "../node-row-chip";
-import { artifact, issueDetails, READER_ACTOR, statementRef } from "../spec-filter/spec-fixtures";
+import { issueDetails, statementRef } from "../spec-filter/spec-fixtures";
 import { blockNodeId, treeContext } from "../tree-drafts";
 import { type TreeWords, treeDraftsFrom } from "../tree-read/tree-nodes";
 import type { TreeAnswer, TreeAnswerNode, TreeTuple } from "../tree-read/tree-read";
