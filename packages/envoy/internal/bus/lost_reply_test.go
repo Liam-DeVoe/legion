@@ -14,7 +14,7 @@ import (
 )
 
 // lostReplyWithin is how soon after its connection drops a request whose reply the drop lost must
-// fail (INFRA-4150, r-lost-reply-fails-fast).
+// fail.
 const lostReplyWithin = 100 * time.Millisecond
 
 // lostReplyWait is how long a row waits for a request it held to fail at all: far past
@@ -176,7 +176,7 @@ func lostReplyBucket(t *testing.T, c *Client) KeyValue {
 // consumer call waits on, gives up a read whose reply the connection's drop lost within 100 ms of
 // the drop, and the read made once the connection is back is answered: a session registration
 // after a reconnect, which waits on that read before its consumer call, no longer waits behind
-// the one the drop cut off (INFRA-4150's q1 harness: 7 of 30 registrations answered 503 at main).
+// the one the drop cut off (the held-reconnect harness: 7 of 30 registrations answered 503 at main).
 //
 // The control is the same row at main a97cd59397: the read cut off waits out its own
 // sessionStreamReadWait (5 s), so the first call is still waiting at lostReplyWait, and a call

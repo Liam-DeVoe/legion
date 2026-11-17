@@ -7,10 +7,11 @@ body: |-
   consumer call and pull, the connection probe, forwards, KV reads and writes, and the JetStream
   calls of every context the listener opens. A registration, a relay restart, a consumer delete, a
   filter write and a consumer repair that lose a request release the session's lock while they
-  wait for the connection, and make the request again once it is back, inside their own budget.
-  So a session registration sent after a reconnect is answered 200 rather than 503: the shared
-  stream read and the relay restart that held the session's lock no longer wait out a reply the
-  drop took.
+  wait for the connection, take it again within their own budget, and make the request again once
+  it is back. So a session registration sent after a reconnect is answered 200 rather than 503:
+  the shared stream read and the relay restart that held the session's lock no longer wait out a
+  reply the drop took. A request on a client that was stopped answers `nats.ErrConnectionClosed`,
+  as before.
 time: 2026-11-17T05:19:00Z
 custom:
-    Issue: INFRA-4150
+    Issue: pr4278

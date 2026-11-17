@@ -33,8 +33,8 @@ func heldListener(t *testing.T) (*sessionConsumerRig, *testnats.ReplyHold, strin
 // and a read whose reply the connection's drop lost gives that lock up within 100 ms of the drop:
 // a registration of the session, which takes the same lock, is answered 200 within its budget, and
 // the relay restarts the session's consumer on the new connection and delivers a message stored
-// after the drop within 3 s of it. This is the session-lock half of INFRA-4150's q1 harness, where
-// 7 of 30 registrations after a held reconnect answered 503 at main.
+// after the drop within 3 s of it. This is the session-lock half of the held-reconnect harness the
+// fix was measured with, where 7 of 30 registrations after a held reconnect answered 503 at main.
 //
 // The control is the same row at main a97cd59397 (and 44a1f1fb97): the restart holds the lock
 // until its read's bound, sessionConsumerCallTimeout (5 s), ends, so the lock is still held 2 s
@@ -191,12 +191,11 @@ const refusalWindow = 4 * time.Second
 // (connect.go's options: one second, no backoff). The hub's refusal is the proxy refusing every
 // dial (testnats.Proxy.Cut), as a hub whose auth service refuses each connect is to a client that
 // retries in place. Registrations are sent back to back, each once the one before it answered,
-// as INFRA-4150's q1 harness sends them in timing mode.
+// as the held-reconnect harness sends them in timing mode.
 //
 // What this does not measure is the plugins' own reconnect to the hub, which a broker-token session
-// makes on a jittered backoff of 2-4 s, 4-8 s, 8-16 s and then 10-20 s (BROKER_REDIAL_CAP_MS,
-// fix/INFRA-840-broker-redial-backoff): that is the session's link, and its registration reaches
-// the listener over HTTP, not over it.
+// makes on its broker client's jittered redial backoff, capped at 20 s: that is the session's link,
+// and its registration reaches the listener over HTTP, not over it.
 func TestARegistrationAfterARefusalWindowAnswersWithinAReconnectWaitOfTheAdmit(t *testing.T) {
 	url := testnats.URL(t)
 	proxy := testnats.StartProxy(t, url)
