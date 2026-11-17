@@ -2,6 +2,8 @@ package api
 
 import (
 	"bytes"
+	"encoding/json"
+	"fmt"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -295,6 +297,50 @@ func TestARatingReasonHoldingANulIsRefused(t *testing.T) {
 	}
 	if rated := putRatingOK(t, handler, issue, id, with(retro, map[string]any{"rating": 3, "rating_reason": "The plan was late."})); rated.RatingReason == nil || *rated.RatingReason != "The plan was late." {
 		t.Fatalf("the rating with no NUL answers %s, want its reason", stepJSON(t, rated))
+	}
+}
+
+// A body that repeats a member is read for a NUL character (U+0000) in every copy of the member,
+// as the route's typed decode keeps each: it merges a repeated object into its first copy, so a
+// later actor that leaves the origin out keeps the first copy's, and a null in place of a string
+// leaves that string as the first copy set it. Each body below is refused 400 NUL_CHARACTER naming
+// actor.origin.cwd, on the plan write and on the rating write, with nothing written; the same body
+// with the NUL taken out lands, which is the control.
+func TestARepeatedMemberHidesNoNulFromAPlanOrARating(t *testing.T) {
+	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{settle: time.Hour})
+	issue := stepIssues(t, handler, "LEG", 1)[0]
+	awaitBackgroundWrites(t, served)
+	daemon := `{"kind":"session","id":"legion-daemon:LEG"`
+	for _, route := range []struct {
+		name, target, fields string
+	}{
+		{"plan", "/api/v1/issues/" + issue + "/plans/%s",
+			`"generation":1,"source":"default","tasks":[{"id":"default","steps":["planner"]}]`},
+		{"rating", "/api/v1/issues/" + issue + "/steps/%s/rating",
+			`"task":"default","step":0,"kind":"retro","role":"implementer","generation":1,"rating":3,"rating_reason":"The plan fit."`},
+	} {
+		for _, actor := range []struct {
+			name string
+			// actor is the body's actor with %s where its cwd stands.
+			actor string
+		}{
+			{"a repeated actor", daemon + `,"origin":{"cwd":"%s"}},"actor":` + daemon + `}`},
+			{"a repeated cwd set to null", daemon + `,"origin":{"cwd":"%s","cwd":null}}`},
+		} {
+			t.Run(route.name+": "+actor.name, func(t *testing.T) {
+				body := func(cwd string) json.RawMessage {
+					return json.RawMessage(`{"actor":` + fmt.Sprintf(actor.actor, cwd) + `,` + route.fields + `}`)
+				}
+				target := fmt.Sprintf(route.target, uuid.NewString())
+				before := databaseFingerprint(t, database)
+				refused := sessionRequest(t, handler, http.MethodPut, target, body(`a\u0000b`))
+				assertRefusal(t, "PUT "+target, refused.Code, refused.Body.Bytes(), "NUL_CHARACTER", "actor.origin.cwd")
+				assertUnchanged(t, "PUT "+target, before, databaseFingerprint(t, database))
+				if clean := sessionRequest(t, handler, http.MethodPut, target, body("ab")); clean.Code != http.StatusOK {
+					t.Fatalf("the body with no NUL: status=%d body=%s, want 200", clean.Code, clean.Body.String())
+				}
+			})
+		}
 	}
 }
 

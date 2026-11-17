@@ -60,49 +60,78 @@ func escapedName(name string) string {
 var nulEscape = []byte(`\u0000`)
 
 // unstorableJSON refuses the first string of the JSON value data opens with - a member name or a
-// value, an object's members read in name order - that holds U+0000, naming it as the caller wrote
-// it under prefix: title, options[1].label, ops[0].attributes.title, or prefix itself, "body" when
-// prefix is empty, for a bare string. A body without the escape is passed over unread. The value is
-// read as a route's own decoder reads it, the first value in data and the last of a repeated member,
-// so what is checked is what is kept; data that does not decode holds nothing a route keeps.
+// value, in the order data writes them - that holds U+0000, naming it as the caller wrote it under
+// prefix: title, options[1].label, ops[0].attributes.title, or prefix itself, "body" when prefix is
+// empty, for a bare string. A body without the escape is passed over unread. Every string of the
+// value is read, each copy of a repeated member among them, because a route's own decoder keeps
+// strings of more copies than the last: it merges a repeated object into its first copy, so a
+// member the later copy leaves out stays as the first copy set it, and a null leaves a string as it
+// was. The read stops where data stops being JSON, which the route's own decoder refuses.
 func unstorableJSON(prefix string, data []byte) *apiError {
 	if !bytes.Contains(data, nulEscape) {
 		return nil
 	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.UseNumber()
-	var value any
-	if decoder.Decode(&value) != nil {
-		return nil
+	var open []jsonFrame
+	for {
+		token, err := decoder.Token()
+		if err != nil {
+			return nil
+		}
+		if token == json.Delim('}') || token == json.Delim(']') {
+			open = open[:len(open)-1]
+			if len(open) == 0 {
+				return nil
+			}
+			continue
+		}
+		at := prefix
+		if len(open) > 0 {
+			frame := &open[len(open)-1]
+			switch {
+			case !frame.object:
+				at = fmt.Sprintf("%s[%d]", frame.path, frame.elements)
+				frame.elements++
+			case !frame.named:
+				// The token is a member's name; its value is the next one.
+				name, _ := token.(string)
+				frame.member, frame.named = escapedName(name), true
+				if frame.path != "" {
+					frame.member = frame.path + "." + frame.member
+				}
+				if refusal := unstorableText(frame.member, name); refusal != nil {
+					return refusal
+				}
+				continue
+			default:
+				at, frame.named = frame.member, false
+			}
+		}
+		switch token := token.(type) {
+		case json.Delim:
+			open = append(open, jsonFrame{path: at, object: token == '{'})
+		case string:
+			if refusal := unstorableText(jsonField(at), token); refusal != nil {
+				return refusal
+			}
+		}
+		if len(open) == 0 {
+			return nil
+		}
 	}
-	return unstorableJSONValue(prefix, value)
 }
 
-func unstorableJSONValue(path string, value any) *apiError {
-	switch value := value.(type) {
-	case string:
-		return unstorableText(jsonField(path), value)
-	case []any:
-		for index, element := range value {
-			if refusal := unstorableJSONValue(fmt.Sprintf("%s[%d]", path, index), element); refusal != nil {
-				return refusal
-			}
-		}
-	case map[string]any:
-		for _, name := range slices.Sorted(maps.Keys(value)) {
-			member := escapedName(name)
-			if path != "" {
-				member = path + "." + member
-			}
-			if refusal := unstorableText(member, name); refusal != nil {
-				return refusal
-			}
-			if refusal := unstorableJSONValue(member, value[name]); refusal != nil {
-				return refusal
-			}
-		}
-	}
-	return nil
+// jsonFrame is an array or an object unstorableJSON reads inside: where it stands, and where its
+// value read next stands, an array's next index or the object's member just named.
+type jsonFrame struct {
+	path     string
+	object   bool
+	elements int
+	// member is the path of the member whose name was read last, and named whether its value is
+	// the token read next.
+	member string
+	named  bool
 }
 
 // jsonField names a JSON value at path, "body" for the body itself.
