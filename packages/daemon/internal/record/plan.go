@@ -221,33 +221,14 @@ func (s *Postgres) Plan(ctx context.Context, tx pgx.Tx, issue string, generation
 		return nil, fmt.Errorf("%s: %w", describe, err)
 	}
 	plan := &StoredPlan{Version: version, Steps: map[string][]PlanStep{}}
-	rows, err := tx.Query(ctx, `select task, plan_version, block_text, needs, part_of, owner_role, merges, state, stopped_reason,
-		running_kind, position, pass, rounds, conflict_rounds, backward_moves, cap_told
-		from plan_tasks where issue = $1 and generation = $2 order by task`, issue, int64(generation))
+	rows, err := tx.Query(ctx, `select `+planTaskColumns+` from plan_tasks
+		where plan_tasks.issue = $1 and plan_tasks.generation = $2 order by plan_tasks.task`, issue, int64(generation))
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", describe, err)
 	}
-	defer rows.Close()
-	for rows.Next() {
-		task := PlanTask{Issue: issue, Generation: generation}
-		var moves []byte
-		if err := rows.Scan(&task.Task, &task.PlanVersion, &task.BlockText, &task.Needs, &task.PartOf, &task.OwnerRole, &task.Merges,
-			&task.State, &task.StoppedReason, &task.Place.Kind, &task.Place.Position,
-			&task.Counts.Pass, &task.Counts.Rounds, &task.Counts.ConflictRounds, &moves, &task.Counts.CapTold); err != nil {
-			return nil, fmt.Errorf("%s: %w", describe, err)
-		}
-		if len(task.Needs) == 0 {
-			task.Needs = nil
-		}
-		if task.Counts.BackwardMoves, err = decodeBackwardMoves(moves); err != nil {
-			return nil, fmt.Errorf("%s: task %s: %w", describe, task.Task, err)
-		}
-		plan.Tasks = append(plan.Tasks, task)
-	}
-	if err := rows.Err(); err != nil {
+	if plan.Tasks, err = scanPlanTasks(rows); err != nil {
 		return nil, fmt.Errorf("%s: %w", describe, err)
 	}
-	rows.Close()
 	steps, err := tx.Query(ctx, `select task, position, role, type, agent_key, reviewed_head
 		from plan_steps where issue = $1 and generation = $2 order by task, position`, issue, int64(generation))
 	if err != nil {
@@ -265,6 +246,64 @@ func (s *Postgres) Plan(ctx context.Context, tx pgx.Tx, issue string, generation
 		return nil, fmt.Errorf("%s: %w", describe, err)
 	}
 	return plan, nil
+}
+
+// PlanTasksOf is every task of the plan of each issue of the Dispatch project at the issue's
+// current generation, ordered by issue and then task, in one read: the tasks a generation holds
+// are the tasks of its plan in force (PutPlan, DeleteTasks). An issue with no plan rows at its
+// generation has none, whether it ran before plans or its rows are of an earlier generation, a run
+// that is over. As Assignments does, the read is joined to the issue records of project, since the
+// database is shared by every project's daemon. The state's projection reads it once for every
+// issue it serves.
+func (s *Postgres) PlanTasksOf(ctx context.Context, tx pgx.Tx, project string) ([]PlanTask, error) {
+	rows, err := tx.Query(ctx, `select `+planTaskColumns+` from plan_tasks
+		join issues on issues.key = plan_tasks.issue and issues.generation = plan_tasks.generation
+		where issues.project = $1
+		order by plan_tasks.issue, plan_tasks.task`, project)
+	if err != nil {
+		return nil, fmt.Errorf("read the plan tasks of every issue of %s: %w", project, err)
+	}
+	tasks, err := scanPlanTasks(rows)
+	if err != nil {
+		return nil, fmt.Errorf("read the plan tasks of every issue of %s: %w", project, err)
+	}
+	return tasks, nil
+}
+
+// planTaskColumns is the columns of a plan_tasks row, named by their table so a read joined to
+// another table names no column twice, in the order scanPlanTasks reads them.
+const planTaskColumns = `plan_tasks.issue, plan_tasks.generation, plan_tasks.task, plan_tasks.plan_version,
+	plan_tasks.block_text, plan_tasks.needs, plan_tasks.part_of, plan_tasks.owner_role, plan_tasks.merges,
+	plan_tasks.state, plan_tasks.stopped_reason, plan_tasks.running_kind, plan_tasks.position,
+	plan_tasks.pass, plan_tasks.rounds, plan_tasks.conflict_rounds, plan_tasks.backward_moves, plan_tasks.cap_told`
+
+// scanPlanTasks reads every row of a query of planTaskColumns and closes rows.
+func scanPlanTasks(rows pgx.Rows) ([]PlanTask, error) {
+	defer rows.Close()
+	var tasks []PlanTask
+	for rows.Next() {
+		var task PlanTask
+		var generation int64
+		var moves []byte
+		if err := rows.Scan(&task.Issue, &generation, &task.Task, &task.PlanVersion, &task.BlockText, &task.Needs, &task.PartOf,
+			&task.OwnerRole, &task.Merges, &task.State, &task.StoppedReason, &task.Place.Kind, &task.Place.Position,
+			&task.Counts.Pass, &task.Counts.Rounds, &task.Counts.ConflictRounds, &moves, &task.Counts.CapTold); err != nil {
+			return nil, err
+		}
+		task.Generation = uint64(generation)
+		if len(task.Needs) == 0 {
+			task.Needs = nil
+		}
+		var err error
+		if task.Counts.BackwardMoves, err = decodeBackwardMoves(moves); err != nil {
+			return nil, fmt.Errorf("task %s of %s: %w", task.Task, task.Issue, err)
+		}
+		tasks = append(tasks, task)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return tasks, nil
 }
 
 // inForce selects, of issue $1, each owner's version that is the plan in force of its generation:

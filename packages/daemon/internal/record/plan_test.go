@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -513,6 +514,73 @@ func TestATaskThatLeftTheWorkflowIsNeverStartedAgain(t *testing.T) {
 			}
 		})
 	}
+}
+
+// queryCountingTx counts each statement its caller sends, so a test can hold a read to the one
+// query it promises.
+type queryCountingTx struct {
+	pgx.Tx
+	statements int
+}
+
+func (tx *queryCountingTx) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
+	tx.statements++
+	return tx.Tx.Query(ctx, sql, args...)
+}
+
+func (tx *queryCountingTx) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
+	tx.statements++
+	return tx.Tx.QueryRow(ctx, sql, args...)
+}
+
+func (tx *queryCountingTx) Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
+	tx.statements++
+	return tx.Tx.Exec(ctx, sql, args...)
+}
+
+// PlanTasksOf is the task of each issue of a project at the issue's own generation, in one query
+// whatever the number of issues, which the state's projection reads beside every issue it serves.
+// An issue whose plan rows are of an older generation gives no row: those rows are a run that is
+// over. An issue of another project gives none either. A project with no plan rows at all gives an
+// empty list, in that one query too. The control is the issue whose rows are of its own
+// generation, which is read whole.
+func TestPlanTasksOfReadsEachIssuesTaskAtItsGenerationInOneQuery(t *testing.T) {
+	st := migratedStore(t)
+	ctx := context.Background()
+	records := NewStore()
+	current := issueFixture(planIssue)
+	older := issueFixture("LEGION-209")
+	elsewhere := issueFixture("OTHER-1")
+	elsewhere.Project = "OTHER"
+	v, tasks, steps := ownersPlan(current.Key, current.Generation, 2, planOwner, planGivenAt)
+	tasks[0].State, tasks[0].Place = TaskRunning, TaskPlace{Kind: PlaceStep, Position: 2}
+	tasks[0].Counts = ReturnCounts{Pass: 5, Rounds: 3, BackwardMoves: map[string]int{"reviewing-implementing": 3, "testing-implementing": 2}, CapTold: 3}
+	inTx(t, st, func(tx pgx.Tx) {
+		for _, issue := range []Issue{current, older, elsewhere} {
+			must(t, records.PutIssue(ctx, tx, issue))
+		}
+		putPlan(t, tx, v, tasks, steps)
+		must(t, records.MoveTask(ctx, tx, current.Key, current.Generation, "a", tasks[0].Place, TaskRunning))
+		must(t, records.PutReturnCounts(ctx, tx, current.Key, current.Generation, "a", tasks[0].Counts))
+		olderV, olderTasks, olderSteps := ownersPlan(older.Key, older.Generation-1, 2, planOwner, planGivenAt)
+		putPlan(t, tx, olderV, olderTasks, olderSteps)
+		otherV, otherTasks, otherSteps := ownersPlan(elsewhere.Key, elsewhere.Generation, 2, planOwner, planGivenAt)
+		putPlan(t, tx, otherV, otherTasks, otherSteps)
+	})
+	inTx(t, st, func(tx pgx.Tx) {
+		counting := &queryCountingTx{Tx: tx}
+		got, err := records.PlanTasksOf(ctx, counting, "LEGION")
+		must(t, err)
+		if !reflect.DeepEqual(got, tasks) || counting.statements != 1 {
+			t.Fatalf("the plan tasks of LEGION = %+v in %d statements, want only %s's task at its generation, %+v, in one", got, counting.statements, current.Key, tasks)
+		}
+		counting = &queryCountingTx{Tx: tx}
+		none, err := records.PlanTasksOf(ctx, counting, "NOPLANS")
+		must(t, err)
+		if len(none) != 0 || counting.statements != 1 {
+			t.Fatalf("the plan tasks of a project with no plan rows = %+v in %d statements, want none in one", none, counting.statements)
+		}
+	})
 }
 
 // Where a task stands names the place a step runs at, for the count of its starts and for its

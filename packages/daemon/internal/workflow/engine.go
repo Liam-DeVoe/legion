@@ -1468,7 +1468,7 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 		return err
 	}
 	// Two counters move here, and they count different things. Every move back to an earlier phase
-	// counts the implementer a pass: the tester's fail, a review's request for changes, a worker's
+	// counts the task a pass: the tester's fail, a review's request for changes, a worker's
 	// backward move, and the one move the daemon makes on its own, a head that conflicts with its
 	// base (TriggerConflict). The pass tells each pass through a phase from the last
 	// (api/handoff.go): a move that counted none would give a completion reporting the last pass's
@@ -1480,7 +1480,9 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	// only a review that requested changes moves it, and a send-back for anything else leaves it
 	// where it stands. The pull request goes with both because each reads it: a move made while
 	// the record holds this head as conflicting with its base is a conflict round, which
-	// review_round_cap does not count and no pair counts either (recordRound, recordPass).
+	// review_round_cap does not count and no pair counts either (recordRound, recordPass). Both
+	// count on the walk's task: its plan_tasks row for an issue with plan rows, the implementer's
+	// phases row for an issue with none (record.Store.ReturnCounts).
 	//
 	// The same reading goes onto the entry the start below raises, in this transaction, because
 	// it is the one thing the entry fence cannot read from anywhere else: a phase re-entered by a
@@ -1490,12 +1492,12 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	// few lines down, which would leave the start comparing a phase with itself.
 	movedBack := phase.MovesBack(issue.Phase, row.To)
 	if movedBack {
-		if err := e.recordPass(ctx, tx, issue.Key, issue.Phase, row.To, pr); err != nil {
+		if err := e.recordPass(ctx, tx, issue, w.Task, issue.Phase, row.To, pr); err != nil {
 			return err
 		}
 	}
 	if trigger == TriggerReviewRejected {
-		if err := e.recordRound(ctx, tx, issue.Key, pr); err != nil {
+		if err := e.recordRound(ctx, tx, issue, w.Task, pr); err != nil {
 			return err
 		}
 	}

@@ -1816,6 +1816,9 @@ type Store interface {
 	// PutReturnCounts writes the counts of returns of task where ReturnCounts reads them, and
 	// nothing else of that row.
 	PutReturnCounts(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task string, c ReturnCounts) error
+	// PlanTasksOf is every task of the plan of each issue of the Dispatch project at the issue's
+	// current generation, in one read; an issue with no plan rows at that generation has none.
+	PlanTasksOf(ctx context.Context, tx pgx.Tx, project string) ([]PlanTask, error)
 	// GatesOf is every design gate issue holds, by step: one entry for each step the issue's
 	// architect has registered. An issue with no gate at all gives an empty map, and a step with
 	// no row has no entry.
