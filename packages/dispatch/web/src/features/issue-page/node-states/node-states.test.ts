@@ -2850,6 +2850,16 @@ test("a proposed lens, finding, risk or constraint carries Settle, sent under th
   }) as typeof api.send);
   try {
     for (const id of [LENS, FINDING, RISK, CONSTRAINT]) {
+      if (id === FINDING) {
+        // A proposed node opens no path of the fold (R2), so the lens stays folded and its
+        // finding is a row once the reader opens the lens.
+        expect(rowOf(view.container, LENS)).toHaveAttribute("aria-expanded", "false");
+        act(() => rowOf(view.container, LENS)?.focus());
+        await user.keyboard("{ArrowRight}");
+        await waitFor(() =>
+          expect(rowOf(view.container, LENS)).toHaveAttribute("aria-expanded", "true")
+        );
+      }
       await waitFor(() => expect(rowOf(view.container, id), `${id} is a row`).not.toBeNull());
       act(() => rowOf(view.container, id)?.focus());
       await waitFor(() =>
