@@ -49,8 +49,9 @@ async function stderrWhileGoWaits(call: string): Promise<string> {
   });
   const reader = child.stderr.getReader();
   const decoder = new TextDecoder();
-  // The bound on a read that never sees the line (the old form's), so its failure is this test's
-  // assertion and not the runner's timeout; the line's arrival ends the wait well before it.
+  // The bound on a read that never sees the line, as a helper that hands go's standard error on
+  // only once go exits would leave it, so its failure is this test's assertion and not the
+  // runner's timeout; the line's arrival ends the wait well before it.
   const deadline = AbortSignal.timeout(20_000);
   const { promise: expired, resolve: expire } = Promise.withResolvers<undefined>();
   deadline.addEventListener("abort", () => expire(undefined));
@@ -65,7 +66,9 @@ async function stderrWhileGoWaits(call: string): Promise<string> {
   } finally {
     child.kill("SIGKILL");
     await child.exited;
-    // The stand-in, and the bash that tees it, outlive the caller until the hold file goes.
+    // The stand-in go outlives the caller until the hold file goes. goOutput's case starts it
+    // directly; goOutputSync's starts bash, which runs it piped into tee (go-command.ts's TEE),
+    // and bash and tee end when go does.
     rmSync(hold);
     await reader.cancel();
   }
