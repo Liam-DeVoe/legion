@@ -17,7 +17,6 @@ import { api } from "../../../api/client";
 import { primarySpec, roleDocument } from "../../../api/issue-cache";
 import { artifactBlocksQuery, issueCoverageQuery, issueResultsQuery } from "../../../api/queries";
 import type { Actor, IssueDetails } from "../../../api/types";
-import { QueryError } from "../../../components/QueryError";
 import {
   pageDecisionText,
   pageFocusedRow,
@@ -46,6 +45,7 @@ import { conversationPath } from "../decisions-filter/decisions-parts";
 import { useSetFocusedNode } from "../focused-node";
 import { IssueThreeThings } from "../IssueThreeThings";
 import { focusedNodeOf, type OutlineRequest, useReleaseFocus } from "../IssueTree";
+import { CLEARANCE } from "../identity-block";
 import type { TreeNode } from "../issue-tree";
 import { NodeGlyph } from "../NodeGlyph";
 import { MoreWords, NodeEdges, useClamp, useRowOnScreen } from "../NodeRow";
@@ -68,10 +68,12 @@ import {
 } from "../page-words";
 import { usePressFocus } from "../press-focus";
 import { RowText, useOutOfTabOrder } from "../RowText";
+import { FailedReadLine } from "../slots/failed-read-line";
 import { specSummary } from "../spec-summary";
+import { TAB_STOP_ROW } from "../tree-focus";
 import type { DrawnRow } from "../tree-fold";
 import { nodesInOrder } from "../tree-keys";
-import { useTreeKeymap } from "../useTreeKeymap";
+import { moveToRow, useTreeKeymap } from "../useTreeKeymap";
 import {
   type SpecDecision,
   type SpecGroup,
@@ -205,7 +207,8 @@ export function SpecFilterBody({
   // Each line of the reads that failed with nothing held, in the page's words: the coverage's and
   // the spec's blocks' as the statements', the results' and the Verification document's blocks'
   // as the results', which leave every statement unmarked alike, then the decisions' and the
-  // asks'. A line's Retry asks again the reads of that line that failed, and no other.
+  // asks'. A line's Retry asks again the reads of that line that failed, and no other, and none
+  // of them while it is read again already.
   const unreadable = (
     [
       { failed: [coverageRead, specBlocksRead], line: "statements_unreadable" },
@@ -327,12 +330,13 @@ export function SpecFilterBody({
     setOpenCell(undefined);
   }, []);
   const releaseFocus = useReleaseFocus({ editing: false, onLeave: leave });
-  // Puts the focus on the statement or the decision cell that draws node `id`.
+  // Puts the focus on the statement or the decision cell that draws node `id`, as the outline
+  // moves to a row (`moveToRow`), which brings it on screen where it already holds the focus.
   const goTo = useCallback((id: string): boolean => {
     const target = tree.current?.querySelector<HTMLElement>(
       `[data-node-id="${CSS.escape(id)}"][role="treeitem"]`
     );
-    target?.focus();
+    if (target != null) moveToRow(target);
     return target != null;
   }, []);
   // `w` on a statement, or on a control inside one: the focus goes to the cell beside it, which
@@ -365,7 +369,8 @@ export function SpecFilterBody({
       const first = rows.findIndex((row) => row.dataset.nodeId === ids[0]);
       const last = rows.findIndex((row) => row.dataset.nodeId === ids.at(-1));
       reportHere("");
-      (step > 0 ? (rows[last + 1] ?? rows[last]) : (rows[first - 1] ?? rows[first]))?.focus();
+      const to = step > 0 ? (rows[last + 1] ?? rows[last]) : (rows[first - 1] ?? rows[first]);
+      if (to !== undefined) moveToRow(to);
     },
     [reportHere]
   );
@@ -388,37 +393,6 @@ export function SpecFilterBody({
     if (reveal === undefined || taken.current === reveal || statements.length === 0) return;
     if (goTo(reveal)) taken.current = reveal;
   }, [goTo, reveal, statements]);
-  // A refused read can leave the view nothing to act on but a Retry: Tab from the tree never
-  // reaches the lines above it. So whenever the lines change - one is drawn, or one leaves - and
-  // the focus is on nothing, the first line still drawn takes it at its Retry: where the view's
-  // key (`t s`) or the page opened at the view's address left the focus on nothing, and where a
-  // line that held it left because its reads answered, as they do after its own Retry. A line
-  // that held the focus and leaves no line behind hands it to the view's first row - the tree's
-  // one tab stop - or to the tree itself where the view draws no row, as a focus on the tree
-  // rests there. A reader whose focus is anywhere else keeps it. At this head this is the one
-  // rule that gives a refused read's Retry the focus, a page load at the view's address
-  // included: the stage takes the focus only while nothing holds it, and only for the view's
-  // tab-stop row (`slots/stage.tsx`'s `ViewStage`). The failed-read line another branch
-  // exports brings its own rule for that focus, which replaces this one with it.
-  const box = useRef<HTMLDivElement | null>(null);
-  // The line the focus is in, from a focus inside it until the focus lands on something outside
-  // it. A line taken off the page while it holds the focus leaves the focus on nothing, and
-  // nothing says where it went, so the line stays named here until the lines change.
-  const heldBy = useRef<string | undefined>(undefined);
-  const lines = unreadable.map(({ line }) => line).join(" ");
-  useEffect(() => {
-    const active = document.activeElement;
-    if (active !== null && active !== document.body) return;
-    const left = heldBy.current !== undefined && !lines.split(" ").includes(heldBy.current);
-    if (left) heldBy.current = undefined;
-    const retry = box.current?.querySelector<HTMLElement>("[data-spec-unreadable] button");
-    if (retry != null) retry.focus();
-    else if (left) {
-      (tree.current?.querySelector<HTMLElement>(TAB_STOP_ROW) ?? tree.current)?.focus({
-        preventScroll: true,
-      });
-    }
-  }, [lines]);
 
   useTreeKeymap({
     container: tree,
@@ -472,34 +446,22 @@ export function SpecFilterBody({
   const tabStop =
     stop !== undefined && statements.some((node) => node.id === stop) ? stop : statements[0]?.id;
   return (
-    <div className="mt-3.5 mb-[120px] flex w-full min-w-0 flex-col" data-spec-body="" ref={box}>
-      {/* Each line of the reads that failed with nothing held, in the page's words, with a
-          Retry that asks those reads alone again. The lines stand over the tree and never in
-          it: an alert inside a tree would break the tree's own structure of rows. Each is this
-          view's own copy of the failed-read line, imported in its place, with its focus rule,
-          once another branch's `FailedReadLine` from `issue-page/` is under this one. */}
+    <div className="mt-3.5 mb-[120px] flex w-full min-w-0 flex-col" data-spec-body="">
+      {/* Each line of the reads that failed with nothing held, in the page's words, as every view
+          drawn in the stage says one (`FailedReadLine`): over the tree and never in it, since an
+          alert inside a tree would break the tree's own structure of rows. The stage gives a
+          focus left on nothing to a line's Retry where the view draws no row, and moves it on to
+          the next line, the tab-stop row or the tree as a line that held it leaves
+          (`slots/stage.tsx`). */}
       {unreadable.map(({ failed, line }) => (
-        // biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the handlers only read where the focus has gone, so the line needs no role of its own.
-        <div
-          data-spec-unreadable={line}
+        <FailedReadLine
           key={line}
-          onBlur={(event) => {
-            const next = event.relatedTarget;
-            if (next instanceof Node && !event.currentTarget.contains(next)) {
-              heldBy.current = undefined;
-            }
+          message={ANSWER_LINES[line]}
+          onRetry={() => {
+            for (const read of failed) if (!read.isFetching) void read.refetch();
           }}
-          onFocus={() => {
-            heldBy.current = line;
-          }}
-        >
-          <QueryError
-            message={ANSWER_LINES[line]}
-            onRetry={() => {
-              for (const read of failed) void read.refetch();
-            }}
-          />
-        </div>
+          retrying={failed.every((read) => read.isFetching)}
+        />
       ))}
       <Legend />
       <div
@@ -627,10 +589,6 @@ const CELL_STEPS: Readonly<Partial<Record<string, 1 | -1>>> = {
   k: -1,
 };
 
-/** The row of the view's tree that holds its one tab stop, which takes the focus where a failed
- *  read's line that held it leaves no line behind. */
-const TAB_STOP_ROW = '[data-node-row][tabindex="0"]';
-
 /** Whether `read` failed with no answer held: a read asked again that fails keeps the answer it
  *  had, which the body still draws from, so only a read that left nothing to draw says it
  *  failed. A read of a document the issue does not name is never asked, so it has not failed. */
@@ -646,26 +604,21 @@ function issueAsksQuery(key: string) {
   return { queryFn: () => api.listIssueAsks(key, "all"), queryKey: ["asks", key] };
 }
 
-/** How far below the view's column heads a statement or cell is put where it has to be scrolled
- *  to: the clearance `bringOnScreen` leaves below the band. A copy of `identity-block.ts`'s
- *  private `CLEARANCE`, imported in its place once that module exports it. */
-const HEADS_CLEARANCE = 8;
-
 /**
  * Places the focused statement or cell on screen by the page's one rule (`useRowOnScreen`,
- * `bringOnScreen`), and then below the view's own column heads, which stay at the top under the
- * band and which that rule does not know of (R4; R11: the focused row is never under a sticky
- * header). The rule clears the band alone, so on the tester's build a statement the arrows moved
+ * `bringOnScreen`), and then below the view's own sticky column heads, which the page's scroll
+ * padding does not hold (R4; R11: the focused row is never under a sticky header). The rule
+ * places a row clear of the band and below what stays at the top of the screen, which is the
+ * page's `scroll-padding-top`: it moves only a row whose top lies above that padding, and the
+ * heads stand under the band, outside it, so on the tester's build a statement the arrows moved
  * up to stood with its top 27 px down, under heads 31 px tall. Where the item stands under the
- * heads it is scrolled down by the rest, by the rule's own clearance, again whenever it grows -
- * after the rule has placed it, since its observer is made first - and never while a press
- * inside it is held, as the rule holds its own placing. At 901 px and below the heads are not
- * drawn, and the rule alone places it.
+ * heads it is scrolled down by the rest, by the rule's own clearance (`CLEARANCE`), again
+ * whenever it grows - after the rule has placed it, since its observer is made first - and never
+ * while a press inside it is held, as the rule holds its own placing. At 901 px and below the
+ * heads are not drawn, and the rule alone places it.
  *
- * Answers the item's own `onPointerDown`, as `useRowOnScreen` does. Its press listeners and its
- * resize observer repeat `NodeRow.tsx`'s `useRowOnScreen`'s own, to run one more placing step
- * after that hook's under the same press and on the same growth: it is that hook alone once the
- * hook takes an optional placing step of a caller's, run after its own.
+ * Answers the item's own `onPointerDown`, as `useRowOnScreen` does, which marks the press for
+ * the rule's step and for this one.
  */
 function useOnScreenUnderHeads(item: RefObject<HTMLElement | null>, focused: boolean): () => void {
   const placeByRule = useRowOnScreen(item, focused);
@@ -704,7 +657,7 @@ function clearOfHeads(element: HTMLElement): void {
     ?.getBoundingClientRect();
   if (heads === undefined || heads.height === 0) return;
   const top = element.getBoundingClientRect().top;
-  if (top < heads.bottom) window.scrollBy({ top: top - heads.bottom - HEADS_CLEARANCE });
+  if (top < heads.bottom) window.scrollBy({ top: top - heads.bottom - CLEARANCE });
 }
 
 /** The key `event` is as one of the keymap's single-key bindings reads it - a letter in lower

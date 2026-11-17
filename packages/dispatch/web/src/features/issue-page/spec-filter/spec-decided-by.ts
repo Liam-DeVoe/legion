@@ -1,9 +1,16 @@
 import type { Actor, CheckBlock, Decision, DisplayTree, IssueDecisions } from "../../../api/types";
-import { parseNodeReference } from "../../refs/routes";
 import type { TextSource } from "../../refs/text-references";
-import { drawnLine, firstLineOf, isStatement, lineWordsRaw, type TreeNode } from "../issue-tree";
+import { askIdOf, isReading } from "../decisions-filter/decisions-parts";
+import {
+  drawnLine,
+  firstLineOf,
+  isStatement,
+  LEADING_LABEL,
+  lineWordsRaw,
+  type TreeNode,
+} from "../issue-tree";
 import { chipWords } from "../node-row-chip";
-import { LEADING_LABEL, referenceStandIns, SENTENCE_END } from "../one-line";
+import { referenceStandIns, SENTENCE_END } from "../one-line";
 import { isReader, type NodeState, type NodeType, type StatementState } from "../page-words";
 import { plainWordsRaw } from "../tree-drafts";
 import { nodesInOrder } from "../tree-keys";
@@ -219,7 +226,12 @@ export function specDecidedBy({
 }): SpecReading {
   const nodes = nodesById(root);
   const asks = asksById(nodes);
+  // The asks the tree holds an answer for, by the id a decision names them with.
+  const answered = new Set(
+    [...asks].flatMap(([id, ask]) => (ask.answer === undefined ? [] : [id]))
+  );
   const shaped = shapedBy({
+    answered,
     asks,
     asksHeld,
     decisions,
@@ -303,10 +315,11 @@ export function firstSentenceOf(text: string): string {
   return end === null ? whole : whole.slice(0, label + end.index + end[0].length);
 }
 
-/** Every node of the tree by its id, the first placement of a node drawn under more than one
- *  parent, which is where it is edited (`TreeNode.transcluded`). It is the reading of
- *  `decisions-filter/decisions-parts.ts`'s `placements` with no parent line beside each node,
- *  which that module keeps to itself; this reads it from there once that module exports it. */
+/** Every node of the tree by its id, at its first placement, which is where a node drawn under
+ *  more than one parent is edited (`TreeNode.transcluded`). It is not
+ *  `decisions-filter/decisions-parts.ts`'s `placements`, which cuts each node's parent line as
+ *  well, from words that write each bare address as its short form (`lineWords`): the Spec view
+ *  reads a parent's line by its own rule (`parentOf`), so this walks the nodes alone. */
 function nodesById(root: TreeNode): ReadonlyMap<string, TreeNode> {
   const nodes = new Map<string, TreeNode>();
   const walk = (node: TreeNode): void => {
@@ -319,15 +332,12 @@ function nodesById(root: TreeNode): ReadonlyMap<string, TreeNode> {
 
 /** Each ask of the tree by the id a decision names it with (`Decision.asks`), which is the ask's
  *  own id and not the id of the row it is drawn as: an ask the server indexed from a block of a
- *  document is drawn as that block (`tree-drafts.ts`'s `addAsks`). An ask node's id is read as
- *  `decisions-filter/decisions-parts.ts`'s `askIdOf` reads it, which that module keeps to
- *  itself; this reads it from there once that module exports it. */
+ *  document is drawn as that block (`tree-drafts.ts`'s `addAsks`). */
 function asksById(nodes: ReadonlyMap<string, TreeNode>): ReadonlyMap<string, TreeNode> {
   const asks = new Map<string, TreeNode>();
   for (const node of nodes.values()) {
-    if (node.type !== "ask" || node.reference === undefined) continue;
-    const route = parseNodeReference(node.reference);
-    if (route?.kind === "ask") asks.set(route.id, node);
+    const id = askIdOf(node);
+    if (id !== undefined) asks.set(id, node);
   }
   return asks;
 }
@@ -336,6 +346,7 @@ function asksById(nodes: ReadonlyMap<string, TreeNode>): ReadonlyMap<string, Tre
  *  decisions read answers them: each drawn, but a person's while the asks read holds no answer
  *  (`specDecidedBy`'s `asksHeld`), which keeps its place as a tie with no decision drawn. */
 function shapedBy({
+  answered,
   asks,
   asksHeld,
   decisions,
@@ -344,6 +355,7 @@ function shapedBy({
   nodes,
   reader,
 }: {
+  answered: ReadonlySet<string>;
   asks: ReadonlyMap<string, TreeNode>;
   asksHeld: boolean;
   decisions: IssueDecisions | undefined;
@@ -362,7 +374,7 @@ function shapedBy({
     const made: Tie =
       decision.kind === "person" && !asksHeld
         ? { key: decision.ref }
-        : tieOf(decisionOf(decision, { asks, nameOf, nodeIdOf, nodes, reader }));
+        : tieOf(decisionOf(decision, { answered, asks, nameOf, nodeIdOf, nodes, reader }));
     for (const link of links) {
       const id = link.to.ref === undefined ? undefined : nodeIdOf(link.to.ref);
       if (id === undefined) continue;
@@ -385,12 +397,15 @@ function tieOf(decision: SpecDecision): Tie {
 function decisionOf(
   decision: Decision,
   {
+    answered,
     asks,
     nameOf,
     nodeIdOf,
     nodes,
     reader,
   }: {
+    /** The ids of the asks the tree holds an answer for. */
+    answered: ReadonlySet<string>;
     asks: ReadonlyMap<string, TreeNode>;
     nameOf: (reference: string) => string | undefined;
     nodeIdOf: (reference: string) => string | undefined;
@@ -400,19 +415,19 @@ function decisionOf(
 ): SpecDecision {
   const node = nodes.get(nodeIdOf(decision.ref) ?? "");
   // A person's decision is their answer to a question, so the words the column quotes are the
-  // answer's own and never the decision's restatement of them (R4). It is the same rule as
-  // `decisions-filter/decisions-parts.ts`'s `isReading` - a person's section that names an
-  // answered ask of this issue - which that module keeps to itself; this reads it from there
-  // once that module exports it.
-  const answered = (decision.asks ?? [])
-    .map((ask) => asks.get(ask))
-    .find((ask) => ask?.answer !== undefined);
-  const answer = answered?.answer;
-  if (decision.kind === "person" && answered !== undefined && answer !== undefined) {
-    return {
-      ...answerDecision(answered, answer, reader, nameOf),
-      ...(node === undefined ? {} : { node: node.id }),
-    };
+  // answer's own and never the decision's restatement of them (R4): a person's section that
+  // names an answered ask of this issue, as the Decisions filter reads one (`isReading`), is
+  // drawn by the first of its asks the tree holds an answer for.
+  if (isReading(decision, answered)) {
+    const ask = (decision.asks ?? [])
+      .map((id) => asks.get(id))
+      .find((one) => one?.answer !== undefined);
+    if (ask?.answer !== undefined) {
+      return {
+        ...answerDecision(ask, ask.answer, reader, nameOf),
+        ...(node === undefined ? {} : { node: node.id }),
+      };
+    }
   }
   // Every other section is drawn by its own words, which are an agent's: its decision, or its
   // record of a person's decision whose answered question this tree does not hold - one the

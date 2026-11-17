@@ -1130,8 +1130,10 @@ test("the Spec view stands as the approved picture draws it @phone", async ({ br
     }
 
     // The statement of 200 words is cut at six lines with "more · N words", and whole with the
-    // focus.
+    // focus. The page measures a row's cut once the row stands within a screen of the viewport,
+    // in the frame after it comes there, so the row is brought there before its cut is read.
     const long = nodeRow(page, longId).first();
+    await long.scrollIntoViewIfNeeded();
     await expect(rowMore(long), `the long statement draws no more at ${at}`).toHaveCount(1);
     const cut = (await rowWords(long).boundingBox())?.height ?? Number.POSITIVE_INFINITY;
     expect(
@@ -1285,35 +1287,35 @@ test("a requirement whose words hold an unbroken run keeps the page inside its v
   });
 });
 
-// R7 and R9, owed: the Spec view opened at its own address while the spec's blocks cannot be
-// read draws the statements' line saying so over its tree, and that line's Retry takes the
-// focus, since nothing else holds it on a fresh load and Tab from the tree never reaches the
-// line. At this head that focus is the Spec body's own (`SpecFilterBody.tsx`, its effect over
-// the failed-read lines): the stage takes a focus only while nothing holds it, and only for the
-// view's tab-stop row. The failed-read line another branch exports brings its own rule for that
-// focus, which replaces the body's once that branch is under this one. The row is owed to that
-// rule, so it skips on its first line until then, and is written whole so that only its skip
-// goes.
-// SLOW(>=2s): a seeded issue and a load of the Spec view with one read refused, waited on until
-// the refused read's line is drawn.
-test("the Spec view opened at its address with the spec's blocks refused puts the focus on that read's Retry @owed", async ({
+// R7 and R9: the Spec view opened at its own address while neither read its statements come
+// from can be read - the spec's blocks and the coverage, which names each statement - draws the
+// statements' line saying so and no row, and that line's Retry takes the focus: nothing else
+// holds it on a fresh load, Tab from the tree never reaches the line, and the stage the page
+// draws the view in gives a focus left on nothing to a failed read's Retry where the view draws
+// no row (`slots/stage.tsx`'s `ViewStage`). With the coverage answered the view draws a row for
+// each statement it names, and the stage gives the focus to the tab-stop row instead.
+// SLOW(>=2s): a seeded issue and a load of the Spec view with two reads refused, waited on until
+// the refused reads' line is drawn.
+test("the Spec view opened at its address with the spec's blocks refused puts the focus on that read's Retry", async ({
   browser,
 }) => {
-  test.skip(
-    true,
-    "owed: the stage that gives a refused read's Retry the focus on a page load is not under this branch yet"
-  );
   await phase(browser, seedNoChildren, async (page, seeded) => {
     await page.setViewportSize({ height: DESKTOP.height, width: DESKTOP.width });
-    const blocks = `/api/v1/artifacts/${seeded.specArtifactId}/blocks`;
-    // Every read of the spec's blocks is refused, from the page's first load on.
+    const refused = new Set([
+      `/api/v1/artifacts/${seeded.specArtifactId}/blocks`,
+      `/api/v1/issues/${seeded.key}/coverage`,
+    ]);
+    // Every read of the spec's blocks and of the coverage is refused, from the page's first load
+    // on.
     await page.route(
-      (url) => url.pathname === blocks,
+      (url) => refused.has(url.pathname),
       (route) =>
-        route.fulfill({ json: { code: "INTERNAL", error: "blocks unavailable" }, status: 500 })
+        route.fulfill({ json: { code: "INTERNAL", error: "read unavailable" }, status: 500 })
     );
     await gotoIssue(page, presetPath(seeded.key, "spec"));
-    const line = issuePage(page).locator('[data-spec-unreadable="statements_unreadable"]');
+    const line = issuePage(page)
+      .locator("[data-failed-read]")
+      .filter({ hasText: ANSWER_LINES.statements_unreadable });
     await expect(
       line,
       "the Spec view draws no line saying its statements could not be loaded"

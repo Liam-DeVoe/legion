@@ -3,8 +3,8 @@ import { type ReactNode, useMemo } from "react";
 import type { DisplayTree } from "../../api/types";
 import { pageInkBg, pageInkText, pageLineBorder, pageMutedText } from "../../theme/classes";
 import { wordsOf } from "../refs/tree-fragment";
-import { drawnLine, firstLineOf, type TreeNode } from "./issue-tree";
-import { CAP, LEADING_LABEL, referenceStandIns, SENTENCE_END } from "./one-line";
+import { drawnLine, firstLineOf, LEADING_LABEL, type TreeNode } from "./issue-tree";
+import { CAP, referenceStandIns, SENTENCE_END } from "./one-line";
 import { authorText, pageChrome } from "./page-structure";
 import { CONTROL_LABELS, EMPTY_STATE_LINES } from "./page-words";
 

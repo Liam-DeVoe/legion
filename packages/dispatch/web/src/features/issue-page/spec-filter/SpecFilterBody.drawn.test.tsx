@@ -6,6 +6,7 @@ import type { ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { displayTree } from "../../../__tests__/display-trees";
+import { installIntersectionObserver } from "../../../__tests__/intersection-observer";
 import { api } from "../../../api/client";
 import { primarySpec, roleDocument } from "../../../api/issue-cache";
 import { artifactBlocksQuery, issueCoverageQuery, issueResultsQuery } from "../../../api/queries";
@@ -22,6 +23,7 @@ import { MarginProvider } from "../../margin/margin-context";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
 import { KeymapProvider } from "../../shell/KeymapProvider";
 import { useKeymapScope } from "../../shell/keymap";
+import { measureNearWords } from "../clamp-fixtures";
 import {
   artifact,
   issueTree,
@@ -48,6 +50,7 @@ import {
 } from "../page-words";
 import { presetView } from "../presets";
 import { ReferenceNamesProvider, usePublishReferenceNames } from "../reference-names";
+import { ViewStage } from "../slots/stage";
 import { decisionBehind } from "../tree-keys";
 import { check, checkNode, result } from "../verification-filter/verification-fixtures";
 import { SpecFilterBody } from "./SpecFilterBody";
@@ -177,7 +180,9 @@ beforeAll(async () => {
  *  is answered unless a case says so; `verification` and `plan`, where a case names them, give
  *  the issue that document, whose blocks read stands so, and `decisionBlocks` says how the
  *  decisions document's blocks read stands; `names` is what the page's batched reference read
- *  named; `staleTime` is how long an answer stays fresh, which the shell sets to 30 s. The
+ *  named; `staleTime` is how long an answer stays fresh, which the shell sets to 30 s; `stage`
+ *  draws the body inside the stage the page draws every view in (`ViewStage`), which places the
+ *  focus on a view's load and moves it on as a failed read's line that held it leaves. The
  *  page's provider of the Contents list's requests stands above the body, so `request` is taken
  *  as the page takes it; `redraw(false)` takes the body off the page and `redraw(true)` draws a
  *  new one under the same provider and reads, as the view turned off and on again does. */
@@ -199,6 +204,7 @@ function drawBody(
     request,
     results = "answered",
     reveal,
+    stage = false,
     staleTime = Number.POSITIVE_INFINITY,
     verification,
   }: {
@@ -216,6 +222,7 @@ function drawBody(
     request?: OutlineRequest;
     results?: ReadState;
     reveal?: string;
+    stage?: boolean;
     staleTime?: number;
     verification?: ReadState;
   } = {}
@@ -297,6 +304,19 @@ function drawBody(
       for (const spy of Object.values(spies)) spy.mockRestore();
     },
   };
+  const body = (
+    <SpecFilterBody
+      context={context}
+      emptyLine={EMPTY_STATE_LINES.spec}
+      holdsEscape={false}
+      issue={issue}
+      reader={reader}
+      {...(request === undefined ? {} : { request })}
+      {...(reveal === undefined ? {} : { reveal })}
+      root={tree}
+      view={presetView(tree, "spec", "", new Set(named)).root}
+    />
+  );
   const page = (drawn: boolean): ReactNode => (
     <QueryClientProvider client={client}>
       <ReferenceNamesProvider>
@@ -310,19 +330,7 @@ function drawBody(
                     <FocusedProbe />
                     <LocationProbe />
                     <TreeReads issue={issue} />
-                    {drawn ? (
-                      <SpecFilterBody
-                        context={context}
-                        emptyLine={EMPTY_STATE_LINES.spec}
-                        holdsEscape={false}
-                        issue={issue}
-                        reader={reader}
-                        {...(request === undefined ? {} : { request })}
-                        {...(reveal === undefined ? {} : { reveal })}
-                        root={tree}
-                        view={presetView(tree, "spec", "", new Set(named)).root}
-                      />
-                    ) : null}
+                    {drawn ? stage ? <ViewStage view="spec">{body}</ViewStage> : body : null}
                   </FocusedNodeProvider>
                 </OutlineRequestProvider>
               </MarginProvider>
@@ -1045,7 +1053,8 @@ test("the body draws one tree, named as the outline is, of the statements and th
 // last word, a direct child of the words' box, and
 // nowhere else in the row. The one for a statement no check serves is the mark at the right of
 // the row, and is not said twice: that statement draws no trail at all.
-test("a gap the mark does not say is drawn after the statement's words, and no check is not said twice", () => {
+test("a gap the mark does not say is drawn after the statement's words, and no check is not said twice", async () => {
+  const near = installIntersectionObserver();
   const { read, view } = drawBody(
     issueTree([
       statement("r1", { gaps: ["shaped_disagreement"] }),
@@ -1053,6 +1062,9 @@ test("a gap the mark does not say is drawn after the statement's words, and no c
     ])
   );
   try {
+    // The page measures only the words of rows near the viewport, so a cut is read once they
+    // are measured.
+    await measureNearWords(near);
     const rows = [...view.container.querySelectorAll("[data-spec-statement]")];
     expect(
       rows[0]?.querySelector("[data-node-words]")?.lastElementChild?.hasAttribute("data-node-trail")
@@ -1072,6 +1084,7 @@ test("a gap the mark does not say is drawn after the statement's words, and no c
   } finally {
     view.unmount();
     read.mockRestore();
+    near.restore();
   }
 });
 
@@ -1505,6 +1518,7 @@ test("a press on a link inside a cut statement leaves every statement as drawn u
   const long = `**R2.** Read [the guide](https://example.com/guide) first. ${words}`;
   // 64 words over 400 lines of 24 px: six lines are drawn and the rest held back.
   const restore = layOut(9600);
+  const near = installIntersectionObserver();
   const { read, view } = drawBody(
     issueTree([statement("r1"), statement("r2", { text: long, tree: displayTree(long) })])
   );
@@ -1518,6 +1532,9 @@ test("a press on a link inside a cut statement leaves every statement as drawn u
       if (found === null) throw new Error("the cut statement draws no link in its words");
       return found;
     });
+    // The page measures only the words of rows near the viewport, so the cut is read once they
+    // are measured.
+    await measureNearWords(near);
     await waitFor(() => expect(pressed.querySelector("[data-node-more]")).not.toBeNull());
     // What is read is who holds the focus, not where the link leads.
     link.addEventListener("click", (event) => event.preventDefault());
@@ -1545,6 +1562,7 @@ test("a press on a link inside a cut statement leaves every statement as drawn u
   } finally {
     view.unmount();
     read.mockRestore();
+    near.restore();
     restore();
   }
 });
@@ -2023,16 +2041,18 @@ test("a refused read of the spec's blocks says the statements could not be read,
 });
 
 // R7 and R9: a refused read leaves the view nothing to act on but its Retry, which Tab from the
-// tree never reaches. So the first line's Retry takes the focus where the view's key or its
-// address left it on nothing, and a reader whose focus is anywhere else keeps it; once a Retry
-// the reader pressed brings the read in, the view's first row takes the focus.
-test("a refused read's Retry takes the focus left on nothing, and the first row takes it once a pressed Retry brings the read in", async () => {
+// tree never reaches, and a reader whose focus is anywhere else keeps it. The stage the page draws
+// the view in owns the focus on a load: where the view draws rows it gives a focus left on nothing
+// to the tab-stop row, and a Retry only where no row is drawn (`ViewStage`). So here, with rows
+// drawn, the row holds the focus at the load and the reader puts it on the Retry; once the Retry
+// they pressed brings the read in, its line leaves and the view's first row takes the focus.
+test("with rows drawn over a refused read the first row holds the focus, and takes it back once a pressed Retry brings the read in", async () => {
   const user = userEvent.setup();
   const tree = issueTree([statement("r1"), statement("r2")]);
   const elsewhere = document.createElement("button");
   document.body.append(elsewhere);
   elsewhere.focus();
-  const kept = drawBody(tree, [], { coverage: "failed" });
+  const kept = drawBody(tree, [], { coverage: "failed", stage: true });
   try {
     await waitFor(() => alertSaying(kept.view, ANSWER_LINES.statements_unreadable));
     expect(document.activeElement, "a Retry took the focus from elsewhere").toBe(elsewhere);
@@ -2041,11 +2061,12 @@ test("a refused read's Retry takes the focus left on nothing, and the first row 
     kept.read.mockRestore();
     elsewhere.remove();
   }
-  const { read, view } = drawBody(tree, [], { coverage: "failed" });
+  const { read, view } = drawBody(tree, [], { coverage: "failed", stage: true });
   try {
     const alert = await waitFor(() => alertSaying(view, ANSWER_LINES.statements_unreadable));
     const retry = within(alert).getByRole("button", { name: "Retry" });
-    await waitFor(() => expect(document.activeElement).toBe(retry));
+    await waitFor(() => expect(document.activeElement).toBe(rowOf(view, "spec#b-r1")));
+    act(() => retry.focus());
     read.coverage.mockResolvedValue(coverageRead([]));
     await user.keyboard("{Enter}");
     await waitFor(() => expect(document.activeElement).toBe(rowOf(view, "spec#b-r1")));
@@ -2207,7 +2228,7 @@ test("a decision with no words is named by its kind's word, never by an empty qu
 // tree rests there; it never leaves the focus on nothing.
 test("a Retry that brings in a view with no row leaves the focus on the tree", async () => {
   const user = userEvent.setup();
-  const { read, view } = drawBody(issueTree([]), [], { coverage: "failed" });
+  const { read, view } = drawBody(issueTree([]), [], { coverage: "failed", stage: true });
   try {
     const alert = await waitFor(() => alertSaying(view, ANSWER_LINES.statements_unreadable));
     const retry = within(alert).getByRole("button", { name: "Retry" });
@@ -2236,6 +2257,7 @@ test("a Retry whose line leaves while another line stays hands the focus to that
   const { read, view } = drawBody(issueTree([statement("r1")]), [], {
     decisions: "failed",
     results: "failed",
+    stage: true,
   });
   try {
     const results = await waitFor(() => alertSaying(view, ANSWER_LINES.results_unreadable));
@@ -2257,17 +2279,20 @@ test("a Retry whose line leaves while another line stays hands the focus to that
 
 // R7 and R9: the focus a Retry held goes on once that line's own reads are in, whatever other
 // read is still out: a Retry that brings in the statements while the results read is out hands
-// the focus to the view's first row.
+// the focus to the view's first row. With rows drawn, the stage gives the focus to the tab-stop
+// row at the load (`ViewStage`), so the reader puts it on the Retry before pressing it.
 test("a Retry hands the focus on once its own line's reads are in, while another read is still out", async () => {
   const user = userEvent.setup();
   const { read, view } = drawBody(issueTree([statement("r1"), statement("r2")]), [], {
     coverage: "failed",
     results: "out",
+    stage: true,
   });
   try {
     const alert = await waitFor(() => alertSaying(view, ANSWER_LINES.statements_unreadable));
     const retry = within(alert).getByRole("button", { name: "Retry" });
-    await waitFor(() => expect(document.activeElement).toBe(retry));
+    await waitFor(() => expect(document.activeElement).toBe(rowOf(view, "spec#b-r1")));
+    act(() => retry.focus());
     read.coverage.mockResolvedValue(coverageRead([]));
     await user.keyboard("{Enter}");
     await waitFor(() => expect(document.activeElement).toBe(rowOf(view, "spec#b-r1")));
