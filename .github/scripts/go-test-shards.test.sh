@@ -381,6 +381,76 @@ check "the same pattern checked without the tag exits 1" "$(is "$status" 1)"
 check "  naming the tagged test as not listed" \
   "$(contains "$err" 'names `TestOnlyUnderTheTag`, which the test binary does not list: ')"
 
+echo "case: the binary lists in the package's own directory, as go test runs it"
+# go test runs a package's test binary in the package's directory, so a TestMain, an init or a
+# package-level variable that reads a path relative to the package reads the package's own file.
+# The race leg runs the script in packages/envoy with ./internal/dispatch/api/, a directory below
+# it; here the script runs in the module's root with ./pkg, whose test file reads
+# testdata/golden.txt as the package is initialised. Listed in the script's directory, the binary
+# panics before it lists a name, and every leg refuses a package go test passes.
+root_dir=$(module directory)
+mkdir -p "$root_dir/pkg/testdata"
+echo golden >"$root_dir/pkg/testdata/golden.txt"
+cat >"$root_dir/pkg/golden_test.go" <<'EOF'
+package fixture
+
+import (
+	"os"
+	"testing"
+)
+
+var golden = must(os.ReadFile("testdata/golden.txt"))
+
+func must(data []byte, err error) []byte {
+	if err != nil {
+		panic(err)
+	}
+	return data
+}
+
+func TestGolden(t *testing.T) {
+	if string(golden) != "golden\n" {
+		t.Fatalf("golden is %q", golden)
+	}
+}
+
+func TestOther(t *testing.T) {}
+EOF
+ran=$(cd "$root_dir" && go test -count=1 -v ./pkg 2>&1)
+check "go test, run from the module's root, passes both tests" \
+  "$(is "$(grep -c -E '^--- PASS: Test(Golden|Other) \(' <<<"$ran")" 2)"
+run_shards "$root_dir" pattern 0 1 ./pkg
+check "the split, run from the module's root, exits 0" "$(is "$status" 0)"
+check "  with both tests in its one shard" "$(is "$out" '^(TestGolden|TestOther)$')"
+run_shards "$root_dir" check ./pkg -- "$out"
+check "  and the check passes it" "$(is "$status" 0)"
+
+echo "case: control - the binary listed in the script's directory panics, and the split refuses"
+# The script with package_directory replaced by a stand-in that answers the directory the script
+# runs in, which is where the binary listed before it asked go for the package's.
+caller_dir=$work/caller-directory.py
+cat >"$caller_dir" <<EOF
+#!/usr/bin/env python3
+import importlib.util
+import sys
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("go_test_shards", "$shards")
+shards = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(shards)
+shards.package_directory = lambda flags, package: Path.cwd()
+sys.exit(shards.main(sys.argv[1:]))
+EOF
+chmod +x "$caller_dir"
+run_script "$caller_dir" "$root_dir" pattern 0 1 ./pkg
+check "exits 2" "$(is "$status" 2)"
+check "prints nothing on standard output" "$(is "$out" "")"
+# shellcheck disable=SC2016 # literal backticks of the message, no expansion wanted
+check "names the listing and the directory it ran in" \
+  "$(contains "$err" "^go-test-shards.py: \`package.test -test.list\` in $root_dir exited 2:\$")"
+check "  and passes on the binary's panic, naming the file it could not read" \
+  "$(contains "$err" 'open testdata/golden.txt: no such file or directory')"
+
 echo "case: a test added later lands in exactly one shard, and moves no other"
 root_grown=$(module grown)
 cp "$root"/*_test.go "$root_grown/"

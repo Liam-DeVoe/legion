@@ -60,7 +60,11 @@ that build: the race build of internal/dispatch/api leaves out the files that ca
 constraint to know that. The patterns are matched by Go's own regexp in the binary, so `check`
 proves what `go test -run` will do, not what a second engine thinks it would do. The build is the
 one the leg's `go test` makes next, so that `go test` takes every compiled package from the build
-cache and links once more; nothing is compiled twice.
+cache and links once more; nothing is compiled twice. The binary lists in the package's own
+directory, which `go list -f '{{.Dir}}'` names under the same flags, because go test runs a test
+binary there: a TestMain, an init or a package-level variable that reads a path relative to the
+package (`testdata/golden.txt`) reads the file go test gives it, where in the caller's directory
+it would panic, and every leg would refuse a package go test passes.
 
 Which shard a test is in. A test is in shard `crc32(name) mod total`, the IEEE CRC-32 that
 Python's zlib and Go's hash/crc32 both compute. The assignment needs no list kept by hand: a new
@@ -100,6 +104,7 @@ import sys
 import tempfile
 import zlib
 from pathlib import Path
+from typing import NamedTuple
 
 USAGE = """\
 usage: go-test-shards.py pattern <index> <total> [<build flag>...] <package>
@@ -150,7 +155,13 @@ def alternation(names) -> str:
     return "^(" + "|".join(sorted(set(names))) + ")$"
 
 
-def build(flags: list[str], package: str, directory: Path) -> Path:
+class TestBinary(NamedTuple):
+    """A package's test binary and the directory go test runs it in."""
+    path: Path
+    directory: Path
+
+
+def build(flags: list[str], package: str, directory: Path) -> TestBinary:
     """The package's test binary, built under the flags into directory. go's standard error, which
     names each module as go downloads it and holds a failed build's error, goes to this script's as
     go writes it: the race leg's setup-go keeps no module cache, so this build is the step that
@@ -164,11 +175,23 @@ def build(flags: list[str], package: str, directory: Path) -> Path:
         raise Refused(f"`{' '.join(command)}` exited {done.returncode}; its standard error is above{output}")
     if not binary.is_file():
         raise Refused(f"`{' '.join(command)}` wrote no test binary: {package} has no test files")
-    return binary
+    return TestBinary(binary, package_directory(flags, package))
 
 
-def listed(binary: Path, pattern: str) -> list[str]:
-    """The names of the split the binary lists for one pattern."""
+def package_directory(flags: list[str], package: str) -> Path:
+    """The package's own directory, as go names it under the build flags, which is where go test
+    runs the package's test binary. It runs after the build, which has downloaded what it needs."""
+    command = ["go", "list", "-f", "{{.Dir}}", *flags, package]
+    done = subprocess.run(command, stdout=subprocess.PIPE, encoding="utf-8", check=False)
+    directories = done.stdout.splitlines()
+    if done.returncode != 0 or len(directories) != 1:
+        raise Refused(f"`{' '.join(command)}` exited {done.returncode} and named {len(directories)} "
+                      f"directories, not the package's one; its standard error is above")
+    return Path(directories[0])
+
+
+def listed(binary: TestBinary, pattern: str) -> list[str]:
+    """The names of the split the binary lists for one pattern, listed in the package's directory."""
     argument = LIST_FLAG + pattern
     if len(argument.encode()) >= MAX_ARGUMENT:
         raise Refused(f"a pattern of {len(pattern.encode())} bytes is longer than "
@@ -177,9 +200,11 @@ def listed(binary: Path, pattern: str) -> list[str]:
                       f"so the binary could not be started with it; add a leg to the matrix, which shortens "
                       f"every shard's pattern")
     # UTF-8 whatever the locale says, since a test's name may hold any letter Go allows.
-    done = subprocess.run([str(binary), argument], capture_output=True, encoding="utf-8", check=False)
+    done = subprocess.run([str(binary.path), argument], cwd=binary.directory, capture_output=True,
+                          encoding="utf-8", check=False)
     if done.returncode != 0:
-        raise Refused(f"`{binary.name} -test.list` exited {done.returncode}:\n{done.stderr}{done.stdout}")
+        raise Refused(f"`{binary.path.name} -test.list` in {binary.directory} exited {done.returncode}:\n"
+                      f"{done.stderr}{done.stdout}")
     return [line for line in done.stdout.splitlines() if SPLIT.match(line)]
 
 
@@ -202,7 +227,7 @@ def shown(text: str) -> str:
                    for c in text)
 
 
-def prove(binary: Path, everything: list[str], patterns: list[str]) -> None:
+def prove(binary: TestBinary, everything: list[str], patterns: list[str]) -> None:
     """Raise Uncovered naming each test of `everything` that no pattern, or more than one,
     selects in the binary; or, before it lists anything, each pattern that is not `^(` and `)$`
     around names the binary listed, `|` between them, whose selection -test.list cannot show (the
