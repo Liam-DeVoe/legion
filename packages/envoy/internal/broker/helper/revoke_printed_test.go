@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strings"
 	"syscall"
 	"testing"
 
@@ -202,5 +203,35 @@ func TestAnAnswerUnderClassIsNotTheBrokersRefusal(t *testing.T) {
 	err = oauthBrokerError(own, addr)
 	if !errors.As(err, &be) || err.Error() != "broker 400 LOGIN_PENDING: a login is already pending" {
 		t.Errorf("the broker's own refusal = %q, want the BrokerError %q", err, "broker 400 LOGIN_PENDING: a login is already pending")
+	}
+}
+
+// TestARefusalBesideAnAddressWithACredentialIsStillARefusal: beside an address that carries a
+// credential, the broker's own OAuth refusal prints none of its words - whoever answers can repeat
+// the credential there - yet it is still the broker's 4xx refusal, so the helper reports it as
+// one (a BrokerError whose text is withheld) and not as a request whose outcome it does not know.
+// Control: beside a clean address the same refusal prints its code and words.
+func TestARefusalBesideAnAddressWithACredentialIsStillARefusal(t *testing.T) {
+	const secret = "hunter2pw-refusal-5e21"
+	refusal := &oauth2.RetrieveError{
+		Response:  &http.Response{StatusCode: http.StatusBadRequest},
+		ErrorCode: "invalid_request", ErrorDescription: "LOGIN_PENDING: a login is already pending (echo " + secret + ")",
+	}
+	credentialed := brokeraddr.New("http://" + "tokuser9f3" + ":" + secret + "@broker.invalid")
+	err := (&requestReach{}).settle(oauthBrokerError(refusal, credentialed))
+	var be *BrokerError
+	if !errors.As(err, &be) || be.Status != http.StatusBadRequest {
+		t.Fatalf("the refusal beside an address with a credential = %v, want a BrokerError of status 400", err)
+	}
+	if outcomeUnknown(err) {
+		t.Errorf("the refusal beside an address with a credential = %q, which reads as an unknown outcome", err)
+	}
+	wantNamedNotPrinted(t, "the refusal beside an address with a credential", err.Error(), []string{"broker 400"}, secret)
+	if strings.Contains(err.Error(), "tokuser9f3") || strings.Contains(err.Error(), "LOGIN_PENDING") {
+		t.Errorf("the refusal beside an address with a credential = %q, which prints the broker's words", err)
+	}
+	clean := (&requestReach{}).settle(oauthBrokerError(refusal, brokeraddr.New("https://broker.example")))
+	if !strings.HasPrefix(clean.Error(), "broker 400 LOGIN_PENDING: a login is already pending") {
+		t.Errorf("the refusal beside a clean address = %q, want its code and words", clean)
 	}
 }

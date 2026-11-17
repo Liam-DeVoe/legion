@@ -17,8 +17,8 @@
 // code (whose text is the response body x/oauth2 kept), prints as the failure's class alone, "the
 // broker answered HTTP <n>", as every answer does where its text may not print; Error puts the
 // *url.Error's operation and URL, through Call, before it, or the caller's own name for the call
-// (Named). A class is fixed text alone: no Cause, Class or later Error of such an error prints the
-// line that names its call, so no URL, path or id reaches a line made from it.
+// (Named). A class is fixed text alone: Cause and Class of such an error print the class, never
+// the line that names its call, and a later Error prints that same line, never the URL anew.
 package redact
 
 import (
@@ -210,8 +210,8 @@ func Error(err error, raw string) error {
 	case errors.As(err, &named):
 		return &called{named.text, &classified{text, err}}
 	case ue != nil:
-		// The call's line names the URL as Call prints it; the class under it stays URL-free, so
-		// Cause, Class, or a later Error, of this error prints the class and never this line's URL.
+		// The call's line names the URL as Call prints it; the class under it stays URL-free, so Cause
+		// and Class of this error print the class alone, and a later Error prints this same line.
 		return &called{ue.Op + " " + strconv.Quote(Call(raw, ue.URL)) + ": " + text, &classified{text, err}}
 	}
 	return &classified{text, err}
@@ -220,9 +220,9 @@ func Error(err error, raw string) error {
 // Named is err, from a request built from raw, named in the caller's own words rather than by its
 // URL: name, ": " and Cause's text of err. It is for a request URL that ends in what a caller
 // typed, such as an id the broker never issued, which Call prints as part of a plain path. Error
-// over the result prints this line again, never the URL under it, and Cause and Class print the
-// failure's class alone. It unwraps to err, so errors.Is and errors.As still classify the failure.
-// Named(nil, raw, name) is nil.
+// over the result prints this line again, never the URL under it; Cause of it beside raw prints
+// what Cause of err does and Class its class, never this line. It unwraps to err, so errors.Is and
+// errors.As still classify the failure. Named(nil, raw, name) is nil.
 func Named(err error, raw, name string) error {
 	if err == nil {
 		return nil

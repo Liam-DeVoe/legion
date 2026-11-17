@@ -381,16 +381,17 @@ func (b *Broker) tokenContext(ctx context.Context, key *ecdsa.PrivateKey) contex
 // and description.
 //
 // An answer the redactor did not print whole - every answer beside an address that carries a
-// credential, which the broker or anyone answering for it can repeat back - stays as it printed
-// it, the failure's class and status: the code and description under it are the very text it
-// withheld, and a BrokerError made of them would print them all the same. The redactor printed
-// err whole exactly when it answers err itself, which is what its own contract says it does. The
-// answer is read as the broker's own (redact.BrokerAnswer), never through errors.As: an answer
-// that redact.Class or redact.Masked holds is another server's, whose words they withheld.
+// credential, which the broker or anyone answering for it can repeat back - is still the broker's
+// refusal, so it is a BrokerError of its status alone, with brokeraddr.WordsNotPrinted for its
+// words: no code and no word of its description, which are the very text the redactor withheld,
+// so no BrokerError holds a part of the credential either. requestReach.settle reads its status,
+// so a 4xx refusal is reported as one and not as an unknown outcome. Any other failure stays as
+// the redactor printed it. The answer is read as the broker's own (redact.BrokerAnswer), never
+// through errors.As: an answer that redact.Class or redact.Masked holds is another server's.
 func oauthBrokerError(err error, addr brokeraddr.Address) error {
 	shown := addr.Error(err)
 	re, ok := redact.BrokerAnswer(err)
-	if !ok || shown != err {
+	if !ok {
 		return shown
 	}
 	be := &BrokerError{Code: re.ErrorCode, Message: re.ErrorDescription}
@@ -399,6 +400,12 @@ func oauthBrokerError(err error, addr brokeraddr.Address) error {
 	}
 	if code, message, ok := strings.Cut(re.ErrorDescription, ": "); ok && re.ErrorCode == "invalid_request" {
 		be.Code, be.Message = code, message
+	}
+	if shown != err {
+		if be.Status == 0 {
+			return shown
+		}
+		return &BrokerError{Status: be.Status, Message: brokeraddr.WordsNotPrinted, withheld: true}
 	}
 	return be
 }
