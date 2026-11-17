@@ -2070,7 +2070,8 @@ SCRIPT_TEST_GATES = [
         (GO_OFFLINE, "the module the script runs go through, linked in beside it"),
         (RELEASE_PLAN, "the release listings and pinned steps the script reads, linked in beside it, and which "
                        "check-legion-version-inputs-fixtures.sh's step() builds each fixture's jobs from"),
-        (f"{SCRIPTS}/workflow_paths.py", "the path model the script reads a push path's glob with, linked in beside it"),
+        (f"{SCRIPTS}/release_push_paths.py", "the push-path rule the script imports, linked in beside it"),
+        (f"{SCRIPTS}/workflow_paths.py", "the path model that rule reads a push path's glob with, linked in beside it"),
         (GO_OFFLINE_STAND_IN, "check-legion-version-inputs.test.sh:29 sources the stand-in go and the proxy recorder "
                               "procedure its last two cases read the script's go commands with"),
     ]),
@@ -3126,7 +3127,8 @@ GATES = [
         (".github/scripts/ci_job_reads.py", "check-ci-filters.sh's data"),
         (".github/scripts/ci_workflow_rules.py", "check-ci-filters.sh's rules about ci.yaml's conditions and "
                                                  "ci-caches.yaml, which ci_filter_coverage.main() runs"),
-        (".github/scripts/workflow_paths.py", f"ci_filter_coverage.py reads filters through it, and {VERSION_INPUTS} "
+        (".github/scripts/release_push_paths.py", f"{VERSION_INPUTS} imports its push-path rule from it"),
+        (".github/scripts/workflow_paths.py", "ci_filter_coverage.py reads filters through it, and release_push_paths.py "
                                               "reads a push path's glob with it"),
         (GO_OFFLINE, f"ci_filter_coverage.py and {VERSION_INPUTS} run every go command through it"),
         (RELEASE_PLAN, f"{VERSION_INPUTS} runs its listings and holds each version step to its text, and "

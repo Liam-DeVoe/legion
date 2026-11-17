@@ -139,8 +139,9 @@ case "$#:${1:-}" in
     ;;
 esac
 
-# go_offline.py and release_version_inputs.py sit beside this script in the repository it checks.
-# PYTHONDONTWRITEBYTECODE keeps the imports from leaving a __pycache__ in the tree.
+# go_offline.py, release_version_inputs.py and release_push_paths.py sit beside this script in the
+# repository it checks. PYTHONDONTWRITEBYTECODE keeps the imports from leaving a __pycache__ in the
+# tree.
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.github/scripts exec python3 - "${1:-check}" <<'PY'
 import collections
 import itertools
@@ -155,9 +156,9 @@ from pathlib import Path
 import yaml
 
 import go_offline
+import release_push_paths
 import release_version_inputs as plan
 from go_offline import decode_stream
-from workflow_paths import glob_regex, unread_patterns
 
 MODE = sys.argv[1]
 SELF = ".github/scripts/check-legion-version-inputs.sh"
@@ -815,36 +816,11 @@ def triggers(path, doc):
                 f"{rendered(list(plan.PUSH_BRANCHES))}: {why}", path)
 
 
-def whole_cover(pattern, path):
-    """Whether the push pattern `pattern`, not `!`-negated, covers every change to `path`, a file or
-    a directory written with its /: `**`, the file itself, or `X/**` with X the directory itself or
-    one above the path. GitHub's `**` keeps the `/` before it, so `X/**` covers what lies inside a
-    directory X and never a file X. Any other glob is not read as covering anything."""
-    if pattern == "**":
-        return True
-    if pattern.endswith("/**") and not WILDCARD.search(pattern[:-3]):
-        return path.startswith(pattern[:-2])
-    return not path.endswith("/") and pattern == path
-
-
-def reaches(pattern, path):
-    """Whether the `!`-negated push pattern `pattern` (its `!` taken off) can drop a change to
-    `path`: for a file, the glob matches it; for a directory, the glob's literal part, up to its
-    first wildcard, lies inside the directory or above it, so it may match something there."""
-    if not path.endswith("/"):
-        return bool(glob_regex(pattern).fullmatch(path))
-    static = WILDCARD.split(pattern, maxsplit=1)[0]
-    return static.startswith(path) or path.startswith(static)
-
-
 def push_paths(path, doc, key, required, excludes):
-    """Rule 3's push paths for the workflow `path`: each path its version step reads, `required`,
-    is covered whole by a pattern of on.push.paths without `!`, and no `!` pattern after it can
-    drop a change to it, unless that pattern's literal part, up to its first wildcard, lies inside
-    the directory an exclude of `key`'s paths drops (`!packages/envoy/infra/**` beside
-    `:(exclude)packages/envoy/infra`; `!packages/envoy/infra*/**` also reaches a sibling such as
-    infra2, so it is refused). A commit that touches only a path no pattern covers runs no
-    release workflow, so nothing releases until a later commit does, and no release step changes."""
+    """Rule 3's push paths for the workflow `path`: its on.push.paths is a list of patterns, and
+    release_push_paths.py's rule holds them against each path its version step reads, `required`.
+    A commit that touches only a path no pattern covers runs no release workflow, so nothing
+    releases until a later commit does, and no release step changes."""
     on = doc.get("on", doc.get(True)) if isinstance(doc, dict) else None
     push = on.get("push") if isinstance(on, dict) else None
     patterns = push.get("paths") if isinstance(push, dict) else None
@@ -852,39 +828,8 @@ def push_paths(path, doc, key, required, excludes):
         problem(f"{path}'s on.push.paths is {rendered(patterns)}, not a list of patterns, so no one can say which "
                 f"commits run its release", path)
         return
-    for pattern in unread_patterns(patterns):
-        problem(f"{path}'s on.push.paths pattern `{pattern}` uses `?`, `+`, `\\`, `{{` or `}}`, which GitHub reads "
-                f"another way than this check's glob does, so the check cannot say which changes it covers or drops; "
-                f"write it without them", path)
-    for pattern in patterns:
-        body = pattern.removeprefix("!")
-        parts = body.split("/")
-        forms = (["a `.` or `..` segment"] if any(part in (".", "..") for part in parts) else []) + (
-            ["an empty segment (a leading `/`, a `//` or a trailing `/`)"] if "" in parts else []) + (
-            ["a `[!` class"] if "[!" in body else [])
-        if forms:
-            problem(f"{path}'s on.push.paths pattern `{pattern}` holds {' and '.join(forms)}, which GitHub's filter "
-                    f"docs give no meaning, and matchers differ on it, so the check cannot say which changes it covers "
-                    f"or drops; write the path with plain segments, and a class as `[...]`", path)
-    dropped = [exclude.rstrip("/") + "/" for _, exclude in excludes]
-    why = ("a commit that touches it alone runs no release workflow, so nothing releases until a later commit "
-           "does, and no release step changes")
-    for need in required:
-        last = max((i for i, p in enumerate(patterns) if not p.startswith("!") and whole_cover(p, need)), default=None)
-        if last is None:
-            problem(f"{path}'s on.push.paths runs the workflow for no change to {need}, which its version step "
-                    f"reads through {key}: {why}; add `{need.rstrip('/') + '/**' if need.endswith('/') else need}` "
-                    f"or a `X/**` above it", path)
-            continue
-        for pattern in patterns[last + 1:]:
-            if not pattern.startswith("!") or not reaches(pattern[1:], need):
-                continue
-            static = WILDCARD.split(pattern[1:], maxsplit=1)[0]
-            if any(static.startswith(d) for d in dropped):
-                continue
-            problem(f"{path}'s on.push.paths pattern `{pattern}`, after `{patterns[last]}`, can leave out a change to "
-                    f"{need}, which its version step reads through {key}: {why}", path)
-
+    for message in release_push_paths.problems(path, patterns, key, required, excludes):
+        problem(message, path)
 
 
 def job_outputs(path, doc):
