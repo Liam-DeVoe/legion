@@ -1358,6 +1358,31 @@ func (w *workflowRuntime) repairCutoverMergers(ctx context.Context) error {
 	return nil
 }
 
+// openUncountedRuns gives each run no start of this release counted, which an issue of the
+// project stands in at the boot, an open row in step_starts (workflow's OpenUncountedRuns), in one
+// transaction of its own under the lock every fact applies under. run runs it before the listing's
+// reconcile, the boot's first admission pass, and before any fact, so each fact's settle ends such
+// a run as an open run, and a fact its agent's request applies waits for that agent's stream
+// first. It queues nothing, and a boot that runs again opens nothing; it logs how many runs it
+// opened when it opened any.
+func (w *workflowRuntime) openUncountedRuns(ctx context.Context) error {
+	var opened int
+	if err := pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
+		if err := intake.SerializeFacts(ctx, tx); err != nil {
+			return fmt.Errorf("serialize the open of the uncounted runs with every fact: %w", err)
+		}
+		var err error
+		opened, err = w.engine.OpenUncountedRuns(ctx, tx)
+		return err
+	}); err != nil {
+		return fmt.Errorf("open the runs of %s no start of this release counted: %w", w.dispatchProject, err)
+	}
+	if opened != 0 {
+		w.log.Info("opened the runs a start of an earlier release began", "count", opened)
+	}
+	return nil
+}
+
 // terminal applies a claim's ready or failure as it happens, on a context the daemon's stop does
 // not end: the fact is the supervisor's observation of a claim that has already reached that
 // state, so it is worth landing even while the daemon is going down, and nothing of the stop can

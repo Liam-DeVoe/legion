@@ -259,9 +259,10 @@ func (e *Engine) settleRuns(ctx context.Context, tx pgx.Tx, runs *factRuns, keys
 		}
 	}
 	// The run each issue stood in when the fact began that no start of this release counted: the
-	// place has no row, or one the roll forward of a rollback marked uncounted. Such a run is in
-	// Dispatch only once its end is written, so a start of its place leaves it be: the start cannot
-	// tell it from the run it begins.
+	// place has no row, or one the roll forward of a rollback marked uncounted. The daemon's boot
+	// gives each such run it finds an open row (OpenUncountedRuns), which the loop above ends, so
+	// this ends a run the boot found none of. Such a run is in Dispatch only once its end is
+	// written, so a start of its place leaves it be: the start cannot tell it from the run it begins.
 	for _, key := range order {
 		now, err := read(key)
 		if err != nil {

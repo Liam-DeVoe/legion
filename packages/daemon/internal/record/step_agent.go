@@ -8,7 +8,8 @@ import (
 // RunsAStepOn says whether the record names agent the agent of a run of a step on issue that is
 // not ended: the latest start of a place of issue wrote agent (RaiseStepStarts), and the store
 // does not hold that place's run ended (RunOpen, or RunUncounted after the roll forward of a
-// rollback). A run no start of this release counted has no row, and names no agent here. It is one
+// rollback). A run no start of this release counted — one an earlier release started — names its
+// agent here from the daemon's boot on, which gives it an open row (OpenUncountedStep). It is one
 // read of q: through a pool it takes no transaction and no lock, so a caller with no fact lock can
 // ask before it applies a fact.
 func RunsAStepOn(ctx context.Context, q RowQuerier, agent, issue string) (bool, error) {

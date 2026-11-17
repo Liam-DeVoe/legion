@@ -1,0 +1,129 @@
+package workflow
+
+import (
+	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/record"
+)
+
+// A run that no start of this release counted — one the release before this one started, with no
+// row, or one an earlier release started after a rollback, whose row the roll forward marked
+// uncounted — gets an open row at the daemon's boot (OpenUncountedRuns): at the count its end
+// would have taken, with the agent and the moment its start would have named, and with no record
+// queued. A second boot opens nothing. An issue in a phase that runs no step, and one in a tree
+// the operator holds, get no row. The run's end is then the settle's end of an open run, written
+// once, under that count's id.
+func TestTheBootOpensTheRunOfEachIssueInAStepNoStartCounted(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// uncounted marks the tester's counted row uncounted, as the roll forward of a rollback
+		// does, where false deletes it, as the release before left the store.
+		uncounted bool
+		count     int64
+	}{
+		{name: "a run the release before started", count: 0},
+		{name: "a run an earlier release started after a rollback", uncounted: true, count: 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			stepRoot(t, pool, phase.Implementing)
+			move(t, pool, stepEngine(nil), "LEGION-208", TriggerImplementationReady, "", record.PhaseRow{})
+			raised := stepClock.Add(30 * time.Minute)
+			execSQL(t, pool, `update phases set entry_raised_at = $1 where issue = 'LEGION-208' and role = 'tester'`, raised)
+			if tc.uncounted {
+				execSQL(t, pool, `update step_starts set run = 'uncounted' where issue = 'LEGION-208'`)
+			} else {
+				execSQL(t, pool, `delete from step_starts where issue = 'LEGION-208'`)
+			}
+			stepChild(t, pool, "LEGION-209", phase.Admitted, nil)
+			seedIssue(t, pool, record.Issue{Key: "LEGION-300", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-300",
+				Project: "LEGION", Title: "operator", Phase: phase.Testing, Generation: 1, Status: "in_progress", Rank: "W", LastDispatchSeq: 1})
+			seedOperatorTree(t, pool, "LEGION-300")
+			written := len(stepWrites(t, pool, "LEGION-208"))
+
+			engine := stepEngine(nil)
+			if opened := openUncountedRuns(t, pool, engine); opened != 1 {
+				t.Fatalf("the boot opened %d runs, want the tester's alone", opened)
+			}
+			testing3 := placeOf("step", 3)
+			tester := treeRoleToken(t, "LEGION-208", claim.RoleTester)
+			want := stepStartRow{starts: tc.count, agent: tester, startedAt: raised, run: record.RunOpen,
+				id: StepID("LEGION-208", 1, testing3, tc.count), generation: 1}
+			opened := readStepStartRow(t, pool, "LEGION-208", testing3)
+			if opened != want {
+				t.Fatalf("the tester's row after the boot = %+v, want %+v", opened, want)
+			}
+			var others int
+			if err := pool.QueryRow(t.Context(), `select count(*) from step_starts where issue <> 'LEGION-208'`).Scan(&others); err != nil || others != 0 {
+				t.Fatalf("rows of the other issues = %d, %v; want none for an issue at admitted or in the operator's tree", others, err)
+			}
+			if got := len(stepWrites(t, pool, "LEGION-208")); got != written {
+				t.Fatalf("the boot queued %d step records, want none", got-written)
+			}
+			if again := openUncountedRuns(t, pool, engine); again != 0 || readStepStartRow(t, pool, "LEGION-208", testing3) != want {
+				t.Fatalf("a second boot opened %d runs and left the row %+v; want none and the row unchanged", again, readStepStartRow(t, pool, "LEGION-208", testing3))
+			}
+
+			move(t, pool, stepEngine(nil), "LEGION-208", TriggerTesterPassed, "", record.PhaseRow{})
+			after := stepWrites(t, pool, "LEGION-208")[written:]
+			if len(after) != 2 {
+				t.Fatalf("writes after the move = %+v, want the end of the tester's run and the start of reviewing", after)
+			}
+			assertEnd(t, after[0], "step", 3, 1, "passed", nil)
+			if end := after[0]; end.ID != want.id || end.Agent != tester || end.StartedAt == nil || !end.StartedAt.Equal(raised) {
+				t.Fatalf("the end = %+v, want the record %s, the tester's, started at %s", end, want.id, raised)
+			}
+			want.run = record.RunEnded
+			if ended := readStepStartRow(t, pool, "LEGION-208", testing3); ended != want {
+				t.Fatalf("the tester's row after its end = %+v, want %+v", ended, want)
+			}
+		})
+	}
+}
+
+// openUncountedRuns runs the boot's pass in a transaction of its own and answers how many runs it
+// opened.
+func openUncountedRuns(t *testing.T, pool *pgxpool.Pool, engine *Engine) int {
+	t.Helper()
+	var opened int
+	if err := pgx.BeginFunc(t.Context(), pool, func(tx pgx.Tx) error {
+		var err error
+		opened, err = engine.OpenUncountedRuns(t.Context(), tx)
+		return err
+	}); err != nil {
+		t.Fatalf("open the uncounted runs: %v", err)
+	}
+	return opened
+}
+
+// stepStartRow is what step_starts holds of one place: the count, the agent and the moment of its
+// latest start, its run, and the id and the generation of the record that start kept.
+type stepStartRow struct {
+	starts     int64
+	agent      string
+	startedAt  time.Time
+	run        record.StepRun
+	id         string
+	generation uint64
+}
+
+// readStepStartRow is the row of place on issue.
+func readStepStartRow(t *testing.T, pool *pgxpool.Pool, issue string, place record.StepPlace) stepStartRow {
+	t.Helper()
+	var row stepStartRow
+	var at *time.Time
+	if err := pool.QueryRow(t.Context(), `select starts, agent, started_at, run, coalesce(record->>'id', ''), coalesce((record->>'generation')::bigint, 0)
+		from step_starts where issue = $1 and task = $2 and kind = $3 and place = $4`, issue, place.Task, place.Kind, place.Place).
+		Scan(&row.starts, &row.agent, &at, &row.run, &row.id, &row.generation); err != nil {
+		t.Fatalf("read the row of %s %+v: %v", issue, place, err)
+	}
+	if at != nil {
+		row.startedAt = at.UTC()
+	}
+	return row
+}
