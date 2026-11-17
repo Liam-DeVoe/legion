@@ -260,14 +260,17 @@ func (r *run) output() string {
 //
 // The reader reads exactly those two forms of report: only in them does the marker separate go
 // test's own lines from what a test prints. A report of another form, as of a test binary run with
-// -test.v=true or the text of go test -v through go tool test2json, lets a test write an end line
-// with no marker. go test -json -v makes such a report: -json gives the test binary
-// -test.v=test2json, and the -v after it gives -test.v=true, which wins. So in a report of go test
-// -json -v a test can print its own end line and read as passed, and a test that prints with no
-// line feed gets no end event and reads as not run (TestStatedLimitsOfTheReader). The reader
-// cannot refuse such a report by its content: of a package of passing tests with no subtest and no
-// error line, its events are those of go test -json. So a step that makes a report for CI runs go
-// test -json with no -v.
+// -test.v=true or the text of go test -v through go tool test2json, lets a test write go test's
+// lines with no marker. go test -json -v makes such a report: -json gives the test binary
+// -test.v=test2json, and the -v after it gives -test.v=true, which wins; go test -json with
+// -test.v=true given to the binary after -args makes one too. So in such a report a test can print
+// the run and end lines of any test of its package, its own or another's, with no marker, and make
+// that test read as run or passed, and a test that prints with no line feed gets no end event and
+// reads as not run (TestStatedLimitsOfTheReader; another test's lines, through the command:
+// TestCitationsStatedLimitAForgedRun of cmd/spec-check). The reader cannot refuse such a report by
+// its content: of a package of passing tests with no subtest and no error line, its events are
+// those of go test -json. So a step that makes a report for CI runs go test -json with no -v and no
+// -test.v.
 //
 // The report is the test binary's own account, and the reader trusts its order: a report that
 // someone changed or put in another order can give a run the wrong outcome. In those two forms, a

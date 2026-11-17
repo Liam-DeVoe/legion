@@ -26,8 +26,9 @@ const citationsJob = "spec-citations"
 // spec-report--<job>--<leg>, a directory that holds the job's report.jsonl.
 const reportPrefix = "spec-report--"
 
-// citationFault is one entry of the --json file: the machine form of a check's state input
-// Input.Uncited.
+// citationFault is one entry of the --json file: the machine form of the value at the commit of a
+// check's state input Input.Uncited, which is by commit, then by check; its reader files the
+// entries under the commit that citations judged.
 type citationFault struct {
 	Check  string `json:"check"`
 	Rule   string `json:"rule"`
@@ -318,8 +319,9 @@ func readChanged(path string) (base string, changed []string, err error) {
 }
 
 // writeFaults writes the faults to path as one line of JSON with printJSON, [] for none, making its
-// directory, and answers whether it could; with no path it writes nothing. It is the input of the
-// state of each check at the commit (Input.Uncited).
+// directory, and answers whether it could; with no path it writes nothing. It is the value at the
+// commit of the input of the state of each check, Input.Uncited, which is by commit, then by
+// check, so its reader files it under that commit.
 func writeFaults(stderr io.Writer, path string, faults specgraph.CitationFaults) bool {
 	if path == "" {
 		return true

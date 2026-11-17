@@ -185,16 +185,19 @@
 // the change deleted, or moved out of the tie, counts, and a tie that is not known at either end
 // counts as a change also when no path changed. A report is the account of the process under test,
 // so a test that prints the testing package's marked run and pass lines of another test makes that
-// test read as run, and a report of go test -json -v lets a test print its own end line: a step that
-// makes a report for CI runs go test -json with no -v. --reports holds one directory per report
-// artifact of the run, spec-report--<job> or spec-report--<job>--<leg>, each with the go test -json
-// report.jsonl; --needs holds toJSON(needs) of the spec-citations job, the result of each job it
-// waits for. The tie of a check whose test did not run, the one check whose tie the rules read, is
+// test read as run, and a report of go test -json -v, or of go test -json with -test.v=true after
+// -args, lets a test print those lines of any test of its package with no marker: a step that makes
+// a report for CI runs go test -json with no -v and no -test.v. --reports holds one directory per
+// report artifact of the run, spec-report--<job> or spec-report--<job>--<leg>, each with the go
+// test -json report.jsonl; --needs holds toJSON(needs) of the spec-citations job, the result of
+// each job it waits for. The tie of a check whose test did not run, the one check whose tie the
+// rules read, is
 // at the commit what <root>'s .github/scripts/go-test-reads.sh says its test reads (GoTies), and at
 // the base what the base's own script says, in a checkout of the base commit that the command makes
-// in a new temporary directory when a check needs it and removes when it ends; a base that is the
-// commit itself has the tie at the commit. --ties, which may be given more than once, names a file
-// of ties by commit, {"<commit>":{"<check>":["<path or pattern>",...]}} (ReadCommitTies), each
+// in a new temporary directory when a check needs it and removes when it ends, which holds the tree
+// as git stores it whatever the settings of git, of .gitattributes or of the process; a base that
+// is the commit itself has the tie at the commit. --ties, which may be given more than once, names
+// a file of ties by commit, {"<commit>":{"<check>":["<path or pattern>",...]}} (ReadCommitTies), each
 // commit by its full object name; with it, the ties at the commit are the files' ties of the
 // commit that HEAD of <root> names (exit 2 when git cannot read it) and those at the base the
 // files' ties of the base line's commit. A commit or a check that the files do not hold reads as a

@@ -235,9 +235,10 @@ func notRunInLeg(test Test, leg JobReport) string {
 	return ""
 }
 
-// Uncited is the rule of each check that f refuses, by check id: the Uncited of the Input of the
-// states at the commit (R48: "At that commit, such a check reads unknown, and no earlier result of
-// it counts").
+// Uncited is the rule of each check that f refuses, by check id: the value at one commit of
+// Input.Uncited, which is by commit, then by check, so a caller files it under the commit whose
+// faults f holds (R48: "At that commit, such a check reads unknown, and no earlier result of it
+// counts").
 func (f CitationFaults) Uncited() map[string]string {
 	uncited := make(map[string]string, len(f))
 	for _, fault := range f {

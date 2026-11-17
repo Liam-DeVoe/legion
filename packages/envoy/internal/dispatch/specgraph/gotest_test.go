@@ -199,17 +199,20 @@ func TestAPassStaysWhenThePackageFailsAfterIt(t *testing.T) {
 //     the marked pass line of TestSleeps while TestSleeps runs, and go test then kills TestSleeps,
 //     which reads pass in a report of go test -json (killsiblingpass); go tool test2json's report
 //     of the same binary holds no end of its package (TestAReportWithNoEndOfItsPackageHoldsNoRun);
-//   - "a report of another form ... lets a test write an end line with no marker": in the text of
-//     go test -v through go tool test2json, a test prints its own pass line with no marker and is
-//     then killed, and it reads pass (piped-killprinted). Under go test -json the same test could
-//     not run (killprinted, in TestWhatATestPrintsDecidesNoOutcome);
-//   - "So in a report of go test -json -v a test can print its own end line and read as passed,
-//     and a test that prints with no line feed gets no end event and reads as not run": a test
-//     prints its own pass line with no marker and then ends its process with status 1, and it reads
-//     pass (verbose-forgedpass); under go test -json it could not run (forgedpass, in
+//   - "a report of another form ... lets a test write go test's lines with no marker": in the text
+//     of go test -v through go tool test2json, a test prints its own pass line with no marker and
+//     is then killed, and it reads pass (piped-killprinted). Under go test -json the same test
+//     could not run (killprinted, in TestWhatATestPrintsDecidesNoOutcome);
+//   - "So in such a report a test can print the run and end lines of any test of its package, its
+//     own or another's, with no marker, and make that test read as run or passed, and a test that
+//     prints with no line feed gets no end event and reads as not run": under go test -json -v, a
+//     test prints its own pass line with no marker and then ends its process with status 1, and it
+//     reads pass (verbose-forgedpass); under go test -json it could not run (forgedpass, in
 //     TestWhatATestPrintsDecidesNoOutcome). TestPrintsNoLineFeedThenPasses passes and reads
 //     could_not_run (verbose-splitlines); under go test -json it reads pass (splitlines, in
-//     TestALineThatGoTestWritesInTwoEventsIsReadWhole).
+//     TestALineThatGoTestWritesInTwoEventsIsReadWhole). The lines of another test, under -v and
+//     under -test.v=true after -args, are pinned through the command, with real reports of each
+//     form (TestCitationsStatedLimitAForgedRun of cmd/spec-check).
 func TestStatedLimitsOfTheReader(t *testing.T) {
 	t.Parallel()
 	readReports(t, []reportRow{

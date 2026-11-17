@@ -360,7 +360,7 @@ func TestCitationsAsksForEachTieOnlyWhenItDecides(t *testing.T) {
 }
 
 // Each faulty check gets one fault, in the order of the tree, and Uncited maps it to its rule, the
-// input of a check's state (Input.Uncited).
+// value at one commit of a check's state input Input.Uncited, which is by commit, then by check.
 func TestCitationFaultsUncited(t *testing.T) {
 	t.Parallel()
 	c := newCitationCase(t)
