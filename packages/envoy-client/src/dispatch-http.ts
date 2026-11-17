@@ -99,7 +99,7 @@ import type { ZodType } from "zod";
 
 import { textHead } from "./ask-answer";
 import type { RequestCredential } from "./bearer";
-import { rowStores, WRITE_ROWS } from "./dispatch-write-rows";
+import { rowHolds, rowStores, type SentWrite, WRITE_ROWS } from "./dispatch-write-rows";
 import { messageFor, redirectOrigin, withoutUserinfo } from "./errors";
 
 export type {
@@ -2233,7 +2233,9 @@ export class DispatchClient {
             method,
             url,
             response,
-            row === undefined || call === undefined ? undefined : { row, call }
+            row === undefined || call === undefined
+              ? undefined
+              : { row, call, sent: { path, body } }
           ),
         };
       }, signal)
@@ -2350,7 +2352,7 @@ export class DispatchClient {
           method,
           url,
           response,
-          call === undefined ? undefined : { row, call }
+          call === undefined ? undefined : { row, call, sent: { path } }
         );
       })
     );
@@ -2793,10 +2795,10 @@ export class DispatchClient {
     method: string,
     url: string,
     response: Response,
-    written?: { readonly row: WriteRow; readonly call: WriteCall }
+    written?: { readonly row: WriteRow; readonly call: WriteCall; readonly sent: SentWrite }
   ): Promise<T> {
     if (response.ok && written !== undefined) {
-      return this.#writtenRow<T>(method, url, response, written.row, written.call);
+      return this.#writtenRow<T>(method, url, response, written);
     }
     const text = await response.text();
     let payload: unknown = text;
@@ -2904,13 +2906,16 @@ export class DispatchClient {
    *   says, empty, or JSON that is not the row — is a landing whose answer was lost
    *   (`DISPATCH_ANSWER_LOST`), as is a replay whose first answer Dispatch did not keep
    *   (`answerNotKept`);
-   * - a 2xx that names no key back and gives the row is the answer of a Dispatch that runs no keyed
-   *   layer, the build before it, which this client still writes to (`#runsKeyedLayer`);
-   * - every other 2xx — one that names another request's key back, or names none and gives no row
+   * - a 2xx that names no key back, gives the row and holds what the call sent that the row's
+   *   answer names back (`rowHolds`: the key or id its path names, and the keys, commit, words and
+   *   numbers of its body) is the answer of a Dispatch that runs no keyed layer, the build before
+   *   it, which this client still writes to (`#runsKeyedLayer`);
+   * - every other 2xx — one that names another request's key back, names none and gives no row
    *   (a proxy's page, a server that is not Dispatch, or a Dispatch older than the key's echo that
-   *   lost the body after it stored) — is no answer this client can take as Dispatch's to this
-   *   call, and the write may have reached Dispatch behind what answered it: its outcome is
-   *   unknown (`#notThisCallsAnswer`).
+   *   lost the body after it stored), or names none and holds another call's values (a proxy or a
+   *   cache that answers one write with another's) — is no answer this client can take as
+   *   Dispatch's to this call, and the write may have reached Dispatch behind what answered it: its
+   *   outcome is unknown (`#notThisCallsAnswer`).
    * A route that stores nothing (`rowStores`) made nothing either way, so a 2xx of it that is not
    * its answer is a `DispatchAnswerMissingError`. The row is the answer as it came, so a caller
    * reads every member Dispatch sent, the ones the check names among them.
@@ -2919,9 +2924,9 @@ export class DispatchClient {
     method: string,
     url: string,
     response: Response,
-    row: WriteRow,
-    call: WriteCall
+    written: { readonly row: WriteRow; readonly call: WriteCall; readonly sent: SentWrite }
   ): Promise<T> {
+    const { row, call } = written;
     const named = keyNamedBack(response);
     const echoed = keyEchoed(response, call.key);
     let text: string | undefined;
@@ -2941,7 +2946,8 @@ export class DispatchClient {
       }
     }
     const read = parsed ? row.safeParse(payload) : undefined;
-    if (read?.success === true && (echoed || named === "")) return payload as T;
+    const answers = echoed || (named === "" && rowHolds(row, written.sent, payload));
+    if (read?.success === true && answers) return payload as T;
     const cause = read?.error ?? unread;
     throw this.#notTheRow(
       method,

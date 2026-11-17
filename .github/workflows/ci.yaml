@@ -2205,29 +2205,31 @@ jobs:
               - *bun_install
               - 'packages/pi-envoy/**'
               - 'packages/pi-shared/src/**'
-              # The omp harness and the skills guard (extensions/dispatch-first-omp.test.ts:12,
-              # src/skills-guard.test.ts:23, scripts/prepack.test.ts:6).
+              # The omp harness and the skills guard: @legion/pi-shared/test/omp-harness, which
+              # extensions/dispatch-first-omp.test.ts imports, and test/skills-guard, which
+              # src/skills-guard.test.ts and scripts/prepack.test.ts import.
               - 'packages/pi-shared/test/**'
               - 'packages/envoy-client/src/**'
               # And @legion/broker-client with it (ci_job_reads.py's envoy_client_dep).
               - 'packages/broker-client/**'
-              # extensions/envoy.test.ts:45-52 imports test/envoy-stack, stall-proxy and
-              # stall-scenario; extensions/askgate/decision-record.test.ts:9 its fake-dispatch.
+              # extensions/envoy.test.ts imports test/envoy-stack, route-answers, stall-proxy and
+              # stall-scenario; extensions/askgate/decision-record.test.ts its fake-dispatch.
               - 'packages/envoy-client/test/**'
               - 'packages/envoy-client/bin/dispatch.ts'
               - 'packages/envoy-client/scripts/build-dispatch-cli.sh'
               - 'packages/contracts/src/**'
               # Its tests import @legion/test-fixtures.
               - 'packages/test-fixtures/src/**'
-              # extensions/envoy.test.ts:172-173.
+              # extensions/envoy.test.ts reads it (targetedDispatchPayload).
               - 'packages/contracts/fixtures/dispatch-targeted-delivery.json'
-              # extensions/envoy.test.ts:62 serves each write's answer through test/route-answers,
-              # which reads the OpenAPI document.
+              # extensions/envoy.test.ts serves each write's answer through test/route-answers
+              # (routeAnswer, leastAnswerFor), which reads the OpenAPI document.
               - 'packages/contracts/schemas/dispatch-openapi.json'
               - 'skills/**'
               - 'packages/daemon/internal/prompts/**'
               # Its pack runs the shared prepack, which writes dist/THIRD_PARTY_NOTICES, and
-              # scripts/prepack.test.ts:92-102 packs through pack-plugin.sh, as the release does.
+              # scripts/prepack.test.ts packs through pack-plugin.sh ("the packed tarball"), as the
+              # release does.
               - 'scripts/pi-plugin-prepack.sh'
               - 'scripts/third-party-notices.ts'
               - 'scripts/e2e/lib/pack-plugin.sh'

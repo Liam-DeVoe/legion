@@ -5,8 +5,11 @@
 // `routeAnswer` is the answer a test's fake Dispatch serves for a keyed write: its route's least
 // answer with the members the test names, held to the route's schema, so a stub answers what
 // Dispatch can answer and fails the test that serves it on the commit that changes the route's
-// answer. The other packages' tests take it as `@legion/envoy-client/test/route-answers`.
+// answer. `keyedLayer` puts a stub behind Dispatch's keyed layer, so each 2xx it gives a keyed
+// write names that write's key back. The other packages' tests take both as
+// `@legion/envoy-client/test/route-answers`.
 import { readFileSync } from "node:fs";
+import { IDEMPOTENCY_KEY_HEADER } from "@legion/contracts";
 import { Ajv2020 } from "ajv/dist/2020";
 
 export type Schema = { readonly [member: string]: unknown };
@@ -16,7 +19,12 @@ interface OpenApiDocument {
   readonly paths: Readonly<
     Record<
       string,
-      Readonly<Record<string, { readonly responses: Readonly<Record<string, Schema>> }>>
+      Readonly<
+        Record<
+          string,
+          { readonly responses: Readonly<Record<string, Schema>>; readonly requestBody?: Schema }
+        >
+      >
     >
   >;
 }
@@ -160,6 +168,19 @@ export function answersOf(route: string): { status: number; branch: number; sche
   return out;
 }
 
+/** The members the JSON body of `route`'s request declares, at its top; none where it takes no
+ *  JSON body. */
+export function requestMembers(route: string): string[] {
+  const body = operationOf(route).operation.requestBody as
+    | { readonly content?: Readonly<Record<string, { readonly schema: Schema }>> }
+    | undefined;
+  const schema = body?.content?.["application/json"]?.schema;
+  if (schema === undefined) return [];
+  return objectParts(schema).flatMap((part) =>
+    Object.keys((part.properties as Record<string, Schema> | undefined) ?? {})
+  );
+}
+
 /** Whether `path` is an instance of the route template `template`. */
 export function onRoute(template: string, path: string): boolean {
   const wanted = template.split("/");
@@ -243,6 +264,25 @@ function declaredIn(parts: readonly Schema[], name: string): Schema | undefined 
   return parts
     .map((part) => (part.properties as Record<string, Schema> | undefined)?.[name])
     .find((declared) => declared !== undefined);
+}
+
+/** The schema `raw` declares at `path` (a member's name, or a number for an item of a list), with
+ *  null set aside, or undefined where it declares nothing there. An object that takes members it
+ *  does not name declares each as its `additionalProperties` says. */
+export function declaredAt(raw: Schema, path: readonly (string | number)[]): Schema | undefined {
+  let at: Schema | undefined = raw;
+  for (const step of path) {
+    if (at === undefined) return undefined;
+    const parts = objectParts(branchesOf(at)[0]);
+    at =
+      typeof step === "number"
+        ? (parts.find((part) => part.items !== undefined)?.items as Schema | undefined)
+        : (declaredIn(parts, step) ??
+          (parts
+            .map((part) => part.additionalProperties)
+            .find((taken) => typeof taken === "object" && taken !== null) as Schema | undefined));
+  }
+  return at === undefined ? undefined : branchesOf(at)[0];
 }
 
 /** The branch of `raw` that `value` is read against, since an answer is one branch of a union and
@@ -351,4 +391,39 @@ export function routeAnswer<T = Record<string, unknown>>(
     );
   }
   return answer as T;
+}
+
+/**
+ * `answer`, a stand-in of Dispatch (a client's `fetch`, or a server's request handler), behind
+ * Dispatch's keyed layer (`keyedWrites`, `packages/envoy/internal/dispatch/api/request_keys.go`):
+ * each 2xx it gives a request that carries an `Idempotency-Key` names that key back, as
+ * `TestEveryKeyedAnswerNamesItsKey` holds every Dispatch answer to a keyed write to, unless the
+ * stand-in named a key itself. A stand-in that names no key back is the build before the keyed
+ * layer, whose answer the client takes only where it holds what the call sent
+ * (`DispatchClient.#writtenRow`), so a test of the client's reading of Dispatch's own answer
+ * serves through this. Every other answer is as the stand-in gave it: the router's no-route
+ * answer and the check of the token come before the keyed layer and name no key.
+ */
+export function keyedLayer<Args extends [RequestInfo | URL, ...unknown[]]>(
+  answer: (...args: Args) => Response | Promise<Response>
+): (...args: Args) => Promise<Response> {
+  return async (...args) => {
+    const [input, init] = args;
+    const sent =
+      input instanceof Request
+        ? input.headers
+        : new Headers((init as RequestInit | undefined)?.headers);
+    const key = sent.get(IDEMPOTENCY_KEY_HEADER) ?? "";
+    const response = await answer(...args);
+    if (key === "" || !response.ok || response.headers.has(IDEMPOTENCY_KEY_HEADER)) {
+      return response;
+    }
+    const headers = new Headers(response.headers);
+    headers.set(IDEMPOTENCY_KEY_HEADER, key);
+    return new Response(response.body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers,
+    });
+  };
 }

@@ -7,7 +7,7 @@ import {
   type Sleep,
   sleep,
 } from "@legion/contracts";
-import { routeAnswer } from "../../test/route-answers";
+import { keyedLayer, routeAnswer } from "../../test/route-answers";
 import { bearerCredential, type RequestCredential } from "../bearer";
 import {
   DISPATCH_WRITE_RETRY,
@@ -31,6 +31,8 @@ function jsonResponse(body: unknown, status = 200): Response {
   });
 }
 
+/** A stand-in of Dispatch that gives `responses` in order, behind Dispatch's keyed layer: each 2xx
+ *  it gives a write names the write's key back (`keyedLayer`), as Dispatch's own answers do. */
 function fakeFetch(responses: readonly Response[]) {
   const requests: RecordedRequest[] = [];
   const fetchImpl = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
@@ -39,7 +41,7 @@ function fakeFetch(responses: readonly Response[]) {
     if (!response) throw new Error("unexpected request");
     return response;
   };
-  return { fetchImpl: fetchImpl as typeof fetch, requests };
+  return { fetchImpl: keyedLayer(fetchImpl) as typeof fetch, requests };
 }
 
 function requestBody(request: RecordedRequest): unknown {

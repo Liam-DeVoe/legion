@@ -47,6 +47,15 @@ interface Recorded {
 
 const makeDirectory = temporaryDirectories("dispatch-cli");
 
+/**
+ * What each child `bun` a row starts is given beside its own environment: no transpiler cache.
+ * Its HOME is the row's folder (`makeDirectory`), where Bun keeps that cache, about 155 files,
+ * and the folder is removed by an afterEach hook under Bun's 5 s hook limit, which no row's own
+ * limit covers. With the cache off the hook removes what the command itself wrote, where a longer
+ * limit for the hook would still leave it 155 files to remove on a loaded machine.
+ */
+const CHILD_BUN = { BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0" } as const;
+
 const PNG = Buffer.from("89504e470d0a1a0a0000000d49484452", "hex");
 const requests: Recorded[] = [];
 let triage = false;
@@ -1771,6 +1780,7 @@ describe("the dispatch entry as its own process", () => {
     const child = Bun.spawn([process.execPath, entry, ...argv], {
       cwd: stateDir,
       env: {
+        ...CHILD_BUN,
         PATH: process.env.PATH,
         HOME: stateDir,
         DISPATCH_STATE_DIR: stateDir,
@@ -1816,6 +1826,13 @@ describe("the dispatch entry as its own process", () => {
     expect(stdout).toContain('"rows.jsonl" is not a Markdown name');
     expect(stdout).toContain("--path <file>");
     expect(requests).toEqual([]);
+  }, 30_000);
+
+  // The row's folder is the child's HOME, and the file's afterEach removes it under Bun's 5 s hook
+  // limit, which no row's own limit covers: what the child leaves there is all that removal reads.
+  test("leaves no Bun cache in the row's folder, which is its HOME", async () => {
+    const { code } = await spawnDispatch(["projects"]);
+    expect({ code, cache: existsSync(join(stateDir, ".bun")) }).toEqual({ code: 0, cache: false });
   }, 30_000);
 
   // The 30 s limit is a hang guard, not a budget: the row runs the entry as a child process twice
@@ -2007,7 +2024,7 @@ describe("dispatch result --project, as a CI job writes it", () => {
   ): Promise<{ code: number; stdout: string; stderr: string }> {
     const child = Bun.spawn([process.execPath, entry, ...argv], {
       cwd: stateDir,
-      env,
+      env: { ...env, ...CHILD_BUN },
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -2435,8 +2452,8 @@ describe("dispatch result --project, as a CI job writes it", () => {
       { status: 429, headers: { "Retry-After": retryAfter } }
     );
 
-  /** A bound of the command short enough for a test, run on the real clock as in a job: no
-   *  round starts later than `reserveMs` before `totalMs`. */
+  /** A bound of the command short enough for a test, on the fake clock each of its rows runs on
+   *  (`onFakeClock`): no round starts later than `reserveMs` before `totalMs`. */
   const shortBound = (totalMs: number, reserveMs: number): ResultBound => ({ totalMs, reserveMs });
 
   // Dispatch answers 201 only after it stored the result, and names the request's key back on it
@@ -2706,6 +2723,50 @@ describe("dispatch result --project, as a CI job writes it", () => {
     }, 30_000);
   }
 
+  // A 201 that names no key back is the answer of a Dispatch with no keyed layer only where the
+  // result it stored is the one this call wrote: its project, check, verdict and commit. Another
+  // call's stored result (a proxy or a cache that answers one write with another's) says nothing of
+  // this write, which may have reached Dispatch behind it: write_outcome_unknown, exit 1.
+  const { predicate, subject } = stored.attestation;
+  /** Another call's stored result: the job's own, its attestation changed as `change` says. */
+  const another = (change: Partial<typeof stored.attestation>): typeof stored => ({
+    ...stored,
+    attestation: { ...stored.attestation, ...change },
+  });
+  for (const [member, other] of [
+    ["project", another({ predicate: { ...predicate, project: "OTHER" } })],
+    ["check", another({ predicate: { ...predicate, check: "p-2" } })],
+    ["verdict", another({ predicate: { ...predicate, verdict: "fail" } })],
+    [
+      "commit",
+      another({
+        subject: subject.map((item) => ({ ...item, digest: { gitCommit: "2".repeat(40) } })),
+      }),
+    ],
+  ] as const) {
+    test(`a 201 with another call's stored result, of another ${member}, that names no key back prints write_outcome_unknown and exits 1`, async () => {
+      const { seen, server } = answeringWhole(
+        "201 Created",
+        "application/json",
+        JSON.stringify(other),
+        "none"
+      );
+      try {
+        const ran = await spawnJob(record, {
+          ...jobEnvironment(),
+          DISPATCH_URL: `http://127.0.0.1:${server.port}`,
+        });
+        expect({ code: ran.code, stdout: ran.stdout, posts: seen.posts }).toEqual({
+          code: 1,
+          stdout: `${JSON.stringify({ write_outcome_unknown: "HTTP_201" })}\n`,
+          posts: 1,
+        });
+      } finally {
+        server.stop(true);
+      }
+    }, 30_000);
+  }
+
   // Dispatch's own 204 to the write would name the key back: a body that gives no stored result
   // under it is the landing, as for its 201.
   test("a 204 that names the key back prints landed_without_answer and exits 0", async () => {
@@ -2763,7 +2824,7 @@ describe("dispatch result --project, as a CI job writes it", () => {
 
   // The broker's rate limit refuses a trade before any work, and a job of many checks meets it
   // with no fault of its own: the trade is asked again after the answer's Retry-After, and the
-  // result is stored once. Each wait is a real second.
+  // result is stored once. Each wait is a second of the fake clock.
   test("a trade the broker's rate limit refuses is asked again after its Retry-After, and the result is stored", async () => {
     const answer = brokerAnswer;
     brokerAnswer = () => (trades.length <= 2 ? rateLimited("1") : answer());

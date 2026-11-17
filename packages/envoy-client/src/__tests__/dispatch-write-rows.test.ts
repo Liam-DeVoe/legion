@@ -20,8 +20,16 @@ import {
   IDEMPOTENCY_KEY_COMMITTED,
   IDEMPOTENCY_KEY_HEADER,
 } from "@legion/contracts";
-import type { z } from "zod";
-import { answerErrors, answersOf, instance, onRoute, routeAnswer } from "../../test/route-answers";
+import { z } from "zod";
+import {
+  answerErrors,
+  answersOf,
+  declaredAt,
+  instance,
+  onRoute,
+  requestMembers,
+  routeAnswer,
+} from "../../test/route-answers";
 import { bearerCredential } from "../bearer";
 import {
   DISPATCH_ANSWER_LOST,
@@ -31,7 +39,7 @@ import {
   DispatchWriteLandedError,
   writeOutcomeUnknown,
 } from "../dispatch-http";
-import { rowStores, WRITE_ROWS } from "../dispatch-write-rows";
+import { type Held, heldBy, rowStores, type SentWrite, WRITE_ROWS } from "../dispatch-write-rows";
 
 const actor = { kind: "session", id: "session-rows" } as Actor;
 const content = { name: "notes.md", content: "# Notes\n", actor };
@@ -48,6 +56,15 @@ interface WriteRowCase {
   readonly noRouteFirst?: string;
   /** What tells this case from another of the same method and route. */
   readonly variant?: string;
+  /** The row this route's answer is read into, where it is not the method's own (a fallback
+   *  route's, whose one source the method answers as its list). */
+  readonly answered?: keyof typeof WRITE_ROWS;
+}
+
+/** The row the case's answer is read into: the held values of the stand-in, of each "another"
+ *  row and of the declaration check are this row's. */
+function rowOf(row: WriteRowCase): (typeof WRITE_ROWS)[keyof typeof WRITE_ROWS] {
+  return WRITE_ROWS[row.answered ?? row.method];
 }
 
 /** The methods no caller reads the answer of, whose row is any object: `{}` is their row. */
@@ -108,6 +125,7 @@ const CASES: readonly WriteRowCase[] = [
     method: "syncArchitectureSources",
     route: "POST /api/v1/projects/{key}/architecture-source/sync",
     noRouteFirst: "POST /api/v1/projects/{key}/architecture-sources/sync",
+    answered: "syncArchitectureSource",
     call: (client) => client.syncArchitectureSources("ACME"),
   },
   {
@@ -293,14 +311,25 @@ const CASES: readonly WriteRowCase[] = [
  *  none, as a Dispatch with no keyed layer or something in Dispatch's place does, or another. */
 type Echo = "this" | "none" | "other";
 
-/** A Dispatch that answers the case's route with `status` and `body` under `type`, naming back
- *  the key `echo` says (and its fallback's first route with no route for it), with the headers
- *  `extra` adds, recording each request it was sent. */
+/** What a request of the client sent, as a row's held values read it (`heldBy`): its path's
+ *  segments from `api` on, and its JSON body. */
+async function sentBy(request: Request): Promise<SentWrite> {
+  const json = request.headers.get("Content-Type")?.startsWith("application/json") === true;
+  return {
+    path: new URL(request.url).pathname.split("/").slice(1).map(decodeURIComponent),
+    body: json ? await request.json() : undefined,
+  };
+}
+
+/** A Dispatch that answers the case's route with `status` and `body` under `type` (or the body
+ *  `body` makes of what the request sent), naming back the key `echo` says (and its fallback's
+ *  first route with no route for it), with the headers `extra` adds, recording each request it
+ *  was sent. */
 function dispatchAnswering(
   row: WriteRowCase,
   status: number,
   type: string,
-  body: string,
+  body: string | ((sent: SentWrite) => string),
   echo: Echo,
   extra: Readonly<Record<string, string>> = {}
 ) {
@@ -320,7 +349,8 @@ function dispatchAnswering(
     const key = request.headers.get(IDEMPOTENCY_KEY_HEADER) ?? "";
     if (echo === "this") headers[IDEMPOTENCY_KEY_HEADER] = key;
     if (echo === "other") headers[IDEMPOTENCY_KEY_HEADER] = `${key}-another`;
-    return new Response(body, { status, headers });
+    const text = typeof body === "string" ? body : body(await sentBy(request));
+    return new Response(text, { status, headers });
   }) as typeof fetch;
   const client = new DispatchClient("http://dispatch.test", bearerCredential("secret"), fetchImpl, {
     sleep: async () => undefined,
@@ -334,7 +364,7 @@ async function outcome(
   row: WriteRowCase,
   status: number,
   type: string,
-  body: string,
+  body: string | ((sent: SentWrite) => string),
   echo: Echo,
   extra: Readonly<Record<string, string>> = {}
 ) {
@@ -363,8 +393,58 @@ function noAnswer(
   return echo === "this" ? { landed: DISPATCH_ANSWER_LOST } : { unknown: true };
 }
 
+/** The value a call sent that `held` names, or undefined where the call did not set it. */
+function sentValue(held: Held, sent: SentWrite): unknown {
+  const value =
+    "segment" in held
+      ? sent.path[held.segment]
+      : (sent.body as Record<string, unknown> | undefined)?.[held.member];
+  return value === null || value === "" ? undefined : value;
+}
+
+/**
+ * `answer` with each value the call sent that the case's row holds (`heldBy`) laid at the member
+ * that holds it, as Dispatch answers the call's own write; with `other` (one of those values),
+ * that one value changed, as another call's answer holds it. A member `answer` holds no object
+ * for on the way (absent, null, an empty list) is taken from `most`, the route's most answer, so
+ * the answer stays one the route declares.
+ */
+function holdingSent(
+  row: WriteRowCase,
+  answer: unknown,
+  most: unknown,
+  sent: SentWrite,
+  other?: Held
+): unknown {
+  const out = structuredClone(answer);
+  for (const held of heldBy(rowOf(row))) {
+    const value = sentValue(held, sent);
+    if (value === undefined) continue;
+    let node = out as Record<string | number, unknown>;
+    let model = most as Record<string | number, unknown>;
+    const leaf = held.at.at(-1) as string | number;
+    for (const step of held.at.slice(0, -1)) {
+      if (typeof node[step] !== "object" || node[step] === null || node[step] === undefined) {
+        node[step] = structuredClone(model[step]);
+      }
+      if (Array.isArray(node[step]) && (node[step] as unknown[]).length === 0) {
+        node[step] = structuredClone(model[step]);
+      }
+      node = node[step] as Record<string | number, unknown>;
+      model = model[step] as Record<string | number, unknown>;
+    }
+    const numeric = typeof model[leaf] === "number";
+    const changed = held === other;
+    node[leaf] = numeric
+      ? Number(value) + (changed ? 1 : 0)
+      : `${String(value)}${changed ? "-another" : ""}`;
+  }
+  return out;
+}
+
 /** Each path inside `schema` at which an object refuses a member it does not name (a
- *  `z.strictObject`, whose catchall is `never`), against the rule that a row keeps each one. */
+ *  `z.strictObject`, whose catchall is `never`), against the rule that a row keeps each one. A
+ *  kind it does not open is refused, naming it: it could hold such an object. */
 function strictPaths(schema: z.core.$ZodType, at: string): string[] {
   // `$ZodTypes` is zod's union of its own types, which a switch on the definition's type narrows.
   const def = (schema as z.core.$ZodTypes)._zod.def;
@@ -394,8 +474,21 @@ function strictPaths(schema: z.core.$ZodType, at: string): string[] {
     case "prefault":
     case "catch":
       return strictPaths(def.innerType, at);
-    default:
+    // A value that holds no member holds no closed object.
+    case "string":
+    case "number":
+    case "boolean":
+    case "bigint":
+    case "null":
+    case "undefined":
+    case "unknown":
+    case "any":
+    case "enum":
+    case "literal":
+    case "date":
       return [];
+    default:
+      throw new Error(`strictPaths opens no ${def.type} schema (${at})`);
   }
 }
 
@@ -410,11 +503,66 @@ describe("every keyed write reads Dispatch's declared answer as its row, by the 
     expect(stores.map(([method]) => method).sort()).toEqual(["markdownRoundTrip", "related"]);
   });
 
+  // A row's held values are what a no-key answer is held to (`rowHolds`): a value the route's
+  // request does not take, or a member its answers do not hold, would turn every such answer
+  // into an unknown outcome, or hold it to nothing.
+  test("each value a row holds is a path parameter or a body member its route's request takes, and a key, id, word or number every answer it is driven with holds", () => {
+    const wrong = CASES.flatMap((row) => {
+      const segments = (row.route.split(" ")[1] as string).split("/").slice(1);
+      const answers = answersOf(row.route).filter(
+        (answer) => !(row.never?.status === answer.status && row.never.branch === answer.branch)
+      );
+      return heldBy(rowOf(row)).flatMap((held) => {
+        const taken =
+          "segment" in held
+            ? /^\{[a-z_]+\}$/.test(segments[held.segment] ?? "")
+            : requestMembers(row.route).includes(held.member);
+        const holds = answers.every((answer) => {
+          const leaf = declaredAt(answer.schema, held.at);
+          const value = leaf === undefined ? undefined : instance(leaf, "most");
+          return typeof value === "string" || typeof value === "number";
+        });
+        const named = "segment" in held ? `segment ${held.segment}` : held.member;
+        return taken && holds
+          ? []
+          : [
+              `${row.method} (${row.route}) ${named} at ${held.at.join(".")}: taken ${taken}, held ${holds}`,
+            ];
+      });
+    });
+    expect(wrong).toEqual([]);
+  });
+
+  test("the rows that hold nothing the call sent are the six the table names", () => {
+    const none = Object.entries(WRITE_ROWS).filter(([, row]) => heldBy(row).length === 0);
+    expect(none.map(([method]) => method).sort()).toEqual([
+      "agentMessage",
+      "deliveryReply",
+      "docEdit",
+      "markdownRoundTrip",
+      "nameArtifactVersion",
+      "related",
+    ]);
+  });
+
   // A newer Dispatch may answer a member the row does not name, at any depth, and an older client
   // must still read the answer as its own: a row that refused it would print a landing.
   test("no row refuses a member it does not name, at any depth", () => {
     const strict = Object.entries(WRITE_ROWS).flatMap(([method, row]) => strictPaths(row, method));
     expect(strict).toEqual([]);
+  });
+
+  // The walk above opens every kind a row is built of, and reads a value that holds no member as
+  // holding no closed object. A kind it does not open (a tuple, a lazy schema) could hold one, so
+  // it is refused by name rather than read as clean.
+  test("the walk refuses a kind it does not open, naming it", () => {
+    for (const [kind, schema] of [
+      ["tuple", z.tuple([z.strictObject({ id: z.string() })])],
+      ["lazy", z.lazy(() => z.strictObject({ id: z.string() }))],
+    ] as const) {
+      expect(() => strictPaths(schema, "row"), kind).toThrow(`opens no ${kind} schema (row)`);
+    }
+    expect(strictPaths(z.looseObject({ id: z.string(), n: z.number().int() }), "row")).toEqual([]);
   });
 
   test("an issue update whose advance and link carry a member the row does not name is its answer", async () => {
@@ -476,21 +624,56 @@ describe("every keyed write reads Dispatch's declared answer as its row, by the 
     const first = answers[0];
     if (first === undefined) throw new Error(`${row.route} declares no 2xx answer`);
     const status = first.status;
-    const least = JSON.stringify(instance(first.schema, "least"));
+    const least = instance(first.schema, "least");
+    const most = instance(first.schema, "most");
+    /** The least answer holding what the call sent, or another call's (`holdingSent`), and the
+     *  ways each one served is not an answer the route declares, read after the call. */
+    const holding = (other?: Held) => {
+      const refused: string[][] = [];
+      const body = (sent: SentWrite): string => {
+        const answered = holdingSent(row, least, most, sent, other);
+        refused.push(answerErrors(row.route, status, answered));
+        return JSON.stringify(answered);
+      };
+      return { body, refused };
+    };
     // Every Dispatch 2xx to a keyed write names its key back (`TestEveryKeyedAnswerNamesItsKey`,
     // packages/envoy/internal/dispatch/api/request_keys_test.go); a Dispatch that runs no keyed
-    // layer names none, and its answer is still the call's.
+    // layer names none, and its answer is still the call's where it holds what the call sent
+    // that the row's answer names back.
     test(`${label}: the least ${status} answer naming no key back is the call's answer`, async () => {
-      const got = await outcome(row, status, "application/json", least, "none");
+      const served = holding();
+      const got = await outcome(row, status, "application/json", served.body, "none");
       expect({
         landed: got.landed,
         unknown: got.unknown,
         missing: got.missing,
         thrown: got.thrown,
-      }).toEqual({ landed: undefined, unknown: undefined, missing: undefined, thrown: undefined });
+        served: served.refused,
+      }).toEqual({
+        landed: undefined,
+        unknown: undefined,
+        missing: undefined,
+        thrown: undefined,
+        served: [[]],
+      });
     });
+    // One that holds another value than the call sent is another call's answer (a proxy or a
+    // cache that answers one write with another's), which says nothing of this write.
+    for (const held of heldBy(rowOf(row))) {
+      test(`${label}: the least ${status} answer naming no key back, of another ${held.at.join(".")}, is not this call's`, async () => {
+        const served = holding(held);
+        const got = await outcome(row, status, "application/json", served.body, "none");
+        expect({
+          landed: got.landed,
+          unknown: got.unknown,
+          missing: got.missing,
+          served: served.refused,
+        }).toEqual({ landed: undefined, unknown: true, missing: undefined, served: [[]] });
+      });
+    }
     test(`${label}: the least ${status} answer naming another key back is not this call's`, async () => {
-      const got = await outcome(row, status, "application/json", least, "other");
+      const got = await outcome(row, status, "application/json", JSON.stringify(least), "other");
       expect({ landed: got.landed, unknown: got.unknown, missing: got.missing }).toEqual({
         landed: undefined,
         unknown: undefined,
