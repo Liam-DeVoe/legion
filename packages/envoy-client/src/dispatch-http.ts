@@ -1241,12 +1241,13 @@ export class DispatchClient {
     return this.#json("GET", ["api", "v1", "issues", await this.#resolveIssue(issue)]);
   }
 
-  /** `PATCH /api/v1/issues/{key}`: the server replaces every field the body names. */
+  /** `PATCH /api/v1/issues/{key}`: the server replaces every field the body names. A call that
+   *  writes `components` reads them back, so its answer is held to the row that requires them. */
   async updateIssue(issue: string, input: UpdateIssueInput): Promise<Advised<Issue>> {
     return this.#write(
       "PATCH",
       ["api", "v1", "issues", await this.#resolveIssue(issue)],
-      WRITE_ROWS.updateIssue,
+      input.components === undefined ? WRITE_ROWS.updateIssue : WRITE_ROWS.updateIssueComponents,
       input
     );
   }

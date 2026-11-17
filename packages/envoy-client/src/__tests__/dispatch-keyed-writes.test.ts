@@ -156,6 +156,10 @@ const posted = routeAnswer<CommentWriteResponse>("POST /api/v1/issues/{key}/comm
   id: "comment-1",
   body: "Shipped.",
 });
+/** An issue's upload as its route answers it. */
+const uploaded = routeAnswer("POST /api/v1/issues/{key}/artifacts", {
+  artifact: { id: "artifact-1" },
+});
 
 function client(fetchImpl: typeof fetch, retry: DispatchWriteRetry, signal?: AbortSignal) {
   return new DispatchClient("http://dispatch.test", bearerCredential("secret"), fetchImpl, {
@@ -512,6 +516,56 @@ describe("DispatchClient's writes", () => {
     );
     await probing;
     const second = client(fetchImpl, pacing().retry)
+      .comment("DSP-1", comment)
+      .then(
+        () => "posted",
+        (error: Error) => `${error.name}: ${error.message}`
+      );
+    const { promise: turned, resolve: turn } = Promise.withResolvers<void>();
+    setImmediate(turn);
+    await turned;
+    cancel.abort();
+    await first;
+    release();
+    expect({ second: await second, posts }).toEqual({ second: "posted", posts: 3 });
+  });
+
+  // The probe's credential waits where a broker credential waits, on the trade its callers share,
+  // so it is given the probe's own bound and never a write's signal: the write that started the
+  // probe is cancelled while the probe's credential waits, and the write that joined the probe
+  // still reads its answer and asks again.
+  test("a write's own end never ends the shared /healthz probe's wait on its credential", async () => {
+    const { promise: trading, resolve: traded } = Promise.withResolvers<void>();
+    const { promise: held, resolve: release } = Promise.withResolvers<void>();
+    const credential: RequestCredential = {
+      ...bearerCredential("secret"),
+      headers: async (_method, url, _session, signal) => {
+        if (url.endsWith("/healthz")) {
+          traded();
+          const { promise: aborted, reject } = Promise.withResolvers<never>();
+          signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+          await Promise.race([held, aborted]);
+        }
+        return { Authorization: "Bearer secret" };
+      },
+    };
+    let posts = 0;
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).endsWith("/healthz")) return json({ status: "ok", idempotency_keys: true });
+      posts += 1;
+      if (posts <= 2) throw Object.assign(new Error("socket closed"), { code: "ECONNRESET" });
+      const key = (init?.headers as Record<string, string>)["Idempotency-Key"] ?? "";
+      return json(posted, 201, { "Idempotency-Key": key });
+    }) as typeof fetch;
+    const dispatch = (signal?: AbortSignal) =>
+      new DispatchClient("http://dispatch.test", credential, fetchImpl, {
+        signal,
+        writeRetry: pacing().retry,
+      });
+    const cancel = new AbortController();
+    const first = failure(dispatch(cancel.signal).comment("DSP-1", comment));
+    await trading;
+    const second = dispatch()
       .comment("DSP-1", comment)
       .then(
         () => "posted",
@@ -1032,13 +1086,7 @@ describe("DispatchClient's writes", () => {
   });
 
   test("a retried upload sends the bytes and boundary its first attempt sent", async () => {
-    const { fetchImpl, sent } = scripted([
-      page(502, "Bad Gateway"),
-      json(
-        routeAnswer("POST /api/v1/issues/{key}/artifacts", { artifact: { id: "artifact-1" } }),
-        201
-      ),
-    ]);
+    const { fetchImpl, sent } = scripted([page(502, "Bad Gateway"), json(uploaded, 201)]);
 
     await client(fetchImpl, pacing().retry).artifact("DSP-1", {
       name: "spec.md",
@@ -1126,11 +1174,6 @@ interface Taken {
   readonly length: number;
   received: number;
 }
-
-/** An issue's upload as its route answers it. */
-const uploaded = routeAnswer("POST /api/v1/issues/{key}/artifacts", {
-  artifact: { id: "artifact-1" },
-});
 
 /** Answers `socket` with `status` and a JSON `body`, carrying back `key`, and closes it. */
 function answerOn(socket: Socket, status: number, body: unknown, key?: string): void {

@@ -165,6 +165,7 @@ export function onRoute(template: string, path: string): boolean {
 /** Each way `body` is not an answer `route` declares for `status`, as Ajv words it; none for an
  *  answer it declares. */
 export function answerErrors(route: string, status: number, body: unknown): string[] {
+  // Throws first, naming the route and the status, for an operation that declares no JSON body.
   answerSchema(route, status);
   const { method, path } = operationOf(route);
   // A JSON pointer's step escapes `~` and `/` (RFC 6901).

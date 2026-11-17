@@ -61,6 +61,13 @@ const CASES: readonly WriteRowCase[] = [
     call: (client) => client.updateIssue("ACME-1", { status: "todo", actor }),
   },
   {
+    method: "updateIssueComponents",
+    route: "PATCH /api/v1/issues/{key}",
+    variant: "writing components",
+    call: (client) =>
+      client.updateIssue("ACME-1", { components: { mode: "explicit", ids: ["web"] }, actor }),
+  },
+  {
     method: "claimIssue",
     route: "POST /api/v1/issues/{key}/claim",
     call: (client) => client.claimIssue("ACME-1", { actor }),

@@ -167,12 +167,33 @@ const uploadedDocument = {
 /** The person or session a review or a retraction names, as `actorText` reads it. */
 const actor = InboundActorSchema;
 
+/** An issue as `issueUpdateCommand` reads the answer of its PATCH (`WRITE_ROWS.updateIssue`). */
+const updatedIssue = z.looseObject({
+  key: issueFields.key,
+  status: issueFields.status,
+  title: issueFields.title.optional(),
+  priority: issueFields.priority.optional(),
+  assignee: issueFields.assignee.optional(),
+  route: issueFields.route.optional(),
+  parent: issueFields.parent.optional(),
+  components: components.optional(),
+  repo: issueFields.repo.optional(),
+  resolved_repo: issueFields.resolved_repo.optional(),
+  labels: issueFields.labels.nullish(),
+  blocked_by: issueFields.blocked_by.nullish(),
+  advances: issueFields.advances,
+  external_links: z.array(ExternalLinkSchema).nullish(),
+  advice,
+});
+
 export const WRITE_ROWS = {
-  /** `issueCommand` reads `project` and `components` inside `otherAdviceLines` and
-   *  `relatedCheckLines`, whose `try` prints a line of its own, so the row names neither. */
+  /** `issueCommand` reads `project` on a created issue's check lines (`relatedCheckLines`, which
+   *  prints it where no check was made), so the row names it. It reads `components` only inside
+   *  `otherAdviceLines`, whose `try` prints a line of its own, so the row names none of it. */
   issue: z.looseObject({
     key: issueFields.key,
     title: issueFields.title,
+    project: issueFields.project,
     assignee: issueFields.assignee.optional(),
     repo: issueFields.repo.optional(),
     advice: caughtAdvice,
@@ -181,23 +202,10 @@ export const WRITE_ROWS = {
   related: z.looseObject({ outcome: z.string() }),
   /** `issueUpdateCommand` reads the key and the status on every path, and each other member only
    *  where the call wrote it, so those are optional. */
-  updateIssue: z.looseObject({
-    key: issueFields.key,
-    status: issueFields.status,
-    title: issueFields.title.optional(),
-    priority: issueFields.priority.optional(),
-    assignee: issueFields.assignee.optional(),
-    route: issueFields.route.optional(),
-    parent: issueFields.parent.optional(),
-    components: components.optional(),
-    repo: issueFields.repo.optional(),
-    resolved_repo: issueFields.resolved_repo.optional(),
-    labels: issueFields.labels.nullish(),
-    blocked_by: issueFields.blocked_by.nullish(),
-    advances: issueFields.advances,
-    external_links: z.array(ExternalLinkSchema).nullish(),
-    advice,
-  }),
+  updateIssue: updatedIssue,
+  /** The same write where the call wrote `components`: `componentsChange` reads them with no guard
+   *  of its own, so this row requires them (`DispatchClient.updateIssue` picks it). */
+  updateIssueComponents: updatedIssue.extend({ components }),
   claimIssue: z.looseObject({
     status: issueFields.status,
     claim: z.looseObject({ at: z.string() }).nullable(),
@@ -218,8 +226,8 @@ export const WRITE_ROWS = {
   }),
   syncArchitectureSources: z.array(architectureSource),
   syncArchitectureSource: architectureSource,
-  /** `requestApprovalCommand` reads `approval` only where the answer holds no ask, and its `by`
-   *  through `?.`. */
+  /** `requestApprovalCommand` reads `approval` where the answer holds no ask, which the route
+   *  always answers, and its `by` through `?.`. */
   requestApproval: z.looseObject({
     version: z.number().int(),
     coverage: z.array(z.string()).nullish(),
@@ -231,7 +239,7 @@ export const WRITE_ROWS = {
         waiting_on_person: z.string().optional(),
       })
       .nullable(),
-    approval: z.looseObject({ by: z.looseObject({ id: z.string() }).nullish() }).optional(),
+    approval: z.looseObject({ by: z.looseObject({ id: z.string() }).nullish() }),
   }),
   planApprove: z.looseObject({ version: z.number().int() }),
   reviewArtifact: z.looseObject({
