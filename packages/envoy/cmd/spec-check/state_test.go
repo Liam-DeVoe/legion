@@ -111,6 +111,7 @@ func TestScenarioRefusals(t *testing.T) {
 	serving := ":::requirement{#messages-reach-sessions kind=\"behavior\"}"
 	loop := ":::requirement{#messages-reach-sessions kind=\"behavior\" serves=\"a-stored-message-survives-a-restart\"}"
 	loopDetail := "loop: a-stored-message-survives-a-restart -[parent]-> messages-reach-sessions -[serves]-> a-stored-message-survives-a-restart"
+	const resultForm = `{"check":"<check id>","check_version":<whole number from 1>,"kind":"<run or failing_example>","outcome":"<pass, fail or could_not_run>","commit":"<commit>","deploy":"<deploy>","graph_tx":"<transaction>","job":"<job>","leg":"<leg>","attempt":<whole number>,"at":"<RFC 3339 time with an upper-case T and Z>","seq":<whole number>,"fault_author":"<author>","test_authors":["<author>", …],"test_commit":"<commit>"}`
 	for _, row := range []struct {
 		name, scenario string
 		change         func(t *testing.T, dir string)
@@ -171,9 +172,16 @@ func TestScenarioRefusals(t *testing.T) {
 		{"a history whose commits are a string", "carry", write("history.json", `{"commits":"c1"}`),
 			"history.json", `specgraph: history: it is not in the form {"commits":[{"id":"<commit>","parent":"<commit>","files":{"<repository path>":"<content label>"}}, …]}: the value at "/commits" is of another type`},
 		{"a result whose check_version is a string", "carry", result1(`"1"`, "run", "pass"),
-			"results.json", `result 1: it is not in the form {"check":"<check id>","check_version":<whole number from 1>,"kind":"<run or failing_example>","outcome":"<pass, fail or could_not_run>","commit":"<commit>","deploy":"<deploy>","graph_tx":"<transaction>","job":"<job>","leg":"<leg>","attempt":<whole number>,"at":"<RFC 3339 time>","seq":<whole number>,"fault_author":"<author>","test_authors":["<author>", …],"test_commit":"<commit>"}: the value at "/check_version" is of another type`},
+			"results.json", `result 1: it is not in the form ` + resultForm + `: the value at "/check_version" is of another type`},
+		{"a result whose time does not parse", "carry",
+			write("results.json", `[{"check":"a-restart-loses-no-message","check_version":1,"kind":"run","outcome":"pass","commit":"c1","at":"yesterday"}]`),
+			"results.json", `result 1: it is not in the form ` + resultForm + `: the value at "/at" is of another type`},
+		{"a job run whose ended is a string", "carry", write("jobs.json", `[{"job":"go-checks","leg":"","commit":"c1","ended":"yes"}]`),
+			"jobs.json", `job run 1: it is not in the form {"job":"<job>","leg":"<leg>","commit":"<commit>","ended":<true or false>}: the value at "/ended" is of another type`},
+		{"a unit whose serves is a string", "wait-cycle", write("units.json", `[{"id":"u-a","serves":"a-message-survives-a-restart","needs":[],"waits_on":[]}]`),
+			"units.json", `unit 1: it is not in the form {"id":"<unit>","serves":["<statement id>", …],"needs":["<unit>", …],"waits_on":["<statement id>", …]}: the value at "/serves" is of another type`},
 		{"subjects.json that is no array", "carry", write("subjects.json", `{"commit":"c2"}`),
-			"subjects.json", `it is not in the form [{"commit":"<commit>","branch":"<branch>","deploy":"<deploy>","graph_tx":"<transaction>","now":"<RFC 3339 time>"}, …]`},
+			"subjects.json", `it is not in the form [{"commit":"<commit>","branch":"<branch>","deploy":"<deploy>","graph_tx":"<transaction>","now":"<RFC 3339 time with an upper-case T and Z>"}, …]`},
 		{"an uncited check whose rule is a list", "carry", write("uncited.json", `{"c1":{"a-restart-loses-no-message":["x"]}}`),
 			"uncited.json", `it is not in the form {"<commit>":{"<check id>":"<R48 rule>"}}: the value at "/c1/a-restart-loses-no-message" is of another type`},
 		{"an approved spec with no list of nodes", "carry", write("approved.json", `{"nodes":null}`),

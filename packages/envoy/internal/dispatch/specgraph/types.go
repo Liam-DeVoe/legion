@@ -130,9 +130,11 @@ const (
 	// KeepsEachNode is the Effect of a problem of form after which the tree holds each node in the
 	// text that the files write: a heading that names code, a claim of more than one line or
 	// sentence, or a byte that Dispatch cannot store. A node keeps such a byte in its text, except a
-	// raw 0xA0 or 0x85 byte between two attributes: the reader of the opening line takes it as white
-	// space, so the node drops it and is byte for byte the node of the same line without it. The
-	// comparison of the files' own text decides.
+	// raw 0xA0 or 0x85 byte where its opening line's attributes take white space (after {, between
+	// two attributes or before }): the reader of the opening line takes it as white space, so the
+	// node drops it and is byte for byte the node of the same line without it. Right after a #id
+	// shortcut the id takes the byte instead, and the line opens no block, a problem that loses a
+	// node. The comparison of the files' own text decides.
 	KeepsEachNode
 )
 
