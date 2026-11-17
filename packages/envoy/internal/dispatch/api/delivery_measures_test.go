@@ -276,6 +276,28 @@ func TestADeliveryWindowOutsideTheYearsAReadAnswersIsRefused(t *testing.T) {
 	}
 }
 
+// TestAPipelineWhoseShownDaysStartBeforeYearOneIsRefused: the Pipeline answers the seven days
+// that end at at, so an at in the first six days of the year 1 shows days of the year 0. R18
+// refuses a read whose window falls outside the years 1 to 9999, as the eval and delivery routes
+// refuse a from in the year 0; here the Pipeline answered 200 with days from 0000-12-26
+// (dispatch://INFRA-2916, the testing round of 2026-11-17 at 5e24362a). The first at whose days
+// all lie in the year 1 is answered.
+func TestAPipelineWhoseShownDaysStartBeforeYearOneIsRefused(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	seedMeasuresSettings(t, database)
+	for _, at := range []string{"0001-01-01T12:00:00Z", "0001-01-06T23:59:59Z"} {
+		target := "/api/v1/delivery/pipeline?" + url.Values{"at": {at}}.Encode()
+		response := dispatchRequest(t, handler, http.MethodGet, target, nil, "alice")
+		if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), `"code":"INVALID_QUERY"`) {
+			t.Errorf("GET %s: status = %d, body = %.200s, want 400 INVALID_QUERY: its shown days start before the year 1", target, response.Code, response.Body.String())
+		}
+	}
+	target := "/api/v1/delivery/pipeline?" + url.Values{"at": {"0001-01-07T00:00:00Z"}}.Encode()
+	if response := dispatchRequest(t, handler, http.MethodGet, target, nil, "alice"); response.Code != http.StatusOK {
+		t.Errorf("GET %s: status = %d, body = %.200s, want 200: its shown days are 0001-01-01 to 0001-01-07", target, response.Code, response.Body.String())
+	}
+}
+
 // TestGetDeliveryMeasuresIsAgentReadable: an agent optimizing against the measures reads them
 // with its bearer, as a person's browser does; an anonymous caller reads nothing.
 func TestGetDeliveryMeasuresIsAgentReadable(t *testing.T) {
