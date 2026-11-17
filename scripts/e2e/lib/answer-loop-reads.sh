@@ -431,6 +431,27 @@ call_organization() {
   organization=$(jq -r '(.response_headers? // {})["anthropic-organization-id"]? // ""' <<<"${1:-null}" 2>/dev/null) || organization=
   printf '%s\n' "$organization"
 }
+# same_organization_pair ORGANIZATION...: given the answers in the order they were asked, each as
+# the organization that served it (call_organization, "" where its call names none), prints
+# "<earlier> <later>", the indexes of the first answer whose organization an earlier answer's also
+# was and of the latest such earlier answer, and fails when no two answers share one. The later
+# answer reads the cache the earlier one wrote whatever was served between them, since a prompt cache
+# is kept per organization and not per call: in proof run 44095624771 six answers strictly
+# alternated two organizations and each read what its own organization's answer before it wrote
+# (A10-2r1 read the 3184 tokens A10-1 wrote). Answers naming no organization at all share one, a
+# route that sends no such header. The caller keeps every answer inside the cache's lifetime.
+same_organization_pair() {
+  local organizations=("$@") earlier later
+  for ((later = 1; later < ${#organizations[@]}; later++)); do
+    for ((earlier = later - 1; earlier >= 0; earlier--)); do
+      if [ "${organizations[earlier]}" = "${organizations[later]}" ]; then
+        printf '%s %s\n' "$earlier" "$later"
+        return 0
+      fi
+    done
+  done
+  return 1
+}
 # request_effort REQUEST: the effort a model request carries, wherever in the body it stands;
 # empty for a request that carries none and for no request at all.
 request_effort() {
@@ -689,6 +710,32 @@ tree_claims_parked() {
 }
 
 # ---- A13: branch against base ------------------------------------------------------------------------
+# merge_base_commit ROOT REV prints "<merge base> <rev> <head>": the commit A13's base build is of,
+# the merge base of REV and ROOT's checkout, then REV and that checkout's head, each a full commit.
+# The head is the working copy's commit under jj and HEAD under git (CI's checkout). A13 asks
+# whether the branch answers as the commit it changed answers, so a base ahead of the branch must
+# not be built: in proof run 44095624771 the base was main's tip, a2b379d1, which carries #4281's
+# `requested_by.proven` and the branch does not, and the criterion read main's change as the
+# branch's. REV an ancestor of the head is its own merge base. It fails when REV or the head does
+# not resolve, or when the two share no history.
+merge_base_commit() {
+  local root=$1 rev=$2 commit head base
+  if command -v jj >/dev/null && jj -R "$root" root >/dev/null 2>&1; then
+    commit=$(jj -R "$root" log -r "$rev" --no-graph -T 'commit_id' 2>/dev/null) &&
+      head=$(jj -R "$root" log -r @ --no-graph -T 'commit_id' 2>/dev/null) &&
+      base=$(jj -R "$root" log -r "fork_point($commit | $head)" --no-graph -T 'commit_id' 2>/dev/null) || return 1
+  else
+    commit=$(git -C "$root" rev-parse --verify --quiet "$rev^{commit}") &&
+      head=$(git -C "$root" rev-parse --verify --quiet HEAD) &&
+      base=$(git -C "$root" merge-base "$commit" "$head") || return 1
+  fi
+  # One full commit each: a revision naming several commits names no base, and jj answers two
+  # histories that share nothing with its root commit, which is no commit of either.
+  local full='^[0-9a-f]{40}$'
+  [[ $commit =~ $full ]] && [[ $head =~ $full ]] && [[ $base =~ $full ]] || return 1
+  [ "$base" != 0000000000000000000000000000000000000000 ] || return 1
+  printf '%s %s %s\n' "$base" "$commit" "$head"
+}
 # a13_same FILE: branch's and base's FILE for the current store say the same thing — byte for byte,
 # but for what each stack minted for its own call, which no two calls can share. A listener's answer
 # (send.body, publish.body) mints its envelope's ids — its own and its source's, its dedupe key and

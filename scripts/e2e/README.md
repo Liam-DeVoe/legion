@@ -1410,7 +1410,9 @@ Each agent is stopped the way the spec's kinds are made:
 
 - a Claude Code reviewer the **base commit's** daemon runs, on a child of a tree of its own (the pre-change tree, its architect spawned with no task and suspended with it), on the pass's database and state directory before the branch's daemon boots on both, as an upgrade does:
   the branch's boot finds it only by its title, the conversation from before the change that A2 names.
-  The base commit (`LEGION_E2E_BASE_REV`, default `main@origin`) is built once from a `git archive` of it, its three binaries and installed workspace kept in the cache under `base-<commit>`, with that commit's plugins in a profile of its own.
+  The base commit is the merge base of `LEGION_E2E_BASE_REV` (default `main@origin`) and the checkout's own head (`merge_base_commit`: the working copy's commit under jj, `HEAD` under git), never the revision itself when it is ahead of the branch, and the run notes which commit it built and why.
+  A change the revision carries and the branch does not would otherwise read as the branch's own: proof run 44095624771 built main's tip, `a2b379d1`, whose #4281 adds `requested_by.proven` to Dispatch's deliveries, and A13 read that field as this change's difference.
+  It is built once from a `git archive` of it, its three binaries and installed workspace kept in the cache under `base-<commit>`, with that commit's plugins in a profile of its own.
 
 **The issues' workspaces.**
 With the workflow on, an operator's spawn spec carries the repository the project's mapping gives the issue, `sjawhar/legion-smoke`, and the tmux runtime then works in the issue's jj workspace, `<state>/workspaces/sjawhar/legion-smoke/<issue lower-cased>` (`workspace.Location`), which must exist already:
@@ -1492,21 +1494,18 @@ The answers to the asker and the controller notices land in `inbox.jsonl` under 
   Its turn after the resume quotes both answers:
   every reply it gave after the task was delivered is read (`assistant_texts_after`), not its last, since a resumed architect may also answer a person's earlier reply in the same turn, and its last words then answer that.
 
-- A10 (Claude Code leg): the pre-change reviewer answered twice within the cache lifetime, and asked again while the last two answers came from two Anthropic organizations:
-  the first request's effort equals the transcript's last `effort`, every thinking signature in the transcript appears byte for byte in it, the cost line of the second answer of the first pair of consecutive answers one organization served reads `cacheReadTokens > 0`, and the resumed reviewer's first model call holds the first two questions' exchanges once each
+- A10 (Claude Code leg): the pre-change reviewer answered twice within the cache lifetime, and asked again while no two of its answers came from one Anthropic organization:
+  the first request's effort equals the transcript's last `effort`, every thinking signature in the transcript appears byte for byte in it, the cost line of the first answer that an earlier answer's organization also served reads `cacheReadTokens > 0`, and the resumed reviewer's first model call holds the first two questions' exchanges once each
   — its first call, not its first proxied request, which is the reachability preflight Claude Code sends as it starts and which holds nothing.
   The byte-for-byte clause needs thinking to replay, and at Claude Code's default on the run's model, `medium`, the reviewer once restated its finding with no thinking at all:
   on that model thinking is adaptive and takes no budget, so effort decides how readily it thinks and the task whether there is anything to think about.
   The pre-change reviewer runs at effort `xhigh`, set as `CLAUDE_CODE_EFFORT_LEVEL` in its claim's `settings.json`, and its task has it weigh, in one sentence and with no tool, whether the missing SBOM alone blocks the release before it restates the blocker and its marker, the two facts A2's and A10's question reads.
   The run notes the thinking blocks and signatures the transcript holds once the base daemon stops, and a transcript with no signature fails the leg, which then says the clause went unexercised.
   The second question is asked once the first answer is posted and ten seconds after that, since a cache entry is not always readable the moment it is written (in the run of 2026-11-08 the second call read 0 tokens of the 2,125 the first had written 2.5 s earlier), and the cache-read clause judges the loop's cache policy, not the provider's propagation delay.
-  A prompt cache is kept per Anthropic organization, and the model gateway of proof run 44035756045 sent the two answers' calls to two organizations, so the second answer read 0 tokens.
-  So the run reads which organization served each answer's first model call: the `anthropic-organization-id` header of the answer the recording proxy forwarded for that call (`daemon_call_for`, `call_organization`).
-  While the last two answers came from two organizations, the second question is asked again under a marker of its own, `A10-2r1)`, then `A10-2r2)` and so on, which holds no `A10-2)`, so the resumed reviewer's counts still read the first two questions;
-  each is asked once the answer before it is posted and ten seconds after that, within five minutes of the first answer's request (the cache's lifetime), and at most four times.
-  The cache-read clause is judged on the first consecutive pair one organization served, read off that pair's second answer's own cost line (`answered_line`), and the notes list every pair's organizations.
-  With no such pair inside those bounds the leg fails and says the gateway served every pair from two organizations, since the clause still needs a cache read the run observed.
-  Answers whose calls name no organization at all, from a route that sends no such header, count as one pair, as every pair did before.
+  A prompt cache is kept per Anthropic organization, and the model gateway sends calls to two of them (proof run 44035756045), so the run reads which one served each answer's first model call, the `anthropic-organization-id` the recording proxy recorded (`call_organization`).
+  While no two answers came from one organization, the second question is asked again as `A10-2r1)`, `A10-2r2)` and so on, which hold no `A10-2)`, so the resume's counts still read the first two, each once the answer before it is posted plus ten seconds, within the cache's five minutes and at most four times.
+  The clause reads the cost line of the first answer an earlier answer's organization also served (`same_organization_pair`), whatever came between: in proof run 44095624771 the organizations alternated and `A10-2r1)` read the 3,184 tokens `A10-1)` wrote.
+  With no such answer in those bounds the leg fails and says so; answers naming no organization share one.
   Compaction leg: the resumed architect's session is compacted as Legion compacts one, by the daemon's own `legion claims compact`, which has Oh My Pi write the summary as text to the daemon's instructions (`compactInstructions`, `packages/daemon/internal/api/compact.go`), and its conversation must then hold a compaction whose summary is text (`text_compactions`).
   A person's bare `/compact` is no such compaction: under the pinned Oh My Pi a compaction that carries no instructions is the image-based snapcompact, which the loop's reader declines, so the question is passed on (docs/kubernetes.md, "The answer loop").
   A question then is answered from the compacted conversation, and the resumed architect's first request holds that exchange once.

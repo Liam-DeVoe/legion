@@ -565,10 +565,20 @@ build_web() {
 }
 
 # build_base builds the base commit's three binaries from a `git archive` of it (the checkout is
-# read, never changed) and installs its workspace, whose plugins the base daemon loads.
+# read, never changed) and installs its workspace, whose plugins the base daemon loads. The base
+# commit is the merge base of LEGION_E2E_BASE_REV and this checkout (merge_base_commit), never the
+# revision itself when it is ahead of the branch: a change the base revision carries and the branch
+# does not would otherwise read as the branch's own (proof run 44095624771, main's #4281).
 build_base() {
-  base_commit=$(jj -R "$root" log -r "$base_rev" --no-graph -T 'commit_id' 2>/dev/null || git -C "$root" rev-parse "$base_rev") ||
-    fail "the base revision $base_rev does not resolve"
+  local resolved rev_commit head_commit
+  resolved=$(merge_base_commit "$root" "$base_rev") ||
+    fail "the base revision $base_rev, or this checkout's head, does not resolve to one commit sharing history with the other"
+  read -r base_commit rev_commit head_commit <<<"$resolved"
+  if [ "$base_commit" = "$rev_commit" ]; then
+    note "A13's base is $base_commit, the base revision $base_rev itself: it is an ancestor of this checkout's head $head_commit"
+  else
+    note "A13's base is $base_commit, the merge base of the base revision $base_rev ($rev_commit) and this checkout's head $head_commit: the revision is ahead of the branch, and what it carries beyond the merge base is none of the branch's change"
+  fi
   # The base commit's tree, its three binaries and its installed workspace are kept in the cache by
   # commit: a commit's build is the same every run.
   base_src=$cache/base-$base_commit/src
@@ -2090,8 +2100,8 @@ check_a10() {
   criterion A10 "a GPT-6.1 conversation's reasoning replayed byte-equal and its cache read" openai || true
   criterion A10 "a Claude Code worker and a compacted Oh My Pi conversation are answered from their conversations and resume after" || return 0
   local session=${agent[$store:pre_change.session]} token=${agent[$store:pre_change.token]} t1 t2 s1 s2 e1 e2 line request transcript effort want_effort sigs thinking unexercised='' missing m counts ok_claude=0 ok_compact=0 t3 s3 e3 compaction
-  local asked_at k marker again before after pair='' pairs='' cache_why=''
-  local -a markers events
+  local asked_at k marker again pair='' pairs='' cache_why='' found judged=''
+  local -a markers events organizations
   transcript=$(conversation_text pre_change)
   want_effort=$(transcript_effort "$transcript")
   sigs=$(transcript_signatures "$transcript")
@@ -2124,31 +2134,39 @@ check_a10() {
   # Nor must it turn on which Anthropic organization served each call. A prompt cache is kept per
   # organization, and the model gateway of proof run 44035756045 sent the two answers' calls to two
   # of them (the `anthropic-organization-id` of each proxied answer, call_organization), so the
-  # second read 0 tokens. The clause is judged on the first pair of consecutive answers one
-  # organization served: while the last pair was served by two, the second question is asked again
-  # under a marker of its own, `A10-2r<N>)`, which holds no `A10-2)`, so the resume's counts still
-  # read the first two questions. Each is asked once the answer before it is posted and ten seconds
-  # more, while the first answer's cache entry can still be alive (five minutes from its request,
-  # counted here from before its question was sent), at most four times. Answers whose calls name
-  # no organization at all (a route that sends no such header) are judged as one pair, as before.
+  # second read 0 tokens. So the clause is judged on the first answer whose organization an
+  # earlier answer's also was (same_organization_pair), whatever was served between them: in proof
+  # run 44095624771 six answers strictly alternated two organizations and each read what its own
+  # organization's answer before it wrote, so a pairing of neighbours alone found none. While no
+  # two answers share an organization, the second question is asked again under a marker of its
+  # own, `A10-2r<N>)`, which holds no `A10-2)`, so the resume's counts still read the first two
+  # questions. Each is asked once the answer before it is posted and ten seconds more, while the
+  # first answer's cache entry can still be alive (five minutes from its request, counted here from
+  # before its question was sent), so every answer of the leg is inside the cache's lifetime, at
+  # most four times. Answers whose calls name no organization at all (a route that sends no such
+  # header) share one, as before.
   markers=("A10-1)" "A10-2)")
   events=("$e1" "$e2")
   while :; do
     k=$((${#markers[@]} - 1))
-    before=$(call_organization "$(daemon_call_for "${markers[k - 1]}")")
-    after=$(call_organization "$(daemon_call_for "${markers[k]}")")
-    pairs+="${pairs:+; }${markers[k - 1]} ${before:-none} and ${markers[k]} ${after:-none}"
-    note "the answers to ${markers[k - 1]} and ${markers[k]} were served by the organizations ${before:-(none recorded)} and ${after:-(none recorded)}"
-    if [ "$before" = "$after" ]; then
-      pair="${markers[k - 1]} and ${markers[k]}"
+    organizations=()
+    pairs=
+    for marker in "${markers[@]}"; do
+      organizations+=("$(call_organization "$(daemon_call_for "$marker")")")
+      pairs+="${pairs:+, }$marker ${organizations[-1]:-none}"
+    done
+    note "the answers so far were served by the organizations: $pairs"
+    if found=$(same_organization_pair "${organizations[@]}"); then
+      judged=${found#* }
+      pair="${markers[${found% *}]} and ${markers[judged]}"
       break
     fi
     if ! inbox_reply "${events[k]}" >/dev/null; then
-      cache_why="the answer to ${markers[k]} was not posted, so the second question was not asked again (the pairs' organizations: $pairs)"
+      cache_why="the answer to ${markers[k]} was not posted, so the second question was not asked again (the answers' organizations: $pairs)"
       break
     fi
     if [ "$k" -gt 4 ] || ((SECONDS + 10 - asked_at >= 300)); then
-      cache_why="the model gateway served every pair of consecutive answers from two organizations ($pairs), within the cache lifetime and four asks again, and a prompt cache is kept per organization, so no cache read was observed"
+      cache_why="the model gateway served no two answers from one organization ($pairs), within the cache lifetime and four asks again, and a prompt cache is kept per organization, so no cache read was observed"
       break
     fi
     sleep 10
@@ -2160,7 +2178,7 @@ check_a10() {
   done
   line=
   if [ -n "$pair" ]; then
-    line=$(answered_line "$(answer_question_id "$(inbox_reply "${events[k]}" || true)")") || line=
+    line=$(answered_line "$(answer_question_id "$(inbox_reply "${events[judged]}" || true)")") || line=
   fi
   request=$(daemon_request_for "A10-1)")
   effort=$(request_effort "$request")
@@ -2171,7 +2189,7 @@ check_a10() {
   note "the transcript's last effort \"$want_effort\", the first answer's request effort \"$effort\"; the transcript's thinking blocks $thinking, its thinking signatures $(grep -c . <<<"$sigs" || true), missing from the request $missing"
   note "answers: $(head -c 200 <<<"$(inbox_reply "$e1")" | tr '\n' ' ') | $(head -c 200 <<<"$(inbox_reply "$e2")" | tr '\n' ' ')"
   if [ -n "$pair" ]; then
-    note "the cache-read clause reads the cost line of the answer to ${markers[k]}, the second of the first pair one organization served ($pair): ${line:-none}"
+    note "the cache-read clause reads the cost line of the answer to ${markers[judged]}, the later of the first two answers one organization served ($pair): ${line:-none}"
   else
     note "the cache-read clause has no pair to read: $cache_why"
   fi
@@ -2218,7 +2236,7 @@ check_a10() {
     [ "$(occurrences "$request" "A10 after compaction)")" = 1 ] && ok_compact=1
   suspend_agent architect || true
   if [ "$ok_claude$ok_compact" = 11 ]; then
-    record_result A10 PASS "Claude Code: effort $effort and each of the transcript's $(grep -c . <<<"$sigs") thinking signatures replayed, the answer to ${markers[k]}, the second of the pair $pair one organization served, read $(cache_read_tokens "$line") tokens from cache, resumed holding both; the compacted conversation answered and resumed holding the exchange"
+    record_result A10 PASS "Claude Code: effort $effort and each of the transcript's $(grep -c . <<<"$sigs") thinking signatures replayed, the answer to ${markers[judged]}, the later of the pair $pair one organization served, read $(cache_read_tokens "$line") tokens from cache, resumed holding both; the compacted conversation answered and resumed holding the exchange"
   else
     record_result A10 FAIL "Claude Code leg $ok_claude, compaction leg $ok_compact (1 = shown)${unexercised:+; $unexercised}${cache_why:+; $cache_why}"
   fi

@@ -793,6 +793,28 @@ describe("the recording proxy's records", () => {
     expect(read("call_organization 'not a record'")).toEqual({ code: 0, text: "" });
   });
 
+  // Proof run 44095624771 (theorem-labs/agent-infra, at 73cbecf0): under the files store six
+  // answers strictly alternated two organizations, A10-1 5fd73c3e, A10-2 d0529c17, A10-2r1
+  // 5fd73c3e and so on, and each read the cache its own organization's answer before it wrote:
+  // A10-2r1 read the 3184 tokens A10-1 wrote. A pairing of neighbours found none and failed the
+  // leg on a cache that was read.
+  test("same_organization_pair pairs an answer with the latest earlier one its organization served", () => {
+    const [a, b] = ["5fd73c3e", "d0529c17"];
+    expect(read(`same_organization_pair ${a} ${b} ${a} ${b} ${a} ${b}`)).toEqual({
+      code: 0,
+      text: "0 2",
+    });
+    expect(read(`same_organization_pair ${a} ${a}`)).toEqual({ code: 0, text: "0 1" });
+    // The latest earlier answer of the organization, not the first.
+    expect(read(`same_organization_pair ${a} ${b} c ${b}`)).toEqual({ code: 0, text: "1 3" });
+    // A route that names no organization: its answers share one.
+    expect(read('same_organization_pair "" ""')).toEqual({ code: 0, text: "0 1" });
+    expect(read(`same_organization_pair ${a} ${b}`).code).toBe(1);
+    expect(read(`same_organization_pair ${a} ""`).code).toBe(1);
+    expect(read(`same_organization_pair ${a}`).code).toBe(1);
+    expect(read("same_organization_pair").code).toBe(1);
+  });
+
   test("request_effort reads the effort a request carries, wherever it stands", () => {
     expect(read('request_effort "$(first_request_after claude-files 0)"').text).toBe("medium");
     expect(read('request_effort "$(first_request_after agents 0)"').text).toBe("");
@@ -1204,6 +1226,47 @@ describe("the daemon's own record and state", () => {
 });
 
 describe("A13: the branch's answer against the base commit's", () => {
+  // Proof run 44095624771 built A13's base from main's tip at dispatch, a2b379d1, which carries
+  // #4281's `requested_by.proven` and the branch did not, so the criterion read main's change as
+  // the branch's. The base is the merge base of the revision and the checkout's head.
+  test("merge_base_commit builds a base ahead of the branch at their merge base, and a base behind it as itself", () => {
+    const repo = join(dir, "merge-base-repo");
+    mkdirSync(repo, { recursive: true });
+    const git = (...args: string[]) => {
+      const result = Bun.spawnSync(
+        ["git", "-C", repo, "-c", "user.name=rig", "-c", "user.email=rig@example.invalid", ...args],
+        { env: { PATH: process.env.PATH ?? "", HOME: dir, GIT_CONFIG_NOSYSTEM: "1" } }
+      );
+      if (result.exitCode !== 0)
+        throw new Error(`git ${args.join(" ")}: ${result.stderr.toString()}`);
+      return result.stdout.toString().trim();
+    };
+    git("init", "-q", "-b", "main");
+    git("commit", "-q", "--allow-empty", "-m", "the fork point");
+    const fork = git("rev-parse", "HEAD");
+    git("commit", "-q", "--allow-empty", "-m", "main moves on");
+    const ahead = git("rev-parse", "HEAD");
+    git("checkout", "-q", "-b", "branch", fork);
+    git("commit", "-q", "--allow-empty", "-m", "the branch's change");
+    const head = git("rev-parse", "HEAD");
+    expect(read(`merge_base_commit ${repo} ${ahead}`)).toEqual({
+      code: 0,
+      text: `${fork} ${ahead} ${head}`,
+    });
+    expect(read(`merge_base_commit ${repo} main`)).toEqual({
+      code: 0,
+      text: `${fork} ${ahead} ${head}`,
+    });
+    expect(read(`merge_base_commit ${repo} ${fork}`)).toEqual({
+      code: 0,
+      text: `${fork} ${fork} ${head}`,
+    });
+    expect(read(`merge_base_commit ${repo} no-such-revision`).code).toBe(1);
+    git("checkout", "-q", "--orphan", "unrelated");
+    git("commit", "-q", "--allow-empty", "-m", "a history of its own");
+    expect(read(`merge_base_commit ${repo} ${ahead}`).code).toBe(1);
+  });
+
   test("a13_same reads the listener's two answers as the same but for what each call minted", () => {
     // Both sends were stored for the stopped session; they differ in their envelope's ids, its
     // dedupe key, its trace id and its issue time alone, as the proof run's captures did.
