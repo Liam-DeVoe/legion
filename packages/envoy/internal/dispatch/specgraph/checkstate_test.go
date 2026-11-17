@@ -148,8 +148,8 @@ func TestCheckState(t *testing.T) {
 			}
 		}, want: CheckState{State: "unknown", Reason: "could_not_run"}},
 		{name: "a silent leg: leg arm of the job ended with no result", change: func(c *checkCase) {
-			c.Results[0].Leg = "linux"
-			c.JobRuns = []JobRun{{Job: "go-checks", Leg: "linux", Commit: "c1", Ended: true}, {Job: "go-checks", Leg: "arm", Commit: "c1", Ended: true}}
+			c.Results[0].Leg = new("linux")
+			c.JobRuns = []JobRun{{Job: "go-checks", Leg: new("linux"), Commit: "c1", Ended: new(true)}, {Job: "go-checks", Leg: new("arm"), Commit: "c1", Ended: new(true)}}
 		}, want: CheckState{State: "unknown", Reason: "ci_fault", Detail: "arm"}},
 		{name: "v-state 8: no failing-example result", change: func(c *checkCase) { c.Results = c.Results[:1] },
 			want: CheckState{State: "unknown", Reason: "no_failing_example"}},
@@ -296,13 +296,13 @@ func TestCheckState(t *testing.T) {
 		{name: "B5, the job ran at c2", change: func(c *checkCase) {
 			c.commit("c2", "c1", "docs/x.md")
 			c.Subject.Commit = "c2"
-			c.JobRuns = []JobRun{{Job: "go-checks", Commit: "c2", Ended: true}}
+			c.JobRuns = []JobRun{{Job: "go-checks", Leg: new(""), Commit: "c2", Ended: new(true)}}
 			c.Results = append(c.Results, checkRun("c2", OutcomePass, checkStateRun.Add(time.Hour)))
 		}, want: CheckState{State: "true", Reason: "passed", From: "c2"}},
 		{name: "R8, the job ran and its test did not (v-citations 5)", change: func(c *checkCase) {
 			c.commit("c2", "c1", "docs/x.md")
 			c.Subject.Commit = "c2"
-			c.JobRuns = []JobRun{{Job: "go-checks", Commit: "c2", Ended: true}}
+			c.JobRuns = []JobRun{{Job: "go-checks", Leg: new(""), Commit: "c2", Ended: new(true)}}
 		}, want: CheckState{State: "true", Reason: "passed", From: "c1"}},
 		{name: "R6, another job: the pass was reported by job envoy-go", change: func(c *checkCase) { c.Results[0].Job = "envoy-go" },
 			want: CheckState{State: "unknown", Reason: "no_result"}},
@@ -369,7 +369,7 @@ func TestCheckState(t *testing.T) {
 		{name: "R9, the job ended with no result", change: func(c *checkCase) {
 			c.commit("c2", "c1", "packages/envoy/cmd/listener/main.go")
 			c.Subject.Commit = "c2"
-			c.JobRuns = []JobRun{{Job: "go-checks", Commit: "c2", Ended: true}}
+			c.JobRuns = []JobRun{{Job: "go-checks", Leg: new(""), Commit: "c2", Ended: new(true)}}
 		}, want: CheckState{State: "unknown", Reason: "ci_fault"}},
 		{name: "a later failure cancels a carried pass", change: func(c *checkCase) {
 			c.commit("c2", "c1", "docs/x.md")
@@ -397,6 +397,25 @@ func TestCheckState(t *testing.T) {
 				productionRun(checkStateProduction, "d1", OutcomeFail, checkStateRun.Add(time.Hour)),
 				productionRun(checkStateProduction, "d2", OutcomePass, checkStateRun.Add(2*time.Hour)),
 				Result{Check: checkStateProduction.ID, Kind: ResultFailingExample, Outcome: OutcomeFail, At: checkStateRun.Add(125 * time.Minute)})
+		}, want: CheckState{ID: checkStateProduction.ID, State: "true", Reason: "passed", From: "d2"}},
+		// R48: "At that commit, such a check reads unknown, and no earlier result of it counts." A
+		// query or an agent of production or of the graph has no candidate of a commit, so only CI's
+		// refusal at S.Commit counts for it (step 2), and one at another commit does not.
+		{name: "R48, a query of production that CI refused at the commit of a deploy subject", change: func(c *checkCase) {
+			c.add(checkStateProduction)
+			c.Subject = Point{Commit: "c9", Deploy: "d2"}
+			c.Results = append(c.Results,
+				productionRun(checkStateProduction, "d2", OutcomePass, checkStateRun.Add(2*time.Hour)),
+				Result{Check: checkStateProduction.ID, Kind: ResultFailingExample, Outcome: OutcomeFail, At: checkStateRun.Add(125 * time.Minute)})
+			c.Uncited = map[string]map[string]string{"c9": {checkStateProduction.ID: "test-not-in-code"}}
+		}, want: CheckState{ID: checkStateProduction.ID, State: "unknown", Reason: "uncited", Detail: "test-not-in-code"}},
+		{name: "control: a query of production that CI refused at another commit than the subject's", change: func(c *checkCase) {
+			c.add(checkStateProduction)
+			c.Subject = Point{Commit: "c9", Deploy: "d2"}
+			c.Results = append(c.Results,
+				productionRun(checkStateProduction, "d2", OutcomePass, checkStateRun.Add(2*time.Hour)),
+				Result{Check: checkStateProduction.ID, Kind: ResultFailingExample, Outcome: OutcomeFail, At: checkStateRun.Add(125 * time.Minute)})
+			c.Uncited = map[string]map[string]string{"c8": {checkStateProduction.ID: "test-not-in-code"}}
 		}, want: CheckState{ID: checkStateProduction.ID, State: "true", Reason: "passed", From: "d2"}},
 		{name: "production on a branch head is not judged", change: func(c *checkCase) {
 			c.add(checkStateProduction)
@@ -580,7 +599,7 @@ func TestEachLegOfAProgramCheckOfProductionKeepsItsResult(t *testing.T) {
 	t.Parallel()
 	q := checkStateProductionProgram
 	run := func(leg string, outcome Outcome, after time.Duration) Result {
-		return Result{Check: q.ID, Kind: ResultRun, Outcome: outcome, Deploy: "d2", Job: q.Test.Job, Leg: leg, TestCommit: "c2", At: checkStateRun.Add(after)}
+		return Result{Check: q.ID, Kind: ResultRun, Outcome: outcome, Deploy: "d2", Job: q.Test.Job, Leg: new(leg), TestCommit: "c2", At: checkStateRun.Add(after)}
 	}
 	for _, row := range []struct {
 		name       string
@@ -615,7 +634,7 @@ func TestEachLegOfAProgramCheckOfProductionKeepsItsResult(t *testing.T) {
 				s.commit("c3", "c2", "docs/x.md")
 				s.Subject.Commit = "c3"
 			}
-			s.JobRuns = []JobRun{{Job: q.Test.Job, Leg: "linux", Commit: "c2", Ended: true}, {Job: q.Test.Job, Leg: "arm", Commit: "c2", Ended: true}}
+			s.JobRuns = []JobRun{{Job: q.Test.Job, Leg: new("linux"), Commit: "c2", Ended: new(true)}, {Job: q.Test.Job, Leg: new("arm"), Commit: "c2", Ended: new(true)}}
 			s.Results = append(append(s.Results, row.runs...), Result{Check: q.ID, Kind: ResultFailingExample, Outcome: OutcomeFail, TestCommit: "c2",
 				At: checkStateRun.Add(5 * time.Minute), FaultAuthor: "author-b", TestAuthors: []string{"author-a"}})
 			want := row.want
@@ -685,10 +704,11 @@ func newCheckCase(t *testing.T) *checkCase {
 }
 
 // input is the Input of the case: the files parsed, each result with no digest given the digest of
-// its check's current approved text, each result's Seq its place in Results, Now, unless the row set
-// it, one hour after the newest result, or after checkStateRun when there is none, and an empty
-// JobRuns and Uncited, unless the row set them, for a case at whose commit no job ran and CI refused
-// no check.
+// its check's current approved text and each result with no leg the leg "" of no matrix, each
+// result's Seq its place in Results, Now, unless the row set it, one hour after the newest result,
+// or after checkStateRun when there is none, and an empty JobRuns and Uncited, unless the row set
+// them, for a case at whose commit no job ran and CI refused no check. A row that reads a result
+// with no leg sets it to nil in the Input that input gives.
 func (s *checkCase) input() Input {
 	s.t.Helper()
 	in := s.Input
@@ -708,6 +728,9 @@ func (s *checkCase) input() Input {
 		r := &in.Results[i]
 		if c, ok := current.CheckByID(r.Check); ok && r.CheckDigest == "" {
 			r.CheckDigest = c.Digest()
+		}
+		if r.Leg == nil {
+			r.Leg = new("")
 		}
 		r.Seq = int64(i + 1)
 		if s.Now.IsZero() && r.At.Add(time.Hour).After(in.Now) {
@@ -750,7 +773,8 @@ func (s *checkCase) specFiles() map[string][]byte {
 	return files
 }
 
-// approve adds a version of each node to the approved spec, approved at at.
+// approve adds a version of each node to the approved spec, approved at at; a node that it adds
+// the approved spec keeps, and its checks decide all of it.
 func (s *checkCase) approve(at time.Time, nodes ...specNode) {
 	s.t.Helper()
 	for _, n := range nodes {
@@ -759,8 +783,10 @@ func (s *checkCase) approve(at time.Time, nodes ...specNode) {
 			s.t.Fatal(err)
 		}
 		id := specNodeID(n)
-		node := s.Approved.Nodes[id]
-		node.ID = id
+		node, held := s.Approved.Nodes[id]
+		if !held {
+			node = ApprovedNode{ID: id, Removed: new(false), PartlyChecked: new(false)}
+		}
 		node.Versions = append(node.Versions, ApprovedVersion{Version: len(node.Versions) + 1, At: at, Document: printed})
 		s.Approved.Nodes[id] = node
 	}
@@ -910,7 +936,7 @@ func checkRun(commit string, outcome Outcome, at time.Time) Result {
 
 // legRun is a run of C's job at commit in one leg and attempt, recorded at at.
 func legRun(commit, leg string, attempt int, outcome Outcome, at time.Time) Result {
-	return Result{Check: checkStateCheck.ID, Kind: ResultRun, Outcome: outcome, Commit: commit, Job: "go-checks", Leg: leg, Attempt: attempt, At: at}
+	return Result{Check: checkStateCheck.ID, Kind: ResultRun, Outcome: outcome, Commit: commit, Job: "go-checks", Leg: new(leg), Attempt: attempt, At: at}
 }
 
 // caughtFault is a failing example of C at commit on which its test failed: author-b, who did not

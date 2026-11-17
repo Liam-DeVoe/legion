@@ -275,7 +275,12 @@ func readDocuments(name string, data []byte) (documents []document, problems []P
 				problems = append(problems, readerProblem(Position{File: name, Line: d.line}, "", noJSONForm))
 				break
 			}
-			if place, null := nullPlace(js); null {
+			place, null, err := nullPlace(js)
+			if err != nil {
+				problems = append(problems, readerProblem(Position{File: name, Line: d.line}, "", noJSONForm))
+				break
+			}
+			if null {
 				where := "the document"
 				if place != "" {
 					where = "the value at " + quoted(place)

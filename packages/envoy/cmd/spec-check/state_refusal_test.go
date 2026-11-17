@@ -34,6 +34,8 @@ func TestScenarioRefusals(t *testing.T) {
 	const historyForm = `{"commits":[{"id":"<commit>","parent":"<commit>","files":{"<repository path>":"<content label>"}}, …]}`
 	const jobRunForm = `{"job":"<job>","leg":"<leg>","commit":"<commit>","ended":<true or false>}`
 	const uncitedForm = `{"<commit>":{"<check id>":"<R48 rule>"}}`
+	const mainAtC4 = `"packages/envoy/cmd/listener/main.go": "2"` // the one path of carry's history.json at c4 with label 2
+	const repoPathRule = `, whose parts "/" separates and none of which is empty, "." or ".."`
 	for _, row := range []struct {
 		name, scenario string
 		change         func(t *testing.T, dir string)
@@ -186,9 +188,9 @@ func TestScenarioRefusals(t *testing.T) {
 		// as reported. So each sets leg, "" for a job with no matrix.
 		{"a result with no leg", "carry",
 			write("results.json", `[{"check":"a-restart-loses-no-message","check_version":1,"kind":"run","outcome":"pass","commit":"c1","job":"go-checks","attempt":1,"at":"2026-11-12T10:00:00Z","seq":1}]`),
-			"results.json", `result 1: it is not in the form ` + resultForm + `: the value at "/leg" is not set`},
+			"results.json", `result 1: it sets no leg; a result of no matrix sets ""`},
 		{"a job run with no leg", "carry", write("jobs.json", `[{"job":"go-checks","commit":"c1","ended":true}]`),
-			"jobs.json", `job run 1: it is not in the form ` + jobRunForm + `: the value at "/leg" is not set`},
+			"jobs.json", `job run 1: it sets no leg; a run of no matrix sets ""`},
 		// A member that a result does not set would be its zero value, and the derivation would read
 		// that value as a real one: a failure with no at as older than every approval, one with no
 		// subject, no job or no test_commit as one that counts nowhere, and of two results at one at and
@@ -226,7 +228,7 @@ func TestScenarioRefusals(t *testing.T) {
 		// "When a check has no result that counts after a run of its job ends, it reads unknown"). A
 		// run that has not ended sets "ended": false.
 		{"a job run with no ended", "carry", write("jobs.json", `[{"job":"go-checks","leg":"","commit":"c1"}]`),
-			"jobs.json", `job run 1: it is not in the form ` + jobRunForm + `: the value at "/ended" is not set`},
+			"jobs.json", "job run 1: it sets no ended; a run that has not ended sets false"},
 		{"a job run with no job", "carry", write("jobs.json", `[{"leg":"","commit":"c1","ended":true}]`),
 			"jobs.json", "job run 1: it sets no job"},
 		{"a job run with no commit", "carry", write("jobs.json", `[{"job":"go-checks","leg":"","ended":true}]`),
@@ -248,15 +250,15 @@ func TestScenarioRefusals(t *testing.T) {
 		{"a rule of uncited.json that is empty", "carry", write("uncited.json", `{"c2":{"a-restart-loses-no-message":""}}`),
 			"uncited.json", `commit "c2": check "a-restart-loses-no-message": its rule is empty, and a refusal of CI names the rule that refused the check`},
 		{"a history that does not set commits", "carry", write("history.json", `{}`),
-			"history.json", `specgraph: history: it is not in the form ` + historyForm + `: the value at "/commits" is not set`},
+			"history.json", "specgraph: history: it sets no commits; a history of no commit sets an empty list"},
 		{"a history whose commits are null", "carry", write("history.json", `{"commits":null}`),
 			"history.json", `specgraph: history: it is not in the form ` + historyForm + `: the value at "/commits" is null`},
 		// A unit with no serves, needs or waits_on would read as one with none, which hides a cycle of
 		// waits (R29); [] is none.
 		{"a unit with no serves", "wait-cycle", write("units.json", `[{"id":"u-a","needs":[],"waits_on":[]}]`),
-			"units.json", `unit 1: it is not in the form ` + unitForm + `: the value at "/serves" is not set`},
+			"units.json", `unit "u-a": it sets no serves; a unit with none sets an empty list`},
 		{"a unit with no needs", "wait-cycle", write("units.json", `[{"id":"u-a","serves":[],"waits_on":[]}]`),
-			"units.json", `unit 1: it is not in the form ` + unitForm + `: the value at "/needs" is not set`},
+			"units.json", `unit "u-a": it sets no needs; a unit with none sets an empty list`},
 		{"a unit whose waits_on is null", "wait-cycle", write("units.json", `[{"id":"u-a","serves":[],"needs":[],"waits_on":null}]`),
 			"units.json", `it is not in the form [` + unitForm + `, …]: the value at "/0/waits_on" is null`},
 		{"a unit with no id", "wait-cycle", write("units.json", `[{"serves":[],"needs":[],"waits_on":[]}]`),
@@ -265,6 +267,70 @@ func TestScenarioRefusals(t *testing.T) {
 			"units.json", `unit "u-a": waits_on names "no-such-statement", which is no current statement of the approved spec`},
 		{"a need of no unit", "wait-cycle", write("units.json", `[{"id":"u-a","serves":[],"needs":["u-x"],"waits_on":[]}]`),
 			"units.json", `unit "u-a": needs names "u-x", which is no unit of the file`},
+		// A path of the history is a repository path, as a tie entry is (isRepoPath): no tie covers
+		// "./a", "/a", "a/", "a//b", "" or ".", so a change at it would carry a result (R8).
+		{"a path of the history that starts with ./", "carry", replace("history.json", mainAtC4, `"./packages/envoy/cmd/listener/main.go": "2"`),
+			"history.json", `specgraph: history: commit "c4": the path "./packages/envoy/cmd/listener/main.go" is no repository path` + repoPathRule},
+		{"a path of the history that starts with /", "carry", replace("history.json", mainAtC4, `"/packages/envoy/cmd/listener/main.go": "2"`),
+			"history.json", `specgraph: history: commit "c4": the path "/packages/envoy/cmd/listener/main.go" is no repository path` + repoPathRule},
+		{"a path of the history that ends with /", "carry", replace("history.json", mainAtC4, `"packages/envoy/cmd/listener/main.go/": "2"`),
+			"history.json", `specgraph: history: commit "c4": the path "packages/envoy/cmd/listener/main.go/" is no repository path` + repoPathRule},
+		{"a path of the history with a doubled /", "carry", replace("history.json", mainAtC4, `"packages//envoy/cmd/listener/main.go": "2"`),
+			"history.json", `specgraph: history: commit "c4": the path "packages//envoy/cmd/listener/main.go" is no repository path` + repoPathRule},
+		{"a path of the history that is empty", "carry", replace("history.json", mainAtC4, `"": "2"`),
+			"history.json", `specgraph: history: commit "c4": the path "" is no repository path` + repoPathRule},
+		{"a path of the history that is .", "carry", replace("history.json", mainAtC4, `".": "2"`),
+			"history.json", `specgraph: history: commit "c4": the path "." is no repository path` + repoPathRule},
+		{"a path of the history that is /", "carry", replace("history.json", mainAtC4, `"/": "2"`),
+			"history.json", `specgraph: history: commit "c4": the path "/" is no repository path` + repoPathRule},
+		{"a commit of the history whose id holds only blanks", "carry", write("history.json", `{"commits":[{"id":" ","files":{"go.work":"1"}}]}`),
+			"history.json", `specgraph: history: commit " ": its id has no letter and no digit, so it names no commit`},
+		{"a commit of the history whose parent holds only blanks", "carry", write("history.json", `{"commits":[{"id":"c1","parent":" ","files":{"go.work":"1"}}]}`),
+			"history.json", `specgraph: history: commit "c1": it sets a parent of no letter and no digit, which names no commit`},
+		// A commit or a check that a key of uncited.json or of ties.json names has a letter or a
+		// digit, as a commit of a subject has: a refusal or a tie under a key of none counts nowhere.
+		{"a commit of uncited.json that is empty", "carry", write("uncited.json", `{"":{"a-restart-loses-no-message":"test-not-in-code"}}`),
+			"uncited.json", `commit "": a commit of no letter and no digit names no commit`},
+		{"a commit of uncited.json that holds only blanks", "carry", write("uncited.json", `{" ":{"a-restart-loses-no-message":"test-not-in-code"}}`),
+			"uncited.json", `commit " ": a commit of no letter and no digit names no commit`},
+		{"a check of uncited.json that is empty", "carry", write("uncited.json", `{"c2":{"":"test-not-in-code"}}`),
+			"uncited.json", `commit "c2": check "": a check of no letter and no digit names no check`},
+		{"a check of uncited.json that holds only blanks", "carry", write("uncited.json", `{"c2":{" ":"test-not-in-code"}}`),
+			"uncited.json", `commit "c2": check " ": a check of no letter and no digit names no check`},
+		{"a check of ties.json that is empty", "carry", write("ties.json", `{"c1":{"":["go.work"]}}`),
+			"ties.json", `commit "c1": check "": a check of no letter and no digit names no check`},
+		{"a check of ties.json that holds only blanks", "carry", write("ties.json", `{"c1":{" \t ":["go.work"]}}`),
+			"ties.json", `commit "c1": check " \t ": a check of no letter and no digit names no check`},
+		// A job, a leg, a commit, a deploy or a test commit that a result or a job run names has a
+		// letter or a digit: a run of job " " is a run of no job of the check, so a leg that ended
+		// with no result would be hidden, and a failure at deploy " " or test commit " " would count
+		// nowhere.
+		{"a job run whose job holds only blanks", "carry", write("jobs.json", `[{"job":" ","leg":"","commit":"c1","ended":true}]`),
+			"jobs.json", "job run 1: it sets a job of no letter and no digit, which names no job"},
+		{"a job run whose leg holds only blanks", "carry", write("jobs.json", `[{"job":"go-checks","leg":" ","commit":"c1","ended":true}]`),
+			"jobs.json", "job run 1: it sets a leg of no letter and no digit, which names no leg"},
+		{"a job run whose commit holds only blanks", "carry", write("jobs.json", `[{"job":"go-checks","leg":"","commit":" ","ended":true}]`),
+			"jobs.json", "job run 1: it sets a commit of no letter and no digit, which names no commit"},
+		{"a run whose job holds only blanks", "carry",
+			write("results.json", `[{"check":"a-restart-loses-no-message","check_version":1,"kind":"run","outcome":"fail","commit":"c1","job":" ","leg":"","at":"2026-11-12T11:00:00Z","seq":5}]`),
+			"results.json", "result 1: it sets a job of no letter and no digit, which names no job"},
+		{"a run whose commit holds only blanks", "carry",
+			write("results.json", `[{"check":"a-restart-loses-no-message","check_version":1,"kind":"run","outcome":"fail","commit":" ","job":"go-checks","leg":"","at":"2026-11-12T11:00:00Z","seq":5}]`),
+			"results.json", "result 1: it sets a commit of no letter and no digit, which names no commit"},
+		{"a run of a check of production whose deploy holds only blanks", "carry",
+			write("results.json", `[{"check":"production-delivery-takes-under-a-second","check_version":1,"kind":"run","outcome":"fail","deploy":" ","leg":"","at":"2026-11-12T12:00:00Z","seq":4}]`),
+			"results.json", "result 1: it sets a deploy of no letter and no digit, which names no deploy"},
+		{"a unit whose id holds only blanks", "wait-cycle", write("units.json", `[{"id":" ","serves":[],"needs":[],"waits_on":[]}]`),
+			"units.json", "unit 1: its id has no letter and no digit, so it names no unit"},
+		// R12: "Each leg of a matrix reports its own result, and no leg replaces the result of
+		// another." One job at one commit has legs or it has none, "" being the leg of no matrix: a
+		// run of no matrix beside a run of leg linux, or a run result of no matrix where the job's runs
+		// there have legs, would be answered by an older run result of the leg "" that counts there
+		// (TestARunResultOfNoMatrixAnswersNoRunWhereItsJobHadLegs).
+		{`runs of one job at one commit in the leg "" and in a named leg`, "silent-leg", replace("jobs.json", `"leg": "arm"`, `"leg": ""`),
+			"jobs.json", `job run 2: it sets the leg "", and job run 1 of its job "go-checks" at the commit "m2" sets the leg "linux"; one job at one commit has legs or it has none, and "" is the leg of no matrix`},
+		{`a run result in the leg "" where the runs of its job at its commit name legs`, "carry", write("jobs.json", `[{"job":"go-checks","leg":"linux","commit":"c1","ended":true}]`),
+			"results.json", `result 1: it sets the leg "", and job run 1 of its job "go-checks" at the commit "c1" sets the leg "linux"; one job at one commit has legs or it has none, and "" is the leg of no matrix`},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
@@ -285,7 +351,8 @@ func TestScenarioRefusals(t *testing.T) {
 // met where it reads unknown, and a statement would lose its "partly checked". Each row takes the
 // member out of the node of carry's check a-restart-loses-no-message (node 5 of the file) and runs
 // state on the scenario, and compare on its files at c2 with its approved.json: each exits 2 with
-// nothing on stdout and one line on stderr that names the file, the form and the place.
+// nothing on stdout and one line on stderr that names the file, the node and the member, in the
+// words in which the entry of the library refuses the same node.
 func TestAnApprovedNodeSetsRemovedAndPartlyChecked(t *testing.T) {
 	t.Parallel()
 	binary := cmdtest.Build(t, "spec-check")
@@ -303,8 +370,8 @@ func TestAnApprovedNodeSetsRemovedAndPartlyChecked(t *testing.T) {
 			}
 			delete(file.Nodes[4], member)
 			writeJSONFile(t, approved, file)
-			want := result{code: 2, stderr: "spec-check: " + approved + ": specgraph: approved spec: it is not in the form " + approvedForm +
-				`: the value at "/nodes/4/` + member + `" is not set` + "\n"}
+			explicit := map[string]string{"removed": "a node that the approved spec keeps sets false", "partly_checked": "a statement whose checks decide all of it sets false"}
+			want := result{code: 2, stderr: "spec-check: " + approved + `: specgraph: approved node "a-restart-loses-no-message": it sets no ` + member + "; " + explicit[member] + "\n"}
 			expect(t, runBinary(t, binary, "", "state", "--scenario", dir), want)
 			expect(t, runBinary(t, binary, "", "compare", "--dir", filepath.Join(dir, "files", "c2"), "--approved", approved), want)
 		})

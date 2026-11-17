@@ -68,7 +68,9 @@ func decodeJSON(data []byte, v any, form string) error {
 	if _, err := dec.ReadToken(); !errors.Is(err, io.EOF) {
 		return errors.New("text after the JSON value")
 	}
-	switch place, null := nullPlace(data); {
+	switch place, null, err := nullPlace(data); {
+	case err != nil:
+		return err
 	case null && place == "":
 		return fmt.Errorf("it is not in the form %s: it is null", form)
 	case null:
@@ -78,16 +80,19 @@ func decodeJSON(data []byte, v any, form string) error {
 }
 
 // nullPlace is the JSON pointer of the first null of data, a JSON text that decodeJSON read whole,
-// and whether data holds one.
-func nullPlace(data []byte) (string, bool) {
+// and whether data holds one; err is a fault of the reader other than the end of data, since a text
+// that it could not read is no text with no null.
+func nullPlace(data []byte) (place string, null bool, err error) {
 	dec := jsontext.NewDecoder(bytes.NewReader(data))
 	for {
 		token, err := dec.ReadToken()
-		if err != nil {
-			return "", false
-		}
-		if token.Kind() == 'n' {
-			return string(dec.StackPointer()), true
+		switch {
+		case errors.Is(err, io.EOF):
+			return "", false, nil
+		case err != nil:
+			return "", false, err
+		case token.Kind() == 'n':
+			return string(dec.StackPointer()), true, nil
 		}
 	}
 }

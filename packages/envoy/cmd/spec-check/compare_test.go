@@ -113,7 +113,7 @@ func testCompare(t *testing.T, binary string) {
 		removed := 0
 		approved := approvedCopy(t, "approved-text", func(n *specgraph.ApprovedNode) {
 			if n.ID == "shipping" || n.ID == "orders-to-billing" || n.ID == "order" {
-				n.Removed = true
+				n.Removed = new(true)
 				removed++
 			}
 		})
@@ -133,7 +133,7 @@ func testCompare(t *testing.T, binary string) {
 		dir := copyOf(t, fixture(t, "compare", "removed-kept", "spec"))
 		approved := fixture(t, "compare", "removed-kept", "approved.json")
 		removed := approvedOf(t, "removed-kept").Nodes["an-order-is-paid-once"]
-		if !removed.Removed {
+		if !*removed.Removed {
 			t.Fatal("the fixture did not remove an-order-is-paid-once")
 		}
 		writeFile(t, filepath.Join(dir, "again.yaml"), []byte(removed.Versions[len(removed.Versions)-1].Document))
@@ -201,7 +201,7 @@ func testCompare(t *testing.T, binary string) {
 		only := func(keep func(id, document string) bool) string {
 			return approvedCopy(t, "approved-text", func(n *specgraph.ApprovedNode) {
 				if !keep(n.ID, n.Versions[len(n.Versions)-1].Document) {
-					n.Removed = true
+					n.Removed = new(true)
 				}
 			})
 		}

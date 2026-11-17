@@ -459,7 +459,8 @@ func addApproved(t *testing.T, dir, id string, node interface{ Print() (string, 
 		t.Fatal(err)
 	}
 	editApproved(t, filepath.Join(dir, "approved.json"), func(nodes []specgraph.ApprovedNode) []specgraph.ApprovedNode {
-		return append(nodes, specgraph.ApprovedNode{ID: id, Versions: []specgraph.ApprovedVersion{{Version: 1, At: scenarioApproval, Document: document}}})
+		return append(nodes, specgraph.ApprovedNode{ID: id, Removed: new(false), PartlyChecked: new(false),
+			Versions: []specgraph.ApprovedVersion{{Version: 1, At: scenarioApproval, Document: document}}})
 	})
 }
 

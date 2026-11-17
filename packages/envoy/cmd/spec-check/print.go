@@ -85,7 +85,7 @@ func printApproved(stdout, stderr io.Writer, fsys fileSystem, path string, a spe
 		case !held:
 			say(stderr, "%s: the approved spec holds no node %q", path, specgraph.Cut(id))
 			refused = true
-		case n.Removed:
+		case *n.Removed: // ReadApproved refused a node that does not set it
 			say(stderr, "%s: the approved spec removed node %q, so it has no current text", path, specgraph.Cut(id))
 			refused = true
 		}

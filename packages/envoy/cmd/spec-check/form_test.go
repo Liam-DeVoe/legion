@@ -144,7 +144,8 @@ func writeApproved(t *testing.T, documents map[string]string) string {
 	t.Helper()
 	file := specgraph.ApprovedFile{Nodes: []specgraph.ApprovedNode{}}
 	for id, document := range documents {
-		file.Nodes = append(file.Nodes, specgraph.ApprovedNode{ID: id, Versions: []specgraph.ApprovedVersion{{Version: 1, At: time.Date(2026, 11, 10, 0, 0, 0, 0, time.UTC), Document: document}}})
+		file.Nodes = append(file.Nodes, specgraph.ApprovedNode{ID: id, Removed: new(false), PartlyChecked: new(false),
+			Versions: []specgraph.ApprovedVersion{{Version: 1, At: time.Date(2026, 11, 10, 0, 0, 0, 0, time.UTC), Document: document}}})
 	}
 	path := filepath.Join(t.TempDir(), "approved.json")
 	writeJSONFile(t, path, file)

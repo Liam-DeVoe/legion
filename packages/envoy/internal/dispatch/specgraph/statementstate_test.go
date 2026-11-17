@@ -691,7 +691,7 @@ func (s *checkCase) remove(ids ...string) {
 // partlyChecked marks the statement id as partly checked in the approved spec.
 func (s *checkCase) partlyChecked(id string) {
 	node := s.Approved.Nodes[id]
-	node.PartlyChecked = true
+	node.PartlyChecked = new(true)
 	s.Approved.Nodes[id] = node
 }
 

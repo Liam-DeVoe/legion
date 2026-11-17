@@ -20,12 +20,13 @@ type Point struct {
 
 // subjectFault is the first fault of a subject, the point p and the time now that the states at it
 // are derived at, as a refusal names it, and "" when it has none: it sets no commit or no now, or it
-// does not set exactly one of a branch and a deploy, or it sets graph_tx with no deploy. With no now
-// no time limit of a check would end; with neither a branch nor a deploy no check of production
-// would be judged, and with both or with a transaction of the graph at the head of a branch the
-// subject would be none of the two that R10 names ("The subject is the head of the branch that the
-// files are read from, or the commit that production runs"). The reader of subjects.json and the
-// entry of the derivation both refuse a subject by it.
+// does not set exactly one of a branch and a deploy, or it sets graph_tx with no deploy, or a
+// commit, branch, deploy or graph_tx that it sets names nothing (nameFault). With no now no time
+// limit of a check would end; with neither a branch nor a deploy no check of production would be
+// judged, and with both or with a transaction of the graph at the head of a branch the subject
+// would be none of the two that R10 names ("The subject is the head of the branch that the files
+// are read from, or the commit that production runs"). The reader of subjects.json and the entry of
+// the derivation both refuse a subject by it.
 func subjectFault(p Point, now time.Time) string {
 	switch {
 	case p.Commit == "":
@@ -39,7 +40,8 @@ func subjectFault(p Point, now time.Time) string {
 	case p.GraphTx != "" && p.Deploy == "":
 		return "it sets graph_tx with no deploy; the commit that production runs reads the graph, and the head of a branch does not"
 	}
-	return ""
+	return nameFault(namedMember{"commit", "commit", p.Commit}, namedMember{"branch", "branch", p.Branch},
+		namedMember{"deploy", "deploy", p.Deploy}, namedMember{"graph_tx", "transaction of the graph", p.GraphTx})
 }
 
 // Input is what the states at one subject are derived from: the spec files at Subject.Commit, the
@@ -50,10 +52,10 @@ func subjectFault(p Point, now time.Time) string {
 // refusal by CI only lower a state, so the caller gives JobRuns and Uncited, empty for none, and
 // Input.check refuses nil. With no tie, or no history, no result carries: a result counts only at
 // its own commit, so a failure at another commit then says nothing about this one. So a caller that
-// gives no Ties or no History is refused too, and one that states that it has none gives an empty
-// CommitTies, or a FixtureHistory of no commit, and gets no carry, as R8 reads a tie that is not
-// known ("A check whose tie to its code is unknown runs on each push to the branch"). The command
-// gives the ties and the history of its scenario.
+// gives no Ties or no History is refused too, and one that states that it has none gives
+// CommitTies{} or FixtureHistory{Commits: []FixtureCommit{}}, the empty values that are not nil,
+// and gets no carry, as R8 reads a tie that is not known ("A check whose tie to its code is unknown
+// runs on each push to the branch"). The command gives the ties and the history of its scenario.
 type Input struct {
 	Files    Tree                         `input:"zero: no spec file, so each statement reads not built"`
 	Approved Approved                     `input:"zero: no approved node, so no state is derived"`
@@ -126,16 +128,25 @@ const (
 //     builds the approved spec from the store, with no reader. A problem that Validate finds in
 //     the files and that refuses C (refusals): unknown, refused, Detail its rule, since the
 //     derivation gives no clean state for a tree that the rules refuse.
-//  2. CI refused C at S.Commit, or at the commit of a candidate of step 3 that counts at S by step
-//     4's rule (R48): unknown, uncited, Detail the least of their rules by its name, so that the
-//     order of the results does not choose it, and no earlier result counts. The commit of a
-//     candidate is the commit of a result of a code check, the TestCommit of a result of a program
-//     check of production or the graph. A refusal counts at its own commit (R48: "At that commit,
-//     such a check reads unknown, and no earlier result of it counts") and cancels the results of
-//     that commit wherever they count, so no result of that commit also counts at another (R8:
-//     "also counts"). A refusal at a commit that holds no candidate counts at that commit as the
-//     subject alone: a refusal about the tree shows in C's text or in its tied files, which stop
-//     the carry by their own rules, and a refusal about one run says nothing about another commit.
+//  2. CI refused C at S.Commit (R48: "At that commit, such a check reads unknown, and no earlier
+//     result of it counts"): unknown, uncited. CI refused C at another commit A that holds a
+//     candidate of step 3 and whose results count at S by step 4's rule: the refusal cancels each
+//     candidate of A and each candidate recorded no later than the newest candidate of A, by the
+//     order of record (At, then Seq), which is the refusal's place in that order, since the refusal
+//     itself carries no time; it cancels no newer candidate (R7: "Of several results that count,
+//     the latest counts"). It cancels the runs and the failing examples alike, so a check whose
+//     only failing example CI cancelled reads unknown (R9: "a check whose current text has no
+//     failing example that failed when it should"). With no run that counts at S left: unknown,
+//     uncited. Detail is the least rule by its name of the refusals that count, so that the order of
+//     the results does not choose it. The commit of a candidate is the commit of a result of a code
+//     check, the TestCommit of a result of a program check of production or the graph; a query or
+//     an agent of production or of the graph has no candidate of a commit, and only a refusal at
+//     S.Commit counts for it. A refusal at a commit that holds no candidate counts at that commit
+//     as the subject alone: no order of record places it, a refusal about the tree shows in C's
+//     text or in its tied files, which stop the carry by their own rules, and a refusal about one
+//     run says nothing about another commit. A run of the job is no candidate, and no refusal
+//     cancels one: it has no time, and it only lowers a state. The steps below read the
+//     candidates that no refusal cancelled.
 //  3. The candidates are C's results of kind run or failing_example that carry the digest of C's
 //     current text (R7: a result counts "only for the procedure that ran it"), a run of a program
 //     check only when the check's job reported it (R6: "only the reports of that job count"), and
@@ -188,13 +199,15 @@ const (
 //     counts, and a later failure cancels an earlier pass").
 //
 // CheckStates gives an error, and no state, for an Input that is not whole (Input.check), so the
-// judge never reads the zero value of a member that the caller did not set as a real one.
+// judge never reads the zero value of a member that the caller did not set as a real one, and for
+// a History that could not answer (History.Changed gives an error), since a history that listed
+// nothing has not read two equal trees.
 func CheckStates(in Input) ([]CheckState, error) {
 	j, err := newCheckJudge(in)
 	if err != nil {
 		return nil, err
 	}
-	return j.states(), nil
+	return j.states()
 }
 
 // newCheckJudge is the judge of the checks of in: the current approved text of each node, which
@@ -216,8 +229,9 @@ func newCheckJudge(in Input) (*checkJudge, error) {
 	return j, nil
 }
 
-// states is the state of each check that CheckStates judges, sorted by id.
-func (j *checkJudge) states() []CheckState {
+// states is the state of each check that CheckStates judges, sorted by id, or the first error of
+// the history, with no state.
+func (j *checkJudge) states() ([]CheckState, error) {
 	var states []CheckState
 	for _, c := range j.current.Checks {
 		if readsProduction(c) && j.in.Subject.Deploy == "" {
@@ -227,17 +241,21 @@ func (j *checkJudge) states() []CheckState {
 		state.ID = c.ID
 		states = append(states, state)
 	}
-	return states
+	if j.historyErr != nil {
+		return nil, j.historyErr
+	}
+	return states, nil
 }
 
 // checkJudge derives the state of each check of one Input.
 type checkJudge struct {
-	in      Input
-	current Tree                    // the current text of each node of the approved spec
-	holds   map[string]Holding      // which approved text of each node the files hold
-	refused map[string]string       // the rule that refuses each check and statement of the files
-	results map[string][]Result     // the results of each check, by its id
-	changed map[string]changedPaths // History.Changed(commit, Subject.Commit), by commit
+	in         Input
+	current    Tree                    // the current text of each node of the approved spec
+	holds      map[string]Holding      // which approved text of each node the files hold
+	refused    map[string]string       // the rule that refuses each check and statement of the files
+	results    map[string][]Result     // the results of each check, by its id
+	changed    map[string]changedPaths // History.Changed(commit, Subject.Commit), by commit
+	historyErr error                   // the first error of History.Changed; states then gives no state
 }
 
 // refusals is the first rule, in the order of SortProblems, that refuses each check and statement
@@ -376,14 +394,15 @@ func (j *checkJudge) state(c Check) CheckState {
 			faults = append(faults, r)
 		}
 	}
-	if rule, refused := j.refusalWhereItCounts(c, runs, faults); refused {
+	rule, refused, atSubject, runs, faults := j.withoutRefused(c, runs, faults)
+	counting := j.countingRuns(c, runs)
+	if atSubject || refused && len(counting) == 0 {
 		return unknownCheck(reasonUncited, rule)
 	}
 	if suspect && len(runs) == 0 && len(faults) == 0 {
 		return unknownCheck(reasonStatementChanged, statement)
 	}
 
-	counting := j.countingRuns(c, runs)
 	if len(counting) == 0 {
 		switch {
 		case job != "" && j.jobEnded(c, job):
@@ -395,7 +414,7 @@ func (j *checkJudge) state(c Check) CheckState {
 		}
 	}
 	latest, _ := newestResult(counting)
-	newest := map[string]Result{latest.Leg: latest}
+	newest := map[string]Result{*latest.Leg: latest}
 	if c.Subject == SubjectCode || c.Procedure == ProcedureProgram { // the checks that a job's matrix runs
 		newest = newestOfEachLeg(counting)
 		switch leg, ended, found := j.legWithNoResult(c, job, newest); {
@@ -510,7 +529,9 @@ func (j *checkJudge) countingFaults(c Check, faults []Result) []Result {
 // two are one commit, or the check's tie is known at both commits and no path that differs between
 // their trees is covered by the tie at either commit, since a tie is a fact of a commit (R18: "At
 // each commit, Dispatch derives four ties"), and a file that the test read at one commit and that
-// the other deleted or added changed the code that the check runs.
+// the other deleted or added changed the code that the check runs. A History that gives an error is
+// kept in historyErr, and the derivation then gives no state, so the false that carries answers
+// with it is read by no state.
 func (j *checkJudge) carries(check, commit string) bool {
 	switch {
 	case commit == "":
@@ -524,42 +545,77 @@ func (j *checkJudge) carries(check, commit string) bool {
 	}
 	changed, read := j.changed[commit]
 	if !read {
-		changed.paths, changed.ok = j.in.History.Changed(commit, j.in.Subject.Commit)
+		var err error
+		changed.paths, changed.ok, err = j.in.History.Changed(commit, j.in.Subject.Commit)
+		if err != nil && j.historyErr == nil {
+			j.historyErr = err
+		}
 		j.changed[commit] = changed
 	}
 	return changed.ok && !slices.ContainsFunc(changed.paths, func(path string) bool { return from.Covers(path) || to.Covers(path) })
 }
 
-// refusalWhereItCounts is the least rule, by its name, of the refusals of c by CI that count at the
-// subject (step 2), and whether there is one: the refusal at S.Commit, and for a check of the code
-// or a program check of production or of the graph, each refusal at a commit whose results of c
-// count at the subject, of the commits of runs and faults, the candidates of c: the commit of a
-// result of a check of the code, the TestCommit of a result of a program check of production or of
-// the graph. The least, so that the order of the results, which says nothing, does not choose the
-// rule that the state names.
-func (j *checkJudge) refusalWhereItCounts(c Check, runs, faults []Result) (string, bool) {
-	rule, refused := j.in.Uncited[j.in.Subject.Commit][c.ID]
+// withoutRefused applies the refusals of c by CI that count at the subject to runs and faults, the
+// candidates of c (step 2). It gives the least rule, by its name, of those refusals, so that the
+// order of the results, which says nothing, does not choose the rule that the state names; whether
+// there is one; whether one is at S.Commit, where c reads unknown whatever its results; and the
+// candidates that no refusal cancels. A refusal at another commit A counts for a check of the code
+// or a program check of production or of the graph when a candidate's commit is A and the results
+// of A count at the subject. It cancels each candidate of A, and each candidate recorded no later
+// than the newest candidate of A (byRecord): a refusal carries no time, so the newest result of its
+// commit is its place in the order of record.
+func (j *checkJudge) withoutRefused(c Check, runs, faults []Result) (rule string, refused, atSubject bool, keptRuns, keptFaults []Result) {
+	rule, atSubject = j.in.Uncited[j.in.Subject.Commit][c.ID]
 	if readsProduction(c) && c.Procedure != ProcedureProgram {
-		return rule, refused
+		return rule, atSubject, atSubject, runs, faults
 	}
+	refused = atSubject
+	var newest map[string]Result // the newest candidate of each refused commit that counts at the subject
 	for _, results := range [2][]Result{runs, faults} {
 		for _, r := range results {
-			commit := r.Commit
-			if readsProduction(c) {
-				commit = r.TestCommit
+			commit := candidateCommit(c, r)
+			other, at := j.in.Uncited[commit][c.ID]
+			if !at || !j.carries(c.ID, commit) {
+				continue
 			}
-			if other, at := j.in.Uncited[commit][c.ID]; at && (!refused || other < rule) && j.carries(c.ID, commit) {
+			if newest == nil {
+				newest = map[string]Result{}
+			}
+			if last, held := newest[commit]; !held || byRecord(r, last) > 0 {
+				newest[commit] = r
+			}
+			if !refused || other < rule {
 				rule, refused = other, true
 			}
 		}
 	}
-	return rule, refused
+	if len(newest) == 0 {
+		return rule, refused, atSubject, runs, faults
+	}
+	kept := func(r Result) bool {
+		for commit, last := range newest {
+			if candidateCommit(c, r) == commit || byRecord(r, last) <= 0 {
+				return false
+			}
+		}
+		return true
+	}
+	return rule, refused, atSubject, resultsWhere(runs, kept), resultsWhere(faults, kept)
+}
+
+// candidateCommit is the commit of r, a candidate of c: the commit of a result of a check of the
+// code, the TestCommit of a result of a program check of production or of the graph.
+func candidateCommit(c Check, r Result) string {
+	if readsProduction(c) {
+		return r.TestCommit
+	}
+	return r.Commit
 }
 
 // jobEnded is whether a run of job, in any leg, ended at a commit whose results of c count at the
 // subject, its commit among them.
 func (j *checkJudge) jobEnded(c Check, job string) bool {
-	return slices.ContainsFunc(j.in.JobRuns, func(r JobRun) bool { return r.Job == job && r.Ended && j.carries(c.ID, r.Commit) })
+	return slices.ContainsFunc(j.in.JobRuns, func(r JobRun) bool { return r.Job == job && *r.Ended && j.carries(c.ID, r.Commit) })
 }
 
 // legWithNoResult is the first leg, by name, of a run of job at a commit whose results of c count at
@@ -569,13 +625,13 @@ func (j *checkJudge) jobEnded(c Check, job string) bool {
 func (j *checkJudge) legWithNoResult(c Check, job string, newest map[string]Result) (leg string, ended, found bool) {
 	var silent, running []string
 	for _, r := range j.in.JobRuns {
-		if _, reported := newest[r.Leg]; r.Job != job || reported || !j.carries(c.ID, r.Commit) {
+		if _, reported := newest[*r.Leg]; r.Job != job || reported || !j.carries(c.ID, r.Commit) {
 			continue
 		}
-		if r.Ended {
-			silent = append(silent, r.Leg)
+		if *r.Ended {
+			silent = append(silent, *r.Leg)
 		} else {
-			running = append(running, r.Leg)
+			running = append(running, *r.Leg)
 		}
 	}
 	switch {
@@ -647,8 +703,8 @@ func checkJob(c Check) string {
 func newestOfEachLeg(results []Result) map[string]Result {
 	newest := map[string]Result{}
 	for _, r := range results {
-		if old, held := newest[r.Leg]; !held || byRecord(r, old) > 0 {
-			newest[r.Leg] = r
+		if old, held := newest[*r.Leg]; !held || byRecord(r, old) > 0 {
+			newest[*r.Leg] = r
 		}
 	}
 	return newest

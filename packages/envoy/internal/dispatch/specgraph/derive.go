@@ -65,14 +65,18 @@ type State struct {
 // statements under it, no supporter and no own check, or none of its checks reads the subject. So
 // at the head of main a wait on S never waits for a check of production.
 //
-// Derive gives an error, and no state, for an Input that is not whole (Input.check), as
-// CheckStates does.
+// Derive gives an error, and no state, for an Input that is not whole (Input.check), and for a
+// History that could not answer, as CheckStates does.
 func Derive(in Input) (State, error) {
 	checks, err := newCheckJudge(in)
 	if err != nil {
 		return State{}, err
 	}
-	s := State{Subject: in.Subject, Checks: checks.states()}
+	states, err := checks.states()
+	if err != nil {
+		return State{}, err
+	}
+	s := State{Subject: in.Subject, Checks: states}
 	if s.Checks == nil {
 		s.Checks = []CheckState{}
 	}
@@ -88,35 +92,40 @@ func Derive(in Input) (State, error) {
 // check is the first fault of in that the derivation refuses, nil when in is whole, in the words
 // that the scenario reader refuses the same fault with. A member that the caller did not set is its
 // zero value, and the judge would read that value as a real one, which turns a state toward true or
-// hides a failure; so the judge never reads one, and no state is given:
+// hides a failure; so the judge never reads one, and no state is given. A member marked present has
+// a type whose zero value is "not set" (memberMark), refused here as a file that leaves it out is,
+// and each name and each path is read by the one rule of its kind (nameFault, isRepoPath):
 //
-//   - the subject: its commit, its now, exactly one of a branch and a deploy, and graph_tx only with
-//     a deploy (subjectFault); with no now no time limit would end, and with neither, no check of
-//     production would be judged;
-//   - each approved node, as ReadApproved refuses it (ApprovedNode.check), and under its own id, as
-//     WriteApproved refuses it: a node with no version, a document that is not its one document or
-//     a key that is not its id would leave the node out, and a version with no time would make no
-//     result suspect (R7: "A change to the text of a statement makes every result under it
-//     suspect");
-//   - each result (Result.fault), with the current text of its check when it carries that text's
-//     digest, so it is judged by what the judge reads of it, and no two results of one check at one
-//     At and one Seq (sameRecordFault);
-//   - History set, a FixtureHistory of no commit for none: with no history no result carries, so a
-//     failure at another commit counts nowhere, and a caller that gives none is not one that states
-//     that it has none; a FixtureHistory as ReadFixtureHistory refuses it (FixtureHistory.check), a
-//     GitHistory with no Dir, and a nil value of any type that implements History (historyFault): a
-//     commit with no files, or a tree with no path, would be an empty tree, and two of them one tree,
-//     a content label "" would be one content at each commit that has it, and a nil history would
-//     panic where a result carries;
-//   - Ties set, an empty map for none, and the map of each commit that it names set, for the same
-//     reason (a commit where no tie is known has {} or no key); and each known tie as NewTie
-//     refuses it: a known tie with no path covers no change;
+//   - the subject: its commit, its now, exactly one of a branch and a deploy, graph_tx only with a
+//     deploy, and no name of no letter and no digit (subjectFault); with no now no time limit would
+//     end, and with neither, no check of production would be judged;
+//   - each approved node, as ReadApproved refuses it (ApprovedNode.check), Removed and
+//     PartlyChecked set among it, and under its own id, as WriteApproved refuses it: a node with no
+//     version, a document that is not its one document or a key that is not its id would leave the
+//     node out, and a version with no time would make no result suspect (R7: "A change to the text
+//     of a statement makes every result under it suspect");
+//   - each result (Result.fault), its Leg set among it, with the current text of its check when it
+//     carries that text's digest, so it is judged by what the judge reads of it, and no two results
+//     of one check at one At and one Seq (sameRecordFault);
+//   - History set, FixtureHistory{Commits: []FixtureCommit{}} for none: with no history no result
+//     carries, so a failure at another commit counts nowhere, and a caller that gives none is not
+//     one that states that it has none; a FixtureHistory as ReadFixtureHistory refuses it
+//     (FixtureHistory.check), Commits set among it, a GitHistory with no Dir, and a nil value of
+//     any type that implements History (historyFault): a commit with no files, or a tree with no
+//     path, would be an empty tree, and two of them one tree, a content label "" would be one
+//     content at each commit that has it, a path that is no repository path a change that no tie
+//     covers, and a nil history would panic where a result carries;
+//   - Ties set, CommitTies{} for none, as ReadCommitTies refuses it (CommitTies.fault), for the
+//     same reason: each commit and check of it a name, the map of each commit that it names set (a
+//     commit where no tie is known has {} or no key), each known tie as NewTie refuses it, since a
+//     known tie with no path covers no change, and no tie that is not known and holds a path;
 //   - JobRuns and Uncited, which only lower a state, set, empty for none: with no job run a leg that
 //     ended with no result would be hidden (R9), and with no map of the checks that CI refused, a
-//     refused check would be judged (R48); and each map of a commit of Uncited set and each of its
-//     rules nonzero (uncitedFault);
-//   - each job run (JobRun.fault).
+//     refused check would be judged (R48); and Uncited as the reader of uncited.json refuses it
+//     (uncitedFault);
+//   - each job run (JobRun.fault), its Leg and Ended set among it.
 //
+// A History that could not answer is refused later, where the judge first asks it (checkJudge).
 // current is the tree of the current texts of in.Approved.
 func (in Input) check(current Tree) error {
 	if fault := subjectFault(in.Subject, in.Now); fault != "" {
@@ -155,19 +164,10 @@ func (in Input) check(current Tree) error {
 		return err
 	}
 	if in.Ties == nil {
-		return errors.New("specgraph: it sets no Ties; an Input that knows no tie sets an empty map")
+		return errors.New("specgraph: it sets no Ties; an Input that knows no tie sets CommitTies{}")
 	}
-	for _, commit := range slices.Sorted(maps.Keys(in.Ties)) {
-		if in.Ties[commit] == nil {
-			return fmt.Errorf("specgraph: ties: commit %s: it sets no map of the ties there, and a commit where no tie is known has an empty map or no key", quoted(commit))
-		}
-		for _, check := range slices.Sorted(maps.Keys(in.Ties[commit])) {
-			if tie := in.Ties[commit][check]; tie.Known {
-				if err := tiePathsFault(tie.Paths); err != nil {
-					return fmt.Errorf("specgraph: ties: commit %s: check %s: %w", quoted(commit), quoted(check), err)
-				}
-			}
-		}
+	if err := in.Ties.fault(); err != nil {
+		return fmt.Errorf("specgraph: ties: %w", err)
 	}
 	switch {
 	case in.JobRuns == nil:
@@ -183,25 +183,42 @@ func (in Input) check(current Tree) error {
 			return fmt.Errorf("specgraph: job run %d: %s", i+1, fault)
 		}
 	}
+	if fault, _ := legFault(in.JobRuns, in.Results); fault != "" {
+		return errors.New("specgraph: " + fault)
+	}
 	return nil
 }
 
 // uncitedFault is the refusal of the first fault of uncited, the checks that CI refused at each
-// commit, by commit and then by check, and "" when it has none: a commit whose map of checks is
-// nil, and a rule "", since a refusal of CI names the rule of R48 that refused the check, and each
-// value of a map marked nonzero is nonzero (memberMark). A map {} of a commit is a value: CI refused
-// no check there. The reader of uncited.json and the entry of the derivation both refuse uncited by
-// it.
+// commit, by commit and then by check, and "" when it has none: a commit or a check of no letter
+// and no digit (hasWord), which names none, so the refusal would count nowhere, as the reader
+// refuses such a commit of a subject; a commit whose map of checks is nil; and a rule "", since a
+// refusal of CI names the rule of R48 that refused the check, and each value of a map marked
+// nonzero is nonzero (memberMark). A map {} of a commit is a value: CI refused no check there. The
+// reader of uncited.json and the entry of the derivation both refuse uncited by it, and the least
+// place by commit and then by check is the one named, whatever the order of the map.
 func uncitedFault(uncited map[string]map[string]string) string {
-	type place struct{ commit, check string }
+	// A place is a commit (depth 0), or a check of it (depth 1); the fault of a commit comes before
+	// the faults of its checks.
+	type place struct {
+		commit, check string
+		depth         int
+		fault         string
+	}
 	var faults []place
 	for commit, checks := range uncited {
-		if checks == nil {
-			faults = append(faults, place{commit, ""})
+		switch {
+		case !hasWord(commit):
+			faults = append(faults, place{commit, "", 0, "a commit of no letter and no digit names no commit"})
+		case checks == nil:
+			faults = append(faults, place{commit, "", 0, "it sets no map of the checks that CI refused there, and a commit where CI refused no check has an empty map or no key"})
 		}
 		for check, rule := range checks {
-			if rule == "" {
-				faults = append(faults, place{commit, check})
+			switch {
+			case !hasWord(check):
+				faults = append(faults, place{commit, check, 1, "a check of no letter and no digit names no check"})
+			case rule == "":
+				faults = append(faults, place{commit, check, 1, "its rule is empty, and a refusal of CI names the rule that refused the check"})
 			}
 		}
 	}
@@ -209,12 +226,12 @@ func uncitedFault(uncited map[string]map[string]string) string {
 		return ""
 	}
 	first := slices.MinFunc(faults, func(a, b place) int {
-		return cmp.Or(strings.Compare(a.commit, b.commit), strings.Compare(a.check, b.check))
+		return cmp.Or(strings.Compare(a.commit, b.commit), cmp.Compare(a.depth, b.depth), strings.Compare(a.check, b.check))
 	})
-	if uncited[first.commit] == nil {
-		return fmt.Sprintf("commit %s: it sets no map of the checks that CI refused there, and a commit where CI refused no check has an empty map or no key", quoted(first.commit))
+	if first.depth == 0 {
+		return fmt.Sprintf("commit %s: %s", quoted(first.commit), first.fault)
 	}
-	return fmt.Sprintf("commit %s: check %s: its rule is empty, and a refusal of CI names the rule that refused the check", quoted(first.commit), quoted(first.check))
+	return fmt.Sprintf("commit %s: check %s: %s", quoted(first.commit), quoted(first.check), first.fault)
 }
 
 // WaitEnds is whether a wait on the statement ends at the subject (R29: "That wait ends when main
