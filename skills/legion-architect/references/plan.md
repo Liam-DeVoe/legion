@@ -53,7 +53,7 @@ parent stood on.
 `register_plan` answers `409 PLAN_REFUSED` with `reasons: [{task, reason}]`, one reason for each
 cause, its `task` empty for a cause of the whole plan. A reason that ends `This release of Legion
 does not carry it out yet.` names a plan a later release takes: write the plan again within the
-rules above. The reasons, with `<…>` filled in:
+rules above. These are the reasons that end so, with `<…>` filled in:
 
 - `the plan has <n> tasks (<ids>), and this release runs one task for each issue.`
 - `task <id> needs <ids>.`
@@ -65,9 +65,16 @@ rules above. The reasons, with `<…>` filled in:
 - `the plan defines the role <role>.` (a `plan_role` block)
 - `task <id> names merges.`, `task <id> names owner.`, `task <id> names part_of.`
 
-Two reasons end with no "yet", because no release takes such a plan:
-`step <i> of task <id> names the role <role>, which neither the deployment nor the plan defines.`
-and `the plan has no task block, so it gives Legion no work.`
+These reasons of the plan's text end with no "yet", because no release takes such a plan:
+
+- `step <i> of task <id> names the role <role>, which neither the deployment nor the plan defines.`
+- `the plan has no task block, so it gives Legion no work.`
+- A block Legion cannot read, the one reason of its answer: `a <type> block has no id, so no step
+  of the plan can be named.`, `the id <id> names a <type> block and a <type> block, so it names no
+  one block.`, or `task <id>: the step "<word>" is neither a role nor a role:key, where each
+  matches [a-z][a-z0-9-]*.`
+
+The reasons a version gets for where its task stands are in "Stopping and changing a task" below.
 
 ## When to give it
 
