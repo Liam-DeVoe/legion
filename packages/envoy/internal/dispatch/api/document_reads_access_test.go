@@ -147,6 +147,8 @@ func TestADocumentOfAPrivateProjectAnswersAsMissing(t *testing.T) {
 					same := hidden.Code == absent.Code &&
 						normalizedBody(hidden, objects[project]) == normalizedBody(absent, missing)
 					switch {
+					case hidden.Code >= http.StatusInternalServerError:
+						t.Errorf("%s: %s answers %d %s, the server's error", caller, route, hidden.Code, hidden.Body.String())
 					case slices.Contains(sees, project) && same:
 						t.Errorf("%s: %s answers %d %s, as for a missing one; %s sees %s", caller, route,
 							hidden.Code, hidden.Body.String(), caller, project)

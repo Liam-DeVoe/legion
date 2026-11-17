@@ -475,6 +475,11 @@ func TestAnIDThatIsNoUUIDAnswersAsAnIDNobodyHolds(t *testing.T) {
 		malformed := walk.request(t, callerAlice, route.Method, fill(notAUUID), body)
 		missing := walk.request(t, callerAlice, route.Method, fill(nobodys), body)
 		walked++
+		if malformed.Code >= http.StatusInternalServerError {
+			t.Errorf("%s: an id that is no uuid answers %d %s: a value Postgres will not read as a uuid is never the database's error",
+				name, malformed.Code, strings.TrimSpace(malformed.Body.String()))
+			continue
+		}
 		var refusal refusalAnswer
 		_ = json.Unmarshal(malformed.Body.Bytes(), &refusal)
 		asMissing := malformed.Code == missing.Code &&
