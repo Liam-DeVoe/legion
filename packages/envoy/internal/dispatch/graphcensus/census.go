@@ -1240,8 +1240,9 @@ var goneRunsAuthored = currentAuthors(`held.kind = '` + graphstore.KindInteracti
 // goneRunsAuthored) are read here too, so the person and session row sides read them bound as
 // well and read the log for them no more than for the rest. An erase of a run, a lens, a finding,
 // a risk or a constraint takes the authored_by these read and, of a run, the going_requests row
-// commentPeople reads its author off, and records that author (erasedWriters), so an author whose
-// only record was the erased node is held to their node still.
+// that names its author, which commentPeople reads a person off and recordedSessions a session,
+// and records that author (erasedWriters), so an author whose only record was the erased node is
+// held to their node still.
 var storedAuthors = `
 	select r.to_kind as kind, r.to_id as id, r.created_at as at
 	from block_refs r

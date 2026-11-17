@@ -157,9 +157,13 @@ var storeWriteCallSites = []string{
 	"docs/ask_blocks.go#createAskBlock",
 	// A document's retirement (dispatch://INFRA-1150 R11), in the same order under the document's
 	// owner row: its artifact node stated gone, then the artifacts row that retires it, then
-	// document.retired and the node's facts under it.
+	// document.retired and the node's facts under it. A removal of an untouched document states
+	// its node gone through the same writer, with each changed_by_run of the node retracted, under
+	// the owner row and the room, then deletes its rows, appends artifact.removed and the node's
+	// facts under it (api's TestEveryApiStoreWriterTakesTheStoreLockOrder holds it to those steps).
 	"docs/retire.go#RetireDocument",
 	"docs/retire.go#writeRetiredNode",
+	"api/artifact_removal.go#removeArtifact",
 	// A person's Keep of an agent's decision (dispatch://INFRA-1150 R2): under the issue's owner
 	// row, the person's node, then the decision_keeps row that projects the Keep, then
 	// decision.kept, and the kept_by tuple and the kept_text_sum value under it, through Caused.

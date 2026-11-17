@@ -28,14 +28,15 @@ const storeStepWait = 20 * time.Second
 // TestEveryApiStoreWriterTakesTheStoreLockOrder is this package's half of dispatch://INFRA-1149's
 // c-lock-order. graphstore's TestEveryStoreWriteCallSiteIsListed lists every call site of the node
 // and tuple store's writers and leaves the proof of each site's lock steps to the package the site
-// lives in. Nine of them live here, on seven write paths: the comment path (createCommentFor, with
+// lives in. Ten of them live here, on eight write paths: the comment path (createCommentFor, with
 // the node its writeNode writes and the tuples its caused appends, then graphstore.Authored), run
 // on an issue and on a project document; a session's reply to a mention (replyComment, through
 // the same three); the settle of a comment mention's delivery (completeCommentDelivery) and of
 // a targeted message's (completeMessageDelivery), each of which records the session it reached
 // through graphstore.Reached inside its own transaction; a run of the command bar, its record
-// (recordGoingRequest) and one frame of it (appendGoingEvent), which takes no owner row; and an
-// issue's own field write made for a run (patchIssue), which writes the issue's node.
+// (recordGoingRequest) and one frame of it (appendGoingEvent), which takes no owner row; an
+// issue's own field write made for a run (patchIssue), which writes the issue's node; and the
+// removal of an untouched document (removeArtifact), which states the document's node gone.
 //
 // The order they are held to is the one written on api/inbox_read.go's markInboxReadThreads, which
 // graphstore's TestEveryStoreWriteTakesOneLockOrder reads: the owner row comes first; a node's
@@ -63,7 +64,7 @@ func TestEveryApiStoreWriterTakesTheStoreLockOrder(t *testing.T) {
 		rig.commentCreate("createCommentFor on a project document", "/api/v1/artifacts/"+rig.document+"/comments",
 			ownerRowStep(documentOwnerStatement, "artifacts", `select 1 from artifacts where id = $1::uuid for no key update`, rig.document)),
 		rig.mentionReply(), rig.commentDeliverySettle(), rig.messageDeliverySettle(),
-		rig.goingRecord(), rig.goingFrame(), rig.issuePatchForRun(),
+		rig.goingRecord(), rig.goingFrame(), rig.issuePatchForRun(), rig.artifactRemoval(),
 	} {
 		t.Run(writer.name, func(t *testing.T) {
 			requireTheWrittenOrderAdmits(t, writer)

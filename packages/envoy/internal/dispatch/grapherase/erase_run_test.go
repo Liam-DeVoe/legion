@@ -9,8 +9,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphstoretest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -242,35 +245,19 @@ func TestTheEraseOfARunOrAReasoningNodeHoldsItsOnlyAuthorToTheirNode(t *testing.
 			{Kind: graphstore.TuplePartOf, ToKind: graphstore.KindIssue, ToID: "CORE-1"},
 		}},
 	} {
-		nodes := []graphstore.Node{{
+		node := graphstore.Node{
 			Kind: written.kind, ID: written.id, Supertag: written.kind,
 			Visibility: graphstore.VisibilityProject, State: graphstore.StateLive, Project: "CORE",
 			MadeAt: at, MadeBy: written.author, SourceEvent: graphstore.NoEvent,
-		}}
-		tuples := make([]graphstore.Tuple, 0, len(written.tuples)+1)
-		for _, tuple := range written.tuples {
-			tuple.FromKind, tuple.FromID = written.kind, written.id
-			tuple.At, tuple.Who, tuple.SourceEvent, tuple.Asserted = at, written.author, graphstore.NoEvent, true
-			tuples = append(tuples, tuple)
 		}
-		authors, facts, named := graphstore.AuthorFacts(written.kind, written.id, written.author, at, graphstore.NoEvent)
-		if !named {
-			t.Fatalf("%s:%s's writer %+v names nobody", written.kind, written.id, written.author)
-		}
-		for _, author := range authors {
-			author.Restates = true
-			nodes = append(nodes, author)
-		}
-		tx, err := database.Pool.Begin(ctx)
+		authors, tuples, err := graphstoretest.AuthoredFacts(node, written.tuples)
 		if err != nil {
-			t.Fatalf("begin the write of %s:%s: %v", written.kind, written.id, err)
+			t.Fatalf("state the author of %s:%s: %v", written.kind, written.id, err)
 		}
-		if err := graphstore.Write(ctx, tx, nodes, append(tuples, facts...)); err != nil {
-			_ = tx.Rollback(ctx)
+		if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
+			return graphstore.Write(ctx, tx, append([]graphstore.Node{node}, authors...), tuples)
+		}); err != nil {
 			t.Fatalf("write %s:%s: %v", written.kind, written.id, err)
-		}
-		if err := tx.Commit(ctx); err != nil {
-			t.Fatalf("commit the write of %s:%s: %v", written.kind, written.id, err)
 		}
 	}
 	requireCensusZero(t, database, "before the erases")

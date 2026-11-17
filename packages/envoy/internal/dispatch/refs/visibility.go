@@ -259,7 +259,8 @@ const (
 	// comparesAuthor compares the author the acting credential proved with the author the node's
 	// `made_by` records, the one rule of dispatch://INFRA-1149 (graphstore.AuthorIsSQL): the
 	// person a cookie, a personal token or a session the broker verified proves, else the
-	// credential's own id, else its workload. It is every kind dispatch://INFRA-1149 registers,
+	// credential's own id, which counts for a session only where the broker proved that session
+	// (model.Actor's Proven), else its workload. It is every kind dispatch://INFRA-1149 registers,
 	// and a lens, a block of a lens's finding, a risk and a constraint (authoredKind).
 	comparesAuthor comparison = iota
 	// comparesCredential compares the whole acting credential with the one that wrote the node

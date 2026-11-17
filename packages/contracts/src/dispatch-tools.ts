@@ -2510,9 +2510,10 @@ export const dispatchToolSpecs = [
     description:
       "List the constraints under an issue that you may see, in the order they were written: " +
       "each one's dispatch://constraint/<uuid> address, its standard and reference or its " +
-      "measurement, value and where it was taken, who wrote it (nobody under the deployment's " +
-      "shared agent token, which proves no author), its state, and author where it is yours " +
-      `alone. ${ISSUE_REFERENCE}`,
+      "measurement, value and where it was taken, who wrote it (a person or a session: under " +
+      "the deployment's shared agent token the session the call named, and nobody where the " +
+      "write named only a workload), its state, and author where it is yours alone. " +
+      ISSUE_REFERENCE,
     arguments: (z) => ({
       issue: z.string().describe(ISSUE_REFERENCE),
     }),
@@ -2580,14 +2581,15 @@ export const dispatchToolSpecs = [
       "(dispatch://lens/<uuid>), a finding, a risk or a constraint; a node that does not exist " +
       "and one you may not see are both 404 NOT_FOUND. Each lens comes whole: its " +
       "dispatch://lens/<uuid> address, its kind with the words a person reads for it, the node " +
-      "it stands on, who invoked it (nobody under the deployment's shared agent token, which " +
-      "proves no author), when, its verdict, its state, author where it is yours alone, the " +
-      "lenses that triggered it and the lenses it triggered, its findings in rank order, and its " +
-      "risks each with the checks that prevent it. Where on is itself a lens, the result reads " +
-      "that lens too, so either end of a trigger reads the other. A chain is the lenses joined " +
-      "by triggered_by, walked both ways, in the order they were invoked; it lists at most 50 " +
-      "and names the lens where it stopped. A lens, a finding or a risk you may not see is in " +
-      "no list and no chain. Invoke a lens with dispatch lens.",
+      "it stands on, who invoked it (a person or a session: under the deployment's shared agent " +
+      "token the session the call named, and nobody where the write named only a workload or " +
+      "envoy-dispatch premortem-convert wrote it), when, its verdict, its state, author where " +
+      "it is yours alone, the lenses that triggered it and the lenses it triggered, its " +
+      "findings in rank order, and its risks each with the checks that prevent it. Where on is " +
+      "itself a lens, the result reads that lens too, so either end of a trigger reads the " +
+      "other. A chain is the lenses joined by triggered_by, walked both ways, in the order they " +
+      "were invoked; it lists at most 50 and names the lens where it stopped. A lens, a finding " +
+      "or a risk you may not see is in no list and no chain. Invoke a lens with dispatch lens.",
     arguments: (z) => ({
       on: z
         .string({ min: 1 })
@@ -2634,11 +2636,12 @@ export const dispatchToolSpecs = [
       "Settle one proposed node of an issue: its state becomes settled, written by you. A " +
       "person settles any proposal. An agent settles only a proposal whose author (for a block " +
       "of a document, the writer of the version that first held the block) is the author its " +
-      "credential proves: the same person for a personal token, the same session for a " +
-      "session the secrets broker verified, the same workload for a pod's service-account " +
-      "token. Any other is refused with 403 SETTLE_NOT_PERMITTED; the deployment's shared " +
-      "agent token proves no author, so it settles nothing. A node that is not proposed is " +
-      "refused with 409 NODE_NOT_PROPOSED. dispatch proposed lists the issue's proposed nodes. " +
+      "credential proves: the same person for a personal token or a secrets-broker session " +
+      "that names a person, the same session for a broker session that names none, the same " +
+      "workload for a pod's service-account token. Any other is refused with 403 " +
+      "SETTLE_NOT_PERMITTED; the deployment's shared agent token proves no author, so it " +
+      "settles nothing. A node that is not proposed is refused with 409 NODE_NOT_PROPOSED. " +
+      "dispatch proposed lists the issue's proposed nodes. " +
       `${REASONING_WRITE_RULE} ${ISSUE_REFERENCE}`,
     arguments: (z) => ({
       issue: z.string().describe(ISSUE_REFERENCE),

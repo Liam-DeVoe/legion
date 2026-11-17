@@ -737,10 +737,10 @@ pass H2 "kept the inventory of this build's writes in $work/writes.json"
 take_census H2 h2
 census_zero H2 h2 person
 census_zero H2 h2 session
-! grep -Fq " difference at session $bearer_session:" "$work/census.h2" ||
-  fail H2 "the census reads no difference of the session $bearer_session" \
-    "$(grep -F " difference at session $bearer_session:" "$work/census.h2")"
-pass H2 "the lens on the shared bearer names $bearer_session as its writer through authored_by, and its write stated that session's node, so the session is on both sides of the census"
+# The census's session node side is every session node (graphcensus's session kind), so were
+# $bearer_session not on its row side, its node, which the lens's check above read, would be a node
+# without a row, on which census_zero fails: the session is on both sides.
+pass H2 "the census reads no session node without a row while $bearer_session, the writer the lens on the shared bearer names through authored_by, is a session node, so its row side holds that session too: it is on both sides"
 
 # --- B2: the base build again, as after a rollback ------------------------------------------------
 
@@ -919,17 +919,15 @@ want_value C "the store holds one person node for every spelling of $carol, one 
   "select (select count(*) from graph_nodes where kind = 'person' and lower(btrim(id)) = '$carol') || '|'
           || (select count(*) from graph_nodes where kind = 'person' and id = '$twin') || '|'
           || (select count(*) from graph_nodes where kind = 'session' and id = '$carol_session')"
-for named in "person $carol" "person $twin" "session $carol_session"; do
-  ! grep -Fq " difference at $named:" "$work/census.h3" ||
-    fail C "the census reads no difference of $named" "$(grep -F " difference at $named:" "$work/census.h3")"
-done
-pass C "the census reads the person and the session kinds at zero differences for $carol, her session and $twin: each is a node, and none is a node without a row or a row without a node"
+# The census's person and session node sides are every node of each kind (graphcensus's person and
+# session kinds), so had a row side not held $carol, $twin or $carol_session, whose nodes the check
+# above read, that node would be a node without a row, on which census_zero above fails.
+pass C "the census reads no person or session node without a row while $carol, $twin and her session $carol_session are nodes, so its row sides hold all three too: each is on both sides"
 want_value C "the store still holds the node of the session $bearer_session, the writer the lens on the shared bearer names" 1 \
   "select count(*) from graph_nodes where kind = 'session' and id = '$bearer_session'"
-! grep -Fq " difference at session $bearer_session:" "$work/census.h3" ||
-  fail C "the census reads no difference of the session $bearer_session" \
-    "$(grep -F " difference at session $bearer_session:" "$work/census.h3")"
-pass C "the census reads no difference of the session $bearer_session, which is on both of its sides"
+# As at H2: the census's session node side is every session node, so a session node off its row
+# side would be a node without a row, on which census_zero above fails.
+pass C "the census reads no session node without a row while $bearer_session is a session node, so its row side still holds that session: it is on both sides"
 
 # --- S: the store-only kinds against the inventory of the writes and the migration's seed ---------
 

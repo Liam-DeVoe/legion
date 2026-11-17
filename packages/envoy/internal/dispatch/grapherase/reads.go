@@ -368,12 +368,13 @@ func (e *Erasure) readTuples(ctx context.Context, tx pgx.Tx, read *erasedRead) e
 // toKind, names who wrote or answered that node, into a person or a session: an ask's
 // authored_by, answered_by or decided_by; a block's authored_by or decided_by - a decision's, a
 // reading's, a finding's of a lens; and the authored_by of a run of the command bar, a lens, a
-// risk or a constraint. The census's person and session row sides find the author of a run only
-// through its going_requests row and that of a lens, a risk or a constraint only through that
-// current authored_by (graphcensus' reasoningAuthored), and the erase takes both, so for an
-// author with no other record the erase's own record is the one that names them. A comment's
-// authored_by is not one: no record of an erase holds a comment's author, whom the events of the
-// comment name still (graphcensus' commentWriters).
+// risk or a constraint. The census's person and session row sides find the author of a run
+// through its going_requests row, or through that current authored_by once a process of the
+// release before deleted the row (graphcensus' goneRunsAuthored), and that of a lens, a risk or
+// a constraint only through that current authored_by (graphcensus' reasoningAuthored), and the
+// erase takes both, so for an author with no other record the erase's own record is the one that
+// names them. A comment's authored_by is not one: no record of an erase holds a comment's author,
+// whom the events of the comment name still (graphcensus' commentWriters).
 func writesTheNode(nodeKind, kind, toKind string) bool {
 	if toKind != graphstore.KindPerson && toKind != graphstore.KindSession {
 		return false

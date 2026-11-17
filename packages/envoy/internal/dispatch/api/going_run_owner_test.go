@@ -18,12 +18,12 @@ import (
 // person or a workload, recorded before the mark. A session of another workload, a workload's
 // own token and the shared bearer read none of them, and the shared bearer's empty author is
 // nobody's.
-func TestARunRecordedBeforeTheProofIsItsOwnCredentialsStill(t *testing.T) {
+func TestARunRecordedBeforeTheProvenMarkIsItsOwnCredentialsStill(t *testing.T) {
 	named := func(name string) *string { return &name }
 	workload := named("system:serviceaccount:legion:legion-worker")
 	otherWorkload := named("system:serviceaccount:legion:legion-reviewer")
 	person := named("alice")
-	const asker = "ses_asked_before_the_proof"
+	const asker = "ses_asked_before_the_proven_mark"
 	proved := func(actor model.Actor) model.Actor {
 		actor.Proven = true
 		actor.Credential = &model.Credential{Session: actor.ID}

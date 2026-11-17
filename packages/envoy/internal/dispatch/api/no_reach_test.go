@@ -986,12 +986,13 @@ type crossProjectRequest struct {
 }
 
 // reasoningCrossProject is the request each route of dispatch://INFRA-1950 under /issues/{key}
-// is sent under the other project's issue, about owned's objects. Every route this child adds gets
-// one, so each gets all three of threeBadRequests' requests (Verification's c-no-reach): crossProjectPath
-// answers none of the routes that take only {key} and gives a /nodes/{id} route a bare uuid,
-// which decodeNodeAddress refuses before any issue is compared. Each request here is well formed
-// and names a node or a document that exists - a node by its store address, as /nodes/{id} takes
-// one, or by its dispatch:// address in a body - so the only thing wrong with it is the issue.
+// is sent under the other project's issue, about owned's objects. Every route
+// dispatch://INFRA-1950 adds gets one, so each gets all three of threeBadRequests' requests
+// (Verification's c-no-reach): crossProjectPath answers none of the routes that take only {key}
+// and gives a /nodes/{id} route a bare uuid, which decodeNodeAddress refuses before any issue is
+// compared. Each request here is well formed and names a node or a document that exists - a node
+// by its store address, as /nodes/{id} takes one, or by its dispatch:// address in a body - so
+// the only thing wrong with it is the issue.
 func reasoningCrossProject(owned crossProject) map[string]crossProjectRequest {
 	under := "/api/v1/issues/" + owned.otherIssue
 	node := func(of lensOrConstraint, route string) string { return under + nodePath(of.storeAddress(), route) }

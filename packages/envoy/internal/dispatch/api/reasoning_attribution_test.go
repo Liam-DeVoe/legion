@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"strings"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
@@ -71,30 +70,12 @@ func TestAReasoningNodeNamesTheSessionItsBodyNamesAsItsWriter(t *testing.T) {
 		if node.Visibility != visibility {
 			t.Errorf("%s/%s is at visibility %q, want %q", kind, id, node.Visibility, visibility)
 		}
-		authored, err := graphstore.CurrentOut(ctx, database.Pool, kind, id, []string{graphstore.TupleAuthoredBy})
-		if err != nil {
-			t.Fatalf("read the authored_by of %s/%s: %v", kind, id, err)
-		}
-		ends := make([]string, 0, len(authored))
-		for _, tuple := range authored {
-			ends = append(ends, tuple.ToKind+"/"+tuple.ToID)
-		}
-		want := ""
+		var want []string
 		if session != "" {
-			want = graphstore.KindSession + "/" + session
+			want = []string{graphstore.KindSession + "/" + session}
 		}
-		if strings.Join(ends, " ") != want {
-			t.Errorf("%s/%s, made by %+v, holds authored_by %v, want [%s]", kind, id, node.MadeBy, ends, want)
-		}
+		requireFarEnds(t, database, kind, id, graphstore.TupleAuthoredBy, want...)
 		return node
-	}
-	sessionHeld := func(t *testing.T, session string) bool {
-		t.Helper()
-		_, held, err := graphstore.ReadNode(ctx, database.Pool, graphstore.KindSession, session)
-		if err != nil {
-			t.Fatalf("read the node of session %s: %v", session, err)
-		}
-		return held
 	}
 	readLens := func(t *testing.T, address string, request func(target string) *httptest.ResponseRecorder) *lensRead {
 		t.Helper()
@@ -120,7 +101,7 @@ func TestAReasoningNodeNamesTheSessionItsBodyNamesAsItsWriter(t *testing.T) {
 	}
 
 	t.Run("the shared bearer names the session its body names and proves nobody", func(t *testing.T) {
-		if sessionHeld(t, bearerSession) {
+		if nodeHeld(t, database, graphstore.KindSession, bearerSession) {
 			t.Fatalf("the store holds the session %s before any write names it", bearerSession)
 		}
 		premortem := decodeBody[lensInvoked](t, post(sharedBearer, bearerSession, "/lenses", map[string]any{
@@ -152,7 +133,7 @@ func TestAReasoningNodeNamesTheSessionItsBodyNamesAsItsWriter(t *testing.T) {
 				t.Errorf("%s/%s, made by %+v, proves an author under the one rule, want nobody", written.kind, written.id, node.MadeBy)
 			}
 		}
-		if !sessionHeld(t, bearerSession) {
+		if !nodeHeld(t, database, graphstore.KindSession, bearerSession) {
 			t.Errorf("the shared bearer's writes state authored_by to %s and the store holds no node of it", bearerSession)
 		}
 		for name, request := range map[string]func(string) *httptest.ResponseRecorder{
@@ -176,7 +157,7 @@ func TestAReasoningNodeNamesTheSessionItsBodyNamesAsItsWriter(t *testing.T) {
 	})
 
 	t.Run("a pod names the session its body names and proves its workload", func(t *testing.T) {
-		if sessionHeld(t, podSession) {
+		if nodeHeld(t, database, graphstore.KindSession, podSession) {
 			t.Fatalf("the store holds the session %s before any write names it", podSession)
 		}
 		project := decodeBody[lensInvoked](t, post(podToken, podSession, "/lenses", map[string]any{
@@ -184,7 +165,7 @@ func TestAReasoningNodeNamesTheSessionItsBodyNamesAsItsWriter(t *testing.T) {
 		}))
 		requireAuthor(t, "the pod's project lens", project.Author, podSession)
 		node := requireStored(t, graphstore.KindLens, project.ID, graphstore.VisibilityProject, podSession)
-		if !sessionHeld(t, podSession) {
+		if !nodeHeld(t, database, graphstore.KindSession, podSession) {
 			t.Errorf("the pod's lens states authored_by to %s and the store holds no node of it", podSession)
 		}
 		// The one rule reads the pod's write as its workload's: the session beside it is not

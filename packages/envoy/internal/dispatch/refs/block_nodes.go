@@ -424,7 +424,7 @@ type heldLink struct{ kind, toKind, toID string }
 // pointer of each `block[]` attribute the store's type nodes declare (BlockRefKindsSQL), and a
 // decision's ties, its decided_by, from_ask and shaped (typedKinds, TypedFacts.pairs). It is the
 // census's own reading of the tuples a block_refs row states (graphcensus's DigestedTuple).
-var heldLinkKinds = `(t.kind in (` + BlockRefKindsSQL + `) or t.kind in ('` + strings.Join(typedKinds, `', '`) + `'))`
+var heldLinkKinds = `(t.kind in (` + BlockRefKindsSQL + `) or t.kind in (` + quotedKinds(typedKinds) + `))`
 
 // heldDocumentBlocks is what the store states now of the blocks of the document refKey names, by
 // block id: each block node that states itself a member of the document (an in_document tuple

@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"maps"
 	"slices"
 	"testing"
 	"time"
@@ -76,9 +77,6 @@ var seededLensKinds = []string{
 	"trade-off", "reversibility", "second-order", "conway", "botec",
 }
 
-// sourcedLensKinds is every kind seededLensSources holds a row for: the ten, and chestertons-fence.
-var sourcedLensKinds = append(slices.Clone(seededLensKinds), "chestertons-fence")
-
 // TestLensKindCatalogueIsSeededWithItsSources is c-lens-catalogue
 // (dispatch://INFRA-1950/spec#b-r-lens-catalogue). The store a test opens is migrated, so it holds
 // the seed; the catalogue is read back through GET /api/v1/schema/blocks. At least ten lens kinds
@@ -109,7 +107,7 @@ func TestLensKindCatalogueIsSeededWithItsSources(t *testing.T) {
 			t.Errorf("the lens kind %s carries %d constrained_by tuples to a constraint node, want one: its source is missing", kind.ID, len(kind.Sources))
 		}
 	}
-	for _, id := range sourcedLensKinds {
+	for _, id := range slices.Sorted(maps.Keys(seededLensSources)) {
 		kind, held := kinds[id]
 		if !held {
 			t.Errorf("the catalogue lacks the lens kind %s", id)

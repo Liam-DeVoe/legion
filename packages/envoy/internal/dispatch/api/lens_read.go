@@ -45,18 +45,18 @@ const lensChainDepth = 50
 // lensStandsOnKinds are the kinds of node a lens may stand on, as decodeNodeAddress names them:
 // the kinds of a node under an issue, which is where P9 (dispatch://INFRA-1950/artifact/plan-md)
 // lets a lens be invoked - the issue, a document and its blocks, an ask, a comment or a message
-// and its blocks, and the lenses, findings, risks and constraints under those - as the arms of
-// refs' backlink counts that count a lens on a node (lensStandsOn) name them. A node of any other
+// and its blocks, and the lenses, findings, risks and constraints under those, the kinds that
+// stand on a node by their part_of tuple alone (refs.StandingKinds) - as the arms of refs'
+// backlink counts that count a lens on a node (lensStandsOn) name them. A node of any other
 // kind holds no lens, and the read answers it the 404 a node nobody holds answers before it reads
 // the store: a person, a session, a role or a page is a node the store holds and every reader may
 // see, so answering one 200 would tell any caller whether that person exists, which the person
 // page keeps from them (D12b).
-var lensStandsOnKinds = []string{
+var lensStandsOnKinds = append([]string{
 	graphstore.KindIssue, graphstore.KindArtifact, refs.BlockNodeKind,
 	string(refs.ItemAsk), refs.ItemAsk.BlockKind(), string(refs.ItemComment), refs.ItemComment.BlockKind(),
 	string(refs.ItemMessage), refs.ItemMessage.BlockKind(),
-	graphstore.KindLens, graphstore.KindLensBlock, graphstore.KindRisk, graphstore.KindConstraint,
-}
+}, refs.StandingKinds()...)
 
 // lensesQuery is GET /api/v1/lenses's query: the one node whose lenses are read.
 type lensesQuery struct {

@@ -21,13 +21,17 @@ body: |-
   /api/v1/issues/{key}/proposed` lists the proposed nodes of an issue, and
   `POST /api/v1/issues/{key}/nodes/{id}/settle` lets a person or the node's author settle a proposed
   node. A requirement's coverage counts no proposed check or plan task.
+  `GET /api/v1/issues/{key}/decisions` lists a decision, an ask and a reading at every state but
+  gone, and each entry and each reading carries its node's `state`.
 
   A run of the command bar is now an interaction node, kept with its frames past its deadline and
   read only by the credential that asked it, where the release before deleted a run after one hour.
   A write sent with the `Dispatch-Going-Run` header adds one `changed_by_run` tuple from each node
-  that it created or changed to that run, an issue PATCH included. The sweep ends the overdue runs
-  whose deadline passed in the last day, and one pass at each boot ends every older overdue run.
-  `envoy-dispatch erase` removes a run with its frames.
+  that it created or changed to that run, an issue PATCH included. A removed document's node is
+  marked gone and keeps no `changed_by_run` tuple, so a document made again under the same title
+  is not listed under the old run. The sweep ends the overdue runs whose deadline passed in the
+  last day, and one pass at each boot ends every older overdue run. `envoy-dispatch erase` removes
+  a run with its frames.
 
   `envoy-dispatch premortem-convert` and
   `POST /api/v1/issues/{key}/artifacts/{slug}/premortem-convert` turn a pre-mortem document into a

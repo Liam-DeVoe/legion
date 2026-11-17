@@ -42,9 +42,10 @@ func SameAuthor(writer, reader model.Actor) bool {
 // R19 makes an author the person a credential proved, so two credentials of one person - her
 // cookie, her personal token, a session the broker verified as hers - are one author, and a node
 // any of them wrote is hers under each of them. Kind is "person", with the canonical login as the
-// id; the actor's own kind, for a credential that proves its own id and no person, which is a
-// session the broker proved and owned by nobody; or "service", with the workload a
-// service-account token proved.
+// id; the actor's own kind, for a credential that proves its own id and no person: a session the
+// broker proved and owned by nobody, or an actor of any other kind that carries an id, such as the
+// server's own {system, premortem-convert} (api's PremortemConverter); or "service", with the
+// workload a service-account token proved.
 //
 // Only a person joins credentials, and a workload the sessions a pod names. A session is its own
 // author, by its own id, only where the record says its credential proved it (model.Actor's

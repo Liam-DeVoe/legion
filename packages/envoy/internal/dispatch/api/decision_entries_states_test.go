@@ -14,13 +14,13 @@ import (
 )
 
 // R12 of dispatch://INFRA-1950: no read takes live to mean present, and R5: a proposed node is
-// drawn wherever the node is drawn. The Decisions read holds a decision, an ask and a reading at
-// every state but gone.
+// drawn wherever the node is drawn, and each read of a node answers its node state. The Decisions
+// read holds a decision, an ask and a reading at every state but gone, each answering its state.
 //
 // The agent's choices.md holds a decision, d1, with a reading, g1, under it; alice's asks.md holds
 // an ask bob answers. With her cookie alice writes each of the three proposed, settles each, and
 // writes each overtaken, and after each step GET /api/v1/issues/{key}/decisions still lists the
-// decision with its reading and the ask.
+// decision with its reading and the ask, and each of the three answers the state that step wrote.
 //
 // A decision a version above the deferral bound drops is gone whatever state it held: the agent's
 // drops.md holds d1 and d2, indexed by its own write; alice writes d2 proposed; the agent's next
@@ -42,16 +42,23 @@ func TestTheDecisionsReadListsADecisionAnAskAndAReadingAtEveryStateButGone(t *te
 	d1, g1 := choices.address("d1"), choices.address("g1")
 	decisionNode, askNode := refs.BlockNodeKind+":"+d1, graphstore.KindAsk+":"+askID
 
-	requireListed := func(when string) {
+	requireListed := func(when, state string) {
 		t.Helper()
 		entries := readEntries(t, handler, issue.Key)
 		decision := requireEntry(t, entries, when+": the decision", decisionNode)
-		requireEntry(t, entries, when+": the ask", askNode)
-		if readings := readingsOf(decision); len(readings) != 1 || !strings.HasPrefix(readings[0], g1+"<-") {
+		ask := requireEntry(t, entries, when+": the ask", askNode)
+		readings := readingsOf(decision)
+		if len(readings) != 1 || !strings.HasPrefix(readings[0], g1+"<-") {
 			t.Errorf("%s: the decision answers the readings %v, want g1, %s", when, readings, g1)
 		}
+		if decision.State != state || ask.State != state {
+			t.Errorf("%s: the decision answers the state %q and the ask %q, want %q", when, decision.State, ask.State, state)
+		}
+		if len(decision.Readings) == 1 && decision.Readings[0].State != state {
+			t.Errorf("%s: the reading g1 answers the state %q, want %q", when, decision.Readings[0].State, state)
+		}
 	}
-	requireListed("all three live")
+	requireListed("all three live", graphstore.StateLive)
 
 	// Each node by the store address the state route takes: a block's own node id, and the ask's
 	// kind and id.
@@ -61,20 +68,20 @@ func TestTheDecisionsReadListsADecisionAnAskAndAReadingAtEveryStateButGone(t *te
 			t.Fatalf("write proposed on %s: status=%d body=%s", address, response.Code, response.Body.String())
 		}
 	}
-	requireListed("all three proposed")
+	requireListed("all three proposed", graphstore.StateProposed)
 	for _, address := range addresses {
 		response := dispatchRequest(t, handler, http.MethodPost, statePath(issue.Key, address, "settle"), nil, "alice")
 		if response.Code != http.StatusOK {
 			t.Fatalf("settle %s: status=%d body=%s", address, response.Code, response.Body.String())
 		}
 	}
-	requireListed("all three settled")
+	requireListed("all three settled", graphstore.StateSettled)
 	for _, address := range addresses {
 		if response := writeStateAs(t, handler, issue.Key, address, graphstore.StateOvertaken, "alice"); response.Code != http.StatusOK {
 			t.Fatalf("write overtaken on %s: status=%d body=%s", address, response.Code, response.Body.String())
 		}
 	}
-	requireListed("all three overtaken")
+	requireListed("all three overtaken", graphstore.StateOvertaken)
 
 	// A proposed decision a deferred version drops.
 	agentUploadAs(t, handler, issue.Key, "drops.md", ":::decision{#d1}\nKeep one.\n:::\n\n:::decision{#d2}\nDrop one.\n:::\n", nil)

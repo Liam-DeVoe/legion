@@ -568,8 +568,13 @@ var indexPasses = map[string]string{
 	"graphcensus/backfill.go#writeGoneRun":   "the interaction node whose going_requests row an earlier build deleted, and that the row is gone",
 	// A document's retirement states its artifact node gone, keeping every other fact of the
 	// node, and appends that fact under the document.retired event it appends (graphstore.Caused).
-	"docs/retire.go#RetireDocument":   "the document the caller retires and the document.retired event it appended",
-	"docs/retire.go#writeRetiredNode": "the retired document's row and the node the store holds of it",
+	// A removal of an untouched document states its node gone through the same writer, with each
+	// changed_by_run the node states now retracted - the store's own relations, which no
+	// projection holds, retracted because the document they name has gone - and appends those
+	// facts under the artifact.removed event it appends.
+	"docs/retire.go#RetireDocument":          "the document the caller retires and the document.retired event it appended",
+	"docs/retire.go#writeRetiredNode":        "the retired or removed document's row, the node the store holds of it and the facts its caller states beside it",
+	"api/artifact_removal.go#removeArtifact": "the document the removal request names, the changed_by_run its node states, and the artifact.removed event it appended",
 	// A person's Keep of an agent's decision states its kept_by and kept_text_sum on the decision's
 	// node and writes their projection row, decision_keeps, from the request and the decision the
 	// person read. It reads the kept_by the node holds only to retract one naming another person,

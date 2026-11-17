@@ -84,7 +84,11 @@ func RetireDocument(ctx context.Context, tx pgx.Tx, artifactID string, actor mod
 	if retired {
 		return Retirement{}, ErrDocumentRetired
 	}
-	node, err := writeRetiredNode(ctx, tx, refKey, owner.Project, session, createdBy, createdAt)
+	var creator model.Actor
+	if err := json.Unmarshal(createdBy, &creator); err != nil {
+		return Retirement{}, fmt.Errorf("decode the creator of %s: %w", refKey, err)
+	}
+	node, err := writeRetiredNode(ctx, tx, refKey, owner.Project, session, creator, createdAt, nil)
 	if err != nil {
 		return Retirement{}, err
 	}
@@ -123,11 +127,12 @@ func documentRetired(ctx context.Context, q Queryer, room string) (bool, error) 
 }
 
 // writeRetiredNode writes the retired document's artifact node gone, held for the event that
-// causes it. The node keeps every other fact the store holds of it - its supertag, its visibility,
-// its project and who made it - and a document whose node no writer wrote yet takes the node its
-// upload would have written, made by its creator when it was created. A ref_key past the store's
-// address bound is no node, as every writer of the store leaves such an address out.
-func writeRetiredNode(ctx context.Context, tx pgx.Tx, refKey, project string, session *string, createdBy []byte, createdAt time.Time) (graphstore.Uncaused, error) {
+// causes it, with stated, the caller's own facts of the same write (graphstore.WriteUncaused). The
+// node keeps every other fact the store holds of it - its supertag, its visibility, its project
+// and who made it - and a document whose node no writer wrote yet takes the node its upload would
+// have written, made by creator when it was created. A ref_key past the store's address bound is
+// no node, as every writer of the store leaves such an address out.
+func writeRetiredNode(ctx context.Context, tx pgx.Tx, refKey, project string, session *string, creator model.Actor, createdAt time.Time, stated []graphstore.Tuple) (graphstore.Uncaused, error) {
 	if !graphstore.AddressFits(refKey) {
 		return graphstore.Uncaused{}, nil
 	}
@@ -136,10 +141,6 @@ func writeRetiredNode(ctx context.Context, tx pgx.Tx, refKey, project string, se
 		return graphstore.Uncaused{}, err
 	}
 	if !held {
-		var creator model.Actor
-		if err := json.Unmarshal(createdBy, &creator); err != nil {
-			return graphstore.Uncaused{}, fmt.Errorf("decode the creator of %s: %w", refKey, err)
-		}
 		conversation := ""
 		if session != nil {
 			conversation = *session
@@ -148,7 +149,42 @@ func writeRetiredNode(ctx context.Context, tx pgx.Tx, refKey, project string, se
 	}
 	node.State = graphstore.StateGone
 	node.SourceEvent = graphstore.NoEvent
-	return graphstore.WriteUncaused(ctx, tx, []graphstore.Node{node}, nil)
+	return graphstore.WriteUncaused(ctx, tx, []graphstore.Node{node}, stated)
+}
+
+// WriteRemovedNode states the node of document gone inside tx, the transaction that removes the
+// document's row (api's removeArtifact), as a retirement states a retired document's node
+// (writeRetiredNode), and retracts, as actor at at, each changed_by_run the node states now
+// (graphstore.TupleChangedByRun). The write is held for the artifact.removed event the caller
+// appends, and the caller hands it to graphstore.Caused once that event is appended.
+//
+// A retired document keeps its row, its slug and so its ref_key, so no later document takes its
+// address. A removed one frees its slug, and a document made again under the same title takes the
+// same ref_key, which is the id of the same node: a create restates the node and brings it back
+// live (graphstore.ArtifactNode), and a changed_by_run left asserted on it would name the new
+// document changed by the run that made the old one, which refs' edgeFrom reads through the new
+// document's uuid. Gone, the node is counted under no run (refs' liveVisibleNodeOf), as the run's
+// list leaves out a document whose row has gone.
+//
+// The caller holds the document's owner row, which every writer that marks the document's node
+// changed takes first, so no changed_by_run of the node lands between the read here and the
+// retraction.
+func WriteRemovedNode(ctx context.Context, tx pgx.Tx, document model.Artifact, actor model.Actor, at time.Time) (graphstore.Uncaused, error) {
+	if !graphstore.AddressFits(document.RefKey) {
+		return graphstore.Uncaused{}, nil
+	}
+	marks, err := graphstore.CurrentOut(ctx, tx, graphstore.KindArtifact, document.RefKey, []string{graphstore.TupleChangedByRun})
+	if err != nil {
+		return graphstore.Uncaused{}, err
+	}
+	retractions := make([]graphstore.Tuple, len(marks))
+	for index, mark := range marks {
+		retractions[index] = graphstore.Tuple{
+			FromKind: mark.FromKind, FromID: mark.FromID, Kind: mark.Kind, ToKind: mark.ToKind, ToID: mark.ToID,
+			At: at, Who: actor, Asserted: false,
+		}
+	}
+	return writeRetiredNode(ctx, tx, document.RefKey, document.Project, document.SessionID, document.CreatedBy, document.CreatedAt, retractions)
 }
 
 // standingApproval is the approval of artifactID that stands, the newest review where it approves

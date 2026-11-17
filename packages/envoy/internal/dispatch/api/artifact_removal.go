@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
@@ -21,7 +23,8 @@ import (
 // the other, and then the document's room (docs.LockDocumentRoom), which is the lock a durable
 // write of the document takes. In that order, which is the one docs/persistence.go states: the
 // owner row first, then the room, as a settlement takes them, and a room's own writers take no
-// owner row, so this joins no lock cycle.
+// owner row, so this joins no lock cycle. After both it writes the document's node, whose every
+// writer takes the owner's row first (the store's order, written on markInboxReadThreads).
 //
 // Four refusals read the artifact row alone: the kind, the role, the issue's spec and a
 // project's document (artifactRowIsUntouched). The removal answers them from the row
@@ -36,12 +39,17 @@ import (
 // document. An append of another process either committed before the room's lock was taken,
 // which refuses the removal, or waits for this transaction and then meets the row that has gone.
 //
-// The rows go in one transaction: first the rows the artifact's own delete would leave behind or
-// be refused by (artifactRemovalClears) and the reference rows package refs keeps for the
-// document (refs.ForgetDocument), then the artifact row, which cascades the keys that do
-// cascade. The artifact.removed event is appended after them and outlives the document: an issue
-// document's events are the issue's (events_one_owner, ownerForArtifact), so that row carries no
-// artifact id.
+// The rows go in one transaction: first the document's node, stated gone with each
+// changed_by_run it states now retracted (docs.WriteRemovedNode), as a retirement states a
+// retired document's node; then the rows the artifact's own delete would leave behind or be
+// refused by (artifactRemovalClears) and the reference rows package refs keeps for the document
+// (refs.ForgetDocument); then the artifact row, which cascades the keys that do cascade. The
+// artifact.removed event is appended after them and outlives the document: an issue document's
+// events are the issue's (events_one_owner, ownerForArtifact), so that row carries no artifact
+// id. What the node write states is appended under that event (graphstore.Caused). A document
+// made again under the same title takes the removed one's ref_key, the id of the same node, and
+// so names no run as having changed it but its own, and a run counts no document that has gone,
+// as it lists none.
 //
 // The room is closed on every process that holds one, through the room-sync notification this
 // transaction sends before it commits (docs.AnnounceDocumentRemoved): a room left open on
@@ -84,6 +92,14 @@ func (s *server) removeArtifact(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, refusal)
 		return
 	}
+	// The document's node, stated gone and with each changed_by_run it states now retracted, in the
+	// store's order: the node row before the document's row goes, and its facts under
+	// artifact.removed below (docs.WriteRemovedNode, graphstore.Caused).
+	node, err := docs.WriteRemovedNode(r.Context(), tx, artifact, actor, time.Now().UTC())
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	for _, clear := range artifactRemovalClears(artifact) {
 		if _, err := tx.Exec(r.Context(), clear.statement, clear.args...); err != nil {
 			s.writeHandlerError(w, fmt.Errorf("clear the %s of the removed document: %w", clear.what, err))
@@ -112,6 +128,10 @@ func (s *server) removeArtifact(w http.ResponseWriter, r *http.Request) {
 	))
 	if err != nil {
 		s.writeHandlerError(w, err)
+		return
+	}
+	if err := graphstore.Caused(r.Context(), tx, node, event.ID); err != nil {
+		s.writeHandlerError(w, fmt.Errorf("state the removed document's node gone: %w", err))
 		return
 	}
 	if err := tx.Commit(r.Context()); err != nil {

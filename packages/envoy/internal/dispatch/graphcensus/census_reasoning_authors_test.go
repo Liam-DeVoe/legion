@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphstoretest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -75,45 +77,24 @@ func TestTheCensusHoldsEachReasoningNodesAuthorToANode(t *testing.T) {
 			Visibility: written.visibility, State: graphstore.StateLive, Project: "CORE",
 			MadeAt: at, MadeBy: written.madeBy, SourceEvent: graphstore.NoEvent,
 		}
-		var nodes []graphstore.Node
-		if written.visibility != graphstore.VisibilityAuthor {
-			nodes = append(nodes, node)
-		}
-		tuples := make([]graphstore.Tuple, 0, len(written.tuples))
-		for _, tuple := range written.tuples {
-			tuple.FromKind, tuple.FromID = written.kind, written.id
-			tuple.At, tuple.Who, tuple.SourceEvent, tuple.Asserted = at, written.madeBy, graphstore.NoEvent, true
-			tuples = append(tuples, tuple)
-		}
-		authors, facts, named := graphstore.AuthorFacts(written.kind, written.id, written.madeBy, at, graphstore.NoEvent)
-		if !named {
-			t.Fatalf("%s/%s's writer %+v names nobody", written.kind, written.id, written.madeBy)
-		}
-		for _, author := range authors {
-			author.Restates = true
-			nodes = append(nodes, author)
-		}
-		tuples = append(tuples, facts...)
-		tx, err := database.Pool.Begin(ctx)
+		authors, tuples, err := graphstoretest.AuthoredFacts(node, written.tuples)
 		if err != nil {
-			t.Fatalf("begin the write of %s/%s: %v", written.kind, written.id, err)
+			t.Fatalf("state the author of %s/%s: %v", written.kind, written.id, err)
 		}
-		// A finding reserved for its author is a node of a kind the store takes no such node of
-		// until its registry entry is flagged (graphstore.ErrVisibilityNotAdmitted), so its row and
-		// its base attributes are seeded as the reasoning write would store them, and the rest of
-		// what that write states goes through the store's writer.
-		if written.visibility == graphstore.VisibilityAuthor {
-			if err := graphstoretest.SeedAuthorOnly(ctx, tx, node); err != nil {
-				_ = tx.Rollback(ctx)
-				t.Fatalf("seed the author-only %s/%s: %v", written.kind, written.id, err)
+		if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
+			// A finding reserved for its author is a node of a kind the store takes no such node
+			// of until its registry entry is flagged (graphstore.ErrVisibilityNotAdmitted), so its
+			// row and its base attributes are seeded as the reasoning write would store them, and
+			// the rest of what that write states goes through the store's writer.
+			if written.visibility == graphstore.VisibilityAuthor {
+				if err := graphstoretest.SeedAuthorOnly(ctx, tx, node); err != nil {
+					return err
+				}
+				return graphstore.Write(ctx, tx, authors, tuples)
 			}
-		}
-		if err := graphstore.Write(ctx, tx, nodes, tuples); err != nil {
-			_ = tx.Rollback(ctx)
+			return graphstore.Write(ctx, tx, append([]graphstore.Node{node}, authors...), tuples)
+		}); err != nil {
 			t.Fatalf("write %s/%s: %v", written.kind, written.id, err)
-		}
-		if err := tx.Commit(ctx); err != nil {
-			t.Fatalf("commit the write of %s/%s: %v", written.kind, written.id, err)
 		}
 	}
 	for _, session := range []string{claimed, podSession} {

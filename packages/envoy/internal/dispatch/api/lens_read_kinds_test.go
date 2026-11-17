@@ -6,12 +6,10 @@ import (
 	"net/url"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
-	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
 // TestALensReadOnAKindNoLensStandsOnAnswersWhatANodeNobodyHoldsAnswers holds the lens read to
@@ -26,11 +24,12 @@ import (
 func TestALensReadOnAKindNoLensStandsOnAnswersWhatANodeNobodyHoldsAnswers(t *testing.T) {
 	rig := newReasoningRig(t)
 	ctx := context.Background()
-	// Alice's lens writes her person node (writeReasoningNodes, graphstore.AuthorFacts).
+	// Alice's lens writes her person node (writeReasoningNodes, graphstore.AuthorFacts), which the
+	// agents' write then finds there.
 	rig.invoke(rig.spec, "trade-off", "alice", nil)
 	const session, role = "ses_lens_read_kinds_01", "lens-read-kinds"
 	page := graphstore.RolePageID(role)
-	seedLensReadAgents(t, rig, session, role, page)
+	writeAgentNodes(t, rig.database, "alice", role, session)
 	for _, held := range []struct{ kind, id string }{
 		{graphstore.KindPerson, "alice"}, {graphstore.KindSession, session},
 		{graphstore.KindRole, role}, {graphstore.KindPage, page},
@@ -81,33 +80,5 @@ func TestALensReadOnAKindNoLensStandsOnAnswersWhatANodeNobodyHoldsAnswers(t *tes
 	}
 	if read := rig.lenses("dispatch://"+rig.issue, "bob"); read.On.Address != "dispatch://"+rig.issue {
 		t.Errorf("bob's read on the issue answers the node %+v, want the issue", read.On)
-	}
-}
-
-// seedLensReadAgents writes a session, a role and its page as nodes, as the store writer writes
-// them, with the page's part_of into the role and the session's part_of into the role it claimed.
-func seedLensReadAgents(t *testing.T, rig reasoningRig, session, role, page string) {
-	t.Helper()
-	ctx := context.Background()
-	tx, err := rig.database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin the agents' write: %v", err)
-	}
-	defer tx.Rollback(ctx)
-	now := time.Now().UTC()
-	who := model.Actor{Kind: "session", ID: session}
-	partOf := func(kind, id string) graphstore.Tuple {
-		return graphstore.Tuple{FromKind: kind, FromID: id, Kind: graphstore.TuplePartOf, ToKind: graphstore.KindRole, ToID: role,
-			At: now, Who: who, SourceEvent: graphstore.NoEvent, Asserted: true}
-	}
-	if err := graphstore.Write(ctx, tx, []graphstore.Node{
-		graphstore.PageNode(page, who, now, graphstore.NoEvent),
-		graphstore.RoleNode(role, who, now, graphstore.NoEvent),
-		graphstore.SessionNode(session, who, now, graphstore.NoEvent),
-	}, []graphstore.Tuple{partOf(graphstore.KindPage, page), partOf(graphstore.KindSession, session)}); err != nil {
-		t.Fatalf("write the agents: %v", err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		t.Fatalf("commit the agents' write: %v", err)
 	}
 }

@@ -55,10 +55,12 @@ function authorOnlyNote(visibility: string): string {
   return visibility === "author" ? ", for you alone" : "";
 }
 
-/** Who wrote a node, as a line about it names them: nobody under a credential that proves none. */
+/** Who wrote a node, as a line about it names them: the person or the session its authored_by
+ *  tuple names, and nobody where the write named neither, as a pod's token alone names only its
+ *  workload. */
 function authorText(author: ReasoningAuthor | null): string {
   return author === null
-    ? "nobody (the credential proves no author)"
+    ? "nobody (the write named no person or session)"
     : `${author.kind} ${author.id}`;
 }
 

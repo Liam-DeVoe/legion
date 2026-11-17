@@ -119,8 +119,7 @@ type Actor struct {
 	// answer it gives the open approval request name the person whose review it carries, proven
 	// when that review's credential proved them, even when the request that wrote the version
 	// proved nobody. The author rule reads it (graphstore's provedAuthor and AuthorIsSQL): a
-	// session is its own author only where its actor is Proven, whether or not its token names a
-	// person.
+	// session that names no person is its own author only where its actor is Proven.
 	Proven bool `json:"proven,omitempty"`
 	// Credential is what authenticated the request: the OAuth scopes it holds and how it names
 	// the agent behind it. It is a fact of the request and never of the record, so it is not

@@ -193,7 +193,7 @@ func TestARunIsReadByTheCredentialThatAskedItWhateverItsRecordProves(t *testing.
 	at := time.Date(2026, 11, 17, 0, 0, 0, 0, time.UTC)
 	named := func(name string) *string { return &name }
 	workload := named("system:serviceaccount:legion:legion-worker")
-	const asker = "ses_asked_before_the_proof"
+	const asker = "ses_asked_before_the_proven_mark"
 
 	oldShape := model.Actor{Kind: "session", ID: asker}
 	bearer := model.Actor{}

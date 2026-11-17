@@ -576,14 +576,6 @@ func TestATokenThatProvesNoIDOfItsOwnSettlesWhatItWrote(t *testing.T) {
 		}
 		return address
 	}
-	stateOf := func(address string) string {
-		t.Helper()
-		node, held, err := graphstore.ReadNode(ctx, database.Pool, graphstore.KindLens, strings.TrimPrefix(address, graphstore.KindLens+"/"))
-		if err != nil || !held {
-			t.Fatalf("read %s: held %t, %v", address, held, err)
-		}
-		return node.State
-	}
 	refused := func(as writer, address, whose string) {
 		t.Helper()
 		response := post(as, nodePath(address, "settle"), map[string]any{})
@@ -591,7 +583,7 @@ func TestATokenThatProvesNoIDOfItsOwnSettlesWhatItWrote(t *testing.T) {
 		if !strings.Contains(refusal.Error, address) {
 			t.Fatalf("%s's settle of %s is refused %q, which does not name the node %s", as.name, whose, refusal.Error, address)
 		}
-		if state := stateOf(address); state != graphstore.StateProposed {
+		if state := lensStateOf(t, database, address); state != graphstore.StateProposed {
 			t.Fatalf("%s's refused settle left %s at %s, want proposed", as.name, whose, state)
 		}
 	}
@@ -602,7 +594,7 @@ func TestATokenThatProvesNoIDOfItsOwnSettlesWhatItWrote(t *testing.T) {
 		if response.Code != http.StatusOK {
 			t.Fatalf("%s's settle of %s: status=%d body=%s, want 200", as.name, whose, response.Code, response.Body.String())
 		}
-		if state := stateOf(address); state != graphstore.StateSettled {
+		if state := lensStateOf(t, database, address); state != graphstore.StateSettled {
 			t.Fatalf("%s's settle left %s at %s, want settled", as.name, whose, state)
 		}
 	}
@@ -610,15 +602,10 @@ func TestATokenThatProvesNoIDOfItsOwnSettlesWhatItWrote(t *testing.T) {
 	// the same request answers for a lens nobody wrote, once the address is substituted.
 	unseen := func(as writer, address, whose string, request func(as writer, address string) *httptest.ResponseRecorder) {
 		t.Helper()
-		nobody := graphstore.KindLens + "/" + uuid.NewString()
-		seen, unwritten := request(as, address), request(as, nobody)
-		t.Logf("%s on %s: status=%d body=%s", as.name, whose, seen.Code, seen.Body.String())
-		if seen.Code != http.StatusNotFound || unwritten.Code != http.StatusNotFound ||
-			!bytes.Equal(seen.Body.Bytes(), bytes.ReplaceAll(unwritten.Body.Bytes(), []byte(nobody), []byte(address))) {
-			t.Fatalf("%s on %s answers %d %s and on a lens nobody wrote %d %s, want one 404 once the id is substituted",
-				as.name, whose, seen.Code, seen.Body.String(), unwritten.Code, unwritten.Body.String())
-		}
-		if state := stateOf(address); state != graphstore.StateProposed {
+		requireAnswersAsALensNobodyWrote(t, as.name+" on "+whose, address, func(address string) *httptest.ResponseRecorder {
+			return request(as, address)
+		})
+		if state := lensStateOf(t, database, address); state != graphstore.StateProposed {
 			t.Fatalf("%s's request left %s at %s, want proposed", as.name, whose, state)
 		}
 	}
@@ -749,14 +736,6 @@ func TestABrokerSessionOfAWorkloadIsNotThatWorkload(t *testing.T) {
 	if marked := pod.send(http.MethodPost, statePath(issue, lens, "state"), map[string]any{"state": graphstore.StateProposed}); marked.Code != http.StatusOK {
 		t.Fatalf("the pod marks its lens proposed: status=%d body=%s", marked.Code, marked.Body.String())
 	}
-	stateOf := func() string {
-		t.Helper()
-		node, held, err := graphstore.ReadNode(ctx, rig.database.Pool, graphstore.KindLens, lensID)
-		if err != nil || !held {
-			t.Fatalf("read %s: held %t, %v", lens, held, err)
-		}
-		return node.State
-	}
 	read := func(as caller, address string) *httptest.ResponseRecorder {
 		return as.send(http.MethodGet, "/api/v1/lenses?on="+url.QueryEscape(address), nil)
 	}
@@ -768,25 +747,47 @@ func TestABrokerSessionOfAWorkloadIsNotThatWorkload(t *testing.T) {
 		t.Fatalf("the pod reads its own lens as %+v, want %s at visibility author", answered, lens)
 	}
 	for _, as := range sessions {
-		nobody := graphstore.KindLens + "/" + uuid.NewString()
-		seen, unwritten := read(as, lens), read(as, nobody)
-		t.Logf("%s's read of the pod's lens: status=%d body=%s", as.name, seen.Code, seen.Body.String())
-		if seen.Code != http.StatusNotFound || unwritten.Code != http.StatusNotFound ||
-			!bytes.Equal(seen.Body.Bytes(), bytes.ReplaceAll(unwritten.Body.Bytes(), []byte(nobody), []byte(lens))) {
-			t.Fatalf("%s reads the pod's lens %d %s and a lens nobody wrote %d %s, want one 404 once the id is substituted",
-				as.name, seen.Code, seen.Body.String(), unwritten.Code, unwritten.Body.String())
-		}
+		requireAnswersAsALensNobodyWrote(t, as.name+"'s read of the pod's lens", lens, func(address string) *httptest.ResponseRecorder {
+			return read(as, address)
+		})
 		requireRefused(t, as.name+"'s settle of the pod's lens", as.send(http.MethodPost, statePath(issue, lens, "settle"), map[string]any{}),
 			http.StatusForbidden, contracts.DispatchSignInRequired, "no person")
-		if state := stateOf(); state != graphstore.StateProposed {
+		if state := lensStateOf(t, rig.database, lens); state != graphstore.StateProposed {
 			t.Fatalf("%s's refused settle left the pod's lens at %s, want proposed", as.name, state)
 		}
 	}
 	if settled := pod.send(http.MethodPost, statePath(issue, lens, "settle"), map[string]any{}); settled.Code != http.StatusOK {
 		t.Fatalf("the pod's settle of its own lens: status=%d body=%s, want 200", settled.Code, settled.Body.String())
 	}
-	if state := stateOf(); state != graphstore.StateSettled {
+	if state := lensStateOf(t, rig.database, lens); state != graphstore.StateSettled {
 		t.Fatalf("the pod's settle left its own lens at %s, want settled", state)
+	}
+}
+
+// lensStateOf is the node state the store holds of the lens whose store address, lens/<uuid>,
+// is address.
+func lensStateOf(t *testing.T, database *store.Store, address string) string {
+	t.Helper()
+	node, held, err := graphstore.ReadNode(context.Background(), database.Pool, graphstore.KindLens,
+		strings.TrimPrefix(address, graphstore.KindLens+"/"))
+	if err != nil || !held {
+		t.Fatalf("read %s: held %t, %v", address, held, err)
+	}
+	return node.State
+}
+
+// requireAnswersAsALensNobodyWrote holds what request answers for the lens address to the 404 the
+// same request answers for a lens nobody wrote, byte for byte once that lens's address is
+// substituted: a node the caller may not see is told by nothing from one that does not exist.
+func requireAnswersAsALensNobodyWrote(t *testing.T, what, address string, request func(address string) *httptest.ResponseRecorder) {
+	t.Helper()
+	nobody := graphstore.KindLens + "/" + uuid.NewString()
+	seen, unwritten := request(address), request(nobody)
+	t.Logf("%s: status=%d body=%s", what, seen.Code, seen.Body.String())
+	if seen.Code != http.StatusNotFound || unwritten.Code != http.StatusNotFound ||
+		!bytes.Equal(seen.Body.Bytes(), bytes.ReplaceAll(unwritten.Body.Bytes(), []byte(nobody), []byte(address))) {
+		t.Fatalf("%s answers %d %s and on a lens nobody wrote %d %s, want one 404 once the id is substituted",
+			what, seen.Code, seen.Body.String(), unwritten.Code, unwritten.Body.String())
 	}
 }
 
