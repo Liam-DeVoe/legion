@@ -54,7 +54,7 @@ const checkResultReadingRunes = 80
 // order.
 const checkResultColumns = `id::text, issue_key, check_issue_key, check_artifact_id::text, check_block_id,
 	check_version, check_sha256, role, surface, run, observed, commit_sha, negative_control,
-	failed, skipped, excluded, verdict, screenshots, session, actor, created_at, event_seq`
+	failed, skipped, excluded, verdict, screenshots, session, actor, created_at, event_seq, commit_repo`
 
 // resolvedCheck is one `check` block a result names: where it lives, the version its words last
 // changed in and their digest as document_blocks holds them, and the attributes the write judges
@@ -181,6 +181,17 @@ func (s *server) recordCheckResult(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	// The row keeps commitRepo where it is not checkRepo, so the results read compares the
+	// result with the branches of the repository that holds its commit (comparisonReader,
+	// onNamedBranch): asked of checkRepo, GitHub answers 404 for such a commit and the result
+	// reads unknown. Every other row keeps none and is compared in the repository the check's
+	// issue resolves to, as every row recorded before the column existed is, at the cost it
+	// always had. commitRepo is nil wherever checkRepo is, since refuseUnknownCommit asks
+	// nothing of a nil repository.
+	var linkedCommitRepo *string
+	if commitRepo != nil && !strings.EqualFold(*commitRepo, *checkRepo) {
+		linkedCommitRepo = commitRepo
+	}
 
 	tx, err := s.begin(r.Context())
 	if err != nil {
@@ -242,7 +253,7 @@ func (s *server) recordCheckResult(w http.ResponseWriter, r *http.Request) {
 		CheckArtifactID: check.ArtifactID, CheckBlockID: check.BlockID,
 		CheckVersion: check.Version, CheckSHA256: check.SHA256,
 		Role: input.Role, Surface: input.Surface, Run: input.Run, Observed: input.Observed,
-		CommitSHA: input.Commit, NegativeControl: input.NegativeControl,
+		CommitSHA: input.Commit, CommitRepo: linkedCommitRepo, NegativeControl: input.NegativeControl,
 		Failed: input.Failed, Skipped: input.Skipped, Excluded: input.Excluded,
 		Verdict: input.Verdict, Screenshots: nonNilStrings(input.Screenshots),
 		Session: sessionOf(actor), Actor: actor,
@@ -839,15 +850,15 @@ func insertCheckResult(ctx context.Context, tx pgx.Tx, result *model.CheckResult
 		insert into check_results (
 			id, issue_key, check_issue_key, check_artifact_id, check_block_id, check_version,
 			check_sha256, role, surface, run, observed, commit_sha, negative_control,
-			failed, skipped, excluded, verdict, screenshots, session, actor, event_seq
+			failed, skipped, excluded, verdict, screenshots, session, actor, event_seq, commit_repo
 		)
-		values ($1::uuid, $2, $3, $4::uuid, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
+		values ($1::uuid, $2, $3, $4::uuid, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
 		returning created_at
 	`,
 		result.ID, result.IssueKey, result.CheckIssueKey, result.CheckArtifactID, result.CheckBlockID,
 		result.CheckVersion, result.CheckSHA256, result.Role, result.Surface, result.Run, result.Observed,
 		result.CommitSHA, result.NegativeControl, result.Failed, result.Skipped, result.Excluded,
-		result.Verdict, result.Screenshots, result.Session, actorJSON, result.EventSeq,
+		result.Verdict, result.Screenshots, result.Session, actorJSON, result.EventSeq, result.CommitRepo,
 	).Scan(&result.CreatedAt)
 }
 
@@ -888,7 +899,7 @@ func scanCheckResult(row pgx.Row) (model.CheckResult, error) {
 		&result.CheckVersion, &result.CheckSHA256, &result.Role, &result.Surface, &result.Run,
 		&result.Observed, &result.CommitSHA, &result.NegativeControl, &result.Failed, &result.Skipped,
 		&result.Excluded, &result.Verdict, &result.Screenshots, &result.Session, &actorJSON,
-		&result.CreatedAt, &result.EventSeq,
+		&result.CreatedAt, &result.EventSeq, &result.CommitRepo,
 	); err != nil {
 		return model.CheckResult{}, err
 	}
@@ -911,18 +922,23 @@ func scanCheckResult(row pgx.Row) (model.CheckResult, error) {
 // merged (linkedRepositories, linkedRepositoryHolds). An issue whose work spans two
 // repositories links the pull request it has in the second one, and a result at that pull
 // request's head names a commit of a repository the issue does not resolve to. A closed pull
-// request that did not merge names no such repository. The links are read only when GitHub
-// proves that repo does not hold the commit, so a result at a commit of the issue's own
-// repository costs the one read it cost before.
+// request that did not merge names no such repository, and neither does a link to a pull
+// request GitHub answers 404 or 410 for (delivery.ErrPullRequestNotFound): a link a person
+// mistyped, or one to a pull request since deleted, names no pull request at all, so it is no
+// open or merged one. The links are read only when GitHub proves that repo does not hold the
+// commit, so a result at a commit of the issue's own repository costs the one read it cost
+// before.
 //
 // It runs before the transaction opens, so a refused result leaves no check_results row and no
 // result.recorded event behind. Dispatch stored a result at a mistyped commit no repository
 // held once, and a reader could not tell it from the real head, since both print as twelve
 // characters.
 //
-// It refuses on nothing but GitHub's proof, for each repository it asked, that the repository
-// does not hold the commit, which delivery.RepositoryHoldsCommit defines as the one 422 whose
-// message says GitHub found no commit for the SHA. Every other answer, about the commit or about
+// It refuses on nothing but GitHub's own answers: its proof, for each repository it asked about
+// the commit, that the repository does not hold it, which delivery.RepositoryHoldsCommit
+// defines as the one 422 whose message says GitHub found no commit for the SHA, and, for each
+// other linked repository, that every pull request the issue links there closed without a
+// merge or is one GitHub answers 404 or 410 for. Every other answer, about the commit or about
 // a linked pull request's state, and a failed read of the links, stores the result. No other
 // GitHub answer can block the result a closed issue takes, the production check's after-merge
 // result — whose merge commit is on the branch its pull request merged into and is held anyway.
@@ -932,7 +948,10 @@ func scanCheckResult(row pgx.Row) (model.CheckResult, error) {
 // Dispatch could not read, which may hold the commit, and nil when the links could not be read.
 // The issue's own repository is asked first, so a result at a commit of that repository, and a
 // result whose commit GitHub could not answer for there, read through that repository, as
-// before. A linked repository's pull request is learned from that repository.
+// before. A linked repository's pull request is learned from that repository. recordCheckResult
+// stores a linked repository it answers with the row (model.CheckResult.CommitRepo), so the
+// results read compares a branch check's result in the repository that holds its commit
+// (comparisonReader.onNamedBranch).
 func (s *server) refuseUnknownCommit(ctx context.Context, q refs.Queryer, issueKey string, repo *string, sha string) (*string, error) {
 	if repo == nil {
 		return nil, nil
@@ -1021,12 +1040,20 @@ func linkedRepositories(ctx context.Context, q refs.Queryer, issueKey string) ([
 // requests is open or merged, read from GitHub in link order until one is
 // (delivery.PullRequestOpenOrMerged) — and, for a repository that counts, whether it holds sha
 // (delivery.RepositoryHoldsCommit). A repository whose every linked pull request closed without
-// merging does not count, with no error, and its commits are never asked about. The error is an
-// answer Dispatch could not read: about the commit, or about a pull request's state where no
-// other pull request of the repository is open or merged.
+// merging, or is one GitHub answers 404 or 410 for, does not count, with no error, and its
+// commits are never asked about. That 404 or 410 (delivery.ErrPullRequestNotFound) is an answer
+// and not a failed read: GitHub says there is no such pull request, which is a link a person
+// mistyped or one to a pull request since deleted, so it counts for nothing, exactly as a
+// closed one that did not merge, and the next linked pull request is read. Read as a failure,
+// it would store a result at a commit no repository holds whenever the issue carried such a
+// link. The error is an answer Dispatch could not read: about the commit, or about a pull
+// request's state where no other pull request of the repository is open or merged.
 func (s *server) linkedRepositoryHolds(ctx context.Context, link linkedRepository, sha string) (counts, held bool, err error) {
 	for _, number := range link.numbers {
 		open, readErr := delivery.PullRequestOpenOrMerged(ctx, s.deps.GitHub, link.repo, number)
+		if errors.Is(readErr, delivery.ErrPullRequestNotFound) {
+			continue
+		}
 		if readErr != nil {
 			if err == nil {
 				err = readErr

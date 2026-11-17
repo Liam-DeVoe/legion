@@ -6,7 +6,8 @@ body: |-
   check's issue resolves to. So an issue whose work is in two repositories takes a result at the
   head of the pull request it links in the second repository. Dispatch reads the links only when
   GitHub says the issue's own repository does not hold the commit. A pull request that closed
-  without a merge does not count. `400 RESULT_COMMIT_UNKNOWN` names the commit and each
+  without a merge does not count, and neither does one GitHub answers 404 or 410 for, such as a
+  mistyped link. `400 RESULT_COMMIT_UNKNOWN` names the commit and each
   repository that Dispatch asked. The read of the pull requests GitHub names for the commit,
   after the write, reads the repository that holds the commit.
 
@@ -14,4 +15,8 @@ body: |-
   linked pull requests too, open or merged, as it does with the pull requests attributed to the
   check's issue. A result at such a head stands `at_basis`, and a push that moves the head leaves
   it at `other_commit`. A link to a pull request of the issue's own repository adds nothing: the
-  attribution alone decides which pull requests of that repository are the issue's.
+  attribution alone decides which pull requests of that repository are the issue's. An
+  `after_merge` or `default_branch` result whose commit only a linked repository holds is compared
+  with that repository's branches: for `after_merge`, the branch its merged linked pull request
+  merged into, then its default branch. The record keeps that repository with the result (column
+  `check_results.commit_repo`, migration 20261117093000), and every other result reads as before.

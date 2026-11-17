@@ -858,11 +858,13 @@ func TestResultOfAnIssueUnderARepositorysOldNameIsRefusedAtTheCanonicalName(t *t
 
 // linkedGitHub is the GitHub the tests of a repository the issue links a pull request in read
 // (TestResultAtACommitOfARepositoryTheIssueLinksAPullRequestIn,
-// TestAResultAtTheHeadOfALinkedPullRequestFollowsThatHead). It is resultsGitHubHolding's
-// fixture with four differences: each repository holds commits of its own, each pull request an
-// issue links answers its state, the read-through of a commit names the pull request heads says
-// that commit is the head of, and each read of a pull request's state and each ask of the
-// read-through is counted by repository.
+// TestAResultAtTheHeadOfALinkedPullRequestFollowsThatHead,
+// TestABranchChecksResultAtALinkedPullRequestsMergeCommitIsComparedInThatRepository). It is
+// resultsGitHubHolding's fixture with five differences: each repository holds commits of its
+// own, each pull request an issue links answers its state, the read-through of a commit names
+// the pull request heads says that commit is the head of, each repository's compare read
+// answers from the commits each of its branches carries, and each read of a pull request's
+// state, each ask of the read-through and each compare read is counted by repository.
 type linkedGitHub struct {
 	mu sync.Mutex
 	// held is the commits each repository holds: GET /repos/{owner}/{repo}/commits/{sha}
@@ -876,9 +878,16 @@ type linkedGitHub struct {
 	// GET /repos/{owner}/{repo}/commits/{sha}/pulls names. A commit it does not name heads no
 	// pull request.
 	heads map[string]int
-	// stateReads counts the reads of a pull request's state, and readThroughs the asks for the
-	// pull requests of a commit (GET /repos/{owner}/{repo}/commits/{sha}/pulls), by repository.
-	stateReads, readThroughs map[string]int
+	// branches is the commits each branch carries, keyed `owner/repo:branch`, which
+	// GET /repos/{owner}/{repo}/compare/{base}...{head} answers from: `behind` for a commit the
+	// branch carries, `diverged` for every other commit the repository holds, and GitHub's 404
+	// for a commit the repository does not hold (held), which is what GitHub answers a compare
+	// naming a commit it cannot find.
+	branches map[string][]string
+	// stateReads counts the reads of a pull request's state, readThroughs the asks for the
+	// pull requests of a commit (GET /repos/{owner}/{repo}/commits/{sha}/pulls), and compares
+	// the compare reads, by repository.
+	stateReads, readThroughs, compares map[string]int
 }
 
 // counts is how often each repository's pull request state was read and the read-through asked
@@ -887,6 +896,13 @@ func (g *linkedGitHub) counts(repo string) (stateReads, readThroughs int) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	return g.stateReads[repo], g.readThroughs[repo]
+}
+
+// compareReads is how often a compare read asked repo about any branch and commit, so far.
+func (g *linkedGitHub) compareReads(repo string) int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.compares[repo]
 }
 
 // linkedRepositoriesGitHub is a Dispatch holding an App key whose GitHub answers from linked.
@@ -901,7 +917,7 @@ func linkedRepositoriesGitHub(t *testing.T, linked *linkedGitHub) (http.Handler,
 		t.Fatalf("generate fixture key: %v", err)
 	}
 	pemText := string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}))
-	linked.stateReads, linked.readThroughs = map[string]int{}, map[string]int{}
+	linked.stateReads, linked.readThroughs, linked.compares = map[string]int{}, map[string]int{}, map[string]int{}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /repos/{owner}/{repo}/installation", func(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprint(w, `{"id":77,"app_slug":"dispatch-test","permissions":{"contents":"read","pull_requests":"read"}}`)
@@ -956,6 +972,22 @@ func linkedRepositoriesGitHub(t *testing.T, linked *linkedGitHub) (http.Handler,
 	})
 	mux.HandleFunc("GET /repos/{owner}/{repo}/pulls/{number}/commits", func(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprint(w, `[]`)
+	})
+	mux.HandleFunc("GET /repos/{owner}/{repo}/compare/{basehead}", func(w http.ResponseWriter, r *http.Request) {
+		repo := r.PathValue("owner") + "/" + r.PathValue("repo")
+		base, head, _ := strings.Cut(r.PathValue("basehead"), "...")
+		linked.mu.Lock()
+		linked.compares[repo]++
+		linked.mu.Unlock()
+		switch {
+		case !slices.Contains(linked.held[repo], head):
+			w.WriteHeader(http.StatusNotFound)
+			fmt.Fprint(w, `{"message":"Not Found"}`)
+		case slices.Contains(linked.branches[repo+":"+base], head):
+			fmt.Fprint(w, `{"status":"behind"}`)
+		default:
+			fmt.Fprint(w, `{"status":"diverged"}`)
+		}
 	})
 	upstream := githubtest.Server(t, githubtest.Spec{Handle: mux.ServeHTTP})
 	handler, database, _, _ := newRegisteredTestServer(t, testServerOptions{
@@ -1209,6 +1241,129 @@ func TestAResultAtTheHeadOfALinkedPullRequestFollowsThatHead(t *testing.T) {
 		"a result at the head of the linked pull request that closed without a merge", model.CommitOtherCommit, false)
 	standsAt(t, read, "k1", own.ID,
 		"a result at the head of a linked pull request of the issue's own repository", model.CommitOtherCommit, false)
+}
+
+// A branch check's result at the merge commit of a pull request its issue links in a second
+// repository is compared with the branches of that repository, which holds the commit, and not
+// with those of the repository the issue resolves to: asked there, GitHub answers the compare
+// read 404 for a commit that repository does not hold, and the result would read unknown for
+// good. The record stores the repository it found the commit in beside the result, and only
+// for such a result: a result at a commit of the issue's own repository stores none and is
+// compared there, at the one compare read it always cost.
+//
+// The first issue's linked pull request merged into the second repository's default branch, so
+// its `after_merge` result is asked about that branch alone, in one compare read, and stands at
+// it, and its `default_branch` result at the same commit stands at it from the same answer. The
+// second issue's merged into an integration branch, so its `after_merge` result is asked about
+// that branch first and stands at it, while its `default_branch` result is asked about the trunk
+// alone and stands at another commit. The checks name their own repository's branches as their
+// bases throughout.
+func TestABranchChecksResultAtALinkedPullRequestsMergeCommitIsComparedInThatRepository(t *testing.T) {
+	const (
+		// toolsMerge is the commit acme/tools#9 merged into main as, and integrationMerge the
+		// one acme/tools#10 merged into integration/x as; acme/widgets holds neither. ownMerge
+		// is a commit of acme/widgets' main.
+		toolsMerge       = "8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a8a"
+		integrationMerge = "8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b"
+		ownMerge         = "8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c"
+	)
+	linked := &linkedGitHub{
+		held: map[string][]string{
+			"acme/widgets": {ownMerge},
+			"acme/tools":   {toolsMerge, integrationMerge},
+		},
+		pulls: map[string]string{"acme/tools#9": "merged", "acme/tools#10": "merged"},
+		branches: map[string][]string{
+			"acme/widgets:main":        {ownMerge},
+			"acme/tools:main":          {toolsMerge},
+			"acme/tools:integration/x": {integrationMerge},
+		},
+	}
+	handler, database := linkedRepositoriesGitHub(t, linked)
+	trunk := issueInRepository(t, handler, "RELB", "acme/widgets", "Merged into the second repository's trunk").Key
+	uploadDocument(t, handler, "/api/v1/issues/"+trunk, "verification.md", afterMergeAndDefaultChecks)
+	integration := issueOfProject(t, handler, "RELB", "Merged into the second repository's integration branch",
+		afterMergeAndDefaultChecks)
+	for issue, url := range map[string]string{
+		trunk:       "https://github.com/acme/tools/pull/9",
+		integration: "https://github.com/acme/tools/pull/10",
+	} {
+		if response := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue,
+			map[string]any{"external_links": []map[string]string{{"url": url}}}, "alice"); response.Code != http.StatusOK {
+			t.Fatalf("link %s to %s: status=%d body=%s", issue, url, response.Code, response.Body.String())
+		}
+	}
+	// The two merges as Dispatch holds them: rows of acme/tools attributed to no issue, which
+	// only the links name as the issues'.
+	writeHeadOnBase(t, database, "acme/tools", 9, headCommit, "merged", "", "main")
+	writeHeadOnBase(t, database, "acme/tools", 10, newHeadCommit, "merged", "", "integration/x")
+
+	record := func(issue, check, commit string) model.CheckResult {
+		t.Helper()
+		recorded := recordResult(t, handler, issue, resultBody(check, "pass", commit, nil))
+		if recorded.Code != http.StatusCreated {
+			t.Fatalf("a result of %s at %s: status=%d body=%s", check, commit, recorded.Code, recorded.Body.String())
+		}
+		return decodeBody[recordedResult](t, recorded).Result
+	}
+	storedRepo := func(result model.CheckResult) *string {
+		t.Helper()
+		var repo *string
+		if err := database.Pool.QueryRow(context.Background(),
+			`select commit_repo from check_results where id = $1::uuid`, result.ID).Scan(&repo); err != nil {
+			t.Fatalf("read the repository stored with result %s: %v", result.ID, err)
+		}
+		return repo
+	}
+
+	linkedAfter := record(trunk, "k4", toolsMerge)
+	linkedDefault := record(trunk, "k5", toolsMerge)
+	own := record(trunk, "k4", ownMerge)
+	if repo := storedRepo(linkedAfter); repo == nil || *repo != "acme/tools" {
+		t.Fatalf("the result at the linked merge commit stored commit_repo %v, want acme/tools", repo)
+	}
+	if repo := storedRepo(own); repo != nil {
+		t.Fatalf("the result at a commit of the issue's own repository stored commit_repo %q, want none", *repo)
+	}
+
+	toolsBefore, widgetsBefore := linked.compareReads("acme/tools"), linked.compareReads("acme/widgets")
+	read := readResults(t, handler, trunk)
+	stands := standsAt(t, read, "k4", linkedAfter.ID,
+		"an after_merge result at the merge commit of the linked pull request", model.CommitAtBasis, false)
+	if basis := stands.Basis; basis == nil || basis.Kind != model.CheckBasisBranch || basis.Branch != "main" {
+		t.Fatalf("the after_merge result at the linked merge commit stands at %+v, want the branch main", basis)
+	}
+	standsAt(t, read, "k5", linkedDefault.ID,
+		"a default_branch result at the merge commit of the linked pull request", model.CommitAtBasis, false)
+	standsAt(t, read, "k4", own.ID,
+		"an after_merge result at a commit of the issue's own trunk", model.CommitAtBasis, false)
+	if compared := checkOf(t, read, "k4").ComparedWith; len(compared) != 1 || compared[0].Branch != "main" {
+		t.Fatalf("the after_merge check compared with %+v, want its own repository's main alone", compared)
+	}
+	if stood := checkOf(t, read, "k5").PassStands; stood.Answer != model.PassStandsYes {
+		t.Fatalf("the default_branch check answers pass_stands %+v, want yes", stood)
+	}
+	// One compare read of each repository: acme/tools for the linked commit, whose answer the
+	// default_branch check's question about the same branch shares, and acme/widgets for the
+	// issue's own commit alone. The linked commit is never asked of acme/widgets.
+	if got := linked.compareReads("acme/tools") - toolsBefore; got != 1 {
+		t.Errorf("the read made %d compare reads of acme/tools, want 1", got)
+	}
+	if got := linked.compareReads("acme/widgets") - widgetsBefore; got != 1 {
+		t.Errorf("the read made %d compare reads of acme/widgets, want 1", got)
+	}
+
+	onIntegration := record(integration, "k4", integrationMerge)
+	offTrunk := record(integration, "k5", integrationMerge)
+	read = readResults(t, handler, integration)
+	stands = standsAt(t, read, "k4", onIntegration.ID,
+		"an after_merge result at the merge commit of a linked pull request merged into an integration branch",
+		model.CommitAtBasis, false)
+	if basis := stands.Basis; basis == nil || basis.Branch != "integration/x" {
+		t.Fatalf("that result stands at %+v, want the branch integration/x", basis)
+	}
+	standsAt(t, read, "k5", offTrunk.ID,
+		"a default_branch result at a commit only the linked integration branch carries", model.CommitOtherCommit, false)
 }
 
 // An after-merge result of an issue Dispatch holds no pull request of at all stands at the

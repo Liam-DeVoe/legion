@@ -2329,6 +2329,10 @@ Nothing updates a row — another run is another row — and a table check refus
 `check_results_check` serves the Verification tab's read of one check's results newest first, and `check_results_issue` an issue's own reads.
 A new table: nothing existing is read, locked or rewritten, the previous release neither reads nor writes it, and its census answers `0`.
 
+Migration `20261117093000_check_results_commit_repo` adds the nullable column `check_results.commit_repo`: the repository that holds a result's commit, written only where that is a repository the check's issue links a pull request in rather than the one the issue resolves to, and null for every other row, the rows before it included.
+The results read compares an `after_merge` or `default_branch` result with that repository's branches where the column names one.
+A nullable column with no default rewrites no row; the ALTER holds ACCESS EXCLUSIVE on `check_results` for the catalog write alone, the previous release neither reads nor writes the column, and its census answers `0`.
+
 Migration `20261116163813_issue_role_holders` creates `issue_role_holders`, the session that holds each Legion role of an issue, which the Legion daemon publishes (`PUT /api/v1/issues/{key}/role-holders`, Routes below).
 The key is `(issue_key, role)`, and a unique index on `(issue_key, session)` keeps a session to one role of an issue.
 The `role` check names the six Legion roles, and a row goes with its issue.
@@ -4290,6 +4294,8 @@ Each item below names a path with its method and identity, then its purpose.
 
   - A `default_branch` check is compared with that repository's default branch alone, whatever branch the pull request merged into.
 
+  - A result of an `after_merge` or `default_branch` check whose commit only a repository the issue links a pull request in holds is compared in that repository: the record route keeps that repository with the result (`check_results.commit_repo`), and the read asks that repository's branches, for `after_merge` the base branch of the merged linked pull request (`delivery.BaseBranchMergedIn`) and then its default branch, for `default_branch` its default branch alone. Asked of the issue's own repository, GitHub answers `404` for such a commit. Every other result keeps no repository and is compared as above.
+
   - A check compared with nothing says why in `compared_nothing`:
     `no_pull_request_or_branch` where the issue resolves to no repository, and where a `before_merge` check's issue holds no pull request at all;
     `repository_unreadable` where the App cannot read that repository and Dispatch can name no branch of it to ask a stored answer about;
@@ -4366,7 +4372,7 @@ Each item below names a path with its method and identity, then its purpose.
 
   - Dispatch asks GitHub whether the repository the check's issue resolves to holds that commit, before it writes anything.
     When GitHub says that repository does not hold it, Dispatch reads the external links of the check's issue: each link of the form `https://github.com/<owner>/<repo>/pull/<n>` names that repository, and the repository counts when GitHub says one of those pull requests is open or merged (`delivery.PullRequestOpenOrMerged`).
-    A pull request that closed without a merge does not make its repository count.
+    A pull request that closed without a merge does not make its repository count, and neither does one GitHub answers `404` or `410` for (a mistyped link, or a pull request since deleted): that is GitHub's answer that there is no such pull request, not a failed read.
     Dispatch then asks GitHub whether each repository that counts holds the commit, and refuses a result at a commit that no repository it asked holds with `400 RESULT_COMMIT_UNKNOWN`, naming the commit and each `owner/repo` it asked.
     So an issue whose work is in two repositories takes a result at the head of the pull request it links in the second repository.
 

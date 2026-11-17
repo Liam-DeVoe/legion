@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
@@ -54,6 +55,20 @@ import (
 // difference between the two `when`s, and it is why a check that must speak for the trunk is
 // written `default_branch` rather than `after_merge`.
 //
+// A branch check's result whose commit is held by a repository the check's issue links a pull
+// request in, and not by the one that issue resolves to, is compared with that repository's
+// branches instead (model.CheckResult.CommitRepo, which the record route stores where
+// refuseUnknownCommit found the commit there; onNamedBranch). An `after_merge` check asks the
+// branch the merged pull request the issue links there merged into
+// (delivery.BaseBranchMergedIn) and then that repository's default branch, in the order and
+// at the cost the issue's own repository is asked in, and a `default_branch` check asks that
+// default branch alone. Asked of the issue's own repository, GitHub answers 404 for such a
+// commit, and the result at the merge commit of the linked pull request would read unknown for
+// good. A result whose row names no such repository — every result at a commit of the issue's
+// own repository, and every row recorded before the column existed — is compared in the
+// issue's own repository, at the reads it always cost. What the check names as its bases
+// stays the issue's own repository's branches either way.
+//
 // Three answers the surface used to collapse into one are kept apart here. A check with nothing
 // to compare with — an issue that resolves to no repository, and a `before_merge` check whose
 // issue holds no pull request at all — names model.ReasonNoPullRequestOrBranch, and its
@@ -78,7 +93,9 @@ import (
 // The repository each issue resolves to, its default branch, the branch each issue's pull
 // request merged into, the pull request heads of each issue, the stored heads of each
 // repository-and-commit pair and GitHub's answer about each repository, branch and commit are
-// each read once per read of the results. The branch is in that last key, and not the
+// each read once per read of the results, and so are the canonical name of each repository a
+// result's row names as holding its commit and the branch each issue's linked pull request
+// merged into in each such repository. The branch is in that last key of GitHub's, and not the
 // repository and the commit alone, because one issue's Verification document may hold an
 // `after_merge` check and a `default_branch` check with a result at the same commit: two
 // questions, with two answers, that one key for both would collapse into whichever was asked
@@ -90,8 +107,9 @@ type comparisonReader struct {
 	// at is the one commit the reader named, and noCommitNamed where it named none.
 	at           string
 	repos        map[string]repositoryAnswer
+	commitRepos  map[string]repositoryAnswer
 	defaults     map[string]defaultBranchAnswer
-	baseBranches map[string]baseBranchAnswer
+	baseBranches map[[2]string]baseBranchAnswer
 	bases        map[[2]string]comparison
 	readThroughs map[[2]string]struct{}
 	storedHeads  map[[2]string]bool
@@ -124,7 +142,9 @@ func noBases(reason string) comparison {
 // that resolves to no repository because the two part every answer below: nothing to compare
 // with is a fact about the work and leaves no pass standing, while a read Dispatch could not
 // make is model.ReasonReadFailed and leaves the gate's question open. One nil for both is how
-// a database hiccup came to read as "this work has moved on" (dispatch://INFRA-1522).
+// a database hiccup came to read as "this work has moved on" (dispatch://INFRA-1522). It holds
+// what one read of the canonical name of a repository a result's row names as holding its
+// commit said too (linkedRepositoryOf), which names a repository wherever it answered.
 type repositoryAnswer struct {
 	repo     *string
 	answered bool
@@ -139,13 +159,13 @@ type defaultBranchAnswer struct {
 	readable bool
 }
 
-// baseBranchAnswer is what Dispatch holds about the merge of one issue: the branch its newest
-// merged pull request merged into, noMergedBranch where it holds no merge of that issue at
-// all, and whether the read answered. The failed read is kept apart from the empty branch
-// because they part the two ways: a read that failed leaves the check comparing with nothing
-// it can name, while no merge found leaves the repository's default branch to answer alone
-// (measuredBranches). One flag for both would turn a database fault into a verdict about the
-// work.
+// baseBranchAnswer is what Dispatch holds about the merge of one issue in one repository: the
+// branch its newest merged pull request there merged into, noMergedBranch where it holds no
+// merge of that issue there at all, and whether the read answered. The failed read is kept
+// apart from the empty branch because they part the two ways: a read that failed leaves the
+// check comparing with nothing it can name, while no merge found leaves the repository's
+// default branch to answer alone (measuredBranches). One flag for both would turn a database
+// fault into a verdict about the work.
 type baseBranchAnswer struct {
 	branch string
 	read   bool
@@ -154,8 +174,9 @@ type baseBranchAnswer struct {
 func newComparisonReader(s *server, at string) *comparisonReader {
 	return &comparisonReader{
 		server: s, at: at, repos: map[string]repositoryAnswer{},
+		commitRepos:  map[string]repositoryAnswer{},
 		defaults:     map[string]defaultBranchAnswer{},
-		baseBranches: map[string]baseBranchAnswer{},
+		baseBranches: map[[2]string]baseBranchAnswer{},
 		bases:        map[[2]string]comparison{},
 		readThroughs: map[[2]string]struct{}{}, storedHeads: map[[2]string]bool{},
 		commits: map[[3]string]delivery.BranchAnswer{},
@@ -179,6 +200,13 @@ const noMergedBranch = ""
 // (measuredBranches). It is spelled like delivery.DefaultBranch and means the opposite of it,
 // as noMergedBranch does, so each is named where it is used.
 const noDefaultBranchNamed = ""
+
+// issueRepository is the repository the check's issue resolves to, named by no name of a
+// result's own: what linkedRepositoryOf answers for a result compared there, and what
+// measuredBranches and baseBranchMergedFor are passed for it, where they read the pull
+// requests attributed to the issue rather than the ones it links in another repository. It is
+// spelled like noMergedBranch and noDefaultBranchNamed, and named where it is used as they are.
+const issueRepository = ""
 
 // answer fills in what one check compared its results with, where each of its results stands,
 // and whether a pass of it stands. The check's results are already in place, newest first,
@@ -313,7 +341,7 @@ func (c *comparisonReader) branchBases(ctx context.Context, check model.CheckBlo
 		return noBases(c.nothingReason(ctx, check.IssueKey))
 	}
 	defaultBranch, _ := c.defaultBranchOf(ctx, check.IssueKey)
-	branches, chosen := c.measuredBranches(ctx, check, defaultBranch)
+	branches, chosen := c.measuredBranches(ctx, check, issueRepository, defaultBranch)
 	if !chosen {
 		return noBases(model.ReasonReadFailed)
 	}
@@ -324,6 +352,39 @@ func (c *comparisonReader) branchBases(ctx context.Context, check model.CheckBlo
 		// App's own failed read is why, from the same memoized reads.
 		return noBases(c.nothingReason(ctx, check.IssueKey))
 	}
+	return branchesNamed(branches)
+}
+
+// linkedBranchBases is branchBases for a result whose commit repo holds, a repository the
+// check's issue links a pull request in and does not resolve to (linkedRepositoryOf): the
+// branches of repo that result is compared with, chosen by the rule the issue's own
+// repository's are chosen by (measuredBranches), the `after_merge` check's merged branch being
+// the one the issue's linked pull request in repo merged into. The walk asks them in this
+// order (onNamedBranch), and the check goes on naming its own repository's branches as its
+// bases: these are one result's, not the check's.
+//
+// A comparison naming no branch here is always unknown for the result, never another commit,
+// so its reason is one of the two a commit's standing carries. A merge read that failed is
+// model.ReasonReadFailed. No branch at all is a repository no read of this process ever named
+// a default branch for, with no merge of the issue's there for an `after_merge` check to name
+// in its place, and that is the App's failed read of repo, since
+// delivery.Branches.DefaultBranchOf answers no name only with no:
+// model.ReasonRepositoryUnreadable.
+func (c *comparisonReader) linkedBranchBases(ctx context.Context, check model.CheckBlock, repo string) comparison {
+	defaultBranch, _ := c.defaultBranchIn(ctx, repo)
+	branches, chosen := c.measuredBranches(ctx, check, repo, defaultBranch)
+	if !chosen {
+		return noBases(model.ReasonReadFailed)
+	}
+	if len(branches) == 0 {
+		return noBases(model.ReasonRepositoryUnreadable)
+	}
+	return branchesNamed(branches)
+}
+
+// branchesNamed is the comparison of a branch check whose branches are named, in the order
+// given, as the surface names a branch basis.
+func branchesNamed(branches []string) comparison {
 	bases := make([]model.CheckBasis, 0, len(branches))
 	for _, branch := range branches {
 		bases = append(bases, model.CheckBasis{Kind: model.CheckBasisBranch, Branch: branch})
@@ -411,8 +472,10 @@ func (c *comparisonReader) learn(ctx context.Context, checks []model.CheckBlock)
 // the check named no basis, the reason it named none decides: nothing to compare with leaves
 // the commit at another commit, while a repository Dispatch could not read leaves it unknown.
 // Where the check named bases and none is this commit, a `before_merge` result turns on
-// whether the repository can be read at all, and a branch check walks the branches
-// (onNamedBranch).
+// whether the repository can be read at all, and a branch check walks the branches of the
+// repository that holds the commit (onNamedBranch). That walk is the only place a repository a
+// result's row names as holding its commit is read: a check that named no basis of its own
+// leaves such a result where its reason leaves every other, as passStandsOf leaves the check.
 //
 // An issue that resolves to no repository is never unknown, whatever the check's `when`.
 // Dispatch holds every head it will ever hold for such an issue, since there is no repository
@@ -471,6 +534,16 @@ func basisAt(bases []model.CheckBasis, sha string) *model.CheckBasis {
 // onNamedBranch walks the branches a check compares with, in the order branchBases named them,
 // and answers where the commit stands.
 //
+// The walk is of the repository that holds the commit. For every result but one, that is the
+// repository the check's issue resolves to, and the branches are the bases the check named.
+// The one is a result whose row names a repository the issue links a pull request in as
+// holding its commit (linkedRepositoryOf): it walks that repository's branches, chosen by the
+// same rule (linkedBranchBases), and the basis it stands at is a branch of that repository.
+// The issue's own repository holds no such commit, so its compare read answers 404 and the
+// walk there could only end unknown. A result whose row names none reads nothing more than it
+// did before the row could name one. Every arm below is about the walked repository: its
+// default branch, and whether the App can read it.
+//
 // The walk stops at the first branch that carries the commit (delivery.BranchCarries). A yes
 // is the whole answer, and no branch after it is asked about, which is what holds an ordinary
 // issue's result to the one compare read it cost before a second branch was asked about at
@@ -516,19 +589,31 @@ func (c *comparisonReader) onNamedBranch(
 		// is told to ask again, never that the work moved on.
 		return model.ResultCommitStands{Answer: model.CommitUnknown, Reason: model.ReasonReadFailed}
 	}
-	// The repository's own read, from the memo the bases were chosen from: whether the App can
-	// read it, which names the reason below, and the default branch, whose absence says the
-	// walk is short of the branch that would have decided.
-	defaultBranch, readable := c.defaultBranchOf(ctx, check.IssueKey)
+	walked, bases := *repo, compared.bases
+	linked, read := c.linkedRepositoryOf(ctx, *repo, result)
+	if !read {
+		return model.ResultCommitStands{Answer: model.CommitUnknown, Reason: model.ReasonReadFailed}
+	}
+	if linked != issueRepository {
+		linkedCompared := c.linkedBranchBases(ctx, check, linked)
+		if len(linkedCompared.bases) == 0 {
+			return model.ResultCommitStands{Answer: model.CommitUnknown, Reason: linkedCompared.reason}
+		}
+		walked, bases = linked, linkedCompared.bases
+	}
+	// The walked repository's own read, from the memo its bases were chosen from: whether the
+	// App can read it, which names the reason below, and the default branch, whose absence
+	// says the walk is short of the branch that would have decided.
+	defaultBranch, readable := c.defaultBranchIn(ctx, walked)
 	// unknown is whether any branch of the walk answered that Dispatch could not say. It is
 	// kept apart from the last branch's own answer because an unknown anywhere outranks every
 	// "not on it" after it, while a branch that carries the commit outranks it in turn.
 	unknown := false
 	answer := delivery.BranchUnknown
-	for index, basis := range compared.bases {
-		answer = c.onBranch(ctx, *repo, basis.Branch, result.CommitSHA)
+	for index, basis := range bases {
+		answer = c.onBranch(ctx, walked, basis.Branch, result.CommitSHA)
 		if answer == delivery.BranchCarries {
-			carried := compared.bases[index]
+			carried := bases[index]
 			return model.ResultCommitStands{Answer: model.CommitAtBasis, Basis: &carried}
 		}
 		unknown = unknown || answer == delivery.BranchUnknown
@@ -602,6 +687,13 @@ func passStandsOf(check model.CheckBlock, compared comparison) model.CheckPassSt
 // the merge read below is keyed by the issue alone and would name the base branch of a
 // repository that issue no longer resolves to.
 //
+// repo is the repository measured, and defaultBranch its default branch: issueRepository for
+// the repository the check's issue resolves to, whose merge is the one the pull requests
+// attributed to the issue name, or a repository the issue links a pull request in, for the
+// one result whose commit that repository holds (linkedBranchBases), whose merge is the one
+// the issue's linked pull requests there name (baseBranchMergedFor). The rule below is the
+// same for both.
+//
 // A `default_branch` check is compared with the repository's default branch alone, whatever
 // branch its issue's pull request merged into. That is the whole of the difference between the
 // two `when`s, and it is why a check that must speak for the trunk is written `default_branch`
@@ -629,11 +721,11 @@ func passStandsOf(check model.CheckBlock, compared comparison) model.CheckPassSt
 // it is delivery.DefaultBranch, which would ask about the repository's default branch under
 // no name and so reach no stored row, and the surface would print a branch called "".
 func (c *comparisonReader) measuredBranches(
-	ctx context.Context, check model.CheckBlock, defaultBranch string,
+	ctx context.Context, check model.CheckBlock, repo, defaultBranch string,
 ) ([]string, bool) {
 	var branches []string
 	if check.When == checkWhenAfterMerge {
-		merged, read := c.baseBranchMergedFor(ctx, check.IssueKey)
+		merged, read := c.baseBranchMergedFor(ctx, check.IssueKey, repo)
 		if !read {
 			return nil, false
 		}
@@ -812,6 +904,48 @@ func (c *comparisonReader) repositoryOf(ctx context.Context, issueKey string) (*
 	return repo, answered
 }
 
+// linkedRepositoryOf is the repository a branch check's result is walked in where that is not
+// issueRepo, the canonical repository the check's issue resolves to: the repository the
+// result's row names as holding its commit (model.CheckResult.CommitRepo), under the canonical
+// name it is called today (refs.CanonicalRepo), and issueRepository wherever the row names none
+// or names issueRepo itself. The bool is whether that answer could be read: a canonical read
+// that failed leaves the result's repository unknown, which onNamedBranch answers as
+// model.ReasonReadFailed rather than walking a repository that holds no such commit.
+//
+// The record route stores the name it found the commit under, which is canonical at the write.
+// It is read again here because the repository can be renamed since, and GitHub answers 404
+// for the old name's installation, so every result of it would read unknown — the reason the
+// repository of the check's issue is read under its canonical name (checkIssueRepository). A
+// row naming the issue's own repository is one whose issue has since come to resolve to that
+// repository, and it is walked there as every other result of the issue is.
+//
+// A row that names no repository, which is every result at a commit of the issue's own
+// repository and every row recorded before the column existed, is answered with no read at
+// all, so the ordinary result costs what it always did. A named one is read once per name per
+// read of the results.
+func (c *comparisonReader) linkedRepositoryOf(ctx context.Context, issueRepo string, result model.CheckResult) (string, bool) {
+	if result.CommitRepo == nil {
+		return issueRepository, true
+	}
+	answer, memoized := c.commitRepos[*result.CommitRepo]
+	if !memoized {
+		canonical, err := refs.CanonicalRepo(ctx, c.server.deps.Store.Pool, *result.CommitRepo)
+		if err != nil {
+			slog.Warn("dispatch: canonical name of the repository a result's commit is held in",
+				"repo", *result.CommitRepo, "error", err)
+		}
+		answer = repositoryAnswer{repo: &canonical, answered: err == nil}
+		c.commitRepos[*result.CommitRepo] = answer
+	}
+	if !answer.answered {
+		return issueRepository, false
+	}
+	if strings.EqualFold(*answer.repo, issueRepo) {
+		return issueRepository, true
+	}
+	return *answer.repo, true
+}
+
 // defaultBranchOf is the default branch of the repository the check's issue resolves to and
 // whether Dispatch can read that repository at all: it resolves to one, and the App answered
 // that repository's default branch (delivery.Branches.DefaultBranchOf). It is read once per
@@ -825,33 +959,54 @@ func (c *comparisonReader) defaultBranchOf(ctx context.Context, issueKey string)
 	if !answered || repo == nil {
 		return "", false
 	}
-	if answer, memoized := c.defaults[*repo]; memoized {
+	return c.defaultBranchIn(ctx, *repo)
+}
+
+// defaultBranchIn is defaultBranchOf for a repository named outright: the repository's default
+// branch and whether the App answered it, read once per repository per read of the results.
+// defaultBranchOf names the repository the check's issue resolves to, and onNamedBranch names a
+// repository a result's row says holds its commit (linkedRepositoryOf). The memo is the same
+// for both, so a repository that is both is read once.
+func (c *comparisonReader) defaultBranchIn(ctx context.Context, repo string) (string, bool) {
+	if answer, memoized := c.defaults[repo]; memoized {
 		return answer.branch, answer.readable
 	}
-	branch, readable := c.server.branches.DefaultBranchOf(ctx, c.server.deps.GitHub, *repo, time.Now())
-	c.defaults[*repo] = defaultBranchAnswer{branch: branch, readable: readable}
+	branch, readable := c.server.branches.DefaultBranchOf(ctx, c.server.deps.GitHub, repo, time.Now())
+	c.defaults[repo] = defaultBranchAnswer{branch: branch, readable: readable}
 	return branch, readable
 }
 
-// baseBranchMergedFor is the branch the check's issue's newest merged pull request merged into
-// (delivery.BaseBranchMergedFor), read once per read of the results, and whether the read
-// answered at all. An issue Dispatch holds no merge of answers noMergedBranch, which
-// measuredBranches reads as no branch but the repository's default one to ask about.
+// baseBranchMergedFor is the branch the check's issue's newest merged pull request in repo
+// merged into, read once per read of the results, and whether the read answered at all. In
+// issueRepository, the repository the issue resolves to, that is the pull requests attributed
+// to the issue (delivery.BaseBranchMergedFor); in a repository the issue links a pull request
+// in, it is the pull requests the issue links there (delivery.BaseBranchMergedIn), since the
+// attribution never gives the issue a pull request of a repository it does not resolve to. An
+// issue Dispatch holds no merge of there answers noMergedBranch, which measuredBranches reads
+// as no branch but the repository's default one to ask about.
 //
 // The memo keeps a failed read as it keeps an answered one, so a second result of the same
 // issue neither reads again nor is quietly compared with the default branch because the first
-// read failed. The key is the issue alone: the branch an issue's work merged into is a fact
-// about that issue, not about any one result or commit of it.
-func (c *comparisonReader) baseBranchMergedFor(ctx context.Context, issueKey string) (string, bool) {
-	if answer, memoized := c.baseBranches[issueKey]; memoized {
+// read failed. The key is the issue and the repository: the branch an issue's work merged into
+// is a fact about that issue, not about any one result or commit of it, and an issue whose
+// work spans two repositories merged once in each.
+func (c *comparisonReader) baseBranchMergedFor(ctx context.Context, issueKey, repo string) (string, bool) {
+	memo := [2]string{issueKey, repo}
+	if answer, memoized := c.baseBranches[memo]; memoized {
 		return answer.branch, answer.read
 	}
-	branch, err := delivery.BaseBranchMergedFor(ctx, c.server.deps.Store.Pool, issueKey)
+	var branch string
+	var err error
+	if repo == issueRepository {
+		branch, err = delivery.BaseBranchMergedFor(ctx, c.server.deps.Store.Pool, issueKey)
+	} else {
+		branch, err = delivery.BaseBranchMergedIn(ctx, c.server.deps.Store.Pool, issueKey, repo)
+	}
 	if err != nil {
-		slog.Warn("dispatch: read the branch a result's issue merged into", "issue", issueKey, "error", err)
+		slog.Warn("dispatch: read the branch a result's issue merged into", "issue", issueKey, "repo", repo, "error", err)
 	}
 	answer := baseBranchAnswer{branch: branch, read: err == nil}
-	c.baseBranches[issueKey] = answer
+	c.baseBranches[memo] = answer
 	return answer.branch, answer.read
 }
 

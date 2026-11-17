@@ -1409,6 +1409,12 @@ type CheckResult struct {
 	Actor           Actor     `json:"actor"`
 	CreatedAt       time.Time `json:"created_at"`
 	EventSeq        *int64    `json:"event_seq,omitempty"`
+	// CommitRepo is the repository that holds CommitSHA where the record route found it in a
+	// repository the check's issue links a pull request in rather than the one that issue
+	// resolves to (check_results.commit_repo), and nil for every other result. The results read
+	// compares a branch check's result with that repository's branches where it is set. It is
+	// no part of the wire shape.
+	CommitRepo *string `json:"-"`
 	// CommitStands is where this result's commit stands against what its check compared with,
 	// and CheckWordsMoved whether the check's words moved after the result was recorded, which
 	// CheckSHA256 beside the check's SHA256 decides. They are two facts and two fields: a

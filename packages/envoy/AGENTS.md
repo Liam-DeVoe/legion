@@ -385,6 +385,7 @@ Each item below names a task and where its code is, then notes on it.
     the issue a result was recorded on counts for nothing here, so a child's pull request is never a basis for a check above it;
 
   - an `after_merge` check with the branch the check's issue's pull request merged into and with the repository's default branch — that default branch alone where Dispatch holds no merge of it;
+    a result whose commit only a repository the issue links a pull request in holds is compared in that repository, which the record route keeps with the result (`check_results.commit_repo`): the branch its merged linked pull request merged into (`delivery.BaseBranchMergedIn`), then its default branch;
 
   - a `default_branch` check with the repository's default branch, whatever branch it merged into (`branch_commits`, the App's answer cached: a yes for good, a no for five minutes);
 

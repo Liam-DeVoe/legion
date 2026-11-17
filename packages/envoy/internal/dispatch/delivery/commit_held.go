@@ -37,9 +37,12 @@ func RepositoryHoldsCommit(ctx context.Context, client *githubapp.Client, repoFu
 // (PullRequestHeadState), so a pull request this answers no for is one the head rows call
 // closed: it closed and did not merge.
 //
-// Every failure is the error, which says only that Dispatch cannot tell: a malformed repository
-// name, a deployment with no App key, a repository the App cannot read, a pull request GitHub
-// answers 404 or 410 for (ErrPullRequestNotFound), a rate limit, a 5xx, a transport failure.
+// Every failure is the error: a malformed repository name, a deployment with no App key, a
+// repository the App cannot read, a pull request GitHub answers 404 or 410 for
+// (ErrPullRequestNotFound), a rate limit, a 5xx, a transport failure. Each says only that
+// Dispatch cannot tell but ErrPullRequestNotFound, which is GitHub's answer that there is no such
+// pull request; the results route reads it as a pull request that does not count
+// (api/results.go, linkedRepositoryHolds).
 func PullRequestOpenOrMerged(ctx context.Context, client *githubapp.Client, repoFull string, number int) (bool, error) {
 	owner, repo, token, err := repositoryRead(ctx, client, repoFull)
 	if err != nil {
