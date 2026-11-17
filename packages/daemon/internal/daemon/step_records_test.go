@@ -665,13 +665,14 @@ func (r *stepRecordsRig) walkToRetro() {
 func (r *stepRecordsRig) unratedRetroRefused(c *stepClaimant) (int, string) {
 	t := r.t
 	t.Helper()
-	if contract := r.d.claim(c.token).PluginContract; contract < api.PlanRatingContract {
+	contract := r.d.claim(c.token).PluginContract
+	if contract < api.PlanRatingContract {
 		t.Fatalf("the %s of %s registered plugin contract %d, below PlanRatingContract %d: this check proves nothing", c.role, r.key, contract, api.PlanRatingContract)
 	}
 	status, body := r.complete(c, r.retroCompletion(nil))
 	if status != http.StatusBadRequest || !strings.Contains(body, "PLAN_RATING_REQUIRED") {
 		t.Fatalf("the retro's completion of %s with no rating from the %s at plugin contract %d = %d %s, want 400 PLAN_RATING_REQUIRED",
-			r.key, c.role, r.d.claim(c.token).PluginContract, status, body)
+			r.key, c.role, contract, status, body)
 	}
 	return status, body
 }
