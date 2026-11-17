@@ -35,7 +35,8 @@ test("stepTasks keeps the server's order and names each run's step, state and ti
             started_at: "2026-11-16T10:31:00Z",
           }),
           record({ id: "retro-1", kind: "retro", step: 0, type: "" }),
-          // A merge GitHub already made: no merger started, so no agent, no model and no start.
+          // A merge GitHub had already made, which started under the release before this one: that
+          // release counted no start, so the end names no agent, no model and no start.
           record({
             agent: "",
             id: "merge-1",

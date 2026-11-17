@@ -63,7 +63,10 @@ const tester: StepRecord = {
   report: null,
 };
 
-/** A merge GitHub already made: no merger started, so no agent, no model and no start. */
+/**
+ * A merge GitHub had already made, which started under the release before this one: that release
+ * counted no start, so the end names no agent, no model and no start.
+ */
 const mergedByGitHub: StepRecord = {
   id: "7c3e1a5b-9d4f-5a2c-b6e8-0a2c4e6f8a03",
   issue: "LEG-1",
