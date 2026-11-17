@@ -180,7 +180,9 @@ func TestAMergedRootWaitsForItsChildrenAndClosesWhenTheLastLeaves(t *testing.T) 
 // role that owns a worked phase. A child in accepting waits on its architect, now its own tree's,
 // which promotion starts with no phase named, and no phase worker. Every phase resumes as itself
 // (workflow.ResumePhase): the merger merges, so a carried merging child's merger is started again
-// to merge.
+// to merge. A child carried in reviewing keeps the commit its reviewer's last deciding review read
+// (record.PhaseRow.ReviewedHead) on the reviewer's carried row, since readmit's carry returns
+// before the generation's clear, and the promoted reviewer's task names it.
 func TestAHandedOverChildCarriesItsPhaseGateAndPullRequest(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -188,11 +190,15 @@ func TestAHandedOverChildCarriesItsPhaseGateAndPullRequest(t *testing.T) {
 		resumes phase.Phase
 		prState record.PullRequestState
 		role    claim.Role
+		// reviewed is the commit the reviewer's carried row holds, "" for a case that seeds no
+		// reviewer row.
+		reviewed string
 	}{
 		{name: "planning", phase: phase.Planning, resumes: phase.Planning, prState: record.PullRequestOpen, role: claim.RolePlanner},
 		{name: "implementing", phase: phase.Implementing, resumes: phase.Implementing, prState: record.PullRequestOpen, role: claim.RoleImplementer},
 		{name: "testing", phase: phase.Testing, resumes: phase.Testing, prState: record.PullRequestOpen, role: claim.RoleTester},
-		{name: "reviewing", phase: phase.Reviewing, resumes: phase.Reviewing, prState: record.PullRequestOpen, role: claim.RoleReviewer},
+		{name: "reviewing", phase: phase.Reviewing, resumes: phase.Reviewing, prState: record.PullRequestOpen, role: claim.RoleReviewer,
+			reviewed: "1111111111111111111111111111111111111111"},
 		{name: "retro", phase: phase.Retro, resumes: phase.Retro, prState: record.PullRequestOpen, role: claim.RoleImplementer},
 		{name: "merging", phase: phase.Merging, resumes: phase.Merging, prState: record.PullRequestOpen, role: claim.RoleMerger},
 		{name: "accepting", phase: phase.Accepting, resumes: phase.Accepting, prState: record.PullRequestOpen, role: claim.RoleArchitect},
@@ -206,13 +212,17 @@ func TestAHandedOverChildCarriesItsPhaseGateAndPullRequest(t *testing.T) {
 			parent := root
 			inTx(t, pool, func(tx pgx.Tx) {
 				records := record.NewStore()
-				for _, put := range []error{
+				puts := []error{
 					records.PutIssue(context.Background(), tx, record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: testProject, Title: root, Phase: phase.Done, Generation: 1, Status: "done", LingerUntil: &until}),
 					records.PutIssue(context.Background(), tx, record.Issue{Key: child, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: testProject, Title: child, Parent: &parent, Phase: tc.phase, Generation: 1, Status: "retro", Rank: "B", LastDispatchSeq: 1}),
 					records.PutGate(context.Background(), tx, record.DesignGate{Issue: root, ArtifactID: artifact, LatestVersion: 2, ApprovedVersion: new(2)}),
 					records.PutPullRequest(context.Background(), tx, record.PullRequest{Issue: child, Repo: "acme/widgets", Number: 42, Branch: "legion/LEGION-209", HeadSHA: "head-42", Generation: 1, State: tc.prState}),
 					records.PutHandover(context.Background(), tx, record.Handover{Issue: child, Tree: root, Generation: 1}),
-				} {
+				}
+				if tc.reviewed != "" {
+					puts = append(puts, records.PutPhase(context.Background(), tx, record.PhaseRow{Issue: child, Role: claim.RoleReviewer, Claim: "reviewer-claim", ReviewedHead: tc.reviewed}))
+				}
+				for _, put := range puts {
 					if put != nil {
 						t.Fatalf("seed: %v", put)
 					}
@@ -255,6 +265,28 @@ func TestAHandedOverChildCarriesItsPhaseGateAndPullRequest(t *testing.T) {
 					if starts := phaseStarts(t, pool, child, worker, tc.resumes); starts != 0 {
 						t.Fatalf("the %s was started %d times for a child carried in accepting, want nobody but the architect", worker, starts)
 					}
+				}
+			}
+			if tc.reviewed != "" {
+				var row record.PhaseRow
+				inTx(t, pool, func(tx pgx.Tx) {
+					rows, err := record.NewStore().Phases(context.Background(), tx, child)
+					if err != nil {
+						t.Fatalf("read the phases rows of %s: %v", child, err)
+					}
+					row = record.PhaseRowOf(rows, claim.RoleReviewer)
+				})
+				if row.ReviewedHead != tc.reviewed {
+					t.Errorf("the carried reviewer's row reads the reviewed commit %q, want %s: the carry keeps the phase rows", row.ReviewedHead, tc.reviewed)
+				}
+				var tasks []string
+				for _, effect := range effects(t, pool) {
+					if request, ok := effect.payload.(record.SuperviseRequest); ok && effect.issue == child && request.Op == "start" && request.Role == claim.RoleReviewer {
+						tasks = append(tasks, request.Task)
+					}
+				}
+				if want := " Last reviewed commit: " + tc.reviewed + "."; len(tasks) != 1 || !strings.Contains(tasks[0], want) {
+					t.Fatalf("the promoted reviewer's tasks = %q, want one naming %q", tasks, want)
 				}
 			}
 		})

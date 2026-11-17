@@ -567,6 +567,9 @@ func TestTheReviewedCommitSurvivesEachWayBackIntoReviewing(t *testing.T) {
 		reviewedTwice(t, apply, pool)
 		before := reviewerRow(t, pool)
 		// The carried orphan's re-admission raises its generation and keeps its phase and its rows.
+		// This stands in for admission's re-admission, which this package cannot drive; admit's
+		// TestAHandedOverChildCarriesItsPhaseGateAndPullRequest drives the real hand-over, its
+		// reviewing case holding a reviewed commit.
 		carried := issueRecord(t, pool, "LEGION-208")
 		carried.Generation++
 		seedIssue(t, pool, *carried)
