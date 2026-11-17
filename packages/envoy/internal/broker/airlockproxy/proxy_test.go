@@ -1316,12 +1316,22 @@ func TestATunnelToAServiceThatNeverClosesIsGoneWithinTheIdleLimit(t *testing.T) 
 	}
 
 	// Once the window has run out: no entry in the registry the drain reads, no goroutine of
-	// the tunnel left, and the service's own connection closed. The half-close leaves the
-	// command's side quiet too, so both wrappers are armed and both windows end here.
+	// the tunnel left, and the service's own connection closed. The command's bytes and its
+	// half-close cross the tunnel on the proxy's goroutines, and a byte read or written after
+	// a move of the clock and before the timer's check pushes the window out: the check then
+	// arms the timer again for a later window, as the product should. So the row moves the fake
+	// to each window the idle timers arm until the tunnel is gone, and never reads the wall
+	// clock.
 	fake.AwaitArmed(t, "the idle limit on both ends of the tunnel", 2)
-	fake.Advance(idle)
-	testwait.Eventually(t, "the proxy to hold no connection and no tunnel goroutine of the quiet tunnel", func() bool {
-		return openTunnels(r.proxy) == 0 && !goroutinesIn(t, "connectTunnel")
+	testwait.Until(t, "the proxy to hold no connection and no tunnel goroutine of the quiet tunnel, the fake moved to each idle window its timers arm", func() (string, bool) {
+		if openTunnels(r.proxy) == 0 && !goroutinesIn(t, "connectTunnel") {
+			return "", true
+		}
+		armed := fake.Armed()
+		if len(armed) > 0 {
+			fake.Set(armed[0])
+		}
+		return fmt.Sprintf("%d connection(s) open, tunnel goroutines %v, timers armed at %v", openTunnels(r.proxy), goroutinesIn(t, "connectTunnel"), armed), false
 	})
 	upstream.SetReadDeadline(time.Now().Add(5 * time.Second))
 	// What the command wrote is still in this socket's buffer, unread by a service that reads
