@@ -190,9 +190,9 @@ type FiledIssue struct {
 	// names it by (tablePhase): the eight words of the spec's "Phase words in tables" — `design`,
 	// `planning`, `implementing`, `testing`, `reviewing`, `accepting`, `retro` and `merging` —,
 	// `queued` for the waiting line, `awaiting_person` and `held` for the "no role" bar, `done`
-	// for an issue the daemon has finished and Dispatch has not closed, and the empty string for
-	// a moment the issue's timeline does not cover, which is what every filing by the controller
-	// carries.
+	// for an hour the issue was out of the workflow before its close (outOfWorkflowSpans), with
+	// observations or before them, and the empty string for a moment the issue's timeline does
+	// not cover, which is what every filing by the controller carries.
 	FilerPhase string `json:"filer_phase"`
 }
 

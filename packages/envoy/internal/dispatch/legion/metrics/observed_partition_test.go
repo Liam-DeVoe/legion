@@ -320,6 +320,22 @@ func TestANullSlotMarkIsAReleaseOnlyInAReadThatStillCarriesTheIssue(t *testing.T
 			timeline: []string{"design 0-4", "design 4-6"},
 			work:     6, queued: 0, architect: 6,
 		},
+		{
+			// The read at hour 3 carries the root again, in planning and holding its slot, so it
+			// is no longer dropped. The read at hour 4 observes it admitted and writes no slot
+			// mark, since its newest one is hour 3's: it still holds the slot, and is in design.
+			// Read as a return from the drop, hour 4 would end the slot and put hours 4 to 6 in
+			// the queue.
+			name: "a drop, a return holding the slot, then a phase with no slot mark",
+			issue: admitted().
+				observe(legion.FieldPhase, hour(2), "null").
+				observe(legion.FieldSlot, hour(2), "null").
+				observeString(legion.FieldPhase, hour(3), "planning").
+				observe(legion.FieldSlot, hour(3), "0").
+				observeString(legion.FieldPhase, hour(4), "admitted"),
+			timeline: []string{"design 0-3", "planning 3-4", "design 4-6"},
+			work:     6, queued: 0, architect: 5,
+		},
 	}
 
 	for _, each := range cases {

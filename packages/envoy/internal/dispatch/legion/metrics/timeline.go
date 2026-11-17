@@ -236,15 +236,13 @@ func (p *Population) observedPhases(issue *Issue) []PhaseSpan {
 // the bar of the phase the issue was last seen in, so the bars of the issue still add up to its
 // work time (the spec's "Parked and pre-work hours in phase time"). Both readers of an issue's
 // phase stretches take them from here, the timeline (observedPhases) and the root's recorded wait
-// on a person (waitingOnPersonSpans), so the two cannot read one mark two ways. The one other
-// reader of the phase marks, slotSpans, takes from them only the moments a read dropped the issue
-// and the moments one carried it again, and it reads a mark that names no phase as this does: a
-// read that no longer carried the issue.
+// on a person (waitingOnPersonSpans), so the two cannot read one mark two ways. slotSpans reads
+// the drops through markedPhase too.
 func (p *Population) phaseStretches(issue *Issue) iter.Seq[PhaseSpan] {
 	return func(yield func(PhaseSpan) bool) {
 		var open PhaseSpan
 		for _, mark := range issue.Observed[legion.FieldPhase] {
-			phase := legion.JSONString([]byte(mark.Value))
+			phase := markedPhase(mark)
 			if phase == "" {
 				continue
 			}
@@ -262,6 +260,10 @@ func (p *Population) phaseStretches(issue *Issue) iter.Seq[PhaseSpan] {
 		}
 	}
 }
+
+// markedPhase is the phase a `phase` mark names, and "" for a mark that names none: a read that no
+// longer carried the issue.
+func markedPhase(mark Mark) string { return legion.JSONString([]byte(mark.Value)) }
 
 // slotSpans are the stretches the issue held an admission slot, from its own `slot` observations:
 // never from the daemon's `admission.active`, which dispatch://INFRA-980 widens to every issue
@@ -309,7 +311,7 @@ func (p *Population) slotSpans(issue *Issue, end time.Time) []Span {
 		if len(slots) > 0 && slots[0].At.Equal(moment) {
 			slot, slots = &slots[0], slots[1:]
 		}
-		dropped := phase != nil && legion.JSONString([]byte(phase.Value)) == ""
+		dropped := phase != nil && markedPhase(*phase) == ""
 		holds := holding
 		switch {
 		case slot != nil:
@@ -589,18 +591,12 @@ func (p *Population) outOfWorkflowByStatus(issue *Issue) []Span {
 		closing--
 	}
 	end := p.issueEnd(issue)
-	var spans []Span
-	for index, mark := range marks[:closing] {
-		if mark.Value != statusTriage && mark.Value != statusDone {
-			continue
-		}
-		span := Span{From: mark.At, To: end}
-		if index+1 < len(marks) {
-			span.To = marks[index+1].At
-		}
-		spans = append(spans, span)
+	if closing < len(marks) {
+		end = marks[closing].At
 	}
-	return normalize(spans)
+	return markSpans(marks[:closing], end, func(value string) bool {
+		return value == statusTriage || value == statusDone
+	})
 }
 
 // outOfWorkflowSpans is the timeline's hours out of the workflow, and there is one definition of
