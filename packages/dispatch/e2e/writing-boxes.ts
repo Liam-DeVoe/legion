@@ -352,10 +352,32 @@ const DELIVERED_WORDS = " can you take a look?";
 /** Presses a box's own send control: the button the box draws, which its driver names. */
 export type SendBox = () => Promise<void>;
 
+/** The mode a plain write delivers in to the world's session: Send, since the session
+ *  advertises it (`delivery.ts`'s `plainDelivery`, and the server's own default for a write that
+ *  names none, `comment_create.go`). */
+const PLAIN_MODE = "steer";
+
+/** What the fake listener took, read as the three facts a delivery claim is about: who it went
+ *  to, the body it carried, and the mode its frame names (`delivery.mode` of the payload the
+ *  comment's delivery wrote, `comment_delivery.go`). */
+async function framesSince(
+  before: number
+): Promise<{ message: unknown; mode: unknown; target_session: unknown }[]> {
+  return (await getSentMessages()).slice(before).map((sent) => {
+    const payload = typeof sent.payload === "string" ? JSON.parse(sent.payload) : undefined;
+    return {
+      message: sent.message,
+      mode: payload?.delivery?.mode,
+      target_session: sent.target_session,
+    };
+  });
+}
+
 /** What a box does with a picked party, which is its row's own `delivers`. A box that does not
  *  deliver lists nobody under the field. A box that delivers lists the party there, and its own
  *  send then reaches that party: the fake Envoy listener takes one frame, for the session picked,
- *  carrying the body the box held (a comment's frame carries its body as `message`). The claim is
+ *  carrying the body the box held (a comment's frame carries its body as `message`), in the mode
+ *  the composer's own rule gives for the session's capabilities (`PLAIN_MODE`). The claim is
  *  driven rather than read, because a row that promises a delivery no reader of the write makes
  *  is exactly what misleads the writer: the suggestion Replacement box said a picked party was
  *  told while neither reader of a comment reads `suggestion.replace_with`. So a delivering row
@@ -392,12 +414,12 @@ export async function expectDeliveryClaim(
   await expect(field).toHaveValue(body);
   const before = (await getSentMessages()).length;
   await sends();
-  // `toMatchObject` holds an array to its length, so a second frame fails as a missing one does.
+  // `toEqual` holds the array to its length, so a second frame fails as a missing one does.
   await expect
-    .poll(async () => (await getSentMessages()).slice(before), {
+    .poll(() => framesSince(before), {
       message: `${box} writing ${write}: the frames its send made`,
     })
-    .toMatchObject([{ message: body, target_session: SESSION.session_id }]);
+    .toEqual([{ message: body, mode: PLAIN_MODE, target_session: SESSION.session_id }]);
 }
 
 /** Everything the box itself is held to, which is every claim but the hint: the three doors,
