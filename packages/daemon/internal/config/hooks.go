@@ -150,8 +150,10 @@ func readHookEvery(value *yaml.Node, field string) (int, error) {
 }
 
 // readHookRoles is a hook's `roles`: the roles its words are put in front of, at least one, each
-// a Legion role of an issue. The architect is refused: the daemon's own wake to an architect is a
-// notice it writes itself, and a hook writes none.
+// a role of an issue: a Legion role, or a name of the role grammar (claim.IsRole), which
+// checkDeploymentRoleKeys holds to a role of `roles` once every key is read. The architect is
+// refused: the daemon's own wake to an architect is a notice it writes itself, and a hook writes
+// none.
 func readHookRoles(value *yaml.Node, field string) ([]claim.Role, error) {
 	key := field + ".roles"
 	if value == nil {
@@ -167,7 +169,7 @@ func readHookRoles(value *yaml.Node, field string) ([]claim.Role, error) {
 	roles := make([]claim.Role, 0, len(named))
 	for _, name := range named {
 		role := claim.Role(name)
-		if !slices.Contains(claim.Roles, role) {
+		if !claim.IsRole(role) {
 			return nil, fmt.Errorf("%s names %q, which is not a Legion role (%s)", key, name, runtime.JoinRoles(claim.Roles))
 		}
 		if role == claim.RoleArchitect {

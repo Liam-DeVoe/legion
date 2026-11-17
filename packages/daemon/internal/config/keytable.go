@@ -489,7 +489,7 @@ var nestedKeys = []memberGroup{
 		{Name: "every", Default: "none: a hook that names no `every` is refused", RequiredBy: "yes",
 			Description: "How many of the moves it counts fire the hook: it fires when those counts, added up, are a whole multiple of this number."},
 		{Name: "roles", Default: "none: a hook that names no `roles` is refused", RequiredBy: "yes",
-			Description: "The roles its words are put in front of, at least one of implementer, tester, reviewer, planner and merger; the architect is refused, since the daemon's own wake to an architect is a notice."},
+			Description: "The roles its words are put in front of, at least one, each one of implementer, tester, reviewer, planner and merger or a role of `roles`; the architect is refused, since the daemon's own wake to an architect is a notice."},
 		{Name: "prompt", Default: "the words come from `prompt_file`", RequiredBy: "when the hook names no `prompt_file`: a hook carries the words it puts in front of its roles",
 			Description: "The words themselves, written in the file."},
 		{Name: "prompt_file", Default: "the words come from `prompt`", RequiredBy: "when the hook names no `prompt`: a hook carries the words it puts in front of its roles",

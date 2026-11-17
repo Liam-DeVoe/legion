@@ -107,3 +107,62 @@ func TestADeploymentRolesOverlaysAreJudgedAsAnIssueRolesAre(t *testing.T) {
 		t.Fatalf("Load with the role on Oh My Pi: %v", err)
 	}
 }
+
+// A hook's `roles` and a project's `default_steps` take a role the deployment defines; a file
+// that defines no such role is refused with the text of any other name no role holds, which for
+// `default_steps` is the plan's own refusal of a role nobody defines. The judgments of
+// `default_steps` run once the whole file is read, in the order of the projects' keys, so a
+// refusal of an earlier key comes first, and of two projects the one whose key sorts first is
+// told.
+func TestAHooksRolesAndDefaultStepsTakeARoleOfTheDeployment(t *testing.T) {
+	const hook = "hooks: [{name: nudge, on: work_back, every: 1, roles: [checker], prompt: Look again.}]\n"
+	steps := func(projects string) string {
+		return strings.Replace(minimalFile, "projects:\n  DEMO: {}\n", "projects:\n"+projects, 1)
+	}
+
+	cfg, err := Load(rolesFile(t, checkerRole+hook, "checker.md"), noEnv)
+	if err != nil {
+		t.Fatalf("Load of a hook of the role: %v", err)
+	}
+	if got := cfg.Hooks[0].Roles; len(got) != 1 || got[0] != "checker" {
+		t.Errorf("Hooks[0].Roles = %v, want [checker]", got)
+	}
+	cfg, err = Load(configFileWith(t, steps("  DEMO: {default_steps: [implementer, checker]}\n")+checkerRole, "checker.md"), noEnv)
+	if err != nil {
+		t.Fatalf("Load of default_steps naming the role: %v", err)
+	}
+	if got := cfg.Projects["DEMO"].DefaultSteps; len(got) != 2 || got[1].Role != "checker" {
+		t.Errorf("DefaultSteps = %v, want [implementer checker]", got)
+	}
+
+	for _, tc := range []struct{ name, path, want string }{
+		{"a hook of the role without roles", rolesFile(t, hook),
+			`hooks[0].roles names "checker", which is not a Legion role (architect, planner, implementer, tester, reviewer, merger)`},
+		{"a hook of a name no role holds", rolesFile(t, checkerRole+strings.Replace(hook, "[checker]", "[ghost]", 1), "checker.md"),
+			`hooks[0].roles names "ghost", which is not a Legion role (architect, planner, implementer, tester, reviewer, merger, checker)`},
+		{"a hook of a name outside the grammar", rolesFile(t, checkerRole+strings.Replace(hook, "[checker]", "[Checker]", 1), "checker.md"),
+			`hooks[0].roles names "Checker", which is not a Legion role (architect, planner, implementer, tester, reviewer, merger)`},
+		{"default_steps of the role without roles", configFileWith(t, steps("  DEMO: {default_steps: [implementer, checker]}\n")),
+			"projects.DEMO.default_steps: step 2 of task default names the role checker, which neither the deployment nor the plan defines."},
+		{"default_steps this release refuses for another cause", configFileWith(t, steps("  DEMO: {default_steps: [tester]}\n")),
+			"projects.DEMO.default_steps: task default has no step implementer. This release of Legion does not carry it out yet. " +
+				"step 1 of task default names tester, and no step before it names the role implementer, whose pull request tester reads. This release of Legion does not carry it out yet."},
+		{"a refusal of an earlier key first", configFileWith(t, steps("  DEMO: {default_steps: [tester]}\n")+"admission_cap: 0\n"),
+			"admission_cap must be a positive integer"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := Load(tc.path, noEnv); err == nil || err.Error() != tc.want {
+				t.Fatalf("Load = %v, want %q", err, tc.want)
+			}
+		})
+	}
+
+	t.Run("the project whose key sorts first", func(t *testing.T) {
+		path := configFileWith(t, steps("  DEMO: {}\n  BETA: {default_steps: [tester]}\n  ACME: {default_steps: [tester]}\n"))
+		for range 20 {
+			if _, err := Load(path, noEnv); err == nil || !strings.HasPrefix(err.Error(), "projects.ACME.default_steps: ") {
+				t.Fatalf("Load = %v, want the refusal of projects.ACME.default_steps", err)
+			}
+		}
+	})
+}

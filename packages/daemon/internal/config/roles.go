@@ -221,16 +221,55 @@ func (c Config) withRoles(legion []claim.Role) []claim.Role {
 // each key's reader takes a name of the role grammar beside Legion's own, since `roles` may be
 // read after it, and this check, run once every key it judges is set, refuses a name that is
 // neither one of Legion's roles for that key nor a role of `roles`, with the reader's text whose
-// list names both. Its keys: `worker_backends`, `role_config_files` and
-// `worker_stall_backstop_hours`.
+// list names both. Its keys: `worker_backends`, `role_config_files`,
+// `worker_stall_backstop_hours` and each hook's `roles`. Then it judges each project's
+// `default_steps`, which readDefaultSteps only parses, in the order of the projects' keys
+// (checkDefaultSteps).
 func checkDeploymentRoleKeys(cfg Config) error {
-	if err := namedRoles(cfg.WorkerBackends, "worker_backends", "an issue role", cfg.issueRoles()); err != nil {
+	issueRoles := cfg.issueRoles()
+	if err := namedRoles(cfg.WorkerBackends, "worker_backends", "an issue role", issueRoles); err != nil {
 		return err
 	}
 	if err := namedRoles(cfg.RoleConfigFiles, "role_config_files", "a Legion role", cfg.roleConfigRoles()); err != nil {
 		return err
 	}
-	return namedRoles(cfg.WorkerStallBackstops, stallBackstopKey, "a Legion role", cfg.roleConfigRoles())
+	if err := namedRoles(cfg.WorkerStallBackstops, stallBackstopKey, "a Legion role", cfg.roleConfigRoles()); err != nil {
+		return err
+	}
+	for index, hook := range cfg.Hooks {
+		for _, role := range hook.Roles {
+			if !slices.Contains(issueRoles, role) {
+				return fmt.Errorf("%s[%d].roles names %q, which is not a Legion role (%s)", hooksKey, index, role, runtime.JoinRoles(issueRoles))
+			}
+		}
+	}
+	return checkDefaultSteps(cfg)
+}
+
+// checkDefaultSteps holds each project's `default_steps` to the checks a plan of the one task
+// `default` with those steps passes (plan.Supported, then plan.Validate against the deployment's
+// roles, Legion's and those of `roles`), so the steps a task with none runs are steps this release
+// carries out. The projects are judged in the order of their keys, and a refusal names the key,
+// then gives every reason of both checks.
+func checkDefaultSteps(cfg Config) error {
+	deployment := cfg.Deployment()
+	for _, key := range slices.Sorted(maps.Keys(cfg.Projects)) {
+		steps := cfg.Projects[key].DefaultSteps
+		if steps == nil {
+			continue
+		}
+		task := plan.Plan{Tasks: []plan.Task{{ID: plan.DefaultTask, HasSteps: true, Steps: steps}}}
+		refusals := append(plan.Supported(task), plan.Validate(task, deployment)...)
+		if len(refusals) == 0 {
+			continue
+		}
+		reasons := make([]string, len(refusals))
+		for i, refusal := range refusals {
+			reasons[i] = refusal.Reason
+		}
+		return fmt.Errorf("projects.%s.default_steps: %s", key, strings.Join(reasons, " "))
+	}
+	return nil
 }
 
 // namedRoles refuses the first role in name order that key names and roles does not hold, as the
