@@ -377,13 +377,14 @@ a profile the AWS config does not hold stops the command before that endpoint si
 packages/envoy/scripts/aws-moto-check.sh [BINARY]
 ```
 
-It starts `moto[server]==5.2.5` through `uvx` on a free loopback port under the account
+It starts `moto[server]==5.2.5` through `uvx` on a loopback port the kernel chooses
+(`-p 0`), which it reads from moto's `Running on` line, under the account
 the tests' key ARN names, runs the test with `AGENT_SECRETS_BINARY` set to BINARY (empty:
 the test builds the CLI from this tree), stops moto, and exits with go test's status; the
 test fails, and never skips, without `AGENT_SECRETS_MOTO_URL`. A release binary as BINARY
 is the negative control. moto ignores a policy's conditions and refuses with an XML
 `AccessDenied` rather than `AccessDeniedException`, so this proves no IAM policy, and
-the refusal's text is proved in process only. It needs uv, curl, python3 and go.
+the refusal's text is proved in process only. It needs uv, curl and go.
 
 ## airlock-lean-axioms.sh
 
