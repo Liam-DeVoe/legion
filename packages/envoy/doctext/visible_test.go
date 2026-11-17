@@ -67,6 +67,15 @@ var exactRows = []struct{ name, doc, want string }{
 	// than a comment.
 	{"a processing instruction block is a bogus comment and goes",
 		"a\n\n<?php hidden(); ?>\n\nb\n", "a\n\n\n\nb\n"},
+	// GitHub's cmark-gfm reads no inline comment whose text ends in `-`: it writes one as text,
+	// which stays. `<!---->` is a comment to it, and goes.
+	{"an inline comment whose text ends in a dash is text on GitHub and stays",
+		"p <!-- note ---> q <!--- t ---> r <!-- u ----> s\n", "p <!-- note ---> q <!--- t ---> r <!-- u ----> s\n"},
+	{"an inline comment whose text ends in a dash across lines stays",
+		"p <!--- a\nb ---> c\n", "p <!--- a\nb ---> c\n"},
+	{"the empty comment of four dashes goes", "p <!----> q\n", "p  q\n"},
+	// cmark-gfm opens an HTML block at `<source>`, which CommonMark 0.31.2 does not.
+	{"a source block's comment goes", "<source>\n<!-- gone -->\n\nb\n", "<source>\n\n\nb\n"},
 	{"no comment at all", "# Title\n\n- `x` — y\n", "# Title\n\n- `x` — y\n"},
 }
 
@@ -160,6 +169,23 @@ var markerRows = []struct {
 	// GitHub reads footnotes: a footnote definition's indented continuation is its content, not code.
 	{"H9 a comment in a footnote's indented continuation", "Text[^1].\n\n[^1]: Note.\n\n    <!-- HIDE89 -->\n\nSHOWN89\n", []string{"HIDE89"}, []string{"SHOWN89"}},
 	{"H10 a comment block in a footnote's continuation paragraph", "Text[^1].\n\n[^1]: Note.\n\n    More SHOWN90.\n    <!--\n    HIDE90\n    -->\n", []string{"HIDE90"}, []string{"SHOWN90"}},
+	// An inline `<!--` whose text ends in `-` is text on GitHub: it hides nothing on its own line,
+	// and it does not end a comment an HTML block left open.
+	{"I2 an inline comment ending in --->", "p <!-- zm2 ---> ze2\n", nil, []string{"zm2", "ze2"}},
+	{"G3 an inline comment ending in ---->", "p <!-- zm63 ----> ze63\n", nil, []string{"zm63", "ze63"}},
+	{"G4 an inline comment opening with <!--- and ending in --->", "p <!--- zm64 ---> ze64\n", nil, []string{"zm64", "ze64"}},
+	{"Q3 an inline comment with -- inside, ending in --->", "p <!-- zm98 -- b ---> ze98\n", nil, []string{"zm98", "ze98"}},
+	{"O1 an open comment that an inline ---> does not end", "<div><!--\n\nzh1 <!-- q ---> zs1\n\nzt1\n", []string{"zh1", "zs1", "zt1"}, nil},
+	{"P3 a list item's open comment that an inline ---> does not end", "- <!--\n  zh71\n\nzs71 <!-- note ---> zt71\n\nzu71\n", []string{"zh71", "zs71", "zt71", "zu71"}, nil},
+	{"Q5 an open comment that a multi-line inline ---> does not end", "- <!--\n  zh100\n\nzs100 <!-- a\nb ---> zt100\n", []string{"zh100", "zs100", "zt100"}, nil},
+	{"S1 a claim list under an open comment that an inline ---> does not end",
+		"#### The identity zhead1\n\n<div><!--\n\nRead the list below <!-- each kind is one bullet --->\n\nIt takes three kinds:\n\n- zbullet1 one\n- zbullet2 two\n- zbullet3 three\n\n#### Network zhead2\n\nzbody2\n",
+		[]string{"zbullet1", "zbullet2", "zbullet3", "zhead2", "zbody2"}, []string{"zhead1"}},
+	// GitHub opens an HTML block at `<source>`, and one there may interrupt a paragraph.
+	{"K1 a source block that leaves a comment open", "<source><!--\n\nzh75\n", []string{"zh75"}, nil},
+	{"K5 a source block interrupting a paragraph", "para zp79\n<source><!--\n\nzh79\n", []string{"zh79"}, []string{"zp79"}},
+	{"S2 a claim list under a source block's open comment", "#### The identity zhead3\n\n<source><!--\n\nIt takes three kinds:\n\n- zbullet4 one\n- zbullet5 two\n\n#### Network zhead4\n",
+		[]string{"zbullet4", "zbullet5", "zhead4"}, []string{"zhead3"}},
 }
 
 // VisibleMarkdown keeps exactly the marker words the page shows.

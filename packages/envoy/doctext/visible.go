@@ -11,33 +11,89 @@ package doctext
 import (
 	"bytes"
 	"cmp"
+	"regexp"
 	"slices"
 	"strings"
 
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/ast"
 	"github.com/yuin/goldmark/extension"
+	"github.com/yuin/goldmark/parser"
 	"github.com/yuin/goldmark/text"
+	"github.com/yuin/goldmark/util"
 	"golang.org/x/net/html"
 )
 
-// markdown parses a document as GitHub renders one: CommonMark (0.31.2, which goldmark
-// implements) with GitHub Flavored Markdown's extensions and its footnotes. A parser is safe for
-// concurrent use.
-var markdown = goldmark.New(goldmark.WithExtensions(extension.GFM, extension.Footnote))
+// markdown parses a document close to how GitHub renders one. goldmark implements CommonMark
+// 0.31.2, with GitHub Flavored Markdown's extensions and footnotes here; GitHub renders with
+// cmark-gfm, whose reading differs in a few places. VisibleMarkdown models two of them: the
+// `<source>` HTML block (sourceBlock) and the inline comment whose text ends in `-`
+// (cmarkGFMComment). The rest are named under VisibleMarkdown's "Not modelled". A parser is safe
+// for concurrent use.
+var markdown = goldmark.New(
+	goldmark.WithExtensions(extension.GFM, extension.Footnote),
+	goldmark.WithParserOptions(parser.WithBlockParsers(util.Prioritized(sourceBlock{}, 899))),
+)
+
+// sourceBlock opens the HTML block cmark-gfm opens at a line that starts, after at most three
+// spaces, with a `<source` or `</source` tag: `source` is on cmark-gfm's list of block tags and
+// not on CommonMark 0.31.2's, which goldmark keeps (parser/html_block.go:13 at v1.8.6). A block of
+// this kind ends at a blank line and may interrupt a paragraph, as goldmark's own blocks of the
+// same kind do, so everything after the opening line is goldmark's HTML block parser's. It runs
+// at priority 899, before goldmark's (900), which opens nothing at `<source>`.
+type sourceBlock struct{}
+
+var sourceBlockStart = regexp.MustCompile(`(?i)^ {0,3}</?source(?:[ \t>]|/>|\r?\n|$)`)
+
+func (sourceBlock) Trigger() []byte { return []byte{'<'} }
+
+func (sourceBlock) Open(_ ast.Node, reader text.Reader, _ parser.Context) (ast.Node, parser.State) {
+	line, segment := reader.PeekLine()
+	if !sourceBlockStart.Match(line) {
+		return nil, parser.NoChildren
+	}
+	node := ast.NewHTMLBlock(ast.HTMLBlockType6)
+	reader.AdvanceToEOL()
+	node.Lines().Append(segment)
+	return node, parser.NoChildren
+}
+
+func (sourceBlock) Continue(node ast.Node, reader text.Reader, pc parser.Context) parser.State {
+	return parser.NewHTMLBlockParser().Continue(node, reader, pc)
+}
+
+func (sourceBlock) Close(node ast.Node, reader text.Reader, pc parser.Context) {
+	parser.NewHTMLBlockParser().Close(node, reader, pc)
+}
+
+func (sourceBlock) CanInterruptParagraph() bool { return true }
+
+func (sourceBlock) CanAcceptIndentedLine() bool { return false }
+
+// cmarkGFMComment is whether raw, the text of an inline raw HTML node that opens with `<!--`, is a
+// comment to cmark-gfm. goldmark reads one as CommonMark 0.31.2 does, from `<!--` to the first
+// `-->`; cmark-gfm reads no comment whose text, between them, ends in `-` (its scanners.re
+// `htmlcomment`), and writes such a one as text: `<!-- note --->`, `<!--- note --->` and
+// `<!-- q ---->`. The empty `<!-->`, `<!--->` and `<!---->` are comments to both.
+func cmarkGFMComment(raw []byte) bool {
+	inner, ok := bytes.CutPrefix(raw, []byte("<!--"))
+	return !ok || len(inner) <= len("-->") || !bytes.HasSuffix(inner, []byte("--->"))
+}
 
 // VisibleMarkdown is doc as a reader of the page GitHub renders sees it, for a check that holds a
 // guide's text to something: every HTML comment is gone, so a passage moved inside one no longer
 // counts as the guide stating it. A check that read the raw bytes passed while the page showed
 // nothing, since a comment is in the file and on no page.
 //
-// Neither grammar is written here. goldmark parses doc as CommonMark with GitHub Flavored
-// Markdown's extensions and footnotes, which says which bytes are raw HTML: an HTML block, or raw
-// HTML inline. golang.org/x/net/html's tokenizer, which follows the HTML specification's
-// tokenizer, reads each of those, and every comment or DOCTYPE token it gives is taken out: a
-// comment, the empty `<!-->`, one that `--!>` ends, a bogus comment such as `<?php … ?>`,
-// `<![CDATA[ … ]]>` or `<!X …>`, and a `<!DOCTYPE …>` (in upper case: see below), none of which a
-// page shows. Before it reads a piece, the `<` of each tag GitHub's tag filter disallows
+// Neither grammar is written here, but for the two cmark-gfm readings markdown names. goldmark
+// parses doc as CommonMark with GitHub Flavored Markdown's extensions and footnotes, which says
+// which bytes are raw HTML: an HTML block, or raw HTML inline. golang.org/x/net/html's tokenizer,
+// which follows the HTML specification's tokenizer, reads each of those, and every comment or
+// DOCTYPE token it gives is taken out: a comment, the empty `<!-->`, one that `--!>` ends, a bogus
+// comment such as `<?php … ?>`, `<![CDATA[ … ]]>` or `<!X …>`, and a `<!DOCTYPE …>` (in upper
+// case: see below), none of which a page shows. An inline `<!--` whose text ends in `-`, which
+// GitHub writes as text (cmarkGFMComment), is not read: it hides nothing and ends no open
+// comment. Before the tokenizer reads a piece, the `<` of each tag GitHub's tag filter disallows
 // (`<script>`, `<style>`, `<textarea>`, `<title>`, `<xmp>`, `<iframe>`, `<noembed>`,
 // `<noframes>`, `<plaintext>`) is read as text, as GitHub writes it `&lt;`, so a comment inside
 // one of those is a comment, as on GitHub.
@@ -56,6 +112,9 @@ var markdown = goldmark.New(goldmark.WithExtensions(extension.GFM, extension.Foo
 // Not modelled:
 //   - a tab between a block quote's `>` and a `<!--`: goldmark opens no HTML block there, where
 //     GitHub and CommonMark do, so the comment is read as inline text and stays;
+//   - an HTML block at `<search>` or `<meta>`: goldmark opens one there and GitHub does not, so a
+//     comment such a line leaves open is carried on here where GitHub shows the text after it.
+//     This takes out text the page shows, so a check fails rather than passes;
 //   - a declaration whose first letter is lower case, such as `<!doctype html>`: goldmark opens
 //     an HTML block or inline raw HTML at `<!` only before an upper-case letter
 //     (parser/html_block.go:88 and parser/raw_html.go:41 at v1.8.6), where CommonMark and every
@@ -176,8 +235,15 @@ func rawHTML(source []byte) []piece {
 			return ast.WalkSkipChildren, nil
 		case *ast.RawHTML:
 			segments := make([]text.Segment, 0, n.Segments.Len())
+			var raw []byte
 			for i := range n.Segments.Len() {
-				segments = append(segments, n.Segments.At(i))
+				segment := n.Segments.At(i)
+				segments = append(segments, segment)
+				raw = append(raw, segment.Value(source)...)
+			}
+			if !cmarkGFMComment(raw) {
+				// GitHub writes it as text: it hides nothing and ends no open comment.
+				return ast.WalkContinue, nil
 			}
 			read(segments, false)
 		}

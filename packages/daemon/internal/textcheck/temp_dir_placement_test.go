@@ -17,7 +17,7 @@ var placementExceptions = map[string]string{
 // testtmp, so that one place measures a socket path against what Linux holds and one place knows
 // where to fall back to (testtmp.CheckPlacements says what it reads). The comment on
 // internal/daemon/idle_rig_pod_test.go's privateDir spells os.TempDir() in English, which the
-// check reads as prose. packages/envoy/testtmp runs the same check over that module.
+// check reads as prose. packages/envoy/internal/textcheck runs the same check over that module.
 func TestNoTestFilePlacesATemporaryDirectoryOfItsOwn(t *testing.T) {
 	testtmp.CheckPlacements(t, "../..", placementExceptions)
 }

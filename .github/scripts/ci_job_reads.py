@@ -799,7 +799,7 @@ RULES = {
     f"{ENVOY}/internal/textcheck/file_copy_test.go": reads(
         (f"{ENVOY}/**", "internal/textcheck/file_copy_test.go:17 has packages/envoy/sourcecheck walk every .go file under packages/envoy (../.., infra included)")),
     f"{ENVOY}/internal/textcheck/temp_dir_placement_test.go": reads(
-        (f"{ENVOY}/**/*_test.go", "internal/textcheck/temp_dir_placement_test.go:24 has packages/envoy/testtmp's CheckPlacements walk every "
+        (f"{ENVOY}/**/*_test.go", "internal/textcheck/temp_dir_placement_test.go:18 has packages/envoy/testtmp's CheckPlacements walk every "
                                   "test file under packages/envoy (../..), infra included")),
     f"{ENVOY}/internal/textcheck/readme_commands_test.go": reads(
         (f"{ENVOY}/loadtest/README.md", "internal/textcheck/readme_commands_test.go:25 reads packages/envoy/loadtest/README.md under ../../../..")),
