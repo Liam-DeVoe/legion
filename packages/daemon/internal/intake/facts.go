@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -695,29 +696,15 @@ func (r PullRequestReview) LegionHead() string {
 func (r PullRequestReview) LegionEntry() int64 {
 	digits := string(r.lastLegionFooter().Entry)
 	if strings.HasPrefix(digits, `"`) {
-		if err := json.Unmarshal([]byte(digits), &digits); err != nil || !onlyDigits(digits) {
+		if err := json.Unmarshal([]byte(digits), &digits); err != nil {
 			return 0
 		}
 	}
-	entry, err := strconv.ParseInt(digits, 10, 64)
-	if err != nil || entry <= 0 {
+	entry, err := strconv.ParseUint(digits, 10, 64)
+	if err != nil || entry == 0 || entry > math.MaxInt64 {
 		return 0
 	}
-	return entry
-}
-
-// onlyDigits says whether s is one or more of the ASCII digits 0 to 9 and nothing else: no sign,
-// no space, no point.
-func onlyDigits(s string) bool {
-	if s == "" {
-		return false
-	}
-	for _, c := range s {
-		if c < '0' || c > '9' {
-			return false
-		}
-	}
-	return true
+	return int64(entry)
 }
 
 // fullCommitSHA says whether s is a commit as GitHub names one: exactly 40 lowercase hexadecimal
