@@ -1050,7 +1050,9 @@ test("the reader's own Ask back keeps the row under Waiting on you, unscrolled, 
     await user.click(draft);
     await user.paste("Ship what, exactly?");
     const askBack = within(card).getByRole("button", { name: "Ask back" });
-    askBack.focus();
+    act(() => {
+      askBack.focus();
+    });
     await user.click(askBack);
 
     // The reply lands in the card's thread and the card says whose turn it is; Ask back, its
@@ -1279,14 +1281,18 @@ test("after the reader's own answer fails, an answer from elsewhere still holds 
     await user.click(field);
     await user.paste("JSON");
     const answer = within(card).getByRole("button", { name: "Answer" });
-    answer.focus();
+    act(() => {
+      answer.focus();
+    });
     await user.click(answer);
     // The optimistic removal does not take the row from under the reader: it stays, and the
     // failure shows on it.
     await waitFor(() => expect(within(card).getByRole("alert")).toBeTruthy());
     expect(answerAsk).toHaveBeenCalledTimes(1);
     expect(within(card).getByLabelText<HTMLTextAreaElement>("Your answer").value).toBe("JSON");
-    field.focus();
+    act(() => {
+      field.focus();
+    });
 
     // Bob answers it meanwhile: the reader is still in the row, so it stays.
     threadB = {

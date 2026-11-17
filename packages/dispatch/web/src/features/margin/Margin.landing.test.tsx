@@ -129,9 +129,14 @@ async function settled(): Promise<void> {
  *  the margin left the card alone. The fake clock also freezes `performance.now()`, which the
  *  long-task row spins on. */
 async function quiet(): Promise<void> {
-  const settled = Promise.withResolvers<void>();
-  setTimeout(settled.resolve, 50);
-  await settled.promise;
+  // Inside `act`, so whatever draws in these 50 ms draws inside it: the margin's frames, and the
+  // reply composer, which draws again in the wait when the shared Markdown engine lands
+  // (`useLoadedEngine`) and when a timer updates its field.
+  await act(async () => {
+    const settled = Promise.withResolvers<void>();
+    setTimeout(settled.resolve, 50);
+    await settled.promise;
+  });
 }
 
 test("a phone comment deep link highlights its card without expanding it or opening the Thread dialog", async () => {

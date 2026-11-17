@@ -1914,7 +1914,9 @@ test("a compact answered ask's Write a reply reveals its composer as the next ke
     expect(replyToggle).toHaveFocus();
 
     const field = view.getByLabelText("Reply");
-    nextTabStop(replyToggle)?.focus();
+    act(() => {
+      nextTabStop(replyToggle)?.focus();
+    });
     expect(field).toHaveFocus();
     expect(controlledBy(replyToggle)?.contains(field)).toBe(true);
     // The toggle and the form's submit button have distinct names.
