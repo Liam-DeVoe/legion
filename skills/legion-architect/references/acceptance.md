@@ -63,8 +63,8 @@ legion({ op: "sign_off", issue: "LEGION-40" })
 - A `catch-up` whose `reason` names an issue as waiting for your acceptance is the wake for it: it
   is in `accepting`, and the `phase-finished` that moved it there may never have reached you (a
   failed architect's notice is dropped, so a retried one learns of the wait from its catch-up
-  alone). Accept it as this section says, a parent only on a head that carries its children's
-  merges (below).
+  alone). Accept it as this section says, a parent only on a head that carries the merges of every
+  child its checks need (below).
 - The daemon refuses `sign_off` while an issue beneath the one you accept is still in the workflow
   (`SIGNOFF_CHILD_IN_WORKFLOW`, naming each one): run each one to done. Unless the issue's pull
   request has merged, the next admission pass moves it to `awaiting_children`, and it comes back by
