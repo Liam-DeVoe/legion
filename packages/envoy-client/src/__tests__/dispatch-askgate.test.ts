@@ -748,6 +748,17 @@ describe("AskGate at the dispatch CLI", () => {
 
 describe("AskGate at the dispatch entry, across processes", () => {
   const ENTRY = join(import.meta.dir, "..", "..", "bin", "dispatch.ts");
+  /**
+   * Each child's environment: the session's, `path` as its PATH, and no transpiler cache. Its HOME
+   * is the row's folder (`makeDirectory`), where Bun keeps that cache, about 156 files, and the
+   * folder is removed by an afterEach hook under Bun's 5 s hook limit, which no row's own limit
+   * covers. With the cache off the hook removes what the children themselves wrote.
+   */
+  const childEnvironment = (path = process.env.PATH ?? ""): Record<string, string> => ({
+    ...(environment(omp) as Record<string, string>),
+    PATH: path,
+    BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0",
+  });
   // The 30 s limit is a hang guard, not a budget: the row spawns two child processes that each
   // start the dispatch entry, and bun's unwritten 5,000 ms per-test default is a limit on that
   // work rather than on a hang. Under 16 busy loops (8 x nproc) in a 2-CPU pod it timed out,
@@ -759,10 +770,7 @@ describe("AskGate at the dispatch entry, across processes", () => {
     mint(MESSAGE, null);
     const spawnOne = () =>
       Bun.spawn([process.execPath, ENTRY, ...MESSAGE], {
-        env: {
-          PATH: process.env.PATH,
-          ...(environment(omp) as Record<string, string>),
-        },
+        env: childEnvironment(),
         stdout: "pipe",
         stderr: "pipe",
       });
@@ -777,6 +785,20 @@ describe("AskGate at the dispatch entry, across processes", () => {
     expect(results.find((r) => r.code === 1)?.stdout).toStartWith(REFUSAL);
     expect(messagePosts()).toHaveLength(1);
     expect(readdirSync(markers())).toEqual([]);
+  }, 30_000);
+
+  // The row's folder is each child's HOME, and the file's afterEach removes it under Bun's 5 s hook
+  // limit, which no row's own limit covers: what the children leave there is all that removal reads.
+  test("a child leaves no Bun cache in the row's folder, which is its HOME", async () => {
+    const child = Bun.spawn([process.execPath, ENTRY, ...MESSAGE], {
+      env: childEnvironment(),
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect({ code: await child.exited, cache: existsSync(join(stateDir, ".bun")) }).toEqual({
+      code: 0,
+      cache: false,
+    });
   }, 30_000);
 
   // Every form AskGate's gate does not read, run as an agent would run it: each reaches the CLI as
@@ -829,10 +851,7 @@ describe("AskGate at the dispatch entry, across processes", () => {
     const runForm = async (command: string[]) => {
       const child = Bun.spawn(command, {
         cwd: stateDir,
-        env: {
-          ...(environment(omp) as Record<string, string>),
-          PATH: `${bin}:${process.env.PATH ?? ""}`,
-        },
+        env: childEnvironment(`${bin}:${process.env.PATH ?? ""}`),
         stdout: "pipe",
         stderr: "pipe",
       });

@@ -1,4 +1,5 @@
 import { expect, spyOn, test } from "bun:test"
+import { existsSync } from "node:fs"
 import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { dirname, join, resolve } from "node:path"
 import { sessionConfigFile } from "@legion/envoy-client/session-settings"
@@ -739,6 +740,13 @@ test("drops a malformed targeted frame that has no reply address", async () => {
 })
 
 const channelEntry = resolve(import.meta.dir, "..", "bin", "envoy-channel.ts")
+/**
+ * What each channel server this file starts is given beside its own environment: no transpiler
+ * cache. Its HOME is a folder of its row (`temporaryHome`), where Bun keeps that cache, about 259
+ * files, and the folder is removed by an afterEach hook under Bun's 5 s hook limit, which no row's
+ * own limit covers. With the cache off the hook removes what the server itself wrote.
+ */
+const CHILD_BUN = { BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0" } as const
 
 /**
  * Runs the channel server as Claude Code does, in `env.HOME` with `env` as its whole environment:
@@ -755,7 +763,7 @@ async function runChannelServer(
 }> {
   const server = Bun.spawn(["bun", channelEntry], {
     cwd: env.HOME,
-    env: { PATH: process.env["PATH"] ?? "", ...env },
+    env: { PATH: process.env["PATH"] ?? "", ...env, ...CHILD_BUN },
     stdin: "pipe",
     stdout: "pipe",
     stderr: "pipe",
@@ -861,6 +869,21 @@ test("with CLAUDE_CONFIG_DIR holding no envoy.json the server names the unread o
     `envoy-channel: no envoy.json at ${file}: Dispatch and Envoy are off; ${notice}`,
   )
   expect(exitCode).toBe(0)
+}, 20_000)
+
+// The row's folder is the server's HOME, and the file's afterEach removes it under Bun's 5 s hook
+// limit, which no row's own limit covers: what the server leaves there is all that removal reads.
+test("the channel server leaves no Bun cache in its HOME", async () => {
+  const home = temporaryHome("cache")
+  const configDirectory = join(home, "claude-config")
+  await mkdir(configDirectory)
+  const { exitCode } = await runChannelServer({
+    HOME: home,
+    CLAUDE_CONFIG_DIR: configDirectory,
+    CLAUDE_CODE_SESSION_ID: "ses_cache",
+    CLAUDE_PLUGIN_DATA: home,
+  })
+  expect({ exitCode, cache: existsSync(join(home, ".bun")) }).toEqual({ exitCode: 0, cache: false })
 }, 20_000)
 
 test("an envoy.json that turns Envoy off opens no NATS connection and calls no listener, whatever the variables name", async () => {
@@ -969,6 +992,7 @@ test("the server calls the listener with the file's envoy.token and signs in to 
         CLAUDE_CONFIG_DIR: configDirectory,
         CLAUDE_CODE_SESSION_ID: "ses_credentials",
         CLAUDE_PLUGIN_DATA: home,
+        ...CHILD_BUN,
       },
       stdin: "pipe",
       stdout: "pipe",
