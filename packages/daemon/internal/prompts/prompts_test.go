@@ -975,3 +975,31 @@ func TestTheMergerWaitsForAMissingReview(t *testing.T) {
 		t.Errorf("the composed merger prompt still says %q", retired)
 	}
 }
+
+// A planner step of an owner's plan adds no task block. The owner's plan and a planner's plan are
+// one document, `plan.md`, and Legion carries out each task block of a version the owner gives, so
+// a block the planner wrote there would become work of its own. The planner tells the two cases
+// apart by the document: where `plan.md` holds a `plan_task` block with the id its `Task:` line
+// names, an owner wrote that plan, and the planner changes no task block, adds none, and writes its
+// plan below them as plain sections; where it holds none (the task `default`, or an issue with no
+// `Task:` line), the planner writes each task as a `plan_task` block. The old rule, which wrote a
+// block in every case, is gone. This shows the text is loaded, never that a planner follows it.
+func TestThePlannerAddsNoTaskBlockToAnOwnersPlan(t *testing.T) {
+	composer, err := New(t.TempDir())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	text := foldWhitespace(composedText(t, composer, claim.RolePlanner, false))
+	for _, phrase := range []string{
+		"Read `plan.md` first, where the issue holds one: `dispatch doc-read --issue <issue> --artifact plan.md --blocks` lists its blocks with their ids.",
+		"Where it holds a `plan_task` block whose id is the task your `Task:` line names, the issue's owner wrote that plan, and Legion carries out each task block of a version its owner gives, so a block of yours would become work of its own: change no `plan_task` block and add none, and write your plan below them as plain sections of the same document.",
+		"Where it holds no such block (your task is `default`, or your task has no `Task:` line), write each task of your plan as a `plan_task` block of `plan.md`",
+	} {
+		if !strings.Contains(text, phrase) {
+			t.Errorf("the composed planner prompt omits %q", phrase)
+		}
+	}
+	if retired := "Write each task of the plan as a `plan_task` block of `plan.md`"; strings.Contains(text, retired) {
+		t.Errorf("the composed planner prompt still says %q, which adds a block to an owner's plan", retired)
+	}
+}
