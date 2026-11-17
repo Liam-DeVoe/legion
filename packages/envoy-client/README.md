@@ -190,12 +190,19 @@ its listener calls present too where they present a broker token rather than a b
 server sent that one connection as its signature
 (`DpopKey.connectionProof`), which is what the auth service of a hub that runs one admits as that
 session alone. `brokerNatsCredential(env, session)` holds it: `ready()` takes a live token before a
-dial, waiting on the token client's retry loop for 20 s (`TRADE_DEADLINE_MS`, nats.js's own dial
-timeout) and then saying what the loop's last trade came to, or, as `ready(life)`, until a token
-lands, a refusal no trade cures ends the loop, or `life` ends; `authenticator(nonce)` signs one
+dial in one of three modes, each one wait on the token client's retry loop. By default it fails
+fast: a failure the loop trades again on fails it at once, naming that failure, and a pod session
+not registered yet is waited out for 20 s (`TRADE_DEADLINE_MS`, nats.js's own dial timeout).
+`ready({ waitForReady: true })`, an Oh My Pi session's start, waits for ready for those 20 s,
+through every failure the loop trades again on, and then fails naming the last one: 20 s is the
+pass's 30 s deadline less 10 s for the rest of the pass, and longer than the loop's longest first
+wait, 15 s. `ready({ life })`, a Claude Code channel server's start, waits for ready until a token
+lands, a refusal no trade cures ends the loop, or `life` ends. `authenticator(nonce)` signs one
 snapshot of it per CONNECT and presents
 nothing, starting a trade, where it holds no live token, and `renew()` takes the token again, the
-next session's after a switch. A server that sends no nonce runs no auth service, so nothing there
+next session's after a switch, failing fast unless asked to wait for ready, as a switch's follow
+(`followNatsCredential`) does for 20 s. A server that sends no nonce runs no auth service, so
+nothing there
 checks a broker token:
 the CONNECT fails, naming that and the setting to undo for that hub (`unset NATS_AUTH`, or take
 `natsAuth` out of the file that set it; `noAuthService`), rather than going out with no credential.
@@ -775,8 +782,10 @@ schedule however many callers ask. This is gRPC's connection backoff (grpc/grpc,
 length and all of it, around a per-trade timeout of 30 s. A caller is one of gRPC's two kinds. A
 fail-fast caller, the default, is told at once, with `TradeRetryingError`, where the loop's last
 trade failed in a way it trades again on and no live token is in hand: every Dispatch and Envoy
-call, and a NATS connection's `ready()`, keeper and switch. A wait-for-ready caller waits through
-the loop's retries: a Claude Code channel server's start (`ready(life)`) alone. Every caller waits
+call, and a NATS connection's keeper. A wait-for-ready caller waits through the loop's retries:
+the startup paths, which have nothing to do until they hold a token: a Claude Code channel
+server's start (`ready({ life })`), for its life, and an Oh My Pi session's start
+(`ready({ waitForReady: true })`) and a switch's follow, each for 20 s. Every caller waits
 out a pod session not registered yet within its own deadline. What a trade comes to decides the
 next one:
 

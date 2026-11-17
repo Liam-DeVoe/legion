@@ -8,6 +8,7 @@
 // keeps its calls (`transport.ts`, `attemptOnce`).
 
 import { expect, test } from "bun:test";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { brokerCredential } from "../broker-credential";
 import { createEnvoyClient } from "../transport";
 import { brokerStandIns } from "./broker-stand-ins";
@@ -100,4 +101,55 @@ test.each([
   expect(Date.now() - started).toBeLessThan(2_000);
   expect(fetched).toHaveLength(1);
   expect(fetched[0]?.authorization).toBeNull();
+});
+
+test("inside the renewal window, a broker that hangs leaves the call its live token and the time to send it", async () => {
+  // The token in hand is inside its renewal window, so the call waits for the renewal the
+  // credential starts, and the broker never answers it. At the end of the credential's share of
+  // the attempt the credential answers with the live token (`BrokerTokenClient.token`), and the
+  // request goes out with it in the time left, rather than on a deadline already spent.
+  let trades = 0;
+  const broker = Bun.serve({
+    port: 0,
+    hostname: "127.0.0.1",
+    fetch: async () => {
+      trades += 1;
+      if (trades > 1) return await new Promise<Response>(() => {});
+      // Good for 200 s: inside the 5-minute renewal window from the first.
+      return Response.json({
+        access_token: fixtureSecret("live"),
+        issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
+        token_type: "DPoP",
+        expires_in: 200,
+      });
+    },
+  });
+  servers.push(broker);
+  const fetched: (string | null)[] = [];
+  const client = createEnvoyClient({
+    baseUrl: "http://listener.test",
+    retry: false,
+    timeoutMs: 1_000,
+    fetch: async (_url, init) => {
+      // As the runtime's fetch does: a request sent on a spent signal is never sent.
+      if (init?.signal?.aborted) throw init.signal.reason;
+      fetched.push(new Headers(init?.headers).get("Authorization"));
+      return Response.json({
+        role: "implementer",
+        holder: "ses_holder",
+        last_seen: 1,
+        state: "live",
+      });
+    },
+    credential: brokerCredential(
+      podEnvironment(`http://127.0.0.1:${broker.port}`, "http://dispatch.test"),
+      POD_SESSION
+    ),
+  });
+  await client.getRole("implementer");
+  const live = fetched[0];
+  expect(live).toStartWith("DPoP ");
+  await client.getRole("implementer");
+  expect(trades).toBe(2);
+  expect(fetched).toEqual([live, live]);
 });

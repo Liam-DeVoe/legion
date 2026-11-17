@@ -17,7 +17,8 @@ import { newDpopKey } from "../dpop";
 import { metadataIdentity } from "../metadata-identity";
 import { projectedToken } from "../projected-token";
 import type { SubjectToken, TokenSource } from "../source";
-import { BrokerRefusedError, type BrokerToken, BrokerTokenClient } from "../token-client";
+import { type BrokerToken, BrokerTokenClient } from "../token-client";
+import { BrokerRefusedError } from "../token-errors";
 import { FORM_LAUNCHER_CREDENTIAL, FORM_LAUNCHER_CREDENTIAL_DECLINED, TOKEN_PATH } from "../wire";
 
 const makeDirectory = temporaryDirectories("broker-client");

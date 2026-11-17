@@ -10,7 +10,7 @@ import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { type IssuerAnswer, signedIn, stubIssuer } from "../../test/sign-ins";
 import { personIdentity } from "../person-identity";
 import { SIGNIN_COMMAND, type SignInFlow } from "../signins";
-import { isFinalRefusal, SignInEndedError } from "../token-client";
+import { isFinalRefusal, SignInEndedError } from "../token-errors";
 import { SUBJECT_TOKEN_TYPE_PERSON } from "../wire";
 import { refusalOf } from "./stub";
 

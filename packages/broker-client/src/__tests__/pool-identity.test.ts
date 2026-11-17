@@ -29,7 +29,8 @@ import {
 import { personIdentity } from "../person-identity";
 import { poolIdentity } from "../pool-identity";
 import { projectedToken } from "../projected-token";
-import { BrokerTokenClient, TradeRetryingError } from "../token-client";
+import { BrokerTokenClient } from "../token-client";
+import { TradeRetryingError } from "../token-errors";
 import {
   ACTOR_TOKEN_TYPE_MACHINE,
   SUBJECT_TOKEN_TYPE_GOOGLE,

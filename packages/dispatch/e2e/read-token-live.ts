@@ -33,7 +33,7 @@
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { DISPATCH_READ_ONLY_TOKEN, IDEMPOTENCY_KEY_HEADER } from "@legion/contracts";
-import type { RequestCredential } from "@legion/envoy-client/bearer";
+import { credentialDeadline, type RequestCredential } from "@legion/envoy-client/bearer";
 import { brokerCredential } from "@legion/envoy-client/broker-credential";
 
 import {
@@ -110,7 +110,12 @@ async function present(
     headers: {
       ...(body === undefined ? {} : { "Content-Type": "application/json" }),
       ...headers,
-      ...(await credential.headers(method, url, undefined, deadline)),
+      ...(await credential.headers(
+        method,
+        url,
+        undefined,
+        credentialDeadline(deadline, REQUEST_DEADLINE_MS)
+      )),
     },
     method,
     signal: deadline,

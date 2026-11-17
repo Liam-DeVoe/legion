@@ -11,8 +11,10 @@ body: |-
   once with `TradeRetryingError`, so a listener that asks for no credential keeps its calls while
   the broker is down. Every caller waits out a pending registration within its own deadline.
   Once a renewal has failed, calls take the token in hand at once while it is live. The NATS
-  credential's `ready(life)` waits for ready, for as long as its caller gives it, and a session
-  switch ends every wait for the session before. The loop logs as the Go client does: a pending
+  credential's startup paths wait for ready: `ready({ life })` for as long as its caller lives,
+  and `ready({ waitForReady: true })` and a session switch's follow for 20 s, which ride out a
+  first trade's 503 and then fail naming it. A session switch ends every wait for the session
+  before. The loop logs as the Go client does: a pending
   registration once, every 30 minutes and when it ends; any other failure at each wait.
 time: 2026-11-17T12:39:04Z
 custom:

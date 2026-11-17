@@ -15,13 +15,13 @@ import { newDpopKey } from "../dpop";
 import { personIdentity } from "../person-identity";
 import { SIGNIN_COMMAND } from "../signins";
 import type { SubjectToken, TokenSource } from "../source";
+import { BrokerTokenClient } from "../token-client";
 import {
   BrokerRefusedError,
-  BrokerTokenClient,
   isFinalRefusal,
   SignInEndedError,
   TradeRetryingError,
-} from "../token-client";
+} from "../token-errors";
 import { SUBJECT_TOKEN_TYPE_KUBERNETES } from "../wire";
 import { accepted, stubBroker } from "./stub";
 

@@ -22,7 +22,8 @@ import {
 import { REFUSAL_TEXT_WITHHELD, shownOAuthCode } from "./refusal-text";
 import { SIGNIN_COMMAND, SIGNIN_ISSUER_VAR, type SignInFlow, type SignInRecord } from "./signins";
 import type { SubjectToken, TokenSource } from "./source";
-import { requestInit, SignInEndedError, statusOf } from "./token-client";
+import { requestInit, statusOf } from "./token-client";
+import { SignInEndedError } from "./token-errors";
 import { SUBJECT_TOKEN_TYPE_PERSON } from "./wire";
 
 /** Bounds each call to the issuer, as the Go client's `HTTPClient` bounds each of its calls

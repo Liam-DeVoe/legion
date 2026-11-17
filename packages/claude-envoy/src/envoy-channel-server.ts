@@ -707,7 +707,9 @@ export async function dialChannelNats(
     // server that ended, so a start that failed on any of them would leave the session with no
     // delivery at all; the loop says what it waits on at each wait, and a refusal no trade cures
     // still ends the start. `unlessStopped` ends the wait at a stop.
-    await unlessStopped(broker?.ready(signal ?? new AbortController().signal) ?? Promise.resolve())
+    await unlessStopped(
+      broker?.ready({ life: signal ?? new AbortController().signal }) ?? Promise.resolve(),
+    )
     const dialing = dial(
       natsConnectionOptions({ servers: inbound.natsUrls, name, credential: natsCredential }),
     )

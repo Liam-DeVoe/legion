@@ -203,19 +203,19 @@ describe("followNatsCredential", () => {
     expect(rig.stoppedReader()).toBe(true);
   });
 
-  test("a connection that never comes back rejects after 15 s, and stops its reader", async () => {
+  test("a connection that never comes back rejects 8 s after the token lands, and stops its reader", async () => {
     const credential = await switched();
     const rig = controlledConnection(credential);
     await expect(followNatsCredential(rig.connection, credential)).rejects.toThrow(
-      "the NATS connection did not come back as the new session within 15 s"
+      "the NATS connection did not come back as the new session within 8 s"
     );
     expect(rig.stoppedReader()).toBe(true);
   }, 30_000);
 
-  test("a switch to a session with no registration yet stops waiting for its token at 15 s", async () => {
+  test("a switch to a session with no registration yet stops waiting for its token at 20 s, naming why", async () => {
     // The case the token client's wait exists for: a pod's host moves to a session whose
-    // registration has not landed. The follow must end at its own deadline, naming why, so the
-    // pass behind it (a registration, a role claim) runs again rather than stalling.
+    // registration has not landed. The follow must end at its own bound, naming why, so the pass
+    // behind it (a registration, a role claim) runs again rather than stalling.
     const broker = stubBroker(600);
     let session = "ses_from";
     const credential = brokerNatsCredential(podEnvironment(broker.url), () => session);
@@ -228,7 +228,33 @@ describe("followNatsCredential", () => {
     await expect(followNatsCredential(rig.connection, credential)).rejects.toThrow(
       "the secrets broker has no registration for this pod's session ses_to yet"
     );
-    expect(Date.now() - started).toBeLessThan(20_000);
+    expect(Date.now() - started).toBeLessThan(25_000);
+  }, 40_000);
+
+  test("a switch whose first trade answers 503 waits for ready and takes the token the next trade grants", async () => {
+    // A switch has nothing to do until it holds the new session's token, so its trade waits for
+    // ready within its bound: the retry loop's next trade, 15 s at most later, grants, and the
+    // follow goes on to its reconnect. Failing fast, the switch would end at the 503 and the new
+    // session would wait for the next heartbeat.
+    const broker = stubBroker(600);
+    let session = "ses_from";
+    const credential = brokerNatsCredential(podEnvironment(broker.url), () => session);
+    await credential.ready();
+    credential.authenticator("nonce-1");
+    broker.state.down = true;
+    session = "ses_to";
+    const rig = controlledConnection(credential);
+    const before = broker.state.trades;
+    const following = followNatsCredential(rig.connection, credential);
+    while (broker.state.trades === before) await Bun.sleep(20);
+    // The first trade for the new session was answered 503; the broker is back for the next.
+    broker.state.down = false;
+    while (broker.state.minted.length < 2) await Bun.sleep(50);
+    await Bun.sleep(50);
+    rig.push("reconnect");
+    await following;
+    expect(credential.needsReconnect()).toBe(false);
+    expect(broker.state.minted.at(-1)?.session).toBe("ses_to");
   }, 40_000);
 
   test("a reconnect returns once its CONNECT presented the new session's token", async () => {

@@ -74,11 +74,13 @@ export interface RequestCredential {
    * the two would reverse that. A caller that cares takes the answer as it comes and awaits only
    * a promise (`transport.ts`).
    *
-   * `signal` is the call's own deadline. A broker credential stops waiting when it ends: while
-   * the broker holds no registration for this pod's session yet, it throws
-   * `RegistrationPendingError` (`@legion/broker-client/token-client`), naming the session, and
-   * goes on trading in the background, so a later call takes the token once the registration
-   * lands. A caller that passes none waits as long as that takes. A bearer ignores it.
+   * `signal` is the call's own deadline. A broker credential fails fast, as gRPC's default call
+   * does: where the token client's last trade failed in a way its retry loop trades again on and
+   * nothing live is in hand, it throws `TradeRetryingError` at once. While the broker holds no
+   * registration for this pod's session yet, it waits until `signal` ends and then throws
+   * `RegistrationPendingError` (both `@legion/broker-client/token-errors`), naming the session;
+   * the loop goes on trading in the background, so a later call takes the token once the
+   * registration lands. A caller that passes none waits as long as that takes. A bearer ignores it.
    */
   headers(
     method: string,
@@ -102,6 +104,16 @@ export interface RequestCredential {
    * redact (`DispatchClient`'s `excerpt`), or "" while it holds none.
    */
   secret(): string;
+}
+
+/**
+ * The signal a request's credential waits on, `deadline` ended at `deadlineMs`: half of the
+ * request's time. A broker credential whose wait ends with a live token in hand answers with that
+ * token (`BrokerTokenClient.token`), so the request still has the other half to be sent and
+ * answered, rather than going out on a deadline the credential has already spent.
+ */
+export function credentialDeadline(deadline: AbortSignal, deadlineMs: number): AbortSignal {
+  return AbortSignal.any([deadline, AbortSignal.timeout(Math.ceil(deadlineMs / 2))]);
 }
 
 /** A plain bearer: the same `Authorization` header on every request, and no proof. The token is

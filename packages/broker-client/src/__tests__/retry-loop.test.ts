@@ -12,13 +12,8 @@ import { expect, test } from "bun:test";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { newDpopKey } from "../dpop";
 import type { SubjectToken, TokenSource } from "../source";
-import {
-  BrokerRefusedError,
-  type BrokerToken,
-  BrokerTokenClient,
-  RegistrationPendingError,
-  TradeRetryingError,
-} from "../token-client";
+import { type BrokerToken, BrokerTokenClient } from "../token-client";
+import { BrokerRefusedError, RegistrationPendingError, TradeRetryingError } from "../token-errors";
 import { SUBJECT_TOKEN_TYPE_KUBERNETES } from "../wire";
 import { accepted } from "./stub";
 
@@ -372,6 +367,24 @@ const ROWS: [string, Row][] = [
           "the secrets broker client was closed, and trades no more"
         );
         expect(await outcome(client.token())).toBe(told);
+        expect(trades()).toBe(1);
+      },
+    },
+  ],
+  [
+    "after close, a fail-fast caller behind a failed trade is told the client is closed, not that it is retried",
+    {
+      answer: () => "503",
+      budget: 0,
+      drive: async ({ client, waits, trades }) => {
+        const first = client.token().catch((error: unknown) => error);
+        await until(() => waits.length === 1, "at its first wait");
+        expect(await first).toBeInstanceOf(TradeRetryingError);
+        client.close();
+        const told = await outcome(client.token());
+        expect((told as Error).message).toBe(
+          "the secrets broker client was closed, and trades no more"
+        );
         expect(trades()).toBe(1);
       },
     },

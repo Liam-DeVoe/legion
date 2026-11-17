@@ -19688,52 +19688,98 @@ console.log(JSON.stringify(args));
     await fixture.handlers.get("session_shutdown")?.({}, context);
   }, 90_000);
 
-  test("a broker that answers 503: the session's notice names the trade's failure and its kind within 5 s", async () => {
-    // A NATS connection's `ready()` fails fast (`TokenCallOptions`): where the token client's
-    // last trade failed in a way its retry loop trades again on, the start is told at once what
-    // that trade came to, as it was before the trade became one retry loop. Waiting for ready
-    // instead held the start 20 s with nothing said.
+  /** A pod whose NATS connection presents its broker token, at a broker that answers each trade
+   *  as `answer(n)` says for its n-th: a 503, or a token it mints for the trade's session. */
+  function brokerPod(answer: (trade: number) => "503" | "grant"): { minted: Map<string, string> } {
     const tokenFile = join(configDirectory, "projected-token");
     writeFileSync(tokenFile, `${MACHINE_IDENTITY_TOKEN}\n`);
     process.env.NATS_AUTH = "broker";
     process.env.AGENT_SECRETS_URL = "http://broker.test";
     process.env.AGENT_SECRETS_MACHINE_IDENTITY = "kubernetes";
     process.env.AGENT_SECRETS_MACHINE_TOKEN_FILE = tokenFile;
+    const minted = new Map<string, string>();
+    let trades = 0;
     globalThis.fetch = async (input, init) => {
       const request = new Request(input, init);
       if (new URL(request.url).host !== "broker.test")
         return responseWithRegistration(input, init, []);
-      await request.text();
-      return new Response("the broker is away", { status: 503 });
+      const session = new URLSearchParams(await request.text()).get("session") ?? "";
+      trades += 1;
+      if (answer(trades) === "503") return new Response("the broker is away", { status: 503 });
+      const token = fixtureSecret("nats");
+      minted.set(token, session);
+      return Response.json({
+        access_token: token,
+        issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
+        token_type: "DPoP",
+        expires_in: 900,
+      });
     };
-    const started = Date.now();
-    // Each notice with how long after the start it was made: the start itself can hold the turn,
-    // so the time is taken as the notice is made, not when the start returns.
+    return { minted };
+  }
+
+  /** A session's context whose notices are kept with how long after `started` each was made: the
+   *  start itself can hold the turn, so the time is taken as the notice is made. */
+  function timedContext(sessionID: string, started: number) {
     const notifications: { readonly message: string; readonly at: number }[] = [];
     const context: SessionContext = {
       cwd: "/tmp/envoy-omp-test",
-      sessionManager: { ...topLevelSession, getSessionId: () => "ses_broker_503" },
+      sessionManager: { ...topLevelSession, getSessionId: () => sessionID },
       setInterval: () => {},
       ui: {
         ...sessionContext().ui,
         notify: (message) => notifications.push({ message, at: Date.now() - started }),
       },
     };
+    return { context, notifications };
+  }
+
+  test("a broker that never grants: the start fails at its 20 s bound, naming the 503, inside its pass", async () => {
+    // The start waits for ready within its bound (`TRADE_DEADLINE_MS`, 20 s), through the retry
+    // loop's retries, and then fails naming what the last trade came to, before the pass's 30 s
+    // deadline: a pass abandoned at that deadline names no cause at all.
+    brokerPod(() => "503");
+    const started = Date.now();
+    const { context, notifications } = timedContext("ses_broker_503", started);
     const { default: envoyExtension } = await import("./envoy.ts?broker-answers-503");
     const fixture = createPi();
     envoyExtension(fixture.pi);
-    const starting = fixture.handlers.get("session_start")?.({}, context);
-    const named = () =>
-      notifications.find(({ message }) => message.includes("the trade for the session's token"));
-    while (named() === undefined && Date.now() - started < 5_000) await Bun.sleep(50);
-    const notice = named();
+    await fixture.handlers.get("session_start")?.({}, context);
+    const notice = notifications.find(({ message }) =>
+      message.includes("the trade for the session's token")
+    );
     expect(
       notice,
-      `no notice named the trade within 5 s: ${notifications.map(({ message }) => message).join(" | ")}`
+      `no notice named the trade: ${notifications.map(({ message }) => message).join(" | ")}`
     ).toBeDefined();
-    expect(notice?.at).toBeLessThan(5_000);
     expect(notice?.message).toContain("HTTP 503");
-    await starting;
+    expect(notice?.at).toBeGreaterThanOrEqual(19_000);
+    expect(notice?.at).toBeLessThan(30_000);
+    expect(notifications.some(({ message }) => message.includes("did not settle within"))).toBe(
+      false
+    );
+    await fixture.handlers.get("session_shutdown")?.({}, context);
+  }, 60_000);
+
+  test("a first trade that answers 503 and then grants: the start presents its token in its first pass", async () => {
+    // The start has nothing to do until it holds a token, so it waits for ready: the retry
+    // loop's next trade, 15 s at most later, grants, and the session's first pass dials and
+    // registers with it, rather than waiting for the next heartbeat, 90 s on.
+    const { minted } = brokerPod((trade) => (trade === 1 ? "503" : "grant"));
+    const started = Date.now();
+    const { context, notifications } = timedContext("ses_broker_once_away", started);
+    const { default: envoyExtension } = await import("./envoy.ts?broker-away-once");
+    const fixture = createPi();
+    envoyExtension(fixture.pi);
+    await fixture.handlers.get("session_start")?.({}, context);
+    expect(
+      natsState.presented.map((token) => minted.get(token)),
+      `the start presented no token: ${notifications.map(({ message }) => message).join(" | ")}`
+    ).toEqual(["ses_broker_once_away"]);
+    expect(natsState.controls.get("notifications.agent.ses_broker_once_away")?.active()).toBe(true);
+    expect(
+      notifications.some(({ message }) => message.includes("the trade for the session's token"))
+    ).toBe(false);
     await fixture.handlers.get("session_shutdown")?.({}, context);
   }, 60_000);
 
