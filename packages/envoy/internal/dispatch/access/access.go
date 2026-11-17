@@ -109,21 +109,24 @@ func VisibleProjectsSQL() string {
 // (TestEveryClauseAnswersTrueOrFalseNeverNull).
 func clause(name, sql string) string { return fragment(name, "coalesce("+sql+", false)") }
 
-func viewerFlag(viewerParam, flag string) string {
+// ViewerFlag is one boolean member of the visibility argument viewerParam binds - "all", "open" or
+// "private" - false where it is absent. It is the one spelling of that read, which refs' rules
+// share.
+func ViewerFlag(viewerParam, flag string) string {
 	return fmt.Sprintf(`coalesce((%s::jsonb->>'%s')::boolean, false)`, viewerParam, flag)
 }
 
 // ProjectClause passes a row of the project projectExpr names when the viewer sees that project.
 func ProjectClause(projectExpr, viewerParam string) string {
 	return clause("ProjectClause", fmt.Sprintf(`(%s or (%s::jsonb->'sees') ? (%s))`,
-		viewerFlag(viewerParam, "all"), viewerParam, projectExpr))
+		ViewerFlag(viewerParam, "all"), viewerParam, projectExpr))
 }
 
 // OpenClause passes an open viewer: one that is not a restricted member and holds no list, which
 // reads every row that belongs to no project and to no conversation, as every caller did before a
 // project could be private. The server's own viewer is open.
 func OpenClause(viewerParam string) string {
-	return clause("OpenClause", viewerFlag(viewerParam, "open"))
+	return clause("OpenClause", ViewerFlag(viewerParam, "open"))
 }
 
 // PersonClause passes a person, by login, to an open viewer; to any other viewer, when it is the
@@ -140,7 +143,7 @@ func PersonClause(loginExpr, viewerParam string) string {
 			join projects seen on seen.key = sees.key
 			where %[5]s
 			offset 0))`,
-		loginExpr, viewerFlag(viewerParam, "all"), viewerFlag(viewerParam, "open"), viewerParam,
+		loginExpr, ViewerFlag(viewerParam, "all"), ViewerFlag(viewerParam, "open"), viewerParam,
 		PersonSeesProjectSQL("("+loginExpr+")", "(select person_kind.member_kind from people person_kind where person_kind.email = ("+loginExpr+"))", "seen")))
 }
 
@@ -168,7 +171,7 @@ func SessionClause(sessionExpr, viewerParam string) string {
 			select 1 from session_projects acted
 			where acted.session_id = (%[1]s) and (%[4]s::jsonb->'sees') ? acted.project_key
 			offset 0)))`,
-		sessionExpr, viewerFlag(viewerParam, "all"), viewerFlag(viewerParam, "open"), viewerParam, viewerFlag(viewerParam, "private")))
+		sessionExpr, ViewerFlag(viewerParam, "all"), ViewerFlag(viewerParam, "open"), viewerParam, ViewerFlag(viewerParam, "private")))
 }
 
 // RoleClause passes a role, by name, to an open viewer; to any other viewer, when the session that
@@ -187,7 +190,7 @@ func RoleClause(roleExpr, viewerParam string) string {
 					offset 0)
 				and %[4]s
 			offset 0))`,
-		roleExpr, viewerFlag(viewerParam, "all"), viewerFlag(viewerParam, "open"), SessionClause("holder.to_id", viewerParam)))
+		roleExpr, ViewerFlag(viewerParam, "all"), ViewerFlag(viewerParam, "open"), SessionClause("holder.to_id", viewerParam)))
 }
 
 // PartyClause passes a conversation that belongs to no project, by its parties ("person:<login>",
@@ -202,7 +205,7 @@ func PartyClause(partiesExpr, viewerParam string) string {
 			select 1 from unnest(%[1]s) party
 			where party like 'session:%%' and not %[5]s
 			offset 0)))`,
-		partiesExpr, viewerFlag(viewerParam, "all"), viewerFlag(viewerParam, "open"), viewerParam,
+		partiesExpr, ViewerFlag(viewerParam, "all"), ViewerFlag(viewerParam, "open"), viewerParam,
 		SessionClause("substr(party, 9)", viewerParam)))
 }
 
