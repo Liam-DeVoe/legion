@@ -27,7 +27,13 @@
 //     stand-in answers every recall 503, held or not: a recall that succeeds is committed to the
 //     session and the next prompt recalls nothing, and one that fails is not, which a run of the
 //     pin made for this proof read (a recall answered 200 made the next prompt start its turn at
-//     once; one answered 503 made the next prompt recall again).
+//     once; one answered 503 made the next prompt recall again). From the release
+//     v18.18.6-sami.20261117-013345 on, a failed recall also pauses automatic recall for
+//     `hindsight.recallCooldownMs` (30 minutes by default), so newer-task's second held recall
+//     would never be asked; the overlay sets it to 0, which turns the pause off, and an earlier
+//     build ignores the key. Measured on 2026-11-17 with two prompts in one session, the first
+//     recall answered 503: the second prompt recalled again with the key at 0 on that release and
+//     on 18.16.0 with or without it, and did not recall on that release at its default.
 //   - a scripted answer in front of paneStandin (scriptedStandin): a `tool_use` answer, which the
 //     live proofs' shared streamAnthropicToolUse writes (live_agent_proof_test.go; at 7df0a64c,
 //     late_completion_live_test.go) as the plugins' own pane harness scripts one
@@ -1143,8 +1149,9 @@ func (r *busyRelaunchLive) writeOverlays(work string) map[claim.Token][]string {
 			continue
 		}
 		memory := filepath.Join(dir, pane.provider+"-memory.yml")
-		writeProofFile(t, memory, fmt.Sprintf("# The pane's memory overlay: Hindsight, at the run's own stand-in.\n"+
-			"memory:\n  backend: hindsight\nhindsight:\n  apiUrl: %s\n  mentalModelsEnabled: false\n  autoRetain: false\n", r.hindsight.url))
+		writeProofFile(t, memory, fmt.Sprintf("# The pane's memory overlay: Hindsight, at the run's own stand-in, with no pause after a\n"+
+			"# failed recall, so each prompt recalls again and a step can hold it (the file comment).\n"+
+			"memory:\n  backend: hindsight\nhindsight:\n  apiUrl: %s\n  mentalModelsEnabled: false\n  autoRetain: false\n  recallCooldownMs: 0\n", r.hindsight.url))
 		overlays[pane.token] = append(overlays[pane.token], memory)
 	}
 	return overlays

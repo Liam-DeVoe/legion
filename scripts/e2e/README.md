@@ -4734,10 +4734,12 @@ Each step runs as a subtest of its own, on a claim no earlier step left working,
 
 What stands in is the model endpoint and one pane's memory backend.
 Each pane talks to a model stand-in of the driver's own, which answers every turn alike unless a step scripts a request: a `tool_use` answer, ported from the plugins' own pane harness (`packages/pi-shared/test/omp-harness.ts`), so a turn starts a `task` subagent of the `deep-worker` agent or an `async` bash job; or a request held open until the step lets it go or the process that asked dies, so a late turn runs while the step reads the claim, a turn of the agent's own runs while a task waits, and a subagent is alive when its process is killed.
-The implementer of the first issue also runs Oh My Pi's memory backend at a Hindsight stand-in, through one more overlay: `memory.backend: hindsight`, `hindsight.apiUrl` at the stand-in, and `hindsight.mentalModelsEnabled` and `hindsight.autoRetain` off, so the recall before each prompt's turn is the one call it is asked.
+The implementer of the first issue also runs Oh My Pi's memory backend at a Hindsight stand-in, through one more overlay: `memory.backend: hindsight`, `hindsight.apiUrl` at the stand-in, `hindsight.mentalModelsEnabled` and `hindsight.autoRetain` off, so the recall before each prompt's turn is the one call it is asked, and `hindsight.recallCooldownMs` at 0.
 At the pin Oh My Pi acknowledges a prompt at its admission and waits on that recall before the turn's `agent_start`, with the session counted as streaming the whole time, so a recall held 20 s is the measured wait between the acknowledgement and the turn: past the daemon's own five-second wait for the turn and under the client's own 30 s bound on a recall.
 The stand-in answers every recall 503.
 Read on the pin by a run made for this proof: a recall answered 200 is committed to the session and the next prompt starts its turn at once, while one answered 503 commits nothing and the next prompt recalls again, which is what lets a later step hold one again.
+From the release `v18.18.6-sami.20261117-013345` on, a failed recall also pauses automatic recall for `hindsight.recallCooldownMs`, 30 minutes by default, so without the key at 0 the second held recall of `newer-task` is never asked.
+An earlier build ignores the key: measured on 2026-11-17 with two prompts in one session and the first recall answered 503, the second prompt recalled again with the key at 0 on that release and on 18.16.0 with or without it, and did not recall on that release at its default.
 
 | step | driven by | read back as |
 | :--- | :--- | :--- |
