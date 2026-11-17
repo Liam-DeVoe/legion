@@ -4449,6 +4449,9 @@ jobs:
               - '.github/envoy-infra-targets.json'
               # ci_job_reads.py reads the workspace list from the root manifest.
               - 'package.json'
+              # ci_job_reads.py's runs_at_install reads the shared test fixtures' scripts to
+              # choose bun_job's reads, so a script added there must re-run this check.
+              - 'packages/test-fixtures/package.json'
               - '**/*.go'
               - '**/go.mod'
               - '**/go.sum'

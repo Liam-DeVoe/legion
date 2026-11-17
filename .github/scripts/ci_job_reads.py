@@ -3157,6 +3157,7 @@ GATES = [
                                                  "ci-caches.yaml, which ci_filter_coverage.main() runs"),
         (".github/scripts/workflow_paths.py", "ci_filter_coverage.py reads filters through it"),
         ("package.json", "ci_job_reads.py reads the workspace list from the root manifest"),
+        (TEST_FIXTURES_MANIFEST, "ci_job_reads.py's runs_at_install reads its scripts to choose bun_job's reads"),
         (GO_TARGETS, "ci_job_reads.py expands the notices and pack runs over it"),
         (CLIENT_TARGETS, "ci_job_reads.py expands the notices runs over it"),
         (INFRA_TARGETS, "ci_job_reads.py expands the notices runs over it"),
