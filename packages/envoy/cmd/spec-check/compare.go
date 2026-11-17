@@ -122,17 +122,17 @@ func refusedProblems(problems []specgraph.Problem) []specgraph.Problem {
 // notCurrentLines is one line for each node of current, the current approved spec, that the files
 // do not hold at its current text, of each kind (R2: the change that lands a statement writes it
 // and its checks into the files): "<kind> <id>: not in the files", or "<kind> <id>: the files hold
-// approved version 1, and version 2 is current", in the order of kinded. held is the number of
-// statements that the files hold at their current text.
+// approved version 1, and version 2 is current", in the order of kinded, each id cut. held is the
+// number of statements that the files hold at their current text.
 func notCurrentLines(current specgraph.Tree, c specgraph.Comparison, a specgraph.Approved) (lines []string, held int) {
 	for _, n := range kinded(current) {
 		h := c.Holds[n.id]
 		switch {
 		case !h.Present:
-			lines = append(lines, n.kind+" "+n.id+": not in the files")
+			lines = append(lines, n.kind+" "+specgraph.Cut(n.id)+": not in the files")
 		case !h.Current:
 			versions := a.Nodes[n.id].Versions
-			lines = append(lines, fmt.Sprintf("%s %s: the files hold approved version %d, and version %d is current", n.kind, n.id, h.Version, versions[len(versions)-1].Version))
+			lines = append(lines, fmt.Sprintf("%s %s: the files hold approved version %d, and version %d is current", n.kind, specgraph.Cut(n.id), h.Version, versions[len(versions)-1].Version))
 		case n.kind == "statement":
 			held++
 		}
@@ -143,14 +143,14 @@ func notCurrentLines(current specgraph.Tree, c specgraph.Comparison, a specgraph
 // removedLines is one line for each node of tree whose id is in removed, the nodes that the
 // approved spec removed and the files still hold (R28: "the files hold one that is no longer
 // approved"): "<kind> <id>: the files hold it, and the approved spec removed it", in the order of
-// kinded, and an id once.
+// kinded, and an id once, cut.
 func removedLines(tree specgraph.Tree, removed []string) []string {
 	var lines []string
 	named := map[string]bool{} // an id the files hold two times is one line
 	for _, n := range kinded(tree) {
 		if slices.Contains(removed, n.id) && !named[n.id] {
 			named[n.id] = true
-			lines = append(lines, n.kind+" "+n.id+": the files hold it, and the approved spec removed it")
+			lines = append(lines, n.kind+" "+specgraph.Cut(n.id)+": the files hold it, and the approved spec removed it")
 		}
 	}
 	return lines

@@ -3199,6 +3199,8 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   the first change that adds a spec file lists each statement as `added`, and a checkout with no spec file has no program check.
   Each entry that is not a spec file is a warning on stderr, `spec-check: warning: <path>: not a spec file (<kind>); the importer passes over it`, and for a file the line says that a spec file is a `*.yaml` file, which `spec-check print` writes.
   `runnerlog.Say` writes every line but the usage and the JSON, with the fixed text `spec-check: `, escaped as the `cmd/architecture-check` item says, and `checks` writes the `[` of each `##[` in its JSON as `\u005b`.
+  Each value of the input that a line of `spec-check` or an error of `specgraph` names, a node id, a value or a line of a file, a name of code or a value of a scenario, prints as `specgraph.Cut` cuts it: whole up to 100 bytes, else its first and its last 50 bytes with `…` between them, so no line grows with the files (`TestEachLineCutsALongValueOfTheInput`, a row for each kind of `specgraph.ProblemKinds`).
+  A problem keeps its whole node id as a key, and `Problem.Text` prints it cut; the JSON of `checks` and of `state --json` holds each value whole, as data for a program.
   It opens no database and reaches no network.
 
 - The composite action `.github/actions/spec-check` runs `spec-check tree` as `.github/actions/architecture-check` runs its command (its own `README.md` is the caller's guide):

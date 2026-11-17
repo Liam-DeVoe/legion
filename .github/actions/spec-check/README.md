@@ -111,6 +111,7 @@ Each line that the command prints about the directory or an entry of it names th
 
 - **Exit 1: the tree is refused.**
   The log holds one line for each problem, `spec-check: <directory>/<file>:<line>: <node>: <rule>: <detail>`, which names the file, the line and the id of the node.
+  A node id, or another value of a file, that is longer than 100 bytes shows as its first and its last 50 bytes, with `…` between them.
   Then it holds the line `spec-check: <directory>: <counts>; the tree is refused`.
   A spec file that is larger than 1 MiB gives the line `spec-check: file too large: <directory>/<file> is <n> bytes (limit 1048576)` in place of the problem lines.
   In that case, each count is 0, because the command parses no spec file.

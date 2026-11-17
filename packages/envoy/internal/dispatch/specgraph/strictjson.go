@@ -74,27 +74,34 @@ func decodeJSONFrom(r io.Reader, v any, form string) error {
 	return decodeJSON(data, v, form)
 }
 
-// quotedBound is the most bytes of a value of the input that quoted prints whole. encoding/json/v2
+// quotedBound is the most bytes of a value of the input that Cut keeps whole. encoding/json/v2
 // and encoding/json/jsontext cut a JSON pointer to about 100 bytes in their own errors
 // (jsonwire.TruncatePointer(pointer, 100) in Go 1.27's src/encoding/json), so a refusal in the
 // package's words is no longer than the library's was, and still names the place.
 const quotedBound = 100
 
-// quoted is s, a value of the input that a refusal prints, such as a JSON pointer or a node id, as
-// a Go string literal: whole when it holds at most quotedBound bytes, else its first and its last
+// Cut is s, a value of the input that a line prints, such as a JSON pointer, a node id or a line
+// of a file: whole when it holds at most quotedBound bytes, else its first and its last
 // quotedBound/2 bytes, each cut at a whole UTF-8 character, with … in place of the rest. So the
-// start of the value and its last part stay, the line grows with no name of the input, and each
-// control character in it is an escape, as %q writes it.
-func quoted(s string) string {
-	if len(s) > quotedBound {
-		start, end := quotedBound/2, len(s)-quotedBound/2
-		for start > 0 && !utf8.RuneStart(s[start]) {
-			start--
-		}
-		for end < len(s) && !utf8.RuneStart(s[end]) {
-			end++
-		}
-		s = s[:start] + "…" + s[end:]
+// start of the value and its last part stay, and a line grows with no value of the input. Each
+// line of the package and of spec-check that names such a value prints it through Cut, bare or
+// quoted; a key, such as Problem.Node, stays whole where it is kept.
+func Cut(s string) string {
+	if len(s) <= quotedBound {
+		return s
 	}
-	return strconv.Quote(s)
+	start, end := quotedBound/2, len(s)-quotedBound/2
+	for start > 0 && !utf8.RuneStart(s[start]) {
+		start--
+	}
+	for end < len(s) && !utf8.RuneStart(s[end]) {
+		end++
+	}
+	return s[:start] + "…" + s[end:]
+}
+
+// quoted is Cut(s) as a Go string literal, so each control character in it is an escape, as %q
+// writes it.
+func quoted(s string) string {
+	return strconv.Quote(Cut(s))
 }

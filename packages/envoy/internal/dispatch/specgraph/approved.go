@@ -221,6 +221,14 @@ func (a Approved) Since(id string) time.Time {
 	return n.Versions[len(n.Versions)-1].At
 }
 
+// The formats of the Detail of bad-approved-document, the problem of versionText for a document of
+// no node or of two, of a node with another id, or not as Print writes its node.
+const (
+	approvedNodeCount  = "bad-approved-document: the document holds %d nodes, not one"
+	approvedOtherNode  = "bad-approved-document: the document is of node %s, not %s"
+	approvedNotPrinted = "bad-approved-document: the document is not as Print writes it"
+)
+
 // versionText is the tree of the one node that version v of the approved node id holds, at the
 // position "approved <id> version <n>". problems is each reason it holds none: a problem of the
 // reader in the document (bad-yaml, no-node, bad-time-limit), or bad-approved-document for a
@@ -237,19 +245,19 @@ func versionText(id string, v ApprovedVersion) (Tree, []Problem) {
 	if len(problems) != 0 {
 		return Tree{}, problems
 	}
-	refuse := func(detail string) (Tree, []Problem) {
-		return Tree{}, []Problem{idProblem(Position{File: name, Line: 1}, id, "bad-approved-document: "+detail)}
+	refuse := func(format string, args ...any) (Tree, []Problem) {
+		return Tree{}, []Problem{idProblem(Position{File: name, Line: 1}, id, fmt.Sprintf(format, args...))}
 	}
 	nodes := nodesOf(tree)
 	switch {
 	case len(nodes) != 1:
-		return refuse(fmt.Sprintf("the document holds %d nodes, not one", len(nodes)))
+		return refuse(approvedNodeCount, len(nodes))
 	case nodes[0].id != id:
-		return refuse(fmt.Sprintf("the document is of node %s, not %s", quoted(nodes[0].id), quoted(id)))
+		return refuse(approvedOtherNode, quoted(nodes[0].id), quoted(id))
 	}
 	if printedFormUnchecked {
 		if printed, err := nodes[0].node.Print(); err != nil || printed != v.Document {
-			return refuse("the document is not as Print writes it")
+			return refuse(approvedNotPrinted)
 		}
 	}
 	return tree, nil

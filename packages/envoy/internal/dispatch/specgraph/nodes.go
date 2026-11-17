@@ -160,10 +160,11 @@ func newNodePrinter(kind, id string) *nodePrinter {
 	return p
 }
 
-// refuse records that field cannot be printed, for the reason given, when no earlier field was.
+// refuse records that field cannot be printed, for the reason given, when no earlier field was. The
+// id is cut (Cut).
 func (p *nodePrinter) refuse(field, reason string) {
 	if p.err == nil {
-		p.err = fmt.Errorf("%w: %s %q, %s: %s", ErrUnprintable, p.kind, p.id, field, reason)
+		p.err = fmt.Errorf("%w: %s %q, %s: %s", ErrUnprintable, p.kind, Cut(p.id), field, reason)
 	}
 }
 
@@ -226,7 +227,7 @@ func (p *nodePrinter) document(file any) (string, error) {
 		text, err = encodeYAML(file)
 	}
 	if err != nil {
-		return "", fmt.Errorf("%w: %s %q: %v", ErrUnprintable, p.kind, p.id, err)
+		return "", fmt.Errorf("%w: %s %q: %v", ErrUnprintable, p.kind, Cut(p.id), err)
 	}
 	return "---\n" + text, nil
 }

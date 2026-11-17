@@ -280,7 +280,7 @@ func readScenarioFiles(fsys fs.FS, subjects []ScenarioSubject) (map[string]Tree,
 		if len(problems) > 0 {
 			SortProblems(problems)
 			p := problems[0]
-			return nil, &ScenarioError{File: path.Join(dir, p.Pos.File), Line: p.Pos.Line, Err: fmt.Errorf("%s: %s", p.Node, p.Detail)}
+			return nil, &ScenarioError{File: path.Join(dir, p.Pos.File), Line: p.Pos.Line, Err: errors.New(p.Text())}
 		}
 		trees[sub.Commit] = tree
 	}

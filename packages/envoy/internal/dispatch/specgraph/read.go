@@ -283,13 +283,52 @@ func readDocuments(name string, data []byte) (documents []document, problems []P
 }
 
 // yamlProblem is the bad-yaml problem of the kind kind (yamlStops or yamlDocument) for one message
-// of yaml.v3, without its "yaml: " prefix, at the line the message names, else at line.
+// of yaml.v3, without its "yaml: " prefix, at the line the message names, else at line. Each value
+// of the input that the message holds is cut (cutYAMLValues).
 func yamlProblem(name string, kind problemKind, msg string, line int) Problem {
 	msg = strings.TrimPrefix(msg, "yaml: ")
 	if m := yamlLine.FindStringSubmatch(msg); m != nil {
 		line, _ = strconv.Atoi(m[1])
 	}
-	return readerProblem(Position{File: name, Line: line}, "", kind, msg)
+	return readerProblem(Position{File: name, Line: line}, "", kind, cutYAMLValues(msg))
+}
+
+// yamlValues are the messages of yaml.v3 (v3.0.1: decode.go and resolve.go) that hold a value of
+// the input, each with one group for that value: a key written two times, which the message
+// quotes as Go quotes a string (goQuoted); an alias of no anchor and an anchor whose value holds
+// its alias, by its name; a key that is a list or a map, as Go writes it; and a value that its tag
+// does not take. Each other message of yaml.v3 holds no value of the input, and its type errors
+// cut a value to 7 bytes themselves.
+var yamlValues = []struct {
+	message  *regexp.Regexp
+	goQuoted bool
+}{
+	{regexp.MustCompile(`^line [0-9]+: mapping key ("(?:[^"\\]|\\.)*") already defined at line [0-9]+$`), true},
+	{regexp.MustCompile(`^unknown anchor '(.*)' referenced$`), false},
+	{regexp.MustCompile(`^anchor '(.*)' value contains itself$`), false},
+	{regexp.MustCompile(`^invalid map key: (.*)$`), false},
+	{regexp.MustCompile("^cannot decode !!\\w+ `(.*)` as a !!\\w+$"), false},
+}
+
+// cutYAMLValues is msg, a message of yaml.v3, with the value of the input that one of yamlValues
+// finds in it cut (Cut): a value that the message quotes as Go does is unquoted, cut and quoted
+// again. A short value, and a message of no value, stay as they are.
+func cutYAMLValues(msg string) string {
+	for _, v := range yamlValues {
+		m := v.message.FindStringSubmatchIndex(msg)
+		if m == nil {
+			continue
+		}
+		value := msg[m[2]:m[3]]
+		cut := Cut(value)
+		if v.goQuoted {
+			if unquoted, err := strconv.Unquote(value); err == nil {
+				cut = quoted(unquoted)
+			}
+		}
+		return msg[:m[2]] + cut + msg[m[3]:]
+	}
+	return msg
 }
 
 // stringKeys reports whether each mapping of value has strings for keys, as JSON's objects do:
@@ -372,19 +411,19 @@ func readFile(name string, data []byte) (documents []Document, problems []Proble
 // alias, a node with an anchor, a scalar with a tag, and a plain scalar that yaml.v3 read as
 // another type than a string (its tag) or that another reader can (quotedScalar, the printer's own
 // rule, so that the reader takes as another value each plain text that the printer would quote).
-// The merge key "<<" is such a plain scalar.
+// The merge key "<<" is such a plain scalar. Each name and text in it is cut (Cut).
 func readsAsAnother(node *yaml.Node) string {
 	const quoted = yaml.DoubleQuotedStyle | yaml.SingleQuotedStyle | yaml.LiteralStyle | yaml.FoldedStyle
 	switch {
 	case node.Kind == yaml.AliasNode:
-		return fmt.Sprintf("the alias *%s at line %d", node.Value, node.Line)
+		return fmt.Sprintf("the alias *%s at line %d", Cut(node.Value), node.Line)
 	case node.Anchor != "":
-		return fmt.Sprintf("the anchor &%s at line %d", node.Anchor, node.Line)
+		return fmt.Sprintf("the anchor &%s at line %d", Cut(node.Anchor), node.Line)
 	case node.Kind != yaml.ScalarNode:
 	case node.Style&yaml.TaggedStyle != 0:
-		return fmt.Sprintf("the tag %s at line %d", node.Tag, node.Line)
+		return fmt.Sprintf("the tag %s at line %d", Cut(node.Tag), node.Line)
 	case node.Style&quoted == 0 && (node.ShortTag() != "!!str" || quotedScalar(node.Value)):
-		return fmt.Sprintf("the plain text %q at line %d, which a YAML reader can read as another value than this text", node.Value, node.Line)
+		return fmt.Sprintf("the plain text %q at line %d, which a YAML reader can read as another value than this text", Cut(node.Value), node.Line)
 	}
 	for _, child := range node.Content {
 		if another := readsAsAnother(child); another != "" {
@@ -538,7 +577,7 @@ func readNode(name string, d document) (any, []Problem) {
 		problems = append(problems, readerProblem(pos, id, refusal, r.detail))
 	}
 	if droppedLimit != "" {
-		problems = append(problems, readerProblem(pos, id, timeLimitDropped, droppedLimit))
+		problems = append(problems, readerProblem(pos, id, timeLimitDropped, Cut(droppedLimit)))
 	}
 	return node, problems
 }
@@ -608,17 +647,31 @@ func schemaLeaves(e *jsonschema.ValidationError) []*jsonschema.ValidationError {
 
 // schemaDetail is "<where>: <message>" for one leaf: where is the JSON pointer of the value it
 // refuses, "node" for the node itself, and the message is the validator's, except for a key that
-// the schema forbids, which the validator names only "false schema".
+// the schema forbids, which the validator names only "false schema". The pointer and each value of
+// the input in the message are cut (Cut): the text that a pattern refuses, and the keys that the
+// node does not take, as one list. Each other message of the schema's kinds names values of the
+// schema, or a type or a count.
 func schemaDetail(leaf *jsonschema.ValidationError) string {
-	where := jsonPointer(leaf.InstanceLocation)
+	where := Cut(jsonPointer(leaf.InstanceLocation))
 	if where == "" {
 		where = "node"
 	}
-	msg := "the node takes no such key"
-	if _, forbidden := leaf.ErrorKind.(*kind.FalseSchema); !forbidden {
-		msg = leaf.ErrorKind.LocalizedString(english)
+	switch k := leaf.ErrorKind.(type) {
+	case *kind.FalseSchema:
+		return where + ": the node takes no such key"
+	case *kind.Pattern:
+		return where + ": " + (&kind.Pattern{Got: Cut(k.Got), Want: k.Want}).LocalizedString(english)
+	case *kind.AdditionalProperties:
+		msg := k.LocalizedString(english)
+		const before, after = "additional properties ", " not allowed"
+		if list, found := strings.CutPrefix(msg, before); found {
+			if list, found = strings.CutSuffix(list, after); found {
+				msg = before + Cut(list) + after
+			}
+		}
+		return where + ": " + msg
 	}
-	return where + ": " + msg
+	return where + ": " + leaf.ErrorKind.LocalizedString(english)
 }
 
 // pointerEscape writes a token of a JSON pointer as RFC 6901 writes it.
@@ -647,17 +700,18 @@ type unprinted struct {
 
 // detail is the detail of the not-printed problem after its rule: the two texts of the line,
 // quoted as Go quotes a string so that a space at the end, a carriage return or a byte order mark
-// shows, what differs in kind, and the command that writes each node in its printed form.
+// shows, each cut (quoted), what differs in kind, and the command that writes each node in its
+// printed form.
 func (u unprinted) detail() string {
 	if u.refused != nil {
 		return fmt.Sprintf("print writes no document for the node at line %d: %v", u.line, u.refused)
 	}
 	got, want := "past the end of the file", "nothing"
 	if u.got != "" {
-		got = strconv.Quote(u.got)
+		got = quoted(u.got)
 	}
 	if u.want != "" {
-		want = strconv.Quote(u.want)
+		want = quoted(u.want)
 	}
 	return fmt.Sprintf("line %d is %s, and print writes %s there (%s); spec-check print writes each node in that form", u.line, got, want, lineDifference(u.got, u.want))
 }

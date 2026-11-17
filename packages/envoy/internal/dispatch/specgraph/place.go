@@ -55,13 +55,13 @@ func (e *PlaceError) Unwrap() error { return e.Err }
 func (e *PlaceError) Error() string {
 	switch e.Err {
 	case ErrHeldTwice:
-		return fmt.Sprintf("node %q is in %s and in %s", e.Node, e.Places[0], e.Places[1])
+		return fmt.Sprintf("node %q is in %s and in %s", Cut(e.Node), e.Places[0], e.Places[1])
 	case ErrNoStatement:
-		return fmt.Sprintf("check %q serves %q, which the directory does not hold: check-serves: a check serves exactly one statement of the files", e.Node, e.Needs)
+		return fmt.Sprintf("check %q serves %q, which the directory does not hold: check-serves: a check serves exactly one statement of the files", Cut(e.Node), Cut(e.Needs))
 	case ErrNoParent:
-		return fmt.Sprintf("statement %q has the parent %q, which the directory does not hold: no-parent: the files hold no statement %q", e.Node, e.Needs, e.Needs)
+		return fmt.Sprintf("statement %q has the parent %q, which the directory does not hold: no-parent: the files hold no statement %q", Cut(e.Node), Cut(e.Needs), Cut(e.Needs))
 	default:
-		return fmt.Sprintf("%s %q: its block is %d bytes, more than one file holds (limit %d)", e.Kind, e.Node, e.Size, e.Limit)
+		return fmt.Sprintf("%s %q: its block is %d bytes, more than one file holds (limit %d)", e.Kind, Cut(e.Node), e.Size, e.Limit)
 	}
 }
 

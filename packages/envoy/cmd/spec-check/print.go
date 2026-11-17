@@ -80,10 +80,10 @@ func printApproved(stdout, stderr io.Writer, fsys fileSystem, path string, a spe
 	for _, id := range named {
 		switch n, held := a.Nodes[id]; {
 		case !held:
-			say(stderr, "%s: the approved spec holds no node %q", path, id)
+			say(stderr, "%s: the approved spec holds no node %q", path, specgraph.Cut(id))
 			refused = true
 		case n.Removed:
-			say(stderr, "%s: the approved spec removed node %q, so it has no current text", path, id)
+			say(stderr, "%s: the approved spec removed node %q, so it has no current text", path, specgraph.Cut(id))
 			refused = true
 		}
 	}
@@ -187,7 +187,7 @@ func planPrint(dir string, set notes.Set, a specgraph.Approved, named []string, 
 		refusals = append(refusals, keepsEachNode(dir, before, run, j.tree)...)
 	}
 	for _, p := range j.problems {
-		line := fmt.Sprintf("print would leave %s:%d: %s: %s", filepath.Join(dir, p.Pos.File), p.Pos.Line, p.Node, p.Detail)
+		line := fmt.Sprintf("print would leave %s:%d: %s", filepath.Join(dir, p.Pos.File), p.Pos.Line, p.Text())
 		if p.Rule == "not-printed" {
 			line += wayOut(dir, p, run, j.tree)
 		}
@@ -211,7 +211,7 @@ func planPrint(dir string, set notes.Set, a specgraph.Approved, named []string, 
 	}
 	for _, node := range run {
 		id := nodeID(node)
-		wrote = append(wrote, fmt.Sprintf("wrote %s to %s:%d", id, filepath.Join(dir, at[id].File), at[id].Line))
+		wrote = append(wrote, fmt.Sprintf("wrote %s to %s:%d", specgraph.Cut(id), filepath.Join(dir, at[id].File), at[id].Line))
 	}
 	return after, wrote, nil
 }
@@ -219,7 +219,8 @@ func planPrint(dir string, set notes.Set, a specgraph.Approved, named []string, 
 // wayOut is the words that end the refusal of a not-printed problem p of the files that a run of
 // print would leave, tree, when the run does not name the node that p is about: print changes only
 // the nodes of its run, so a run that names each node of p's file writes that file in its printed
-// form. It is "" when the run names that node, or p is about no node.
+// form. It is "" when the run names that node, or p is about no node. Each id is cut as Cut cuts a
+// value of the input.
 func wayOut(dir string, p specgraph.Problem, run []any, tree specgraph.Tree) string {
 	if p.Node == "" || p.Node == "-" || slices.ContainsFunc(run, func(n any) bool { return nodeID(n) == p.Node }) {
 		return ""
@@ -233,11 +234,11 @@ func wayOut(dir string, p specgraph.Problem, run []any, tree specgraph.Tree) str
 	slices.SortFunc(held, func(a, b any) int { return cmp.Compare(nodePos(a).Line, nodePos(b).Line) })
 	ids := make([]string, 0, len(held))
 	for _, n := range held {
-		ids = append(ids, "--id "+nodeID(n))
+		ids = append(ids, "--id "+specgraph.Cut(nodeID(n)))
 	}
 	file := filepath.Join(dir, p.Pos.File)
 	return fmt.Sprintf("; print changes only the nodes that the run names, and this run does not name %s, so to write %s in that form, name each node of it: %s",
-		p.Node, file, strings.Join(ids, " "))
+		specgraph.Cut(p.Node), file, strings.Join(ids, " "))
 }
 
 // heldNodes is each node of each document of l, by the reader of yaml.v3: the nodes that the files
@@ -288,13 +289,13 @@ func keepsEachNode(dir string, before, run []any, after specgraph.Tree) []string
 		}
 		switch {
 		case written[id]:
-			lines = append(lines, fmt.Sprintf("print would not leave node %q as its approved document", id))
+			lines = append(lines, fmt.Sprintf("print would not leave node %q as its approved document", specgraph.Cut(id)))
 		case len(want[id]) > 0:
 			pos := nodePos(want[id][0])
-			lines = append(lines, fmt.Sprintf("print would lose or change node %q of %s:%d, which the run does not name", id, filepath.Join(dir, pos.File), pos.Line))
+			lines = append(lines, fmt.Sprintf("print would lose or change node %q of %s:%d, which the run does not name", specgraph.Cut(id), filepath.Join(dir, pos.File), pos.Line))
 		default:
 			pos := nodePos(got[id][0])
-			lines = append(lines, fmt.Sprintf("print would leave node %q at %s:%d, which neither the files nor the run held", id, filepath.Join(dir, pos.File), pos.Line))
+			lines = append(lines, fmt.Sprintf("print would leave node %q at %s:%d, which neither the files nor the run held", specgraph.Cut(id), filepath.Join(dir, pos.File), pos.Line))
 		}
 	}
 	return lines
@@ -360,13 +361,13 @@ func placeRefusal(dir string, err error) string {
 	}
 	switch refused.Err {
 	case specgraph.ErrNoStatement:
-		return fmt.Sprintf("print would write check %q, whose statement %q %s does not hold: check-serves: a check serves exactly one statement of the files", refused.Node, refused.Needs, dir)
+		return fmt.Sprintf("print would write check %q, whose statement %q %s does not hold: check-serves: a check serves exactly one statement of the files", specgraph.Cut(refused.Node), specgraph.Cut(refused.Needs), dir)
 	case specgraph.ErrNoParent:
-		return fmt.Sprintf("print would write statement %q, whose parent %q %s does not hold: no-parent: the files hold no statement %q", refused.Node, refused.Needs, dir, refused.Needs)
+		return fmt.Sprintf("print would write statement %q, whose parent %q %s does not hold: no-parent: the files hold no statement %q", specgraph.Cut(refused.Node), specgraph.Cut(refused.Needs), dir, specgraph.Cut(refused.Needs))
 	case specgraph.ErrHeldTwice:
-		return fmt.Sprintf("print would write node %q, which %s and %s both hold", refused.Node, filepath.Join(dir, refused.Places[0]), filepath.Join(dir, refused.Places[1]))
+		return fmt.Sprintf("print would write node %q, which %s and %s both hold", specgraph.Cut(refused.Node), filepath.Join(dir, refused.Places[0]), filepath.Join(dir, refused.Places[1]))
 	default:
-		return fmt.Sprintf("print would write %s %q, whose block is %d bytes, more than one file holds (limit %d)", refused.Kind, refused.Node, refused.Size, refused.Limit)
+		return fmt.Sprintf("print would write %s %q, whose block is %d bytes, more than one file holds (limit %d)", refused.Kind, specgraph.Cut(refused.Node), refused.Size, refused.Limit)
 	}
 }
 

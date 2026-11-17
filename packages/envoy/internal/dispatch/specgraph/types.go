@@ -113,6 +113,13 @@ type Problem struct {
 	Effect             Effect
 }
 
+// Text is the problem as a line prints it after its place, "<node>: <detail>": its node cut as Cut
+// cuts a value of the input, since an id has no bound of length and Node stays whole as a key, and
+// its Detail, whose values were cut where it was made. Each line that names a problem prints this.
+func (p Problem) Text() string {
+	return Cut(p.Node) + ": " + p.Detail
+}
+
 // Effect is what a problem of Parse does to the tree that Parse gives with it: LosesNode or
 // KeepsEachNode. The reader sets on each of its problems the Effect of its kind (problemKinds,
 // read.go). The zero value is no Effect, as on a problem of Validate or of Compare, and a caller
@@ -137,6 +144,33 @@ const (
 	// key. The comparison of the files' own text decides.
 	KeepsEachNode
 )
+
+// ProblemKind is one kind of problem that the package gives: the format of its Detail, which
+// begins with its rule, and its Effect, which only a kind of the reader has.
+type ProblemKind struct {
+	Format string
+	Effect Effect
+}
+
+// ProblemKinds is each kind of problem that the package gives: the reader's (problemKinds),
+// Validate's (ruleKinds), Compare's, and bad-approved-document, which ReadApproved names. Two kinds
+// can have one format, such as the two of bad-yaml. A caller that must meet each kind, such as the
+// table test of the lines that print a problem (cmd/spec-check), checks itself against it, so a new
+// kind fails that test until it has a row.
+func ProblemKinds() []ProblemKind {
+	others := []string{detailUnapprovedID, detailUnapprovedText, detailRemovedID, approvedNodeCount, approvedOtherNode, approvedNotPrinted}
+	kinds := make([]ProblemKind, 0, len(problemKinds)+len(ruleKinds)+len(others))
+	for _, k := range problemKinds {
+		kinds = append(kinds, ProblemKind{Format: k.format, Effect: k.effect})
+	}
+	for _, format := range ruleKinds {
+		kinds = append(kinds, ProblemKind{Format: format})
+	}
+	for _, format := range others {
+		kinds = append(kinds, ProblemKind{Format: format})
+	}
+	return kinds
+}
 
 // StatementByID is the first statement the tree holds with id, and whether it holds one.
 func (t Tree) StatementByID(id string) (Statement, bool) {
