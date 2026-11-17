@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { render, within } from "@testing-library/react";
+import { act, render, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
 import { InPlaceField } from "./InPlaceField";
@@ -52,5 +52,38 @@ test("a text written elsewhere replaces what a field the reader is not holding s
   expect((page.getByRole("textbox", { name: "Title" }) as HTMLInputElement).value).toBe(
     "Written elsewhere"
   );
+  view.unmount();
+});
+
+/** The field as a page holds it while another person's write lands: every write the field sends
+ *  is kept in `writes`, and `land.write` stands for the server's answer moving `value` under the
+ *  field, as a refresh of the row does, without taking the focus from it. */
+function HeldField({
+  land,
+  writes,
+}: {
+  land: { write?: (text: string) => void };
+  writes: string[];
+}): ReactNode {
+  const [value, setValue] = useState("Old name");
+  land.write = setValue;
+  return <InPlaceField label="Title" onSave={(next) => writes.push(next)} value={value} />;
+}
+
+test("leaving a held field with nothing typed writes nothing, and shows what was written meanwhile", async () => {
+  const user = userEvent.setup();
+  const writes: string[] = [];
+  const land: { write?: (text: string) => void } = {};
+  const view = render(<HeldField land={land} writes={writes} />);
+  const field = within(view.container).getByRole("textbox", { name: "Title" }) as HTMLInputElement;
+  await user.click(field);
+  // Another person's rename lands while the reader holds the field.
+  act(() => land.write?.("Written elsewhere"));
+  expect(document.activeElement).toBe(field);
+  await user.tab();
+  // The reader typed nothing, so leaving writes nothing. A write of "Old name" here takes the
+  // other person's rename back, which nobody asked for, and the field goes on showing it.
+  expect(writes).toEqual([]);
+  expect(field.value).toBe("Written elsewhere");
   view.unmount();
 });
