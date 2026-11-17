@@ -15,6 +15,7 @@ import { MemoryRouter } from "react-router-dom";
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { installFakeLiveSockets } from "../../__tests__/live-socket-harness";
 import { ApiError, api } from "../../api/client";
+import { useEventFeed } from "../../api/event-feed";
 import { eventRefreshTargets } from "../../api/event-refresh";
 import { liveSocketFor } from "../../api/live-socket";
 import { issueCoverageQuery, issueQuery } from "../../api/queries";
@@ -3318,6 +3319,71 @@ test("a resolve from the margin with the live feed down reads the tree once for 
     ).toBe("settled");
     view.unmount();
   } finally {
+    for (const stub of stubs) stub.mockRestore();
+    client.clear();
+  }
+});
+
+/** The shell's event feed, as the app mounts it beside every page. */
+function ShellEventFeed(): null {
+  useEventFeed();
+  return null;
+}
+
+// A tree read refused, its retries spent, is read again when the live feed comes back. The
+// page's socket is restarted under it, and Dispatch starts the feed again on the next socket
+// with every event of the gap replayed, none of them of this issue: that is still the feed
+// coming back, so the refused read is asked again, or the outline stays on its failed line until
+// the reader presses Retry.
+test("a refused tree read is read again when the live feed comes back with its gap replayed whole", async () => {
+  const stubs = stubTreeReads(async (refs) => namedTargets(refs));
+  (api.getIssueTree as Mock<typeof api.getIssueTree>).mockRejectedValue(
+    new ApiError(404, { code: "NOT_FOUND", error: NO_ROUTE_ROLLING_RELEASE_MESSAGE })
+  );
+  const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  const sockets = installFakeLiveSockets();
+  // Signed in at event head 1, as the app's sign-in gate holds it before the page.
+  client.setQueryData(["whoami"], { event_head: "1", kind: "user", login: "alice" });
+  const startFeed = (): void => {
+    const socket = sockets.latest();
+    act(() => socket.open());
+    const { sub } = socket.subscribed("events");
+    act(() => socket.receive({ type: "events_start", sub, since: "1", replay_complete: true }));
+  };
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={client}>
+      <ShellEventFeed />
+      <ViewReadProvider issue={issue} preset="conversation">
+        {children}
+      </ViewReadProvider>
+    </QueryClientProvider>
+  );
+  try {
+    const view = renderHook(() => useIssueTree(issue), { wrapper });
+    startFeed();
+    await waitFor(() => expect(client.getQueryState(issueTreeKey(KEY))?.status).toBe("error"));
+    await act(async () => {
+      await Bun.sleep(1_100);
+    });
+    const before = treeReadsOf();
+
+    act(() => sockets.latest().restart());
+    await act(async () => {
+      await Bun.sleep(200);
+    });
+    expect(sockets.sockets.length, "the page opened its next socket").toBe(2);
+    startFeed();
+    await act(async () => {
+      await Bun.sleep(1_500);
+    });
+    expect(
+      treeReadsOf() - before,
+      "the feed coming back reads the refused tree again"
+    ).toBeGreaterThanOrEqual(1);
+    view.unmount();
+  } finally {
+    liveSocketFor(client).close();
+    sockets.restore();
     for (const stub of stubs) stub.mockRestore();
     client.clear();
   }
