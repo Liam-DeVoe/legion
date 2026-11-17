@@ -404,7 +404,7 @@ func TestCurrentIsTheNewestTextOfEachNodeThatIsNotRemoved(t *testing.T) {
 	t.Parallel()
 	approved := readApproved(t, "testdata/compare/removed-kept/approved.json")
 	removed := approved.Nodes["an-order-is-paid-once"]
-	if !removed.Removed || removed.PartlyChecked || len(removed.Versions) != 2 || removed.Versions[1].Version != 2 ||
+	if !*removed.Removed || *removed.PartlyChecked || len(removed.Versions) != 2 || removed.Versions[1].Version != 2 ||
 		!removed.Versions[1].At.Equal(time.Date(2026, 11, 5, 0, 0, 0, 0, time.UTC)) {
 		t.Errorf("Nodes[an-order-is-paid-once] = %+v", removed)
 	}
@@ -432,8 +432,41 @@ func TestCurrentIsTheNewestTextOfEachNodeThatIsNotRemoved(t *testing.T) {
 	}
 
 	partly := readApproved(t, "testdata/compare/approved-text/approved.json")
-	if partly.Nodes["acme-keeps-each-order"].PartlyChecked {
+	if *partly.Nodes["acme-keeps-each-order"].PartlyChecked {
 		t.Error("PartlyChecked read true from false")
+	}
+}
+
+// An approved spec that a caller builds can hold a node that does not set Removed, which
+// ApprovedNode.check refuses: Current, Since and Compare read it as a node with no current text,
+// and no false that the caller did not write. The control sets Removed false.
+func TestCurrentLeavesOutANodeThatDoesNotSetRemoved(t *testing.T) {
+	t.Parallel()
+	at := time.Date(2026, 11, 10, 0, 0, 0, 0, time.UTC)
+	block := ":::requirement{#a-page-shows-it kind=\"behavior\"}\nThe page shows it.\n:::\n"
+	files, problems := Parse(map[string][]byte{"spec.md": []byte(block)})
+	if len(problems) != 0 {
+		t.Fatal(problems)
+	}
+	for _, row := range []struct {
+		name    string
+		removed *bool
+		current bool
+	}{
+		{"Removed not set", nil, false},
+		{"control: Removed false", new(false), true},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			a := Approved{Nodes: map[string]ApprovedNode{"a-page-shows-it": {ID: "a-page-shows-it", Removed: row.removed, PartlyChecked: new(false),
+				Versions: []ApprovedVersion{{Version: 1, At: at, Block: block}}}}}
+			current, problems := a.Current()
+			_, held := current.StatementByID("a-page-shows-it")
+			_, compared := Compare(files, a).Holds["a-page-shows-it"]
+			if held != row.current || len(problems) != 0 || a.Since("a-page-shows-it").IsZero() == row.current || compared != row.current {
+				t.Errorf("Current holds it %t (problems %v), Since %v, Compare holds it %t; want %t", held, problems, a.Since("a-page-shows-it"), compared, row.current)
+			}
+		})
 	}
 }
 
@@ -445,7 +478,7 @@ func TestCurrentNamesABlockThatDoesNotParse(t *testing.T) {
 	at := time.Date(2026, 11, 10, 0, 0, 0, 0, time.UTC)
 	broken := ":::requirement{#a-page-shows-it kind=\"behavior\"}\nThe page shows it.\n::: and more\n:::\n"
 	approved := Approved{Nodes: map[string]ApprovedNode{
-		"a-page-shows-it": {ID: "a-page-shows-it", Versions: []ApprovedVersion{{Version: 1, At: at, Block: broken}}},
+		"a-page-shows-it": {ID: "a-page-shows-it", Removed: new(false), PartlyChecked: new(false), Versions: []ApprovedVersion{{Version: 1, At: at, Block: broken}}},
 	}}
 	current, problems := approved.Current()
 	if len(current.Statements) != 0 {
@@ -468,7 +501,7 @@ func TestATextThatComesBackIsItsNewestVersion(t *testing.T) {
 	day := func(d int) time.Time { return time.Date(2026, 11, d, 0, 0, 0, 0, time.UTC) }
 	a := ":::requirement{#a-page-shows-it kind=\"behavior\"}\nThe page shows it.\n:::\n"
 	b := ":::requirement{#a-page-shows-it kind=\"behavior\"}\nThe page shows all.\n:::\n"
-	approved := Approved{Nodes: map[string]ApprovedNode{"a-page-shows-it": {ID: "a-page-shows-it", Versions: []ApprovedVersion{
+	approved := Approved{Nodes: map[string]ApprovedNode{"a-page-shows-it": {ID: "a-page-shows-it", Removed: new(false), PartlyChecked: new(false), Versions: []ApprovedVersion{
 		{Version: 1, At: day(10), Block: a}, {Version: 2, At: day(11), Block: b}, {Version: 3, At: day(12), Block: a},
 	}}}}
 	files, problems := Parse(map[string][]byte{"spec.md": []byte(a)})
@@ -517,8 +550,15 @@ func TestWriteApprovedWritesWhatReadApprovedReads(t *testing.T) {
 	}{
 		{"a node under another id", Approved{Nodes: map[string]ApprovedNode{"a-page-shows-all": {ID: "a-page-shows-it", Versions: []ApprovedVersion{{Version: 1, At: at, Block: block}}}}},
 			`node "a-page-shows-it" is under the id "a-page-shows-all"`},
-		{"a version with no time", Approved{Nodes: map[string]ApprovedNode{"a-page-shows-it": {ID: "a-page-shows-it", Versions: []ApprovedVersion{{Version: 1, Block: block}}}}},
+		{"a version with no time", Approved{Nodes: map[string]ApprovedNode{"a-page-shows-it": {ID: "a-page-shows-it", Removed: new(false), PartlyChecked: new(false),
+			Versions: []ApprovedVersion{{Version: 1, Block: block}}}}},
 			`approved node "a-page-shows-it" version 1: it has no time`},
+		{"a node that does not set removed", Approved{Nodes: map[string]ApprovedNode{"a-page-shows-it": {ID: "a-page-shows-it", PartlyChecked: new(false),
+			Versions: []ApprovedVersion{{Version: 1, At: at, Block: block}}}}},
+			`approved node "a-page-shows-it": it sets no removed`},
+		{"a node that does not set partly_checked", Approved{Nodes: map[string]ApprovedNode{"a-page-shows-it": {ID: "a-page-shows-it", Removed: new(false),
+			Versions: []ApprovedVersion{{Version: 1, At: at, Block: block}}}}},
+			`approved node "a-page-shows-it": it sets no partly_checked`},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()

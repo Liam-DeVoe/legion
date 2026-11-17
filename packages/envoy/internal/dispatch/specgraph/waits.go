@@ -6,22 +6,40 @@ import (
 )
 
 // Unit is a work unit as the workflow spec defines it, as far as a wait reads it (R29): the
-// statements it serves, the units it needs, and the statements it waits on. JSON tags are the form
-// of units.json.
+// statements it serves, the units it needs, and the statements it waits on, each nil when it is
+// not set and an empty list for none. JSON tags are the form of units.json.
 type Unit struct {
 	ID      string   `json:"id" input:"nonzero"`
-	Serves  []string `json:"serves" input:"present: [] serves no statement, and a file sets it"`
-	Needs   []string `json:"needs" input:"present: [] needs no unit, and a file sets it"`
-	WaitsOn []string `json:"waits_on" input:"present: [] waits on no statement, and a file sets it"`
+	Serves  []string `json:"serves" input:"present: [] serves no statement"`
+	Needs   []string `json:"needs" input:"present: [] needs no unit"`
+	WaitsOn []string `json:"waits_on" input:"present: [] waits on no statement"`
 }
 
-// unitsFault is the refusal of the first unit of units that sets no id, which would read as a unit
-// named "", or "" when each sets one. The reader of units.json and WaitCycle both refuse units by
-// it.
+// unitsFault is the refusal of the first unit of units that sets no id, an id of no letter and no
+// digit (hasWord), which would read as a unit named "" or named nothing, no serves, needs or
+// waits_on, which would read as one with none and hide a cycle of waits (R29), or one of them that
+// holds an id of no letter and no digit, which names no statement or unit; and "" when each unit
+// is whole. The reader of units.json and WaitCycle both refuse units by it.
 func unitsFault(units []Unit) string {
 	for i, u := range units {
 		if u.ID == "" {
 			return fmt.Sprintf("unit %d has no id", i+1)
+		}
+		if !hasWord(u.ID) {
+			return fmt.Sprintf("unit %d: its id has no letter and no digit, so it names no unit", i+1)
+		}
+		for _, list := range []struct {
+			member, what string
+			ids          []string
+		}{{"serves", "statement", u.Serves}, {"needs", "unit", u.Needs}, {"waits_on", "statement", u.WaitsOn}} {
+			if list.ids == nil {
+				return fmt.Sprintf("unit %s: it sets no %s; a unit with none sets an empty list", quoted(u.ID), list.member)
+			}
+			for _, id := range list.ids {
+				if !hasWord(id) {
+					return fmt.Sprintf("unit %s: %s holds %s, which names no %s", quoted(u.ID), list.member, quoted(id), list.what)
+				}
+			}
 		}
 	}
 	return ""
@@ -34,8 +52,9 @@ func unitsFault(units []Unit) string {
 // a cycle, written unit, statement, unit, …, back to that unit, with no statement between two units
 // where the first needs the second; of two steps to one unit, a need comes first, then the
 // statement with the smallest id. Only the rule is here: refusing the wait that closes a cycle is
-// the workflow capability's. It gives an error, and no cycle, for a unit that sets no id
-// (unitsFault).
+// the workflow capability's. It gives an error, and no cycle, for units that unitsFault refuses: a
+// unit with no id, or that does not set serves, needs or waits_on, or a name in them that names
+// nothing.
 func WaitCycle(units []Unit) ([]string, error) {
 	if fault := unitsFault(units); fault != "" {
 		return nil, errors.New("specgraph: " + fault)

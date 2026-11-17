@@ -6,7 +6,7 @@
     "outcome": "pass",
     "commit": "c1",
     "job": "go-checks",
-    "leg": "",
+    "leg": "linux",
     "attempt": 1,
     "at": "2026-11-12T10:00:00Z",
     "seq": 1
@@ -18,7 +18,7 @@
     "outcome": "fail",
     "commit": "c1",
     "job": "go-checks",
-    "leg": "",
+    "leg": "linux",
     "attempt": 1,
     "at": "2026-11-12T10:05:00Z",
     "seq": 2,
