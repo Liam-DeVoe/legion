@@ -279,6 +279,7 @@ such a row loses is feedback on the pull request itself.
 | `e2e/issue-page-q.e2e.ts` | the server's decisions read sorts the view; a sent Change is re-read |
 | `e2e/issue-page-switch.e2e.ts` | the setting is kept under the login the server's sign-in names, and one row signs a second login in on the same context to read that it holds none; one row reads the server's 404 for a key it does not hold |
 | `e2e/issue-page-t.e2e.ts` | the rows draw the tree read and its views the server answers for each seeded issue, count the reads the page sends it, and write a status and a reply whose refresh is the server's tree read |
+| `e2e/issue-page-u.e2e.ts` | the server's decision nodes, their review state and the comment under each, read through the tree and its views |
 | `e2e/issue-page-v.e2e.ts` | the rows record and withdraw results and file a child through the server, and the view draws its coverage and results reads |
 | `e2e/issue.e2e.ts` | asserts the fake Envoy's state across resets; status writes re-read; writes persisted and re-read |
 | `e2e/issues-table.e2e.ts` | every row writes and then reads its own write: parents, ranks, epics and merges patched through the API and read back through `getIssue`, plus a refused write retried from the store and an interrupted action finished after a reload |

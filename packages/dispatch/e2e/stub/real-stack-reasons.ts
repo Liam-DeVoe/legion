@@ -182,6 +182,8 @@ export const realStackReasons: Record<string, string> = {
   "issue-page-q.e2e.ts": "the server's decisions read sorts the view; a sent Change is re-read",
   "issue-page-t.e2e.ts":
     "the rows draw the tree read and its views the server answers for each seeded issue, count the reads the page sends it, and write a status and a reply whose refresh is the server's tree read",
+  "issue-page-u.e2e.ts":
+    "the server's decision nodes, their review state and the comment under each, read through the tree and its views",
   "issue-page-v.e2e.ts":
     "the rows record and withdraw results and file a child through the server, and the view draws its coverage and results reads",
   "issues-table.e2e.ts":
