@@ -18,13 +18,15 @@ import (
 // lane's filter, as the phase entry's way back does (way_back_doc_test.go).
 //
 // The migration is read through migrations.All, as phase_entry_migrations_doc_test.go reads them,
-// and the guide's block is found by the one line only that rollback's block holds
-// (wayBackBlockOfTheGuide). The header's block is read here by a parse of its own, which shares no
-// code with internal/store's: two readers that agree with each other while both drift are what a
-// copy of a document is most at risk of.
+// and the guide's block is the one a reader sees under that heading holding the one line only that
+// rollback's block holds (wayBackBlockOfTheGuide). The header's block is read here by a parse of
+// its own, which shares no code with internal/store's: two readers that agree with each other
+// while both drift are what a copy of a document is most at risk of.
 const (
 	// planRatingsMigration is the migration whose header carries the block.
 	planRatingsMigration = "20261117023932_outbox_kinds_with_the_plan_record.up.sql"
+	// planRatingsWayBackSection is the heading of the guide's section that gives the way back.
+	planRatingsWayBackSection = "Rolling back the release that rates each plan"
 	// planRatingsWayBackMark is the line that deletes the plan records, which no other
 	// rollback's block carries.
 	planRatingsWayBackMark = "delete from outbox where kind = 'plan_record';"
@@ -35,7 +37,8 @@ const (
 // and not in the header would otherwise never reach the test that runs the header's block.
 func TestThePlanRatingsWayBackIsOneTextInTheHeaderAndTheGuide(t *testing.T) {
 	header := planRatingsWayBackOfTheHeader(t)
-	guide := wayBackBlockOfTheGuide(t, planRatingsWayBackMark, "the header of "+planRatingsMigration)
+	guide := wayBackBlockOfTheGuide(t, planRatingsWayBackSection, planRatingsWayBackMark,
+		"the header of "+planRatingsMigration)
 	if header != guide {
 		t.Errorf("the way back of the release that rates each plan differs between %s and the header of %s:\n"+
 			"the guide:\n%s\nthe header:\n%s\nthe header's block is the one internal/store runs, so the guide "+

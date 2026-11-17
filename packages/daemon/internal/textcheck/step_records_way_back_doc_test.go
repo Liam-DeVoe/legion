@@ -31,7 +31,8 @@ var stepRecordsWayBackMark = fmt.Sprintf("delete from schema_version where versi
 // the header's and an operator runs the guide's.
 func TestTheStepRecordsWayBackIsOneTextInTheRollForwardAndTheGuide(t *testing.T) {
 	header := stepRecordsWayBackOfTheHeader(t)
-	guide := wayBackBlockOfTheGuide(t, stepRecordsWayBackMark, "the header of the step records' roll forward")
+	guide := wayBackBlockOfTheGuide(t, "Rolling back the release that records each step", stepRecordsWayBackMark,
+		"the header of the step records' roll forward")
 	if header == guide {
 		return
 	}
