@@ -2062,13 +2062,13 @@ SCRIPT_TEST_GATES = [
     harness("check_legion_version_inputs_test", "Test the legion version input check",
             f"{SCRIPTS}/check-legion-version-inputs.test.sh", [
         (f"{SCRIPTS}/check-legion-version-inputs-fixtures.sh",
-         "check-legion-version-inputs.test.sh:28 sources the fixture library every case is built with"),
+         "check-legion-version-inputs.test.sh:30 sources the fixture library every case is built with"),
         (VERSION_INPUTS, "the script under test, which the fixture library symlinks into every fixture "
-                         "(check-legion-version-inputs-fixtures.sh:119-121)"),
+                         "(check-legion-version-inputs-fixtures.sh:165-167)"),
         (GO_OFFLINE, "the module the script runs go through, linked in beside it"),
         (RELEASE_PLAN, "the release listings and pinned steps the script reads, linked in beside it, and which "
                        "check-legion-version-inputs-fixtures.sh's step() builds each fixture's jobs from"),
-        (GO_OFFLINE_STAND_IN, "check-legion-version-inputs.test.sh:25 sources the stand-in go and the proxy recorder "
+        (GO_OFFLINE_STAND_IN, "check-legion-version-inputs.test.sh:27 sources the stand-in go and the proxy recorder "
                               "procedure its last two cases read the script's go commands with"),
     ]),
     harness("check_ts_filters_test", "Test the TypeScript filter check", f"{SCRIPTS}/check-ts-filters.test.sh", [
