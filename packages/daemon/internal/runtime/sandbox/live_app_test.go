@@ -50,7 +50,7 @@ func (t implementTokens) Token(ctx context.Context, repo ghrepo.Repository) (str
 // directory a command names, not which App a role writes as; Stage 4b's daemon hands each role
 // its own.
 func (t implementTokens) Credential(ctx context.Context, _ claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
-	return appauth.GitHubCredential(t.apps, t.repositories, ghrepo.Renames{}, t.left, slog.Default())(ctx, claim.RoleImplementer, repo)
+	return appauth.GitHubCredential(t.apps, t.repositories, ghrepo.Renames{}, t.left, nil, slog.Default())(ctx, claim.RoleImplementer, repo)
 }
 
 // ControllerCredential is the harness's ControllerCredential (Options.ControllerCredential): the

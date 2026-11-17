@@ -254,6 +254,34 @@ func TestADeploymentRolesAppIsItsSetting(t *testing.T) {
 	}
 }
 
+// A role the deployment defines gets its gh files minted as the App its github_app setting names,
+// as each of Legion's roles gets its own App's: the checker, set to implement, holds the
+// implement App's write token and the reviewer the review App's. A role nothing defines is
+// refused before any lease is minted.
+func TestADeploymentRolesBundleIsMintedAsItsApp(t *testing.T) {
+	repos := projectRepos("sjawhar/legion")
+	repo := ghrepo.MustParse("sjawhar/legion")
+	deployed := DeploymentApps{"checker": Implement}
+	credential := GitHubCredential(ownerTokens{}, repos, ghrepo.Renames{}, nil, deployed, quietBundleLog())
+	for role, app := range map[claim.Role]string{"checker": "implement", claim.RoleReviewer: "review"} {
+		bundle, err := credential(context.Background(), role, repo)
+		if err != nil {
+			t.Fatalf("the bundle of %s: %v", role, err)
+		}
+		if token := bundleTokens(t, bundle)["sjawhar"]; !strings.HasPrefix(token, app+"-token-for-") {
+			t.Errorf("%s's hosts file holds %q, want the %s App's write token, %q…", role, token, app, app+"-token-for-")
+		}
+		if rendered := bundle.Dirs["sjawhar"]; rendered.App != app {
+			t.Errorf("%s's gh files are rendered for the %q App, want %q", role, rendered.App, app)
+		}
+	}
+	var minted []string
+	counted := GitHubCredential(countingTokens{ownerTokens: ownerTokens{}, minted: &minted}, repos, ghrepo.Renames{}, nil, deployed, quietBundleLog())
+	if _, err := counted(context.Background(), "ghost", repo); !errors.Is(err, ErrRoleNotDefined) || len(minted) != 0 {
+		t.Errorf("the bundle of ghost = %v, minting %v; want an error that is ErrRoleNotDefined and no mint", err, minted)
+	}
+}
+
 func TestTokensMintsRefreshesAndCachesIdentity(t *testing.T) {
 	key, privatePEM := testAppKey(t)
 	now := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)

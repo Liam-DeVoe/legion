@@ -262,7 +262,7 @@ func servingRenamed(repos ...ghrepo.Repository) func(*Options) {
 		leases := &namedLeases{}
 		o.Mapped = served
 		o.Tokens = servingTokens{served: served, renames: renames}
-		o.GitHubCredential = appauth.GitHubCredential(leases, served, renames, left, nil)
+		o.GitHubCredential = appauth.GitHubCredential(leases, served, renames, left, nil, nil)
 		o.ControllerCredential = appauth.ControllerCredential(leases, served, renames, left, nil)
 		o.GitHubDirs = func(repo ghrepo.Repository, roles []appauth.AppRole) []string {
 			return appauth.GitHubDirs(served, renames, left, roles, repo)

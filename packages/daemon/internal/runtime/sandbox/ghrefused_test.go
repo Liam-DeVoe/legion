@@ -74,7 +74,7 @@ func withRefusedOwner(owner string, refuse *atomic.Bool) rigOption {
 func withProjectTokens(tokens appauth.Tokens) rigOption {
 	return withOptions(func(o *Options) {
 		left := appauth.NewLeftOut()
-		o.GitHubCredential = appauth.GitHubCredential(tokens, refusedProjectRepos, ghrepo.Renames{}, left, o.Log)
+		o.GitHubCredential = appauth.GitHubCredential(tokens, refusedProjectRepos, ghrepo.Renames{}, left, nil, o.Log)
 		o.ControllerCredential = appauth.ControllerCredential(tokens, refusedProjectRepos, ghrepo.Renames{}, left, o.Log)
 		o.GitHubDirs = func(repo ghrepo.Repository, roles []appauth.AppRole) []string {
 			return appauth.GitHubDirs(refusedProjectRepos, ghrepo.Renames{}, left, roles, repo)
@@ -152,7 +152,7 @@ func TestAPodProjectsTheGhDirectoriesEveryRolesBundleHolds(t *testing.T) {
 	refuse.Store(true)
 	tokens := refusingOwnerTokens{refuse: &refuse, owner: "acme", app: appauth.Review}
 	g := newRig(t, nil, withOptions(func(o *Options) {
-		o.GitHubCredential = appauth.GitHubCredential(tokens, refusedProjectRepos, ghrepo.Renames{}, nil, o.Log)
+		o.GitHubCredential = appauth.GitHubCredential(tokens, refusedProjectRepos, ghrepo.Renames{}, nil, nil, o.Log)
 	}))
 
 	loc := g.spawn(workerSpec(t))

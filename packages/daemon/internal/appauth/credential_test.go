@@ -113,7 +113,7 @@ func projectRepos(names ...string) func() []ghrepo.Repository {
 // repository of its own has no bundle.
 func TestGitHubCredentialBundlesEveryOwnerOfTheProject(t *testing.T) {
 	repos := projectRepos("sjawhar/legion", "Acme/widgets", "acme/gadgets")
-	credential := GitHubCredential(ownerTokens{}, repos, ghrepo.Renames{}, nil, quietBundleLog())
+	credential := GitHubCredential(ownerTokens{}, repos, ghrepo.Renames{}, nil, nil, quietBundleLog())
 	for _, tc := range []struct {
 		name    string
 		role    claim.Role
@@ -170,12 +170,12 @@ func TestGitHubCredentialBundlesEveryOwnerOfTheProject(t *testing.T) {
 		})
 	}
 
-	refused := GitHubCredential(ownerTokens{refuse: "sjawhar"}, repos, ghrepo.Renames{}, nil, quietBundleLog())
+	refused := GitHubCredential(ownerTokens{refuse: "sjawhar"}, repos, ghrepo.Renames{}, nil, nil, quietBundleLog())
 	if _, err := refused(context.Background(), claim.RoleImplementer, ghrepo.MustParse("acme/widgets")); err == nil ||
 		!strings.Contains(err.Error(), "sjawhar") || !strings.Contains(err.Error(), string(claim.RoleImplementer)) {
 		t.Errorf("a refused read mint = %v, want an error naming the owner and the role", err)
 	}
-	none := GitHubCredential(ownerTokens{}, projectRepos(), ghrepo.Renames{}, nil, quietBundleLog())
+	none := GitHubCredential(ownerTokens{}, projectRepos(), ghrepo.Renames{}, nil, nil, quietBundleLog())
 	if _, err := none(context.Background(), claim.RoleController, ghrepo.Repository{}); !errors.Is(err, runtime.ErrNoGitHubOwner) {
 		t.Errorf("a bundle with no owner = %v, want runtime.ErrNoGitHubOwner", err)
 	}
@@ -191,7 +191,7 @@ func TestGitHubCredentialBundlesEveryOwnerOfTheProject(t *testing.T) {
 func TestGitHubCredentialNarrowsEverySiblingRepositoryToItsOwnDirectory(t *testing.T) {
 	var minted []string
 	repos := projectRepos("cybermonklabs/legion", "theorem-labs/agent-infra", "theorem-labs/nats-server")
-	credential := GitHubCredential(countingTokens{minted: &minted}, repos, ghrepo.Renames{}, nil, quietBundleLog())
+	credential := GitHubCredential(countingTokens{minted: &minted}, repos, ghrepo.Renames{}, nil, nil, quietBundleLog())
 	bundle, err := credential(context.Background(), claim.RoleImplementer, ghrepo.MustParse("theorem-labs/agent-infra"))
 	if err != nil {
 		t.Fatalf("credential: %v", err)
@@ -318,7 +318,7 @@ func TestGitHubCredentialBundlesARenamedPairAsOneOwner(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var minted []string
 			renames := ghrepo.MustRenames(legionRename)
-			credential := GitHubCredential(countingTokens{minted: &minted}, repos, renames, nil, quietBundleLog())
+			credential := GitHubCredential(countingTokens{minted: &minted}, repos, renames, nil, nil, quietBundleLog())
 			bundle, err := credential(context.Background(), tc.role, tc.repo)
 			if err != nil {
 				t.Fatalf("credential: %v", err)
@@ -363,7 +363,7 @@ func TestGitHubCredentialBundlesARenamedPairAsOneOwner(t *testing.T) {
 	t.Run("no pair configured", func(t *testing.T) {
 		var minted []string
 		both := projectRepos("Cybermonklabs/legion", "sjawhar/legion")
-		credential := GitHubCredential(countingTokens{minted: &minted}, both, ghrepo.Renames{}, nil, quietBundleLog())
+		credential := GitHubCredential(countingTokens{minted: &minted}, both, ghrepo.Renames{}, nil, nil, quietBundleLog())
 		bundle, err := credential(context.Background(), claim.RoleImplementer, ghrepo.MustParse("cybermonklabs/legion"))
 		if err != nil {
 			t.Fatalf("credential: %v", err)
@@ -390,7 +390,7 @@ func TestGitHubCredentialBundlesARenamedPairAsOneOwner(t *testing.T) {
 	t.Run("the owner it moved from is an owner of the project under the pair's own from", func(t *testing.T) {
 		var minted []string
 		both := projectRepos("Cybermonklabs/legion", "sjawhar/legion")
-		credential := GitHubCredential(countingTokens{minted: &minted}, both, ghrepo.MustRenames(legionRename), nil, quietBundleLog())
+		credential := GitHubCredential(countingTokens{minted: &minted}, both, ghrepo.MustRenames(legionRename), nil, nil, quietBundleLog())
 		bundle, err := credential(context.Background(), claim.RoleImplementer, ghrepo.MustParse("cybermonklabs/legion"))
 		if err != nil {
 			t.Fatalf("credential: %v", err)
@@ -677,7 +677,7 @@ func TestEveryServedOwnerKeepsItsOwnReadLeaseWhileAPairResolves(t *testing.T) {
 				repos = projectRepos(tc.served...)
 			}
 			var minted []string
-			credential := GitHubCredential(countingTokens{minted: &minted}, repos, renames, nil, quietBundleLog())
+			credential := GitHubCredential(countingTokens{minted: &minted}, repos, renames, nil, nil, quietBundleLog())
 			bundle, err := credential(context.Background(), claim.RoleImplementer, tc.repo)
 			if err != nil {
 				t.Fatalf("credential: %v", err)
@@ -731,7 +731,7 @@ func TestASecondPairDoesNotRedirectTheOwnerThatServesTheRolesRepository(t *testi
 	served := []string{"Cybermonklabs/legion", "cybermonklabs/tools", "theorem-labs/agent-infra", "theorem-labs/nats-server"}
 	repos := projectRepos(served...)
 	recorded := ghrepo.MustParse("sjawhar/legion")
-	credential := GitHubCredential(ownerTokens{}, repos, chainedRenames, nil, quietBundleLog())
+	credential := GitHubCredential(ownerTokens{}, repos, chainedRenames, nil, nil, quietBundleLog())
 	bundle, err := credential(context.Background(), claim.RoleImplementer, recorded)
 	if err != nil {
 		t.Fatalf("credential: %v", err)
@@ -837,7 +837,7 @@ func TestGitHubCredentialKeepsTheReadLeaseTheReachableRepositoriesGive(t *testin
 	log, said := bundleLog()
 	repos := projectRepos("sjawhar/legion", "acme/widgets", "acme/gadgets")
 	tokens := countingTokens{ownerTokens: ownerTokens{unreachable: map[string]bool{"acme/gadgets": true}}, minted: &minted}
-	credential := GitHubCredential(tokens, repos, ghrepo.Renames{}, nil, log)
+	credential := GitHubCredential(tokens, repos, ghrepo.Renames{}, nil, nil, log)
 
 	bundle, err := credential(context.Background(), claim.RoleImplementer, ghrepo.MustParse("sjawhar/legion"))
 	if err != nil {
@@ -877,7 +877,7 @@ func TestGitHubCredentialLeavesOutASiblingRepositoryGitHubRefuses(t *testing.T) 
 	log, said := bundleLog()
 	repos := projectRepos("theorem-labs/agent-infra", "theorem-labs/nats-server", "cybermonklabs/legion")
 	tokens := ownerTokens{unreachable: map[string]bool{"theorem-labs/nats-server": true}}
-	credential := GitHubCredential(tokens, repos, ghrepo.Renames{}, nil, log)
+	credential := GitHubCredential(tokens, repos, ghrepo.Renames{}, nil, nil, log)
 
 	bundle, err := credential(context.Background(), claim.RoleImplementer, ghrepo.MustParse("theorem-labs/agent-infra"))
 	if err != nil {
@@ -908,7 +908,7 @@ func TestGitHubCredentialStillFailsOnARefusedWriteLease(t *testing.T) {
 	log, said := bundleLog()
 	repos := projectRepos("acme/widgets", "sjawhar/legion")
 	tokens := ownerTokens{unreachable: map[string]bool{"acme/widgets": true}}
-	credential := GitHubCredential(tokens, repos, ghrepo.Renames{}, nil, log)
+	credential := GitHubCredential(tokens, repos, ghrepo.Renames{}, nil, nil, log)
 
 	bundle, err := credential(context.Background(), claim.RoleReviewer, ghrepo.MustParse("acme/widgets"))
 	if !errors.Is(err, ErrNarrowingRefused) || len(bundle.Dirs) != 0 {
@@ -931,7 +931,7 @@ func TestGitHubCredentialSaysARefusedRepositoryOnceOverTwoBundles(t *testing.T) 
 	log, said := bundleLog()
 	repos := projectRepos("oncelabs/served", "oncelabs/twice")
 	tokens := ownerTokens{unreachable: map[string]bool{"oncelabs/twice": true}}
-	credential := GitHubCredential(tokens, repos, ghrepo.Renames{}, nil, log)
+	credential := GitHubCredential(tokens, repos, ghrepo.Renames{}, nil, nil, log)
 
 	for i := range 2 {
 		if _, err := credential(context.Background(), claim.RoleImplementer, ghrepo.MustParse("other/thing")); err != nil {
@@ -952,7 +952,7 @@ func TestGitHubCredentialLeavesOutARepositoryNamedLikeGhsOwnFiles(t *testing.T) 
 		t.Run(named, func(t *testing.T) {
 			log, said := bundleLog()
 			repos := projectRepos(owner+"/legion", owner+"/"+named)
-			credential := GitHubCredential(ownerTokens{}, repos, ghrepo.Renames{}, nil, log)
+			credential := GitHubCredential(ownerTokens{}, repos, ghrepo.Renames{}, nil, nil, log)
 
 			bundle, err := credential(context.Background(), claim.RoleImplementer, ghrepo.MustParse(owner+"/legion"))
 			if err != nil {
@@ -984,7 +984,7 @@ func TestGitHubCredentialLeavesOutARepositoryNamedLikeGhsOwnFiles(t *testing.T) 
 func TestABundleTakesItsDefaultFromTheOwnersTheMintAnsweredFor(t *testing.T) {
 	repos := projectRepos("acme/widgets", "sjawhar/legion")
 	tokens := ownerTokens{unreachable: map[string]bool{"acme/widgets": true}}
-	credential := GitHubCredential(tokens, repos, ghrepo.Renames{}, NewLeftOut(), quietBundleLog())
+	credential := GitHubCredential(tokens, repos, ghrepo.Renames{}, NewLeftOut(), nil, quietBundleLog())
 
 	bundle, err := credential(context.Background(), claim.RoleImplementer, ghrepo.Repository{})
 	if err != nil {
@@ -1041,7 +1041,7 @@ func TestGitHubsTroubleThatReadsAsARefusalFailsTheBundleAndLeavesNothingOut(t *t
 	log, said := bundleLog()
 	left := NewLeftOut()
 	repos := projectRepos("acme/gadgets", "acme/widgets", "sjawhar/legion")
-	credential := GitHubCredential(troubledTokens{}, repos, ghrepo.Renames{}, left, log)
+	credential := GitHubCredential(troubledTokens{}, repos, ghrepo.Renames{}, left, nil, log)
 
 	bundle, err := credential(context.Background(), claim.RoleImplementer, ghrepo.MustParse("sjawhar/legion"))
 	var trouble *TransientError

@@ -22,10 +22,12 @@ var ErrOwnerOutsideProject = errors.New("is not an owner of the project's reposi
 
 // GitHubCredential is the one function every role's gh files come from (runtime.GitHubCredential)
 // over tokens: a bundle whose directories (GitHubDirs, built from the same description) each hold
-// one lease of the role's App, rendered as gh's hosts.yml and config.yml and named for the App and
-// its expiry so a log can say whose token it wrote. Every lease reaches its owner's whole
-// installation at its own permissions, so a directory's name says which lease a command is served,
-// not which repositories the token reaches:
+// one lease of the role's App — AppRoleFor over deployed, the roles the deployment defines, so a
+// role of the deployment's acts as the App its github_app names and a role nothing defines is
+// refused before anything is minted — rendered as gh's hosts.yml and config.yml and named for
+// the App and its expiry so a log can say whose token it wrote. Every lease reaches its owner's
+// whole installation at its own permissions, so a directory's name says which lease a command is
+// served, not which repositories the token reaches:
 //
 //   - the directory named for the issue's recorded owner and the directory named for the owner
 //     whose installation serves that repository hold the one write lease for it (Tokens.Token),
@@ -79,9 +81,9 @@ var ErrOwnerOutsideProject = errors.New("is not an owner of the project's reposi
 // refresh ask GitHub only when a lease turns over, and one lease is minted per scope however many
 // directories carry it: a configured rename's two owner directories hold the one lease, as do the
 // repository directories under them.
-func GitHubCredential(tokens Tokens, repos func() []ghrepo.Repository, renames ghrepo.Renames, left *LeftOut, log *slog.Logger) runtime.GitHubCredential {
+func GitHubCredential(tokens Tokens, repos func() []ghrepo.Repository, renames ghrepo.Renames, left *LeftOut, deployed DeploymentApps, log *slog.Logger) runtime.GitHubCredential {
 	return func(ctx context.Context, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
-		appRole, err := AppRoleFor(role, nil)
+		appRole, err := AppRoleFor(role, deployed)
 		if err != nil {
 			return ghconfig.Bundle{}, err
 		}

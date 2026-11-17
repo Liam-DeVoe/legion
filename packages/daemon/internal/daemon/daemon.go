@@ -1054,9 +1054,10 @@ func launchVariants(st *store.Store, declared []config.Experiment, stateDir stri
 // tmuxRuntime builds the tmux runtime over the worker stream: the listener is its connection
 // directory, and the listener's address is the `--connect` every pane's shim is started with;
 // providerEnvDir, when set, is the `--provider-env-dir` beside it. The workflow's App tokens, when
-// the daemon has them, are every tree pane's gh bundle (appauth.GitHubCredential) and the
-// controller pane's own (appauth.ControllerCredential), which its refresh asks by the default
-// owner its launch recorded, both built over
+// the daemon has them, are every tree pane's gh bundle (appauth.GitHubCredential, minted as the
+// App the pane's role acts as, a role the deployment defines acting as the App its github_app
+// names: deploymentApps) and the controller pane's own (appauth.ControllerCredential), which its
+// refresh asks by the default owner its launch recorded, both built over
 // repos (the project's mapping's served repositories), with gh, the real gh boot resolved
 // (daemonTools), the one each pane's `legion gh` runs, and the repository each claim's issue
 // works (claimRepository over the workflow's repository), which a pane adopted after a restart
@@ -1075,7 +1076,7 @@ func tmuxRuntime(cfg config.Config, project string, launchers map[runtime.Backen
 			// directory left out of one pane's bundle is left out of the next pane's by the
 			// mint, not by this record.
 			left := appauth.NewLeftOut()
-			opts.GitHubCredential, opts.GH = appauth.GitHubCredential(tokens, repos, cfg.RepositoryRenames, left, log), gh
+			opts.GitHubCredential, opts.GH = appauth.GitHubCredential(tokens, repos, cfg.RepositoryRenames, left, deploymentApps(cfg.Roles), log), gh
 			opts.ControllerCredential = appauth.ControllerCredential(tokens, repos, cfg.RepositoryRenames, left, log)
 			opts.ClaimRepository = claimRepository(st.ClaimIssue, repository)
 		}

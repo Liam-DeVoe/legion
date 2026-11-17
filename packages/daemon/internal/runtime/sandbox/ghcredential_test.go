@@ -769,7 +769,7 @@ func TestTheRefresherKeepsARenamedIssuesWriteLeaseInItsOwnDirectory(t *testing.T
 	renames := ghrepo.MustRenames(smokeRename)
 	left := appauth.NewLeftOut()
 	g := newRig(t, nil, withOptions(func(o *Options) {
-		o.GitHubCredential = appauth.GitHubCredential(leases, served, renames, left, nil)
+		o.GitHubCredential = appauth.GitHubCredential(leases, served, renames, left, nil, nil)
 		o.ControllerCredential = appauth.ControllerCredential(leases, served, renames, left, nil)
 		o.GitHubDirs = func(repo ghrepo.Repository, roles []appauth.AppRole) []string {
 			return appauth.GitHubDirs(served, renames, left, roles, repo)

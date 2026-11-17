@@ -28,7 +28,7 @@ import (
 // sjawhar's repositories and this test's assertion is the rule rather than the bug.
 func TestTheBundleReachesEveryRepositoryTheProjectServesUnderTheRecordedOwner(t *testing.T) {
 	repos := projectRepos("cybermonklabs/legion", "sjawhar/oh-my-pi", "sjawhar/tools")
-	credential := GitHubCredential(ownerTokens{}, repos, ghrepo.MustRenames(legionRename), nil, quietBundleLog())
+	credential := GitHubCredential(ownerTokens{}, repos, ghrepo.MustRenames(legionRename), nil, nil, quietBundleLog())
 	bundle, err := credential(context.Background(), claim.RoleImplementer, ghrepo.MustParse("sjawhar/oh-my-pi"))
 	if err != nil {
 		t.Fatalf("credential: %v", err)

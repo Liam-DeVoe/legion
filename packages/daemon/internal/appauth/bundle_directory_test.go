@@ -31,7 +31,7 @@ func TestEveryRepositoryDirectoryHoldsTheLeaseOfTheRepositoryItsNameResolvesTo(t
 	serves := func(candidate ghrepo.Repository) bool { return ghrepo.Serves(repos(), candidate) }
 	for _, rec := range []string{"sjawhar/tools", "sjawhar/legion", "cybermonklabs/tools", "cybermonklabs/legion"} {
 		t.Run("an issue recorded on "+rec, func(t *testing.T) {
-			credential := GitHubCredential(ownerTokens{}, repos, renames, nil, quietBundleLog())
+			credential := GitHubCredential(ownerTokens{}, repos, renames, nil, nil, quietBundleLog())
 			bundle, err := credential(context.Background(), claim.RoleImplementer, ghrepo.MustParse(rec))
 			if err != nil {
 				t.Fatalf("credential: %v", err)
