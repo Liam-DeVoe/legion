@@ -11,8 +11,11 @@ import (
 // PostgreSQL's text and jsonb cannot hold U+0000, so a statement given caller text holding one
 // fails, and a route that reached that statement answered a 500 naming nothing the caller could
 // fix. The decoder of every request body (decodeJSON) refuses such text before the route reads
-// it, naming where the caller wrote the character. A JSON body can hold no other text PostgreSQL
-// refuses, since decoding writes each byte that is not UTF-8 as U+FFFD.
+// it, naming where the caller wrote the character. A member a route decodes into a Go string holds
+// no other text PostgreSQL refuses, since decoding writes each byte that is not UTF-8, and each
+// lone surrogate escape, as U+FFFD. A json.RawMessage or []byte member keeps the bytes or the
+// escapes as sent, and no body a route of this package decodes has one: a route that adds one, to
+// store it, holds it to UTF-8 and to no lone surrogate itself.
 
 // nulEscape is the only way JSON carries U+0000: a decoder refuses the raw control character.
 var nulEscape = []byte(`\u0000`)
