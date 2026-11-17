@@ -1692,10 +1692,12 @@ jobs:
               - 'packages/daemon/internal/runtime/sandbox/testdata/golden/root-operator-route.json'
               - 'packages/envoy-client/test/fake-dispatch.ts'
               - 'packages/envoy-client/test/route-answers.ts'
+              - 'packages/envoy-client/test/keyed-layer.ts'
               - 'scripts/dispatch/**'
-              # scripts/dispatch/__tests__/moved-approval-production-check.test.ts:3 and
+              # scripts/dispatch/__tests__/moved-approval-production-check.test.ts:3-4 and
               # scripts/e2e/lib/dispatch-keyed-comment.test.ts:5 serve each write's answer through
-              # envoy-client's routeAnswer, which reads the OpenAPI document.
+              # envoy-client's routeAnswer, which reads the OpenAPI document, and the first through
+              # its keyedLayer.
               - 'packages/contracts/schemas/dispatch-openapi.json'
               - 'scripts/github-apps/**'
               - 'scripts/sessions/**'
@@ -3368,7 +3370,7 @@ jobs:
               # an edit of the list alone must start both jobs, or the side it disagrees with
               # stays green.
               - 'packages/contracts/fixtures/go-unicode-isspace.json'
-              # test/route-answers.ts:24-26 reads the OpenAPI document: every
+              # test/route-answers.ts:29-31 reads the OpenAPI document: every
               # keyed write of the client is driven against each 2xx answer it declares, and each
               # test's stub of a keyed write serves its route's answer.
               - 'packages/contracts/schemas/dispatch-openapi.json'
@@ -3392,7 +3394,7 @@ jobs:
               - 'packages/dispatch/e2e/**'
               - 'docs/site/src/**'
               - '**/AGENTS.md'
-              # src/__tests__/dispatch-who-waits.test.ts:783,791 reads the CLI guide's sentence on
+              # src/__tests__/dispatch-who-waits.test.ts:785,793 reads the CLI guide's sentence on
               # an assignee move, which must name the project's default assignee.
               - 'packages/envoy/cmd/dispatch/README.md'
               # The one corpus both clients read: packages/broker-client/src/__tests__/wire.test.ts:23-29
