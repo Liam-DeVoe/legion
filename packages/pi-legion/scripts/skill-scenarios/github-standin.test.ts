@@ -13,6 +13,7 @@ import path from "node:path";
 import { scriptFunctions } from "../../../../scripts/e2e/lib/script-functions";
 import { GITHUB_ROUTES, requestSites, UNREACHED } from "./github-routes";
 import { GITHUB_LOG, GITHUB_NOT_KEPT, githubRefusal, HEADS_NOT_KEPT, headUnmoved } from "./health";
+import { absentFields, restOperation } from "./rest-required";
 import { SCENARIOS, workerWorld } from "./run-names";
 import { spawnChecked } from "./test-programs";
 
@@ -36,7 +37,13 @@ function freshDir(name: string): string {
   made.push(dir);
   return dir;
 }
+/** `git -C dir args…` under the identity its `-c user.*` names: the operator's own
+ * GIT_AUTHOR_* and GIT_COMMITTER_*, which a Legion pod sets to its App and git reads ahead of any
+ * `-c`, are left out, so the world's commits carry the author the world names. */
 function git(dir: string, ...args: string[]): string {
+  const own = Object.fromEntries(
+    Object.entries(process.env).filter(([name]) => !/^GIT_(AUTHOR|COMMITTER)_/.test(name))
+  );
   const ran = spawnChecked(
     [
       "git",
@@ -50,7 +57,7 @@ function git(dir: string, ...args: string[]): string {
       dir,
       ...args,
     ],
-    { env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" } }
+    { env: { ...own, GIT_CONFIG_GLOBAL: "/dev/null" } }
   );
   if (ran.exitCode !== 0) throw new Error(`git ${args.join(" ")}: ${ran.stderr.toString()}`);
   return ran.stdout.toString().trim();
@@ -76,8 +83,9 @@ function callsOf(log: string): string[] {
 }
 
 /** A run directory holding a world: a remote whose default branch has one commit and whose issue
- * branch two above it, the world rig.sh's fixture_write writes for it, and the gh answers the
- * stand-in reads the repository and the pull request's title and body from. */
+ * branch two above it, made by the implementer's App (AUTHOR), which opened the pull request, the
+ * world rig.sh's fixture_write writes for it, and the gh answers the stand-in reads the
+ * repository and the pull request's title and body from. */
 function world() {
   const dir = freshDir("github-world");
   const src = path.join(dir, "src");
@@ -88,12 +96,13 @@ function world() {
   git(src, "commit", "-qm", "init");
   const base = git(src, "rev-parse", "HEAD");
   git(src, "checkout", "-qb", "legion/WID-1");
+  const implementer = ["-c", `user.name=${AUTHOR}`, "-c", `user.email=1+${AUTHOR}@example.invalid`];
   writeFileSync(path.join(src, "greet.ts"), "export const greet = () => 1;\n");
   git(src, "add", "-A");
-  git(src, "commit", "-qm", "feat: greet()");
+  git(src, ...implementer, "commit", "-qm", "feat: greet()");
   const first = git(src, "rev-parse", "HEAD");
   writeFileSync(path.join(src, "greet.ts"), "export const greet = () => 2;\n");
-  git(src, "commit", "-qam", "fix: greet()");
+  git(src, ...implementer, "commit", "-qam", "fix: greet()");
   const second = git(src, "rev-parse", "HEAD");
   git(dir, "clone", "-q", "--bare", src, "remote.git");
   writeFileSync(
@@ -107,7 +116,14 @@ function world() {
       head: first,
     })
   );
-  const repository = { id: 1, name: "widgets", full_name: REPO, default_branch: "main" };
+  const repository = {
+    id: 1,
+    node_id: "R_kgDOAAAAAQ",
+    name: "widgets",
+    full_name: REPO,
+    owner: { login: "fernbrook", type: "Organization" },
+    default_branch: "main",
+  };
   writeFileSync(
     path.join(dir, "fixtures.json"),
     JSON.stringify({
@@ -125,7 +141,7 @@ function world() {
 
 /** The stand-in serving `dir`, its origin, and its log so far. */
 async function serving(dir: string) {
-  const child = Bun.spawn(["bun", STANDIN, dir, REPO, "main", AUTHOR], {
+  const child = Bun.spawn(["bun", STANDIN, dir, REPO, "main"], {
     stdout: "pipe",
     stderr: "pipe",
   });
@@ -291,6 +307,70 @@ test("the stand-in answers the measured routes from the run's remote, and refuse
   expect(new Set(succeeded.map((line) => `${line.route} ${line.status}`))).toEqual(
     new Set(GITHUB_ROUTES.map((row) => `${row.route} ${row.status}`))
   );
+}, 60_000);
+
+// Catches: an answer of this stand-in short of a field GitHub's description requires of its
+// route's operation — rest-required.json, the extract of github/rest-api-description at
+// c9c95fe34ced that the gh stand-in's routes are held to too (gh-standin.test.ts) — read as
+// INFRA-764's read search reads one: an installation with no `app_id` or `access_tokens_url` and
+// its account a login alone, a repository short of its URLs and times, and a pull request short
+// of its `_links`, its user or its counts, in the listing of a commit's pull requests and by its
+// number alike; and a route of GITHUB_ROUTES this row makes no call of.
+test("every route the HTTP stand-in serves answers every field GitHub's description requires", async () => {
+  const { dir, first } = world();
+  const github = await serving(dir);
+  try {
+    const ask = async (method: string, route: string, token: string, accept?: string) => {
+      const answered = await fetch(`${github.origin}${route}`, {
+        method,
+        headers: {
+          Accept: accept ?? "application/vnd.github+json",
+          Authorization: `Bearer ${token}`,
+        },
+      });
+      const text = await answered.text();
+      return [answered.status, accept === undefined ? JSON.parse(text) : text] as const;
+    };
+    const [, installation] = await ask("GET", `/repos/${REPO}/installation`, JWT);
+    const minted = await ask("POST", `/app/installations/${installation.id}/access_tokens`, JWT);
+    const token = String(minted[1].token);
+    const answers: Record<string, readonly [number, unknown]> = {
+      "GET /repos/{owner}/{repo}/installation": [200, installation],
+      "POST /app/installations/{id}/access_tokens": minted,
+      "GET /repos/{owner}/{repo}/commits/{sha}": await ask(
+        "GET",
+        `/repos/${REPO}/commits/${first}`,
+        token,
+        "application/vnd.github.sha"
+      ),
+      "GET /repos/{owner}/{repo}": await ask("GET", `/repos/${REPO}`, token),
+      "GET /repos/{owner}/{repo}/commits/{sha}/pulls": await ask(
+        "GET",
+        `/repos/${REPO}/commits/${first}/pulls`,
+        token
+      ),
+      "GET /repos/{owner}/{repo}/pulls/{number}": await ask(
+        "GET",
+        `/repos/${REPO}/pulls/1000`,
+        token
+      ),
+    };
+    expect(
+      GITHUB_ROUTES.map(({ route }) => {
+        const operation = restOperation(route);
+        const [answered, answer] = answers[route] ?? [0, undefined];
+        return [
+          route,
+          answered,
+          operation?.schema === undefined ? "no operation" : absentFields(answer, operation.schema),
+        ];
+      })
+    ).toEqual(GITHUB_ROUTES.map(({ route, status }) => [route, status, []]));
+    // The listing names the pull request it lists, which is no empty list's absence of fields.
+    expect(answers["GET /repos/{owner}/{repo}/commits/{sha}/pulls"]?.[1]).toHaveLength(1);
+  } finally {
+    await github.stop();
+  }
 }, 60_000);
 
 // Catches: a read Dispatch's code adds later, which a batch would meet as a refusal and no test

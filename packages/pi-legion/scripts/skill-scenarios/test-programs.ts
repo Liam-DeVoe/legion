@@ -115,3 +115,23 @@ export function writeGhSelectors(runDir: string): void {
   ownSelectors ??= `${JSON.stringify(labelGhSelectors(path.resolve(DAEMON_MODULE, "..", "..")))}\n`;
   writeFileSync(path.join(runDir, RUN_SELECTORS), ownSelectors);
 }
+
+/** The shell `script`'s definition of `name`, from `name() {` to the `}` that closes it, with the
+ * lines of each here-document it holds skipped: `scriptFunctions` ends a definition at the first
+ * line that is `}` alone, which a here-document's own text can be — rig.sh's fixture_cli writes
+ * greet.ts, whose functions end so. Read so, a world a row builds writes the files the rig's own
+ * world does. */
+export function scriptDefinition(script: string, name: string): string {
+  const lines = script.split("\n");
+  const start = lines.indexOf(`${name}() {`);
+  if (start < 0) throw new Error(`the script defines no ${name}()`);
+  let delimiter: string | undefined;
+  for (const [index, line] of lines.entries()) {
+    if (index <= start) continue;
+    if (delimiter !== undefined) {
+      if (line === delimiter) delimiter = undefined;
+    } else if (line === "}") return lines.slice(start, index + 1).join("\n");
+    else delimiter = /(?<!<)<<(?!<)-?\s*(['"]?)(\w+)\1/.exec(line)?.[2];
+  }
+  throw new Error(`the script's ${name}() has no closing }`);
+}

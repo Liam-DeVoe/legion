@@ -42,8 +42,16 @@ import {
   shapeDiff,
   shapeOf,
 } from "./production-shapes";
+import {
+  absentFields,
+  DESCRIPTION_COMMIT,
+  derive as deriveExtract,
+  extractCommit,
+  restOperation,
+  servedRoutes,
+} from "./rest-required";
 import { REMOVED_NAMES, WORLD_PROJECT } from "./run-names";
-import { bundled, spawnChecked, writeGhSelectors } from "./test-programs";
+import { bundled, scriptDefinition, spawnChecked, writeGhSelectors } from "./test-programs";
 
 // GitHub answers the pull request's head as the commit its branch points at, and the worker skill
 // has every pushing role read that head after its own push and stop when it is not its commit. A
@@ -240,17 +248,20 @@ test("a submit of a review that is no longer pending is refused, as GitHub refus
 // for a review id no world of this rig gives, since review_world answers a create 6001 and
 // approved_world 5002; and an answer carrying the state the review had rather than the state it
 // was submitted in. A review created with no `event` is pending, and the submit of that one
-// answers the review itself, carrying the head it was created at and the state GitHub leaves it
-// in — which is what keeps the two-step route an agent may take readable as the submission it is.
+// answers the review itself — GitHub's whole review (`pull-request-review`, which the row walking
+// every REST route holds to GitHub's description) — carrying the head it was created at and the
+// state GitHub leaves it in, which is what keeps the two-step route an agent may take readable as
+// the submission it is.
 test("a submit of the run's pending review answers its id, its head and the state submitted", () => {
   const { dir, first } = runDir({ fixture: true });
   createPending(dir, { commit_id: first, body: "two findings" });
   const submit = apiPost(dir, `${REVIEWS}/6001/events`, "-f", "event=REQUEST_CHANGES");
   expect(submit.exitCode).toBe(0);
-  expect(JSON.parse(submit.stdout.toString())).toEqual({
+  expect(JSON.parse(submit.stdout.toString())).toMatchObject({
     id: 6001,
     commit_id: first,
     state: "CHANGES_REQUESTED",
+    body: "two findings",
   });
 });
 
@@ -299,7 +310,7 @@ test("a create's --input is its whole body, and the fields beside it are the que
   expect(JSON.parse(created.stdout.toString())).toMatchObject({ state: "PENDING" });
   const submit = apiPost(dir, `${REVIEWS}/6001/events`, "-f", "event=APPROVE");
   expect(submit.exitCode).toBe(0);
-  expect(JSON.parse(submit.stdout.toString())).toEqual({
+  expect(JSON.parse(submit.stdout.toString())).toMatchObject({
     id: 6001,
     commit_id: first,
     state: "APPROVED",
@@ -321,7 +332,7 @@ test("a create whose --input is written against the flag is read from that file 
   expect(apiPost(dir, REVIEWS, `--input=${body}`).exitCode).toBe(0);
   const submit = apiPost(dir, `${REVIEWS}/6001/events`, "-f", "event=APPROVE");
   expect(submit.exitCode).toBe(0);
-  expect(JSON.parse(submit.stdout.toString())).toEqual({
+  expect(JSON.parse(submit.stdout.toString())).toMatchObject({
     id: 6001,
     commit_id: second,
     state: "APPROVED",
@@ -345,7 +356,7 @@ test("a create with no body leaves a pending review, at the pull request's own h
   });
   const submit = apiPost(dir, `${REVIEWS}/6001/events`, "-f", "event=APPROVE");
   expect(submit.exitCode).toBe(0);
-  expect(JSON.parse(submit.stdout.toString())).toEqual({
+  expect(JSON.parse(submit.stdout.toString())).toMatchObject({
     id: 6001,
     commit_id: first,
     state: "APPROVED",
@@ -354,22 +365,32 @@ test("a create with no body leaves a pending review, at the pull request's own h
 
 // What GitHub answers a create with is the review it created, carrying the state it is in, the
 // head it was created at and its body: `PENDING` where the create named no event, and the state
-// the event leaves it in where it named one; `""` for a create that sent no body. Catches: a
-// world's frozen `{id, html_url}` answered as it stands, which told a reviewer nothing about
-// whether its approval had been submitted — measured in the threads-closed head arm, where a round
-// read that answer back and submitted a second time — and a create answered without its body,
-// which left a reviewer reading its own footer back on null and exiting 1
-// (round17-forty/reviewer-text-findings-defect-head-4/calls.jsonl:29).
+// the event leaves it in where it named one; `""` for a create that sent no body; and GitHub's
+// own for that id on this pull request: its node id, its whole user, its pages and its links, and
+// no `submitted_at` while it is pending. Catches: a world's frozen `{id, html_url}` answered as it
+// stands, which told a reviewer nothing about whether its approval had been submitted — measured
+// in the threads-closed head arm, where a round read that answer back and submitted a second time
+// — a create answered without its body, which left a reviewer reading its own footer back on
+// null and exiting 1 (round17-forty/reviewer-text-findings-defect-head-4/calls.jsonl:29), and a
+// review short of the fields GitHub's description requires (INFRA-764's read search).
 test("a create is answered with the review's state and the head it was created at", () => {
   const { dir, first, second } = runDir({ fixture: true });
   const pending = apiPost(dir, REVIEWS, "-f", `commit_id=${second}`);
+  const page = "https://example.invalid/pull/1001#pullrequestreview-6001";
+  const pull = "https://api.github.com/repos/example/widgets/pulls/1001";
   expect(JSON.parse(pending.stdout.toString())).toEqual({
     id: 6001,
-    html_url: "https://example.invalid/pull/1001#pullrequestreview-6001",
-    user: { login: WORLD_LOGIN },
-    state: "PENDING",
-    commit_id: second,
+    node_id: "PRR_kwDOAAAAAc4AAE6001",
+    user: expect.objectContaining({ login: WORLD_LOGIN, type: "Bot" }),
     body: "",
+    state: "PENDING",
+    html_url: page,
+    pull_request_url: pull,
+    author_association: "NONE",
+    is_copilot_code_review: false,
+    copilot_code_review_effort: null,
+    _links: { html: { href: page }, pull_request: { href: pull } },
+    commit_id: second,
   });
   const approved = apiPost(dir, REVIEWS, "-f", `commit_id=${first}`, "-f", "event=APPROVE");
   expect(JSON.parse(approved.stdout.toString())).toMatchObject({
@@ -432,7 +453,7 @@ test("a submit of an id that is not the pending review's is refused", () => {
   // And the review the run did leave pending is still pending after that refusal.
   const submitted = apiPost(dir, `${REVIEWS}/6001/events`, "-f", "event=APPROVE");
   expect(submitted.exitCode).toBe(0);
-  expect(JSON.parse(submitted.stdout.toString())).toEqual({
+  expect(JSON.parse(submitted.stdout.toString())).toMatchObject({
     id: 6001,
     commit_id: first,
     state: "APPROVED",
@@ -466,7 +487,7 @@ test("a second pending create while one stands is refused, and the first stays t
   });
   const submitted = apiPost(dir, `${REVIEWS}/6001/events`, "-f", "event=REQUEST_CHANGES");
   expect(submitted.exitCode).toBe(0);
-  expect(JSON.parse(submitted.stdout.toString())).toEqual({
+  expect(JSON.parse(submitted.stdout.toString())).toMatchObject({
     id: 6001,
     commit_id: first,
     state: "CHANGES_REQUESTED",
@@ -532,7 +553,7 @@ test("a create whose event is empty is pending, as one naming none is", () => {
   expect(JSON.parse(created.out)).toMatchObject({ state: "PENDING", commit_id: first });
   const submit = apiPost(dir, `${REVIEWS}/6001/events`, "-f", "event=APPROVE");
   expect(submit.exitCode).toBe(0);
-  expect(JSON.parse(submit.stdout.toString())).toEqual({
+  expect(JSON.parse(submit.stdout.toString())).toMatchObject({
     id: 6001,
     commit_id: first,
     state: "APPROVED",
@@ -652,10 +673,11 @@ test("a body written as fields is gh's: nested keys, arrays of objects, and -F k
   });
 });
 
-// GitHub answers `PATCH repos/<o>/<r>/pulls/<n>` with the pull request as the PATCH left it.
-// Catches: the generic write route's `{id, html_url}` answered to it, which 23 recorded PATCH
-// calls read `.body` back from as null and one round exited 1 on (review 5887659447, finding 6);
-// and an answer carrying the body from before the edit, since the routes are read before it.
+// GitHub answers `PATCH repos/<o>/<r>/pulls/<n>` with the pull request as the PATCH left it, in
+// its REST shape (`head.sha`, the head the pull request is at). Catches: the generic write route's
+// `{id, html_url}` answered to it, which 23 recorded PATCH calls read `.body` back from as null
+// and one round exited 1 on (review 5887659447, finding 6); and an answer carrying the body from
+// before the edit, since the routes are read before it.
 test("a PATCH of the pull request's body answers the pull request, carrying the body it left", () => {
   const { dir, first } = runDir({ fixture: true });
   const pull = "repos/example/widgets/pulls/1001";
@@ -663,7 +685,7 @@ test("a PATCH of the pull request's body answers the pull request, carrying the 
   expect(patched.code).toBe(0);
   expect(JSON.parse(patched.out)).toMatchObject({
     number: 1001,
-    headRefOid: first,
+    head: { sha: first },
     body: "the fixed body",
   });
   const input = path.join(dir, "body.json");
@@ -798,7 +820,11 @@ test("a GET of the submit route submits nothing, and a submit with a leading sla
     "event=APPROVE"
   );
   expect(submitted.code).toBe(0);
-  expect(JSON.parse(submitted.out)).toEqual({ id: 6001, commit_id: first, state: "APPROVED" });
+  expect(JSON.parse(submitted.out)).toMatchObject({
+    id: 6001,
+    commit_id: first,
+    state: "APPROVED",
+  });
 });
 // The submit written `-XPOST`, the spelling gh takes with the verb against the flag. Catches: a
 // verb read in the spellings a row happened to use, where a reviewer that submitted its review
@@ -809,7 +835,11 @@ test("a submit written -XPOST is the submit --method POST is", () => {
   createPending(dir, { commit_id: first, body: "two findings" });
   const submitted = ghCall(dir, "api", "-XPOST", `${REVIEWS}/6001/events`, "-f", "event=APPROVE");
   expect(submitted.code).toBe(0);
-  expect(JSON.parse(submitted.out)).toEqual({ id: 6001, commit_id: first, state: "APPROVED" });
+  expect(JSON.parse(submitted.out)).toMatchObject({
+    id: 6001,
+    commit_id: first,
+    state: "APPROVED",
+  });
 });
 // A call on the submit path that gh does not send as a POST submits nothing: `-X PUT` names
 // another verb, a write GitHub serves no route for there and the world models none of, and a
@@ -828,7 +858,7 @@ test("a PUT of the submit route and a bare one submit nothing", () => {
   expect(bare.err).toBe("gh: Not Found (HTTP 404)\n");
   const submitted = apiPost(dir, `${REVIEWS}/6001/events`, "-f", "event=APPROVE");
   expect(submitted.exitCode).toBe(0);
-  expect(JSON.parse(submitted.stdout.toString())).toEqual({
+  expect(JSON.parse(submitted.stdout.toString())).toMatchObject({
     id: 6001,
     commit_id: first,
     state: "APPROVED",
@@ -869,7 +899,7 @@ test("a submit with no event, or an event GitHub does not take, is refused and l
   ).toHaveLength(4);
   const commented = apiPost(dir, `${REVIEWS}/6001/events`, "-f", "event=COMMENT");
   expect(commented.exitCode).toBe(0);
-  expect(JSON.parse(commented.stdout.toString())).toEqual({
+  expect(JSON.parse(commented.stdout.toString())).toMatchObject({
     id: 6001,
     commit_id: first,
     state: "COMMENTED",
@@ -930,7 +960,7 @@ test("gh pr list --open is a call of the run and no ask for the opening line", (
   // this assertion rather than on the parse.
   expect(listed.out).toStartWith("[");
   expect(JSON.parse(listed.out)).toMatchObject([
-    { number: 1001, headRefOid: first, head: { sha: first }, body: "a body" },
+    { number: 1001, headRefOid: first, body: "a body" },
   ]);
   const recorded = readFileSync(path.join(dir, "calls.jsonl"), "utf8")
     .split("\n")
@@ -1096,14 +1126,24 @@ test("the gh a run's PATH resolves to names none of the rig's words, and finds i
 // Catches: a call that names github.com, gh's own default host and the host the world plays,
 // refused where GitHub answers it as it answers the bare call (`gh api --hostname github.com
 // user` matched no route, since the world's routes name the bare call): `--hostname` before or
-// after the endpoint, and a `-R` of github.com's in its `HOST/OWNER/REPO` and URL forms. And the
-// record keeping the call as the world answered it, so its readers read one repository.
+// after the endpoint, and a `-R` of github.com's in its `HOST/OWNER/REPO` and URL forms. GitHub
+// answers a role App's `user` with its 403 (rig.sh's fixture_write), and the named host gets the
+// very same refusal. And the record keeping the call as the world answered it, so its readers
+// read one repository.
 test("a call that names github.com is answered as the bare call, wherever the flag stands", () => {
   const { dir } = runDir({ fixture: true });
-  const user = answer(dir, ["api", "user"]);
-  expect(JSON.parse(user)).toEqual({ login: "widgets-reviewer[bot]" });
-  expect(answer(dir, ["api", "--hostname", "github.com", "user"])).toBe(user);
-  expect(answer(dir, ["api", "user", "--hostname=github.com"])).toBe(user);
+  const user = ghCall(dir, "api", "user");
+  expect(user).toEqual({
+    code: 1,
+    out: JSON.stringify({
+      message: "Resource not accessible by integration",
+      documentation_url: "https://docs.github.com/rest/users/users#get-the-authenticated-user",
+      status: "403",
+    }),
+    err: "gh: Resource not accessible by integration (HTTP 403)\n",
+  });
+  expect(ghCall(dir, "api", "--hostname", "github.com", "user")).toEqual(user);
+  expect(ghCall(dir, "api", "user", "--hostname=github.com")).toEqual(user);
   const view = answer(dir, ["pr", "view", "1001", "--json", "number", "--jq", ".number"]);
   expect(view).toBe("1001");
   for (const repo of [
@@ -1562,6 +1602,30 @@ test("health declares the wrapper's refusal of an owner outside the project for 
   rmSync(path.join(dir, "gh-selectors.json"));
   expect(ghUndeclared({ dir, scenario: "threads-closed" })).toBe(
     "gh refusal: calls.jsonl:2, `gh repo view actions/checkout --json name` of the reviewer, exited 2: gh: Not Found (HTTP 404) (no route of the world answers it), which threads-closed does not declare for that role"
+  );
+}, 60_000);
+
+// GitHub refuses every role App's read of `user` 403 (measured on 2026-11-17 from a Legion pod:
+// `gh api user`, exit 1, `Resource not accessible by integration`), and the world refuses it so
+// (rig.sh's fixture_write). Catches: a health that calls a run unhealthy for a role that asked
+// GitHub who its token is and met production's refusal; and one that reads that 403 by its text
+// alone, which is the protection read's, so declaring it for every role declared the protection
+// read's 403 for the implementer too, which reads no protection.
+test("health declares GitHub's 403 to a role App's read of its user for every role, and the protection's for the reviewer alone", () => {
+  const { dir } = runDir({ fixture: true });
+  const roles = ["reviewer", "implementer", "tester"];
+  for (const by of roles) for (const user of ["user", "/user"]) asked(dir, by, ["api", user]);
+  expect(recordedCalls(dir).map((call) => [call.by, call.exit])).toEqual(
+    roles.flatMap((by) => [
+      [by, 1],
+      [by, 1],
+    ])
+  );
+  for (const scenario of ["tester-proof", "reviewer-text-findings", "threads-closed"])
+    expect(ghUndeclared({ dir, scenario })).toBeUndefined();
+  asked(dir, "implementer", ["api", "repos/example/widgets/branches/main/protection"]);
+  expect(ghUndeclared({ dir, scenario: "threads-closed" })).toBe(
+    "gh refusal: calls.jsonl:8, `gh api repos/example/widgets/branches/main/protection` of the implementer, exited 1: gh: Resource not accessible by integration (HTTP 403), which threads-closed does not declare for that role"
   );
 }, 60_000);
 
@@ -2274,7 +2338,7 @@ test("a submit answered from the run's own record prints no route's stderr and e
   );
   expect(submit.code).toBe(0);
   expect(submit.err).toBe("");
-  expect(JSON.parse(submit.out)).toEqual({ id: 6001, commit_id: first, state: "APPROVED" });
+  expect(JSON.parse(submit.out)).toMatchObject({ id: 6001, commit_id: first, state: "APPROVED" });
 });
 
 // Catches: a stand-in that reads a create's body out of a file alone. `gh api --input -` takes
@@ -2297,7 +2361,7 @@ test("a create whose body is on stdin as JSON lines leaves a pending review", ()
   expect(created.exitCode).toBe(0);
   const submit = apiPost(dir, `${REVIEWS}/6001/events`, "-f", "event=APPROVE");
   expect(submit.exitCode).toBe(0);
-  expect(JSON.parse(submit.stdout.toString())).toEqual({
+  expect(JSON.parse(submit.stdout.toString())).toMatchObject({
     id: 6001,
     commit_id: first,
     state: "APPROVED",
@@ -2377,12 +2441,13 @@ const WORLD_VALUES = [
   "text_finding_trigger",
 ];
 /** WORLD (with GUARD) built for real under a run directory of its own by rig.sh's own world
- * functions, as rig.test.ts builds its worlds, with `fixture_cli` stubbed, whose heredoc holds a
- * line that is `}` alone, which `scriptFunctions` reads as the end of the function (the stub
- * writes the two files that step writes), and `fixture_workspace`, which clones the issue
- * workspace with jj and which no gh answer reads, stubbed unless `workspace` asks for it, and
- * this checkout's gh selectors written in as worker_boot writes a label's (`writeGhSelectors`).
- * `env` is the operator's own environment the build runs in, over this process's. */
+ * functions, as rig.test.ts builds its worlds: `fixture_cli` read whole, here-documents and all
+ * (test-programs.ts's `scriptDefinition`), so the CLI and its tests are the rig's own and a
+ * review comment on them stands on a line of the pull request's diff, as the world's seeded one
+ * does; `fixture_workspace`, which clones the issue workspace with jj and which no gh answer
+ * reads, stubbed unless `workspace` asks for it; and this checkout's gh selectors written in as
+ * worker_boot writes a label's (`writeGhSelectors`). `env` is the operator's own environment the
+ * build runs in, over this process's. */
 function worldDir(
   world: string,
   guard = "",
@@ -2418,7 +2483,7 @@ function worldDir(
       [
         fn("fail"),
         ...steps.map(fn),
-        'fixture_cli() { printf "export const greet = 1;\\n" >"$src/greet.ts"; : >"$src/greet.test.ts"; }',
+        scriptDefinition(readFileSync(RIG, "utf8"), "fixture_cli"),
         ...(workspace ? [] : ["fixture_workspace() { :; }"]),
         "R=$1 worker_key=LWEVAL-1 worker_repo=example/widgets worker_base=main",
         ...WORLD_VALUES.map(assignment),
@@ -2797,7 +2862,7 @@ test("a review update of a review the run made changes its body at every read, a
   expect(JSON.parse(updated.out)).toEqual({
     id: 6001,
     node_id: "PRR_kwDOAAAAAc4AAE6001",
-    user: { login: WORLD_LOGIN },
+    user: expect.objectContaining({ login: WORLD_LOGIN, type: "Bot" }),
     body,
     state: "APPROVED",
     html_url: html,
@@ -2806,6 +2871,8 @@ test("a review update of a review the run made changes its body at every read, a
     submitted_at: expect.any(String),
     commit_id: first,
     author_association: "NONE",
+    is_copilot_code_review: false,
+    copilot_code_review_effort: null,
   });
   expect(ghCall(dir, "api", `${REVIEWS}/6001`, "--jq", ".body").out).toBe(body);
   expect(ghCall(dir, "api", REVIEWS, "--jq", ".[].body").out).toBe(body);
@@ -3625,6 +3692,402 @@ test("the base branch's protection is GitHub's 403 to a role App, --jq or none",
     ".required_status_checks.contexts[]"
   );
   expect(filtered).toEqual({ code: read.exit, out: JSON.stringify(body), err: read.stderr });
+}, 60_000);
+
+// The REST routes the world serves, each held to the fields GitHub's REST API description marks
+// required in its success answer: rest-required.json, which rest-required.ts derives from
+// github/rest-api-description at DESCRIPTION_COMMIT (`descriptions/api.github.com/
+// api.github.com.json`) and reads an answer against as INFRA-764's read search reads it
+// (`absentFields`: through `$ref`, every part of an `allOf`, the closest of a `oneOf` or an
+// `anyOf`, and every item of an array). The search found the world's repository short of 79 of
+// them, its pull request of 37, every user it named of 17 and every review comment of its
+// `diff_hunk` (2026-11-17). github-standin.test.ts holds the HTTP stand-in's routes to the same
+// extract.
+
+// Catches: an extract that reads GitHub's description otherwise than the tester's search does —
+// a `$ref` not followed, a response named by `$ref` not followed, an `allOf` read by one part, a
+// `oneOf` read by its first variant where another is closer, an array's items not read or read on
+// a value that is no object, a field required below an object not reached, a cycle of schemas
+// followed for ever — one that keeps a schema nothing below requires, which would hold the world
+// to no field and swell the extract; one that names a route's operation by another path or
+// status; and a route the description has no operation of written into the extract rather than
+// refused, by name. The description is this row's own, in GitHub's layout.
+test("the extract keeps each served operation's required fields as GitHub's description reads them", () => {
+  const ref = (name: string) => ({ $ref: `#/components/schemas/${name}` });
+  const json = (schema: object) => ({ content: { "application/json": { schema } } });
+  const description = {
+    paths: {
+      "/things/{thing_id}": {
+        get: { operationId: "things/get", responses: { "404": {}, "200": json(ref("thing")) } },
+      },
+      "/things": {
+        post: {
+          operationId: "things/create",
+          responses: { "201": { $ref: "#/components/responses/made" } },
+        },
+      },
+    },
+    components: {
+      responses: { made: json({ type: "array", items: ref("named") }) },
+      schemas: {
+        thing: {
+          allOf: [
+            ref("named"),
+            {
+              required: ["owner"],
+              properties: {
+                owner: { oneOf: [ref("user"), ref("bot")] },
+                next: ref("thing"),
+                note: { type: "string" },
+                meta: ref("loose"),
+              },
+            },
+          ],
+        },
+        named: { required: ["name"], properties: { name: { type: "string" } } },
+        user: { required: ["login", "id"] },
+        bot: { required: ["slug"] },
+        loose: { properties: { a: { type: "string" } } },
+      },
+    },
+  };
+  const extract = deriveExtract(description, [
+    { route: "GET things/{id}" },
+    { route: "POST things" },
+  ]);
+  expect(extract.routes).toEqual({
+    "GET things/{id}": "GET /things/{thing_id}",
+    "POST things": "POST /things",
+  });
+  expect(extract.operations).toEqual({
+    "GET /things/{thing_id}": {
+      operation_id: "things/get",
+      status: 200,
+      media: "application/json",
+      schema: { ref: "thing" },
+    },
+    "POST /things": {
+      operation_id: "things/create",
+      status: 201,
+      media: "application/json",
+      schema: { items: { ref: "named" } },
+    },
+  });
+  expect(Object.keys(extract.schemas).sort()).toEqual(["bot", "named", "thing", "user"]);
+  const absent = (value: unknown, key: string) =>
+    absentFields(value, extract.operations[key]?.schema ?? {}, extract.schemas);
+  const get = "GET /things/{thing_id}";
+  expect(absent({ name: "a", owner: { slug: "b" }, next: { owner: { login: "c" } } }, get)).toEqual(
+    [".next.name", ".next.owner.id"]
+  );
+  expect(absent({}, get)).toEqual([".name", ".owner"]);
+  expect(absent([{ name: "a" }, {}, "x"], "POST /things")).toEqual(["[].name"]);
+  expect(() => deriveExtract(description, [{ route: "GET nothing/{id}" }])).toThrow(
+    "no operation of the description is GET nothing/{id}"
+  );
+});
+
+/** One call of each REST route of WORLD_ROUTES, in the order the row makes them, in
+ * approved_world, whose reviews (5001, and 5002 for a create), threads (comments from 7001) and
+ * files reach every route: the writes first, so the reads after them read what the writes left.
+ * A route GitHub answers a role App with a refusal and no success — the protection of a branch
+ * and `user` (its 403), and the jobs of a run the world holds none of (its 404) — names that
+ * refusal. */
+function restCalls(head: string, base: string): [string, string[], string?][] {
+  const repo = "repos/example/widgets";
+  const pull = `${repo}/pulls/1001`;
+  const post = (path: string, ...fields: string[]) => ["api", "-X", "POST", path, ...fields];
+  const refused = "gh: Resource not accessible by integration (HTTP 403)\n";
+  return [
+    [
+      "POST repos/{owner}/{repo}/issues/{number}/comments",
+      post(`${repo}/issues/1001/comments`, "-f", "body=a note"),
+    ],
+    [
+      "POST repos/{owner}/{repo}/pulls/{number}/comments",
+      post(
+        `${pull}/comments`,
+        "-f",
+        "body=a line note",
+        "-f",
+        `commit_id=${head}`,
+        "-f",
+        "path=docs/cli.md",
+        "-F",
+        "line=5"
+      ),
+    ],
+    [
+      "POST repos/{owner}/{repo}/pulls/{number}/comments/{id}/replies",
+      post(`${pull}/comments/7001/replies`, "-f", "body=a reply"),
+    ],
+    [
+      "POST repos/{owner}/{repo}/pulls/{number}/reviews",
+      post(`${pull}/reviews`, "-f", `commit_id=${head}`, "-f", "body=pending"),
+    ],
+    [
+      "POST repos/{owner}/{repo}/pulls/{number}/reviews/{id}/events",
+      post(`${pull}/reviews/5002/events`, "-f", "event=COMMENT"),
+    ],
+    [
+      "PUT repos/{owner}/{repo}/pulls/{number}/reviews/{id}",
+      ["api", "-X", "PUT", `${pull}/reviews/5001`, "-f", "body=updated"],
+    ],
+    [
+      "PATCH repos/{owner}/{repo}/pulls/{number}",
+      ["api", "-X", "PATCH", pull, "-f", "body=a body"],
+    ],
+    ["GET repos/{owner}/{repo}", ["api", repo]],
+    ["GET repos/{owner}/{repo}/pulls/{number}", ["api", pull]],
+    ["GET repos/{owner}/{repo}/pulls/{number}/reviews", ["api", `${pull}/reviews`]],
+    ["GET repos/{owner}/{repo}/pulls/{number}/reviews/{id}", ["api", `${pull}/reviews/5001`]],
+    [
+      "GET repos/{owner}/{repo}/pulls/{number}/reviews/{id}/comments",
+      ["api", `${pull}/reviews/5001/comments`],
+    ],
+    ["GET repos/{owner}/{repo}/pulls/{number}/comments", ["api", `${pull}/comments`]],
+    ["GET repos/{owner}/{repo}/issues/{number}/comments", ["api", `${repo}/issues/1001/comments`]],
+    [
+      "GET repos/{owner}/{repo}/commits/{ref}/check-runs",
+      ["api", `${repo}/commits/${head}/check-runs`],
+    ],
+    ["GET repos/{owner}/{repo}/commits/{ref}/status", ["api", `${repo}/commits/${head}/status`]],
+    ["GET repos/{owner}/{repo}/actions/runs", ["api", `${repo}/actions/runs`]],
+    [
+      "GET repos/{owner}/{repo}/actions/runs/{run_id}/jobs",
+      ["api", `${repo}/actions/runs/1/jobs`],
+      "gh: Not Found (HTTP 404)\n",
+    ],
+    ["GET repos/{owner}/{repo}/rules/branches/{branch+}", ["api", `${repo}/rules/branches/main`]],
+    ["GET repos/{owner}/{repo}/rulesets", ["api", `${repo}/rulesets`]],
+    ["GET repos/{owner}/{repo}/rulesets/{id}", ["api", `${repo}/rulesets/1`]],
+    [
+      "GET repos/{owner}/{repo}/branches/{branch}/protection",
+      ["api", `${repo}/branches/main/protection`],
+      refused,
+    ],
+    ["GET repos/{owner}/{repo}/branches/{branch+}", ["api", `${repo}/branches/main`]],
+    ["GET repos/{owner}/{repo}/compare/{basehead+}", ["api", `${repo}/compare/${base}...${head}`]],
+    ["GET repos/{owner}/{repo}/git/ref/{ref+}", ["api", `${repo}/git/ref/heads/main`]],
+    ["GET repos/{owner}/{repo}/contents/{path+}", ["api", `${repo}/contents/greet.ts?ref=${head}`]],
+    ["GET repos/{owner}/{repo}/contents/{path+}", ["api", `${repo}/contents/docs?ref=${head}`]],
+    ["GET user", ["api", "user"], refused],
+  ];
+}
+
+// Catches: a REST route the world serves whose answer lacks a field GitHub's description requires
+// of its operation's success — a user that is a login alone, a review with no `_links`, a review
+// comment with no `diff_hunk`, a comparison with no `commits`, a check run with no
+// `pull_requests`, a commit status's repository that is a name alone, a ref with no `node_id` —
+// read as the tester's search reads it; a route the world serves that the extract holds no
+// operation of, named, so a route added to the world without its pin fails here; a route of
+// WORLD_ROUTES this row makes no call of; and a route GitHub refuses a role App answered with a
+// success, or refused in another shape than GitHub's error body. The extract is the one of
+// github/rest-api-description at c9c95fe34ced, which this row names.
+test("every REST route the world serves answers every field GitHub's description requires", () => {
+  expect([extractCommit(), DESCRIPTION_COMMIT]).toEqual([
+    "c9c95fe34ced05fe076001f5c55704742bc8e7f8",
+    "c9c95fe34ced05fe076001f5c55704742bc8e7f8",
+  ]);
+  expect(
+    servedRoutes()
+      .map(({ route }) => route)
+      .filter((route) => restOperation(route) === undefined)
+  ).toEqual([]);
+  const dir = worldDir("approved_world");
+  const head = builtHead(dir);
+  const base = git(path.join(dir, "remote.git"), "rev-parse", "refs/heads/main");
+  const calls = restCalls(head, base);
+  expect([...new Set(calls.map(([route]) => route))].sort()).toEqual(
+    WORLD_ROUTES.map(({ route }) => route)
+      .filter((route) => /^(GET|POST|PUT|PATCH|DELETE) /.test(route))
+      .sort()
+  );
+  const error = pinnedRead("branches-main-protection");
+  const verdicts = calls.map(([route, argv, refusal]) => {
+    const got = ghCall(dir, ...argv);
+    const answer: unknown = JSON.parse(got.out);
+    if (refusal !== undefined)
+      return [
+        route,
+        got.code,
+        got.err === refusal ? "GitHub's refusal" : got.err,
+        shapeDiff(answer, error),
+      ];
+    const schema = restOperation(route)?.schema;
+    return [
+      route,
+      got.code,
+      got.err,
+      schema === undefined ? "no schema" : absentFields(answer, schema),
+    ];
+  });
+  expect(verdicts).toEqual(
+    calls.map(([route, , refusal]) =>
+      refusal === undefined ? [route, 0, "", []] : [route, 1, "GitHub's refusal", SAME_SHAPE]
+    )
+  );
+}, 120_000);
+
+/** The REST reads production-shapes.json pins that the rows above do not hold, each read with
+ * production's own command (`argvOf`) in each of `worlds` (approved_world unless it names others)
+ * after `before`, the calls that leave the world holding what production's answer held items of
+ * (a conversation comment, a reply), and `kinds`, the kinds production's answer and the world's
+ * differ in for a reason of state, which `state` names. The pull request's comments are read in
+ * review_world too, whose seeded comment stands on greet.test.ts, the CLI's tests as rig.sh's
+ * fixture_cli writes them. */
+const PINNED_REST: readonly {
+  name: string;
+  worlds?: string[];
+  path?: string;
+  before?: string[][];
+  kinds?: string[];
+  state?: string;
+}[] = [
+  { name: "gh api GET repos/fernbrook/widgets" },
+  { name: "gh api GET repos/fernbrook/widgets/pulls/{n}" },
+  { name: "gh api GET repos/fernbrook/widgets/pulls/{n}/reviews" },
+  { name: "gh api GET repos/fernbrook/widgets/pulls/{n}/reviews/{n}" },
+  { name: "gh api GET repos/fernbrook/widgets/pulls/{n}/reviews/{n}/comments" },
+  ...[
+    "gh api GET repos/fernbrook/widgets/pulls/{n}/comments",
+    "gh api GET repos/{owner}/{repo}/pulls/{n}/comments",
+  ].map((name) => ({
+    name,
+    worlds: ["approved_world", "review_world"],
+    before: [
+      [
+        "api",
+        "-X",
+        "POST",
+        "repos/example/widgets/pulls/1001/comments/7001/replies",
+        "-f",
+        "body=done",
+      ],
+    ],
+  })),
+  {
+    name: "gh api GET repos/fernbrook/widgets/issues/{n}/comments",
+    before: [["pr", "comment", "1001", "--body", "a note"]],
+  },
+  {
+    name: "gh api GET repos/fernbrook/widgets/commits/{sha}/check-runs",
+    kinds: [
+      ".check_runs[].conclusion: null in production, string in the world",
+      ".check_runs[].completed_at: null in production, string in the world",
+    ],
+    state:
+      "production's checks were still running when it was read, and the world's have concluded (rig.sh's concluded_checks)",
+  },
+  { name: "gh api GET repos/fernbrook/widgets/commits/{sha}/status" },
+  { name: "gh api GET repos/fernbrook/widgets/compare/{sha}...{sha}" },
+  { name: "gh api GET repos/fernbrook/widgets/contents/greet.ts", path: "greet.ts" },
+  {
+    name: "gh api GET repos/fernbrook/widgets/contents/.github/workflows/greet.yml",
+    path: ".github/workflows/greet.yml",
+  },
+  { name: "gh api GET repos/fernbrook/widgets/rules/branches/main" },
+  { name: "gh api GET repos/fernbrook/widgets/branches/main" },
+];
+
+// Catches, each read held to production's whole answer (every path production's holds, no path it
+// does not, no kind it does not give): the repository short of its URLs, its times, its counts, its
+// license or its organization; the pull request in gh's own `pr view` shape (a string `id`,
+// `mergeable` `MERGEABLE`, `headRefOid` and no `head.repo`); a review carrying the `author` gh's
+// view gives and GitHub's REST does not, or no `node_id`, `_links` or `author_association`; a
+// review's comments in the shape of the pull request's (`line`, `side`, `start_line`, which
+// GitHub's older shape of a review's comments has not got) or with no `diff_hunk` and
+// `position`; a reply that names no review, where GitHub files it in one of its own; a
+// conversation comment with no `url`, `reactions` or the App that made it; a check run with no
+// `pull_requests` or its App a name alone; a commit status's repository that is a name alone; a
+// comparison with no commits, links or file URLs; and a file or a branch in another shape.
+for (const pin of PINNED_REST)
+  test(`a REST read answers in production's shape: ${pin.name}`, () => {
+    const read = pinnedRead(pin.name);
+    for (const world of pin.worlds ?? ["approved_world"]) {
+      const dir = worldDir(world);
+      const head = builtHead(dir);
+      const base = git(path.join(dir, "remote.git"), "rev-parse", "refs/heads/main");
+      for (const argv of pin.before ?? [])
+        expect([world, argv, ghCall(dir, ...argv).code]).toEqual([world, argv, 0]);
+      const got = pinnedCall(dir, read, {
+        number: "1001",
+        review: "5001",
+        head,
+        base,
+        path: pin.path ?? "",
+      });
+      expect([world, got.code, got.err, shapeDiff(got.answer, read)]).toEqual([
+        world,
+        read.exit,
+        read.stderr,
+        { ...SAME_SHAPE, kinds: pin.kinds ?? [] },
+      ]);
+    }
+  }, 60_000);
+
+// Catches (the architect's ruling 4 of 2026-11-17): `GET repos/<repo>/pulls/<n>` answered with
+// gh's `pr view` object, and a REST pull request that says something else than the world's other
+// answers: a node id, a URL, a title, a body, a state, a branch, a head or a merge state other
+// than `pr view`'s at the same moment (after a push moved the head and a body edit changed the
+// body); a base that is not the base branch's tip; an author other than the bot whose commit
+// opened the branch, as the comparison links that commit to it; and a test merge GitHub could not
+// hold: no commit, or one that does not merge the head into the base.
+test("the REST pull request is GitHub's object, saying what pr view says", () => {
+  const dir = worldDir("approved_world");
+  const remote = path.join(dir, "remote.git");
+  const base = git(remote, "rev-parse", "refs/heads/main");
+  const tip = pushFix(dir, "docs/cli.md", "the text fix\n");
+  expect(
+    ghCall(dir, "api", "-X", "PATCH", "repos/example/widgets/pulls/1001", "-f", "body=edited").code
+  ).toBe(0);
+  const view = JSON.parse(
+    ghCall(
+      dir,
+      "pr",
+      "view",
+      "1001",
+      "--json",
+      "id,number,title,body,state,isDraft,headRefName,headRefOid,baseRefName,url,mergeable,mergeStateStatus"
+    ).out
+  );
+  const rest = JSON.parse(ghCall(dir, "api", "repos/example/widgets/pulls/1001").out);
+  expect({
+    node_id: rest.node_id,
+    number: rest.number,
+    title: rest.title,
+    body: rest.body,
+    state: rest.state,
+    draft: rest.draft,
+    head: [rest.head.ref, rest.head.sha],
+    base: [rest.base.ref, rest.base.sha],
+    html_url: rest.html_url,
+    mergeable: rest.mergeable,
+    mergeable_state: rest.mergeable_state,
+  }).toEqual({
+    node_id: view.id,
+    number: view.number,
+    title: view.title,
+    body: "edited",
+    state: view.state.toLowerCase(),
+    draft: view.isDraft,
+    head: [view.headRefName, tip],
+    base: [view.baseRefName, base],
+    html_url: view.url,
+    mergeable: view.mergeable === "MERGEABLE",
+    mergeable_state: view.mergeStateStatus.toLowerCase(),
+  });
+  expect(view.headRefOid).toBe(tip);
+  const compared = JSON.parse(
+    ghCall(dir, "api", `repos/example/widgets/compare/${base}...${tip}`).out
+  );
+  expect(rest.user).toEqual(compared.commits[0].author);
+  expect(rest.user).toMatchObject({ login: "widgets-implementer[bot]", type: "Bot" });
+  expect(git(remote, "show", "-s", "--format=%P", rest.merge_commit_sha)).toBe(`${base} ${tip}`);
+  expect(git(remote, "rev-parse", `${rest.merge_commit_sha}^{tree}`)).toBe(
+    git(remote, "merge-tree", "--write-tree", base, tip)
+  );
+  expect(rest.commits).toBe(Number(git(remote, "rev-list", "--count", `${base}..${tip}`)));
 }, 60_000);
 
 // Catches: a merge state that reads the base's classic protection, which a base a ruleset alone

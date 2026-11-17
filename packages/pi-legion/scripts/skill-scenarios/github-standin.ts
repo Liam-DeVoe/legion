@@ -7,13 +7,17 @@
 // repository", where production answers `no`, that commit being none of the compared commits
 // (INFRA-764, measured 2026-11-16 on a result one push below the pull request's head).
 //
-//   bun github-standin.ts <run dir> <owner/repo> <default branch> <pull request author>
+//   bun github-standin.ts <run dir> <owner/repo> <default branch>
 //
 // It answers the routes the world's flows were measured to ask for (github-routes.ts's
 // GITHUB_ROUTES, each with the Dispatch code that asks for it), each from the run's own remote
-// (<run>/remote.git) and the world's own data (<run>/world.json, and the gh answers rig.sh's
-// fixture_write writes, <run>/fixtures.json), read at each request: the world is built after the
-// server starts, and every push of the run moves it. A request for a repository or an
+// (<run>/remote.git) and the world's own data (<run>/world.json, its accounts, the gh answers
+// rig.sh's fixture_write writes, <run>/fixtures.json, and the record of the gh calls the run
+// made), read at each request: the world is built after the server starts, and every push of the
+// run moves it. Each answer is GitHub's whole object, built as the gh stand-in builds it
+// (rest-objects.ts), so the repository and the pull request Dispatch reads are the ones an agent
+// reads, every field GitHub's description requires (rest-required.json) among them. A request for
+// a repository or an
 // installation the world does not hold is answered as GitHub answers it, 404. Any other request is
 // refused loudly: answered 501 and logged with `refused`, so a read Dispatch adds later surfaces as
 // a refusal, which health.ts's `github` rule makes the run unhealthy for, and never as an answer
@@ -28,19 +32,31 @@ import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { type Route, readWorld, routeFor } from "./gh-call";
+import {
+  commentsOf,
+  conversationOf,
+  mergeStateOf,
+  recordedCalls,
+  type ThreadRoute,
+  threadState,
+} from "./gh-threads";
 import { GITHUB_ROUTES, type GithubRoute, githubRouteOf } from "./github-routes";
+import { accountsOf, pullRequestJson, repositoryJson, userJson } from "./rest-objects";
+import { CALLS } from "./run-records";
 
 /** The world one stand-in serves, and the tokens it minted. */
 interface Served {
   readonly runDir: string;
   readonly repo: string;
   readonly defaultBranch: string;
-  readonly author: string;
   readonly minted: Map<string, Date>;
 }
 
-/** The installation of the run's App on the world's repository. */
+/** The installation of the run's App on the world's repository, and the App it installs. */
 const INSTALLATION_ID = 51_204_113;
+const APP_ID = 2_101_400;
+/** When the App was installed, the world's own time. */
+const INSTALLED = "2026-01-01T00:00:00Z";
 /** The permissions GitHub grants that installation, the ones Dispatch's App asks for. */
 const PERMISSIONS = {
   checks: "read",
@@ -59,11 +75,13 @@ function git(served: Served, ...args: string[]): string | undefined {
   return read.exitCode === 0 ? read.stdout.toString().trim() : undefined;
 }
 
-/** The world's gh answers, or none before rig.sh's fixture_write wrote them. */
-function ghRoutes(served: Served): Route[] {
+/** The world's gh answers and the merge states it names for a head (rig.sh's fixture_write), or
+ * none before fixture_write wrote them. */
+function fixturesOf(served: Served): { routes: ThreadRoute[]; mergeStates: unknown } {
   const file = path.join(served.runDir, "fixtures.json");
-  if (!existsSync(file)) return [];
-  return (JSON.parse(readFileSync(file, "utf8")) as { routes?: Route[] }).routes ?? [];
+  if (!existsSync(file)) return { routes: [], mergeStates: {} };
+  const read: { routes?: Route[]; mergeStates?: unknown } = JSON.parse(readFileSync(file, "utf8"));
+  return { routes: read.routes ?? [], mergeStates: read.mergeStates ?? {} };
 }
 
 /** GitHub's error body, as its REST API writes one. */
@@ -74,11 +92,11 @@ function githubError(status: number, message: string): Response {
   );
 }
 
-/** The repository object GitHub answers `GET /repos/{owner}/{repo}` with: the world's own, as the
- * gh stand-in answers `gh api repos/<repo>` with it, and before the world is built one of the
- * same shape on the default branch the run was started with. */
-function repository(served: Served): Record<string, unknown> {
-  const held = routeFor(ghRoutes(served), ["api", `repos/${served.repo}`])?.stdout;
+/** The world's repository settings, as the gh stand-in answers `gh api repos/<repo>` from them
+ * (rig.sh's fixture_write), and before the world is built the settings of a repository on the
+ * default branch the run was started with. */
+function heldRepository(served: Served): Record<string, unknown> {
+  const held = routeFor(fixturesOf(served).routes, ["api", `repos/${served.repo}`])?.stdout;
   if (typeof held === "object" && held !== null && !Array.isArray(held))
     return held as Record<string, unknown>;
   const [owner = "", name = ""] = served.repo.split("/");
@@ -88,73 +106,53 @@ function repository(served: Served): Record<string, unknown> {
     name,
     full_name: served.repo,
     owner: { login: owner, type: "Organization" },
-    private: false,
-    visibility: "public",
-    fork: false,
-    archived: false,
-    disabled: false,
-    html_url: `https://github.com/${served.repo}`,
-    url: `https://api.github.com/repos/${served.repo}`,
     default_branch: served.defaultBranch,
   };
 }
 
-/** The pull request the world's remote holds, as GitHub's REST API lists it: its head the tip of
- * the issue branch at the call and its base the tip of the branch it is open against, read from
- * the run's remote; its author the role that opened it; and the rest the world's (fixtures.json's
- * `gh pr view`). Undefined before the world is built. */
-function pullRequest(served: Served): Record<string, unknown> | undefined {
+/** The pull request the world's remote holds, as GitHub's REST API answers it in `form` (rest-
+ * objects.ts's `pullRequestJson`): its head the tip of the issue branch at the call and its base
+ * the tip of the branch it is open against, read from the run's remote; its merge state the one
+ * the run's review threads leave it in, and its comment counts the run's, as the gh stand-in
+ * answers them (gh-threads.ts's `mergeStateOf`, `threadState`, `conversationOf`); the rest the
+ * world's (fixtures.json's `gh pr view`). Undefined before the world is built. */
+function pullRequest(served: Served, form: "simple" | "full"): Record<string, unknown> | undefined {
   const read = existsSync(path.join(served.runDir, "world.json"))
     ? readWorld(served.runDir)
     : undefined;
   if (read === undefined || !("world" in read)) return undefined;
   const world = read.world;
-  const held = routeFor(ghRoutes(served), ["pr", "view", String(world.pr)])?.stdout as
-    | Record<string, unknown>
-    | undefined;
+  const { routes, mergeStates } = fixturesOf(served);
+  const held = routeFor(routes, ["pr", "view", String(world.pr)])?.stdout;
   const head = git(served, "rev-parse", `refs/heads/${world.branch}`);
   const base = git(served, "rev-parse", `refs/heads/${world.base}`);
   if (head === undefined || base === undefined) return undefined;
-  const opened = (git(served, "log", "--reverse", "--format=%cI", `${base}..${head}`) ?? "").split(
-    "\n"
-  )[0];
-  const updated = git(served, "log", "-1", "--format=%cI", head) ?? "";
-  const htmlUrl = `https://github.com/${served.repo}/pull/${world.pr}`;
-  const api = `https://api.github.com/repos/${served.repo}`;
-  const [owner = ""] = served.repo.split("/");
-  const side = (ref: string, sha: string) => ({
-    label: `${owner}:${ref}`,
-    ref,
-    sha,
-    repo: repository(served),
-  });
-  return {
-    url: `${api}/pulls/${world.pr}`,
-    id: 2_000_000_000 + world.pr,
-    node_id: held?.id ?? `PR_kwDOAAAAAc4AAA${world.pr}`,
-    html_url: htmlUrl,
-    diff_url: `${htmlUrl}.diff`,
-    patch_url: `${htmlUrl}.patch`,
-    issue_url: `${api}/issues/${world.pr}`,
-    number: world.pr,
-    state: "open",
-    locked: false,
-    title: held?.title ?? "",
-    user: { login: served.author, type: "Bot" },
-    body: held?.body ?? "",
-    created_at: opened !== undefined && opened !== "" ? new Date(opened).toISOString() : null,
-    updated_at: updated !== "" ? new Date(updated).toISOString() : null,
-    closed_at: null,
-    merged_at: null,
-    merge_commit_sha: null,
-    labels: [],
-    draft: false,
-    head: side(world.branch, head),
-    base: side(world.base, base),
-    author_association: "NONE",
-    auto_merge: null,
-    active_lock_reason: null,
-  };
+  const record = path.join(served.runDir, CALLS);
+  const calls = existsSync(record) ? recordedCalls(record) : [];
+  const at = { routes, world };
+  const threads = threadState(at, calls);
+  const view = typeof held === "object" && held !== null ? (held as Record<string, unknown>) : {};
+  const comments =
+    (Array.isArray(view.comments) ? view.comments.length : 0) + conversationOf(world, calls).length;
+  return pullRequestJson(
+    { ...view, mergeStateStatus: mergeStateOf(at, threads, mergeStates, head) },
+    {
+      runDir: served.runDir,
+      repo: served.repo,
+      pr: world.pr,
+      branch: world.branch,
+      base: world.base,
+      head,
+      baseSha: base,
+      repository: heldRepository(served),
+      accounts: accountsOf(served.runDir),
+      comments,
+      reviewComments: threads.list
+        .flatMap(commentsOf)
+        .filter((comment) => comment.state !== "PENDING").length,
+    },
+    form
+  );
 }
 
 /** The head and base commits of a pull request object `pullRequest` built. */
@@ -170,14 +168,28 @@ const ANSWERS: Readonly<
 > = {
   "GET /repos/{owner}/{repo}/installation": (served) => {
     const [owner = "", name = ""] = served.repo.split("/");
+    const account = userJson(owner, accountsOf(served.runDir), "Organization");
     return Response.json({
       id: INSTALLATION_ID,
-      account: { login: owner, type: "Organization" },
+      client_id: `Iv23li${INSTALLATION_ID}`,
+      account,
+      repository_selection: "selected",
+      access_tokens_url: `https://api.github.com/app/installations/${INSTALLATION_ID}/access_tokens`,
+      repositories_url: "https://api.github.com/installation/repositories",
+      html_url: `https://github.com/organizations/${owner}/settings/installations/${INSTALLATION_ID}`,
+      app_id: APP_ID,
       app_slug: `${name}-dispatch`,
+      target_id: account.id,
       target_type: "Organization",
       permissions: PERMISSIONS,
-      repository_selection: "selected",
       events: ["check_run", "check_suite", "pull_request", "push", "status"],
+      created_at: INSTALLED,
+      updated_at: INSTALLED,
+      single_file_name: null,
+      has_multiple_single_files: false,
+      single_file_paths: [],
+      suspended_by: null,
+      suspended_at: null,
     });
   },
   "POST /app/installations/{id}/access_tokens": (served, { id }) => {
@@ -204,7 +216,10 @@ const ANSWERS: Readonly<
       headers: { "Content-Type": "application/vnd.github.sha; charset=utf-8" },
     });
   },
-  "GET /repos/{owner}/{repo}": (served) => Response.json(repository(served)),
+  "GET /repos/{owner}/{repo}": (served) =>
+    Response.json(
+      repositoryJson(heldRepository(served), served.runDir, accountsOf(served.runDir), "full")
+    ),
   // The pull requests GitHub associates with a commit: for one on the issue branch alone, the open
   // pull request whose commits it is among; for one the default branch already holds, the merged
   // pull request that brought it there, which no world has; for one the remote does not hold,
@@ -212,31 +227,19 @@ const ANSWERS: Readonly<
   "GET /repos/{owner}/{repo}/commits/{sha}/pulls": (served, { sha = "" }) => {
     if (git(served, "cat-file", "-e", `${sha}^{commit}`) === undefined)
       return githubError(422, `No commit found for SHA: ${sha}`);
-    const pull = pullRequest(served);
+    const pull = pullRequest(served, "simple");
     if (pull === undefined) return Response.json([]);
     const { head, base } = sides(pull);
     const onBranch = git(served, "merge-base", "--is-ancestor", sha, head) !== undefined;
     const onBase = git(served, "merge-base", "--is-ancestor", sha, base) !== undefined;
     return Response.json(onBranch && !onBase ? [pull] : []);
   },
-  // One pull request: the listing's object with the counts GitHub adds to a single one, read from
-  // the run's remote. The fields GitHub computes from more than the remote (`mergeable`, the
-  // comment counts) are not given: no read of Dispatch's names them, and one that comes to is a
-  // change to this table.
+  // One pull request, as GitHub answers it by its number: the listing's object with the counts
+  // and the mergeability GitHub adds to a single one.
   "GET /repos/{owner}/{repo}/pulls/{number}": (served, { number }) => {
-    const pull = pullRequest(served);
+    const pull = pullRequest(served, "full");
     if (pull === undefined || pull.number !== Number(number)) return githubError(404, "Not Found");
-    const { head, base } = sides(pull);
-    const stat = git(served, "diff", "--shortstat", `${base}...${head}`) ?? "";
-    const count = (word: string) => Number(new RegExp(`(\\d+) ${word}`).exec(stat)?.[1] ?? 0);
-    return Response.json({
-      ...pull,
-      merged: false,
-      commits: Number(git(served, "rev-list", "--count", `${base}..${head}`) ?? 0),
-      additions: count("insertion"),
-      deletions: count("deletion"),
-      changed_files: count("file"),
-    });
+    return Response.json(pull);
   },
 };
 
@@ -289,14 +292,12 @@ function answer(served: Served, request: Request): { response: Response; line: o
 }
 
 if (import.meta.main) {
-  const [runDir = "", repo = "", defaultBranch = "", author = ""] = Bun.argv.slice(2);
-  if (runDir === "" || !/^[^/\s]+\/[^/\s]+$/.test(repo) || defaultBranch === "" || author === "") {
-    console.error(
-      "usage: github-standin.ts <run dir> <owner/repo> <default branch> <pull request author>"
-    );
+  const [runDir = "", repo = "", defaultBranch = ""] = Bun.argv.slice(2);
+  if (runDir === "" || !/^[^/\s]+\/[^/\s]+$/.test(repo) || defaultBranch === "") {
+    console.error("usage: github-standin.ts <run dir> <owner/repo> <default branch>");
     process.exit(2);
   }
-  const served: Served = { runDir, repo, defaultBranch, author, minted: new Map() };
+  const served: Served = { runDir, repo, defaultBranch, minted: new Map() };
   const server = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,

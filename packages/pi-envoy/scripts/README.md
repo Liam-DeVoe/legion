@@ -842,6 +842,46 @@ account by the address the commit carries and the key it signs with (`rig.sh`'s
 `author` and `committer` are that account and its `verification` is the one `git verify-commit`
 gives against that key, as production's head is linked and verified.
 
+Every REST route the world serves — each `GET`, `POST`, `PUT` and `PATCH` of `gh-routes.ts`'s
+`WORLD_ROUTES` and each route of `github-routes.ts`'s `GITHUB_ROUTES`, the HTTP stand-in
+Dispatch reads — answers every field GitHub's REST API description marks required in its
+success answer, as `rest-required.json` holds them: the required field tree of each route's
+operation, derived by `rest-required.ts` from `descriptions/api.github.com/api.github.com.json`
+of github/rest-api-description at commit `c9c95fe34ced05fe076001f5c55704742bc8e7f8` and never
+written by hand. To regenerate it, fetch that file at that commit (`curl -fsSLO
+https://raw.githubusercontent.com/github/rest-api-description/c9c95fe34ced05fe076001f5c55704742bc8e7f8/descriptions/api.github.com/api.github.com.json`)
+and run `bun rest-required.ts api.github.com.json`, which writes the extract and formats it; a
+route the description has no operation of fails it, naming the route. An answer is read against
+it as INFRA-764's read search reads one (`absentFields`): through `$ref`, every part of an
+`allOf`, the closest of a `oneOf` or an `anyOf`, and every item of an array. `gh-standin.test.ts`
+calls every REST route of `WORLD_ROUTES` in a world and holds its answer to its operation, and
+fails naming a route the extract holds no operation of; `github-standin.test.ts` does the same
+for the HTTP stand-in. Three routes are GitHub's refusal of a role App and no success, which the
+world gives as GitHub's error body and gh's line: a branch's classic protection and `user` (403:
+an installation token reads no administration and is no user's, measured from a Legion pod on
+2026-11-17; `rig.sh health` declares the second for every role), and the jobs of a run the world
+holds none of (404). The values agree across routes: a user, the repository and the pull request
+are each built one way for both stand-ins (`rest-objects.ts`) from the world's accounts
+(`<run>/accounts.json`: the developer, the organization the repository is in, and the bot of each
+role App, so a commit a role made links to its bot), the repository's settings, the pull
+request as `gh pr view` reads it and the run's remote. `GET …/pulls/<n>` is GitHub's pull request
+object, not gh's view of it, opened by the author of its branch's first commit, its head the
+branch's tip, its merge state `pr view`'s, its test merge (`merge_commit_sha`) the commit that
+merges the head into the base, which the world writes into the remote as GitHub keeps its own. A
+comment made outside a review, and a reply, is filed in a `COMMENTED` review of its own, as
+GitHub files it, which the reviews list holds.
+
+The REST reads round 25 made are pinned to production's whole shape too, and
+`gh-standin.test.ts` holds each with `shapeDiff`: the repository, the pull request, its reviews
+and one review, a review's comments (GitHub's older shape of a review comment, with no `line`,
+`side` or start of its own), the pull request's review comments, its conversation, a commit's
+check runs and combined status, a comparison, a file at a ref, the base branch's rules and the
+base branch, beside the five ruleset reads above. Each answers with no difference but one of
+state: production read its check runs while they ran, so their `conclusion` and `completed_at`
+are null there and the world's, concluded, are strings. A REST read the pin does not hold — the
+workflow runs, a ref, the answer of a write — is held to the fields GitHub requires and no more,
+and is not claimed to answer in production's whole shape.
+
 A write is answered only where the world models it, each by a route of its own that names its
 verb and the one path it writes, the world's repository and pull request read whole: the create
 of a review, its submit and its update (`PUT …/reviews/<id>`, whose new body every later read of

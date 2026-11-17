@@ -1741,9 +1741,10 @@ services_from() {
 # port 1 every reviewer was told a pass stands "not known", Dispatch "cannot read the repository",
 # where production answers that commit is none of the compared commits. The stand-in answers the
 # reads the world's flows were measured to make (github-routes.ts's GITHUB_ROUTES) from the run's
-# own remote, its pull request opened by the implementer's App as production's is, and refuses any
-# other, naming it in $evidence/logs/github.log, the log the world does not show and health.ts's
-# `github` rule reads. The
+# own remote, its pull request opened by the author of the issue branch's first commit, the
+# implementer's App, as production's is (rest-objects.ts's `pullRequestJson`, the gh stand-in's
+# reading too), and refuses any other, naming it in $evidence/logs/github.log, the log the world
+# does not show and health.ts's `github` rule reads. The
 # server is the one the batch built from the run's label's own checkout (services_up, go_binary),
 # which run-server.sh runs in place of a build of its own (DISPATCH_E2E_SERVER_BIN), so every run
 # runs the binary its provenance names (services_from). run-server.sh itself is this checkout's,
@@ -1764,7 +1765,7 @@ start_dispatch() {
   [ -x "$server" ] || fail "no Dispatch server of $co at $server: the run's batch builds it (services_up)"
   : >"$log"
   : >"$github"
-  start_process github bun "$here/github-standin.ts" "$R" "$worker_repo" "$worker_base" "${world_implement_app}[bot]"
+  start_process github bun "$here/github-standin.ts" "$R" "$worker_repo" "$worker_base"
   await_start github "$github_pid" 30 "the GitHub stand-in to report its port" \
     report_port "$github" '"listening":"127\.0\.0\.1:'
   github_port=$(report_port "$github" '"listening":"127\.0\.0\.1:')
@@ -2809,7 +2810,11 @@ $entries"
 # fixture_open INDEX START opens the run's remote and its checkout: the pull request's number and
 # URL (1000 plus INDEX), the date of this world's commits (INDEX seconds after START), a bare
 # remote whose post-receive hook logs every push, and $src on the world's default branch
-# ($worker_base) with the README every world carries.
+# ($worker_base) with the README and the MIT license every world carries. The license is the one
+# GitHub reads off the file and answers the repository with (rest-objects.ts's `repositoryJson`),
+# as production's repository answers one (production-shapes.json's `repos/<repo>`, its
+# `license` an object): a repository without one answered `license: null` where production's is
+# an object.
 fixture_open() {
   local index=$1 start=$2
   worker_pr=$((1000 + index))
@@ -2824,6 +2829,11 @@ EOF
   src=$R/src
   git init -q -b "$worker_base" "$src"
   printf '# widgets\n\nSmall CLI helpers.\n' >"$src/README.md"
+  printf '%s\n' 'MIT License' '' "Copyright (c) 2026 ${worker_repo%%/*}" '' \
+    'Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:' '' \
+    'The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.' '' \
+    'THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.' \
+    >"$src/LICENSE"
 }
 
 # The world's git in $src: this world's date on every commit, and the identity a commit of $src
@@ -2853,23 +2863,31 @@ fixture_docs_before() {
 
 # fixture_first_commit commits what $src holds, pushes the world's default branch and opens
 # legion/<key> on it: the base the implementer's own commit sits above, and the other side of the
-# diff the gh stand-in serves. The world's GitHub holds its developer's account, as production's
+# diff the gh stand-in serves. The world's GitHub holds the accounts its answers name
+# ($R/accounts.json, read by rest-objects.ts's `accountsOf`): its developer's, as production's
 # holds the account a base head's author is (production-shapes.json's `branches-main`, where
-# `commit.author` and `commit.committer` are user objects): its login, the local part of the
+# `commit.author` and `commit.committer` are user objects), its login the local part of the
 # developer's address with each dot a dash (GitHub's logins hold none), its id, and the address
-# its commits carry ($R/accounts.json); and the SSH key that account signs with
-# ($R/allowed-signers, in git's allowed-signers form), whose private half signs this commit, as
-# production's base head is signed and GitHub verifies it (`commit.verification`). The commit's
-# author and committer lines are the developer's as before (fixture_git); the signature is a
-# header of its own.
+# its commits carry; the organization the repository is in; and the bot of each role App
+# (role_identity), its id and its noreply address, which every commit a role makes carries, so
+# GitHub links those commits to it as it links production's, and the App it is, its id the
+# world's own. Then the SSH key the developer's account signs with ($R/allowed-signers, in git's
+# allowed-signers form), whose private half signs this commit, as production's base head is
+# signed and GitHub verifies it (`commit.verification`). The commit's author and committer lines
+# are the developer's as before (fixture_git); the signature is a header of its own.
 # gh-standin.ts's `commitJson` reads both files.
 fixture_first_commit() {
   local login=${world_author_email%%@*}
   rm -f "$R/signing-key" "$R/signing-key.pub"
   ssh-keygen -q -t ed25519 -N '' -C "$world_author_email" -f "$R/signing-key"
   printf '%s %s\n' "$world_author_email" "$(cut -d' ' -f1,2 "$R/signing-key.pub")" >"$R/allowed-signers"
-  jq -n --arg login "${login//./-}" --arg email "$world_author_email" \
-    '[{login:$login, id:318400017, email:$email}]' >"$R/accounts.json"
+  jq -n --arg login "${login//./-}" --arg email "$world_author_email" --arg org "${worker_repo%%/*}" \
+    --arg implementer "$(role_identity implementer)" --argjson implementer_id "$world_implement_app_id" \
+    --arg reviewer "$(role_identity reviewer)" --argjson reviewer_id "$world_review_app_id" '
+    def bot($identity; $id; $app): ($identity | split("\t")) as [$name, $address]
+      | {login:$name, id:$id, email:$address, app:{id:$app, slug:($name | rtrimstr("[bot]"))}};
+    [{login:$login, id:318400017, email:$email}, {login:$org, id:318399944, type:"Organization"},
+     bot($implementer; $implementer_id; 2101307), bot($reviewer; $reviewer_id; 2101311)]' >"$R/accounts.json"
   fixture_git add -A &&
     fixture_git -c gpg.format=ssh -c user.signingkey="$R/signing-key" commit -S -qm "init"
   fixture_git push -q "$R/remote.git" "$worker_base"
@@ -3219,17 +3237,16 @@ fixture_write() {
                 else {id:("PRR_kwDOAAAAAc4AAE" + ($thread.review|tostring)), databaseId:$thread.review} end)}]}]
         | .next += ($thread.comments | length))
       | .out) as $seeded
-    | {number:$number, id:("PR_kwDOAAAAAc4AAA" + $n), url:$url, html_url:$url,
+    | {number:$number, id:("PR_kwDOAAAAAc4AAA" + $n), url:$url,
      title:("feat: greet() (" + $key + ")"), state:"OPEN", isDraft:false, isCrossRepository:false,
      headRefName:$ref, headRefOid:$head, baseRefName:$base, body:$body, mergeable:"MERGEABLE",
-     mergeStateStatus:"CLEAN", mergeable_state:"clean", mergedAt:null, autoMergeRequest:null,
+     mergeStateStatus:"CLEAN", mergedAt:null, autoMergeRequest:null,
      reviewDecision:$decision, reviews:$reviews, latestReviews:$reviews, comments:[],
-     head:{sha:$head, ref:$ref}, base:{ref:$base},
      statusCheckRollup:[$runs[] | {name, status:(.status|ascii_upcase), conclusion:(.conclusion|ascii_upcase)}]} as $pr
     | {id:1, node_id:"R_kgDOAAAAAQ", name:$name, full_name:$repo, owner:{login:$owner, type:"Organization"},
-       private:false, visibility:"public", fork:false, archived:false, disabled:false,
-       html_url:("https://github.com/" + $repo), url:("https://api.github.com/repos/" + $repo),
-       default_branch:$base, allow_squash_merge:true, allow_merge_commit:true, allow_rebase_merge:true,
+       private:false, visibility:"public", fork:false, archived:false, disabled:false, description:null,
+       language:"TypeScript", default_branch:$base,
+       allow_squash_merge:true, allow_merge_commit:true, allow_rebase_merge:true,
        allow_auto_merge:false, delete_branch_on_merge:false,
        squash_merge_commit_title:"COMMIT_OR_PR_TITLE", squash_merge_commit_message:"COMMIT_MESSAGES",
        merge_commit_title:"MERGE_MESSAGE", merge_commit_message:"PR_TITLE",
@@ -3253,7 +3270,8 @@ fixture_write() {
        endpoint:($pulls + "/reviews/[0-9]+/events"), answer:"review-submit"},
       {match:("^gh api .*pulls/" + $n + "/reviews/[0-9]+([ ?]|$)"), methods:["PUT"],
        endpoint:($pulls + "/reviews/[0-9]+"), answer:"review-update", stdout:$reviews},
-      {match:("^gh api .*pulls/" + $n + "([ ?]|$)"), methods:["PATCH"], endpoint:$pulls, stdout:$pr},
+      {match:("^gh api .*pulls/" + $n + "([ ?]|$)"), methods:["PATCH"], endpoint:$pulls, answer:"pull-request",
+       stdout:$pr},
       {match:("^gh api .*pulls/" + $n + "/comments([ ?]|$)"), methods:["POST"], endpoint:($pulls + "/comments"),
        answer:"review-comment"},
       {match:("^gh api .*pulls/" + $n + "/comments/[0-9]+/replies([ ?]|$)"), methods:["POST"],
@@ -3281,13 +3299,23 @@ fixture_write() {
       {match:"^gh api .*commits/[^/ ]+/check-runs([ ?]|$)", methods:["GET"], answer:"check-runs",
        stdout:{total_count:($runs|length), check_runs:$runs}},
       {match:"^gh api .*commits/[^/ ]+/status([ ?]|$)", methods:["GET"], answer:"combined-status", stdout:{statuses:[]}},
-      {match:"^gh api .*actions/runs/[0-9]+/jobs([ ?]|$)", methods:["GET"], stderr:"gh: Not Found (HTTP 404)\n", exit:1},
+      {match:"^gh api .*actions/runs/[0-9]+/jobs([ ?]|$)", methods:["GET"],
+       stdout:{message:"Not Found",
+         documentation_url:"https://docs.github.com/rest/actions/workflow-jobs#list-jobs-for-a-workflow-run",
+         status:"404"},
+       stderr:"gh: Not Found (HTTP 404)\n", exit:1},
       {match:"^gh api .*actions/runs([ ?]|$)", methods:["GET"], stdout:{total_count:0, workflow_runs:[]}},
       {match:"^gh api .*git/ref/", methods:["GET"], answer:"git-ref"},
       {match:"^gh api .*repos/[^/ ]+/[^/ ]+/contents([/?][^ ]*)?( |$)", methods:["GET"], answer:"contents"},
-      {match:("^gh api .*pulls/" + $n + "([ ?]|$)"), methods:["GET"], stdout:$pr},
-      {match:("^gh api (.* )?/?repos/" + $repo_re + "([?][^ ]*)?( |$)"), methods:["GET"], stdout:$repository},
-      {match:"^gh (api user|auth status)", methods:["GET"], stdout:{login:$login}},
+      {match:("^gh api .*pulls/" + $n + "([ ?]|$)"), methods:["GET"], answer:"pull-request", stdout:$pr},
+      {match:("^gh api (.* )?/?repos/" + $repo_re + "([?][^ ]*)?( |$)"), methods:["GET"], answer:"repository",
+       stdout:$repository},
+      {match:"^gh api /?user([/?][^ ]*)?( |$)", methods:["GET"],
+       stdout:{message:"Resource not accessible by integration",
+         documentation_url:"https://docs.github.com/rest/users/users#get-the-authenticated-user",
+         status:"403"},
+       stderr:"gh: Resource not accessible by integration (HTTP 403)\n", exit:1},
+      {match:"^gh auth status", methods:["GET"], stdout:{login:$login}},
       {match:"^gh run (view|watch) ([^ ]+ )*[0-9]+( |$)", stderr:"failed to get run: HTTP 404: Not Found\n", exit:1},
       {match:"^gh run view", stderr:"run or job ID required when not running interactively\n", exit:1},
       {match:"^gh run watch", stderr:"run ID required when not running interactively\n", exit:1}

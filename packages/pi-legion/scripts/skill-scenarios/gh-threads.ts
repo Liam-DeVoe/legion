@@ -126,15 +126,53 @@ export interface ThreadWorld {
   readonly routes: readonly ThreadRoute[];
   readonly world: World | undefined;
 }
-/** The login the run's token acts as: the world's answer to `gh api user`. */
+/** The login the run's token acts as: the world's GraphQL `viewer`, which GitHub answers a role
+ * App's token with its bot's login, where its REST `user` is GitHub's 403 to an App (measured on
+ * 2026-11-17 from a Legion pod: `gh api user` exit 1, `Resource not accessible by integration`;
+ * `gh api graphql -f query='query{viewer{login}}'` the App's bot). */
 export function worldLogin(routes: readonly ThreadRoute[]): string {
-  const user = routeFor(routes, ["api", "user"])?.stdout;
-  return isObject(user) && typeof user.login === "string" ? user.login : "";
+  const graph = routes.find((route) => isObject(route.graph))?.graph;
+  const query = isObject(graph) && isObject(graph.query) ? graph.query : {};
+  return isObject(query.viewer) && typeof query.viewer.login === "string" ? query.viewer.login : "";
 }
 /** The pull request as the world's `gh pr view` route holds it, or an empty object. */
 export function heldPullRequest(routes: readonly ThreadRoute[]): Json {
   const held = routeFor(routes, ["pr", "view"])?.stdout;
   return isObject(held) ? held : {};
+}
+/** The comments `calls` posted on the pull request's conversation, oldest first: each `gh pr
+ * comment` of the world's repository and each POST of `repos/<repo>/issues/<n>/comments` exiting
+ * 0, with the body it posted and when it posted it. The gh stand-in answers the conversation from
+ * these and the HTTP stand-in counts them on the pull request, so the two read one conversation. */
+export function conversationOf(
+  world: World | undefined,
+  calls: readonly Recorded[]
+): { body: string; at: string }[] {
+  if (world === undefined) return [];
+  const path = `repos/${world.repo}/issues/${world.pr}/comments`;
+  const posted: { body: string; at: string }[] = [];
+  for (const call of calls) {
+    const { argv } = call;
+    if (call.as !== "gh" || call.exit !== 0) continue;
+    let text: string | undefined;
+    if (argv[0] === "pr" && argv[1] === "comment") {
+      const named = flagValue(argv, ["-R", "--repo"]);
+      if (named !== undefined && named !== world.repo) continue;
+      const file = flagValue(argv, ["-F", "--body-file"]);
+      text =
+        flagValue(argv, ["-b", "--body"]) ??
+        (file === undefined ? undefined : file === "-" ? call.stdin : call.files?.[file]);
+    } else if (
+      argv[0] === "api" &&
+      isPost(argv) &&
+      argv.some((arg) => arg.replace(/^\//, "").split("?")[0] === path)
+    ) {
+      const sent = sentBody({ argv, stdin: call.stdin, files: call.files }) ?? {};
+      text = typeof sent.body === "string" ? sent.body : undefined;
+    }
+    if (text !== undefined) posted.push({ body: text, at: call.at ?? "" });
+  }
+  return posted;
 }
 /** The object the route a recorded call was matched to answers with, which the record names
  * (`route`, the route's own regex), or undefined when it answered no object. */
@@ -153,6 +191,12 @@ export function routeAnswer(
 const THREAD_NODE = "PRRT_kwDOAAAAAc4AAD";
 const COMMENT_NODE = "PRRC_kwDOAAAAAc4AAC";
 export const REVIEW_NODE = "PRR_kwDOAAAAAc4AAE";
+/** Where the ids of the reviews GitHub files a comment made outside a review in begin: every
+ * review comment is a review's, and GitHub files one made alone — a comment of its own, a reply —
+ * in a review of its own, `COMMENTED` with no body, whose id the comment names (production's
+ * replies each carry a `pull_request_review_id`, production-shapes.json's `…/pulls/{n}/comments`,
+ * where the world's answered null). Its id is this plus the comment's databaseId. */
+export const OWN_REVIEW = 6_000_000;
 /** The databaseId of the first review comment the run makes, where the world seeds none above
  * it: rig.sh's fixture_write numbers the comments of the world's own threads from 7001. */
 const FIRST_COMMENT = 9001;
@@ -203,9 +247,10 @@ export function threadState(at: ThreadWorld, calls: readonly Recorded[]): Thread
   return state;
 }
 /** A review comment the run makes, as GitHub's GraphQL answers one: its two ids, its author (the
- * login the run's token acts as), where it stands, when it was made, the review it belongs to,
- * the comment it replies to and the commit it is on. A comment of a pending review is pending
- * until that review is submitted. */
+ * login the run's token acts as), where it stands, when it was made, the review it belongs to —
+ * the one it was made in, or the review of its own GitHub files it in (OWN_REVIEW) — the comment
+ * it replies to and the commit it is on. A comment of a pending review is pending until that
+ * review is submitted. */
 function newComment(
   at: ThreadWorld,
   state: Threads,
@@ -221,6 +266,7 @@ function newComment(
   }
 ): Json {
   const databaseId = state.next++;
+  const review = made.review ?? OWN_REVIEW + databaseId;
   const url = String(heldPullRequest(at.routes).url ?? "");
   return {
     __typename: "PullRequestReviewComment",
@@ -246,10 +292,7 @@ function newComment(
         : { id: made.replyTo.id, databaseId: made.replyTo.databaseId },
     commit: { oid: made.commit },
     originalCommit: { oid: made.commit },
-    pullRequestReview:
-      made.review === undefined
-        ? null
-        : { id: `${REVIEW_NODE}${made.review}`, databaseId: made.review },
+    pullRequestReview: { id: `${REVIEW_NODE}${review}`, databaseId: review },
   };
 }
 /** The thread `comment` opens, unresolved, on the line and the side it was made on. */
@@ -321,10 +364,11 @@ export interface FieldAnswer {
   readonly payload: Json | null | undefined;
   readonly error?: { type: string; path: string[]; message: string };
 }
-/** What a call on the review threads was answered with: a REST comment it made, a refusal, or
- * one answer per field of a GraphQL mutation. */
+/** What a call on the review threads was answered with: the REST comment it made (the thread it
+ * stands in and the comment, as GraphQL holds them, which gh-standin.ts's `reviewCommentJson`
+ * answers in GitHub's REST shape), a refusal, or one answer per field of a GraphQL mutation. */
 export type ThreadAnswer =
-  | { readonly rest: Json }
+  | { readonly rest: { readonly thread: Json; readonly comment: Json } }
   | { readonly refused: string; readonly documentation?: string }
   | { readonly fields: readonly FieldAnswer[] };
 /** Applies `call` to `state` and says what GitHub answered it, or undefined for a call that
@@ -394,7 +438,7 @@ export function threadCall(
       const found = threadOfComment(state, numberOf(sent.in_reply_to));
       if (found === undefined) return { refused: NOT_FOUND, documentation: COMMENT_DOCS };
       const reply = replyIn(at, state, found.thread, body, made);
-      return { rest: restComment(world, found.thread, reply) };
+      return { rest: { thread: found.thread, comment: reply } };
     }
     const commit = typeof sent.commit_id === "string" ? sent.commit_id : "";
     const path = typeof sent.path === "string" ? sent.path : "";
@@ -417,7 +461,7 @@ export function threadCall(
     });
     const thread = newThread(comment, sent.side, numberOf(sent.start_line) ?? null);
     state.list.push(thread);
-    return { rest: restComment(world, thread, comment) };
+    return { rest: { thread, comment } };
   }
   const replied = /^repos\/(.+)\/pulls\/(\d+)\/comments\/(\d+)\/replies$/.exec(endpoint);
   if (isPost(argv) && replied?.[1] === repo && Number(replied[2]) === pr) {
@@ -427,7 +471,7 @@ export function threadCall(
     const body = typeof sent.body === "string" ? sent.body : "";
     if (body === "") return { refused: COMMENT_BODY };
     const reply = replyIn(at, state, found.thread, body, made);
-    return { rest: restComment(world, found.thread, reply) };
+    return { rest: { thread: found.thread, comment: reply } };
   }
   if (endpoint !== "graphql") return undefined;
   const { operation, variables } = graphqlOf(call);
@@ -484,47 +528,6 @@ export function threadCall(
     }
   }
   return { fields };
-}
-/** A review comment of `thread` as GitHub's REST API answers it, read off the comment GitHub's
- * GraphQL holds (`newComment`, and the world's own): its id is the comment's databaseId, which is
- * what the REST reply route names, and a reply names the comment it replies to
- * (`in_reply_to_id`). */
-export function restComment(world: World | undefined, thread: Json, comment: Json): Json {
-  const api = `https://api.github.com/repos/${world?.repo ?? ""}/pulls`;
-  const id = numberOf(comment.databaseId);
-  const self = `${api}/comments/${id}`;
-  const pull = `${api}/${world?.pr}`;
-  const author = isObject(comment.author) ? String(comment.author.login ?? "") : "";
-  const replyTo = isObject(comment.replyTo) ? numberOf(comment.replyTo.databaseId) : undefined;
-  return {
-    url: self,
-    pull_request_review_id: isObject(comment.pullRequestReview)
-      ? (numberOf(comment.pullRequestReview.databaseId) ?? null)
-      : null,
-    id,
-    node_id: comment.id,
-    path: comment.path,
-    commit_id: commitOf(comment),
-    original_commit_id: isObject(comment.originalCommit)
-      ? comment.originalCommit.oid
-      : commitOf(comment),
-    user: { login: author, type: author.endsWith("[bot]") ? "Bot" : "User" },
-    body: comment.body,
-    created_at: comment.createdAt,
-    updated_at: comment.updatedAt,
-    html_url: comment.url,
-    pull_request_url: pull,
-    author_association: comment.authorAssociation ?? "NONE",
-    _links: { self: { href: self }, html: { href: comment.url }, pull_request: { href: pull } },
-    start_line: thread.startLine ?? null,
-    original_start_line: thread.originalStartLine ?? null,
-    start_side: null,
-    line: comment.line ?? null,
-    original_line: comment.originalLine ?? null,
-    side: thread.diffSide ?? "RIGHT",
-    subject_type: thread.subjectType === "FILE" ? "file" : "line",
-    ...(replyTo === undefined ? {} : { in_reply_to_id: replyTo }),
-  };
 }
 
 /** The merge states a ruleset that requires review threads resolved holds `BLOCKED`: the states

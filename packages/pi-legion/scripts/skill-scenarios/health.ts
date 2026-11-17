@@ -522,11 +522,21 @@ const JOBS = /^\/?repos\/[^/]+\/[^/]+\/actions\/runs\/\d+\/jobs(?:\?.*)?$/;
 const OWNER_REFUSED = 'legion gh: "<owner>" is not an owner of this project (exit 2)';
 const OWNER_NOT_REFUSED =
   "the refusal of an owner outside the project with another status than the Legion gh wrapper's 2";
-/** The refusals every role of every scenario may meet: OWNER_REFUSED, since a correct agent of
- * any role may read a repository of another owner (a reviewer reading the tag an action of the
- * world's workflow is pinned to from that action's own repository, in the rehearsal of
- * 2026-11-16), and production refuses that read so for every role. */
-const GH_DECLARED_EVERY_ROLE: readonly string[] = [OWNER_REFUSED];
+/** GitHub's answer to a role App's read of the user its token is (`gh api user`), which the
+ * world's user route gives every role (rig.sh's fixture_write): an installation token is no
+ * user's, and GitHub refuses it 403 (measured on 2026-11-17 from a Legion pod: `gh api user`, exit
+ * 1, `Resource not accessible by integration`). Its text is PROTECTION_403's, so it is read back
+ * from the call by `USER`. */
+const USER_403 =
+  "gh: Resource not accessible by integration (HTTP 403) (the user a role App's token is)";
+/** `user` and the paths under it, with the leading slash and the query string `gh api` takes. */
+const USER = /^\/?user(?:[/?].*)?$/;
+/** The refusals every role of every scenario may meet, since production refuses each so for every
+ * role: OWNER_REFUSED, since a correct agent of any role may read a repository of another owner
+ * (a reviewer reading the tag an action of the world's workflow is pinned to from that action's
+ * own repository, in the rehearsal of 2026-11-16); and USER_403, since any role may ask GitHub
+ * who its token is. */
+const GH_DECLARED_EVERY_ROLE: readonly string[] = [OWNER_REFUSED, USER_403];
 
 /** The gh refusals each scenario provokes on purpose, or that a correct agent meets in it, by the
  * role that meets them; every other refusal is unhealthy (rule 7). Both labels' worlds are one
@@ -586,7 +596,8 @@ const OWN_READ = /\/compare\/[^?]+\.\.\.|\/pulls\/\d+\/reviews\/\d+(?:\?|$)/;
  *   - the create of a review (`reviewCreate`) a route matched that left no review was refused 422
  *     (CREATE_422); one that left a review was taken, as above;
  *   - a call a route matched is the route's refusal where the route has a status of its own (its
- *     stderr's first line; JOBS_404 for the jobs of a run, read off the call), and otherwise was
+ *     stderr's first line; JOBS_404 for the jobs of a run and USER_403 for the user a token is,
+ *     each read off the call), and otherwise was
  *     answered, its status being its `--jq`'s or `--json`'s over that answer, gh's exit on the
  *     errors of a GraphQL answer, or the refusal production gives where the stand-in reads the
  *     route's answer from the run and finds nothing there (a review, a ref or a commit the world
@@ -617,11 +628,10 @@ function ghRefusal(
     const route = routes.find((one) => one.match === call.route);
     if (route?.exit === undefined || route.exit === 0) return undefined;
     const refusal = (route.stderr ?? `exit ${route.exit}`).split("\n")[0];
-    return refusal === "gh: Not Found (HTTP 404)" &&
-      argv[0] === "api" &&
-      argv.some((arg) => JOBS.test(arg))
-      ? JOBS_404
-      : refusal;
+    const reads = (path: RegExp) => argv[0] === "api" && argv.some((arg) => path.test(arg));
+    if (refusal === "gh: Not Found (HTTP 404)" && reads(JOBS)) return JOBS_404;
+    if (refusal === PROTECTION_403 && reads(USER)) return USER_403;
+    return refusal;
   }
   if (argv[0] === "pr" && (argv[1] === "checks" || argv[1] === "diff")) return undefined;
   if (argv[0] === "api" && methodOf(argv) === "GET" && argv.some((arg) => OWN_READ.test(arg)))

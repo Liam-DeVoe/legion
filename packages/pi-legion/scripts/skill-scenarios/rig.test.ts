@@ -23,7 +23,7 @@ import { routeFor } from "./gh-call";
 import { routeOf, WORLD_ROUTES, worldRouteOf } from "./gh-routes";
 import { headUnmoved } from "./health";
 import { nameWords, runIdentity, textWords, vocabulary, WORLD_PROJECT } from "./run-names";
-import { bundled, spawnChecked, writeGhSelectors } from "./test-programs";
+import { bundled, scriptDefinition, spawnChecked, writeGhSelectors } from "./test-programs";
 import { WORLD_REPO, WORLD_SPEC } from "./world-issue";
 
 // Every test here runs rig.sh and its stand-ins as real processes. On a loaded machine one test
@@ -102,24 +102,8 @@ function assignment(name: string): string {
   if (found === null) throw new Error(`rig.sh assigns no ${name} at the start of a line`);
   return found[0];
 }
-/** rig.sh's definition of `name`, from `name() {` to the `}` that closes it, with the lines of
- * each here-document it holds skipped: `fn` ends a definition at the first line that is `}`
- * alone, which a here-document's own text can be — fixture_cli writes greet.ts, whose functions
- * end so. */
-function definition(name: string): string {
-  const lines = rigScript.split("\n");
-  const start = lines.indexOf(`${name}() {`);
-  if (start < 0) throw new Error(`rig.sh defines no ${name}()`);
-  let delimiter: string | undefined;
-  for (const [index, line] of lines.entries()) {
-    if (index <= start) continue;
-    if (delimiter !== undefined) {
-      if (line === delimiter) delimiter = undefined;
-    } else if (line === "}") return lines.slice(start, index + 1).join("\n");
-    else delimiter = /(?<!<)<<(?!<)-?\s*(['"]?)(\w+)\1/.exec(line)?.[2];
-  }
-  throw new Error(`rig.sh's ${name}() has no closing }`);
-}
+/** rig.sh's definition of `name`, here-documents and all (test-programs.ts's `scriptDefinition`). */
+const definition = (name: string) => scriptDefinition(rigScript, name);
 /** rig.sh's own top-level single-quoted assignment of `name`, over as many lines as it takes, as
  * the script writes it (private_world). */
 function quotedAssignment(name: string): string {
@@ -5448,7 +5432,7 @@ describe("the worlds' routes, in the order the stand-in matches them", () => {
     expect(other.out).toBe("");
     const submitted = submit(dir, 6001, "APPROVE");
     expect(submitted.code).toBe(0);
-    expect(JSON.parse(submitted.out)).toEqual({
+    expect(JSON.parse(submitted.out)).toMatchObject({
       id: 6001,
       commit_id: head,
       state: "APPROVED",
@@ -5483,7 +5467,7 @@ describe("the worlds' routes, in the order the stand-in matches them", () => {
       });
       const submitted = submit(dir, id, "REQUEST_CHANGES");
       expect(submitted.code).toBe(0);
-      expect(JSON.parse(submitted.out)).toEqual({
+      expect(JSON.parse(submitted.out)).toMatchObject({
         id,
         commit_id: head,
         state: "CHANGES_REQUESTED",
@@ -5597,7 +5581,7 @@ describe("the worlds' routes, in the order the stand-in matches them", () => {
       "event=APPROVE"
     );
     expect(submitted.code).toBe(0);
-    expect(JSON.parse(submitted.out)).toEqual({
+    expect(JSON.parse(submitted.out)).toMatchObject({
       id: 6001,
       commit_id: head,
       state: "APPROVED",
@@ -5635,7 +5619,11 @@ describe("the worlds' routes, in the order the stand-in matches them", () => {
       expect(JSON.parse(created.out)).toMatchObject({ id: 6001, state: "PENDING" });
       const submitted = submit(dir, 6001, "APPROVE");
       expect(submitted.code).toBe(0);
-      expect(JSON.parse(submitted.out)).toEqual({ id: 6001, commit_id: head, state: "APPROVED" });
+      expect(JSON.parse(submitted.out)).toMatchObject({
+        id: 6001,
+        commit_id: head,
+        state: "APPROVED",
+      });
     });
 
   // The comparison the rule has a role read (review-threads.md step 2) is the run's own
@@ -5700,7 +5688,9 @@ describe("the worlds' routes, in the order the stand-in matches them", () => {
       answer(dir, "api", "repos/example/widgets/pulls/1001/reviews/5001/comments", "--jq", "type")
     ).toEqual({ code: 0, out: "array" });
     // The create: the id, the URL and the user are the world's, and the state, the head the
-    // review was created at and its body are the call's own (gh-standin.ts).
+    // review was created at and its body are the call's own (gh-standin.ts), in GitHub's whole
+    // review (`pull-request-review`): its node id, pages and links, and no `submitted_at` while it
+    // is pending.
     const created = call(
       dir,
       "api",
@@ -5711,10 +5701,18 @@ describe("the worlds' routes, in the order the stand-in matches them", () => {
       `commit_id=${head}`
     );
     expect(created.code).toBe(0);
+    const page = "https://github.com/example/widgets/pull/1001#pullrequestreview-5002";
+    const pull = "https://api.github.com/repos/example/widgets/pulls/1001";
     expect(JSON.parse(created.out)).toEqual({
       id: 5002,
-      html_url: "https://github.com/example/widgets/pull/1001#pullrequestreview-5002",
-      user: { login: WORLD_LOGIN },
+      node_id: "PRR_kwDOAAAAAc4AAE5002",
+      html_url: page,
+      pull_request_url: pull,
+      _links: { html: { href: page }, pull_request: { href: pull } },
+      user: expect.objectContaining({ login: WORLD_LOGIN, type: "Bot" }),
+      author_association: "NONE",
+      is_copilot_code_review: false,
+      copilot_code_review_effort: null,
       state: "PENDING",
       commit_id: head,
       body: "",
@@ -5996,7 +5994,16 @@ describe("the world's gh routes: every read a role text names, answered as GitHu
     "GET repos/{owner}/{repo}/actions/runs/{run_id}/jobs": {
       argv: () => ["api", `${REPO}/actions/runs/1/jobs`],
       answers: (got) =>
-        expect(got).toMatchObject({ code: 1, out: "", err: "gh: Not Found (HTTP 404)\n" }),
+        expect(got).toMatchObject({
+          code: 1,
+          out: JSON.stringify({
+            message: "Not Found",
+            documentation_url:
+              "https://docs.github.com/rest/actions/workflow-jobs#list-jobs-for-a-workflow-run",
+            status: "404",
+          }),
+          err: "gh: Not Found (HTTP 404)\n",
+        }),
     },
     "GET repos/{owner}/{repo}/rules/branches/{branch+}": {
       argv: () => ["api", "--paginate", `${REPO}/rules/branches/main`, "--jq", "[.[].type]"],
@@ -6058,7 +6065,17 @@ describe("the world's gh routes: every read a role text names, answered as GitHu
     },
     "GET user": {
       argv: () => ["api", "user", "--jq", ".login"],
-      answers: (got) => expect(got).toMatchObject({ code: 0, out: WORLD_LOGIN }),
+      answers: (got) =>
+        expect(got).toMatchObject({
+          code: 1,
+          out: JSON.stringify({
+            message: "Resource not accessible by integration",
+            documentation_url:
+              "https://docs.github.com/rest/users/users#get-the-authenticated-user",
+            status: "403",
+          }),
+          err: "gh: Resource not accessible by integration (HTTP 403)\n",
+        }),
     },
     "GH auth status": {
       argv: () => ["auth", "status"],
@@ -6476,7 +6493,6 @@ describe("the world's gh routes: every read a role text names, answered as GitHu
     expect(
       gh(dir, "api", "--method", "POST", `${REPO}/pulls/1001/reviews`, "--input", review).code
     ).toBe(0);
-    const listed = [".[] | [.pull_request_review_id, .path, .line, .body, .commit_id]"];
     // The pull request's review comments: the bot's, which the world seeded in its own review
     // 4001, then the run's.
     expect(
@@ -6499,9 +6515,19 @@ describe("the world's gh routes: every read a role text names, answered as GitHu
         [6001, "greet.ts", 1, "a line note", head],
       ])
     );
-    expect(gh(dir, "api", `${REPO}/pulls/1001/reviews/6001/comments`, "--jq", ...listed).out).toBe(
-      JSON.stringify([6001, "greet.ts", 1, "a line note", head])
-    );
+    // A review's own comments are listed in GitHub's older shape of a review comment, which names
+    // its place in the diff by `position` and carries no `line` (production-shapes.json's
+    // `…/reviews/{n}/comments`): the line the review named is the first of greet.ts, which the
+    // change adds, so the first line of its diff.
+    expect(
+      gh(
+        dir,
+        "api",
+        `${REPO}/pulls/1001/reviews/6001/comments`,
+        "--jq",
+        ".[] | [.pull_request_review_id, .path, .position, .line, .body, .commit_id]"
+      ).out
+    ).toBe(JSON.stringify([6001, "greet.ts", 1, null, "a line note", head]));
     expect(
       gh(dir, "api", `${REPO}/pulls/1001/reviews`, "--jq", "[.[] | [.id, .state, .body]]").out
     ).toBe(
@@ -6903,12 +6929,13 @@ describe("what the rig writes into a run's world", () => {
         "run_brainstorm: cwd history",
       ])
     );
-    // And the gh answers: every world's routes, `gh api user` among them, so a world whose
-    // fixtures.json the walk did not read is no answer read as clean.
+    // And the gh answers: every world's routes, `gh api user` (GitHub's 403 to a role App, its
+    // route `^gh api /?user…`) among them, so a world whose fixtures.json the walk did not read is
+    // no answer read as clean.
     for (const world of ["tester_proof_world", "review_world", "approved_world dropped"])
       expect([...read.keys()]).toEqual(
         expect.arrayContaining([
-          expect.stringMatching(new RegExp(`^${world}: route \\d+ .*api user`)),
+          expect.stringMatching(new RegExp(`^${world}: route \\d+ .*api /\\?user`)),
         ])
       );
     for (const [where, text] of read)

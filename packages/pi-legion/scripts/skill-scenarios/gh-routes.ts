@@ -630,11 +630,13 @@ export const WORLD_ROUTES: readonly WorldRoute[] = [
   // Reads.
   {
     route: "GET repos/{owner}/{repo}",
-    answer: "world.json: the repository, its default branch and GitHub's default merge settings",
+    answer:
+      "world.json and the remote: the repository, its settings and what GitHub reads off the remote, as GitHub answers it",
   },
   {
     route: "GET repos/{owner}/{repo}/pulls/{number}",
-    answer: "world.json and the remote: the pull request at the branch's tip",
+    answer:
+      "world.json and the remote: the pull request at the branch's tip, as GitHub's REST API answers it",
   },
   {
     route: "GET repos/{owner}/{repo}/pulls/{number}/reviews",
@@ -742,8 +744,9 @@ export const WORLD_ROUTES: readonly WorldRoute[] = [
   },
   {
     route: "GET user",
-    answer: "world.json: the login the run's token acts as",
-    evidence: { world: "the identity read every gh session can make" },
+    answer:
+      "GitHub's 403 to a role App, whose installation token is no user's: `Resource not accessible by integration`",
+    evidence: { world: "the identity read every gh session can make, which GitHub refuses an App" },
   },
   {
     route: "GH auth status",
@@ -793,7 +796,8 @@ export const WORLD_ROUTES: readonly WorldRoute[] = [
   },
   {
     route: "PATCH repos/{owner}/{repo}/pulls/{number}",
-    answer: "the pull request with the body the call leaves; a PATCH of anything else is refused",
+    answer:
+      "the pull request with the body the call leaves, as GitHub's REST API answers it; a PATCH of anything else is refused",
   },
   {
     route: "POST repos/{owner}/{repo}/pulls/{number}/comments/{id}/replies",

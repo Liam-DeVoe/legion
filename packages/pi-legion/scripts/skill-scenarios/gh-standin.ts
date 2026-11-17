@@ -101,19 +101,36 @@ import {
 // in: one replay of the record for this stand-in and the daemon stand-in.
 import {
   commentsOf,
+  conversationOf,
   graphqlOf,
   heldPullRequest,
+  type Json,
   mergeStateOf,
   NOT_FOUND,
+  OWN_REVIEW,
   REVIEW_NODE,
   recordedCalls,
-  restComment,
   routeAnswer,
   type ThreadWorld,
   threadCall,
   threadState,
   worldLogin,
 } from "./gh-threads";
+// GitHub's REST objects more than one route carries — an account, an App, the repository, the
+// pull request — built one way for this stand-in and the HTTP one Dispatch reads.
+import {
+  accountsOf,
+  appJson,
+  committerJson,
+  GITHUB_ACTIONS,
+  githubInstant,
+  githubTime,
+  type PullFacts,
+  pullRequestJson,
+  reactionsJson,
+  repositoryJson,
+  userJson,
+} from "./rest-objects";
 import { CALLS, openingLine } from "./run-records";
 
 /** rig.sh's worker_fixture writes each route as {match, methods?, endpoint?, stdout?, stderr?,
@@ -215,6 +232,9 @@ const routes = fixtures.routes;
  * sent to read, with nothing anywhere saying why. So that file ends the call with 2, as it ends
  * every other program of the run (`worldOf`). */
 const world = existsSync(`${run}/world.json`) ? worldOf(run, "gh") : undefined;
+/** The world's GitHub accounts (rig.sh's fixture_first_commit), which every user an answer names
+ * is read from (rest-objects.ts's `userJson`). */
+const accounts = accountsOf(run);
 
 let stdin: string | undefined;
 const readStdin = async () => {
@@ -513,6 +533,10 @@ function comparison(): string | Record<string, unknown> | undefined {
   const letters = fromRemote("diff", "--name-status", "--no-renames", ...range);
   if (ahead === undefined || behind === undefined) return undefined;
   if (counts === undefined || letters === undefined) return undefined;
+  const baseSha = fromRemote("rev-parse", "--verify", "--quiet", `${base}^{commit}`);
+  const headSha = fromRemote("rev-parse", "--verify", "--quiet", `${head}^{commit}`);
+  const mergeBase = fromRemote("merge-base", base, head);
+  if (baseSha === undefined || headSha === undefined || mergeBase === undefined) return undefined;
   const aheadBy = Number(ahead);
   const behindBy = Number(behind);
   const status =
@@ -533,6 +557,8 @@ function comparison(): string | Record<string, unknown> | undefined {
         return [file, words[letter.slice(0, 1)] ?? "modified"] as const;
       })
   );
+  const repo = world?.repo ?? "";
+  const owner = repo.split("/")[0] ?? "";
   const files = counts
     .split("\n")
     .filter((line) => line !== "")
@@ -545,16 +571,44 @@ function comparison(): string | Record<string, unknown> | undefined {
       // it is absent for a file git prints no hunk for, as GitHub leaves it out for a binary.
       const diff = fromRemote("diff", "--no-renames", ...range, "--", filename) ?? "";
       const hunks = diff.search(/^@@/m);
+      const fileStatus = statusOf.get(filename) ?? "modified";
+      // The blob the file is at the head, or, for a file the head removed, the one it was.
+      const side = fileStatus === "removed" ? mergeBase : headSha;
+      const encoded = filename.split("/").map(encodeURIComponent).join("/");
       return {
+        sha: fromRemote("rev-parse", `${side}:${filename}`) ?? "",
         filename,
-        status: statusOf.get(filename) ?? "modified",
+        status: fileStatus,
         additions,
         deletions,
         changes: additions + deletions,
+        blob_url: `https://github.com/${repo}/blob/${headSha}/${encoded}`,
+        raw_url: `https://github.com/${repo}/raw/${headSha}/${encoded}`,
+        contents_url: `https://api.github.com/repos/${repo}/contents/${encoded}?ref=${headSha}`,
         ...(hunks < 0 ? {} : { patch: diff.slice(hunks) }),
       };
     });
-  return { status, ahead_by: aheadBy, behind_by: behindBy, total_commits: aheadBy, files };
+  // The two refs as the call named them, as GitHub's own URLs name them, and its permalink by the
+  // two commits, each its owner's and seven digits long.
+  const html = `https://github.com/${repo}/compare/${base}...${head}`;
+  const commits = (fromRemote("rev-list", "--reverse", `${base}..${head}`) ?? "")
+    .split("\n")
+    .filter((sha) => sha !== "");
+  return {
+    url: `https://api.github.com/repos/${repo}/compare/${base}...${head}`,
+    html_url: html,
+    permalink_url: `https://github.com/${repo}/compare/${owner}:${baseSha.slice(0, 7)}...${owner}:${headSha.slice(0, 7)}`,
+    diff_url: `${html}.diff`,
+    patch_url: `${html}.patch`,
+    base_commit: commitJson(baseSha),
+    merge_base_commit: commitJson(mergeBase),
+    status,
+    ahead_by: aheadBy,
+    behind_by: behindBy,
+    total_commits: aheadBy,
+    commits: commits.map(commitJson),
+    files,
+  };
 }
 /** The comparison this call asks for, when it asks for one the run's remote can answer. It is
  * read before the route check, since no route answers a comparison and a 404 there reads to the
@@ -672,13 +726,14 @@ function reviewSubmission(): Record<string, unknown> | undefined {
   const body = sentBody({ argv: args, stdin, files }) ?? {};
   const state = submittedState(body.event);
   if (state === undefined) refuse(NO_EVENT);
-  return { id: Number(id), commit_id: pending.head, state };
+  const text = typeof body.body === "string" && body.body !== "" ? body.body : pending.body;
+  return reviewObject({ ...pending, state, body: text, at });
 }
 /** One review this run created on the world's pull request, as this stand-in answered it: the
  * world's answer to its create (the id, the URL and the user whose token the run calls with), the
  * state and the head the create — and, once it was submitted, the submit — were answered with,
- * the body it carries and when it was made. Its inline comments are threads of the pull request
- * (`threadState`). */
+ * the body it carries and when it was made, or, once it was submitted, when it was submitted. Its
+ * inline comments are threads of the pull request (`threadState`). */
 type OwnReview = {
   answer: Record<string, unknown>;
   id: string;
@@ -721,7 +776,11 @@ function ownReviews(repo: string): {
   const byId = new Map<string, OwnReview>();
   let pending: OwnReview | undefined;
   const bodies = new Map<string, string>();
-  const heldIds = new Set(heldReviews().map((review) => String(isObject(review) ? review.id : "")));
+  const heldIds = new Set(
+    [...heldReviews(), ...commentReviews()].map((review) =>
+      String(isObject(review) ? review.id : "")
+    )
+  );
   for (const call of recordedCalls(RECORD)) {
     const { argv } = call;
     if (argv[0] !== "api") continue;
@@ -740,6 +799,7 @@ function ownReviews(repo: string): {
       if (pending?.id === submitted) {
         pending.state = call.review.state;
         pending.body = text ?? pending.body;
+        pending.at = call.at ?? pending.at;
         pending = undefined;
       }
       continue;
@@ -768,6 +828,29 @@ function heldReviews(): unknown[] {
     `repos/${world?.repo}/pulls/${world?.pr}/reviews`,
   ])?.stdout;
   return Array.isArray(listed) ? listed : [];
+}
+/** The reviews GitHub filed the comments this run made outside a review in (gh-threads.ts's
+ * OWN_REVIEW), one each: `COMMENTED` with no body, by the comment's author, at the commit it
+ * stands on, submitted when it was made. */
+function commentReviews(): Json[] {
+  return threads.list.flatMap(commentsOf).flatMap((comment) => {
+    const id = isObject(comment.pullRequestReview)
+      ? Number(comment.pullRequestReview.databaseId)
+      : 0;
+    if (id < OWN_REVIEW) return [];
+    const made = String(comment.createdAt ?? "");
+    return [
+      {
+        id,
+        user: { login: isObject(comment.author) ? comment.author.login : "" },
+        body: "",
+        state: "COMMENTED",
+        commit_id: isObject(comment.commit) ? comment.commit.oid : "",
+        submitted_at: githubInstant(made),
+        at: made,
+      },
+    ];
+  });
 }
 /** `review`, a review of the pull request, with the body it was updated to where the run updated
  * it (`bodies`, `ownReviews`), and as it was otherwise. */
@@ -828,19 +911,19 @@ function reviewRead(): Record<string, unknown> | undefined {
   const review = id === undefined ? undefined : ownReviews(repo).byId.get(id);
   return review === undefined ? undefined : reviewObject(review);
 }
-/** A review this run created as GitHub answers it: the world's answer to its create, with the
- * state, the head and the body it has now, and the time it was submitted once it is no longer
- * pending. */
+/** A review this run created as GitHub answers it (`reviewJson`): the world's answer to its
+ * create, with the state, the head and the body it has now, and the time it was submitted once it
+ * is no longer pending. */
 function reviewObject(review: OwnReview): Record<string, unknown> {
   const { answer, state, head, body, at: made } = review;
-  return {
+  return reviewJson({
     ...answer,
     id: Number(review.id),
     state,
     commit_id: head,
     body,
-    ...(state === "PENDING" ? {} : { submitted_at: made }),
-  };
+    ...(state === "PENDING" ? {} : { submitted_at: githubInstant(made) }),
+  });
 }
 /** The world the threads are read against, and the pull request's review threads as this call
  * finds them: the world's, and every call the record holds. */
@@ -868,7 +951,11 @@ const read = reviewRead();
  * review, the read of a review this run created, and a REST comment the run made on a thread.
  * Each stands over whatever route the call matched. */
 const own =
-  submitted ?? read ?? (threaded !== undefined && "rest" in threaded ? threaded.rest : undefined);
+  submitted ??
+  read ??
+  (threaded !== undefined && "rest" in threaded
+    ? reviewCommentJson(threaded.rest.thread, threaded.rest.comment, "pull")
+    : undefined);
 /** A check run as GitHub's check-runs route reports it on the commit it ran on: the world's run —
  * its name, status, conclusion, the link of the app that ran it (`details_url`) and how long it
  * ran — with the ids GitHub gives it, the commit it ran on (`head_sha`), GitHub's own page of it
@@ -882,15 +969,6 @@ interface ReportedRun extends CheckRun {
 /** How long GitHub takes from a push to the start of the first check run on it, which this world
  * fixes so every head reads alike. */
 const QUEUED_MS = 3000;
-/** The App GitHub reports a workflow's check runs as made by, GitHub Actions, as its check-runs
- * route names it: no name of this world's own. */
-const GITHUB_ACTIONS = {
-  id: 15368,
-  slug: "github-actions",
-  node_id: "MDM6QXBwMTUzNjg=",
-  name: "GitHub Actions",
-  owner: { login: "github", id: 9919, type: "Organization" },
-};
 /** When the commit `sha` reached the run's remote, in milliseconds: the first push of it the
  * remote's post-receive hook logged (`<run>/pushes.log`, `<at> <ref> <old> <new>`, which holds
  * the run's own pushes), or, for a commit the world was built with, its committer date. */
@@ -923,6 +1001,8 @@ function reportedRuns(runs: readonly CheckRun[], sha: string): ReportedRun[] {
     return new Date(reached + QUEUED_MS + parsed - origin).toISOString().replace(/\.\d{3}Z$/, "Z");
   };
   const seed = Number.parseInt(sha.slice(0, 8), 16) || 0;
+  // The pull requests GitHub reports a check run for: the open one whose head the commit is.
+  const pulls = world !== undefined && sha === branchTip() ? [minimalPull(sha)] : [];
   return runs.map((one, index) => {
     const id = 40_000_000_000 + seed * 8 + index;
     const page = `https://github.com/${repo}/runs/${id}`;
@@ -950,8 +1030,34 @@ function reportedRuns(runs: readonly CheckRun[], sha: string): ReportedRun[] {
       },
       check_suite: { id: 30_000_000_000 + seed },
       app: GITHUB_ACTIONS,
+      pull_requests: pulls,
     };
   });
+}
+/** The world's repository as the route of `gh api repos/<repo>` holds it (rig.sh's fixture_write:
+ * its settings, which rest-objects.ts's `repositoryJson` answers it from), or an empty object. */
+function heldRepository(): Json {
+  const held = routeFor(routes, ["api", `repos/${world?.repo ?? ""}`])?.stdout;
+  return isObject(held) ? held : {};
+}
+/** The pull request at `head` as GitHub names it inside a check run (`pull-request-minimal`): its
+ * number, its id, and its two branches, each with its tip and the repository it is in. */
+function minimalPull(head: string): Json {
+  const repository = heldRepository();
+  const repo = world?.repo ?? "";
+  const api = `https://api.github.com/repos/${repo}`;
+  const side = (ref: string, sha: string) => ({
+    ref,
+    sha,
+    repo: { id: repository.id, url: api, name: repository.name },
+  });
+  return {
+    url: `${api}/pulls/${world?.pr}`,
+    id: 2_000_000_000 + (world?.pr ?? 0),
+    number: world?.pr,
+    head: side(world?.branch ?? "", head),
+    base: side(world?.base ?? "", fromRemote("rev-parse", `refs/heads/${world?.base}`) ?? ""),
+  };
 }
 /** The check runs the world reports on the pull request's head as it stands, read at the call
  * from the run's own remote (`branchTip`) and the world's check-runs answer for that head
@@ -1057,50 +1163,30 @@ if (body !== undefined) {
 // PATCH of the pull request with the pull request as that PATCH left it, and the world's route
 // for it answered the body before the edit, where the route every write fell to had answered
 // `{id, html_url}` and 23 recorded PATCH calls read `.body` back as null.
-/** The comments this run posted on the pull request's conversation, oldest first: each
- * `gh pr comment` of the world's repository and each POST of `repos/<repo>/issues/<n>/comments`
- * the record holds exiting 0, with the body it posted and when it posted it. */
-function conversation(): { body: string; at: string }[] {
-  if (world === undefined) return [];
-  const path = `repos/${world.repo}/issues/${world.pr}/comments`;
-  const posted: { body: string; at: string }[] = [];
-  for (const call of recordedCalls(RECORD)) {
-    const { argv } = call;
-    if (call.as !== "gh" || call.exit !== 0) continue;
-    let text: string | undefined;
-    if (argv[0] === "pr" && argv[1] === "comment") {
-      const named = flagValue(argv, ["-R", "--repo"]);
-      if (named !== undefined && named !== world.repo) continue;
-      const file = flagValue(argv, ["-F", "--body-file"]);
-      text =
-        flagValue(argv, ["-b", "--body"]) ??
-        (file === undefined ? undefined : file === "-" ? call.stdin : call.files?.[file]);
-    } else if (
-      argv[0] === "api" &&
-      isPost(argv) &&
-      argv.some((arg) => arg.replace(/^\//, "").split("?")[0] === path)
-    ) {
-      const sent = sentBody({ argv, stdin: call.stdin, files: call.files }) ?? {};
-      text = typeof sent.body === "string" ? sent.body : undefined;
-    }
-    if (text !== undefined) posted.push({ body: text, at: call.at ?? "" });
-  }
-  return posted;
-}
-/** The conversation comment at `index` of `conversation()`, as GitHub's REST API answers it. */
+/** The comments this run posted on the pull request's conversation, oldest first (gh-threads.ts's
+ * `conversationOf`, which the HTTP stand-in counts them by too). */
+const conversation = () => conversationOf(world, recordedCalls(RECORD));
+/** The conversation comment at `index` of `conversation()`, as GitHub's REST API answers it
+ * (`issue-comment`): made by the login the run's token acts as, through its App. */
 function issueComment(comment: { body: string; at: string }, index: number) {
   const id = 8001 + index;
   const url = String(heldPullRequest(routes).url ?? "");
+  const api = `https://api.github.com/repos/${world?.repo}/issues`;
+  const login = worldLogin(routes);
   return {
+    url: `${api}/comments/${id}`,
+    html_url: `${url}#issuecomment-${id}`,
+    issue_url: `${api}/${world?.pr}`,
     id,
     node_id: `IC_kwDOAAAAAc4AAB${id}`,
-    html_url: `${url}#issuecomment-${id}`,
-    issue_url: `https://api.github.com/repos/${world?.repo}/issues/${world?.pr}`,
-    user: { login: worldLogin(routes), type: "Bot" },
+    user: userJson(login, accounts),
+    created_at: githubInstant(comment.at),
+    updated_at: githubInstant(comment.at),
     body: comment.body,
-    created_at: comment.at,
-    updated_at: comment.at,
     author_association: "NONE",
+    reactions: reactionsJson(`${api}/comments/${id}`),
+    performed_via_github_app: appJson(login, world?.repo.split("/")[0] ?? "", accounts),
+    minimized: null,
   };
 }
 /** Whether the call asks for a file's own bytes rather than the JSON that carries them: `gh api -H
@@ -1206,41 +1292,6 @@ function contentsAt(endpoint: string): unknown {
 const REVIEW_BODY = "gh: Unprocessable Entity (HTTP 422)\nA review is updated with a body.\n";
 const CONVERSATION_BODY =
   "gh: Unprocessable Entity (HTTP 422)\nA comment on the conversation is created with a body.\n";
-/** The world's GitHub accounts (rig.sh's fixture_first_commit writes $run/accounts.json): each
- * one's login, id and the address the commits it makes carry. */
-const Accounts = z.array(z.object({ login: z.string(), id: z.number(), email: z.string() }));
-/** The account GitHub links a commit's `email` to, as its REST API answers a user, or null where
- * the world holds no account with that address, as GitHub answers a commit no account made. */
-function accountOf(email: string): Record<string, unknown> | null {
-  const file = `${run}/accounts.json`;
-  const account = existsSync(file)
-    ? Accounts.parse(JSON.parse(readFileSync(file, "utf8"))).find((one) => one.email === email)
-    : undefined;
-  if (account === undefined) return null;
-  const { login, id } = account;
-  const api = `https://api.github.com/users/${login}`;
-  return {
-    login,
-    id,
-    node_id: `U_kgDO${id}`,
-    avatar_url: `https://avatars.githubusercontent.com/u/${id}?v=4`,
-    gravatar_id: "",
-    url: api,
-    html_url: `https://github.com/${login}`,
-    followers_url: `${api}/followers`,
-    following_url: `${api}/following{/other_user}`,
-    gists_url: `${api}/gists{/gist_id}`,
-    starred_url: `${api}/starred{/owner}{/repo}`,
-    subscriptions_url: `${api}/subscriptions`,
-    organizations_url: `${api}/orgs`,
-    repos_url: `${api}/repos`,
-    events_url: `${api}/events{/privacy}`,
-    received_events_url: `${api}/received_events`,
-    type: "User",
-    user_view_type: "public",
-    site_admin: false,
-  };
-}
 /** GitHub's verification of the commit `sha` of the run's own remote, committed at `committed`:
  * for a commit that carries no signature, `unsigned` and nothing else; for one that does, the
  * signature and the payload it signs (the commit without its `gpgsig` header), verified where a
@@ -1287,10 +1338,11 @@ function verificationOf(sha: string, committed: string): Record<string, unknown>
   };
 }
 /** The commit `sha` of the run's own remote as GitHub's REST API answers one inside another
- * answer (a branch's `commit`): its author and committer as git holds them, its message, tree and
- * parents, the links GitHub gives each, its verification (`verificationOf`), and the accounts
- * GitHub links its author's and its committer's addresses to (`accountOf`): the world's base
- * holds its developer's commits, whose account the world holds. */
+ * answer (a branch's `commit`, a comparison's commits): its author and committer as git holds
+ * them, its message, tree and parents, the links GitHub gives each, its verification
+ * (`verificationOf`), and the accounts GitHub links its author's and its committer's addresses to
+ * (rest-objects.ts's `committerJson`): the world's base holds its developer's commits and its
+ * issue branch its role Apps' bots', each an account the world holds. */
 function commitJson(sha: string): Record<string, unknown> {
   const repo = world?.repo ?? "";
   const api = `https://api.github.com/repos/${repo}`;
@@ -1307,8 +1359,7 @@ function commitJson(sha: string): Record<string, unknown> {
     parents = "",
     message = "",
   ] = (fromRemote("show", "-s", `--format=${format}`, sha) ?? "").split("\0");
-  const date = (seconds: string) =>
-    new Date(Number(seconds) * 1000).toISOString().replace(/\.\d{3}Z$/, "Z");
+  const date = (seconds: string) => githubTime(Number(seconds));
   return {
     sha,
     node_id: `C_kwDOAAAAAdoAKD${sha}`,
@@ -1324,8 +1375,8 @@ function commitJson(sha: string): Record<string, unknown> {
     url: `${api}/commits/${sha}`,
     html_url: `${html}/commit/${sha}`,
     comments_url: `${api}/commits/${sha}/comments`,
-    author: accountOf(email),
-    committer: accountOf(address),
+    author: committerJson(email, accounts),
+    committer: committerJson(address, accounts),
     parents: parents
       .split(" ")
       .filter((parent) => parent !== "")
@@ -1338,13 +1389,18 @@ function commitJson(sha: string): Record<string, unknown> {
 }
 /** A route's answer read from what the run did (rig.sh's fixture_write names which, as `answer`),
  * with `held` the route's own `stdout`, what the world held before the run:
+ *   - `repository`: the world's repository (`held`, its settings) as GitHub answers it whole
+ *     (rest-objects.ts's `repositoryJson`);
+ *   - `pull-request`: the pull request as it stands (`current`, with the body this call left it
+ *     with) as GitHub's REST API answers it (rest-objects.ts's `pullRequestJson`), for its read
+ *     and for the PATCH of its body;
  *   - `reviews`: the world's reviews, then each review this run created as it stands, each with
- *     the body the run last updated it to;
+ *     the body the run last updated it to, as GitHub answers a review (`reviewJson`);
  *   - `review`: the world's review the path names by id, with the body the run last updated it
  *     to, or GitHub's 404 (a review this run created is `reviewRead`'s, read before the routes);
  *   - `review-comments`: every comment of the pull request's review threads as they stand
  *     (`threads`), or the ones of the review the path names, which is 404 where neither the world
- *     nor the run holds that review;
+ *     nor the run holds that review, each as GitHub answers it there (`reviewCommentJson`);
  *   - `issue-comments`: the world's conversation, then each comment the run posted on it;
  *   - `combined-status`: GitHub's combined status of the ref the path names, resolved on the run's
  *     own remote — the world's statuses, `state` `pending` where there are none, and 422 for a ref
@@ -1377,32 +1433,76 @@ function fromRun(kind: string, held: unknown): unknown {
   const repo = world?.repo ?? "";
   const path = endpointPath(args);
   switch (kind) {
+    case "repository":
+      return repositoryJson(isObject(held) ? held : {}, run ?? "", accounts, "full");
+    case "pull-request": {
+      if (!isObject(held) || world === undefined) return held;
+      const view = current(
+        kept === undefined ? held : { ...held, body: kept },
+        branchTip(),
+        headRuns()
+      );
+      const facts: PullFacts = {
+        runDir: run ?? "",
+        repo,
+        pr: world.pr,
+        branch: world.branch,
+        base: world.base,
+        head: String(view.headRefOid ?? world.head),
+        baseSha: fromRemote("rev-parse", `refs/heads/${world.base}`) ?? "",
+        repository: heldRepository(),
+        accounts,
+        comments: Array.isArray(view.comments) ? view.comments.length : 0,
+        reviewComments: threads.list
+          .flatMap(commentsOf)
+          .filter((comment) => comment.state !== "PENDING").length,
+      };
+      return pullRequestJson(view, facts, "full");
+    }
     case "reviews": {
       const bodies = heldBodies();
+      // The run's reviews in the order it made them: the ones it created and the ones GitHub
+      // filed its lone comments in, each by when it was made.
+      const made = [
+        ...(world === undefined ? [] : [...ownReviews(repo).byId.values()]).map((review) => ({
+          at: review.at,
+          review: reviewObject(review),
+        })),
+        ...commentReviews().map((review) => ({
+          at: String(review.at),
+          review: reviewJson(withReviewBody(review, bodies) as Json),
+        })),
+      ].sort((one, other) => (one.at < other.at ? -1 : one.at > other.at ? 1 : 0));
       return [
-        ...(Array.isArray(held) ? held : []).map((review) => withReviewBody(review, bodies)),
-        ...(world === undefined ? [] : [...ownReviews(repo).byId.values()].map(reviewObject)),
+        ...(Array.isArray(held) ? held : []).map((review) =>
+          reviewJson(withReviewBody(review, bodies) as Json)
+        ),
+        ...made.map(({ review }) => review),
       ];
     }
     case "review": {
       const id = /\/reviews\/(\d+)$/.exec(path)?.[1];
-      const found = (Array.isArray(held) ? held : []).find(
+      const found = [...(Array.isArray(held) ? held : []), ...commentReviews()].find(
         (review) => isObject(review) && String(review.id) === id
       );
       if (found === undefined) refuse(NOT_FOUND, REVIEW_DOCS);
-      return withReviewBody(found, heldBodies());
+      return reviewJson(withReviewBody(found, heldBodies()) as Json);
     }
     case "review-comments": {
       const id = /\/reviews\/(\d+)\/comments$/.exec(path)?.[1];
       const listed = threads.list
         .flatMap((thread) =>
-          commentsOf(thread).map((comment) => restComment(world, thread, comment))
+          commentsOf(thread).map((comment) =>
+            reviewCommentJson(thread, comment, id === undefined ? "pull" : "review")
+          )
         )
         .sort((one, other) => Number(one.id) - Number(other.id));
       if (id === undefined) return listed;
       const known =
         (world !== undefined && ownReviews(repo).byId.has(id)) ||
-        heldReviews().some((review) => isObject(review) && String(review.id) === id);
+        [...heldReviews(), ...commentReviews()].some(
+          (review) => isObject(review) && String(review.id) === id
+        );
       if (!known) refuse(NOT_FOUND, REVIEW_COMMENTS_DOCS);
       return listed.filter((comment) => String(comment.pull_request_review_id) === id);
     }
@@ -1428,7 +1528,7 @@ function fromRun(kind: string, held: unknown): unknown {
         statuses,
         sha,
         total_count: statuses.length,
-        repository: { full_name: repo },
+        repository: repositoryJson(heldRepository(), run ?? "", accounts, "minimal"),
         commit_url: commit,
         url: `${commit}/status`,
       };
@@ -1441,6 +1541,7 @@ function fromRun(kind: string, held: unknown): unknown {
       if (sha === undefined || sha === "") refuse(NOT_FOUND, REF_DOCS);
       return {
         ref: `refs/${ref}`,
+        node_id: `REF_kwDOAAAAAc${Buffer.from(`refs/${ref}`).toString("base64url")}`,
         url: `https://api.github.com/repos/${repo}/git/refs/${ref}`,
         object: {
           sha,
@@ -1480,7 +1581,7 @@ function fromRun(kind: string, held: unknown): unknown {
       const made = world === undefined ? undefined : ownReviews(repo).byId.get(id);
       const found =
         made === undefined
-          ? (Array.isArray(held) ? held : []).find(
+          ? [...(Array.isArray(held) ? held : []), ...commentReviews()].find(
               (review) => isObject(review) && String(review.id) === id
             )
           : reviewObject(made);
@@ -1504,27 +1605,130 @@ function fromRun(kind: string, held: unknown): unknown {
   }
   return held;
 }
-/** A review of the pull request as GitHub's REST API answers one (the schema of "Get a review for
- * a pull request"): its id and node id, its author, body, state and head, its page, the pull
- * request it is on, the links to both, when it was submitted where it was, and its author's
- * association. A world's review and a review the run created carry the id, author, body, state
- * and head; the rest is GitHub's own for that id on this pull request. */
-function reviewJson(review: Record<string, unknown>): Record<string, unknown> {
+/** A review of the pull request as GitHub's REST API answers one (`pull-request-review`): its id
+ * and node id, its author, body, state and head, its page, the pull request it is on, the links
+ * to both, its author's association, and when it was submitted, for one that is no longer
+ * pending. A world's review and a review the run created carry the id, author, body, state, head
+ * and, for the run's, when it was submitted; a world's review was submitted when the head it
+ * stands at was made, and the rest is GitHub's own for that id on this pull request. */
+function reviewJson(review: Json): Json {
   const id = Number(review.id);
   const html = `${String(heldPullRequest(routes).url ?? "")}#pullrequestreview-${id}`;
   const pull = `https://api.github.com/repos/${world?.repo}/pulls/${world?.pr}`;
+  const login = isObject(review.user) ? String(review.user.login ?? "") : "";
+  const head = String(review.commit_id ?? "");
+  const made = fromRemote("show", "-s", "--format=%ct", head);
+  const submitted =
+    review.state === "PENDING"
+      ? undefined
+      : (review.submitted_at ?? (made === undefined ? undefined : githubTime(Number(made))));
   return {
     id,
     node_id: `${REVIEW_NODE}${id}`,
-    user: review.user ?? null,
+    user: userJson(login, accounts),
     body: review.body,
     state: review.state,
     html_url: html,
     pull_request_url: pull,
-    _links: { html: { href: html }, pull_request: { href: pull } },
-    ...(review.submitted_at === undefined ? {} : { submitted_at: review.submitted_at }),
-    commit_id: review.commit_id,
     author_association: "NONE",
+    is_copilot_code_review: false,
+    copilot_code_review_effort: null,
+    _links: { html: { href: html }, pull_request: { href: pull } },
+    ...(submitted === undefined ? {} : { submitted_at: submitted }),
+    commit_id: head,
+  };
+}
+/** The diff GitHub reads a review comment's place in: the pull request's diff of `file` (its
+ * base's merge base with `commit`, to `commit`), from the hunk the comment's `line` of the new
+ * file stands in through that line (`diff_hunk`), and that line's place in the file's diff
+ * (`position`, GitHub's count of the lines below the file's first hunk header, the line under it
+ * the first). A line the diff does not show has no place in it. */
+function diffAt(
+  commit: string,
+  file: string,
+  line: unknown
+): { hunk: string; position: number | null } {
+  const diff = fromRemote(
+    "diff",
+    "--no-renames",
+    `refs/heads/${world?.base}...${commit}`,
+    "--",
+    file
+  );
+  const lines = (diff ?? "").split("\n");
+  const first = lines.findIndex((text) => text.startsWith("@@"));
+  let start = first;
+  let number = 0;
+  for (let index = Math.max(first, 0); first >= 0 && index < lines.length; index++) {
+    const text = lines[index] ?? "";
+    const header = /^@@ -\d+(?:,\d+)? \+(\d+)/.exec(text);
+    if (header !== null) {
+      start = index;
+      number = Number(header[1]);
+    } else if (!text.startsWith("-") && !text.startsWith("\\")) {
+      if (number === line)
+        return { hunk: lines.slice(start, index + 1).join("\n"), position: index - first };
+      number++;
+    }
+  }
+  return { hunk: "", position: null };
+}
+/** A review comment of `thread` as GitHub's REST API answers it, read off the comment GitHub's
+ * GraphQL holds (gh-threads.ts's `newComment`, and the world's own): its id is the comment's
+ * databaseId, which is what the REST reply route names, and its place in the pull request's diff
+ * is read off the commit it was made on (`diffAt`). `pull` is the shape the pull request's
+ * comments and a comment's create are answered in (`pull-request-review-comment`), where a reply
+ * names the comment it replies to (`in_reply_to_id`); `review` the older one GitHub lists a
+ * review's comments in (`review-comment`), which carries no line, side or start of its own
+ * (production-shapes.json's `…/reviews/{n}/comments`). */
+function reviewCommentJson(thread: Json, comment: Json, form: "pull" | "review"): Json {
+  const api = `https://api.github.com/repos/${world?.repo ?? ""}/pulls`;
+  const id = Number(comment.databaseId);
+  const self = `${api}/comments/${id}`;
+  const pull = `${api}/${world?.pr}`;
+  const login = isObject(comment.author) ? String(comment.author.login ?? "") : "";
+  const commit = isObject(comment.commit) ? String(comment.commit.oid ?? "") : "";
+  const original = isObject(comment.originalCommit)
+    ? String(comment.originalCommit.oid ?? "")
+    : commit;
+  const { hunk, position } = diffAt(original, String(comment.path ?? ""), comment.originalLine);
+  const shared = {
+    url: self,
+    pull_request_review_id: isObject(comment.pullRequestReview)
+      ? Number(comment.pullRequestReview.databaseId)
+      : null,
+    id,
+    node_id: comment.id,
+    diff_hunk: hunk,
+    path: comment.path,
+    position,
+    original_position: position,
+    commit_id: commit,
+    original_commit_id: original,
+    user: userJson(login, accounts),
+    body: comment.body,
+    created_at: githubInstant(String(comment.createdAt ?? "")),
+    updated_at: githubInstant(String(comment.updatedAt ?? "")),
+    html_url: comment.url,
+    pull_request_url: pull,
+    author_association: comment.authorAssociation ?? "NONE",
+    _links: { self: { href: self }, html: { href: comment.url }, pull_request: { href: pull } },
+    reactions: reactionsJson(self),
+    is_copilot_code_review: false,
+    copilot_code_review_sources: [],
+  };
+  if (form === "review") return shared;
+  const replyTo = isObject(comment.replyTo) ? Number(comment.replyTo.databaseId) : undefined;
+  return {
+    ...shared,
+    start_line: thread.startLine ?? null,
+    original_start_line: thread.originalStartLine ?? null,
+    start_side: null,
+    line: comment.line ?? null,
+    original_line: comment.originalLine ?? null,
+    side: thread.diffSide ?? "RIGHT",
+    subject_type: thread.subjectType === "FILE" ? "file" : "line",
+    ...(replyTo === undefined ? {} : { in_reply_to_id: replyTo }),
   };
 }
 let output: unknown;
@@ -1550,14 +1754,15 @@ if (compared !== undefined) {
   handler = route?.graph !== undefined ? "graph" : "route";
 }
 if (kept !== undefined) output = withBody(output, kept);
-// What GitHub answers the create of a review with is the review it created, and three of its
-// fields are the call's own and no world's (`reviewCreate`): the state, which is `PENDING` for a
-// create that names no event and the state its event leaves the review in for one that does,
-// the head it was created at, and its body. The world's route carries what is the world's — the
-// id it answers every create with, the URL and the user whose token the run calls with — since a
-// review a run created has no id of this file's own. The create answered with neither state nor
-// head is what left a round reading back `{id, html_url}`: it could not tell whether its
-// approval had been submitted, and it submitted again.
+// What GitHub answers the create of a review with is the review it created (`reviewJson`), and
+// three of its fields are the call's own and no world's (`reviewCreate`): the state, which is
+// `PENDING` for a create that names no event and the state its event leaves the review in for one
+// that does, the head it was created at, and its body; a review created with an event was
+// submitted by that call. The world's route carries what is the world's — the id it answers every
+// create with, the URL and the user whose token the run calls with — since a review a run created
+// has no id of this file's own. The create answered with neither state nor head is what left a
+// round reading back `{id, html_url}`: it could not tell whether its approval had been submitted,
+// and it submitted again.
 if (
   created !== undefined &&
   typeof output === "object" &&
@@ -1566,7 +1771,13 @@ if (
 ) {
   handler = "review create";
   const { state, head, body: written } = created;
-  output = { ...output, state, body: written, ...(head === undefined ? {} : { commit_id: head }) };
+  output = reviewJson({
+    ...output,
+    state,
+    body: written,
+    ...(head === undefined ? {} : { commit_id: head }),
+    ...(state === "PENDING" ? {} : { submitted_at: githubInstant(at) }),
+  });
   if (head !== undefined) answered = { state, head };
 }
 /** The pull request `one` as it stands: at the tip of the run's own remote (`tip`), with the
@@ -1608,10 +1819,6 @@ function current(
     })
   );
   if (tip === undefined) return { ...one, ...comments, ...reviews };
-  const nested =
-    "head" in one && typeof one.head === "object" && one.head !== null
-      ? { head: { ...one.head, sha: tip } }
-      : {};
   const rollup =
     "statusCheckRollup" in one && runs !== undefined
       ? {
@@ -1628,19 +1835,17 @@ function current(
         }
       : {};
   const state = mergeStateOf(threadWorld, threads, fixtures.mergeStates, tip);
-  const merge = {
-    ...("mergeStateStatus" in one ? { mergeStateStatus: state } : {}),
-    ...("mergeable_state" in one ? { mergeable_state: state.toLowerCase() } : {}),
-  };
-  return { ...one, headRefOid: tip, ...nested, ...rollup, ...merge, ...comments, ...reviews };
+  const merge = "mergeStateStatus" in one ? { mergeStateStatus: state } : {};
+  return { ...one, headRefOid: tip, ...rollup, ...merge, ...comments, ...reviews };
 }
 // What GitHub answers for a pull request's head is read from the run's own remote, and only for
 // an answer that carries one: the tip is a `git` call, which a call answered by any other route
 // never makes. The checks the object reports (`statusCheckRollup`) are that head's own, in the
 // spelling GitHub's GraphQL gives them (`headRuns`): a rollup frozen into the world read green
 // on a head whose check the check-runs route said was still running. So is its merge state, in
-// gh's spelling (`mergeStateStatus`) and the REST one (`mergeable_state`), which the daemon
-// stand-in moves the record on (daemon-standin.ts's `roundOutcome`).
+// gh's spelling (`mergeStateStatus`), which the REST pull request answers in its own
+// (`mergeable_state`, rest-objects.ts's `pullRequestJson`) and the daemon stand-in moves the
+// record on (daemon-standin.ts's `roundOutcome`).
 if (
   (Array.isArray(output) ? output : [output]).some(
     (one) => typeof one === "object" && one !== null && "headRefOid" in one
