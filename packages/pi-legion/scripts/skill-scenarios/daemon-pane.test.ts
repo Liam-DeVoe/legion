@@ -212,6 +212,26 @@ test.skipIf(skip)(
   600_000
 );
 
+// The rig's stand-in daemon serves a phase worker's routes alone, none of a tree architect's (its
+// design gate's among them), so the rig builds no pane prompt for one; `composeRolePrompt` below
+// composes that architect's prompt for a reader of it.
+test.skipIf(skip)(
+  "refuses the pane prompt of a tree architect",
+  () => {
+    expect(() =>
+      workerPane(
+        { rig, port: 13399, profile: "rig-profile" },
+        inherited,
+        { project: "skillsrig", issue: "LWEVAL-1", role: "architect" },
+        { daemonModule: DAEMON_MODULE, systemPrompt: true }
+      )
+    ).toThrow(
+      "a tree architect is also told its design gate policy, which the rig does not stand in for"
+    );
+  },
+  600_000
+);
+
 // A part of the daemon module's own role prompts, as the composition holds it: each part's text in
 // order, so every part but the last ends with its own newline, which this drops.
 const promptPart = (name: string) =>

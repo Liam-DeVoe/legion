@@ -10,11 +10,14 @@
 //	                         the handoff record that phase ends with (handoffWords), empty for a
 //	                         phase that ends with none
 //	pane                     reads a paneRequest (JSON) on stdin, writes the claim's gh bundle
-//	                         under its LEGION_GH_OWNERS_DIR, and prints its paneResponse (JSON)
+//	                         under its LEGION_GH_OWNERS_DIR, and prints its paneResponse (JSON);
+//	                         it refuses the system prompt of a tree architect (systemPromptArgument)
 //	prompt <role> <root|child>
 //	                         prints the system prompt a launch of the role starts with
 //	                         (rolePrompt), byte for byte as the daemon writes its prompt file, for
-//	                         the rig's claim on the root issue of its tree or on a child under it
+//	                         the rig's claim on the root issue of its tree or on a child under it;
+//	                         a root architect's prompt ends with the design gate steps of a
+//	                         deployment that sets no `gates.design`, as such a launch's does
 package main
 
 import (
@@ -310,12 +313,17 @@ func rolePrompt(stateDir, project string, c supervise.Claim) (string, error) {
 
 // systemPromptArgument writes the pane's system prompt (rolePrompt; the pane's tree is its issue)
 // to the claim's prompt file, as a pane's launch does, and answers the argument that names that
-// file. The write is this program's own copy of the daemon's (runtime.WriteSystemPrompt), since
-// the rig runs it against each label's checkout of the daemon module, an older one among them,
-// which lacks it.
+// file. It refuses a tree architect: a pane runs against the rig's stand-in daemon, which serves a
+// phase worker's routes alone and none of the tree architect's, its design gate's among them. The
+// write is this program's own copy of the daemon's (runtime.WriteSystemPrompt), since the rig runs
+// it against each label's checkout of the daemon module, an older one among them, which lacks it.
 func systemPromptArgument(req paneRequest, token claim.Token) (string, error) {
+	role := claim.Role(req.Role)
+	if claim.IsTreeArchitect(role, req.Issue, req.Issue) {
+		return "", errors.New("a tree architect is also told its design gate policy, which the rig does not stand in for")
+	}
 	prompt, err := rolePrompt(req.StateDir, req.Project, supervise.Claim{
-		Token: token, Project: req.Project, Tree: req.Issue, Issue: req.Issue, Role: claim.Role(req.Role), Generation: 1,
+		Token: token, Project: req.Project, Tree: req.Issue, Issue: req.Issue, Role: role, Generation: 1,
 	})
 	if err != nil {
 		return "", err
