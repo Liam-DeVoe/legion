@@ -241,7 +241,7 @@ func TestTheIndexPassesAreStoreWritersAndNoRepairExists(t *testing.T) {
 
 	requireTheTickLocksTheOwnerThenTheOwedRow(t, database, service)
 	requireTheItemBlockPassWritesNoStoreRow(t, database, service)
-	requireTheRebuildWritesNoProjectedRow(t, database)
+	requireTheRebuildWritesRefsAndNoProjectedRow(t, database, document)
 }
 
 // requireTheTickLocksTheOwnerThenTheOwedRow holds each of the two rows the tick takes and reads
@@ -399,12 +399,23 @@ func requireTheItemBlockPassWritesNoStoreRow(t *testing.T, database *store.Store
 	}
 }
 
-// requireTheRebuildWritesNoProjectedRow holds refs.RebuildAll to what it is: a writer of refs
-// that marks the work the block index owes. A row of document_blocks, block_refs or comments
+// requireTheRebuildWritesRefsAndNoProjectedRow holds refs.RebuildAll to what it is: a writer of
+// refs that marks the work the block index owes. A row of document_blocks, block_refs or comments
 // written by it would make it a repair of the projection, which is what this fails on.
-func requireTheRebuildWritesNoProjectedRow(t *testing.T, database *store.Store) {
+//
+// The refs it writes are read as its own: the request already wrote the document's refs, so a
+// count after the rebuild would read those and pass a rebuild that wrote none. They are deleted
+// first, and the rebuild must write the same references back from the document's text.
+func requireTheRebuildWritesRefsAndNoProjectedRow(t *testing.T, database *store.Store, document string) {
 	t.Helper()
 	ctx := context.Background()
+	written := documentRefs(t, database, document)
+	if written == "" {
+		t.Fatalf("the request wrote no refs row of %s, so the rebuild has nothing to be seen writing", document)
+	}
+	if _, err := database.Pool.Exec(ctx, `delete from refs where from_kind = 'artifact' and from_id = $1`, document); err != nil {
+		t.Fatalf("delete the refs the request wrote of %s: %v", document, err)
+	}
 	projected := []string{"document_blocks", "block_refs", "comments"}
 	before := map[string]string{}
 	for _, table := range projected {
@@ -417,6 +428,12 @@ func requireTheRebuildWritesNoProjectedRow(t *testing.T, database *store.Store) 
 	if report.BlocksOwed == 0 {
 		t.Errorf("the rebuild marked %d documents owed a block index, want the ones it holds", report.BlocksOwed)
 	}
+	if rebuilt := documentRefs(t, database, document); rebuilt != written {
+		t.Errorf("the rebuild wrote the refs of %s as [%s], want the [%s] the request wrote and the test deleted before it ran",
+			document, rebuilt, written)
+	} else {
+		t.Logf("the rebuild wrote the refs of %s back: [%s]", document, rebuilt)
+	}
 	if report.Edges == 0 {
 		t.Errorf("the rebuild left %d references, want the ones it wrote", report.Edges)
 	}
@@ -426,6 +443,19 @@ func requireTheRebuildWritesNoProjectedRow(t *testing.T, database *store.Store) 
 				table, before[table], now)
 		}
 	}
+}
+
+// documentRefs is every refs row out of one document, by its far end, in one order.
+func documentRefs(t *testing.T, database *store.Store, document string) string {
+	t.Helper()
+	var held string
+	if err := database.Pool.QueryRow(context.Background(), `
+		select coalesce(string_agg(to_kind || ':' || to_id, ', ' order by to_kind, to_id), '')
+		from refs where from_kind = 'artifact' and from_id = $1
+	`, document).Scan(&held); err != nil {
+		t.Fatalf("read the refs of %s: %v", document, err)
+	}
+	return held
 }
 
 // indexPasses is every pass that writes document_blocks, block_refs, comments, graph_nodes or
@@ -675,8 +705,11 @@ var projectedWrite = regexp.MustCompile(`(?is)\b(insert into|update|delete from)
 // own, and a scan of SQL alone would never see it. asks.Follow picks graphstore.WriteArms or
 // graphstore.WriteArmsUncaused by its cause and then calls what it picked, so a scan for calls
 // alone would read it as no writer, where graphstore's TestEveryStoreWriteCallSiteIsListed reads
-// the same use as one.
-var storeWriterCall = regexp.MustCompile(`\bgraphstore\.(Write|WriteUncaused|Caused|Authored|Reached|WriteArms|WriteArmsUncaused|EraseNode|FillScopes|Retarget|QueueFrameTuple)\b`)
+// the same use as one. The names are every exported function of graphstore that writes the store
+// or builds the statement that does, the list that test holds as storeWriteFunctions:
+// SessionRecorded writes a session's node through arms of its own, and a pass that wrote the
+// store through it alone would otherwise be read as no writer at all.
+var storeWriterCall = regexp.MustCompile(`\bgraphstore\.(Write|WriteUncaused|Caused|Authored|Reached|SessionRecorded|WriteArms|WriteArmsUncaused|EraseNode|FillScopes|Retarget|QueueFrameTuple)\b`)
 
 // projectionRead matches one read of either side of a projection: a projected table or the
 // store. A `delete from` is a write and no read, so the match takes the delete with it, and the

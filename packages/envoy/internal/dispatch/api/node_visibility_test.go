@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/brokertoken/brokertokentest"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphstoretest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -51,6 +52,9 @@ type privateNodeFixture struct {
 	// publicComment is a comment she wrote for everyone, in both fixtures, so her person page
 	// answers in both.
 	privateComment, publicComment string
+	// broker is the stub secrets broker the server asks about a DPoP-bound token, so a read can
+	// be made under a session the broker verified as well as under a cookie and a token.
+	broker *brokertokentest.StubBroker
 }
 
 // author and reader are the two people of this test: the one who owns the private node and one
@@ -80,6 +84,11 @@ const privateBlockID = "private"
 // Every read the second person makes is recorded, a route's statements as that route issued them
 // through the traced store, and every one of them is held to binding the registry's predicate in
 // its SQL (requirePredicatesInSQL).
+//
+// The reads above are made under a person's cookie. The author rule answers alike under each
+// other credential that proves a person, a personal token and a session the secrets broker
+// verified (requireEveryCredentialReadsAsItsPerson), and for the shared bearer, which proves
+// none (requireOneAuthorRule).
 func TestNoReadAnswersANodeTheActingPersonMayNotSee(t *testing.T) {
 	held := seedPrivateNode(t, true)
 	// The same seed without the private node ever written, which the counts are compared
@@ -369,6 +378,7 @@ func TestNoReadAnswersANodeTheActingPersonMayNotSee(t *testing.T) {
 	}
 
 	requireOneAuthorRule(t)
+	requireEveryCredentialReadsAsItsPerson(t, held)
 }
 
 // recordedRead is one read the second person made, with every statement it issued.
@@ -512,6 +522,80 @@ func requireOneAuthorRule(t *testing.T) {
 	}
 }
 
+// requireEveryCredentialReadsAsItsPerson holds the author rule to each credential that proves a
+// person, beside the cookie every read above is made under: a personal token, which proves its
+// owner, and a session the secrets broker verified, which proves the person the broker names.
+// Under each, a credential proving the author reads the private block's address and the private
+// comment's, and one proving the second person reads each as an address nobody holds, byte for
+// byte once the address asked for is substituted.
+func requireEveryCredentialReadsAsItsPerson(t *testing.T, fixture privateNodeFixture) {
+	t.Helper()
+	document := "dispatch://" + fixture.refKey
+	nobodyComment := "4c6e7b00-0000-4000-8000-0000000000fe"
+	addresses := []struct{ name, private, nobody, privateID, nobodyID string }{
+		{"the private block's address", refs.BlockRef(document, privateBlockID), refs.BlockRef(document, "nosuchblock"), privateBlockID, "nosuchblock"},
+		{"the private comment's address", "dispatch://" + fixture.issue + "/comment/" + fixture.privateComment,
+			"dispatch://" + fixture.issue + "/comment/" + nobodyComment, fixture.privateComment, nobodyComment},
+	}
+	caller := newBrokerCaller(t)
+	// A session the broker verified for a person, scoped to the fixture's project, as the
+	// broker's exchange answers for a token it minted to act as that session.
+	verified := func(person, session string) string {
+		token := "a-token-proving-" + person + "s-session"
+		answer := liveNamedToken(caller.jkt)
+		answer.Person, answer.Session = person, session
+		answer.Projects = []string{strings.SplitN(fixture.issue, "-", 2)[0]}
+		fixture.broker.Says(token, answer)
+		return token
+	}
+	type credential struct {
+		name string
+		read func(target string) *httptest.ResponseRecorder
+	}
+	underToken := func(name, token string) credential {
+		return credential{name, func(target string) *httptest.ResponseRecorder {
+			return bearerTokenRequest(t, fixture.handler, http.MethodGet, target, token, nil)
+		}}
+	}
+	underSession := func(name, token string) credential {
+		return credential{name, func(target string) *httptest.ResponseRecorder {
+			response := httptest.NewRecorder()
+			fixture.handler.ServeHTTP(response, caller.presenting(t, http.MethodGet, target, token, nil))
+			return response
+		}}
+	}
+	for _, pair := range []struct{ author, reader credential }{
+		{
+			underToken("the author's personal token", personalTokenOwnedBy(t, fixture.database, privateNodeAuthor().ID, model.Scopes...)),
+			underToken("the second person's personal token", personalTokenOwnedBy(t, fixture.database, privateNodeReader().ID, model.Scopes...)),
+		},
+		{
+			underSession("a session the broker verified as the author's", verified(privateNodeAuthor().ID, "ses_a1b2c3d4e5f6")),
+			underSession("a session the broker verified as the second person's", verified(privateNodeReader().ID, "ses_f6e5d4c3b2a1")),
+		},
+	} {
+		for _, address := range addresses {
+			target := "/api/v1/references?to=" + url.QueryEscape(address.private)
+			if authored := pair.author.read(target); authored.Code != http.StatusOK {
+				t.Errorf("%s reads %s: status=%d body=%s, want the node", pair.author.name, address.name, authored.Code, authored.Body.String())
+			} else if !strings.Contains(authored.Body.String(), address.privateID) {
+				t.Errorf("%s reads %s and its answer does not name it: %s", pair.author.name, address.name, authored.Body.String())
+			}
+			private := pair.reader.read(target)
+			nobody := pair.reader.read("/api/v1/references?to=" + url.QueryEscape(address.nobody))
+			if nobody.Code < 400 {
+				t.Errorf("an address nobody holds answers %s %d for %s, so the comparison proves nothing", pair.reader.name, nobody.Code, address.name)
+			}
+			want := bytes.ReplaceAll(nobody.Body.Bytes(), []byte(address.nobodyID), []byte(address.privateID))
+			if private.Code != nobody.Code || !bytes.Equal(private.Body.Bytes(), want) {
+				t.Errorf("%s reads %s as %d\n%s\nand an address nobody holds as %d\n%s",
+					pair.reader.name, address.name, private.Code, private.Body.Bytes(), nobody.Code, want)
+			}
+		}
+		t.Logf("%s reads the private nodes and %s reads each as an address nobody holds", pair.author.name, pair.reader.name)
+	}
+}
+
 // privateNodeAmong reports whether any edge, or the block any edge sits at, is the node.
 func privateNodeAmong(edges []model.GraphEdge, node string) bool {
 	for _, edge := range edges {
@@ -574,10 +658,14 @@ func seedPrivateNode(t *testing.T, private bool) privateNodeFixture {
 	embedder := &fakeEmbedder{vectors: map[string][]float32{privateNodePhrase: queryVector()}}
 	recorder := &statementRecorder{}
 	database := storetest.TracedStore(t, storetest.Open(t), recorder)
-	handler, _, _ := newTestServer(t, testServerOptions{store: database, embedder: embedder})
+	// The broker-token rig's server is the package's one test server with the broker check
+	// wired to a stub broker, so a read can present a session the broker verified.
+	rig := newBrokerTokenRigOn(t, testServerOptions{store: database, embedder: embedder})
+	handler := rig.handler
 	issue := createInteractionIssue(t, handler, "PRIV", "A private node in public company",
 		"# Spec\n\nA passage about "+privateNodePhrase+".")
-	fixture := privateNodeFixture{handler: handler, database: database, recorder: recorder, issue: issue.Key, specID: issue.PrimaryArtifactID}
+	fixture := privateNodeFixture{handler: handler, database: database, recorder: recorder, issue: issue.Key,
+		specID: issue.PrimaryArtifactID, broker: rig.broker}
 	if err := database.Pool.QueryRow(ctx,
 		`select ref_key from artifacts where id = $1::uuid`, fixture.specID).Scan(&fixture.refKey); err != nil {
 		t.Fatalf("read the spec's address: %v", err)

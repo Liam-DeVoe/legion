@@ -441,7 +441,10 @@ func (r *settlementReconciliation) repairAsk(node *pmdoc.Node, blockID string, s
 
 // repairAskInStep is repairAsk with askReadableWrite, settlement's write to a block of ask, or
 // of a copy of ask on the document copied, that records the block when the write gave it an
-// answer's words while another build serves, for withholdAnswersWithoutRoom to weigh.
+// answer's words while another build serves (wroteAnswerWords), for withholdAnswersWithoutRoom to
+// weigh. A block that already held the words its write leaves - one whose repair cleared its
+// `invalid` or moved a copy's provenance - keeps them: they are in the document settlement read
+// and add nothing to it, and the release before weighed only a repair that wrote an answer.
 func (r *settlementReconciliation) repairAskInStep(node *pmdoc.Node, blockID string, twoBuilds bool, ask model.Ask, copied string, event *model.Event) bool {
 	found := maps.Clone(node.Attrs)
 	repair, eventAt := len(r.repairs), len(r.events)
@@ -452,13 +455,29 @@ func (r *settlementReconciliation) repairAskInStep(node *pmdoc.Node, blockID str
 	if !r.repairAsk(node, blockID, write, event) {
 		return false
 	}
-	if twoBuilds && holdsAnswerWords(node) {
+	if twoBuilds && wroteAnswerWords(found, node) {
 		r.inStep = append(r.inStep, answerInStep{
 			node: node, found: found, write: write, withheld: askReadableWriteWithheld(ask, copied),
 			repair: repair, event: eventAt,
 		})
 	}
 	return true
+}
+
+// wroteAnswerWords reports whether node, an ask block a write left, holds an answer's words
+// (answerWords) that found, its attributes before the write, did not: a selection or words found
+// held none of, or held another value of.
+func wroteAnswerWords(found pmdoc.Attrs, node *pmdoc.Node) bool {
+	for _, name := range answerWords {
+		value, held := node.Attrs[name]
+		if !held {
+			continue
+		}
+		if was, had := found[name]; !had || !sameAskAttribute(was, value) {
+			return true
+		}
+	}
+	return false
 }
 
 // withholdAnswersWithoutRoom keeps out of the document each answer this settlement wrote into its

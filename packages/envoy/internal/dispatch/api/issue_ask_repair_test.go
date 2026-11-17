@@ -570,15 +570,17 @@ func TestAnIntervalRepairSweepsOnlyTheDocumentsMarkedSinceItsLastPass(t *testing
 	if repair.Swept != 1 {
 		t.Fatalf("bounded repair = %+v, want the fresh document's block alone swept", repair)
 	}
-	requireLiveText(t, f.handler, fresh.PrimaryArtifactID, `#other-room urgency="low" multiple="false" state="resolved"`)
+	requireLiveTree(t, f.documents, fresh.PrimaryArtifactID, `#other-room urgency="low" multiple="false" state="resolved"`)
 	// The stale document's block is left as the browser wrote it, with no state: the bounded pass
-	// did not sweep it, and no settlement indexed it.
-	requireLiveText(t, f.handler, stale.PrimaryArtifactID, `#other-room urgency="low" multiple="false"}`)
+	// did not sweep it, and no settlement indexed it. The text an agent reads renders it resolved
+	// all the same, from its issue's close (docs.TextWithAnswers), so its live tree is read.
+	requireLiveTree(t, f.documents, stale.PrimaryArtifactID, `#other-room urgency="low" multiple="false"}`)
+	requireLiveText(t, f.handler, stale.PrimaryArtifactID, `#other-room urgency="low" multiple="false" state="resolved"`)
 
 	if repair := repairNow(t, f); repair.Swept != 1 {
 		t.Fatalf("full repair = %+v, want the stale document's block swept", repair)
 	}
-	requireLiveText(t, f.handler, stale.PrimaryArtifactID, `#other-room urgency="low" multiple="false" state="resolved"`)
+	requireLiveTree(t, f.documents, stale.PrimaryArtifactID, `#other-room urgency="low" multiple="false" state="resolved"`)
 }
 
 // A repair pass that finds nothing to change writes nothing, so the interval passes' bound keeps

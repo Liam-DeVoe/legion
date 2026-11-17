@@ -3371,16 +3371,23 @@ type DecisionKeep struct {
 	TextSHA256 string `json:"-"`
 }
 
-// DecisionLink is one link from a block of a decision to a block of the issue's spec: the
-// decision's own block that holds it, the spec block it names, when and in which version of
-// decisions.md the link was first written, and whether the spec block is out of date - the
-// decision changed after it first linked that block, and that block has not changed since.
+// DecisionLink is one link from a decision to a block it shaped: the decision's own block that
+// holds it, the block it names, when and in which version the link was first written, and whether
+// that block is out of date. A link of the decisions document's view reads stale when the
+// decision changed after it first linked that block and that block has not changed since; a link
+// of a decision node (internal/dispatch/decisionread) is its `shaped` tuple, Event the event that
+// wrote the tuple, TextChangedEvent and TextChangedAt the event and the time that wrote the version
+// the block's text last changed in, and Stale true when the block's text changed after the tuple
+// was written (dispatch://INFRA-1150 R5). The three are absent where the store holds none.
 type DecisionLink struct {
-	FromBlock      string    `json:"from_block"`
-	To             GraphNode `json:"to"`
-	CreatedVersion int       `json:"created_version"`
-	CreatedAt      time.Time `json:"created_at"`
-	Stale          bool      `json:"stale"`
+	FromBlock        string     `json:"from_block"`
+	To               GraphNode  `json:"to"`
+	CreatedVersion   int        `json:"created_version"`
+	CreatedAt        time.Time  `json:"created_at"`
+	Stale            bool       `json:"stale"`
+	Event            *int64     `json:"event,omitempty"`
+	TextChangedEvent *int64     `json:"text_changed_event,omitempty"`
+	TextChangedAt    *time.Time `json:"text_changed_at,omitempty"`
 }
 
 // Decision is one decision of an issue's decisions.md: its heading block and every block after
@@ -3409,6 +3416,11 @@ type Decision struct {
 	ChangedAt      *time.Time     `json:"changed_at"`
 	Kept           *DecisionKeep  `json:"kept"`
 	WaitingReview  bool           `json:"waiting_review"`
+	// NodeKind and NodeID name the node a decision node's read answered this for
+	// (decisionread.Decisions): an ask's own node, or a decision's block node. No wire shape
+	// carries them; a caller that asked for several decisions finds each one by them.
+	NodeKind string `json:"-"`
+	NodeID   string `json:"-"`
 }
 
 // DocumentRead is one person's last read version of a document: null when they have read none.

@@ -66,13 +66,20 @@ import (
 // approval was superseded by it.
 
 // restoreReason is the reason a review carried to a version restoring the approved text records,
-// naming the approval it follows. It opens as every carried reason does, which is how the Legion
-// daemon tells a carry from a person's own approval (intake.CarriedApprovalReasonPrefix).
+// naming the version of the approval it stands for (approvalOrigin), where that version's text is
+// the text restored. It opens as every carried reason does, which is how the Legion daemon tells a
+// carry from a person's own approval (intake.CarriedApprovalReasonPrefix).
 const restoreReason = "Carried forward from the approval of version %d: this version's text is that version's, unchanged."
 
-// carriedReasonPrefix opens the reason of every review a carry case records, naming the approval
-// it follows: the daemon's intake.CarriedApprovalReasonPrefix and the version. The changes of the
-// cases that carried follow it, joined, and carriedReasonEnd closes it.
+// restoreCarriedReason is restoreReason where the approval restored is itself a carry: it names the
+// version the person approved (approvalOrigin), then the version whose text is restored, the one
+// that approval was carried to (restoredReason).
+const restoreCarriedReason = "Carried forward from the approval of version %d: this version's text is version %d's, unchanged, which that approval was carried to."
+
+// carriedReasonPrefix opens the reason of every review a carry case records, naming the version
+// of the approval it stands for (approvalOrigin): the daemon's intake.CarriedApprovalReasonPrefix
+// and the version. The changes of the cases that carried follow it, joined, and carriedReasonEnd
+// closes it.
 const carriedReasonPrefix = "Carried forward from the approval of version %d: "
 
 // carriedReasonEnd closes a carried reason after the changes it names (carryVerdict).
@@ -196,7 +203,11 @@ func carryNewestApproval(ctx context.Context, tx pgx.Tx, broker *events.Broker, 
 		return nil, err
 	}
 	if restored {
-		return writeCarriedReview(ctx, tx, broker, artifactID, number, newest, fmt.Sprintf(restoreReason, newest.Version), serverURL)
+		reason, err := restoredReason(ctx, tx, artifactID, newest)
+		if err != nil {
+			return nil, err
+		}
+		return writeCarriedReview(ctx, tx, broker, artifactID, number, newest, reason, serverURL)
 	}
 	if len(shown.nodes) == 0 && !holdsDecision(tree) {
 		return nil, nil
@@ -216,7 +227,59 @@ func carryNewestApproval(ctx context.Context, tx pgx.Tx, broker *events.Broker, 
 	if !carried {
 		return nil, nil
 	}
-	return writeCarriedReview(ctx, tx, broker, artifactID, number, newest, fmt.Sprintf(carriedReasonPrefix, newest.Version)+change, serverURL)
+	origin, err := approvalOrigin(ctx, tx, artifactID, newest)
+	if err != nil {
+		return nil, err
+	}
+	return writeCarriedReview(ctx, tx, broker, artifactID, number, newest, fmt.Sprintf(carriedReasonPrefix, origin)+change, serverURL)
+}
+
+// restoredReason is the reason of the carry of newest, the approval of version A, to a version
+// whose text is A's stored text byte for byte: restoreReason where newest is the person's own
+// approval of A, and restoreCarriedReason where newest is a carry to A of the approval of an
+// earlier version (approvalOrigin), whose text the restored version need not hold.
+func restoredReason(ctx context.Context, tx pgx.Tx, artifactID string, newest model.ArtifactReview) (string, error) {
+	origin, err := approvalOrigin(ctx, tx, artifactID, newest)
+	if err != nil || origin == newest.Version {
+		return fmt.Sprintf(restoreReason, newest.Version), err
+	}
+	return fmt.Sprintf(restoreCarriedReason, origin, newest.Version), nil
+}
+
+// approvalOrigin is the version of the approval newest, an approval the document carries to a
+// later version, stands for, which the carried reason names: newest's own version where a person,
+// or a plan review, gave it; and where newest is itself a carry, the version its reason names. So
+// a carry of a carried approval names the version the person approved however many carries stand
+// between, as c-attribute-removal reads it ("The carried review records the version the person
+// approved"). A carry is told by the shape Dispatch writes it in (writeCarriedReview): a reason
+// that opens as every carried reason does (carriedReasonPrefix), naming a version before newest's
+// own, at which artifactID holds an approval by newest's own actor. A reason a person or an agent
+// wrote in that opening for a version nobody approved, or one after newest's own, names nothing,
+// and newest's own version stands. The comparison itself is with newest's own version, whose text
+// the carry stands on (restoresApprovedText, approvedVersion). The Legion daemon reads a carried
+// reason's opening alone (intake.CarriedApprovalReasonPrefix), never its number.
+func approvalOrigin(ctx context.Context, tx pgx.Tx, artifactID string, newest model.ArtifactReview) (int, error) {
+	var origin int
+	if newest.Reason == nil {
+		return newest.Version, nil
+	}
+	if _, err := fmt.Sscanf(*newest.Reason, carriedReasonPrefix, &origin); err != nil || origin < 1 || origin >= newest.Version {
+		return newest.Version, nil
+	}
+	var approved bool
+	if err := tx.QueryRow(ctx, `
+		select exists (
+			select 1 from artifact_reviews
+			where artifact_id = $1 and version = $2 and state = 'approved'
+			  and actor->>'kind' = $3 and actor->>'id' = $4
+		)
+	`, artifactID, origin, newest.Actor.Kind, newest.Actor.ID).Scan(&approved); err != nil {
+		return 0, fmt.Errorf("read the approval a carried review names: %w", err)
+	}
+	if !approved {
+		return newest.Version, nil
+	}
+	return origin, nil
 }
 
 // versionAsks is what asksAgreeWithTheirNodes read of a version's ask blocks: each one by block id
@@ -344,21 +407,20 @@ func holdsDecision(tree *pmdoc.Node) bool {
 // copyAgreesWithItsSource reports whether node, a copy of source's ask on another document,
 // agrees with it: settlement reads it (no `invalid`), and it shows no state of the source other
 // than the source's - none at all, or what the roll window keeps in step with the source, its
-// provenance among it (rollWindowAskAttributes with the source's document). Its wording is the
+// provenance among it (inStepWithTheRollWindow with the source's document). Its wording is the
 // source's by the classification that found it.
 func copyAgreesWithItsSource(node *pmdoc.Node, source copiedSource) bool {
 	if _, flagged := node.Attrs["invalid"]; flagged {
 		return false
 	}
-	inStep := rollWindowAskAttributes(true, source.ask, source.document)
-	return !withoutStoredAskAttributes(attributesOf(node)) || !inStep(attributesOf(node))
+	return !withoutStoredAskAttributes(attributesOf(node)) || inStepWithTheRollWindow(node, source.ask, source.document)
 }
 
 // askAgreesWithItsNode reports whether node, an ask block of a version, agrees with ask, the row of
 // its document that indexes it, which is the projection of the ask's node: settlement reads it (it
 // carries no `invalid`); it shows no answer state other than the row's - none at all, as every
 // block of a version written once the fleet is one build, or what the roll window keeps in step
-// with the row (rollWindowAskAttributes), as a block of a version written while two builds serve -
+// with the row (inStepWithTheRollWindow), as a block of a version written while two builds serve -
 // so a forged or stale state, answerer, time, selection or answer, or a copy's provenance on a
 // block of this document's own, disagrees; and, for a row that is not open, it asks the wording
 // the row was decided on (askBlock.asks, settlement's own test), which settlement writes back over
@@ -368,8 +430,7 @@ func askAgreesWithItsNode(node *pmdoc.Node, ask model.Ask) bool {
 	if _, flagged := node.Attrs["invalid"]; flagged {
 		return false
 	}
-	inStep := rollWindowAskAttributes(true, ask, "")
-	if withoutStoredAskAttributes(attributesOf(node)) && inStep(attributesOf(node)) {
+	if withoutStoredAskAttributes(attributesOf(node)) && !inStepWithTheRollWindow(node, ask, "") {
 		return false
 	}
 	if ask.State == asks.StateOpen {
@@ -377,6 +438,18 @@ func askAgreesWithItsNode(node *pmdoc.Node, ask model.Ask) bool {
 	}
 	block, err := parseAskBlock(node)
 	return err == nil && block.asks(model.NewAskEditPrevious(ask))
+}
+
+// inStepWithTheRollWindow reports whether node, an ask block, holds what the roll window keeps in
+// step with ask, a copy's provenance among it where copied names the source's document, as one of
+// its two writes leaves it, so that neither changes the block: the write with the answer's words
+// (rollWindowAskAttributes), or the one without them (rollWindowAskAttributesWithheld), which the
+// answer route and settlement write into a block whose answer the document has no room for, as
+// the release before writes such a block. Only a block both would change shows a state the row
+// does not hold.
+func inStepWithTheRollWindow(node *pmdoc.Node, ask model.Ask, copied string) bool {
+	return !rollWindowAskAttributes(true, ask, copied)(attributesOf(node)) ||
+		!rollWindowAskAttributesWithheld(ask, copied)(attributesOf(node))
 }
 
 // attributesOf is a node of node's type holding a copy of its attributes alone, for a write to an
@@ -609,12 +682,15 @@ func askNodes(tree *pmdoc.Node) (map[string]*pmdoc.Node, bool) {
 // input.approvedText, is what this build renders A's tree to, so that what is compared is the
 // bytes the person approved, and a renderer change between A and N is a difference no case
 // carries; both trees, taken through every carry case (carryCases), render byte for byte the
-// same; at least one case took something out of one of them, since a version that equals A
-// without any is the restore's to carry (restoresApprovedText), or a change nobody approved; and
+// same; at least one case is one the two trees render apart without, since a version that equals
+// A without any is the restore's to carry (restoresApprovedText), or a change nobody approved; and
 // every block id A holds, but for the readings readingCase took out of it, still stands in N
 // (blockIDsStand over the two trees each case left). It answers what the carried reason says the
-// change was: the change of each case that took something out, in carryCases' order, joined and
-// closed by carriedReasonEnd. Its error is a refusal of this renderer.
+// change was: the change of each case the two trees render apart without, in carryCases' order,
+// joined and closed by carriedReasonEnd. Each case is skipped in turn, beside every case before it
+// that the trees rendered the same without, at two renders a case. A case that took out of both
+// trees only what stands the same in each - readings A holds and N holds unchanged - changed
+// nothing, and is not named. Its error is a refusal of this renderer.
 func carryVerdict(input carryInput) (string, bool, error) {
 	if !input.agrees {
 		return "", false, nil
@@ -623,31 +699,61 @@ func carryVerdict(input carryInput) (string, bool, error) {
 	if err != nil || approvedText != input.approvedText {
 		return "", false, err
 	}
-	approved, version := input.approved, input.version
+	// skipped names the cases a comparison is made without: none, for the verdict itself.
+	skipped := make([]bool, len(carryCases))
+	approved, version, took := input.neutral(skipped)
+	if !took {
+		return "", false, nil
+	}
+	if same, err := renderSame(approved, version); err != nil || !same {
+		return "", false, err
+	}
+	if !blockIDsStand(approved, version) {
+		return "", false, nil
+	}
 	var changes []string
-	for _, carried := range carryCases {
-		var tookApproved, tookVersion bool
-		approved, tookApproved = carried.neutral(approved, input.answered)
-		version, tookVersion = carried.neutral(version, input.answered)
-		if tookApproved || tookVersion {
+	for index, carried := range carryCases {
+		skipped[index] = true
+		approvedWithout, versionWithout, _ := input.neutral(skipped)
+		same, err := renderSame(approvedWithout, versionWithout)
+		if err != nil {
+			return "", false, err
+		}
+		if !same {
+			skipped[index] = false
 			changes = append(changes, carried.change)
 		}
 	}
 	if len(changes) == 0 {
 		return "", false, nil
 	}
-	approvedText, err = pmdoc.Render(approved)
-	if err != nil {
-		return "", false, err
-	}
-	versionText, err := pmdoc.Render(version)
-	if err != nil || versionText != approvedText {
-		return "", false, err
-	}
-	if !blockIDsStand(approved, version) {
-		return "", false, nil
-	}
 	return strings.Join(changes, ", and ") + carriedReasonEnd, true, nil
+}
+
+// neutral is input's two trees, A's and N's, each taken through every carry case in carryCases'
+// order but those skipped names, and whether any of those cases took something out of either.
+func (input carryInput) neutral(skipped []bool) (approved, version *pmdoc.Node, took bool) {
+	approved, version = input.approved, input.version
+	for index, carried := range carryCases {
+		if skipped[index] {
+			continue
+		}
+		var tookApproved, tookVersion bool
+		approved, tookApproved = carried.neutral(approved, input.answered)
+		version, tookVersion = carried.neutral(version, input.answered)
+		took = took || tookApproved || tookVersion
+	}
+	return approved, version, took
+}
+
+// renderSame reports whether the trees a and b render byte for byte the same.
+func renderSame(a, b *pmdoc.Node) (bool, error) {
+	aText, err := pmdoc.Render(a)
+	if err != nil {
+		return false, err
+	}
+	bText, err := pmdoc.Render(b)
+	return err == nil && aText == bText, err
 }
 
 // blockIDsStand reports whether every typed block id approved holds - the ids a stored version

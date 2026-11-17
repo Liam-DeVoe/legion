@@ -188,8 +188,9 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 	if err := content(tree); err != nil {
 		return RebuildReport{}, VersionResult{}, &ErrInvalidAskBlock{Reason: err}
 	}
-	if err := s.refuseDroppedAskBlocks(ctx, artifactID, tree); err != nil {
-		return RebuildReport{}, VersionResult{}, &ErrInvalidAskBlock{Reason: err}
+	// A rebuild is a person's own write: its route needs the person scope (api's routeScopes).
+	if err := s.refuseDroppedAskBlocks(ctx, artifactID, tree, true); err != nil {
+		return RebuildReport{}, VersionResult{}, err
 	}
 	// A closed issue's document shows its asks as the close left them, and the tree read from the
 	// latest version need not: no settlement versions a document whose history does not load,
@@ -198,13 +199,21 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 	// in the history this replaces. So the close's final sweep is written into the tree here
 	// (closedIssueAskState): every resolved ask's block and copy, and every answered ask's copy,
 	// from the rows as they stand under the issue's row this transaction holds, and every readable
-	// ask block with no ask row marked resolved. The ask rows are taken before RebuildTx takes the
-	// document's advisory lock, the order the close's own write takes them in
-	// (WriteIssueAskStates). Once this transaction commits, the rebuilt document reads as the
-	// issue's other documents do.
+	// ask block with no ask row marked resolved. The sweep is written as the fleet stands
+	// (anotherBuildServes), as the close writes it: while another build serves, each block gets the
+	// attributes that build's pages read its state from; once the fleet is one build, every reader
+	// reads the state from the store, and each such block has the seven attributes a version can
+	// store taken off instead, so the rebuilt document holds none (readIssueAskStateWrites). The ask
+	// rows are taken before RebuildTx takes the document's advisory lock, the order the close's own
+	// write takes them in (WriteIssueAskStates). Once this transaction commits, the rebuilt document
+	// reads as the issue's other documents do.
 	var closedStates *issueAskStateWrites
 	if !open {
-		closedStates, err = readIssueAskStateWrites(ctx, tx, artifactID, owner, tree, closedIssueAskState, true)
+		twoBuilds, err := anotherBuildServes(ctx, tx)
+		if err != nil {
+			return RebuildReport{}, VersionResult{}, err
+		}
+		closedStates, err = readIssueAskStateWrites(ctx, tx, artifactID, owner, tree, closedIssueAskState, true, twoBuilds)
 		if err != nil {
 			return RebuildReport{}, VersionResult{}, err
 		}
@@ -439,8 +448,9 @@ func ReadErasedLiveText(ctx context.Context, tx pgx.Tx, artifactID string, scope
 	if err := validateStoredAskBlocks(seeded); err != nil {
 		return nil, fmt.Errorf("the redacted text of document %s: %w", artifactID, &ErrInvalidAskBlock{Reason: err})
 	}
-	if err := refuseDroppedAskBlocksIn(ctx, tx, artifactID, seeded); err != nil {
-		return nil, fmt.Errorf("the redacted text of document %s: %w", artifactID, &ErrInvalidAskBlock{Reason: err})
+	// The erase is an operator's (envoy-dispatch erase), no agent's write.
+	if err := refuseDroppedAskBlocksIn(ctx, tx, artifactID, seeded, true); err != nil {
+		return nil, fmt.Errorf("the redacted text of document %s: %w", artifactID, err)
 	}
 	margin, moved := keptMargin(marginOf(doc), scope)
 	if erased.seed, err = encodeDocumentSeed(seeded, tree, margin); err != nil {

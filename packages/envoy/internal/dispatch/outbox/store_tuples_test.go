@@ -2,8 +2,11 @@ package outbox
 
 import (
 	"context"
+	"slices"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
@@ -35,7 +38,8 @@ type claimTuple struct {
 // session `part_of` the role it claimed, the role's page under the role, and then - after a
 // resolution that reads the role unclaimed - the retraction that ends the claim, with the
 // earlier claim still readable in the history, in the order the two were written. Nothing here
-// updates a row: both facts are rows of their own.
+// updates a row: both facts are rows of their own. Last, it reads the visibility and the state
+// of every node the store holds, the role and the page the publisher wrote among them.
 func TestTheStoreHoldsNodesAndAppendedTuples(t *testing.T) {
 	const (
 		key    = "T-1"
@@ -91,6 +95,63 @@ func TestTheStoreHoldsNodesAndAppendedTuples(t *testing.T) {
 	if current := currentHolder(t, database, role); current != "" {
 		t.Fatalf("the role still holds %s after the resolution that read it unclaimed", current)
 	}
+
+	// Every node the run writes carries both base attributes. The api half reads the nodes its
+	// comment path wrote, and the role and the role's page are written here, by the arms the
+	// publisher's record splices in, so this half reads its own. The session that held the role
+	// is no node of this write: a holder resolved over the bus is in no table this child
+	// projects, so the record states its tuples alone and leaves its node to the writer that
+	// sees a row naming it (outbox's deliveredGraph), and the loop reads it if any write made it.
+	requireBaseAttributes(t, database, []graphstore.Node{
+		{Kind: graphstore.KindRole, ID: role},
+		{Kind: graphstore.KindPage, ID: graphstore.RolePageID(role)},
+	})
+}
+
+// requireBaseAttributes fails unless the store holds each node of written, and unless every node
+// it holds carries visibility and state, both as the node row's columns and as current tuples,
+// naming the node that lacks either. Every node the store holds is read rather than the named
+// ones alone, so a node the record wrote that this test does not name is held to the same rule;
+// written is what the run must have written for the loop to read anything of the publisher's.
+func requireBaseAttributes(t *testing.T, database *store.Store, written []graphstore.Node) {
+	t.Helper()
+	ctx := context.Background()
+	rows, err := database.Pool.Query(ctx, `select kind, id from graph_nodes order by kind, id`)
+	if err != nil {
+		t.Fatalf("read the nodes the store holds: %v", err)
+	}
+	held, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (graphstore.Node, error) {
+		var node graphstore.Node
+		return node, row.Scan(&node.Kind, &node.ID)
+	})
+	if err != nil {
+		t.Fatalf("read the nodes the store holds: %v", err)
+	}
+	for _, want := range written {
+		if !slices.ContainsFunc(held, func(node graphstore.Node) bool { return node.Kind == want.Kind && node.ID == want.ID }) {
+			t.Errorf("the publisher wrote no %s node %s, so nothing below reads its base attributes", want.Kind, want.ID)
+		}
+	}
+	for _, node := range held {
+		read, found, err := graphstore.ReadNode(ctx, database.Pool, node.Kind, node.ID)
+		if err != nil || !found {
+			t.Fatalf("read the %s node %s: found %t, %v", node.Kind, node.ID, found, err)
+		}
+		if read.Visibility == "" || read.State == "" {
+			t.Errorf("%s %s carries visibility %q and state %q on its row, want both", node.Kind, node.ID,
+				read.Visibility, read.State)
+		}
+		for _, attribute := range graphstore.BaseAttributes() {
+			value, ok, err := graphstore.CurrentValue(ctx, database.Pool, node.Kind, node.ID, attribute)
+			if err != nil {
+				t.Fatalf("read the %s of %s %s: %v", attribute, node.Kind, node.ID, err)
+			}
+			if !ok || value == "" {
+				t.Errorf("%s %s carries no %s tuple", node.Kind, node.ID, attribute)
+			}
+		}
+	}
+	t.Logf("%d node(s) read for visibility and state, the publisher's %d among them", len(held), len(written))
 }
 
 // claimTuples is every held_by tuple of one role, in the order the log holds them.

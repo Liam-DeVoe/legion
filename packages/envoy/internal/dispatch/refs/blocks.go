@@ -1390,8 +1390,9 @@ func scanBlockRefRows(rows pgx.Rows, err error) ([]blockRefRow, error) {
 // which it names, so a citation written before its target moved still reaches it
 // (dispatch://INFRA-1150 R8); only a target no row holds is followed through block_moved_to, so a
 // link to a block that stands costs the probe alone. A pointer's link counts only while the block
-// it reaches has a type the pointer allows (block_ref_listed). A link either of whose blocks who
-// may not see drops out the same way, since neither end resolves to a node.
+// it reaches has a type the pointer allows, tested as the arm of graph_edges that answers the row
+// tests it (blockRefListed). A link either of whose blocks who may not see drops out the same
+// way, since neither end resolves to a node.
 //
 // It reads no document's address and follows no document's move: it takes the two documents by
 // uuid, and a document the pre-mortem conversion retired, whose address moved to a lens
@@ -1408,7 +1409,7 @@ func BlockLinks(ctx context.Context, q Queryer, who model.Actor, fromArtifact, t
 				block_moved_to(r.to_id)) as node_id
 		) target
 		join document_blocks t on t.node_id = target.node_id and t.artifact_id = $2::uuid
-		where r.artifact_id = $1::uuid and r.to_kind = 'block' and (r.to_types is null or block_ref_listed(r.to_types, t.node_id))
+		where r.artifact_id = $1::uuid and r.to_kind = 'block' and `+blockRefListed("r", "t.node_id")+`
 		order by r.created_at desc, r.from_node, t.node_id`, fromArtifact, toArtifact)
 	if err != nil {
 		return nil, fmt.Errorf("list the block links from %s to %s: %w", fromArtifact, toArtifact, err)

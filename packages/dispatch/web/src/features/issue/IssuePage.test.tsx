@@ -1173,6 +1173,7 @@ test("IssuePage opens the Decisions tab with the t d chord", async () => {
   const decisions = spyOn(api, "getIssueDecisions").mockResolvedValue({
     decisions: [],
     document: null,
+    entries: [],
     open_questions: [],
   });
   const view = renderIssuePage("/issues/CORE-1/spec");

@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/decisionread"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -58,7 +59,7 @@ func TestAKeepIsTwoAppendsOnTheDecisionNodeThatDecisionKeepsProjects(t *testing.
 		if err != nil {
 			t.Fatalf("load choices.md: %v", err)
 		}
-		decision, found, err := s.readDecisionNode(ctx, database.Pool, document, block)
+		decision, found, err := s.readDecisionNode(ctx, database.Pool, model.Actor{Kind: "user", ID: "alice"}, document, block)
 		if err != nil || !found {
 			t.Fatalf("read the decision %s: found %t, %v", block, found, err)
 		}
@@ -122,9 +123,9 @@ func TestAKeepIsTwoAppendsOnTheDecisionNodeThatDecisionKeepsProjects(t *testing.
 
 	// The decision's words are its own: the reading g1 it closes with is none of them.
 	before := read("d1")
-	if want := ":::decision{#d1 replaced=\"false\"}\n" + keptWords + "\n:::\n"; before.Text != want || before.TextSHA256 != decisionTextSum(want) {
+	if want := ":::decision{#d1 replaced=\"false\"}\n" + keptWords + "\n:::\n"; before.Text != want || before.TextSHA256 != decisionread.TextSum(want) {
 		t.Fatalf("d1 reads the words %q summed %s, want its own words %q and their sum %s, without the reading",
-			before.Text, before.TextSHA256, want, decisionTextSum(want))
+			before.Text, before.TextSHA256, want, decisionread.TextSum(want))
 	}
 	if !before.WaitingReview || before.Kept != nil || before.Replaced {
 		t.Fatalf("the agent's d1 before any Keep = %+v, want it waiting for review, kept by nobody", before)
@@ -178,6 +179,30 @@ func TestAKeepIsTwoAppendsOnTheDecisionNodeThatDecisionKeepsProjects(t *testing.
 		t.Fatalf("d1 after its reading's edit = %+v, want its sum %s and no review waiting", edited, before.TextSHA256)
 	}
 
+	// The reading's edit moved d1's row, whose text holds the reading, and none of d1's words: a
+	// Keep after it records the version the words last changed in, the one alice kept it at, on
+	// the row and in its decision.kept, and not the version the reading's edit wrote.
+	var moved int
+	if err := database.Pool.QueryRow(ctx, `select changed_version from document_blocks where artifact_id = $1::uuid and block_id = 'd1'`, choices.id).Scan(&moved); err != nil {
+		t.Fatalf("read d1's row after its reading's edit: %v", err)
+	}
+	if moved == changed {
+		t.Fatalf("the reading's edit left d1's row at version %d; this case needs it moved", changed)
+	}
+	keep("alice", before.TextSHA256)
+	if again := row(); again.changedVersion != changed {
+		t.Fatalf("the Keep after the reading's edit recorded the version %d on the row, want %d, the version d1's words last changed in, not %d, which moved only its reading",
+			again.changedVersion, changed, moved)
+	}
+	var payloadVersion int
+	if err := database.Pool.QueryRow(ctx, `
+		select (payload->>'changed_version')::int from events
+		where type = 'decision.kept' and payload->>'artifact_id' = $1 order by id desc limit 1
+	`, choices.id).Scan(&payloadVersion); err != nil || payloadVersion != changed {
+		t.Fatalf("the Keep after the reading's edit recorded the version %d in its decision.kept (%v), want %d", payloadVersion, err, changed)
+	}
+	kept = row()
+
 	// The decision's own words change: it waits for review again, and a Keep of the old sum is
 	// 409 DECISION_CHANGED, writing nothing.
 	agentEdit(t, handler, choices.id, latestVersion(t, database, choices.id).Number+1, replaceOp(keptWords, "We ship gRPC first."))
@@ -185,10 +210,11 @@ func TestAKeepIsTwoAppendsOnTheDecisionNodeThatDecisionKeepsProjects(t *testing.
 	if !reworded.WaitingReview || reworded.TextSHA256 == before.TextSHA256 {
 		t.Fatalf("d1 after its words changed = %+v, want a new sum and waiting for review again", reworded)
 	}
+	keptByHeld, keptSumHeld, keptEventsHeld := len(history(refs.TupleKeptBy)), len(history(refs.ValueKeptTextSum)), len(keptEvents())
 	expectRefusal(t, "a Keep of the sum d1 had before its words changed", dispatchRequest(t, handler, http.MethodPost,
 		"/api/v1/artifacts/"+choices.id+"/blocks/d1/keep", map[string]any{"text_sha256": before.TextSHA256}, "alice"),
 		http.StatusConflict, "DECISION_CHANGED")
-	if len(history(refs.TupleKeptBy)) != 1 || len(history(refs.ValueKeptTextSum)) != 1 || len(keptEvents()) != 1 || !row().same(kept) {
+	if len(history(refs.TupleKeptBy)) != keptByHeld || len(history(refs.ValueKeptTextSum)) != keptSumHeld || len(keptEvents()) != keptEventsHeld || !row().same(kept) {
 		t.Fatalf("the refused Keep wrote something: kept_by %+v, kept_text_sum %+v, %d decision.kept events, row %+v (was %+v)",
 			history(refs.TupleKeptBy), history(refs.ValueKeptTextSum), len(keptEvents()), row(), kept)
 	}

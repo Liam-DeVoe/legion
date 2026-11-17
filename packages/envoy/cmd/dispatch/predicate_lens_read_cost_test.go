@@ -334,7 +334,7 @@ func seedPredicateCostInbound(t *testing.T, arm *costArm, sizes predicateCostSiz
 		phrase:      phrase,
 		holds: func(t *testing.T, arm *costArm, shape *predicateCostShape) []string {
 			t.Helper()
-			block := readCostBlockID(shape.into)
+			block := predicateCostBlockID(shape.into)
 			references := arm.count(t, `
 				select count(*) from block_refs r
 				join document_blocks b on b.node_id = r.to_id
@@ -550,7 +550,7 @@ func settlePredicateCost(t *testing.T, arm *costArm, shapes []*predicateCostShap
 	t.Helper()
 	for _, shape := range shapes {
 		if shape.outOf == "" {
-			shape.outOf = readCostPointerAt(t, arm, shape.into)
+			shape.outOf = readCostPointerAt(t, arm, shape.into, readCostEdges(t, arm, "to", shape.into))
 		}
 		shape.rows = append(shape.holds(t, arm, shape),
 			fmt.Sprintf("%d block(s) of the issue's documents", arm.count(t,
@@ -653,7 +653,7 @@ func dropPredicateCostInboundIndexes(t *testing.T, head *costArm, shape *predica
 	var node string
 	if err := head.pool.QueryRow(context.Background(), `
 		select b.node_id from document_blocks b join artifacts a on a.id = b.artifact_id
-		where a.issue_key = $1 and b.block_id = $2`, shape.issue, readCostBlockID(shape.into)).Scan(&node); err != nil {
+		where a.issue_key = $1 and b.block_id = $2`, shape.issue, predicateCostBlockID(shape.into)).Scan(&node); err != nil {
 		t.Fatalf("%s: read the node id of %s, the node of %q: %v", head.name, shape.into, shape.name, err)
 	}
 	reads := func(plan string) []string {
@@ -772,6 +772,14 @@ func predicateCostCount(count int) string {
 func predicateCostDocumentOf(ref string) string {
 	if cut := strings.LastIndex(ref, "#b-"); cut >= 0 {
 		return ref[:cut]
+	}
+	return ref
+}
+
+// predicateCostBlockID is the block id a block address `<document>#b-<id>` names.
+func predicateCostBlockID(ref string) string {
+	if cut := strings.LastIndex(ref, "#b-"); cut >= 0 {
+		return ref[cut+len("#b-"):]
 	}
 	return ref
 }

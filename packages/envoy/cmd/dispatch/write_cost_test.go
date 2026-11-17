@@ -14,6 +14,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"slices"
 	"strings"
@@ -502,10 +503,19 @@ func TestNoWritePathThisChildChangesGetsSlower(t *testing.T) {
 		// others above it: its p99 decides. A path of seconds takes 20, where the 99th is the
 		// slowest of them, and the slowest of twenty readings of a 40-second tick is a statement
 		// about this pod's worst moment rather than about the path: its p50 decides, and its p99
-		// is printed beside it for the reader.
+		// is printed beside it for the reader. The line below states the rule each path took and
+		// the reason, from the path's own count of readings and the rank its p99 falls at.
 		statistic, here99, before99 := "p99", here.p99(), before.p99()
+		rank := int(math.Ceil(0.99 * float64(path.readings)))
+		rule := fmt.Sprintf("p99 decides, because this path costs tens of milliseconds and takes %d readings, "+
+			"so its p99 by nearest rank is reading %d of them with %d slower beside it, and no one hiccup of this pod moves it",
+			path.readings, rank, path.readings-rank)
 		if path.readings < costReadReadings {
 			statistic, here99, before99 = "p50", here.p50(), before.p50()
+			rule = fmt.Sprintf("p50 decides, because this path costs seconds and takes %d readings, where its p99 by nearest rank "+
+				"is reading %d of them, the slowest, which one hiccup of this pod decides, and %d readings of a path of seconds "+
+				"would be hours of wall time; its p99 is printed beside the p50 so a reader sees the tail it carries",
+				path.readings, rank, costReadReadings)
 		}
 		if path.absolute > 0 {
 			// The bound this environment allows: the stated one where the commit before this
@@ -534,10 +544,10 @@ func TestNoWritePathThisChildChangesGetsSlower(t *testing.T) {
 		}
 		relative := rise <= allowance
 		absolute := path.absolute == 0 || here99 < path.absolute
-		t.Logf("%s: %s %.1f ms at this child against %.1f ms at the commit before it, a rise of %.1f ms against the %s budget (%s)%s (p99 %.1f ms here, %.1f ms there, over %d reading(s) of each)",
+		t.Logf("%s: %s %.1f ms at this child against %.1f ms at the commit before it, a rise of %.1f ms against the %s budget (%s)%s (p99 %.1f ms here, %.1f ms there, over %d reading(s) of each). The rule this path is read by: %s.",
 			path.name, statistic, costMilliseconds(here99), costMilliseconds(before99),
 			costMilliseconds(rise), allowance, measured, costAbsoluteNote(path.absolute, here99),
-			costMilliseconds(here.p99()), costMilliseconds(before.p99()), path.readings)
+			costMilliseconds(here.p99()), costMilliseconds(before.p99()), path.readings, rule)
 		if !relative {
 			t.Errorf("%s: %s %.1f ms at this child against %.1f ms at the commit before this child, a rise of %.1f ms, over the %s budget (%s) (this child's readings %s; the commit before's %s)",
 				path.name, statistic, costMilliseconds(here99), costMilliseconds(before99),

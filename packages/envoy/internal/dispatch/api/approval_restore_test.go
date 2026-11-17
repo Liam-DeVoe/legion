@@ -195,7 +195,8 @@ func TestAnUploadOfTheApprovedTextCarriesTheApproval(t *testing.T) {
 // approveThenOthersAnswer writes restoreSpec and waveAsk into a new issue's spec, has alice approve
 // version 1 while the block is open, and has bob answer the block, which writes no version
 // (dispatch://INFRA-1150 R3): the block's row now holds bob's decision and alice's approval stands
-// at version 1. The agent then deletes the block, which writes version 2 and stales the approval.
+// at version 1. The agent cannot delete the block bob answered (R6): its delete is refused and
+// writes no version. Bob then deletes the block, which writes version 2 and stales the approval.
 func approveThenOthersAnswer(t *testing.T, handler http.Handler, database *store.Store, title string) approvedDocument {
 	t.Helper()
 	issue := createInteractionIssue(t, handler, "TEST", title, restoreSpec+"\n"+waveAsk)
@@ -204,7 +205,16 @@ func approveThenOthersAnswer(t *testing.T, handler http.Handler, database *store
 	answerDecisionBlock(t, handler, asks["wave"], "bob", []string{"Two"}, "", nil)
 	requireNoVersionPast(t, handler, database, issue.PrimaryArtifactID, 1)
 	requireNoCarry(t, handler, issue.PrimaryArtifactID, 1, "approved")
-	agentEdit(t, handler, issue.PrimaryArtifactID, 2, map[string]string{"op": "delete", "block": "wave"})
+	deleteWave := map[string]any{"actor": sessionActor(), "ops": []map[string]string{{"op": "delete", "block": "wave"}}}
+	if refused := sessionRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/edits", deleteWave); refused.Code != http.StatusConflict ||
+		decodeBody[errorBody](t, refused).Code != codeAnsweredAskKept {
+		t.Fatalf("the agent deletes the block bob answered: status=%d body=%s, want 409 %s", refused.Code, refused.Body.String(), codeAnsweredAskKept)
+	}
+	requireNoVersionPast(t, handler, database, issue.PrimaryArtifactID, 1)
+	if deleted := dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/edits", deleteWave, "bob"); deleted.Code != http.StatusOK {
+		t.Fatalf("bob deletes the block he answered: status=%d body=%s", deleted.Code, deleted.Body.String())
+	}
+	waitForArtifactVersion(t, handler, issue.PrimaryArtifactID, 2)
 	requireNoCarry(t, handler, issue.PrimaryArtifactID, 1, "stale")
 	return approvedDocument{issueKey: issue.Key, artifactID: issue.PrimaryArtifactID, asks: asks}
 }
@@ -212,7 +222,7 @@ func approveThenOthersAnswer(t *testing.T, handler http.Handler, database *store
 // The approved text over a block decided since is still the approved text: bob answered the block
 // alice approved open, which changes no byte of the document and leaves her approval standing
 // (R3: "a person's answer changes no byte of any document, and an approval of that document
-// stands through it"), and the agent deleted the block and inserts its approved markdown again.
+// stands through it"), bob deleted the block, and the agent inserts its approved markdown again.
 // Version 3 is version 1 byte for byte, and its block agrees with its row - it shows no answer
 // state, and asks the wording the row was decided on - so the restore carries alice's approval to
 // it, and answers the approval request the agent opened at version 2.

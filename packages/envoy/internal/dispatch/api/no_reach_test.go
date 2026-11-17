@@ -662,7 +662,6 @@ var routesNoSeedAnswers = map[string]string{
 	"GET /api/v1/credential-grants":                                      "the agent-secrets broker",
 	"GET /api/v1/machine-logins":                                         "the agent-secrets broker",
 	"GET /api/v1/signins":                                                "the agent-secrets broker",
-	"GET /api/v1/near-copy-checks/{id}":                                  "a near-copy check the create gate recorded",
 }
 
 // routeProbeQueries are the queries the reads that require one are sent, each naming the
@@ -753,6 +752,7 @@ func seededProbePath(pattern string, owned crossProject) string {
 		{"/artifacts/{id}", "/artifacts/" + owned.document},
 		{"/documents/{id}", "/documents/" + owned.document},
 		{"/priorities/{id}", "/priorities/" + owned.priority},
+		{"/near-copy-checks/{id}", "/near-copy-checks/" + owned.nearCopyCheck},
 		{"{block_id}", owned.documentBlock},
 	} {
 		path = strings.ReplaceAll(path, replacement.from, replacement.to)
@@ -809,6 +809,8 @@ type crossProject struct {
 	// priority is the id of a priority. A priority belongs to no project, so no project's key
 	// addresses it, and only the probe that reads each object at its own address reads it.
 	priority string
+	// nearCopyCheck is the id of the near-copy gate's record of one of the project's creates.
+	nearCopyCheck string
 }
 
 // seedTwoProjects writes one project with an issue, a document, a comment, an ask, a message, a
@@ -856,6 +858,15 @@ func seedTwoProjects(t *testing.T, handler http.Handler) crossProject {
 	// answers a row only for a priority the store holds: at a placeholder id it answers 404, and
 	// its traversal probe would read nothing.
 	owned.priority = createTestPriority(t, handler, map[string]any{"title": "A priority of the deployment"}, "alice").ID
+	// Every create records the near-copy gate's answer (issue_create.go, recordNearCopyCheck), so
+	// the project's own creates above left records; one of them is the row the read of a record
+	// by its id answers, which at a placeholder id answers 404 and reads nothing.
+	checks := decodeBody[model.NearCopyChecksPage](t, dispatchRequest(t, handler, http.MethodGet,
+		"/api/v1/near-copy-checks?project=TEST", nil, "alice"))
+	if len(checks.Checks) == 0 {
+		t.Fatalf("the project's creates left no near-copy check record, so its read by id has no row to answer")
+	}
+	owned.nearCopyCheck = checks.Checks[0].ID
 	return owned
 }
 

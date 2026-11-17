@@ -134,9 +134,10 @@ var nodeRegistry map[string]nodeKind
 var nodeKinds []string
 
 // personComparedKinds is every node kind of nodeRegistry whose predicate compares the person a
-// credential proves (comparesPerson), sorted: what a predicate over a node whose kind is a column
-// reads to pick the comparison of each node's own kind (authorIsOfRow).
-var personComparedKinds []string
+// credential proves (comparesPerson), sorted, and credentialComparedKinds every one whose
+// predicate compares the whole credential (comparesCredential): what a predicate over a node
+// whose kind is a column reads to pick the comparison of each node's own kind (authorIsOfRow).
+var personComparedKinds, credentialComparedKinds []string
 
 // registrySQL is the SQL the predicates over a node whose kind is a column splice from the
 // registry's own lists, rendered once the registry is built (deriveRegistryLists) rather than on
@@ -145,8 +146,9 @@ var registrySQL struct {
 	// kinds is every kind the registry holds a predicate for, as the literals of an `in` list
 	// (VisibleNode).
 	kinds string
-	// personCompared is personComparedKinds as the literals of an `in` list (authorIsOfRow).
-	personCompared string
+	// personCompared and credentialCompared are personComparedKinds and credentialComparedKinds
+	// as the literals of an `in` list (authorIsOfRow).
+	personCompared, credentialCompared string
 	// storedRewrites is the `when` arm of storedKindSQL's case for each entry the store keys
 	// under another kind, empty where no entry is.
 	storedRewrites string
@@ -215,11 +217,13 @@ func init() {
 }
 
 // deriveRegistryLists sets what is read off nodeRegistry once it is built: the kinds it resolves
-// (nodeKinds), the kinds whose predicate compares the person (personComparedKinds), and the SQL
-// rendered from them (registrySQL).
+// (nodeKinds), the kinds whose predicate compares the person (personComparedKinds) and those
+// whose predicate compares the whole credential (credentialComparedKinds), and the SQL rendered
+// from them (registrySQL).
 func deriveRegistryLists() {
 	nodeKinds = registryKinds(func(entry nodeKind) bool { return entry.load != nil })
 	personComparedKinds = registryKinds(func(entry nodeKind) bool { return entry.visibility.compares == comparesPerson })
+	credentialComparedKinds = registryKinds(func(entry nodeKind) bool { return entry.visibility.compares == comparesCredential })
 	var rewrites strings.Builder
 	for _, kind := range VisibilityKinds() {
 		if stored := nodeRegistry[kind].visibility.storedKind; stored != "" {
@@ -228,6 +232,7 @@ func deriveRegistryLists() {
 	}
 	registrySQL.kinds = quotedKinds(VisibilityKinds())
 	registrySQL.personCompared = quotedKinds(personComparedKinds)
+	registrySQL.credentialCompared = quotedKinds(credentialComparedKinds)
 	registrySQL.storedRewrites = rewrites.String()
 }
 
@@ -253,9 +258,14 @@ func registryKinds(keep func(nodeKind) bool) []string {
 type comparison uint8
 
 const (
+	// comparesAuthor compares the author the acting credential proved with the author the node's
+	// `made_by` records, the one rule of dispatch://INFRA-1149 (graphstore.AuthorIsSQL): the
+	// person a cookie, a personal token or a session the broker verified proves, else the
+	// credential's own id, else its workload. It is every kind dispatch://INFRA-1149 registers.
+	comparesAuthor comparison = iota
 	// comparesCredential compares the whole acting credential with the one that wrote the node
-	// (graphstore.AuthorIsSQL): every kind dispatch://INFRA-1149 registers, and an interaction.
-	comparesCredential comparison = iota
+	// (graphstore.AuthorCredentialIsSQL): an interaction.
+	comparesCredential
 	// comparesPerson compares the person the acting credential proves with the person the node's
 	// author names - a user's login or a token's owner - and the whole credential where that
 	// author names none (graphstore.AuthorPersonIsSQL): a lens, a block of a lens's finding, a
@@ -266,8 +276,11 @@ const (
 // authorIs is the comparison c states of the author a node's `made_by` column records and the
 // acting credential bound at param.
 func (c comparison) authorIs(column, param string) string {
-	if c == comparesPerson {
+	switch c {
+	case comparesPerson:
 		return graphstore.AuthorPersonIsSQL(column, param)
+	case comparesCredential:
+		return graphstore.AuthorCredentialIsSQL(column, param)
 	}
 	return graphstore.AuthorIsSQL(column, param)
 }
@@ -288,8 +301,9 @@ type nodeVisibility struct {
 	// on lens_block would find no row and answer the finding to everyone (storedAs).
 	storedKind string
 	// compares is what the predicate compares the author of a node reserved for that author
-	// with: the whole acting credential, the zero value and the comparison of every kind
-	// dispatch://INFRA-1149 registers, or the person that credential proves, which
+	// with: the author the acting credential proved, the zero value and the comparison of every
+	// kind dispatch://INFRA-1149 registers; the whole acting credential, which
+	// credentialAuthoredKind states; or the person that credential proves, which
 	// personAuthoredKind states.
 	compares comparison
 }
@@ -347,9 +361,10 @@ func ResolvesNodeKind(kind string) bool {
 }
 
 // VisibilityArg is the one argument every rendered predicate binds: the acting credential, as
-// graphstore's one author rule compares it, with the person that credential proves beside it,
-// which the kinds that compare the person read (graphstore.ActingCredential). A read binds it
-// once and names its placeholder in each predicate it renders, whatever kinds those are.
+// the kinds that compare the whole credential read it, with the person that credential proves
+// and the author it proved beside it, which the kinds that compare the person and graphstore's
+// one author rule read (graphstore.ActingCredential). A read binds it once and names its
+// placeholder in each predicate it renders, whatever kinds those are.
 func VisibilityArg(who model.Actor) any {
 	return graphstore.ActingCredential(who)
 }
@@ -570,16 +585,27 @@ func visibleWhere(kindExpr, address, authorIs string) string {
 
 // authorIsOfRow is the comparison of the author of the `graph_nodes` row alias names with the
 // acting credential bound at param, by the row's own kind: the person for a kind whose entry
-// compares the person (personComparedKinds), with a block's kind read off its id
-// (graphstore.AddressKindSQL), and the whole credential for every other kind. While no kind
-// compares the person, it is the whole credential's comparison alone, with no test of the kind.
+// compares the person (personComparedKinds), the whole credential for a kind whose entry compares
+// that (credentialComparedKinds), each with a block's kind read off its id
+// (graphstore.AddressKindSQL), and the author the credential proved for every other kind. A
+// comparison no kind states takes no arm, and while neither is stated it is the one rule's
+// comparison alone, with no test of the kind.
 func authorIsOfRow(alias, param string) string {
-	credential := graphstore.AuthorIsSQL(alias+`.made_by`, param)
-	if len(personComparedKinds) == 0 {
-		return credential
+	proved := graphstore.AuthorIsSQL(alias+`.made_by`, param)
+	if len(personComparedKinds) == 0 && len(credentialComparedKinds) == 0 {
+		return proved
 	}
-	return `(case when ` + graphstore.AddressKindSQL(alias+`.kind`, alias+`.id`) + ` in (` + registrySQL.personCompared +
-		`) then ` + graphstore.AuthorPersonIsSQL(alias+`.made_by`, param) + ` else ` + credential + ` end)`
+	kind := graphstore.AddressKindSQL(alias+`.kind`, alias+`.id`)
+	var arms strings.Builder
+	if len(personComparedKinds) > 0 {
+		arms.WriteString(` when ` + kind + ` in (` + registrySQL.personCompared + `) then ` +
+			graphstore.AuthorPersonIsSQL(alias+`.made_by`, param))
+	}
+	if len(credentialComparedKinds) > 0 {
+		arms.WriteString(` when ` + kind + ` in (` + registrySQL.credentialCompared + `) then ` +
+			graphstore.AuthorCredentialIsSQL(alias+`.made_by`, param))
+	}
+	return `(case` + arms.String() + ` else ` + proved + ` end)`
 }
 
 // quotedKinds is kinds as the SQL literals of an `in` list. Every kind is a constant of this

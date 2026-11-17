@@ -103,9 +103,10 @@ func TestACommentAskedForAuthorIsRefusedNamingItsKind(t *testing.T) {
 // asked and one her personal token asked: bob's page of her lists the project comment alone; the
 // page her cookie reads lists the three, the lens titled by its verdict and opening the issue's
 // page, and the cookie's run titled by the first line of its words and opening nothing; and the
-// page her token reads lists the project comment, the lens, whose predicate compares the person,
-// and the token's run, and neither the comment nor the run her cookie wrote, whose predicates
-// compare the whole credential. Each row answers its state and its visibility.
+// page her token reads lists the project comment, the comment reserved for her, whose predicate
+// compares the author a credential proved (dispatch://INFRA-1149's one rule), the lens, whose
+// predicate compares the person, and the token's run, and not the run her cookie asked, whose
+// predicate compares the whole credential. Each row answers its state and its visibility.
 //
 // The store's writer takes no comment reserved for its author (graphstore.ErrVisibilityNotAdmitted),
 // so each such comment's node is seeded as such a write would store it
@@ -170,7 +171,7 @@ func TestAPersonPageAnswersOnlyWhereThePersonHoldsANodeTheReaderMaySee(t *testin
 			title: "Which risk did alice's cookie ask about?", opensNothing: true},
 	})
 	requirePage(t, personPageRequest(t, handler, "/api/v1/people/alice/nodes", token), "alice", map[string]personPageRow{
-		public.ID: comment(graphstore.VisibilityProject), alicesLens: lens,
+		public.ID: comment(graphstore.VisibilityProject), alicesPrivate: comment(graphstore.VisibilityAuthor), alicesLens: lens,
 		tokenRun.ID: {kind: graphstore.KindInteraction, visibility: graphstore.VisibilityAuthor,
 			title: "Which risk did alice's token ask about?", opensNothing: true},
 	})

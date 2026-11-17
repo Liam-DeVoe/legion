@@ -127,8 +127,8 @@ func TestTheKindsThatTakeAuthorAreThisChildsRegisteredKinds(t *testing.T) {
 		flagged  bool
 		compares comparison
 	}{
-		{"resolvedKind", resolvedKind(loadStoreNodes, nodeVisibility{}), false, comparesCredential},
-		{"unresolvedKind", unresolvedKind(nodeVisibility{}), false, comparesCredential},
+		{"resolvedKind", resolvedKind(loadStoreNodes, nodeVisibility{}), false, comparesAuthor},
+		{"unresolvedKind", unresolvedKind(nodeVisibility{}), false, comparesAuthor},
 		{"personAuthoredKind", personAuthoredKind(loadStoreNodes), true, comparesPerson},
 		{"credentialAuthoredKind", credentialAuthoredKind(loadStoreNodes), true, comparesCredential},
 	} {
@@ -147,10 +147,12 @@ func TestTheKindsThatTakeAuthorAreThisChildsRegisteredKinds(t *testing.T) {
 // credential that proves the person its author names - alice's personal token reads what her
 // cookie wrote, under any spelling of her login, and her cookie what her token wrote - and to no
 // other person's; where the author names no person, a workload, it answers the node to that very
-// credential. A kind that compares the whole credential (credentialAuthoredKind), and every kind
-// dispatch://INFRA-1149 registers, answers the node to the credential that wrote it alone, so
-// alice's cookie reads nothing of what her token recorded. A node whose author is nobody is
-// answered to nobody under either comparison, and a project node to everybody.
+// credential. A kind that compares the whole credential (credentialAuthoredKind) answers the node
+// to the credential that wrote it alone, so alice's cookie reads nothing of what her token
+// recorded. Every kind dispatch://INFRA-1149 registers compares the author a credential proved,
+// that child's one rule (graphstore.AuthorIsSQL), so a comment alice's cookie wrote is read by
+// every credential that proves alice. A node whose author is nobody is answered to nobody under
+// every comparison, and a project node to everybody.
 //
 // Every form the registry renders is read for each node and each reader - the loader's own read
 // (Node, which binds VisibleRow), VisibleKind, VisibleKindRow, VisibleEnd and VisibleNode - and
@@ -219,7 +221,7 @@ func TestAKindComparesThePersonOrTheCredentialItsEntryStates(t *testing.T) {
 			[]string{"alice's cookie"}},
 		{"the credential kind, written by nobody", node(credentialComparedTestKind, "by-nobody", graphstore.VisibilityAuthor, shared), nil},
 		{"a comment, written by alice's cookie", node(graphstore.KindComment, "11111111-1111-4111-8111-111111111111", graphstore.VisibilityAuthor, aliceCookie),
-			[]string{"alice's cookie"}},
+			[]string{"alice's cookie", "alice's personal token", "alice's proved session"}},
 		// The kinds of dispatch://INFRA-1950 this build registers with the person comparison, a
 		// finding among them, which the store keys as a block and every predicate reads under that
 		// kind, so a finding reserved for its author is no more visible than a lens.
