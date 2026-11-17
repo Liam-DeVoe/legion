@@ -198,23 +198,10 @@ func TestCollectReplayMeta(t *testing.T) {
 // text alone.
 func TestReadCgroupCPUQuota(t *testing.T) {
 	v2Root := func(t *testing.T, cpuMax string) string {
-		dir := t.TempDir()
-		if err := os.WriteFile(filepath.Join(dir, "cpu.max"), []byte(cpuMax+"\n"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		return dir
+		return cgroupFiles(t, map[string]string{"cpu.max": cpuMax + "\n"})
 	}
 	v1Root := func(t *testing.T, quota, period string) string {
-		dir := t.TempDir()
-		if err := os.MkdirAll(filepath.Join(dir, "cpu"), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		for name, text := range map[string]string{"cpu.cfs_quota_us": quota, "cpu.cfs_period_us": period} {
-			if err := os.WriteFile(filepath.Join(dir, "cpu", name), []byte(text+"\n"), 0o644); err != nil {
-				t.Fatal(err)
-			}
-		}
-		return dir
+		return cgroupFiles(t, map[string]string{"cpu/cpu.cfs_quota_us": quota + "\n", "cpu/cpu.cfs_period_us": period + "\n"})
 	}
 	for _, c := range []struct {
 		name       string

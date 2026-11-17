@@ -40,6 +40,12 @@
 # One run at a time per LOADTEST_ROOT: this script takes the root's lock (common.sh) and the
 # run-step.sh it starts inherits it. A failure of this script ends that step, so the root is free
 # for the next run instead of being held by a step that measures on alone.
+#
+# LOADTEST_SERVER_CPUS and LOADTEST_GENERATOR_CPUS (common.sh, CPU pinning) are checked before the
+# lock, as run-series.sh checks them: a list taskset refuses, two lists that overlap, a generator
+# list too wide for the pod's CPU quota and `auto` without the server list are refused before
+# anything starts, and the generator's list is settled once (check_cpu_lists) and exported, so the
+# step's run-step.sh and this script's own stack.sh calls inside the window take it as given.
 set -euo pipefail
 
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
@@ -81,6 +87,7 @@ for seconds in warm_at kill_at down; do
   [[ ${!seconds} =~ ^[0-9]+$ ]] || die "--${seconds//_/-} is a whole number of seconds, not '${!seconds}'"
 done
 ((warm_at < kill_at)) || die "--warm-at ($warm_at s) must come before --kill-at ($kill_at s)"
+check_cpu_lists
 
 lock_root "$ROOT"
 out=$(realpath -m -- "$out")

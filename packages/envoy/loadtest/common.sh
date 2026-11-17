@@ -376,6 +376,10 @@ auto_generator_cpus() {
   printf '%s\n' "$out"
 }
 
+# quota_text QUOTA_CPUS: the pod's CPU quota of QUOTA_CPUS whole CPUs as generator_cpus names it,
+# with the text it was read from and where.
+quota_text() { printf "the pod's CPU quota of %s ('%s' under %s)\n" "$(cpus_text "$1")" "$(cpu_quota)" "$CGROUP_ROOT"; }
+
 # generator_cpus: the list the generator runs on, which check_cpu_lists makes
 # LOADTEST_GENERATOR_CPUS (README.md, CPU pinning). taskset reserves nothing inside a CPU quota:
 # CFS throttles every process of the pod once together they pass it, the pinned server side with
@@ -384,42 +388,40 @@ auto_generator_cpus() {
 # least one (auto_generator_cpus), which it names; and a given list of more CPUs than that count is
 # refused, naming the quota, both lists and the list `auto` gives. Without a quota an unset or
 # given list stands, and `auto` is every CPU of the pod outside the server list; `auto` without the
-# server list is refused. It prints nothing for a list that stays unset.
+# server list is refused. It prints nothing for a list that stays unset. A given list that fits,
+# as a script a run starts gets the list its parent settled, costs a read of the quota and two CPU
+# counts: stack.sh restart-dispatch runs this inside the window.
 generator_cpus() {
-  local gen=${LOADTEST_GENERATOR_CPUS:-} server=${LOADTEST_SERVER_CPUS:-} quota servers room="" auto limit n what
-  if [ -z "$server" ]; then
-    [ "$gen" != auto ] ||
-      die "LOADTEST_GENERATOR_CPUS=auto gives the generator the pod's CPUs outside LOADTEST_SERVER_CPUS, which is unset: set the server list too, or give the generator a list of its own"
-    [ -z "$gen" ] || printf '%s\n' "$gen"
-    return 0
-  fi
-  quota=$(quota_cpus)
+  local gen=${LOADTEST_GENERATOR_CPUS:-} server=${LOADTEST_SERVER_CPUS:-} quota="" servers room="" auto n what
+  [ -n "$server" ] || [ "$gen" != auto ] ||
+    die "LOADTEST_GENERATOR_CPUS=auto gives the generator the pod's CPUs outside LOADTEST_SERVER_CPUS, which is unset: set the server list too, or give the generator a list of its own"
+  [ -z "$server" ] || quota=$(quota_cpus)
   if [ -z "$quota" ] && [ "$gen" != auto ]; then
     [ -z "$gen" ] || printf '%s\n' "$gen"
     return 0
   fi
-  servers=$(server_cpu_count)
   if [ -n "$quota" ]; then
+    servers=$(server_cpu_count)
     room=$((quota - servers))
     ((room >= 1)) || room=1
-    limit="the pod's CPU quota of $(cpus_text "$quota") ('$(cpu_quota)' under $CGROUP_ROOT)"
   fi
-  auto=$(auto_generator_cpus "$room") || auto=""
   if [ -n "$gen" ] && [ "$gen" != auto ]; then
     # A list this script cannot read is check_cpu_list's to refuse.
     n=$(cpu_count "$gen") || { printf '%s\n' "$gen" && return 0; }
-    ((n <= room)) ||
-      die "LOADTEST_GENERATOR_CPUS='$gen', $(cpus_text "$n"), and LOADTEST_SERVER_CPUS='$server', $(cpus_text "$servers"), ask for $((n + servers)) CPUs, more than $limit: CFS throttles every process of the pod once together they pass the quota, the pinned server side with them, since taskset reserves no CPU inside it. Set LOADTEST_GENERATOR_CPUS=auto, which is '${auto}' here, or leave it unset"
+    if ((n > room)); then
+      auto=$(auto_generator_cpus "$room") || auto=""
+      die "LOADTEST_GENERATOR_CPUS='$gen', $(cpus_text "$n"), and LOADTEST_SERVER_CPUS='$server', $(cpus_text "$servers"), ask for $((n + servers)) CPUs, more than $(quota_text "$quota"): CFS throttles every process of the pod once together they pass the quota, the pinned server side with them, since taskset reserves no CPU inside it. Set LOADTEST_GENERATOR_CPUS=auto, which is '${auto}' here, or leave it unset"
+    fi
     printf '%s\n' "$gen"
     return 0
   fi
-  [ -n "$auto" ] ||
+  auto=$(auto_generator_cpus "$room") ||
     die "the pod's CPUs ($(pod_cpus | paste -sd, -)) hold none outside LOADTEST_SERVER_CPUS='$server', so the generator would have no CPU of its own"
-  n=$(cpu_count "$auto")
   what="LOADTEST_GENERATOR_CPUS=auto"
   [ -n "$gen" ] || what="LOADTEST_GENERATOR_CPUS is unset, which beside LOADTEST_SERVER_CPUS under a CPU quota is auto"
   if [ -n "$quota" ]; then
-    note "$what: the generator runs on $auto, $(cpus_text "$n") of the pod outside LOADTEST_SERVER_CPUS='$server', $(cpus_text "$servers"), so the two lists ask for $((n + servers)) CPUs against $limit"
+    n=$(cpu_count "$auto")
+    note "$what: the generator runs on $auto, $(cpus_text "$n") of the pod outside LOADTEST_SERVER_CPUS='$server', $(cpus_text "$servers"), so the two lists ask for $((n + servers)) CPUs against $(quota_text "$quota")"
   else
     note "$what: the generator runs on $auto, every CPU of the pod outside LOADTEST_SERVER_CPUS='$server'; the pod has no CPU quota (under $CGROUP_ROOT)"
   fi
@@ -435,14 +437,13 @@ generator_cpus() {
 # the list's count, naming both: a Dispatch pinned to N CPUs with M processors is not the bed any
 # reading names.
 gomaxprocs() {
-  local cpus n what=CPUs
+  local cpus n
   cpus=$(server_cpu_count) ||
     die "LOADTEST_SERVER_CPUS='$LOADTEST_SERVER_CPUS' is a list this script cannot read; write it as N, N-M or N-M:S items separated by commas"
   n=${LOADTEST_GOMAXPROCS:-${cpus:-$(nproc)}}
   [[ $n =~ ^[1-9][0-9]*$ ]] || die "LOADTEST_GOMAXPROCS='$n' is not a positive integer"
-  [ "$cpus" != 1 ] || what=CPU
   [ -z "$cpus" ] || [ "$n" = "$cpus" ] ||
-    die "LOADTEST_GOMAXPROCS=$n (run-step.sh --gomaxprocs) differs from LOADTEST_SERVER_CPUS='$LOADTEST_SERVER_CPUS', $cpus $what: a Dispatch pinned to $cpus $what with GOMAXPROCS $n is not the bed any reading names. Leave LOADTEST_GOMAXPROCS unset, and GOMAXPROCS follows the list, or set it to $cpus"
+    die "LOADTEST_GOMAXPROCS=$n (run-step.sh --gomaxprocs) differs from LOADTEST_SERVER_CPUS='$LOADTEST_SERVER_CPUS', $(cpus_text "$cpus"): a Dispatch pinned to $(cpus_text "$cpus") with GOMAXPROCS $n is not the bed any reading names. Leave LOADTEST_GOMAXPROCS unset, and GOMAXPROCS follows the list, or set it to $cpus"
   printf '%s\n' "$n"
 }
 

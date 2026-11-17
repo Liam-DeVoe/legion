@@ -36,9 +36,10 @@
 # loadgen run gets; (n) a step whose box stays busy past LOADTEST_QUIET_WAIT is refused before its
 # reset, and its not-run record carries every reading, the bar and the wait; (o) the bar follows
 # LOADTEST_MAX_BUSY_BEFORE and the wait LOADTEST_QUIET_WAIT (0: one reading, then the refusal); (p)
-# a step and a series whose generator list, with the server list, asks for more CPUs than the pod's
-# CPU quota are refused before their build, naming the quota, both lists and the list auto gives,
-# and the step's not-run record carries that refusal; on the faked stack, (q) a step beside
+# a step, a series and a restart step whose generator list, with the server list, asks for more
+# CPUs than the pod's CPU quota are refused before their build, naming the quota, both lists and
+# the list auto gives, the step's not-run record carries that refusal, and restart-step.sh refuses
+# it itself, before it starts its step; on the faked stack, (q) a step beside
 # LOADTEST_SERVER_CPUS under a CPU quota whose generator list is unset, and one whose list is auto,
 # run loadgen run on the list auto gives, while with no quota an unset list stays unset.
 set -euo pipefail
@@ -46,6 +47,7 @@ set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly run_step="${here}/run-step.sh"
 readonly run_series="${here}/run-series.sh"
+readonly restart_step="${here}/restart-step.sh"
 temporary_dir="$(mktemp -d)"
 readonly temporary_dir
 readonly fake_bin_dir="${temporary_dir}/bin"
@@ -247,6 +249,10 @@ expect_record "a step whose generator list is too wide for the pod's CPU quota" 
 expect_refused_before_build "a series whose generator list is too wide for the pod's CPU quota" \
   "ask for 4 CPUs, more than the pod's CPU quota of 2 CPUs" \
   env LOADTEST_CGROUP_ROOT="$quota2" LOADTEST_SERVER_CPUS=0 LOADTEST_GENERATOR_CPUS=1-3 bash "$run_series"
+# restart-step.sh settles the lists before its lock, so the refusal is its own, not its step's.
+expect_refused_before_build "a restart step whose generator list is too wide for the pod's CPU quota" \
+  "restart-step.sh: LOADTEST_GENERATOR_CPUS='1-3', 3 CPUs, and LOADTEST_SERVER_CPUS='0', 1 CPU, ask for 4 CPUs" \
+  env LOADTEST_CGROUP_ROOT="$quota2" LOADTEST_SERVER_CPUS=0 LOADTEST_GENERATOR_CPUS=1-3 bash "$restart_step" restart-quota
 
 # A step refused at a flag check leaves its not-run record beside its step directory, also when the
 # --out that names that directory comes after the refused flag.
@@ -526,8 +532,8 @@ printf 'PASS: the gate'"'"'s bar follows LOADTEST_MAX_BUSY_BEFORE and its wait L
 
 # (q) The generator's list on the faked stack, beside LOADTEST_SERVER_CPUS=0. The pin's check takes
 # a verdict kept for the test's own boot, so it times no loop. generator_step STEP CGROUP_ROOT
-# [NAME=VALUE...]: a --replay step on the cgroup root CGROUP_ROOT, its loadgen run opening a window
-# at once, under the NAME=VALUE variables. Sets rc, out (what the step wrote) and gen (the
+# [NAME=VALUE...]: gate_step's step on a quiet box (every reading 0), on the cgroup root
+# CGROUP_ROOT, under the NAME=VALUE variables. Sets rc and out as gate_step does, and gen (the
 # LOADTEST_GENERATOR_CPUS loadgen run got: "unset" for none, "none" when loadgen run did not run).
 readonly boot_file="${temporary_dir}/boot_id" boot_id=0f1e2d3c-0000-4000-8000-0000000000aa
 printf '%s\n' "$boot_id" >"$boot_file"
@@ -537,11 +543,7 @@ generator_step() {
   local step=$1 root=$2
   shift 2
   rm -f "${relay_root}/loadgen-run-generator-cpus"
-  : >"${relay_root}/end-window"
-  rc=0
-  "${relay_env[@]}" LOADTEST_CGROUP_ROOT="$root" LOADTEST_SERVER_CPUS=0 LOADTEST_BOOT_ID_FILE="$boot_file" \
-    LOADTEST_TEST_LOADGEN=window "$@" bash "${relay_dir}/run-step.sh" "$step" --replay >"${temporary_dir}/generator-output" 2>&1 || rc=$?
-  out=$(<"${temporary_dir}/generator-output")
+  gate_step "$step" 0 LOADTEST_CGROUP_ROOT="$root" LOADTEST_SERVER_CPUS=0 LOADTEST_BOOT_ID_FILE="$boot_file" "$@"
   gen=$(cat "${relay_root}/loadgen-run-generator-cpus" 2>/dev/null || echo none)
 }
 

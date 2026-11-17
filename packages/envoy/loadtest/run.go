@@ -768,11 +768,12 @@ type metaFile struct {
 	ServerCPUCount  *int   `json:"server_cpu_count"`
 	// GeneratorCPUs is the CPU list this loadgen ran on (LOADTEST_GENERATOR_CPUS as common.sh's
 	// check_cpu_lists settled it: `auto`, or an unset list beside the server list under a CPU
-	// quota, is the list it stands for), "" unpinned. CPUQuota is the pod's CPU quota as its cgroup
-	// gives it (podCPUQuota): cgroup v2's cpu.max text, "max 100000" for none, else cgroup v1's
-	// cpu.cfs_quota_us and cpu.cfs_period_us as "<quota> <period>", "-1 100000" for none; null when
-	// neither can be read. QuotaCPUs is that quota in whole CPUs, rounded down, as common.sh's
-	// quota_cpus sizes the generator's list by; null without a quota.
+	// quota, is the list it stands for), "" unpinned. CPUQuota is the CPU quota of the pod this
+	// loadgen runs in (on the local stack the server's too, on a cluster copy the runner's alone)
+	// as its cgroup gives it (podCPUQuota): cgroup v2's cpu.max text, "max 100000" for none, else
+	// cgroup v1's cpu.cfs_quota_us and cpu.cfs_period_us as "<quota> <period>", "-1 100000" for
+	// none; null when neither can be read. QuotaCPUs is that quota in whole CPUs, rounded down, as
+	// common.sh's quota_cpus sizes the generator's list by; null without a quota.
 	GeneratorCPUs string  `json:"generator_cpus"`
 	CPUQuota      *string `json:"cpu_quota"`
 	QuotaCPUs     *int    `json:"quota_cpus"`
@@ -1930,8 +1931,8 @@ func collectMeta(ctx context.Context, cfg runConfig, lg *log.Logger) metaFile {
 		lg.Printf("meta: quiet-box gate: the step started on a box %.0f%% busy, at or under its bar of %.0f%% (LOADTEST_MAX_BUSY_BEFORE); its readings %s",
 			100*start, 100*bar, strings.Join(read, ", "))
 	}
-	// The quota the pod's processes share, beside how busy the box was before the step: a pinned
-	// server is throttled with the rest of the pod once they together pass it.
+	// The quota of the pod loadgen runs in, beside how busy the box was before the step: on the
+	// local stack a pinned server is throttled with the rest of that pod once they together pass it.
 	m.CPUQuota, m.QuotaCPUs = podCPUQuota(cfg.cgroupRoot)
 	m.GOMAXPROCS, m.GOMAXPROCSError = readDispatchGOMAXPROCS(cfg.ep.pids["dispatch"])
 	if cfg.serverCPUs != "" {
@@ -2036,8 +2037,8 @@ func podCPUQuota(root string) (text *string, cpus *int) {
 		v1 := fmt.Sprintf("%d %d", q.QuotaUS, q.PeriodUS)
 		text = &v1
 	}
-	if ok && q.QuotaUS > 0 {
-		n := int(q.QuotaUS / q.PeriodUS)
+	if c, ok := q.cores(); ok {
+		n := int(c)
 		cpus = &n
 	}
 	return text, cpus

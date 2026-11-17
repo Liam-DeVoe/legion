@@ -82,9 +82,10 @@ func TestTablesNameTheQuietGatesReadingBesideBoxBusyBefore(t *testing.T) {
 }
 
 // TestTablesShowThePodsThrottlingInTheResourcesTable: the Resources table's last column is how often
-// and how long CFS stopped the pod's processes over the window (summary.json
+// and how long CFS stopped the processes of the pod loadgen run ran in over the window (summary.json
 // resources.cpu_throttled_periods and resources.cpu_throttled_ms), 0 / 0 for a step never
-// throttled and "-" for one that read no cpu.stat, and a note under the table says what it holds.
+// throttled and "-" for one that read no cpu.stat, and a note under the table says what it holds:
+// the server's pod too on the local stack, the runner pod alone on a cluster copy.
 func TestTablesShowThePodsThrottlingInTheResourcesTable(t *testing.T) {
 	periods, ms, noPeriods, noMs := int64(1234), 5678.4, int64(0), 0.0
 	step := func(name string, r resourcesSummary) stepData {
@@ -105,8 +106,12 @@ func TestTablesShowThePodsThrottlingInTheResourcesTable(t *testing.T) {
 			t.Errorf("%s: the throttling cell of %q, want %q:\n%s", name, c, want, text)
 		}
 	}
-	if !strings.Contains(text, "\n"+podThrottledH+": ") {
-		t.Errorf("no note says what the throttling cell holds:\n%s", text)
+	note := noteLine(text, podThrottledH+": ")
+	for _, want := range []string{"the pod `loadgen run` ran in", "On the local stack that pod is the server's too",
+		"on a cluster copy it is the runner pod alone, and Dispatch's throttling is the cluster sampler's `throttled_s`."} {
+		if !strings.Contains(note, want) {
+			t.Errorf("the note on the throttling cell lacks %q:\n%s", want, text)
+		}
 	}
 	checkRowWidths(t, md)
 }

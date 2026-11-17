@@ -532,7 +532,13 @@ func resourcesTable(md *markdown, steps []stepData) {
 		"`resources.pg_read_errors` and `resources.pprof_read_errors`")
 	md.line("\nheap live: the in-use bytes of Dispatch's heap profile (`/debug/pprof/heap`), read every 15 s by a run given -heap-samples, and `-` in a run without it: a sampled estimate of the live heap, not runtime.MemStats HeapInuse.")
 	md.line("\nbox busy before / gate: the box's busy share over 5 s just before the step (`meta.json` `box_busy_before`), then the reading of run-step.sh's quiet-box gate the step started on, at or under `LOADTEST_MAX_BUSY_BEFORE` (`box_busy_gate`); `-` for a reading not taken, as by a step run without the gate.")
-	md.line("\n%s: how often and how long CFS stopped the pod's processes over the window for passing its CPU quota, from the pod's `cpu.stat` at the window's start and end (`resources.cpu_throttled_periods`, `resources.cpu_throttled_ms`); a pinned server is stopped with the rest of the pod, so a step whose cell is not 0 / 0 ran throttled, and `-` is a step that read no `cpu.stat`.", podThrottledH)
+	// Dispatch's own throttling on a cluster copy is the cluster sampler's; the note names
+	// cgroup.json only in a table that holds one, as a table without it names no cgroup.
+	dispatchThrottled := "the cluster sampler's `throttled_s`"
+	if withCgroup {
+		dispatchThrottled = "`cgroup.json`'s `throttled_s`"
+	}
+	md.line("\n%s: how often and how long CFS stopped the processes of the pod `loadgen run` ran in over the window, for passing that pod's CPU quota, from its `cpu.stat` at the window's start and end (`resources.cpu_throttled_periods`, `resources.cpu_throttled_ms`); `-` is a step that read no `cpu.stat`. On the local stack that pod is the server's too, and a pinned server is stopped with the rest of it, so a step whose cell is not 0 / 0 ran with its server throttled; on a cluster copy it is the runner pod alone, and Dispatch's throttling is %s.", podThrottledH, dispatchThrottled)
 	if memStats {
 		md.line("\n%s: the step ran before the sampler read the heap profile, so its heap cell is runtime.MemStats HeapInuse from `/debug/pprof/heap?debug=1` (summary.json `resources.heap_inuse_mib`), a different metric that is not comparable with a heap live cell.", memStatsHeapMark)
 	}
@@ -540,7 +546,8 @@ func resourcesTable(md *markdown, steps []stepData) {
 	cgroupNotes(md, withCgroup, cgFailed, cgUnmeasured)
 }
 
-// podThrottledH is the Resources table's column of the pod's CFS throttling over the window.
+// podThrottledH is the Resources table's column of the CFS throttling of the pod loadgen run ran
+// in, over the window.
 const podThrottledH = "pod CPU throttled periods / ms"
 
 // boxBusyBeforeCell is the Resources table's box busy before / gate cell: meta.json's

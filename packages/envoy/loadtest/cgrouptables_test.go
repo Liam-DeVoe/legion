@@ -102,6 +102,10 @@ func TestTablesTakeTheResourcesCellsFromCgroupJSON(t *testing.T) {
 			t.Errorf("no note defines %s:\n%s", mark, md)
 		}
 	}
+	// The throttling cell is the runner pod's own on a cluster copy; Dispatch's is cgroup.json's.
+	if note := noteLine(md, podThrottledH+": "); !strings.Contains(note, "the runner pod alone, and Dispatch's throttling is `cgroup.json`'s `throttled_s`.") {
+		t.Errorf("the throttling note of a table with cgroup.json does not send Dispatch's throttling to cgroup.json:\n%s", note)
+	}
 	checkRowWidths(t, md)
 }
 
