@@ -299,10 +299,10 @@ test.skipIf(skip)(
   600_000
 );
 
-// daemon-pane.go's own copies of the daemon's plan guidance, its rule of an owner's launch and its
-// copy of the guidance file, are held to the daemon's at this checkout by daemon-pane_test.go,
-// compiled with the program inside this daemon module. A test binary exits 0 on a -test.run that
-// selects no test, so the row reads the test's own PASS line.
+// daemon-pane.go's own copies of the daemon's plan guidance — its rule of an owner's launch, its
+// copy of the guidance file and its join of a prompt — are held to the daemon's at this checkout
+// by daemon-pane_test.go, compiled with the program inside this daemon module. A test binary exits
+// 0 on a -test.run that selects no test, so the row reads each test's own PASS line.
 test.skipIf(skip)(
   "holds the tool's restatement of the plan guidance to the daemon's at this checkout",
   () => {
@@ -313,9 +313,18 @@ test.skipIf(skip)(
         "main_test.go": path.join(import.meta.dir, "daemon-pane_test.go"),
       },
       "test",
-      ["-test.run", "^TestTheToolRestatesTheDaemonsPlanGuidance$", "-test.v"]
+      [
+        "-test.run",
+        "^(TestTheToolRestatesTheDaemonsPlanGuidance|TestTheToolJoinsAPromptAsTheDaemonDoes)$",
+        "-test.v",
+      ]
     );
-    expect(out).toContain("\n--- PASS: TestTheToolRestatesTheDaemonsPlanGuidance ");
+    for (const name of [
+      "TestTheToolRestatesTheDaemonsPlanGuidance",
+      "TestTheToolJoinsAPromptAsTheDaemonDoes",
+    ]) {
+      expect(out).toContain(`\n--- PASS: ${name} `);
+    }
   },
   600_000
 );

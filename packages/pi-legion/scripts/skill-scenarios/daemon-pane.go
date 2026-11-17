@@ -130,13 +130,40 @@ const (
 	rigChild   = "RIG-2"
 )
 
-// printPrompt prints the system prompt a launch of role starts with (rolePrompt), for the rig's
+// rigClaim is the claim `prompt` composes for: the rig's claim on the root issue of its tree
+// (root) or on a child issue under that root.
+func rigClaim(role claim.Role, root bool) (supervise.Claim, error) {
+	issue := rigChild
+	if root {
+		issue = rigRoot
+	}
+	token, err := claim.NewToken(rigProject, issue, role)
+	if err != nil {
+		return supervise.Claim{}, err
+	}
+	return supervise.Claim{Token: token, Project: rigProject, Tree: rigRoot, Issue: issue, Role: role, Generation: 1}, nil
+}
+
+// guidedPrompt is the system prompt a launch of c starts with (rolePrompt), with the deployment's
+// plan guidance where guidance is not nil and c's launch is an owner's (ownsPlan): a blank line
+// and the daemon's copy of the file, its trailing newlines dropped, as runtime.ComposePrompt joins
+// a part after the addressing. Any other role's prompt is the prompt without it, byte for byte.
+func guidedPrompt(stateDir string, c supervise.Claim, guidance []byte) (string, error) {
+	prompt, err := rolePrompt(stateDir, rigProject, c)
+	if err != nil {
+		return "", err
+	}
+	if guidance != nil && ownsPlan(c) {
+		prompt += "\n\n" + strings.TrimRight(planGuidanceCopy(rigProject, guidance), "\n")
+	}
+	return prompt, nil
+}
+
+// printPrompt prints the system prompt a launch of role starts with (guidedPrompt), for the rig's
 // claim on the root issue of its tree (root) or on a child issue under it, and nothing else: no
 // newline is added, so the output is the text of the claim's prompt file. A guidanceFile that is
-// not "" is the deployment's plan guidance: an owner's prompt then ends with a blank line and the
-// daemon's copy of it, its trailing newlines dropped, as runtime.ComposePrompt joins it after the
-// addressing, and any other role's prompt is unchanged. It is refused, before the file is read,
-// by a checkout whose daemon has no key plan_guidance, since no launch of that daemon carries one.
+// not "" is the deployment's plan guidance. It is refused, before the file is read, by a checkout
+// whose daemon has no key plan_guidance, since no launch of that daemon carries one.
 func printPrompt(role claim.Role, root bool, guidanceFile string) error {
 	var guidance []byte
 	if guidanceFile != "" {
@@ -148,11 +175,7 @@ func printPrompt(role claim.Role, root bool, guidanceFile string) error {
 			return fmt.Errorf("read the plan guidance: %w", err)
 		}
 	}
-	issue := rigChild
-	if root {
-		issue = rigRoot
-	}
-	token, err := claim.NewToken(rigProject, issue, role)
+	c, err := rigClaim(role, root)
 	if err != nil {
 		return err
 	}
@@ -161,13 +184,9 @@ func printPrompt(role claim.Role, root bool, guidanceFile string) error {
 		return err
 	}
 	defer os.RemoveAll(stateDir)
-	c := supervise.Claim{Token: token, Project: rigProject, Tree: rigRoot, Issue: issue, Role: role, Generation: 1}
-	prompt, err := rolePrompt(stateDir, rigProject, c)
+	prompt, err := guidedPrompt(stateDir, c, guidance)
 	if err != nil {
 		return err
-	}
-	if guidanceFile != "" && ownsPlan(c) {
-		prompt += "\n\n" + strings.TrimRight(planGuidanceCopy(rigProject, guidance), "\n")
 	}
 	_, err = io.WriteString(os.Stdout, prompt)
 	return err
@@ -319,39 +338,48 @@ func firstBytes(path string, n int) ([]byte, error) {
 	return head[:read], nil
 }
 
-// rolePrompt is the system prompt a launch of c starts with, composed as the daemon composes it
-// (specs.SpawnSpec): the role prompts snapshotted under stateDir, the role's parts concatenated
-// with the newlines that end them dropped, a blank line, then its addressing for the rig's
-// repository, which for the architect of a tree's root ends with the design gate steps of a
+// rolePromptInputs is what a launch of c composes its prompt from, each the daemon's own answer:
+// the paths of the role's prompt files, snapshotted under stateDir, and its addressing for the
+// rig's repository, which for the architect of a tree's root ends with the design gate steps of a
 // deployment that leaves `gates.design` unset (config.Gates.Steps), as workerSpawnSpec appends
-// them. It is the prompt of a deployment with no instructions file and no experiment, whose roles
-// run on Oh My Pi, a backend whose launch is told no prompt part of its own. The join is this
-// program's own copy of the daemon's (runtime.ComposePrompt), since the rig runs it against each
-// label's checkout of the daemon module, an older one among them, which lacks it.
-func rolePrompt(stateDir, project string, c supervise.Claim) (string, error) {
+// them. They are the prompt of a deployment with no instructions file and no experiment, whose
+// roles run on Oh My Pi, a backend whose launch is told no prompt part of its own.
+func rolePromptInputs(stateDir, project string, c supervise.Claim) (paths []string, addressing string, err error) {
 	composer, err := prompts.New(stateDir)
 	if err != nil {
-		return "", err
+		return nil, "", err
 	}
 	parts, err := composer.Compose(c.Role, claim.IsTreeRoot(c.Issue, c.Tree))
 	if err != nil {
-		return "", err
+		return nil, "", err
 	}
 	repository, err := ghrepo.Parse("the rig's repository", rigRepository)
 	if err != nil {
-		return "", err
+		return nil, "", err
 	}
-	addressing, err := daemon.AddressingFragment(project, c, repository, rigDefaultBranch, api.RepositoriesView{
+	addressing, err = daemon.AddressingFragment(project, c, repository, rigDefaultBranch, api.RepositoriesView{
 		Mapped: []api.MappedRepositoryView{{Repo: rigRepository, Default: true}},
 	})
 	if err != nil {
-		return "", err
+		return nil, "", err
 	}
 	if claim.IsTreeArchitect(c.Role, c.Issue, c.Tree) {
 		addressing += " " + daemon.DesignGateFragment(config.Gates{}.Steps())
 	}
+	return parts.RolePromptPaths, addressing, nil
+}
+
+// rolePrompt is the system prompt a launch of c starts with (rolePromptInputs): the role's parts
+// concatenated with the newlines that end them dropped, a blank line, then its addressing. The
+// join is this program's own copy of the daemon's (runtime.ComposePrompt), since the rig runs it
+// against each label's checkout of the daemon module, an older one among them, which lacks it.
+func rolePrompt(stateDir, project string, c supervise.Claim) (string, error) {
+	paths, addressing, err := rolePromptInputs(stateDir, project, c)
+	if err != nil {
+		return "", err
+	}
 	var body strings.Builder
-	for _, path := range parts.RolePromptPaths {
+	for _, path := range paths {
 		text, err := os.ReadFile(path)
 		if err != nil {
 			return "", fmt.Errorf("prompt file: %w", err)
