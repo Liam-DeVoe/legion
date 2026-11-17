@@ -2145,4 +2145,21 @@ package api
 // (#3659) and 155 (#4273), so this change took 156, one above the highest any open head declared
 // and the lowest free number above main's. Read the base's own number and every open pull request
 // again at the next merge rather than from this line.)
+//
+// 163: an experiment sets how each new issue is done. `POST /legion/v1/plans/register` and `POST
+// /legion/v1/tasks/stop` answer `409 PLAN_NOT_TAKEN` for a recorded issue that an experiment drew
+// into an arm whose `plan` is `default`: a code and a sentence that names the issue's variant and
+// experiment, with no `reasons`. Legion takes no plan from that issue's owner, and so no stop of
+// one of its tasks; register_plan's answer leaves the registration unspent, so the same call sent
+// again gets the same answer. Both routes pass any refusal through to the agent, so a plugin
+// below 163 reads the code and its sentence as it reads every other one. This entry also names
+// what the two routes answered from 156 on and 156's entry left out: register_plan's
+// `400 INVALID_ISSUE`, `400 INVALID_ARTIFACT_ID` and `400 INVALID_VERSION`, `500
+// RECORD_UNAVAILABLE` and `500 DISPATCH_UNAVAILABLE`, and stop_task's `400 INVALID_ISSUE` and
+// `409 TREE_LINGERING`. `TestEveryCodeThePlanRoutesAnswerIsInTheContractHistory` reads the codes
+// the two routes answer of their own from the source and holds each to this history.
+// (This entry took 163 on 2026-11-17, one above the 162 of the branch it stacks on, and no open
+// pull request declared 163 or above at a reading of every open head made at 23:29Z. Read the
+// base's own number and every open pull request again at the next merge rather than from this
+// line.)
 const DaemonAPIVersion = 156
