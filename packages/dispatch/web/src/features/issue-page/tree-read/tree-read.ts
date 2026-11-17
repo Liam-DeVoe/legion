@@ -14,7 +14,6 @@ import {
   type IssueTreeTuple,
 } from "../../../api/client";
 import type { ArtifactBlock, IssueDetails } from "../../../api/types";
-import { issueDecisionsQuery } from "../../doc/spec-marks";
 import { blocksOfRole } from "./tree-nodes";
 
 /**
@@ -33,6 +32,13 @@ export type TreeFilter = "spec" | "verification" | "plan";
 
 const TREE_FILTERS: readonly TreeFilter[] = ["spec", "verification", "plan"];
 
+/** Every view of the tree a read asks for (`?view=`): a role document's (`TreeFilter`), and the
+ *  decisions view, the issue's decisions wherever they are written (dispatch://INFRA-4097's plan,
+ *  choice 6). That view plays no role, so `blocksOf` takes no such name. */
+export type TreeView = TreeFilter | "decisions";
+
+const TREE_VIEWS: readonly TreeView[] = [...TREE_FILTERS, "decisions"];
+
 /** The tree read's key. It is not under `["issue", key]`, so a write that invalidates the
  *  issue's key by prefix does not reach it, and `subscribeTreeFreshness` is the one path that
  *  refreshes it: a page that reads the tree alone after a write of its own invalidates this key,
@@ -42,11 +48,8 @@ export function issueTreeKey(key: string): readonly ["issue-tree", string] {
 }
 
 /** One view's key: under the tree's, and refreshed by `subscribeTreeFreshness` alone too. */
-export function viewKey(
-  key: string,
-  filter: TreeFilter
-): readonly ["issue-tree", string, TreeFilter] {
-  return ["issue-tree", key, filter];
+export function viewKey(key: string, view: TreeView): readonly ["issue-tree", string, TreeView] {
+  return ["issue-tree", key, view];
 }
 
 /**
@@ -73,7 +76,7 @@ export function mergeTreePages(pages: readonly [TreeAnswer, ...TreeAnswer[]]): T
  * again - a refetch, a retry - starts from the first page, since a cursor names a place in the
  * walk as it stood when the page that gave it was answered.
  */
-async function readTree(key: string, view?: TreeFilter): Promise<TreeAnswer> {
+async function readTree(key: string, view?: TreeView): Promise<TreeAnswer> {
   const first = await api.getIssueTree(key, { view });
   const pages: [TreeAnswer, ...TreeAnswer[]] = [first];
   let cursor = first.cursor;
@@ -94,10 +97,10 @@ export const issueTreeQuery = (key: string) =>
 
 /** One view of the issue's tree, one query over every page (`readTree`). A plain query rather
  *  than one per page, so an observer that is never enabled can watch a view a slot read. */
-export const viewQuery = (key: string, filter: TreeFilter) =>
+export const viewQuery = (key: string, view: TreeView) =>
   queryOptions({
-    queryKey: viewKey(key, filter),
-    queryFn: () => readTree(key, filter),
+    queryKey: viewKey(key, view),
+    queryFn: () => readTree(key, view),
   });
 
 /** One role's blocks from the tree read, answered as the blocks read of that role's document
@@ -167,14 +170,14 @@ export function useTreeRead(issue: IssueDetails): TreeRead {
 /**
  * Keeps the tree read and its views as fresh as the issue's other reads, which no write
  * reaches directly: their keys are not under `["issue", key]` (`issueTreeKey`). Whenever a query
- * of the issue (`["issue", key, …]`, `["asks", key, …]`, `["comments", key, …]`,
- * `["issue-messages", key, …]` and the decisions read's key) is invalidated - a page write's
- * `invalidateQueries`, and an event's own refresh (`api/query-refresh.ts`' `owe`) - or written
- * by `setQueryData` - a Keep and a status change write that way (TanStack's `success` action
- * with `manual`) - it reads the tree again, drops every view, so a held one is gone and the one
- * a slot has on is read again, and invalidates the decisions read, so it is read again where
- * something observes it. Every such change of one turn is one refresh, made in the microtask
- * after it.
+ * of the issue (`["issue", key, …]`, `["asks", key, …]`, `["comments", key, …]` and
+ * `["issue-messages", key, …]`) is invalidated - a page write's `invalidateQueries`, and an
+ * event's own refresh (`api/query-refresh.ts`' `owe`), whose targets name `["issue", key]` for
+ * every event of the issue, a Keep's included (`api/event-refresh.ts`) - or written by
+ * `setQueryData` - a status change writes that way (TanStack's `success` action with `manual`) -
+ * it reads the tree again and drops every view, the decisions view among them, so a held one is
+ * gone and the one a slot has on is read again. Every such change of one turn is one refresh,
+ * made in the microtask after it.
  *
  * The tree's and the views' own keys are no query of the issue, and what its own calls raise is
  * ignored (`calling`), so a refresh never starts another. Nothing is refreshed before the tree
@@ -182,13 +185,11 @@ export function useTreeRead(issue: IssueDetails): TreeRead {
  * then would only start the first read over. Answers the unsubscribe.
  */
 export function subscribeTreeFreshness(queryClient: QueryClient, key: string): () => void {
-  const decisionsKey = issueDecisionsQuery(key, true).queryKey;
   const issueQueries: readonly QueryFilters[] = [
     { queryKey: ["issue", key] },
     { queryKey: ["asks", key] },
     { queryKey: ["comments", key] },
     { queryKey: ["issue-messages", key] },
-    { exact: true, queryKey: decisionsKey },
   ];
   let calling = false;
   let queued = false;
@@ -199,10 +200,9 @@ export function subscribeTreeFreshness(queryClient: QueryClient, key: string): (
     calling = true;
     try {
       void queryClient.invalidateQueries({ exact: true, queryKey: issueTreeKey(key) });
-      for (const filter of TREE_FILTERS) {
-        void queryClient.resetQueries({ exact: true, queryKey: viewKey(key, filter) });
+      for (const view of TREE_VIEWS) {
+        void queryClient.resetQueries({ exact: true, queryKey: viewKey(key, view) });
       }
-      void queryClient.invalidateQueries({ exact: true, queryKey: decisionsKey });
     } finally {
       calling = false;
     }
