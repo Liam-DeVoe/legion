@@ -147,7 +147,7 @@ type heldIdentity struct {
 // every path that may enroll may register, and the registration's first write presents the
 // hello's token before the enrollment drops it.
 func (m *Machine) ensureEnrolled(ctx context.Context) error {
-	m.ensureRegistered()
+	m.ensureRegistered(ctx)
 	if m.deps.Secrets == nil || m.claim.Locator == nil {
 		return nil
 	}
@@ -238,7 +238,18 @@ func (m *Machine) ensureEnrolled(ctx context.Context) error {
 // is let go (letGo, stopRegistration) or the claim moves to another session or key. Each pod,
 // session and key is registered once per incarnation: a later hello or observation of the same one
 // starts nothing.
-func (m *Machine) ensureRegistered() {
+//
+// The session is held to the claim before the first write, as an enrollment's is (holdRecorded,
+// dispatch://INFRA-840, plan E's t-e-54): every name the claim's record gives it, or, for the id
+// the runtime chose for this launch, that id. The broker answers an exchange naming the pod and
+// the session with the role's own token, so a registration of another claim's session is that
+// session's trade. A hold refused — another claim holds a name, no claim does, or the claim is at
+// MaxHeldNamesPerClaim — registers nothing and is logged at Error; a store that does not answer
+// registers nothing and is logged at Warn, and the next decision that reaches here asks again. Any
+// registration the machine kept for another session is stopped first either way, since the claim
+// has moved off that session. A name of the claim's own session it holds already asks nothing
+// (Machine.heldNames), so a registration after the agent's own registration costs no store call.
+func (m *Machine) ensureRegistered(ctx context.Context) {
 	loc := m.claim.Locator
 	if m.deps.Registrar == nil || loc == nil || loc.Runtime != runtime.RuntimeSandbox || loc.Sandbox == nil {
 		return
@@ -263,6 +274,21 @@ func (m *Machine) ensureRegistered() {
 		return
 	}
 	m.stopRegistration()
+	file := ""
+	if session == m.claim.Session {
+		file = m.claim.SessionFile
+	}
+	if err := m.holdRecorded(ctx, session, file); err != nil {
+		var refusal claim.Refusal
+		if errors.As(err, &refusal) {
+			m.log.Error("supervise: agent-secrets: not registering a session this claim may not take for its pod to trade",
+				"incarnation", loc.Incarnation, "session", session, "error", err)
+		} else {
+			m.log.Warn("supervise: agent-secrets: the store did not hold the session; registering it at the next decision",
+				"incarnation", loc.Incarnation, "session", session, "error", err)
+		}
+		return
+	}
 	// The renewal's context is the machine's own, not the decision's: the request that brought
 	// the session in ending does not end it, the process's let-go (its stop) or the machine's end
 	// does. The first write's outcome is the registrar's to log; nothing here decides on it.

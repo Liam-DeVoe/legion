@@ -6312,7 +6312,8 @@ each issue's pod (every role of it alike) and the image probe's.
 - The session a pod is enrolled under is the one its agent registered, and the daemon holds every name of that session to the first claim of its project that recorded it, whatever that claim's state since: live, suspended, failed or retired (dispatch://INFRA-840).
   A session's names are the keys anything resumes or enrolls it by: its id, which the broker enrolls and a Claude Code relaunch resumes; the base name of its file, which holds the file's path too, since an Oh My Pi relaunch resumes the path and the tmux runtime a file of the same name in another folder; the id an Oh My Pi file name `<timestamp>_<id>.jsonl` gives, by which the tmux runtime resumes any `*_<id>.jsonl`; and the id a Claude Code transcript `<uuid>.jsonl` is named for.
   A registration under a name another claim recorded is refused `409` (`session <name> is recorded for another claim of this daemon; …`) before anything of it is recorded or enrolled, and the daemon's log names the claim that holds it;
-  a relaunch whose record names one is refused before anything starts, as a launch failure.
+  a relaunch whose record names one is refused before anything starts, as a launch failure;
+  and with `exchange_audience` set, the pod's session registration, which lets the role trade its pod's token for that session, is made only for a session every name of which the claim holds, the id the runtime chose for a launch included, and is logged at Error and not made otherwise.
   A claim's own earlier session and a session no claim has recorded register as before.
 
 - The daemon's record of held names is the `claim_sessions` table, one row per project, kind and name.
