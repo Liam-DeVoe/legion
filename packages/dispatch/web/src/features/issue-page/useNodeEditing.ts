@@ -32,8 +32,7 @@ export const READER_ACTS = ["keydown", "pointerdown", "wheel", "touchstart"] as 
 
 /**
  * The caret in a node's own text, where that text lives: the node's block of its own document,
- * with the collaborative cursors and the comment chord it has there (dispatch://INFRA-1196 R9,
- * the Design section's "Editing").
+ * with the collaborative cursors and the comment chord it has there.
  *
  * The tree holds no editor of its own. The page draws the one editor of whichever document a
  * row is editing (`slots/body.tsx`, through `onEditing`), `document-stage.tsx` moves it onto the
@@ -93,8 +92,8 @@ export function useNodeEditing({
 
   const editingArtifact = editing?.artifactId;
   const editingBlock = editing?.blockId;
-  // The row the caret went into, not the node it holds: one node is drawn under two parents
-  // (R23), so its id answers with whichever copy the fold drew first, which is the wrong row
+  // The row the caret went into, not the node it holds: one node may be drawn under two
+  // parents, so its id answers with whichever copy the fold drew first, which is the wrong row
   // whenever the reader is editing the second. The row's key is the one thing that tells two
   // placements apart (`tree-keys.ts`'s `rowKeyOf`, `[data-row-key]`).
   const editingRow = editing?.row;
