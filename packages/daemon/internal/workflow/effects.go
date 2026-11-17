@@ -883,29 +883,40 @@ type Standing string
 
 // WorkingCopy is the standing of a start of an issue with no plan rows, its working copy line
 // alone: ` Working copy: branch legion/<KEY>, directory <dir>.`, with the directory dir gives the
-// issue (Config.WorkspaceDir), and ` Working copy: branch legion/<KEY>.` where dir is nil or gives
-// none. The branch is the issue's (claim.IssueBranch), which its workspace's bookmark names.
-func WorkingCopy(issue record.Issue, dir func(record.Issue) string) Standing {
+// issue's own branch (Config.WorkspaceDir), and ` Working copy: branch legion/<KEY>.` where dir is
+// nil or gives none. The branch is the issue's (claim.IssueBranch), which its workspace's bookmark
+// names.
+func WorkingCopy(issue record.Issue, dir func(record.Issue, string) string) Standing {
+	return taskWorkingCopy(issue, claim.IssueBranch(issue.Key), dir)
+}
+
+// taskWorkingCopy is the working copy line of a start of issue's task on branch, the one writer of
+// that line: ` Working copy: branch <branch>, directory <dir>.`, with the directory dir gives that
+// branch's working copy (Config.WorkspaceDir), and ` Working copy: branch <branch>.` where dir is
+// nil or gives none. A task on the issue's own branch is told the issue's line (WorkingCopy).
+func taskWorkingCopy(issue record.Issue, branch string, dir func(record.Issue, string) string) Standing {
 	where := ""
 	if dir != nil {
-		where = dir(issue)
+		where = dir(issue, branch)
 	}
 	if where == "" {
-		return Standing(fmt.Sprintf(" %s: branch %s.", workingCopyLabel, claim.IssueBranch(issue.Key)))
+		return Standing(fmt.Sprintf(" %s: branch %s.", workingCopyLabel, branch))
 	}
-	return Standing(fmt.Sprintf(" %s: branch %s, directory %s.", workingCopyLabel, claim.IssueBranch(issue.Key), where))
+	return Standing(fmt.Sprintf(" %s: branch %s, directory %s.", workingCopyLabel, branch, where))
 }
 
 // standingPart is where the work of a worker started in issue's phase stands, the part of its
-// task after the continue line (Standing). Every start names its working copy (WorkingCopy). An
-// issue with no plan rows names nothing else, so it is told today's task with that one line, and
-// the prompts read a task with no `Task:` line as such an issue's (R20). An issue with plan rows
-// names its one task: a step's worker is told ` Task: <id>. Step <i> of <n>: <role>.`, the task's
-// steps (stepsLine), ` Task text: ` and the text of the task's block, and the report of each step
-// before its own (reportsBefore). The retro and the merge run no step of the task, so their worker
-// is told ` Task: <id>.` and the task's steps alone: the merger reads from them whether the task
-// has a review step, and each reads the runs of the steps and their reports from Dispatch
-// (`dispatch steps`), which keeps every run, the failed ones too.
+// task after the continue line (Standing). Every start names its working copy: the issue's for an
+// issue with no plan rows (WorkingCopy), and its task's for one with plan rows (taskWorkingCopy,
+// on the task's branch). An issue with no plan rows names nothing else, so it is told today's task
+// with that one line, and the prompts read a task with no `Task:` line as such an issue's (R20). An
+// issue with plan rows names its one task: a step's worker is told
+// ` Task: <id>. Step <i> of <n>: <role>.`, the task's steps (stepsLine), ` Task text: ` and the
+// text of the task's block, and the report of each step before its own (reportsBefore). The retro
+// and the merge run no step of the task, so their worker is told ` Task: <id>.` and the task's
+// steps alone: the merger reads from them whether the task has a review step, and each reads the
+// runs of the steps and their reports from Dispatch (`dispatch steps`), which keeps every run, the
+// failed ones too.
 //
 // The phase the worker starts in is issue.Phase, the phase each caller has put the issue in
 // before it composes the task. A run with plan rows whose line holds no place in that phase is
@@ -926,17 +937,17 @@ func (e *Engine) standingPart(ctx context.Context, tx pgx.Tx, issue record.Issue
 }
 
 // standingText is standingPart's text for the worker of issue's phase, from the walk w of its
-// run, the directory dir gives its working copy, and its phases rows, which only a step's text reads.
-func standingText(issue record.Issue, dir func(record.Issue) string, w Walk, rows []record.PhaseRow) (Standing, error) {
-	at := WorkingCopy(issue, dir)
+// run, the directory dir gives each working copy, and its phases rows, which only a step's text
+// reads.
+func standingText(issue record.Issue, dir func(record.Issue, string) string, w Walk, rows []record.PhaseRow) (Standing, error) {
 	if !w.Stored {
-		return at, nil
+		return WorkingCopy(issue, dir), nil
 	}
 	place, ok := w.PlaceOf(issue.Phase)
 	if !ok {
 		return "", fmt.Errorf("the task of a start of %s in %s: its task %s has no step, retro or merge in %s", issue.Key, issue.Phase, w.Task, issue.Phase)
 	}
-	text := string(at) + fmt.Sprintf(" %s: %s.", planTaskLabel, w.Task)
+	text := string(taskWorkingCopy(issue, w.Branch, dir)) + fmt.Sprintf(" %s: %s.", planTaskLabel, w.Task)
 	if place.Kind != record.PlaceStep {
 		return Standing(text + stepsLine(w.Steps)), nil
 	}

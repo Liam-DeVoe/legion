@@ -36,6 +36,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
+	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
 // workflowRuntime is the daemon-owned integration surface around the pure transition engine.
@@ -603,25 +604,32 @@ func engineConfig(cfg config.Config, reviewAppLogin string, hookPrompts map[stri
 	}
 }
 
-// engineWorkspaceDir is the directory the runtime cfg names starts an issue's role processes in,
-// which every task the engine composes names (workflow.Config.WorkspaceDir): each runtime's own
-// function that places the workspace, sandbox.WorkspaceDir under Kubernetes and tmux.WorkspaceDir
-// under the state directory under tmux, read for the repository the issue's record names, as the
-// launch reads it (issueRepository). An issue whose recorded repository does not parse, which no
-// launch can work either, names none, and its task names the branch alone.
-func engineWorkspaceDir(cfg config.Config) func(record.Issue) string {
-	place := func(repo ghrepo.Repository, issue string) (string, error) {
-		return tmux.WorkspaceDir(cfg.StateDir, repo, issue)
+// engineWorkspaceDir is the directory of the working copy of an issue's task on a branch, which
+// every task the engine composes names (workflow.Config.WorkspaceDir), as the runtime cfg names
+// places it: each runtime's own function that places the workspace, sandbox.WorkspaceDir under
+// Kubernetes and tmux.WorkspaceDir under the state directory under tmux, read for the repository
+// the issue's record names, as the launch reads it (issueRepository), and for the working copy's
+// name, the branch without legion/ (workspace.Name): the issue's own key for its own branch, the
+// directory its role processes start in, and the task's name beside it for a task's branch. An
+// issue whose recorded repository does not parse, which no launch can work either, and a branch
+// that is no task's of an issue name none, and the task names the branch alone.
+func engineWorkspaceDir(cfg config.Config) func(record.Issue, string) string {
+	place := func(repo ghrepo.Repository, name string) (string, error) {
+		return tmux.WorkspaceDir(cfg.StateDir, repo, name)
 	}
 	if cfg.Runtime.Name == "kubernetes" {
 		place = sandbox.WorkspaceDir
 	}
-	return func(issue record.Issue) string {
+	return func(issue record.Issue, branch string) string {
 		repo, err := issue.Repository()
 		if err != nil {
 			return ""
 		}
-		dir, err := place(repo, issue.Key)
+		name, err := workspace.Name(branch)
+		if err != nil {
+			return ""
+		}
+		dir, err := place(repo, name)
 		if err != nil {
 			return ""
 		}

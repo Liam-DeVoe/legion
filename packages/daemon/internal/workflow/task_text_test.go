@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -17,12 +18,22 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// textEngine is stepEngine whose runtime places an issue's working copy at /work/<KEY>
-// (Config.WorkspaceDir).
+// textEngine is stepEngine whose runtime places the working copy of an issue's task on branch
+// legion/<name> at /work/<name> (Config.WorkspaceDir), so the issue's own at /work/<KEY>.
 func textEngine() *Engine {
 	engine := stepEngine(nil)
-	engine.cfg.WorkspaceDir = func(issue record.Issue) string { return "/work/" + issue.Key }
+	engine.cfg.WorkspaceDir = func(_ record.Issue, branch string) string { return "/work/" + strings.TrimPrefix(branch, "legion/") }
 	return engine
+}
+
+// storeTaskBranch writes branch as the branch the row of task a of key's plan at generation holds,
+// as the task's first start writes it (AssignTaskBranch).
+func storeTaskBranch(t *testing.T, pool *pgxpool.Pool, key string, generation uint64, branch string) {
+	t.Helper()
+	if tag, err := pool.Exec(t.Context(), `update plan_tasks set branch = $3 where issue = $1 and generation = $2 and task = 'a'`,
+		key, int64(generation), branch); err != nil || tag.RowsAffected() != 1 {
+		t.Fatalf("write the branch %q of task a of %s: %v (%d rows)", branch, key, err, tag.RowsAffected())
+	}
 }
 
 // lastStart is the task of the newest start of role in key's outbox.
@@ -116,6 +127,55 @@ func TestATaskNamesItsWorkingCopyItsStepAndTheReportsBeforeIt(t *testing.T) {
 	merger := lastStart(t, pool, root.Key, claim.RoleMerger)
 	hasPrefix(t, "merger", merger, continued+"merging."+working+" Task: a."+steps)
 	lacks(t, "merger", merger, "reported:", "Task text:", "Step 1 of", "Step 2 of")
+}
+
+// The step of a task whose branch is not the issue's own is told the working copy of its own
+// task (R4): the line names the task's branch and the directory the runtime places that branch's
+// working copy at, beside the issue's, in the start of its step, in a resume of its worker and in
+// the retro of the task.
+func TestAStepOfASecondTaskNamesItsOwnWorkingCopy(t *testing.T) {
+	pool := migratedPool(t)
+	engine := textEngine()
+	root := stepRoot(t, pool, phase.Admitted)
+	seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", "reviewer")
+	storeTaskBranch(t, pool, root.Key, root.Generation, "legion/LEGION-208.b")
+	const working = " Working copy: branch legion/LEGION-208.b, directory /work/LEGION-208.b."
+
+	move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
+	hasPrefix(t, "implementer", lastStart(t, pool, root.Key, claim.RoleImplementer),
+		"Continue root. Issue: LEGION-208. Phase: implementing."+working+" Task: a. Step 1 of 2: implementer.")
+
+	applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+		issue, err := engine.store.Issue(ctx, tx, root.Key)
+		if err != nil {
+			return err
+		}
+		return engine.StartPromotedWorker(ctx, tx, *issue, claim.RoleImplementer)
+	})
+	hasPrefix(t, "resumed implementer", lastStart(t, pool, root.Key, claim.RoleImplementer),
+		"Continue root. Issue: LEGION-208. Phase: implementing."+working+" Task: a. Step 1 of 2: implementer.")
+
+	move(t, pool, engine, root.Key, TriggerImplementationReady, "", record.PhaseRow{})
+	move(t, pool, engine, root.Key, TriggerReviewApproved, "", record.PhaseRow{})
+	hasPrefix(t, "retro", lastStart(t, pool, root.Key, claim.RoleImplementer), "Continue root. Issue: LEGION-208. Phase: retro."+working+" Task: a.")
+}
+
+// The twin: the task that holds the issue's own branch, and a task that ran at the release before
+// tasks had branches, whose row holds none, are told today's line, the issue's own working copy.
+func TestTheTaskOfTheIssuesBranchIsTodaysLine(t *testing.T) {
+	for _, branch := range []string{"legion/LEGION-208", ""} {
+		t.Run("the row holds "+strconv.Quote(branch), func(t *testing.T) {
+			pool := migratedPool(t)
+			engine := textEngine()
+			root := stepRoot(t, pool, phase.Admitted)
+			seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", "reviewer")
+			storeTaskBranch(t, pool, root.Key, root.Generation, branch)
+
+			move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
+			hasPrefix(t, "implementer", lastStart(t, pool, root.Key, claim.RoleImplementer),
+				"Continue root. Issue: LEGION-208. Phase: implementing. Working copy: branch legion/LEGION-208, directory /work/LEGION-208. Task: a.")
+		})
+	}
 }
 
 // A move into a phase that starts no worker composes no task, since no worker is told one: the
@@ -282,9 +342,10 @@ func TestEachTaskLabelIsOneThePromptsName(t *testing.T) {
 	readers := taskReaders(t)
 	issue := record.Issue{Key: "LEGION-208", Title: "root", Phase: phase.Reviewing}
 	steps := []record.PlanStep{{Task: "a", Position: 1, Role: "implementer"}, {Task: "a", Position: 2, Role: "reviewer"}}
-	w := Walk{Stored: true, Task: "a", Text: "Build the widget.", Steps: steps, Line: []phase.Phase{phase.Implementing, phase.Reviewing, phase.Retro, phase.Merging}}
+	w := Walk{Stored: true, Task: "a", Branch: "legion/LEGION-208", Text: "Build the widget.", Steps: steps,
+		Line: []phase.Phase{phase.Implementing, phase.Reviewing, phase.Retro, phase.Merging}}
 	rows := []record.PhaseRow{{Role: claim.RoleImplementer, HandoffRecord: "implement-1", HandoffVersion: 1}}
-	at, err := standingText(issue, func(record.Issue) string { return "/work" }, w, rows)
+	at, err := standingText(issue, func(record.Issue, string) string { return "/work" }, w, rows)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -334,7 +395,7 @@ func TestEachTaskLabelIsOneThePromptsName(t *testing.T) {
 	for _, p := range []phase.Phase{phase.Retro, phase.Merging} {
 		after := issue
 		after.Phase = p
-		at, err := standingText(after, func(record.Issue) string { return "/work" }, w, rows)
+		at, err := standingText(after, func(record.Issue, string) string { return "/work" }, w, rows)
 		if err != nil {
 			t.Fatal(err)
 		}

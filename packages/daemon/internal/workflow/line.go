@@ -25,6 +25,9 @@ type Walk struct {
 	// Task is the id of the run's one task: the plan's, or defaultTask where the run has none,
 	// which is the task its steps are recorded under (StepID).
 	Task string
+	// Branch is the GitHub branch the task works on (record.PlanTask.BranchOf), whose working copy
+	// a start of the task names (taskWorkingCopy); "" where the run has no plan rows.
+	Branch string
 	// Text is the text of the task's block (record.PlanTask.BlockText), which a step's worker is
 	// told (standingPart); "" where the run has no plan rows.
 	Text string
@@ -67,8 +70,8 @@ func (e *Engine) walk(ctx context.Context, tx pgx.Tx, issue record.Issue) (Walk,
 	if at := slices.Index(line, ""); at >= 0 {
 		return Walk{}, fmt.Errorf("walk %s at generation %d: step %d of task %s names the role %q, which runs as no phase", issue.Key, issue.Generation, at+1, task.Task, steps[at].Role)
 	}
-	return Walk{Stored: true, Task: task.Task, Text: task.BlockText, Steps: steps, Line: line, State: task.State, Place: task.Place,
-		Version: stored.Version}, nil
+	return Walk{Stored: true, Task: task.Task, Branch: task.BranchOf(issue.Key), Text: task.BlockText, Steps: steps, Line: line,
+		State: task.State, Place: task.Place, Version: stored.Version}, nil
 }
 
 // PlaceOf is where the task stands while its issue stands in p: the step of the line that runs
