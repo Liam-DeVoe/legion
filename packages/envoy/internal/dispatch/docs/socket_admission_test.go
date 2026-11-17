@@ -652,28 +652,7 @@ func TestAnEarlierRoomsLateUnloadLeavesTheResidentRoomsBytesResident(t *testing.
 // so once both have run no bytes of either are counted and the name counts no load.
 func TestUnloadsOfTwoRoomsInEitherOrderLeaveNoResidentBytes(t *testing.T) {
 	r := unloadAcrossAReload(t)
-	// The first room's unload goes on past what releaseUnloadedRoom reads, then waits before it
-	// ends a load (beforeUnloadEndsLoad); only that unload waits, and a sync.Once would make the
-	// second wait for the first as well.
-	waiting := make(chan struct{})
-	proceed := make(chan struct{})
-	var proceedOnce sync.Once
-	letProceed := func() { proceedOnce.Do(func() { close(proceed) }) }
-	cleanupAndRelease(t, letProceed)
-	var held atomic.Bool
-	r.service.beforeUnloadEndsLoad = func(room string) {
-		if room != r.room || held.Swap(true) {
-			return
-		}
-		close(waiting)
-		<-proceed
-	}
-	r.letFirstUnload()
-	select {
-	case <-waiting:
-	case <-time.After(roomWait(t)):
-		t.Fatal("the first room never began its unload, so nothing here is tested")
-	}
+	letProceed := r.holdFirstUnload()
 
 	// The second room unloads in full while the first unload waits. The first close holds the
 	// service's close gate for the room (roomServer.CloseRoom) until its unload returns, so the
@@ -690,10 +669,43 @@ func TestUnloadsOfTwoRoomsInEitherOrderLeaveNoResidentBytes(t *testing.T) {
 	r.requireNothingCounted("once both rooms have unloaded")
 }
 
+// The second room's last browser leaving runs the settlement the document owes then
+// (settleLastPeer), and a settlement that finds no room of the document resident loads one to
+// settle in (settlement.take). The rows above read the count once the rooms they unload have
+// unloaded, so nothing that departure runs may load a room of the document: the rig settles the
+// write it makes while the second room still holds the document (unloadAcrossAReload). Here the
+// departure runs nothing until both rooms have unloaded, the latest it can run, and the count is
+// read once it has returned. A rig that left the write owing fails here every time: the
+// departure's settlement loads a third room, which the count holds.
+func TestUnloadsOfTwoRoomsLeaveNoResidentBytesHoweverLateTheSecondRoomsDepartureRuns(t *testing.T) {
+	t.Parallel()
+	r := unloadAcrossAReload(t)
+	letProceed := r.holdFirstUnload()
+	r.holdDeparture.Store(true)
+
+	// The second room's last browser leaves, and the room is closed once that browser is out of
+	// it, so the close waits for nothing the departure runs.
+	_ = r.socket.Close()
+	r.awaitDeparture(r.leaving, "the second room's last browser never left it")
+	if err := r.service.srv.Server.CloseRoom(r.room, true); err != nil {
+		t.Fatalf("close the second room: %v", err)
+	}
+	r.awaitUnload("the second room")
+	letProceed()
+	r.awaitFirstClose()
+
+	r.letDeparture()
+	r.awaitDeparture(r.left, "the second room's last browser's departure never returned")
+	r.requireNothingCounted("once both rooms have unloaded and the second room's departure has returned")
+}
+
 // reloadedRoom is a document whose first room has left ygo's map with its unload held, and whose
 // second room has loaded and taken a write meanwhile (unloadAcrossAReload). first and second are
 // the resident bytes each load counted, and second is larger, so an unload that took back the
-// wrong load's bytes shows.
+// wrong load's bytes shows. leaving and left report each departure of the room's last browser
+// after the first room's: leaving as it begins, once the browser is out of the room, and left once
+// ygo's OnLastPeer has returned, with whatever settlement it ran (settleLastPeer). A departure
+// that begins while holdDeparture is set runs nothing until letDeparture is called.
 type reloadedRoom struct {
 	t              *testing.T
 	service        *Service
@@ -703,16 +715,45 @@ type reloadedRoom struct {
 	letFirstUnload func()
 	closed         chan error
 	unloaded       chan struct{}
+	leaving, left  chan struct{}
+	holdDeparture  atomic.Bool
+	letDeparture   func()
 }
 
 // unloadAcrossAReload loads a document's room, closes it, holds ygo's call of the room's unload,
-// and loads and writes to the room again while that unload is held.
+// and loads and writes to the room again while that unload is held, settling that write before
+// it hands the rooms to its row.
 func unloadAcrossAReload(t *testing.T) *reloadedRoom {
 	t.Helper()
 	database := storetest.Open(t)
 	service, server := newTestServiceInstance(t, database)
-	r := &reloadedRoom{t: t, service: service, room: createDocuments(t, database, 1)[0], closed: make(chan error, 1), unloaded: make(chan struct{}, 2)}
+	r := &reloadedRoom{t: t, service: service, room: createDocuments(t, database, 1)[0], closed: make(chan error, 1), unloaded: make(chan struct{}, 2),
+		leaving: make(chan struct{}, 2), left: make(chan struct{}, 2)}
+	// Every departure of the room's last browser reports itself, and waits while a row holds it.
+	// The hook is wrapped before any browser opens the room, so no departure reads it while it is
+	// replaced.
+	depart := make(chan struct{})
+	var departOnce sync.Once
+	r.letDeparture = func() { departOnce.Do(func() { close(depart) }) }
+	cleanupAndRelease(t, r.letDeparture)
+	lastPeer := service.srv.OnLastPeer
+	service.srv.OnLastPeer = func(ctx context.Context, room string) {
+		if room != r.room {
+			lastPeer(ctx, room)
+			return
+		}
+		r.leaving <- struct{}{}
+		if r.holdDeparture.Load() {
+			<-depart
+		}
+		lastPeer(ctx, room)
+		r.left <- struct{}{}
+	}
 	admitSocket(t, server.URL, r.room, "the socket that loads the first room").Close()
+	// The first room's browser has left by the time the room closes, so every departure reported
+	// from here is the second room's.
+	r.awaitDeparture(r.leaving, "the first room's browser never left it")
+	r.awaitDeparture(r.left, "the first room's browser's departure never returned")
 	// The service holds this room alone, so the figure is the first room's load.
 	if r.first = service.residentBytes.Load(); r.first <= 0 {
 		t.Fatalf("the first room's load counted %d resident bytes, want the history it decoded; nothing here is tested", r.first)
@@ -750,10 +791,57 @@ func unloadAcrossAReload(t *testing.T) *reloadedRoom {
 	if _, err := joinedReplaceText(service, r.room, "A write the second room takes, longer than the seed.\n", model.Actor{Kind: "user", ID: "alice"}); err != nil {
 		t.Fatalf("write to the second room: %v", err)
 	}
+	// The write leaves the document owing a settlement, which the second room's last browser
+	// leaving runs (settleLastPeer), and a settlement that finds no room of the document resident
+	// loads one to settle in (settlement.take): one that starts once the second room has closed
+	// loads a third room, whose load the count holds when the row reads it. It runs here instead,
+	// in the second room, and the rig goes on once it has returned with the document owing none.
+	if err := service.settleOwedNow(context.Background(), r.room, time.Now().Add(roomWait(t))); err != nil {
+		t.Fatalf("settle the second room's write: %v", err)
+	}
 	if r.second = service.residentBytes.Load() - r.first; r.second <= r.first {
 		t.Fatalf("the second room counted %d resident bytes against the first room's %d, want more; nothing here is tested", r.second, r.first)
 	}
 	return r
+}
+
+// holdFirstUnload lets the first room's unload go and returns once it has gone on past what
+// releaseUnloadedRoom reads and waits before it ends a load (beforeUnloadEndsLoad), which it does
+// until letProceed is called. Only that unload waits, and a sync.Once would make the second wait
+// for the first as well.
+func (r *reloadedRoom) holdFirstUnload() (letProceed func()) {
+	r.t.Helper()
+	waiting := make(chan struct{})
+	proceed := make(chan struct{})
+	var proceedOnce sync.Once
+	letProceed = func() { proceedOnce.Do(func() { close(proceed) }) }
+	cleanupAndRelease(r.t, letProceed)
+	var held atomic.Bool
+	r.service.beforeUnloadEndsLoad = func(room string) {
+		if room != r.room || held.Swap(true) {
+			return
+		}
+		close(waiting)
+		<-proceed
+	}
+	r.letFirstUnload()
+	select {
+	case <-waiting:
+	case <-time.After(roomWait(r.t)):
+		r.t.Fatal("the first room never began its unload, so nothing here is tested")
+	}
+	return letProceed
+}
+
+// awaitDeparture waits for the next report on reported, leaving or left, failing with never
+// when none comes.
+func (r *reloadedRoom) awaitDeparture(reported <-chan struct{}, never string) {
+	r.t.Helper()
+	select {
+	case <-reported:
+	case <-time.After(roomWait(r.t)):
+		r.t.Fatal(never)
+	}
 }
 
 // awaitUnload waits for the next unload of the room to have run.
