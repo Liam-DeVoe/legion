@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -77,15 +78,20 @@ func startIdleRigListenerOn(t *testing.T, natsURL, machine string, port int) *id
 	}()
 	l := &idleRigListener{t: t, url: "http://127.0.0.1:" + fmt.Sprint(port), logs: logs, cmd: cmd, port: port,
 		client: &http.Client{Timeout: 10 * time.Second}}
+	// The stop kills the process (exec's default Cancel, SIGKILL) and returns only once it is gone,
+	// so that its NATS clients are gone with it before the shared server's leak check reads what
+	// this test left. It waited a fixed 15 s before, and on a loaded machine (load5 1,100 to 2,000)
+	// a killed listener had not ended when that span did: the stop returned, the leak check found
+	// the listener's clients still on the server, and the next test to take the server failed for
+	// them. A SIGKILL cannot be caught, so what delays a killed process is the kernel, and the wait
+	// has no span of its own: it ends with the process, or fails naming the process's state at the
+	// test binary's deadline less idleRigDeadlineMargin.
 	var once sync.Once
 	l.stop = func() {
 		once.Do(func() {
+			killed := time.Now()
 			cancel()
-			select {
-			case <-done:
-			case <-time.After(15 * time.Second):
-				t.Error("the Envoy listener did not stop")
-			}
+			l.awaitEnd(done, killed)
 		})
 	}
 	t.Cleanup(l.stop)
@@ -118,6 +124,48 @@ func (l *idleRigListener) log() string {
 		return "(the listener's log could not be read: " + err.Error() + ")"
 	}
 	return string(read)
+}
+
+// awaitEnd waits for the listener's process, killed at killed, to have ended: done is closed
+// once its Wait returns. A process that ends after more than a second says how long it took, so a
+// loaded run's log records what a killed listener's end costs there.
+func (l *idleRigListener) awaitEnd(done <-chan struct{}, killed time.Time) {
+	pid := l.cmd.Process.Pid
+	var deadline <-chan time.Time
+	if end, ok := l.t.Deadline(); ok {
+		timer := time.NewTimer(time.Until(end) - idleRigDeadlineMargin)
+		defer timer.Stop()
+		deadline = timer.C
+	}
+	select {
+	case <-done:
+		if took := time.Since(killed); took > time.Second {
+			l.t.Logf("the Envoy listener (pid %d) ended %s after its kill", pid, took.Round(time.Millisecond))
+		}
+	case <-deadline:
+		l.t.Errorf("the Envoy listener (pid %d) had not ended %s after its kill, with %s of the test binary's deadline left: %s",
+			pid, time.Since(killed).Round(time.Millisecond), idleRigDeadlineMargin, idleRigProcessState(pid))
+	}
+}
+
+// idleRigProcessState is what /proc says of a process that does not end: its State line (`D` is
+// a wait in the kernel that a kill does not interrupt) and the kernel function it waits in.
+func idleRigProcessState(pid int) string {
+	status, err := os.ReadFile(fmt.Sprintf("/proc/%d/status", pid))
+	if err != nil {
+		return fmt.Sprintf("/proc/%d/status: %v", pid, err)
+	}
+	state := "no State line"
+	for _, line := range strings.Split(string(status), "\n") {
+		if strings.HasPrefix(line, "State:") {
+			state = strings.TrimSpace(line)
+		}
+	}
+	wchan, err := os.ReadFile(fmt.Sprintf("/proc/%d/wchan", pid))
+	if err != nil {
+		return state
+	}
+	return state + ", wchan " + string(wchan)
 }
 
 // publish publishes one message to a topic, as a sender's envoy_publish does. It answers the
