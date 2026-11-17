@@ -45,7 +45,9 @@ func visibilityReadRepository(env map[string]string) (ghrepo.Repository, bool) {
 // answerVisibilityRead answers the shared public leak check's own visibility read of repo
 // (sharedCheckVisibilityRead) by the guard's one rule, read fresh (Guard.FreshVisibility): the
 // REST read, and where GitHub refuses it for a rate limit, GraphQL with the same token or git's
-// ls-remote with no credential, which can answer only public. The guard's reads come back
+// ls-remote with no credential, which can answer only public, and where this command refuses the
+// REST read because the bundle holds no directory for the repository's owner, that same
+// ls-remote. The guard's reads come back
 // through this command, which runs each with the repository's token, or with the caller's
 // GH_TOKEN or GITHUB_TOKEN where one is set (ghVisibilityRead). The real gh's read, which the
 // check made before, answers nothing while the installation's REST limit is spent, and the check

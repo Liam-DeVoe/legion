@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
 )
 
 const gitCredentialUsage = "usage: legion git-credential get|store|erase  (git's credential helper for a shared clone; git runs it, never a person)"
@@ -136,10 +137,13 @@ func readCredentialRequest(r io.Reader) map[string]string {
 // A repo no bundle directory could be named for (ghconfig.IsDirName) is one the bundle holds
 // none for, so the owner's is answered rather than a refusal. An owner the bundle holds no
 // directory for at all is refused here, which is this caller's own answer to the helper's miss:
-// owner is then no owner of this project, and an answer of nothing would have git prompt.
+// owner is then no owner of this project, and an answer of nothing would have git prompt. The
+// refusal is leakguard.OwnerNotServedError, whose words the leak guard reads in `legion gh`'s
+// refusal of its REST visibility read: it then reads that repository's visibility with no
+// credential instead.
 func repositoryGHConfigDir(ownersDir, owner, repo string) (string, error) {
 	if dir := ghconfig.RepositoryDir(ownersDir, owner, repo); dir != "" {
 		return dir, nil
 	}
-	return "", fmt.Errorf("%q is not an owner of this project: %s holds no gh directory for it", owner, ownersDir)
+	return "", &leakguard.OwnerNotServedError{Owner: owner, OwnersDir: ownersDir}
 }

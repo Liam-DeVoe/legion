@@ -36,7 +36,8 @@ const ghUsage = "usage: legion gh [gh args…]  (the gh first on a Legion pane's
 // in a working directory whose git remotes name none, keeps GH_CONFIG_DIR, the issue's owner's.
 // A command it cannot read for certain, one naming two owners, and one naming an owner the
 // bundle holds no directory for are refused, exit 2, naming why, and the real gh never runs: no
-// token but the target repository's or its owner's is ever sent. Under a GH_TOKEN or GITHUB_TOKEN,
+// token but the target repository's or its owner's is ever sent. The last is refused before the
+// leak guard reads anything of it, so it sends nothing at all. Under a GH_TOKEN or GITHUB_TOKEN,
 // which gh sends in place of any directory's token, every command is refused the same way but
 // these: the guard's own visibility reads, which run with that token (ghVisibilityRead), the
 // shared check's visibility read (sharedCheckVisibilityRead), the exact `gh api rate_limit`
@@ -155,10 +156,7 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 	var buffered []byte
 	checkedOnly := false
 	mode := ghCallModeOf(rateLimitRead, isVisibilityRead, target.writesNothing)
-	switch mode {
-	case ghRateLimitCall:
-		// This read has no repository or body for the guard to inspect.
-	case ghVisibilityCall:
+	if mode == ghVisibilityCall {
 		// This process is the guard's own request. Its enclosing user call records the source of
 		// that request, so logging it again would count one wrapped call twice.
 		logCall = false
@@ -169,6 +167,24 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 		if !callerTokenRead {
 			target.owner, target.repo = strings.ToLower(visibilityRead.Owner()), visibilityRead.Name()
 		}
+	}
+	// The directory is read before the guard runs. A call naming an owner the bundle holds no
+	// directory for is refused here, exit 2 (repositoryGHConfigDir), and sends nothing: not even
+	// the read with no credential the guard would make of that owner's repository, for a call
+	// that is refused whatever it answers. The guard's own REST read of such a repository is
+	// refused here the same way; the guard reads exactly that refusal
+	// (leakguard.OwnerNotServedError) and reads the repository's visibility with no credential
+	// instead.
+	dir := env["GH_CONFIG_DIR"]
+	if target.owner != "" {
+		if dir, err = repositoryGHConfigDir(env["LEGION_GH_OWNERS_DIR"], target.owner, target.repo); err != nil {
+			fmt.Fprintf(stderr, "legion gh: %v\n", err)
+			return 2
+		}
+	}
+	switch mode {
+	case ghRateLimitCall:
+		// This read has no repository or body for the guard to inspect.
 	case ghReadCall, ghGuardedCall:
 		guard := leakguard.New(leakguard.Options{
 			OnVisibility: func(source leakguard.VisibilitySource) {
@@ -190,13 +206,6 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 		buffered, checkedOnly = answer.Stdin, answer.CheckedOnly
 		if checkedOnly {
 			visibilitySource = ghCheckedOnlyVisibility
-		}
-	}
-	dir := env["GH_CONFIG_DIR"]
-	if target.owner != "" {
-		if dir, err = repositoryGHConfigDir(env["LEGION_GH_OWNERS_DIR"], target.owner, target.repo); err != nil {
-			fmt.Fprintf(stderr, "legion gh: %v\n", err)
-			return 2
 		}
 	}
 	set := map[string]string{"GH_CONFIG_DIR": dir, "GH_PATH": wrapper, "GH_NO_UPDATE_NOTIFIER": "1", "GH_PROMPT_DISABLED": "1"}
@@ -383,7 +392,9 @@ func trimGhCallLog(path string) {
 //     as a git push whose credential helper answers with GH_TOKEN. That token writes the
 //     repository the guard reads, so it can read that repository too.
 //   - The bundle may hold no directory for the repository's owner. A read with the bundle's
-//     directory would then be refused, and so would the push, for a repository the token writes.
+//     directory would then be refused, and the guard could read the visibility only with no
+//     credential, which answers for a public repository alone (leakguard.OwnerNotServedError):
+//     a push to a private repository the token writes would be refused.
 //   - gh sends the caller's token first, so a read with the bundle's directory would also have to
 //     remove that token from gh's environment.
 //

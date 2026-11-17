@@ -149,6 +149,9 @@ the exact `gh api rate_limit`;
 and `gh auth git-credential`, which answers from the bundle.
 The guard's reads use the caller's token because a push made with the token writes the repository they read,
 and the bundle may hold no directory for that repository's owner.
+Without such a token, the leak guard's own REST read of a repository whose owner the bundle holds no directory for is refused as above,
+and the guard reads that repository's visibility with an unauthenticated `git ls-remote` instead:
+its exit 0, listing the refs, alone reads public, and any other outcome refuses the write as a setup error.
 The real gh runs with `GH_PATH`
 naming the pane's wrapper, so the git gh runs itself (a clone, the fetch of a fork's parent, `pr
 checkout`) authenticates through the helper gh names after it, `legion gh auth git-credential`,
