@@ -4988,6 +4988,43 @@ A plugin of the release before that contract is no step here: the package's whol
 What the proof stands in for is what [`step-records.sh`](#step-recordssh) stands in for.
 `PLAN_RATINGS_EVIDENCE_DIR` (default a fresh directory under `TMPDIR`, kept and printed) keeps the transcript, the `nats-server`'s log, the daemon's own, Dispatch's (`dispatch.log`) and the driver's output.
 
+### What each check catches
+
+Each check ends the run non-zero on the first fault below that it meets.
+The four of the library name themselves in their `FAIL` line; a step of the proof that fails is the last `== <name>` before the test's own failure, which `FAIL proof` follows.
+
+- `prerequisites`: no `LEGION_TEST_PG_DSN`, no `go`, `awk` or `python3` on PATH, a DSN whose host is not loopback (exit 2), or no `nats-server` named or installable; before it the script refuses a host with no `bun` or no `node_modules`.
+
+- `broker`: a `nats-server` that does not come up with JetStream on 127.0.0.1.
+
+- `driver`: a test binary of `TestPlanRatingsLive` that does not build with `-tags e2e`.
+
+- `three-finished-issues-each-rated`: a plan or a rating that never reaches Dispatch, a rating without its reason, the finished issues in any order but newest close first, a time or a count of failed steps the records do not give, a fourth issue the read lists although it is not finished, or a read script that does not pass on the first issue and fail on the fourth;
+  its control fails when the count of failed steps does not follow the records, since the parse must fail once the failed review's record is gone.
+
+- `a-retro-with-no-rating-is-refused`: the daemon taking a retro's completion with no rating from a claim at the contract that added the rating, the issue leaving `retro` on that completion, or the same completion with a rating refused.
+
+### A control to run by hand
+
+This change of the daemon makes the second step fail while the first passes, which shows the proof can see the fault it is for.
+In `packages/daemon/internal/api/handoff.go`, in `planRatingOf`, delete the `if endsRetro && pluginContract >= PlanRatingContract { … }` block, so the route takes a completion that ends the retro and carries no rating from any plugin, as it does from one of the release before.
+Run on 2026-11-17 on a loaded host, it failed after 47 s with these lines, the project's key and the times aside:
+
+```sh
+LEGION_TEST_PG_DSN=… bash scripts/e2e/plan-ratings.sh
+# → ok three-finished-issues-each-rated (<n>s)
+#   == a-retro-with-no-rating-is-refused
+#      planning, implementing, testing, an approving review and the architect's sign-off walked SR<6 hex>-4 to its retro
+#       plan_ratings_live_test.go:136: the retro's completion of SR<6 hex>-4 with no rating from the implementer at plugin contract 161 = 200 {}
+#           , want 400 PLAN_RATING_REQUIRED
+#   --- FAIL: TestPlanRatingsLive (<n>s)
+#   FAIL proof: the proof's driver failed; see <evidence>/proof.log and <evidence>/daemon.log
+#   plan ratings e2e: FAIL at proof after <n>s (evidence: <evidence>)
+#   exit 1
+```
+
+Put the block back before anything else runs from that checkout.
+
 ## plan-ratings-read.sh
 
 ```sh
