@@ -3,7 +3,12 @@
  * process's as go writes it. A test that only collects go's standard error shows nothing until go
  * exits, and a module download that stalls into the test's timeout never exits: the timeout ends
  * the test with the bytes unread, and the log does not name the download.
+ *
+ * {@link goOutput} runs under Node as well as Bun: Playwright's runner loads the Dispatch e2e
+ * harness (packages/dispatch/e2e/harness-postgres.ts) under Node, which takes this module through
+ * the package's `default` export condition. {@link goOutputSync} needs Bun.
  */
+import { spawn } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -20,26 +25,27 @@ export interface GoCommand {
  * what go wrote on both streams.
  */
 export async function goOutput(args: readonly string[], command: GoCommand): Promise<string> {
-  const child = Bun.spawn(["go", ...args], {
+  const child = spawn("go", args, {
     cwd: command.cwd,
     env: command.env ?? process.env,
-    stdout: "pipe",
-    stderr: "pipe",
+    stdio: ["ignore", "pipe", "pipe"],
   });
-  const errors: Uint8Array[] = [];
-  const copied = (async () => {
-    for await (const chunk of child.stderr) {
-      process.stderr.write(chunk);
-      errors.push(chunk);
-    }
-  })();
-  const [stdout, code] = await Promise.all([
-    new Response(child.stdout).text(),
-    child.exited,
-    copied,
-  ]);
-  if (code !== 0) throw failure(args, command, code, stdout, Buffer.concat(errors).toString());
-  return stdout;
+  const stdout: Buffer[] = [];
+  const errors: Buffer[] = [];
+  child.stdout.on("data", (chunk: Buffer) => stdout.push(chunk));
+  child.stderr.on("data", (chunk: Buffer) => {
+    process.stderr.write(chunk);
+    errors.push(chunk);
+  });
+  // `close` comes once go has exited and both of its streams have ended, so every byte is read;
+  // `error` comes instead when go could not be started.
+  const ended = Promise.withResolvers<number | NodeJS.Signals | null>();
+  child.once("error", ended.reject);
+  child.once("close", (status, signal) => ended.resolve(status ?? signal));
+  const code = await ended.promise;
+  const out = Buffer.concat(stdout).toString();
+  if (code !== 0) throw failure(args, command, code, out, Buffer.concat(errors).toString());
+  return out;
 }
 
 /**
@@ -83,7 +89,7 @@ const TEE =
 function failure(
   args: readonly string[],
   command: GoCommand,
-  code: number | null,
+  code: number | NodeJS.Signals | null,
   stdout: string,
   stderr: string
 ) {

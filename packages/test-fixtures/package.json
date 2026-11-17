@@ -11,7 +11,8 @@
     },
     "./go-command": {
       "types": "./src/go-command.ts",
-      "bun": "./src/go-command.ts"
+      "bun": "./src/go-command.ts",
+      "default": "./src/go-command.ts"
     },
     "./host-tools": {
       "types": "./src/host-tools.ts",
