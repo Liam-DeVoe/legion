@@ -55,11 +55,12 @@ var ErrUnverified = errors.New("kvwatch: no read could read its bucket past a ba
 // began waiting: an unbroken run of reads whose wait failed (readAgainUnverified), or, before any
 // has failed, the one still waiting. From then on the copy is refused (Servable) because those
 // reads do not complete, and only a bucket that takes the barrier and a consumer that reaches it
-// repair it. It names how long the reads have waited and the run's last error, and is nil before
-// the bound and once a read completes. A watcher whose reads fail so keeps running, so Err stays
-// nil; the listener's /healthz reports this instead. A wait is bounded by the barrier write's
-// request timeout and then the idle timeout, both well inside the stale bound, so a run reaches it
-// only across reads.
+// repair it. It names the watcher and its bucket, how long the reads have waited and the run's
+// last error, and is nil before the bound and once a read completes. A cache that answers for two
+// watchers (store.Registry) reports either one's under that one's own name. A watcher whose reads
+// fail so keeps running, so Err stays nil; the listener's /healthz reports this instead. A wait is
+// bounded by the barrier write's request timeout and then the idle timeout, both well inside the
+// stale bound, so a run reaches it only across reads.
 func (w *Watcher) ReadErr() error {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
@@ -75,10 +76,11 @@ func (w *Watcher) ReadErr() error {
 		return nil
 	}
 	if w.unverifiedRuns == 0 {
-		return fmt.Errorf("%w for %s, past the %s stale bound: the read is still waiting", ErrUnverified, waiting.Round(time.Second), w.bound)
+		return fmt.Errorf("%s (KV bucket %s): %w for %s, past the %s stale bound: the read is still waiting",
+			w.name, w.bucket, ErrUnverified, waiting.Round(time.Second), w.bound)
 	}
-	return fmt.Errorf("%w for %s over %d reads, past the %s stale bound: %w",
-		ErrUnverified, waiting.Round(time.Second), w.unverifiedRuns, w.bound, w.unverifiedErr)
+	return fmt.Errorf("%s (KV bucket %s): %w for %s over %d reads, past the %s stale bound: %w",
+		w.name, w.bucket, ErrUnverified, waiting.Round(time.Second), w.unverifiedRuns, w.bound, w.unverifiedErr)
 }
 
 // WaitComplete blocks until the copy can be served, the state Servable reports, and then returns

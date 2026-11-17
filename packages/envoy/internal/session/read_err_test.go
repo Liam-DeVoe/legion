@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -80,6 +81,70 @@ func TestReadErrReportsSessionReadsThatCannotReadPastABarrier(t *testing.T) {
 	}
 	if err := reg.Ping(); err != nil {
 		t.Fatalf("Ping past the stale bound = %v, want nil: only ReadErr reports the failed reads", err)
+	}
+}
+
+// The known-session store's reads that cannot read its bucket past a barrier are reported too, by
+// its own ReadErr, which names the store's watcher and its bucket: it is none of the listener's
+// caches, so /healthz reads this one to report them (degraded, cmd/listener's healthz handler).
+func TestKnownSessionsReadErrReportsReadsThatCannotReadPastABarrier(t *testing.T) {
+	client := setupNATS(t)
+	known, err := OpenKnownSessions(client.Conn, WithKnownSessionReplicas(1))
+	if err != nil {
+		t.Fatalf("open the known-session store: %v", err)
+	}
+	t.Cleanup(known.StopWatch)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := known.WaitForCacheReady(ctx); err != nil {
+		t.Fatalf("wait for the known-session cache: %v", err)
+	}
+	if err := known.ReadErr(); err != nil {
+		t.Fatalf("ReadErr of an open store = %v, want nil", err)
+	}
+
+	// The store's watcher is replaced by one whose read barriers fail, on a clock the test moves,
+	// which counts the re-reads its failed reads arm.
+	kv := known.watch().KV()
+	known.watch().Stop()
+	var (
+		clockMu sync.Mutex
+		now     = time.Now()
+		rereads atomic.Int32
+	)
+	clock := func() time.Time {
+		clockMu.Lock()
+		defer clockMu.Unlock()
+		return now
+	}
+	handle := bus.NewKeyValue(kv.Legacy(), kv.WatchHandle(), failedBarriers{JetStream: kv.Streams()})
+	replacement := kvwatch.New("known session store", handle, knownCache{known}, kvwatch.WithNow(clock), kvwatch.WithStreamProbeInterval(0),
+		kvwatch.WithAfterFunc(func(d time.Duration, _ func()) kvwatch.Timer {
+			if d == 5*time.Second {
+				rereads.Add(1)
+			}
+			return heldTimer{}
+		}))
+	known.openMu.Lock()
+	known.watcher = replacement
+	known.openMu.Unlock()
+	replacement.Start()
+	waitFor(t, 10*time.Second, func() bool { return rereads.Load() > 0 })
+
+	if err := known.ReadErr(); err != nil {
+		t.Fatalf("ReadErr after the first failed read = %v, want nil within the stale bound", err)
+	}
+	clockMu.Lock()
+	now = now.Add(2*time.Minute + time.Second)
+	clockMu.Unlock()
+	err = known.ReadErr()
+	want := "known session store (KV bucket " + bus.KnownSessionBucket + "): "
+	if !errors.Is(err, kvwatch.ErrUnverified) || !errors.Is(err, natsgo.ErrConnectionClosed) || !strings.HasPrefix(err.Error(), want) {
+		t.Fatalf("ReadErr past the 2m stale bound = %v, want %v under %q wrapping %v", err, kvwatch.ErrUnverified, want, natsgo.ErrConnectionClosed)
+	}
+	var nothing *KnownSessions
+	if err := nothing.ReadErr(); err != nil {
+		t.Fatalf("ReadErr of a nil store = %v, want nil", err)
 	}
 }
 

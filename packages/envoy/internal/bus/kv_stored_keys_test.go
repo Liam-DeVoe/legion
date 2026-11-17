@@ -5,9 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
+	"time"
+
+	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/sjawhar/envoy/internal/testnats"
 )
@@ -55,14 +60,191 @@ func TestStoredKeysListsEveryKeyTheStreamHoldsAMessageOn(t *testing.T) {
 	}
 }
 
+// A bucket of more keys than one STREAM.INFO answer holds, 100,000 (JSMaxSubjectDetails), is
+// listed whole by a real server, and not only when it holds still. The known-session bucket is
+// sized for about 100,000 records over its 30 days, and its live sessions rewrite their records
+// all the time, so its list pages while it is written to. Here one writer replaces a key through
+// the whole list, so the stream's last sequence moves between every two pages, and then the
+// subject of the first key is purged between the first page and the second, which shifts every
+// later subject back by one and would carry a page asked at the count of subjects taken so far
+// one subject past the boundary.
+func TestStoredKeysListsABucketPastOnePageWhileItChanges(t *testing.T) {
+	const bucket = "kv_stored_keys_pages"
+	const count = 100_050
+	_, kv := leaderReadBucket(t, bucket)
+	js := kv.Streams()
+	key := func(i int) string { return fmt.Sprintf("k%06d", i) }
+	for i := range count {
+		if _, err := js.PublishAsync(kv.subjectsPrefix()+key(i), []byte("1")); err != nil {
+			t.Fatalf("store key %d: %v", i, err)
+		}
+		if i%2000 == 1999 || i == count-1 {
+			select {
+			case <-js.PublishAsyncComplete():
+			case <-time.After(30 * time.Second):
+				t.Fatalf("the stores up to key %d were not acknowledged within 30 s", i)
+			}
+		}
+	}
+	barrier, err := kv.WriteBarrier(context.Background())
+	if err != nil {
+		t.Fatalf("write the barrier: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	if answer, err := kv.streams.Conn().RequestWithContext(ctx, "$JS.API.STREAM.INFO.KV_"+bucket, []byte(`{"subjects_filter":"`+kv.subjectsPrefix()+`>"}`)); err == nil {
+		t.Logf("the first page of %d subjects of %d characters is %d bytes", count+1, len(kv.subjectsPrefix()+key(0)), len(answer.Data))
+	}
+	holdsEvery := func(t *testing.T, keys []string, from int) {
+		t.Helper()
+		listed := map[string]bool{}
+		for _, k := range keys {
+			listed[k] = true
+		}
+		for i := from; i < count; i++ {
+			if !listed[key(i)] {
+				t.Fatalf("StoredKeys listed %d keys and not %s, which the bucket holds throughout", len(keys), key(i))
+			}
+		}
+	}
+
+	t.Run("while a key is replaced between pages", func(t *testing.T) {
+		stop := make(chan struct{})
+		var writer sync.WaitGroup
+		writes := 0
+		writer.Go(func() {
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				if _, err := kv.Put(key(count-1), []byte("2")); err != nil {
+					t.Errorf("replace %s: %v", key(count-1), err)
+					return
+				}
+				writes++
+			}
+		})
+		keys, err := kv.StoredKeys(ctx, barrier)
+		close(stop)
+		writer.Wait()
+		if err != nil {
+			t.Fatalf("StoredKeys of %d keys while one is replaced (%d replacements) = %v", count, writes, err)
+		}
+		if writes == 0 {
+			t.Fatal("no replacement was stored while the list ran, so the row shows nothing")
+		}
+		holdsEvery(t, keys, 0)
+	})
+
+	t.Run("while a key before the page boundary is removed between pages", func(t *testing.T) {
+		asks := 0
+		keys, err := storedKeys(kv.subjectsPrefix(), barrier, func(offset int) (subjectsPage, error) {
+			if asks == 1 {
+				stream, err := js.Stream(ctx, "KV_"+bucket)
+				if err != nil {
+					return subjectsPage{}, err
+				}
+				if err := stream.Purge(ctx, jetstream.WithPurgeSubject(kv.subjectsPrefix()+key(0))); err != nil {
+					return subjectsPage{}, fmt.Errorf("purge %s: %w", key(0), err)
+				}
+			}
+			asks++
+			return kv.subjectsPageAt(ctx, offset)
+		})
+		if err != nil {
+			t.Fatalf("StoredKeys of %d keys with the first one removed after the first page = %v", count, err)
+		}
+		holdsEvery(t, keys, 1)
+		if asks < 3 {
+			t.Fatalf("the list asked %d times, want a step back past the removed subject", asks)
+		}
+	})
+}
+
 // A list of more subjects than one STREAM.INFO answer holds comes in pages, each read from the
-// stream as it is when asked, so the pages are one list only when the stream's state is the same
-// in each, in one more ask after the last page too, and they add up to the first page's total. A
-// list of one page is taken without that ask. Each answer here is scripted, as the server's JSON,
-// since a single-node server pages only past 100,000 subjects.
-func TestStoredKeysTakesPagesOnlyWhenTheyAddUpToOneList(t *testing.T) {
+// store as it is when asked, so the store can change between them. The list holds every key the
+// store holds from its first ask to its last whatever changed between them: a key replaced, which
+// moves no subject, a key added before the page boundary, which repeats a subject, and a key
+// removed before the boundary or the last key taken itself, which a page asked at the count of
+// subjects taken so far would skip a subject past. It lists no key the store never held. Each store
+// here pages two subjects at a time, as a server pages 100,000, and is changed before the ask a row
+// names. The rows that read the answers' leader, sequence or size are scripted answers, as the
+// server's JSON.
+func TestStoredKeysListsEveryKeyTheStoreHoldsWhateverChangesBetweenItsPages(t *testing.T) {
 	const prefix = "$KV.b."
-	// pages answers the answer scripted at each offset it is asked for.
+	for _, row := range []struct {
+		name string
+		// before changes the store before the ask of its index, counted from 0.
+		before map[int]func(s *pagedStore)
+		// must is the keys the store holds at every ask: the list holds them all, and nothing
+		// the store never held.
+		must []string
+	}{
+		{name: "a store that does not change", must: []string{"a", "b", "c", "d", "e"}},
+		{
+			name:   "a key replaced between pages",
+			before: map[int]func(s *pagedStore){1: func(s *pagedStore) { s.replace("a") }, 2: func(s *pagedStore) { s.replace("d") }},
+			must:   []string{"a", "b", "c", "d", "e"},
+		},
+		{
+			name:   "keys added before the page boundary",
+			before: map[int]func(s *pagedStore){1: func(s *pagedStore) { s.put("0a"); s.put("0b") }},
+			must:   []string{"a", "b", "c", "d", "e"},
+		},
+		{
+			name:   "a key before the page boundary removed",
+			before: map[int]func(s *pagedStore){1: func(s *pagedStore) { s.remove("a") }},
+			must:   []string{"b", "c", "d", "e"},
+		},
+		{
+			name:   "the last key taken removed",
+			before: map[int]func(s *pagedStore){1: func(s *pagedStore) { s.remove("b") }},
+			must:   []string{"a", "c", "d", "e"},
+		},
+		{
+			// The round-6 order: a key before the boundary expires and a later one is stored in
+			// the same interval, so the subject at the next count is one past the key it shifted.
+			name:   "a key removed before the boundary and one added after it",
+			before: map[int]func(s *pagedStore){1: func(s *pagedStore) { s.remove("a"); s.put("f") }},
+			must:   []string{"b", "c", "d", "e"},
+		},
+		{
+			name:   "every key at or before the boundary removed",
+			before: map[int]func(s *pagedStore){1: func(s *pagedStore) { s.remove("a"); s.remove("b") }},
+			must:   []string{"c", "d", "e"},
+		},
+		{
+			name:   "the store ends before the page asked",
+			before: map[int]func(s *pagedStore){1: func(s *pagedStore) { s.remove("c"); s.remove("d"); s.remove("e") }},
+			must:   []string{"a", "b"},
+		},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			store := newPagedStore(t, prefix, 2, "a", "b", "c", "d", "e", BarrierKey)
+			store.before = row.before
+			keys, err := storedKeys(prefix, 3, store.read)
+			if err != nil {
+				t.Fatalf("storedKeys = %v, %v; want every key the store holds throughout", keys, err)
+			}
+			for _, key := range row.must {
+				if !slices.Contains(keys, key) {
+					t.Fatalf("storedKeys = %v after %d asks, want %s, which the store holds at every ask", keys, store.asks, key)
+				}
+			}
+			for _, key := range keys {
+				if !store.ever[key] || key == BarrierKey {
+					t.Fatalf("storedKeys = %v, listing %s, which the store never held as a key", keys, key)
+				}
+			}
+			if len(keys) != len(slices.Compact(slices.Sorted(slices.Values(keys)))) {
+				t.Fatalf("storedKeys = %v, listing a key twice", keys)
+			}
+		})
+	}
+
+	// The rows below are one scripted answer each.
 	pages := func(byOffset map[int]answer) func(int) (subjectsPage, error) {
 		return func(offset int) (subjectsPage, error) {
 			scripted, ok := byOffset[offset]
@@ -84,48 +266,8 @@ func TestStoredKeysTakesPagesOnlyWhenTheyAddUpToOneList(t *testing.T) {
 			want:  []string{"a"},
 		},
 		{
-			name: "two pages of one state",
-			pages: map[int]answer{
-				0: {total: 3, first: 1, last: 3, msgs: 3, subjects: []string{"a", BarrierKey}},
-				2: {total: 3, first: 1, last: 3, msgs: 3, subjects: []string{"c"}},
-				3: {total: 3, first: 1, last: 3, msgs: 3},
-			},
-			want: []string{"a", "c"},
-		},
-		{
-			// The bucket holds a, b and c. The last page reads the stream's state, then a expires
-			// and e is stored before it reads its subjects, which are now b, c and e: the subject at
-			// its offset is e, and c has moved into the range the first page read.
-			name: "the last page's subjects read after its state",
-			pages: map[int]answer{
-				0: {total: 3, first: 1, last: 3, msgs: 3, subjects: []string{"a", "b"}},
-				2: {total: 3, first: 1, last: 3, msgs: 3, subjects: []string{"e"}},
-				3: {total: 3, first: 2, last: 4, msgs: 3},
-			},
-			fails: ErrIncompleteKeyList,
-		},
-		{
-			name: "a later page read the stream after a write",
-			pages: map[int]answer{
-				0: {total: 3, first: 1, last: 3, msgs: 3, subjects: []string{"a", "b"}},
-				2: {total: 3, first: 1, last: 4, msgs: 3, subjects: []string{"c"}},
-			},
-			fails: ErrIncompleteKeyList,
-		},
-		{
-			name: "a later page listed nothing of what remains",
-			pages: map[int]answer{
-				0: {total: 3, first: 1, last: 3, msgs: 3, subjects: []string{"a", "b"}},
-				2: {total: 3, first: 1, last: 3, msgs: 3},
-			},
-			fails: ErrIncompleteKeyList,
-		},
-		{
-			name: "a later page listed a key again",
-			pages: map[int]answer{
-				0: {total: 3, first: 1, last: 3, msgs: 3, subjects: []string{"a", "b"}},
-				2: {total: 3, first: 1, last: 3, msgs: 3, subjects: []string{"b"}},
-			},
+			name:  "a page short of the end that lists one subject",
+			pages: map[int]answer{0: {total: 3, first: 1, last: 3, msgs: 3, subjects: []string{"a"}}},
 			fails: ErrIncompleteKeyList,
 		},
 		{
@@ -177,6 +319,55 @@ func TestStoredKeysTakesPagesOnlyWhenTheyAddUpToOneList(t *testing.T) {
 	if _, err := storedKeys(prefix, 0, outsidePage); err == nil || !strings.Contains(err.Error(), "outside "+prefix) {
 		t.Fatalf("storedKeys of a subject outside the filter = %v, want it refused", err)
 	}
+}
+
+// pagedStore is a bucket's store as STREAM.INFO pages it (jetstream_api.go:2207-2243): its
+// subjects sorted at each ask, pageSize of them from the asked offset, with the total and the
+// stream's last sequence of that moment. before changes it ahead of the ask of its index.
+type pagedStore struct {
+	t        *testing.T
+	prefix   string
+	pageSize int
+	keys     map[string]bool
+	// ever is every key the store has held.
+	ever    map[string]bool
+	lastSeq uint64
+	asks    int
+	before  map[int]func(s *pagedStore)
+}
+
+func newPagedStore(t *testing.T, prefix string, pageSize int, keys ...string) *pagedStore {
+	s := &pagedStore{t: t, prefix: prefix, pageSize: pageSize, keys: map[string]bool{}, ever: map[string]bool{}, lastSeq: 3}
+	for _, key := range keys {
+		s.put(key)
+	}
+	return s
+}
+
+// put stores a record of key, a new subject if the store holds none.
+func (s *pagedStore) put(key string) {
+	s.keys[key], s.ever[key] = true, true
+	s.lastSeq++
+}
+
+// replace stores a new record of key in place of its last: the subjects stay, the sequence moves.
+func (s *pagedStore) replace(key string) { s.lastSeq++ }
+
+// remove drops key's last message, as its MaxAge or a purge of its subject does.
+func (s *pagedStore) remove(key string) { delete(s.keys, key) }
+
+func (s *pagedStore) read(offset int) (subjectsPage, error) {
+	if change := s.before[s.asks]; change != nil {
+		change(s)
+	}
+	s.asks++
+	if s.asks > 100 {
+		s.t.Fatalf("the list asked the store more than 100 times")
+	}
+	sorted := slices.Sorted(maps.Keys(s.keys))
+	start := min(offset, len(sorted))
+	end := min(start+s.pageSize, len(sorted))
+	return answer{total: len(sorted), first: 1, last: s.lastSeq, msgs: uint64(len(sorted)), subjects: sorted[start:end]}.page(s.t, s.prefix), nil
 }
 
 // answer is one scripted STREAM.INFO answer with its subject list: the total the server counts,

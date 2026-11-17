@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A store captures its handle and epoch before it writes (Watcher.Handle; the session registry's
@@ -280,6 +281,49 @@ func TestAReadsWaitPastItsBarrierIsBoundedAndReported(t *testing.T) {
 	if done := len(into.completions()); done != 0 || w.Following() || !into.has(heldByTheCopy) {
 		t.Fatalf("after the bounded wait failed: %d reads completed, Following %v, copy %v; want none completed, not following, %s kept",
 			done, w.Following(), into.keyList(), heldByTheCopy)
+	}
+}
+
+// A read's wait past its barrier ends with its generation, and ReadErr then measures nothing
+// from it. The read here waits on a barrier its consumer never reaches. Then either a new watch
+// replaces it, whose scan has not ended, or its watcher ends on its own when the bucket is
+// deleted. Past the stale bound, ReadErr is nil: no read is waiting past a barrier, and none has
+// failed. Before, the replaced wait's start stayed, and ReadErr answered "the read is still
+// waiting", which /healthz reports as a 503.
+func TestAWaitItsGenerationEndedIsNoWaitToReadErr(t *testing.T) {
+	for _, row := range []struct {
+		name string
+		end  func(t *testing.T, w *kvwatch.Watcher, conn *natsgo.Conn, kv bus.KeyValue)
+	}{
+		{name: "a new watch replaces the read", end: func(t *testing.T, w *kvwatch.Watcher, _ *natsgo.Conn, kv bus.KeyValue) {
+			if err := kvwatch.WatchOn(w, scripted(kv, stallsAfter(0)).handle()); err != nil {
+				t.Fatalf("install the new watch: %v", err)
+			}
+		}},
+		{name: "its watcher ends on its own", end: func(t *testing.T, w *kvwatch.Watcher, conn *natsgo.Conn, _ bus.KeyValue) {
+			deleteTestBucket(t, jetStream(t, conn))
+			// nats.go's ordered consumer notices a deleted stream only after about 10 s
+			// (stopNoticeBudget).
+			testwait.WithinPolling(t, stopNoticeBudget, 50*time.Millisecond, "the watcher to end on its own", func() bool { return w.Err() != nil })
+		}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			uri := testnats.URL(t)
+			conn, kv := bucket(t, uri)
+			clock := newClock()
+			timers := &pending{}
+			w := kvwatch.New("test cache", bus.NewKeyValue(kv.Legacy(), kv.WatchHandle(), ackedAt{JetStream: kv.Streams(), sequence: 1 << 40}), newSeen(),
+				kvwatch.WithNow(clock.Now), kvwatch.WithAfterFunc(timers.afterFunc()), kvwatch.WithStreamProbeInterval(0), kvwatch.WithScanIdleTimeout(7*time.Hour))
+			t.Cleanup(w.Stop)
+			w.Start()
+			eventually(t, "the read to wait past its barrier", func() bool { return len(timers.armed(7*time.Hour)) == 2 })
+
+			row.end(t, w, conn, kv)
+			clock.advance(2*time.Minute + time.Second)
+			if err := w.ReadErr(); err != nil {
+				t.Fatalf("ReadErr past the stale bound, with no read waiting past a barrier = %v, want nil", err)
+			}
+		})
 	}
 }
 

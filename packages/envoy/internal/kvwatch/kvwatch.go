@@ -413,9 +413,13 @@ func (w *Watcher) Err() error {
 	return w.err
 }
 
-// Ready reports whether the cache is ready: the current watcher's scan ended (complete or timed
-// out) or the watcher ended on its own, or the first start failed with no watcher current. It is
-// the one-shot release of a startup's warm-up, not whether the copy can be served (Servable).
+// Ready reports whether the cache is ready. Readiness is released when the current watcher's read
+// ends one way or another: its scan timed out (endScan), or its scan completed and the wait past
+// its barrier and the leader's reads of what it did not deliver then completed the read
+// (finishSettle) or failed it (settleFailed), or the barrier found its bucket replaced
+// (settleReplaced). It is released too when the watcher ended on its own (closed), or the first
+// start failed with no watcher current. It is the one-shot release of a startup's warm-up, not
+// whether the copy can be served (Servable).
 func (w *Watcher) Ready() bool {
 	select {
 	case <-w.ready:
@@ -545,6 +549,9 @@ func (w *Watcher) watch(run context.Context, kv bus.KeyValue, expect uint64) err
 		w.epoch++
 	}
 	w.generation++
+	// A read the new generation replaces waits for nothing now, so its wait's start goes with it:
+	// ReadErr would otherwise measure from a wait nobody is in.
+	w.clearSettleLocked()
 	generation := w.generation
 	w.watcher = sub
 	w.kv = kv
@@ -868,9 +875,12 @@ const unmarkedReads = 16
 // message on every key that held a record at the barrier, that record or a later one, so the list
 // names it, and the leader's read applies it before the read completes. A read that reaches its
 // barrier makes one key listing: one STREAM.INFO per page of 100,000 subjects, normally one page,
-// plus one more when it pages, of one entry per key the bucket holds a message on. The scan
-// delivers every key's newest message, delete markers included, so the leader reads only what the
-// scan and the wait did not deliver.
+// and one more for each step back past a subject removed between two pages
+// (bus.KeyValue.StoredKeys), of one entry per key the bucket holds a message on. That is beside
+// the barrier write and the stream check (confirmStream, a STREAM.INFO) consume makes when the
+// barrier's acknowledgement arrives before the consumer has passed the barrier, which is the
+// usual order. The scan delivers every key's newest message, delete markers included, so the
+// leader reads only what the scan and the wait did not deliver.
 //
 // At most unmarkedReads reads are in flight, each bounded by bus.RequestTimeout, as the list is,
 // and the first failure ends the rest. A read that may no longer complete, or a generation
@@ -973,8 +983,17 @@ func (w *Watcher) endSettle(generation uint64) {
 	defer w.mu.Unlock()
 	if generation == w.generation {
 		w.clearIdleArm()
-		w.settleSince = time.Time{}
+		w.clearSettleLocked()
 	}
+}
+
+// clearSettleLocked clears the current read's wait past its barrier: its start, which ReadErr
+// measures from while no failed read has begun a run, and its bound's deadline. A wait ends when
+// its read does (endSettle), and also when its generation ends without it: a new watch replaces it
+// (watch), its watcher ends on its own (closed), or the watcher stops (Stop). Callers hold mu.
+func (w *Watcher) clearSettleLocked() {
+	w.settleSince = time.Time{}
+	w.settleDeadline = time.Time{}
 }
 
 // endScan ends generation's scan, which delivered scan, at its nil or, when timedOut, at its idle
@@ -1016,6 +1035,7 @@ func (w *Watcher) closed(sub *subscription, generation uint64) {
 	}
 	w.watcher = nil
 	w.clearIdleArm()
+	w.clearSettleLocked()
 	// Only a Rewatch repairs a watcher that ended on its own, and a scheduled read would install
 	// over the terminal error recorded here, on the handle whose connection may be the one that
 	// closed.

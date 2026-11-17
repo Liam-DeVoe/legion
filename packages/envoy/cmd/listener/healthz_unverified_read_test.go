@@ -82,9 +82,9 @@ func TestHealthzIsUnhealthyOnceACachesReadsCannotReadPastABarrierForTheBound(t *
 	code, body := get("past the stale bound")
 	reported, _ := body["error"].(string)
 	if code != http.StatusServiceUnavailable || body["status"] != "unhealthy" ||
-		!strings.HasPrefix(reported, "session KV read unavailable: "+kvwatch.ErrUnverified.Error()) ||
+		!strings.HasPrefix(reported, "session KV read unavailable: session registry (KV bucket healthz-unverified-read): "+kvwatch.ErrUnverified.Error()) ||
 		!strings.Contains(reported, natsgo.ErrConnectionClosed.Error()) {
-		t.Fatalf("/healthz past the stale bound = %d %v, want 503 unhealthy naming the session KV read, %q and the reads' own %q",
+		t.Fatalf("/healthz past the stale bound = %d %v, want 503 unhealthy naming the session KV read and its watcher's bucket, %q and the reads' own %q",
 			code, body, kvwatch.ErrUnverified, natsgo.ErrConnectionClosed)
 	}
 }
