@@ -1,4 +1,3 @@
-import type { IssueTreeAnswer } from "../web/src/api/client";
 import { presetPath } from "../web/src/features/issue-page/issue-address";
 import { kindWords } from "../web/src/features/issue-page/lenses/lens-drafts";
 import { chipWords } from "../web/src/features/issue-page/node-row-chip";
@@ -27,8 +26,17 @@ import {
   unfoldEveryBranch,
 } from "./issue-page-g";
 import {
+  convertedGate,
+  heldAnswer,
+  owedUnless,
+  type TreeAnswerWatch,
+  treeAnswerOf,
+  treeReadGate,
+} from "./issue-page-t";
+import {
   chromeTexts,
   drawnIdOf,
+  findingGate,
   focusedRowReadId,
   heldTreeAnswer,
   type LensKind,
@@ -47,8 +55,6 @@ import {
   lensShowChain,
   menuItems,
   seedLenses,
-  type TreeAnswerWatch,
-  treeAnswerOf,
   treePagesOf,
 } from "./issue-page-w";
 import { expect, type Locator, type Page, type Route, test } from "./test";
@@ -68,10 +74,20 @@ import { assertPageFits } from "./unclipped";
  * reads it through G's readers (`e2e/issue-page-g.ts`) and this part's (`e2e/issue-page-w.ts`).
  * A `@phone` row reads 1440 px on `chromium` and 390 px on `iphone` (`rowSize`).
  *
- * Every node a row names, it names by the id the page's own tree read gave it (`treeAnswerOf`,
- * read through `lensReadIds`), and every row it reads, by the id the page drew it under for that
- * read id (`drawnIdOf`): no row builds an id. Each row asserts that the read answers
- * `converted: true` before it reads a row.
+ * Every node a row names, it names by the id the page's own tree read gave it (part T's
+ * `treeAnswerOf`, read through `lensReadIds`), and every row it reads, by the id the page drew it
+ * under for that read id (`drawnIdOf`): no row builds an id.
+ *
+ * Each row checks its gates first, each with T's `owedUnless` (`e2e/issue-page-t.ts`), and skips
+ * where a gate is not on W's base, with an `owed` annotation naming the gate and the decisions
+ * that make it owed; it never passes then (INFRA-1196 decision 170, reading decisions 61, 127 and
+ * 135). Every row waits on G1, INFRA-1253's t16a, which T's `treeReadGate` reads as the tree
+ * read's 404, and on G3, INFRA-1253's T12b, the read's `converted: true` (`convertedGate`). These
+ * rows carry no `@owed`: each runs for real once its gates are on the base. Row 2's clause on a
+ * finding waits on GF as well, INFRA-1950's 5c85ffdc1b, which stands a lens invoked on a finding
+ * under it (`findingGate`, `e2e/issue-page-w.ts`): it is a row of its own, titled for the clause
+ * and tagged `@owed`, which checks the three gates the same way and asserts the clause once they
+ * are met.
  *
  * Each row's first reading of a part W draws is the assertion its check names, so at a base that
  * serves the tree read and holds no part W the row fails there and not at its deadline: row 1 on
@@ -79,11 +95,10 @@ import { assertPageFits } from "./unclipped";
  * 3 on `the load with lenses sends the requests of the load without them`, and row 4 on `the
  * constraint stands at the top level`.
  *
- * Two departures from the checks' words, said where they stand: the write layer tries a 5xx again
+ * One departure from the checks' words, said where it stands: the write layer tries a 5xx again
  * under its key until the reader stops it or the key's day is spent (`writeUnderKey`), so row 2's
  * refused invocation answers its first attempt 500 and every later one 400, the refusal the page
- * does not try again; and the Lens act on a finding is owed until gate GF, a comment in row 2 and
- * no assertion.
+ * does not try again.
  */
 
 /** The four views, none of which draws a row of part W's (R1). */
@@ -112,13 +127,6 @@ async function seedLensIssue(): Promise<LensIssue> {
 /** The size a `@phone` row reads: 390 px on the `iphone` project, 1440 px on every other. */
 function rowSize(): { readonly height: number; readonly width: number } {
   return test.info().project.name === "iphone" ? PHONE : DESKTOP;
-}
-
-/** Waits for the page's tree read of issue `key` and fails unless it answers `converted: true`. */
-async function convertedTree(tree: TreeAnswerWatch, key: string): Promise<IssueTreeAnswer> {
-  const answer = await heldTreeAnswer(tree, `the tree read of ${key}`);
-  expect(answer.converted, `the tree read of ${key} does not answer converted: true`).toBe(true);
-  return answer;
 }
 
 /** The kind of the catalogue a lens was invoked as, by the id or the address its 201 names. */
@@ -251,7 +259,7 @@ async function invokeThroughMenu(
   target: string,
   what: string
 ): Promise<void> {
-  const held = await heldTreeAnswer(tree, "the tree read");
+  const held = await heldAnswer(tree, "the tree read");
   expect(
     held.nodes.some((node) => node.id === target),
     `the tree read holds no ${what}`
@@ -327,12 +335,14 @@ test("lenses are drawn under their node with the chain that triggered them @phon
   const size = rowSize();
   await phase(browser, seedLensIssue, async (page, { lenses, whole }) => {
     const key = whole.key;
+    owedUnless(await treeReadGate(page, key));
+    owedUnless(await convertedGate(page, key));
     const plain = presetPath(key, "conversation");
     await page.setViewportSize(size);
     const tree = treeAnswerOf(page);
     const traffic = watchApiRequests(page);
     await gotoIssue(page, plain);
-    const answer = await convertedTree(tree, key);
+    const answer = await heldAnswer(tree, `the tree read of ${key}`);
     const ids = lensReadIds(answer, key, lenses);
     expect(
       answer.nodes.find((node) => node.id === ids.tradeOff)?.parent,
@@ -582,11 +592,13 @@ test("a person invokes a lens from a node's menu @phone", async ({ browser }) =>
   const size = rowSize();
   await phase(browser, seedLensIssue, async (page, { lenses, whole }) => {
     const key = whole.key;
+    owedUnless(await treeReadGate(page, key));
+    owedUnless(await convertedGate(page, key));
     const plain = presetPath(key, "conversation");
     await page.setViewportSize(size);
     const tree = treeAnswerOf(page);
     await gotoIssue(page, plain);
-    const answer = await convertedTree(tree, key);
+    const answer = await heldAnswer(tree, `the tree read of ${key}`);
     const ids = lensReadIds(answer, key, lenses);
     const kinds = await lensCatalogue();
     expect(kinds, "the lens catalogue does not hold its 22 kinds").toHaveLength(22);
@@ -630,7 +642,7 @@ test("a person invokes a lens from a node's menu @phone", async ({ browser }) =>
 
     // Again: two down arrows and Enter pick the third kind, which says it is examining while the
     // write is held, and lands on the new lens's row, focused, under statement 2.
-    const before = new Set(lensIdsIn(await heldTreeAnswer(tree, "the tree read")));
+    const before = new Set(lensIdsIn(await heldAnswer(tree, "the tree read")));
     await pressFTo(page, lensAct(row), "the focused row offers the Lens act");
     await page.keyboard.press("Enter");
     await expect(
@@ -722,9 +734,6 @@ test("a person invokes a lens from a node's menu @phone", async ({ browser }) =>
     ] as const) {
       await invokeThroughMenu(page, tree, target, what);
     }
-    // The Lens act on a finding is owed until gate GF, the invoke route taking a finding's
-    // address: once part T's gates are merged under W, the row reads it behind T's `owedUnless`
-    // on GF's probe. Until then this step asserts nothing.
 
     // A catalogue read the server refuses at every attempt: the menu says the kinds could not be
     // read. A new load, since the catalogue is read once in a load.
@@ -750,7 +759,7 @@ test("a person invokes a lens from a node's menu @phone", async ({ browser }) =>
     // An invocation the server fails: the page tries a 5xx again under its key, so the first
     // attempt answers 500 and every later one 400, the refusal the write layer does not try
     // again. The row says it could not examine the node, as a status, and gains no lens.
-    const lensesBefore = lensIdsIn(await heldTreeAnswer(tree, "the tree read"));
+    const lensesBefore = lensIdsIn(await heldAnswer(tree, "the tree read"));
     const rowsBefore = await lensRows(page).count();
     let attempts = 0;
     const failWrite = async (route: Route) => {
@@ -776,7 +785,7 @@ test("a person invokes a lens from a node's menu @phone", async ({ browser }) =>
     expect(attempts, "the page did not try the 500 again under its key").toBeGreaterThanOrEqual(2);
     await expect(refused, "the refusal does not give the focus back to the row").toBeFocused();
     expect(
-      lensIdsIn(await heldTreeAnswer(tree, "the tree read")),
+      lensIdsIn(await heldAnswer(tree, "the tree read")),
       "a failed invocation made a lens"
     ).toEqual(lensesBefore);
     await expect(lensRows(page), "a failed invocation draws a row").toHaveCount(rowsBefore);
@@ -803,6 +812,23 @@ test("a person invokes a lens from a node's menu @phone", async ({ browser }) =>
   });
 });
 
+// c-premortem, row 2's Lens act on a finding (R4, R7), owed on GF.
+// SLOW(>=2s): a whole seeded issue with its lenses, the gate's invocation and its tree read,
+// every branch opened and one invocation through the menu.
+test("a person invokes a lens on a finding from its row @owed", async ({ browser }) => {
+  test.setTimeout(120_000);
+  await phase(browser, seedLensIssue, async (page, { lenses, whole }) => {
+    const key = whole.key;
+    owedUnless(await treeReadGate(page, key));
+    owedUnless(await convertedGate(page, key));
+    owedUnless(await findingGate(page, key, lenses));
+    const tree = treeAnswerOf(page);
+    await gotoIssue(page, presetPath(key, "conversation"));
+    const answer = await heldAnswer(tree, `the tree read of ${key}`);
+    await invokeThroughMenu(page, tree, lensReadIds(answer, key, lenses).finding, "finding");
+  });
+});
+
 // c-lens-reads, row 3 (R2, R4, R6).
 // SLOW(>=2s): two whole seeded issues each loaded to a 1.5 s quiet window, then `j` over every
 // row, two chain presses, two menu openings and an invocation, each waited out to that window.
@@ -812,20 +838,24 @@ test("the first load adds no request for lenses and reads a chain only at a pres
   test.setTimeout(240_000);
   let without: readonly RouteCount[] = [];
   await phase(browser, seedWholeIssue, async (page, whole) => {
+    owedUnless(await treeReadGate(page, whole.key));
+    owedUnless(await convertedGate(page, whole.key));
     const tree = treeAnswerOf(page);
     const traffic = watchApiRequests(page);
     await gotoIssue(page, presetPath(whole.key, "conversation"));
     await expectLoadSettled(traffic);
-    await convertedTree(tree, whole.key);
+    await heldAnswer(tree, `the tree read of ${whole.key}`);
     without = traffic.byRoute();
   });
   await phase(browser, seedLensIssue, async (page, { lenses, whole }) => {
     const key = whole.key;
+    owedUnless(await treeReadGate(page, key));
+    owedUnless(await convertedGate(page, key));
     const tree = treeAnswerOf(page);
     const traffic = watchApiRequests(page);
     await gotoIssue(page, presetPath(key, "conversation"));
     await expectLoadSettled(traffic);
-    const answer = await convertedTree(tree, key);
+    const answer = await heldAnswer(tree, `the tree read of ${key}`);
     expect(
       traffic.byRoute(),
       "the load with lenses sends the requests of the load without them"
@@ -951,11 +981,13 @@ test("a constraint stands under the issue and a statement names it @phone", asyn
   const size = rowSize();
   await phase(browser, seedLensIssue, async (page, { lenses, whole }) => {
     const key = whole.key;
+    owedUnless(await treeReadGate(page, key));
+    owedUnless(await convertedGate(page, key));
     const plain = presetPath(key, "conversation");
     await page.setViewportSize(size);
     const tree = treeAnswerOf(page);
     await gotoIssue(page, plain);
-    const answer = await convertedTree(tree, key);
+    const answer = await heldAnswer(tree, `the tree read of ${key}`);
     const ids = lensReadIds(answer, key, lenses);
 
     // (1) The two constraints stand at the top level, in the read's order, each with its words,
