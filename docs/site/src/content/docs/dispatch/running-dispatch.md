@@ -376,9 +376,10 @@ envoy-dispatch project-visibility <KEY> public
 ```
 
 So to take a key off the list, make the project public first, and only then remove its key. At
-start Dispatch also logs, at INFO, the listed keys no private project holds yet, and, with a list,
-an ERROR line at start and once an hour while the store cannot hold a private project, naming its
-first rows and the command that repairs it. Every response carries `Dispatch-Private-Projects: 1`
+start Dispatch also logs, at INFO, the listed keys no private project holds yet. With a list, each
+server logs an ERROR line as it starts, and then once an hour, while the store cannot hold a
+private project for one of the reasons of step 4, naming the reason and the command that repairs
+it. Every response carries `Dispatch-Private-Projects: 1`
 while the list names a project or the database holds a private one, and
 `Dispatch-Private-Projects: 0` otherwise.
 

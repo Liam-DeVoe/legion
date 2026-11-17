@@ -585,12 +585,13 @@ write identity errors with `identity.WriteError`.
   provisioned as private (`privateProjectsSetting`: trimmed, empty entries dropped, deduplicated
   and sorted; an entry that is no project key, `1` included, refuses the boot). `appContextOptions`
   hands it to the router as `api.Deps.PrivateProjects`, which a switch to private checks after the
-  owner (`409 PRIVATE_PROJECT_NOT_PROVISIONED`; no list is A1's `409 PRIVATE_PROJECTS_OFF` before
+  owner (`409 PRIVATE_PROJECT_NOT_PROVISIONED`; with no list, `409 PRIVATE_PROJECTS_OFF` before
   any read). Nothing about it refuses the boot: `reportPrivateProjects`, right after
-  `store.EnsureProjectOwners`, logs an ERROR line for each private project off the list, an INFO
-  line for listed keys not private yet, and, with a list, an ERROR line for a store a private
-  project would read wrongly; the maintenance sweep repeats the first every pass and the last
-  hourly, and `/healthz` answers `degraded: ["private_project_unprovisioned"]` for the first, naming
+  `store.EnsureProjectOwners`, logs an ERROR line for each private project off the list and an
+  INFO line for listed keys not private yet; the maintenance sweep repeats the first every pass,
+  and, with a list, logs an ERROR line for a store that cannot hold a private project yet once as
+  its loop starts in each process and then hourly, off the boot path; and `/healthz` answers
+  `degraded: ["private_project_unprovisioned"]` for the first, naming
   no key and counting none, without touching `ok`. Every response carries `Dispatch-Private-Projects` (`access.PrivateProjectsHeader`): `1`
   with a list, else `1` while the database holds a private project or the read failed, else `0`.
   Both come from `privateProjectsState`: its first read (`startPrivateProjectsState`) runs at boot
