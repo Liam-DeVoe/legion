@@ -1227,6 +1227,7 @@ func TestEveryCallerDecidingASecretRequestGetsDecideOnBrokerPage(t *testing.T) {
 // until its sweep denies it. The code is still DECIDE_ON_BROKER_PAGE, which Dispatch relays, the
 // record stays pending, and a machine login is still decided with its code.
 func TestDecidingASecretRequestOnABrokerWithNoPageNamesTheSwitch(t *testing.T) {
+	t.Parallel()
 	ts := newTestServerWith(t, func(d *api.Deps) { d.Approval = nil })
 	enrollmentID, sessionKey := ts.newSessionEnrollment(t, "session-"+t.Name(), testApprover)
 	compact := signAgentSecretRequest(t, sessionKey, ts.URL, "a request an earlier run left", "DEEL_API_KEY")
@@ -1344,6 +1345,7 @@ func TestEveryAnswerNamingAPendingSecretRequestLinksItsPage(t *testing.T) {
 // pending and listed. TestEveryAnswerNamingAPendingSecretRequestLinksItsPage is the control: the
 // same answers with a page carry the link.
 func TestABrokerWithNoPageLinksNoPageForAPendingRequest(t *testing.T) {
+	t.Parallel()
 	ts := newTestServerWith(t, func(d *api.Deps) { d.Approval = nil })
 	enrollmentID, sessionKey := ts.newSessionEnrollment(t, "session-"+t.Name(), testApprover)
 	status, body := ts.session(t, sessionKey, enrollmentID, http.MethodPost, "/v1/requests",
