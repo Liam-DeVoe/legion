@@ -467,16 +467,14 @@ func (r *stepRecordsRig) token(role claim.Role) claim.Token {
 // awaitLaunch waits for the running daemon to launch token's claim.
 func (r *stepRecordsRig) awaitLaunch(token claim.Token) {
 	r.t.Helper()
-	if !testwait.Holds(stepRecordsWait, 50*time.Millisecond, func() bool {
+	testwait.WithinPolling(r.t, stepRecordsWait, 50*time.Millisecond, "the daemon's launch of "+string(token), func() bool {
 		for _, call := range r.rt.Calls() {
 			if (call.Method == "Spawn" || call.Method == "Resume") && call.Spec.Claim == token {
 				return true
 			}
 		}
 		return false
-	}) {
-		r.t.Fatalf("the daemon did not launch %s", token)
-	}
+	})
 }
 
 // person sends one request to Dispatch as the run's person, through the identity header the
