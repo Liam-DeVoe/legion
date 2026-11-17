@@ -168,8 +168,9 @@ export function shownColumns(
  *  issues in the queue lists the same rows in the same order, since Open sorts by Queue. */
 const QUEUE_VIEW_IDS: readonly string[] = ["queue", "waiting"];
 
-/** The filters of columns this build does not have, which an address drops. */
+/** The filters and the grouping of columns this build does not have, which an address drops. */
 const DROPPED_FILTERS: readonly string[] = ["f.stage", "f.epic"];
+const DROPPED_GROUP = "epic";
 
 /**
  * An older address in today's spelling, or undefined where it is today's already:
@@ -181,17 +182,17 @@ export function currentAddress(params: URLSearchParams): URLSearchParams | undef
   const id = params.get("view");
   const queue = id !== null && QUEUE_VIEW_IDS.includes(id);
   const groups = params.getAll("group");
-  const epicGroup = groups.includes("epic");
+  const droppedGrouping = groups.includes(DROPPED_GROUP);
   const dropped = DROPPED_FILTERS.filter((key) => params.has(key));
-  if (!queue && !epicGroup && dropped.length === 0) return undefined;
+  if (!queue && !droppedGrouping && dropped.length === 0) return undefined;
   const next = copyAddress(params);
   if (queue) {
     next.delete("view");
     if (!next.has("f.queue")) next.set("f.queue", "Queued");
   }
-  if (epicGroup) {
+  if (droppedGrouping) {
     next.delete("group");
-    for (const group of groups) if (group !== "epic") next.append("group", group);
+    for (const group of groups) if (group !== DROPPED_GROUP) next.append("group", group);
   }
   for (const key of dropped) next.delete(key);
   return next;
@@ -516,7 +517,7 @@ export function durationPick(ms: number | undefined): DurationPick {
 
 /** The pick of the time from `since` to `nowMs` (Time waiting, Time in Legion phase), None
  *  where there is no time to start from. */
-export function sincePick(since: string | null | undefined, nowMs: number): DurationPick {
+export function sinceDurationPick(since: string | null | undefined, nowMs: number): DurationPick {
   if (since === null || since === undefined) return NONE_PICK;
   const at = Date.parse(since);
   return Number.isNaN(at) ? NONE_PICK : durationPick(nowMs - at);
@@ -536,10 +537,10 @@ export function reviewRoundsPick(rounds: number | undefined): ReviewRoundsPick {
 /** Legion tree's picks (`f.legion`): two of them select their union, so `f.legion=root` with
  *  `f.legion=child` is every issue with Legion work. */
 export const LEGION_TREE_PICKS = ["root", "child", NONE_PICK] as const;
-export type LegionTreePick = (typeof LEGION_TREE_PICKS)[number];
+export type LegionPick = (typeof LEGION_TREE_PICKS)[number];
 
 /** Where an issue stands in its Legion tree: the root, a child, or None with no Legion work. */
-export function legionTreePick(facts: Pick<LegionFacts, "tree_depth"> | undefined): LegionTreePick {
+export function legionPick(facts: Pick<LegionFacts, "tree_depth"> | undefined): LegionPick {
   if (facts === undefined) return NONE_PICK;
   return facts.tree_depth === 0 ? "root" : "child";
 }
@@ -552,7 +553,7 @@ export const LEGION_PHASE_PICKS: readonly string[] = [
 ];
 
 /** The pick of the board column an issue's card is in, None with no card. */
-export function legionPhasePick(column: string | undefined): string {
+export function phaseColumnPick(column: string | undefined): string {
   return column === undefined || column === "" ? NONE_PICK : column;
 }
 
@@ -561,7 +562,7 @@ export function legionPhasePick(column: string | undefined): string {
 export const ROLE_PICKS: readonly string[] = [...LEGION_ROLES, NONE_PICK];
 
 /** The picks of the roles at work on a card, None where none is. */
-export function rolePicks(roles: readonly string[] | null | undefined): readonly string[] {
+export function workerPicks(roles: readonly string[] | null | undefined): readonly string[] {
   return roles === null || roles === undefined || roles.length === 0 ? [NONE_PICK] : roles;
 }
 
@@ -589,7 +590,7 @@ export const WORKER_STATE_PICKS = [
 ] as const;
 
 /** The pick of what a card's slot is used for, None with no slot of its own. */
-export function workerStatePick(slotUse: string | null | undefined): string {
+export function activityPick(slotUse: string | null | undefined): string {
   return slotUse === null || slotUse === undefined || slotUse === "" ? NONE_PICK : slotUse;
 }
 

@@ -22,6 +22,7 @@ import {
 import {
   type ActiveView,
   ASKS_PICKS,
+  activityPick,
   asksPick,
   BUILT_IN_VIEWS,
   builtInAddress,
@@ -41,11 +42,11 @@ import {
   LEGION_TREE_PICKS,
   lastDayOf,
   legacyOpenLayout,
-  legionPhasePick,
-  legionTreePick,
+  legionPick,
   matchSavedView,
   NO_SAVED_VIEWS,
   narrowingsDiffer,
+  phaseColumnPick,
   phaseHoursPicks,
   QUEUE_PICKS,
   REVIEW_ROUND_PICKS,
@@ -57,11 +58,10 @@ import {
   readSavedViews,
   readWindow,
   reviewRoundsPick,
-  rolePicks,
   type SavedView,
   savedViewQuery,
   shownColumns,
-  sincePick,
+  sinceDurationPick,
   toEndOfDay,
   useExcludedTrees,
   useSavedViews,
@@ -76,7 +76,7 @@ import {
   waitingReasonPick,
   withoutSavedView,
   withSavedView,
-  workerStatePick,
+  workerPicks,
   writeSavedViews,
 } from "./issues-views";
 
@@ -666,10 +666,10 @@ test("a duration's picks are under-1h, 1h-1d, 1d-7d, over-7d and none, each with
   expect(
     [0, HOUR - 1, HOUR, DAY - 1, DAY, 7 * DAY - 1, 7 * DAY, undefined].map(durationPick)
   ).toEqual(["under-1h", "under-1h", "1h-1d", "1h-1d", "1d-7d", "1d-7d", "over-7d", "none"]);
-  expect(sincePick(new Date(NOW - 2 * HOUR).toISOString(), NOW)).toBe("1h-1d");
-  expect(sincePick(new Date(NOW - 8 * DAY).toISOString(), NOW)).toBe("over-7d");
-  expect(sincePick(null, NOW)).toBe("none");
-  expect(sincePick(undefined, NOW)).toBe("none");
+  expect(sinceDurationPick(new Date(NOW - 2 * HOUR).toISOString(), NOW)).toBe("1h-1d");
+  expect(sinceDurationPick(new Date(NOW - 8 * DAY).toISOString(), NOW)).toBe("over-7d");
+  expect(sinceDurationPick(null, NOW)).toBe("none");
+  expect(sinceDurationPick(undefined, NOW)).toBe("none");
 });
 
 test("Review rounds' picks are 0, 1, 2, 3-or-more and none", () => {
@@ -694,9 +694,9 @@ test("Workers' picks are the roles' ids and none", () => {
     "merger",
     "none",
   ]);
-  expect(rolePicks(["implementer", "tester"])).toEqual(["implementer", "tester"]);
-  expect(rolePicks([])).toEqual(["none"]);
-  expect(rolePicks(null)).toEqual(["none"]);
+  expect(workerPicks(["implementer", "tester"])).toEqual(["implementer", "tester"]);
+  expect(workerPicks([])).toEqual(["none"]);
+  expect(workerPicks(null)).toEqual(["none"]);
 });
 
 test("Why it waits' picks are ready, slot, blocked, person and none", () => {
@@ -717,19 +717,19 @@ test("Worker state's picks are the board's slot uses and none", () => {
     "held_idle",
     "none",
   ]);
-  expect(workerStatePick("between_turns")).toBe("between_turns");
-  expect(workerStatePick(null)).toBe("none");
+  expect(activityPick("between_turns")).toBe("between_turns");
+  expect(activityPick(null)).toBe("none");
 });
 
 test("Legion tree's picks are root, child and none, and two of them select their union", () => {
   expect(LEGION_TREE_PICKS).toEqual(["root", "child", "none"]);
-  expect(legionTreePick({ tree_depth: 0 })).toBe("root");
-  expect(legionTreePick({ tree_depth: 2 })).toBe("child");
-  expect(legionTreePick(undefined)).toBe("none");
+  expect(legionPick({ tree_depth: 0 })).toBe("root");
+  expect(legionPick({ tree_depth: 2 })).toBe("child");
+  expect(legionPick(undefined)).toBe("none");
   const picked = expandView(at("view=done&f.legion=root&f.legion=child")).getAll("f.legion");
   expect(picked).toEqual(["root", "child"]);
   const rows = [{ tree_depth: 0 }, { tree_depth: 1 }, undefined];
-  expect(rows.filter((facts) => picked.includes(legionTreePick(facts)))).toEqual([
+  expect(rows.filter((facts) => picked.includes(legionPick(facts)))).toEqual([
     { tree_depth: 0 },
     { tree_depth: 1 },
   ]);
@@ -749,8 +749,8 @@ test("Legion phase's picks are the board's column ids and none", () => {
     "held",
     "none",
   ]);
-  expect(legionPhasePick("implementing")).toBe("implementing");
-  expect(legionPhasePick(undefined)).toBe("none");
+  expect(phaseColumnPick("implementing")).toBe("implementing");
+  expect(phaseColumnPick(undefined)).toBe("none");
 });
 
 test("Open asks' picks are any and none: f.asks=0 reads as none and f.asks=3 as any", () => {
