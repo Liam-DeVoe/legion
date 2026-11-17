@@ -60,10 +60,9 @@ func unstorableJSONValue(path string, decoder *json.Decoder) error {
 			if err != nil {
 				return err
 			}
-			name, ok := key.(string)
-			if !ok {
-				return fmt.Errorf("a member of %q has a name that is no string", path)
-			}
+			// Token returns an object's key as a string, or the error returned above: in the
+			// state before a member's name it reads a '"' as the name and refuses any other byte.
+			name := key.(string)
 			// A name is written with each U+0000 in it as the six characters \u0000, so no
 			// refusal sends the character back.
 			member := strings.ReplaceAll(name, "\x00", `\u0000`)
