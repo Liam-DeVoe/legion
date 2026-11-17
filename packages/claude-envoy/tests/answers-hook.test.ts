@@ -1,9 +1,10 @@
 import { afterAll, afterEach, beforeAll, expect, test } from "bun:test"
-import { existsSync } from "node:fs"
+import { existsSync, readFileSync } from "node:fs"
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import type { SessionAnswer } from "@legion/contracts"
+import { hasErrnoCode } from "@legion/envoy-client/errors"
 import {
   renderSessionAnswers,
   SESSION_ANSWERS_DEADLINE_MS,
@@ -190,12 +191,17 @@ async function preloadAfterRefresher(home: string, state: string, signal: string
 
 /** What the hook measured of itself, written to `ENVOY_ANSWERS_TIMING_FILE`, in ms after its
  *  process started: when its code began, when it printed (null: it failed before), and when it
- *  exited. */
+ *  exited; and the pid of the refresher it started (null: it started none). */
 interface HookTiming {
   readonly began: number
   readonly printed: number | null
   readonly ended: number
+  readonly refresher: number | null
 }
+
+/** The refreshers each case's hooks started, by the case's Dispatch state directory: the only
+ *  processes `refreshersRunning` reads. */
+const refreshersByState = new Map<string, number[]>()
 
 interface HookRun {
   readonly exitCode: number
@@ -238,6 +244,10 @@ async function runHook(
     Promise.all([run.exited, new Response(run.stdout).text(), new Response(run.stderr).text()]),
   )
   const timing: HookTiming = JSON.parse(await readFile(timingFile, "utf8"))
+  const state = env["DISPATCH_STATE_DIR"]
+  if (timing.refresher !== null && state !== undefined) {
+    refreshersByState.set(state, [...(refreshersByState.get(state) ?? []), timing.refresher])
+  }
   return { exitCode, stdout, stderr, timing }
 }
 
@@ -709,20 +719,74 @@ test("a `!` token command runs outside the hook: a quick one gives the bearer, a
   expect(await readdir(tmp)).toEqual([])
 })
 
-/** Processes whose command line holds `marker`, as `pgrep -f` finds them. */
-function processesWith(marker: string): string {
-  return Bun.spawnSync(["pgrep", "-f", marker]).stdout.toString().trim()
+/** Whether process `pid` still runs with `marker` in its command line. It reads that one
+ *  process's command line (`/proc/<pid>/cmdline`, or `ps -p` on a host with no `/proc`), never
+ *  every process on the machine as `pgrep -f` does: that search took 0.6 s to 1.2 s a call on a
+ *  loaded dev box, and its `Bun.spawnSync` holds this file's one event loop, Bun's timeout of the
+ *  row included, while it runs (docs/testing.md, "A test that looks for a process it started").
+ *  A pid that ended, or that another program took since, runs no `marker`. */
+function runsWith(pid: number, marker: string): boolean {
+  if (existsSync("/proc/self/cmdline")) {
+    try {
+      return readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0").join(" ").includes(marker)
+    } catch (error) {
+      // ENOENT: the process is gone; ESRCH: it ended while its file was read.
+      if (hasErrnoCode(error, "ENOENT") || hasErrnoCode(error, "ESRCH")) return false
+      throw error
+    }
+  }
+  return Bun.spawnSync(["ps", "-o", "args=", "-p", String(pid)])
+    .stdout.toString()
+    .includes(marker)
 }
 
-/** Whether no refresher of the session runs for the project directory `home` (its command line
- *  is `bun <bundle> answers-refresh <session> <directory>`) and none holds the lock. The lock is
- *  a file test and the processes are a `pgrep` fork, so the lock decides first: both reads are
- *  free of side effects, and a poll every 20 ms pays for the fork each time it runs. */
+/** The refreshers this case's hooks said they started (`HookTiming.refresher`) that still run for
+ *  the project directory `home` (their command line is `bun <bundle> answers-refresh <session>
+ *  <directory>`). The read costs one file for each of them, whatever else the machine runs. */
+function refreshersRunning(home: string, state: string): number[] {
+  return (refreshersByState.get(state) ?? []).filter((pid) =>
+    runsWith(pid, `answers-refresh ${SESSION} ${home}`),
+  )
+}
+
+/** Whether no refresher of the session runs for the project directory `home` and none holds the
+ *  lock. */
 function noRefresher(home: string, state: string): boolean {
   return (
     !existsSync(join(state, "sessions", SESSION, "answers-refresh.lock")) &&
-    processesWith(`answers-refresh ${SESSION} ${home}`) === ""
+    refreshersRunning(home, state).length === 0
   )
+}
+
+/** The pid a token command wrote to `file` as its first act (`echo $$ >file`); undefined until
+ *  the command has written it. */
+function commandPid(file: string): number | undefined {
+  let text: string
+  try {
+    text = readFileSync(file, "utf8")
+  } catch (error) {
+    if (hasErrnoCode(error, "ENOENT")) return undefined
+    throw error
+  }
+  const pid = Number(text.trim())
+  return Number.isInteger(pid) && pid > 0 ? pid : undefined
+}
+
+/** Whether any process of the token command's process group still runs: its shell, or anything
+ *  it started. envoy-config starts the command `detached`, so its shell leads a group of its own
+ *  and its pid is the group's id, and one `kill(-pid, 0)` asks the kernel about that group alone.
+ *  EPERM means the group exists. */
+function commandRuns(file: string): boolean {
+  const pid = commandPid(file)
+  if (pid === undefined) return false
+  try {
+    process.kill(-pid, 0)
+    return true
+  } catch (error) {
+    if (hasErrnoCode(error, "ESRCH")) return false
+    if (hasErrnoCode(error, "EPERM")) return true
+    throw error
+  }
 }
 
 test("a token command slower than the hook's deadline finishes and cleans up after the hook, and the next hook carries the list it read", async () => {
@@ -731,15 +795,16 @@ test("a token command slower than the hook's deadline finishes and cleans up aft
   dispatch.route = { kind: "list", items }
   const { home, state, config, tmp } = await scratch()
   const env = { HOME: home, DISPATCH_STATE_DIR: state, CLAUDE_CONFIG_DIR: config, TMPDIR: tmp }
-  // The command waits until the test opens the gate, a path no other process names: `pgrep -f`
-  // finds the command's shell by it.
+  // The command writes its shell's pid, which is its process group's id, then waits until the
+  // test opens the gate.
   const gate = join(home, "gate")
+  const pidFile = join(home, "command.pid")
   await writeFile(
     join(config, "envoy.json"),
     JSON.stringify({
       dispatch: {
         serverUrl: dispatch.base,
-        token: `!while [ ! -e '${gate}' ]; do sleep 0.02; done; printf hook-token`,
+        token: `!echo $$ >'${pidFile}'; while [ ! -e '${gate}' ]; do sleep 0.02; done; printf hook-token`,
       },
     }),
   )
@@ -754,12 +819,12 @@ test("a token command slower than the hook's deadline finishes and cleans up aft
   expectPrinted(first)
   // The command outlives the hook, in the refresher the hook started (whose own bun start-up may
   // end after the hook did).
-  await until("the command's start", () => processesWith(gate) !== "")
+  await until("the command's start", () => commandRuns(pidFile))
 
   await writeFile(gate, "")
   await refresherFinished(state, firstSince)
   expect(await readdir(tmp)).toEqual([])
-  expect(processesWith(gate)).toBe("")
+  expect(commandRuns(pidFile)).toBe(false)
   expect(dispatch.requests).toEqual([`Bearer hook-token /api/v1/agents/${SESSION}/answers`])
 
   await rm(gate)
@@ -772,7 +837,7 @@ test("a token command slower than the hook's deadline finishes and cleans up aft
   expectPrinted(second)
   await writeFile(gate, "")
   await refresherFinished(state, secondSince)
-  expect(processesWith(gate)).toBe("")
+  expect(commandRuns(pidFile)).toBe(false)
 })
 
 test("with a slow token command, a list read from another Dispatch than envoy.json names now never stands in", async () => {
@@ -844,17 +909,19 @@ test("a refresher started for the Dispatch envoy.json named before never hands i
   const env = { HOME: home, DISPATCH_STATE_DIR: state, CLAUDE_CONFIG_DIR: config, TMPDIR: tmp }
   const envoyJson = join(config, "envoy.json")
   const gate = join(home, "gate")
+  const pidFile = join(home, "command.pid")
   const user = "user-7f2a"
   const secret = "pw-4c7e19"
   const beforeUrl = before.base.replace("://", `://${user}:${secret}@`)
 
-  // The first hook's refresher runs the command, which waits until the gate opens.
+  // The first hook's refresher runs the command, which writes its pid and waits until the gate
+  // opens.
   await writeFile(
     envoyJson,
     JSON.stringify({
       dispatch: {
         serverUrl: beforeUrl,
-        token: `!while [ ! -e '${gate}' ]; do sleep 0.02; done; printf before-token`,
+        token: `!echo $$ >'${pidFile}'; while [ ! -e '${gate}' ]; do sleep 0.02; done; printf before-token`,
       },
     }),
   )
@@ -867,7 +934,7 @@ test("a refresher started for the Dispatch envoy.json named before never hands i
 
   // The refresher resolves envoy.json before its command runs: once the command runs, it reads
   // `before` whatever envoy.json names next.
-  await until("the command's start", () => processesWith(gate) !== "")
+  await until("the command's start", () => commandRuns(pidFile))
 
   // envoy.json now names another Dispatch. A hook starts while the refresher runs; it opens the
   // gate once its process has started and holds its code until the refresher has read `before`
@@ -1088,7 +1155,7 @@ test("hooks started together run a slow token command once", async () => {
   await until(
     "the refreshers that found the lock taken to exit, leaving the one running the command",
     async () =>
-      processesWith(`answers-refresh ${SESSION} ${home}`).split("\n").length === 1 &&
+      refreshersRunning(home, state).length === 1 &&
       (await readFile(runs, "utf8").catch(() => "")) !== "",
   )
   await writeFile(gate, "")

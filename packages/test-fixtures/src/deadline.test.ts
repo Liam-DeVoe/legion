@@ -1,10 +1,10 @@
 import { expect, test } from "bun:test";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { psCommandLine, runnerFrom } from "./deadline";
-import { skipWithout } from "./host-tools";
+import { temporaryDirectory } from "./temporary-directories";
 
-// The comparison needs both readings; a host without `/proc` is the one `ps` stands in for.
-const withoutBothReadings = skipWithout("ps") || !existsSync("/proc/self/cmdline");
+const dir = temporaryDirectory("test-fixtures-deadline");
 
 test("a bun test command line names the runner and its --timeout in either form", () => {
   expect(runnerFrom(["bun", "test", "--timeout=777", "./a.test.ts"])).toEqual({
@@ -57,12 +57,35 @@ test("a --timeout that is not milliseconds is refused", () => {
   );
 });
 
-// `ps` prints the arguments joined by spaces, so it is compared through what the runner reads
-// from it: an argument that holds a space (`-t "a row"`) splits in two there and nowhere else.
-test.skipIf(withoutBothReadings)("ps reads the runner and guard that /proc reads", () => {
-  const proc = readFileSync("/proc/self/cmdline", "utf8")
-    .split("\0")
-    .filter((arg) => arg !== "");
-  expect(runnerFrom(proc).inBunTest).toBe(true);
-  expect(runnerFrom(psCommandLine(process.pid))).toEqual(runnerFrom(proc));
-});
+// `psCommandLine` is the reading of a host with no `/proc` (macOS). Here it asks a stand-in for
+// `ps` that answers the one call it makes as procps-ng does, from that one process's
+// `/proc/<pid>/cmdline` (its words joined by spaces), and refuses any other: a real `ps -p` reads
+// every process on the machine, about a second a call on a loaded box (docs/testing.md, "A test
+// that looks for a process it started"). The two are compared through what the runner reads, since
+// `ps` joins the words by spaces: an argument that holds a space (`-t "a row"`) splits in two there
+// and nowhere else.
+test.skipIf(!existsSync("/proc/self/cmdline"))(
+  "ps's line reads as the runner and guard that /proc reads",
+  () => {
+    const standIn = join(dir, "ps-stand-in");
+    writeFileSync(
+      standIn,
+      [
+        "#!/bin/sh",
+        'if [ "$#" -ne 5 ] || [ "$1" != -ww ] || [ "$2" != -o ] || [ "$3" != args= ] || [ "$4" != -p ]; then',
+        '  echo "the ps stand-in was asked: $*" >&2',
+        "  exit 2",
+        "fi",
+        "tr '\\0' ' ' <\"/proc/$5/cmdline\"",
+        "echo",
+        "",
+      ].join("\n"),
+      { mode: 0o755 }
+    );
+    const proc = readFileSync("/proc/self/cmdline", "utf8")
+      .split("\0")
+      .filter((arg) => arg !== "");
+    expect(runnerFrom(proc).inBunTest).toBe(true);
+    expect(runnerFrom(psCommandLine(process.pid, standIn))).toEqual(runnerFrom(proc));
+  }
+);

@@ -44,17 +44,19 @@ export function runnerFrom(args: readonly string[]): Runner {
 
 /**
  * A process's command line as `ps` prints it, for a host with no `/proc` (macOS). `-ww` asks for
- * the whole line, which a `ps` that sizes its output to a terminal would otherwise cut.
+ * the whole line, which a `ps` that sizes its output to a terminal would otherwise cut. `ps` is
+ * the program asked: its test hands it a stand-in, since procps-ng's `ps -p` reads every process
+ * on the machine (docs/testing.md, "A test that looks for a process it started").
  */
-export function psCommandLine(pid: number): string[] {
-  const ps = Bun.spawnSync(["ps", "-ww", "-o", "args=", "-p", String(pid)]);
-  if (ps.exitCode !== 0) {
+export function psCommandLine(pid: number, ps = "ps"): string[] {
+  const run = Bun.spawnSync([ps, "-ww", "-o", "args=", "-p", String(pid)]);
+  if (run.exitCode !== 0) {
     throw new Error(
-      `could not read the command line of process ${pid}: \`ps -ww -o args= -p ${pid}\` exited ` +
-        `${ps.exitCode}: ${ps.stderr.toString().trim()}`
+      `could not read the command line of process ${pid}: \`${ps} -ww -o args= -p ${pid}\` ` +
+        `exited ${run.exitCode}: ${run.stderr.toString().trim()}`
     );
   }
-  return ps.stdout.toString().trim().split(/\s+/);
+  return run.stdout.toString().trim().split(/\s+/);
 }
 
 /** This process's command line: `/proc/self/cmdline`, or `ps` where the host has no `/proc`. */

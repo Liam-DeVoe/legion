@@ -244,9 +244,20 @@ kill -STOP "$pid"
 # can no longer write. Measured in this pod, a sleeping sampler shows `T` within about a
 # millisecond, so the wait is a guarantee rather than a delay.
 # sampler_stopped: the kernel shows the sampler stopped (state T); it prints the state it shows.
+# The state is the first field after the command name's closing `) ` in that one process's
+# /proc/<pid>/stat (the name may hold spaces and parentheses), never a read of every process on
+# the machine, which procps-ng's `ps -o state= -p PID` makes even for one pid, about a second a
+# call on a loaded devbox (docs/testing.md, "A test that looks for a process it started"). The
+# file is read with `read`: under `set -e`, bash 5.2 ends the shell when `$(<FILE)` cannot open
+# FILE, even on the left of `||`. A host with no /proc asks ps.
 sampler_stopped() {
-  local shown
-  shown=$(ps -o state= -p "$pid" | tr -d ' ')
+  local stat shown=
+  if [ ! -d /proc/self ]; then
+    shown=$(ps -o state= -p "$pid" | tr -d ' ')
+  elif { read -r stat <"/proc/$pid/stat"; } 2>/dev/null; then
+    shown=${stat##*) }
+    shown=${shown%% *}
+  fi
   echo "the sampler $pid is in state '${shown:-gone}'"
   [ "$shown" = T ]
 }
