@@ -82,8 +82,8 @@ label, such a job is at the head and reads `skipped`, which leaves the check no 
 implementer adds that label and then pushes, because the workflow starts on a push and not on a
 label, and the run at that head is the check's proof. The label stays on for as long as a
 `ci_check` of the issue names a held-back job, because every later head (a review fix, a forward
-merge) needs its own run; where it came off, it goes on again before the next push. The tester
-takes the check's result from that run, as from any other.
+merge) needs its own run; where it came off, it goes on again before the next push.
+`dispatch results` derives the check's result from that run, as from any other.
 
 ## A name that no run answers
 
@@ -92,9 +92,10 @@ merge state first (*Never waiting on CI* in `skill://legion-worker/references/pr
 that conflicts with its base gets no `pull_request` run, and the forward merge cures it. A
 held-back job (above) is not absent without the label: it reads `skipped`, and the label cures it.
 Otherwise the words of the check are wrong. The tester and the reviewer each send this to the
-architect as a finding, with
-`envoy_publish` to its role topic. The architect corrects the name or gives the check a command.
-Neither role fails the round or requests changes for it, because the change under review is not
+architect as a finding, each where the task has that step, with `envoy_publish` to its role topic.
+On a task with no tester step and no reviewer step, the implementer sends the architect, the owner
+of the task, the name that no run answers in the same way. The architect corrects the name or gives
+the check a command. No role fails the round or requests changes for it, because the change is not
 what is wrong.
 
 ## What the evidence is
@@ -102,8 +103,8 @@ what is wrong.
 The CI job that `ci_check` names is the proof of that check at the head, and no role repeats it.
 This is true also when the job is a unit or integration suite, which proves no other check.
 The limit: such a check claims only that the named job passed at that head. It never takes the
-place of the proof a tester makes on a real surface. The tester continues to prove the surface
-with the checks that CI cannot run.
+place of the proof a role makes on a real surface. The tester, or the implementer on a task with
+no tester step, continues to prove the surface with the checks that CI cannot run.
 
 ## How the architect writes one
 

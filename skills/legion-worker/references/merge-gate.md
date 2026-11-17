@@ -4,15 +4,25 @@ Part of `skill://legion-worker`. Read it when you are the reviewer submitting a 
 approval, the tester on a look of its closed issue's production check, or the merger merging
 the pull request. Every path it cites is in cybermonklabs/legion.
 
-The order, in full: the tester's evidence green → the reviewer's approval of the head → the
-architect's acceptance, in `accepting` → retro → the merger's merge of the head it read, which
-closes the issue → the production check after the close, which the project's `production_check`
-setting gives to a role or takes away. Every handoff is a record on the Dispatch issue, never a
-commit, so the head that merges carries none. Retro commits nothing (*Retro*, below), so the
-approved head is the head that merges, and no Legion check holds the head that merges to the head
-the review approved in any case: a repository that wants its newest push reviewed says so in its
-own rulesets. A conflict-forced merge goes back to the reviewer for a confirmation or a new round,
-as the fingerprint decides (*The reviewer*, below, and
+The order, in full: the steps of the issue's task in the order its `Steps:` line names them — in
+the default steps, and in today's line, which a task with no `Task:` line runs, the tester's
+evidence green → the reviewer's approval of the head → the architect's acceptance, in
+`accepting` — then retro → the
+merger's merge of the head it read, which closes the issue → the production check after the
+close, which the project's `production_check` setting gives to a role or takes away. A step the
+task's `Steps:` line does not name is no gate of
+that task, and its duty falls as follows. With no tester step, the implementer's own results
+against the issue's `before_merge` checks are the evidence, which a reviewer step reads before it
+approves. With no reviewer step, no step approves the head, and on a base whose rules require an
+approving review the merger waits and tells the owner of the task (*The merger*, below). With no
+`acceptance:owner` step, nobody accepts: the last step passing starts retro (*The architect's
+acceptance*, below). Every handoff is a record on the Dispatch issue, never a commit, so the head
+that merges carries none. Retro commits nothing (*Retro*, below), so the head the task's last step
+passed — the approved head, where the task has a review step — is the head that merges, and no
+Legion check holds the head that merges to the head the review approved in any case: a repository
+that wants its newest push reviewed says so in its own rulesets. A conflict-forced merge goes back
+through the task's steps after the implementer — to the reviewer, where the task has a review
+step, for a confirmation or a new round, as the fingerprint decides (*The reviewer*, below, and
 `skill://legion-worker/references/conflicts-and-rewrites.md`).
 
 ## The reviewer
@@ -119,7 +129,7 @@ as the fingerprint decides (*The reviewer*, below, and
   Approval is refused while any `before_merge` check of the issue's own Verification document has no pass standing at the head being reviewed: `REQUEST_CHANGES` naming each such check by its block id, and `dispatch results --issue <issue>` is the read that decides it, under the check's own line saying whether a pass stands and from which roles. That answer leaves out a pass at another commit, a pass recorded under an older wording of the check and a retracted pass, each of which the command still prints; a fail recorded after a pass leaves that pass standing until someone retracts it.
   A check carrying `ci_check` is CI's: the one result that `dispatch results` derives from the named run decides it (`skill://legion-worker/references/ci-checks.md`). While that run has not concluded, wait for it by its name, and do not approve or request changes for that check. Wait the same way where GitHub could not be read. When no run of that name answers after the head's checks settle, tell the architect as a finding and request no changes for it.
   A check whose `run` is a whole test suite and has no pass standing at the head has wrong words, which the architect rewrites: tell the architect as a finding, wait for the rewrite with a `WAITING` line naming it, and request no changes for it. One that has a pass standing at the head is a finding for the architect too, and its pass decides the check, so the review goes on.
-  An issue with no Verification document, or whose Verification document holds no `before_merge` check, is a gap you name in the review body, never a review that asks for changes: say which of the two it is, and tell the architect, who writes the checks. Your own findings and the checks that do exist still decide the review, and on an issue that has none the architect's acceptance is the gate.
+  An issue with no Verification document, or whose Verification document holds no `before_merge` check, is a gap you name in the review body, never a review that asks for changes: say which of the two it is, and tell the architect, who writes the checks. Your own findings and the checks that do exist still decide the review, and on an issue that has none the architect's acceptance is the gate, where its task has the step `acceptance:owner`.
   A result proves the head it was recorded at. A result a child recorded against a root's check proves nothing for the root, since it was recorded at the child's head, and a child never records the result that proves a root's check. A child that carries part of a root's requirement proves it with a check on the child's own Verification document whose `serves` names that requirement, at the child's own head. A root's own checks are proven at the root's own head, or, for an `after_merge` check, on the branch the root's pull request merged into or on the repository's default branch, in the root's last round.
   On a docs-only PR the `Thermo` line still records the simplify pass and the defects it
   reported, and its pair half reads `thermonuclear pair: not run (docs-only)`.
@@ -197,8 +207,8 @@ as the fingerprint decides (*The reviewer*, below, and
   when every thread is settled enough to approve, and resolving one never gates your approval.
 - **The reviewer pushes nothing to the branch it reviews**, a prose fix included: it names a
   prose fault (wording, a count, a tense, a citation) in its review, as any other finding. A
-  commit of the reviewer's is a new head, so the passes the tester and the checks recorded at the
-  head before it do not stand at it, and on a base whose rules want each change approved by
+  commit of the reviewer's is a new head, so the passes and the checks recorded at the head before
+  it do not stand at it, and on a base whose rules want each change approved by
   someone other than its author, the reviewer's approval cannot cover a commit it wrote, so
   GitHub holds the merge.
 
@@ -222,17 +232,20 @@ it there until that answer comes clean.
 
 ## The architect's acceptance
 
-- Between the reviewer's approval and retro the issue sits in `accepting` (Dispatch status
-  `needs_review`), where no worker is started: the tree's architect reads the evidence (the
-  tester's handoff, `dispatch results --issue <issue>` at the approved head and the reviewer's
-  approval of the head by SHA; the daemon refuses the sign-off while an issue beneath it is still
-  in the workflow, `SIGNOFF_CHILD_IN_WORKFLOW`, so a parent is accepted after its children, on
-  the head of its last round, `skill://legion-architect`, section 4) and accepts with the
-  `legion` tool's `sign_off`, which moves the issue to retro, or sends it back to `implementing`
-  or `testing` with `request_backward_move` and a reason, which reaches the started worker's task
-  as its `Reason:` line and counts a review round. The acceptance comment names each check with
-  its result. An issue with no Verification document, or none holding a `before_merge` check,
-  is a gap the tester and the reviewer named and neither refused, so that comment is its only
+- Where the issue's task holds the step `acceptance:owner`, as the default steps do, the issue
+  sits in `accepting` (Dispatch status `needs_review`) between the step before it — in the default
+  steps, the reviewer's approval — and retro, and no worker is started there: the tree's architect
+  reads the evidence (`dispatch results --issue <issue>` at the head that step passed, the
+  tester's handoff where the task has a tester step, and the reviewer's approval of the head by
+  SHA where it has a reviewer step; the daemon refuses the sign-off while an issue beneath it is
+  still in the workflow, `SIGNOFF_CHILD_IN_WORKFLOW`, so a parent is accepted after its children,
+  on the head of its last round, `skill://legion-architect`, section 4) and accepts with the
+  `legion` tool's `sign_off`, which moves the issue to retro, or sends it back to `implementing`,
+  or to `testing` where the task has a tester step, with `request_backward_move` and a reason,
+  which reaches the started worker's task as its `Reason:` line and counts a review round. The
+  acceptance comment names each check with its result. An issue with no Verification document, or
+  none holding a `before_merge` check, is a gap the steps before it named and none refused — the
+  tester and the reviewer, where the task has those steps — so that comment is its only
   gate: it names the gap and decides how each delivered item is proven at this head, never
   whether one stays unmet; checks it writes close the root's `criteria` step where the
   deployment gates it, since that step records the root's Verification document, and a child's
@@ -246,30 +259,38 @@ it there until that answer comes clean.
   CI red at the head in `accepting` moves nothing, as it moves nothing anywhere: the daemon names
   the checks GitHub reported and leaves the decision to the roles it told. Read the head's checks
   on GitHub yourself before you accept, and send a red head back with `request_backward_move`.
+- A task with no `acceptance:owner` step has no `accepting` and no acceptance: its last step
+  passing starts retro. A parent that passes its last step while an issue beneath it is still in
+  the workflow is held before its retro instead, and its architect gets a `retro-held` notice
+  naming those issues; retro starts when the last one leaves. On such a task an issue with no
+  `before_merge` check has no gate beyond what its steps found.
 
 ## Retro
 
 - **Retro commits nothing.** It reads the evidence, writes what the work taught as a
   `dispatch comment` on the issue for the skill librarian, brings the PR body up to date and
-  completes (`skill://legion-retro` gives the steps), so the approved head is the head the merger
-  merges. Nothing in Legion compares that head with the one the approval named either: a
+  completes (`skill://legion-retro` gives the steps), so the head the task's last step passed —
+  the approved head, where the task has a review step — is the head the merger merges. Nothing in
+  Legion compares that head with the one an approval named either: a
   repository that wants a push made after the approval reviewed says so in its own rulesets (a
   stale review dismissed, a review required again), and GitHub holds the merge to them. A
-  conflict merge pushed above the approved head still goes back to the reviewer for a
-  confirmation or a new round, as the fingerprint decides
+  conflict merge pushed above that head still goes back through the task's steps after the
+  implementer — to the reviewer, where the task has a review step, for a confirmation or a new
+  round, as the fingerprint decides
   (`skill://legion-worker/references/conflicts-and-rewrites.md`), because the branch's own
   procedure says so and not because any Legion check refuses the head. Retro removes nothing.
 - **Retro brings the PR body's path-derived content up to date before it completes.** Whatever the
   repository's instructions derive from the pull request's changed paths (a checklist named for
   each class of path, read by a required check), retro recomputes for the whole diff at its head
   and writes into the live body before it completes (`skill://legion-retro`), since the merger
-  reports a stale body rather than rewriting it. A body edit changes no commit, so the approval
+  reports a stale body rather than rewriting it. A body edit changes no commit, so an approval
   stands.
 
 ## The merger
 
-- The merger resolves no review thread: the reviewer's approval already judged them, and the
-  merge requires no thread state beyond it. It writes no file, commits nothing and pushes
+- The merger resolves no review thread: the reviewer's approval, where the task has a review step,
+  already judged them, and the merge needs no thread state beyond what the base's rules require,
+  which holds the merge as any other blocker does. It writes no file, commits nothing and pushes
   nothing.
 - **The merge is the merger's own act, at the head it read.** It reads the pull request
   (`gh pr view <n> --json number,title,url,state,baseRefName,headRefOid,mergeStateStatus`), and
@@ -319,7 +340,12 @@ it there until that answer comes clean.
     what no worker can do — a repository setting, a rule or an App permission only a person can
     change — with the blocker and GitHub's own answer quoted. The repository's required reviews
     and checks decide what may merge: Legion bypasses none, and a review only a person can give
-    is waited for.
+    is waited for. Where the task's `Steps:` line names no reviewer step and the base's rules
+    require an approving review that no step of the task gave, the merger does not merge, does
+    not approve the pull request itself and does not return the task: it waits, and tells the
+    architect, the owner of the task, which review is missing — the rule that requires it, and that the
+    task's steps have no review step — since only the owner or a person can give that review or
+    change the plan.
 - *The completion* is `handoff_complete` with the ordinary two-sentence `summary`, which names the
   pull request, the head merged and the merge commit. It records the merger's phase row and moves
   nothing: no Dispatch message, no publish, no phase. What moves the issue is the daemon's own
@@ -336,7 +362,8 @@ it there until that answer comes clean.
   or `tester`, and a project that names no key gets `tester`, so by default the tester works the
   check; the loader refuses every other value, naming the key and the value it read. Where the
   setting names the tester, the daemon reads that merge, writes `done` and hands the check task
-  to the tester's live session. Where it is `off` nothing is opened at all — no record, no
+  to the tester's session, a fresh one where no step of the issue's task was the tester's. Where
+  it is `off` nothing is opened at all — no record, no
   bound and no look — and the merged close is like any other done: every claim of the issue is
   retired and its pod released with the disk it ran on. A merged root still lingers its tree with
   every claim suspended, as before. On a root whose tree still runs, the merge is recorded and
@@ -422,8 +449,8 @@ it there until that answer comes clean.
   ask there (`ISSUE_CLOSED`), so the deployment instructions' "on the pull request and the issue"
   is the pull request and that result, and a defect reaches Dispatch by the `fail` verdict's two
   paths alone — the message to the controller, which gives it to the tree that owns that code,
-  and the ask on the controller's report issue. The architect accepted before the
-  merge and is asked nothing after. `pass` or
+  and the ask on the controller's report issue. The architect, which accepted before the merge
+  where the issue's task had the step `acceptance:owner`, is asked nothing after. `pass` or
   `fail` closes the check: your claim is retired and the issue's Sandbox goes with its pod and
   disk, for a root as for a child. Neither ending retires or suspends anything of an issue back in
   the workflow (a root reopened inside its linger): its claim and pod are the new run's.

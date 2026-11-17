@@ -22,8 +22,9 @@ Every path it cites is in cybermonklabs/legion.
   shared files, `envoy_publish` to its implementer's role topic, ask when its next push lands, and
   merge once, after it. A forward merge that leaves the branch's diff unchanged is a
   confirmation, not a new round (see *The unchanged-diff check* below). The check compares the
-  pull request's own lines file by file: a changed file sends the head through the tester again,
-  and your comment names it. Before merging, record
+  pull request's own lines file by file: a changed file sends the head through the task's steps
+  after yours again, as a new round (a tester step's full test round, a reviewer step's new
+  review), and your comment names it. Before merging, record
   the fingerprint at the current tip; after pushing the merged branch, record it at the new
   tip; post one PR comment (Legion footer):
   `forward merge <old-tip-sha> → <new-tip-sha>; fingerprint <before> → <after>; unchanged|changed`.
@@ -32,8 +33,9 @@ Every path it cites is in cybermonklabs/legion.
   head for the class of every finding of every earlier review round and record each search
   beside the fingerprints.
   In a parent's last round, end that comment with `parent's last round: full test round`, the line
-  the tester reads for a full round (`skill://legion-architect/references/acceptance.md`,
-  "The last round").
+  a tester step reads for a full round (`skill://legion-architect/references/acceptance.md`,
+  "The last round"); on a task with no tester step, your own record of each check at the merge
+  head, above, is that full round.
   On the tmux runtime, where issue workspaces are still jj workspaces of one shared clone,
   `jj undo`, `jj abandon` and `jj op restore` rewrite the shared operation log, so a mistake there
   is recovered forward (`jj -R "$LEGION_WORKSPACE" new`, or `jj -R "$LEGION_WORKSPACE" restore
@@ -121,7 +123,7 @@ Where each role gets its two heads: the implementer — the tip before and after
 the tester — the commit its latest results name and the new head; the reviewer — the head its last
 submitted review read, which that review's Legion footer names, never that review's `commit_id`, which GitHub can move onto a later head (*The reviewer* in `skill://legion-worker/references/merge-gate.md` gives the read, what stands for a footer that names no head, and the measurement)
 and the new head; the merger never computes a fingerprint — it merges the head it read, and no
-Legion check compares that head with the approved one.
+Legion check compares that head with the one an approval named.
 
 The fingerprint is not the whole check: a file the merge adds only moves the hash, exactly as an ordinary round of work does.
 So beside it, compare the *set* of files the pull request changes against its base, before and after the merge (`gh pr diff <n> --name-only`, or `jj diff --stat` at each of the two heads), and explain every path that appears or disappears.

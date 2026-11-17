@@ -16,22 +16,22 @@ later phase keeps it current rather than replacing it:
 **Why:** <the problem, one or two sentences, ending with the Dispatch key in parentheses — the key only, never a URL>
 **Change:**
 - <two to five bullets, each one behaviour a user or operator meets, never a file name>
-**Look at first:** <one to three `path:line` places where a wrong decision would hurt> (the reviewer writes this line)
+**Look at first:** <one to three `path:line` places where a wrong decision would hurt> (the reviewer writes this line; on a task whose `Steps:` line names no reviewer, the implementer does)
 **Proven by:** <the surface and the run of the check the change turns on, one line>
 **Not proven / risk:**
-- <one line per claim recorded as unproven before the merge>, or the single word `none` (the reviewer writes this line; `none` is invalid while such a claim stands)
+- <one line per claim recorded as unproven before the merge>, or the single word `none` (the reviewer writes this line; on a task whose `Steps:` line names no reviewer, the implementer does; `none` is invalid while such a claim stands)
 **Size:** <files changed, +added/−removed>
 
 ## Verification
 
-**Threads:** <n> resolved, 0 unresolved. Each answered and resolved individually by the implementer, the pull request's author, never in bulk (the reviewer names the bot threads it accepted; it resolves none itself):
+**Threads:** <n> resolved, 0 unresolved. Each answered and resolved individually by the implementer, the pull request's author, never in bulk (the reviewer names the bot threads it accepted; it resolves none itself; on a task whose `Steps:` line names no reviewer, the implementer resolves each bot thread it fixed or declined, its reason in the reply):
 - Thread <node id>: fixed in <commit-sha> — <one line>; resolved at <head-sha>.
 - Thread <node id>: not a defect — <reason>; resolved at <head-sha>.
 - Thread <node id>: accepted by the reviewer — <its reason, one line>; resolved at <head-sha>.
 - Thread <node id>: still open — <what remains>; unresolved at <head-sha>.
 
 **Thermo:** `simplify-settled-diff` once at <head-sha>: <0 applied | applied → new head <sha>>; defects reported: <none | <n>, fixed in <sha>>; thermonuclear pair at the reviewed head <sha> over <the whole change | <last-reviewed-sha>..<sha>>:
-<verdict>. (on a docs-only PR the simplify half and the defects are recorded as on any other diff, and the pair half reads `thermonuclear pair: not run (docs-only)`) (in a later round whose difference touches no runtime code, the pair half reads `thermonuclear pair at the reviewed head <sha>: not run (<last-reviewed-sha>..<sha> touches no runtime code)`, and the pair half of the last round the pair ran in stays beside it)
+<verdict>. (on a docs-only PR the simplify half and the defects are recorded as on any other diff, and the pair half reads `thermonuclear pair: not run (docs-only)`) (in a later round whose difference touches no runtime code, the pair half reads `thermonuclear pair at the reviewed head <sha>: not run (<last-reviewed-sha>..<sha> touches no runtime code)`, and the pair half of the last round the pair ran in stays beside it) (on a task whose `Steps:` line names no reviewer, the implementer writes the pair half, and it reads `thermonuclear pair: not run (no reviewer step in this task)`)
 
 **Checks:** one line per `check` block of the issue's Verification document, in the document's
 order. Each is the line `dispatch result` printed when the result was recorded, or the
@@ -62,8 +62,8 @@ architect, the worker of the issue's current phase and the implementer, and judg
 That message is the implementer's to act on while it still works the issue: a red that failed on
 its own is re-run once (`gh run rerun <run-id> --failed`), woken by the pull request's checks
 event (`skill://envoy`, *Wait for CI or a merge*: subscribe, then end the turn) and never by a
-sleep loop; a red at the code is fixed, which the reviewer asks for anyway, since it reads the
-head's checks on GitHub before it approves; and a red only GitHub can settle is GitHub's, which
+sleep loop; a red at the code is fixed, which a reviewer step asks for anyway, since the reviewer
+reads the head's checks on GitHub before it approves; and a red only GitHub can settle is GitHub's, which
 holds the merge for it under the base branch's own rules.
 A merge-group run is never re-run: the implementer finishes its round instead, and the pull request
 is tested again when it is queued again.
@@ -86,14 +86,19 @@ about whether the head merges.
 ledger the reviewer and merger check against GitHub. The implementer writes `Outcome`, `Why`,
 `Change`, `Proven by`, and `Size` when the pull request opens, and keeps them true after every
 push; `Outcome` is a sentence a user of the repository would recognise, never "fix bug" or a file
-name, and `Why` ends with the Dispatch key, never a URL. The reviewer writes `Look at first` and
-`Not proven / risk` at each round, into the live body (`gh api
+name, and `Why` ends with the Dispatch key, never a URL. Where the task has a review step, the
+reviewer writes `Look at first` and `Not proven / risk` at each round, into the live body (`gh api
 repos/{owner}/{repo}/pulls/{number} --jq .body`, edit, then `--method PATCH ... -F body=@body.md`);
 `Not proven / risk` copies every claim recorded as unproven before the merge — the tester's
-`failures`, the reviewer's own review, any proof-check comment already on the pull request —
-word for word, and `none` is a finding while one stands. The merger reads `Outcome` and
-`Not proven / risk` from the body at the head it merges, and a stale `Outcome` that no
-longer describes the diff is a finding against the implementer, not a line the merger rewrites.
+`failures`, where the task has a tester step, the reviewer's own review, any proof-check comment
+already on the pull request — word for word, and `none` is a finding while one stands. On a task
+whose `Steps:` line names no reviewer, the implementer writes both lines at each of its rounds,
+into the live body the same way. It writes `Not proven / risk` from what its own evidence does not
+prove, and copies word for word the tester's `failures`, where the task has a tester step, and any
+proof-check comment already on the pull request; `none` is invalid there too while such a claim
+stands. The merger reads `Outcome` and `Not proven / risk` from the body at the head it merges, and
+a stale `Outcome` that no longer describes the diff is a finding against the implementer, not a
+line the merger rewrites.
 
 ## What a result is
 
@@ -163,9 +168,11 @@ or on the repository's default branch, in its last round.
 
 **An issue with no `before_merge` check is a named gap.** One with no Verification document, or
 with none holding a `before_merge` check, has no evidence of its own. The tester names the gap
-in its handoff and the reviewer in its review, and neither sends the issue back for it; both
-tell the architect, who writes the checks, and the architect's acceptance comment names the gap
-and decides there, the only gate on such an issue.
+in its handoff and the reviewer in its review, each where the task has that step, and neither
+sends the issue back for it; each tells the architect, who writes the checks. Where the task holds
+the step `acceptance:owner`, the architect's acceptance comment names the gap and decides there,
+the only gate on such an issue; on a task without it, the issue has no gate beyond what its steps
+found.
 
 ## The rules every phase's evidence follows
 
@@ -196,8 +203,9 @@ and decides there, the only gate on such an issue.
   read CI on GitHub at the head you are judging for everything static: lint, types and the unit
   and integration suites are CI's, read there and recorded for no later step, except a `ci_check` job, and no CI lane is
   rerun as evidence. A lane GitHub shows `queued` or `in progress` is read as such: the tester
-  never waits for it, since a required red that settles sends the work back from `testing` and
-  the reviewer reads the head's checks before it approves.
+  never waits for it, since a red that settles moves the issue nowhere and reaches the implementer
+  in the daemon's message (above), a reviewer step reads the head's checks before it approves,
+  and GitHub holds the merge for a required red under the base branch's own rules.
   A `before_merge` check the implementer left with no pass standing at the head is a test failure, not a gap
   for the tester to fill: record it in `failures` (each `{check, evidence}`, `check` the block id)
   with `implementerProof.verdict: "rejected"`, complete the phase with
@@ -229,8 +237,9 @@ and decides there, the only gate on such an issue.
 - **The implementer runs `skill://simplify-settled-diff` once per pull request, in its first
   implementing round, after its own results and before it completes that round,
   whatever the diff touches, a docs-only diff included.** The daemon starts no implementing round
-  between a clean review and the approval, so this is the one slot before the tester and the
-  reviewer read the head; a later round answering a review runs no second pass. It is scoped to
+  between a clean review and the approval, so this is the one slot before the task's later steps
+  read the head (the tester and the reviewer, in the default steps); a later round answering a
+  review runs no second pass. It is scoped to
   the pull request's own diff at that head: nothing applied leaves the head as it is; applied →
   the implementer re-runs its fast local checks and the issue's own checks on the applied head
   for the surface the simplify diff touched, since a refactor that "preserves behaviour" is a

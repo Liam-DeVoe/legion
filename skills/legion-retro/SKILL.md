@@ -1,13 +1,14 @@
 ---
 name: legion-retro
-description: "Use when the Legion daemon starts you, the implementer, on `Phase: retro` after the architect accepted the reviewed head."
+description: "Use when the Legion daemon starts you, the implementer, on `Phase: retro`, after the last step of the issue's task passed."
 ---
 
 # Legion retro
 
 If this skill disagrees with the code, a command's output or its `--help`, follow those and say which line of this skill is wrong.
 
-Retro runs on the reviewed head, after the architect's acceptance and before the merger merges it
+Retro runs on the head the last step of the issue's task passed, after that step (the architect's
+acceptance, where the task has the step `acceptance:owner`) and before the merger merges it
 (`skill://legion-worker/references/merge-gate.md` has the whole order).
 `<issue>` is your `LEGION_ISSUE`.
 Run steps 1-6 even when the change looks mechanical; each gives its reason.
@@ -15,18 +16,19 @@ Run steps 1-6 even when the change looks mechanical; each gives its reason.
 Retro commits nothing and pushes nothing: every handoff is a record on the Dispatch issue, no
 commit carries one, and what the work taught is a `dispatch comment` on the issue, for the skill
 librarian to read. `docs/solutions/` stays as history, and no role writes there.
-The head the merger names is the head the reviewer approved.
+The head the merger names is the head the task's last step passed: the head the reviewer approved,
+where the task has a review step.
 
 ## What sends the issue back here
 
 Nothing does.
-No Legion check compares the head that merges with the one the review approved, so whether a push
-made after the approval must be reviewed again is the repository's own rule, and no handoff is a
+No Legion check compares the head that merges with the one an approval named, so whether a push
+made after an approval must be reviewed again is the repository's own rule, and no handoff is a
 commit, so no head carries one for a retro to remove.
 
 Work on the existing issue branch: never rebase it onto another base, never make another branch or
 bookmark, and push nothing, because the merger merges this branch's head and a push of yours
-would put a commit above the head the reviewer approved.
+would put a commit above the head the task's last step passed.
 
 ## When retro stops
 
@@ -43,12 +45,15 @@ Dispatch message (step 5) is for a finished retro only.
 ## Steps
 
 1. **Read the evidence:** the issue, its checks (`dispatch results --issue <issue>`), the pull
-   request, and the tester's and reviewer's handoffs
+   request, and the handoff of each step of your task: each `Step <j> (<role>) reported:` line of
+   your task names one, read with `dispatch handoff-read --issue <issue> --phase <word> --version <v>`.
+   A task with no `Task:` line ran today's line, so read the tester's and reviewer's handoffs
    (`dispatch handoff-read --issue <issue> --phase test`, then the review
    at the version your task's `Handoff:` line names, `--phase review --version <n>`, the command
-   that line quotes). A pass stands for every `before_merge` check of the issue at the approved
-   head, from the implementer and from the tester alike, and the pull request
-   body's `Checks` block carries each of those lines. A check carrying `ci_check` is CI's: the
+   that line quotes). A pass stands for every `before_merge` check of the issue at the head the
+   task's last step passed, from the implementer and, where the task has a tester step, from the
+   tester, and the pull request body's `Checks` block carries each of those lines. A check
+   carrying `ci_check` is CI's: the
    result that `dispatch results` derives is the pass it needs, and its CI job is its evidence
    (`skill://legion-worker/references/ci-checks.md`). In
    cybermonklabs/legion a surface may also be the daemon's real-process tests, a live proof under
@@ -62,8 +67,8 @@ Dispatch message (step 5) is for a finished retro only.
    finding does. When any other check has no pass standing at that head, or
    a check with no `ci_check` has a unit suite as its only evidence, call the `legion` tool's
    `request_backward_move` with `to: implementing` for the implementer's result or a `ci_check`
-   check, or `to: testing` for the tester's result, its `reason` naming the check by its block
-   id. When
+   check, or, where the task has a tester step, `to: testing` for the tester's result, its
+   `reason` naming the check by its block id. When
    retro runs again, that gap is your first learning.
 2. **Get a second reading**, because a reader without your context sees what you stopped seeing.
    First list, in your session, the constraints the issue did not state, choices between two
@@ -92,7 +97,7 @@ Dispatch message (step 5) is for a finished retro only.
    **Key takeaways:**
    - <one to three reusable lessons>
 
-   **Results read:** implementer <check and result>, tester <check and result>.
+   **Results read:** implementer <check and result>, tester <check and result, where the task has a tester step>.
 
    **Production check:** <the command or user action that will show the change working in production>
    **Carried by:** <the deploy or restart that carries the merge there>
@@ -113,7 +118,9 @@ Dispatch message (step 5) is for a finished retro only.
    writes only step 4's `mktemp -d` directory, the PR body and the Dispatch comment and message.
    It sets no GitHub or Dispatch label: Legion keeps phase state in the daemon, not in labels.
    In the same call, the agent that does the retro rates the plan the issue ran.
-   The plan is the issue's steps and the role that worked each, not the planner's `plan.md`.
+   The plan is the task's steps and the role that worked each, as your task's `Steps:` line names
+   them (today's line, on a task with no `Task:` line), and not the implementation plan a planner
+   step wrote in `plan.md`.
    `plan_rating` is a whole number from 1 (the plan cost the work) to 5 (the plan fit the work), and
    `plan_reason` is one sentence of why, from the evidence step 1 read.
    Send the two together: the daemon refuses this completion without them (`PLAN_RATING_REQUIRED`)
@@ -123,7 +130,7 @@ Dispatch message (step 5) is for a finished retro only.
 
 - `jj -R "$LEGION_WORKSPACE" diff --from "legion/${LEGION_ISSUE:?}@origin" --to @ --name-only`
   lists nothing: retro leaves the workspace as it found it, and the merger merges the head the
-  reviewer approved.
+  task's last step passed.
 - Each body line you added or changed that says work was done names work this pull request did.
 - The Dispatch comment and the Dispatch message are posted, and the pull request's head is the
   head you found.
