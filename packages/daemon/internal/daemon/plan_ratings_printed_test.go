@@ -60,6 +60,10 @@ type printedRating struct {
 	reason string
 }
 
+// planHeaderPattern reads the header `<project>: <n> finished issues`, with nothing after it, as
+// plan-ratings-read.sh's awk anchors it.
+var planHeaderPattern = regexp.MustCompile(`^(\S+): (\d+) finished issues$`)
+
 // planLinePattern reads one finished issue's line; the ratings are read apart (parseRatings).
 var planLinePattern = regexp.MustCompile(`^(\S+) closed (\S+) plan (none|(?:default|owner) \(\d+ tasks: [^)]*\)) ratings (none|.*) time (-|\d+h\d+m) failed steps (\d+)$`)
 
@@ -67,18 +71,13 @@ var planLinePattern = regexp.MustCompile(`^(\S+) closed (\S+) plan (none|(?:defa
 // finished issues`, then exactly n lines of issues.
 func parsePlans(project, out string) ([]planLine, error) {
 	lines := strings.Split(strings.TrimSpace(out), "\n")
-	header := strings.TrimPrefix(lines[0], project+": ")
-	var count int
-	if header == lines[0] {
-		return nil, fmt.Errorf("the first line %q is no header of %s", lines[0], project)
+	header := planHeaderPattern.FindStringSubmatch(lines[0])
+	if header == nil || header[1] != project {
+		return nil, fmt.Errorf("the first line %q is no header `%s: <n> finished issues`", lines[0], project)
 	}
-	if _, err := fmt.Sscanf(header, "%d finished issues", &count); err != nil {
+	count, err := strconv.Atoi(header[2])
+	if err != nil {
 		return nil, fmt.Errorf("the header %q: %v", lines[0], err)
-	}
-	// Sscanf stops at the end of its format, so the line must also be that header and nothing more,
-	// as plan-ratings-read.sh's awk anchors it.
-	if header != fmt.Sprintf("%d finished issues", count) {
-		return nil, fmt.Errorf("the header %q is no `%s: <n> finished issues`", lines[0], project)
 	}
 	var parsed []planLine
 	for _, text := range lines[1:] {
