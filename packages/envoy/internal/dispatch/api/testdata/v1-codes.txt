@@ -279,5 +279,8 @@ UNKNOWN_CHECK 400
 WAIT_INPUT 400
 
 # Added on main after c8a44f97.
+INVALID_ROLE_HOLDER 400 # #4228, the Legion daemon publishes the session of each role of an issue
 NEAR_COPY_CHECK_ID_INPUT 400 # #4103, record every answer of the near-copy gate
 NEAR_COPY_CHECK_NOT_FOUND 404 # #4103, record every answer of the near-copy gate
+READ_ONLY_TOKEN 403 # #4113, mint a read-only Dispatch token and serve it on the read list alone
+ROLE_HOLDER_FORBIDDEN 403 # #4228, the Legion daemon publishes the session of each role of an issue

@@ -50,12 +50,11 @@ const artifactRowText = "Each artifact is one row: its own fields (id, issue_key
 
 // artifactIncludeText is what every description of a read of documents says include= adds.
 const artifactIncludeText = "include=text adds to each document its canonical markdown, its whole-document token, " +
-	"its version, the newest version whose stored markdown is that markdown, and unsettled false, or, where no " +
-	"version stores it, the newest version and unsettled true, the markdown holding edits no version holds yet " +
-	"(unsettled is null on a row read without include=text); include=blocks adds its blocks, each with its markdown " +
-	"range, token, reference counts, attributes, table and embedding state; include=text,blocks reads all of them " +
-	"from one tree, so another session's write cannot split the blocks' ranges from the markdown they index. A file " +
-	"or an image carries neither."
+	"its version, the newest version whose stored markdown is that markdown, and unsettled, false there; " +
+	unsettledText + " (unsettled is null on a row read without include=text); include=blocks adds its blocks, each " +
+	"with its markdown range, token, reference counts, attributes, table and embedding state; include=text,blocks " +
+	"reads all of them from one tree, so another session's write cannot split the blocks' ranges from the markdown " +
+	"they index. A file or an image carries neither."
 
 // artifactSlugText is what the descriptions of an issue's and a project's artifact lists say of
 // slug=, which answers for the /api/v1 read by slug (J7).
@@ -430,8 +429,9 @@ func (s *server) v2DocumentRows() []routeRow {
 				"-v<number> before the extension for an older version (report-v2.pdf), and Cache-Control: private, " +
 				"max-age=31536000, immutable. download=true answers every kind with Content-Disposition: attachment under that " +
 				"name and Cache-Control: private, no-cache, and a document as its Markdown, text/markdown, its name ending in " +
-				".md when the stored name has no Markdown extension. 404 VERSION_NOT_FOUND for a number that names no version " +
-				"of it, 404 ARTIFACT_NOT_FOUND.",
+				".md when the stored name has no Markdown extension. A version's author carries proven: true only when the " +
+				"credential of every write that author made to the version proved it. 404 VERSION_NOT_FOUND for a number " +
+				"that names no version of it, 404 ARTIFACT_NOT_FOUND.",
 			Handler:  s.getArtifactVersionV2,
 			Resource: "versions", Kind: kindBytes, Key: "{number}",
 			Query: artifactVersionV2Query{},
@@ -528,11 +528,13 @@ type artifactV2 struct {
 	MarkdownTree model.DisplayTree `json:"markdown_tree,omitempty"`
 	Token        *string           `json:"token,omitempty"`
 	Version      *int              `json:"version,omitempty"`
-	// Unsettled is true where Markdown holds edits made after Version that no version holds yet
-	// (a room's unsettled typing) and false where Version's stored markdown is Markdown, on every
-	// row that carries Markdown (include=text on a document); null on a row that carries none, one
-	// read without include=text or a file or an image, so it never says false of text the read did
-	// not answer. A pointer with no omitempty: the member is on every row, required and nullable.
+	// Unsettled is false where Version's stored markdown is Markdown, and true when Markdown equals
+	// no stored version's markdown: the document holds edits no version holds yet (a room's
+	// unsettled typing), or its newest version was rendered by an older build; Version is then the
+	// newest version, not the version of this text. It is on every row that carries Markdown
+	// (include=text on a document), and null on a row that carries none, one read without
+	// include=text or a file or an image, so it never says false of text the read did not answer.
+	// A pointer with no omitempty: the member is on every row, required and nullable.
 	Unsettled *bool `json:"unsettled"`
 	// Blocks are a document's blocks, with include=blocks: from the tree Markdown was rendered
 	// from where include names text too.

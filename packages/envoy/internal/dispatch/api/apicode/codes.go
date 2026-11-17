@@ -257,6 +257,7 @@ var (
 	InvalidRepoProject     = both("INVALID_REPO_PROJECT", http.StatusBadRequest)
 	InvalidResolution      = both("INVALID_RESOLUTION", http.StatusBadRequest)
 	InvalidReview          = both("INVALID_REVIEW", http.StatusBadRequest)
+	InvalidRoleHolder      = both("INVALID_ROLE_HOLDER", http.StatusBadRequest)
 	InvalidRouteStatus     = both("INVALID_ROUTE_STATUS", http.StatusBadRequest)
 	InvalidSessionID       = both("INVALID_SESSION_ID", http.StatusBadRequest)
 	InvalidSince           = both("INVALID_SINCE", http.StatusBadRequest)
@@ -330,6 +331,7 @@ var (
 	RetractionForbidden            = both("RETRACTION_FORBIDDEN", http.StatusForbidden)
 	RetractionInput                = both("RETRACTION_INPUT", http.StatusBadRequest)
 	ReviewVersionMoved             = both("REVIEW_VERSION_MOVED", http.StatusConflict)
+	RoleHolderForbidden            = both("ROLE_HOLDER_FORBIDDEN", http.StatusForbidden)
 	RouteChanged                   = both("ROUTE_CHANGED", http.StatusConflict)
 	RouteInvalid                   = both("ROUTE_INVALID", http.StatusBadRequest)
 	RunIDInput                     = both("RUN_ID_INPUT", http.StatusBadRequest)
@@ -378,6 +380,9 @@ var (
 	IDAmbiguous    = both(contracts.IDAmbiguous, http.StatusConflict)
 	SignInRequired = both(contracts.DispatchSignInRequired, http.StatusForbidden)
 	LoginChanged   = both(contracts.DispatchLoginChanged, http.StatusConflict)
+	// ReadOnlyToken is a read-only token's call of a route the read list does not name
+	// (refuseReadOnlyToken).
+	ReadOnlyToken = both(contracts.DispatchReadOnlyToken, http.StatusForbidden)
 
 	// AnswerNotKept answers a repeat of a keyed write whose first answer could not be kept, with
 	// the status that first answer had (request_keys.go): its status is the call's, so only

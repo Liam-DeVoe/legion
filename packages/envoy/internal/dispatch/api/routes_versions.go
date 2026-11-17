@@ -455,6 +455,11 @@ type apiRoute struct {
 	Version apiVersion
 	// Successor is the route that answers a v1Row's route under /api/v2; zero on every other.
 	Successor successor
+	// ReadScope is whether a read-only token may call the route: true on every route the read
+	// list names (readScopeRoutes) by the method and pattern it is mounted at, which routes()
+	// stamps once the table is whole, and on no other. Only the read-only gate reads it
+	// (refuseReadOnlyToken), never the route index or the OpenAPI document.
+	ReadScope bool
 	// columns marks the mount of a routeRow, whose facts are its own columns. A route of the v1
 	// table - and a route a test builds by hand - carries false, and the mount guards read its
 	// facts where the side maps hold them (sideMapName), so a side-map entry stays held to the

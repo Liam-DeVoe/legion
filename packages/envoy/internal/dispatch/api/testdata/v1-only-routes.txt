@@ -119,6 +119,8 @@ GET /api/v1/issues/{key}/messages/{id}
 GET /api/v1/issues/{key}/references
 GET /api/v1/issues/{key}/results
 POST /api/v1/issues/{key}/results
+GET /api/v1/issues/{key}/role-holders # #4228, merged after c8a44f97
+PUT /api/v1/issues/{key}/role-holders # #4228, merged after c8a44f97
 GET /api/v1/issues/{key}/subscribers
 DELETE /api/v1/issues/{key}/subscribers/{session_id}
 GET /api/v1/issues/{key}/summary

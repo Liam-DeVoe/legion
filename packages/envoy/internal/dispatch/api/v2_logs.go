@@ -73,7 +73,9 @@ func (s *server) v2LogRows() []routeRow {
 				"and offset; {items, total, limit, offset}, and total is null on this route alone: counting the log costs about ten " +
 				"times its page for a reader near the oldest event (measured 2026-11-16), so a reader pages by after until a page " +
 				"comes back short. An after above the highest event id written, or an after or a before that is no integer of 0 " +
-				"or more, is 400 POSITION_INVALID naming the parameter and id.",
+				"or more, is 400 POSITION_INVALID naming the parameter and id. An event's actor carries proven: true when the " +
+				"write's credential proved it (a browser's person, a broker-issued token's session), and no proven when the " +
+				"request only named it.",
 			Handler:  s.listEventLogV2,
 			Resource: "events", Kind: kindLog, Position: eventIDPosition,
 			Query:    eventLogV2Query{},
@@ -84,7 +86,9 @@ func (s *server) v2LogRows() []routeRow {
 		{
 			Method: http.MethodGet, Pattern: "/issues/{key}/events", Auth: authAny, Versions: onlyV2,
 			Description: "Page an issue's event log. " + ownerLogText + " The answer carries an ETag over the issue's event " +
-				"sequence and the query; If-None-Match answers 304. 404 ISSUE_NOT_FOUND for an issue that does not exist.",
+				"sequence and the query; If-None-Match answers 304. An event's actor carries proven: true when the write's " +
+				"credential proved it (a browser's person, a broker-issued token's session), and no proven when the request " +
+				"only named it. 404 ISSUE_NOT_FOUND for an issue that does not exist.",
 			Handler:  s.listIssueEventsV2,
 			Resource: "events", Kind: kindLog, Position: seqPosition,
 			Query: ownerEventsV2Query{},

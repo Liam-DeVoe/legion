@@ -836,11 +836,12 @@ type artifactText struct {
 	MarkdownTree model.DisplayTree `json:"markdown_tree,omitempty"`
 	Token        string            `json:"token"`
 	// Version is the newest version whose stored markdown is Markdown, read after the markdown by
-	// that markdown (versionOfText), so a review naming it approves the text this read answered.
-	// Where no version stores Markdown it is the newest version and Unsettled is true: Markdown
-	// holds edits made after that version, which no version holds yet (a room's unsettled typing).
-	// Version is nil for a document with no version. Unsettled stands before Version, where the
-	// sorted keys of the map this body was once written from put it (TestResponseShapes).
+	// that markdown (versionOfText), so a review naming it approves the text this read answered,
+	// and Unsettled is false. Unsettled is true when Markdown equals no stored version's markdown:
+	// the document holds edits no version holds yet (a room's unsettled typing), or its newest
+	// version was rendered by an older build; Version is then the newest version, not the version
+	// of this text, and nil for a document with no version. Unsettled stands before Version, where
+	// the sorted keys of the map this body was once written from put it (TestResponseShapes).
 	Unsettled bool                   `json:"unsettled"`
 	Version   *int                   `json:"version"`
 	Blocks    *[]model.ArtifactBlock `json:"blocks,omitempty"`
