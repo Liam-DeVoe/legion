@@ -937,6 +937,34 @@ test("from an address that names a node, a press on Spec, on Decisions and on Ve
   });
 });
 
+// On the phone, Details is a modal dialog, so a press on its text keeps the focus inside it, and
+// the sheet's own `Shift+M`, which acts only while the focus is inside, still closes it (decision
+// 168 of INFRA-1196's parts). With no focusable box in the sheet, the press moves the focus to
+// the body, and this row fails on "a press on Details' text took the focus out of the sheet".
+test("at 390 px a press on Details' text keeps the focus in the sheet, and Shift+M then closes it", async ({
+  browser,
+}) => {
+  await phase(browser, seedFrame, async (page, { key }) => {
+    await page.setViewportSize(viewportAt(390));
+    await gotoIssue(page, `/issues/${key}`);
+    await focusNothing(page);
+    await page.keyboard.press("Shift+M");
+    const phoneDetails = page.getByRole("dialog", { exact: true, name: "Details" });
+    await expect(phoneDetails, "Shift+M did not open the phone's Details").toBeVisible();
+    await expect(detailsClose(page)).toBeFocused();
+    await phoneDetails.getByRole("heading", { exact: true, name: "Details" }).click();
+    expect(
+      await phoneDetails.evaluate((sheet) => sheet.contains(document.activeElement)),
+      "a press on Details' text took the focus out of the sheet"
+    ).toBe(true);
+    await page.keyboard.press("Shift+M");
+    await expect(
+      phoneDetails,
+      "Shift+M after a press on Details' text did not close the sheet"
+    ).toBeHidden();
+  });
+});
+
 /** An issue whose spec links another issue, so today's page draws a reference to hover. */
 async function seedTodaysPage(): Promise<{ key: string }> {
   await createProject({ key: "OFF", name: "Today" });
