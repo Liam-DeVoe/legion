@@ -14,8 +14,12 @@
 #      answers every trade with a token of its own, plays the other broker;
 #   5. the listener is connected by its own service token: the hub's connection list names a
 #      connection authorized as the listener's service user, listener/<its machine id>;
-#   6. with one of the two brokers killed, a new session is admitted within 2 s, three times over:
-#      the killed replica left the auth service's queue group, so no request waits on it.
+#   6. with one of the two brokers killed, a new session is admitted within 2 s of the kill, three
+#      times over: the hub drops the killed replica's connection, and with it the replica's place in
+#      the auth service's queue group, so no request waits on it. A session opened before the hub
+#      has read that connection's close can be routed to the dead replica and is refused at the
+#      hub's authorization timeout (measured), so the check opens the first session only once the
+#      hub's connection list no longer names the killed replica, inside the first session's 2 s.
 #
 # Each probe is cmd/natsprobe, run with only the variables it needs: as a session, it trades the
 # pod's exchange token for a broker access token under the session the stack registered the pod
@@ -238,35 +242,74 @@ else
   fail "the listener is connected by its service token: the hub lists none authorized as listener/..., only: $(printf '%s' "$users" | tr '\n' ' ')"
 fi
 
-# 6. One of the two brokers killed, then three new sessions, each admitted within 2 s.
+# callout_connections prints how many connections the hub's connection list names as the auth
+# service's (natscallout's connectionName), or nothing when the list cannot be read. nats-server
+# marks a connection closed, and so routes nothing more to its subscriptions (client.go,
+# deliverMsg), before it takes the connection off that list (closeConnection, removeClient).
+callout_connections() {
+  curl -sf "$DEV_STACK_NATS_MONITOR_URL/connz?limit=1024" 2>/dev/null |
+    jq -r '[.connections[]? | select(.name == "envoy-broker-callout")] | length' 2>/dev/null || true
+}
+
+# 6. One of the two brokers killed, then three new sessions, each admitted within 2 s: the first
+# counted from the kill, so the wait for the hub to drop the killed replica is inside its 2 s.
 read -r _ second_broker <<<"$DEV_STACK_BROKER_PIDS"
+killed_property="one broker killed and a new session admitted within 2 s"
 if [ -z "${second_broker:-}" ] || ! kill -0 "$second_broker" 2>/dev/null; then
-  unknown "one broker killed and a new session admitted within 2 s: DEV_STACK_BROKER_PIDS ($DEV_STACK_BROKER_PIDS) names no live second broker"
+  unknown "$killed_property: DEV_STACK_BROKER_PIDS ($DEV_STACK_BROKER_PIDS) names no live second broker"
 else
-  kill -KILL "$second_broker"
-  slowest=0
-  outcome=pass
-  detail=""
-  for attempt in 1 2 3; do
-    began=$(date +%s%N)
-    probe "$AGENT_SECRETS_URL" --subscribe "$OWN_CHANNEL" --wait 10ms
-    took=$((($(date +%s%N) - began) / 1000000))
-    [ "$took" -gt "$slowest" ] && slowest=$took
-    if [ "$probe_rc" -ne 0 ]; then
-      outcome=fail
-      detail="attempt $attempt: natsprobe exit $probe_rc after ${took} ms: $probe_out"
-      break
-    fi
-    if [ "$took" -ge 2000 ]; then
-      outcome=fail
-      detail="attempt $attempt took ${took} ms"
-      break
-    fi
-  done
-  if [ "$outcome" = pass ]; then
-    pass "one broker killed and a new session admitted within 2 s: three sessions, the slowest ${slowest} ms"
+  before="$(callout_connections)"
+  if [ -z "$before" ]; then
+    unknown "$killed_property: the hub's connection list ($DEV_STACK_NATS_MONITOR_URL/connz) could not be read before the kill"
+  elif [ "$before" -lt 2 ]; then
+    unknown "$killed_property: the hub lists $before connection named envoy-broker-callout before the kill, not one for each of the two brokers"
   else
-    fail "one broker killed and a new session admitted within 2 s: $detail"
+    killed=$(date +%s%N)
+    kill -KILL "$second_broker"
+    dropped=""
+    count=""
+    waited=0
+    while :; do
+      count="$(callout_connections)"
+      waited=$((($(date +%s%N) - killed) / 1000000))
+      if [ -n "$count" ] && [ "$count" -lt "$before" ]; then
+        dropped=$waited
+        break
+      fi
+      [ "$waited" -ge 2000 ] && break
+      sleep 0.02
+    done
+    if [ -z "$dropped" ] && [ -z "$count" ]; then
+      unknown "$killed_property: the hub's connection list ($DEV_STACK_NATS_MONITOR_URL/connz) could not be read after the kill"
+    elif [ -z "$dropped" ]; then
+      fail "$killed_property: the hub still listed $count connections named envoy-broker-callout ${waited} ms after the kill"
+    else
+      slowest=0
+      outcome=pass
+      detail=""
+      began=$killed
+      for attempt in 1 2 3; do
+        probe "$AGENT_SECRETS_URL" --subscribe "$OWN_CHANNEL" --wait 10ms
+        took=$((($(date +%s%N) - began) / 1000000))
+        [ "$took" -gt "$slowest" ] && slowest=$took
+        if [ "$probe_rc" -ne 0 ]; then
+          outcome=fail
+          detail="attempt $attempt: natsprobe exit $probe_rc after ${took} ms: $probe_out"
+          break
+        fi
+        if [ "$took" -ge 2000 ]; then
+          outcome=fail
+          detail="attempt $attempt took ${took} ms"
+          break
+        fi
+        began=$(date +%s%N)
+      done
+      if [ "$outcome" = pass ]; then
+        pass "$killed_property: the hub dropped the killed broker's connection after ${dropped} ms; three sessions, the slowest ${slowest} ms, the first counted from the kill"
+      else
+        fail "$killed_property: $detail"
+      fi
+    fi
   fi
 fi
 

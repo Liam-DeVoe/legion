@@ -138,15 +138,14 @@ func Listener(machineID string) Permissions {
 // machineID: the listener's set (Listener), the session consumers' calls included, then a
 // subscribe to every notification topic (bus.NotificationTopicPrefix) that nothing now uses. It
 // existed for the opt-in that had a listener hold a core subscription on notifications.> for the
-// sessions it served, and that opt-in went with the listener's push to a session's serving port
-// (dispatch://INFRA-889), so this set grants the listener's set and the one subscribe nothing
-// reads. It keeps the subscribe rather than dropping it, and so stays a set of its own rather than
-// an alias, because a change to a set rewrites every hub's rendered authorization: it replaces a
-// VM hub's instance and reaches a clustered hub only as a live reload, which
-// dispatch://INFRA-429's non-goals leave to dispatch://INFRA-551. The set holds none of the
-// session's publish entries, so a process connecting as this user can neither publish a session's
-// agent stream frames nor subscribe to a session's control subject. Host stays the set of a user a
-// host's sessions share.
+// sessions it served, and that opt-in went with the listener's push to a session's serving port,
+// so this set grants the listener's set and the one subscribe nothing reads. It keeps the
+// subscribe rather than dropping it, and so stays a set of its own rather than an alias, because a
+// change to a set rewrites every hub's rendered authorization: it replaces a VM hub's instance and
+// reaches a clustered hub only as a live reload, which is left to later work. The set holds none
+// of the session's publish entries, so a process connecting as this user can neither publish a
+// session's agent stream frames nor subscribe to a session's control subject. Host stays the set
+// of a user a host's sessions share.
 func ListenerHost(machineID string) Permissions {
 	grant := Listener(machineID)
 	grant.Subscribe = append(grant.Subscribe, bus.NotificationTopicPrefix+">")

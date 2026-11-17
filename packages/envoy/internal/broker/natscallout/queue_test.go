@@ -186,7 +186,7 @@ func TestABudgetSpentWaitingForASlotNamesTheWait(t *testing.T) {
 	_, err := connectSession(t, url, waiter, nil)
 	require.ErrorIs(t, err, nats.ErrAuthorization)
 	testwait.WithinPolling(t, 5*time.Second, 20*time.Millisecond, "the waiter's refusal counted", func() bool {
-		return strings.Contains(scrape(t, registry), `outcome="refused",reason="budget"} 1`)
+		return refusedFor(t, registry, labelBudget) == 1
 	})
 	close(release)
 	testwait.WithinPolling(t, 5*time.Second, 20*time.Millisecond, "the refusal in the broker's log", func() bool {
@@ -200,7 +200,7 @@ func TestABudgetSpentWaitingForASlotNamesTheWait(t *testing.T) {
 // the bound at once, naming the bound, while the ones it holds wait on and are decided. One slot is
 // held by a decision until that refusal is heard; two requests, the bound, wait behind it; a third
 // is refused within half a second rather than waiting, and the holder and the two held are then
-// admitted. With no bound the third waits behind the slot too and is admitted.
+// admitted. With no bound the third waits behind the slot too, past half a second.
 //
 // The refusal's reason is read after Close, whose last report writes whatever is still counted
 // (report), so it is in the log whether a tick's line or that last one carried it, and the test
@@ -251,14 +251,12 @@ func TestARequestPastTheWaitingBoundIsRefusedAtOnce(t *testing.T) {
 	close(release)
 	require.ErrorIs(t, err, nats.ErrAuthorization, "the request past the waiting bound was admitted after %s", took)
 	require.Less(t, took, 500*time.Millisecond, "the request past the waiting bound was answered after %s: it waited rather than being refused at once", took)
-	testwait.WithinPolling(t, 5*time.Second, 20*time.Millisecond, "the refusal counted under its label", func() bool {
-		return strings.Contains(scrape(t, registry), `outcome="refused",reason="`+labelWaitingBound+`"} 1`)
-	})
 	require.NoError(t, <-held, "the slot's holder was refused")
 	for index, err := range <-results {
 		require.NoError(t, err, "waiter %d of the bound was refused", index)
 	}
 	service.Close()
+	require.Equal(t, 1, refusedFor(t, registry, labelWaitingBound), "the refusal was not counted under its label")
 	require.Contains(t, log.String(), labelWaitingBound+"=1", "the refusal was not in the broker's log:\n%s", log.String())
 	require.Contains(t, log.String(), "2 requests already wait for a decision slot", "the refusal did not name the bound:\n%s", log.String())
 }

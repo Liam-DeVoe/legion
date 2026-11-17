@@ -37,8 +37,10 @@ func (s *stalledResponse) Write(p []byte) (int, error) {
 // A scrape whose client stops reading blocks nothing that records. In each row the scrape's write
 // stops on the line of one metric's series, and that metric is then recorded to, or a metric
 // registered, which must return at once. A handler that held the metric's lock, or the registry's,
-// across its write to the scrape would hold the recording for as long as the client did not read;
-// Dispatch, the listener and the broker record as they answer requests and all serve this handler.
+// across its write to the scrape would hold the recording while that write waited on the client:
+// on Dispatch, which sets no write timeout, as long as the client did not read, and on the
+// listener and the broker up to their write timeouts (10 s and 60 s). All three record as they
+// answer requests and serve this handler.
 func TestAStalledScrapeBlocksNoRecording(t *testing.T) {
 	r := New()
 	counter := r.NewCounter("envoy_test_answers_total", "Answers the test counts")
