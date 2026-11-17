@@ -374,7 +374,8 @@ func TestAReviewerIsToldTheTestersVerdictAsTheTesters(t *testing.T) {
 		t.Fatalf("ApplyFact tester completion: %v", err)
 	}
 	task := startTask(t, pool, claim.RoleReviewer)
-	if want := "Phase: reviewing. Handoff: test version 3 (dispatch handoff-read --issue LEGION-208 --phase test --version 3). Tester's verdict: pass. Pull request: #42."; !strings.HasSuffix(task, want) {
+	if want := "Phase: reviewing. Handoff: test version 3 (dispatch handoff-read --issue LEGION-208 --phase test --version 3). Tester's verdict: pass. Pull request: #42." +
+		reviewEntryPartOf(phaseRowOf(t, pool, claim.RoleReviewer).Entry); !strings.HasSuffix(task, want) {
 		t.Fatalf("reviewer task %q, want it to end with %q", task, want)
 	}
 	if strings.Contains(task, "Handoff verdict") {
@@ -416,26 +417,36 @@ func TestTheReviewerPromptNamesTheTestersVerdictLabel(t *testing.T) {
 	}
 }
 
-// The reviewer is told the commit its later round reads from by the label its task carries
-// (reviewedCommit.part), and its prompt and the merge gate of skill://legion-worker, which the
-// prompt sends it to, name that field, so a rename of the label in the writer alone, in the
-// reviewer's prompt alone or in the merge gate alone fails here.
+// The reviewer is told the commit its later round reads from, and the entry of each round, by
+// the labels its task carries (reviewedCommit.part, reviewEntry.part), and its prompt and the
+// merge gate of skill://legion-worker, which the prompt sends it to, name those fields, so a
+// rename of a label in the writer alone, in the reviewer's prompt alone or in the merge gate alone
+// fails here. The reviewer writes the entry into its review's footer, so a prompt that did not
+// name the field would leave every review moving no commit.
 func TestTheReviewerIsToldTheReviewedCommitLabelItsTaskCarries(t *testing.T) {
-	field := ReviewedCommitLabel + ": <sha>"
-	if got := reviewedCommit("<sha>").part(); !strings.HasPrefix(got, " "+field) {
-		t.Fatalf("a task names its reviewed commit as %q, want it to start with %q", got, " "+field)
-	}
-	want := "`" + field
-	if !strings.Contains(reviewerPrompt(t), want) {
-		t.Errorf("the reviewer's prompt does not say %q", want)
-	}
 	mergeGate := filepath.Join("..", "..", "..", "..", "skills", "legion-worker", "references", "merge-gate.md")
 	body, err := os.ReadFile(mergeGate)
 	if err != nil {
 		t.Fatalf("read %s, the skill the reviewer's prompt sends it to: %v", mergeGate, err)
 	}
-	if !strings.Contains(string(body), want) {
-		t.Errorf("%s does not say %q", mergeGate, want)
+	prompt := reviewerPrompt(t)
+	for _, tc := range []struct {
+		field, part string
+	}{
+		{field: ReviewedCommitLabel + ": <sha>", part: reviewedCommit("<sha>").part()},
+		{field: ReviewEntryLabel + ": <n>", part: reviewEntry(7).part()},
+	} {
+		label, _, _ := strings.Cut(tc.field, ": ")
+		if !strings.HasPrefix(tc.part, " "+label+": ") {
+			t.Fatalf("a task names its field as %q, want it to start with %q", tc.part, " "+label+": ")
+		}
+		want := "`" + tc.field
+		if !strings.Contains(prompt, want) {
+			t.Errorf("the reviewer's prompt does not say %q", want)
+		}
+		if !strings.Contains(string(body), want) {
+			t.Errorf("%s does not say %q", mergeGate, want)
+		}
 	}
 }
 

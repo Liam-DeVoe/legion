@@ -443,7 +443,7 @@ func TestALaterReviewRoundIsToldTheCommitTheReviewBeforeItRead(t *testing.T) {
 		t.Fatalf("round 2's reviewer row is on entry %d, want one above round 1's %d: round 2 started", second.Entry, first.Entry)
 	}
 	want := "Continue root. Issue: LEGION-208. Phase: reviewing. Handoff: test version 2 (dispatch handoff-read --issue LEGION-208 --phase test --version 2)." +
-		" Tester's verdict: pass. Pull request: #42." + reviewedPartOf(headOne)
+		" Tester's verdict: pass. Pull request: #42." + reviewedPartOf(headOne) + reviewEntryPartOf(second.Entry)
 	if second.EntryTask != want {
 		t.Fatalf("round 2's task = %q, want %q", second.EntryTask, want)
 	}
@@ -572,7 +572,7 @@ func TestTheReviewedCommitSurvivesEachWayBackIntoReviewing(t *testing.T) {
 		outboxRan(t, pool)
 		apply("retry", intake.RetryOrEscalate{Issue: "LEGION-208", Decision: intake.RetryDecision, Reason: "the claim failed"})
 		task := onlyReviewerStart(t, pool).Task
-		if !strings.Contains(task, " Phase: reviewing.") || !strings.HasSuffix(task, " Pull request: #42."+reviewedPartOf(headOne)+" Reason: the claim failed.") {
+		if !strings.Contains(task, " Phase: reviewing.") || !strings.HasSuffix(task, " Pull request: #42."+reviewedPartOf(headOne)+" Reason: the claim failed."+reviewEntryPartOf(reviewerRow(t, pool).Entry)) {
 			t.Fatalf("the retry's task = %q, want the reviewing task naming %s after the pull request and before the reason", task, headOne)
 		}
 	})
@@ -588,8 +588,8 @@ func TestTheReviewedCommitSurvivesEachWayBackIntoReviewing(t *testing.T) {
 			intake.ClaimReady{Issue: "LEGION-208", Role: claim.RoleReviewer, Launch: 2}, engine, admissionStub{}); err != nil {
 			t.Fatalf("apply the ready: %v", err)
 		}
-		if task := onlyReviewerStart(t, pool).Task; task != resumeWant {
-			t.Fatalf("the catch-up's task = %q, want %q", task, resumeWant)
+		if task, want := onlyReviewerStart(t, pool).Task, resumeWant+reviewEntryPartOf(row.Entry); task != want {
+			t.Fatalf("the catch-up's task = %q, want %q", task, want)
 		}
 	})
 	t.Run("the boot's resume", func(t *testing.T) {
@@ -601,8 +601,8 @@ func TestTheReviewedCommitSurvivesEachWayBackIntoReviewing(t *testing.T) {
 				run: record.RoleRun{Claim: &record.RoleClaim{GivenEntry: row.Entry}}}, row)
 			return err
 		})
-		if task := onlyReviewerStart(t, pool).Task; task != resumeWant {
-			t.Fatalf("the resume's task = %q, want %q", task, resumeWant)
+		if task, want := onlyReviewerStart(t, pool).Task, resumeWant+reviewEntryPartOf(row.Entry); task != want {
+			t.Fatalf("the resume's task = %q, want %q", task, want)
 		}
 	})
 	t.Run("the silence repair", func(t *testing.T) {
@@ -614,8 +614,8 @@ func TestTheReviewedCommitSurvivesEachWayBackIntoReviewing(t *testing.T) {
 				intake.WorkerSilent{Issue: "LEGION-208", Role: claim.RoleReviewer, Generation: 1, LastStep: reviewTestedAt, Bound: time.Hour},
 				reviewTestedAt.Add(2*time.Hour))
 		})
-		if task := onlyReviewerStart(t, pool).Task; task != resumeWant {
-			t.Fatalf("the silence repair's task = %q, want %q", task, resumeWant)
+		if task, want := onlyReviewerStart(t, pool).Task, resumeWant+reviewEntryPartOf(row.Entry); task != want {
+			t.Fatalf("the silence repair's task = %q, want %q", task, want)
 		}
 	})
 	t.Run("an owed entry whose row names no task", func(t *testing.T) {
@@ -646,8 +646,8 @@ func TestTheReviewedCommitSurvivesEachWayBackIntoReviewing(t *testing.T) {
 			return engine.StartPromotedWorker(ctx, tx, *carried, claim.RoleReviewer)
 		})
 		after := reviewerRow(t, pool)
-		if after.Entry != before.Entry+1 || after.EntryTask != resumeWant {
-			t.Fatalf("the promoted reviewer is on entry %d with the task %q, want entry %d with %q", after.Entry, after.EntryTask, before.Entry+1, resumeWant)
+		if want := resumeWant + reviewEntryPartOf(before.Entry+1); after.Entry != before.Entry+1 || after.EntryTask != want {
+			t.Fatalf("the promoted reviewer is on entry %d with the task %q, want entry %d with %q", after.Entry, after.EntryTask, before.Entry+1, want)
 		}
 	})
 }
@@ -713,7 +713,7 @@ func TestAGenerationThatClearsItsRowsNamesNoCommit(t *testing.T) {
 			return engine.StartPromotedWorker(ctx, tx, *member, claim.RoleReviewer)
 		})
 		after := reviewerRow(t, pool)
-		want := "Continue child. Issue: LEGION-208. Phase: reviewing. Resume the existing phase work."
+		want := "Continue child. Issue: LEGION-208. Phase: reviewing. Resume the existing phase work." + reviewEntryPartOf(before.Entry+1)
 		if after.Entry != before.Entry+1 || after.EntryTask != want {
 			t.Fatalf("the promoted reviewer is on entry %d with the task %q, want entry %d with %q", after.Entry, after.EntryTask, before.Entry+1, want)
 		}
@@ -826,7 +826,7 @@ func TestAReviewFromBeforeAReadmissionAppliedBeforeThePromotionMovesNoCommit(t *
 		t.Fatalf("after the late approval the reviewer's row reads the reviewed commit %q, want none: the approval was submitted before the re-admission cleared the generation", got)
 	}
 	promotesTheReviewer(t, pool, engine, entered.Add(3*time.Hour))
-	want := "Continue child. Issue: LEGION-208. Phase: reviewing. Resume the existing phase work."
+	want := "Continue child. Issue: LEGION-208. Phase: reviewing. Resume the existing phase work." + reviewEntryPartOf(reviewerRow(t, pool).Entry)
 	if task := reviewerRow(t, pool).EntryTask; task != want {
 		t.Fatalf("the promoted reviewer's first task = %q, want %q: the first review of the new generation reads the whole change", task, want)
 	}
