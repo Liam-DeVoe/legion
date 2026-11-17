@@ -3256,9 +3256,14 @@ const knownRecordWriteTimeout = 1 * time.Second
 // every heartbeat after it (pi-envoy's ensureHeartbeat, claude-envoy's heartbeat). Nothing the
 // registration stored is undone: its interest row, entry and consumer stand, and the retry is a
 // registration like any other, which writes the record because this listener's copy holds none.
-// A store whose bucket is not open, or no store at all, writes nothing and answers nil
-// (session.KnownSessions.RecordWithin), so such a listener answers 200 as it always has: it is the
-// listener the known-session store's comment describes, which knows no session past its entry.
+// That is the rule with one exception, and the exception is deliberate: a registration answered
+// with success has written the session's known-session record, except while this listener's
+// known-session store is not yet open. A store whose bucket is not open, or no store at all, writes
+// nothing and answers nil (session.KnownSessions.RecordWithin), so such a listener answers 200 as
+// it always has: it is the listener the known-session store's comment describes, which knows no
+// session past its entry. A 503 there would refuse every registration for as long as the bucket
+// stays shut, live sessions' heartbeats among them, which costs more than the 404 a send meets for
+// a session whose process is already gone.
 //
 // Every 200 this route answers is answered here, and nothing else is: a branch added later that
 // accepts a registration - cybermonklabs/legion#4194's registration that asked for no consumer and
