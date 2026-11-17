@@ -365,9 +365,10 @@ html:has([data-issue-page]) {
   /* The new issue page's view row, `[data-filter-row]`, is one line of 35 px at every width
      (ruling 5 of dispatch://INFRA-1196/artifact/build-rulings-md), so its controls take WCAG
      2.2's 24 px target (2.5.8) rather than the floor above. A menu or a dialog the row opens
-     keeps the floor. */
-  html:has([data-issue-page]) [data-filter-row]
-    :is(button, a, input, select):not([role="menu"] *):not([role="dialog"] *) {
+     keeps the floor. Only the new page draws the row (`identity-block.ts`'s
+     `FILTER_ROW_ATTRIBUTE`), so the rule takes no `html:has()` scope: under one, each row the
+     page added recalculated the style of every button and link of the page (decision 176). */
+  [data-filter-row] :is(button, a, input, select):not([role="menu"] *):not([role="dialog"] *) {
     min-width: 24px;
     min-height: 24px;
   }
