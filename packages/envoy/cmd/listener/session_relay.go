@@ -897,18 +897,13 @@ func (m *sessionRelays) restart(ctx context.Context, run *relayRun) (bus.Session
 		settleLost = m.settleFilter(callCtx, sessionID, revision)
 	}
 	unlock()
-	// A landed restart whose settle lost its connection settles again once that connection is
-	// back, inside the restart's budget, with the session's lock released while it waits and taken
-	// again within that budget. One whose connection or lock is not back in time, or whose client
-	// stopped, leaves the filter the restart wrote to the session's next heartbeat, as a settle that
-	// could not read the bucket does, and pulls.
-	for err == nil && bus.Reconnected(callCtx, settleLost) {
-		relocked, ok := m.delivery.locks.lockWithin(callCtx, sessionID)
-		if !ok {
-			break
-		}
-		settleLost = m.settleFilter(callCtx, sessionID, revision)
-		relocked()
+	// A landed restart whose settle lost its connection waits for that connection in the relay's
+	// loop (relayLost) and restarts from the bucket's newest row once it is back, which settles
+	// the filter again. It does not wait here: the restart's turn (m.restarts) is held until this
+	// call returns, and a wait for the connection made with it held would keep the restarts queued
+	// behind it waiting through the outage (bus.Reconnected's rule: release what is held first).
+	if err == nil && errors.Is(settleLost, bus.ErrConnectionLost) {
+		return bus.SessionConsumerStart{}, nil, m.connectionLost(run, "settle the session's filter", settleLost)
 	}
 	if err == nil {
 		run.restartedAt.Store(at)
@@ -975,9 +970,8 @@ func (m *sessionRelays) connectionLost(run *relayRun, doing string, err error) r
 // have created the consumer on the filter it carried (restart, consumerCallAnswered).
 //
 // It returns the error of a pass that lost its connection (bus.ErrConnectionLost), and nil for
-// every other end: the restart then settles again once the connection is back (restart), and
-// since its first pass answers the restart's own write again, the correction a lost pass did not
-// make is made by the next one.
+// every other end: the restart then returns relayLost, and the relay restarts once the connection
+// is back, holding no turn and no lock while it waits, which settles the filter again.
 func (m *sessionRelays) settleFilter(ctx context.Context, sessionID string, wrote uint64) error {
 	// The restart's own write is this fence's first pass: it is made, or may have been made,
 	// before the fence runs, so that pass answers it as the write it is (filterWriteLanded) and
