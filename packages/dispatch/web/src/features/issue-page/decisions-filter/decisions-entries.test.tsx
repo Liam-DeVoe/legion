@@ -248,7 +248,8 @@ test("the seam gives four parts from today's reads and makes no request", async 
 // the asks have answered, which say which questions and decisions there are; the comments and
 // the blocks only move a decision between parts, so the reads hold while those are out. Either
 // of the first two refused before it first answers is the seam's to name, with a retry of its
-// own, so the body can say so without naming a read.
+// own, so the body can say so without naming a read; one refused only on a later read keeps
+// the answer it gave, and is none.
 test("an empty decisions member gives the questions alone and no error", async () => {
   const children = [statement("s1"), openAsk("q-open")];
   // A read with no `decisions` member, which its type does not allow and an answer can still be.
@@ -368,6 +369,43 @@ test("an empty decisions member gives the questions alone and no error", async (
     } finally {
       asked.mockRestore();
       notAsked.mockRestore();
+    }
+  }
+
+  // Each of the two reads has answered, and a refetch of it then fails. While the refetch runs
+  // the seam says that read is being read again; once it has failed, the read still holds the
+  // answer it gave, which the view draws from, so it is not unreadable, draws no line, and the
+  // reads still hold.
+  const refetched = [
+    { key: ["decisions", KEY], read: "decisions", request: "getIssueDecisions" },
+    { key: ["asks", KEY], read: "asks", request: "listIssueAsks" },
+  ] as const;
+  for (const { key, read, request } of refetched) {
+    const answer = Promise.withResolvers<never>();
+    const asked = spyOn(api, request).mockReturnValue(answer.promise);
+    try {
+      const { client, hook } = await mountEntries(children, noDecision);
+      const reading = () => ({
+        read,
+        readsHeld: hook.result.current.readsHeld,
+        retrying: hook.result.current.retrying,
+        unreadable: hook.result.current.unreadable,
+      });
+      const held = { read, readsHeld: true, retrying: [], unreadable: [] };
+      expect(reading()).toEqual(held);
+      await act(async () => hook.result.current.retry(read));
+      await waitFor(() => expect(reading()).toEqual({ ...held, retrying: [read] }));
+      await act(async () => {
+        answer.reject(new Error("refused"));
+        await answer.promise.catch(() => undefined);
+      });
+      await waitFor(() => expect(hook.result.current.retrying).toEqual([]));
+      expect(client.getQueryState(key)?.status).toBe("error");
+      expect(reading()).toEqual(held);
+      expect(asked).toHaveBeenCalledTimes(1);
+      hook.unmount();
+    } finally {
+      asked.mockRestore();
     }
   }
 });

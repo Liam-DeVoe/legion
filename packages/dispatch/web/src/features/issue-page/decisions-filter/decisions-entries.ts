@@ -44,12 +44,14 @@ import { type DecisionsEntry, type DecisionsParts, decisionsParts } from "./deci
  * issue that holds nothing say so.
  *
  * The seam says too which of those two reads was refused before it first answered
- * (`unreadable`), and asks one of them alone again (`retry`). The body draws a line with a
- * Retry for each, in place of the entries that read would give. How a read stands and how it
- * is asked again belong to the read, and only this module names one, so they are read here and
- * the body knows a read only by the word its line is drawn for. A read whose refetch fails over
- * an answer it already holds keeps that answer, which the view still draws from, so it is not
- * among them; nor are the comments and the blocks, which only move a decision between parts.
+ * (`unreadable`), which of them is being read now (`retrying`), and asks one of them alone again
+ * (`retry`). The body draws a line with a Retry for each refused read, in place of the entries
+ * that read would give, and a Retry pressed while its read runs again asks nothing more. How a
+ * read stands and how it is asked again belong to the read, and only this module names one, so
+ * they are read here and the body knows a read only by the word its line is drawn for. A read
+ * whose refetch fails over an answer it already holds keeps that answer, which the view still
+ * draws from, so it is not among the refused; nor are the comments and the blocks, which only
+ * move a decision between parts.
  *
  * The hook is the module's one export and its answer's type is its own, so the read that
  * replaces this module has one name to give the view and nothing else of it to keep.
@@ -69,6 +71,9 @@ interface DecisionsEntries extends DecisionsParts {
   readonly readsHeld: boolean;
   /** Asks `read` alone again, by its own query's refetch. */
   readonly retry: (read: DecisionsRead) => void;
+  /** Each of the decisions read and the asks, in that order, that is being read now, a first
+   *  read, a Retry's or any other (TanStack Query's `isFetching`). */
+  readonly retrying: readonly DecisionsRead[];
   /** Each of the decisions read and the asks, in that order, that was refused before it first
    *  answered: it holds no answer and is in error. */
   readonly unreadable: readonly DecisionsRead[];
@@ -125,6 +130,15 @@ export function useDecisionsEntries({
     ],
     [asksRefused, decisionsRefused]
   );
+  const decisionsFetching = decisionsRead.isFetching;
+  const asksFetching = asksRead.isFetching;
+  const retrying = useMemo<readonly DecisionsRead[]>(
+    () => [
+      ...(decisionsFetching ? (["decisions"] as const) : []),
+      ...(asksFetching ? (["asks"] as const) : []),
+    ],
+    [asksFetching, decisionsFetching]
+  );
   // Each read is asked again by its own query, so a Retry asks for that read and no other.
   const refetchDecisions = decisionsRead.refetch;
   const refetchAsks = asksRead.refetch;
@@ -165,6 +179,7 @@ export function useDecisionsEntries({
       others: [],
       readsHeld,
       retry,
+      retrying,
       unreadable,
       yours:
         parts.others.length === 0
@@ -180,6 +195,7 @@ export function useDecisionsEntries({
     reader,
     readsHeld,
     retry,
+    retrying,
     root,
     unreadable,
     view,
