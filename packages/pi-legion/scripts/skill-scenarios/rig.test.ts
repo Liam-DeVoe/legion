@@ -917,6 +917,23 @@ exit "$(cat "$PWD/exit-status" 2>/dev/null || echo 0)"
   /** What `judged` reads back from a judge that ran and a rig that refused nothing. */
   const judgedCleanly = { code: 0, refused: false, stderr: "" };
 
+  // The judges' image, pulled once for the file, by rig.sh's own pull and its three tries
+  // (`rig.sh judge-image`), so that a failed pull names itself here and no row waits for it. The
+  // first row paid for it alone: 119,329.07 ms on a runner whose pull was slow, while no other
+  // judge-omp row took more than 3.4 s on CI. So this hook alone has a guard of its own, at least
+  // twice the slowest pull CI read; package.json's `//` note gives the readings and their runs.
+  // Its one line of output is the pull's time, so each CI log records one more reading. A host
+  // that skips the rows skips the pull.
+  beforeAll(() => {
+    if (skip) return;
+    const start = performance.now();
+    const result = Bun.spawnSync(["bash", path.join(import.meta.dir, "rig.sh"), "judge-image"], {
+      env: { ...childEnv, SKILL_SCENARIOS_WORK: work },
+    });
+    console.log(`judge-omp: rig.sh judge-image took ${(performance.now() - start).toFixed(2)} ms`);
+    expect(judged(result)).toEqual(judgedCleanly);
+  }, 240_000);
+
   // Catches: a judge session with the label's plugins, the operator's skills or the default model,
   // run outside its own directory, or with no record of its model.
   test.skipIf(skip)(
