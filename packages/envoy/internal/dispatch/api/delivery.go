@@ -62,13 +62,20 @@ var deliveryPrioritySelection = regexp.MustCompile(`^[pP]?([0-3])$`)
 
 // parseDeliveryWindow reads from/to (RFC3339) from query, defaulting to the last 7 days when
 // either is absent, and refuses a malformed value, an inverted window, or one wider than
-// maxDeliveryWindow.
+// maxDeliveryWindow. A from the query leaves out is to less defaultDeliveryWindow, held to the UTC
+// years 1 to 9999 as a named one is (parseOptionalRFC3339, R18): a to in the first seven days of
+// the year 1 would otherwise start the window in the year 0. Its refusal names the from it derived
+// and where it came from, since the query that earns it names no from.
 func parseDeliveryWindow(query url.Values) (from, to time.Time, err error) {
 	if to, err = parseOptionalRFC3339(query, "to", time.Now().UTC()); err != nil {
 		return time.Time{}, time.Time{}, err
 	}
 	if from, err = parseOptionalRFC3339(query, "from", to.Add(-defaultDeliveryWindow)); err != nil {
 		return time.Time{}, time.Time{}, err
+	}
+	if year := from.UTC().Year(); !query.Has("from") && year < 1 {
+		return time.Time{}, time.Time{}, fmt.Errorf("from is not named, so it is to less the default %d days, %s, a moment of the year %d: from must be a moment of the UTC years 1 to 9999",
+			defaultDeliveryWindow/(24*time.Hour), from.UTC().Format(time.RFC3339Nano), year)
 	}
 	if !from.Before(to) {
 		return time.Time{}, time.Time{}, errors.New("from must be before to")

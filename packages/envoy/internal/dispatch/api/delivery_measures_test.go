@@ -276,6 +276,44 @@ func TestADeliveryWindowOutsideTheYearsAReadAnswersIsRefused(t *testing.T) {
 	}
 }
 
+// TestAWindowWhoseDefaultFromFallsBeforeYearOneIsRefused: a read whose query names to and no from
+// reads the window from to less the default 7 days (parseDeliveryWindow), and that from was held
+// to no year, so ?to=0001-01-03T00:00:00Z was answered 200 from 0000-12-27, a moment of the year
+// 0, which R18 refuses in a named from. Each read that takes its window there, the delivery
+// timeline and measures and the four eval reads, refuses it 400 INVALID_QUERY naming the from it
+// derived and that it is to less the default window; a to with an offset is held to the UTC year
+// as a named from is. The first to whose default window starts in the year 1 is answered.
+func TestAWindowWhoseDefaultFromFallsBeforeYearOneIsRefused(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	seedMeasuresSettings(t, database)
+	createTestProject(t, handler, "EVL")
+	registerReviewTime(t, handler)
+	reads := []string{
+		"/api/v1/delivery/timeline", "/api/v1/delivery/measures",
+		"/api/v1/projects/EVL/evals", "/api/v1/evals", "/api/v1/projects/EVL/evals/review-time", "/api/v1/projects/EVL/evals/review-time/items",
+	}
+	for _, read := range reads {
+		for _, refused := range []struct{ to, from string }{
+			{"0001-01-03T00:00:00Z", "0000-12-27T00:00:00Z"},
+			{"0001-01-07T23:59:59Z", "0000-12-31T23:59:59Z"},
+			{"0001-01-08T00:00:00+01:00", "0000-12-31T23:00:00Z"},
+		} {
+			target := read + "?" + url.Values{"to": {refused.to}}.Encode()
+			response := dispatchRequest(t, handler, http.MethodGet, target, nil, "alice")
+			var refusal evalRefusal
+			if response.Code != http.StatusBadRequest || json.Unmarshal(response.Body.Bytes(), &refusal) != nil || refusal.Code != "INVALID_QUERY" ||
+				!strings.Contains(refusal.Error, refused.from) || !strings.Contains(refusal.Error, "to less the default 7 days") {
+				t.Errorf("GET %s: status = %d, body = %.300s, want 400 INVALID_QUERY naming the from %s it derived as to less the default 7 days",
+					target, response.Code, response.Body.String(), refused.from)
+			}
+		}
+		target := read + "?" + url.Values{"to": {"0001-01-08T00:00:00Z"}}.Encode()
+		if response := dispatchRequest(t, handler, http.MethodGet, target, nil, "alice"); response.Code != http.StatusOK || response.Body.Len() == 0 {
+			t.Errorf("GET %s: status = %d, body = %.300s, want 200: its window starts at 0001-01-01T00:00:00Z", target, response.Code, response.Body.String())
+		}
+	}
+}
+
 // TestAPipelineWhoseShownDaysStartBeforeYearOneIsRefused: the Pipeline answers the seven days
 // that end at at, so an at in the first six days of the year 1 shows days of the year 0. R18
 // refuses a read whose window falls outside the years 1 to 9999, as the eval and delivery routes
