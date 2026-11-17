@@ -170,3 +170,17 @@ test("a line is cut with each reference still unnamed, and each is named after t
   const second = references.standIn("Ask dispatch://KEY-3 first.");
   expect(references.named(`${first} ${second}`)).toBe("See R2. Every address. Ask KEY-3 first.");
 });
+
+// R1 and R5: a plain line draws its author's words as they wrote them, with each reference named.
+// A reference stands in by a private-use character while the line is cut, and a text may hold
+// that character of its own: an icon a reader pasted from a terminal or an icon font is one
+// (U+E000 to U+F8FF). Found by the tester on a running build at 0058727e, where a comment that
+// read "<U+E000> dispatch://INFRA-3570 then" drew its Contents entry as "INFRA-3570 INFRA-3570…":
+// the author's own character was drawn as the reference's name.
+test("a private-use character the author wrote is drawn as written, never as a reference's name", () => {
+  const references = referenceStandIns(() => undefined);
+  const text = "\ue000 marks dispatch://KEY-2 here, and \ue001 is the next icon.";
+  expect(references.named(references.standIn(text))).toBe(
+    "\ue000 marks KEY-2 here, and \ue001 is the next icon."
+  );
+});
