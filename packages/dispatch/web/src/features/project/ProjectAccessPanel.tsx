@@ -601,11 +601,18 @@ export function ProjectAccessPanel({ project }: { project: string }): ReactNode 
           </RefusableButton>
         </form>
         <p className={`mt-2 text-sm ${textMutedOnSurface}`}>
-          A group admits only its full members. Groups are made and edited in{" "}
-          <Link className={`font-medium ${linkText} ${linkHoverText}`} to="/settings#groups">
-            Settings → Groups
-          </Link>
-          .
+          A group admits only its full members.
+          {/* A restricted member's Settings draws no Groups, so they are sent to none. */}
+          {restricted ? null : (
+            <>
+              {" "}
+              Groups are made and edited in{" "}
+              <Link className={`font-medium ${linkText} ${linkHoverText}`} to="/settings#groups">
+                Settings → Groups
+              </Link>
+              .
+            </>
+          )}
         </p>
         {groups.isError ? (
           <div className="mt-3">
