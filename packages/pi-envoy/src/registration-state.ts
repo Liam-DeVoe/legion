@@ -5,6 +5,7 @@ import {
   type EnvoyClient,
   expandSubscriptionTopics,
   type Interest,
+  isBusUnanswered,
   newClientInstanceID,
   roleHeldBy,
   type SubscribeInput,
@@ -226,13 +227,15 @@ export interface TaskHandle {
   readonly readRoleHolder: (role: string) => Promise<string | undefined>;
   /** The listener's registered interests for a session; `undefined` when the read failed. */
   readonly readInterest: (sessionID: string) => Promise<Interest | undefined>;
-  /** Unregisters `topics` as `sessionID`'s interests at the listener. A failure is warned under
-   *  `warning`, the caller's own sentence for it, and swallowed, as a recovery's own unregister
-   *  was: the next pass reads the registry afresh. */
+  /** Unregisters `topics` as `sessionID`'s interests at the listener. A failure is warned in the
+   *  caller's own words and swallowed, as a recovery's own unregister was: the next pass reads
+   *  the registry afresh. The warning is `busUnanswered` when the listener's message bus did not
+   *  answer (`isBusUnanswered`), since the listener can have written the record before that, and
+   *  `failed` for any other failure. */
   readonly unregisterTopics: (
     sessionID: string,
     topics: readonly string[],
-    warning: string
+    warnings: { readonly failed: string; readonly busUnanswered: string }
   ) => Promise<void>;
 
   // — NATS —
@@ -831,13 +834,17 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
           .getInterest(sessionID)
           .catch(() => undefined);
       },
-      unregisterTopics: async (sessionID, topics, warning) => {
+      unregisterTopics: async (sessionID, topics, warnings) => {
         guard();
         await deps
           .client()
           .unsubscribe({ sessionID, topics: [...topics] })
           .catch((error: unknown) =>
-            deps.log.warn(warning, { sessionID, topics, error: messageFor(error) })
+            deps.log.warn(isBusUnanswered(error) ? warnings.busUnanswered : warnings.failed, {
+              sessionID,
+              topics,
+              error: messageFor(error),
+            })
           );
       },
       connect,

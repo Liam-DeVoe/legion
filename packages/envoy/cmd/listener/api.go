@@ -369,7 +369,10 @@ func writeNATSError(w http.ResponseWriter, err error, status int, message string
 // did not answer, so one string matches in a test and in a deployed log filter. It is deliberately
 // distinct from the starting gate's "service starting" 503 (main.go): that one says this listener
 // is not ready yet and the same request will be served here in a moment, this one says the bus
-// itself did not answer, and the two ask the caller for different actions.
+// itself did not answer, and the two ask the caller for different actions. envoy-client keeps a
+// copy of it, BUS_UNANSWERED_PREFIX in packages/envoy-client/src/transport.ts, which isBusUnanswered
+// reads to tell this 503 from any other, so a change of the text changes that copy in the same
+// change.
 const busUnansweredPrefix = "envoy: the message bus did not answer"
 
 // publishDeniedPrefix opens the body of every answer this listener gives a publish the NATS server

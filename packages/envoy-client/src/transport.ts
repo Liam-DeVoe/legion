@@ -792,6 +792,29 @@ export class EnvoyApiError extends Error {
   }
 }
 
+/**
+ * The words that open the error of every 503 the listener answers when its message bus did not
+ * answer a request. It is `busUnansweredPrefix` in `packages/envoy/cmd/listener/api.go`, and the
+ * two must agree: if one changes and the other does not, `isBusUnanswered` is false for every
+ * such answer.
+ */
+const BUS_UNANSWERED_PREFIX = "envoy: the message bus did not answer";
+
+/**
+ * Whether `error` is the listener's bus-outage answer: an `EnvoyApiError` with status 503 whose
+ * message begins with `BUS_UNANSWERED_PREFIX`. The message after the prefix names the call the
+ * bus did not answer, and says `bus: NATS is reconnecting` when NATS was reconnecting. The work
+ * the listener did before that call can have landed: an unsubscribe gets this answer after it
+ * wrote the session's record, when only the update of the consumer's filter met the reconnect.
+ */
+export function isBusUnanswered(error: unknown): boolean {
+  return (
+    error instanceof EnvoyApiError &&
+    error.details.status === 503 &&
+    error.message.startsWith(BUS_UNANSWERED_PREFIX)
+  );
+}
+
 /** The listener's own test of whether a send's dedupe key lets the stream and hosts drop a repeat. */
 const mintedDedupeKey = new RegExp(MINTED_DEDUPE_KEY_PATTERN);
 

@@ -77,6 +77,7 @@ import {
   type EnvoyClient,
   expandSubscriptionTopics,
   holderStateOf,
+  isBusUnanswered,
   mayActOnRoleRecord,
   mergeInterestSources,
   newClientInstanceID,
@@ -1000,10 +1001,16 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
     // flight at that moment adds them back; removing them again behind it undoes
     // that. A failure here is not retried by name: the heartbeat's own interest
     // reconciliation (below) brings the entry back in line with what this session
-    // actually follows, whatever caused the drift.
+    // actually follows, whatever caused the drift, and its registration sets the
+    // consumer's filter to the topics the entry holds. The listener's message bus
+    // can fail to answer after the entry was written, when only the update of the
+    // consumer's filter met a NATS reconnect, so that outage is not reported as a
+    // removal that did not happen.
     dropFromTopicsAndRegistry(topics).catch((error: unknown) => {
       process.stderr.write(
-        `envoy-channel: could not drop a removed subscription from the registry — ${messageFor(error)}; the next heartbeat reconciles it\n`,
+        isBusUnanswered(error)
+          ? `envoy-channel: the listener's message bus did not answer a request to drop a removed subscription from the registry — ${messageFor(error)}; the registry may already be without it, and the next heartbeat reconciles the registry and sets the consumer's filter to the topics it holds\n`
+          : `envoy-channel: could not drop a removed subscription from the registry — ${messageFor(error)}; the next heartbeat reconciles it\n`,
       )
     })
   }

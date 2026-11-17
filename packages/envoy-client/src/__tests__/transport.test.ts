@@ -10,6 +10,7 @@ import {
   type DeliveryAnswer,
   EnvoyApiError,
   EnvoySendUnconfirmedError,
+  isBusUnanswered,
   mayActOnRoleRecord,
   newClientInstanceID,
   parseSubscribeAnswer,
@@ -1477,6 +1478,26 @@ describe("EnvoyClient", () => {
         responseBody: "invalid role",
       })
     );
+  });
+
+  // The listener answers a request its message bus did not answer 503 under one prefix
+  // (`busUnansweredPrefix` in packages/envoy/cmd/listener/api.go). A caller tells that answer
+  // apart by both, since the starting gate's 503 and a 500 mean other things.
+  test("isBusUnanswered is true only for a 503 whose error begins with the bus-outage prefix", () => {
+    const answer = (status: number, error: string) =>
+      new EnvoyApiError({
+        method: "POST",
+        url: "http://listener/v1/interests/unsubscribe",
+        status,
+        responseBody: JSON.stringify({ error }),
+      });
+    const outage =
+      "envoy: the message bus did not answer: set the filter of ses_a's session consumer: bus: NATS is reconnecting";
+
+    expect(isBusUnanswered(answer(503, outage))).toBe(true);
+    expect(isBusUnanswered(answer(503, "service starting"))).toBe(false);
+    expect(isBusUnanswered(answer(500, outage))).toBe(false);
+    expect(isBusUnanswered(new Error(outage))).toBe(false);
   });
 
   test("retries one 503 response and keeps the direct-send recipient", async () => {

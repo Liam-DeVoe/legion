@@ -1,5 +1,5 @@
 import { messageFor } from "@legion/envoy-client/errors";
-import type { EnvoyClient } from "@legion/envoy-client/transport";
+import { type EnvoyClient, isBusUnanswered } from "@legion/envoy-client/transport";
 
 /**
  * The ledger of the role holds this process gave up: what it still owes the listener, and what
@@ -85,7 +85,8 @@ export interface HandBackLedgerDeps {
   readonly client: () => EnvoyClient;
   /** The process this ledger's releases name. */
   readonly clientInstanceID: string;
-  /** Writes the one warning this ledger has; the host's logger stays the caller's. */
+  /** Writes this ledger's warning about a hand-back that failed; the host's logger stays the
+   *  caller's. */
   readonly warn: (message: string, context: Record<string, unknown>) => void;
 }
 
@@ -105,11 +106,17 @@ export function createHandBackLedger(deps: HandBackLedgerDeps): HandBackLedger {
       .unsubscribe({ sessionID: id, topics: [topic], clientInstanceID: deps.clientInstanceID });
   };
 
+  // Before it answers, the listener frees the claim, takes the role's topic out of the registry
+  // and sets the filter of the session's consumer. Its message bus can fail to answer at any of
+  // those steps, after the steps before it landed, so the warning for that outage says only what
+  // can be so. Any other failure is warned as a role that was not handed back.
   const warnRefused = (error: unknown, logFields: Record<string, unknown>): void => {
-    deps.warn("envoy: a role this process gave up was not handed back", {
-      ...logFields,
-      error: messageFor(error),
-    });
+    deps.warn(
+      isBusUnanswered(error)
+        ? "envoy: the listener's message bus did not answer the hand-back of a role this process gave up. The listener may already have freed the claim. The registry may already be without the role's topic."
+        : "envoy: a role this process gave up was not handed back",
+      { ...logFields, error: messageFor(error) }
+    );
   };
 
   return {

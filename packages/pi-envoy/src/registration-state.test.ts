@@ -83,6 +83,20 @@ const apiError = (status: number): EnvoyApiError =>
     responseBody: JSON.stringify({ error: "no live holder" }),
   });
 
+/** The listener's bus-outage error, answered with `status`: under 503 it is the answer the
+ *  listener gives when its message bus did not answer (here a filter update that met a NATS
+ *  reconnect, after the record was written), and under any other status it is not. */
+const busOutageAnswer = (status: number): EnvoyApiError =>
+  new EnvoyApiError({
+    method: "POST",
+    url: "/v1/interests/unsubscribe",
+    status,
+    responseBody: JSON.stringify({
+      error:
+        "envoy: the message bus did not answer: set the filter of ses_a's session consumer: bus: NATS is reconnecting",
+    }),
+  });
+
 /** What a test moves while a task is parked: the open session, the deadline, each listener call. */
 interface HarnessControl {
   /** The one session open here, which the module's `sessionOpen` answers for. */
@@ -575,7 +589,10 @@ describe("the serial queues", () => {
     const running = state.passes.run(async (handle) => {
       handle.actFor("ses_a");
       await handle.readInterest("ses_a");
-      await handle.unregisterTopics("ses_a", ["notifications.slack.channel.C1"], "envoy: nope");
+      await handle.unregisterTopics("ses_a", ["notifications.slack.channel.C1"], {
+        failed: "envoy: nope",
+        busUnanswered: "envoy: nope",
+      });
       return true;
     });
     await read.promise;
@@ -590,19 +607,17 @@ describe("the serial queues", () => {
     control.open = "ses_a";
     const unregistered = await state.passes.run(async (handle) => {
       handle.actFor("ses_a");
-      await handle.unregisterTopics(
-        "ses_a",
-        ["notifications.slack.channel.C1"],
-        "envoy: could not unregister a resumed controller's retired Slack topics"
-      );
+      await handle.unregisterTopics("ses_a", ["notifications.slack.channel.C1"], {
+        failed: "envoy: could not unregister a resumed controller's retired Slack topics",
+        busUnanswered: "envoy: the bus did not answer",
+      });
       control.unsubscribe = async () => {
         throw apiError(503);
       };
-      await handle.unregisterTopics(
-        "ses_a",
-        ["notifications.slack.channel.C2"],
-        "envoy: could not unregister a resumed controller's retired Slack topics"
-      );
+      await handle.unregisterTopics("ses_a", ["notifications.slack.channel.C2"], {
+        failed: "envoy: could not unregister a resumed controller's retired Slack topics",
+        busUnanswered: "envoy: the bus did not answer",
+      });
       return true;
     });
     expect(unregistered).toBe(true);
@@ -617,6 +632,72 @@ describe("the serial queues", () => {
           sessionID: "ses_a",
           topics: ["notifications.slack.channel.C2"],
           error: messageFor(apiError(503)),
+        },
+      },
+    ]);
+  });
+
+  // The listener answers a bus outage after it wrote the record, when only the filter update met
+  // a NATS reconnect, so the warning that says the topics stayed registered is for every other
+  // failure: another 503, the same words under a 500, and no answer at all.
+  test("an unregister the listener's message bus did not answer warns in the caller's words for that outage, and any other failure in its words for a failure", async () => {
+    const { state, control, warnings } = createHarness();
+    control.open = "ses_a";
+    const words = {
+      failed: "envoy: the topics were not unregistered",
+      busUnanswered: "envoy: the bus did not answer the unregister",
+    };
+    const unanswered = busOutageAnswer(503);
+    const starting = apiError(503);
+    const broken = busOutageAnswer(500);
+    const unreachable = new TypeError("fetch failed");
+    await state.passes.run(async (handle) => {
+      handle.actFor("ses_a");
+      for (const [topic, error] of [
+        ["notifications.slack.channel.C1", unanswered],
+        ["notifications.slack.channel.C2", starting],
+        ["notifications.slack.channel.C3", broken],
+        ["notifications.slack.channel.C4", unreachable],
+      ] as const) {
+        control.unsubscribe = async () => {
+          throw error;
+        };
+        await handle.unregisterTopics("ses_a", [topic], words);
+      }
+      return true;
+    });
+
+    expect(warnings).toEqual([
+      {
+        message: words.busUnanswered,
+        context: {
+          sessionID: "ses_a",
+          topics: ["notifications.slack.channel.C1"],
+          error: messageFor(unanswered),
+        },
+      },
+      {
+        message: words.failed,
+        context: {
+          sessionID: "ses_a",
+          topics: ["notifications.slack.channel.C2"],
+          error: messageFor(starting),
+        },
+      },
+      {
+        message: words.failed,
+        context: {
+          sessionID: "ses_a",
+          topics: ["notifications.slack.channel.C3"],
+          error: messageFor(broken),
+        },
+      },
+      {
+        message: words.failed,
+        context: {
+          sessionID: "ses_a",
+          topics: ["notifications.slack.channel.C4"],
+          error: messageFor(unreachable),
         },
       },
     ]);
@@ -808,6 +889,57 @@ describe("handBackAllHolds", () => {
         context: { topic: ALPHA, sessionID: "ses_a", error: "listener failed" },
       },
     ]);
+  });
+
+  // Before it answers, the listener frees the claim and takes the role's topic out of the
+  // registry, and its bus can fail to answer after either, so that outage is not warned as a
+  // role not handed back. Every other failure is: another 503, the same words under a 500, and
+  // no answer at all.
+  test("a hand-back the listener's message bus did not answer is warned as that outage, and any other failure as a role not handed back", async () => {
+    const harness = createHarness();
+    const { state, control, warnings } = harness;
+    await harness.hold("alpha", "ses_a");
+    const gamma = `${ROLE_TOPIC_PREFIX}gamma`;
+    const delta = `${ROLE_TOPIC_PREFIX}delta`;
+    state.recordClaimAfterDeadline(BETA, "ses_b");
+    state.recordClaimAfterDeadline(gamma, "ses_c");
+    state.recordClaimAfterDeadline(delta, "ses_d");
+    const failures: Record<string, unknown> = {
+      ses_a: busOutageAnswer(503),
+      ses_b: apiError(503),
+      ses_c: busOutageAnswer(500),
+      ses_d: new TypeError("fetch failed"),
+    };
+    control.unsubscribe = async (input) => {
+      throw failures[input.sessionID];
+    };
+
+    await state.handBackAllHolds();
+
+    // The hand-backs go side by side, so the warnings come in no set order.
+    const notHandedBack = "envoy: a role this process gave up was not handed back";
+    expect(warnings).toHaveLength(4);
+    expect(warnings).toEqual(
+      expect.arrayContaining([
+        {
+          message:
+            "envoy: the listener's message bus did not answer the hand-back of a role this process gave up. The listener may already have freed the claim. The registry may already be without the role's topic.",
+          context: { topic: ALPHA, sessionID: "ses_a", error: messageFor(failures.ses_a) },
+        },
+        {
+          message: notHandedBack,
+          context: { topic: BETA, sessionID: "ses_b", error: messageFor(failures.ses_b) },
+        },
+        {
+          message: notHandedBack,
+          context: { topic: gamma, sessionID: "ses_c", error: messageFor(failures.ses_c) },
+        },
+        {
+          message: notHandedBack,
+          context: { topic: delta, sessionID: "ses_d", error: messageFor(failures.ses_d) },
+        },
+      ])
+    );
   });
 
   test("sends nothing for a process that holds no role and owes no hand-back", async () => {

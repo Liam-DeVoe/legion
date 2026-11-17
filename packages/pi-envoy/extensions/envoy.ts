@@ -127,6 +127,7 @@ import {
   createEnvoyClient,
   expandSubscriptionTopics,
   holderStateOf,
+  isBusUnanswered,
   mayActOnRoleRecord,
   mergeInterestSources,
   type SubscribeResult,
@@ -701,6 +702,20 @@ if (CONFIG_FILE.path !== null) process.env.ENVOY_CONFIG_FILE = CONFIG_FILE.path;
  */
 const timedDispatchClient = (ms: number, session: () => string = currentSessionID) =>
   sessionDispatchClient(CONFIG_FILE, process.cwd(), AbortSignal.timeout(ms), session)?.client;
+
+/**
+ * The warning for a request to take `what` out of the listener's registry that the listener's
+ * message bus did not answer (`isBusUnanswered`). The listener writes the record before it sets
+ * the filter of the session's consumer, and it gives that answer also when only the filter update
+ * met a NATS reconnect, so the record may already be without what the request named. The error
+ * logged beside the warning says whether NATS was reconnecting. A registration sets the
+ * consumer's filter to the topics it stores in the record (the listener's `registerPass`), so the
+ * session's next one brings the filter in line with the record either way.
+ */
+const busUnansweredRemoval = (what: string): string =>
+  `envoy: the listener's message bus did not answer a request to take ${what} out of the registry. ` +
+  "The registry may already be without them. " +
+  "The session's next registration sets its consumer's filter to the topics the registry holds.";
 
 export default function envoyExtension(pi: PiApi): void {
   logger.debug("extension instance loaded", { extension: import.meta.url });
@@ -2338,12 +2353,16 @@ export default function envoyExtension(pi: PiApi): void {
         relay: relay?.sessionID === sessionID ? relay.delivery : undefined,
         close: unfollow,
         unregister: async (topics) => {
-          await active?.client.unsubscribe({ sessionID, topics }).catch((error: unknown) =>
-            logger.warn("envoy: a subscription removal was not taken out of the registry", {
-              topics,
-              error: messageFor(error),
-            })
-          );
+          await active?.client
+            .unsubscribe({ sessionID, topics })
+            .catch((error: unknown) =>
+              logger.warn(
+                isBusUnanswered(error)
+                  ? busUnansweredRemoval("the topics of a subscription removal")
+                  : "envoy: a subscription removal was not taken out of the registry",
+                { topics, error: messageFor(error) }
+              )
+            );
         },
         followedChanged: ledgerFollowedChanged,
       }
@@ -3065,13 +3084,16 @@ export default function envoyExtension(pi: PiApi): void {
       for (const subject of subjects) unfollow(subject);
       const id = held === "" ? sessionID : held;
       if (subjects.length === 0 || id === "") return;
-      void active?.client.unsubscribe({ sessionID: id, topics: subjects }).catch((error: unknown) =>
-        logger.warn("envoy: a role's notice subjects were not taken out of the registry", {
-          topics: subjects,
-          sessionID: id,
-          error: messageFor(error),
-        })
-      );
+      void active?.client
+        .unsubscribe({ sessionID: id, topics: subjects })
+        .catch((error: unknown) =>
+          logger.warn(
+            isBusUnanswered(error)
+              ? busUnansweredRemoval("a role's notice subjects")
+              : "envoy: a role's notice subjects were not taken out of the registry",
+            { topics: subjects, sessionID: id, error: messageFor(error) }
+          )
+        );
     },
   });
 
@@ -3490,13 +3512,13 @@ export default function envoyExtension(pi: PiApi): void {
       : [];
     // A step of this pass, so a pass the host left behind unregisters nothing: the listener keeps
     // the retired topics until the pass the move queued reads the registry itself. The failure is
-    // this branch's to name: the step warns under the sentence it is handed.
+    // this branch's to name: the step warns under the sentences it is handed, one for a bus that
+    // did not answer and one for any other failure.
     if (retired.length > 0)
-      await handle.unregisterTopics(
-        sessionID,
-        retired,
-        "envoy: could not unregister a resumed controller's retired Slack topics"
-      );
+      await handle.unregisterTopics(sessionID, retired, {
+        failed: "envoy: could not unregister a resumed controller's retired Slack topics",
+        busUnanswered: busUnansweredRemoval("a resumed controller's retired Slack topics"),
+      });
     // The newest ledger state's topics (`rememberedTopics`), but a retired Slack topic. They are
     // followed again, so the registration that ends this pass carries them and the session's
     // consumer relays what the stream kept for them.

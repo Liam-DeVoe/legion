@@ -1409,6 +1409,15 @@ function response(body: unknown): Response {
   });
 }
 
+/** The listener's bus-outage body under `status`: with 503 it is the answer a request its message
+ *  bus did not answer gets (`isBusUnanswered`), and with any other status it is not. */
+function busOutageAnswer(status: number): Response {
+  return Response.json(
+    { error: "envoy: the message bus did not answer: bus: NATS is reconnecting" },
+    { status }
+  );
+}
+
 /**
  * Delivers one Dispatch comment card written by `actor` (a person by default) over NATS, then
  * drives the agent-initiated run it starts through its stop, against a Dispatch with no open asks
@@ -7270,6 +7279,67 @@ console.log(JSON.stringify(args));
     const left = await followedTopics(fixture.tools, context);
     expect(left).not.toContain(lane);
     expect(left).not.toContain(mention);
+  });
+
+  // A role's end takes its notice subjects out of the registry. The listener answers its
+  // bus-outage 503 also after it wrote the record, when only the filter update met a reconnect.
+  test("a role's notice subjects whose removal met the bus-outage 503 are warned as that outage, and any other failure as not taken out", async () => {
+    const notTakenOut = "envoy: a role's notice subjects were not taken out of the registry";
+    const rows = [
+      {
+        answer: () => busOutageAnswer(503),
+        warned:
+          "envoy: the listener's message bus did not answer a request to take a role's notice subjects out of the registry. The registry may already be without them. The session's next registration sets its consumer's filter to the topics the registry holds.",
+      },
+      { answer: () => busOutageAnswer(500), warned: notTakenOut },
+      {
+        answer: (): Response => {
+          throw new TypeError("fetch failed");
+        },
+        warned: notTakenOut,
+      },
+    ];
+    let lane = "";
+    let answer = () => response({});
+    globalThis.fetch = async (input, init) => {
+      const path = new URL(input.toString()).pathname;
+      const body = JSON.parse(init?.body?.toString() ?? "{}");
+      if (path === "/v1/roles/set") {
+        const topics = [`notifications.role.${body.role}`];
+        return response({ session_id: "ses_notice", machine_id: "test", dir: "/tmp", topics });
+      }
+      // The role's own topic is handed back in a request of its own, answered `{}`.
+      if (path === "/v1/interests/unsubscribe") {
+        return body.topics.includes(lane) ? answer() : response({});
+      }
+      return responseWithRegistration(input, init, {});
+    };
+    const warnings: string[] = [];
+    const stopSink = logger.registerLogSink((entry) => {
+      if (entry.level === "warn" && entry.message.includes("notice subjects")) {
+        warnings.push(entry.message);
+      }
+    });
+    try {
+      const { default: envoyExtension } = await import("./envoy.ts?notice-removal-unanswered");
+      const fixture = createPi();
+      envoyExtension(fixture.pi);
+      const context = sessionContext("ses_notice");
+      await fixture.handlers.get("session_start")?.({}, context);
+      for (const [index, row] of rows.entries()) {
+        const role = `notice-${index}`;
+        lane = `notifications.slack.T01.C${index}.mention`;
+        answer = row.answer;
+        await claimEnvoyRole("ses_notice", role, context);
+        await subscribeLegionNotice("ses_notice", lane, context, role);
+        // The role ends: its notice subject is closed and taken out of the registry.
+        await claimEnvoyRole("ses_notice", "notice-other", context);
+        await until(() => warnings.length > index, `the warning about ${role}'s notices`);
+        expect(warnings[index]).toBe(row.warned);
+      }
+    } finally {
+      stopSink();
+    }
   });
 
   test("a session that holds no controller role registers no controller notice lane", async () => {
@@ -21260,6 +21330,28 @@ describe("consumer delivery", () => {
     });
   }
 
+  /** A person's removal of `topic` from this session's subscriptions, through Dispatch `issue`. */
+  function removal(issue: string, topic: string): string {
+    const by = { kind: "user", id: "alice" };
+    return JSON.stringify({
+      event_id: `dispatch-${issue}`,
+      source: "dispatch",
+      source_event_id: issue,
+      topic: AGENT,
+      dedupe_key: `dispatch-${issue}`,
+      issued_at: 1,
+      payload_summary: `unsubscribed from ${issue}`,
+      trace_id: `trace-dispatch-${issue}`,
+      payload: JSON.stringify({
+        issue_key: issue,
+        type: "subscription.removed",
+        actor: by,
+        notify: true,
+        payload: { session_id: SESSION, by, topics: [topic] },
+      }),
+    });
+  }
+
   interface Registration {
     readonly topics: readonly string[];
     readonly delivery?: {
@@ -21314,6 +21406,8 @@ describe("consumer delivery", () => {
        *  does: the frame fails, and its third delivery is given up on, which is when the
        *  session is told what it was never shown (`@legion/envoy-client/consumer-delivery`). */
       readonly refuseCard?: (message: SentCard) => boolean;
+      /** Answers `POST /v1/interests/unsubscribe` (`{}` without it); a throw is no answer. */
+      readonly unsubscribe?: () => Response;
     } = {}
   ) {
     process.env.ENVOY_RESUBSCRIBE_DELAY_MS = "10";
@@ -21358,6 +21452,9 @@ describe("consumer delivery", () => {
             gap: options.gap === true && registrations.length === 1,
           }),
         });
+      }
+      if (url.pathname === "/v1/interests/unsubscribe" && options.unsubscribe !== undefined) {
+        return options.unsubscribe();
       }
       if (
         url.pathname.startsWith("/v1/interests/") &&
@@ -22178,24 +22275,7 @@ describe("consumer delivery", () => {
     expect(session.registrations.at(-1)?.topics).toContain(issueTopic);
     const followed = session.registrations.length;
 
-    const removal = JSON.stringify({
-      event_id: "dispatch-21",
-      source: "dispatch",
-      source_event_id: "21",
-      topic: AGENT,
-      dedupe_key: "dispatch-21",
-      issued_at: 1,
-      payload_summary: "unsubscribed from INFRA-9",
-      trace_id: "trace-dispatch-21",
-      payload: JSON.stringify({
-        issue_key: "INFRA-9",
-        type: "subscription.removed",
-        actor: { kind: "user", id: "alice" },
-        notify: true,
-        payload: { session_id: SESSION, by: { kind: "user", id: "alice" }, topics: [issueTopic] },
-      }),
-    });
-    session.relay(1, removal);
+    session.relay(1, removal("INFRA-9", issueTopic));
     await until(() => session.registrations.length > followed, "the registration without it");
     expect(session.registrations.at(-1)?.topics).not.toContain(issueTopic);
 
@@ -22203,6 +22283,50 @@ describe("consumer delivery", () => {
     const inbox = session.relay(2, late, { subject: issueSubject });
     await until(() => session.replies(inbox).includes("done"), "the unfollowed frame's done");
     expect(session.cards("evt-after-removal")).toHaveLength(0);
+  });
+
+  // The listener answers its bus-outage 503 also after it wrote the record, when only the filter
+  // update met a NATS reconnect.
+  test("a relayed removal that met the bus-outage 503 is warned as that outage, and any other failure as not taken out", async () => {
+    const notTakenOut = "envoy: a subscription removal was not taken out of the registry";
+    const rows = [
+      {
+        answer: () => busOutageAnswer(503),
+        warned:
+          "envoy: the listener's message bus did not answer a request to take the topics of a subscription removal out of the registry. The registry may already be without them. The session's next registration sets its consumer's filter to the topics the registry holds.",
+      },
+      { answer: () => busOutageAnswer(500), warned: notTakenOut },
+      {
+        answer: (): Response => {
+          throw new TypeError("fetch failed");
+        },
+        warned: notTakenOut,
+      },
+    ];
+    let answer = () => response({});
+    const warnings: string[] = [];
+    const stopSink = logger.registerLogSink((entry) => {
+      if (entry.level === "warn" && entry.message.includes("subscription removal")) {
+        warnings.push(entry.message);
+      }
+    });
+    try {
+      const session = await bootConsumer("consumer-removal-unanswered", {
+        unsubscribe: () => answer(),
+      });
+      for (const [index, row] of rows.entries()) {
+        const issue = `INFRA-3${index}`;
+        const topic = legacyDispatchIssueSubject(issue, ">");
+        await session.follow(topic);
+        await settle();
+        answer = row.answer;
+        session.relay(index + 1, removal(issue, topic));
+        await until(() => warnings.length > index, `the warning about ${issue}'s removal`);
+        expect(warnings[index]).toBe(row.warned);
+      }
+    } finally {
+      stopSink();
+    }
   });
 
   // A session behind on its inbox read a card stamped five hours earlier, took the stamp for the

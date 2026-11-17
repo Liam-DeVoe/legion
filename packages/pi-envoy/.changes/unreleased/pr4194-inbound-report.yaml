@@ -6,7 +6,11 @@ body: |-
   after the first accepted registration. Once a registration is accepted after a told outage, the
   session says once that its inbound is back: a card "Envoy inbound restored", which says that
   what the stream stored meanwhile arrives now, the UI note `envoy: inbound messages are back`,
-  and one info log line.
+  and one info log line. A removal from the listener's registry that the listener's message bus
+  did not answer is warned as that outage, with the words that the registry may already be
+  without those topics, where the warning said they were not taken out: a relayed subscription
+  removal, a role's notice subjects, a resumed controller's retired Slack topics, and a role's
+  hand-back.
 time: 2026-11-17T03:00:16Z
 custom:
     Issue: pr4194
