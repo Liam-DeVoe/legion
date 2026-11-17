@@ -12,7 +12,7 @@
  *
  * Every provider writes its own refusal text, and the host hands an extension the message the
  * provider left, not a code, so the texts below are matched as Oh My Pi writes them at the pinned
- * tag `v18.18.6-sami.20261115-031133`. The module reads its input as `unknown` and narrows it
+ * tag `v18.18.6-sami.20261117-013345`. The module reads its input as `unknown` and narrows it
  * field by field, as `./phase-stall` does: a host whose message shape differs falls through to
  * `clean` rather than throwing inside an event handler.
  */

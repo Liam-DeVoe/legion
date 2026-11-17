@@ -13,7 +13,7 @@ import type { Component } from "@oh-my-pi/pi-tui";
 
 /** A model as the host names it: the provider and the id a model selector resolves to
  * (`ExtensionModelQuery`, `packages/coding-agent/src/extensibility/extensions/types.ts:579-598` in
- * Oh My Pi at the pinned tag `v18.18.6-sami.20261115-031133`). */
+ * Oh My Pi at the pinned tag `v18.18.6-sami.20261117-013345`). */
 export interface HostModel {
   readonly provider: string;
   readonly id: string;
@@ -250,7 +250,7 @@ export interface AsyncJobDelivery {
  * the window they are measured against.
  *
  * Read out of the pinned binary (`.omp-pin`,
- * `github:cybermonklabs/oh-my-pi@18.18.6-sami.20261115-031133`), which builds the extension context
+ * `github:cybermonklabs/oh-my-pi@18.18.6-sami.20261117-013345`), which builds the extension context
  * with `getContextUsage: () => this.#d()` over a session method answering
  * `{tokens: usedTokens, contextWindow, percent: usedTokens / contextWindow * 100}`, and nothing
  * at all when it holds no context breakdown. `percent` is nullable because the same build
