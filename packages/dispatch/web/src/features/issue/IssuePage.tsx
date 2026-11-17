@@ -2,7 +2,7 @@ import { type ReactNode, useCallback, useLayoutEffect, useMemo, useRef, useState
 import { Link, Navigate, useLocation, useNavigate } from "react-router-dom";
 
 import { ApiError } from "../../api/client";
-import type { Artifact, IssuePriority } from "../../api/types";
+import type { ArtifactV2, IssuePriority } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import { tabButtonId } from "../../components/Tabs";
 import {
@@ -172,16 +172,16 @@ function RoleDocumentPanel({
   tab,
 }: {
   Tab: (props: {
-    artifact: Artifact | undefined;
+    artifact: ArtifactV2 | undefined;
     children?: ReactNode;
     issueKey: string;
   }) => ReactNode;
   activated: boolean;
   active: boolean;
-  artifact: Artifact | undefined;
+  artifact: ArtifactV2 | undefined;
   isClosed: boolean;
   issueKey: string;
-  onVersionChange: (artifact: Artifact, version: number | null) => void;
+  onVersionChange: (artifact: ArtifactV2, version: number | null) => void;
   tab: "verification" | "plan";
 }): ReactNode {
   return (
@@ -423,7 +423,7 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
   const issueState = stateForIssue(state.data, issue.data.key);
   const isClosed = issue.data.closed_at !== null;
   const issueKey = issue.data.key;
-  const selectDocumentVersion = (artifact: Artifact, version: number | null) =>
+  const selectDocumentVersion = (artifact: ArtifactV2, version: number | null) =>
     navigate(buildReferencePath(documentRoute(artifact, version ?? undefined)));
 
   return (

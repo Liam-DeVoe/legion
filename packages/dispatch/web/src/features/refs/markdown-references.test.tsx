@@ -7,11 +7,12 @@ import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { graphNode } from "../../__tests__/graph-fixture";
-import { ApiError, api } from "../../api/client";
-import type { GraphReferences, IssueReferenceSummary, ReferenceQuestions } from "../../api/types";
+import { ApiError, api, type WholeList } from "../../api/client";
+import type { IssueReadV2 } from "../../api/types";
 import { MarkdownBody } from "./MarkdownBody";
 import { MarkdownPreview } from "./MarkdownPreview";
 import { warmMarkdownRenderer } from "./markdown-engine";
+import { askRow, issueSummary, questionsRead, referencesRead } from "./reference-fixture";
 import { readTextReferences, type TextSource } from "./text-references";
 
 const origin = "https://dispatch.test";
@@ -35,14 +36,8 @@ afterEach(() => {
   testWindow.happyDOM.setURL(pageBefore);
 });
 
-function summaryOf(key: string): IssueReferenceSummary {
-  return {
-    documents: [],
-    key,
-    project: key.slice(0, key.lastIndexOf("-")),
-    status: "in_progress",
-    title: `Title of ${key}`,
-  };
+function summaryOf(key: string): IssueReadV2 {
+  return issueSummary({ key, status: "in_progress", title: `Title of ${key}` });
 }
 
 /**
@@ -59,7 +54,6 @@ function spyTitleReads(): () => void {
     spyOn(api, "getComment").mockRejectedValue(noRecord()),
     spyOn(api, "getMessage").mockRejectedValue(noRecord()),
     spyOn(api, "getProjectArtifact").mockRejectedValue(noRecord()),
-    spyOn(api, "getProjectDocumentSummary").mockRejectedValue(noRecord()),
   ];
   return () => {
     for (const spy of spies) spy.mockRestore();
@@ -68,15 +62,17 @@ function spyTitleReads(): () => void {
 
 /** The question map the route answers for that source, as `refs.QuestionMap` writes it: each
  *  question block of CORE-1's spec with the ask settled for it and that ask's address. */
-function questionsOf(questions: Readonly<Record<string, string>>): ReferenceQuestions {
-  return {
-    document: "spec-1",
-    questions: Object.entries(questions).map(([block, reference]) => ({
-      ask: reference.slice(reference.lastIndexOf("/") + 1),
-      block_id: block,
-      reference,
-    })),
-  };
+function questionsOf(questions: Readonly<Record<string, string>>): WholeList<"/api/v2/asks"> {
+  return questionsRead(
+    Object.entries(questions).map(([block, reference]) =>
+      askRow({
+        id: reference.slice(reference.lastIndexOf("/") + 1),
+        question_block_id: block,
+        ref: reference,
+      })
+    ),
+    "spec-1"
+  );
 }
 
 /** The graph read of a reference whose id is written short, as the server answers it: the one
@@ -85,7 +81,7 @@ function questionsOf(questions: Readonly<Record<string, string>>): ReferenceQues
 function prefixAnswer(
   reference: string,
   items: Readonly<Record<string, string>>
-): GraphReferences | undefined {
+): WholeList<"/api/v2/references"> | undefined {
   const matches = Object.entries(items).filter(([, whole]) =>
     whole.toLowerCase().startsWith(reference.toLowerCase())
   );
@@ -95,12 +91,11 @@ function prefixAnswer(
   }
   const [id, whole] = found;
   const block = whole.includes("#b-");
-  return {
-    edges: [],
-    node: block
+  return referencesRead(
+    block
       ? graphNode({ block_id: id, id: "spec-1", kind: "block", ref: whole })
-      : graphNode({ id, kind: "ask", ref: whole }),
-  };
+      : graphNode({ id, kind: "ask", ref: whole })
+  );
 }
 
 /** A query cache holding what the row says exists: each issue of `issues`, the asks that declare

@@ -7,33 +7,29 @@ import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { ApiError, api } from "../../api/client";
-import type { Artifact } from "../../api/types";
+import type { ArtifactV2 } from "../../api/types";
 import type { DocumentToolbar } from "../doc/ProofDocument";
 import { buildIssuePath } from "../refs/routes";
 import { ArtifactHeader } from "./ArtifactHeader";
 
-function document(overrides: Partial<Artifact> = {}): Artifact {
+function document(overrides: Partial<ArtifactV2> = {}): ArtifactV2 {
   return {
     created_at: "2026-11-10T00:00:00Z",
     created_by: { id: "alice", kind: "user" },
     id: "artifact-1",
     issue_key: "CORE-1",
     kind: "doc",
+    latest_version: 1,
+    latest_version_at: "2026-11-10T00:00:00Z",
+    latest_version_size: null,
     name: "Lauch notes",
     primary: false,
     project: "CORE",
     ref_key: "CORE-1/lauch-notes",
     session_id: null,
     slug: "lauch-notes",
-    versions: [
-      {
-        authors: [{ id: "alice", kind: "user" }],
-        created_at: "2026-11-10T00:00:00Z",
-        named: false,
-        number: 1,
-        summary: null,
-      },
-    ],
+    unsettled: null,
+    version_count: 1,
     ...overrides,
   };
 }
@@ -177,7 +173,7 @@ test("a refused correction shows the server's own sentence", async () => {
 // version the person was reading went with the document.
 test("the removal sends the delete and leaves the person on the gone document's address", async () => {
   const user = userEvent.setup();
-  let stored: Artifact[] = [document()];
+  let stored: ArtifactV2[] = [document()];
   const listArtifacts = spyOn(api, "listArtifacts").mockImplementation(() =>
     Promise.resolve(stored)
   );

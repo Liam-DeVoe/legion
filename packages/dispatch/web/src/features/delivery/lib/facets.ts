@@ -1,5 +1,5 @@
 // The delivery timeline's facets, as the page's URL and FacetPanel name them. Every facet, and the
-// search, is applied server-side (`GET /api/v1/delivery/timeline`, `api/delivery.go`), which also
+// search, is applied server-side (`GET /api/v2/delivery/timeline`, `api/delivery.go`), which also
 // answers each facet's counts, so this module holds only the shapes and labels the page shares:
 // the `Filters` the URL carries, the query parameter each facet is sent as, the placeholder values
 // a PR with no issue, priority, component or session reads as, and the display-only repository

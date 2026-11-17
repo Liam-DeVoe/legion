@@ -1,24 +1,39 @@
 import { afterEach, beforeEach, expect, type Mock, spyOn, test } from "bun:test";
 import { focusManager, type QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor } from "@testing-library/react";
+import { http } from "msw";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { installFakeLiveSockets } from "../../__tests__/live-socket-harness";
+import { answerRequests } from "../../__tests__/network";
 import { api, isRetryableQueryError } from "../../api/client";
 import { useEventFeed } from "../../api/event-feed";
 import { liveSocketFor } from "../../api/live-socket";
+import type { Result } from "../../api/paths";
 import { DispatchQueryClient, queryRetryDelay } from "../../api/query-client";
 import { refreshQueries } from "../../api/query-refresh";
-import type { CredentialPendingResponse } from "../../api/types";
 import { Inbox } from "./Inbox";
 
-// A Dispatch with no secrets broker answers the credential-request list with `null`, an answer that
-// holds until the page reloads or the event feed has a gap (the server reads its broker setting at
-// boot). The QueryClient here is main.tsx's own. Every credential-list call after the first is held
-// open, so a refetch, had one started, would leave the list loading and the empty state off the
-// screen.
+// A Dispatch with no secrets broker refuses the credential-request list `404 FEATURE_OFF`, an
+// answer that holds until the page reloads or the event feed has a gap (the server reads its
+// broker setting at boot), and which the client reads as `null`: no broker, not a failure. The
+// QueryClient here is main.tsx's own. Every credential-list request after the ones a test queues
+// is held open, so a refetch, had one started, would leave the list loading and the empty state
+// off the screen.
 const never = () => Promise.withResolvers<never>().promise;
+
+/** What a Dispatch with no secrets broker answers on every credential route. */
+function noBroker(): Response {
+  return Response.json(
+    { code: "FEATURE_OFF", error: "agent-secrets is not configured on this Dispatch" },
+    { status: 404 }
+  );
+}
+
+/** What `GET /api/v2/credential-requests` answers, one entry per request in order; a request
+ *  past the last is held open. */
+let credentialAnswers: (() => Response | Promise<Response>)[];
 
 let whoAmI: Mock<typeof api.whoAmI>;
 let getInbox: Mock<typeof api.getInbox>;
@@ -32,9 +47,12 @@ beforeEach(() => {
     login: "alice",
   });
   getInbox = spyOn(api, "getInbox").mockResolvedValue([]);
-  getCredentialPending = spyOn(api, "getCredentialPending")
-    .mockResolvedValueOnce(null)
-    .mockImplementation(never);
+  credentialAnswers = [noBroker];
+  answerRequests(
+    http.get("/api/v2/credential-requests", () => (credentialAnswers.shift() ?? never)())
+  );
+  // Counted, not answered: the client's own read goes to the route above.
+  getCredentialPending = spyOn(api, "getCredentialPending");
   // A listed request names what the broker can still do; this Dispatch has none, so it offers
   // the machine-code page to nobody.
   getCredentialCapabilities = spyOn(api, "getCredentialCapabilities").mockResolvedValue({
@@ -86,6 +104,8 @@ test("a Dispatch with no broker is asked once per load, even when that answer be
   const view = render(shell(productionQueryClient(), <Inbox />));
   try {
     await waitFor(() => expect(getCredentialPending).toHaveBeenCalledTimes(1));
+    // The client reads the refusal as no broker rather than as a failure.
+    expect(await getCredentialPending.mock.results[0]?.value).toBeNull();
     await act(async () => {
       await Promise.resolve();
     });
@@ -145,8 +165,8 @@ test("with no broker, a gap in the event feed asks the list again once, and a fo
   const sockets = installFakeLiveSockets();
   // The server restarted with a broker: the second answer lists a request, and is held until the
   // whole-cache refresh the gap starts has run.
-  const relisted = Promise.withResolvers<CredentialPendingResponse>();
-  getCredentialPending.mockReturnValueOnce(relisted.promise);
+  const relisted = Promise.withResolvers<Result<"/api/v2/credential-requests", "get">>();
+  credentialAnswers.push(async () => Response.json(await relisted.promise));
   const queryClient = productionQueryClient();
   const view = render(
     shell(
@@ -202,7 +222,7 @@ test("with no broker, a gap in the event feed asks the list again once, and a fo
 
     await act(async () => {
       relisted.resolve({
-        pending: [
+        items: [
           {
             approve_url: "https://secrets.example.com/approve/record-1",
             identifiers: ["DEMO_API_KEY"],
@@ -212,6 +232,9 @@ test("with no broker, a gap in the event feed asks the list again once, and a fo
             session: { enrollment: null, request: null },
           },
         ],
+        limit: 50,
+        offset: 0,
+        total: 1,
       });
     });
     expect(await screen.findByRole("link", { name: /Secret request.*DEMO_API_KEY/s })).toBeTruthy();

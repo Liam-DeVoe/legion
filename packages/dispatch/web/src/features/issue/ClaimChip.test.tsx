@@ -64,14 +64,17 @@ function header(
   liveness: ClaimHolderLiveness = {}
 ): { unmount: () => void; user: UserEvent } {
   const details: IssueDetails = {
-    route_status: null,
-    route_holder: null,
-    route_status_reason: null,
-    holder_state: null,
-    last_seen: null,
-    takeable_at: null,
     ...issue,
-    ...liveness,
+    // The issue read carries the holder's liveness under `reach`, beside the route's.
+    reach: {
+      holder_state: null,
+      last_seen: null,
+      route_holder: null,
+      route_status: null,
+      route_status_reason: null,
+      takeable_at: null,
+      ...liveness,
+    },
     artifacts: [],
     children: [],
     design_gates: [],
@@ -114,7 +117,7 @@ function header(
   };
 }
 
-/** One live session, as `GET /api/v1/agents` lists it. */
+/** One live session, as `GET /api/v2/agents` lists it. */
 function running(sessionID: string, title: string): Agent {
   return {
     session_id: sessionID,

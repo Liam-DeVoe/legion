@@ -1,7 +1,7 @@
 import { type ReactNode, useCallback, useState } from "react";
 import { Link } from "react-router-dom";
 
-import type { Artifact, InboxRow, MyReplyRow } from "../../api/types";
+import type { ArtifactV2, InboxRow, MyReplyRow } from "../../api/types";
 import {
   linkHoverText,
   linkText,
@@ -33,7 +33,7 @@ function openPagePath(ask: InboxRow, sectionBlockId: string | undefined): string
   if (issueKey !== null) {
     return buildIssuePath({ key: issueKey, kind: "issue" });
   }
-  if (ask.document === undefined) {
+  if (ask.document === null) {
     return undefined;
   }
   const document = buildProjectPath({
@@ -50,7 +50,7 @@ function openPagePath(ask: InboxRow, sectionBlockId: string | undefined): string
 export interface ReadingPaneHeadProps {
   /** The document the column shows, once it is read; undefined for a question in no document and
    *  while the read is out. The approval actions are this document's. */
-  artifact: Artifact | undefined;
+  artifact: ArtifactV2 | undefined;
   ask: InboxRow;
   /** The reader's own answer or review landed. */
   onAnswered: (askId: string) => void;
@@ -99,7 +99,7 @@ export function ReadingPaneHead({
   const onAssignLive = useCallback((_askId: string, live: boolean) => setAssignLive(live), []);
   const name = controlName(ask, undefined);
   const page = openPagePath(ask, sectionBlockId);
-  const reference = itemRoute("ask", ask, ask.document);
+  const reference = itemRoute("ask", ask, ask.document ?? undefined);
   const approval = ask.kind === "approval" ? ask.approval : undefined;
   // The chip draws Approve only while the document is reviewable and not already approved; where
   // it draws none, the head says which approval this request follows instead.
@@ -127,7 +127,7 @@ export function ReadingPaneHead({
         askId={ask.id}
         label={name}
         onLive={onSnoozeLive}
-        snoozedUntil={isSnoozed(ask) ? ask.snoozed_until : null}
+        snoozedUntil={isSnoozed(ask) ? ask.mark.snoozed_until : null}
       />
       {reference === undefined ? null : <CopyRefButton route={reference} />}
       {onSkipToAnswer === undefined ? null : (

@@ -24,7 +24,7 @@ function renderPage() {
 function stubUnrelatedQueries() {
   return {
     getDeliverySettings: spyOn(api, "getDeliverySettings").mockResolvedValue(null),
-    getSignIns: spyOn(api, "getSignIns").mockResolvedValue({ signins: [] }),
+    getSignIns: spyOn(api, "getSignIns").mockResolvedValue([]),
     listAgentTokens: spyOn(api, "listAgentTokens").mockResolvedValue([]),
     listArchitectureSources: spyOn(api, "listArchitectureSources").mockResolvedValue([]),
     listProjectDefaultAssignees: spyOn(api, "listProjectDefaultAssignees").mockResolvedValue([]),
@@ -54,29 +54,25 @@ test("hides the Live grants section on a Dispatch with no secrets broker", async
 test("lists live grants once credential requests are configured, and Revoke is one plain POST", async () => {
   const user = userEvent.setup();
   const unrelated = stubUnrelatedQueries();
-  const getCredentialPending = spyOn(api, "getCredentialPending").mockResolvedValue({
-    pending: [],
-  });
-  const getCredentialGrants = spyOn(api, "getCredentialGrants").mockResolvedValue({
-    grants: [
-      {
-        approver: "sami@example.com",
-        created_at: "2026-09-30T00:00:00Z",
-        decided_by: "sami@example.com",
-        enrollment: {
-          kind: "session",
-          operator: "sami@example.com",
-          runtime_id: "box-1",
-          slot: null,
-        },
-        expires_at: "2026-09-30T01:00:00Z",
-        grant_id: "grant-1",
-        granted: "approval",
-        names: ["DEEL_API_KEY"],
-        record_id: "rec-1",
+  const getCredentialPending = spyOn(api, "getCredentialPending").mockResolvedValue([]);
+  const getCredentialGrants = spyOn(api, "getCredentialGrants").mockResolvedValue([
+    {
+      approver: "sami@example.com",
+      created_at: "2026-09-30T00:00:00Z",
+      decided_by: "sami@example.com",
+      enrollment: {
+        kind: "session",
+        operator: "sami@example.com",
+        runtime_id: "box-1",
+        slot: null,
       },
-    ],
-  });
+      expires_at: "2026-09-30T01:00:00Z",
+      grant_id: "grant-1",
+      granted: "approval",
+      names: ["DEEL_API_KEY"],
+      record_id: "rec-1",
+    },
+  ]);
   const revokeCredentialGrant = spyOn(api, "revokeCredentialGrant").mockResolvedValue(undefined);
 
   try {
@@ -102,41 +98,37 @@ test("lists live grants once credential requests are configured, and Revoke is o
 // policy without asking, or on the approval of a login it names, which can be another person's.
 test("names how each grant was granted: automatically, or approved by whom", async () => {
   const unrelated = stubUnrelatedQueries();
-  const getCredentialPending = spyOn(api, "getCredentialPending").mockResolvedValue({
-    pending: [],
-  });
+  const getCredentialPending = spyOn(api, "getCredentialPending").mockResolvedValue([]);
   const enrollment = {
     kind: "session",
     operator: "sami@example.com",
     runtime_id: "example-host-devbox:4242:1",
     slot: null,
   };
-  const getCredentialGrants = spyOn(api, "getCredentialGrants").mockResolvedValue({
-    grants: [
-      {
-        approver: "mallory@example.com",
-        created_at: "2026-09-30T00:00:00Z",
-        decided_by: "mallory@example.com",
-        enrollment,
-        expires_at: "2026-09-30T01:00:00Z",
-        grant_id: "grant-1",
-        granted: "approval",
-        names: ["DEEL_API_KEY"],
-        record_id: "rec-1",
-      },
-      {
-        approver: null,
-        created_at: "2026-09-30T00:00:00Z",
-        decided_by: null,
-        enrollment,
-        expires_at: "2026-09-30T01:00:00Z",
-        grant_id: "grant-2",
-        granted: "automatic",
-        names: ["GWS_READ_TOKEN"],
-        record_id: null,
-      },
-    ],
-  });
+  const getCredentialGrants = spyOn(api, "getCredentialGrants").mockResolvedValue([
+    {
+      approver: "mallory@example.com",
+      created_at: "2026-09-30T00:00:00Z",
+      decided_by: "mallory@example.com",
+      enrollment,
+      expires_at: "2026-09-30T01:00:00Z",
+      grant_id: "grant-1",
+      granted: "approval",
+      names: ["DEEL_API_KEY"],
+      record_id: "rec-1",
+    },
+    {
+      approver: null,
+      created_at: "2026-09-30T00:00:00Z",
+      decided_by: null,
+      enrollment,
+      expires_at: "2026-09-30T01:00:00Z",
+      grant_id: "grant-2",
+      granted: "automatic",
+      names: ["GWS_READ_TOKEN"],
+      record_id: null,
+    },
+  ]);
 
   try {
     renderPage();
@@ -159,9 +151,7 @@ test("names how each grant was granted: automatically, or approved by whom", asy
 // grant on an enrollment with no slot names none.
 test("two grants on one pod read apart by their slots", async () => {
   const unrelated = stubUnrelatedQueries();
-  const getCredentialPending = spyOn(api, "getCredentialPending").mockResolvedValue({
-    pending: [],
-  });
+  const getCredentialPending = spyOn(api, "getCredentialPending").mockResolvedValue([]);
   const grant = (grantId: string, slot: string | null) => ({
     approver: "sami@example.com",
     created_at: "2026-09-30T00:00:00Z",
@@ -173,13 +163,11 @@ test("two grants on one pod read apart by their slots", async () => {
     names: ["DEEL_API_KEY"],
     record_id: `rec-${grantId}`,
   });
-  const getCredentialGrants = spyOn(api, "getCredentialGrants").mockResolvedValue({
-    grants: [
-      grant("grant-1", "implementer-g1"),
-      grant("grant-2", "reviewer-g1"),
-      grant("grant-3", null),
-    ],
-  });
+  const getCredentialGrants = spyOn(api, "getCredentialGrants").mockResolvedValue([
+    grant("grant-1", "implementer-g1"),
+    grant("grant-2", "reviewer-g1"),
+    grant("grant-3", null),
+  ]);
 
   try {
     renderPage();
@@ -202,9 +190,7 @@ test("two grants on one pod read apart by their slots", async () => {
 // row says so rather than a time read from null (1970), and a grant with an expiry still shows it.
 test("a grant with no expiry says it ends when its session ends", async () => {
   const unrelated = stubUnrelatedQueries();
-  const getCredentialPending = spyOn(api, "getCredentialPending").mockResolvedValue({
-    pending: [],
-  });
+  const getCredentialPending = spyOn(api, "getCredentialPending").mockResolvedValue([]);
   const grant = (grantId: string, expiresAt: string | null) => ({
     approver: null,
     created_at: "2026-09-30T00:00:00Z",
@@ -216,9 +202,10 @@ test("a grant with no expiry says it ends when its session ends", async () => {
     names: [grantId === "grant-1" ? "DEEL_API_KEY" : "GWS_READ_TOKEN"],
     record_id: null,
   });
-  const getCredentialGrants = spyOn(api, "getCredentialGrants").mockResolvedValue({
-    grants: [grant("grant-1", null), grant("grant-2", "2026-09-30T01:00:00Z")],
-  });
+  const getCredentialGrants = spyOn(api, "getCredentialGrants").mockResolvedValue([
+    grant("grant-1", null),
+    grant("grant-2", "2026-09-30T01:00:00Z"),
+  ]);
 
   try {
     renderPage();

@@ -4,7 +4,6 @@ import {
   AnswerNotKeptError,
   ApiError,
   busyRetryAfterMs,
-  goesUnderKey,
   isKeyCommitted,
   isKeyInFlight,
   isUnauthorized,
@@ -79,16 +78,15 @@ export function keyExpired(key: string, now: number): boolean {
 }
 
 /**
- * Whether `key` is spent by `now`: a request has already gone out under it, that request is one
- * that goes under its key (`goesUnderKey`), and Dispatch has forgotten the key (`keyExpired`).
- * Another request under a spent key would be a second write of the person's action rather than
- * a repeat of the first, which is why no attempt may go out under one.
+ * Whether `key` is spent by `now`: a request has already gone out under it - every write goes
+ * under its key, a `PUT` and a `DELETE` as well as a `POST` and a `PATCH` - and Dispatch has
+ * forgotten the key (`keyExpired`). Another request under a spent key would be a second write of
+ * the person's action rather than a repeat of the first, which is why no attempt may go out under
+ * one.
  *
  * `carried` is what the key has carried: the method of an attempt that went out under it, or
  * `null` where none has. A key that has carried nothing is never spent however old it is -
- * Dispatch has never seen it, so there is nothing under it a request now would repeat - and a
- * key whose request was a `PUT` or a `DELETE` is never spent either, since neither sends a key
- * and making one again is the same change however late.
+ * Dispatch has never seen it, so there is nothing under it a request now would repeat.
  *
  * This is the one place that question is answered, and both askers are told the same fact: the
  * store keeps what each key has carried (`Writes` `#carried`, kept with the write as
@@ -98,7 +96,7 @@ export function keyExpired(key: string, now: number): boolean {
  * two cannot answer the same write differently.
  */
 export function keySpent(carried: WriteMethod | null, key: string, now: number): boolean {
-  return carried !== null && goesUnderKey(carried) && keyExpired(key, now);
+  return carried !== null && keyExpired(key, now);
 }
 
 /** A write that stopped trying before Dispatch confirmed it: the reader pressed Stop trying. Not
@@ -297,8 +295,7 @@ export class OneRequestPerWriteError extends Error {
  * attempt would be a new write to Dispatch rather than a repeat of the first. The key is spent
  * by what it has carried: `carried`, the method that went out under it before this call, and
  * then the request of this call's own first attempt, told as it goes out. A key that has
- * carried nothing stops nothing, however old it is, and neither does one a `PUT` or a `DELETE`
- * went under, since those send no key at all.
+ * carried nothing stops nothing, however old it is.
  */
 export async function writeUnderKey<T>(
   attempt: (bounds: WriteBounds) => Promise<T>,

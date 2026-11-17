@@ -23,7 +23,7 @@ const lostRoutes = new Set<string>();
 /** Whether the live socket was lost since it last opened. */
 let socketLost = false;
 
-/** The route of a request: its method and its path, `PATCH /api/v1/issues/CORE-1`. A `GET` of a
+/** The route of a request: its method and its path, `PATCH /api/v2/issues/CORE-1`. A `GET` of a
  *  path is not a `PATCH` of it: a proxy can drop one and pass the other. */
 export function routeOf(method: string | undefined, path: string): string {
   return `${(method ?? "GET").toUpperCase()} ${path}`;

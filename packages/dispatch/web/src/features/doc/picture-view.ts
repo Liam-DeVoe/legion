@@ -2,7 +2,6 @@ import { DOMSerializer, type Node as ProseMirrorNode } from "@milkdown/kit/prose
 import { TextSelection } from "@milkdown/kit/prose/state";
 import type { EditorView, NodeView, NodeViewConstructor } from "@milkdown/kit/prose/view";
 
-import { artifactVersionPath } from "../../api/client";
 import { pictureClassName } from "../refs/DispatchPicture";
 import { isPlainClick, openPictureLightbox } from "../refs/picture-lightbox";
 import {
@@ -122,12 +121,10 @@ export function pictureView(
     img.setAttribute("src", src);
   };
   let stopWatching = () => {};
-  if (named === undefined) {
-    showLink();
-  } else if (named.version !== undefined) {
-    showPicture(artifactVersionPath(named.owner, named.slug, named.version));
-  } else {
-    showLink();
+  showLink();
+  if (named !== undefined) {
+    // `/api/v2` addresses a version's bytes by the document's id, which the reference names by
+    // its owner and slug, so a pinned version too is drawn once the document's summary is read.
     stopWatching = watchPicture(route, (src) => {
       if (src === shown) return;
       if (src === undefined) showLink();

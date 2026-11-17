@@ -2,12 +2,15 @@ import { ApiError, WRITE_METHODS, type WriteMethod, type WriteRequest } from "..
 import { keySpent, SendExpiredError, SendInterruptedError, SendStoppedError } from "./keyed-write";
 
 /**
- * Where every write to Dispatch waits out a reload (`write-store.ts`). Every `POST` and `PATCH`
- * names itself to Dispatch by a key (`Idempotency-Key`), so making it again is safe - Dispatch
- * answers a repeat of the key with what the first request did - and a `PUT` or a `DELETE` is the
- * same write however often it is made, so the page keeps each write in `sessionStorage`, which a
- * reload keeps and closing the tab drops, from its press until Dispatch answers it, and the store
- * resumes it on load under its key. Each write is one entry, `dispatch.write:<key>`, in one
+ * Where every write to Dispatch waits out a reload (`write-store.ts`). Every write names itself
+ * to Dispatch by a key (`Idempotency-Key`), so making it again is safe - Dispatch answers a
+ * repeat of the key with what the first request did - so the page keeps each write in
+ * `sessionStorage`, which a reload keeps and closing the tab drops, from its press until Dispatch
+ * answers it, and the store resumes it on load under its key, to the path it was kept with. A
+ * write a build of the page older than `/api/v2` kept holds an `/api/v1` path, and goes there:
+ * Dispatch's record of its key holds that route, so the same key sent to the route's `/api/v2`
+ * successor would be refused `422 KEY_REUSED`, and a new key would make a write that landed twice.
+ * Each write is one entry, `dispatch.write:<key>`, in one
  * versioned format for every kind (`KeptWrite`): its key, its kind and how it is shown, the login
  * of the person who pressed it and when, the target its line is ordered on, where it stood and its
  * refusal, the request as it last went out, what its key has carried, and its kind's own record.
@@ -231,8 +234,8 @@ export function keptRefusal(error: Error): KeptRefusal {
  *  with the request it is planned as - and `now` the time it is read back: a write that ended
  *  without Dispatch's verdict under a key Dispatch has forgotten since comes back expired, since
  *  a Retry of it is now a new write rather than the same one asked again. Which writes those are
- *  is `keySpent`'s to say, the same question the retry loop asks before each attempt: a `PUT` or
- *  a `DELETE` sends no key, and a key nothing went out under has never been seen by Dispatch. */
+ *  is `keySpent`'s to say, the same question the retry loop asks before each attempt: a key
+ *  nothing went out under has never been seen by Dispatch. */
 export function refusalFrom(
   kept: KeptRefusal,
   key: string,

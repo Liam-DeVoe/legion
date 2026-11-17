@@ -1,7 +1,7 @@
 import { type ReactNode, useId, useState } from "react";
 
 import type { ArtifactOwner } from "../../api/client";
-import type { Ask } from "../../api/types";
+import type { AskV2 } from "../../api/types";
 import { linkHoverText, linkText } from "../../theme/classes";
 import type { DwellRef } from "../shell/useDwell";
 import { composerFirst } from "../threads/thread-layout";
@@ -9,7 +9,7 @@ import type { ThreadOrder } from "../threads/thread-order";
 import { AskReplyComposer, AskThread, type AskThreadQuery, type CreateReply } from "./AskThread";
 
 interface AskThreadDisclosureProps {
-  ask: Ask;
+  ask: AskV2;
   thread: AskThreadQuery;
   createReply?: CreateReply;
   embedded?: boolean;
@@ -58,7 +58,7 @@ export function AskThreadDisclosure({
     );
   }
 
-  const replyCount = (thread.data?.replies ?? []).length;
+  const replyCount = (thread.data?.thread.replies ?? []).length;
   if (replyCount === 0 && ask.state !== "answered") return null;
 
   // The composer follows the control that reveals it, so the next Tab from the control lands in

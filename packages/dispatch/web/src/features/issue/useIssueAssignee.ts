@@ -52,10 +52,10 @@ export function useIssueAssignee(issueKey: string): IssueAssigneeWrite {
       assignee ??
       queryClient
         .getQueryData(projectDefaultAssigneesQuery().queryKey)
-        ?.find((entry) => entry.project === project)?.assignee;
+        ?.find((entry) => entry.key === project)?.default_assignee;
     queryClient.setQueriesData<InboxRow[]>({ queryKey: inboxKey }, (current) =>
       current?.map((row) => {
-        if (row.issue_key !== issueKey || row.issue === undefined) return row;
+        if (row.issue_key !== issueKey || row.issue === null) return row;
         const moved = { ...row, issue: { ...row.issue, assignee } };
         if (row.asked_of !== null && row.asked_of !== undefined) return moved;
         return person === undefined ? moved : { ...moved, waiting_on_person: person };

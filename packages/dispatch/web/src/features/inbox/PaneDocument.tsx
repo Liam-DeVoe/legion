@@ -13,7 +13,7 @@ import { type ReactNode, type RefObject, useCallback, useEffect, useRef, useStat
 
 import { api } from "../../api/client";
 import { issueQuery, whoAmIQuery } from "../../api/queries";
-import type { Artifact, AuthenticatedUser } from "../../api/types";
+import type { ArtifactV2, AuthenticatedUser } from "../../api/types";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { focusVisibleRing, quoteAccentBorder } from "../../theme/classes";
 import { BLOCK_ID_ATTRIBUTE } from "../doc/block-id";
@@ -165,7 +165,7 @@ export function PaneFrame({
  *  document itself, where the section bar stands, and whether it could be placed at all. */
 interface DocumentAtBlock {
   /** The document, once the read lands. */
-  readonly artifact: Artifact | undefined;
+  readonly artifact: ArtifactV2 | undefined;
   /** Whether the editor has drawn the block the column is opened at; undefined while it has
    *  drawn no block at all, and false once it has drawn a document holding no such block. */
   readonly blockFound: boolean | undefined;
@@ -382,7 +382,7 @@ function PaneDocument({
   user,
 }: {
   anchoredThread: ProofDocumentProps["anchoredThread"];
-  artifact: Artifact;
+  artifact: ArtifactV2;
   document: DocumentAtBlock;
   onAskAnswered: (askId: string) => void;
   user: AuthenticatedUser;

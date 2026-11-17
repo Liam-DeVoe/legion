@@ -4,57 +4,96 @@ import { QueryClient, QueryObserver } from "@tanstack/react-query";
 import { api } from "../api/client";
 import { mergeIssue } from "../api/issue-cache";
 import { issueQuery } from "../api/queries";
-import type { IssueDetails } from "../api/types";
+import type { IssueDetails, IssueReachV2 } from "../api/types";
 import { issue as fixture } from "../features/margin/margin-fixture";
 
 function cachedAfterPatch(before: IssueDetails, patch: Partial<IssueDetails>): IssueDetails {
   const queryClient = new QueryClient();
   queryClient.setQueryData(["issue", before.key], before);
   // A PATCH answers the `Issue` fields alone; the route's reach is never among them.
-  const {
-    route_status: _status,
-    route_holder: _holder,
-    route_status_reason: _reason,
-    ...response
-  } = { ...before, ...patch };
+  const { reach: _reach, ...response } = { ...before, ...patch };
   mergeIssue(queryClient, response);
   const cached = queryClient.getQueryData<IssueDetails>(["issue", before.key]);
   if (cached === undefined) throw new Error("the merge dropped the cached issue");
   return cached;
 }
 
-const unheld: IssueDetails = { ...fixture, route: "role:sre", route_status: "no_holder" };
+/** Where the issue's route reaches, as `include=reach` answers it: nothing known but `fields`. */
+function reachOf(fields: Partial<IssueReachV2>): IssueReachV2 {
+  return {
+    holder_state: null,
+    last_seen: null,
+    route_holder: null,
+    route_status: null,
+    route_status_reason: null,
+    takeable_at: null,
+    ...fields,
+  };
+}
+
+const unheld: IssueDetails = {
+  ...fixture,
+  reach: reachOf({ route_status: "no_holder" }),
+  route: "role:sre",
+};
 
 test("a PATCH that moves the route drops the old route's status instead of wearing it", () => {
   const cached = cachedAfterPatch(unheld, { route: "role:platform-po" });
   expect(cached.route).toBe("role:platform-po");
-  expect(cached.route_status).toBeNull();
-  expect(cached.route_holder).toBeNull();
+  expect(cached.reach.route_status).toBeNull();
+  expect(cached.reach.route_holder).toBeNull();
 });
 
 test("a PATCH that leaves the route alone keeps its status until the next read", () => {
   const cached = cachedAfterPatch(unheld, { title: "Renamed" });
   expect(cached.title).toBe("Renamed");
-  expect(cached.route_status).toBe("no_holder");
+  expect(cached.reach.route_status).toBe("no_holder");
 });
 
 const refilling: IssueDetails = {
   ...fixture,
+  reach: reachOf({ route_status: "unknown", route_status_reason: "refilling" }),
   route: "role:sre",
-  route_status: "unknown",
-  route_status_reason: "refilling",
 };
 
 test("a PATCH that moves the route drops why the old route was unknown", () => {
   const cached = cachedAfterPatch(refilling, { route: "role:platform-po" });
-  expect(cached.route_status).toBeNull();
-  expect(cached.route_status_reason).toBeNull();
+  expect(cached.reach.route_status).toBeNull();
+  expect(cached.reach.route_status_reason).toBeNull();
 });
 
 test("a PATCH that leaves the route alone keeps why it is unknown", () => {
   const cached = cachedAfterPatch(refilling, { title: "Renamed" });
-  expect(cached.route_status).toBe("unknown");
-  expect(cached.route_status_reason).toBe("refilling");
+  expect(cached.reach.route_status).toBe("unknown");
+  expect(cached.reach.route_status_reason).toBe("refilling");
+});
+
+// `reach` holds two things: where the route reaches (`route_status`, `route_holder`,
+// `route_status_reason`) and the liveness of the session holding the issue's claim
+// (`holder_state`, `last_seen`, `takeable_at`; `issueReachV2` is `IssueRouteReach` beside
+// `IssueClaimLiveness`). A PATCH that moves the route says nothing of the claim, so the claim
+// chip keeps its holder's liveness while the old route's reach goes.
+const held: IssueDetails = {
+  ...fixture,
+  reach: reachOf({
+    holder_state: "unresponsive",
+    last_seen: "2026-10-01T00:00:00Z",
+    route_holder: "session-sre",
+    route_status: "live",
+    takeable_at: "2026-10-01T00:10:00Z",
+  }),
+  route: "role:sre",
+};
+
+test("a PATCH that moves the route drops the old route's reach and keeps the claim's liveness", () => {
+  expect(cachedAfterPatch(held, { route: "role:platform-po" }).reach).toEqual(
+    reachOf({
+      holder_state: "unresponsive",
+      last_seen: "2026-10-01T00:00:00Z",
+      takeable_at: "2026-10-01T00:10:00Z",
+    })
+  );
+  expect(cachedAfterPatch(held, { title: "Renamed" }).reach).toEqual(held.reach);
 });
 
 // W35. A read already out when a write changed the issue - a slow GET started before a PATCH - can

@@ -7,7 +7,8 @@ import { MemoryRouter } from "react-router-dom";
 import { ApiError, api } from "../../api/client";
 import { prependEventToLog } from "../../api/event-feed";
 import type { Query } from "../../api/paths";
-import type { Agent, DispatchEvent, UserIssueState, UserState } from "../../api/types";
+import type { Agent, DispatchEvent, Marks, MarkV2 } from "../../api/types";
+import { markOf } from "../agents/marks-fixture";
 import { writesOf } from "../writes/write-store";
 import { ActivityTab } from "./ActivityTab";
 
@@ -48,11 +49,17 @@ function newQueryClient(): QueryClient {
   });
 }
 
-function issueState(lastReadSeq = 0): UserIssueState {
-  return { dismissed: [], last_read_seq: lastReadSeq, pinned: false, seq: 0 };
+/** CORE-1's mark, read through `lastReadSeq`, with no item pinned. */
+function issueState(lastReadSeq = 0): MarkV2 {
+  return markOf("issue", "CORE-1", {
+    last_read_seq: lastReadSeq,
+    pinned: false,
+    pinned_items: [],
+    seq: 0,
+  });
 }
 
-function renderTab(state: UserState, queryClient: QueryClient = newQueryClient()) {
+function renderTab(state: Marks, queryClient: QueryClient = newQueryClient()) {
   return render(
     <MemoryRouter>
       <QueryClientProvider client={queryClient}>
@@ -73,9 +80,7 @@ test("ActivityTab lists the issue's events under its own label and writes no rea
     message(1),
   ]);
   const putIssueState = spyOn(api, "putIssueState");
-  const view = renderTab({
-    "CORE-1": { dismissed: [], last_read_seq: 2, pinned: false, seq: 0 },
-  });
+  const view = renderTab({ "CORE-1": issueState(2) });
 
   try {
     const list = await screen.findByRole("list", { name: "Issue activity" });
@@ -92,7 +97,7 @@ test("ActivityTab lists the issue's events under its own label and writes no rea
 test("ActivityTab's Load older fetches the page before the oldest event it holds", async () => {
   const user = userEvent.setup();
   const firstPage = Array.from({ length: 200 }, (_, index) => message(200 - index));
-  const calls: Query<"/api/v1/issues/{key}/events", "get">[] = [];
+  const calls: Query<"/api/v2/issues/{key}/events", "get">[] = [];
   const getIssueEvents = spyOn(api, "getIssueEvents").mockImplementation(async (_key, options) => {
     calls.push(options ?? {});
     return options?.before === undefined ? firstPage : [message(0)];
@@ -104,7 +109,7 @@ test("ActivityTab's Load older fetches the page before the oldest event it holds
     await user.click(await screen.findByRole("button", { name: "Load older" }));
 
     await waitFor(() => expect(calls).toHaveLength(2));
-    expect(calls[1]).toEqual({ before: 1, limit: 200 });
+    expect(calls[1]).toEqual({ before: "1", limit: 200 });
     await waitFor(() =>
       expect(
         within(screen.getByRole("list", { name: "Issue activity" })).getAllByText("sent a message")
@@ -116,7 +121,7 @@ test("ActivityTab's Load older fetches the page before the oldest event it holds
   }
 });
 
-/** One live session, as `GET /api/v1/agents` lists it. */
+/** One live session, as `GET /api/v2/agents` lists it. */
 function running(sessionId: string, title: string): Agent {
   return {
     capabilities: [],
@@ -176,12 +181,12 @@ test("a pin the server refuses shows refused in the store, and Retry re-sends it
   try {
     api.getMyState = async () => ({ "CORE-1": issueState(9) });
     api.putIssueState = async (_issueKey, input) => {
-      const dismissed = input.dismissed ?? [];
-      writes.push(dismissed);
+      const pinned = input.pinned_items ?? [];
+      writes.push(pinned);
       if (refuse) {
         throw new ApiError(409, { code: "PIN_REFUSED", error: "refused" });
       }
-      return { ...issueState(9), dismissed, seq: input.seq ?? 1 };
+      return { ...issueState(9), pinned_items: pinned, seq: input.seq ?? 1 };
     };
     unmount = renderTab({ "CORE-1": issueState(9) }, queryClient).unmount;
     await user.click(await screen.findByRole("button", { name: "Pin" }));

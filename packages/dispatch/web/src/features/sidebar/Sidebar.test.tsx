@@ -8,8 +8,9 @@ import { MemoryRouter, useLocation, useNavigate } from "react-router-dom";
 import { answerAgentStates } from "../../__tests__/send-answers";
 import { api } from "../../api/client";
 import { whoAmIQuery } from "../../api/queries";
-import type { Agent, UserAgentStates } from "../../api/types";
+import type { Agent, Marks } from "../../api/types";
 import { liveViewsOf } from "../agent-view/live-views";
+import { marksOf } from "../agents/marks-fixture";
 import { Sidebar } from "./Sidebar";
 
 /**
@@ -66,7 +67,7 @@ function renderRail({
   entries = ["/"],
   listed = [agent(PLANNER, "Planner"), agent(REVIEWER, "Reviewer"), agent(TESTER, "Tester")],
 }: {
-  agentState?: UserAgentStates;
+  agentState?: Marks;
   entries?: string[];
   listed?: Agent[];
 } = {}): { putAgentState: Mock<typeof api.putAgentState>; queryClient: QueryClient } {
@@ -78,7 +79,10 @@ function renderRail({
     // priority, so its entry carries no number and these rows are about the agents alone.
     spyOn(api, "listPriorities").mockResolvedValue({
       empty: "No priority is live now, so the list is empty.",
-      priorities: [],
+      items: [],
+      limit: 50,
+      offset: 0,
+      total: 0,
       priority_work_parked: { by_priority: {}, count: 0, issues: [] },
       work_under_no_priority: { by_project: {}, count: 0, issues: [] },
     }),
@@ -123,12 +127,12 @@ function rowTexts(): (string | null)[] {
   return pinnedRows().map((row) => row.textContent);
 }
 
-const pins: UserAgentStates = {
+const pins: Marks = marksOf("agent", {
   // Keyed in neither pin order nor name order: the rail orders by `pinned_at`.
   [TESTER]: { pinned_at: "2026-09-14T00:00:03Z", unread_replies: 0 },
   [PLANNER]: { pinned_at: "2026-09-14T00:00:01Z", unread_replies: 2 },
   [REVIEWER]: { pinned_at: "2026-09-14T00:00:02Z", unread_replies: 0 },
-};
+});
 
 // Exactly the person's pins, in the order they pinned them, each carrying what R1 asks of a row:
 // its running state, its name and its unread count. A session Dispatch lists but they have not
@@ -136,7 +140,7 @@ const pins: UserAgentStates = {
 test("the rail lists the pinned agents, oldest pin first, with their state and unread count", async () => {
   const unpinned = agent("other-session", "Nobody pinned me");
   renderRail({
-    agentState: { ...pins, "other-session": { unread_replies: 5 } },
+    agentState: { ...pins, ...marksOf("agent", { "other-session": { unread_replies: 5 } }) },
     listed: [
       agent(PLANNER, "Planner"),
       agent(REVIEWER, "Reviewer"),
@@ -161,7 +165,9 @@ test("the rail lists the pinned agents, oldest pin first, with their state and u
 // is no longer running says so rather than reading as live.
 test("a pinned session Dispatch no longer lists reads as not running", async () => {
   renderRail({
-    agentState: { [PLANNER]: { pinned_at: "2026-09-14T00:00:01Z", unread_replies: 0 } },
+    agentState: marksOf("agent", {
+      [PLANNER]: { pinned_at: "2026-09-14T00:00:01Z", unread_replies: 0 },
+    }),
     listed: [agent(REVIEWER, "Reviewer")],
   });
 

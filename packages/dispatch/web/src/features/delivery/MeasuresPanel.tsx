@@ -1,7 +1,7 @@
 // The prototype's web/src/components/DoraPanel.tsx, ported as it is: the six KPI cards, the
 // headline strip, and the "Definitions & alternatives" fold with its eight definition cards and
 // per-day table. Every number, every target and whether each is met come from
-// GET /api/v1/delivery/measures; nothing is computed here. Three differences, each from LEGION-567's
+// GET /api/v2/delivery/measures; nothing is computed here. Three differences, each from LEGION-567's
 // slice 2 plan: the change-failure-rate card says flags arrive with flag confirmation while the
 // server stores none; the P0 card links each issue inside Dispatch and dates its count by the
 // response's computed_at; and the cards and the strip lay themselves out for the panel's own

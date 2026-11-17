@@ -23,10 +23,10 @@ import { isSnoozed } from "./snooze";
  *  waits on, which `needsYou` below adds. An agent's progress note keeps its ask waiting on the
  *  agent, whoever replied last; a snooze keeps its ask off every "needs you" surface - the nav
  *  badge, the sidebar, this banner - until it returns, because deferring it is the viewer
- *  saying it does not need them now. A row that carries no snooze at all (an issue header's
+ *  saying it does not need them now. A row that carries no mark at all (an issue header's
  *  `open_asks`) is never deferred. */
 export function waitingOnHuman<
-  T extends Pick<InboxRow, "waiting_on"> & Partial<Pick<InboxRow, "snoozed_until">>,
+  T extends Pick<InboxRow, "waiting_on"> & Partial<Pick<InboxRow, "mark">>,
 >(asks: readonly T[]): T[] {
   return asks.filter((ask) => ask.waiting_on === "human" && !isSnoozed(ask));
 }

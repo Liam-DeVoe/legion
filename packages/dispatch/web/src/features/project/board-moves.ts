@@ -3,7 +3,7 @@ import { useCallback, useState } from "react";
 
 import { ApiError, issuePatchRequest } from "../../api/client";
 import { boardMoveMutationKey } from "../../api/queries";
-import type { IssueSummary, UpdateIssueInput } from "../../api/types";
+import type { IssueSummary, PatchIssueV2Input } from "../../api/types";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { type IssueStatus, moveIssue, moveIssueToLane, type PriorityLane } from "./board-model";
 import { projectIssuesQueryKey } from "./issue-filters";
@@ -54,7 +54,7 @@ export function useBoardMoves(
   // the header's status, its fields, a components save.
   const patch = useKeyedWrite({
     inline: true,
-    label: ({ key }: { input: UpdateIssueInput; key: string }) => `${key} moved on the board`,
+    label: ({ key }: { input: PatchIssueV2Input; key: string }) => `${key} moved on the board`,
     target: ({ key }) => `issue:${key}`,
     request: ({ input, key }) => issuePatchRequest(key, input),
     mutationKey: boardMoveMutationKey(project),
@@ -67,7 +67,7 @@ export function useBoardMoves(
   const commit = useCallback(
     async (
       key: string,
-      moved: { issues: IssueSummary[]; input: UpdateIssueInput } | undefined,
+      moved: { issues: IssueSummary[]; input: PatchIssueV2Input } | undefined,
       previous: IssueSummary[]
     ) => {
       if (moved === undefined) {

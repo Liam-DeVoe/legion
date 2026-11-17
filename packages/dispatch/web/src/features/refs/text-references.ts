@@ -69,9 +69,9 @@ export interface TextReferenceNeeds {
 /** What the text belongs to, as the reference graph knows it: the record whose text it is, by
  *  the kind the server indexes that record under and its id - a document version's own text
  *  (`artifact`), an ask's question, answer or resolution reason, a comment, an issue message.
- *  Which document a `#id` in it resolves against is the server's to say
- *  (`refs.ScopeOf`, read through `GET /api/v1/references/questions`): the document itself, the
- *  document an ask or a comment is written on or anchored to, an issue message's spec. Text
+ *  Which document a `#id` in it resolves against is the server's to say (`refs.ScopeOf`,
+ *  read through `GET /api/v2/asks?source=<kind>:<id>`): the document itself, the document an
+ *  ask or a comment is written on or anchored to, an issue message's spec. Text
  *  that is no record's - an agent's conversation, a broadcast, a search hit - names no source
  *  and gets no `#id` links, which is right: a `#id` there declares nothing. */
 export interface TextSource {

@@ -2,12 +2,12 @@
  * The Inbox's **Mark all read**: what one press sends, what it changes on the page before the
  * server answers, and what comes back when the server refuses it.
  *
- * One press is one `POST /api/v1/me/inbox/read` (`markInboxReadRequest`), carrying the read mark
- * the list was read at (`as_of`) and the narrowing the list is under, so the server marks exactly
- * the threads the reader is looking at: no row that arrived after that read is swallowed, and no
- * row the Filter hid is marked. The press is applied here first - the rows are drawn as read and
- * every unread count drops - because the reader pressed it, and is taken back whole when the
- * request fails, which an old server with no such route is one way of doing.
+ * One press is one `PATCH /api/v2/me/marks` (`marksRequest`) whose `filter` is the narrowing the
+ * list is under and whose `set` is the read mark the list was read at (`as_of`), so the server
+ * marks exactly the threads the reader is looking at: no row that arrived after that read is
+ * swallowed, and no row the Filter hid is marked. The press is applied here first - the rows are
+ * drawn as read and every unread count drops - because the reader pressed it, and is taken back
+ * whole when the request fails, which an old server with no such route is one way of doing.
  *
  * It takes no row out of the list. A thread stays in the Inbox, read or not, until it is
  * dismissed (`useInboxDismiss.ts`), as an email stays until it is archived.
@@ -16,34 +16,36 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 
-import { markInboxReadRequest } from "../../api/client";
+import { marksRequest, type WholeList } from "../../api/client";
 import {
   inboxThreadsQuery,
   myRepliesCountQuery,
   myRepliesKey,
   userAgentStateQuery,
 } from "../../api/queries";
-import type {
-  InboxReadRequest,
-  InboxReadResponse,
-  MyRepliesResponse,
-  MyReplyRow,
-} from "../../api/types";
+import type { MarkUpdatesV2, MyReplyRow, MyThreadsV2 } from "../../api/types";
 import { compareTimestamps } from "../../lib/timestamps";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import type { InboxFilters } from "./InboxBar";
 import { type InboxListRow, rowId } from "./list-row";
-import { inboxWriteScope, inWriteScope } from "./write-scope";
+import { type InboxWriteScope, inboxWriteScope, inWriteScope } from "./write-scope";
 
 /** What the page says when the server refused the press and nothing was marked. */
 export const MARK_ALL_REFUSED_TEXT = "Nothing was marked read.";
+
+/** What one press sends: the list's own narrowing as the filter, and the read mark it sets on
+ *  every thread under it. */
+export interface MarkAllReadBody {
+  readonly filter: InboxWriteScope;
+  readonly set: { readonly read_through: string };
+}
 
 /**
  * The body one press sends: the read mark the list was read at, and the list's own narrowing
  * (`inboxWriteScope`).
  */
-export function markAllReadBody(filters: InboxFilters, readThrough: string): InboxReadRequest {
-  return { ...inboxWriteScope(filters), read_through: readThrough };
+export function markAllReadBody(filters: InboxFilters, readThrough: string): MarkAllReadBody {
+  return { filter: inboxWriteScope(filters), set: { read_through: readThrough } };
 }
 
 /**
@@ -52,12 +54,10 @@ export function markAllReadBody(filters: InboxFilters, readThrough: string): Inb
  * stays unread - the reader has not seen that write - and the list's narrowing decides the rest
  * (`inWriteScope`).
  */
-export function marksThread(thread: MyReplyRow, body: InboxReadRequest): boolean {
+export function marksThread(thread: MyReplyRow, body: MarkAllReadBody): boolean {
   if (!thread.unread) return false;
-  const through = body.read_through;
-  if (through === undefined || through === null) return false;
-  if (compareTimestamps(thread.reply.created_at, through) > 0) return false;
-  return inWriteScope(thread, body);
+  if (compareTimestamps(thread.reply.created_at, body.set.read_through) > 0) return false;
+  return inWriteScope(thread, body.filter);
 }
 
 /** A thread row as a read mark leaves it: read, with nothing unread in it. A Reply row's mark
@@ -73,15 +73,15 @@ export function readRow(thread: MyReplyRow, readThrough: string): MyReplyRow {
 /** The list as the press leaves it: every row it marked drawn as read, and not one of them taken
  *  out of the list. A read thread is still in the Inbox - only a dismiss takes it out - so the
  *  rows stay where the reader can see what their press did. */
-export function applyMarkAll(
-  answer: MyRepliesResponse,
+export function applyMarkAll<T extends Pick<MyThreadsV2, "items">>(
+  answer: T,
   marked: ReadonlySet<string>,
   readThrough: string
-): MyRepliesResponse {
+): T {
   if (marked.size === 0) return answer;
   return {
     ...answer,
-    rows: (answer.rows ?? []).map((row) =>
+    items: (answer.items ?? []).map((row) =>
       marked.has(rowId({ kind: "thread", thread: row })) ? readRow(row, readThrough) : row
     ),
   };
@@ -90,7 +90,7 @@ export function applyMarkAll(
 /** What the press rolls back to: the two reads it wrote, as they stood before it. */
 interface MarkAllRollback {
   readonly count: number | undefined;
-  readonly threads: MyRepliesResponse | undefined;
+  readonly threads: WholeList<"/api/v2/me/threads"> | undefined;
 }
 
 export interface MarkAllRead {
@@ -140,7 +140,7 @@ export function useMarkAllRead({
     body !== undefined &&
     rows.some((row) => row.kind === "thread" && marksThread(row.thread, body));
 
-  const write = useKeyedWrite<InboxReadResponse, InboxReadRequest, MarkAllRollback>({
+  const write = useKeyedWrite<MarkUpdatesV2, MarkAllReadBody, MarkAllRollback>({
     inline: true,
     label: () => "Inbox marked read",
     onError: (_error, _input, rollback) => {
@@ -151,16 +151,15 @@ export function useMarkAllRead({
     },
     onMutate: (input) => {
       setRefused(false);
-      const threads = queryClient.getQueryData<MyRepliesResponse>(threadsKey);
+      const threads = queryClient.getQueryData(threadsKey);
       const count = queryClient.getQueryData<number>(countKey);
       const marked = new Set(
-        (threads?.rows ?? [])
+        (threads?.items ?? [])
           .filter((thread) => marksThread(thread, input))
           .map((thread) => rowId({ kind: "thread", thread }))
       );
-      const through = input.read_through;
-      if (threads !== undefined && through !== undefined && through !== null) {
-        queryClient.setQueryData(threadsKey, applyMarkAll(threads, marked, through));
+      if (threads !== undefined) {
+        queryClient.setQueryData(threadsKey, applyMarkAll(threads, marked, input.set.read_through));
       }
       // The count every badge shares drops by what this press marks, clamped at zero: an
       // unfiltered press marks every unread row and reads zero, and a filtered one takes away
@@ -176,7 +175,7 @@ export function useMarkAllRead({
       void queryClient.invalidateQueries({ queryKey: myRepliesKey });
       void queryClient.invalidateQueries({ queryKey: userAgentStateQuery().queryKey });
     },
-    request: (input) => markInboxReadRequest(input),
+    request: (input) => marksRequest(input),
     target: () => "inbox:read",
   });
 

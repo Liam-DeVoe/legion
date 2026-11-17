@@ -1,6 +1,6 @@
 import { type RefObject, useEffect, useMemo, useRef } from "react";
 
-import type { Artifact } from "../../api/types";
+import type { ArtifactV2 } from "../../api/types";
 import { COMPACT_VIEWPORT_QUERY, useMediaQuery } from "../shell/useDialog";
 import type { MarginComposer } from "./CommentsTab";
 import { scrollMarginTo, useCardHold } from "./useCardHold";
@@ -23,7 +23,7 @@ interface UseMarginListenersOptions {
   setTab: (tab: MarginTab) => void;
   sheetExpanded: boolean;
   tab: MarginTab;
-  visibleArtifact: Artifact | undefined;
+  visibleArtifact: ArtifactV2 | undefined;
 }
 
 export function useMarginListeners({

@@ -6,52 +6,16 @@ import { MemoryRouter } from "react-router-dom";
 
 import { graphNode } from "../../__tests__/graph-fixture";
 import { ApiError, api } from "../../api/client";
-import type { AskRead, IssueReferenceSummary, MessageRead } from "../../api/types";
+import type { MessageReadV2 } from "../../api/types";
 import { MarkdownBody } from "./MarkdownBody";
+import { askWithThread, issueSummary, referencesRead } from "./reference-fixture";
 
 const ASK_ID = "2a7f1c90-1f4e-4a2b-9c3d-5e6f70819a2b";
 
-const summary: IssueReferenceSummary = {
-  documents: [],
-  key: "CORE-1",
-  project: "CORE",
-  status: "in_progress",
-  title: "Fix the thing",
-};
+const summary = issueSummary({ key: "CORE-1", status: "in_progress", title: "Fix the thing" });
 
-function askRead(id: string, question: string): AskRead {
-  return {
-    answers: [],
-    ask: {
-      anchor: null,
-      answer: null,
-      artifact_id: null,
-      asked_of: null,
-      asked_of_at: null,
-      asked_of_by: null,
-      author: { id: "planner", kind: "session" },
-      block_id: null,
-      created_at: "2026-01-01T00:00:00Z",
-      edited_at: null,
-      id,
-      issue_key: "CORE-1",
-      kind: "question",
-      multiple: false,
-      opened_event_id: 1,
-      options: [],
-      question,
-      state: "open",
-      urgency: "med",
-    },
-    claimant: null,
-    edits: [],
-    followers: [],
-    replies: [],
-    route: null,
-    route_holder: null,
-    route_status: null,
-    route_status_reason: null,
-  };
+function askRead(id: string, question: string) {
+  return askWithThread({ created_at: "2026-01-01T00:00:00Z", id, question });
 }
 
 function withQueries(queryClient: QueryClient, children: ReactNode): ReactNode {
@@ -90,18 +54,19 @@ test("an issue reference reads as its key then its title", async () => {
 });
 
 test("a message reference reads as the headline of its body, as a comment's does", async () => {
-  const message: MessageRead = {
-    message: {
-      author: { id: "planner", kind: "session" },
-      body: "## Shipped it\n\nThe deploy went out at noon.",
-      created_at: "2026-01-01T00:00:00Z",
-      deliveries: [],
-      id: "4c9f3e12-3b60-4c4d-9e5f-70819a2b3c4d",
-      in_reply_to: null,
-      issue_key: "CORE-1",
-    },
+  const message: MessageReadV2 = {
+    author: { id: "planner", kind: "session" },
+    body: "## Shipped it\n\nThe deploy went out at noon.",
+    broadcast_id: null,
+    created_at: "2026-01-01T00:00:00Z",
+    deliveries: [],
+    id: "4c9f3e12-3b60-4c4d-9e5f-70819a2b3c4d",
+    in_reply_to: null,
+    issue_key: "CORE-1",
     replies: [],
-  } as unknown as MessageRead;
+    reply_block: null,
+    target: null,
+  };
   spies.push(spyOn(api, "getMessage").mockResolvedValue(message));
   const view = render(
     withQueries(
@@ -139,10 +104,9 @@ test("a reference whose target is missing reads as the words its author wrote", 
 
 test("a reference whose id is a prefix reads the item under the whole id, caching nothing under the prefix", async () => {
   const whole = `dispatch://CORE-1/ask/${ASK_ID}`;
-  const getReferences = spyOn(api, "getReferences").mockResolvedValue({
-    edges: [],
-    node: graphNode({ id: ASK_ID, kind: "ask", ref: whole }),
-  });
+  const getReferences = spyOn(api, "getReferences").mockResolvedValue(
+    referencesRead(graphNode({ id: ASK_ID, kind: "ask", ref: whole }))
+  );
   const getAsk = spyOn(api, "getAsk").mockResolvedValue(askRead(ASK_ID, "Ship it?"));
   spies.push(getReferences, getAsk);
   const queryClient = freshClient();

@@ -131,9 +131,9 @@ export function filterOptions(
 
 /** Every issue key an OPEN ask by each session names, keyed by session id - the search box's
  *  "issue key" field. `rows` is the inbox read the page already fetches for its `needsYou`
- *  counts (`GET /api/v1/inbox`, open asks only: `inbox.go`'s `where a.state = 'open'`), so this
- *  costs no network call of its own, and a session's answered or resolved asks name no issue
- *  here. */
+ *  counts (`GET /api/v2/asks`, whose state defaults to open: `inbox.go`'s `where a.state =
+ *  'open'`), so this costs no network call of its own, and a session's answered or resolved
+ *  asks name no issue here. */
 export function sessionIssueKeys(
   rows: readonly InboxRow[]
 ): ReadonlyMap<string, readonly string[]> {

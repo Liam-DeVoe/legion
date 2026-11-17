@@ -1,6 +1,6 @@
 import { type ReactNode, type RefObject, useRef } from "react";
 
-import type { Artifact, Ask, DispatchEvent } from "../../api/types";
+import type { ArtifactV2, AskV2, DispatchEvent } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import {
   activeTabIndicatorBorder,
@@ -65,13 +65,13 @@ export interface MarginSheetModel {
     /** The decisions beside the spec's blocks, in the spec's order; none beside any other
      *  document. */
     decisions: readonly DecisionMarginItem[];
-    historicalAsks: Ask[];
+    historicalAsks: AskV2[];
     marginRef: RefObject<HTMLElement | null>;
     isClosed: boolean;
     issueError: boolean;
     owner: MarginOwner | undefined;
     issuePending: boolean;
-    needsYou: Ask[];
+    needsYou: AskV2[];
     onSelectCard: (id: string, blockID?: string) => void;
     openAskCount: number;
     pendingActionIds: ReadonlySet<string>;
@@ -83,7 +83,7 @@ export interface MarginSheetModel {
     foldedAskCount: number;
     threads: Thread[];
     viewerLogin: string;
-    visibleArtifact: Artifact | undefined;
+    visibleArtifact: ArtifactV2 | undefined;
   };
   placement: {
     blockPlacements: ReadonlyMap<string, MarkPlacement>;

@@ -4,7 +4,7 @@ import { myRepliesOwnerQuery, whoAmIQuery } from "../../api/queries";
 import type { MyReplyAgentRow, MyReplyThreadRow } from "../../api/types";
 import type { RepliesOwner } from "./useMarkThreadRead";
 
-/** One unread thread row for `threadId`, as `GET /api/v1/me/replies` answers it: a Reply row,
+/** One unread thread row for `threadId`, as `GET /api/v2/me/threads` answers it: a Reply row,
  *  read through a mark older than its reply, at a version of its own - not 0, so a test cannot
  *  pass on a missing field. An Agent row is a shape of its own, which the tests that need one
  *  build themselves. */
@@ -89,9 +89,9 @@ export function seedUnread(
   });
   queryClient.setQueryData(myRepliesOwnerQuery(owner).queryKey, {
     as_of: "2026-10-12T00:00:00Z",
+    items: threadIds.map((id) => replyRow(id)),
     limit: 200,
     offset: 0,
-    rows: threadIds.map((id) => replyRow(id)),
     total: threadIds.length,
   });
 }

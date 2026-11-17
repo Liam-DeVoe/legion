@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { Link } from "react-router-dom";
 
-import type { Ask } from "../../api/types";
+import type { AskV2 } from "../../api/types";
 import {
   askBlockPill,
   badgeBlocking,
@@ -27,7 +27,7 @@ const PILL_CLASS = "rounded-full px-2 py-0.5 text-[10px] font-semibold tracking-
 
 export interface AskBlockCardProps {
   /** The indexed ask row for this block, once the server has created it. */
-  ask: Ask | undefined;
+  ask: AskV2 | undefined;
   /** The block stands in text no server reads - a comment, ask or message body - so nothing
    *  ever activates it: a malformed one is not told to fix its text to re-activate. */
   detached?: boolean;

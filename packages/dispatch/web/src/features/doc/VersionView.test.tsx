@@ -7,7 +7,7 @@ import { MemoryRouter } from "react-router-dom";
 
 import { fakeDocumentRuntime, markedText } from "../../__tests__/document-runtime";
 import { realClock, tick } from "../../__tests__/fake-clock";
-import type { AuthenticatedUser, DisplayTree } from "../../api/types";
+import type { AuthenticatedUser, DisplayTree, Version } from "../../api/types";
 import { loadedEngine, warmMarkdownRenderer } from "../refs/markdown-engine";
 import { type ChangeBaseline, changeMarksAgainst } from "./change-marks";
 import type { CreateEditor, EditorHandle } from "./editor";
@@ -279,6 +279,70 @@ test("VersionView draws a version whose answer carried no reading from its markd
     expect(editors[0]?.documentJSON).toBeUndefined();
     expect(within(view.container).queryByText("Could not load this document version.")).toBeNull();
     expect(within(view.container).getByRole("heading").textContent).toMatch(/^Version 1 · /);
+  } finally {
+    view.unmount();
+  }
+});
+
+// A plan, a Verification document or a decisions document uploaded as a file before a Markdown
+// upload made it a document keeps that file as an earlier version, whose answer is the file's
+// bytes. The view shows it as a file - its type, its size, the SHA-256 its entry in the version
+// list carries, and the link that downloads it - where it said the version could not be loaded.
+test("VersionView shows a document's version that holds a file as that file", async () => {
+  const runtime = fakeDocumentRuntime();
+  const queryClient = createQueryClient();
+  queryClient.setQueryData<AuthenticatedUser>(["whoami"], signedIn);
+  // A file version's answer, as `api.getArtifactVersion` gives it for bytes.
+  queryClient.setQueryData(["artifact", "artifact-1", "version", 1], {
+    blob: new Blob(["- [ ] ship it"], { type: "text/plain" }),
+    mime: "text/plain",
+    version: 1,
+  });
+  queryClient.setQueryData<Version[]>(
+    ["artifact", "artifact-1", "versions"],
+    [
+      {
+        authors: [{ id: "alice", kind: "user" }],
+        created_at: "2026-09-09T00:00:00Z",
+        mime: "text/plain",
+        named: false,
+        number: 1,
+        sha256: "plan-file-sha",
+        size: 13,
+        summary: null,
+      },
+    ]
+  );
+  const view = render(
+    <MemoryRouter>
+      <QueryClientProvider client={queryClient}>
+        <DocumentRuntime.Provider value={runtime.runtime}>
+          <VersionView
+            artifactId="artifact-1"
+            asks={[]}
+            createdAt="2026-09-09T00:00:00Z"
+            highlight={undefined}
+            owner={undefined}
+            version={1}
+          />
+        </DocumentRuntime.Provider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+
+  try {
+    const shown = await within(view.container).findByRole("region", {
+      name: "Document version 1",
+    });
+    expect(within(shown).getByRole("heading").textContent).toMatch(/^Version 1 · /);
+    expect(shown.textContent).toContain("This version is a file, not document text.");
+    expect(shown.textContent).toContain("text/plain");
+    expect(shown.textContent).toContain("13 B");
+    expect(await within(shown).findByText("plan-file-sha")).toBeTruthy();
+    expect(
+      within(shown).getByRole("link", { name: "Download version 1" }).getAttribute("href")
+    ).toBe("/api/v2/artifacts/artifact-1/versions/1?download=true");
+    expect(runtime.editors).toHaveLength(0);
   } finally {
     view.unmount();
   }

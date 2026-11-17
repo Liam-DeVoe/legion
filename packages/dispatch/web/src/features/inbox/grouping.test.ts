@@ -3,7 +3,7 @@ import { expect, test } from "bun:test";
 import type { InboxRow, MyReplyThreadRow } from "../../api/types";
 import { agentRow, replyRow } from "../threads/replies-fixture";
 import { dimensionValue, filterCounts, group, inFieldFilter, sortRows } from "./grouping";
-import { issueAsk } from "./inbox-fixture";
+import { issueAsk, withSnooze } from "./inbox-fixture";
 import type { InboxListRow } from "./list-row";
 
 const viewer = "alice";
@@ -112,9 +112,9 @@ test("Waiting on bands by whose turn it is, and a thread waits on the reader", (
 });
 
 test("None is one unheaded band, and a snoozed ask folds into Later under every grouping", () => {
-  const rows = [
+  const rows: InboxListRow[] = [
     ask({ id: "open" }),
-    ask({ id: "deferred", snoozed_until: "2026-10-13T00:00:00Z" }),
+    { ask: withSnooze(issueAsk({ id: "deferred" }), "2026-10-13T00:00:00Z"), kind: "ask" },
     thread({ thread_id: "t1" }),
   ];
   for (const by of ["none", "priority", "waiting-on", "type"] as const) {
@@ -129,7 +129,8 @@ test("None is one unheaded band, and a snoozed ask folds into Later under every 
   expect(ungrouped[0]?.label).toBeUndefined();
   expect(ungrouped[0]?.rows.map(rowKey)).toEqual(["open", "t1"]);
   // A snooze whose moment has passed is an ordinary row again.
-  const returned = group([ask({ id: "back", snoozed_until: "2026-10-11T00:00:00Z" })], "none", {
+  const back = withSnooze(issueAsk({ id: "back" }), "2026-10-11T00:00:00Z");
+  const returned = group([{ ask: back, kind: "ask" }], "none", {
     now,
     titles,
     viewer,

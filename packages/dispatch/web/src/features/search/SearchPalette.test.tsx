@@ -15,9 +15,10 @@ import { Link, MemoryRouter, useLocation, useNavigate } from "react-router-dom";
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
-import type { IssueReferenceSummary, SearchResponse, SearchResult } from "../../api/types";
+import type { SearchResult, SearchResultsV2 } from "../../api/types";
 import { issue as issueFixture, specArtifact } from "../margin/margin-fixture";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
+import { issueSummary } from "../refs/reference-fixture";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { appKeymap } from "../shell/keymap";
 import { ANSWER_PREVIEW_CHARS } from "./AskHitStatus";
@@ -90,13 +91,7 @@ let getIssueSummary: Mock<typeof api.getIssueSummary>;
 
 beforeEach(() => {
   getIssueSummary = spyOn(api, "getIssueSummary").mockImplementation((key) =>
-    Promise.resolve({
-      documents: [],
-      key,
-      project: key.split("-")[0] ?? "",
-      status: "todo",
-      title: `Instrument ${key}`,
-    } satisfies IssueReferenceSummary)
+    Promise.resolve(issueSummary({ key, status: "todo", title: `Instrument ${key}` }))
   );
 });
 
@@ -581,7 +576,7 @@ test("a refetch that re-ranks the hits leaves the highlight on the hit the reade
 function bothTiers(
   words: SearchResult[],
   fused: SearchResult[]
-): (query: string, options?: { keywords_only?: boolean }) => Promise<SearchResponse> {
+): (query: string, options?: { keywords_only?: boolean }) => Promise<SearchResultsV2> {
   return (_query, options = {}) =>
     Promise.resolve(searchAnswer(options.keywords_only === true ? words : fused));
 }
@@ -751,7 +746,7 @@ test("while the search is in flight no action found inside its label is highligh
   const ran: string[] = [];
   const unregister = registerClose(ran);
   const hit = issueHit("LEGION-3");
-  const answer = Promise.withResolvers<SearchResponse>();
+  const answer = Promise.withResolvers<SearchResultsV2>();
   const search = spyOn(api, "search").mockReturnValue(answer.promise);
   const view = renderPaletteHost();
 
@@ -818,7 +813,7 @@ test("an arrow pressed before the search answers reaches no action found inside 
   const ran: string[] = [];
   const unregister = registerClose(ran);
   const hit = issueHit("LEGION-3");
-  const answer = Promise.withResolvers<SearchResponse>();
+  const answer = Promise.withResolvers<SearchResultsV2>();
   const search = spyOn(api, "search").mockReturnValue(answer.promise);
   const view = renderPaletteHost();
 
@@ -891,7 +886,7 @@ test("while the search is out the arrows walk only the actions the query starts,
     { id: "triage", keys: [], label: "Issue triage", run: () => ran.push("triage") },
   ]);
   const hit = issueHit("LEGION-3");
-  const answer = Promise.withResolvers<SearchResponse>();
+  const answer = Promise.withResolvers<SearchResultsV2>();
   const search = spyOn(api, "search").mockReturnValue(answer.promise);
   const view = renderPaletteHost();
   const [report, triage] = [
@@ -968,7 +963,7 @@ test("a background refetch keeps the actions the query starts and the hits walka
   const view = renderPaletteHost();
   const report = "search-option-action-global-report";
   const refetchHeld = async (calls: number) => {
-    const answer = Promise.withResolvers<SearchResponse>();
+    const answer = Promise.withResolvers<SearchResultsV2>();
     search.mockReturnValue(answer.promise);
     act(() => {
       void view.queryClient.refetchQueries();

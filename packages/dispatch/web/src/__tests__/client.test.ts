@@ -18,6 +18,8 @@ import {
   RequestTimeoutError,
   UnreadableAnswerError,
   type UploadImplementation,
+  WRITE_METHODS,
+  type WriteMethod,
 } from "../api/client";
 import { QUERY_RETRY_DELAY_MS, queryRetryDelay } from "../api/query-client";
 import { FIRST_BACKOFF_MS, writeUnderKey } from "../features/writes/keyed-write";
@@ -29,8 +31,14 @@ interface RecordedRequest {
   path: string;
 }
 
+/** A list route's page holding no row, as `/api/v2` answers one. A test's Dispatch answers it to
+ *  every request it names no answer for: a list read reads it whole, and any other read or write
+ *  takes it as an answer whose members the test does not read. */
+const EMPTY_PAGE = { items: [], limit: 50, offset: 0, total: 0 };
+
 function stubFetch(
-  handler: (request: RecordedRequest) => Response | Promise<Response> = () => Response.json({})
+  handler: (request: RecordedRequest) => Response | Promise<Response> = () =>
+    Response.json(EMPTY_PAGE)
 ): { fetch: FetchImplementation; requests: RecordedRequest[] } {
   const requests: RecordedRequest[] = [];
 
@@ -79,8 +87,8 @@ function outcome(pending: Promise<unknown>): Promise<unknown> {
   );
 }
 
-/** The bounds one press of a write gives the client: its key, which a `POST` or a `PATCH` sends as
- *  `Idempotency-Key` and a `PUT` or a `DELETE` leaves off. */
+/** The bounds one press of a write gives the client: its key, which every write - a `POST`, a
+ *  `PATCH`, a `PUT` and a `DELETE` - sends as `Idempotency-Key`. */
 function keyed(key: string): { key: string } {
   return { key };
 }
@@ -92,14 +100,14 @@ test("a GET past the deadline fails with RequestTimeoutError", async () => {
     const stub = heldFetch();
     const api = createApiClient(stub.fetch);
 
-    const read = outcome(api.getIssue("CORE-1"));
+    const read = outcome(api.getIssueSummary("CORE-1"));
     jest.advanceTimersByTime(REQUEST_DEADLINE_MS - 1);
     expect(stub.requests[0]?.init?.signal?.aborted).toBe(false);
     jest.advanceTimersByTime(1);
     const error = await read;
 
     expect(error).toBeInstanceOf(RequestTimeoutError);
-    expect(error).toMatchObject({ path: "/api/v1/issues/CORE-1" });
+    expect(error).toMatchObject({ path: "/api/v2/issues/CORE-1" });
     expect(apiErrorMessage(error, "fallback")).toBe("Dispatch did not answer within 30 seconds");
     expect(isRetryableQueryError(error)).toBe(true);
   });
@@ -589,7 +597,7 @@ test("API client uploads inline artifact content as JSON and files as multipart"
   );
 
   const [inline, multipart] = stub.requests;
-  expect(inline?.path).toBe("/api/v1/issues/CORE-1/artifacts");
+  expect(inline?.path).toBe("/api/v2/issues/CORE-1/artifacts");
   expect(inline?.init?.method).toBe("POST");
   expect(JSON.parse(String(inline?.init?.body))).toEqual({
     content: "# Spec\n",
@@ -623,9 +631,9 @@ test("API client sends the documented method and JSON body for mutations", async
   );
 
   expect(stub.requests.map(({ init, path }) => [init?.method, path])).toEqual([
-    ["POST", "/api/v1/projects"],
-    ["PATCH", "/api/v1/issues/CORE-1"],
-    ["POST", "/api/v1/asks/ask-1/answer"],
+    ["POST", "/api/v2/projects"],
+    ["PATCH", "/api/v2/issues/CORE-1"],
+    ["PUT", "/api/v2/asks/ask-1/state"],
   ]);
   expect(JSON.parse(stub.requests[0]?.body as string)).toEqual({
     actor: { id: "session-1", kind: "session" },
@@ -633,14 +641,16 @@ test("API client sends the documented method and JSON body for mutations", async
     name: "Core",
   });
   expect(JSON.parse(stub.requests[1]?.body as string)).toEqual({ status: "done" });
+  // An answer is the ask's state moving to `answered`, carrying what was picked and written.
   expect(JSON.parse(stub.requests[2]?.body as string)).toEqual({
     expected_edited_at: "2026-09-12T12:00:00Z",
     selected: ["Ship"],
+    state: "answered",
     text: "Approved",
   });
 });
 
-test("API client sends comment edits to their endpoint, and the reopen with no body at all", async () => {
+test("API client sends comment edits to their endpoint, and the reopen as the comment's state", async () => {
   const stub = stubFetch();
   const api = createApiClient(stub.fetch);
 
@@ -648,19 +658,17 @@ test("API client sends comment edits to their endpoint, and the reopen with no b
   await api.reopenComment("comment-1", keyed("write-2"));
 
   expect(stub.requests.map(({ init, path }) => [init?.method, path])).toEqual([
-    ["PATCH", "/api/v1/comments/comment-1"],
-    ["POST", "/api/v1/comments/comment-1/reopen"],
+    ["PATCH", "/api/v2/comments/comment-1"],
+    ["PUT", "/api/v2/comments/comment-1/state"],
   ]);
   expect(JSON.parse(stub.requests[0]?.body as string)).toEqual({ body: "Revised comment" });
-  // `POST /api/v1/comments/{id}/reopen` takes no request body: the route reads the person from
-  // the caller's own credential (`comment_actions.go`), so the document declares none for it and
-  // the client sends none, which leaves the request without a body and without a Content-Type.
-  expect(stub.requests[1]?.body).toBeUndefined();
-  expect(stub.requests[1]?.init?.headers).not.toHaveProperty("Content-Type");
+  // A reopen is the comment's state moving back to `open`; the person is the caller's own
+  // credential, so the body names nothing else.
+  expect(JSON.parse(stub.requests[1]?.body as string)).toEqual({ state: "open" });
 });
 
-test("API client sends repository project mapping requests to their settings routes", async () => {
-  const stub = stubFetch(() => Response.json({ repo: "owner/repo", project: "CORE" }));
+test("API client sends repository project mapping requests to their routes", async () => {
+  const stub = stubFetch();
   const settingsApi = createApiClient(stub.fetch);
 
   await settingsApi.listRepoProjects();
@@ -668,16 +676,22 @@ test("API client sends repository project mapping requests to their settings rou
   await settingsApi.deleteRepoProject("owner/repo", keyed("delete-1"));
 
   expect(stub.requests.map(({ init, path }) => [init?.method ?? "GET", path])).toEqual([
-    ["GET", "/api/v1/settings/repo-projects"],
-    ["PUT", "/api/v1/settings/repo-projects/owner/repo"],
-    ["DELETE", "/api/v1/settings/repo-projects/owner/repo"],
+    ["GET", "/api/v2/repositories"],
+    ["PUT", "/api/v2/repositories/owner/repo"],
+    ["DELETE", "/api/v2/repositories/owner/repo"],
   ]);
   expect(JSON.parse(stub.requests[1]?.body as string)).toEqual({ project: "CORE" });
 });
 
 test("API client sends architecture source requests to their routes", async () => {
-  const stub = stubFetch(() =>
-    Response.json({ project: "CORE", repo: "legion/arch", branch: "main" })
+  // `/api/v2` lists sources one project at a time, so every project's list is the projects'
+  // list read first, then each project's own.
+  const stub = stubFetch((request) =>
+    Response.json(
+      request.path === "/api/v2/projects"
+        ? { ...EMPTY_PAGE, items: [{ key: "CORE", name: "Core" }], total: 1 }
+        : EMPTY_PAGE
+    )
   );
   const settingsApi = createApiClient(stub.fetch);
 
@@ -693,33 +707,34 @@ test("API client sends architecture source requests to their routes", async () =
   await settingsApi.deleteArchitectureSource("CORE", "acme/infra", keyed("write-3"));
 
   expect(stub.requests.map(({ init, path }) => [init?.method ?? "GET", path])).toEqual([
-    ["GET", "/api/v1/settings/architecture-sources"],
-    ["GET", "/api/v1/projects/CORE/architecture-sources"],
-    ["PUT", "/api/v1/projects/CORE/architecture-sources/legion/arch"],
-    ["POST", "/api/v1/projects/CORE/architecture-sources/legion/arch/sync"],
-    ["DELETE", "/api/v1/projects/CORE/architecture-sources/acme/infra"],
+    ["GET", "/api/v2/projects"],
+    ["GET", "/api/v2/projects/CORE/architecture-sources"],
+    ["GET", "/api/v2/projects/CORE/architecture-sources"],
+    ["PUT", "/api/v2/projects/CORE/architecture-sources/legion/arch"],
+    ["POST", "/api/v2/projects/CORE/architecture-syncs"],
+    ["DELETE", "/api/v2/projects/CORE/architecture-sources/acme/infra"],
   ]);
   // The repository is the address; the body carries only the branch.
-  expect(JSON.parse(stub.requests[2]?.body as string)).toEqual({ branch: "main" });
+  expect(JSON.parse(stub.requests[3]?.body as string)).toEqual({ branch: "main" });
+  // A sync names the one repository it imports.
+  expect(JSON.parse(stub.requests[4]?.body as string)).toEqual({ repos: ["legion/arch"] });
 });
 
 test("API client sends project default assignee requests to their routes", async () => {
-  const stub = stubFetch(() => Response.json({ assignee: "alice@example.com", project: "CORE" }));
+  const stub = stubFetch();
   const settingsApi = createApiClient(stub.fetch);
 
   await settingsApi.listProjectDefaultAssignees();
-  await settingsApi.putProjectDefaultAssignee(
-    "CORE",
-    { assignee: "alice@example.com" },
-    keyed("put-1")
-  );
+  await settingsApi.putProjectDefaultAssignee("CORE", "alice@example.com", keyed("put-1"));
 
   expect(stub.requests.map(({ init, path }) => [init?.method ?? "GET", path])).toEqual([
-    ["GET", "/api/v1/settings/project-default-assignees"],
-    ["PUT", "/api/v1/projects/CORE/default-assignee"],
+    ["GET", "/api/v2/projects?include=default_assignee"],
+    ["PATCH", "/api/v2/projects/CORE"],
   ]);
   // The write always names a person: no body of this route clears a default.
-  expect(JSON.parse(stub.requests[1]?.body as string)).toEqual({ assignee: "alice@example.com" });
+  expect(JSON.parse(stub.requests[1]?.body as string)).toEqual({
+    default_assignee: "alice@example.com",
+  });
 });
 
 test("API client sends inline artifacts as JSON", async () => {
@@ -737,7 +752,7 @@ test("API client sends inline artifacts as JSON", async () => {
   );
 
   expect(stub.requests.map(({ init, path }) => [init?.method, path])).toEqual([
-    ["POST", "/api/v1/issues/CORE-1/artifacts"],
+    ["POST", "/api/v2/issues/CORE-1/artifacts"],
   ]);
   // Every request the page makes carries `Dispatch-Trees: 1`, which is how the server is asked
   // for the reading it made of each stored text in its answer (`api/display_trees.go`); the
@@ -761,70 +776,55 @@ test("API client encodes list filters and artifact version query parameters", as
   await api.listIssues({
     pinned: true,
     open: true,
-    project: "CORE",
+    project: ["CORE"],
     status: ["in progress"],
     parent: "CORE-1",
-    updated_since: "2026-09-10T12:00:00Z",
+    updated_from: "2026-09-10T12:00:00Z",
     label: ["frontend", "docs"],
   });
-  await api.getIssueEvents("CORE-1", { after: 3, limit: 20 });
-  await api.getIssueEvents("CORE-1", { before: 40, order: "desc" });
-  await api.getIssueEvents("CORE-1", { ids: "42,10" });
+  // An event's position is a string on `/api/v2`, and `ids` a list, each id its own value.
+  await api.getIssueEvents("CORE-1", { after: "3", limit: 20 });
+  await api.getIssueEvents("CORE-1", { before: "40", sort: "-seq" });
+  await api.getIssueEvents("CORE-1", { ids: [42, 10] });
   await api.listComments("CORE-1", "spec");
 
   expect(stub.requests.map(({ path }) => path)).toEqual([
-    "/api/v1/issues?pinned=true&open=true&project=CORE&status=in+progress&parent=CORE-1&updated_since=2026-09-10T12%3A00%3A00Z&label=frontend&label=docs",
-    "/api/v1/issues/CORE-1/events?after=3&limit=20",
-    "/api/v1/issues/CORE-1/events?before=40&order=desc",
-    "/api/v1/issues/CORE-1/events?ids=42%2C10",
-    "/api/v1/issues/CORE-1/comments?artifact=spec",
+    "/api/v2/issues?pinned=true&open=true&project=CORE&status=in+progress&parent=CORE-1&updated_from=2026-09-10T12%3A00%3A00Z&label=frontend&label=docs",
+    "/api/v2/issues/CORE-1/events?after=3&limit=20",
+    "/api/v2/issues/CORE-1/events?before=40&sort=-seq",
+    "/api/v2/issues/CORE-1/events?ids=42&ids=10",
+    "/api/v2/issues/CORE-1/comments?artifact=spec",
   ]);
 });
+// `/api/v2` searches on one route, whatever the search narrows by: each filter is a query key of
+// its own, `project` repeated for each project and `from` bounding the rows' update.
 test("API client searches with the documented query parameters", async () => {
-  const stub = stubFetch(() => Response.json({ results: [], took_ms: 1 }));
-  const api = createApiClient(stub.fetch);
-
-  await api.search("astrolabe", { project: "LEGION", limit: 5 });
-
-  expect(stub.requests.map(({ path }) => path)).toEqual([
-    "/api/v1/search?q=astrolabe&project=LEGION&limit=5",
-  ]);
-});
-test("a search of the members every build reads goes to /api/v1/search", async () => {
-  const stub = stubFetch(() => Response.json({ results: [], took_ms: 1 }));
+  const stub = stubFetch();
   const api = createApiClient(stub.fetch);
 
   await api.search("astrolabe");
-  await api.search("astrolabe", { project: "LEGION", limit: 5, offset: 10 });
-
-  expect(stub.requests.map(({ path }) => path)).toEqual([
-    "/api/v1/search?q=astrolabe",
-    "/api/v1/search?q=astrolabe&project=LEGION&limit=5&offset=10",
-  ]);
-});
-// The bar's own filters ask for a path of their own: a Dispatch released before them answers it
-// `404 no route`, which is a refusal, where it answers `/api/v1/search` `200` with the filter
-// dropped, which is unnarrowed rows under the filters a person chose.
-test("a search carrying a member everyBuildReadsSearch drops goes to /api/v1/search/results", async () => {
-  const stub = stubFetch(() => Response.json({ results: [], took_ms: 1 }));
-  const api = createApiClient(stub.fetch);
-
+  await api.search("astrolabe", { project: ["LEGION", "CORE"], limit: 5, offset: 10 });
   await api.search("astrolabe", { status: "in_progress" });
   await api.search("astrolabe", { number_project: "INFRA", keywords_only: true });
-  await api.search("astrolabe", { author: "sami@theorem.dev", updated_since: "2026-11-01" });
+  await api.search("astrolabe", { author: "sami@theorem.dev", from: "2026-11-01T00:00:00Z" });
 
   expect(stub.requests.map(({ path }) => path)).toEqual([
-    "/api/v1/search/results?q=astrolabe&status=in_progress",
-    "/api/v1/search/results?q=astrolabe&number_project=INFRA&keywords_only=true",
-    "/api/v1/search/results?q=astrolabe&author=sami%40theorem.dev&updated_since=2026-11-01",
+    "/api/v2/search-results?q=astrolabe",
+    "/api/v2/search-results?q=astrolabe&project=LEGION&project=CORE&limit=5&offset=10",
+    "/api/v2/search-results?q=astrolabe&status=in_progress",
+    "/api/v2/search-results?q=astrolabe&number_project=INFRA&keywords_only=true",
+    "/api/v2/search-results?q=astrolabe&author=sami%40theorem.dev&from=2026-11-01T00%3A00%3A00Z",
   ]);
 });
 test("API client reaches project artifact and owner-scoped document endpoints", async () => {
-  const stub = stubFetch((request) =>
-    request.path.startsWith("/api/v1/artifacts/artifact-1/asks?")
-      ? Response.json([])
-      : Response.json({})
-  );
+  const stub = stubFetch((request) => {
+    // A slug read is the project's list narrowed to the one document the slug names.
+    if (request.path.includes("slug=")) {
+      return Response.json({ ...EMPTY_PAGE, items: [{ id: "artifact-1" }], total: 1 });
+    }
+    if (request.path.endsWith("?include=blocks")) return Response.json({ blocks: [] });
+    return Response.json(EMPTY_PAGE);
+  });
   const api = createApiClient(stub.fetch);
 
   await api.listProjectArtifacts("CORE");
@@ -835,7 +835,6 @@ test("API client reaches project artifact and owner-scoped document endpoints", 
     keyed("upload-1")
   );
   await api.getProjectArtifact("CORE", "design-notes");
-  await api.getProjectDocumentSummary("CORE", "design notes.md");
   await api.getIssueSummary("CORE-1");
   await api.listArtifactAsks("artifact-1", "open");
   await api.createArtifactAsk("artifact-1", { question: "Ship?" }, keyed("write-1"));
@@ -845,26 +844,39 @@ test("API client reaches project artifact and owner-scoped document endpoints", 
   await api.getIssueReferences("CORE-1");
 
   expect(stub.requests.map(({ init, path }) => [init?.method ?? "GET", path])).toEqual([
-    ["GET", "/api/v1/projects/CORE/artifacts"],
-    ["GET", "/api/v1/projects/CORE/artifacts?unlinked=true"],
-    ["POST", "/api/v1/projects/CORE/artifacts"],
-    ["GET", "/api/v1/projects/CORE/artifacts/design-notes"],
-    ["GET", "/api/v1/projects/CORE/artifacts/design%20notes.md/summary"],
-    ["GET", "/api/v1/issues/CORE-1/summary"],
-    ["GET", "/api/v1/artifacts/artifact-1/asks?state=open"],
-    ["POST", "/api/v1/artifacts/artifact-1/asks"],
-    ["GET", "/api/v1/artifacts/artifact-1/comments"],
-    ["POST", "/api/v1/artifacts/artifact-1/comments"],
-    ["GET", "/api/v1/artifacts/artifact-1/blocks"],
-    ["GET", "/api/v1/issues/CORE-1/references"],
+    ["GET", "/api/v2/projects/CORE/artifacts"],
+    ["GET", "/api/v2/projects/CORE/artifacts?issue=none"],
+    ["POST", "/api/v2/projects/CORE/artifacts"],
+    ["GET", "/api/v2/projects/CORE/artifacts?issue=none&slug=design-notes"],
+    ["GET", "/api/v2/issues/CORE-1"],
+    ["GET", "/api/v2/artifacts/artifact-1/asks?state=open"],
+    ["POST", "/api/v2/artifacts/artifact-1/asks"],
+    ["GET", "/api/v2/artifacts/artifact-1/comments"],
+    ["POST", "/api/v2/artifacts/artifact-1/comments"],
+    ["GET", "/api/v2/artifacts/artifact-1?include=blocks"],
+    ["GET", "/api/v2/issues/CORE-1/references"],
   ]);
   expect(JSON.parse(stub.requests[2]?.body as string)).toEqual({
     content: "# Design notes\n",
     name: "Design notes",
   });
 });
+test("a slug that names no document of a project is refused as the document's own read refuses it", async () => {
+  const api = createApiClient(stubFetch().fetch);
+
+  await expect(api.getProjectArtifact("CORE", "gone")).rejects.toMatchObject({
+    code: "ARTIFACT_NOT_FOUND",
+    status: 404,
+  });
+});
 test("API client reaches an agent conversation's artifacts under the agent's session", async () => {
-  const stub = stubFetch(() => Response.json({}));
+  const stub = stubFetch((request) =>
+    Response.json(
+      request.path.includes("slug=")
+        ? { ...EMPTY_PAGE, items: [{ id: "artifact-9" }], total: 1 }
+        : EMPTY_PAGE
+    )
+  );
   const api = createApiClient(stub.fetch);
 
   await api.uploadArtifact(
@@ -872,11 +884,11 @@ test("API client reaches an agent conversation's artifacts under the agent's ses
     { file: new File(["png"], "shot.png", { type: "image/png" }), name: "shot.png" },
     keyed("upload-1")
   );
-  await api.getAgentArtifact("ses/1", "shot-png");
+  expect(await api.getAgentArtifact("ses/1", "shot-png")).toEqual({ id: "artifact-9" } as never);
 
   expect(stub.requests.map(({ init, path }) => [init?.method ?? "GET", path])).toEqual([
-    ["POST", "/api/v1/agents/ses%2F1/artifacts"],
-    ["GET", "/api/v1/agents/ses%2F1/artifacts/shot-png"],
+    ["POST", "/api/v2/agents/ses%2F1/artifacts"],
+    ["GET", "/api/v2/agents/ses%2F1/artifacts?slug=shot-png"],
   ]);
 });
 
@@ -1082,35 +1094,7 @@ test(
   }
 );
 test("API client reaches every remaining documented endpoint", async () => {
-  const stub = stubFetch((request) => {
-    if (
-      request.path.startsWith("/api/v1/inbox") ||
-      request.path.startsWith("/api/v1/issues/CORE-1/asks?")
-    ) {
-      return Response.json([]);
-    }
-    if (request.path === "/api/v1/asks/ask-1") {
-      return Response.json({
-        ask: {
-          anchor: null,
-          answer: null,
-          author: { id: "session-1", kind: "session" },
-          created_at: "2026-09-09T00:00:00Z",
-          custom: false,
-          id: "ask-1",
-          issue_key: "CORE-1",
-          multiple: false,
-          opened_event_id: 1,
-          options: [],
-          question: "Ship?",
-          state: "open",
-          urgency: "med",
-        },
-        replies: [],
-      });
-    }
-    return Response.json({});
-  });
+  const stub = stubFetch();
   const api = createApiClient(stub.fetch);
 
   await api.listProjects();
@@ -1124,9 +1108,9 @@ test("API client reaches every remaining documented endpoint", async () => {
   await api.listIssueAskThreads("CORE-1");
   await api.getAsk("ask-1");
   await api.listMyAnswers({ limit: 50, offset: 100 });
-  await api.listMyReplies({ limit: 50 });
-  await api.listMyReplies({ issue: "CORE-1", limit: 200 });
-  await api.listMyReplies({ artifact: "artifact-1", limit: 200 });
+  await api.listMyThreads({ limit: 50 });
+  await api.listMyThreads({ issue: "CORE-1", limit: 200 });
+  await api.listMyThreads({ artifact: "artifact-1", limit: 200 });
   await api.markThreadRead("comment-1", "2026-10-12T00:00:00.000Z", keyed("put-1"));
   await api.createComment("CORE-1", { body: "Looks good" }, keyed("write-3"));
   await api.resolveComment("comment-1", keyed("write-4"));
@@ -1186,48 +1170,58 @@ test("API client reaches every remaining documented endpoint", async () => {
   );
 
   expect(stub.requests.map(({ init, path }) => [init?.method ?? "GET", path])).toEqual([
-    ["GET", "/api/v1/projects"],
-    ["GET", "/api/v1/issues"],
-    ["GET", "/api/v1/search?q=astrolabe"],
-    ["POST", "/api/v1/issues"],
-    ["GET", "/api/v1/issues/CORE-1"],
-    ["GET", "/api/v1/inbox?project=CORE"],
-    ["POST", "/api/v1/issues/CORE-1/asks"],
-    ["GET", "/api/v1/issues/CORE-1/asks?state=all"],
-    ["GET", "/api/v1/issues/CORE-1/asks?state=all&thread=1"],
-    ["GET", "/api/v1/asks/ask-1"],
-    ["GET", "/api/v1/me/answers?limit=50&offset=100"],
-    ["GET", "/api/v1/me/replies?limit=50"],
-    ["GET", "/api/v1/me/replies?issue=CORE-1&limit=200"],
-    ["GET", "/api/v1/me/replies?artifact=artifact-1&limit=200"],
-    ["PUT", "/api/v1/me/threads/comment-1/read"],
-    ["POST", "/api/v1/issues/CORE-1/comments"],
-    ["POST", "/api/v1/comments/comment-1/resolve"],
-    ["POST", "/api/v1/comments/comment-1/accept"],
-    ["POST", "/api/v1/comments/comment-1/reject"],
-    ["POST", "/api/v1/comments/comment-1/deliveries"],
-    ["POST", "/api/v1/issues/CORE-1/messages"],
-    ["POST", "/api/v1/agents/planner-session/messages"],
-    ["GET", "/api/v1/agents/planner-session/messages"],
-    ["GET", "/api/v1/issues/CORE-1/artifacts"],
-    ["GET", "/api/v1/agents"],
-    ["POST", "/api/v1/issues/CORE-1/artifacts"],
-    ["GET", "/api/v1/artifacts/artifact-1"],
-    ["GET", "/api/v1/artifacts/artifact-1/text"],
-    ["GET", "/api/v1/artifacts/artifact-1/versions/3"],
-    ["POST", "/api/v1/artifacts/artifact-1/versions"],
-    ["GET", "/api/v1/artifacts/artifact-1/reviews"],
-    ["POST", "/api/v1/artifacts/artifact-1/reviews"],
-    ["GET", "/api/v1/me/state"],
-    ["PUT", "/api/v1/me/issues/CORE-1/state"],
-    ["GET", "/api/v1/me/agents/state"],
-    ["PUT", "/api/v1/me/agents/planner-session/state"],
+    ["GET", "/api/v2/projects"],
+    ["GET", "/api/v2/issues"],
+    ["GET", "/api/v2/search-results?q=astrolabe"],
+    ["POST", "/api/v2/issues"],
+    [
+      "GET",
+      "/api/v2/issues/CORE-1?include=open_asks&include=children&include=progress&include=design_gates&include=reach&include=referenced_by_count",
+    ],
+    ["GET", "/api/v2/asks?include=thread&include=mark&project=CORE"],
+    ["POST", "/api/v2/issues/CORE-1/asks"],
+    ["GET", "/api/v2/issues/CORE-1/asks?state=all"],
+    ["GET", "/api/v2/issues/CORE-1/asks?include=thread&state=all"],
+    ["GET", "/api/v2/asks/ask-1?include=thread"],
+    ["GET", "/api/v2/me/answers?limit=50&offset=100"],
+    ["GET", "/api/v2/me/threads?limit=50"],
+    ["GET", "/api/v2/me/threads?issue=CORE-1&limit=200"],
+    ["GET", "/api/v2/me/threads?artifact=artifact-1&limit=200"],
+    ["PATCH", "/api/v2/me/marks/thread/comment-1"],
+    ["POST", "/api/v2/issues/CORE-1/comments"],
+    ["PUT", "/api/v2/comments/comment-1/state"],
+    ["PUT", "/api/v2/comments/comment-1/state"],
+    ["PUT", "/api/v2/comments/comment-1/state"],
+    ["POST", "/api/v2/comments/comment-1/deliveries"],
+    ["POST", "/api/v2/issues/CORE-1/messages"],
+    ["POST", "/api/v2/agents/planner-session/messages"],
+    ["GET", "/api/v2/agents/planner-session/messages"],
+    ["GET", "/api/v2/issues/CORE-1/artifacts"],
+    ["GET", "/api/v2/agents"],
+    ["POST", "/api/v2/issues/CORE-1/artifacts"],
+    ["GET", "/api/v2/artifacts/artifact-1"],
+    ["GET", "/api/v2/artifacts/artifact-1?include=text"],
+    ["GET", "/api/v2/artifacts/artifact-1/versions/3"],
+    ["POST", "/api/v2/artifacts/artifact-1/versions"],
+    ["GET", "/api/v2/artifacts/artifact-1/reviews"],
+    ["POST", "/api/v2/artifacts/artifact-1/reviews"],
+    ["GET", "/api/v2/me/marks?kind=issue"],
+    ["PATCH", "/api/v2/me/marks/issue/CORE-1"],
+    ["GET", "/api/v2/me/marks?kind=agent"],
+    ["PATCH", "/api/v2/me/marks/agent/planner-session"],
     ["GET", "/auth/whoami"],
     ["POST", "/auth/logout"],
     ["GET", "/api/github/rest/repos/acme/dispatch"],
-    ["GET", "/api/v1/settings/delivery"],
-    ["PUT", "/api/v1/settings/delivery"],
+    ["GET", "/api/v2/settings/delivery"],
+    ["PUT", "/api/v2/settings/delivery"],
   ]);
+  // Each state route carries the state it moves to: a resolve, an accept and a reject of a
+  // comment are one route apart only by their body.
+  expect(
+    stub.requests
+      .filter(({ path }) => path === "/api/v2/comments/comment-1/state")
+      .map(({ body }) => JSON.parse(body as string))
+  ).toEqual([{ state: "resolved" }, { state: "accepted" }, { state: "rejected" }]);
 });
 
 test("API client lists an issue's handoffs and reads one handoff by id", async () => {
@@ -1241,8 +1235,8 @@ test("API client lists an issue's handoffs and reads one handoff by id", async (
   };
   const handoff = { ...summary, body: '{"proof":["a"]}' };
   const stub = stubFetch((request) =>
-    request.path === "/api/v1/issues/CORE-1/handoffs"
-      ? Response.json([summary])
+    request.path === "/api/v2/issues/CORE-1/handoffs"
+      ? Response.json({ ...EMPTY_PAGE, items: [summary], total: 1 })
       : Response.json(handoff)
   );
   const api = createApiClient(stub.fetch);
@@ -1250,54 +1244,23 @@ test("API client lists an issue's handoffs and reads one handoff by id", async (
   expect(await api.listHandoffs("CORE-1")).toEqual([summary]);
   expect(await api.getHandoff("handoff/1")).toEqual(handoff);
   expect(stub.requests.map(({ init, path }) => [init?.method ?? "GET", path])).toEqual([
-    ["GET", "/api/v1/issues/CORE-1/handoffs"],
-    ["GET", "/api/v1/handoffs/handoff%2F1"],
+    ["GET", "/api/v2/issues/CORE-1/handoffs"],
+    ["GET", "/api/v2/handoffs/handoff%2F1"],
   ]);
 });
 
-test("API client keeps only small idempotent /me/ writes alive during navigation", async () => {
-  const stub = stubFetch();
-  const api = createApiClient(stub.fetch);
-  const oversizedDismissed = Array.from(
-    { length: 3_000 },
-    (_unused, index) => `pinned_items:event:${index}`
-  );
-
-  await api.putIssueState("CORE-1", { pinned: true }, keyed("put-1"));
-  await api.putAgentState(
-    "planner-session",
-    { cleared_before: "2026-09-15T20:51:00.000Z" },
-    keyed("put-2")
-  );
-  await api.revokeAgentToken("token-1", keyed("delete-1"));
-  await api.createAgentToken({ name: "planner" }, keyed("write-1"));
-  await api.putIssueState("CORE-1", { dismissed: oversizedDismissed }, keyed("put-3"));
-
-  const [smallIssueState, agentState, revokedToken, createdToken, oversizedIssueState] =
-    stub.requests;
-  expect(smallIssueState?.init?.keepalive).toBe(true);
-  expect(agentState?.init?.keepalive).toBe(true);
-  expect(revokedToken?.init?.keepalive).toBe(true);
-  expect(createdToken?.init?.keepalive).toBeUndefined();
-  expect(createdToken?.init?.method).toBe("POST");
-  expect(new TextEncoder().encode(String(oversizedIssueState?.body)).byteLength).toBeGreaterThan(
-    64 * 1024
-  );
-  expect(oversizedIssueState?.init?.keepalive).toBeUndefined();
-});
-
-// W38. Every PUT and DELETE the page makes is one write of the store, which hands it the bounds of
-// its press - the key it is kept under, and the login that pressed it (`Dispatch-Login`) - so a
-// client method called bare, as the Conversation's read mark once was, does not type-check.
-test("a PUT or a DELETE without its press's bounds does not type-check", () => {
+// W38. Every write the page makes is one write of the store, which hands it the bounds of its
+// press - the key it is kept under, and the login that pressed it (`Dispatch-Login`) - so a client
+// method called bare, as the Conversation's read mark once was, does not type-check.
+test("a write without its press's bounds does not type-check", () => {
   const api = createApiClient(stubFetch().fetch);
   const bare = () => {
-    // @ts-expect-error a PUT goes with the bounds of the press it belongs to
+    // @ts-expect-error a mark's write goes with the bounds of the press it belongs to
     void api.putIssueState("CORE-1", { last_read_seq: 3 });
     // @ts-expect-error so does a DELETE
     void api.releaseIssueClaim("CORE-1");
     // @ts-expect-error and either one made as a bare request
-    void api.send({ method: "PUT", path: "/api/v1/me/issues/CORE-1/state" });
+    void api.send({ method: "PATCH", path: "/api/v2/me/marks/issue/CORE-1" });
   };
   expect(bare).toBeInstanceOf(Function);
 });
@@ -1315,13 +1278,17 @@ const CLIENT_PLUMBING = new Set([
   "put",
   "remove",
   "read",
+  "readWholeList",
   "patch",
 ]);
 
-/** The one write Dispatch's keyed layer does not take, and so the one the page makes outside the
- *  write path: `/auth/logout` is the same however often it is made, ends a session rather than
- *  writing anything a reload should resume, and sits outside the layer. */
-const UNKEYED_POSTS = new Set(["/auth/logout"]);
+/** The requests that are no write and so go outside the keyed write path, under no key. One is
+ *  `/auth/logout`, which sits outside Dispatch's keyed layer, is the same however often it is
+ *  made, and ends a session rather than writing anything a reload should resume. The other is
+ *  `POST /api/v2/projects/{key}/related-searches`, the related-item check over a title, a
+ *  computation that writes nothing: Dispatch runs a request to it that carries no key unkeyed
+ *  (`keyedWrites`), and a key would have it keep the answer of every keystroke's check. */
+const UNKEYED_REQUESTS = [/^\/auth\/logout$/u, /^\/api\/v2\/projects\/[^/]+\/related-searches$/u];
 
 /**
  * The one keyed write path, over every method the client has, found from the client itself rather
@@ -1329,12 +1296,13 @@ const UNKEYED_POSTS = new Set(["/auth/logout"]);
  * method is called with one argument that stands for any of them: a string where a path wants one
  * (`owner/repo`, which a repository path also takes), an empty JSON object where a body does, and
  * the press's bounds - its key, its login and the `sent` hook every write tells as it goes out.
- * Every request that is not a GET must have gone out through `send` (it told `sent`), carry the
- * presser's login (`Dispatch-Login`), and carry the key when it is a `POST` or a `PATCH` and none
- * when it is a `PUT` or a `DELETE`.
+ * Every request that is not a GET must be a write method, have gone out through `send` (it told
+ * `sent`), and carry the presser's login (`Dispatch-Login`) and the press's key
+ * (`Idempotency-Key`) - a `POST`, a `PATCH`, a `PUT` and a `DELETE` alike - but for the requests
+ * that are no write (`UNKEYED_REQUESTS`), which carry no key.
  */
 test("every write method of the client goes through the one keyed path", async () => {
-  const stub = stubFetch(() => Response.json({}));
+  const stub = stubFetch();
   const api = createApiClient(stub.fetch);
   const told: string[] = [];
   /** Stands for any argument: a path segment, a JSON body, an artifact's owner, and a press's
@@ -1389,45 +1357,58 @@ test("every write method of the client goes through the one keyed path", async (
   // The census found the client's writes, not a handful: every write of the page is one of these.
   expect(writers.size).toBeGreaterThan(45);
   const problems: string[] = [];
+  const unkeyed: string[] = [];
   for (const [name, writes] of writers) {
     for (const { key, login, method, path } of writes) {
-      const keyed = method === "POST" || method === "PATCH";
-      if (UNKEYED_POSTS.has(path)) continue;
+      if (UNKEYED_REQUESTS.some((pattern) => pattern.test(path))) {
+        unkeyed.push(`${method} ${path}`);
+        if (key !== null) problems.push(`${name}: ${method} ${path} carries a key`);
+        continue;
+      }
+      if (!WRITE_METHODS.includes(method as WriteMethod)) {
+        problems.push(`${name}: ${method} ${path} is no write method`);
+      }
       if (!told.includes(`${method} ${path}`)) {
         problems.push(`${name}: ${method} ${path} bypassed send`);
       }
       if (login !== "alice") problems.push(`${name}: ${method} ${path} carries no Dispatch-Login`);
-      if (keyed && key !== "census-key") problems.push(`${name}: ${method} ${path} carries no key`);
-      if (!keyed && key !== null) problems.push(`${name}: ${method} ${path} carries a key`);
-      if (!keyed && method !== "PUT" && method !== "DELETE") {
-        problems.push(`${name}: ${method} ${path} is no write method`);
-      }
+      if (key !== "census-key") problems.push(`${name}: ${method} ${path} carries no key`);
     }
   }
   expect(problems).toEqual([]);
+  // Both exceptions were made, so the census judged them rather than missing them.
+  expect(unkeyed.sort()).toEqual([
+    "POST /api/v2/projects/owner%2Frepo/related-searches",
+    "POST /auth/logout",
+  ]);
+  // Every write method was made, the `PUT`s and the `DELETE`s among them.
+  const madeMethods = new Set([...writers.values()].flat().map(({ method }) => method));
+  expect([...madeMethods].sort()).toEqual([...WRITE_METHODS]);
 });
 
-test("API client exposes the current state with a stale state-write conflict", async () => {
-  const staleState = {
-    dismissed: ["pinned_items:event:1"],
+test("API client exposes the mark Dispatch holds with a stale mark's write", async () => {
+  const staleMark = {
+    id: "CORE-1",
+    kind: "issue" as const,
     last_read_seq: 0,
     pinned: false,
+    pinned_items: ["event:1"],
     seq: 2,
   };
   const stub = stubFetch(() =>
     Response.json(
-      { code: "STATE_STALE", error: "user state was updated by another write", state: staleState },
+      { code: "STATE_STALE", error: "the mark was updated by another write", state: staleMark },
       { status: 409 }
     )
   );
   const api = createApiClient(stub.fetch);
 
   const error = await api
-    .putIssueState("CORE-1", { dismissed: ["pinned_items:event:1"], seq: 1 }, keyed("put-1"))
+    .putIssueState("CORE-1", { pinned_items: ["event:1"], seq: 1 }, keyed("put-1"))
     .then(
       () => undefined,
       (caught) => caught
     );
 
-  expect(error).toMatchObject({ code: "STATE_STALE", state: staleState, status: 409 });
+  expect(error).toMatchObject({ code: "STATE_STALE", state: staleMark, status: 409 });
 });

@@ -7,20 +7,30 @@ import type { ReactNode } from "react";
 import { MEANING_PAUSE_MS, useTieredSearch } from "../features/search/useTieredSearch";
 import { answerRequests } from "./network";
 
-// The keystroke's tier asks for the keyword leg alone (`useTieredSearch`, `keywords_only: true`),
-// which `everyBuildReadsSearch` does not keep on `/api/v1/search`, so that tier always asks for
-// `/api/v1/search/results` - whatever the reader narrowed by, even nothing. The pause's tier
-// sends the request as the chips built it, so a reader who narrowed by nothing leaves it on
-// `/api/v1/search`.
-test("the keystroke tier asks for the results path, and an unnarrowed pause tier for /api/v1/search", async () => {
-  // The paths the two tiers asked for, in the order they were asked. Each is answered an empty
-  // page, which is all the hook needs to resolve.
+// Both tiers ask `/api/v2/search-results`, the one search route. The keystroke's tier asks for the
+// keyword leg alone (`useTieredSearch`, `keywords_only=true`), which makes no embedding call
+// behind each keystroke; the pause's tier sends the request as the chips built it, so a reader
+// who narrowed by nothing searches by meaning too wherever an embedder is configured.
+test("the keystroke tier asks for the keyword leg alone, and the pause tier for the whole search", async () => {
+  // What the two tiers asked for, in the order they were asked. Each is answered an empty page,
+  // which is all the hook needs to resolve.
   const asked: string[] = [];
-  const record = ({ request }: { request: Request }): Response => {
-    asked.push(new URL(request.url).pathname);
-    return Response.json({ results: [], took_ms: 1 });
-  };
-  answerRequests(http.get("/api/v1/search/results", record), http.get("/api/v1/search", record));
+  answerRequests(
+    http.get("/api/v2/search-results", ({ request }) => {
+      const url = new URL(request.url);
+      asked.push(`${url.pathname}${url.search}`);
+      return Response.json({
+        filters: {},
+        items: [],
+        limit: 50,
+        offset: 0,
+        query: {},
+        reachable: 0,
+        took_ms: 1,
+        total: 0,
+      });
+    })
+  );
 
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const wrapper = ({ children }: { children: ReactNode }): ReactNode => (
@@ -32,10 +42,17 @@ test("the keystroke tier asks for the results path, and an unnarrowed pause tier
   );
 
   try {
-    await waitFor(() => expect(asked).toEqual(["/api/v1/search/results", "/api/v1/search"]), {
-      // Both tiers' waits, and the answers behind them.
-      timeout: MEANING_PAUSE_MS * 8,
-    });
+    await waitFor(
+      () =>
+        expect(asked).toEqual([
+          "/api/v2/search-results?q=astrolabe&keywords_only=true",
+          "/api/v2/search-results?q=astrolabe",
+        ]),
+      {
+        // Both tiers' waits, and the answers behind them.
+        timeout: MEANING_PAUSE_MS * 8,
+      }
+    );
   } finally {
     hook.unmount();
     client.clear();

@@ -17,7 +17,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { projectIssuesQuery, userStateQuery } from "../../api/queries";
-import type { IssueSummary, UserState } from "../../api/types";
+import type { IssueSummary, Marks } from "../../api/types";
 import { AttentionBadge } from "../../components/Badge";
 import { EmptyState } from "../../components/EmptyState";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
@@ -193,7 +193,7 @@ const BoardColumnView = memo(function BoardColumnView({
   column: BoardColumn;
   /** The swimlane this column sits inside, when it does; the flat board omits it. */
   lane?: PriorityLane;
-  userState: UserState | undefined;
+  userState: Marks | undefined;
 }): ReactNode {
   const { isOver, setNodeRef } = useDroppable({
     id: lane === undefined ? `status:${column.status}` : laneColumnId(column.status, lane),
@@ -267,7 +267,7 @@ const BoardLaneRow = memo(function BoardLaneRow({
   boardLane: BoardLane;
   dragging: boolean;
   isCollapsed: (status: IssueStatus) => boolean;
-  userState: UserState | undefined;
+  userState: Marks | undefined;
 }): ReactNode {
   const count = boardLane.columns.reduce((total, column) => total + column.issues.length, 0);
   return (

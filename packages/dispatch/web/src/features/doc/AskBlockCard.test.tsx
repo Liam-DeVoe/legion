@@ -8,7 +8,7 @@ import { MemoryRouter } from "react-router-dom";
 
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { api } from "../../api/client";
-import type { Ask, AskRead, Comment } from "../../api/types";
+import type { AskV2, AskWithThread, Comment } from "../../api/types";
 import { AskBlockCard } from "./AskBlockCard";
 import type { AskBlockHost } from "./typed-block-drawing";
 
@@ -61,7 +61,7 @@ function askNode(
   ]);
 }
 
-const ask: Ask = {
+const ask: AskV2 = {
   anchor: null,
   answer: null,
   author: {
@@ -77,19 +77,24 @@ const ask: Ask = {
   block_artifact: { id: "artifact-1", primary: true, slug: "spec" },
   block_id: "b-1",
   created_at: new Date(Date.now() - 3 * 60_000).toISOString(),
+  document: null,
   edited_at: null,
   id: "ask-1",
+  issue: null,
   issue_key: "CORE-1",
   kind: "question",
+  last_reply: null,
   multiple: false,
   opened_event_id: 1,
   options: [{ description: "Release it", label: "Ship" }, { label: "Hold" }],
+  priority: null,
   question: "Should we ship?",
+  ref: "dispatch://CORE-1/ask/ask-1",
   state: "open",
   urgency: "high",
 };
 
-const answeredAsk: Ask = {
+const answeredAsk: AskV2 = {
   ...ask,
   answer: {
     at: new Date(Date.now() - 2 * 60 * 60_000).toISOString(),
@@ -120,18 +125,21 @@ function reply(body: string): Comment {
   };
 }
 
-function threadRead(of: Ask, replies: Comment[] = []): AskRead {
+/** The ask read with its thread, as `GET /api/v2/asks/{id}?include=thread` answers it. */
+function threadRead(of: AskV2, replies: Comment[] = []): AskWithThread {
   return {
-    ask: of,
-    answers: [],
-    claimant: null,
-    edits: [],
-    followers: [],
-    replies,
-    route: null,
-    route_status: null,
-    route_holder: null,
-    route_status_reason: null,
+    ...of,
+    thread: {
+      answers: [],
+      claimant: null,
+      edits: [],
+      followers: [],
+      replies,
+      route: null,
+      route_status: null,
+      route_holder: null,
+      route_status_reason: null,
+    },
   };
 }
 
@@ -170,7 +178,7 @@ function renderCard({
   rowResolution = false,
   thread = threadRead(indexed),
 }: {
-  ask?: Ask;
+  ask?: AskV2;
   /** Render as the server would before it has indexed the block: no ask row at all. */
   indexed?: boolean;
   node: ProseMirrorNode;
@@ -180,7 +188,7 @@ function renderCard({
   /** Render as a closed issue's current document does. */
   rowResolution?: boolean;
   /** What `GET /asks/{id}` answers for the block's ask. */
-  thread?: AskRead;
+  thread?: AskWithThread;
 }) {
   getAsk.mockResolvedValue(thread);
   const section = document.createElement("section");
@@ -614,7 +622,7 @@ test("Ask back on an issue document's decision posts a clarification on the issu
 });
 
 test("Ask back on a project document's decision posts the clarification on the document", async () => {
-  const documentAsk: Ask = {
+  const documentAsk: AskV2 = {
     ...ask,
     artifact_id: "doc-1",
     block_artifact: { id: "doc-1", primary: false, slug: "design" },
@@ -751,7 +759,7 @@ test("a reply written in Markdown keeps its paragraphs and list inside the block
 });
 
 test("a resolved decision hosts the shared resolution record and no composer", () => {
-  const resolved: Ask = {
+  const resolved: AskV2 = {
     ...ask,
     resolution: {
       actor: { id: "01a086ad", kind: "session" },
@@ -861,7 +869,7 @@ test("a read-only resolved decision shows its state and no form", () => {
 // A closed issue's current document: a block whose own state and ask row are both resolved shows
 // the row's record, as the close that withdrew it wrote it. A version view never does.
 
-const withdrawnAsk: Ask = {
+const withdrawnAsk: AskV2 = {
   ...ask,
   resolution: {
     actor: { id: "legion-daemon:CORE", kind: "session" },

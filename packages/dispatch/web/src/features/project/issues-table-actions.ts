@@ -1,9 +1,15 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
-import { ApiError, api, issuePatchRequest, type WriteRequest } from "../../api/client";
+import {
+  ApiError,
+  api,
+  issuePatchRequest,
+  type WriteRequest,
+  writeRequest,
+} from "../../api/client";
 import { mergeIssue } from "../../api/issue-cache";
 import { advancesIssuesParams } from "../../api/queries";
-import type { IssueSummary, UpdateIssueInput } from "../../api/types";
+import type { IssueSummary, PatchIssueV2Input } from "../../api/types";
 import { newSendKey } from "../../lib/send-key";
 import { settledWithLimit } from "../../lib/settled";
 import { plainWrite, useWrites } from "../writes/write-store";
@@ -20,7 +26,7 @@ import { type TableAction, tableEpicWrite, useTableRecovery } from "./issues-tab
 
 interface Patch {
   key: string;
-  input: UpdateIssueInput;
+  input: PatchIssueV2Input;
 }
 /** The write key each step of an action was given, by the issue the step writes. */
 type Keys = Readonly<Record<string, string>>;
@@ -91,7 +97,7 @@ export function useIssueTableActions({
   /** Every issue of this table's listing, read afresh: what an action checks itself against. */
   const listAll = () =>
     "project" in listing
-      ? api.listIssues({ project: listing.project })
+      ? api.listIssues({ project: [listing.project] })
       : api.listIssues(advancesIssuesParams(listing));
 
   const request = <T>(value: WriteRequest<T>, label: string, issue: string, key: string) => {
@@ -360,7 +366,7 @@ export function useIssueTableActions({
     const prefix = `Merged into ${into} (`;
     const alreadySaid =
       resumed &&
-      (await api.listIssueMessages(from)).some(({ message }) =>
+      (await api.listIssueMessages(from)).some((message) =>
         // The sentence the merge actually sent, kept with the record: the target may have been
         // renamed or closed since, which would make a freshly built sentence miss and post a
         // second one. A record from before this was kept falls back to the title-free opening.
@@ -372,11 +378,7 @@ export function useIssueTableActions({
       const body = mergeReason(into, titleOf(into));
       recovery.record({ reason }, record.id, { reasonBody: body });
       await request(
-        {
-          method: "POST",
-          path: `/api/v1/issues/${encodeURIComponent(from)}/messages`,
-          body: { body },
-        },
+        writeRequest("post", "/api/v2/issues/{key}/messages", { key: from }, { body }),
         `Record the merge reason on ${from}`,
         from,
         reason

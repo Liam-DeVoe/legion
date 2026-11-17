@@ -18,12 +18,13 @@ import {
   decisionsAndReadMarkHandlers,
 } from "../../__tests__/proof-document";
 import { ApiError, api } from "../../api/client";
-import type { Artifact, Ask, AskRead, Comment, InboxRow, IssueAskRow } from "../../api/types";
+import type { ArtifactV2, AskV2, AskWithThread, Comment } from "../../api/types";
 import { DocumentRuntime } from "../doc/runtime";
 import { Margin } from "../margin/Margin";
 import { MarginProvider } from "../margin/margin-context";
 import { issue, SelectedItemLabel, specArtifact } from "../margin/margin-fixture";
 import type { MarginOwner } from "../margin/useMarginItems";
+import { referencesRead } from "../refs/reference-fixture";
 import { ArtifactDocument } from "./ArtifactDocument";
 
 answerTextReadsWithTheSeededText();
@@ -37,12 +38,16 @@ answerTextReadsWithTheSeededText();
  */
 beforeEach(() => {
   answerRequests(
-    http.get("/api/v1/issues/:key/asks", () => Response.json([] satisfies IssueAskRow[])),
-    http.get("/api/v1/artifacts/:id/asks", () => Response.json([] satisfies Ask[])),
-    http.get("/api/v1/inbox", () => Response.json([] satisfies InboxRow[])),
+    http.get("/api/v2/artifacts/:id/versions", () => Response.json(emptyPage)),
+    http.get("/api/v2/issues/:key/asks", () => Response.json(emptyPage)),
+    http.get("/api/v2/artifacts/:id/asks", () => Response.json(emptyPage)),
+    http.get("/api/v2/asks", () => Response.json(emptyPage)),
     ...decisionsAndReadMarkHandlers()
   );
 });
+
+/** A list route's page holding no row, as `/api/v2` answers one. */
+const emptyPage = { items: [], limit: 50, offset: 0, total: 0 };
 
 const WHOLE_COMMENT = "11111111-1111-4111-8111-111111111111";
 const OTHER_COMMENT = "1111dddd-dddd-4ddd-8ddd-dddddddddddd";
@@ -54,19 +59,23 @@ const SHORT_ASK = "22222222";
 const UNKNOWN_COMMENT = "33333333-3333-4333-8333-333333333333";
 
 /** The project document the second owner's tests stand on, the one `?ask=` is written beside. */
-const projectDocument: Artifact = {
+const projectDocument: ArtifactV2 = {
   created_at: "2026-09-10T00:00:00Z",
   created_by: { id: "alice", kind: "user" },
   id: "artifact-9",
   issue_key: null,
   kind: "doc",
+  latest_version: null,
+  latest_version_at: null,
+  latest_version_size: null,
   name: "Plan",
   primary: false,
   project: "CORE",
   ref_key: "CORE/plan-md",
   session_id: null,
   slug: "plan-md",
-  versions: [],
+  unsettled: null,
+  version_count: 0,
 };
 
 const issueOwner: MarginOwner = { key: "CORE-1", kind: "issue" };
@@ -104,7 +113,7 @@ function anchoredComment(id: string): Comment {
   };
 }
 
-function documentAsk(id: string): Ask {
+function documentAsk(id: string): AskV2 {
   return {
     anchor: {
       artifact_id: projectDocument.id,
@@ -122,38 +131,45 @@ function documentAsk(id: string): Ask {
     author: { id: "session-1", kind: "session" },
     block_id: null,
     created_at: "2026-09-10T00:00:00Z",
+    document: { name: projectDocument.name, project: "CORE", slug: projectDocument.slug },
     edited_at: null,
     id,
+    issue: null,
     issue_key: null,
     kind: "question",
+    last_reply: null,
     multiple: false,
     opened_event_id: 1,
     options: [],
+    priority: null,
     question: "Which way round?",
+    ref: `dispatch://CORE/artifact/plan-md/ask/${id}`,
     state: "open",
     urgency: "med",
   };
 }
 
-function askRead(ask: Ask): AskRead {
+function askRead(ask: AskV2): AskWithThread {
   return {
-    answers: [],
-    ask,
-    claimant: null,
-    edits: [],
-    followers: [],
-    replies: [],
-    route: null,
-    route_holder: null,
-    route_status: null,
-    route_status_reason: null,
+    ...ask,
+    thread: {
+      answers: [],
+      claimant: null,
+      edits: [],
+      followers: [],
+      replies: [],
+      route: null,
+      route_holder: null,
+      route_status: null,
+      route_status_reason: null,
+    },
   };
 }
 
 /** The document page as both of its hosts render it: the item the address names comes from the
  *  URL's `?comment=` or `?ask=` (`useIssueDetail`, `DocumentPage`), so the page reads whatever
  *  the address holds after a rewrite. */
-function Page({ document, owner }: { document: Artifact; owner: MarginOwner }): ReactNode {
+function Page({ document, owner }: { document: ArtifactV2; owner: MarginOwner }): ReactNode {
   const { search } = useLocation();
   const item = itemFromSearch(search);
 
@@ -191,7 +207,7 @@ function GoBack(): ReactNode {
 /** The query cache a document page opens with: the reader, the schema and the reads
  *  `ProofDocument` makes of the document itself, so the only reads a test sees are the ones the
  *  address's item asks for. */
-function documentClient(document: Artifact): QueryClient {
+function documentClient(document: ArtifactV2): QueryClient {
   const queryClient = createQueryClient();
   queryClient.setQueryData(["whoami"], { kind: "user", login: "alice" });
   queryClient.setQueryData(["block-schema"], { types: [], version: 1 });
@@ -213,7 +229,7 @@ function renderDocument({
   path,
   queryClient = documentClient(document),
 }: {
-  document?: Artifact;
+  document?: ArtifactV2;
   margin?: boolean;
   owner?: MarginOwner;
   path: string;
@@ -287,14 +303,15 @@ test("a `?ask=` that writes its id whole reads the ask under it with nothing res
 test("a `?comment=` written short resolves, selects the whole-id comment and replaces the address", async () => {
   const user = userEvent.setup();
   const comment = anchoredComment(WHOLE_COMMENT);
-  const getReferences = spyOn(api, "getReferences").mockResolvedValue({
-    edges: [],
-    node: graphNode({
-      id: WHOLE_COMMENT,
-      kind: "comment",
-      ref: `dispatch://CORE-1/comment/${WHOLE_COMMENT}`,
-    }),
-  });
+  const getReferences = spyOn(api, "getReferences").mockResolvedValue(
+    referencesRead(
+      graphNode({
+        id: WHOLE_COMMENT,
+        kind: "comment",
+        ref: `dispatch://CORE-1/comment/${WHOLE_COMMENT}`,
+      })
+    )
+  );
   const listComments = spyOn(api, "listComments").mockResolvedValue([comment]);
   const queryClient = documentClient(specArtifact);
   queryClient.setQueryData(["comments", issue.key], [comment]);
@@ -327,14 +344,15 @@ test("a `?comment=` written short resolves, selects the whole-id comment and rep
 test("a project document's `?ask=` written short reads the ask under its whole id alone", async () => {
   const ask = documentAsk(WHOLE_ASK);
   const reference = `dispatch://CORE/artifact/plan-md/ask/${SHORT_ASK}`;
-  const getReferences = spyOn(api, "getReferences").mockResolvedValue({
-    edges: [],
-    node: graphNode({
-      id: WHOLE_ASK,
-      kind: "ask",
-      ref: `dispatch://CORE/artifact/plan-md/ask/${WHOLE_ASK}`,
-    }),
-  });
+  const getReferences = spyOn(api, "getReferences").mockResolvedValue(
+    referencesRead(
+      graphNode({
+        id: WHOLE_ASK,
+        kind: "ask",
+        ref: `dispatch://CORE/artifact/plan-md/ask/${WHOLE_ASK}`,
+      })
+    )
+  );
   const getAsk = spyOn(api, "getAsk").mockResolvedValue(askRead(ask));
   const { view } = renderDocument({
     document: projectDocument,

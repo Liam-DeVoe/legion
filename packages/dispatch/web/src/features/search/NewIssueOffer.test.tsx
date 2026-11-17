@@ -7,7 +7,7 @@ import type { ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { ApiError, api } from "../../api/client";
-import type { ArtifactUploadResponse, Issue, Message } from "../../api/types";
+import type { ArtifactUploadV2, Issue, Message } from "../../api/types";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { firstCriterion } from "./new-issue";
 import { SearchPalette } from "./SearchPalette";
@@ -70,9 +70,7 @@ function openBar(settings: { label: string; session: string }): Stubs {
   const search = spyOn(api, "search").mockResolvedValue(searchAnswer([]));
   const newIssueSettings = spyOn(api, "getNewIssueSettings").mockResolvedValue(settings);
   const createIssue = spyOn(api, "createIssue").mockResolvedValue(issue("CORE-7"));
-  const uploadArtifact = spyOn(api, "uploadArtifact").mockResolvedValue(
-    {} as ArtifactUploadResponse
-  );
+  const uploadArtifact = spyOn(api, "uploadArtifact").mockResolvedValue({} as ArtifactUploadV2);
   const patchIssue = spyOn(api, "patchIssue").mockResolvedValue(issue("CORE-7"));
   const createMessage = spyOn(api, "createMessage").mockResolvedValue({} as Message);
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });

@@ -6,7 +6,7 @@ import {
 import { type AgentStreamCommand, isShellCommandReport } from "@legion/contracts";
 import { type ReactNode, useCallback, useLayoutEffect, useMemo } from "react";
 
-import type { Message, MessageRead } from "../../api/types";
+import type { Message, MessageThreadV2 } from "../../api/types";
 import { compareTimestamps } from "../../lib/timestamps";
 import type { SessionSends } from "../conversation/useSessionSends";
 import { isViewer } from "../refs/actor";
@@ -114,7 +114,7 @@ export function AgentRuntimeThread({
   /** Holds the composer's Send while a model or thinking switch awaits the session. */
   sendDisabled: boolean;
   sessionId: string;
-  stored: readonly MessageRead[];
+  stored: readonly MessageThreadV2[];
   /** The signed-in human's login: their own messages read as theirs, every other one names its
    *  author. */
   viewer: string | undefined;

@@ -4,7 +4,7 @@ import { useRef } from "react";
 import { issuePatchRequest } from "../../api/client";
 import { mergeIssue } from "../../api/issue-cache";
 import { inboxQuery } from "../../api/queries";
-import type { InboxRow, IssueDetails, IssueSummary, UpdateIssueInput } from "../../api/types";
+import type { InboxRow, IssueDetails, IssueSummary, PatchIssueV2Input } from "../../api/types";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 
@@ -42,7 +42,7 @@ export const inboxKey = inboxQuery().queryKey;
 export function useIssueFieldWrite<Value>(
   issueKey: string,
   field: {
-    patch: (value: Value) => UpdateIssueInput;
+    patch: (value: Value) => PatchIssueV2Input;
     show: (value: Value) => void;
     /** What the shell's indicator names one save of this field. */
     label: (value: Value) => string;

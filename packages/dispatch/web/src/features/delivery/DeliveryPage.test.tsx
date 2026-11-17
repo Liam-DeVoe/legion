@@ -51,7 +51,7 @@ const emptyFreshness: DeliveryTimelineWithMeasures["freshness"] = {
 
 const NOT_CONFIGURED = "DELIVERY_NOT_CONFIGURED";
 const notConfiguredMessage =
-  "delivery is not configured; set delivery_settings through PUT /api/v1/settings/delivery";
+  "delivery is not configured; set delivery_settings through PUT /api/v2/settings/delivery";
 
 /** The measures panel's answer for the page's window: nothing in it, so every test that is not
  *  about the panel renders it without asserting on it. */

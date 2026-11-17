@@ -1,6 +1,5 @@
 import { type ReactNode, useEffect, useRef, useState } from "react";
 
-import { artifactVersionPath } from "../../api/client";
 import { borderDefault } from "../../theme/classes";
 import { isPlainClick, openPictureLightbox } from "./picture-lightbox";
 import { pictureThumbnailClassName, RefLink } from "./RefLink";
@@ -113,17 +112,9 @@ export function DispatchPicture({
 }): ReactNode {
   const [failedSrc, setFailedSrc] = useState<string>();
   const named = referencedArtifact(route);
-  const pinned = named?.version;
-  const latest = useReferenceTarget(
-    named !== undefined && pinned === undefined ? route : undefined,
-    { text: false }
-  ).picture;
-  const src =
-    named === undefined
-      ? undefined
-      : pinned === undefined
-        ? latest
-        : artifactVersionPath(named.owner, named.slug, pinned);
+  // `/api/v2` addresses a version's bytes by the document's id, which a reference names by its
+  // owner and slug, so even a pinned version is drawn once the document's summary is read.
+  const src = useReferenceTarget(named === undefined ? undefined : route, { text: false }).picture;
   if (src === undefined || src === failedSrc) {
     return <RefLink route={route} text={caption} />;
   }

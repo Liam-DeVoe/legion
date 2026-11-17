@@ -3,7 +3,13 @@ import { useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, type ReactNode, useId, useState } from "react";
 
 import { type ArtifactOwner, api, type WriteBounds } from "../../api/client";
-import type { Ask, AskRead, Comment, CommentWithTrees, CreateCommentInput } from "../../api/types";
+import type {
+  AskV2,
+  AskWithThread,
+  Comment,
+  CommentWithTrees,
+  CreateCommentInput,
+} from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import { submitOnModifiedEnter } from "../../hooks/submitOnModifiedEnter";
 import { useSending } from "../../hooks/useSending";
@@ -73,7 +79,7 @@ function AskReply({
 
 /** AskCard owns the `["ask-thread", ask.id]` query, initializing it from an Inbox row when
  *  available; every card renders the shared thread without a duplicate read. */
-export type AskThreadQuery = UseQueryResult<AskRead, Error>;
+export type AskThreadQuery = UseQueryResult<AskWithThread, Error>;
 
 /**
  * The reply form under an answered ask. It posts to the ask's issue, or to its document for a
@@ -87,7 +93,7 @@ export function AskReplyComposer({
   createReply: reply = createReply,
   uploadOwner,
 }: {
-  ask: Ask;
+  ask: AskV2;
   createReply?: CreateReply;
   /** Where a file pasted or dropped into the reply goes: the ask's issue, or its document's
    *  project. Without one the field takes a paste as text. */
@@ -177,7 +183,7 @@ export function AskReplyComposer({
 }
 
 export interface AskThreadProps {
-  ask: Ask;
+  ask: AskV2;
   /** The shared ask-thread query AskCard owns; this component never requests thread data itself. */
   thread: AskThreadQuery;
   createReply?: CreateReply;
@@ -223,7 +229,7 @@ export function AskThread({
   order,
   unread,
 }: AskThreadProps): ReactNode {
-  const replies = thread.data?.replies ?? [];
+  const replies = thread.data?.thread.replies ?? [];
   const [showAllReplies, setShowAllReplies] = useState<boolean>();
   const { composerFirst, folded, shown } = threadLayout({
     collapse: true,

@@ -715,7 +715,7 @@ export type BlockedByRefusalWords = keyof typeof BLOCKED_BY_REFUSALS;
 
 /**
  * How a document of the issue stands with its reviewers, in words (R5): the head's "How it gets
- * done" row says this of the plan. The keys are `ArtifactApproval.state`; the version a review
+ * done" row says this of the plan. The keys are `ArtifactApprovalWithTrees.state`; the version a review
  * covers is no part of the word, because the head is one line and the document's own toolbar
  * carries the version.
  */

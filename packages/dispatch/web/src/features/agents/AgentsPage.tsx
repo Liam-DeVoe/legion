@@ -23,10 +23,10 @@ import {
 } from "../../api/queries";
 import type {
   Agent,
+  AgentMessageV2,
+  Marks,
   MessageDeliveryMode,
-  MessageRead,
   MessageWithTrees,
-  UserAgentStates,
 } from "../../api/types";
 import { CopyButton } from "../../components/CopyButton";
 import { ChevronIcon, DisclosureToggle } from "../../components/DisclosureToggle";
@@ -153,7 +153,7 @@ function groupAgents(
   agents: readonly Agent[],
   pinned: readonly string[],
   needsYou: NeedsYouBySession,
-  states: UserAgentStates,
+  states: Marks,
   now: number
 ): Record<AgentGroup, Agent[]> {
   const grouped: Record<AgentGroup, Agent[]> = {
@@ -195,7 +195,7 @@ function AgentExchangeReply({
   agent: Agent;
   liveAgents: readonly Agent[] | undefined;
   onReply: (reply: AgentReply) => void;
-  read: MessageRead;
+  read: AgentMessageV2;
   reply: MessageWithTrees;
   replyDisabled: boolean;
 }): ReactNode {
@@ -212,11 +212,11 @@ function AgentExchangeReply({
     write: (delivery, bounds) => api.createMessageDelivery(reply.id, delivery, bounds),
   });
   const replies = read.replies ?? [];
-  const parent = [read.message, ...replies].find((item) => item.id === reply.in_reply_to);
+  const parent = [read, ...replies].find((item) => item.id === reply.in_reply_to);
   const answer = replies.find(
     (candidate) => candidate.in_reply_to === reply.id && candidate.author.kind === "session"
   );
-  const capabilities = capabilitiesForTarget(read.message.target, liveAgents);
+  const capabilities = capabilitiesForTarget(read.target, liveAgents);
   return (
     <ReplyTurn
       at={reply.created_at}
@@ -273,7 +273,7 @@ function AgentTargetedMessage({
   agent: Agent;
   liveAgents: readonly Agent[] | undefined;
   onReply: (reply: AgentReply) => void;
-  read: MessageRead;
+  read: AgentMessageV2;
   replyDisabled: boolean;
 }): ReactNode {
   const queryClient = useQueryClient();
@@ -286,7 +286,7 @@ function AgentTargetedMessage({
       void queryClient.invalidateQueries({
         queryKey: agentMessagesQuery(agent.session_id).queryKey,
       }),
-    write: (delivery, bounds) => api.createMessageDelivery(read.message.id, delivery, bounds),
+    write: (delivery, bounds) => api.createMessageDelivery(read.id, delivery, bounds),
   });
   const replies = read.replies ?? [];
   const answer = replies.find((reply) => reply.author.kind === "session");
@@ -296,20 +296,20 @@ function AgentTargetedMessage({
       body={
         <>
           <p className={`flex items-baseline gap-2 text-sm ${textSecondaryOnCanvas}`}>
-            <AgentName actor={read.message.author} className="font-semibold" inline />
-            <Timestamp at={read.message.created_at} />
+            <AgentName actor={read.author} className="font-semibold" inline />
+            <Timestamp at={read.created_at} />
           </p>
           <div className={textPrimaryOnCanvas}>
-            <MarkdownBody markdown={read.message.body} tree={read.message.body_tree} />
+            <MarkdownBody markdown={read.body} tree={read.body_tree} />
           </div>
         </>
       }
-      canAside={capabilitiesForTarget(read.message.target, liveAgents)?.includes("aside") !== false}
-      canBtw={capabilitiesForTarget(read.message.target, liveAgents)?.includes("btw") !== false}
-      canSteer={capabilitiesForTarget(read.message.target, liveAgents)?.includes("steer") !== false}
-      deliveries={deliveryAttempts(read.message.deliveries ?? [], rowTarget(agent))}
+      canAside={capabilitiesForTarget(read.target, liveAgents)?.includes("aside") !== false}
+      canBtw={capabilitiesForTarget(read.target, liveAgents)?.includes("btw") !== false}
+      canSteer={capabilitiesForTarget(read.target, liveAgents)?.includes("steer") !== false}
+      deliveries={deliveryAttempts(read.deliveries ?? [], rowTarget(agent))}
       header={null}
-      onReply={() => onReply(agentReplyTo(agent, read, read.message))}
+      onReply={() => onReply(agentReplyTo(agent, read, read))}
       onRetry={retry.mutate}
       replyDisabled={replyDisabled}
       retrying={retry.isPending}
@@ -331,14 +331,14 @@ function AgentTargetedMessage({
           </ThreadReplies>
         )
       }
-      turnID={`message:${read.message.id}`}
+      turnID={`message:${read.id}`}
     />
   );
 }
 
 /** When an exchange last moved: its newest reply, else the root message. */
-function exchangeActivityAt(read: MessageRead): string {
-  return ((read.replies ?? []).at(-1) ?? read.message).created_at;
+function exchangeActivityAt(read: AgentMessageV2): string {
+  return ((read.replies ?? []).at(-1) ?? read).created_at;
 }
 
 /**
@@ -347,9 +347,9 @@ function exchangeActivityAt(read: MessageRead): string {
  * answer is news.
  */
 function exchangesAfter(
-  exchanges: readonly MessageRead[],
+  exchanges: readonly AgentMessageV2[],
   clearedBefore: string | undefined
-): readonly MessageRead[] {
+): readonly AgentMessageV2[] {
   if (clearedBefore === undefined) return exchanges;
   return exchanges.filter((read) => compareTimestamps(exchangeActivityAt(read), clearedBefore) > 0);
 }
@@ -385,7 +385,7 @@ function AgentMessageList({
   // row is open, so marking those replies read does not fold them away from the viewer reading
   // them.
   const unreadAtOpen = useUnreadAtOpen(messages.data, open);
-  const olderShown = older.filter((read) => unreadAtOpen?.has(read.message.id) === true);
+  const olderShown = older.filter((read) => unreadAtOpen?.has(read.id) === true);
   const olderFolded = older.filter((read) => !olderShown.includes(read));
   const rendered =
     newest === undefined ? [] : [newest, ...olderShown, ...(showOlder ? olderFolded : [])];
@@ -413,10 +413,10 @@ function AgentMessageList({
     return <p className={`mt-3 text-sm ${dangerText}`}>Could not load this conversation.</p>;
   }
   if (all.length === 0) return null;
-  const row = (read: MessageRead) => (
+  const row = (read: AgentMessageV2) => (
     <AgentTargetedMessage
       agent={agent}
-      key={read.message.id}
+      key={read.id}
       liveAgents={liveAgents}
       onReply={onReply}
       read={read}

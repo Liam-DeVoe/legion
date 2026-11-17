@@ -29,7 +29,7 @@ function renderMark(send: (value: string) => Promise<void>, initial: Props) {
   client.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
   const request = (value: string): WriteRequest =>
     sends.answer(
-      { body: { value }, method: "PUT", path: "/api/v1/me/threads/t/read" },
+      { body: { value }, method: "PATCH", path: "/api/v2/me/marks/thread/t" },
       (bounds) => {
         sent.push(value);
         keys.push(bounds.key);
@@ -105,7 +105,7 @@ test("a mark whose attempts fail short of a verdict is tried again under its key
     const { client, hook, keys, sent, succeeded } = renderMark(
       async () => {
         calls += 1;
-        if (calls < 3) throw new NetworkError("/api/v1/me/threads/t/read", new TypeError("x"));
+        if (calls < 3) throw new NetworkError("/api/v2/me/marks/thread/t", new TypeError("x"));
       },
       { key: "a", shouldSend: true }
     );

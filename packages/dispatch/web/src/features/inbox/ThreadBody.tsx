@@ -24,9 +24,9 @@ import { api } from "../../api/client";
 import { agentMessagesQuery, askThreadQuery, issueQuery, myRepliesKey } from "../../api/queries";
 import type {
   Actor,
+  AgentMessageV2,
   CommentWithTrees,
   DisplayTree,
-  MessageRead,
   MessageWithTrees,
   MyReplyAgentRow,
   MyReplyRow,
@@ -400,14 +400,12 @@ function MessageThreadBody({
   if (messages.isError) {
     return <p className={`mt-2 text-sm ${dangerText}`}>Could not load this thread.</p>;
   }
-  const read = messages.data.find((candidate) => candidate.message.id === thread.thread_id);
-  const root = read?.message;
+  const root = messages.data.find((candidate) => candidate.id === thread.thread_id);
   const rootTurn = root === undefined ? undefined : messageTurn(root);
-  const replies = (read?.replies ?? []).map((message) => messageTurn(message));
+  const replies = (root?.replies ?? []).map((message) => messageTurn(message));
   // A reply into a targeted thread is delivered as the thread's newest attempt was, which is how
   // the issue's Conversation addresses one.
-  const last =
-    read === undefined ? undefined : newestAttempt([read.message, ...(read.replies ?? [])]);
+  const last = root === undefined ? undefined : newestAttempt([root, ...(root.replies ?? [])]);
   const target = root?.target;
   return (
     <ThreadTurns
@@ -477,11 +475,11 @@ function AskThreadBody({
   return (
     <div className="mt-2" data-inbox-thread={thread.thread_id} ref={markNewest}>
       <AskCard
-        ask={read.data.ask}
+        ask={read.data}
         initialThread={read.data}
         owner={thread.document}
         thread="inline"
-        unread={unreadWrites(thread, read.data.replies ?? [])}
+        unread={unreadWrites(thread, read.data.thread.replies ?? [])}
         variant="full"
       />
     </div>
@@ -530,15 +528,15 @@ function AgentThreadBody({
   const hold = useSending(sendKey);
   // Read before the loading branches, because the mark below is a hook: the thread's own
   // conversation among the session's, which is undefined until the read lands.
-  const read: MessageRead | undefined = messages.data?.find(
-    (candidate) => candidate.message.id === thread.thread_id
+  const read: AgentMessageV2 | undefined = messages.data?.find(
+    (candidate) => candidate.id === thread.thread_id
   );
   const markNewest = useAgentThreadRead(thread, read?.replies ?? NO_REPLIES);
   if (messages.isPending) return <LoadingSkeleton label="Opening the conversation" />;
   if (messages.isError) {
     return <p className={`mt-2 text-sm ${dangerText}`}>Could not load this conversation.</p>;
   }
-  const newest = read === undefined ? undefined : ((read.replies ?? []).at(-1) ?? read.message);
+  const newest = read === undefined ? undefined : ((read.replies ?? []).at(-1) ?? read);
   const turn = (message: MessageWithTrees): ThreadTurn =>
     messageTurn(
       message,
@@ -546,7 +544,7 @@ function AgentThreadBody({
         <AcceptedAsTurn sessionId={sessionId} />
       ) : undefined
     );
-  const turns = read === undefined ? [] : [read.message, ...(read.replies ?? [])].map(turn);
+  const turns = read === undefined ? [] : [read, ...(read.replies ?? [])].map(turn);
   return (
     <>
       <ThreadTurns

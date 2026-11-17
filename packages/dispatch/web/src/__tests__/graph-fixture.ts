@@ -1,7 +1,7 @@
-import type { GraphReferences } from "../api/types";
+import type { GraphNodeRead } from "../api/types";
 
-/** One node of the reference graph, as `GET /api/v1/references` answers with it. */
-export type GraphNode = GraphReferences["node"];
+/** One node of the reference graph, as `GET /api/v2/references` answers it beside its edges. */
+export type GraphNode = GraphNodeRead;
 
 /**
  * A graph node with the fields the server writes on every one of them, and whatever the caller

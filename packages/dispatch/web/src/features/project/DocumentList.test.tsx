@@ -8,10 +8,10 @@ import { realClock, tick } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
-import type { Artifact } from "../../api/types";
+import { type DocumentFixture, documentRead } from "../artifacts/artifact-fixture";
 import { DocumentList } from "./DocumentList";
 
-function document(overrides: Partial<Artifact> = {}): Artifact {
+function document(overrides: Partial<DocumentFixture> = {}): DocumentFixture {
   return {
     created_at: "2026-09-10T00:00:00Z",
     created_by: { id: "alice", kind: "user" },
@@ -24,6 +24,7 @@ function document(overrides: Partial<Artifact> = {}): Artifact {
     ref_key: "CORE/design-notes",
     session_id: null,
     slug: "design-notes",
+    unsettled: null,
     versions: [
       {
         authors: [{ id: "alice", kind: "user" }],
@@ -43,15 +44,17 @@ function Location() {
 
 function uploadResponse() {
   const artifact = document();
-  const version = artifact.versions?.at(0);
+  const version = artifact.versions.at(0);
   if (version === undefined) {
     throw new Error("document fixture requires a version");
   }
-  return { artifact, version };
+  return { artifact: documentRead(artifact), version };
 }
 
-function renderList(artifacts: Artifact[]) {
-  const listProjectArtifacts = spyOn(api, "listProjectArtifacts").mockResolvedValue(artifacts);
+function renderList(artifacts: DocumentFixture[]) {
+  const listProjectArtifacts = spyOn(api, "listProjectArtifacts").mockResolvedValue(
+    artifacts.map(documentRead)
+  );
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const view = render(
     <MemoryRouter>
@@ -83,7 +86,7 @@ test("Documents requests unlinked project artifacts and links a document to its 
 });
 
 test("a document's row names its latest version's stored size", async () => {
-  const [first] = document().versions ?? [];
+  const [first] = document().versions;
   if (first === undefined) {
     throw new Error("document fixture requires a version");
   }

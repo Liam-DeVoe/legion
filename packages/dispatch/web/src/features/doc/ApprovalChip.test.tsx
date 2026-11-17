@@ -4,28 +4,32 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { ApiError, api } from "../../api/client";
-import type { Artifact, ArtifactApproval, ArtifactReview } from "../../api/types";
+import type { ArtifactApprovalWithTrees, ArtifactReview, ArtifactV2 } from "../../api/types";
 import { ApprovalChip } from "./ApprovalChip";
 
-function artifact(approval: ArtifactApproval | undefined): Artifact {
+function artifact(approval: ArtifactApprovalWithTrees | undefined): ArtifactV2 {
   return {
     created_at: "2026-09-09T00:00:00Z",
     created_by: { id: "alice", kind: "user" },
     id: "artifact-1",
     issue_key: "CORE-1",
     kind: "doc",
+    latest_version: null,
+    latest_version_at: null,
+    latest_version_size: null,
     name: "Design notes",
     primary: false,
     project: "CORE",
     ref_key: "CORE-1/design-notes",
     session_id: null,
     slug: "design-notes",
-    versions: [],
+    unsettled: null,
+    version_count: 0,
     ...(approval === undefined ? {} : { approval }),
   };
 }
 
-function renderChip(target: Artifact, variant?: "header" | "list", onReviewed?: () => void) {
+function renderChip(target: ArtifactV2, variant?: "header" | "list", onReviewed?: () => void) {
   const queryClient = new QueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
   });
@@ -57,7 +61,7 @@ test("renders nothing for a draft document in every variant", () => {
 });
 
 test("renders each approval state's label", () => {
-  const cases: Array<[ArtifactApproval, string]> = [
+  const cases: Array<[ArtifactApprovalWithTrees, string]> = [
     [{ latest_version: 3, state: "awaiting" }, "Awaiting approval"],
     [{ latest_version: 3, state: "approved", version: 3 }, "Approved v3"],
     [{ latest_version: 3, state: "changes_requested", version: 2 }, "Changes requested"],

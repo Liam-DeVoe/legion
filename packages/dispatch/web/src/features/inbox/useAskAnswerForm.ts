@@ -1,17 +1,15 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, useEffect, useId, useRef, useState } from "react";
 
-import { ApiError, api, apiErrorMessage, type WriteBounds } from "../../api/client";
+import {
+  type AnswerAskInput,
+  ApiError,
+  api,
+  apiErrorMessage,
+  type WriteBounds,
+} from "../../api/client";
 import { whoAmIQuery } from "../../api/queries";
-import type {
-  AnswerAskInput,
-  Ask,
-  AskAnswer,
-  AskRead,
-  AskWithTrees,
-  Comment,
-  CreateCommentInput,
-} from "../../api/types";
+import type { AskAnswer, AskV2, AskWithThread, Comment, CreateCommentInput } from "../../api/types";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 import { isViewer } from "../refs/actor";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
@@ -26,16 +24,16 @@ import { askArtifactId, invalidateOwnerReads } from "./owner-reads";
 import { isQuestionShapedAnswer } from "./question-shaped-answer";
 
 interface UseAskAnswerFormOptions {
-  ask: AskWithTrees;
-  answer: (id: string, input: AnswerAskInput, bounds: WriteBounds) => Promise<Ask>;
+  ask: AskV2;
+  answer: (id: string, input: AnswerAskInput, bounds: WriteBounds) => Promise<AskV2>;
   createReply: (
     issueKey: string,
     input: CreateCommentInput,
     bounds: WriteBounds
   ) => Promise<Comment>;
-  getAskThread: (id: string) => Promise<AskRead>;
+  getAskThread: (id: string) => Promise<AskWithThread>;
   /** Data the Inbox response already hydrated for this card's first render. */
-  initialThread?: AskRead;
+  initialThread?: AskWithThread;
   /** Timestamp of the Inbox snapshot that supplied initialThread. */
   initialThreadUpdatedAt?: number;
   /** Called once the server has recorded the reader's answer from this card. */
@@ -118,7 +116,7 @@ export function useAskAnswerForm({
   const [selected, setSelected] = useState<string[]>([]);
   const [otherSelected, setOtherSelected] = useState(false);
   const [questionChoice, setQuestionChoice] = useState(false);
-  const [justAnswered, setJustAnswered] = useState<Ask | null>(null);
+  const [justAnswered, setJustAnswered] = useState<AskV2 | null>(null);
   const [askChanged, setAskChanged] = useState(false);
   const [changing, setChanging] = useState(false);
   // The reader's unsent answer, which outlives this form: the ask's own Inbox row can leave
@@ -142,7 +140,7 @@ export function useAskAnswerForm({
   // and so does every thread on an issue whose claim or route moved while it was in flight.
   const refreshInitialThread =
     initialThread !== undefined && hasPendingAskThreadInvalidation(queryClient, ask);
-  const threadQuery = useQuery<AskRead, Error>({
+  const threadQuery = useQuery<AskWithThread, Error>({
     initialData: refreshInitialThread ? undefined : initialThread,
     initialDataUpdatedAt: refreshInitialThread ? undefined : initialThreadUpdatedAt,
     queryKey: ["ask-thread", ask.id],
@@ -154,8 +152,8 @@ export function useAskAnswerForm({
       clearPendingAskThreadInvalidation(queryClient, ask.id);
     }
   }, [ask.id, queryClient, refreshInitialThread, threadQuery.data]);
-  const edits = threadQuery.data?.edits ?? [];
-  const answers = threadQuery.data?.answers ?? [];
+  const edits = threadQuery.data?.thread.edits ?? [];
+  const answers = threadQuery.data?.thread.answers ?? [];
   // The card says why an answer was refused, in the ask's own words, beside the draft it holds;
   // the shell's indicator shows the answer only while it is out. The row's removal from the
   // Inbox, its restore on a refusal and the hold that keeps the question where the reader
@@ -204,13 +202,16 @@ export function useAskAnswerForm({
       if (changed || updatedAsk === null) {
         if (updatedAsk?.answer != null) {
           const changedAnswer = updatedAsk.answer;
-          queryClient.setQueryData<AskRead>(["ask-thread", ask.id], (current) =>
+          queryClient.setQueryData<AskWithThread>(["ask-thread", ask.id], (current) =>
             current === undefined
               ? undefined
               : {
                   ...current,
-                  answers: [...(current.answers ?? []), changedAnswer],
-                  ask: updatedAsk,
+                  ...updatedAsk,
+                  thread: {
+                    ...current.thread,
+                    answers: [...(current.thread.answers ?? []), changedAnswer],
+                  },
                 }
           );
         }
@@ -251,7 +252,7 @@ export function useAskAnswerForm({
   // The thread read is the truth once the question changed under the draft, and once the ask
   // was answered or resolved elsewhere while this card still holds its open row (an Inbox row
   // kept in place while the reader is on it): the card then shows the recorded outcome.
-  const threadAsk = threadQuery.data?.ask;
+  const threadAsk = threadQuery.data;
   const displayedAsk =
     threadAsk !== undefined && (askChanged || threadAsk.state !== "open") ? threadAsk : ask;
   const recordedAsk = justAnswered ?? (displayedAsk.state === "open" ? null : displayedAsk);

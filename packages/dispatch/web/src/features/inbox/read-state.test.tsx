@@ -13,7 +13,7 @@ import { onFakeClock } from "../../__tests__/fake-clock";
 import { dwellOn, installIntersectionObserver } from "../../__tests__/intersection-observer";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerAgentStates, answerThreadReads } from "../../__tests__/send-answers";
-import { api } from "../../api/client";
+import { api, type WholeList } from "../../api/client";
 import {
   inboxQuery,
   inboxThreadsQuery,
@@ -22,15 +22,7 @@ import {
   userAgentStateQuery,
   whoAmIQuery,
 } from "../../api/queries";
-import type {
-  Agent,
-  Comment,
-  IssueDetails,
-  Message,
-  MessageRead,
-  MyRepliesResponse,
-  MyReplyRow,
-} from "../../api/types";
+import type { Agent, Comment, IssueDetails, Message, MyReplyRow } from "../../api/types";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { plannerAgentRow, replyRow } from "../threads/replies-fixture";
 import { Inbox } from "./Inbox";
@@ -92,8 +84,8 @@ function comment(id: string, body: string, overrides: Partial<Comment> = {}): Co
   };
 }
 
-function threadsRead(rows: readonly MyReplyRow[]): MyRepliesResponse {
-  return { as_of: AS_OF, limit: 0, offset: 0, rows: [...rows], total: rows.length };
+function threadsRead(rows: readonly MyReplyRow[]): WholeList<"/api/v2/me/threads"> {
+  return { as_of: AS_OF, items: [...rows], limit: 0, offset: 0, total: rows.length };
 }
 
 /** A client holding everything the Inbox reads but the thread's own comments. */
@@ -147,7 +139,7 @@ function widenToReadingPane(): () => void {
 
 function mockCommentReads(): void {
   spy("getIssue", { closed_at: null } as unknown as IssueDetails);
-  spy("getCredentialPending", { pending: [] });
+  spy("getCredentialPending", []);
   spy("listComments", [
     comment("comment-1", "The retry budget is too small."),
     comment("comment-2", "Agreed.", {
@@ -268,12 +260,16 @@ function message(id: string, body: string, overrides: Partial<Message> = {}): Me
 
 test("an Agent thread is read by reply id, and moves no session read mark", async () => {
   const viewport = installIntersectionObserver();
-  const state = answerAgentStates().mockResolvedValue({ unread_replies: 0 });
+  const state = answerAgentStates().mockResolvedValue({
+    id: "planner",
+    kind: "agent",
+    unread_replies: 0,
+  });
   const threadMark = answerThreadReads().mockResolvedValue(undefined);
   spy("listAgents", [session]);
   spy("listAgentMessages", [
     {
-      message: message("message-1", "Have a look at the build"),
+      ...message("message-1", "Have a look at the build"),
       replies: [
         message("reply-1", "Looked at it.", {
           author: { id: "planner", kind: "session" },
@@ -281,12 +277,13 @@ test("an Agent thread is read by reply id, and moves no session read mark", asyn
           in_reply_to: "message-1",
         }),
       ],
-    } satisfies MessageRead,
+      unread: true,
+    },
   ]);
   const client = seeded([]);
   // The server still counts a reply of this session's unread, so the mark is wanted.
   client.setQueryData(userAgentStateQuery().queryKey, {
-    planner: { unread_replies: 1 },
+    planner: { id: "planner", kind: "agent", unread_replies: 1 },
   });
   render(
     <MemoryRouter>

@@ -1,7 +1,7 @@
 import type { QueryClient } from "@tanstack/react-query";
 
 import { ApiError, api, type WriteBounds } from "../../api/client";
-import type { UserIssueState, UserState } from "../../api/types";
+import type { Marks, MarkV2 } from "../../api/types";
 import { type Shape, shape } from "../writes/write-storage";
 import { defineWriteKind, ofKind, type Writes, writesOf } from "../writes/write-store";
 import { pinnedItemMarker, stateForIssue } from "./pins";
@@ -19,7 +19,7 @@ const keptPin = shape.record({
   operation: shape.record({ id: shape.string, op: shape.oneOf("pin", "unpin") }),
 }) satisfies Shape<PinWrite>;
 
-/** `dismissed` with `operation` applied: the item's marker in it for a pin, out of it for an
+/** `pinned_items` with `operation` applied: the item's marker in it for a pin, out of it for an
  *  unpin. */
 export function applyPinStateOperation(
   dismissed: readonly string[],
@@ -30,13 +30,13 @@ export function applyPinStateOperation(
   return dismissed.includes(marker) ? [...dismissed] : [...dismissed, marker];
 }
 
-/** The viewer's state of each issue as Dispatch last answered it, which each pin writes over:
+/** The viewer's mark of each issue as Dispatch last answered it, which each pin writes over:
  *  every pin of one issue goes after the one before it (`pin:<issue>`), so each reads the answer
  *  its predecessor got. */
-const authoritative = new Map<string, UserIssueState>();
+const authoritative = new Map<string, MarkV2>();
 
-/** Dispatch's current row, when it refused a write for carrying an older sequence. */
-function staleState(error: unknown): UserIssueState | undefined {
+/** Dispatch's current mark, when it refused a write for carrying an older sequence. */
+function staleState(error: unknown): MarkV2 | undefined {
   return error instanceof ApiError && error.code === "STATE_STALE" ? error.state : undefined;
 }
 
@@ -47,13 +47,20 @@ function staleState(error: unknown): UserIssueState | undefined {
  * which the pin is put on once more.
  */
 function pinAttempt({ issueKey, operation }: PinWrite) {
-  return async (bounds: WriteBounds): Promise<UserIssueState> => {
-    let base = authoritative.get(issueKey) ?? stateForIssue(await api.getMyState(), issueKey);
+  return async (bounds: WriteBounds): Promise<MarkV2> => {
+    const held = authoritative.get(issueKey);
+    let base = stateForIssue(
+      held === undefined ? await api.getMyState() : { [issueKey]: held },
+      issueKey
+    );
     for (let stale = 0; ; stale += 1) {
       try {
         const next = await api.putIssueState(
           issueKey,
-          { dismissed: applyPinStateOperation(base.dismissed ?? [], operation), seq: base.seq + 1 },
+          {
+            pinned_items: applyPinStateOperation(base.pinned_items, operation),
+            seq: base.seq + 1,
+          },
           bounds
         );
         authoritative.set(issueKey, next);
@@ -62,7 +69,7 @@ function pinAttempt({ issueKey, operation }: PinWrite) {
         const current = staleState(error);
         if (current === undefined || stale > 0) throw error;
         authoritative.set(issueKey, current);
-        base = current;
+        base = stateForIssue({ [issueKey]: current }, issueKey);
       }
     }
   };
@@ -98,9 +105,9 @@ const pinWrite = defineWriteKind<PinWrite>({
       void client.invalidateQueries({ queryKey: ["user-state"] });
       return;
     }
-    client.setQueryData<UserState>(["user-state"], (current) => ({
+    client.setQueryData<Marks>(["user-state"], (current) => ({
       ...current,
-      [issueKey]: answer as UserIssueState,
+      [issueKey]: answer as MarkV2,
     }));
   },
   name: "pin",
@@ -114,21 +121,24 @@ const pinWrite = defineWriteKind<PinWrite>({
 
 /** Pins or unpins one item of `issueKey` for the viewer: applied to the page's state at once and
  *  written behind every pin of that issue still out. The operation may be derived from the stored
- *  `dismissed` list at the moment of the write, which is what a toggle needs. */
+ *  `pinned_items` list at the moment of the write, which is what a toggle needs. */
 export function writePin(
   client: QueryClient,
   issueKey: string,
-  operation: PinStateOperation | ((dismissed: string[]) => PinStateOperation)
+  operation: PinStateOperation | ((pinned: readonly string[]) => PinStateOperation)
 ): void {
   let applied: PinStateOperation | undefined;
-  client.setQueryData<UserState>(["user-state"], (current) => {
+  client.setQueryData<Marks>(["user-state"], (current) => {
     const state = stateForIssue(current, issueKey);
-    applied = typeof operation === "function" ? operation(state.dismissed ?? []) : operation;
+    applied = typeof operation === "function" ? operation(state.pinned_items) : operation;
     return {
       ...current,
       [issueKey]: {
+        ...current?.[issueKey],
         ...state,
-        dismissed: applyPinStateOperation(state.dismissed ?? [], applied),
+        id: issueKey,
+        kind: "issue",
+        pinned_items: applyPinStateOperation(state.pinned_items, applied),
       },
     };
   });

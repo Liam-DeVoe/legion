@@ -3,11 +3,12 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
-import { graphNodeFields } from "../../__tests__/graph-fixture";
+import { type GraphNode, graphNodeFields } from "../../__tests__/graph-fixture";
 import { api } from "../../api/client";
-import type { GraphEdge, GraphReferences } from "../../api/types";
+import type { GraphEdge } from "../../api/types";
 import type { BlockItemKind } from "./block-reference";
 import { ReferencedBy } from "./ReferencedBy";
+import { referencesRead } from "./reference-fixture";
 
 const createdAt = "2026-10-20T10:00:00Z";
 
@@ -37,8 +38,13 @@ function blockEdge(
   } satisfies GraphEdge;
 }
 
-function renderPanel(read: GraphReferences, reference = "dispatch://CORE-1") {
-  const getReferences = spyOn(api, "getReferences").mockResolvedValue(read);
+function renderPanel(
+  read: { edges: GraphEdge[]; node: GraphNode },
+  reference = "dispatch://CORE-1"
+) {
+  const getReferences = spyOn(api, "getReferences").mockResolvedValue(
+    referencesRead(read.node, read.edges)
+  );
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const view = render(
     <MemoryRouter>
@@ -258,7 +264,7 @@ test("one source citing two blocks of the shown document is two rows, each linke
   ]);
 
   // The comment stops citing a: its row goes, and b's row keeps its link and its expanded excerpt.
-  getReferences.mockResolvedValue({ edges: [citing("b")], node });
+  getReferences.mockResolvedValue(referencesRead(node, [citing("b")]));
   await act(() => client.refetchQueries());
   expect(rows()).toEqual([["/issues/CORE-1/spec#b-b", "true"]]);
   expect(consoleError.mock.calls.some((call) => String(call[0]).includes("same key"))).toBeFalse();

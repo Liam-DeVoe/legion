@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 
-import { apiErrorMessage } from "../../api/client";
+import { apiErrorMessage, isApiV1Ended } from "../../api/client";
 import {
   borderDefault,
   calloutWarningBorder,
@@ -19,6 +19,11 @@ import {
 import { StopTrying } from "./StopTrying";
 import { useWriteSelection, useWrites, type Write } from "./write-store";
 
+/** What the indicator says of a write a build older than `/api/v2` kept, which the deployment
+ *  refused because it has ended `/api/v1`: nothing of it was saved, and nothing can send it now. */
+export const API_V1_ENDED_REASON =
+  "this change was kept from before Dispatch was updated, and Dispatch no longer accepts it. Make it again.";
+
 /** Why the refused write was not saved, in the reader's words. */
 function refusalReason(refusal: Error): string {
   if (refusal instanceof SendInterruptedError) {
@@ -30,6 +35,7 @@ function refusalReason(refusal: Error): string {
   if (refusal instanceof SendStoppedError) {
     return `Dispatch has not confirmed it. ${sameKeyRetryNote("saved")}`;
   }
+  if (isApiV1Ended(refusal)) return API_V1_ENDED_REASON;
   return apiErrorMessage(refusal, "Dispatch could not be reached");
 }
 
@@ -117,13 +123,15 @@ export function PendingWritesIndicator(): ReactNode {
                     <span className={`min-w-0 flex-1 ${dangerText}`}>
                       Not saved: {row.label} — {refusalReason(row.refusal)}
                     </span>
-                    <button
-                      className={secondaryButtonCompact}
-                      onClick={() => writes.retry(row.id)}
-                      type="button"
-                    >
-                      Retry
-                    </button>
+                    {isApiV1Ended(row.refusal) ? null : (
+                      <button
+                        className={secondaryButtonCompact}
+                        onClick={() => writes.retry(row.id)}
+                        type="button"
+                      >
+                        Retry
+                      </button>
+                    )}
                     <button
                       className={secondaryButtonCompact}
                       onClick={() => writes.discard(row.id)}

@@ -16,6 +16,7 @@ import {
   useMarkdownHeadline,
   warmMarkdownRenderer,
 } from "./markdown-engine";
+import { issueSummary } from "./reference-fixture";
 import { treeHead } from "./tree-fragment";
 
 /**
@@ -166,13 +167,9 @@ test("a hit inside a link's own words marks the whole link, whose title replaces
   // The snippet's own text cites `dispatch://CORE-1`, so the preview resolves that reference and
   // reads the issue's summary; without the spy that read reaches the network and the row fails on
   // it rather than on what it asserts (main's #2906 made a snippet's references its body's own).
-  const getIssueSummary = spyOn(api, "getIssueSummary").mockResolvedValue({
-    documents: [],
-    key: "CORE-1",
-    project: "CORE",
-    status: "in_progress",
-    title: "Design decision",
-  });
+  const getIssueSummary = spyOn(api, "getIssueSummary").mockResolvedValue(
+    issueSummary({ key: "CORE-1", status: "in_progress", title: "Design decision" })
+  );
   const hit = stored("a-marked-reference");
   if (hit.snippet === undefined) {
     throw new Error("the marked reference carries no snippet tree");

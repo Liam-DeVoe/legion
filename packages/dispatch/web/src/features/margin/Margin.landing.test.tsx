@@ -6,7 +6,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
 import { api } from "../../api/client";
-import type { Ask, Comment } from "../../api/types";
+import type { AskV2, Comment } from "../../api/types";
 import { buildIssuePath } from "../refs/routes";
 import { Margin } from "./Margin";
 import { MarginProvider } from "./margin-context";
@@ -19,6 +19,7 @@ import {
   SameCommentLink,
   SelectedItemLabel,
   stubMatchMedia,
+  withEmptyThread,
 } from "./margin-fixture";
 import { RELAYOUT_SETTLES_FRAMES } from "./useCardHold";
 
@@ -32,18 +33,7 @@ const secondComment: Comment = {
 /** The anchored ask's own thread, which its margin card reads: the ask as the fixture has it,
  *  with nothing answered, edited, replied or followed. */
 function answerAnchoredAsk() {
-  return spyOn(api, "getAsk").mockResolvedValue({
-    answers: [],
-    ask: anchoredAsk,
-    claimant: null,
-    edits: [],
-    followers: [],
-    replies: [],
-    route: null,
-    route_holder: null,
-    route_status: null,
-    route_status_reason: null,
-  });
+  return spyOn(api, "getAsk").mockResolvedValue(withEmptyThread(anchoredAsk));
 }
 
 function stubRects(cardTop: () => number): () => void {
@@ -75,7 +65,7 @@ function stubRects(cardTop: () => number): () => void {
   return () => rect.mockRestore();
 }
 
-function landingClient(comments: Comment[], asks: Ask[] = []): QueryClient {
+function landingClient(comments: Comment[], asks: AskV2[] = []): QueryClient {
   const queryClient = new QueryClient({
     defaultOptions: {
       mutations: { retry: false },
@@ -90,7 +80,10 @@ function landingClient(comments: Comment[], asks: Ask[] = []): QueryClient {
   return queryClient;
 }
 
-function renderCommentLinkLanding(comments: Comment[] = [comment], asks: Ask[] = []): RenderResult {
+function renderCommentLinkLanding(
+  comments: Comment[] = [comment],
+  asks: AskV2[] = []
+): RenderResult {
   return render(
     <MemoryRouter
       initialEntries={[`${buildIssuePath({ key: issue.key, kind: "spec" })}?comment=comment-1`]}
@@ -473,9 +466,12 @@ test("a press in the document takes over once the document has reported an empty
   const restoreMatchMedia = stubMatchMedia(false);
   // The spec's margin reads the issue's decisions, which this issue has none of.
   const getIssueDecisions = spyOn(api, "getIssueDecisions").mockResolvedValue({
-    decisions: [],
     document: `dispatch://${issue.key}/artifact/decisions-md`,
+    items: [],
+    limit: 50,
+    offset: 0,
     open_questions: [],
+    total: 0,
   });
   const view = renderLandingWithReport();
 

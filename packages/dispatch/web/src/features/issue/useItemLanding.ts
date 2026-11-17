@@ -131,9 +131,9 @@ export function useItemLanding(
   const resolved =
     route.kind === "comment"
       ? {
-          artifactID: comment.data?.comment.anchor?.artifact_id,
+          artifactID: comment.data?.anchor?.artifact_id,
           blockID: undefined,
-          item: comment.data?.comment,
+          item: comment.data,
           query: comment,
         }
       : route.kind === "ask"
@@ -142,17 +142,17 @@ export function useItemLanding(
             // it asks about (`approval.artifact_id`); landing there, with the ask in the
             // margin, beats falling through to the Conversation turn below.
             artifactID:
-              ask.data?.ask.anchor?.artifact_id ??
-              ask.data?.ask.block_artifact?.id ??
-              ask.data?.ask.approval?.artifact_id,
-            blockID: ask.data?.ask.block_id ?? undefined,
-            item: ask.data?.ask,
+              ask.data?.anchor?.artifact_id ??
+              ask.data?.block_artifact?.id ??
+              ask.data?.approval?.artifact_id,
+            blockID: ask.data?.block_id ?? undefined,
+            item: ask.data,
             query: ask,
           }
         : {
             artifactID: undefined,
             blockID: undefined,
-            item: message.data?.message,
+            item: message.data,
             query: message,
           };
   const { artifactID, blockID, item, query } = resolved;

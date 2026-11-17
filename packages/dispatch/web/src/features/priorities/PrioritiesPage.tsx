@@ -41,7 +41,7 @@ const PARKED_LAYOUT = {
 
 /** The per-project or per-priority counts under a fault's rule, in plain words: `CORE 12 ·
  *  OPS 7`, greatest first, which is what says where the fault is. */
-function countsLine(by: Readonly<Record<string, number>> | null): string {
+function countsLine(by: Readonly<Record<string, number>> | undefined): string {
   return Object.entries(by ?? {})
     .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
     .map(([name, count]) => `${name} ${count}`)
@@ -64,7 +64,7 @@ export function PrioritiesPage(): ReactNode {
   // wrote, never by the id, which is a slug of that title and no name at all to a reader.
   const { parkedByPriority, rows, titles } = useMemo(() => {
     const read = priorities.data;
-    const priorityRows = read?.priorities ?? [];
+    const priorityRows = read?.items ?? [];
     const byId = new Map(priorityRows.map((row) => [row.id, row.title]));
     return {
       rows: priorityRows,

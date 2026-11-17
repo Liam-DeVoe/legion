@@ -34,7 +34,7 @@ test("the engine parses with the manifest the page was built with and reads none
   const schemaReads: string[] = [];
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const path = input.toString();
-    if (path.startsWith("/api/v1/schema/blocks")) {
+    if (path.startsWith("/api/v2/block-schema")) {
       schemaReads.push(path);
       return Response.json({ ...manifest, types: [], version: manifest.version + 1 });
     }

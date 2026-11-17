@@ -95,7 +95,7 @@ const PIPELINE_JOB_FIELDS = [
 interface DeliverySettingsFormProps {
   /** The record when the caller already holds the answer, and the form then reads nothing: the
    *  Delivery page passes `null`, since the timeline's `DELIVERY_NOT_CONFIGURED` already says no
-   *  record is stored. Left out, the form reads `GET /api/v1/settings/delivery`. */
+   *  record is stored. Left out, the form reads `GET /api/v2/settings/delivery`. */
   readonly initial?: DeliverySettings | null;
 }
 

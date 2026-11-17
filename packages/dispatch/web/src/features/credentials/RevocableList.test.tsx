@@ -35,29 +35,27 @@ const sections: Section[] = [
     rowId: "grant-1",
     section: () => <GrantsSection />,
     stub: (revoke) => {
-      const list = spyOn(api, "getCredentialGrants").mockResolvedValue({
-        grants: [
-          {
-            approver: null,
-            created_at: "2026-10-03T12:05:00Z",
-            decided_by: null,
-            enrollment: {
-              kind: "session",
-              operator: "ada@example.com",
-              runtime_id: "box-1",
-              slot: null,
-            },
-            expires_at: "2026-10-03T13:05:00Z",
-            grant_id: "grant-1",
-            granted: "automatic",
-            names: ["WORKER_TOKEN"],
-            record_id: null,
+      const list = spyOn(api, "getCredentialGrants").mockResolvedValue([
+        {
+          approver: null,
+          created_at: "2026-10-03T12:05:00Z",
+          decided_by: null,
+          enrollment: {
+            kind: "session",
+            operator: "ada@example.com",
+            runtime_id: "box-1",
+            slot: null,
           },
-        ],
-      });
+          expires_at: "2026-10-03T13:05:00Z",
+          grant_id: "grant-1",
+          granted: "automatic",
+          names: ["WORKER_TOKEN"],
+          record_id: null,
+        },
+      ]);
       const spy = spyOn(api, "revokeCredentialGrant").mockImplementation(revoke);
       return {
-        clearList: () => list.mockResolvedValue({ grants: [] }),
+        clearList: () => list.mockResolvedValue([]),
         restore: () => {
           list.mockRestore();
           spy.mockRestore();
@@ -73,23 +71,21 @@ const sections: Section[] = [
     rowId: "cred-devbox",
     section: () => <MachineLoginsSection />,
     stub: (revoke) => {
-      const list = spyOn(api, "getMachineLogins").mockResolvedValue({
-        credentials: [
-          {
-            approved_by: "ada@example.com",
-            credential_id: "cred-devbox",
-            expired: false,
-            expires_at: "2026-10-10T12:00:00Z",
-            host: "devbox.example.com",
-            issued_at: "2026-10-03T12:00:00Z",
-            service: null,
-            subject: null,
-          },
-        ],
-      });
+      const list = spyOn(api, "getMachineLogins").mockResolvedValue([
+        {
+          approved_by: "ada@example.com",
+          credential_id: "cred-devbox",
+          expired: false,
+          expires_at: "2026-10-10T12:00:00Z",
+          host: "devbox.example.com",
+          issued_at: "2026-10-03T12:00:00Z",
+          service: null,
+          subject: null,
+        },
+      ]);
       const spy = spyOn(api, "revokeMachineLogin").mockImplementation(revoke);
       return {
-        clearList: () => list.mockResolvedValue({ credentials: [] }),
+        clearList: () => list.mockResolvedValue([]),
         restore: () => {
           list.mockRestore();
           spy.mockRestore();

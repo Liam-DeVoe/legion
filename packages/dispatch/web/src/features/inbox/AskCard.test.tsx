@@ -12,9 +12,9 @@ import { graphNode } from "../../__tests__/graph-fixture";
 import { dwellOn, installIntersectionObserver } from "../../__tests__/intersection-observer";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerThreadReads } from "../../__tests__/send-answers";
-import { ApiError, api } from "../../api/client";
+import { type AnswerAskInput, ApiError, api } from "../../api/client";
 import { myRepliesOwnerQuery } from "../../api/queries";
-import type { AnswerAskInput, Ask, AskAnswer, AskRead, Comment } from "../../api/types";
+import type { AskAnswer, AskV2, AskWithThread, Comment, IssueReadV2 } from "../../api/types";
 import { userPreferenceStorageKey } from "../shell/userPreference";
 import { replyRow, seedUnread } from "../threads/replies-fixture";
 import { AskCard } from "./AskCard";
@@ -32,8 +32,11 @@ beforeEach(() => {
     login: "alice",
   });
   getReferences = spyOn(api, "getReferences").mockResolvedValue({
-    edges: [],
+    items: [],
+    limit: 50,
     node: graphNode({ id: "ask-1", kind: "ask" }),
+    offset: 0,
+    total: 0,
   });
   // Every card with an issue names who the ask reaches, which reads the issue's subscribers;
   // nobody is subscribed here, so the card lists its followers alone.
@@ -54,7 +57,7 @@ const firstAnswer: AskAnswer = {
   user: "alice",
 };
 
-function answeredAsk(overrides: Partial<Ask> = {}): Ask {
+function answeredAsk(overrides: Partial<AskV2> = {}): AskV2 {
   return {
     anchor: null,
     answer: firstAnswer,
@@ -65,14 +68,19 @@ function answeredAsk(overrides: Partial<Ask> = {}): Ask {
     author: { id: "session-1", kind: "session" },
     block_id: null,
     created_at: "2026-10-08T00:00:00Z",
+    document: null,
     edited_at: null,
     id: "ask-1",
+    issue: { assignee: "alice", key: "CORE-1", title: "Fix the thing" },
     issue_key: "CORE-1",
     kind: "question",
+    last_reply: null,
     multiple: false,
     opened_event_id: 1,
     options: [{ label: "Ship" }, { label: "Hold" }],
+    priority: null,
     question: "Which release path?",
+    ref: "dispatch://CORE-1/ask/ask-1",
     state: "answered",
     urgency: "med",
     waiting_on: "human",
@@ -80,18 +88,26 @@ function answeredAsk(overrides: Partial<Ask> = {}): Ask {
   };
 }
 
-function thread(ask: Ask, answers: AskAnswer[] = ask.answer === null ? [] : [ask.answer]): AskRead {
+/** The ask read with its thread, as `getAsk` answers it and the card holds it: its answers
+ *  (the recorded one alone, unless given) and its replies. */
+function thread(
+  ask: AskV2,
+  answers: AskAnswer[] = ask.answer === null ? [] : [ask.answer],
+  replies: Comment[] = []
+): AskWithThread {
   return {
-    answers,
-    ask,
-    claimant: null,
-    edits: [],
-    followers: [],
-    replies: [],
-    route: null,
-    route_status: null,
-    route_holder: null,
-    route_status_reason: null,
+    ...ask,
+    thread: {
+      answers,
+      claimant: null,
+      edits: [],
+      followers: [],
+      replies,
+      route: null,
+      route_status: null,
+      route_holder: null,
+      route_status_reason: null,
+    },
   };
 }
 
@@ -119,7 +135,7 @@ test("the answerer can change an answer and sees both answers immediately", asyn
   const after = answeredAsk({ answer: secondAnswer });
   const sent: AnswerAskInput[] = [];
   let threadReads = 0;
-  const refreshed = Promise.withResolvers<AskRead>();
+  const refreshed = Promise.withResolvers<AskWithThread>();
   const getAskThread = async () => {
     threadReads += 1;
     return refreshed.promise;
@@ -377,7 +393,7 @@ function renderUnreadAsk(props: {
       <QueryClientProvider client={queryClient}>
         <AskCard
           ask={ask}
-          initialThread={{ ...thread(ask), replies }}
+          initialThread={thread(ask, undefined, replies)}
           markRead={props.markRead}
           thread={props.thread}
           variant="compact"
@@ -456,10 +472,10 @@ function decisionBlockFixture(name: string): string {
 
 const earlierApproval = {
   approved: { at: "2026-10-05T14:30:00Z", by: { id: "alice", kind: "user" }, version: 11 },
-} satisfies Partial<NonNullable<Ask["approval"]>>;
+} satisfies Partial<NonNullable<AskV2["approval"]>>;
 
 /** An open approval request for version 12 of `spec.md`, carrying `approval` as given. */
-function approvalAsk(approval: Partial<NonNullable<Ask["approval"]>> = {}): Ask {
+function approvalAsk(approval: Partial<NonNullable<AskV2["approval"]>> = {}): AskV2 {
   return answeredAsk({
     answer: null,
     approval: {
@@ -597,6 +613,53 @@ test("the diff keeps a paragraph changed beside the decision blocks", async () =
   }
 });
 
+// A plan uploaded as a file before a Markdown upload made it a document keeps that file as
+// version 1, and an approval of it stands. Its answer is the file's bytes, so there is no text to
+// diff the request's version against: the card names the file's type and size and links to it,
+// where it stood at "Loading versions to compare…" for ever.
+test("the diff from an approved version that holds a file names the file instead", async () => {
+  const user = userEvent.setup();
+  const ask = approvalAsk({
+    approved: { at: "2026-10-05T14:30:00Z", by: { id: "alice", kind: "user" }, version: 1 },
+    requested_version: 2,
+    version: 2,
+  });
+  const getArtifactVersion = spyOn(api, "getArtifactVersion").mockImplementation(
+    async (_id, version) =>
+      version === 1
+        ? { blob: new Blob(["- [ ] ship it"], { type: "text/plain" }), mime: "text/plain", version }
+        : {
+            authors: [],
+            created_at: "2026-10-05T00:00:00Z",
+            markdown: "# Plan\n",
+            named: false,
+            number: version,
+            summary: null,
+          }
+  );
+  const { view } = renderCard(<AskCard ask={ask} initialThread={thread(ask)} />);
+  const card = within(view.container);
+  try {
+    await user.click(card.getByRole("button", { name: "Show diff" }));
+    const note = await card.findByText(/^Version 1 is a file/);
+    expect(note.textContent).toBe(
+      "Version 1 is a file (text/plain, 13 B), not text to compare. Download version 1"
+    );
+    expect(
+      within(note).getByRole("link", { name: "Download version 1" }).getAttribute("href")
+    ).toBe("/api/v2/artifacts/artifact-1/versions/1?download=true");
+    expect(getArtifactVersion.mock.calls).toEqual([
+      ["artifact-1", 1],
+      ["artifact-1", 2],
+    ]);
+    expect(card.queryByTestId("change-view")).not.toBeInTheDocument();
+    expect(card.queryByText("Loading versions to compare…")).not.toBeInTheDocument();
+  } finally {
+    view.unmount();
+    getArtifactVersion.mockRestore();
+  }
+});
+
 test("a question closed under the reader keeps their unsent answer, out of the form", async () => {
   const user = userEvent.setup();
   const open = answeredAsk({ answer: null, state: "open" });
@@ -610,7 +673,7 @@ test("a question closed under the reader keeps their unsent answer, out of the f
 
     // The server withdraws the question while that answer is still a draft.
     act(() => {
-      queryClient.setQueryData<AskRead>(
+      queryClient.setQueryData<AskWithThread>(
         ["ask-thread", open.id],
         thread(
           {
@@ -655,7 +718,7 @@ test("the hand-on control is on an open question and on no closed one", async ()
     view.unmount();
   }
 
-  const closedBy = (kind: "resolved" | "withdrawn"): Ask =>
+  const closedBy = (kind: "resolved" | "withdrawn"): AskV2 =>
     answeredAsk({
       answer: null,
       resolution: {
@@ -692,7 +755,7 @@ test("the hand-on control is on an open question and on no closed one", async ()
 test("a hand-on reads the ask's thread again, so a card reading that thread follows the write", async () => {
   const user = userEvent.setup();
   const open = answeredAsk({ answer: null, state: "open" });
-  const handedOn: Ask = {
+  const handedOn: AskV2 = {
     ...open,
     asked_of: "bob",
     asked_of_at: "2026-10-08T04:00:00Z",
@@ -714,11 +777,11 @@ test("a hand-on reads the ask's thread again, so a card reading that thread foll
     { login: "bob" },
   ]);
   // The card marks the thread read off its owner's unread set, which holds nothing here.
-  const listMyReplies = spyOn(api, "listMyReplies").mockResolvedValue({
+  const listMyThreads = spyOn(api, "listMyThreads").mockResolvedValue({
     as_of: "2026-10-08T00:00:00Z",
+    items: [],
     limit: 200,
     offset: 0,
-    rows: [],
     total: 0,
   });
   const { view } = renderCard(<ThreadBody thread={replyRow(open.id, { kind: "ask" })} />);
@@ -739,7 +802,7 @@ test("a hand-on reads the ask's thread again, so a card reading that thread foll
     view.unmount();
     getAsk.mockRestore();
     handAskTo.mockRestore();
-    listMyReplies.mockRestore();
+    listMyThreads.mockRestore();
     listUsers.mockRestore();
   }
 });
@@ -771,9 +834,7 @@ for (const order of ["oldest", "newest"] as const) {
       askReply("reply-2", "2026-10-08T02:00:00Z"),
       askReply("reply-3", "2026-10-08T03:00:00Z"),
     ];
-    const { view } = renderCard(
-      <AskCard ask={open} initialThread={{ ...thread(open, []), replies }} />
-    );
+    const { view } = renderCard(<AskCard ask={open} initialThread={thread(open, [], replies)} />);
     try {
       // The card draws the thread in the browser's own order, which it reads once the signed-in
       // identity has landed, so the section it draws first is replaced by the ordered one.
@@ -816,15 +877,15 @@ test("an unread reply is never folded away", async () => {
   // The reader read the thread through its first reply, so replies 2 to 4 are unread.
   queryClient.setQueryData(myRepliesOwnerQuery({ issue: "CORE-1" }).queryKey, {
     as_of: "2026-10-12T00:00:00Z",
+    items: [replyRow(ask.id, { kind: "ask", read_through: "2026-10-08T01:00:00Z" })],
     limit: 200,
     offset: 0,
-    rows: [replyRow(ask.id, { kind: "ask", read_through: "2026-10-08T01:00:00Z" })],
     total: 1,
   });
   const view = render(
     <MemoryRouter>
       <QueryClientProvider client={queryClient}>
-        <AskCard ask={ask} initialThread={{ ...thread(ask), replies }} markRead />
+        <AskCard ask={ask} initialThread={thread(ask, undefined, replies)} markRead />
       </QueryClientProvider>
     </MemoryRouter>
   );
@@ -847,18 +908,18 @@ test("an unread reply is never folded away", async () => {
 // INFRA-869: a reply that is nothing but a reference shows the reference's card under it, as
 // the margin's comments do.
 test("a reply that is nothing but a reference shows its card", async () => {
+  // The card reads the issue's key, title, status and documents; the rest of the read is left
+  // out, since nothing on this card draws it.
   const getIssueSummary = spyOn(api, "getIssueSummary").mockResolvedValue({
-    documents: [],
+    artifacts: [],
     key: "CORE-2",
     project: "CORE",
     status: "in_progress",
     title: "The other issue",
-  });
+  } as unknown as IssueReadV2);
   const ask = answeredAsk();
   const link = { ...askReply("reply-1", "2026-10-08T03:00:00Z"), body: "dispatch://CORE-2" };
-  const { view } = renderCard(
-    <AskCard ask={ask} initialThread={{ ...thread(ask), replies: [link] }} />
-  );
+  const { view } = renderCard(<AskCard ask={ask} initialThread={thread(ask, undefined, [link])} />);
 
   try {
     const reply = await waitFor(() => {

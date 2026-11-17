@@ -1,19 +1,15 @@
 import { type Mock, mock, spyOn } from "bun:test";
 
 import { api, type WriteBounds, type WriteMethod, type WriteRequest } from "../api/client";
+import type { Result } from "../api/paths";
 import type {
-  AskSnooze,
+  AgentMarkV2Input,
   CreateAgentMessageInput,
-  InboxDismissRequest,
-  InboxDismissResponse,
-  InboxReadRequest,
-  InboxReadResponse,
-  Issue,
-  Message,
-  UpdateIssueInput,
-  UserAgentState,
-  UserAgentStateInput,
-  UserIssueState,
+  IssueMarkV2Input,
+  MarksPatchV2Input,
+  MarkUpdatesV2,
+  MarkV2,
+  PatchIssueV2Input,
 } from "../api/types";
 
 /** What a test answers the writes made from their request alone with (`answerSends`). */
@@ -121,59 +117,62 @@ export function answerRoute<F extends RouteAnswer>(method: WriteMethod, path: st
   return answer;
 }
 
-/** `PATCH /api/v1/issues/{key}` (`issuePatchRequest`): called with the key, the change and the
+/** `PATCH /api/v2/issues/{key}` (`issuePatchRequest`): called with the key, the change and the
  *  bounds. */
 export const answerIssuePatches = () =>
-  answerRoute<(key: string, input: UpdateIssueInput, bounds: WriteBounds) => Promise<Issue>>(
+  answerRoute<
+    (
+      key: string,
+      input: PatchIssueV2Input,
+      bounds: WriteBounds
+    ) => Promise<Result<"/api/v2/issues/{key}", "patch">>
+  >("PATCH", "/api/v2/issues/*");
+
+/** `PATCH /api/v2/me/marks/issue/{key}` (`issueStateRequest`): the person's mark of one issue. */
+export const answerIssueStates = () =>
+  answerRoute<(key: string, input: IssueMarkV2Input, bounds: WriteBounds) => Promise<MarkV2>>(
     "PATCH",
-    "/api/v1/issues/*"
+    "/api/v2/me/marks/issue/*"
   );
 
-/** `PUT /api/v1/me/issues/{key}/state` (`issueStateRequest`). */
-export const answerIssueStates = () =>
-  answerRoute<
-    (key: string, input: Partial<UserIssueState>, bounds: WriteBounds) => Promise<UserIssueState>
-  >("PUT", "/api/v1/me/issues/*/state");
-
-/** `PUT /api/v1/me/agents/{session}/state` (`agentStateRequest`). */
+/** `PATCH /api/v2/me/marks/agent/{session_id}` (`agentStateRequest`): the person's mark of one
+ *  session. */
 export const answerAgentStates = () =>
-  answerRoute<
-    (session: string, input: UserAgentStateInput, bounds: WriteBounds) => Promise<UserAgentState>
-  >("PUT", "/api/v1/me/agents/*/state");
+  answerRoute<(session: string, input: AgentMarkV2Input, bounds: WriteBounds) => Promise<MarkV2>>(
+    "PATCH",
+    "/api/v2/me/marks/agent/*"
+  );
 
-/** `PUT /api/v1/me/threads/{id}/read` (`threadReadRequest`). */
+/** `PATCH /api/v2/me/marks/thread/{id}` (`threadReadRequest`): a thread's read mark. */
 export const answerThreadReads = () =>
   answerRoute<
     (id: string, body: { read_through: string }, bounds: WriteBounds) => Promise<unknown>
-  >("PUT", "/api/v1/me/threads/*/read");
+  >("PATCH", "/api/v2/me/marks/thread/*");
 
-/** `POST /api/v1/me/inbox/read` (`markInboxReadRequest`): the Inbox's Mark all read, called
- *  with the body and the bounds. */
-export const answerInboxReads = () =>
-  answerRoute<(body: InboxReadRequest, bounds: WriteBounds) => Promise<InboxReadResponse>>(
-    "POST",
-    "/api/v1/me/inbox/read"
+/** `PATCH /api/v2/me/marks` (`marksRequest`): the Inbox's Mark all read, its Dismiss and its Move
+ *  to Inbox, called with the body - the marks it names (`items`) or the narrowing it is under
+ *  (`filter`), with what it sets (`set`) - and the bounds. */
+export const answerMarksPatches = () =>
+  answerRoute<(body: MarksPatchV2Input, bounds: WriteBounds) => Promise<MarkUpdatesV2>>(
+    "PATCH",
+    "/api/v2/me/marks"
   );
 
-/** `POST /api/v1/me/inbox/dismiss` (`inboxDismissRequest`): the Inbox's Dismiss and its Move to
- *  Inbox, called with the body and the bounds. */
-export const answerInboxDismisses = () =>
-  answerRoute<(body: InboxDismissRequest, bounds: WriteBounds) => Promise<InboxDismissResponse>>(
-    "POST",
-    "/api/v1/me/inbox/dismiss"
-  );
-
-/** `PUT /api/v1/me/asks/{id}/snooze` (`askSnoozeRequest`). */
+/** `PATCH /api/v2/me/marks/ask/{id}` (`askSnoozeRequest`): the person's snooze of one ask. */
 export const answerAskSnoozes = () =>
   answerRoute<
-    (id: string, body: { snoozed_until: string }, bounds: WriteBounds) => Promise<AskSnooze>
-  >("PUT", "/api/v1/me/asks/*/snooze");
+    (id: string, body: { snoozed_until: string | null }, bounds: WriteBounds) => Promise<MarkV2>
+  >("PATCH", "/api/v2/me/marks/ask/*");
 
-/** `POST /api/v1/agents/{session}/messages` (`agentMessageRequest`). */
+/** `POST /api/v2/agents/{session_id}/messages` (`agentMessageRequest`). */
 export const answerAgentMessages = () =>
   answerRoute<
-    (session: string, input: CreateAgentMessageInput, bounds: WriteBounds) => Promise<Message>
-  >("POST", "/api/v1/agents/*/messages");
+    (
+      session: string,
+      input: CreateAgentMessageInput,
+      bounds: WriteBounds
+    ) => Promise<Result<"/api/v2/agents/{session_id}/messages", "post">>
+  >("POST", "/api/v2/agents/*/messages");
 
 /** Lets every route a test answered go, and puts `api.send` back: the unit-test preload, after
  *  each test. */

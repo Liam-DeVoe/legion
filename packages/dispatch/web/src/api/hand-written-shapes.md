@@ -2,9 +2,11 @@
 
 The Dispatch HTTP API's request and response shapes are generated: `envoy-dispatch openapi`
 reflects the Go route table and the Go types each row takes and answers into
-`packages/contracts/schemas/dispatch-openapi.json`, and `bun run gen:api` renders that into
-`packages/contracts/src/dispatch-api.generated.ts`, which `@legion/contracts` re-exports
-(dispatch://INFRA-1406).
+`packages/contracts/schemas/dispatch-openapi.json` and `dispatch-openapi-v2.json`, and
+`bun run gen:api` renders those into `packages/contracts/src/dispatch-api.generated.ts` and
+`dispatch-api-v2.generated.ts`, which `@legion/contracts` and
+`@legion/contracts/dispatch-api-v2` re-export (dispatch://INFRA-1406). The dashboard calls
+`/api/v2` alone, so every shape it reads comes from the second of those.
 
 So a request or response shape written by hand here is a finding. This file is the list of what
 is left and why each one is not a shape of that kind, so a reader checks the grep's answer rather
@@ -21,16 +23,30 @@ generated.
 
 - **`client.ts`'s transport** — `FetchImplementation`, `UploadImplementation`,
   `UploadProgress`, `ErrorPayload`, `RequestBounds`, `WriteMethod`, `WriteRequest<T>`,
-  `WriteBounds`, `ArtifactOwner`, `WriteVerb`. These are the page's rules about how a request is
-  sent and how its answer is kept, not what either carries: the silence deadline, the keepalive
-  bound, the replay shape a kept write is stored as, and which of three routes an upload's owner
-  picks.
+  `WriteBounds`, `ArtifactOwner`, `WriteVerb`, and the list shapes `ListPage<T>`, `ListPattern`,
+  `ItemOf<P>` and `WholeList<P>` that `readWholeList` pages a list route with. These are the
+  page's rules about how a request is sent and how its answer is kept, not what either carries:
+  the silence deadline, the replay shape a kept write is stored as, which of three routes an
+  upload's owner picks, and how the pages of one list are read whole.
 - **`client.ts`'s projections of generated types** — `CreateArtifactReviewInput` is
-  `Body<"/api/v1/artifacts/{id}/reviews", "post">`, `ErrorCandidate` is the union of the
-  candidate shapes a refusal carries, and `ReferenceSourceKind` is read off that route's own
-  query schema. Each is derived from the document rather than declared beside it.
-- **`types.ts`'s `IssueCollaboratorLegionAgent`** — the generated `IssueCollaboratorAgent` with
-  its `legion` entry narrowed to non-null. The two readers that keep the registry's sessions
+  `Body<"/api/v2/artifacts/{id}/reviews", "post">`, `DeclineAskInput` and `AnswerAskInput` are
+  the ask's state write without its `state`, `MarkInput` is `Body<"/api/v2/me/marks/{kind}/{id}",
+  "patch">`, and `ErrorCandidate` is the union of the candidate shapes a refusal carries. Each is
+  derived from the document rather than declared beside it.
+- **`client.ts`'s `ReferenceSourceKind`** — the four kinds a reference source is read as
+  (`artifact`, `ask`, `comment`, `message`). `GET /api/v2/asks` takes the source as one string
+  (`source=<kind>:<id>`), so the document holds no member these could be read from; the client
+  builds that string from this.
+- **`types.ts`'s reads of a route that `include=` adds members to** — `IssueDetails` (the issue
+  read with every member its `include` asks for), `AskWithThread` (`include=thread`), `InboxRow`
+  (`include=thread,mark`) and `ArtifactText` (`include=text`). The document marks each added
+  member optional, because the route answers it only as a read asks for it; each of these names
+  the read that asked for it, and declares no field the generated row does not.
+- **`types.ts`'s `Marks`** — the person's marks of one kind by the id each names, which is how
+  `["user-state"]` and `["user-agent-state"]` hold the list `GET /api/v2/me/marks` answers. A
+  keying of a generated row, not a shape of its own.
+- **`types.ts`'s `IssueCollaboratorLegionAgent`** — the generated `CollaboratorV2` with its
+  `legion` entry narrowed to present. The two readers that keep the registry's sessions
   apart from the rest - the Collaborators tab's Legion sections and the composer's "Not running"
   options - narrow to it with a type guard of their own, so the narrowed shape is named once.
   It declares no field the generated row does not; it is a refinement of it, as
@@ -54,13 +70,19 @@ generated.
 - **A test file's fake is not a wire shape either**: `query-refresh.test.ts`'s `ServedQuery`
   and `live-socket.test.ts`'s `FakeLiveSocket` and `FakeLiveSockets` are the stand-ins each
   test drives its subject with.
+- **A shape outside these paths that reads a generated one is not a wire shape**:
+  `features/issue/pins.ts`'s `IssueState` is the viewer's mark of an issue with every field
+  present, which `stateForIssue` defaults from the generated `MarkV2` - a mark holds no field it
+  has no value for, and each reader would otherwise default it again. It declares no field the
+  mark does not.
 
 ## `e2e`
 
 - **`api.ts`'s harness half** — `ApiOptions`, `CachedSession`, `CallArgs`. The lane's base URL,
   the dev sign-in's cookie cache, and the argument record the typed call seam takes.
-  `ApprovalRequested` is `Result<"/api/v1/artifacts/{id}/approval-requests", "post">`, read from
-  the document.
+  `ApprovalRequested` is the `Result<…>` of the approval-request route the lane posts to, read
+  from the document under the path `e2e/api.ts` names. That lane still calls the older API,
+  which the browser suite's own task moves; the dashboard calls `/api/v2` alone.
 - **Every other declaration under `e2e/`** is a fixture or a harness type of the test that holds
   it (`FakeSession`, `Seeded`, `ProbeLine`, the Playwright re-exports). None is a Dispatch
   request or response.
@@ -74,7 +96,7 @@ Each is in `packages/contracts/src/dispatch-api.ts`:
   `DeliveryLive*` and `EventsLive*` families). They travel `GET /ws/live`, which is no row of the
   route table the document is emitted from, and `packages/contracts/fixtures/live/` with the Go
   diff (`delivery_live_diff_test.go`) already holds them against the server.
-- **The Going SSE frames** of `GET /api/v1/going/requests/{id}/stream`. A frame union is not an
+- **The Going SSE frames** of `GET /api/v2/going-requests/{id}/stream`. A frame union is not an
   OpenAPI response, and `packages/contracts/src/going.ts` holds them.
 - **`DispatchEvent` and the event payloads.** Go's `model.Event.Payload` is bytes, so the
   document can only say `payload: unknown`; `DispatchEvent` is the union over the same bytes,
@@ -95,18 +117,13 @@ Each is in `packages/contracts/src/dispatch-api.ts`:
   carries), `DispatchServiceErrorShape`, `ArtifactVersionBlob`/`ArtifactVersionContent` (the byte
   arm of a version download is a transport value, not a wire shape), `IssueRead`,
   `CreateArtifactInput` (it carries a `Blob`), `AuthenticatedUser`
-  (`GET /auth/whoami` is outside `/api/v1`).
+  (`GET /auth/whoami` is outside the API's own paths).
 - **The Inbox row's two narrowings** — `MyReplyThreadRow`, `MyReplyAgentRow` and the
-  `inboxThreadRow` that tells them apart. `GET /api/v1/me/replies` answers both kinds of row
+  `inboxThreadRow` that tells them apart. `GET /api/v2/me/threads` answers both kinds of row
   under one Go struct, so the generated `MyReplyRow` carries each kind's fields as optional and
   `kind` as the open string the Go field holds; these two say what a row of each kind always
-  carries, as `IssueAskThreadRow` does for an ask read with its thread. Neither declares a field
+  carries, as `AskWithThread` does for an ask read with its thread. Neither declares a field
   the generated row does not; each is a refinement of it.
-- **`InboxDismissSeenReply`, `InboxDismissSeenAgent` and `InboxDismissSeen`** — what a dismissal
-  carries per row in `InboxDismissRequest.seen_replies`. The route reads each entry in the shape
-  its own row's kind takes and refuses it in its own words, so Go holds them unparsed
-  (`inboxDismissRequest.SeenReplies` is a `map[string]json.RawMessage`) and the document can only
-  say the map's values are bytes; these three are what each one must be.
 - **`IDCandidate` and `ID_AMBIGUOUS`** are a refusal body that stays hand-written, and the one
   entry here that is a wire shape rather than a helper. `writeAmbiguousID` (`id_prefix.go`)
   answers 409 with `{error, code, candidates}` when an id written as a prefix names two items or

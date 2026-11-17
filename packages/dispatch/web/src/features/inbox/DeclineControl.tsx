@@ -3,7 +3,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useId, useRef, useState } from "react";
 
 import { apiErrorMessage, type DeclineAskInput, type WriteBounds } from "../../api/client";
-import type { Ask, AskRead } from "../../api/types";
+import type { AskV2, AskWithThread } from "../../api/types";
 import { submitOnModifiedEnter } from "../../hooks/submitOnModifiedEnter";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 import {
@@ -153,8 +153,8 @@ export function DeclineControl({
   decline,
   onDeclined,
 }: {
-  ask: Ask;
-  decline: (id: string, input: DeclineAskInput, bounds: WriteBounds) => Promise<Ask>;
+  ask: AskV2;
+  decline: (id: string, input: DeclineAskInput, bounds: WriteBounds) => Promise<AskV2>;
   /** Called once the server has recorded the decline, as an answer from this card calls it. */
   onDeclined?: (id: string) => void;
 }): ReactNode {
@@ -170,10 +170,11 @@ export function DeclineControl({
     onSettled: () => submitGuard.release(),
     onSuccess: (declined) => {
       setOpen(false);
-      // The card reads its ask from the thread, so the record it swaps to is this decline.
+      // The card reads its ask from the thread, so the record it swaps to is this decline; the
+      // write answers the ask without its thread, which stays the one the card holds.
       if (declined !== null) {
-        queryClient.setQueryData<AskRead>(["ask-thread", ask.id], (current) =>
-          current === undefined ? undefined : { ...current, ask: declined }
+        queryClient.setQueryData<AskWithThread>(["ask-thread", ask.id], (current) =>
+          current === undefined ? undefined : { ...current, ...declined, thread: current.thread }
         );
       }
       void queryClient.invalidateQueries({ queryKey: ["ask-thread", ask.id] });
@@ -199,7 +200,9 @@ export function DeclineControl({
             write.reset();
             setOpen(false);
           }}
-          onSubmit={(note) => submitGuard.guard(() => write.mutate(note === "" ? {} : { note }))}
+          onSubmit={(note) =>
+            submitGuard.guard(() => write.mutate(note === "" ? {} : { reason: note }))
+          }
           saving={write.isPending}
         />
       ) : null}

@@ -44,11 +44,14 @@ test("code -> lookup -> Approve posts the looked-up code", async () => {
   const record = machineRecord();
   const lookupMachineCredential = spyOn(api, "lookupMachineCredential").mockResolvedValue(record);
   // The page lists the viewer's machine logins beside the code form; no test here reads them.
-  const getMachineLogins = spyOn(api, "getMachineLogins").mockResolvedValue({ credentials: [] });
-  const approveCredentialRecord = spyOn(api, "approveCredentialRecord").mockResolvedValue({
-    credential_id: "cred-9",
-    state: "approved",
-  });
+  const getMachineLogins = spyOn(api, "getMachineLogins").mockResolvedValue([]);
+  // The decision answers the record as it left it.
+  const approveCredentialRecord = spyOn(api, "approveCredentialRecord").mockResolvedValue(
+    machineRecord({
+      decided: { at: "2026-09-27T00:05:00Z", credential_id: "cred-9", event: "approved" },
+      state: "approved",
+    })
+  );
 
   try {
     renderPage();
@@ -65,11 +68,7 @@ test("code -> lookup -> Approve posts the looked-up code", async () => {
     await user.click(screen.getByRole("button", { name: "Approve" }));
 
     await waitFor(() => expect(approveCredentialRecord).toHaveBeenCalledTimes(1));
-    expect(approveCredentialRecord).toHaveBeenCalledWith(
-      "req-2",
-      { code: "ABCD-1234" },
-      keyedAttempt
-    );
+    expect(approveCredentialRecord).toHaveBeenCalledWith("req-2", "ABCD-1234", keyedAttempt);
   } finally {
     cleanup();
     lookupMachineCredential.mockRestore();
@@ -83,7 +82,7 @@ test("a NO_SUCH_CODE lookup failure renders inline under the input", async () =>
   const lookupMachineCredential = spyOn(api, "lookupMachineCredential").mockRejectedValue(
     new ApiError(404, { code: "NO_SUCH_CODE", error: "No pending request matches that code." })
   );
-  const getMachineLogins = spyOn(api, "getMachineLogins").mockResolvedValue({ credentials: [] });
+  const getMachineLogins = spyOn(api, "getMachineLogins").mockResolvedValue([]);
 
   try {
     renderPage();
@@ -105,10 +104,13 @@ test("code -> lookup -> Deny posts the looked-up code too, which the broker requ
   const user = userEvent.setup();
   const record = machineRecord();
   const lookupMachineCredential = spyOn(api, "lookupMachineCredential").mockResolvedValue(record);
-  const getMachineLogins = spyOn(api, "getMachineLogins").mockResolvedValue({ credentials: [] });
-  const denyCredentialRecord = spyOn(api, "denyCredentialRecord").mockResolvedValue({
-    state: "denied",
-  });
+  const getMachineLogins = spyOn(api, "getMachineLogins").mockResolvedValue([]);
+  const denyCredentialRecord = spyOn(api, "denyCredentialRecord").mockResolvedValue(
+    machineRecord({
+      decided: { at: "2026-09-27T00:05:00Z", credential_id: null, event: "denied" },
+      state: "denied",
+    })
+  );
 
   try {
     renderPage();
@@ -125,7 +127,7 @@ test("code -> lookup -> Deny posts the looked-up code too, which the broker requ
     await user.click(screen.getByRole("button", { name: "Deny" }));
 
     await waitFor(() => expect(denyCredentialRecord).toHaveBeenCalledTimes(1));
-    expect(denyCredentialRecord).toHaveBeenCalledWith("req-2", { code: "ABCD-1234" }, keyedAttempt);
+    expect(denyCredentialRecord).toHaveBeenCalledWith("req-2", "ABCD-1234", keyedAttempt);
   } finally {
     cleanup();
     lookupMachineCredential.mockRestore();
@@ -138,10 +140,15 @@ test("a pending service login from before token logins offers Deny alone, which 
   const user = userEvent.setup();
   const record = machineRecord({ approver: "anyone", service: "legion-daemon" });
   const lookupMachineCredential = spyOn(api, "lookupMachineCredential").mockResolvedValue(record);
-  const getMachineLogins = spyOn(api, "getMachineLogins").mockResolvedValue({ credentials: [] });
-  const denyCredentialRecord = spyOn(api, "denyCredentialRecord").mockResolvedValue({
-    state: "denied",
-  });
+  const getMachineLogins = spyOn(api, "getMachineLogins").mockResolvedValue([]);
+  const denyCredentialRecord = spyOn(api, "denyCredentialRecord").mockResolvedValue(
+    machineRecord({
+      approver: "anyone",
+      decided: { at: "2026-09-27T00:05:00Z", credential_id: null, event: "denied" },
+      service: "legion-daemon",
+      state: "denied",
+    })
+  );
 
   try {
     renderPage();
@@ -158,11 +165,7 @@ test("a pending service login from before token logins offers Deny alone, which 
 
     await user.click(screen.getByRole("button", { name: "Deny" }));
     await waitFor(() =>
-      expect(denyCredentialRecord).toHaveBeenCalledWith(
-        "req-2",
-        { code: "ABCD-1234" },
-        keyedAttempt
-      )
+      expect(denyCredentialRecord).toHaveBeenCalledWith("req-2", "ABCD-1234", keyedAttempt)
     );
   } finally {
     cleanup();

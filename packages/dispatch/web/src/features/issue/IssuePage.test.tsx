@@ -17,33 +17,37 @@ import {
   decisionsAndReadMarkHandlers,
 } from "../../__tests__/proof-document";
 import { answerIssuePatches } from "../../__tests__/send-answers";
-import { AGENT_LIST_REFILLING, ApiError, api } from "../../api/client";
+import { AGENT_LIST_REFILLING, ApiError, api, type WholeList } from "../../api/client";
 import type {
   Agent,
   ArtifactText,
+  ArtifactV2,
   ArtifactVersionText,
-  Ask,
-  GraphReferences,
   InboxRow,
   IssueCoverage,
   IssueDetails,
-  IssueReferences,
-  Project,
+  IssueReachV2,
+  IssueSummary,
+  ProjectV2,
   Subscriber,
-  UserIssueState,
+  Version,
 } from "../../api/types";
+import { type MarkFields, markOf, marksOf } from "../agents/marks-fixture";
 import { DocumentRuntime } from "../doc/runtime";
 import { MarginProvider } from "../margin/margin-context";
+import { askRow, askWithThread, referencesRead } from "../refs/reference-fixture";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { IssuePage } from "./IssuePage";
 
 const issue = {
-  route_status: null,
-  route_holder: null,
-  route_status_reason: null,
-  holder_state: null,
-  last_seen: null,
-  takeable_at: null,
+  reach: {
+    route_status: null,
+    route_holder: null,
+    route_status_reason: null,
+    holder_state: null,
+    last_seen: null,
+    takeable_at: null,
+  },
   advances: [],
   advances_revision: 0,
   artifacts: [
@@ -54,12 +58,16 @@ const issue = {
       issue_key: "CORE-1",
       project: "CORE",
       kind: "doc",
+      latest_version: null,
+      latest_version_at: null,
+      latest_version_size: null,
       name: "spec.md",
       primary: true,
       ref_key: "CORE-1/spec",
       session_id: null,
       slug: "spec",
-      versions: [],
+      unsettled: null,
+      version_count: 0,
     },
   ],
   children: [],
@@ -94,7 +102,7 @@ const issue = {
   updated_at: "2026-09-09T00:00:00Z",
   verification_artifact_id: "",
   // `satisfies`, not an annotation: the tests below read `issue.artifacts[0]` and spread the
-  // list, which the route table's `Artifact[] | null` would not let them.
+  // list, which the route table's `ArtifactV2[] | null` would not let them.
 } satisfies IssueDetails;
 
 const itemComment = {
@@ -151,31 +159,42 @@ function listedAgent(sessionId: string, title: string): Agent {
   };
 }
 
-const openIssueAsk: Ask = {
-  anchor: null,
-  answer: null,
-  artifact_id: null,
-  asked_of: null,
-  asked_of_at: null,
-  asked_of_by: null,
+const openIssueAsk = askRow({
   author: { id: "session-1", kind: "session" },
-  block_id: null,
   created_at: "2026-09-10T00:00:00Z",
-  edited_at: null,
   id: "ask-open",
-  issue_key: "CORE-1",
-  kind: "question",
-  multiple: false,
-  opened_event_id: 1,
-  options: [],
   question: "Should this ship?",
-  state: "open",
   waiting_on: "human",
-  urgency: "med",
-};
+});
+
+/** A document's live text as its own read answers it (`include=text`): the document with its
+ *  markdown, the token a write of it goes under and the version it stands on. */
+function liveText(
+  text: Pick<ArtifactText, "markdown" | "token" | "unsettled" | "version">,
+  document: ArtifactV2 = issue.artifacts[0]
+): ArtifactText {
+  return { ...document, ...text };
+}
 
 function issueWithExternalLink(url: string): IssueDetails {
   return { ...issue, external_links: [{ url }] };
+}
+
+/** The issue routed to `role:sre`, with what the listener judged of that route's reach. */
+function routedIssue(reach: Partial<IssueReachV2>): IssueDetails {
+  return { ...issue, reach: { ...issue.reach, ...reach }, route: "role:sre" };
+}
+
+/** The issue as a list of issues answers it (`api.listIssues`): its own fields, with no open
+ *  ask, and its route's reach beside them. */
+function listedIssue(details: IssueDetails): IssueSummary {
+  return {
+    ...details,
+    open_asks: 0,
+    route_holder: details.reach.route_holder,
+    route_status: details.reach.route_status,
+    route_status_reason: details.reach.route_status_reason,
+  };
 }
 
 /** The issue the file's stub is answering for, so the handlers below hand a panel that re-reads
@@ -186,7 +205,7 @@ function stubIssuePage(
   nextIssue: IssueDetails,
   inbox: InboxRow[] = [],
   subscribers: Subscriber[] = [],
-  state: UserIssueState = { dismissed: [], last_read_seq: 0, pinned: false, seq: 0 },
+  state: MarkFields = { last_read_seq: 0, pinned: false, seq: 0 },
   agents: Agent[] = []
 ): () => void {
   const originalGetIssue = api.getIssue;
@@ -204,7 +223,7 @@ function stubIssuePage(
   stubbedIssue = nextIssue;
   api.getIssue = async () => nextIssue;
   api.getInbox = async () => inbox;
-  api.getMyState = async () => ({ "CORE-1": state });
+  api.getMyState = async () => marksOf("issue", { "CORE-1": state });
   api.getIssueEvents = async () => [];
   // The Conversation builds its list from the issue's own asks, comments, messages and handoffs;
   // it asks the ask list for each thread, where the margin reads the same route without one.
@@ -246,10 +265,12 @@ function stubIssuePage(
  * reaches these handlers.
  */
 function answerIssuePageReads(): void {
+  // A list holding nothing, as every list route answers one.
+  const nothing = { items: [], limit: 50, offset: 0, total: 0 };
   answerRequests(
-    http.get("/api/v1/settings/repo-projects", () => Response.json([])),
-    http.get("/api/v1/projects/:project/architecture-sources", () => Response.json([])),
-    http.get("/api/v1/issues/:key/coverage", ({ params }) =>
+    http.get("/api/v2/repositories", () => Response.json(nothing)),
+    http.get("/api/v2/projects/:key/architecture-sources", () => Response.json(nothing)),
+    http.get("/api/v2/issues/:key/coverage", ({ params }) =>
       Response.json({
         gaps: [],
         has_plan: false,
@@ -258,41 +279,68 @@ function answerIssuePageReads(): void {
         spec_artifact_id: "",
       } satisfies IssueCoverage)
     ),
-    http.get("/api/v1/issues/:key/artifacts", () => Response.json([])),
-    http.get("/api/v1/issues/:key/references", () =>
-      Response.json({ members: [], truncated: false } satisfies IssueReferences)
-    ),
-    http.get("/api/v1/references", ({ request }) =>
+    http.get("/api/v2/issues/:key/artifacts", () => Response.json(nothing)),
+    http.get("/api/v2/issues/:key/references", () =>
       Response.json({
-        edges: [],
-        node: graphNode({
-          id: new URL(request.url).searchParams.get("to") ?? "",
-          kind: "artifact",
-        }),
-      } satisfies GraphReferences)
+        ...nothing,
+        truncated: false,
+      } satisfies WholeList<"/api/v2/issues/{key}/references">)
     ),
-    http.get("/api/v1/artifacts/:id/blocks", () => Response.json([])),
-    http.get("/api/v1/artifacts/:id/text", () =>
-      Response.json({
+    http.get("/api/v2/references", ({ request }) =>
+      Response.json(
+        referencesRead(
+          graphNode({ id: new URL(request.url).searchParams.get("to") ?? "", kind: "artifact" })
+        )
+      )
+    ),
+    // A document's live text (`include=text`) as a document with no version answers it; every
+    // other read of the record falls through to the record handler below.
+    http.get("/api/v2/artifacts/:id", ({ params, request }) => {
+      const include = new URL(request.url).searchParams
+        .getAll("include")
+        .flatMap((value) => value.split(","));
+      const document = (stubbedIssue.artifacts ?? []).find((each) => each.id === params.id);
+      if (!include.includes("text") || document === undefined) return undefined;
+      return Response.json({
+        ...document,
         markdown: "",
         token: "sha256:empty",
-        version: null,
         unsettled: true,
-      } satisfies ArtifactText)
-    ),
-    http.get("/api/v1/artifacts/:id/versions/:version", ({ params }) =>
+      } satisfies ArtifactText);
+    }),
+    // A document's versions as a document holding none; a test whose document holds some
+    // answers them itself (`answerVersions`).
+    http.get("/api/v2/artifacts/:id/versions", () => Response.json(nothing)),
+    http.get("/api/v2/artifacts/:id/versions/:number", ({ params }) =>
       Response.json({
         authors: [],
         created_at: "2026-09-09T00:00:00Z",
         markdown: "",
         named: false,
-        number: Number(params.version),
+        number: Number(params.number),
         summary: null,
       } satisfies ArtifactVersionText)
     ),
     // The document the page re-reads is the one the stubbed issue carries.
     artifactRecordHandler((id) => (stubbedIssue.artifacts ?? []).find((each) => each.id === id)),
     ...decisionsAndReadMarkHandlers()
+  );
+}
+
+/** `GET /api/v2/artifacts/{id}/versions` for the rest of this test: each document's versions by
+ *  its id, a document it does not name holding none. A document's own read carries only its
+ *  latest version's number; the page reads the history from this list. */
+function answerVersions(versionsOf: Readonly<Record<string, Version[]>>): void {
+  answerRequests(
+    http.get("/api/v2/artifacts/:id/versions", ({ params }) => {
+      const items = versionsOf[String(params.id)] ?? [];
+      return Response.json({
+        items,
+        limit: 50,
+        offset: 0,
+        total: items.length,
+      } satisfies WholeList<"/api/v2/artifacts/{id}/versions">);
+    })
   );
 }
 
@@ -435,7 +483,7 @@ test("IssuePage's header warns when nobody holds the route, and adds nothing whe
     return screen.getByTestId("issue-state-actions");
   };
 
-  const unheld = stubIssuePage({ ...issue, route: "role:sre", route_status: "no_holder" });
+  const unheld = stubIssuePage(routedIssue({ route_status: "no_holder" }));
   const unheldView = renderIssuePage();
   try {
     const marker = within(await stateRow()).getByTestId("issue-route-unreachable");
@@ -446,12 +494,7 @@ test("IssuePage's header warns when nobody holds the route, and adds nothing whe
     unheld();
   }
 
-  const live = stubIssuePage({
-    ...issue,
-    route: "role:sre",
-    route_status: "live",
-    route_holder: "ses-sre",
-  });
+  const live = stubIssuePage(routedIssue({ route_status: "live", route_holder: "ses-sre" }));
   const liveView = renderIssuePage();
   try {
     const row = await stateRow();
@@ -462,12 +505,9 @@ test("IssuePage's header warns when nobody holds the route, and adds nothing whe
     live();
   }
 
-  const unjudged = stubIssuePage({
-    ...issue,
-    route: "role:sre",
-    route_status: "unknown",
-    route_status_reason: "unreachable",
-  });
+  const unjudged = stubIssuePage(
+    routedIssue({ route_status: "unknown", route_status_reason: "unreachable" })
+  );
   const unjudgedView = renderIssuePage();
   try {
     const row = await stateRow();
@@ -481,12 +521,9 @@ test("IssuePage's header warns when nobody holds the route, and adds nothing whe
 
   // A listener that is refilling its agent list says so: the route is unknown for that reason,
   // never unheld.
-  const refilling = stubIssuePage({
-    ...issue,
-    route: "role:sre",
-    route_status: "unknown",
-    route_status_reason: "refilling",
-  });
+  const refilling = stubIssuePage(
+    routedIssue({ route_status: "unknown", route_status_reason: "refilling" })
+  );
   const refillingView = renderIssuePage();
   try {
     const row = await stateRow();
@@ -512,12 +549,9 @@ test("IssuePage's header marks an unresponsive route holder apart from an unheld
     return screen.getByTestId("issue-state-actions");
   };
 
-  const stalled = stubIssuePage({
-    ...issue,
-    route: "role:sre",
-    route_status: "holder_unresponsive",
-    route_holder: "ses-sre",
-  });
+  const stalled = stubIssuePage(
+    routedIssue({ route_status: "holder_unresponsive", route_holder: "ses-sre" })
+  );
   const stalledView = renderIssuePage();
   try {
     const row = await stateRow();
@@ -538,7 +572,7 @@ test("IssuePage's header marks an unresponsive route holder apart from an unheld
     { route_status: "no_holder" } as const,
     { route_status: "unknown", route_status_reason: "refilling" } as const,
   ]) {
-    const other = stubIssuePage({ ...issue, route: "role:sre", ...reach });
+    const other = stubIssuePage(routedIssue(reach));
     const otherView = renderIssuePage();
     try {
       expect(
@@ -669,16 +703,16 @@ test("IssuePage lists project labels with issue labels selected and filters them
   const labeledIssue = { ...issue, labels: ["bug"] };
   const restore = stubIssuePage(labeledIssue);
   const listIssues = spyOn(api, "listIssues").mockResolvedValue([
-    { ...labeledIssue, open_asks: 0 },
-    { ...issue, key: "CORE-2", labels: ["frontend", "backend"], open_asks: 0 },
-    { ...issue, key: "CORE-3", labels: ["docs"], open_asks: 0 },
+    listedIssue(labeledIssue),
+    listedIssue({ ...issue, key: "CORE-2", labels: ["frontend", "backend"] }),
+    listedIssue({ ...issue, key: "CORE-3", labels: ["docs"] }),
   ]);
   const view = renderIssuePage();
 
   try {
     await user.click(await screen.findByRole("button", { name: "Edit labels" }));
     const input = await screen.findByRole("combobox", { name: "Search or create label" });
-    await waitFor(() => expect(listIssues).toHaveBeenCalledWith({ project: "CORE" }));
+    await waitFor(() => expect(listIssues).toHaveBeenCalledWith({ project: ["CORE"] }));
     expect(screen.getByRole("option", { name: "bug" })).toHaveAttribute("aria-selected", "true");
     expect(screen.getByRole("option", { name: "frontend" })).toHaveAttribute(
       "aria-selected",
@@ -702,8 +736,8 @@ test("IssuePage creates a label from the multi-select and saves the final draft 
   const labeledIssue = { ...issue, labels: ["bug"] };
   const restore = stubIssuePage(labeledIssue);
   const listIssues = spyOn(api, "listIssues").mockResolvedValue([
-    { ...labeledIssue, open_asks: 0 },
-    { ...issue, key: "CORE-2", labels: ["frontend"], open_asks: 0 },
+    listedIssue(labeledIssue),
+    listedIssue({ ...issue, key: "CORE-2", labels: ["frontend"] }),
   ]);
   const patchIssue = answerIssuePatches().mockResolvedValue({
     ...labeledIssue,
@@ -737,9 +771,7 @@ test("IssuePage does not save after a label is toggled off and back on", async (
   const user = userEvent.setup();
   const labeledIssue = { ...issue, labels: ["bug", "api"] };
   const restore = stubIssuePage(labeledIssue);
-  const listIssues = spyOn(api, "listIssues").mockResolvedValue([
-    { ...labeledIssue, open_asks: 0 },
-  ]);
+  const listIssues = spyOn(api, "listIssues").mockResolvedValue([listedIssue(labeledIssue)]);
   const patchIssue = answerIssuePatches().mockResolvedValue(labeledIssue);
   const view = renderIssuePage();
 
@@ -770,9 +802,7 @@ test("IssuePage returns focus to the label trigger when Escape closes an unchang
   const user = userEvent.setup();
   const labeledIssue = { ...issue, labels: ["bug"] };
   const restore = stubIssuePage(labeledIssue);
-  const listIssues = spyOn(api, "listIssues").mockResolvedValue([
-    { ...labeledIssue, open_asks: 0 },
-  ]);
+  const listIssues = spyOn(api, "listIssues").mockResolvedValue([listedIssue(labeledIssue)]);
   const patchIssue = answerIssuePatches().mockResolvedValue(labeledIssue);
   const view = renderIssuePage();
 
@@ -1121,21 +1151,8 @@ test("IssuePage continues to unfurl GitHub issues through the issues endpoint", 
 test("IssuePage opens the Spec tab and leaves open asks out of the main column", async () => {
   const restore = stubIssuePage(issue, [
     {
-      ...openIssueAsk,
-      last_reply: null,
-      priority: issue.priority,
-      snoozed_until: null,
-      thread: {
-        answers: [],
-        claimant: null,
-        edits: [],
-        followers: [],
-        replies: [],
-        route: null,
-        route_status: null,
-        route_holder: null,
-        route_status_reason: null,
-      },
+      ...askWithThread(openIssueAsk),
+      mark: { id: openIssueAsk.id, kind: "ask", snoozed_until: null },
     },
   ]);
   const view = renderIssuePage("/issues/CORE-1");
@@ -1176,9 +1193,12 @@ test("IssuePage opens the Decisions tab with the t d chord", async () => {
   const user = userEvent.setup();
   const restore = stubIssuePage(issue);
   const decisions = spyOn(api, "getIssueDecisions").mockResolvedValue({
-    decisions: [],
     document: null,
+    items: [],
+    limit: 50,
+    offset: 0,
     open_questions: [],
+    total: 0,
   });
   const view = renderIssuePage("/issues/CORE-1/spec");
 
@@ -1201,10 +1221,12 @@ test("IssuePage opens the Collaborators tab with the t o chord", async () => {
   const user = userEvent.setup();
   const restore = stubIssuePage(issue);
   const collaborators = spyOn(api, "getIssueCollaborators").mockResolvedValue({
-    agents: [],
     issue_key: "CORE-1",
+    items: [],
     legion_registry: "ok",
-    people: [],
+    limit: 50,
+    offset: 0,
+    total: 0,
   });
   const view = renderIssuePage("/issues/CORE-1/spec");
 
@@ -1225,9 +1247,9 @@ test("IssuePage opens the Collaborators tab with the t o chord", async () => {
 
 test("IssuePage renders a not-found view for an unrecognized tab suffix without fetching the issue", async () => {
   const getIssueSpy = spyOn(api, "getIssue").mockResolvedValue(issue);
-  const getMyStateSpy = spyOn(api, "getMyState").mockResolvedValue({
-    "CORE-1": { dismissed: [], last_read_seq: 0, pinned: false, seq: 0 },
-  });
+  const getMyStateSpy = spyOn(api, "getMyState").mockResolvedValue(
+    marksOf("issue", { "CORE-1": { last_read_seq: 0, pinned: false, seq: 0 } })
+  );
   const view = renderIssuePage("/issues/CORE-1/not-a-tab");
 
   try {
@@ -1250,12 +1272,14 @@ test("IssuePage keeps the Spec mounted across tabs", async () => {
   const getArtifact = spyOn(api, "getArtifact").mockResolvedValue({
     ...issue.artifacts[0],
   });
-  const getArtifactText = spyOn(api, "getArtifactText").mockResolvedValue({
-    markdown: "The mounted specification",
-    version: 1,
-    unsettled: false,
-    token: "sha256:mounted-specification",
-  });
+  const getArtifactText = spyOn(api, "getArtifactText").mockResolvedValue(
+    liveText({
+      markdown: "The mounted specification",
+      version: 1,
+      unsettled: false,
+      token: "sha256:mounted-specification",
+    })
+  );
   const view = renderIssuePage("/issues/CORE-1/spec", undefined, "The mounted specification");
 
   try {
@@ -1320,12 +1344,16 @@ test("IssuePage remounts when switching issues, discarding unsaved local state",
         issue_key: "CORE-2",
         project: "CORE",
         kind: "doc",
+        latest_version: null,
+        latest_version_at: null,
+        latest_version_size: null,
         name: "spec.md",
         primary: true,
         ref_key: "CORE-2/spec",
         session_id: null,
         slug: "spec",
-        versions: [],
+        unsettled: null,
+        version_count: 0,
       },
     ],
     key: "CORE-2",
@@ -1349,10 +1377,11 @@ test("IssuePage remounts when switching issues, discarding unsaved local state",
   try {
     api.getIssue = async (key: string) => (key === "CORE-2" ? secondIssue : issue);
     api.getInbox = async () => [];
-    api.getMyState = async () => ({
-      "CORE-1": { dismissed: [], last_read_seq: 0, pinned: false, seq: 0 },
-      "CORE-2": { dismissed: [], last_read_seq: 0, pinned: false, seq: 0 },
-    });
+    api.getMyState = async () =>
+      marksOf("issue", {
+        "CORE-1": { last_read_seq: 0, pinned: false, seq: 0 },
+        "CORE-2": { last_read_seq: 0, pinned: false, seq: 0 },
+      });
     api.getIssueEvents = async () => [];
     api.getIssueSubscribers = async () => [];
 
@@ -1413,12 +1442,14 @@ test("IssuePage highlights a historical quote from its comment deep link", async
   const getArtifact = spyOn(api, "getArtifact").mockResolvedValue({
     ...primaryArtifact,
   });
-  const getArtifactText = spyOn(api, "getArtifactText").mockResolvedValue({
-    markdown: "SQLite is local",
-    version: 1,
-    unsettled: false,
-    token: "sha256:sqlite-local",
-  });
+  const getArtifactText = spyOn(api, "getArtifactText").mockResolvedValue(
+    liveText({
+      markdown: "SQLite is local",
+      version: 1,
+      unsettled: false,
+      token: "sha256:sqlite-local",
+    })
+  );
   const getArtifactVersion = spyOn(api, "getArtifactVersion").mockResolvedValue({
     authors: [{ id: "alice", kind: "user" }],
     created_at: "2026-09-09T00:00:00Z",
@@ -1491,12 +1522,14 @@ test("IssuePage reports an ambiguous historical quote as changed text", async ()
   const getArtifact = spyOn(api, "getArtifact").mockResolvedValue({
     ...primaryArtifact,
   });
-  const getArtifactText = spyOn(api, "getArtifactText").mockResolvedValue({
-    markdown: "SQLite and SQLite",
-    version: 1,
-    unsettled: false,
-    token: "sha256:sqlite",
-  });
+  const getArtifactText = spyOn(api, "getArtifactText").mockResolvedValue(
+    liveText({
+      markdown: "SQLite and SQLite",
+      version: 1,
+      unsettled: false,
+      token: "sha256:sqlite",
+    })
+  );
   const getArtifactVersion = spyOn(api, "getArtifactVersion").mockResolvedValue({
     authors: [{ id: "alice", kind: "user" }],
     created_at: "2026-09-09T00:00:00Z",
@@ -1553,21 +1586,28 @@ test("IssuePage reports an ambiguous historical quote as changed text", async ()
 });
 
 test("IssuePage renders an image artifact in the Artifacts tab", async () => {
-  const imageArtifact = {
+  const imageArtifact: ArtifactV2 = {
     created_at: "2026-09-09T01:00:00Z",
-    created_by: { id: "alice", kind: "user" as const },
+    created_by: { id: "alice", kind: "user" },
     id: "artifact-image",
     issue_key: "CORE-1",
     project: "CORE",
-    kind: "image" as const,
+    kind: "image",
+    latest_version: 1,
+    latest_version_at: "2026-09-09T01:00:00Z",
+    latest_version_size: null,
     name: "diagram.png",
     primary: false,
     ref_key: "CORE-1/diagram-png",
     session_id: null,
     slug: "diagram-png",
-    versions: [
+    unsettled: null,
+    version_count: 1,
+  };
+  answerVersions({
+    [imageArtifact.id]: [
       {
-        authors: [{ id: "alice", kind: "user" as const }],
+        authors: [{ id: "alice", kind: "user" }],
         created_at: "2026-09-09T01:00:00Z",
         mime: "image/png",
         named: false,
@@ -1577,13 +1617,13 @@ test("IssuePage renders an image artifact in the Artifacts tab", async () => {
         summary: null,
       },
     ],
-  };
+  });
   const restore = stubIssuePage({ ...issue, artifacts: [...issue.artifacts, imageArtifact] });
   const view = renderIssuePage("/issues/CORE-1/artifacts/diagram-png");
 
   try {
     await screen.findByRole("tab", { name: "Artifacts 2", selected: true });
-    expect(screen.getByRole("img", { name: "diagram.png version 1" })).not.toBeNull();
+    expect(await screen.findByRole("img", { name: "diagram.png version 1" })).not.toBeNull();
     expect(screen.getByTestId("artifact-header").className).toContain("ring-2");
   } finally {
     view.unmount();
@@ -1593,21 +1633,28 @@ test("IssuePage renders an image artifact in the Artifacts tab", async () => {
 
 test("IssuePage does not mount an image as the hidden Spec document", async () => {
   const user = userEvent.setup();
-  const imageArtifact = {
+  const imageArtifact: ArtifactV2 = {
     created_at: "2026-09-09T01:00:00Z",
-    created_by: { id: "alice", kind: "user" as const },
+    created_by: { id: "alice", kind: "user" },
     id: "artifact-image",
     issue_key: "CORE-1",
     project: "CORE",
-    kind: "image" as const,
+    kind: "image",
+    latest_version: 1,
+    latest_version_at: "2026-09-09T01:00:00Z",
+    latest_version_size: null,
     name: "diagram.png",
     primary: false,
     ref_key: "CORE-1/diagram-png",
     session_id: null,
     slug: "diagram-png",
-    versions: [
+    unsettled: null,
+    version_count: 1,
+  };
+  answerVersions({
+    [imageArtifact.id]: [
       {
-        authors: [{ id: "alice", kind: "user" as const }],
+        authors: [{ id: "alice", kind: "user" }],
         created_at: "2026-09-09T01:00:00Z",
         mime: "image/png",
         named: false,
@@ -1617,14 +1664,16 @@ test("IssuePage does not mount an image as the hidden Spec document", async () =
         summary: null,
       },
     ],
-  };
-  const restore = stubIssuePage({ ...issue, artifacts: [...issue.artifacts, imageArtifact] });
-  const getArtifactText = spyOn(api, "getArtifactText").mockResolvedValue({
-    markdown: "# Primary",
-    version: 1,
-    unsettled: false,
-    token: "sha256:primary",
   });
+  const restore = stubIssuePage({ ...issue, artifacts: [...issue.artifacts, imageArtifact] });
+  const getArtifactText = spyOn(api, "getArtifactText").mockResolvedValue(
+    liveText({
+      markdown: "# Primary",
+      version: 1,
+      unsettled: false,
+      token: "sha256:primary",
+    })
+  );
   const view = renderIssuePage("/issues/CORE-1/spec", "/issues/CORE-1/artifacts/diagram-png");
 
   try {
@@ -1643,21 +1692,28 @@ test("IssuePage does not mount an image as the hidden Spec document", async () =
 
 test("IssuePage opens a non-spec document at its version route", async () => {
   const user = userEvent.setup();
-  const documentArtifact = {
+  const documentArtifact: ArtifactV2 = {
     created_at: "2026-09-09T01:00:00Z",
-    created_by: { id: "alice", kind: "user" as const },
+    created_by: { id: "alice", kind: "user" },
     id: "artifact-design",
     issue_key: "CORE-1",
     project: "CORE",
-    kind: "doc" as const,
+    kind: "doc",
+    latest_version: 1,
+    latest_version_at: "2026-09-09T01:00:00Z",
+    latest_version_size: null,
     name: "design.md",
     primary: false,
     ref_key: "CORE-1/design",
     session_id: null,
     slug: "design",
-    versions: [
+    unsettled: null,
+    version_count: 1,
+  };
+  answerVersions({
+    [documentArtifact.id]: [
       {
-        authors: [{ id: "alice", kind: "user" as const }],
+        authors: [{ id: "alice", kind: "user" }],
         created_at: "2026-09-09T01:00:00Z",
         mime: "text/markdown",
         named: true,
@@ -1667,17 +1723,22 @@ test("IssuePage opens a non-spec document at its version route", async () => {
         summary: "Initial design",
       },
     ],
-  };
+  });
   const restore = stubIssuePage({ ...issue, artifacts: [...issue.artifacts, documentArtifact] });
   const getArtifact = spyOn(api, "getArtifact").mockResolvedValue({
     ...documentArtifact,
   });
-  const getArtifactText = spyOn(api, "getArtifactText").mockResolvedValue({
-    markdown: "# Design",
-    version: 1,
-    unsettled: false,
-    token: "sha256:design",
-  });
+  const getArtifactText = spyOn(api, "getArtifactText").mockResolvedValue(
+    liveText(
+      {
+        markdown: "# Design",
+        version: 1,
+        unsettled: false,
+        token: "sha256:design",
+      },
+      documentArtifact
+    )
+  );
   const view = renderIssuePage("/issues/CORE-1/artifacts/design");
 
   try {
@@ -1699,21 +1760,28 @@ test("IssuePage opens a non-spec document at its version route", async () => {
 });
 
 test("IssuePage shows an unavailable image version instead of the latest image", async () => {
-  const imageArtifact = {
+  const imageArtifact: ArtifactV2 = {
     created_at: "2026-09-09T01:00:00Z",
-    created_by: { id: "alice", kind: "user" as const },
+    created_by: { id: "alice", kind: "user" },
     id: "artifact-image",
     issue_key: "CORE-1",
     project: "CORE",
-    kind: "image" as const,
+    kind: "image",
+    latest_version: 1,
+    latest_version_at: "2026-09-09T01:00:00Z",
+    latest_version_size: null,
     name: "diagram.png",
     primary: false,
     ref_key: "CORE-1/diagram-png",
     session_id: null,
     slug: "diagram-png",
-    versions: [
+    unsettled: null,
+    version_count: 1,
+  };
+  answerVersions({
+    [imageArtifact.id]: [
       {
-        authors: [{ id: "alice", kind: "user" as const }],
+        authors: [{ id: "alice", kind: "user" }],
         created_at: "2026-09-09T01:00:00Z",
         mime: "image/png",
         named: false,
@@ -1723,13 +1791,15 @@ test("IssuePage shows an unavailable image version instead of the latest image",
         summary: null,
       },
     ],
-  };
+  });
   const restore = stubIssuePage({ ...issue, artifacts: [...issue.artifacts, imageArtifact] });
   const view = renderIssuePage("/issues/CORE-1/artifacts/diagram-png?v=999");
 
   try {
     await screen.findByRole("tab", { name: "Artifacts 2", selected: true });
-    expect(screen.getByText("Version 999 is not available for this artifact.")).not.toBeNull();
+    expect(
+      await screen.findByText("Version 999 is not available for this artifact.")
+    ).not.toBeNull();
     expect(screen.queryByRole("img", { name: "diagram.png version 1" })).not.toBeInTheDocument();
   } finally {
     view.unmount();
@@ -1778,36 +1848,33 @@ test("IssuePage encodes primary-document version selection in the artifact route
   if (primaryArtifact === undefined) {
     throw new Error("IssuePage test fixture needs a primary document.");
   }
-  const versionedIssue = {
-    ...issue,
-    artifacts: [
+  const versionedIssue = { ...issue, artifacts: [{ ...primaryArtifact, latest_version: 1 }] };
+  answerVersions({
+    [primaryArtifact.id]: [
       {
-        ...primaryArtifact,
-        versions: [
-          {
-            authors: [{ id: "alice", kind: "user" as const }],
-            created_at: "2026-09-09T01:00:00Z",
-            mime: "text/markdown",
-            named: true,
-            number: 1,
-            sha256: "primary-sha",
-            size: 10,
-            summary: "Initial spec",
-          },
-        ],
+        authors: [{ id: "alice", kind: "user" }],
+        created_at: "2026-09-09T01:00:00Z",
+        mime: "text/markdown",
+        named: true,
+        number: 1,
+        sha256: "primary-sha",
+        size: 10,
+        summary: "Initial spec",
       },
     ],
-  };
+  });
   const restore = stubIssuePage(versionedIssue);
   const getArtifact = spyOn(api, "getArtifact").mockResolvedValue({
     ...versionedIssue.artifacts[0],
   });
-  const getArtifactText = spyOn(api, "getArtifactText").mockResolvedValue({
-    markdown: "# Primary",
-    version: 1,
-    unsettled: false,
-    token: "sha256:primary",
-  });
+  const getArtifactText = spyOn(api, "getArtifactText").mockResolvedValue(
+    liveText({
+      markdown: "# Primary",
+      version: 1,
+      unsettled: false,
+      token: "sha256:primary",
+    })
+  );
   const view = renderIssuePage("/issues/CORE-1/spec");
 
   try {
@@ -1835,12 +1902,14 @@ test("IssuePage renders exactly one Version combobox on the Spec tab", async () 
   const getArtifact = spyOn(api, "getArtifact").mockResolvedValue({
     ...primaryArtifact,
   });
-  const getArtifactText = spyOn(api, "getArtifactText").mockResolvedValue({
-    markdown: "# Primary",
-    version: 1,
-    unsettled: false,
-    token: "sha256:primary",
-  });
+  const getArtifactText = spyOn(api, "getArtifactText").mockResolvedValue(
+    liveText({
+      markdown: "# Primary",
+      version: 1,
+      unsettled: false,
+      token: "sha256:primary",
+    })
+  );
   const view = renderIssuePage("/issues/CORE-1/spec");
 
   try {
@@ -1860,12 +1929,14 @@ test("IssuePage keeps version controls in the active Spec tab row", async () => 
   const getArtifact = spyOn(api, "getArtifact").mockResolvedValue({
     ...issue.artifacts[0],
   });
-  const getArtifactText = spyOn(api, "getArtifactText").mockResolvedValue({
-    markdown: "# Primary",
-    version: 1,
-    unsettled: false,
-    token: "sha256:primary",
-  });
+  const getArtifactText = spyOn(api, "getArtifactText").mockResolvedValue(
+    liveText({
+      markdown: "# Primary",
+      version: 1,
+      unsettled: false,
+      token: "sha256:primary",
+    })
+  );
   const view = renderIssuePage("/issues/CORE-1/spec");
 
   try {
@@ -1897,12 +1968,14 @@ test("IssuePage copies the issue key on click, its reference on a modifier click
   const getArtifact = spyOn(api, "getArtifact").mockResolvedValue({
     ...issue.artifacts[0],
   });
-  const getArtifactText = spyOn(api, "getArtifactText").mockResolvedValue({
-    markdown: "# Primary",
-    version: 1,
-    unsettled: false,
-    token: "sha256:primary",
-  });
+  const getArtifactText = spyOn(api, "getArtifactText").mockResolvedValue(
+    liveText({
+      markdown: "# Primary",
+      version: 1,
+      unsettled: false,
+      token: "sha256:primary",
+    })
+  );
   const getArtifactVersion = spyOn(api, "getArtifactVersion").mockResolvedValue({
     authors: [{ id: "alice", kind: "user" }],
     created_at: "2026-09-09T00:00:00Z",
@@ -2040,7 +2113,7 @@ test("IssuePage draws a gated root issue's steps where the header's one chip sat
       },
     ],
   });
-  const gated: Project = {
+  const gated: ProjectV2 = {
     created_at: "2026-09-09T00:00:00Z",
     gated_steps: ["decisions", "criteria", "spec"],
     open_asks: 0,
@@ -2090,7 +2163,7 @@ test("IssuePage keeps the primary document's chip when no gated step reviews it"
   });
   // A deployment may gate the decisions and the Verification document and not the spec; the
   // spec still has an approval to answer, and only the header's own chip can answer it.
-  const gated: Project = {
+  const gated: ProjectV2 = {
     created_at: "2026-09-09T00:00:00Z",
     gated_steps: ["decisions", "criteria"],
     open_asks: 0,
@@ -2124,12 +2197,7 @@ test("IssuePage keeps the primary document's chip when no gated step reviews it"
 });
 
 test("IssuePage fills and marks the issue pin when it is pinned", async () => {
-  const restore = stubIssuePage(issue, [], [], {
-    dismissed: [],
-    last_read_seq: 0,
-    pinned: true,
-    seq: 0,
-  });
+  const restore = stubIssuePage(issue, [], [], { last_read_seq: 0, pinned: true, seq: 0 });
   const view = renderIssuePage("/issues/CORE-1/conversation");
 
   try {
@@ -2146,7 +2214,7 @@ test("IssuePage fills and marks the issue pin when it is pinned", async () => {
 test("IssuePage's pin refreshes the sidebar's pinned list once the pin is saved", async () => {
   const user = userEvent.setup();
   const restore = stubIssuePage(issue);
-  const saved = { dismissed: [], last_read_seq: 0, pinned: true, seq: 1 };
+  const saved = markOf("issue", "CORE-1", { last_read_seq: 0, pinned: true, seq: 1 });
   const putIssueState = spyOn(api, "putIssueState").mockResolvedValue(saved);
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
@@ -2201,12 +2269,14 @@ test("IssuePage shows a failed historical document version", async () => {
   const getArtifact = spyOn(api, "getArtifact").mockResolvedValue({
     ...issue.artifacts[0],
   });
-  const getArtifactText = spyOn(api, "getArtifactText").mockResolvedValue({
-    markdown: "# Primary",
-    version: 1,
-    unsettled: false,
-    token: "sha256:primary",
-  });
+  const getArtifactText = spyOn(api, "getArtifactText").mockResolvedValue(
+    liveText({
+      markdown: "# Primary",
+      version: 1,
+      unsettled: false,
+      token: "sha256:primary",
+    })
+  );
   const getArtifactVersion = spyOn(api, "getArtifactVersion").mockRejectedValue(
     new Error("missing version")
   );
@@ -2233,12 +2303,14 @@ test("IssuePage closes an issue and reopens it into Backlog", async () => {
   const getArtifact = spyOn(api, "getArtifact").mockResolvedValue({
     ...issue.artifacts[0],
   });
-  const getArtifactText = spyOn(api, "getArtifactText").mockResolvedValue({
-    markdown: "The mounted specification",
-    version: 1,
-    unsettled: false,
-    token: "sha256:mounted-specification",
-  });
+  const getArtifactText = spyOn(api, "getArtifactText").mockResolvedValue(
+    liveText({
+      markdown: "The mounted specification",
+      version: 1,
+      unsettled: false,
+      token: "sha256:mounted-specification",
+    })
+  );
   const closeSave = Promise.withResolvers<IssueDetails>();
   const reopenSave = Promise.withResolvers<IssueDetails>();
   const patchIssue = answerIssuePatches().mockImplementation(async (_key, input) => {
@@ -2338,10 +2410,7 @@ test("IssuePage reports a failed issue read on an item deep link instead of load
   api.getIssue = async () => {
     throw new ApiError(500, { code: "SERVER_ERROR", error: "boom" });
   };
-  const getComment = spyOn(api, "getComment").mockResolvedValue({
-    comment: { ...itemComment },
-    replies: [],
-  });
+  const getComment = spyOn(api, "getComment").mockResolvedValue({ ...itemComment, replies: [] });
   const view = renderIssuePage(`/issues/CORE-1/comments/${itemComment.id}`);
 
   try {
@@ -2407,7 +2476,7 @@ test("IssuePage reads an item whose address writes its id whole without resolvin
   const restore = stubIssuePage(issue);
   const getReferences = spyOn(api, "getReferences");
   const getComment = spyOn(api, "getComment").mockResolvedValue({
-    comment: shortIdComment,
+    ...shortIdComment,
     replies: [],
   });
   const view = renderIssuePage(`/issues/CORE-1/comments/${WHOLE_ID}`);
@@ -2432,16 +2501,17 @@ test("IssuePage reads an item whose address writes its id whole without resolvin
 test("IssuePage resolves an address that writes an id short and replaces it with the whole id", async () => {
   const user = userEvent.setup();
   const restore = stubIssuePage(issue);
-  const getReferences = spyOn(api, "getReferences").mockResolvedValue({
-    edges: [],
-    node: graphNode({
-      id: WHOLE_ID,
-      kind: "comment",
-      ref: `dispatch://CORE-1/comment/${WHOLE_ID}`,
-    }),
-  });
+  const getReferences = spyOn(api, "getReferences").mockResolvedValue(
+    referencesRead(
+      graphNode({
+        id: WHOLE_ID,
+        kind: "comment",
+        ref: `dispatch://CORE-1/comment/${WHOLE_ID}`,
+      })
+    )
+  );
   const getComment = spyOn(api, "getComment").mockResolvedValue({
-    comment: shortIdComment,
+    ...shortIdComment,
     replies: [],
   });
   const view = renderLandingHistory(["/issues/CORE-1", `/issues/CORE-1/comments/${SHORT_ID}`]);

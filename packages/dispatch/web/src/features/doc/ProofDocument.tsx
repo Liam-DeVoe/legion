@@ -18,8 +18,8 @@ import {
   isDocumentSchemaError,
   isDocumentUnloadable,
 } from "../../api/client";
-import { artifactBlocksQuery } from "../../api/queries";
-import type { Artifact, AuthenticatedUser, Version } from "../../api/types";
+import { artifactBlocksQuery, artifactVersionsQuery } from "../../api/queries";
+import type { ArtifactV2, AuthenticatedUser, Version } from "../../api/types";
 import { TruncatedText } from "../../components/TruncatedText";
 import { copyText } from "../../lib/clipboard";
 import {
@@ -183,7 +183,7 @@ export interface ProofDocumentProps {
     readonly children: ReactNode;
     readonly markId: string | null;
   };
-  artifact: Artifact;
+  artifact: ArtifactV2;
   highlight: Highlight | undefined;
   highlightTerm?: string;
   isClosed: boolean;
@@ -312,10 +312,7 @@ export function ProofDocument({
   // block of this document changes it in place, firing no event of the browser's own.
   const { hash: routedHash } = useLocation();
   const documentRef = buildDispatchReference(documentRoute(artifact));
-  const artifactQuery = useQuery({
-    queryKey: ["artifact", artifact.id],
-    queryFn: () => api.getArtifact(artifact.id),
-  });
+  const versionsQuery = useQuery(artifactVersionsQuery(artifact.id));
   const liveTextQuery = useQuery(liveTextQueryOptions(artifact.id));
   // The repair replaces this document, so it uploads under the document's own name whatever the
   // picked file is called; a closed issue takes none.
@@ -407,16 +404,12 @@ export function ProofDocument({
       // answer to give, the store has read the document again.
       setIsNameDialogOpen(false);
       if (created === null) return;
-      queryClient.setQueryData<Artifact>(["artifact", artifact.id], (current) => {
-        const source = current ?? artifact;
-        return {
-          ...source,
-          versions: [
-            ...(source.versions ?? []).filter(({ number }) => number !== created.number),
-            created,
-          ],
-        };
-      });
+      // The list is put right where it is held; one not read yet is read whole when it is.
+      queryClient.setQueryData(artifactVersionsQuery(artifact.id).queryKey, (current) =>
+        current === undefined
+          ? undefined
+          : [...current.filter(({ number }) => number !== created.number), created]
+      );
       onVersionChange(created.number);
     },
   });
@@ -434,8 +427,8 @@ export function ProofDocument({
       ? versionQuery.data.markdown
       : undefined;
   const versions = useMemo(
-    () => versionsNewestFirst(artifactQuery.data?.versions ?? artifact.versions),
-    [artifactQuery.data?.versions, artifact.versions]
+    () => versionsNewestFirst(versionsQuery.data ?? null),
+    [versionsQuery.data]
   );
   // An issue's live spec on its own page marks the blocks its decisions and the person's last
   // read call out, and records what it shows as read.
@@ -443,7 +436,8 @@ export function ProofDocument({
     artifact,
     enabled: page && version === undefined && artifact.primary && owner.kind === "issue",
     issueKey: owner.kind === "issue" ? owner.key : "",
-    shownVersion: versions[0]?.number,
+    // Until the list answers, the document's own read names its latest version.
+    shownVersion: versions[0]?.number ?? artifact.latest_version ?? undefined,
   });
   // The editor takes the marks when it binds, and every set after that, through its handle:
   // a class Dispatch wrote into the editor's DOM would be read back as an edit.
@@ -1264,11 +1258,14 @@ export function ProofDocument({
             View current version
           </Link>
         </section>
-      ) : versionMarkdown === undefined ? (
+      ) : versionQuery.data === undefined ? (
         <p>Loading version…</p>
-      ) : showDiff ? (
+      ) : showDiff && versionMarkdown !== undefined ? (
         <ChangeView after={liveMarkdown} before={versionMarkdown} />
       ) : (
+        // A version stored as a file (a role document's bytes from before a Markdown upload made it
+        // a document) answers no text: the version view shows it as a file, and with no text to
+        // diff against the current one, a diff of it shows that same view.
         <div data-testid="version-view">
           <VersionView
             artifactId={artifact.id}

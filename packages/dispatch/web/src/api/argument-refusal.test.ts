@@ -27,52 +27,52 @@ const notOwnerRepo = "repository must be formatted as owner/repo";
 const refusals: readonly Refusal[] = [
   {
     call: (api) => api.patchIssue("", { status: "done" }, bounds),
-    message: "/api/v1/issues/{key} has no value for {key}",
+    message: "/api/v2/issues/{key} has no value for {key}",
     method: "patchIssue",
   },
   {
     call: (api) => api.getIssueEvents(""),
-    message: "/api/v1/issues/{key}/events has no value for {key}",
+    message: "/api/v2/issues/{key}/events has no value for {key}",
     method: "getIssueEvents",
   },
   {
     call: (api) => api.listIssueAskThreads(""),
-    message: "/api/v1/issues/{key}/asks has no value for {key}",
+    message: "/api/v2/issues/{key}/asks has no value for {key}",
     method: "listIssueAskThreads",
   },
   {
     call: (api) => api.snoozeAsk("", timestamp, bounds),
-    message: "/api/v1/me/asks/{id}/snooze has no value for {id}",
+    message: "/api/v2/me/marks/{kind}/{id} has no value for {id}",
     method: "snoozeAsk",
   },
   {
     call: (api) => api.markThreadRead("", timestamp, bounds),
-    message: "/api/v1/me/threads/{id}/read has no value for {id}",
+    message: "/api/v2/me/marks/{kind}/{id} has no value for {id}",
     method: "markThreadRead",
   },
   {
     call: (api) => api.createAgentMessage("", { body: "Ready?", delivery: "btw" }, bounds),
-    message: "/api/v1/agents/{session_id}/messages has no value for {session_id}",
+    message: "/api/v2/agents/{session_id}/messages has no value for {session_id}",
     method: "createAgentMessage",
   },
   {
     call: (api) => api.putDocumentRead("", 3, bounds),
-    message: "/api/v1/me/documents/{id}/read has no value for {id}",
+    message: "/api/v2/me/marks/{kind}/{id} has no value for {id}",
     method: "putDocumentRead",
   },
   {
     call: (api) => api.getArtifactVersion("", 3),
-    message: "/api/v1/artifacts/{id}/versions/{number} has no value for {id}",
+    message: "/api/v2/artifacts/{id}/versions/{number} has no value for {id}",
     method: "getArtifactVersion",
   },
   {
     call: (api) => api.putIssueState("", { pinned: true }, bounds),
-    message: "/api/v1/me/issues/{key}/state has no value for {key}",
+    message: "/api/v2/me/marks/{kind}/{id} has no value for {id}",
     method: "putIssueState",
   },
   {
     call: (api) => api.putAgentState("", { cleared_before: timestamp }, bounds),
-    message: "/api/v1/me/agents/{session_id}/state has no value for {session_id}",
+    message: "/api/v2/me/marks/{kind}/{id} has no value for {id}",
     method: "putAgentState",
   },
   {
@@ -90,9 +90,11 @@ const refusals: readonly Refusal[] = [
     message: notOwnerRepo,
     method: "putArchitectureSource",
   },
+  // A sync names its repositories in its body, so the project is the one path parameter it
+  // builds its URL from.
   {
-    call: (api) => api.syncArchitectureSource("ACME", "", bounds),
-    message: notOwnerRepo,
+    call: (api) => api.syncArchitectureSource("", "acme/infra", bounds),
+    message: "/api/v2/projects/{key}/architecture-syncs has no value for {key}",
     method: "syncArchitectureSource",
   },
   {

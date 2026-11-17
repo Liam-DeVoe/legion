@@ -1,5 +1,5 @@
 import { ISSUE_STATUSES, type IssueStatus } from "@legion/contracts/dispatch-tools";
-import type { IssuePriority, IssueSummary, UpdateIssueInput } from "../../api/types";
+import type { IssuePriority, IssueSummary, PatchIssueV2Input } from "../../api/types";
 import { issuePriority } from "../issue/issue-priority";
 
 /** The Go server's `model.IssueStatuses`, in lifecycle order: the board's columns. */
@@ -194,7 +194,7 @@ export function moveIssue(
   targetStatus: IssueStatus,
   insertionIndex: number,
   isVisible: (issue: IssueSummary) => boolean = () => true
-): { issues: IssueSummary[]; input: UpdateIssueInput } | undefined {
+): { issues: IssueSummary[]; input: PatchIssueV2Input } | undefined {
   const active = issues.find((issue) => issue.key === key);
   if (active === undefined) {
     return undefined;
@@ -343,7 +343,7 @@ export function moveIssueToLane(
   targetLane: PriorityLane,
   insertionIndex: number,
   isVisible: (issue: IssueSummary) => boolean = () => true
-): { issues: IssueSummary[]; input: UpdateIssueInput } | undefined {
+): { issues: IssueSummary[]; input: PatchIssueV2Input } | undefined {
   const active = issues.find((issue) => issue.key === key);
   if (active === undefined) {
     return undefined;

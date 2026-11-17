@@ -8,27 +8,13 @@ import { fakeDocumentRuntime } from "../../__tests__/document-runtime";
 import { graphNode } from "../../__tests__/graph-fixture";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { ApiError, api } from "../../api/client";
-import type { Artifact, GraphEdge, Subscriber } from "../../api/types";
+import type { ArtifactText, GraphEdge, Subscriber } from "../../api/types";
+import { type DocumentFixture, documentRead, serveVersions } from "../artifacts/artifact-fixture";
 import { DocumentRuntime } from "../doc/runtime";
 import { MarginProvider } from "../margin/margin-context";
 import { DocumentPage } from "./DocumentPage";
 
-const getReferences = spyOn(api, "getReferences").mockResolvedValue({
-  edges: [],
-  node: graphNode({ id: "artifact-1", kind: "artifact" }),
-});
-// The document's own blocks and the asks anchored in it: every rendered page reads both, and
-// none of these rows carries either.
-const getArtifactBlocks = spyOn(api, "getArtifactBlocks").mockResolvedValue([]);
-const listArtifactAsks = spyOn(api, "listArtifactAsks").mockResolvedValue([]);
-
-afterAll(() => {
-  getReferences.mockRestore();
-  getArtifactBlocks.mockRestore();
-  listArtifactAsks.mockRestore();
-});
-
-const artifact: Artifact = {
+const artifact: DocumentFixture = {
   created_at: "2026-09-10T00:00:00Z",
   created_by: { id: "alice", kind: "user" },
   id: "artifact-1",
@@ -40,6 +26,7 @@ const artifact: Artifact = {
   ref_key: "CORE/design-notes",
   session_id: null,
   slug: "design-notes",
+  unsettled: null,
   versions: [
     {
       authors: [{ id: "alice", kind: "user" }],
@@ -50,6 +37,39 @@ const artifact: Artifact = {
     },
   ],
 };
+
+/** The document's own read, as the page reads it by its project and slug and by its id. */
+const read = documentRead(artifact);
+
+/** The document's live text, as a member of its own read (`include=text`). */
+const text: ArtifactText = {
+  ...read,
+  markdown: "# Design notes",
+  token: "sha256:design-notes",
+  unsettled: false,
+  version: 1,
+};
+
+const getReferences = spyOn(api, "getReferences").mockResolvedValue({
+  items: [],
+  limit: 50,
+  node: graphNode({ id: "artifact-1", kind: "artifact" }),
+  offset: 0,
+  total: 0,
+});
+// The document's own blocks and the asks anchored in it: every rendered page reads both, and
+// none of these rows carries either. Its versions are its own list, which the header's picker
+// reads.
+const getArtifactBlocks = spyOn(api, "getArtifactBlocks").mockResolvedValue([]);
+const listArtifactAsks = spyOn(api, "listArtifactAsks").mockResolvedValue([]);
+const listArtifactVersions = serveVersions([artifact]);
+
+afterAll(() => {
+  getReferences.mockRestore();
+  getArtifactBlocks.mockRestore();
+  listArtifactAsks.mockRestore();
+  listArtifactVersions.mockRestore();
+});
 
 function renderDocumentPage() {
   const runtime = fakeDocumentRuntime({ text: "# Design notes" });
@@ -74,17 +94,12 @@ function renderDocumentPage() {
 }
 
 test("renders the header, the document, versions, and Referenced by for an unlinked document", async () => {
-  const getProjectArtifact = spyOn(api, "getProjectArtifact").mockResolvedValue(artifact);
-  const getArtifact = spyOn(api, "getArtifact").mockResolvedValue(artifact);
+  const getProjectArtifact = spyOn(api, "getProjectArtifact").mockResolvedValue(read);
+  const getArtifact = spyOn(api, "getArtifact").mockResolvedValue(read);
   const getArtifactSubscribers = spyOn(api, "getArtifactSubscribers").mockResolvedValue([]);
-  const getArtifactText = spyOn(api, "getArtifactText").mockResolvedValue({
-    markdown: "# Design notes",
-    version: 1,
-    unsettled: false,
-    token: "sha256:design-notes",
-  });
+  const getArtifactText = spyOn(api, "getArtifactText").mockResolvedValue(text);
   getReferences.mockResolvedValueOnce({
-    edges: [
+    items: [
       {
         created_at: "2026-09-10T00:00:00Z",
         direction: "in",
@@ -100,12 +115,15 @@ test("renders the header, the document, versions, and Referenced by for an unlin
         source_seq: 1,
       },
     ],
+    limit: 50,
     node: graphNode({
       id: "artifact-1",
       kind: "artifact",
       project: "CORE",
       ref: "dispatch://CORE/artifact/design-notes",
     }),
+    offset: 0,
+    total: 1,
   });
   const { runtime, view } = renderDocumentPage();
 
@@ -141,15 +159,10 @@ test("renders the header, the document, versions, and Referenced by for an unlin
 // During a release a newer Dispatch can answer with an edge kind, or a node kind at its other end,
 // that this page does not render. The page leaves such an edge out of the list and its count.
 test("Referenced by leaves out an edge whose kind or node kind the page does not render", async () => {
-  const getProjectArtifact = spyOn(api, "getProjectArtifact").mockResolvedValue(artifact);
-  const getArtifact = spyOn(api, "getArtifact").mockResolvedValue(artifact);
+  const getProjectArtifact = spyOn(api, "getProjectArtifact").mockResolvedValue(read);
+  const getArtifact = spyOn(api, "getArtifact").mockResolvedValue(read);
   const getArtifactSubscribers = spyOn(api, "getArtifactSubscribers").mockResolvedValue([]);
-  const getArtifactText = spyOn(api, "getArtifactText").mockResolvedValue({
-    markdown: "# Design notes",
-    version: 1,
-    unsettled: false,
-    token: "sha256:design-notes",
-  });
+  const getArtifactText = spyOn(api, "getArtifactText").mockResolvedValue(text);
   const mention: GraphEdge = {
     created_at: "2026-09-10T00:00:00Z",
     direction: "in",
@@ -164,7 +177,7 @@ test("Referenced by leaves out an edge whose kind or node kind the page does not
     source_seq: 1,
   };
   getReferences.mockResolvedValueOnce({
-    edges: [
+    items: [
       mention,
       { ...mention, kind: "supersedes" } as unknown as GraphEdge,
       {
@@ -172,12 +185,15 @@ test("Referenced by leaves out an edge whose kind or node kind the page does not
         node: { id: "future-1", kind: "future", ref: "dispatch://CORE-1/future/future-1" },
       } as unknown as GraphEdge,
     ],
+    limit: 50,
     node: graphNode({
       id: "artifact-1",
       kind: "artifact",
       project: "CORE",
       ref: "dispatch://CORE/artifact/design-notes",
     }),
+    offset: 0,
+    total: 3,
   });
   const { runtime, view } = renderDocumentPage();
 
@@ -220,14 +236,9 @@ test("shows Document not found with a way back for an unknown slug", async () =>
 
 test("shows Subscribed agents and unsubscribes after confirming the dialog", async () => {
   const user = userEvent.setup();
-  const getProjectArtifact = spyOn(api, "getProjectArtifact").mockResolvedValue(artifact);
-  const getArtifact = spyOn(api, "getArtifact").mockResolvedValue(artifact);
-  const getArtifactText = spyOn(api, "getArtifactText").mockResolvedValue({
-    markdown: "# Design notes",
-    version: 1,
-    unsettled: false,
-    token: "sha256:design-notes",
-  });
+  const getProjectArtifact = spyOn(api, "getProjectArtifact").mockResolvedValue(read);
+  const getArtifact = spyOn(api, "getArtifact").mockResolvedValue(read);
+  const getArtifactText = spyOn(api, "getArtifactText").mockResolvedValue(text);
   let currentSubscribers: Subscriber[] = [
     {
       last_seen: 1,

@@ -14,6 +14,7 @@ import { api } from "../../api/client";
 import type { Comment } from "../../api/types";
 import { userPreferenceStorageKey } from "../shell/userPreference";
 import { seedUnread } from "../threads/replies-fixture";
+import { issue as issueFixture } from "./margin-fixture";
 import { ThreadCard } from "./ThreadCard";
 import type { Thread } from "./useMarginItems";
 
@@ -736,7 +737,8 @@ for (const order of ["oldest", "newest"] as const) {
 // predicate decides which bodies show cards.
 test("a comment of several references shows a card for each of them", async () => {
   const getIssueSummary = spyOn(api, "getIssueSummary").mockImplementation(async (key) => ({
-    documents: [],
+    ...issueFixture,
+    artifacts: [],
     key,
     project: "CORE",
     status: "in_progress",

@@ -1,4 +1,4 @@
-import type { InboxRow } from "../../api/types";
+import type { AskMarkV2 } from "../../api/types";
 
 const HOUR_MS = 60 * 60 * 1000;
 
@@ -85,13 +85,14 @@ export const SNOOZE_PRESETS: readonly SnoozePreset[] = [
  * Whether the reader has deferred this row and its moment is still ahead. The window is
  * absolute: nothing an agent does to the ask - a reply, a progress note, handing the turn back -
  * shortens it, so a deferred row stays deferred until it returns or the reader un-snoozes it.
- * Reads a row that carries no snooze at all (an issue header's `open_asks`) as not snoozed.
+ * The snooze is the reader's own mark on the ask (`include=mark`), so a read that carries no
+ * mark at all (an issue header's `open_asks`) is not snoozed.
  */
 export function isSnoozed(
-  row: Partial<Pick<InboxRow, "snoozed_until">>,
+  row: { readonly mark?: Pick<AskMarkV2, "snoozed_until"> },
   now: number = Date.now()
 ): boolean {
-  const until = row.snoozed_until;
+  const until = row.mark?.snoozed_until;
   if (until === null || until === undefined) return false;
   const at = Date.parse(until);
   return !Number.isNaN(at) && at > now;

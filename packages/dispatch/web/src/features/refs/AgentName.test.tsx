@@ -11,7 +11,7 @@ import { useAgents } from "../conversation/useAgents";
 import { AgentName, AskResolutionLine, askResolutionParts, useAgentText } from "./AgentName";
 import { AGENT_REGISTRY_POLL_MS, AgentRegistryPoller } from "./agent-registry";
 
-/** One live session, as `GET /api/v1/agents` lists it. */
+/** One live session, as `GET /api/v2/agents` lists it. */
 function listed(sessionId: string, title: string, lastSeen = Date.now() - 3 * 60_000): Agent {
   return {
     session_id: sessionId,

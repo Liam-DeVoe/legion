@@ -9,18 +9,21 @@ import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { ApiError, api, NetworkError } from "../../api/client";
 import type { Issue, IssueDetails, IssueSummary } from "../../api/types";
+import { marksOf } from "../agents/marks-fixture";
 import type { IssueStatus } from "../project/board-model";
 import { useBoardMoves } from "../project/board-moves";
 import { projectIssuesQueryKey } from "../project/issue-filters";
 import { IssuePage } from "./IssuePage";
 
 const issue: IssueDetails = {
-  route_status: null,
-  route_holder: null,
-  route_status_reason: null,
-  holder_state: null,
-  last_seen: null,
-  takeable_at: null,
+  reach: {
+    route_status: null,
+    route_holder: null,
+    route_status_reason: null,
+    holder_state: null,
+    last_seen: null,
+    takeable_at: null,
+  },
   advances: [],
   advances_revision: 0,
   artifacts: [
@@ -31,12 +34,16 @@ const issue: IssueDetails = {
       issue_key: "CORE-1",
       project: "CORE",
       kind: "doc",
+      latest_version: null,
+      latest_version_at: null,
+      latest_version_size: null,
       name: "spec.md",
       primary: true,
       ref_key: "CORE-1/spec",
       session_id: null,
       slug: "spec",
-      versions: [],
+      unsettled: null,
+      version_count: 0,
     },
   ],
   children: [],
@@ -95,8 +102,19 @@ function renderIssuePage() {
   return { queryClient, unmount: view.unmount };
 }
 
+/** The issue as a write of it answers: its own fields, without what only the issue page's read
+ *  includes. */
 function narrowIssue(details: IssueDetails): Issue {
-  const { artifacts: _artifacts, children: _children, open_asks: _openAsks, ...rest } = details;
+  const {
+    artifacts: _artifacts,
+    children: _children,
+    design_gates: _designGates,
+    open_asks: _openAsks,
+    progress: _progress,
+    reach: _reach,
+    referenced_by_count: _referencedBy,
+    ...rest
+  } = details;
   return rest;
 }
 
@@ -105,9 +123,9 @@ function stubIssueApi() {
   const getIssueEvents = spyOn(api, "getIssueEvents").mockResolvedValue([]);
   const getInbox = spyOn(api, "getInbox").mockResolvedValue([]);
   const getIssueSubscribers = spyOn(api, "getIssueSubscribers").mockResolvedValue([]);
-  const getMyState = spyOn(api, "getMyState").mockResolvedValue({
-    "CORE-1": { dismissed: [], last_read_seq: 0, pinned: false, seq: 0 },
-  });
+  const getMyState = spyOn(api, "getMyState").mockResolvedValue(
+    marksOf("issue", { "CORE-1": { last_read_seq: 0, pinned: false, seq: 0 } })
+  );
   // The header reads the project's repository mappings at once for an issue that resolves to
   // none, as this one does; a project that maps none shows no repository item.
   const listRepoProjects = spyOn(api, "listRepoProjects").mockResolvedValue([]);
@@ -146,7 +164,9 @@ function stubIssueApi() {
     ) =>
       narrowIssue({
         ...issue,
-        ...update,
+        // The document types the body's clearable fields (`assignee`, `parent`, `priority`,
+        // `repo`) as `unknown`: each is the value the write stores.
+        ...(update as Partial<IssueDetails>),
         status: status ?? issue.status,
         title: title ?? issue.title,
       })
@@ -1106,8 +1126,8 @@ test("a board move then a header status change land in press order after an outa
   const moveAnswers = Promise.withResolvers<void>();
   patchIssue.mockImplementation(async (key, input, bounds) => {
     // As `api.patchIssue` does, the request is told to `sent` before anything goes out.
-    bounds.sent?.({ body: input, method: "PATCH", path: `/api/v1/issues/${key}` });
-    if (!up) throw new NetworkError("/api/v1/issues/CORE-1", new TypeError("Failed to fetch"));
+    bounds.sent?.({ body: input, method: "PATCH", path: `/api/v2/issues/${key}` });
+    if (!up) throw new NetworkError("/api/v2/issues/CORE-1", new TypeError("Failed to fetch"));
     if (input.rank !== undefined) {
       outstanding.resolve();
       await moveAnswers.promise;
@@ -1115,8 +1135,14 @@ test("a board move then a header status change land in press order after an outa
     landed.push(input.rank !== undefined ? `board move to ${input.status}` : `${input.status}`);
     return narrowIssue({ ...issue, status: input.status ?? issue.status });
   });
-  const { artifacts: _artifacts, children: _children, open_asks: _asks, ...fields } = issue;
-  const summary: IssueSummary = { ...fields, open_asks: 0 };
+  const summary: IssueSummary = {
+    ...narrowIssue(issue),
+    open_asks: 0,
+    progress: issue.progress,
+    route_holder: issue.reach.route_holder,
+    route_status: issue.reach.route_status,
+    route_status_reason: issue.reach.route_status_reason,
+  };
   queryClient.setQueryData(projectIssuesQueryKey("CORE", []), [summary]);
   let moveCard: ((key: string, status: IssueStatus, index: number) => Promise<void>) | undefined;
   function Board(): null {

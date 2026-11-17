@@ -11,10 +11,11 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
 
 import { displayTree } from "../../__tests__/display-trees";
-import { graphNodeFields } from "../../__tests__/graph-fixture";
+import { graphNode, graphNodeFields } from "../../__tests__/graph-fixture";
 import { ApiError, api } from "../../api/client";
-import type { GraphReferences, IssueReferenceSummary } from "../../api/types";
+import type { ReferencesV2 } from "../../api/types";
 import { warmMarkdownRenderer } from "./markdown-engine";
+import { documentRow, issueSummary, referencesRead } from "./reference-fixture";
 import {
   blockQuery,
   documentSummaryQuery,
@@ -41,27 +42,25 @@ afterEach(() => {
 /** Every api read a reference can make, spied so a test sees which ran and none reaches the
  *  network. */
 function spyReads() {
-  const summary: IssueReferenceSummary = {
-    documents: [
-      {
+  const summary = issueSummary({
+    artifacts: [
+      documentRow({
         id: "doc-1",
-        kind: "doc",
         latest_version: 2,
         name: "design.md",
         primary: true,
         slug: "design",
-      },
+      }),
     ],
     key: "CORE-1",
-    project: "CORE",
     status: "in_progress",
     title: "Design decision",
-  };
+  });
   const spies = {
     getArtifactText: spyOn(api, "getArtifactText").mockResolvedValue({
+      ...documentRow({ id: "doc-1", latest_version: null, name: "design.md", slug: "design" }),
       markdown: "Live",
       token: "sha256:live",
-      version: null,
       unsettled: true,
     }),
     getArtifactVersion: spyOn(api, "getArtifactVersion").mockResolvedValue({} as never),
@@ -75,19 +74,12 @@ function spyReads() {
     } as never),
     getIssueSummary: spyOn(api, "getIssueSummary").mockResolvedValue(summary),
     getMessage: spyOn(api, "getMessage").mockResolvedValue({} as never),
-    getProjectArtifact: spyOn(api, "getProjectArtifact").mockResolvedValue({} as never),
-    getProjectDocumentSummary: spyOn(api, "getProjectDocumentSummary").mockResolvedValue({
-      id: "doc-9",
-      kind: "doc",
-      latest_version: 4,
-      name: "Runbook.md",
-      project: "CORE",
-      slug: "runbook-md",
-    }),
-    getReferences: spyOn(api, "getReferences").mockResolvedValue({
-      edges: [],
-      node: { id: "CORE-1/spec#intro", kind: "block" },
-    } as never),
+    getProjectArtifact: spyOn(api, "getProjectArtifact").mockResolvedValue(
+      documentRow({ id: "doc-9", latest_version: 4, name: "Runbook.md", slug: "runbook-md" })
+    ),
+    getReferences: spyOn(api, "getReferences").mockResolvedValue(
+      referencesRead(graphNode({ id: "CORE-1/spec#intro", kind: "block" }))
+    ),
   };
   restore = () => {
     for (const spy of Object.values(spies)) {
@@ -180,7 +172,7 @@ test("a summary or block read that failed is fetched again when the window regai
   await expectFocusRecoversFailedRead(issueSummaryQuery("CORE-1"), reads.getIssueSummary);
   await expectFocusRecoversFailedRead(
     documentSummaryQuery("CORE", "runbook-md"),
-    reads.getProjectDocumentSummary
+    reads.getProjectArtifact
   );
   await expectFocusRecoversFailedRead(
     blockQuery("dispatch://CORE-1/spec#intro"),
@@ -227,7 +219,7 @@ test("hovering a project document warms its summary and the version it pins", as
     ["doc-summary", "CORE", "runbook-md"],
     ["artifact", "doc-9", 3],
   ]);
-  expect(reads.getProjectArtifact).not.toHaveBeenCalled();
+  expect(reads.getProjectArtifact).toHaveBeenCalledWith("CORE", "runbook-md");
 });
 
 test("hovering an ask, a comment or a message warms its own read and nothing of its issue or document", async () => {
@@ -250,7 +242,7 @@ test("hovering an ask, a comment or a message warms its own read and nothing of 
   ]);
   expect(reads.getIssue).not.toHaveBeenCalled();
   expect(reads.getIssueSummary).not.toHaveBeenCalled();
-  expect(reads.getProjectDocumentSummary).not.toHaveBeenCalled();
+  expect(reads.getProjectArtifact).not.toHaveBeenCalled();
 });
 
 test("hovering a block of a comment or message warms its graph read alone, no summary of a document", async () => {
@@ -282,7 +274,7 @@ test("hovering a block of a comment or message warms its graph read alone, no su
   ]);
   expect(reads.getIssue).not.toHaveBeenCalled();
   expect(reads.getIssueSummary).not.toHaveBeenCalled();
-  expect(reads.getProjectDocumentSummary).not.toHaveBeenCalled();
+  expect(reads.getProjectArtifact).not.toHaveBeenCalled();
   expect(reads.getComment).not.toHaveBeenCalled();
   expect(reads.getMessage).not.toHaveBeenCalled();
 });
@@ -290,19 +282,16 @@ test("hovering a block of a comment or message warms its graph read alone, no su
 /** A block's graph read: its current text with the reading the server made of it, and the pin
  *  a pinned reference's read carries, with its own. A reference's title is the tree's plain
  *  words now, so a read with no tree has none. */
-function blockRead(text: string | undefined, pin?: NonNullable<GraphReferences["node"]["pin"]>) {
-  return {
-    edges: [],
-    node: {
-      ...graphNodeFields(),
-      block_id: "b2",
-      id: "CORE-1/spec#b2",
-      kind: "block",
-      pin,
-      text,
-      text_tree: text === undefined ? undefined : displayTree(text),
-    },
-  } satisfies GraphReferences;
+function blockRead(text: string | undefined, pin?: NonNullable<ReferencesV2["node"]["pin"]>) {
+  return referencesRead({
+    ...graphNodeFields(),
+    block_id: "b2",
+    id: "CORE-1/spec#b2",
+    kind: "block",
+    pin,
+    text,
+    text_tree: text === undefined ? undefined : displayTree(text),
+  });
 }
 
 // A link to a block is titled by the block's text, from its graph read, which an event that can
@@ -387,22 +376,21 @@ test.each([
 
 test("watchPicturePath reports an image's latest version and follows its summary as it changes", async () => {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const summary = (kind: "image" | "doc", latest: number): IssueReferenceSummary => ({
-    documents: [
-      {
-        id: "shot",
-        kind,
-        latest_version: latest,
-        name: "shot.png",
-        primary: false,
-        slug: "shot-png",
-      },
-    ],
-    key: "CORE-1",
-    project: "CORE",
-    status: "in_progress",
-    title: "Core one",
-  });
+  const summary = (kind: "image" | "doc", latest: number) =>
+    issueSummary({
+      artifacts: [
+        documentRow({
+          id: "shot",
+          kind,
+          latest_version: latest,
+          name: "shot.png",
+          slug: "shot-png",
+        }),
+      ],
+      key: "CORE-1",
+      status: "in_progress",
+      title: "Core one",
+    });
   queryClient.setQueryData(issueSummaryQuery("CORE-1").queryKey, summary("image", 2));
   const reported: (string | undefined)[] = [];
   const stop = watchPicturePath(
@@ -412,12 +400,10 @@ test("watchPicturePath reports an image's latest version and follows its summary
   );
 
   // A summary already read answers at once, so the picture draws with no link before it.
-  expect(reported).toEqual(["/api/v1/issues/CORE-1/artifacts/shot-png/versions/2"]);
+  expect(reported).toEqual(["/api/v2/artifacts/shot/versions/2"]);
   // An event's refresh of the summary - a new version uploaded - reaches the watcher.
   queryClient.setQueryData(issueSummaryQuery("CORE-1").queryKey, summary("image", 3));
-  await waitFor(() =>
-    expect(reported.at(-1)).toBe("/api/v1/issues/CORE-1/artifacts/shot-png/versions/3")
-  );
+  await waitFor(() => expect(reported.at(-1)).toBe("/api/v2/artifacts/shot/versions/3"));
   // A document is no picture.
   queryClient.setQueryData(issueSummaryQuery("CORE-1").queryKey, summary("doc", 4));
   await waitFor(() => expect(reported.at(-1)).toBeUndefined());

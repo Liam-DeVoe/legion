@@ -46,7 +46,7 @@ function Requirement({ requirement }: { requirement: RequirementCoverage }): Rea
 
 /**
  * The requirements of the issue's spec, each flagged with what it lacks
- * (`GET /api/v1/issues/{key}/coverage`). It sits under the spec on the Spec tab, where the
+ * (`GET /api/v2/issues/{key}/coverage`). It sits under the spec on the Spec tab, where the
  * document itself draws the requirement's words: here they carry the flag and the Referenced-by
  * list, which the document's own drawing has nowhere to put.
  */

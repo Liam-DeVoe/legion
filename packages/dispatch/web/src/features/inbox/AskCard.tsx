@@ -10,13 +10,18 @@ import {
   useState,
 } from "react";
 
-import { type ArtifactOwner, api, type DeclineAskInput, type WriteBounds } from "../../api/client";
+import {
+  type AnswerAskInput,
+  type ArtifactOwner,
+  api,
+  type DeclineAskInput,
+  type WriteBounds,
+} from "../../api/client";
 import { usersQuery } from "../../api/queries";
 import type {
-  AnswerAskInput,
-  Ask,
-  AskRead,
   AskUrgency,
+  AskV2,
+  AskWithThread,
   Comment,
   CreateCommentInput,
 } from "../../api/types";
@@ -85,11 +90,11 @@ import { clearReplyDraft } from "./reply-drafts";
 import { useAskAnswerForm } from "./useAskAnswerForm";
 import { useAskHandOn } from "./useAskHandOn";
 
-const answerAsk = (id: string, input: AnswerAskInput, bounds: WriteBounds): Promise<Ask> =>
+const answerAsk = (id: string, input: AnswerAskInput, bounds: WriteBounds): Promise<AskV2> =>
   api.answerAsk(id, input, bounds);
-const declineAsk = (id: string, input: DeclineAskInput, bounds: WriteBounds): Promise<Ask> =>
+const declineAsk = (id: string, input: DeclineAskInput, bounds: WriteBounds): Promise<AskV2> =>
   api.declineAsk(id, input, bounds);
-const getAskThread = (id: string): Promise<AskRead> => api.getAsk(id);
+const getAskThread = (id: string): Promise<AskWithThread> => api.getAsk(id);
 const createReply = (
   issueKey: string,
   input: CreateCommentInput,
@@ -116,12 +121,12 @@ export interface AskCardProps {
    *  editor shows the question, and the block is the link's target, so the card renders only
    *  what the block lacks — who asked and when, the exchange, and the composer or the record. */
   frame?: AskFrame;
-  answerAsk?: (id: string, input: AnswerAskInput, bounds: WriteBounds) => Promise<Ask>;
-  declineAsk?: (id: string, input: DeclineAskInput, bounds: WriteBounds) => Promise<Ask>;
+  answerAsk?: (id: string, input: AnswerAskInput, bounds: WriteBounds) => Promise<AskV2>;
+  declineAsk?: (id: string, input: DeclineAskInput, bounds: WriteBounds) => Promise<AskV2>;
   /** Reply-thread fetch/write seams for tests; default to the real API. */
-  getAskThread?: (id: string) => Promise<AskRead>;
+  getAskThread?: (id: string) => Promise<AskWithThread>;
   /** Data the Inbox response already hydrated for the first card render. */
-  initialThread?: AskRead;
+  initialThread?: AskWithThread;
   /** Timestamp of the Inbox snapshot that supplied initialThread. */
   initialThreadUpdatedAt?: number;
   createReply?: (
@@ -227,7 +232,7 @@ function useFormRef(): [
  * card, a sibling ask block - and holding that ask would pull it into the reader's list. A
  * card drawn where no list can drop it registers with nobody.
  */
-function AskHandOn({ ask, assignee }: { ask: Ask; assignee: string | null }): ReactNode {
+function AskHandOn({ ask, assignee }: { ask: AskV2; assignee: string | null }): ReactNode {
   const [wanted, setWanted] = useState(false);
   const people = useQuery({ ...usersQuery(), enabled: wanted });
   const want = () => setWanted(true);
@@ -490,11 +495,11 @@ export function AskCard({
   // The count comes from `displayedAsk`, never from `completed`: answering an ask does not move
   // a backlink count, and the answer response is the one ask shape that carries no count.
   const referencedByCount = displayedAsk.referenced_by_count ?? 0;
-  const turnHolder = askTurnHolder(currentAsk, (threadQuery.data?.replies ?? []).at(-1));
+  const turnHolder = askTurnHolder(currentAsk, (threadQuery.data?.thread.replies ?? []).at(-1));
   // The thread's newest write the card shows, which the shared thread read mark watches and
   // reads through: the newest reply, unless the record's answer came after it (an answer is a
   // write like a reply).
-  const newestReply = (threadQuery.data?.replies ?? []).at(-1);
+  const newestReply = (threadQuery.data?.thread.replies ?? []).at(-1);
   const recordedAnswer = completed?.state === "answered" ? completed.answer : null;
   const answerIsNewest =
     recordedAnswer !== null &&
@@ -507,7 +512,7 @@ export function AskCard({
     newestShownAt: answerIsNewest ? recordedAnswer?.at : newestReply?.created_at,
     owner: askRepliesOwner(displayedAsk),
     threadId: displayedAsk.id,
-    writes: threadQuery.data?.replies ?? undefined,
+    writes: threadQuery.data?.thread.replies ?? undefined,
   });
   const markNewest = threadRead.ref;
   const unreadReplies = unread ?? threadRead.unread;
@@ -970,12 +975,12 @@ export function AskCard({
       {answerFirst ? threadNode : null}
       <AskRecipients
         askId={displayedAsk.id}
-        claimant={threadQuery.data?.claimant ?? null}
-        followers={threadQuery.data?.followers ?? []}
+        claimant={threadQuery.data?.thread.claimant ?? null}
+        followers={threadQuery.data?.thread.followers ?? []}
         owner={displayedAsk}
-        route={threadQuery.data?.route ?? null}
-        routeHolder={threadQuery.data?.route_holder ?? null}
-        routeStatus={threadQuery.data?.route_status ?? null}
+        route={threadQuery.data?.thread.route ?? null}
+        routeHolder={threadQuery.data?.thread.route_holder ?? null}
+        routeStatus={threadQuery.data?.thread.route_status ?? null}
       />
     </article>
   );

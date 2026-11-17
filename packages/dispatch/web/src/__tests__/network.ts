@@ -26,6 +26,7 @@ import { FetchInterceptor } from "@mswjs/interceptors/fetch/web";
 import { XMLHttpRequestInterceptor } from "@mswjs/interceptors/XMLHttpRequest/web";
 import { http, type RequestHandler } from "msw";
 import { defineNetwork, InterceptorSource } from "msw/experimental";
+import type { Result } from "../api/paths";
 import { TEST_ORIGIN } from "./register-dom";
 
 /** Every request a test let reach the network since the last report, each `<METHOD> <path>`. */
@@ -39,6 +40,10 @@ const reached: string[] = [];
 export function requestsThatReachedNetwork(): string[] {
   return reached.splice(0);
 }
+
+/** A list route's page holding no row, as `/api/v2` answers one: its envelope at the route's
+ *  default limit. */
+const emptyPage = { items: [], limit: 50, offset: 0, total: 0 };
 
 /**
  * The routes the application shell reads on every rendered page, answered with the API's empty
@@ -54,7 +59,9 @@ const shellHandlers: RequestHandler[] = [
   http.get("/auth/whoami", () =>
     Response.json({ code: "NO_IDENTITY", error: "no identity" }, { status: 401 })
   ),
-  http.get("/api/v1/agents", () => Response.json([])),
+  http.get("/api/v2/agents", () =>
+    Response.json(emptyPage satisfies Result<"/api/v2/agents", "get">)
+  ),
   // The sidebar reads the project list wherever it is drawn - on a wide viewport with the sidebar
   // shown, or in the compact navigation drawer while it is open - with no `enabled` guard
   // (`features/sidebar/Sidebar.tsx:91`, drawn by `app.tsx:375`). The issue header reads the same
@@ -66,24 +73,36 @@ const shellHandlers: RequestHandler[] = [
   // `ProjectsSection.tsx:42`, `SettingsPage.tsx:75`) read it too. An empty list is a project with
   // no gate, which is what a page with no `api.listProjects` spy drew before, and every row that
   // asserts on project content spies that method above MSW.
-  http.get("/api/v1/projects", () => Response.json([])),
-  http.get("/api/v1/me/replies", () => Response.json({ rows: [], total: 0, limit: 50, offset: 0 })),
-  http.get("/api/v1/credential-requests", () => Response.json({ pending: [] })),
-  http.get("/api/v1/me/agents/state", () => Response.json({})),
+  http.get("/api/v2/projects", () =>
+    Response.json(emptyPage satisfies Result<"/api/v2/projects", "get">)
+  ),
+  http.get("/api/v2/me/threads", () =>
+    Response.json({
+      ...emptyPage,
+      as_of: "2026-09-01T00:00:00Z",
+    } satisfies Result<"/api/v2/me/threads", "get">)
+  ),
+  http.get("/api/v2/credential-requests", () =>
+    Response.json(emptyPage satisfies Result<"/api/v2/credential-requests", "get">)
+  ),
+  // The person's marks, of every kind the page reads them by (`?kind=agent`, `?kind=issue`).
+  http.get("/api/v2/me/marks", () =>
+    Response.json(emptyPage satisfies Result<"/api/v2/me/marks", "get">)
+  ),
   // The navigation rail reads the two fault counts on every page it is drawn on
   // (`features/sidebar/Sidebar.tsx`, `prioritySummaryQuery`), so every test that renders the
   // rail or the shell around it makes this read without being about priorities. The answer is
   // the server's own for a deployment that has written no priority: both counts zero and the
   // sentence that says why, which is the case where the rail draws no number at all. A test
   // that asserts on a count spies `api.listPriorities` above MSW.
-  http.get("/api/v1/priorities", () =>
+  http.get("/api/v2/priorities", () =>
     Response.json({
+      ...emptyPage,
       empty:
         "No priority is live now, so the list is empty. Write one, then say which work advances it.",
-      priorities: [],
       priority_work_parked: { by_priority: {}, count: 0, issues: [] },
       work_under_no_priority: { by_project: {}, count: 0, issues: [] },
-    })
+    } satisfies Result<"/api/v2/priorities", "get">)
   ),
 ];
 

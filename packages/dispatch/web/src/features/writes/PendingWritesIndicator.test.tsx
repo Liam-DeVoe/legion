@@ -11,7 +11,7 @@ import { answerSends } from "../../__tests__/send-answers";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, type WriteBounds } from "../../api/client";
 import { expiredRetryNote, FIRST_BACKOFF_MS, SEND_DEADLINE_MS } from "./keyed-write";
-import { PendingWritesIndicator } from "./PendingWritesIndicator";
+import { API_V1_ENDED_REASON, PendingWritesIndicator } from "./PendingWritesIndicator";
 import { plainWrite, type Writes, writesOf } from "./write-store";
 
 /** One write the indicator shows, labelled `label`, its attempt `write`. */
@@ -167,7 +167,7 @@ test("a refused write names Dispatch's reason, and Retry sends it again", async 
   }
 });
 
-const patch = { body: { status: "done" }, method: "PATCH", path: "/api/v1/issues/CORE-1" } as const;
+const patch = { body: { status: "done" }, method: "PATCH", path: "/api/v2/issues/CORE-1" } as const;
 
 // W37. A write waiting its turn behind another on its line was never sent: it reads "Waiting to
 // send", never "Saving" or "Sending", and offers Discard, which drops it with nothing sent.
@@ -225,7 +225,7 @@ test("an upload in progress reads Uploading… N% until an attempt fails", async
       bounds.sent?.({
         body: { name: "spec.md" },
         method: "POST",
-        path: "/api/v1/issues/CORE-1/artifacts",
+        path: "/api/v2/issues/CORE-1/artifacts",
       });
       if (attempts > 1) return Promise.withResolvers<never>().promise;
       bounds.progress?.(40, 100);
@@ -277,7 +277,7 @@ test("a write whose key has run out says a Retry saves it again, with Retry and 
           bounds.sent?.({
             body: { status: "done" },
             method: "PATCH",
-            path: "/api/v1/issues/CORE-1",
+            path: "/api/v2/issues/CORE-1",
           });
           return Promise.reject(refusal);
         },
@@ -302,5 +302,63 @@ test("a write whose key has run out says a Retry saves it again, with Retry and 
   } finally {
     unmount();
     realClock();
+  }
+});
+
+// Decision 14. A write a build older than `/api/v2` kept in this tab goes to its own `/api/v1`
+// path once the page loads again; a deployment that has ended `/api/v1` answers it `410`, and
+// nothing can make that write now. The page says it was not saved, and why in words that tell the
+// reader to make the change again, and offers Discard alone: a Retry would meet the same answer.
+test("a kept /api/v1 write answered 410 reads Not saved, with Discard and no Retry", async () => {
+  const key = keyMinted(Date.now());
+  const entry = `dispatch.write:${key}`;
+  window.sessionStorage.setItem(
+    entry,
+    JSON.stringify({
+      carried: "PATCH",
+      detail: null,
+      key,
+      kind: "write",
+      label: "CORE-1 set to done",
+      login: "alice",
+      presentation: "indicator",
+      pressedAt: Date.now(),
+      request: { body: { status: "done" }, method: "PATCH", path: "/api/v1/issues/CORE-1" },
+      sent: true,
+      state: { status: "sending" },
+      target: null,
+      version: 1,
+    })
+  );
+  const fetched = spyOn(globalThis, "fetch").mockImplementation((async () =>
+    Response.json(
+      {
+        code: "API_V1_ENDED",
+        error: "/api/v1 ended at 2026-11-20T00:00:00Z; GET /api/v2 lists every route",
+        hint: "GET /api/v2",
+      },
+      { status: 410 }
+    )) as unknown as typeof fetch);
+  const user = userEvent.setup();
+  const { client, unmount } = mountIndicator();
+  try {
+    writesOf(client).resume("alice");
+    const indicator = await screen.findByTestId("pending-writes");
+    expect(
+      await within(indicator).findByText(`Not saved: CORE-1 set to done — ${API_V1_ENDED_REASON}`)
+    ).toBeTruthy();
+    expect(fetched.mock.calls.map(([input]) => String(input))).toEqual(["/api/v1/issues/CORE-1"]);
+    expect(within(indicator).queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+    // Nothing of it is kept for a reload to bring back.
+    expect(window.sessionStorage.getItem(entry)).toBeNull();
+
+    await user.click(within(indicator).getByRole("button", { name: "Discard" }));
+    await settle();
+    expect(screen.queryByTestId("pending-writes")).not.toBeInTheDocument();
+    expect(fetched).toHaveBeenCalledTimes(1);
+  } finally {
+    unmount();
+    fetched.mockRestore();
+    window.sessionStorage.removeItem(entry);
   }
 });

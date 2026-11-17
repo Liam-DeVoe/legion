@@ -6,10 +6,10 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
-import type { Project } from "../../api/types";
+import type { ProjectV2 } from "../../api/types";
 import { ProjectsSection } from "./ProjectsSection";
 
-const core: Project = {
+const core: ProjectV2 = {
   created_at: "2026-09-01T00:00:00Z",
   key: "CORE",
   name: "Core",

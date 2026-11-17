@@ -4,8 +4,8 @@ import type {
   ArtifactBlock,
   Decision,
   DecisionLink,
-  GraphReferences,
-  IssueDecisions,
+  IssueDecisionsV2,
+  ReferencesV2,
 } from "../../api/types";
 import { changedSinceReadMark, staleBlockMark } from "../../theme/classes";
 import {
@@ -57,23 +57,29 @@ function decision(blockId: string, links: DecisionLink[], replaced = false): Dec
   };
 }
 
-const decisions: IssueDecisions = {
-  decisions: [
+const decisions: IssueDecisionsV2 = {
+  items: [
     decision("d-1", [link("p-plan", true), link("p-scope", false)]),
     decision("d-2", [link("p-plan", true), link("p-rollout", true)], true),
   ],
   document: "dispatch://CORE-1/artifact/decisions-md",
+  limit: 50,
+  offset: 0,
   open_questions: [],
+  total: 2,
 };
 
 test("every spec block a stale link names is stale, each once, in the order the view names them", () => {
   expect(staleSpecBlocks(decisions)).toEqual(["p-plan", "p-rollout"]);
   expect(staleSpecBlocks(undefined)).toEqual([]);
-  expect(staleSpecBlocks({ ...decisions, decisions: [], document: null })).toEqual([]);
+  expect(staleSpecBlocks({ ...decisions, items: [], document: null })).toEqual([]);
 });
 
-const references: GraphReferences = {
-  edges: [
+const references: ReferencesV2 = {
+  limit: 50,
+  offset: 0,
+  total: 2,
+  items: [
     {
       created_at: "2026-10-01T00:00:00Z",
       direction: "in",

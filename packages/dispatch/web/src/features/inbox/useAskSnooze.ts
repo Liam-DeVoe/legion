@@ -7,6 +7,12 @@ import type { InboxRow } from "../../api/types";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { plainWrite, useWrites } from "../writes/write-store";
 
+/** `row` as a snooze until `until` leaves it, or as an un-snooze leaves it for `null`: the
+ *  snooze is the reader's own mark on the ask, so that is what moves. */
+function snoozedRow(row: InboxRow, until: string | null): InboxRow {
+  return { ...row, mark: { ...row.mark, snoozed_until: until } };
+}
+
 export interface AskSnoozeWrite {
   /** The server's reason after a refused save, until the next attempt. */
   error: string | undefined;
@@ -15,7 +21,7 @@ export interface AskSnoozeWrite {
   pending: boolean;
   /** What the in-flight write is doing, and `undefined` when none is: the moment a snooze is
    *  saving, or `null` for an un-snooze. The optimistic update has already moved the row by
-   *  the time it renders, so this - not the row's own `snoozed_until` - is what the reader
+   *  the time it renders, so this - not the row's own `mark.snoozed_until` - is what the reader
    *  just asked for. */
   pendingUntil: string | null | undefined;
   /** Repeats the failed save. */
@@ -36,16 +42,14 @@ export function useAskSnooze(askId: string): AskSnoozeWrite {
   // The row says why its snooze was refused, where the reader pressed it.
   const mutation = useKeyedWrite({
     write: (until: string | null, bounds) =>
-      until === null
-        ? api.unsnoozeAsk(askId, bounds)
-        : api.snoozeAsk(askId, until, bounds).then(() => undefined),
+      until === null ? api.unsnoozeAsk(askId, bounds) : api.snoozeAsk(askId, until, bounds),
     inline: true,
     label: (until) => (until === null ? "Ask brought back now" : "Ask snoozed"),
     onMutate: async (until) => {
       await queryClient.cancelQueries({ queryKey: inboxKey });
       const previous = queryClient.getQueriesData<InboxRow[]>({ queryKey: inboxKey });
       queryClient.setQueriesData<InboxRow[]>({ queryKey: inboxKey }, (current) =>
-        current?.map((row) => (row.id === askId ? { ...row, snoozed_until: until } : row))
+        current?.map((row) => (row.id === askId ? snoozedRow(row, until) : row))
       );
       return previous;
     },
@@ -114,7 +118,7 @@ export function useAskSnoozeMany(): AskSnoozeManyWrite {
       const previous = queryClient.getQueriesData<InboxRow[]>({ queryKey: inboxKey });
       const marked = new Set(ids);
       queryClient.setQueriesData<InboxRow[]>({ queryKey: inboxKey }, (current) =>
-        current?.map((row) => (marked.has(row.id) ? { ...row, snoozed_until: until } : row))
+        current?.map((row) => (marked.has(row.id) ? snoozedRow(row, until) : row))
       );
       const results = await Promise.allSettled(
         writeOf.map(({ id, request }) =>
@@ -137,10 +141,10 @@ export function useAskSnoozeMany(): AskSnoozeManyWrite {
       });
       const refused = new Set(failed.map(({ askId }) => askId));
       for (const [key, data] of refused.size === 0 ? [] : previous) {
-        const before = new Map((data ?? []).map((row) => [row.id, row.snoozed_until]));
+        const before = new Map((data ?? []).map((row) => [row.id, row.mark.snoozed_until]));
         queryClient.setQueryData<InboxRow[]>(key, (current) =>
           current?.map((row) =>
-            refused.has(row.id) ? { ...row, snoozed_until: before.get(row.id) ?? null } : row
+            refused.has(row.id) ? snoozedRow(row, before.get(row.id) ?? null) : row
           )
         );
       }

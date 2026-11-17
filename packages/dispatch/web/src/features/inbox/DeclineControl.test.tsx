@@ -8,7 +8,7 @@ import { MemoryRouter } from "react-router-dom";
 
 import { graphNode } from "../../__tests__/graph-fixture";
 import { ApiError, api, type DeclineAskInput } from "../../api/client";
-import type { Ask, AskRead } from "../../api/types";
+import type { AskV2, AskWithThread } from "../../api/types";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { AskCard } from "./AskCard";
 
@@ -23,8 +23,11 @@ beforeEach(() => {
     login: "alice",
   });
   getReferences = spyOn(api, "getReferences").mockResolvedValue({
-    edges: [],
+    items: [],
+    limit: 50,
     node: graphNode({ id: "ask-1", kind: "ask" }),
+    offset: 0,
+    total: 0,
   });
   // Every card with an issue names who the ask reaches, which reads the issue's subscribers;
   // nobody is subscribed here, so the card lists its followers alone.
@@ -38,7 +41,7 @@ afterEach(() => {
 });
 
 /** An open question: the one ask the decline control is drawn on. */
-function openAsk(overrides: Partial<Ask> = {}): Ask {
+function openAsk(overrides: Partial<AskV2> = {}): AskV2 {
   return {
     anchor: null,
     answer: null,
@@ -49,14 +52,19 @@ function openAsk(overrides: Partial<Ask> = {}): Ask {
     author: { id: "session-1", kind: "session" },
     block_id: null,
     created_at: "2026-10-08T00:00:00Z",
+    document: null,
     edited_at: null,
     id: "ask-1",
+    issue: { assignee: "alice", key: "CORE-1", title: "Fix the thing" },
     issue_key: "CORE-1",
     kind: "question",
+    last_reply: null,
     multiple: false,
     opened_event_id: 1,
     options: [{ label: "Ship" }, { label: "Hold" }],
+    priority: null,
     question: "Which release path?",
+    ref: "dispatch://CORE-1/ask/ask-1",
     state: "open",
     urgency: "med",
     waiting_on: "human",
@@ -65,7 +73,7 @@ function openAsk(overrides: Partial<Ask> = {}): Ask {
 }
 
 /** The same question, answered: a card that offers a change of answer, never a decline. */
-function answeredAsk(): Ask {
+function answeredAsk(): AskV2 {
   return openAsk({
     answer: {
       at: "2026-10-08T01:00:00Z",
@@ -79,7 +87,7 @@ function answeredAsk(): Ask {
 
 /** An open approval request for version 12 of `spec.md`, which is answered with its two options
  *  and never declined. */
-function approvalAsk(): Ask {
+function approvalAsk(): AskV2 {
   return openAsk({
     approval: {
       artifact_id: "artifact-1",
@@ -104,7 +112,7 @@ const DISPATCH_WORDS =
 
 /** The ask as the server hands it back once the person has declined it, with `note` as the
  *  reason they wrote; an empty note leaves an empty reason. */
-function declinedAsk(note: string): Ask {
+function declinedAsk(note: string): AskV2 {
   return openAsk({
     resolution: {
       actor: { id: "alice", kind: "user" },
@@ -117,18 +125,21 @@ function declinedAsk(note: string): Ask {
   });
 }
 
-function thread(ask: Ask): AskRead {
+/** The ask read with its thread, as `getAsk` answers it and the card holds it. */
+function thread(ask: AskV2): AskWithThread {
   return {
-    answers: ask.answer === null ? [] : [ask.answer],
-    ask,
-    claimant: null,
-    edits: [],
-    followers: [],
-    replies: [],
-    route: null,
-    route_status: null,
-    route_holder: null,
-    route_status_reason: null,
+    ...ask,
+    thread: {
+      answers: ask.answer === null ? [] : [ask.answer],
+      claimant: null,
+      edits: [],
+      followers: [],
+      replies: [],
+      route: null,
+      route_status: null,
+      route_holder: null,
+      route_status_reason: null,
+    },
   };
 }
 
@@ -236,7 +247,7 @@ test("a decline sends the person's note and closes the question", async () => {
     await user.paste(note);
     await user.click(within(dialog).getByRole("button", { name: "Decline to answer" }));
 
-    await waitFor(() => expect(sent).toEqual([{ note }]));
+    await waitFor(() => expect(sent).toEqual([{ reason: note }]));
     const record = await card.findByTestId("ask-ask-1");
     expect(within(record).getByTestId("ask-resolution-badge").textContent).toBe("Declined");
     expect(record.textContent).toContain(note);
@@ -296,7 +307,7 @@ test("a decline out keeps its dialog through Escape and the backdrop, and shows 
   const open = openAsk();
   // The decline the server has not answered yet, refused by hand once the dialog has stood
   // through both ways out of it.
-  const out = Promise.withResolvers<Ask>();
+  const out = Promise.withResolvers<AskV2>();
   const { view } = renderCard(
     <AskCard
       ask={open}

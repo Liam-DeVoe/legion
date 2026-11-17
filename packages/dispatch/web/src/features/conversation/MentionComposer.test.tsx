@@ -10,15 +10,8 @@ import { MemoryRouter } from "react-router-dom";
 import { jump, realClock, tick } from "../../__tests__/fake-clock";
 import { graphNode } from "../../__tests__/graph-fixture";
 import { userOnFakeClock } from "../../__tests__/user";
-import { AGENT_LIST_REFILLING, ApiError, api } from "../../api/client";
-import type {
-  Agent,
-  Comment,
-  IssueCollaborators,
-  ItemBlock,
-  ItemBlocks,
-  Message,
-} from "../../api/types";
+import { AGENT_LIST_REFILLING, ApiError, api, type WholeList } from "../../api/client";
+import type { Agent, Comment, ItemBlock, ItemBlocks, Message } from "../../api/types";
 import { useSending } from "../../hooks/useSending";
 import type { AgentText } from "../refs/AgentName";
 import {
@@ -161,10 +154,12 @@ function holdControls(): HTMLFieldSetElement {
 let collaboratorsRead: Mock<typeof api.getIssueCollaborators>;
 beforeEach(() => {
   collaboratorsRead = spyOn(api, "getIssueCollaborators").mockResolvedValue({
-    agents: [],
     issue_key: "CORE-1",
+    items: [],
     legion_registry: "ok",
-    people: [],
+    limit: 50,
+    offset: 0,
+    total: 0,
   });
 });
 afterEach(() => {
@@ -876,8 +871,9 @@ test("the mention picker draws each agent with its state and no link", async () 
  *  agents by role in workflow order and then newest first, then the rest newest first) - the
  *  planner, the reviewer role's newest session and the one it replaced, then a session with no
  *  registry entry. */
-const collaboratorsAnswer: IssueCollaborators = {
-  agents: [
+const collaboratorsAnswer: WholeList<"/api/v2/issues/{key}/collaborators"> = {
+  issue_key: "CORE-1",
+  items: [
     {
       kind: "session",
       last_at: null,
@@ -923,15 +919,15 @@ const collaboratorsAnswer: IssueCollaborators = {
     {
       kind: "session",
       last_at: "2026-10-26T03:00:00Z",
-      legion: null,
       reasons: ["posted"],
       session_id: "helper",
       title: "Helper",
     },
   ],
-  issue_key: "CORE-1",
   legion_registry: "ok",
-  people: [],
+  limit: 50,
+  offset: 0,
+  total: 4,
 };
 
 /** The naming the picker does outside React: no stopped session is in the registry cache, so each
@@ -1014,7 +1010,7 @@ test("a picker holding only stopped roles does not say no agent matches", async 
 // (never offered twice), and a role is offered once by its newest session whatever replaced it.
 // A live list whose state is unknown is the caller's case, which the picker test below proves.
 test("stopped role options leave out held roles and name each role once", () => {
-  const answerAgents = collaboratorsAnswer.agents ?? [];
+  const answerAgents = collaboratorsAnswer.items;
   const reviewerOnly = stoppedRoleOptions([planner], answerAgents, storedNames);
   expect(reviewerOnly.map((option) => [option.target, option.sessionId, option.detail])).toEqual([
     ["role:legion-p-core-1-reviewer", "new-reviewer", "reviewer · not running"],
@@ -2715,7 +2711,7 @@ test("a send kept failing shows Stop trying once late, which stops it for Retry 
 test("a stopped send the reader comes back to a day later says its key has run out", async () => {
   const createAgentMessage = spyOn(api, "createAgentMessage").mockImplementation(
     (sessionID, input, bounds) => {
-      bounds.sent?.({ body: input, method: "POST", path: `/api/v1/agents/${sessionID}/messages` });
+      bounds.sent?.({ body: input, method: "POST", path: `/api/v2/agents/${sessionID}/messages` });
       return Promise.reject(
         new ApiError(503, { code: "UNAVAILABLE", error: "the server is down" })
       );

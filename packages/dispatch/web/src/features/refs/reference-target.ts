@@ -14,17 +14,16 @@ import { ApiError, api, artifactVersionPath } from "../../api/client";
 import { primarySpec } from "../../api/issue-cache";
 import { issueQuery } from "../../api/queries";
 import type {
-  Artifact,
   ArtifactText,
+  ArtifactV2,
   ArtifactVersionContent,
-  AskRead,
-  CommentRead,
+  AskV2,
+  AskWithThread,
+  CommentReadV2,
   DisplayTree,
-  GraphReferences,
-  IssueReferenceSummary,
-  IssueReferenceSummaryDocument,
-  MessageRead,
-  ReferenceQuestions,
+  IssueReadV2,
+  MessageReadV2,
+  ReferencesV2,
 } from "../../api/types";
 import { itemOfBlock } from "./block-reference";
 import { useMarkdownHeadline } from "./markdown-engine";
@@ -82,9 +81,9 @@ export interface ReferenceTarget {
 const TITLE_HEADLINE_MAX = 60;
 
 /** What a reference to an issue, or to one of its documents, shows: the issue's title and status
- *  and each document's name, kind, latest version and whether it is the spec
- *  (`GET /issues/{key}/summary`). Fetched again only by an event that can change it, or on focus
- *  after it failed. */
+ *  and each document's name, kind, latest version and whether it is the spec (the issue's own
+ *  read with nothing included, `GET /api/v2/issues/{key}`). Fetched again only by an event that
+ *  can change it, or on focus after it failed. */
 export const issueSummaryQuery = (key: string | undefined) =>
   queryOptions({
     queryKey: ["issue-summary", key],
@@ -93,23 +92,24 @@ export const issueSummaryQuery = (key: string | undefined) =>
     refetchOnWindowFocus: refetchFailedOnFocus,
   });
 
-/** What a reference to a project document shows: its name, kind and latest version
- *  (`GET /projects/{key}/artifacts/{slug}/summary`). Fetched again only by an event that can
- *  change it, or on focus after it failed. */
+/** What a reference to a project document shows: its name, kind and latest version (its row of
+ *  `GET /api/v2/projects/{key}/artifacts?issue=none&slug=`). Fetched again only by an event that
+ *  can change it, or on focus after it failed. */
 export const documentSummaryQuery = (project: string | undefined, slug: string | undefined) =>
   queryOptions({
     queryKey: ["doc-summary", project, slug],
-    queryFn: () => api.getProjectDocumentSummary(project ?? "", slug ?? ""),
+    queryFn: () => api.getProjectArtifact(project ?? "", slug ?? ""),
     staleTime: Number.POSITIVE_INFINITY,
     refetchOnWindowFocus: refetchFailedOnFocus,
   });
 
 /** One issue message and its replies, as the Conversation's landing, a reference and the hover
- *  card read it. Outside the `["issue"]` prefix, so a refresh of issue details leaves it alone. */
+ *  card read it. Outside the `["issue"]` prefix, so a refresh of issue details leaves it alone;
+ *  keyed by its issue too, which every refresh of the issue's messages names. */
 export const messageQuery = (key: string | undefined, id: string | undefined) =>
   queryOptions({
     queryKey: ["issue-message", key, id],
-    queryFn: () => api.getMessage(key ?? "", id ?? ""),
+    queryFn: () => api.getMessage(id ?? ""),
   });
 
 /** An artifact of an agent's conversation, by its session and slug. */
@@ -143,7 +143,7 @@ export const commentQuery = (id: string | undefined) =>
     queryFn: () => api.getComment(id ?? ""),
   });
 
-/** `GET /api/v1/references?to=<reference>`: the node a reference names and the edges pointing at
+/** `GET /api/v2/references?to=<reference>`: the node a reference names and the edges pointing at
  *  it, read by the Referenced by panel and, for a block, by the reference's title and card. */
 export const referencesQuery = (reference: string | undefined) =>
   queryOptions({
@@ -164,7 +164,7 @@ export const blockQuery = (reference: string | undefined) =>
     refetchOnWindowFocus: refetchFailedOnFocus,
   });
 
-/** `GET /api/v1/references/questions?kind=&id=`: the question map a `#id` in one source's text
+/** `GET /api/v2/asks?source=<kind>:<id>`: the question map a `#id` in one source's text
  *  resolves against, which is the server's own map (`refs.ScopeOf` for the document that text
  *  belongs to, `refs.QuestionMap` for the questions that document's latest version declares) -
  *  the one map the page and the reference graph share. Keyed by the source, so two texts of one
@@ -185,47 +185,33 @@ export const questionsQuery = (source: TextSource | undefined) =>
   });
 
 /** The question map of a read's answer: each question block id its document declares to the
- *  `dispatch://` reference of the ask settled for it, as the server writes that address. A
- *  block whose ask has no address - an ask on an agent conversation's document - is left out,
- *  since no reference names it. Undefined until the read answers. */
+ *  `dispatch://` reference of the ask settled for it (the row's `question_block_id` and `ref`), as
+ *  the server writes that address. A block whose ask has no address - an ask on an agent
+ *  conversation's document - is left out, since no reference names it. Undefined until the read
+ *  answers. */
 export function questionReferences(
-  answer: ReferenceQuestions | undefined
+  answer: { readonly items: readonly AskV2[] } | undefined
 ): Readonly<Record<string, string>> | undefined {
   if (answer === undefined) {
     return undefined;
   }
   const questions: Record<string, string> = {};
-  for (const question of answer.questions ?? []) {
-    if (question.reference !== "") {
-      questions[question.block_id] = question.reference;
+  for (const question of answer.items) {
+    if (question.ref !== "" && question.question_block_id !== undefined) {
+      questions[question.question_block_id] = question.ref;
     }
   }
   return questions;
 }
 
-/** The document a reference names, as much of it as a reference shows: an issue summary's
- *  document, a project document's summary, or an agent conversation's artifact cut to the same
- *  fields. `latest_version` is its greatest version number, null when it has none. */
-export type ReferenceArtifact = Pick<
-  IssueReferenceSummaryDocument,
-  "id" | "kind" | "latest_version" | "name"
->;
+/** The document a reference names, as much of it as a reference shows: a document row of an
+ *  issue's read, a project document's row, or an agent conversation's artifact, each cut to the
+ *  same fields. `latest_version` is its greatest version number, null when it has none. */
+export type ReferenceArtifact = Pick<ArtifactV2, "id" | "kind" | "latest_version" | "name">;
 
-/** An agent conversation's artifact as a `ReferenceArtifact`; its versions are in number order. */
-function agentReferenceArtifact(artifact: Artifact): ReferenceArtifact {
-  return {
-    id: artifact.id,
-    kind: artifact.kind,
-    latest_version: (artifact.versions ?? []).at(-1)?.number ?? null,
-    name: artifact.name,
-  };
-}
-
-/** The issue's spec among an issue summary's documents, or undefined until the summary is read. */
-export function summarySpec(
-  summary: IssueReferenceSummary | undefined
-): IssueReferenceSummaryDocument | undefined {
-  return (summary?.documents ?? []).find((document) => document.primary);
+/** The issue's spec among an issue read's documents, or undefined until the read answers. */
+export function summarySpec(summary: IssueReadV2 | undefined): ArtifactV2 | undefined {
+  return (summary?.artifacts ?? []).find((document) => document.primary);
 }
 
 /** The block a route names, as the reference its graph read is keyed by; undefined for a route
@@ -244,15 +230,15 @@ function blockReferenceOf(route: DispatchReferenceRoute | undefined): string | u
  * reference, its pin, undefined once the read answers that the block is gone. A block reference
  * reads that alone: its document's name is the hover card's own read (`useBlockDocument`). */
 export interface ReferenceData {
-  readonly issue: IssueReferenceSummary | undefined;
+  readonly issue: IssueReadV2 | undefined;
   readonly artifact: ReferenceArtifact | undefined;
   readonly markdown: string | undefined;
   /** The reading Go made of `markdown`, which a card draws. */
   readonly markdownTree: DisplayTree | undefined;
-  readonly ask: AskRead | undefined;
-  readonly comment: CommentRead | undefined;
-  readonly message: MessageRead | undefined;
-  readonly block: GraphReferences | undefined;
+  readonly ask: AskWithThread | undefined;
+  readonly comment: CommentReadV2 | undefined;
+  readonly message: MessageReadV2 | undefined;
+  readonly block: ReferencesV2 | undefined;
 }
 
 export interface ReferenceReadOptions {
@@ -295,10 +281,7 @@ export function prefetchReference(queryClient: QueryClient, route: DispatchRefer
       const query = agentArtifactQuery(route.session, route.slug);
       void queryClient.prefetchQuery(query).then(() => {
         const artifact = queryClient.getQueryData(query.queryKey);
-        warmText(
-          artifact === undefined ? undefined : agentReferenceArtifact(artifact),
-          route.version
-        );
+        warmText(artifact, route.version);
       });
       return;
     }
@@ -329,7 +312,7 @@ export function prefetchReference(queryClient: QueryClient, route: DispatchRefer
     case "artifact": {
       const query = issueSummaryQuery(route.key);
       void queryClient.prefetchQuery(query).then(() => {
-        const documents = queryClient.getQueryData(query.queryKey)?.documents;
+        const documents = queryClient.getQueryData(query.queryKey)?.artifacts;
         warmText(
           documents?.find((candidate) => candidate.slug === route.slug),
           route.version
@@ -350,7 +333,7 @@ export function prefetchReference(queryClient: QueryClient, route: DispatchRefer
  *  under: a block by its block id, every other record by its own. A read that answered nothing
  *  names nothing, and the reference stays as the text wrote it. */
 export function resolvedPrefixItems(
-  answer: GraphReferences | undefined
+  answer: ReferencesV2 | undefined
 ): Readonly<Record<string, string>> {
   const node = answer?.node;
   const reference = node?.ref;
@@ -366,13 +349,13 @@ export function resolvedPrefixItems(
  *  and that read, for a caller that also shows what an ambiguous prefix matched. */
 export interface WholeRouteRead {
   readonly prefix: string | undefined;
-  readonly resolution: UseQueryResult<GraphReferences>;
+  readonly resolution: UseQueryResult<ReferencesV2>;
   readonly route: DispatchReferenceRoute | undefined;
 }
 
 /**
  * `route` with every id it writes short replaced by the whole id it names, which one graph read
- * of the reference as written answers (`GET /api/v1/references?to=…`, which the server resolves
+ * of the reference as written answers (`GET /api/v2/references?to=…`, which the server resolves
  * within the owner the reference names). A route that writes every id whole - every reference a
  * page or a node gave - is answered as it stands and reads nothing extra. One whose short id
  * names nothing yet, or nothing at all, is `undefined`, so the record behind it is read under
@@ -458,7 +441,6 @@ export function useReferenceData(
   const sessionArtifact = useQuery({
     ...agentArtifactQuery(agentArtifact?.session, agentArtifact?.slug),
     enabled: agentArtifact !== undefined,
-    select: agentReferenceArtifact,
   });
   const block = useQuery({
     ...blockQuery(blockReference),
@@ -469,7 +451,7 @@ export function useReferenceData(
       ? projectDocument.data
       : agentArtifact !== undefined
         ? sessionArtifact.data
-        : (issue.data?.documents ?? []).find(
+        : (issue.data?.artifacts ?? []).find(
             (candidate) => route?.kind === "artifact" && candidate.slug === route.slug
           );
   const text = useQuery({
@@ -527,7 +509,7 @@ export function useBlockDocument(
     case "spec":
       return summarySpec(issue.data);
     case "artifact":
-      return (issue.data?.documents ?? []).find((candidate) => candidate.slug === named.slug);
+      return (issue.data?.artifacts ?? []).find((candidate) => candidate.slug === named.slug);
     default:
       return undefined;
   }
@@ -535,13 +517,13 @@ export function useBlockDocument(
 
 /** The text a block reference shows: the text the pinned version held for a pinned reference, the
  *  block's current text otherwise. */
-export function blockText(node: GraphReferences["node"]): string | undefined {
+export function blockText(node: ReferencesV2["node"]): string | undefined {
   return node.pin === undefined ? node.text : node.pin.text;
 }
 
 /** The reading Go made of the text `blockText` answers, which a reference's title and card draw
  *  rather than parsing the block's markdown again. */
-export function blockTextTree(node: GraphReferences["node"]): DisplayTree | undefined {
+export function blockTextTree(node: ReferencesV2["node"]): DisplayTree | undefined {
   return node.pin === undefined ? node.text_tree : node.pin.text_tree;
 }
 
@@ -575,20 +557,20 @@ export function useReferenceTarget(
   let authoredTree: DisplayTree | undefined;
   switch (kind) {
     case "ask":
-      authored = ask?.ask.question;
-      authoredTree = ask?.ask.question_tree;
+      authored = ask?.question;
+      authoredTree = ask?.question_tree;
       break;
     case "comment":
-      authored = comment?.comment.body;
-      authoredTree = comment?.comment.body_tree;
+      authored = comment?.body;
+      authoredTree = comment?.body_tree;
       break;
     case "block":
       authored = block === undefined ? undefined : blockText(block.node);
       authoredTree = block === undefined ? undefined : blockTextTree(block.node);
       break;
     case "message":
-      authored = message?.message.body;
-      authoredTree = message?.message.body_tree;
+      authored = message?.body;
+      authoredTree = message?.body_tree;
       break;
   }
   // The tree is the reading Go made of this text, and where there is one nothing here parses
@@ -604,8 +586,8 @@ export function useReferenceTarget(
     // description, which the cards under a message reference render formatted.
     return {
       title: headline?.text,
-      description: message?.message.body,
-      descriptionTree: message?.message.body_tree,
+      description: message?.body,
+      descriptionTree: message?.body_tree,
       picture: undefined,
     };
   }
@@ -632,12 +614,12 @@ export function useReferenceTarget(
  *  version, since a document or another file is no picture the browser can draw. */
 function picturePath(
   named: ReferencedArtifact,
-  artifact: Pick<ReferenceArtifact, "kind" | "latest_version"> | undefined
+  artifact: Pick<ReferenceArtifact, "id" | "kind" | "latest_version"> | undefined
 ): string | undefined {
   const version = named.version ?? artifact?.latest_version;
   return artifact?.kind !== "image" || !version
     ? undefined
-    : artifactVersionPath(named.owner, named.slug, version);
+    : artifactVersionPath(artifact.id, version);
 }
 
 /** Calls `onPicture` with the picture path a summary's data gives, now and whenever the summary
@@ -683,7 +665,7 @@ export function watchPicturePath(
     return observePicturePath(
       queryClient,
       agentArtifactQuery(route.session, route.slug),
-      agentReferenceArtifact,
+      (artifact) => artifact,
       named,
       onPicture
     );
@@ -692,7 +674,7 @@ export function watchPicturePath(
     return observePicturePath(
       queryClient,
       issueSummaryQuery(route.key),
-      (summary) => (summary.documents ?? []).find((candidate) => candidate.slug === route.slug),
+      (summary) => (summary.artifacts ?? []).find((candidate) => candidate.slug === route.slug),
       named,
       onPicture
     );

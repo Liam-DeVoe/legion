@@ -2,8 +2,9 @@ import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useState } from "react";
 
 import { isText } from "../../api/artifact-version";
-import { api } from "../../api/client";
-import type { Artifact, Version } from "../../api/types";
+import { api, artifactVersionPath } from "../../api/client";
+import { artifactVersionsQuery } from "../../api/queries";
+import type { ArtifactV2, Version } from "../../api/types";
 import {
   borderDefault,
   dangerText,
@@ -18,16 +19,10 @@ import { ChangeView } from "../doc/ChangeView";
 import { ReferencedBy } from "../refs/ReferencedBy";
 import { buildDispatchReference, documentRoute } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
-import {
-  artifactVersionUrl,
-  formatArtifactBytes,
-  versionLabel,
-  versionsNewestFirst,
-} from "./ArtifactHeader";
+import { formatArtifactBytes, versionLabel, versionsNewestFirst } from "./ArtifactHeader";
 
-// A blob (image/file) has no markdown to diff, so its "compare" is size and checksum, not a
-// text diff — this is what a document's From/To compare falls back to when either side lacks
-// text content.
+// A file or an image has no markdown to diff, so its "compare" is size and checksum, not a text
+// diff.
 function BlobVersionComparison({ after, before }: { after: Version; before: Version }): ReactNode {
   const identical = before.size === after.size && before.sha256 === after.sha256;
 
@@ -60,6 +55,14 @@ function BlobVersionComparison({ after, before }: { after: Version; before: Vers
       {identical ? <p className={`text-sm ${textMutedOnSurface}`}>Identical blobs.</p> : null}
     </section>
   );
+}
+
+/** Whether `version` is stored as a file: every version of a file or an image, and a version of a
+ *  document that was uploaded as a file before a Markdown upload made the artifact a document (a
+ *  plan, a Verification document or a decisions document). Such a version carries the SHA-256 of
+ *  its bytes, which a document's text version never does. */
+function isFileVersion(artifact: ArtifactV2, version: Version): boolean {
+  return artifact.kind !== "doc" || version.sha256 !== undefined;
 }
 
 /** One side of the From/To compare: a labelled picker over every version, newest first. */
@@ -100,15 +103,23 @@ function CompareVersionSelect({
 // `ArtifactHeader` already offers a version picker plus "Diff vs current" for documents (only
 // current vs. one historical version); this From/To compare covers the arbitrary-pair case
 // (e.g. version 3 vs version 7) that picker can't, for both docs and blobs.
-export function ArtifactDetails({ artifact }: { artifact: Artifact }): ReactNode {
+export function ArtifactDetails({ artifact }: { artifact: ArtifactV2 }): ReactNode {
   const [showAllVersions, setShowAllVersions] = useState(false);
   // A diff is render-heavy and long; it appears only after the reader asks for it.
   const [compareOpen, setCompareOpen] = useState(false);
-  const versions = versionsNewestFirst(artifact.versions);
+  // A document's own read carries only its latest version's number: the history is its own list.
+  const versionList = useQuery(artifactVersionsQuery(artifact.id));
+  const versions = versionsNewestFirst(versionList.data ?? null);
   const namedVersions = versions.filter((version) => version.named);
   const displayedVersions = showAllVersions ? versions : namedVersions;
-  const beforeDefault = versions[1]?.number;
-  const afterDefault = versions[0]?.number;
+  // A document's compare is of its text, so it offers the document's text versions alone: a file
+  // version among them answers its bytes, and a text compare would wait on that answer for ever.
+  const comparable =
+    artifact.kind === "doc"
+      ? versions.filter((version) => !isFileVersion(artifact, version))
+      : versions;
+  const beforeDefault = comparable[1]?.number;
+  const afterDefault = comparable[0]?.number;
   const [before, setBefore] = useState<number | undefined>();
   const [after, setAfter] = useState<number | undefined>();
   const beforeVersion = before ?? beforeDefault;
@@ -141,7 +152,11 @@ export function ArtifactDetails({ artifact }: { artifact: Artifact }): ReactNode
             </button>
           ) : null}
         </div>
-        {displayedVersions.length === 0 ? (
+        {versionList.isPending ? (
+          <p className={`text-sm ${textMutedOnSurface}`}>Loading versions…</p>
+        ) : versionList.isError ? (
+          <p className={`text-sm ${dangerText}`}>Could not load this document's versions.</p>
+        ) : displayedVersions.length === 0 ? (
           <p className={`text-sm ${textMutedOnSurface}`}>No named versions yet.</p>
         ) : (
           <ul className="space-y-1">
@@ -154,14 +169,19 @@ export function ArtifactDetails({ artifact }: { artifact: Artifact }): ReactNode
                 <a
                   className={`inline-flex min-h-11 items-center font-medium ${linkText}`}
                   download=""
-                  href={artifactVersionUrl(artifact.id, version.number, { download: true })}
+                  href={artifactVersionPath(artifact.id, version.number, { download: true })}
                 >
                   Download version {version.number}
                 </a>
                 <span className={`w-full break-all text-xs ${textMutedOnSurface}`}>
                   <Timestamp at={version.created_at} />
+                  {isFileVersion(artifact, version) && version.mime !== undefined
+                    ? ` · ${version.mime}`
+                    : null}
                   {version.size === undefined ? null : ` · ${formatArtifactBytes(version.size)}`}
-                  {artifact.kind === "doc" ? null : ` · SHA-256 ${version.sha256 ?? "unavailable"}`}
+                  {isFileVersion(artifact, version)
+                    ? ` · SHA-256 ${version.sha256 ?? "unavailable"}`
+                    : null}
                 </span>
               </li>
             ))}
@@ -169,7 +189,7 @@ export function ArtifactDetails({ artifact }: { artifact: Artifact }): ReactNode
         )}
       </section>
 
-      {versions.length >= 2 ? (
+      {comparable.length >= 2 ? (
         <section aria-label={`Compare versions for ${artifact.name}`} className="space-y-2">
           <div className="flex items-center justify-between gap-3">
             <h3 className={`text-sm font-semibold ${textSecondaryOnSurface}`}>Compare versions</h3>
@@ -190,14 +210,14 @@ export function ArtifactDetails({ artifact }: { artifact: Artifact }): ReactNode
                   label="From"
                   onChange={setBefore}
                   value={beforeVersion}
-                  versions={versions}
+                  versions={comparable}
                 />
                 <CompareVersionSelect
                   ariaLabel={`Compare ${artifact.name} to`}
                   label="To"
                   onChange={setAfter}
                   value={afterVersion}
-                  versions={versions}
+                  versions={comparable}
                 />
               </div>
               {artifact.kind === "doc" ? (

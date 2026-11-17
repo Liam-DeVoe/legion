@@ -10,7 +10,7 @@ import {
   usersQuery,
   whoAmIQuery,
 } from "../../api/queries";
-import type { CreateProjectInput, ProjectDefaultAssignee } from "../../api/types";
+import type { CreateProjectInput, ProjectV2 } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 import {
@@ -73,7 +73,9 @@ export function ProjectsSection(): ReactNode {
   // it, so opening Settings makes no request for it.
   const [wantUsers, setWantUsers] = useState(false);
   const users = useQuery({ ...usersQuery(), enabled: wantUsers });
-  const defaultAssignees = new Map((defaults.data ?? []).map((row) => [row.project, row.assignee]));
+  const defaultAssignees = new Map(
+    (defaults.data ?? []).map((row) => [row.key, row.default_assignee])
+  );
   const logins = (users.data ?? []).map((user) => user.login);
   // The server takes the person creating the project when the call names nobody, so that is what
   // the form starts on; the reader may pick anyone else who has signed in.
@@ -334,7 +336,7 @@ type DefaultAssigneePick = { assignee: string };
 type DefaultAssigneeSuperseded = { superseded: true };
 
 type DefaultAssigneeSave = Mutation<
-  ProjectDefaultAssignee | DefaultAssigneeSuperseded | null,
+  ProjectV2 | DefaultAssigneeSuperseded | null,
   Error,
   DefaultAssigneePick
 >;
@@ -366,10 +368,7 @@ function useDefaultAssigneeWrite(project: string): {
   const queryClient = useQueryClient();
   const defaultsKey = projectDefaultAssigneesQuery().queryKey;
   const mutationKey = ["project-default-assignee", project];
-  const mutation = useKeyedWrite<
-    ProjectDefaultAssignee | DefaultAssigneeSuperseded,
-    DefaultAssigneePick
-  >({
+  const mutation = useKeyedWrite<ProjectV2 | DefaultAssigneeSuperseded, DefaultAssigneePick>({
     mutationKey,
     scope: { id: `project-default-assignee:${project}` },
     // A refused save stays in the cache, with no row observing it, until a newer save of the
@@ -378,7 +377,7 @@ function useDefaultAssigneeWrite(project: string): {
     // The row shows its newest save's refusal itself, beside the control it was refused over.
     inline: true,
     label: (pick) => `${project}'s default assignee ${pick.assignee}`,
-    write: async (pick, bounds): Promise<ProjectDefaultAssignee | DefaultAssigneeSuperseded> => {
+    write: async (pick, bounds): Promise<ProjectV2 | DefaultAssigneeSuperseded> => {
       // The cache lists mutations in the order they were made, so the last pending one is the
       // newest pick. Any other is waiting behind this save, and only it need reach the server.
       const waiting = queryClient
@@ -387,7 +386,7 @@ function useDefaultAssigneeWrite(project: string): {
       if (waiting.at(-1)?.state.variables !== pick) {
         return { superseded: true };
       }
-      return api.putProjectDefaultAssignee(project, { assignee: pick.assignee }, bounds);
+      return api.putProjectDefaultAssignee(project, pick.assignee, bounds);
     },
     // A defaults read already out was asked before this save and could land over its answer.
     onMutate: () => queryClient.cancelQueries({ queryKey: defaultsKey }),
@@ -396,11 +395,11 @@ function useDefaultAssigneeWrite(project: string): {
       if (saved === null || "superseded" in saved) {
         return;
       }
-      queryClient.setQueryData<ProjectDefaultAssignee[]>(defaultsKey, (rows) => {
+      queryClient.setQueryData<ProjectV2[]>(defaultsKey, (rows) => {
         if (rows === undefined) {
           return rows;
         }
-        const others = rows.filter((row) => row.project !== saved.project);
+        const others = rows.filter((row) => row.key !== saved.key);
         return [...others, saved];
       });
     },

@@ -19,9 +19,9 @@ import { ApiError, api } from "../../api/client";
 import type {
   BroadcastSummary,
   Comment,
-  CommentRead,
+  CommentReadV2,
   DisplayTree,
-  IssueReferenceSummary,
+  IssueReadV2,
   SearchResult,
 } from "../../api/types";
 import { AgentThread } from "../agent-view/AgentThread";
@@ -38,6 +38,7 @@ import fixtures from "./__fixtures__/display-trees.json";
 import { warmMarkdownRenderer } from "./markdown-engine";
 import { closeRefPreview, RefPreviewHost, referenceTriggerProps } from "./RefPreview";
 import { REF_PREVIEW_OPEN_DELAY_MS } from "./ref-preview-timing";
+import { documentRow, issueSummary } from "./reference-fixture";
 import { Unfurl } from "./Unfurl";
 
 /** One marked snippet of the display-tree fixture, by name: the reading the server made of
@@ -97,13 +98,11 @@ const RENDERED = new RegExp(
 const LITERAL_SYNTAX = ["##", "**", "`", "[link](", "- first", "dispatch://"];
 
 /** CORE-1's summary read, which a reference to it shows. */
-const issue: IssueReferenceSummary = {
-  documents: [],
+const issue: IssueReadV2 = issueSummary({
   key: "CORE-1",
-  project: "CORE",
   status: "in_progress",
   title: "Design decision",
-};
+});
 
 const comment: Comment = {
   anchor: null,
@@ -123,7 +122,7 @@ const comment: Comment = {
   ...commentDeliveryFields(),
 };
 
-const commentRead: CommentRead = { comment, replies: [] };
+const commentRead: CommentReadV2 = { ...comment, replies: [] };
 
 function queryClient(): QueryClient {
   return new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -419,7 +418,9 @@ test("the unfurl card under a bare reference renders the target's text formatted
   // Long enough that the title has to cut it, so the card shows the whole text under the title.
   const long = `${FIXTURE}\n- and a third item, which runs the title past its cut`;
   const getComment = spyOn(api, "getComment").mockResolvedValue({
-    comment: { ...comment, body: long, body_tree: displayTree(long) },
+    ...comment,
+    body: long,
+    body_tree: displayTree(long),
     replies: [],
   });
   const getIssueSummary = spyOn(api, "getIssueSummary").mockResolvedValue(issue);
@@ -453,7 +454,8 @@ test("the unfurl card under a bare reference renders the target's text formatted
     // formatting or nested link, so the markup is dropped and the reference reads as its short
     // form, as a body's reference link does before its title resolves.
     getComment.mockResolvedValue({
-      comment: { ...comment, body: long.slice(long.indexOf("## ")) },
+      ...comment,
+      body: long.slice(long.indexOf("## ")),
       replies: [],
     });
     const titled = render(
@@ -629,14 +631,29 @@ test("the broadcasts list shows each broadcast's first line formatted", async ()
  * A picture someone pasted, as the composer writes it (`uploadedFileText`): an artifact at a
  * version, captioned with its file name. A surface that renders through `MarkdownBody` shows it at
  * the column's width, named by its caption; one that renders through `MarkdownPreview` shows its
- * 40 px thumbnail beside the caption on the preview's one line. `DispatchPicture` builds the
- * address from the reference alone, so the issue summary lists no such document: a picture that fell
- * back to its reference (`RefLink`) draws no `<img>` at all and fails every assertion below.
+ * 40 px thumbnail beside the caption on the preview's one line. `/api/v2` serves the version's
+ * bytes by the document's id, which `DispatchPicture` reads from the issue's summary
+ * (`pictureSummary`): a picture that fell back to its reference (`RefLink`) draws no `<img>` at
+ * all and fails every assertion below.
  */
 const PICTURE = "The broken layout: ![shot.png](dispatch://CORE-1/artifact/shot-png@v1)";
 
+/** CORE-1's summary read listing the picture's document, an image. */
+const pictureSummary: IssueReadV2 = {
+  ...issue,
+  artifacts: [
+    documentRow({
+      id: "artifact-shot",
+      issue_key: "CORE-1",
+      kind: "image",
+      name: "shot.png",
+      slug: "shot-png",
+    }),
+  ],
+};
+
 /** The version's bytes route the picture loads from (`artifactVersionPath`). */
-const PICTURE_SRC = "/api/v1/issues/CORE-1/artifacts/shot-png/versions/1";
+const PICTURE_SRC = "/api/v2/artifacts/artifact-shot/versions/1";
 
 /** What a preview of `PICTURE` reads as: its words, then the caption beside the thumbnail. */
 const PICTURE_WORDS = "The broken layout: shot.png";
@@ -706,9 +723,9 @@ describe("a Dispatch picture on every surface", () => {
   beforeEach(() => {
     pageBefore = window.location.href;
     testWindow.happyDOM.setURL("https://dispatch.test/issues/CORE-1/conversation");
-    // A picture that fell back to its reference resolves it against this issue's summary, which
-    // lists no document, rather than reaching the network.
-    getIssueSummary = spyOn(api, "getIssueSummary").mockResolvedValue(issue);
+    // The picture's document id comes from this issue's summary, read here rather than from the
+    // network.
+    getIssueSummary = spyOn(api, "getIssueSummary").mockResolvedValue(pictureSummary);
     // This page's origin is not the suite's, so the shell's own `/auth/whoami` answer does not
     // resolve against it: the viewer read is answered here at the api client, as it answers
     // signed out - no identity - everywhere else in this suite.
@@ -800,7 +817,8 @@ describe("a Dispatch picture on every surface", () => {
 
   test("the reference hover card shows it in a comment's body as a thumbnail beside its caption", async () => {
     const getComment = spyOn(api, "getComment").mockResolvedValue({
-      comment: { ...comment, body: PICTURE },
+      ...comment,
+      body: PICTURE,
       replies: [],
     });
     jest.useFakeTimers();
@@ -845,7 +863,9 @@ describe("a Dispatch picture on every surface", () => {
     const prose = "After the deploy every column on the board was drawn twice.";
     const long = `${prose} ${PICTURE}`;
     const getComment = spyOn(api, "getComment").mockResolvedValue({
-      comment: { ...comment, body: long, body_tree: displayTree(long) },
+      ...comment,
+      body: long,
+      body_tree: displayTree(long),
       replies: [],
     });
     const view = render(
@@ -941,7 +961,7 @@ describe("a Dispatch picture on every surface", () => {
     const search = spyOn(api, "search").mockResolvedValue(searchAnswer([hit]));
     // The bar lists a project row for every project whose key or name holds the words
     // (`SearchPalette.tsx`), so it reads the project list. This page's origin is not the
-    // suite's, so the shell's own `/api/v1/projects` answer does not resolve against it: the
+    // suite's, so the shell's own `/api/v2/projects` answer does not resolve against it: the
     // read is answered here at the api client, with the empty list that answer carries, which
     // leaves the one hit as the only option in the list this row reads.
     const listProjects = spyOn(api, "listProjects").mockResolvedValue([]);

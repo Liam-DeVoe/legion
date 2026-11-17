@@ -14,9 +14,10 @@ import {
   renderProofDocument,
 } from "../../__tests__/proof-document";
 import { ApiError, api } from "../../api/client";
-import type { Ask, IssueDetails, IssueReferenceSummary } from "../../api/types";
+import type { AskV2, IssueDetails } from "../../api/types";
 import { heldSends } from "../conversation/held-sends";
 import { marginComposeSendKey } from "../margin/margin-context";
+import { issue as issueFixture } from "../margin/margin-fixture";
 import { appKeymap } from "../shell/keymap";
 import { colorForLogin } from "./connection";
 
@@ -25,27 +26,20 @@ answerTextReadsWithTheSeededText();
 /**
  * The document surface's own shared reads (`documentSurfaceHandlers`), and the read this file
  * adds to them: a reference link the pointer rests on opens a preview card, which reads the
- * issue the reference names and the documents it holds.
+ * issue the reference names and the documents it holds (the issue's own read, `GET
+ * /api/v2/issues/{key}`).
  */
 beforeEach(() => {
   answerRequests(
-    http.get("/api/v1/issues/:key/summary", ({ params }) =>
+    http.get("/api/v2/issues/:key", ({ params }) =>
       Response.json({
-        documents: [
-          {
-            id: artifact.id,
-            kind: artifact.kind,
-            latest_version: null,
-            name: artifact.name,
-            primary: artifact.primary,
-            slug: artifact.slug,
-          },
-        ],
+        ...issueFixture,
+        artifacts: [artifact],
         key: String(params.key),
         project: artifact.project,
         status: "todo",
         title: "Review the spec",
-      } satisfies IssueReferenceSummary)
+      } satisfies IssueDetails)
     ),
     ...documentSurfaceHandlers()
   );
@@ -213,12 +207,14 @@ test("ProofDocument highlights a routed search term again after route and docume
 test("ProofDocument opens a hover card for a dispatch:// link in the live editor and navigates in-app", async () => {
   const user = userEvent.setup();
   const issue: IssueDetails = {
-    route_status: null,
-    route_holder: null,
-    route_status_reason: null,
-    holder_state: null,
-    last_seen: null,
-    takeable_at: null,
+    reach: {
+      holder_state: null,
+      last_seen: null,
+      route_holder: null,
+      route_status: null,
+      route_status_reason: null,
+      takeable_at: null,
+    },
     advances: [],
     advances_revision: 0,
     artifacts: [],
@@ -511,6 +507,36 @@ test("ProofDocument compares a selected version with the current settled text wh
       expect(diff.querySelector("del")?.textContent).toBe("SQLite");
       expect(diff.querySelector("ins")?.textContent).toBe("Postgres");
     });
+  } finally {
+    view.unmount();
+  }
+});
+
+// A plan uploaded as a file before a Markdown upload made it a document keeps that file as version
+// 1, whose answer is its bytes and no text. Picked, it is shown as the file it is, where the page
+// stood at "Loading version…" for ever; and with no text to diff, a diff of it shows the same.
+test("ProofDocument shows a picked version that holds a file as that file, diffed or not", async () => {
+  const queryClient = createQueryClient();
+  queryClient.setQueryData(["whoami"], { kind: "user", login: "alice" });
+  queryClient.setQueryData(["artifact", artifact.id, "version", 1], {
+    blob: new Blob(["- [ ] ship it"], { type: "text/plain" }),
+    mime: "text/plain",
+    version: 1,
+  });
+  const { rerender, sync, view } = renderProofDocument({ queryClient, version: 1 });
+
+  try {
+    await sync();
+    const shown = await within(view.container).findByRole("region", {
+      name: "Document version 1",
+    });
+    expect(shown.textContent).toContain("This version is a file, not document text.");
+    expect(shown.textContent).toContain("text/plain");
+    expect(within(shown).getByRole("link", { name: "Download version 1" })).toBeTruthy();
+    rerender({ showDiff: true, version: 1 });
+    await within(view.container).findByText("This version is a file, not document text.");
+    expect(within(view.container).queryByTestId("change-view")).not.toBeInTheDocument();
+    expect(within(view.container).queryByText("Loading version…")).not.toBeInTheDocument();
   } finally {
     view.unmount();
   }
@@ -1067,7 +1093,7 @@ test("Ctrl+Alt+M comments on the selection while the editor has focus, and nowhe
 // It takes no edits, publishes no presence, and claims none of the page-level singletons.
 // ---------------------------------------------------------------------------------------------
 
-const openDecision: Ask = {
+const openDecision: AskV2 = {
   anchor: null,
   answer: null,
   author: { id: "01a086ad", kind: "session", origin: { session_title: "Architect for CORE-1" } },
@@ -1078,14 +1104,19 @@ const openDecision: Ask = {
   block_artifact: { id: "artifact-1", primary: true, slug: "spec" },
   block_id: "ship_it",
   created_at: "2026-09-09T00:00:00Z",
+  document: null,
   edited_at: null,
   id: "ask-1",
+  issue: null,
   issue_key: "CORE-1",
   kind: "question",
+  last_reply: null,
   multiple: false,
   opened_event_id: 1,
   options: [{ label: "Ship" }, { label: "Hold" }],
+  priority: null,
   question: "Should we ship?",
+  ref: "dispatch://CORE-1/ask/ask-1",
   state: "open",
   urgency: "high",
 };
@@ -1133,9 +1164,7 @@ test("a read-only admission and a close each leave a pane read-only", async () =
 });
 
 test("a pane registers no document with the margin, reports no toolbar and shows no Open-decisions navigator", async () => {
-  const listIssueAsks = spyOn(api, "listIssueAsks").mockResolvedValue([
-    { ...openDecision, last_reply: null },
-  ]);
+  const listIssueAsks = spyOn(api, "listIssueAsks").mockResolvedValue([openDecision]);
   const paneClient = createQueryClient();
   paneClient.setQueryData(["asks", "CORE-1"], [openDecision]);
   const pane = renderProofDocument({ queryClient: paneClient, surface: "pane" });

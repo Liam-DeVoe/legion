@@ -5,10 +5,10 @@ import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
-import { answerInboxReads } from "../../__tests__/send-answers";
-import { ApiError } from "../../api/client";
+import { answerMarksPatches } from "../../__tests__/send-answers";
+import { ApiError, type WholeList } from "../../api/client";
 import { inboxThreadsQuery, myRepliesCountQuery, whoAmIQuery } from "../../api/queries";
-import type { MyRepliesResponse, MyReplyRow } from "../../api/types";
+import type { MyReplyRow } from "../../api/types";
 import { plannerAgentRow, replyRow } from "../threads/replies-fixture";
 import { InboxBar, type InboxFilters } from "./InboxBar";
 import type { InboxListRow } from "./list-row";
@@ -19,8 +19,8 @@ afterEach(cleanup);
 
 const AS_OF = "2026-10-12T02:00:00Z";
 
-function threadsRead(rows: readonly MyReplyRow[]): MyRepliesResponse {
-  return { as_of: AS_OF, limit: 0, offset: 0, rows: [...rows], total: rows.length };
+function threadsRead(rows: readonly MyReplyRow[]): WholeList<"/api/v2/me/threads"> {
+  return { as_of: AS_OF, items: [...rows], limit: 0, offset: 0, total: rows.length };
 }
 
 function noop(): void {}
@@ -33,7 +33,7 @@ function noop(): void {}
  */
 function Bar({ filters = {} }: { filters?: InboxFilters }): ReactNode {
   const read = useQuery(inboxThreadsQuery());
-  const rows: readonly InboxListRow[] = (read.data?.rows ?? []).map((thread) => ({
+  const rows: readonly InboxListRow[] = (read.data?.items ?? []).map((thread) => ({
     kind: "thread",
     thread,
   }));
@@ -43,7 +43,9 @@ function Bar({ filters = {} }: { filters?: InboxFilters }): ReactNode {
     <>
       <output data-testid="inbox-count">{count}</output>
       <output data-testid="listed">{rows.length}</output>
-      <output data-testid="unread">{(read.data?.rows ?? []).filter((t) => t.unread).length}</output>
+      <output data-testid="unread">
+        {(read.data?.items ?? []).filter((t) => t.unread).length}
+      </output>
       <InboxBar
         agentToken={undefined}
         assignees={undefined}
@@ -106,18 +108,18 @@ function unread(): string {
 test("the body carries the list's read mark and the filters the list is under", () => {
   // Nothing narrowed: both kinds, and no list for the three fields, which the route reads as
   // every value.
-  expect(markAllReadBody({}, AS_OF)).toEqual({ kind: ["reply", "agent"], read_through: AS_OF });
+  expect(markAllReadBody({}, AS_OF)).toEqual({
+    filter: { kind: ["reply", "agent"] },
+    set: { read_through: AS_OF },
+  });
   expect(
     markAllReadBody(
       { priority: ["P0", "none"], project: ["CORE"], type: ["reply"], urgency: ["none"] },
       AS_OF
     )
   ).toEqual({
-    kind: ["reply"],
-    priority: ["P0", "none"],
-    project: ["CORE"],
-    read_through: AS_OF,
-    urgency: ["none"],
+    filter: { kind: ["reply"], priority: ["P0", "none"], project: ["CORE"], urgency: ["none"] },
+    set: { read_through: AS_OF },
   });
 });
 
@@ -145,8 +147,8 @@ test("the button shows only while the list holds an unread Reply or Agent row", 
 
 test("one press zeroes the count and draws the rows read, without taking one out of the list", async () => {
   const user = userEvent.setup();
-  const marked = answerInboxReads();
-  const settle = Promise.withResolvers<{ marked: number }>();
+  const marked = answerMarksPatches();
+  const settle = Promise.withResolvers<{ updated: number }>();
   marked.mockReturnValue(settle.promise);
   renderBar([replyRow("c1", { priority: 1 }), replyRow("c2", { priority: 1 })], 2, {
     priority: ["P1"],
@@ -165,17 +167,16 @@ test("one press zeroes the count and draws the rows read, without taking one out
   expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 
   expect(marked.mock.calls[0]?.[0]).toEqual({
-    kind: ["reply", "agent"],
-    priority: ["P1"],
-    read_through: AS_OF,
+    filter: { kind: ["reply", "agent"], priority: ["P1"] },
+    set: { read_through: AS_OF },
   });
-  settle.resolve({ marked: 2 });
+  settle.resolve({ updated: 2 });
   await waitFor(() => expect(marked).toHaveBeenCalledTimes(1));
 });
 
 test("a refused press brings the rows and the counts back and says nothing was marked", async () => {
   const user = userEvent.setup();
-  const marked = answerInboxReads();
+  const marked = answerMarksPatches();
   // An old server mid-deploy has no such route, which is a failed request like any other.
   marked.mockRejectedValue(new ApiError(404, { error: "not found" }));
   renderBar([replyRow("c1"), replyRow("c2")], 2);

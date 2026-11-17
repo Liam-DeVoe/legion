@@ -4,8 +4,8 @@ import { render, screen, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 
 import { graphNode } from "../../__tests__/graph-fixture";
-import { api } from "../../api/client";
-import type { Artifact, ArtifactApproval, ArtifactBlock, GraphReferences } from "../../api/types";
+import { api, type WholeList } from "../../api/client";
+import type { ArtifactApprovalWithTrees, ArtifactBlock, ArtifactV2 } from "../../api/types";
 import { PlanTab } from "./PlanTab";
 
 /** The words a block reference resolves to, which is what a pointer's link shows. */
@@ -15,9 +15,12 @@ const BLOCK_TEXT: Record<string, string> = {
   "dispatch://CORE-1/spec#b-r1": "Every issue page shows a Plan tab.",
 };
 
-function references(reference: string): GraphReferences {
+function references(reference: string): WholeList<"/api/v2/references"> {
   return {
-    edges: [],
+    items: [],
+    limit: 50,
+    offset: 0,
+    total: 0,
     node: graphNode({
       block_id: reference.split("#b-")[1] ?? "",
       id: reference.slice("dispatch://".length),
@@ -29,7 +32,7 @@ function references(reference: string): GraphReferences {
   };
 }
 
-function plan(approval?: ArtifactApproval): Artifact {
+function plan(approval?: ArtifactApprovalWithTrees): ArtifactV2 {
   return {
     created_at: "2026-10-01T00:00:00Z",
     created_by: { id: "alice", kind: "user" },
@@ -43,7 +46,11 @@ function plan(approval?: ArtifactApproval): Artifact {
     ref_key: "CORE-1/plan-md",
     session_id: null,
     slug: "plan-md",
-    versions: [],
+    latest_version: 1,
+    latest_version_at: "2026-10-01T00:00:00Z",
+    latest_version_size: null,
+    unsettled: null,
+    version_count: 1,
     ...(approval === undefined ? {} : { approval }),
   };
 }
@@ -73,7 +80,7 @@ const blocks: ArtifactBlock[] = [
   },
 ];
 
-function renderTab(artifact: Artifact | undefined, artifactBlocks: ArtifactBlock[] = blocks) {
+function renderTab(artifact: ArtifactV2 | undefined, artifactBlocks: ArtifactBlock[] = blocks) {
   const getArtifactBlocks = spyOn(api, "getArtifactBlocks").mockResolvedValue(artifactBlocks);
   const getReferences = spyOn(api, "getReferences").mockImplementation(async (reference: string) =>
     references(reference)

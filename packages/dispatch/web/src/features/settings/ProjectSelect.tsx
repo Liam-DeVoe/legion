@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 
-import type { Project } from "../../api/types";
+import type { ProjectV2 } from "../../api/types";
 import { inputClasses, textPrimaryOnSurface } from "../../theme/classes";
 
 /** The "Choose a project" picker both Settings forms use; `disabled` is omitted from the DOM
@@ -15,7 +15,7 @@ export function ProjectSelect({
   disabled?: boolean;
   id: string;
   onChange: (project: string) => void;
-  projects: readonly Project[];
+  projects: readonly ProjectV2[];
   value: string;
 }): ReactNode {
   return (

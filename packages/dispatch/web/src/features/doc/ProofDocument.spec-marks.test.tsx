@@ -9,16 +9,10 @@ import {
   renderProofDocument,
 } from "../../__tests__/proof-document";
 import { answerRoute } from "../../__tests__/send-answers";
-import { api, type WriteBounds } from "../../api/client";
-import type {
-  Artifact,
-  ArtifactBlock,
-  DocumentRead,
-  GraphReferences,
-  IssueDecisions,
-  Version,
-} from "../../api/types";
+import { api, type WholeList, type WriteBounds } from "../../api/client";
+import type { ArtifactBlock, MarkV2, Version } from "../../api/types";
 import { changedSinceReadMark, staleBlockMark } from "../../theme/classes";
+import { type DocumentFixture, documentRead, serveVersions } from "../artifacts/artifact-fixture";
 import { STALE_BLOCK_TITLE } from "./spec-marks";
 
 answerTextReadsWithTheSeededText();
@@ -40,10 +34,12 @@ function version(number: number): Version {
   };
 }
 
-const spec: Artifact = { ...artifact, versions: [1, 2, 3, 4].map(version) };
+/** The issue's spec at four versions: its own read names the fourth, its versions list all four. */
+const specFixture: DocumentFixture = { ...artifact, versions: [1, 2, 3, 4].map(version) };
+const spec = documentRead(specFixture);
 
-const decisions: IssueDecisions = {
-  decisions: [
+const decisions: WholeList<"/api/v2/issues/{key}/decisions"> = {
+  items: [
     {
       asks: [],
       block_id: "d-1",
@@ -70,7 +66,10 @@ const decisions: IssueDecisions = {
     },
   ],
   document: "dispatch://CORE-1/artifact/decisions-md",
+  limit: 50,
+  offset: 0,
   open_questions: [],
+  total: 1,
 };
 
 function part(blockId: string, changedVersion: number, text: string) {
@@ -89,14 +88,17 @@ function part(blockId: string, changedVersion: number, text: string) {
   };
 }
 
-const parts: GraphReferences = {
-  edges: [
+const parts: WholeList<"/api/v2/references"> = {
+  items: [
     part("h-plan", 1, "## Plan"),
     part("p-plan", 2, "Ship it in two steps."),
     part("h-rollout", 1, "## Rollout"),
     part("p-rollout", 4, "Behind a flag."),
   ],
+  limit: 50,
   node: graphNode({ id: "artifact-1", kind: "artifact" }),
+  offset: 0,
+  total: 4,
 };
 
 function block(id: string, type: string, from: number): ArtifactBlock {
@@ -117,16 +119,21 @@ const blocks = [
   block("p-rollout", "paragraph", 30),
 ];
 
-function readOf(version: number | null): DocumentRead {
-  return {
-    artifact_id: "artifact-1",
-    read_at: version === null ? null : "2026-10-02T00:00:00Z",
-    version,
-  };
+/** The person's mark on the spec: the version they last read, none where they have read none. */
+function readOf(version: number | null): MarkV2 {
+  return version === null
+    ? { id: "artifact-1", kind: "document" }
+    : {
+        id: "artifact-1",
+        kind: "document",
+        read_at: "2026-10-02T00:00:00Z",
+        read_version: version,
+      };
 }
 
 function stubReads(readVersion: number | null) {
   const getArtifact = spyOn(api, "getArtifact").mockResolvedValue(spec);
+  const listArtifactVersions = serveVersions([specFixture]);
   const getIssueDecisions = spyOn(api, "getIssueDecisions").mockResolvedValue(decisions);
   const getDocumentRead = spyOn(api, "getDocumentRead").mockResolvedValue(readOf(readVersion));
   const getReferences = spyOn(api, "getReferences").mockResolvedValue(parts);
@@ -134,9 +141,9 @@ function stubReads(readVersion: number | null) {
   // The margin reads the issue's asks for every document it shows; none of these rows has one.
   const listIssueAsks = spyOn(api, "listIssueAsks").mockResolvedValue([]);
   const putRead = answerRoute<
-    (id: string, body: { version: number }, bounds: WriteBounds) => Promise<unknown>
-  >("PUT", "/api/v1/me/documents/*/read");
-  putRead.mockImplementation(async (_id, body) => readOf(body.version));
+    (id: string, body: { read_version: number }, bounds: WriteBounds) => Promise<unknown>
+  >("PATCH", "/api/v2/me/marks/document/*");
+  putRead.mockImplementation(async (_id, body) => readOf(body.read_version));
   return {
     getDocumentRead,
     getIssueDecisions,
@@ -145,6 +152,7 @@ function stubReads(readVersion: number | null) {
     restore() {
       for (const spy of [
         getArtifact,
+        listArtifactVersions,
         getIssueDecisions,
         getDocumentRead,
         getReferences,
@@ -192,7 +200,7 @@ test("the Spec tab marks stale and changed blocks through the editor, names the 
 
     // Then the tab records the version it shows, once.
     await waitFor(() => expect(reads.putRead).toHaveBeenCalledTimes(1));
-    expect(reads.putRead.mock.calls[0]?.slice(0, 2)).toEqual(["artifact-1", { version: 4 }]);
+    expect(reads.putRead.mock.calls[0]?.slice(0, 2)).toEqual(["artifact-1", { read_version: 4 }]);
 
     // The marks stay for the visit, though the person's read version is now the latest.
     await tick(20);
@@ -223,7 +231,7 @@ test("with no read version the Spec tab shows no line and marks no changed block
     if (editor === undefined) throw new Error("editor missing");
 
     await waitFor(() => expect(reads.putRead).toHaveBeenCalledTimes(1));
-    expect(reads.putRead.mock.calls[0]?.slice(0, 2)).toEqual(["artifact-1", { version: 4 }]);
+    expect(reads.putRead.mock.calls[0]?.slice(0, 2)).toEqual(["artifact-1", { read_version: 4 }]);
     await waitFor(() =>
       expect(editor.blockMarks.at(-1)).toEqual([
         { blockId: "p-plan", className: staleBlockMark, title: STALE_BLOCK_TITLE },

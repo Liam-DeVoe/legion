@@ -14,7 +14,7 @@ const PARENT_READS_IN_FLIGHT = 8;
 /**
  * What a table lists. A project's table lists that project's issues; a scoped table lists the
  * issues that advance one priority, where `advances` is the priority node's id and the server
- * narrows the listing by it (`GET /api/v1/issues?advances=<id>`). A priority belongs to no
+ * narrows the listing by it (`GET /api/v2/issues?advances=<id>`). A priority belongs to no
  * project, so a scoped table lists the work of every project and stands on none of them: it
  * can make no write that names a project, and it offers none (`issues-table-actions.ts`).
  */

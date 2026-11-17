@@ -19,7 +19,8 @@ import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
-import type { Issue, IssueSummary, UserState } from "../../api/types";
+import type { Issue, IssueSummary, Marks } from "../../api/types";
+import { marksOf } from "../agents/marks-fixture";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { issueStatuses } from "./board-model";
 import { staleBoardMessage, useBoardMoves } from "./board-moves";
@@ -70,7 +71,7 @@ const issues: IssueSummary[] = [
 ];
 
 function renderBoard(
-  state: UserState = {},
+  state: Marks = {},
   showEdges?: boolean,
   list: IssueSummary[] = issues,
   initialEntry = "/projects/CORE",
@@ -158,10 +159,12 @@ test("the whole card is the drag activator: no Reorder button, no status pill, s
 });
 
 test("board cards show the unread dot when events are newer than the viewer's last read", async () => {
-  const { cleanup } = renderBoard({
-    "CORE-1": { dismissed: [], last_read_seq: 1, pinned: false, seq: 0 },
-    "CORE-2": { dismissed: [], last_read_seq: 2, pinned: false, seq: 0 },
-  });
+  const { cleanup } = renderBoard(
+    marksOf("issue", {
+      "CORE-1": { last_read_seq: 1, pinned: false, pinned_items: [], seq: 0 },
+      "CORE-2": { last_read_seq: 2, pinned: false, pinned_items: [], seq: 0 },
+    })
+  );
   try {
     const board = await screen.findByRole("region", { name: "Project board" });
     const unread = within(board).getByRole("article", { name: "CORE-2 Ship the work" });
@@ -947,11 +950,11 @@ test("the strip's search hides board cards, counts the visible column, and drags
 
 test("Needs you and Unread from the URL keep only matching cards on the board", async () => {
   const { cleanup } = renderBoard(
-    {
-      "CORE-1": { dismissed: [], last_read_seq: 1, pinned: false, seq: 0 },
-      "CORE-2": { dismissed: [], last_read_seq: 1, pinned: false, seq: 0 },
-      "CORE-3": { dismissed: [], last_read_seq: 1, pinned: false, seq: 0 },
-    },
+    marksOf("issue", {
+      "CORE-1": { last_read_seq: 1, pinned: false, seq: 0 },
+      "CORE-2": { last_read_seq: 1, pinned: false, seq: 0 },
+      "CORE-3": { last_read_seq: 1, pinned: false, seq: 0 },
+    }),
     undefined,
     [
       issue({ key: "CORE-1", last_seq: 4, open_asks: 1, status: "todo", title: "Wanted" }),

@@ -44,7 +44,7 @@ function priorityLabels(rows: readonly PriorityRow[]): ReadonlyMap<string, strin
  * priority inherited from an issue above (R4) says so and carries no remove: that relation is
  * the ancestor's, and a relation on a child never places the issues above it.
  *
- * Every press writes the whole of the issue's own set — `PATCH /api/v1/issues/{key}` — with the
+ * Every press writes the whole of the issue's own set — `PATCH /api/v2/issues/{key}` — with the
  * `advances_revision` of the read the line drew it from. The server reads the act from the
  * difference between the set and what it holds now, so without the revision a set another writer
  * moved in between would read as this press's act and retract a relation the person never saw;
@@ -71,7 +71,7 @@ export function IssuePriorityLine({
     ...prioritiesQuery(),
     enabled: adding || advances.length > 0,
   });
-  const rows = useMemo(() => priorities.data?.priorities ?? [], [priorities.data]);
+  const rows = useMemo(() => priorities.data?.items ?? [], [priorities.data]);
   const labels = useMemo(() => priorityLabels(rows), [rows]);
   const write = useKeyedWrite({
     // The line says why a write was refused, beside the control it came from.

@@ -5,7 +5,7 @@ import { Link } from "react-router-dom";
 
 import { api } from "../../api/client";
 import { myRepliesKey } from "../../api/queries";
-import type { MyReplyRow, UserAgentState } from "../../api/types";
+import type { MarkV2, MyReplyRow } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import {
   borderDefault,
@@ -40,7 +40,7 @@ export function ThreadRowCard({ thread }: { thread: MyReplyRow }): ReactNode {
   const queryClient = useQueryClient();
   const read = inboxThreadRow(thread);
   const session = read.kind === "agent" ? read.session.id : undefined;
-  const markRead = useKeyedWrite<UserAgentState | undefined>({
+  const markRead = useKeyedWrite<MarkV2 | undefined>({
     label: () => "Thread marked read",
     // An Agent row is read by id, as every read of one is: its session's own read mark covers
     // replies in the live conversation and in its other threads, which this press has not

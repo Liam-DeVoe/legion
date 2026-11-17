@@ -3,7 +3,7 @@ import { QueryClient } from "@tanstack/react-query";
 
 import { settle } from "../../__tests__/fake-clock";
 import { api, NetworkError } from "../../api/client";
-import type { UserIssueState } from "../../api/types";
+import type { MarkV2 } from "../../api/types";
 import { writesOf } from "../writes/write-store";
 import { writePin } from "./pin-write";
 import { pinnedItemMarker } from "./pins";
@@ -15,7 +15,14 @@ function signedIn(login: string): QueryClient {
   return client;
 }
 
-const fresh: UserIssueState = { dismissed: [], last_read_seq: 0, pinned: false, seq: 0 };
+const fresh: MarkV2 = {
+  id: "CORE-1",
+  kind: "issue",
+  last_read_seq: 0,
+  pinned: false,
+  pinned_items: [],
+  seq: 0,
+};
 
 /**
  * Alice's first pin of CORE-1 lands while her second is still out, so the state its answer gave
@@ -25,10 +32,10 @@ const fresh: UserIssueState = { dismissed: [], last_read_seq: 0, pinned: false, 
 async function nextPinAfter(end: (client: QueryClient) => void) {
   const client = signedIn("alice");
   const getMyState = spyOn(api, "getMyState").mockResolvedValue({ "CORE-1": fresh });
-  const alicesAnswer: UserIssueState = { ...fresh, dismissed: [pinnedItemMarker("ask:a")], seq: 1 };
+  const alicesAnswer: MarkV2 = { ...fresh, pinned_items: [pinnedItemMarker("ask:a")], seq: 1 };
   const put = spyOn(api, "putIssueState")
     .mockResolvedValueOnce(alicesAnswer)
-    .mockRejectedValueOnce(new NetworkError("/api/v1/me/issues/CORE-1/state", new TypeError()));
+    .mockRejectedValueOnce(new NetworkError("/api/v2/me/marks/issue/CORE-1", new TypeError()));
   try {
     writePin(client, "CORE-1", { id: "ask:a", op: "pin" });
     writePin(client, "CORE-1", { id: "ask:b", op: "pin" });
@@ -63,10 +70,10 @@ test("another sign-in lets go of the last pin's answer", async () => {
     invalidate.mockRestore();
   });
   expect(rolledBack).toBe(true);
-  expect(sent).toEqual({ dismissed: [pinnedItemMarker("ask:c")], seq: 1 });
+  expect(sent).toEqual({ pinned_items: [pinnedItemMarker("ask:c")], seq: 1 });
 });
 
 test("a sign-out lets go of the last pin's answer", async () => {
   const sent = await nextPinAfter((client) => writesOf(client).clear());
-  expect(sent).toEqual({ dismissed: [pinnedItemMarker("ask:c")], seq: 1 });
+  expect(sent).toEqual({ pinned_items: [pinnedItemMarker("ask:c")], seq: 1 });
 });

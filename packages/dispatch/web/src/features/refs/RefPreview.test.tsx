@@ -8,27 +8,23 @@ import { Link, MemoryRouter } from "react-router-dom";
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { graphNodeFields } from "../../__tests__/graph-fixture";
 import { userOnFakeClock } from "../../__tests__/user";
-import { ApiError, api } from "../../api/client";
-import type {
-  AskRead,
-  BlockPin,
-  CommentRead,
-  GraphReferences,
-  IssueDetails,
-  IssueReferenceSummary,
-} from "../../api/types";
+import { ApiError, api, type WholeList } from "../../api/client";
+import type { BlockPin, CommentReadV2, IssueDetails, IssueReadV2 } from "../../api/types";
 import { closeRefPreview, RefPreviewHost, referenceTriggerProps } from "./RefPreview";
 import { REF_PREVIEW_CLOSE_DELAY_MS, REF_PREVIEW_OPEN_DELAY_MS } from "./ref-preview-timing";
+import { askWithThread, documentRow, issueSummary, referencesRead } from "./reference-fixture";
 import { shortForm } from "./routes";
 
 function issue(key: string, title: string): IssueDetails {
   return {
-    route_status: null,
-    route_holder: null,
-    route_status_reason: null,
-    holder_state: null,
-    last_seen: null,
-    takeable_at: null,
+    reach: {
+      route_status: null,
+      route_holder: null,
+      route_status_reason: null,
+      holder_state: null,
+      last_seen: null,
+      takeable_at: null,
+    },
     advances: [],
     advances_revision: 0,
     artifacts: [],
@@ -605,39 +601,14 @@ test("anchors React did not render are triggers too, and a card closes when its 
 // formatted: bold as bold and a list's items on the heading's line, never `**` or `-`.
 test("an ask's card heads with its question formatted, not its source", async () => {
   const getIssue = mockIssues();
-  const askRead: AskRead = {
-    ask: {
-      anchor: null,
-      answer: null,
-      artifact_id: null,
-      asked_of: null,
-      asked_of_at: null,
-      asked_of_by: null,
+  const getAsk = spyOn(api, "getAsk").mockResolvedValue(
+    askWithThread({
       author: { id: "alice", kind: "user" },
-      block_id: null,
       created_at: "2026-09-09T00:00:00Z",
-      edited_at: null,
       id: "ask-1",
-      issue_key: "CORE-1",
-      kind: "question",
-      multiple: false,
-      opened_event_id: 1,
-      options: [],
       question: "**Ship** on Friday?\n\n- `main` is green\n- review is in",
-      state: "open",
-      urgency: "med",
-    },
-    answers: [],
-    edits: [],
-    claimant: null,
-    followers: [],
-    route: null,
-    route_status: null,
-    route_holder: null,
-    route_status_reason: null,
-    replies: [],
-  };
-  const getAsk = spyOn(api, "getAsk").mockResolvedValue(askRead);
+    })
+  );
   jest.useFakeTimers();
   const view = render(
     <Harness>
@@ -673,21 +644,20 @@ test("an ask's card heads with its question formatted, not its source", async ()
 
 test("a document's card shows its owner, name, latest version and text from its summary and text reads", async () => {
   const getIssue = mockIssues();
-  const getProjectDocumentSummary = spyOn(api, "getProjectDocumentSummary").mockResolvedValue({
+  const runbook = documentRow({
     id: "doc-9",
-    kind: "doc",
     latest_version: 4,
     name: "Runbook.md",
     project: "CORE",
     slug: "runbook-md",
   });
+  const getProjectArtifact = spyOn(api, "getProjectArtifact").mockResolvedValue(runbook);
   const getArtifactText = spyOn(api, "getArtifactText").mockResolvedValue({
+    ...runbook,
     markdown: "Restart the **pod** first.",
     token: "sha256:runbook",
-    version: null,
     unsettled: true,
   });
-  const getProjectArtifact = spyOn(api, "getProjectArtifact");
   jest.useFakeTimers();
   const view = render(
     <Harness>
@@ -713,54 +683,49 @@ test("a document's card shows its owner, name, latest version and text from its 
     expect(card).toHaveTextContent("CORE · Runbook.md");
     expect(card).toHaveTextContent("v4");
     expect(getArtifactText).toHaveBeenCalledWith("doc-9");
-    expect(getProjectArtifact).not.toHaveBeenCalled();
+    expect(getProjectArtifact).toHaveBeenCalledWith("CORE", "runbook-md");
   } finally {
     view.unmount();
     getProjectArtifact.mockRestore();
     getArtifactText.mockRestore();
-    getProjectDocumentSummary.mockRestore();
     getIssue.mockRestore();
   }
 });
 
 /** CORE-1's summary with its spec, `design-md`, the document a block reference to
  *  `dispatch://CORE-1/spec` names. */
-function summaryWithSpec(): IssueReferenceSummary {
-  return {
-    documents: [
-      {
+function summaryWithSpec(): IssueReadV2 {
+  return issueSummary({
+    artifacts: [
+      documentRow({
         id: "spec",
-        kind: "doc",
+        issue_key: "CORE-1",
         latest_version: 3,
         name: "Design.md",
         primary: true,
         slug: "design-md",
-      },
+      }),
     ],
     key: "CORE-1",
-    project: "CORE",
     status: "in_progress",
     title: "Design decision",
-  };
+  });
 }
 
-function pinnedRead(pin: Omit<BlockPin, "ref" | "version">): GraphReferences {
-  return {
-    edges: [],
-    node: {
-      ...graphNodeFields(),
-      block_id: "p1",
-      changed_version: pin.state === "removed" ? undefined : 3,
-      document: "dispatch://CORE-1/spec",
-      id: "CORE-1/spec#p1",
-      issue_key: "CORE-1",
-      kind: "block",
-      pin: { ...pin, ref: "dispatch://CORE-1/spec#b-p1@v2", version: 2 },
-      project: "CORE",
-      ref: "dispatch://CORE-1/spec#b-p1",
-      text: pin.state === "removed" ? undefined : "Ship it on Monday.",
-    },
-  };
+function pinnedRead(pin: Omit<BlockPin, "ref" | "version">): WholeList<"/api/v2/references"> {
+  return referencesRead({
+    ...graphNodeFields(),
+    block_id: "p1",
+    changed_version: pin.state === "removed" ? undefined : 3,
+    document: "dispatch://CORE-1/spec",
+    id: "CORE-1/spec#p1",
+    issue_key: "CORE-1",
+    kind: "block",
+    pin: { ...pin, ref: "dispatch://CORE-1/spec#b-p1@v2", version: 2 },
+    project: "CORE",
+    ref: "dispatch://CORE-1/spec#b-p1",
+    text: pin.state === "removed" ? undefined : "Ship it on Monday.",
+  });
 }
 
 test.each([
@@ -959,47 +924,41 @@ test("a comment or message block's card names its item and author, a comment's p
   const getComment = spyOn(api, "getComment");
   const getMessage = spyOn(api, "getMessage");
   const getIssueSummary = spyOn(api, "getIssueSummary");
-  const getProjectDocumentSummary = spyOn(api, "getProjectDocumentSummary");
+  const getProjectArtifact = spyOn(api, "getProjectArtifact");
   const getReferences = spyOn(api, "getReferences").mockImplementation((reference) =>
     Promise.resolve(
       reference.includes("/comment/")
-        ? {
-            edges: [],
-            node: {
-              ...graphNodeFields(),
-              block_id: "b2",
-              changed_version: 2,
-              id: `comment/${comment}#b2`,
-              issue_key: "CORE-1",
-              kind: "block",
-              made_by: [{ id: "alice", kind: "user" }],
-              parent: { id: comment, kind: "comment", ref: `dispatch://CORE-1/comment/${comment}` },
-              pin: {
-                ref: `dispatch://CORE-1/comment/${comment}#b-b2@v1`,
-                state: "changed",
-                text: "Beta, as first written.",
-                version: 1,
-              },
-              project: "CORE",
-              ref: `dispatch://CORE-1/comment/${comment}#b-b2`,
-              text: "Beta, as edited.",
+        ? referencesRead({
+            ...graphNodeFields(),
+            block_id: "b2",
+            changed_version: 2,
+            id: `comment/${comment}#b2`,
+            issue_key: "CORE-1",
+            kind: "block",
+            made_by: [{ id: "alice", kind: "user" }],
+            parent: { id: comment, kind: "comment", ref: `dispatch://CORE-1/comment/${comment}` },
+            pin: {
+              ref: `dispatch://CORE-1/comment/${comment}#b-b2@v1`,
+              state: "changed",
+              text: "Beta, as first written.",
+              version: 1,
             },
-          }
-        : {
-            edges: [],
-            node: {
-              ...graphNodeFields(),
-              block_id: "b1",
-              id: `message/${message}#b1`,
-              issue_key: "CORE-1",
-              kind: "block",
-              made_by: [{ id: "bob", kind: "user" }],
-              parent: { id: message, kind: "message", ref: `dispatch://CORE-1/message/${message}` },
-              project: "CORE",
-              ref: `dispatch://CORE-1/message/${message}#b-b1`,
-              text: "The message's first paragraph.",
-            },
-          }
+            project: "CORE",
+            ref: `dispatch://CORE-1/comment/${comment}#b-b2`,
+            text: "Beta, as edited.",
+          })
+        : referencesRead({
+            ...graphNodeFields(),
+            block_id: "b1",
+            id: `message/${message}#b1`,
+            issue_key: "CORE-1",
+            kind: "block",
+            made_by: [{ id: "bob", kind: "user" }],
+            parent: { id: message, kind: "message", ref: `dispatch://CORE-1/message/${message}` },
+            project: "CORE",
+            ref: `dispatch://CORE-1/message/${message}#b-b1`,
+            text: "The message's first paragraph.",
+          })
     )
   );
   const view = render(
@@ -1082,11 +1041,11 @@ test("a comment or message block's card names its item and author, a comment's p
     expect(getMessage).not.toHaveBeenCalled();
     expect(getIssue).not.toHaveBeenCalled();
     expect(getIssueSummary).not.toHaveBeenCalled();
-    expect(getProjectDocumentSummary).not.toHaveBeenCalled();
+    expect(getProjectArtifact).not.toHaveBeenCalled();
   } finally {
     view.unmount();
     getReferences.mockRestore();
-    getProjectDocumentSummary.mockRestore();
+    getProjectArtifact.mockRestore();
     getIssueSummary.mockRestore();
     getMessage.mockRestore();
     getComment.mockRestore();
@@ -1102,9 +1061,8 @@ test("an ask part's card names the ask and its author, its pin a revision, and t
   const getIssue = mockIssues();
   const getAsk = spyOn(api, "getAsk");
   const getIssueSummary = spyOn(api, "getIssueSummary");
-  const getReferences = spyOn(api, "getReferences").mockResolvedValue({
-    edges: [],
-    node: {
+  const getReferences = spyOn(api, "getReferences").mockResolvedValue(
+    referencesRead({
       ...graphNodeFields(),
       block_id: "b3",
       changed_version: 2,
@@ -1122,8 +1080,8 @@ test("an ask part's card names the ask and its author, its pin a revision, and t
       project: "CORE",
       ref: `dispatch://CORE-1/ask/${ask}#b-b3`,
       text: "Tuesday — Ship once the review lands and the queue is green.",
-    },
-  });
+    })
+  );
   const view = render(
     <Harness>
       <Link
@@ -1168,24 +1126,22 @@ test("an ask part's card names the ask and its author, its pin a revision, and t
 // its own: the reference link stays the card's only anchor.
 test("a comment card names its agent by its current title and state, without a second link", async () => {
   const getIssue = mockIssues();
-  const commentRead: CommentRead = {
-    comment: {
-      id: "comment-1",
-      issue_key: "CORE-1",
-      author: { id: "ses-hover", kind: "session", origin: { session_title: "Stamped title" } },
-      body: "Looks good.",
-      anchor: null,
-      reply_to: null,
-      ask_id: null,
-      turn: null,
-      resolved: false,
-      resolved_by: null,
-      resolved_at: null,
-      edited_at: null,
-      suggestion: null,
-      created_at: "2026-09-09T00:00:00Z",
-      ...commentDeliveryFields(),
-    },
+  const commentRead: CommentReadV2 = {
+    id: "comment-1",
+    issue_key: "CORE-1",
+    author: { id: "ses-hover", kind: "session", origin: { session_title: "Stamped title" } },
+    body: "Looks good.",
+    anchor: null,
+    reply_to: null,
+    ask_id: null,
+    turn: null,
+    resolved: false,
+    resolved_by: null,
+    resolved_at: null,
+    edited_at: null,
+    suggestion: null,
+    created_at: "2026-09-09T00:00:00Z",
+    ...commentDeliveryFields(),
     replies: [],
   };
   const getComment = spyOn(api, "getComment").mockResolvedValue(commentRead);

@@ -2,10 +2,11 @@ import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useMemo, useState } from "react";
 
 import { isText } from "../../api/artifact-version";
-import { api } from "../../api/client";
+import { api, artifactVersionPath } from "../../api/client";
 import type { AskApproval } from "../../api/types";
 import { DisclosureToggle } from "../../components/DisclosureToggle";
-import { dangerText, textMutedOnSurface } from "../../theme/classes";
+import { dangerText, linkText, textMutedOnSurface } from "../../theme/classes";
+import { formatArtifactBytes } from "../artifacts/ArtifactHeader";
 import { ChangeView } from "../doc/ChangeView";
 import { cutDecisionBlocks } from "../doc/decision-blocks";
 import { AgentName } from "../refs/AgentName";
@@ -48,6 +49,32 @@ function ApprovedChangeView({
   );
   if (before.isError || after.isError) {
     return <p className={`text-sm ${dangerText}`}>Could not load versions to compare.</p>;
+  }
+  // A version stored as a file - the bytes a plan, a Verification document or a decisions
+  // document was uploaded as before a Markdown upload made it a document - answers those bytes
+  // and no text, so there is nothing to compare it with: each such version is named with its
+  // type and size and the link that downloads it, where the comparison would wait for ever.
+  const files = [before.data, after.data].flatMap((content) =>
+    content === undefined || isText(content) ? [] : [content]
+  );
+  if (files.length > 0) {
+    return (
+      <div className="space-y-1">
+        {files.map((file) => (
+          <p className={`text-sm ${textMutedOnSurface}`} key={file.version}>
+            Version {file.version} is a file ({file.mime}, {formatArtifactBytes(file.blob.size)}),
+            not text to compare.{" "}
+            <a
+              className={`font-medium ${linkText}`}
+              download=""
+              href={artifactVersionPath(artifactId, file.version, { download: true })}
+            >
+              Download version {file.version}
+            </a>
+          </p>
+        ))}
+      </div>
+    );
   }
   if (cut !== undefined) {
     return <ChangeView after={cut.after} before={cut.before} />;

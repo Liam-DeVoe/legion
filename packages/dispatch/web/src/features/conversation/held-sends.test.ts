@@ -403,7 +403,7 @@ test("leaving asks for confirmation only while a send is unconfirmed", async () 
 test("a send pressed offline is tried, goes late, holds its name, and lands", async () => {
   const online = onlineManager.isOnline();
   const createAgentMessage = spyOn(api, "createAgentMessage").mockRejectedValue(
-    new NetworkError("/api/v1/agents/planner-session/messages", new TypeError("Failed to fetch"))
+    new NetworkError("/api/v2/agents/planner-session/messages", new TypeError("Failed to fetch"))
   );
   const client = signedIn();
   const { held } = heldOf(keptTab(), client);
@@ -540,7 +540,7 @@ test("a late send can be stopped, and its Retry goes under its key", async () =>
 test("a send held for a sign-out in another tab says so, and goes on once released", async () => {
   await onFakeClock(async () => {
     const createAgentMessage = spyOn(api, "createAgentMessage").mockRejectedValue(
-      new NetworkError("/api/v1/agents/planner-session/messages", new TypeError("Failed to fetch"))
+      new NetworkError("/api/v2/agents/planner-session/messages", new TypeError("Failed to fetch"))
     );
     const { held, writes } = heldOf();
     const sends = { discard: () => {}, retry: () => {}, stop: () => {} };
@@ -586,7 +586,7 @@ test("a send whose key has run out says so on its turn, with Retry and Discard",
         bounds.sent?.({
           body: input,
           method: "POST",
-          path: `/api/v1/agents/${sessionID}/messages`,
+          path: `/api/v2/agents/${sessionID}/messages`,
         });
         return Promise.reject(new ApiError(503, { code: "UNAVAILABLE", error: "down" }));
       }
@@ -649,7 +649,7 @@ test("a send re-pressed under its key sends nothing under it after a reload", as
         bounds.sent?.({
           body: input,
           method: "POST",
-          path: `/api/v1/agents/${sessionID}/messages`,
+          path: `/api/v2/agents/${sessionID}/messages`,
         });
         keys.push(bounds.key);
         return input.body === "Ahead"

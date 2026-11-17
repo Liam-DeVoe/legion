@@ -7,12 +7,13 @@ import { MemoryRouter } from "react-router-dom";
 
 import { api } from "../api/client";
 import { whoAmIQuery } from "../api/queries";
-import type { CredentialPendingRow, IssueSummary, Priorities, Project } from "../api/types";
+import type { CredentialPendingRow, IssueSummary, PrioritiesV2, ProjectV2 } from "../api/types";
+import { issueAsk } from "../features/inbox/inbox-fixture";
 import { Sidebar } from "../features/sidebar/Sidebar";
 
-/** The summary call the rail reads (`?summary=true`): the two fault counts, and `empty` where
- *  the deployment has written no priority at all. Neither answer carries a priority row. */
-function summary(parked: number, unplaced: number, written = true): Priorities {
+/** The summary read the rail makes (`limit=0`): the two fault counts beside no priority row, and
+ *  `empty` where the deployment has written no priority at all. */
+function summary(parked: number, unplaced: number, written = true): PrioritiesV2 {
   return {
     ...(written
       ? {}
@@ -20,8 +21,11 @@ function summary(parked: number, unplaced: number, written = true): Priorities {
           empty:
             "No priority is live now, so the list is empty. Write one, then say which work advances it.",
         }),
-    priorities: [],
+    items: [],
+    limit: 0,
+    offset: 0,
     priority_work_parked: { by_priority: {}, count: parked, issues: [] },
+    total: written ? 2 : 0,
     work_under_no_priority: { by_project: {}, count: unplaced, issues: [] },
   };
 }
@@ -67,7 +71,7 @@ function issue(overrides: Partial<IssueSummary> = {}): IssueSummary {
   };
 }
 
-function project(overrides: Partial<Project> = {}): Project {
+function project(overrides: Partial<ProjectV2> = {}): ProjectV2 {
   return {
     created_at: "2026-09-10T00:00:00Z",
     key: "CORE",
@@ -84,131 +88,51 @@ function project(overrides: Partial<Project> = {}): Project {
 function renderSidebar(
   pathname = "/",
   pending?: CredentialPendingRow[],
-  priorities: Priorities = summary(0, 0, false)
+  priorities: PrioritiesV2 = summary(0, 0, false)
 ) {
-  const listPriorities = spyOn(api, "listPriorities").mockResolvedValue(priorities);
-  railSpies.push(listPriorities);
+  const getPrioritySummary = spyOn(api, "getPrioritySummary").mockResolvedValue(priorities);
+  railSpies.push(getPrioritySummary);
+  // Needs you counts the questions waiting on the reader, which is what the server answers in
+  // `waiting_on_person`: nobody has handed ask-1 or ask-3 on, so it is their issue's assignee.
+  // ask-2's issue is nobody's, so it waits on its project's default assignee, who is not alice.
   const getInbox = spyOn(api, "getInbox").mockResolvedValue([
-    {
-      anchor: null,
-      answer: null,
-      artifact_id: null,
-      asked_of: null,
-      asked_of_at: null,
-      asked_of_by: null,
+    issueAsk({
       author: { id: "alice", kind: "user" },
-      block_id: null,
       created_at: "2026-09-10T00:00:00Z",
-      edited_at: null,
       id: "ask-1",
-      // Needs you counts the questions waiting on the reader, which is what the server answers
-      // in `waiting_on_person`: nobody has handed these on, so it is their issue's assignee.
       issue: { assignee: "alice", key: "CORE-1", title: "Pinned work" },
-      issue_key: "CORE-1",
-      last_reply: null,
-      waiting_on_person: "alice",
-      priority: null,
-      snoozed_until: null,
-      kind: "question",
-      multiple: false,
-      opened_event_id: 1,
-      options: [],
-      thread: {
-        answers: [],
-        claimant: null,
-        edits: [],
-        followers: [],
-        replies: [],
-        route: null,
-        route_status: null,
-        route_holder: null,
-        route_status_reason: null,
-      },
       question: "Ship?",
-      state: "open",
-      waiting_on: "human",
-      urgency: "med",
-    },
-    {
-      anchor: null,
-      answer: null,
-      artifact_id: null,
-      asked_of: null,
-      asked_of_at: null,
-      asked_of_by: null,
+      waiting_on_person: "alice",
+    }),
+    issueAsk({
       author: { id: "alice", kind: "user" },
-      block_id: null,
       created_at: "2026-09-10T00:00:00Z",
-      edited_at: null,
       id: "ask-2",
+      issue: null,
       issue_key: "OPS-1",
-      priority: null,
-      snoozed_until: null,
-      kind: "question",
-      multiple: false,
-      opened_event_id: 2,
-      options: [],
-      thread: {
-        answers: [],
-        claimant: null,
-        edits: [],
-        followers: [],
-        replies: [],
-        route: null,
-        route_status: null,
-        route_holder: null,
-        route_status_reason: null,
-      },
-      question: "Review?",
-      state: "open",
-      waiting_on: "agent",
       last_reply: { author: { id: "alice", kind: "user" }, created_at: "2026-09-10T01:00:00Z" },
-      urgency: "med",
-    },
-    {
-      anchor: null,
-      answer: null,
-      artifact_id: null,
-      asked_of: null,
-      asked_of_at: null,
-      asked_of_by: null,
+      opened_event_id: 2,
+      question: "Review?",
+      waiting_on: "agent",
+    }),
+    issueAsk({
       author: { id: "agent-2", kind: "session" },
-      block_id: null,
       created_at: "2026-09-10T00:00:00Z",
-      edited_at: null,
       id: "ask-3",
       issue: { assignee: "alice", key: "OPS-2", title: "Operations work" },
       issue_key: "OPS-2",
-      waiting_on_person: "alice",
-      priority: null,
-      snoozed_until: null,
-      kind: "question",
-      multiple: false,
-      opened_event_id: 3,
-      options: [],
-      thread: {
-        answers: [],
-        claimant: null,
-        edits: [],
-        followers: [],
-        replies: [],
-        route: null,
-        route_status: null,
-        route_holder: null,
-        route_status_reason: null,
-      },
-      question: "Confirm?",
-      state: "open",
-      waiting_on: "human",
       last_reply: {
         author: { id: "agent-3", kind: "session" },
         created_at: "2026-09-10T01:00:00Z",
       },
-      urgency: "med",
-    },
+      opened_event_id: 3,
+      question: "Confirm?",
+      waiting_on_person: "alice",
+    }),
   ]);
+  // Without a broker the credential list answers `null`; with one, the requests themselves.
   const getCredentialPending = spyOn(api, "getCredentialPending").mockResolvedValue(
-    pending === undefined ? null : { pending }
+    pending ?? null
   );
   const getIssue = spyOn(api, "getIssue").mockResolvedValue(undefined as never);
   const listIssues = spyOn(api, "listIssues").mockResolvedValue([issue()]);
@@ -241,8 +165,8 @@ function renderSidebar(
     getCredentialPending,
     getInbox,
     getIssue,
+    getPrioritySummary,
     listIssues,
-    listPriorities,
     listProjects,
     view,
   };
@@ -339,18 +263,18 @@ for (const [unread, name] of [
       kind: "user",
       login: "alice",
     });
-    const listMyReplies = spyOn(api, "listMyReplies").mockResolvedValue({
+    const listMyThreads = spyOn(api, "listMyThreads").mockResolvedValue({
       as_of: "2026-10-12T00:00:00Z",
+      items: [],
       limit: 1,
       offset: 0,
-      rows: [],
       total: unread,
     });
     const sidebar = renderSidebar("/");
 
     try {
       await waitFor(() =>
-        expect(listMyReplies).toHaveBeenCalledWith({ kind: ["reply", "agent"], limit: 1 })
+        expect(listMyThreads).toHaveBeenCalledWith({ kind: ["reply", "agent"], limit: 1 })
       );
       await waitFor(() =>
         expect(screen.getByRole("link", { name: /^Inbox/ }).textContent).toBe(name)
@@ -364,7 +288,7 @@ for (const [unread, name] of [
       sidebar.listIssues.mockRestore();
       sidebar.listProjects.mockRestore();
       whoAmI.mockRestore();
-      listMyReplies.mockRestore();
+      listMyThreads.mockRestore();
     }
   });
 }
@@ -434,7 +358,7 @@ test("the rail's Priorities entry carries no number where no priority exists", a
 
   try {
     const entry = await screen.findByRole("link", { name: /^Priorities/ });
-    await waitFor(() => expect(sidebar.listPriorities).toHaveBeenCalledWith({ summary: true }));
+    await waitFor(() => expect(sidebar.getPrioritySummary).toHaveBeenCalledWith([]));
     expect(entry.textContent).toBe("PrioritiesEvery project's priorities, and the work on none");
   } finally {
     sidebar.view.unmount();

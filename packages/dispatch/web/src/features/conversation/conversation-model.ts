@@ -1,10 +1,10 @@
 import type {
+  AskWithThread,
   CommentDelivery,
   CommentWithTrees,
   HandoffSummary,
-  IssueAskThreadRow,
   MessageDeliveryMode,
-  MessageRead,
+  MessageThreadV2,
   MessageWithTrees,
 } from "../../api/types";
 import { compareTimestamps } from "../../lib/timestamps";
@@ -49,7 +49,7 @@ interface ConversationBase {
  *  built from the issue's own entity list, so a conversation older than any window of the event
  *  log is listed like every other. */
 export type Conversation =
-  | (ConversationBase & { readonly kind: "ask"; readonly ask: IssueAskThreadRow })
+  | (ConversationBase & { readonly kind: "ask"; readonly ask: AskWithThread })
   | (ConversationBase & {
       readonly kind: "comment";
       readonly root: CommentWithTrees;
@@ -78,9 +78,9 @@ export type Conversation =
 export type MessageConversation = Extract<Conversation, { kind: "message" | "targeted-message" }>;
 
 export interface ConversationInput {
-  readonly asks: readonly IssueAskThreadRow[];
+  readonly asks: readonly AskWithThread[];
   readonly comments: readonly CommentWithTrees[];
-  readonly messages: readonly MessageRead[];
+  readonly messages: readonly MessageThreadV2[];
   /** Every phase handoff of the issue, each version its own entry. */
   readonly handoffs: readonly HandoffSummary[];
   /** `created_at` of the first event the reader has not read. Without one nothing is unread:
@@ -137,7 +137,7 @@ export function rootOf(
   return root;
 }
 
-function askConversation(ask: IssueAskThreadRow, unreadFrom: string | undefined): Conversation {
+function askConversation(ask: AskWithThread, unreadFrom: string | undefined): Conversation {
   let at = ask.created_at;
   for (const reply of ask.thread.replies ?? []) {
     at = newest(at, reply.created_at);
@@ -200,24 +200,27 @@ function commentConversations(
 
 /** One card per root message, targeted or not: a targeted root keeps its delivery card, with
  *  its replies beneath it, rather than becoming a second turn. */
-function messageConversation(read: MessageRead, unreadFrom: string | undefined): Conversation {
-  const replies = [...(read.replies ?? [])].sort(
+function messageConversation(
+  { replies: unsorted, ...root }: MessageThreadV2,
+  unreadFrom: string | undefined
+): Conversation {
+  const replies = [...(unsorted ?? [])].sort(
     (left, right) =>
       compareTimestamps(left.created_at, right.created_at) || left.id.localeCompare(right.id)
   );
-  let at = read.message.created_at;
+  let at = root.created_at;
   for (const reply of replies) {
     at = newest(at, reply.created_at);
   }
   const base = {
     at,
     closed: false,
-    id: conversationItemId("message", read.message.id),
+    id: conversationItemId("message", root.id),
     replies,
-    root: read.message,
+    root,
     unread: isUnread(at, unreadFrom),
   };
-  if (read.message.target === null) {
+  if (root.target === null) {
     return { ...base, kind: "message" };
   }
   const answer = replies.find((reply) => reply.author.kind === "session");
@@ -352,12 +355,12 @@ export function focusConversation(
       ? { id: conversationItemId("comment", root.id) }
       : { id: conversationItemId("comment", root.id), replyId: comment.id };
   }
-  for (const { message, replies } of messages) {
-    if (message.id === itemId) {
-      return { id: conversationItemId("message", message.id) };
+  for (const { id, replies } of messages) {
+    if (id === itemId) {
+      return { id: conversationItemId("message", id) };
     }
     if ((replies ?? []).some((reply) => reply.id === itemId)) {
-      return { id: conversationItemId("message", message.id), replyId: itemId };
+      return { id: conversationItemId("message", id), replyId: itemId };
     }
   }
   if (handoffs.some((handoff) => handoff.id === itemId)) {

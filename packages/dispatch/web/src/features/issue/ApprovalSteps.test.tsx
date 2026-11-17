@@ -2,36 +2,40 @@ import { expect, test } from "bun:test";
 import { screen, within } from "@testing-library/react";
 
 import { renderWithQueries } from "../../__tests__/query-provider";
-import type { Artifact, ArtifactApproval } from "../../api/types";
+import type { ArtifactApprovalWithTrees, ArtifactV2 } from "../../api/types";
 import { ApprovalSteps } from "./ApprovalSteps";
 import type { StepEntry } from "./gated-steps";
 
 const SPEC_ID = "artifact-spec";
 const DECISIONS_ID = "artifact-decisions";
 
-function doc(id: string, name: string, approval?: ArtifactApproval): Artifact {
+function doc(id: string, name: string, approval?: ArtifactApprovalWithTrees): ArtifactV2 {
   return {
     created_at: "2026-09-09T00:00:00Z",
     created_by: { id: "alice", kind: "user" },
     id,
     issue_key: "CORE-1",
     kind: "doc",
+    latest_version: null,
+    latest_version_at: null,
+    latest_version_size: null,
     name,
     primary: id === SPEC_ID,
     project: "CORE",
     ref_key: `CORE-1/${name}`,
     session_id: null,
     slug: name.replace(".", "-"),
-    versions: [],
+    unsettled: null,
+    version_count: 0,
     ...(approval === undefined ? {} : { approval }),
   };
 }
 
-function specEntry(approval?: ArtifactApproval): StepEntry {
+function specEntry(approval?: ArtifactApprovalWithTrees): StepEntry {
   return { document: doc(SPEC_ID, "spec.md", approval), label: "Spec", step: "spec" };
 }
 
-function decisionsEntry(approval?: ArtifactApproval): StepEntry {
+function decisionsEntry(approval?: ArtifactApprovalWithTrees): StepEntry {
   return {
     document: doc(DECISIONS_ID, "decisions.md", approval),
     label: "Decisions",
@@ -80,7 +84,7 @@ test("lists one named item per entry, in the entries' order, under one Approvals
 });
 
 test("each approval state reads as that step's state", () => {
-  const cases: Array<[ArtifactApproval, string]> = [
+  const cases: Array<[ArtifactApprovalWithTrees, string]> = [
     [{ latest_version: 1, state: "draft" }, "Not requested"],
     [{ latest_version: 1, state: "awaiting" }, "Awaiting approval"],
     [{ latest_version: 3, state: "approved", version: 3 }, "Approved v3"],

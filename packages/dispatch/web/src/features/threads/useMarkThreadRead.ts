@@ -3,19 +3,19 @@ import { useMemo, useState } from "react";
 
 import { threadReadRequest } from "../../api/client";
 import { myRepliesKey, myRepliesOwnerQuery } from "../../api/queries";
-import type { Ask } from "../../api/types";
+import type { AskV2 } from "../../api/types";
 import { useIsHuman } from "../../hooks/useIsHuman";
 import { type DwellRef, useDwell } from "../shell/useDwell";
 import { useSendMarkOnce } from "../writes/useSendMarkOnce";
 import { unreadWrites } from "./thread-layout";
 
-/** The owner a thread lives on, as `GET /api/v1/me/replies` narrows to it: an issue, or a project
+/** The owner a thread lives on, as `GET /api/v2/me/threads` narrows to it: an issue, or a project
  *  document (an issue's documents are the issue's). */
 export type RepliesOwner = { readonly issue: string } | { readonly artifact: string };
 
 /** An ask's owner: its issue, else the project document it was asked on. */
 export function askRepliesOwner(
-  ask: Pick<Ask, "artifact_id" | "issue_key">
+  ask: Pick<AskV2, "artifact_id" | "issue_key">
 ): RepliesOwner | undefined {
   if (ask.issue_key !== null) return { issue: ask.issue_key };
   return ask.artifact_id === null || ask.artifact_id === undefined
@@ -56,7 +56,7 @@ export interface ThreadRead {
  * Conversation, a document's margin, an ask's card and the Inbox's threads all read by: the
  * returned ref goes on that reply's own element, and once it has been three-quarters on screen for
  * a second (`useDwell`, whose one IntersectionObserver every thread on the page shares) the thread
- * is marked read through that reply's timestamp (`PUT /api/v1/me/threads/{id}/read`), once per
+ * is marked read through that reply's timestamp (`PATCH /api/v2/me/marks/thread/{id}`), once per
  * thread and timestamp (`useSendMarkOnce`). It watches the newest reply rather than the whole
  * thread, because a thread taller than the screen never has three-quarters of itself on screen.
  *
@@ -85,11 +85,11 @@ export function useMarkThreadRead({
   const rows = unreadSet.data;
   // This thread's own row of that set, which says both that it is unread and what in it is.
   const row = watching
-    ? (rows?.rows ?? []).find((candidate) => candidate.thread_id === threadId)
+    ? (rows?.items ?? []).find((candidate) => candidate.thread_id === threadId)
     : undefined;
   // Whether this thread is one the mark watches at all.
   const watched =
-    watching && rows !== undefined && (rows.total > (rows.rows ?? []).length || row !== undefined);
+    watching && rows !== undefined && (rows.total > (rows.items ?? []).length || row !== undefined);
   // The newest reply this surface saw dwell, for the thread it saw it in.
   const [seen, setSeen] = useState<{ readonly at: string; readonly threadId: string }>();
   const ref = useDwell({

@@ -1,18 +1,18 @@
 import { expect, test } from "bun:test";
 
-import type { UserAgentStates } from "../../api/types";
+import { marksOf } from "./marks-fixture";
 import { legacyPinnedIds, pinnedAgentSessions } from "./pins";
 
 // The rail lists the person's pins oldest first (INFRA-812, R1), so the agent they pinned first
 // keeps the top row however their agent state is keyed, and a session they have only read or
 // cleared is not in the rail at all.
 test("the pins are the sessions with a pinned_at, oldest pin first", () => {
-  const states: UserAgentStates = {
+  const states = marksOf("agent", {
     "tester-session": { pinned_at: "2026-09-14T00:00:03Z", unread_replies: 0 },
     "planner-session": { pinned_at: "2026-09-14T00:00:01Z", unread_replies: 2 },
     "reviewer-session": { pinned_at: "2026-09-14T00:00:02Z", unread_replies: 0 },
     "quiet-session": { read_through: "2026-09-14T00:00:00Z", unread_replies: 1 },
-  };
+  });
 
   expect(pinnedAgentSessions(states)).toEqual([
     "planner-session",
@@ -24,10 +24,10 @@ test("the pins are the sessions with a pinned_at, oldest pin first", () => {
 // The server writes RFC 3339 with its trailing fractional zeros dropped, which does not sort as
 // text (`lib/timestamps.ts`): a pin made at `…00.12Z` is older than one at `…00.123456Z`.
 test("two pins in the same second are ordered by their fractions, not as text", () => {
-  const states: UserAgentStates = {
+  const states = marksOf("agent", {
     "second-session": { pinned_at: "2026-09-14T00:00:00.123456Z", unread_replies: 0 },
     "first-session": { pinned_at: "2026-09-14T00:00:00.12Z", unread_replies: 0 },
-  };
+  });
 
   expect(pinnedAgentSessions(states)).toEqual(["first-session", "second-session"]);
 });
@@ -40,10 +40,10 @@ test("nothing is pinned when the viewer has no agent state yet", () => {
 // A `pinned_at` this page cannot read orders nothing, and throwing on it would take the whole
 // rail - every other pin with it - off the page.
 test("a pin whose time cannot be read is listed last, not thrown on", () => {
-  const states: UserAgentStates = {
+  const states = marksOf("agent", {
     "broken-session": { pinned_at: "yesterday", unread_replies: 0 },
     "planner-session": { pinned_at: "2026-09-14T00:00:01Z", unread_replies: 0 },
-  };
+  });
 
   expect(pinnedAgentSessions(states)).toEqual(["planner-session", "broken-session"]);
 });

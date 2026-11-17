@@ -1,6 +1,7 @@
 import { type ReactNode, useEffect, useRef, useState } from "react";
 
 import { REQUEST_DEADLINE_MS } from "../../api/client";
+import type { Json200, Op, PathsOf } from "../../api/paths";
 import {
   borderStrong,
   card,
@@ -25,9 +26,11 @@ const CHUNK_RELOAD_BUDGET = 3;
 const CHUNK_RELOAD_WINDOW_MS = 5 * 60_000;
 const VERSION_CHECK_INTERVAL_MS = 60_000;
 const INDEX_ASSET_PATH = /^\/assets\/index-[^/]+\.js$/;
-// GET /api/v1/dashboard/builds answers `{serving, live}`: the entry chunk of the build the
-// answering process serves, and the entry chunks of the builds every live server process serves.
-const DASHBOARD_BUILDS_PATH = "/api/v1/dashboard/builds";
+// GET /api/v2/dashboard-builds answers one `{entry, serving}` per build a live server process
+// serves: its entry chunk, and whether the answering process serves it.
+const DASHBOARD_BUILDS_PATH = "/api/v2/dashboard-builds" satisfies PathsOf<"get">;
+
+type DashboardBuilds = Json200<Op<typeof DASHBOARD_BUILDS_PATH, "get">>;
 
 declare const __DISPATCH_BUILD__: string;
 
@@ -89,13 +92,15 @@ async function deploymentChanged(): Promise<boolean> {
   if (response.status !== 200) {
     return false;
   }
-  const { live } = (await response.json()) as { live?: unknown };
-  if (!Array.isArray(live) || live.length !== 1) {
+  const { items, total } = (await response.json()) as Partial<DashboardBuilds>;
+  if (!Array.isArray(items) || total !== 1 || items.length !== 1) {
     return false;
   }
-  const [newest] = live;
+  const [newest] = items;
   const running = runningIndexAsset();
-  return typeof newest === "string" && INDEX_ASSET_PATH.test(running) && newest !== running;
+  return (
+    typeof newest?.entry === "string" && INDEX_ASSET_PATH.test(running) && newest.entry !== running
+  );
 }
 
 // Set from the start of a navigation away from this page (`beforeunload`, or the Navigation API's

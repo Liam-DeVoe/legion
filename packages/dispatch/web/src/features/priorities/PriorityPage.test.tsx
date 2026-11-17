@@ -3,8 +3,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
-import { api } from "../../api/client";
-import type { IssueSummary, Priorities, Priority, PriorityRow } from "../../api/types";
+import { api, type WholeList } from "../../api/client";
+import type { IssueSummary, Priority, PriorityRow } from "../../api/types";
 import { PriorityPage } from "./PriorityPage";
 
 function priority(id: string, overrides: Partial<PriorityRow> = {}): PriorityRow {
@@ -79,10 +79,13 @@ const ROWS: PriorityRow[] = [
   }),
 ];
 
-const BODY: Priorities = {
-  priorities: ROWS,
-  work_under_no_priority: { by_project: null, count: 0, issues: null },
-  priority_work_parked: { by_priority: null, count: 0, issues: null },
+const BODY: WholeList<"/api/v2/priorities"> = {
+  items: ROWS,
+  limit: 50,
+  offset: 0,
+  priority_work_parked: { count: 0 },
+  total: ROWS.length,
+  work_under_no_priority: { count: 0 },
 };
 
 const saved = (id: string): Priority => ({

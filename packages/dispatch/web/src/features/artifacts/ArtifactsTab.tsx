@@ -2,8 +2,8 @@ import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useId, useMemo, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
 
-import { api } from "../../api/client";
-import type { Artifact, IssueReferences } from "../../api/types";
+import { api, artifactVersionPath } from "../../api/client";
+import type { ArtifactV2, IssueReferencesV2 } from "../../api/types";
 import { TruncatedText } from "../../components/TruncatedText";
 import { compareTimestamps } from "../../lib/timestamps";
 import {
@@ -29,12 +29,12 @@ import {
   parseIssuePath,
 } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
-import { artifactVersionUrl, formatArtifactBytes, versionsNewestFirst } from "./ArtifactHeader";
+import { formatArtifactBytes } from "./ArtifactHeader";
 import { ArtifactDropZone, ArtifactUploadRow, useArtifactUpload } from "./ArtifactUpload";
 import { CLOSED_ISSUE_DOCUMENT_REFUSAL, CreateDocument } from "./CreateDocument";
 import { CLOSED_ISSUE_REMOVE_REFUSAL, RemoveDocument, removalIsOffered } from "./DocumentWayBack";
 
-function kindIcon(kind: Artifact["kind"]): ReactNode {
+function kindIcon(kind: ArtifactV2["kind"]): ReactNode {
   const common = {
     "aria-hidden": true,
     className: "size-5 shrink-0",
@@ -79,7 +79,8 @@ function kindIcon(kind: Artifact["kind"]): ReactNode {
   );
 }
 
-function artifactPath(artifact: Artifact): string {
+/** The page of a document a References row names, in the shape the closure answers it. */
+function artifactPath(artifact: ArtifactV2): string {
   // A conversation's picture has its own page, under its agent's session.
   if (isAgentArtifact(artifact)) {
     return buildReferencePath(documentRoute(artifact));
@@ -99,7 +100,7 @@ function artifactPath(artifact: Artifact): string {
 
 /** Who owns an artifact, as a References row names it: its issue, its project, or the agent
  *  whose conversation holds it. */
-function ArtifactOwner({ artifact }: { artifact: Artifact }): ReactNode {
+function ArtifactOwner({ artifact }: { artifact: ArtifactV2 }): ReactNode {
   if (artifact.issue_key !== null) return artifact.issue_key;
   if (!isAgentArtifact(artifact)) return artifact.project;
   return (
@@ -113,8 +114,9 @@ function ArtifactOwner({ artifact }: { artifact: Artifact }): ReactNode {
 // hops) — a different thing from a single artifact's own "Referenced by" list above. Collapsed
 // by default: it is background context for the issue, not something worth scrolling past on
 // every visit to the tab.
-function References({ references }: { references: IssueReferences }): ReactNode {
-  if ((references.members ?? []).length === 0) {
+function References({ references }: { references: IssueReferencesV2 }): ReactNode {
+  const members = references.items ?? [];
+  if (members.length === 0) {
     return null;
   }
 
@@ -123,11 +125,11 @@ function References({ references }: { references: IssueReferences }): ReactNode 
       <summary
         className={`min-h-11 cursor-pointer text-sm font-semibold ${textSecondaryOnSurface}`}
       >
-        References ({(references.members ?? []).length})
+        References ({members.length})
       </summary>
       <section aria-label="References" className="mt-3 space-y-2">
         <ul className="space-y-2">
-          {(references.members ?? []).map(({ artifact, depth, via }) => (
+          {members.map(({ artifact, depth, via }) => (
             <li className={`rounded-lg border p-3 text-sm ${borderDefault}`} key={artifact.id}>
               <Link
                 className={`font-medium underline ${linkText} ${linkHoverText}`}
@@ -149,19 +151,25 @@ function References({ references }: { references: IssueReferences }): ReactNode 
   );
 }
 
+/** When a row was last updated: its newest version's time, or its own where it holds none. */
+function updatedAt(artifact: ArtifactV2): string {
+  return artifact.latest_version_at ?? artifact.created_at;
+}
+
 function ArtifactRow({
   artifact,
   highlighted,
   isClosed,
   issueKey,
 }: {
-  artifact: Artifact;
+  artifact: ArtifactV2;
   highlighted: boolean;
   isClosed: boolean;
   issueKey: string;
 }): ReactNode {
-  const versions = versionsNewestFirst(artifact.versions);
-  const latestVersion = versions[0];
+  const latestNumber = artifact.latest_version;
+  const versionCount = artifact.version_count;
+  const size = artifact.latest_version_size;
 
   // The name keeps at least 8 rem; on a phone the trailing controls wrap under it rather than
   // squeezing the name to nothing.
@@ -173,12 +181,12 @@ function ArtifactRow({
       data-testid={`artifact-${artifact.slug}`}
     >
       <span className={`shrink-0 ${textSecondaryOnSurface}`}>{kindIcon(artifact.kind)}</span>
-      {artifact.kind === "image" && latestVersion !== undefined ? (
+      {artifact.kind === "image" && latestNumber !== null ? (
         <img
-          alt={`${artifact.name} version ${latestVersion.number}`}
+          alt={`${artifact.name} version ${latestNumber}`}
           className={`h-10 w-10 shrink-0 rounded border object-cover ${borderDefault}`}
           loading="lazy"
-          src={artifactVersionUrl(artifact.id, latestVersion.number)}
+          src={artifactVersionPath(artifact.id, latestNumber)}
         />
       ) : null}
       <div className="min-w-32 flex-1">
@@ -194,11 +202,9 @@ function ArtifactRow({
             with room to spare. The size is the latest version's as stored (a document's
             markdown), so a document near the size cap shows here without being opened. */}
         <p className={`text-xs ${textMutedOnSurface}`}>
-          {artifact.kind} · {versions.length} {versions.length === 1 ? "version" : "versions"} ·
-          {latestVersion?.size === undefined
-            ? null
-            : ` ${formatArtifactBytes(latestVersion.size)} ·`}{" "}
-          Updated <Timestamp at={latestVersion?.created_at ?? artifact.created_at} />
+          {artifact.kind} ·{` ${versionCount} ${versionCount === 1 ? "version" : "versions"} ·`}
+          {size === null ? null : ` ${formatArtifactBytes(size)} ·`} Updated{" "}
+          <Timestamp at={updatedAt(artifact)} />
         </p>
       </div>
       {artifact.primary ? (
@@ -210,13 +216,13 @@ function ArtifactRow({
       ) : null}
       <CopyRefButton route={documentRoute(artifact)} />
       <ApprovalChip artifact={artifact} />
-      {latestVersion === undefined ? null : (
+      {latestNumber === null ? null : (
         <a
           className={`shrink-0 text-sm font-medium underline ${linkText} ${linkHoverText}`}
           download=""
-          href={artifactVersionUrl(artifact.id, latestVersion.number, { download: true })}
+          href={artifactVersionPath(artifact.id, latestNumber, { download: true })}
         >
-          Download version {latestVersion.number}
+          Download version {latestNumber}
         </a>
       )}
       {/* A removal is offered only where the server can take one: a document of this issue that
@@ -272,9 +278,9 @@ export function ArtifactsTab({ isClosed }: { readonly isClosed: boolean }): Reac
         if (left.primary !== right.primary) {
           return left.primary ? -1 : 1;
         }
-        const leftUpdated = (left.versions ?? []).at(-1)?.created_at ?? left.created_at;
-        const rightUpdated = (right.versions ?? []).at(-1)?.created_at ?? right.created_at;
-        return compareTimestamps(rightUpdated, leftUpdated) || left.id.localeCompare(right.id);
+        return (
+          compareTimestamps(updatedAt(right), updatedAt(left)) || left.id.localeCompare(right.id)
+        );
       }),
     [artifacts.data]
   );

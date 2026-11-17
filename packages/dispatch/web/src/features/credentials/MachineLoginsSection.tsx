@@ -55,7 +55,7 @@ const columns: readonly RevocableColumn<LauncherCredentialResp>[] = [
  */
 export function MachineLoginsSection(): ReactNode {
   const queryClient = useQueryClient();
-  const logins = useQuery({ ...machineLoginsQuery(), select: (data) => data.credentials ?? [] });
+  const logins = useQuery(machineLoginsQuery());
 
   return (
     <RevocableList

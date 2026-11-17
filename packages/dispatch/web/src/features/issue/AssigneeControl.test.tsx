@@ -42,12 +42,14 @@ const issue: Issue = {
   updated_at: "2026-09-09T00:00:00Z",
 };
 const details: IssueDetails = {
-  route_status: null,
-  route_holder: null,
-  route_status_reason: null,
-  holder_state: null,
-  last_seen: null,
-  takeable_at: null,
+  reach: {
+    route_status: null,
+    route_holder: null,
+    route_status_reason: null,
+    holder_state: null,
+    last_seen: null,
+    takeable_at: null,
+  },
   ...issue,
   artifacts: [],
   children: [],
@@ -96,11 +98,13 @@ const inboxRow: InboxRow = {
   block_id: null,
   last_reply: null,
   created_at: "2026-09-09T00:00:00Z",
+  document: null,
   edited_at: null,
   id: "ask-1",
   issue: { assignee: issue.assignee, key: issue.key, title: issue.title },
   issue_key: issue.key,
   kind: "question",
+  mark: { id: "ask-1", kind: "ask", snoozed_until: null },
   multiple: false,
   opened_event_id: 1,
   options: [],
@@ -116,8 +120,8 @@ const inboxRow: InboxRow = {
     route_status_reason: null,
   },
   priority: null,
-  snoozed_until: null,
   question: "Which layout?",
+  ref: "dispatch://CORE-1/ask/ask-1",
   state: "open",
   urgency: "med",
 };
@@ -264,9 +268,17 @@ test.each([
   };
   queryClient.setQueryData(inboxKey, [{ ...inboxRow, waiting_on_person: "alice" }, handedOn]);
   if (defaultsRead) {
+    const project = (key: string, defaultAssignee: string) => ({
+      created_at: "2026-09-09T00:00:00Z",
+      default_assignee: defaultAssignee,
+      gated_steps: [],
+      key,
+      name: key,
+      open_asks: 0,
+    });
     queryClient.setQueryData(projectDefaultAssigneesQuery().queryKey, [
-      { project: "OPS", assignee: "dana" },
-      { project: "CORE", assignee: "carol" },
+      project("OPS", "dana"),
+      project("CORE", "carol"),
     ]);
   }
   try {

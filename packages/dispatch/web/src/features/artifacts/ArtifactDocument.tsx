@@ -4,7 +4,7 @@ import { Navigate, useLocation } from "react-router-dom";
 
 import { api } from "../../api/client";
 import { whoAmIQuery } from "../../api/queries";
-import type { Artifact, IDCandidate } from "../../api/types";
+import type { ArtifactV2, IDCandidate } from "../../api/types";
 import type { Highlight } from "../doc/highlight";
 import { type DocumentToolbar, ProofDocument } from "../doc/ProofDocument";
 import { ItemMatchList } from "../issue/ItemMatchList";
@@ -87,7 +87,7 @@ export function ArtifactDocument({
   showDiff,
   version,
 }: {
-  artifact: Artifact;
+  artifact: ArtifactV2;
   askId?: string;
   commentId?: string;
   highlightTerm?: string;
@@ -134,7 +134,7 @@ export function ArtifactDocument({
     selected === undefined
       ? undefined
       : selected.kind === "ask"
-        ? ask.data?.ask
+        ? ask.data
         : comments.data?.find((item) => item.id === landing.id);
   const anchor = selectedItem?.anchor;
   const highlight: Highlight | undefined =

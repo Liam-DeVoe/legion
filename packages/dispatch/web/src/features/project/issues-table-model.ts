@@ -1,6 +1,6 @@
 import { rankItem, rankings } from "@tanstack/match-sorter-utils";
 import type { ColumnFiltersState, GroupingState, SortingState } from "@tanstack/react-table";
-import type { Actor, IssueSummary, UpdateIssueInput } from "../../api/types";
+import type { Actor, IssueSummary, PatchIssueV2Input } from "../../api/types";
 import { capSearchQuery } from "../../lib/query-param";
 import { compareTimestamps } from "../../lib/timestamps";
 import { type IssueStatus, issueStatuses, openIssueStatuses, statusText } from "./board-model";
@@ -724,7 +724,7 @@ export function queuedInOrder(items: readonly Item[], keys: readonly string[]): 
 export function startNextWrites(
   items: readonly Item[],
   keys: readonly string[]
-): { key: string; input: UpdateIssueInput }[] {
+): { key: string; input: PatchIssueV2Input }[] {
   const queue = items
     .filter((item) => item.queue !== undefined)
     .sort((a, b) => (a.queue ?? 0) - (b.queue ?? 0))
@@ -733,7 +733,7 @@ export function startNextWrites(
   const selected = keys.filter((key) => queued.has(key));
   const selectedKeys = new Set(selected);
   let before = queue.find((key) => !selectedKeys.has(key));
-  const operations: { key: string; input: UpdateIssueInput }[] = [];
+  const operations: { key: string; input: PatchIssueV2Input }[] = [];
   for (const key of selected.reverse()) {
     if (before && queue.indexOf(key) > queue.indexOf(before)) {
       operations.push({ key, input: { rank: { before } } });

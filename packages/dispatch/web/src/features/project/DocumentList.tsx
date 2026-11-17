@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 
 import { api } from "../../api/client";
-import type { Artifact } from "../../api/types";
+import type { ArtifactV2 } from "../../api/types";
 import { EmptyState } from "../../components/EmptyState";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { TruncatedText } from "../../components/TruncatedText";
@@ -20,7 +20,7 @@ import {
   textSecondaryOnCanvas,
   textSecondaryOnSurface,
 } from "../../theme/classes";
-import { formatArtifactBytes, versionsNewestFirst } from "../artifacts/ArtifactHeader";
+import { formatArtifactBytes } from "../artifacts/ArtifactHeader";
 import {
   ArtifactDropZone,
   ArtifactUploadStatus,
@@ -32,14 +32,10 @@ import { CopyRefButton } from "../refs/CopyRefButton";
 import { buildIssuePath, buildProjectPath, documentRoute } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 
-function documentUpdatedAt(document: Artifact): string {
-  return document.versions?.at(-1)?.created_at ?? document.created_at;
-}
-
-function DocumentRow({ document }: { document: Artifact }): ReactNode {
+function DocumentRow({ document }: { document: ArtifactV2 }): ReactNode {
   // The latest version's stored size (its markdown's bytes), so a document near the size cap
   // shows in the list without being opened.
-  const size = versionsNewestFirst(document.versions)[0]?.size;
+  const size = document.latest_version_size;
   return (
     <li
       aria-label={document.name}
@@ -79,7 +75,7 @@ function DocumentRow({ document }: { document: Artifact }): ReactNode {
       </div>
       <span className={`text-xs ${textSecondaryOnCanvas}`}>
         {document.kind}
-        {size === undefined ? null : ` · ${formatArtifactBytes(size)}`}
+        {size === null ? null : ` · ${formatArtifactBytes(size)}`}
       </span>
       <span className="text-xs max-sm:empty:hidden">
         {document.issue_key === null ? null : (
@@ -91,7 +87,10 @@ function DocumentRow({ document }: { document: Artifact }): ReactNode {
           </Link>
         )}
       </span>
-      <Timestamp at={documentUpdatedAt(document)} className={`text-xs ${textMutedOnCanvas}`} />
+      <Timestamp
+        at={document.latest_version_at ?? document.created_at}
+        className={`text-xs ${textMutedOnCanvas}`}
+      />
     </li>
   );
 }

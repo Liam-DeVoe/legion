@@ -3,23 +3,27 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
-import type { Artifact, Comment } from "../../api/types";
+import type { ArtifactV2, Comment } from "../../api/types";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { MarginSheet } from "./MarginSheet";
 
-const specArtifact: Artifact = {
+const specArtifact: ArtifactV2 = {
   created_at: "2026-09-10T00:00:00Z",
   created_by: { id: "alice", kind: "user" },
   id: "artifact-1",
   issue_key: "CORE-1",
   project: "CORE",
   kind: "doc",
+  latest_version: null,
+  latest_version_at: null,
+  latest_version_size: null,
   name: "Spec",
   primary: true,
   ref_key: "CORE-1/spec",
   session_id: null,
   slug: "spec",
-  versions: [],
+  unsettled: null,
+  version_count: 0,
 };
 
 test("an issue margin offers Comments and Pinned, Comments first", () => {

@@ -2,7 +2,7 @@ import { type QueryClient, useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, type ReactNode, useState } from "react";
 
 import { type ArtifactOwner, api, apiErrorMessage } from "../../api/client";
-import type { Artifact } from "../../api/types";
+import type { ArtifactV2 } from "../../api/types";
 import { RefusableButton } from "../../components/RefusableButton";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 import { dangerText } from "../../theme/classes";
@@ -20,7 +20,7 @@ export const CLOSED_ISSUE_REMOVE_REFUSAL =
   "This issue is closed. Reopen it to remove this document.";
 
 /** Who holds `artifact`: its issue, its project, or the agent whose conversation holds it. */
-function artifactOwner(artifact: Artifact): ArtifactOwner {
+function artifactOwner(artifact: ArtifactV2): ArtifactOwner {
   if (artifact.session_id !== null) {
     return { session: artifact.session_id };
   }
@@ -40,7 +40,7 @@ function artifactOwner(artifact: Artifact): ArtifactOwner {
  * (`api/event-refresh.ts`), which is how one reader's correction reaches another's page; this is
  * what makes the writer's own page move whether or not that stream is up.
  */
-function refreshArtifact(queryClient: QueryClient, artifact: Artifact): void {
+function refreshArtifact(queryClient: QueryClient, artifact: ArtifactV2): void {
   refreshOwnerArtifacts(queryClient, artifactOwner(artifact));
   void queryClient.invalidateQueries({ queryKey: ["artifact", artifact.id] });
   void queryClient.invalidateQueries({
@@ -62,7 +62,7 @@ export function CorrectTitle({
   artifact,
   refusal = null,
 }: {
-  readonly artifact: Artifact;
+  readonly artifact: ArtifactV2;
   readonly refusal?: string | null;
 }): ReactNode {
   const [correcting, setCorrecting] = useState(false);
@@ -131,7 +131,7 @@ export function CorrectTitle({
  * Verification document because it plays a role (`artifactIsUntouched`). A press that is always
  * refused is offered nowhere, so both hosts of the control read this.
  */
-export function removalIsOffered(artifact: Artifact): boolean {
+export function removalIsOffered(artifact: ArtifactV2): boolean {
   return (
     artifact.kind === "doc" &&
     artifact.issue_key !== null &&
@@ -148,7 +148,7 @@ export function removalIsOffered(artifact: Artifact): boolean {
  * document and a project document are both corrected, so neither is read here. A press that is
  * always refused is offered nowhere, so the header reads this before it renders `CorrectTitle`.
  */
-export function correctionIsOffered(artifact: Artifact): boolean {
+export function correctionIsOffered(artifact: ArtifactV2): boolean {
   return artifact.kind === "doc" && !(artifact.primary && artifact.issue_key !== null);
 }
 
@@ -165,7 +165,7 @@ export function RemoveDocument({
   onRemoved,
   refusal = null,
 }: {
-  readonly artifact: Artifact;
+  readonly artifact: ArtifactV2;
   readonly onRemoved?: () => void;
   readonly refusal?: string | null;
 }): ReactNode {

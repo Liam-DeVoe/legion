@@ -18,18 +18,18 @@ import type {
   ArchitectureTree,
   ArchitectureTreeComponent,
   ArchitectureTreeIssueRef,
-  Artifact,
+  ArtifactV2,
   Ask,
-  AskRead,
+  AskV2,
+  AskWithThread,
   ChangedReference,
   DispatchEvent,
-  DocumentReferenceSummary,
   EventType,
-  GraphReferences,
   InboxRow,
   IssueSummary,
-  MyRepliesResponse,
   MyReplyRow,
+  MyThreadsV2,
+  ReferencesV2,
 } from "./types";
 
 /**
@@ -199,7 +199,7 @@ const DOCUMENT_ASK_LISTS_DECIDED_BY_DEFAULT: RefreshTarget = {
 /** The project the ask of a cached thread names, or undefined when it names none: its issue's
  *  (`issueProject`), else the project of the document an anchored ask or an approval request sits
  *  on. A block ask on a project document names its document by id alone (`block_artifact`). */
-function threadAskProject(ask: AskRead["ask"]): string | undefined {
+function threadAskProject(ask: AskV2): string | undefined {
   if (ask.issue_key !== null) return issueProject(ask.issue_key);
   return ask.anchor_artifact?.project ?? ask.approval_artifact?.project;
 }
@@ -215,7 +215,7 @@ function askThreadsDecidedByDefault(project: string): RefreshTarget {
   return {
     queryKey: ["ask-thread"],
     when: (data) => {
-      const ask = (data as AskRead | undefined)?.ask;
+      const ask = data as AskWithThread | undefined;
       if (ask === undefined || !openAndNotHandedOn(ask)) return false;
       const named = threadAskProject(ask);
       return named === undefined || named === project;
@@ -230,20 +230,20 @@ function askThreadsDecidedByAssignee(key: string): RefreshTarget {
   return {
     queryKey: ["ask-thread"],
     when: (data) => {
-      const ask = (data as AskRead | undefined)?.ask;
+      const ask = data as AskWithThread | undefined;
       return ask !== undefined && ask.issue_key === key && openAndNotHandedOn(ask);
     },
   };
 }
 
-/** The thread rows one of the Inbox's two reads holds: its own unpaged list, or the pages of
- *  what the reader has dismissed (`dismissedThreadsQuery`, an infinite read, whose data is its
+/** The thread rows one of the Inbox's two reads holds: its own whole list, or the pages of what
+ *  the reader has dismissed (`dismissedThreadsQuery`, an infinite read, whose data is its
  *  pages). */
 function threadRowsOf(data: unknown): readonly MyReplyRow[] {
-  const read = data as { pages?: readonly MyRepliesResponse[]; rows?: unknown } | undefined;
+  const read = data as { pages?: readonly MyThreadsV2[]; items?: unknown } | undefined;
   const pages = read?.pages;
-  if (Array.isArray(pages)) return pages.flatMap((page) => rowsOf<MyReplyRow>(page.rows));
-  return rowsOf<MyReplyRow>(read?.rows);
+  if (Array.isArray(pages)) return pages.flatMap((page) => rowsOf<MyReplyRow>(page.items));
+  return rowsOf<MyReplyRow>(read?.items);
 }
 
 /** The Inbox's own thread reads (`inboxThreadsQuery` and `dismissedThreadsQuery`, so both the
@@ -285,10 +285,10 @@ function architectureListing(project: string, key: string): RefreshTarget {
 }
 
 /** Every backlink panel (`ReferencedBy`'s `["references", "to", ref]`) whose read `matches`. */
-function referencePanels(matches: (references: GraphReferences) => boolean): RefreshTarget {
+function referencePanels(matches: (references: ReferencesV2) => boolean): RefreshTarget {
   return {
     queryKey: ["references", "to"],
-    when: (data) => data !== undefined && matches(data as GraphReferences),
+    when: (data) => data !== undefined && matches(data as ReferencesV2),
   };
 }
 
@@ -755,11 +755,11 @@ function issueWriteTargets(
     const blockers = payloadStrings(event, "blocked_by") ?? [];
     targets.push(
       referencePanels(
-        ({ edges, node }) =>
+        ({ items, node }) =>
           node.kind === "issue" &&
           (node.id === parent ||
             blockers.includes(node.id) ||
-            (edges ?? []).some(
+            (items ?? []).some(
               (edge) =>
                 edge.node.kind === "issue" &&
                 edge.node.id === key &&
@@ -888,7 +888,7 @@ function documentTargets(event: DispatchEvent, viewer: string | undefined): Refr
     // id is the one the event does.
     {
       queryKey: ["artifact-ref"],
-      when: (data) => data === undefined || (data as Artifact).id === id,
+      when: (data) => data === undefined || (data as ArtifactV2).id === id,
     },
   ];
   if (changesQuestionMaps(event)) {
@@ -906,8 +906,7 @@ function documentTargets(event: DispatchEvent, viewer: string | undefined): Refr
     targets.push({
       queryKey: ["doc-summary", event.project],
       when: (data) =>
-        (created && data === undefined) ||
-        (data as DocumentReferenceSummary | undefined)?.id === id,
+        (created && data === undefined) || (data as ArtifactV2 | undefined)?.id === id,
     });
   }
   if (isAskEvent(event)) {
@@ -1444,8 +1443,8 @@ function askThreadsOn(issue: string): RefreshTarget {
   return {
     queryKey: ["ask-thread"],
     when: (data) => {
-      const thread = data as AskRead | undefined;
-      return thread === undefined || thread.ask.issue_key === issue;
+      const ask = data as AskWithThread | undefined;
+      return ask === undefined || ask.issue_key === issue;
     },
   };
 }

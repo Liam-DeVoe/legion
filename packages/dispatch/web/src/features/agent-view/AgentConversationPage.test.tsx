@@ -32,8 +32,10 @@ import { answerAgentMessages, answerAgentStates } from "../../__tests__/send-ans
 import { userOnFakeClock } from "../../__tests__/user";
 import { AGENT_LIST_REFILLING, ApiError, api, NetworkError } from "../../api/client";
 import { liveSocketFor } from "../../api/live-socket";
-import type { Agent, Message, MessageRead, UserAgentStates } from "../../api/types";
+import type { Agent, AgentMessageV2, Message } from "../../api/types";
+import { type MarkFields, markOf, marksOf } from "../agents/marks-fixture";
 import { KEYED_SEND_LATE_TEXT } from "../conversation/send-request";
+import { documentRow } from "../refs/reference-fixture";
 import { Sidebar } from "../sidebar/Sidebar";
 import {
   KEYED_SEND_ATTEMPT_MS,
@@ -90,22 +92,28 @@ function message(id: string, body: string, overrides: Partial<Message> = {}): Me
   };
 }
 
-const conversation: MessageRead[] = [
-  {
-    message: message("m1", "Where is the dashboard?"),
-    replies: [
-      message("r1", "Switching to it now.", {
-        author: { id: SESSION, kind: "session" },
-        created_at: "2026-09-27T21:17:16Z",
-        in_reply_to: "m1",
-      }),
-      message("r2", "Done: it is at /dash.", {
-        author: { id: SESSION, kind: "session" },
-        created_at: "2026-09-27T21:20:28Z",
-        in_reply_to: "r1",
-      }),
-    ],
-  },
+/** One conversation as the session's list holds it: the message, flat, with its replies, none
+ *  of them unread when the list was read. */
+function stored(root: Message, replies: Message[] = []): AgentMessageV2 {
+  return { ...root, replies, unread: false };
+}
+
+/** SESSION's mark with no reply unread, as Dispatch answers a write of it. */
+const readMark = markOf("agent", SESSION, { unread_replies: 0 });
+
+const conversation: AgentMessageV2[] = [
+  stored(message("m1", "Where is the dashboard?"), [
+    message("r1", "Switching to it now.", {
+      author: { id: SESSION, kind: "session" },
+      created_at: "2026-09-27T21:17:16Z",
+      in_reply_to: "m1",
+    }),
+    message("r2", "Done: it is at /dash.", {
+      author: { id: SESSION, kind: "session" },
+      created_at: "2026-09-27T21:20:28Z",
+      in_reply_to: "r1",
+    }),
+  ]),
 ];
 
 const spies: { mockRestore: () => void }[] = [];
@@ -139,10 +147,11 @@ function mockDispatch({
   messages,
   putAgentState,
 }: {
-  agentState: UserAgentStates;
+  /** The person's marks of the sessions, by session: the fields each mark holds. */
+  agentState: Readonly<Record<string, MarkFields>>;
   /** The live sessions, or an Error the agent registry read rejects with. */
   agents: Agent[] | Error;
-  messages: () => MessageRead[];
+  messages: () => AgentMessageV2[];
   putAgentState: Mock<typeof api.putAgentState>;
 }): void {
   const listAgents = spyOn(api, "listAgents");
@@ -155,7 +164,7 @@ function mockDispatch({
     spyOn(api, "whoAmI").mockResolvedValue({ event_head: "0", kind: "user", login: "sami" }),
     listAgents,
     spyOn(api, "listAgentMessages").mockImplementation(async () => messages()),
-    spyOn(api, "getMyAgentState").mockResolvedValue(agentState),
+    spyOn(api, "getMyAgentState").mockResolvedValue(marksOf("agent", agentState)),
     spyOn(api, "getInbox").mockResolvedValue([]),
     spyOn(api, "listIssues").mockResolvedValue([]),
     spyOn(api, "listProjects").mockResolvedValue([]),
@@ -241,11 +250,11 @@ function renderLiveView({
   replay,
   responding,
 }: {
-  agentState: UserAgentStates;
+  agentState: Readonly<Record<string, MarkFields>>;
   /** What the agent list answers in place of SESSION alone: another list, or a failure. */
   agents?: Agent[] | Error;
   capabilities?: string[];
-  messages: MessageRead[];
+  messages: AgentMessageV2[];
   other?: { replay?: AgentStreamFrame[] };
   putAgentState: Mock<typeof api.putAgentState>;
   replay?: AgentStreamFrame[];
@@ -281,7 +290,7 @@ function renderLiveView({
         open.receive({ type: "agent", sub: subscribed.sub, event: "frame", data: frame });
       });
     },
-    storeThread: async (next: MessageRead[]) => {
+    storeThread: async (next: AgentMessageV2[]) => {
       thread = next;
       await act(async () => {
         await queryClient.invalidateQueries({ queryKey: ["agents", SESSION, "messages"] });
@@ -293,7 +302,7 @@ function renderLiveView({
 /** What a test does to a rendered live view after it opened. */
 interface LiveView {
   frame: (frame: AgentStreamFrame) => void;
-  storeThread: (messages: MessageRead[]) => Promise<void>;
+  storeThread: (messages: AgentMessageV2[]) => Promise<void>;
 }
 
 /** In-app links to SESSION and OTHER: following one keeps the live view's route mounted and
@@ -330,11 +339,13 @@ function relayStatus(view: HTMLElement = screen.getByTestId("agent-conversation"
 // call. The live view is where the human talks to the session, so it has to show those replies,
 // and seeing them there is reading them.
 test("the live view shows the session's Dispatch replies to direct messages and marks them read", async () => {
-  const putAgentState = answerAgentStates().mockImplementation(async (_session, input) => ({
-    cleared_before: input.cleared_before ?? undefined,
-    read_through: input.read_through ?? undefined,
-    unread_replies: 0,
-  }));
+  const putAgentState = answerAgentStates().mockImplementation(async (_session, input) =>
+    markOf("agent", SESSION, {
+      cleared_before: input.cleared_before ?? undefined,
+      read_through: input.read_through ?? undefined,
+      unread_replies: 0,
+    })
+  );
   renderLiveView({
     agentState: { [SESSION]: { unread_replies: 2 } },
     messages: conversation,
@@ -363,11 +374,13 @@ test("the live view shows the session's Dispatch replies to direct messages and 
 test("the live view retries a read mark that failed to save", async () => {
   const putAgentState = answerAgentStates()
     .mockRejectedValueOnce(new ApiError(503, { code: "UNAVAILABLE", error: "restarting" }))
-    .mockImplementation(async (_session, input) => ({
-      cleared_before: input.cleared_before ?? undefined,
-      read_through: input.read_through ?? undefined,
-      unread_replies: 0,
-    }));
+    .mockImplementation(async (_session, input) =>
+      markOf("agent", SESSION, {
+        cleared_before: input.cleared_before ?? undefined,
+        read_through: input.read_through ?? undefined,
+        unread_replies: 0,
+      })
+    );
   renderLiveView({
     agentState: { [SESSION]: { unread_replies: 2 } },
     messages: conversation,
@@ -385,24 +398,22 @@ test("the live view attributes other people's messages to the session to their a
   renderLiveView({
     agentState: {},
     messages: [
-      { message: message("m1", "Mine: where is the dashboard?"), replies: [] },
-      {
-        message: message("m2", "Alice here: status?", {
+      stored(message("m1", "Mine: where is the dashboard?")),
+      stored(
+        message("m2", "Alice here: status?", {
           author: { id: "alice", kind: "user" },
           created_at: "2026-09-27T21:18:00Z",
-        }),
-        replies: [],
-      },
-      {
-        message: message("m3", "Bob on the issue: ship it?", {
+        })
+      ),
+      stored(
+        message("m3", "Bob on the issue: ship it?", {
           author: { id: "bob", kind: "user" },
           created_at: "2026-09-27T21:19:00Z",
           issue_key: "CORE-1",
-        }),
-        replies: [],
-      },
-      {
-        message: message("m4", "Reviewer: merged.", {
+        })
+      ),
+      stored(
+        message("m4", "Reviewer: merged.", {
           author: {
             id: "reviewer-session-id",
             kind: "session",
@@ -410,11 +421,10 @@ test("the live view attributes other people's messages to the session to their a
           },
           created_at: "2026-09-27T21:19:30Z",
           issue_key: "CORE-2",
-        }),
-        replies: [],
-      },
+        })
+      ),
     ],
-    putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
+    putAgentState: answerAgentStates().mockResolvedValue(readMark),
   });
 
   const thread = await screen.findByTestId("agent-thread");
@@ -445,7 +455,7 @@ test("the live view's header names the agent with its running state and no link"
   renderLiveView({
     agentState: {},
     messages: [],
-    putAgentState: spyOn(api, "putAgentState").mockResolvedValue({ unread_replies: 0 }),
+    putAgentState: spyOn(api, "putAgentState").mockResolvedValue(readMark),
   });
 
   const heading = await screen.findByRole("heading", { level: 1 });
@@ -463,16 +473,10 @@ test("the live view orders two stored messages in one millisecond by their micro
   renderLiveView({
     agentState: {},
     messages: [
-      {
-        message: message("m2", "Written second", { created_at: "2026-09-27T21:16:15.1208Z" }),
-        replies: [],
-      },
-      {
-        message: message("m1", "Written first", { created_at: "2026-09-27T21:16:15.1201Z" }),
-        replies: [],
-      },
+      stored(message("m2", "Written second", { created_at: "2026-09-27T21:16:15.1208Z" })),
+      stored(message("m1", "Written first", { created_at: "2026-09-27T21:16:15.1201Z" })),
     ],
-    putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
+    putAgentState: answerAgentStates().mockResolvedValue(readMark),
   });
 
   const thread = await screen.findByTestId("agent-thread");
@@ -510,20 +514,16 @@ test("a person's message the session took as its own turn shows once, still nami
   renderLiveView({
     agentState: {},
     messages: [
-      { message: message("m1", "Mine: where is the dashboard?"), replies: [] },
-      {
-        message: message("m2", "Alice here: status?", {
+      stored(message("m1", "Mine: where is the dashboard?")),
+      stored(
+        message("m2", "Alice here: status?", {
           author: { id: "alice", kind: "user" },
           created_at: "2026-09-27T21:18:00Z",
-        }),
-        replies: [],
-      },
-      {
-        message: message("m3", "Not taken yet", { created_at: "2026-09-27T21:19:00Z" }),
-        replies: [],
-      },
+        })
+      ),
+      stored(message("m3", "Not taken yet", { created_at: "2026-09-27T21:19:00Z" })),
     ],
-    putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
+    putAgentState: answerAgentStates().mockResolvedValue(readMark),
     replay: [
       userFrame(1, at("2026-09-27T21:16:16Z"), "Mine: where is the dashboard?", "m1"),
       userFrame(2, at("2026-09-27T21:18:01Z"), "Alice here: status?", "m2"),
@@ -551,8 +551,8 @@ test("a person's message the session took as its own turn shows once, still nami
 test("a streamed user message tagged with a person's message but saying something else hides nothing", async () => {
   renderLiveView({
     agentState: {},
-    messages: [{ message: message("m1", "Merge only after review."), replies: [] }],
-    putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
+    messages: [stored(message("m1", "Merge only after review."))],
+    putAgentState: answerAgentStates().mockResolvedValue(readMark),
     replay: [userFrame(1, Date.parse("2026-09-27T21:16:16Z"), "Merge now, skip review.", "m1")],
   });
 
@@ -581,18 +581,15 @@ test("a shell command's report takes over the person's own message rather than d
   renderLiveView({
     agentState: {},
     messages: [
-      {
-        message: message("m1", "!cat missing.txt"),
-        replies: [
-          message("r1", SHELL_REPORT, {
-            author: { id: SESSION, kind: "session" },
-            created_at: "2026-09-27T21:16:17Z",
-            in_reply_to: "m1",
-          }),
-        ],
-      },
+      stored(message("m1", "!cat missing.txt"), [
+        message("r1", SHELL_REPORT, {
+          author: { id: SESSION, kind: "session" },
+          created_at: "2026-09-27T21:16:17Z",
+          in_reply_to: "m1",
+        }),
+      ]),
     ],
-    putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
+    putAgentState: answerAgentStates().mockResolvedValue(readMark),
     replay: [userFrame(1, Date.parse("2026-09-27T21:16:16Z"), SHELL_REPORT, "m1")],
   });
 
@@ -615,18 +612,15 @@ test("the session's reply to a message the stream took over is still drawn", asy
   renderLiveView({
     agentState: {},
     messages: [
-      {
-        message: message("m1", "Where is the dashboard?"),
-        replies: [
-          message("r1", "It is at /dash.", {
-            author: { id: SESSION, kind: "session" },
-            created_at: "2026-09-27T21:16:17Z",
-            in_reply_to: "m1",
-          }),
-        ],
-      },
+      stored(message("m1", "Where is the dashboard?"), [
+        message("r1", "It is at /dash.", {
+          author: { id: SESSION, kind: "session" },
+          created_at: "2026-09-27T21:16:17Z",
+          in_reply_to: "m1",
+        }),
+      ]),
     ],
-    putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
+    putAgentState: answerAgentStates().mockResolvedValue(readMark),
     replay: [userFrame(1, Date.parse("2026-09-27T21:16:16Z"), "Where is the dashboard?", "m1")],
   });
 
@@ -651,8 +645,8 @@ test("a streamed turn that adds a bracketed word of its own hides nothing", asyn
   const at = Date.parse("2026-09-27T21:16:16Z");
   renderLiveView({
     agentState: {},
-    messages: [{ message: message("m1", "Should I deploy?"), replies: [] }],
-    putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
+    messages: [stored(message("m1", "Should I deploy?"))],
+    putAgentState: answerAgentStates().mockResolvedValue(readMark),
     replay: [userFrame(1, at, "Should I deploy?\n[yes]", "m1")],
   });
 
@@ -665,6 +659,26 @@ test("a streamed turn that adds a bracketed word of its own hides nothing", asyn
   ).toEqual(["Should I deploy?", "Should I deploy?[yes]"]);
 });
 
+/** The session's own artifacts as a picture's read of them answers (`api.getAgentArtifact`):
+ *  `i3-blue96-png` is a picture the session holds, and any other slug names nothing, as a forged
+ *  address does. `/api/v2` serves a picture's bytes by the id this read gives. */
+function answerAgentPictures(): void {
+  spies.push(
+    spyOn(api, "getAgentArtifact").mockImplementation(async (sessionId, slug) => {
+      if (slug !== "i3-blue96-png") {
+        throw new ApiError(404, { code: "ARTIFACT_NOT_FOUND", error: `no artifact ${slug}` });
+      }
+      return documentRow({
+        id: "artifact-blue",
+        kind: "image",
+        name: "i3-blue96.png",
+        session_id: sessionId,
+        slug,
+      });
+    })
+  );
+}
+
 // The same hole as the bracketed word, in the one syntax that draws rather than reads: a row
 // tagged with a person's message and carrying a picture the body never embedded would hide the
 // stored copy and show that picture, with a caption of its own, under the person's name. Any
@@ -672,12 +686,13 @@ test("a streamed turn that adds a bracketed word of its own hides nothing", asyn
 // that very markdown (`rowLines`, `features/agent-view/conversation.ts`); otherwise the row
 // says something the person did not, and the stored copy keeps showing beside it (INFRA-1026).
 test("a streamed turn that adds a picture of its own hides nothing", async () => {
+  answerAgentPictures();
   const at = Date.parse("2026-09-27T21:16:16Z");
   const forged = "dispatch://agent/f376a3a9-6e75-461b-806b-22dea4e83ddf/artifact/i3-red96-png@v1";
   renderLiveView({
     agentState: {},
-    messages: [{ message: message("m1", "Should I deploy?"), replies: [] }],
-    putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
+    messages: [stored(message("m1", "Should I deploy?"))],
+    putAgentState: answerAgentStates().mockResolvedValue(readMark),
     replay: [userFrame(1, at, `Should I deploy?\n![ship it](${forged})`, "m1")],
   });
 
@@ -714,8 +729,8 @@ test("a person's message that is a bracketed word of their own shows once", asyn
   const at = Date.parse("2026-09-27T21:16:16Z");
   renderLiveView({
     agentState: {},
-    messages: [{ message: message("m1", "[ack]"), replies: [] }],
-    putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
+    messages: [stored(message("m1", "[ack]"))],
+    putAgentState: answerAgentStates().mockResolvedValue(readMark),
     replay: [userFrame(1, at, "[ack]", "m1")],
   });
 
@@ -736,12 +751,13 @@ test("a person's message that is a bracketed word of their own shows once", asyn
 // which of the two `[...]` lines the person wrote, and the picture it embeds is what accounts
 // for the other (INFRA-1026).
 test("a person's message that is a bracketed word with a picture shows once", async () => {
+  answerAgentPictures();
   const at = Date.parse("2026-09-27T21:16:16Z");
   const picture = "dispatch://agent/f376a3a9-6e75-461b-806b-22dea4e83ddf/artifact/i3-blue96-png@v1";
   renderLiveView({
     agentState: {},
-    messages: [{ message: message("m1", `[ack]\n\n![blue](${picture})`), replies: [] }],
-    putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
+    messages: [stored(message("m1", `[ack]\n\n![blue](${picture})`))],
+    putAgentState: answerAgentStates().mockResolvedValue(readMark),
     replay: [pictureTurn(1, at, "m1", "[ack]")],
   });
 
@@ -783,23 +799,20 @@ function pictureTurn(seq: number, at: number, dispatchMessageId: string, text: s
 // A row that carries the markdown as the person wrote it says the same body, which is how a
 // terminal session's row records it (INFRA-1026).
 test("a person's message embedding a picture shows once, with or without the markdown in the row", async () => {
+  answerAgentPictures();
   const at = Date.parse("2026-09-27T21:16:16Z");
   const picture = "dispatch://agent/f376a3a9-6e75-461b-806b-22dea4e83ddf/artifact/i3-blue96-png@v1";
   renderLiveView({
     agentState: {},
     messages: [
-      {
-        message: message("m1", `What colour is this picture? ![blue](${picture})`),
-        replies: [],
-      },
-      {
-        message: message("m2", `And this one? ![blue](${picture})`, {
+      stored(message("m1", `What colour is this picture? ![blue](${picture})`)),
+      stored(
+        message("m2", `And this one? ![blue](${picture})`, {
           created_at: "2026-09-27T21:17:15Z",
-        }),
-        replies: [],
-      },
+        })
+      ),
     ],
-    putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
+    putAgentState: answerAgentStates().mockResolvedValue(readMark),
     replay: [
       // The row the pane streamed: the picture's markdown is gone from the text, the `[image]`
       // part standing where it was.
@@ -826,7 +839,7 @@ test("the live view sends as Send by default where the session takes it, and as 
   renderLiveView({
     agentState: {},
     messages: [],
-    putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
+    putAgentState: answerAgentStates().mockResolvedValue(readMark),
   });
 
   const mode = (await screen.findByRole("combobox", {
@@ -857,7 +870,7 @@ test("the live view sends as Send by default where the session takes it, and as 
     agentState: {},
     capabilities: ["aside"],
     messages: [],
-    putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
+    putAgentState: answerAgentStates().mockResolvedValue(readMark),
   });
   const asideOnly = (await screen.findByRole("combobox", {
     name: "Delivery mode",
@@ -872,7 +885,7 @@ test("the live view sends as Send by default where the session takes it, and as 
 
 /** A fetch that failed, as the client hands it on: no answer from Dispatch at all. */
 const dropped = () =>
-  new NetworkError(`/api/v1/agents/${SESSION}/messages`, new TypeError("Failed to fetch"));
+  new NetworkError(`/api/v2/agents/${SESSION}/messages`, new TypeError("Failed to fetch"));
 
 /** Types `body` into the live view's composer and presses its Send. */
 async function sendFromLiveView(user: UserEvent, body: string): Promise<void> {
@@ -896,7 +909,7 @@ test("the live view's send retries under one key", async () => {
   renderLiveView({
     agentState: {},
     messages: [],
-    putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
+    putAgentState: answerAgentStates().mockResolvedValue(readMark),
   });
   const mode = (await screen.findByRole("combobox", {
     name: "Delivery mode",
@@ -934,7 +947,7 @@ test("leaving the live view leaves its send being tried, under its key", async (
   renderLiveView({
     agentState: {},
     messages: [],
-    putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
+    putAgentState: answerAgentStates().mockResolvedValue(readMark),
   });
   const mode = (await screen.findByRole("combobox", {
     name: "Delivery mode",
@@ -967,7 +980,7 @@ async function renderSendingView(): Promise<void> {
   renderLiveView({
     agentState: {},
     messages: [],
-    putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
+    putAgentState: answerAgentStates().mockResolvedValue(readMark),
   });
   const mode = (await screen.findByRole("combobox", {
     name: "Delivery mode",
@@ -1116,7 +1129,7 @@ test("the live view says a session advertising no delivery mode takes no message
     agentState: {},
     capabilities: [],
     messages: [],
-    putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
+    putAgentState: answerAgentStates().mockResolvedValue(readMark),
   });
 
   expect(await screen.findByTestId("agent-takes-no-messages")).toHaveTextContent(
@@ -1129,7 +1142,7 @@ test("the live view says a session advertising no delivery mode takes no message
     agentState: {},
     capabilities: ["aside"],
     messages: [],
-    putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
+    putAgentState: answerAgentStates().mockResolvedValue(readMark),
   });
   await screen.findByRole("combobox", { name: "Delivery mode" });
   expect(screen.queryByTestId("agent-takes-no-messages")).not.toBeInTheDocument();
@@ -1138,7 +1151,7 @@ test("the live view says a session advertising no delivery mode takes no message
 // Only a current agent list says a session is gone. One that is refilling says that instead, and
 // one Dispatch could not read says that; neither narrows the delivery modes to none.
 test("the live view says the session may have ended only from a current agent list", async () => {
-  const putAgentState = () => spyOn(api, "putAgentState").mockResolvedValue({ unread_replies: 0 });
+  const putAgentState = () => spyOn(api, "putAgentState").mockResolvedValue(readMark);
   const modes = async () =>
     [
       ...((await screen.findByRole("combobox", { name: "Delivery mode" })) as HTMLSelectElement)
@@ -1203,7 +1216,7 @@ test("the live view shows the session's model next to its title and on the turn 
   renderLiveView({
     agentState: {},
     messages: [],
-    putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
+    putAgentState: answerAgentStates().mockResolvedValue(readMark),
     replay: [
       assistantFrame(
         1,
@@ -1227,7 +1240,7 @@ test("the live view shows nothing for a session whose client reports no model", 
   renderLiveView({
     agentState: {},
     messages: [],
-    putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
+    putAgentState: answerAgentStates().mockResolvedValue(readMark),
     replay: [assistantFrame(1, Date.parse("2026-09-27T21:16:16Z"), "Switching to it now.")],
   });
 
@@ -1243,7 +1256,7 @@ test("the live view connects, goes live on the session's answer, and reconnects 
   renderLiveView({
     agentState: {},
     messages: [],
-    putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
+    putAgentState: answerAgentStates().mockResolvedValue(readMark),
   });
   expect(relayStatus()).toEqual(["Connecting to the session"]);
 
@@ -1274,7 +1287,7 @@ test("a rotation rebuilds from the replay and keeps status live", async () => {
   renderLiveView({
     agentState: {},
     messages: [],
-    putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
+    putAgentState: answerAgentStates().mockResolvedValue(readMark),
     replay: [assistantFrame(1, Date.parse("2026-09-27T21:16:16Z"), "Before the rotation.")],
   });
   const thread = await screen.findByTestId("agent-thread");
@@ -1306,7 +1319,7 @@ test("a missing-scope refusal shows the view unavailable", async () => {
   const queryClient = renderLiveView({
     agentState: {},
     messages: [],
-    putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
+    putAgentState: answerAgentStates().mockResolvedValue(readMark),
   });
   // The app's event feed rides the same socket, so the socket outlives the refused view.
   liveSocketFor(queryClient).subscribeEvents({
@@ -1348,7 +1361,7 @@ test("two agent views share the tab's socket", async () => {
     agentState: {},
     agents: [agent, { ...agent, session_id: REVIEWER, title: "Reviewer" }],
     messages: () => [],
-    putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
+    putAgentState: answerAgentStates().mockResolvedValue(readMark),
   });
   const queryClient = newClient();
   const planner = renderPage(queryClient, SESSION);
@@ -1407,7 +1420,7 @@ async function renderWithCommands(commands?: AgentStreamCommand[]): Promise<HTML
   renderLiveView({
     agentState: {},
     messages: [],
-    putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
+    putAgentState: answerAgentStates().mockResolvedValue(readMark),
     replay: commands === undefined ? [] : [commandsFrame(1, commands)],
   });
   const mode = (await screen.findByRole("combobox", {
@@ -1734,7 +1747,7 @@ async function renderWithPickers(replay: AgentStreamFrame[]): Promise<LiveView> 
   const view = renderLiveView({
     agentState: {},
     messages: [],
-    putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
+    putAgentState: answerAgentStates().mockResolvedValue(readMark),
     replay,
   });
   await screen.findByRole("combobox", { name: "Model" });
@@ -1804,7 +1817,7 @@ test("a session not answering the live view keeps the empty transcript's explana
   renderLiveView({
     agentState: {},
     messages: [],
-    putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
+    putAgentState: answerAgentStates().mockResolvedValue(readMark),
     responding: false,
   });
   expect(await screen.findByTestId("agent-thread-empty")).toHaveTextContent(
@@ -1833,10 +1846,9 @@ test("a pick sends /model or /effort as a Send for a running session, whatever S
     )
   );
   await view.storeThread([
-    {
-      message: message("switch-1", "/model custom/model@v2:high"),
-      replies: [sessionReply("switch-1", "Model set to custom/model@v2:high.")],
-    },
+    stored(message("switch-1", "/model custom/model@v2:high"), [
+      sessionReply("switch-1", "Model set to custom/model@v2:high."),
+    ]),
   ]);
   await waitFor(() => expect(held(picker("Thinking level"))).toBe(false));
 
@@ -1884,7 +1896,7 @@ test("while a switch waits the pickers and Send hold, and its reply and frame la
 
   const first = message("switch-1", "/model anthropic/model-b");
   await view.storeThread([
-    { message: first, replies: [sessionReply("switch-1", "Model set to anthropic/model-b.")] },
+    stored(first, [sessionReply("switch-1", "Model set to anthropic/model-b.")]),
   ]);
   await waitFor(() =>
     expect(screen.getByTestId("agent-switch-status").textContent).toBe(
@@ -1913,11 +1925,10 @@ test("while a switch waits the pickers and Send hold, and its reply and frame la
   expect(sendButton().disabled).toBe(true);
   expect(held(picker("Thinking level"))).toBe(true);
   await view.storeThread([
-    { message: first, replies: [sessionReply("switch-1", "Model set to anthropic/model-b.")] },
-    {
-      message: message("switch-2", "/effort high"),
-      replies: [sessionReply("switch-2", "Thinking set to high.")],
-    },
+    stored(first, [sessionReply("switch-1", "Model set to anthropic/model-b.")]),
+    stored(message("switch-2", "/effort high"), [
+      sessionReply("switch-2", "Thinking set to high."),
+    ]),
   ]);
   await waitFor(() =>
     expect(screen.getByTestId("agent-switch-status").textContent).toBe(
@@ -1938,10 +1949,9 @@ test("a refused switch shows the session's reason and the header keeps its value
   await user.selectOptions(picker("Model"), "openai/model-c");
   await screen.findByTestId("agent-switch-status");
   await view.storeThread([
-    {
-      message: message("switch-1", "/model openai/model-c"),
-      replies: [sessionReply("switch-1", "Failed to set model: No API key for openai/model-c")],
-    },
+    stored(message("switch-1", "/model openai/model-c"), [
+      sessionReply("switch-1", "Failed to set model: No API key for openai/model-c"),
+    ]),
   ]);
   await waitFor(() =>
     expect(screen.getByTestId("agent-switch-status").textContent).toBe(
@@ -2062,7 +2072,7 @@ test("Send stays pressable while the session is mid-turn, and a click sends at o
   renderLiveView({
     agentState: {},
     messages: [],
-    putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
+    putAgentState: answerAgentStates().mockResolvedValue(readMark),
     replay: MID_TURN,
   });
   const input = await modeSettled("steer");
@@ -2089,7 +2099,7 @@ test("Enter sends while the session is mid-turn", async () => {
   renderLiveView({
     agentState: {},
     messages: [],
-    putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
+    putAgentState: answerAgentStates().mockResolvedValue(readMark),
     replay: MID_TURN,
   });
   const input = await modeSettled("steer");
@@ -2118,7 +2128,7 @@ test("with an empty box Send is refused, says why on screen, and sends nothing",
   renderLiveView({
     agentState: {},
     messages: [],
-    putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
+    putAgentState: answerAgentStates().mockResolvedValue(readMark),
   });
   const input = await modeSettled("steer");
 
@@ -2176,7 +2186,7 @@ test("a refused send keeps the message on screen and says why", async () => {
   renderLiveView({
     agentState: {},
     messages: [],
-    putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
+    putAgentState: answerAgentStates().mockResolvedValue(readMark),
   });
   const input = await modeSettled("steer");
 
@@ -2201,7 +2211,7 @@ test("a refusal that lands after switching sessions stays with the session that 
     agentState: {},
     messages: [],
     other: {},
-    putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
+    putAgentState: answerAgentStates().mockResolvedValue(readMark),
   });
   const input = await modeSettled("steer");
 
@@ -2250,7 +2260,7 @@ test("a send pressed while another is out waits its turn, and a refused one is r
   renderLiveView({
     agentState: {},
     messages: [],
-    putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
+    putAgentState: answerAgentStates().mockResolvedValue(readMark),
   });
   const input = await modeSettled("steer");
   const refusal = new ApiError(400, { code: "MESSAGE_INPUT", error: "Dispatch refused it" });
@@ -2320,7 +2330,7 @@ test("a draft stays with its session across a switch to another", async () => {
     agentState: {},
     messages: [],
     other: {},
-    putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
+    putAgentState: answerAgentStates().mockResolvedValue(readMark),
   });
   const input = await modeSettled("steer");
 
@@ -2339,7 +2349,7 @@ test("a draft outlives the view it was written in and comes back when it wakes",
   const queryClient = renderLiveView({
     agentState: {},
     messages: [],
-    putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
+    putAgentState: answerAgentStates().mockResolvedValue(readMark),
   });
   await type(user, await modeSettled("steer"), "half a question for the planner");
 
@@ -2363,7 +2373,7 @@ test("a pending switch holds its own session's Send, and a send out on another h
     agentState: {},
     messages: [],
     other: {},
-    putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
+    putAgentState: answerAgentStates().mockResolvedValue(readMark),
     replay: [settingsFrame(1), commandsFrame(2, SWITCHES)],
   });
   await screen.findByRole("combobox", { name: "Model" });
@@ -2443,7 +2453,7 @@ test("a session advertising no delivery mode still takes a mid-turn send as an a
     agentState: {},
     capabilities: [],
     messages: [],
-    putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
+    putAgentState: answerAgentStates().mockResolvedValue(readMark),
     replay: MID_TURN,
   });
   await screen.findByTestId("agent-takes-no-messages");
@@ -2467,10 +2477,14 @@ test("a session advertising no delivery mode still takes a mid-turn send as an a
 /** Dispatch's answer to a pin write: the session's whole state, with the time it took the pin
  *  and none once the viewer unpinned it. */
 function answerPinWrites(): Mock<typeof api.putAgentState> {
-  return answerAgentStates().mockImplementation(async (_session, input) =>
-    input.pinned === true
-      ? { pinned_at: "2026-09-27T22:00:00Z", unread_replies: 0 }
-      : { unread_replies: 0 }
+  return answerAgentStates().mockImplementation(async (session, input) =>
+    markOf(
+      "agent",
+      session,
+      input.pinned === true
+        ? { pinned_at: "2026-09-27T22:00:00Z", unread_replies: 0 }
+        : { unread_replies: 0 }
+    )
   );
 }
 
@@ -2652,7 +2666,7 @@ test("the line under the message box reads nothing at rest and carries Send's re
   renderLiveView({
     agentState: {},
     messages: [],
-    putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
+    putAgentState: answerAgentStates().mockResolvedValue(readMark),
   });
   const input = await modeSettled("steer");
 

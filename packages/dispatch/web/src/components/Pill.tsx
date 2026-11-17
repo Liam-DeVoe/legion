@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 
-import type { ArtifactApproval } from "../api/types";
+import type { ArtifactApprovalWithTrees } from "../api/types";
 import {
   approvalPill,
   statusPill,
@@ -89,6 +89,6 @@ function approvalTone(state: string): keyof typeof approvalPill {
  * narrow row can hold. Both utilities belong to this one string rather than being appended by a
  * host, for the reason `pillShapeClassName` records above: two conflicting Tailwind utilities
  * are settled by the generated CSS's order, not the attribute's. */
-export function approvalPillClassName(state: ArtifactApproval["state"]): string {
+export function approvalPillClassName(state: ArtifactApprovalWithTrees["state"]): string {
   return `inline-flex min-w-0 items-center rounded-full border px-2 py-1 text-center text-xs font-medium [overflow-wrap:anywhere] ${approvalPill[approvalTone(state)]}`;
 }

@@ -12,7 +12,7 @@ import {
 } from "react";
 
 import { ApiError, type ArtifactOwner, api, type WriteBounds } from "../../api/client";
-import type { Artifact, Version } from "../../api/types";
+import type { ArtifactUploadV2 } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import { RefusableButton } from "../../components/RefusableButton";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
@@ -37,18 +37,14 @@ import { useKeyedWrite } from "../writes/useKeyedWrite";
  *  one until the issue is reopened. */
 export const CLOSED_ISSUE_UPLOAD_REFUSAL = "This issue is closed. Reopen it to upload.";
 
-export interface UploadResult {
-  artifact: Artifact;
-  version: Version;
-}
-
-/** One attempt of `file`'s upload to `owner`, under the write's key (`bounds`). */
+/** One attempt of `file`'s upload to `owner`, under the write's key (`bounds`): the document it
+ *  made or added to, and the version it stored. */
 export function uploadFile(
   owner: ArtifactOwner,
   file: File,
   options: { name?: string; summary?: string },
   bounds: WriteBounds
-): Promise<UploadResult> {
+): Promise<ArtifactUploadV2> {
   return api.uploadArtifact(
     owner,
     {
@@ -97,7 +93,7 @@ export function appendToDraft(draft: string, text: string): string {
 export function uploadedFileText(
   owner: ArtifactOwner,
   file: File,
-  { artifact, version }: UploadResult
+  { artifact, version }: ArtifactUploadV2
 ): string {
   const pinned = isPictureType(file.type) ? version.number : undefined;
   const route: DispatchReferenceRoute =
@@ -148,7 +144,7 @@ export function useDraftUpload(insert: (text: string) => void): DraftUpload {
   // Each file is one write under a key of its own, its refusal shown here beside the draft, and
   // its file kept across a reload with it.
   const upload = useKeyedWrite<
-    { file: File; owner: ArtifactOwner; result: UploadResult },
+    { file: File; owner: ArtifactOwner; result: ArtifactUploadV2 },
     { file: File; owner: ArtifactOwner }
   >({
     write: async ({ file, owner }, bounds) => ({
@@ -268,7 +264,7 @@ export function useArtifactUpload(
   const [pendingFile, setPendingFile] = useState<File | null>(null);
   const [summary, setSummary] = useState("");
   const [isDragging, setIsDragging] = useState(false);
-  const upload = useKeyedWrite<UploadResult, File>({
+  const upload = useKeyedWrite<ArtifactUploadV2, File>({
     write: (file, bounds) =>
       uploadFile(
         owner,

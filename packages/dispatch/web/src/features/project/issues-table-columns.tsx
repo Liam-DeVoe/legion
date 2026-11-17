@@ -1,7 +1,7 @@
 import type { ColumnDef, FilterFn, RowData } from "@tanstack/react-table";
 import { useMemo } from "react";
 import { Link } from "react-router-dom";
-import type { UserState } from "../../api/types";
+import type { Marks } from "../../api/types";
 import { AttentionBadge } from "../../components/Badge";
 import { LabelPill, StatusPill } from "../../components/Pill";
 import { issueProject } from "../../lib/issue-key";
@@ -63,9 +63,7 @@ const inPicks: FilterFn<Item> = (row, id, value: string[]) =>
  *  else about a column — whether it filters, what a row files under, what it groups by, how
  *  wide it starts and how narrow it may go — comes from `COLUMNS` in the model, so the two
  *  never disagree. */
-const renderings = (
-  userState: UserState | undefined
-): Record<ColumnId, Partial<ColumnDef<Item>>> => ({
+const renderings = (userState: Marks | undefined): Record<ColumnId, Partial<ColumnDef<Item>>> => ({
   select: {
     header: ({ table }) => (
       <input
@@ -431,7 +429,7 @@ export function issueTableLayout(
 }
 
 export function useIssueTableColumns(
-  userState: UserState | undefined,
+  userState: Marks | undefined,
   compact: boolean,
   /** The table's layout (`issueTableLayout`): which listing columns it has. */
   layout: LayoutColumns,

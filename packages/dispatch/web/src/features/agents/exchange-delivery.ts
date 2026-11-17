@@ -10,7 +10,7 @@ import type {
   Agent,
   Message,
   MessageDelivery,
-  MessageRead,
+  MessageThreadV2,
   MessageWithTrees,
 } from "../../api/types";
 import { compareTimestamps } from "../../lib/timestamps";
@@ -39,9 +39,9 @@ export function newestAttempt(
  *  that takes neither. */
 export function exchangeDelivery(
   agent: Agent,
-  read: MessageRead
+  read: MessageThreadV2
 ): NonNullable<ReplyTarget["thread"]> {
-  const last = newestAttempt([read.message, ...(read.replies ?? [])]);
+  const last = newestAttempt([read, ...(read.replies ?? [])]);
   const capabilities = agent.capabilities ?? [];
   const canSteer = capabilities.includes("steer");
   const fallback = canSteer
@@ -58,9 +58,13 @@ export function exchangeDelivery(
 
 /** What a reply to `node` in `read`'s exchange is addressed as: the quoted message, the
  *  conversation it belongs to (an issue, or none), and the delivery above. */
-export function agentReplyTo(agent: Agent, read: MessageRead, node: MessageWithTrees): AgentReply {
+export function agentReplyTo(
+  agent: Agent,
+  read: MessageThreadV2,
+  node: MessageWithTrees
+): AgentReply {
   return {
-    issueKey: read.message.issue_key,
+    issueKey: read.issue_key,
     target: {
       actor: node.author,
       excerpt: node.body,

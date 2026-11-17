@@ -21,7 +21,7 @@ import {
 } from "../../api/client";
 import { mergeIssue } from "../../api/issue-cache";
 import { projectsQuery, userStateQuery } from "../../api/queries";
-import type { Artifact, IssueDetails, UserIssueState, UserState } from "../../api/types";
+import type { ArtifactV2, IssueDetails, Marks } from "../../api/types";
 import { PinButton } from "../../components/PinButton";
 import { QueryError } from "../../components/QueryError";
 import { TruncatedText } from "../../components/TruncatedText";
@@ -76,10 +76,11 @@ import { IssueLabels } from "./IssueLabels";
 import { issuePriority } from "./issue-priority";
 import { PriorityEditor } from "./PriorityControl";
 import { ProgressChips } from "./ProgressChips";
-import { stateForIssue } from "./pins";
+import type { IssueState } from "./pins";
 import { RepoControl } from "./RepoControl";
 import {
   RouteReachUnknownMarker,
+  routedIssue,
   UnreachableRouteMarker,
   UnresponsiveRouteMarker,
 } from "./RouteReach";
@@ -112,13 +113,13 @@ export function IssueHeader({
   priorityWrite,
   state,
 }: {
-  documentArtifact: Artifact | undefined;
+  documentArtifact: ArtifactV2 | undefined;
   isClosed: boolean;
   issue: IssueDetails;
   /** The page's one priority write, shared with the keyboard's `0`–`3` and the palette's Set
    *  priority rows, so a refusal of any of them is reported once and by this header. */
   priorityWrite: IssuePriorityWrite;
-  state: UserIssueState;
+  state: IssueState;
 }): ReactNode {
   const queryClient = useQueryClient();
   const [editingTitle, setEditingTitle] = useState(false);
@@ -316,22 +317,23 @@ export function IssueHeader({
     },
     onMutate: async (pinned) => {
       await queryClient.cancelQueries({ queryKey: userStateQuery().queryKey });
-      const previous = queryClient.getQueryData<UserState>(userStateQuery().queryKey);
-      queryClient.setQueryData<UserState>(userStateQuery().queryKey, (current) => ({
+      const previous = queryClient.getQueryData<Marks>(userStateQuery().queryKey);
+      queryClient.setQueryData<Marks>(userStateQuery().queryKey, (current) => ({
         ...current,
-        [issue.key]: { ...state, pinned },
+        [issue.key]: { ...current?.[issue.key], id: issue.key, kind: "issue", pinned },
       }));
       return { previous };
     },
     onError: (_error, _pinned, context) => {
-      queryClient.setQueryData<UserState>(userStateQuery().queryKey, (current) => ({
+      // The mark as it stood before the pin; none reads as an unpinned issue (`stateForIssue`).
+      queryClient.setQueryData<Marks>(userStateQuery().queryKey, (current) => ({
         ...current,
-        [issue.key]: stateForIssue(context?.previous, issue.key),
+        [issue.key]: { ...context?.previous?.[issue.key], id: issue.key, kind: "issue" },
       }));
     },
     onSuccess: (next) => {
       if (next === null) return;
-      queryClient.setQueryData<UserState>(userStateQuery().queryKey, (current) => ({
+      queryClient.setQueryData<Marks>(userStateQuery().queryKey, (current) => ({
         ...current,
         [issue.key]: next,
       }));
@@ -557,10 +559,10 @@ export function IssueHeader({
               saved route only, so a route being saved hides it until the next read judges it. */}
           {drafts.route === (issue.route ?? "") ? (
             <>
-              <UnreachableRouteMarker issue={issue} showRoute />
-              <UnresponsiveRouteMarker issue={issue} showRoute />
-              {issue.route !== null && issue.route_status === "unknown" ? (
-                issue.route_status_reason === "refilling" ? (
+              <UnreachableRouteMarker issue={routedIssue(issue)} showRoute />
+              <UnresponsiveRouteMarker issue={routedIssue(issue)} showRoute />
+              {issue.route !== null && issue.reach.route_status === "unknown" ? (
+                issue.reach.route_status_reason === "refilling" ? (
                   <span
                     className={`shrink-0 text-xs ${textMutedOnSurface}`}
                     data-testid="issue-route-refilling"
@@ -580,7 +582,7 @@ export function IssueHeader({
                   status, priority and assignee, and Release is an action beside Close. This
                   row wraps, so both stay visible and tappable at 390px; the metadata rail
                   below never wraps (#1211) and would clip them. */}
-              <ClaimChip claim={issue.claim} liveness={issue} />
+              <ClaimChip claim={issue.claim} liveness={issue.reach} />
               <button
                 aria-label={`Release the claim on ${issue.key}`}
                 className={`min-h-11 shrink-0 rounded-lg px-2 py-2 text-sm font-medium sm:px-3 md:min-h-8 md:py-1 xl:px-2 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`}

@@ -10,7 +10,7 @@ import {
 import { matchPath } from "react-router-dom";
 
 import type { ArtifactOwner } from "../../api/client";
-import type { Artifact } from "../../api/types";
+import type { ArtifactV2 } from "../../api/types";
 import { issueProject } from "../../lib/issue-key";
 import { INBOX_ROW_TYPES } from "../inbox/list-row";
 import { EVERYONE_FILTER_VALUE } from "../inbox/sections";
@@ -224,14 +224,14 @@ export function isProjectRoute(route: DispatchRoute | AgentArtifactRoute): route
 
 export function isPrimaryDocumentArtifactRoute(
   route: IssueRoute,
-  artifact: Pick<Artifact, "kind" | "primary"> | undefined
+  artifact: Pick<ArtifactV2, "kind" | "primary"> | undefined
 ): boolean {
   return route.kind === "artifact" && artifact?.primary === true && artifact.kind === "doc";
 }
 
 export function issueTabForRoute(
   route: IssueRoute,
-  artifact: Pick<Artifact, "kind" | "primary"> | undefined
+  artifact: Pick<ArtifactV2, "kind" | "primary"> | undefined
 ): IssueTab {
   if (isPlainIssueRoute(route)) {
     return route.kind;
@@ -727,7 +727,7 @@ export function buildDispatchReference(route: DispatchReferenceRoute): string {
 /** Whether `artifact` belongs to an agent's conversation (its `session_id` is set, its
  *  `issue_key` null and its `project` empty), so its page and reference sit under that agent's
  *  session rather than an issue or a project. */
-export function isAgentArtifact<T extends Pick<Artifact, "session_id">>(
+export function isAgentArtifact<T extends Pick<ArtifactV2, "session_id">>(
   artifact: T
 ): artifact is T & { readonly session_id: string } {
   return artifact.session_id !== undefined && artifact.session_id !== null;
@@ -745,7 +745,7 @@ export function sessionOfAddress(address: string): string | undefined {
  *  version (`@vN`), a form the bare `spec` route cannot carry, so a versioned primary document is
  *  referenced as `artifact/<slug>@vN`. */
 export function documentRoute(
-  artifact: Pick<Artifact, "issue_key" | "kind" | "primary" | "project" | "session_id" | "slug">,
+  artifact: Pick<ArtifactV2, "issue_key" | "kind" | "primary" | "project" | "session_id" | "slug">,
   version?: number
 ): DispatchReferenceRoute {
   if (isAgentArtifact(artifact)) {
@@ -854,7 +854,7 @@ export function itemRoute(
  *  the shape every in-app thread link already uses. A typed ask block is named by its block
  *  fragment, which is how a decision block is focused, rather than by the ask's id. */
 export function documentItemPath(
-  artifact: Pick<Artifact, "issue_key" | "kind" | "primary" | "project" | "session_id" | "slug">,
+  artifact: Pick<ArtifactV2, "issue_key" | "kind" | "primary" | "project" | "session_id" | "slug">,
   item: { blockID?: string; id: string; kind: "ask" | "comment" }
 ): string {
   const path = buildReferencePath(documentRoute(artifact));
@@ -996,10 +996,10 @@ function filterVocabulary(field: InboxFilterField): readonly string[] | undefine
 
 /**
  * The page's `?assignee=` deliberately spells its default the opposite way round from the
- * server's own `?assignee=` on `GET /api/v1/inbox`
- * (`packages/envoy/internal/dispatch/api/inbox.go`), where an absent parameter means everybody:
- * here absent means the reader alone and `assignee=everyone` means everybody, so the same name
- * now means different things on the two sides and neither reads the other's URL.
+ * server's own `waiting_on=` on `GET /api/v2/asks`
+ * (`packages/envoy/internal/dispatch/api/v2_asks.go`), where an absent parameter means everybody:
+ * here absent means the reader alone and `assignee=everyone` means everybody, so the two sides
+ * spell one choice differently and neither reads the other's URL.
  *
  * Every other field is absent while it holds its default, so the Inbox as it opens is `/` and a
  * link says only what the reader changed. A value this build does not know - an older link, a

@@ -1,7 +1,7 @@
 import { type Query, type QueryClient, queryOptions, useQuery } from "@tanstack/react-query";
 
 import { api } from "../../api/client";
-import type { CredentialPendingResponse, CredentialPendingRow } from "../../api/types";
+import type { CredentialPendingRow } from "../../api/types";
 
 /** How long a credential request may sit unseen on an open tab before the poll below notices it:
  *  short enough that an approver waiting on it never feels the wait, long enough that one GET a
@@ -9,11 +9,11 @@ import type { CredentialPendingResponse, CredentialPendingRow } from "../../api/
  *  cadence, for the same reason, but the two are independent constants - nothing ties them). */
 const CREDENTIAL_POLL_INTERVAL_MS = 15_000;
 
-/** `null` is a Dispatch with no secrets broker; anything else - even an empty list - is one that
- *  answered. `enabled` and `refetchInterval` below both gate on this one fact through this one
- *  function, so the two can never drift apart: a `null`-holding query can neither fetch again on
- *  its own nor have the poll armed for it. */
-function holdsList(query: Query<CredentialPendingResponse | null>): boolean {
+/** `null` is a Dispatch with no secrets broker (`404 FEATURE_OFF`, `getCredentialPending`);
+ *  anything else - even an empty list - is one that answered. `enabled` and `refetchInterval`
+ *  below both gate on this one fact through this one function, so the two can never drift apart:
+ *  a `null`-holding query can neither fetch again on its own nor have the poll armed for it. */
+function holdsList(query: Query<CredentialPendingRow[] | null>): boolean {
   return query.state.data !== null;
 }
 
@@ -64,5 +64,5 @@ export function useCredentialRequests(): CredentialRequests {
   const pending = useQuery(credentialPendingQuery());
   if (pending.isPending) return { requests: [], status: "loading" };
   if (pending.isLoadingError) return { requests: [], status: "failed" };
-  return { requests: pending.data?.pending ?? [], status: "listed" };
+  return { requests: pending.data ?? [], status: "listed" };
 }

@@ -4,13 +4,14 @@ import { render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 
 import { api } from "../../api/client";
-import type { Artifact, DispatchEvent, IssueDetails } from "../../api/types";
+import type { ArtifactV2, DispatchEvent, IssueDetails } from "../../api/types";
 import type { AgentPart } from "../refs/AgentName";
 import { ActivityLine } from "./ActivityLine";
 
 // This document is carried by an `artifact.created` frame below as well as read as a route's
 // answer, and a frame's payload states the kinds Dispatch writes where the route states a plain
-// string. It is written as the literal it is, so both readings take it.
+// string. It is written as the literal it is, so both readings take it: the frame's with its
+// version list, the issue's read with its latest version's number in its place.
 const uploaded = {
   created_at: "2026-09-15T00:00:00Z",
   created_by: { id: "session-1", kind: "session" } as const,
@@ -23,16 +24,17 @@ const uploaded = {
   ref_key: "OPS-52/cu-update-2026-09-15-md",
   session_id: null,
   slug: "cu-update-2026-09-15-md",
-  versions: [],
-} satisfies Artifact;
+} satisfies Partial<ArtifactV2>;
 
 const issue: IssueDetails = {
-  route_status: null,
-  route_holder: null,
-  route_status_reason: null,
-  holder_state: null,
-  last_seen: null,
-  takeable_at: null,
+  reach: {
+    route_status: null,
+    route_holder: null,
+    route_status_reason: null,
+    holder_state: null,
+    last_seen: null,
+    takeable_at: null,
+  },
   advances: [],
   advances_revision: 0,
   artifacts: [
@@ -42,15 +44,26 @@ const issue: IssueDetails = {
       id: "artifact-1",
       issue_key: "OPS-52",
       kind: "doc",
+      latest_version: null,
+      latest_version_at: null,
+      latest_version_size: null,
       name: "spec.md",
       primary: true,
       project: "OPS",
       ref_key: "OPS-52/spec",
       session_id: null,
       slug: "spec",
-      versions: [],
+      unsettled: null,
+      version_count: 0,
     },
-    uploaded,
+    {
+      ...uploaded,
+      latest_version: null,
+      latest_version_at: null,
+      latest_version_size: null,
+      unsettled: null,
+      version_count: 0,
+    },
   ],
   assignee: null,
   claim: null,
@@ -117,7 +130,7 @@ test("an added artifact's name links to the artifact", () => {
   const event: DispatchEvent = {
     ...base,
     id: 4,
-    payload: { artifact: uploaded },
+    payload: { artifact: { ...uploaded, versions: [] } },
     seq: 4,
     type: "artifact.created",
   };

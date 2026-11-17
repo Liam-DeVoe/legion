@@ -3,7 +3,7 @@ import { type ReactNode, useId, useRef, useState } from "react";
 
 import { api, type CreateArtifactReviewInput, isCapExceeded } from "../../api/client";
 import { inboxQuery } from "../../api/queries";
-import type { Artifact, ArtifactApproval } from "../../api/types";
+import type { ArtifactApprovalWithTrees, ArtifactV2 } from "../../api/types";
 import { approvalPillClassName } from "../../components/Pill";
 import { submitOnModifiedEnter } from "../../hooks/submitOnModifiedEnter";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
@@ -31,11 +31,11 @@ import { useKeyedWrite } from "../writes/useKeyedWrite";
 
 /** The version an approval speaks for: `version` when the review named one, else the document's
  *  latest. */
-export function approvalVersion(approval: ArtifactApproval): number {
+export function approvalVersion(approval: ArtifactApprovalWithTrees): number {
   return approval.version ?? approval.latest_version;
 }
 
-function approvalLabel(approval: ArtifactApproval): string {
+function approvalLabel(approval: ArtifactApprovalWithTrees): string {
   // A plan is approved by its plan review, never by a person, and its chip says so.
   const approved = approval.kind === "plan_review" ? "Approved by plan review" : "Approved";
   const version = approvalVersion(approval);
@@ -59,7 +59,7 @@ function approvalLabel(approval: ArtifactApproval): string {
 }
 
 /** The documents an open request covers, when it covers more than the one being read. */
-function approvalScope(approval: ArtifactApproval): string {
+function approvalScope(approval: ArtifactApprovalWithTrees): string {
   const documents = approval.documents ?? [];
   if (documents.length < 2) {
     return "";
@@ -221,7 +221,7 @@ function RequestChangesDialog({
 }
 
 export interface ApprovalChipProps {
-  artifact: Artifact;
+  artifact: ArtifactV2;
   /** `header`: shown on the document header, with an approval-state chip.
    * `list` (default): shown in a compact list row. */
   variant?: "header" | "list";

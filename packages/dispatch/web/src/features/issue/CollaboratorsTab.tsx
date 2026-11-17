@@ -4,10 +4,9 @@ import type { ReactNode } from "react";
 
 import { issueCollaboratorsQuery } from "../../api/queries";
 import type {
-  IssueCollaboratorAgent,
+  CollaboratorV2,
   IssueCollaboratorLegionAgent,
-  IssueCollaboratorPerson,
-  IssueCollaborators,
+  IssueCollaboratorsV2,
 } from "../../api/types";
 import { EmptyState } from "../../components/EmptyState";
 import { QueryError } from "../../components/QueryError";
@@ -22,6 +21,15 @@ import {
 import { AgentName } from "../refs/AgentName";
 import { Timestamp } from "../refs/Timestamp";
 
+/** A session row of the collaborators list: one that names its session. */
+type SessionCollaborator = CollaboratorV2 & {
+  readonly kind: "session";
+  readonly session_id: string;
+};
+
+/** A person row of the collaborators list: one that names its login. */
+type PersonCollaborator = CollaboratorV2 & { readonly kind: "user"; readonly login: string };
+
 /** The tab's three sections, in the order the reader meets them. Each holds the server's own
  *  order, which the contract states: the registry's agents first, by role in workflow order and
  *  then newest first, then the rest newest first, and people newest first. */
@@ -32,19 +40,26 @@ export interface CollaboratorSections {
     readonly agents: readonly IssueCollaboratorLegionAgent[];
   }[];
   /** Every other agent session, the most recently active first. */
-  readonly others: readonly IssueCollaboratorAgent[];
+  readonly others: readonly SessionCollaborator[];
   /** People, in the server's order (newest first). */
-  readonly people: readonly IssueCollaboratorPerson[];
+  readonly people: readonly PersonCollaborator[];
 }
 
-export function collaboratorSections(collaborators: IssueCollaborators): CollaboratorSections {
+/** The session rows of the list: `GET /api/v2/issues/{key}/collaborators` answers people and
+ *  sessions as one list, each row's `kind` saying which. */
+function sessionRows(collaborators: IssueCollaboratorsV2): SessionCollaborator[] {
+  return (collaborators.items ?? []).filter(
+    (row): row is SessionCollaborator => row.kind === "session" && row.session_id !== undefined
+  );
+}
+
+export function collaboratorSections(collaborators: IssueCollaboratorsV2): CollaboratorSections {
   /** Whether this row is held by a role this build knows, which is what puts it in a Legion
    *  section: a row with no Legion record, and one naming a role `LEGION_ROLES` does not hold,
    *  both belong to `others`. */
-  const known = (agent: IssueCollaboratorAgent): agent is IssueCollaboratorLegionAgent =>
-    agent.legion !== null && isLegionRole(agent.legion.role);
-  // The document types every list as nullable, though this handler always sends `[]`.
-  const agents = collaborators.agents ?? [];
+  const known = (agent: SessionCollaborator): agent is IssueCollaboratorLegionAgent =>
+    agent.legion !== undefined && isLegionRole(agent.legion.role);
+  const agents = sessionRows(collaborators);
   const legion = agents.filter(known);
   return {
     // A section is the role's slice of the server's list, in the order it sent them: the server
@@ -58,7 +73,9 @@ export function collaboratorSections(collaborators: IssueCollaborators): Collabo
     // Every session no Legion section holds, so a registry entry naming a role this build does
     // not know is listed rather than dropped from the page. The server's order again.
     others: agents.filter((agent) => !known(agent)),
-    people: collaborators.people ?? [],
+    people: (collaborators.items ?? []).filter(
+      (row): row is PersonCollaborator => row.kind === "user" && row.login !== undefined
+    ),
   };
 }
 
@@ -92,7 +109,7 @@ function Worked({
   reasons,
 }: {
   lastAt: string | null;
-  reasons: IssueCollaboratorPerson["reasons"];
+  reasons: CollaboratorV2["reasons"];
 }): ReactNode {
   // The document types every list as nullable, though this handler always sends `[]`.
   const worked = reasons ?? [];
@@ -105,7 +122,8 @@ function Worked({
 }
 
 /**
- * Everyone who worked the issue, running or not (`GET /issues/{key}/collaborators`): Legion's
+ * Everyone who worked the issue, running or not (`GET /api/v2/issues/{key}/collaborators`):
+ * Legion's
  * agents by role, other agent sessions, and people. Each agent is an `AgentName` link to its live
  * conversation, its running state from the agents registry, so a replaced or stopped agent is one
  * click from the conversation it had; a person is their login as plain text, as everywhere.
@@ -126,7 +144,7 @@ export function CollaboratorsTab({ issueKey }: { issueKey: string }): ReactNode 
   }
   const collaborators = query.data;
   const sections = collaboratorSections(collaborators);
-  const agents = collaborators.agents ?? [];
+  const agents = sessionRows(collaborators);
   const titles = new Map(agents.map((agent) => [agent.session_id, agent.title ?? undefined]));
   const unavailable = collaborators.legion_registry === "unavailable";
   const empty = agents.length === 0 && sections.people.length === 0;

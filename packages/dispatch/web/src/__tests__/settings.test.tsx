@@ -7,7 +7,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
 import { ApiError, api } from "../api/client";
-import type { CreatedProject, Project, ProjectDefaultAssignee, RepoProject } from "../api/types";
+import type { CreatedProject, ProjectV2, RepoProject } from "../api/types";
 import { App } from "../app";
 // The Settings page is a lazy route of the app. Its module's first compile is not what a wait is
 // for, so the module is loaded here, with the test file, and no wait measures that load.
@@ -356,14 +356,14 @@ test("repository settings retries a failed mapping query", async () => {
 
 test("a human creates a project from Settings and it appears in the mappings selector", async () => {
   const user = userEvent.setup();
-  const core: Project = {
+  const core: ProjectV2 = {
     created_at: "2026-09-01T00:00:00Z",
     key: "CORE",
     name: "Core",
     open_asks: 0,
     gated_steps: [],
   };
-  const listed: Project = {
+  const listed: ProjectV2 = {
     created_at: "2026-09-10T00:00:00Z",
     key: "QA",
     name: "Quality",
@@ -387,11 +387,8 @@ test("a human creates a project from Settings and it appears in the mappings sel
   // The defaults read is the one place a project's default comes from: the page's first read
   // knows CORE alone, and the one after the create knows QA too.
   const listDefaults = spyOn(api, "listProjectDefaultAssignees")
-    .mockResolvedValueOnce([{ assignee: "alice", project: "CORE" }])
-    .mockResolvedValue([
-      { assignee: "alice", project: "CORE" },
-      { assignee: "alice", project: "QA" },
-    ]);
+    .mockResolvedValueOnce([withDefault("CORE", "alice")])
+    .mockResolvedValue([withDefault("CORE", "alice"), withDefault("QA", "alice")]);
   const getDeliverySettings = spyOn(api, "getDeliverySettings").mockResolvedValue(null);
   const listProjects = spyOn(api, "listProjects")
     .mockResolvedValueOnce([core])
@@ -456,7 +453,7 @@ test("a human creates a project from Settings and it appears in the mappings sel
 
 test("creating a project with a taken key shows the server's error inline", async () => {
   const user = userEvent.setup();
-  const core: Project = {
+  const core: ProjectV2 = {
     created_at: "2026-09-01T00:00:00Z",
     key: "CORE",
     name: "Core",
@@ -520,11 +517,25 @@ test("creating a project with a taken key shows the server's error inline", asyn
   }
 });
 
-/** The default-assignee routes' server state as the Settings page reaches it: a read answers
- *  what the writes have left, and `sent` records each write's assignee as it arrives. Every
- *  project names a person and no write clears one, so an assignee is always a login. While
- *  `hold()`'s release has not been called, a write that arrives waits before it lands. */
-function defaultAssigneeServer(initial: ProjectDefaultAssignee[]) {
+/** A project as the defaults read lists it (`GET /api/v2/projects?include=default_assignee`),
+ *  and as a write of its default answers it: `key`, naming `assignee`. */
+function withDefault(key: string, assignee: string): ProjectV2 {
+  return {
+    created_at: "2026-09-01T00:00:00Z",
+    default_assignee: assignee,
+    gated_steps: [],
+    key,
+    name: key,
+    open_asks: 0,
+  };
+}
+
+/** The default-assignee routes' server state as the Settings page reaches it, each project's
+ *  default as a row: a read answers what the writes have left, and `sent` records each write's
+ *  assignee as it arrives. Every project names a person and no write clears one, so an assignee
+ *  is always a login. While `hold()`'s release has not been called, a write that arrives waits
+ *  before it lands. */
+function defaultAssigneeServer(initial: { assignee: string; project: string }[]) {
   let rows = initial.map((row) => ({ ...row }));
   const sent: string[] = [];
   let gate: Promise<void> | undefined;
@@ -537,16 +548,14 @@ function defaultAssigneeServer(initial: ProjectDefaultAssignee[]) {
         resolve();
       };
     },
-    list: async (): Promise<ProjectDefaultAssignee[]> => rows.map((row) => ({ ...row })),
-    put: async (
-      project: string,
-      { assignee }: { assignee: string }
-    ): Promise<ProjectDefaultAssignee> => {
+    list: async (): Promise<ProjectV2[]> =>
+      rows.map(({ assignee, project }) => withDefault(project, assignee)),
+    put: async (project: string, assignee: string): Promise<ProjectV2> => {
       sent.push(assignee);
       await gate;
       rows = rows.filter((row) => row.project !== project);
       rows.push({ assignee, project });
-      return { assignee, project };
+      return withDefault(project, assignee);
     },
     rows: () => rows,
     sent,
@@ -675,9 +684,9 @@ test("default assignee picks made while one is saving show, and only the newest 
         .getAllByRole("option")
         .map((option) => option.getAttribute("value"))
     ).toEqual(["alice@example.com", "bob@example.com", "carol@example.com"]);
-    expect(putDefault.mock.calls.map(([, input]) => input)).toEqual([
-      { assignee: "bob@example.com" },
-      { assignee: "carol@example.com" },
+    expect(putDefault.mock.calls.map(([, assignee]) => assignee)).toEqual([
+      "bob@example.com",
+      "carol@example.com",
     ]);
   } finally {
     done();
@@ -755,7 +764,7 @@ test("a default assignee save refused while Settings is unmounted shows its reas
   const user = userEvent.setup();
   const server = defaultAssigneeServer([{ assignee: "alice@example.com", project: "CORE" }]);
   const listDefaults = spyOn(api, "listProjectDefaultAssignees").mockImplementation(server.list);
-  const refusal = Promise.withResolvers<ProjectDefaultAssignee>();
+  const refusal = Promise.withResolvers<ProjectV2>();
   const putDefault = spyOn(api, "putProjectDefaultAssignee")
     .mockReturnValueOnce(refusal.promise)
     .mockImplementation(server.put);
@@ -801,8 +810,8 @@ test("a default assignee save refused while Settings is unmounted shows its reas
       expect(server.rows()).toEqual([{ assignee: "bob@example.com", project: "CORE" }])
     );
     expect(putDefault.mock.calls).toEqual([
-      ["CORE", { assignee: "bob@example.com" }, keyedAttempt],
-      ["CORE", { assignee: "bob@example.com" }, keyedAttempt],
+      ["CORE", "bob@example.com", keyedAttempt],
+      ["CORE", "bob@example.com", keyedAttempt],
     ]);
     await waitFor(() => expect(core.value).toBe("bob@example.com"));
   } finally {
@@ -868,9 +877,9 @@ test("a refused default assignee puts the row back, shows the server's reason in
     await user.click(coreCell.getByRole("button", { name: "Retry" }));
     await waitFor(() => expect(coreCell.queryByRole("alert")).not.toBeInTheDocument());
     expect(putDefault.mock.calls).toEqual([
-      ["CORE", { assignee: "bob@example.com" }, keyedAttempt],
-      ["OPS", { assignee: "bob@example.com" }, keyedAttempt],
-      ["CORE", { assignee: "bob@example.com" }, keyedAttempt],
+      ["CORE", "bob@example.com", keyedAttempt],
+      ["OPS", "bob@example.com", keyedAttempt],
+      ["CORE", "bob@example.com", keyedAttempt],
     ]);
     await waitFor(() => expect(core.value).toBe("bob@example.com"));
     expect(server.rows()).toContainEqual({ assignee: "bob@example.com", project: "CORE" });
@@ -884,7 +893,7 @@ test("a refused default assignee puts the row back, shows the server's reason in
 
 test("a default assignee the page has not read is disabled and names nobody", async () => {
   const user = userEvent.setup();
-  const read = Promise.withResolvers<ProjectDefaultAssignee[]>();
+  const read = Promise.withResolvers<ProjectV2[]>();
   const listDefaults = spyOn(api, "listProjectDefaultAssignees").mockReturnValueOnce(read.promise);
   const listUsers = spyOn(api, "listUsers").mockResolvedValue([{ login: "alice@example.com" }]);
   const { done } = renderSettings(["CORE"]);
@@ -909,7 +918,7 @@ test("a default assignee the page has not read is disabled and names nobody", as
     expect(control.value).not.toBe("");
     expect(optionNames(control)).toEqual(["Unavailable"]);
 
-    listDefaults.mockResolvedValue([{ assignee: "alice@example.com", project: "CORE" }]);
+    listDefaults.mockResolvedValue([withDefault("CORE", "alice@example.com")]);
     await user.click(section.getByRole("button", { name: "Retry" }));
     await waitFor(() => expect(control.disabled).toBe(false));
     expect(control.value).toBe("alice@example.com");

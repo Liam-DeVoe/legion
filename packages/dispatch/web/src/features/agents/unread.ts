@@ -4,11 +4,12 @@ import { useState } from "react";
 import { agentStateRequest } from "../../api/client";
 import { userAgentStateQuery } from "../../api/queries";
 import type {
+  AgentMarkV2Input,
+  AgentMessageV2,
+  Marks,
+  MarkV2,
   Message,
-  MessageRead,
-  UserAgentState,
-  UserAgentStateInput,
-  UserAgentStates,
+  MessageThreadV2,
 } from "../../api/types";
 import { compareTimestamps } from "../../lib/timestamps";
 import { useSendMarkOnce } from "../writes/useSendMarkOnce";
@@ -19,9 +20,9 @@ export function unreadRepliesLabel(count: number): string {
   return count === 1 ? "New reply 1" : `New replies ${count}`;
 }
 
-/** Every session's unread replies to the viewer's direct messages, summed. An API older than the
- *  count answers a state without it, which counts as none. */
-export function totalUnreadReplies(states: UserAgentStates | undefined): number {
+/** Every session's unread replies to the viewer's direct messages, summed. A mark that carries no
+ *  count counts as none. */
+export function totalUnreadReplies(states: Marks | undefined): number {
   return Object.values(states ?? {}).reduce(
     (total, state) => total + (state.unread_replies ?? 0),
     0
@@ -31,7 +32,7 @@ export function totalUnreadReplies(states: UserAgentStates | undefined): number 
 /** The newest reply `sessionId` wrote anywhere in `exchanges`, by its own (the server's)
  *  timestamp. */
 function newestSessionReply(
-  exchanges: readonly MessageRead[],
+  exchanges: readonly MessageThreadV2[],
   sessionId: string
 ): string | undefined {
   let newest: string | undefined;
@@ -58,7 +59,7 @@ function newestSessionReply(
  * open freezes afresh, as a new mount would. Undefined until the conversations have loaded.
  */
 export function useUnreadAtOpen(
-  exchanges: readonly MessageRead[] | undefined,
+  exchanges: readonly AgentMessageV2[] | undefined,
   open: boolean
 ): ReadonlySet<string> | undefined {
   const [frozen, setFrozen] = useState<{
@@ -70,23 +71,17 @@ export function useUnreadAtOpen(
   if (next.unread === undefined && exchanges !== undefined && open) {
     next = {
       open,
-      unread: new Set(
-        exchanges.filter((read) => read.unread === true).map((read) => read.message.id)
-      ),
+      unread: new Set(exchanges.filter((read) => read.unread).map((read) => read.id)),
     };
   }
   if (next !== frozen) setFrozen(next);
   return next.unread;
 }
 
-/** Puts the session's state a PUT answered with into the viewer's shared agent-state query, so
+/** Puts the session's mark a write answered with into the viewer's shared agent-state query, so
  *  every badge and row reads it at once. */
-export function storeAgentState(
-  queryClient: QueryClient,
-  sessionId: string,
-  next: UserAgentState
-): void {
-  queryClient.setQueryData<UserAgentStates>(userAgentStateQuery().queryKey, (current) => ({
+export function storeAgentState(queryClient: QueryClient, sessionId: string, next: MarkV2): void {
+  queryClient.setQueryData<Marks>(userAgentStateQuery().queryKey, (current) => ({
     ...current,
     [sessionId]: next,
   }));
@@ -103,14 +98,14 @@ function useSendReadMark<V>(
   sessionId: string,
   value: V | undefined,
   dedupeKey: (value: V) => string,
-  input: (value: V) => UserAgentStateInput
+  input: (value: V) => AgentMarkV2Input
 ): void {
   const queryClient = useQueryClient();
   const unread = useQuery(userAgentStateQuery()).data?.[sessionId]?.unread_replies ?? 0;
   useSendMarkOnce({
     mark: value === undefined ? undefined : { key: dedupeKey(value), value: input(value) },
     onSuccess: (next) => storeAgentState(queryClient, sessionId, next),
-    request: (body: UserAgentStateInput) => agentStateRequest(sessionId, body),
+    request: (body: AgentMarkV2Input) => agentStateRequest(sessionId, body),
     shouldSend: unread !== 0,
     target: `read:agent:${sessionId}`,
     wake: unread,
@@ -119,11 +114,11 @@ function useSendReadMark<V>(
 
 const ownString = (value: string): string => value;
 
-const readThrough = (newest: string): UserAgentStateInput => ({ read_through: newest });
+const readThrough = (newest: string): AgentMarkV2Input => ({ read_through: newest });
 
 const joinedIds = (ids: readonly string[]): string => ids.join(" ");
 
-const readReplies = (ids: readonly string[]): UserAgentStateInput => ({ read_replies: [...ids] });
+const readReplies = (ids: readonly string[]): AgentMarkV2Input => ({ read_replies: [...ids] });
 
 /**
  * Records that the viewer has read a session's conversation, through the newest reply the
@@ -134,7 +129,7 @@ const readReplies = (ids: readonly string[]): UserAgentStateInput => ({ read_rep
  */
 export function useMarkRepliesRead(
   sessionId: string,
-  exchanges: readonly MessageRead[] | undefined
+  exchanges: readonly MessageThreadV2[] | undefined
 ): void {
   useSendReadMark(
     sessionId,

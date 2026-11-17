@@ -34,7 +34,10 @@ export function ReferencePicker({ issueKey, onClose, onSelect }: ReferencePicker
   const issues = useQuery({
     enabled: currentIssue.data !== undefined,
     queryKey: ["issues", currentIssue.data?.project],
-    queryFn: () => api.listIssues({ project: currentIssue.data?.project }),
+    queryFn: () =>
+      api.listIssues(
+        currentIssue.data === undefined ? {} : { project: [currentIssue.data.project] }
+      ),
   });
   const needle = filter.trim().toLowerCase();
   const filtered = (issues.data ?? []).filter(

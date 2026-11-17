@@ -2,7 +2,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useState } from "react";
 
 import { api, type WriteBounds } from "../../api/client";
-import type { Ask, AskFollower, IssueDetails, Subscriber } from "../../api/types";
+import type { AskFollower, AskThread, AskV2, Subscriber } from "../../api/types";
 import { DisclosureToggle } from "../../components/DisclosureToggle";
 import { QueryError } from "../../components/QueryError";
 import { useIsHuman } from "../../hooks/useIsHuman";
@@ -21,7 +21,7 @@ const EMPTY_SUBSCRIBERS: readonly Subscriber[] = [];
 /** The ask's owner, whose topic subscribers also hear every event on the ask. An ask on an
  *  issue (including one in an issue-linked document) routes through the issue's topics; an
  *  ask on a project document routes through the document's. */
-type AskOwner = Pick<Ask, "artifact_id" | "issue_key">;
+type AskOwner = Pick<AskV2, "artifact_id" | "issue_key">;
 
 /** The subscribers list shared with the owner's header: the issue's Subscribed agents panel
  *  (`IssueHeader`) or the project document page. Same key, so a removal from either surface
@@ -62,7 +62,7 @@ export interface AskRecipientsProps {
   askId: string;
   /** The session holding the claim on the ask's issue, from the same thread read. */
   claimant: string | null;
-  /** Oldest first, as `GET /api/v1/asks/{id}` returns them. */
+  /** Oldest first, as `GET /api/v2/asks/{id}?include=thread` returns them. */
   followers: readonly AskFollower[];
   owner: AskOwner;
   /** Write seam for tests; defaults to the real API. */
@@ -74,7 +74,7 @@ export interface AskRecipientsProps {
   routeHolder: string | null;
   /** Whether the route reaches anyone, from the same thread read: `unknown` when the Envoy
    *  listener did not answer, so a null `routeHolder` says nothing about who receives it. */
-  routeStatus: IssueDetails["route_status"];
+  routeStatus: AskThread["route_status"];
 }
 
 /** A row the ask reaches through its issue rather than through a follow or a subscription: the
@@ -144,7 +144,7 @@ export function reachRows({
   followers: readonly AskFollower[];
   route: string | null;
   routeHolder: string | null;
-  routeStatus: IssueDetails["route_status"];
+  routeStatus: AskThread["route_status"];
   subscribers: readonly Subscriber[];
 }): Reach {
   const listed = new Set(followers.map((follower) => follower.session_id));

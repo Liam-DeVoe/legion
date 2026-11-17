@@ -5,6 +5,7 @@ import { useRef, useSyncExternalStore } from "react";
 import {
   ApiError,
   api,
+  isApiV1Ended,
   type WriteBounds,
   type WriteMethod,
   type WriteRequest,
@@ -478,6 +479,9 @@ export class Writes {
   retry(id: number): void {
     const entry = this.#entries.get(id);
     if (entry?.write.status !== "refused" || entry.keeping !== undefined) return;
+    // A write `/api/v1`'s end refused is the one request it was kept as, which goes nowhere else:
+    // making it again would meet the same `410`.
+    if (isApiV1Ended(entry.write.refusal)) return;
     const old = entry.write.key;
     if (retriesUnderItsKey(entry.write.refusal)) {
       this.#retryUnder(entry, old, entry.write.sent);
@@ -1057,7 +1061,10 @@ export class Writes {
    *  refusal itself or it is never shown - and the next write of its target goes. One Dispatch
    *  refused because someone else is signed in goes with every write of its login, and the page
    *  reads who is signed in again. A refused sign-out leaves its person signed in, so every write
-   *  of theirs it held goes on. */
+   *  of theirs it held goes on. A write a build older than `/api/v2` kept, made again to its own
+   *  `/api/v1` path after the deployment ended `/api/v1` (`410`, `isApiV1Ended`), is dropped from
+   *  what the store keeps, so no reload brings it back to meet the same answer, and stays on the
+   *  page as not saved until the reader discards it (`PendingWritesIndicator`). */
   #refused(entry: Entry, refusal: Error): void {
     entry.press?.reject(refusal);
     entry.press = undefined;
@@ -1072,8 +1079,14 @@ export class Writes {
       return;
     }
     const write: Write = { ...baseOf(entry.write), refusal, status: "refused" };
-    if (entry.write.inline || entry.write.presentation === "quiet") this.#remove(entry);
-    else this.#update(entry, write);
+    if (entry.write.inline || entry.write.presentation === "quiet") {
+      this.#remove(entry);
+    } else if (isApiV1Ended(refusal)) {
+      this.#forget(entry);
+      this.#show(entry, write);
+    } else {
+      this.#update(entry, write);
+    }
     kinds.get(write.kind)?.undone?.(this.#client, write);
     this.#emit({ kind: "refused", refusal, write });
     this.#advance(write.target);

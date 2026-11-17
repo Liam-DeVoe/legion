@@ -66,9 +66,7 @@ const byAda: ApproverGrantResp = {
 // approver named ada for a request she never saw. Her revoke is unchanged: the broker allows it
 // because she is the approver, which is what `unrevocable` reads.
 test("a judged grant is granted by the judge, a person's own by that person, and both are revocable", async () => {
-  const getCredentialGrants = spyOn(api, "getCredentialGrants").mockResolvedValue({
-    grants: [judged, byAda],
-  });
+  const getCredentialGrants = spyOn(api, "getCredentialGrants").mockResolvedValue([judged, byAda]);
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 
   try {
@@ -101,9 +99,10 @@ test("a judged grant is granted by the judge, a person's own by that person, and
 // - so "no operator" arrives as "" and never as null.
 for (const operator of [""]) {
   test(`a grant whose operator is ${JSON.stringify(operator)} and approver is null is read-only, and the viewer's own still revokes`, async () => {
-    const getCredentialGrants = spyOn(api, "getCredentialGrants").mockResolvedValue({
-      grants: [operated, nobodys(operator)],
-    });
+    const getCredentialGrants = spyOn(api, "getCredentialGrants").mockResolvedValue([
+      operated,
+      nobodys(operator),
+    ]);
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 
     try {

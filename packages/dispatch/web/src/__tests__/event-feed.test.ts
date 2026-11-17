@@ -28,7 +28,7 @@ import {
   userStateQuery,
 } from "../api/queries";
 import { refreshQueries } from "../api/query-refresh";
-import type { Ask, AskRead, DispatchEvent, EventType, InboxRow } from "../api/types";
+import type { AskV2, AskWithThread, DispatchEvent, EventType, InboxRow } from "../api/types";
 import { hasPendingAskThreadInvalidation } from "../features/inbox/ask-thread-freshness";
 import { issueAsk } from "../features/inbox/inbox-fixture";
 import { useAskAnswerForm } from "../features/inbox/useAskAnswerForm";
@@ -70,7 +70,7 @@ const READS = {
   architecture: { key: ["architecture", "CORE"] },
   ask: { key: askQuery("ask-1").queryKey },
   askPanel: {
-    data: { edges: [], node: { id: "ask-9", kind: "ask" } },
+    data: { items: [], node: { id: "ask-9", kind: "ask" } },
     key: ["references", "to", "dispatch://CORE-9/ask/ask-9"],
   },
   asks: { key: ["asks", "CORE-1"] },
@@ -81,11 +81,11 @@ const READS = {
   // Block b2 of CORE-1's comment-1, read by a link to it and, pinned to the comment's revision 1,
   // by another link.
   commentBlock: {
-    data: { edges: [], node: { id: "comment/comment-1#b2", kind: "block" } },
+    data: { items: [], node: { id: "comment/comment-1#b2", kind: "block" } },
     key: blockQuery("dispatch://CORE-1/comment/comment-1#b-b2").queryKey,
   },
   commentBlockPinned: {
-    data: { edges: [], node: { id: "comment/comment-1#b2", kind: "block" } },
+    data: { items: [], node: { id: "comment/comment-1#b2", kind: "block" } },
     key: blockQuery("dispatch://CORE-1/comment/comment-1#b-b2@v1").queryKey,
   },
   comments: { key: ["comments", "CORE-1"] },
@@ -93,7 +93,7 @@ const READS = {
   conversationMessages: { key: ["issue-messages", "CORE-1"] },
   detail: { key: issueQuery("CORE-1").queryKey },
   docAskPanel: {
-    data: { edges: [], node: { id: "ask-7", kind: "ask" } },
+    data: { items: [], node: { id: "ask-7", kind: "ask" } },
     key: ["references", "to", "dispatch://CORE/artifact/plan-md/ask/ask-7"],
   },
   // A project document's ask list and its block listing: the first's rows are asks.
@@ -108,7 +108,7 @@ const READS = {
   docSummary: { data: { id: "artifact-1" }, key: documentSummaryQuery("CORE", "plan-md").queryKey },
   documentPage: { data: { id: "artifact-1" }, key: ["artifact-ref", "CORE/plan-md"] },
   documentPanel: {
-    data: { edges: [], node: { id: "artifact-1", kind: "artifact" } },
+    data: { items: [], node: { id: "artifact-1", kind: "artifact" } },
     key: ["references", "to", "dispatch://CORE/artifact/plan-md"],
   },
   grandparent: { key: issueQuery("CORE-00").queryKey },
@@ -116,23 +116,23 @@ const READS = {
   inbox: { key: inboxQuery().queryKey },
   inboxThreads: { key: inboxThreadsQuery().queryKey },
   issuePanel: {
-    data: { edges: [], node: { id: "CORE-1", kind: "issue" } },
+    data: { items: [], node: { id: "CORE-1", kind: "issue" } },
     key: ["references", "to", "dispatch://CORE-1"],
   },
   labelledProjectList: { key: projectIssuesQuery("CORE", ["ui"]).queryKey },
   log: { key: ["events", "CORE-1"] },
   message: { key: messageQuery("CORE-1", "message-1").queryKey },
   messageBlock: {
-    data: { edges: [], node: { id: "message/message-0#b1", kind: "block" } },
+    data: { items: [], node: { id: "message/message-0#b1", kind: "block" } },
     key: blockQuery("dispatch://CORE-1/message/message-0#b-b1").queryKey,
   },
   newParentPanel: {
-    data: { edges: [], node: { id: "CORE-8", kind: "issue" } },
+    data: { items: [], node: { id: "CORE-8", kind: "issue" } },
     key: ["references", "to", "dispatch://CORE-8"],
   },
   otherAsk: { key: askQuery("ask-9").queryKey },
   otherCommentBlock: {
-    data: { edges: [], node: { id: "comment/comment-9#b2", kind: "block" } },
+    data: { items: [], node: { id: "comment/comment-9#b2", kind: "block" } },
     key: blockQuery("dispatch://CORE-1/comment/comment-9#b-b2").queryKey,
   },
   otherDocSummary: {
@@ -146,14 +146,14 @@ const READS = {
   otherProjectList: { key: projectIssuesQuery("OTHER", []).queryKey },
   // Another block of CORE-1's spec, which a link elsewhere on the page names.
   otherSpecBlock: {
-    data: { edges: [], node: { id: "CORE-1/spec#outro", kind: "block" } },
+    data: { items: [], node: { id: "CORE-1/spec#outro", kind: "block" } },
     key: blockQuery("dispatch://CORE-1/spec#b-outro").queryKey,
   },
   parent: { key: issueQuery("CORE-0").queryKey },
   // CORE-1 is CORE-0's child: CORE-0's panel lists the `child_of` edge from it.
   parentPanel: {
     data: {
-      edges: [{ direction: "in", kind: "child_of", node: { id: "CORE-1", kind: "issue" } }],
+      items: [{ direction: "in", kind: "child_of", node: { id: "CORE-1", kind: "issue" } }],
       node: { id: "CORE-0", kind: "issue" },
     },
     key: ["references", "to", "dispatch://CORE-0"],
@@ -178,76 +178,70 @@ const READS = {
   // A block of CORE-1's spec, read by a link to it (its panel shares the key) and, pinned to
   // version 2, by another link.
   specBlock: {
-    data: { edges: [], node: { id: "CORE-1/spec#intro", kind: "block" } },
+    data: { items: [], node: { id: "CORE-1/spec#intro", kind: "block" } },
     key: blockQuery("dispatch://CORE-1/spec#b-intro").queryKey,
   },
   specBlockPinned: {
-    data: { edges: [], node: { id: "CORE-1/spec#intro", kind: "block" } },
+    data: { items: [], node: { id: "CORE-1/spec#intro", kind: "block" } },
     key: blockQuery("dispatch://CORE-1/spec#b-intro@v2").queryKey,
   },
   // CORE-1's spec, one document, opened on two spellings of its address.
   specPanel: {
-    data: { edges: [], node: { id: "artifact-3", kind: "artifact" } },
+    data: { items: [], node: { id: "artifact-3", kind: "artifact" } },
     key: ["references", "to", "dispatch://CORE-1/spec"],
   },
   specPanelBySlug: {
-    data: { edges: [], node: { id: "artifact-3", kind: "artifact" } },
+    data: { items: [], node: { id: "artifact-3", kind: "artifact" } },
     key: ["references", "to", "dispatch://CORE-1/artifact/spec"],
   },
   summary: { key: issueSummaryQuery("CORE-1").queryKey },
-  // The Reply-thread card's reads (`askThreadQuery`, `GET /asks/{id}`), each cut to the fields
-  // the rules read: an open question on CORE-1 nobody handed on, one handed on, one answered, an
-  // open one on CORE-9, one on another project's issue, and one on a project document of CORE and
-  // of another project.
+  // The Reply-thread card's reads (`askThreadQuery`, `GET /api/v2/asks/{id}?include=thread`), each
+  // the ask itself, flat, cut to the fields the rules read: an open question on CORE-1 nobody
+  // handed on, one handed on, one answered, an open one on CORE-9, one on another project's issue,
+  // and one on a project document of CORE and of another project.
   thread: {
-    data: { ask: { asked_of: null, id: "ask-1", issue_key: "CORE-1", state: "open" } },
+    data: { asked_of: null, id: "ask-1", issue_key: "CORE-1", state: "open" },
     key: askThreadQuery("ask-1").queryKey,
   },
   threadAnswered: {
-    data: { ask: { asked_of: null, id: "ask-3", issue_key: "CORE-1", state: "answered" } },
+    data: { asked_of: null, id: "ask-3", issue_key: "CORE-1", state: "answered" },
     key: askThreadQuery("ask-3").queryKey,
   },
   threadHandedOn: {
-    data: {
-      ask: { asked_of: "dave@example.com", id: "ask-2", issue_key: "CORE-1", state: "open" },
-    },
+    data: { asked_of: "dave@example.com", id: "ask-2", issue_key: "CORE-1", state: "open" },
     key: askThreadQuery("ask-2").queryKey,
   },
   threadOnDocument: {
     data: {
-      ask: {
-        anchor_artifact: { name: "plan.md", primary: false, project: "CORE", slug: "plan-md" },
-        asked_of: null,
-        id: "ask-7",
-        issue_key: null,
-        state: "open",
-      },
+      anchor_artifact: { name: "plan.md", primary: false, project: "CORE", slug: "plan-md" },
+      asked_of: null,
+      id: "ask-7",
+      issue_key: null,
+      state: "open",
     },
     key: askThreadQuery("ask-7").queryKey,
   },
   threadOnOtherDocument: {
     data: {
-      ask: {
-        anchor_artifact: { name: "notes.md", primary: false, project: "OTHER", slug: "notes-md" },
-        asked_of: null,
-        id: "ask-8",
-        issue_key: null,
-        state: "open",
-      },
+      anchor_artifact: { name: "notes.md", primary: false, project: "OTHER", slug: "notes-md" },
+      asked_of: null,
+      id: "ask-8",
+      issue_key: null,
+      state: "open",
     },
     key: askThreadQuery("ask-8").queryKey,
   },
   threadOnOtherIssue: {
-    data: { ask: { asked_of: null, id: "ask-9", issue_key: "CORE-9", state: "open" } },
+    data: { asked_of: null, id: "ask-9", issue_key: "CORE-9", state: "open" },
     key: askThreadQuery("ask-9").queryKey,
   },
   threadOnOtherProject: {
-    data: { ask: { asked_of: null, id: "ask-6", issue_key: "OTHER-1", state: "open" } },
+    data: { asked_of: null, id: "ask-6", issue_key: "OTHER-1", state: "open" },
     key: askThreadQuery("ask-6").queryKey,
   },
   unrelatedDetail: { key: issueQuery("CORE-9").queryKey },
   unrelatedPanel: {
-    data: { edges: [], node: { id: "CORE-9", kind: "issue" } },
+    data: { items: [], node: { id: "CORE-9", kind: "issue" } },
     key: ["references", "to", "dispatch://CORE-9"],
   },
   userState: { key: userStateQuery().queryKey },
@@ -268,7 +262,7 @@ interface PageOptions {
   /** The rows both Inbox reads hold, in place of the two `inboxHolds` names. */
   readonly inboxRows?: readonly Partial<InboxRow>[];
   /** The rows every issue's ask list and the project document's hold, in place of their own. */
-  readonly askRows?: readonly Partial<Ask>[];
+  readonly askRows?: readonly Partial<AskV2>[];
   /** The priorities the one issue each named read holds advances, in place of its own data: an
    *  issue read (`ISSUE_READS`) answers the issue, any other read a list of that one row. */
   readonly advances?: Readonly<Partial<Record<ReadName, readonly string[]>>>;
@@ -314,9 +308,9 @@ function dataFor(name: ReadName, page: PageOptions): unknown {
     const key = page.threadsHold ? "CORE-1" : "CORE-5";
     return {
       as_of: "2026-10-26T00:00:00Z",
-      limit: 0,
+      items: [{ issue: { key, title: "Ship the release" }, kind: "comment", thread_id: "root-1" }],
+      limit: 50,
       offset: 0,
-      rows: [{ issue: { key, title: "Ship the release" }, kind: "comment", thread_id: "root-1" }],
       total: 1,
     };
   }
@@ -1828,9 +1822,10 @@ test("a log page that predates streamed events keeps them in front of it", () =>
 // the issue's claimant and the session its route reaches. The thread key holds only the ask id, so
 // the rule tests each cached thread's ask for its issue.
 
-/** A thread read as `GET /asks/{id}` answers it, cut to the one field the rule reads. */
+/** A thread read as `GET /api/v2/asks/{id}?include=thread` answers it - the ask itself, flat - cut
+ *  to the one field the rule reads. */
 function cacheThread(client: QueryClient, id: string, issueKey: string | null): void {
-  client.setQueryData(["ask-thread", id], { ask: { id, issue_key: issueKey } });
+  client.setQueryData(["ask-thread", id], { id, issue_key: issueKey });
 }
 
 function refreshedThreads(incoming: DispatchEvent): string[] {
@@ -1886,23 +1881,23 @@ test("a write that moves neither the claimant nor the route refreshes no ask thr
 
 test("a thread on its first load is judged on the response that lands: refreshed on the claimed issue, left alone elsewhere", async () => {
   const client = new QueryClient();
-  const onIssue = Promise.withResolvers<AskRead>();
-  const elsewhere = Promise.withResolvers<AskRead>();
+  const onIssue = Promise.withResolvers<AskWithThread>();
+  const elsewhere = Promise.withResolvers<AskWithThread>();
   // Neither ask is read yet, so the cache cannot tell their issues when the claim arrives.
   const loads = [
     client.prefetchQuery({ queryFn: () => onIssue.promise, queryKey: ["ask-thread", "ask-3"] }),
     client.prefetchQuery({ queryFn: () => elsewhere.promise, queryKey: ["ask-thread", "ask-4"] }),
   ];
   refreshQueries(client, eventRefreshTargets(event("issue.claimed", { key: "CORE-1" }), "alice"));
-  onIssue.resolve({ ask: { id: "ask-3", issue_key: "CORE-1" } } as unknown as AskRead);
-  elsewhere.resolve({ ask: { id: "ask-4", issue_key: "CORE-2" } } as unknown as AskRead);
+  onIssue.resolve({ id: "ask-3", issue_key: "CORE-1" } as unknown as AskWithThread);
+  elsewhere.resolve({ id: "ask-4", issue_key: "CORE-2" } as unknown as AskWithThread);
   await Promise.all(loads);
   expect(client.getQueryState(["ask-thread", "ask-3"])?.isInvalidated).toBe(true);
   expect(client.getQueryState(["ask-thread", "ask-4"])?.isInvalidated).toBe(false);
 });
 
-function threadOf(row: InboxRow, claimant: string | null = row.thread.claimant): AskRead {
-  return { ask: row, ...row.thread, claimant };
+function threadOf(row: InboxRow, claimant: string | null = row.thread.claimant): AskWithThread {
+  return { ...row, thread: { ...row.thread, claimant } };
 }
 
 test("a claim that moves while the Inbox is in flight sends that issue's later cards to the ask endpoint, until a newer Inbox lands", async () => {
@@ -1921,7 +1916,7 @@ test("a claim that moves while the Inbox is in flight sends that issue's later c
   const inboxKey = inboxQuery().queryKey;
   const reads: string[] = [];
   // The endpoint answers after the claim: every thread on CORE-1 names the new claimant.
-  const getAskThread = async (id: string): Promise<AskRead> => {
+  const getAskThread = async (id: string): Promise<AskWithThread> => {
     reads.push(id);
     const row = rows.find((candidate) => candidate.id === id) as InboxRow;
     return threadOf(row, row.issue_key === "CORE-1" ? "session-now" : null);
@@ -1932,7 +1927,7 @@ test("a claim that moves while the Inbox is in flight sends that issue's later c
     renderHook(
       () =>
         useAskAnswerForm({
-          answer: async () => row as Ask,
+          answer: async () => row,
           ask: row,
           createReply: async () => {
             throw new Error("no reply in this test");
@@ -1965,16 +1960,16 @@ test("a claim that moves while the Inbox is in flight sends that issue's later c
     const first = mountCard(onIssue);
     cards.push(first);
     await waitFor(() =>
-      expect(first.result.current.threadQuery.data?.claimant).toBe("session-now")
+      expect(first.result.current.threadQuery.data?.thread.claimant).toBe("session-now")
     );
     const other = mountCard(elsewhere);
     cards.push(other);
-    expect(other.result.current.threadQuery.data?.claimant).toBeNull();
+    expect(other.result.current.threadQuery.data?.thread.claimant).toBeNull();
     // One card's own read leaves the issue's mark for the next card on it.
     const second = mountCard(sibling);
     cards.push(second);
     await waitFor(() =>
-      expect(second.result.current.threadQuery.data?.claimant).toBe("session-now")
+      expect(second.result.current.threadQuery.data?.thread.claimant).toBe("session-now")
     );
     expect([...reads].sort()).toEqual(["ask-1", "ask-3"]);
 

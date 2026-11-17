@@ -35,10 +35,12 @@ test("a key with no mint time is never spent", () => {
 test("a key is spent for what went out under it, never for a key that carried nothing", () => {
   const spent = keyMinted(MINTED_AT);
   const now = MINTED_AT + IDEMPOTENCY_KEY_TTL_MS;
+  // Every write goes under its key, so whichever method went out under it, Dispatch has
+  // forgotten what the key named once its lifetime is over.
   expect(keySpent("POST", spent, now)).toBe(true);
   expect(keySpent("PATCH", spent, now)).toBe(true);
-  expect(keySpent("PUT", spent, now)).toBe(false);
-  expect(keySpent("DELETE", spent, now)).toBe(false);
+  expect(keySpent("PUT", spent, now)).toBe(true);
+  expect(keySpent("DELETE", spent, now)).toBe(true);
   expect(keySpent("POST", spent, now - 1)).toBe(false);
   // Nothing went out under it: Dispatch has never seen the key, so there is nothing under it
   // that a request now would write a second time.
@@ -90,7 +92,7 @@ test("a key spent before the write began carries its first attempt and stops the
   const refusal = await writeUnderKey(
     (bounds) => {
       attempts += 1;
-      bounds.sent?.({ body: { title: "A thing" }, method: "POST", path: "/api/v1/issues" });
+      bounds.sent?.({ body: { title: "A thing" }, method: "POST", path: "/api/v2/issues" });
       return Promise.reject(new ApiError(503, { code: "UNAVAILABLE", error: "down" }));
     },
     keyMinted(Date.now() - IDEMPOTENCY_KEY_TTL_MS),
@@ -100,32 +102,33 @@ test("a key spent before the write began carries its first attempt and stops the
   expect(refusal).toBeInstanceOf(SendExpiredError);
 });
 
-// The key stops only the write that sends it. A `PUT` or a `DELETE` sends none, so Dispatch
-// keeps nothing under one for it and making it again is the same change: a tab that slept past
-// the key's lifetime still makes it. A key a `POST` went out under is the write the guard is
-// for, and the write is refused before any attempt.
-test("a spent key stops a write that sends it and lets one that does not through", async () => {
+// The key stops every write that went out under it. A `PUT` and a `DELETE` go under their key as
+// a `POST` does, so once Dispatch has forgotten the key a request under it would be answered as a
+// new write rather than with what the first one did, and the write is refused before any
+// attempt, whatever its method.
+test("a spent key stops a PUT and a DELETE as it stops a POST", async () => {
   const spent = keyMinted(Date.now() - IDEMPOTENCY_KEY_TTL_MS);
-  let attempts = 0;
-  const answer = await writeUnderKey(
-    () => {
-      attempts += 1;
-      return Promise.resolve({ seq: 2 });
-    },
-    spent,
-    {
-      carried: "PUT",
-      planned: { body: { seq: 2 }, method: "PUT", path: "/api/v1/me/state/CORE-1" },
-    }
-  );
-  expect(attempts).toBe(1);
-  expect(answer).toEqual({ seq: 2 });
-
-  const refusal = await writeUnderKey(() => Promise.resolve({}), spent, {
-    carried: "POST",
-    planned: { body: { body: "hello" }, method: "POST", path: "/api/v1/issues/CORE-1/comments" },
-  }).catch((error: unknown) => error);
-  expect(refusal).toBeInstanceOf(SendExpiredError);
+  const planned = {
+    DELETE: { method: "DELETE", path: "/api/v2/issues/CORE-1/claim" },
+    POST: { body: { body: "hello" }, method: "POST", path: "/api/v2/issues/CORE-1/comments" },
+    PUT: { body: { state: "resolved" }, method: "PUT", path: "/api/v2/comments/comment-1/state" },
+  } as const;
+  for (const [method, request] of Object.entries(planned)) {
+    let attempts = 0;
+    const refusal = await writeUnderKey(
+      () => {
+        attempts += 1;
+        return Promise.resolve({});
+      },
+      spent,
+      { carried: method as keyof typeof planned, planned: request }
+    ).catch((error: unknown) => error);
+    expect({ attempts, method, refusal }).toEqual({
+      attempts: 0,
+      method,
+      refusal: expect.any(SendExpiredError),
+    });
+  }
 });
 
 // Retry of a write that ended without Dispatch's verdict asks again under its own key, which

@@ -24,19 +24,19 @@ import {
 } from "../../api/client";
 import type {
   Agent,
+  AgentMessageV2,
   BroadcastCreated,
-  CreateBroadcastInput,
+  CreateBroadcastV2Input,
   InboxRow,
   IssueSummary,
   Message,
   MessageDelivery,
   MessageDeliveryMode,
-  MessageRead,
-  UserAgentStates,
 } from "../../api/types";
 import { AuthGate } from "../../app";
 import type { BroadcastRequest } from "./broadcast-plan";
 import { messageDeliveryFields } from "./delivery-fixture";
+import { type MarkFields, markOf, marksOf } from "./marks-fixture";
 // The live view is a lazy route of the app. Its module's first compile is not what a wait is
 // for, so the module is loaded here, with the test file, and no wait measures that load.
 import "../agent-view/AgentConversationPage";
@@ -130,6 +130,7 @@ const inbox: InboxRow[] = [1, 2].map((number) => ({
   author: { id: "planner-session", kind: "session" },
   block_id: null,
   created_at: new Date(now - 60_000).toISOString(),
+  document: null,
   edited_at: null,
   id: `ask-${number}`,
   issue: { assignee: "alice", key: "CORE-1", title: "Core work" },
@@ -137,6 +138,7 @@ const inbox: InboxRow[] = [1, 2].map((number) => ({
   waiting_on_person: "alice",
   kind: "question",
   last_reply: null,
+  mark: { id: `ask-${number}`, kind: "ask", snoozed_until: null },
   multiple: false,
   opened_event_id: number,
   options: [],
@@ -152,12 +154,18 @@ const inbox: InboxRow[] = [1, 2].map((number) => ({
     route_status_reason: null,
   },
   priority: null,
-  snoozed_until: null,
   question: "What should happen next?",
+  ref: `dispatch://CORE-1/ask/ask-${number}`,
   state: "open",
   waiting_on: "human",
   urgency: "med",
 }));
+
+/** One conversation as the session's list answers it: the message, flat, with its replies, and
+ *  whether the server held it unread when the list was read. */
+function exchangeOf(root: Message, replies: Message[] = [], unread = false): AgentMessageV2 {
+  return { ...root, replies, unread };
+}
 
 function message(body: string, overrides: Partial<Message> = {}): Message {
   return {
@@ -193,12 +201,12 @@ function renderAgents({
   issues = [],
   messages = [],
 }: {
-  agentState?: UserAgentStates;
+  agentState?: Readonly<Record<string, MarkFields>>;
   inboxRows?: InboxRow[];
   initialEntry?: string;
   listedAgents?: Agent[];
   issues?: IssueSummary[];
-  messages?: MessageRead[];
+  messages?: AgentMessageV2[];
 } = {}) {
   const whoAmI = spyOn(api, "whoAmI").mockResolvedValue({
     event_head: "0",
@@ -265,7 +273,9 @@ function renderAgents({
     session_id: "planner-session",
     state: "sent",
   });
-  const getMyAgentState = spyOn(api, "getMyAgentState").mockResolvedValue(agentState);
+  const getMyAgentState = spyOn(api, "getMyAgentState").mockResolvedValue(
+    marksOf("agent", agentState)
+  );
   // Dispatch answers a state write with the session's whole state: the marks the write set over
   // the state it held, with `pinned_at` added by a pin and dropped by an unpin, and nothing left
   // unread. A mark the body leaves out rides as a null the write does not read.
@@ -273,13 +283,13 @@ function renderAgents({
     const { cleared_before: cleared, pinned, read_through: read } = input;
     const { pinned_at: held, ...rest } = agentState[session] ?? {};
     const pinnedAt = pinned == null ? held : pinned ? ANSWERED_PIN_AT : undefined;
-    return {
+    return markOf("agent", session, {
       ...rest,
       ...(cleared == null ? {} : { cleared_before: cleared }),
       ...(read == null ? {} : { read_through: read }),
       ...(pinnedAt === undefined ? {} : { pinned_at: pinnedAt }),
       unread_replies: 0,
-    };
+    });
   });
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const view = render(
@@ -555,12 +565,20 @@ test("Agents counts a card's two numbers in their own right: the reader's own, a
       }),
       builderAsk({
         id: "builder-snoozed",
-        snoozed_until: new Date(now + 3 * 60 * 60 * 1000).toISOString(),
+        mark: {
+          id: "builder-snoozed",
+          kind: "ask",
+          snoozed_until: new Date(now + 3 * 60 * 60 * 1000).toISOString(),
+        },
       }),
       builderAsk({ id: "builder-agents", waiting_on: "agent" }),
       builderAsk({
         id: "builder-agents-snoozed",
-        snoozed_until: new Date(now + 3 * 60 * 60 * 1000).toISOString(),
+        mark: {
+          id: "builder-agents-snoozed",
+          kind: "ask",
+          snoozed_until: new Date(now + 3 * 60 * 60 * 1000).toISOString(),
+        },
         waiting_on: "agent",
       }),
     ],
@@ -1289,16 +1307,13 @@ test("Agents renders each targeted message and its reply beneath the matching ca
   });
   const page = renderAgents({
     messages: [
-      {
-        message: root,
-        replies: [
-          message("Yes, it can.", {
-            author: { id: "planner-session", kind: "session" },
-            id: "message-2",
-            in_reply_to: root.id,
-          }),
-        ],
-      },
+      exchangeOf(root, [
+        message("Yes, it can.", {
+          author: { id: "planner-session", kind: "session" },
+          id: "message-2",
+          in_reply_to: root.id,
+        }),
+      ]),
     ],
   });
 
@@ -1338,7 +1353,7 @@ test("Agents keeps an issue-attached legacy reply on its issue message route", a
       },
     ],
   });
-  const page = renderAgents({ messages: [{ message: root, replies: [] }] });
+  const page = renderAgents({ messages: [exchangeOf(root)] });
 
   try {
     const planner = card(await screen.findByRole("region", { name: "Agents" }), "Planner");
@@ -1394,7 +1409,7 @@ test("Agents retain targeted-message retries and attempt history", async () => {
   );
   const page = renderAgents({
     listedAgents: steerCapableAgents,
-    messages: [{ message: root, replies: [] }],
+    messages: [exchangeOf(root)],
   });
 
   try {
@@ -1439,7 +1454,7 @@ test("Use Send instead is disabled when the target does not advertise steer", as
     ],
   });
   // The shared "planner" fixture advertises aside and btw, not steer.
-  const page = renderAgents({ messages: [{ message: root, replies: [] }] });
+  const page = renderAgents({ messages: [exchangeOf(root)] });
 
   try {
     const planner = card(await screen.findByRole("region", { name: "Agents" }), "Planner");
@@ -1487,38 +1502,37 @@ for (const [name, session, read, headline, retries] of [
   [
     "a person's direct Aside the session took as its own turn",
     "Planner",
-    {
-      message: message("Where is the dashboard?", {
+    exchangeOf(
+      message("Where is the dashboard?", {
         deliveries: [sentAttempt("message-1", "aside", accepted)],
-      }),
-      replies: [],
-    },
+      })
+    ),
     "Delivered to Planner's conversation (Aside)",
     0,
   ],
   [
     "a person's reply the session took as its own turn",
     "Planner",
-    {
-      message: message("Where is the dashboard?", {
+    exchangeOf(
+      message("Where is the dashboard?", {
         deliveries: [sentAttempt("message-1", "aside", accepted)],
       }),
-      replies: [
+      [
         message("And the logs?", {
           deliveries: [sentAttempt("message-2", "steer", accepted)],
           id: "message-2",
           in_reply_to: "message-1",
         }),
-      ],
-    },
+      ]
+    ),
     "Delivered to Planner's conversation (Send)",
     0,
   ],
   [
     "a turn the session took whose send the listener later recorded as failed",
     "Planner",
-    {
-      message: message("Where is the dashboard?", {
+    exchangeOf(
+      message("Where is the dashboard?", {
         deliveries: [
           sentAttempt("message-1", "aside", {
             ...accepted,
@@ -1527,46 +1541,44 @@ for (const [name, session, read, headline, retries] of [
             state: "failed",
           }),
         ],
-      }),
-      replies: [],
-    },
+      })
+    ),
     "Delivered to Planner's conversation (Aside)",
     0,
   ],
   [
     "a person's direct Aside the session did not accept",
     "Planner",
-    {
-      message: message("Where is the dashboard?", {
+    exchangeOf(
+      message("Where is the dashboard?", {
         deliveries: [sentAttempt("message-1", "aside")],
-      }),
-      replies: [],
-    },
+      })
+    ),
     "Sent to Planner (Aside)",
     1,
   ],
   [
     "an Aside an aside-only session got as a card",
     "Reviewer",
-    {
-      message: message("Where is the dashboard?", {
+    exchangeOf(
+      message("Where is the dashboard?", {
         deliveries: [sentAttempt("message-1", "aside", { session_id: "reviewer-session" })],
         target: "session:reviewer-session",
-      }),
-      replies: [],
-    },
+      })
+    ),
     "Sent to Reviewer (Aside)",
     1,
   ],
-] as const satisfies readonly (readonly [string, string, MessageRead, string, number])[]) {
+] as const satisfies readonly (readonly [string, string, AgentMessageV2, string, number])[]) {
   test(`Agents shows ${name} as ${retries === 0 ? "delivered to the conversation" : "sent, awaiting a reply"}`, async () => {
     const user = userEvent.setup();
     // As a current Dispatch answers: a direct message no broadcast sent reads broadcast_id null.
     const page = renderAgents({
       messages: [
         {
-          message: { ...read.message, broadcast_id: null },
-          replies: read.replies.map((reply) => ({ ...reply, broadcast_id: null })),
+          ...read,
+          broadcast_id: null,
+          replies: (read.replies ?? []).map((reply) => ({ ...reply, broadcast_id: null })),
         },
       ],
     });
@@ -1591,23 +1603,22 @@ function exchange(
   body: string,
   createdAt: string,
   reply?: { body: string; createdAt: string; unread?: boolean }
-): MessageRead {
+): AgentMessageV2 {
   const root = message(body, { created_at: createdAt, id });
-  return {
-    message: root,
-    unread: reply?.unread,
-    replies:
-      reply === undefined
-        ? []
-        : [
-            message(reply.body, {
-              author: { id: "planner-session", kind: "session" },
-              created_at: reply.createdAt,
-              id: `${id}-reply`,
-              in_reply_to: id,
-            }),
-          ],
-  };
+  return exchangeOf(
+    root,
+    reply === undefined
+      ? []
+      : [
+          message(reply.body, {
+            author: { id: "planner-session", kind: "session" },
+            created_at: reply.createdAt,
+            id: `${id}-reply`,
+            in_reply_to: id,
+          }),
+        ],
+    reply?.unread ?? false
+  );
 }
 
 test("Agents shows only the newest exchange and folds the rest behind Show N older", async () => {
@@ -1988,7 +1999,7 @@ test("a reply to an Aside-only agent after a refused Send goes as an Aside", asy
     ],
     target: "session:reviewer-session",
   });
-  const page = renderAgents({ messages: [{ message: root, replies: [] }] });
+  const page = renderAgents({ messages: [exchangeOf(root)] });
 
   try {
     const reviewer = card(await screen.findByRole("region", { name: "Agents" }), "Reviewer");
@@ -2036,16 +2047,13 @@ test("Agents replies to an issue-less exchange through the agent route, threaded
   });
   const page = renderAgents({
     messages: [
-      {
-        message: root,
-        replies: [
-          message("Yes, it can.", {
-            author: { id: "planner-session", kind: "session" },
-            id: "message-2",
-            in_reply_to: root.id,
-          }),
-        ],
-      },
+      exchangeOf(root, [
+        message("Yes, it can.", {
+          author: { id: "planner-session", kind: "session" },
+          id: "message-2",
+          in_reply_to: root.id,
+        }),
+      ]),
     ],
   });
 
@@ -2168,16 +2176,13 @@ test("a reply inherits the mode of the exchange's newest attempt even within one
   });
   const page = renderAgents({
     messages: [
-      {
-        message: root,
-        replies: [
-          message("Yes, it can.", {
-            author: { id: "planner-session", kind: "session" },
-            id: "message-2",
-            in_reply_to: root.id,
-          }),
-        ],
-      },
+      exchangeOf(root, [
+        message("Yes, it can.", {
+          author: { id: "planner-session", kind: "session" },
+          id: "message-2",
+          in_reply_to: root.id,
+        }),
+      ]),
     ],
   });
 
@@ -2245,7 +2250,7 @@ test("a root targeted-message retry on the Agents page checks the role's current
   };
   const page = renderAgents({
     listedAgents: [newReviewer],
-    messages: [{ message: root, replies: [] }],
+    messages: [exchangeOf(root)],
   });
 
   try {
@@ -2326,7 +2331,7 @@ test("a reply's targeted-message retry on the Agents page checks the thread's cu
   };
   const page = renderAgents({
     listedAgents: [newReviewer],
-    messages: [{ message: root, replies: [sessionAnswer, userReply] }],
+    messages: [exchangeOf(root, [sessionAnswer, userReply])],
   });
 
   try {
@@ -2541,7 +2546,7 @@ interface BroadcastSpy {
 }
 
 /** The i-th request the page handed `api.createBroadcast`. */
-function posted(page: BroadcastSpy, index: number): CreateBroadcastInput {
+function posted(page: BroadcastSpy, index: number): CreateBroadcastV2Input {
   const call = page.createBroadcast.mock.calls[index];
   if (call === undefined) throw new Error(`no broadcast request ${index}`);
   return call[0];
@@ -3200,13 +3205,13 @@ test("a broadcast Dispatch has not confirmed is tried again under its key until 
   const page = renderAgents();
   const region = await screen.findByRole("region", { name: "Agents" });
   page.createBroadcast
-    .mockRejectedValueOnce(new NetworkError("/api/v1/broadcasts", new TypeError("Failed to fetch")))
-    .mockRejectedValueOnce(new RequestTimeoutError("/api/v1/broadcasts", KEYED_SEND_ATTEMPT_MS))
+    .mockRejectedValueOnce(new NetworkError("/api/v2/broadcasts", new TypeError("Failed to fetch")))
+    .mockRejectedValueOnce(new RequestTimeoutError("/api/v2/broadcasts", KEYED_SEND_ATTEMPT_MS))
     .mockRejectedValueOnce(new ApiError(503, { code: "UNAVAILABLE", error: "the server is down" }))
     .mockRejectedValueOnce(new ApiError(504, { error: "gateway timeout" }))
     .mockRejectedValueOnce(new ApiError(502, { error: "bad gateway" }))
     .mockRejectedValueOnce(
-      new NetworkError("/api/v1/broadcasts", new TypeError("Failed to fetch"))
+      new NetworkError("/api/v2/broadcasts", new TypeError("Failed to fetch"))
     );
   jest.useFakeTimers();
 
@@ -3310,7 +3315,7 @@ test("a broadcast out or refused when the page reloads is there again after it",
   before.createBroadcast
     .mockImplementationOnce(refuseBroadcast)
     .mockReturnValueOnce(Promise.withResolvers<BroadcastCreated>().promise);
-  let out: CreateBroadcastInput | undefined;
+  let out: CreateBroadcastV2Input | undefined;
   try {
     const region = await screen.findByRole("region", { name: "Agents" });
     for (const body of ["Refused.", "Out."]) {
@@ -3675,7 +3680,9 @@ test("an open row a collapsed group hides marks nothing read, and opening the gr
         })),
       },
     ]);
-    page.getMyAgentState.mockResolvedValue({ "stale-session": { unread_replies: 1 } });
+    page.getMyAgentState.mockResolvedValue(
+      marksOf("agent", { "stale-session": { unread_replies: 1 } })
+    );
     await page.queryClient.invalidateQueries();
     await within(staleCard).findByText("Yes, still here.");
     // A mark the hidden row sent would go out from an effect a few microtasks on; give it a
@@ -4555,7 +4562,7 @@ test("a send pressed offline goes late with Stop trying, and lands when the netw
   const online = onlineManager.isOnline();
   const page = await renderPlannerLiveView();
   page.createAgentMessage.mockRejectedValue(
-    new NetworkError("/api/v1/agents/planner-session/messages", new TypeError("Failed to fetch"))
+    new NetworkError("/api/v2/agents/planner-session/messages", new TypeError("Failed to fetch"))
   );
   jest.useFakeTimers();
   const user = userOnFakeClock();
