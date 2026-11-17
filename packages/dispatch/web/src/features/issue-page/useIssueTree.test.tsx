@@ -1935,6 +1935,236 @@ test("a Retry of a refused tree read keeps the focus off the page's body while t
   }
 });
 
+/** The page's body as the stage draws it, around the hook a case reads the tree's state by. */
+function bodyWrapper(client: QueryClient) {
+  const route = { key: KEY, kind: "issue" } as const;
+  return ({ children }: { children: ReactNode }) => (
+    <MemoryRouter>
+      <QueryClientProvider client={client}>
+        <KeymapProvider>
+          <MarginProvider>
+            <ProvidersSlot issue={issue} route={route}>
+              <BodySlot issue={issue} route={route} />
+              {children}
+            </ProvidersSlot>
+          </MarginProvider>
+        </KeymapProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+}
+
+/** The Retry of the line the body draws for a refused tree read, once it is drawn. */
+function failedTreeRetry(): Promise<HTMLButtonElement> {
+  return waitFor(() => {
+    const found = [...(failedTreeLine()?.querySelectorAll("button") ?? [])].find(
+      (one) => one.textContent === "Retry"
+    );
+    if (found === undefined) throw new Error("the body drew no Retry for the refused tree read");
+    return found;
+  });
+}
+
+/** A keyboard reader's press of `control`, which holds the focus: the keydown of Enter, then the
+ *  click the browser makes of it. */
+async function pressByKeyboard(control: HTMLElement): Promise<void> {
+  await act(async () => {
+    control.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Enter" }));
+    control.click();
+  });
+}
+
+// A reader who sees nothing happen presses Retry again while the read the first press asked for
+// is out. The second press does nothing: the read out is not given up, no other is sent, and
+// the first one's answer is what the page draws.
+test("a second press of a Retry while its tree read is out neither gives that read up nor sends another", async () => {
+  const stubs = stubTreeReads(async (refs) => namedTargets(refs));
+  const again = Promise.withResolvers<TreeAnswer>();
+  const signals: (AbortSignal | undefined)[] = [];
+  (api.getIssueTree as Mock<typeof api.getIssueTree>).mockImplementation(
+    async (_key, _query, init) => {
+      signals.push(init?.signal);
+      if (signals.length === 1) throw new Error("the tree read was refused");
+      return again.promise;
+    }
+  );
+  const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  try {
+    const view = renderHook(() => useIssueTree(issue), { wrapper: bodyWrapper(client) });
+    const retry = await failedTreeRetry();
+    act(() => retry.focus());
+    await pressByKeyboard(retry);
+    await waitFor(() => expect(signals).toHaveLength(2));
+    expect(
+      { drawn: retry.isConnected, enabled: !retry.disabled },
+      "the Retry is drawn and enabled while its read is out"
+    ).toEqual({ drawn: true, enabled: true });
+
+    await pressByKeyboard(retry);
+    await act(async () => {
+      await Bun.sleep(50);
+    });
+    expect({
+      givenUp: signals.filter((signal) => signal?.aborted === true).length,
+      reads: signals.length,
+    }).toEqual({ givenUp: 0, reads: 2 });
+
+    await act(async () => {
+      again.resolve(treeAnswer([]));
+    });
+    await waitFor(() => expect(view.result.current.blocksHeld).toBe(true));
+    expect(failedTreeLine(), "no failed line once the read holds data").toBeNull();
+    view.unmount();
+  } finally {
+    again.resolve(treeAnswer([]));
+    for (const stub of stubs) stub.mockRestore();
+    client.clear();
+  }
+});
+
+// A keyboard reader presses Retry and the read answers: the line goes with the focus in it, and
+// the focus goes to the outline, on the row that holds the tree's tab stop, never to the page's
+// body, from which the reader has to find the way back to the outline.
+test("a Retry whose tree read answers hands the focus to the outline's tab-stop row", async () => {
+  const stubs = stubTreeReads(async (refs) => namedTargets(refs));
+  const again = Promise.withResolvers<TreeAnswer>();
+  let reads = 0;
+  (api.getIssueTree as Mock<typeof api.getIssueTree>).mockImplementation(async () => {
+    reads += 1;
+    if (reads === 1) throw new Error("the tree read was refused");
+    return again.promise;
+  });
+  const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  try {
+    const view = renderHook(() => useIssueTree(issue), { wrapper: bodyWrapper(client) });
+    const retry = await failedTreeRetry();
+    act(() => retry.focus());
+    await pressByKeyboard(retry);
+    await waitFor(() => expect(reads).toBe(2));
+
+    await act(async () => {
+      again.resolve(treeAnswer([comment]));
+    });
+    await waitFor(() => expect(view.result.current.blocksHeld).toBe(true));
+    expect(failedTreeLine(), "no failed line once the read holds data").toBeNull();
+    await act(async () => {
+      await Bun.sleep(50);
+    });
+    const row = document.body.querySelector<HTMLElement>(
+      '[role="tree"] [role="treeitem"][tabindex="0"]'
+    );
+    expect(row, "the outline draws its tab-stop row").not.toBeNull();
+    expect(document.activeElement, "the focus is on the outline's tab-stop row").toBe(row);
+    view.unmount();
+  } finally {
+    again.resolve(treeAnswer([]));
+    for (const stub of stubs) stub.mockRestore();
+    client.clear();
+  }
+});
+
+// A keyboard reader presses Retry and the read is refused again: the line stays as it was, the
+// same Retry under the same focus, and that Retry reads the tree again when it is next pressed.
+test("a Retry whose tree read is refused again leaves the line, its Retry and the focus where they were", async () => {
+  const stubs = stubTreeReads(async (refs) => namedTargets(refs));
+  const again = Promise.withResolvers<TreeAnswer>();
+  let reads = 0;
+  (api.getIssueTree as Mock<typeof api.getIssueTree>).mockImplementation(async () => {
+    reads += 1;
+    if (reads === 1) throw new Error("the tree read was refused");
+    return again.promise;
+  });
+  const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  try {
+    const view = renderHook(() => useIssueTree(issue), { wrapper: bodyWrapper(client) });
+    const retry = await failedTreeRetry();
+    const line = failedTreeLine();
+    act(() => retry.focus());
+    await pressByKeyboard(retry);
+    await waitFor(() => expect(reads).toBe(2));
+
+    await act(async () => {
+      again.reject(new Error("the tree read was refused again"));
+      await again.promise.catch(() => undefined);
+    });
+    await waitFor(() => expect(client.getQueryState(issueTreeKey(KEY))?.status).toBe("error"));
+    await act(async () => {
+      await Bun.sleep(20);
+    });
+    expect(failedTreeLine(), "the line drawn before the press").toBe(line);
+    expect(
+      { drawn: retry.isConnected, enabled: !retry.disabled },
+      "the Retry pressed, drawn and enabled"
+    ).toEqual({ drawn: true, enabled: true });
+    expect(document.activeElement, "the focus on the Retry pressed").toBe(retry);
+    expect(reads, "no read but the Retry's").toBe(2);
+
+    await pressByKeyboard(retry);
+    await waitFor(() => expect(reads, "the next press reads the tree again").toBe(3));
+    view.unmount();
+  } finally {
+    again.resolve(treeAnswer([]));
+    for (const stub of stubs) stub.mockRestore();
+    client.clear();
+  }
+});
+
+// The tree read is refused with no answer held, and the reader is on the line's Retry. A read of
+// the tree the reader did not ask for begins, as an event's refresh begins one through the page's
+// scheduler: while it is out the line stays as it was, the same Retry, enabled, under the same
+// focus, and a press of it sends no other read. Once the read answers the line goes.
+test("a read the reader did not ask for keeps the refused read's line and its focused Retry while it is out", async () => {
+  const stubs = stubTreeReads(async (refs) => namedTargets(refs));
+  const unasked = Promise.withResolvers<TreeAnswer>();
+  let reads = 0;
+  (api.getIssueTree as Mock<typeof api.getIssueTree>).mockImplementation(async () => {
+    reads += 1;
+    if (reads === 1) throw new Error("the tree read was refused");
+    return unasked.promise;
+  });
+  const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  try {
+    const view = renderHook(() => useIssueTree(issue), { wrapper: bodyWrapper(client) });
+    const retry = await failedTreeRetry();
+    const line = failedTreeLine();
+    act(() => retry.focus());
+
+    act(() => {
+      refreshQueries(client, [{ exact: true, queryKey: issueTreeKey(KEY) }]);
+    });
+    await waitFor(() => expect(reads).toBe(2), { timeout: 3_000 });
+    await act(async () => {
+      await Bun.sleep(20);
+    });
+    expect(client.getQueryState(issueTreeKey(KEY))?.fetchStatus, "the read is out").toBe(
+      "fetching"
+    );
+    expect(failedTreeLine(), "the line drawn before the read began").toBe(line);
+    expect(
+      { drawn: retry.isConnected, enabled: !retry.disabled },
+      "the Retry, drawn and enabled"
+    ).toEqual({ drawn: true, enabled: true });
+    expect(document.activeElement, "the focus on the Retry").toBe(retry);
+
+    await pressByKeyboard(retry);
+    await act(async () => {
+      await Bun.sleep(50);
+    });
+    expect(reads, "a press while the read is out sends no other").toBe(2);
+
+    await act(async () => {
+      unasked.resolve(treeAnswer([]));
+    });
+    await waitFor(() => expect(view.result.current.blocksHeld).toBe(true));
+    expect(failedTreeLine(), "no failed line once the read holds data").toBeNull();
+    view.unmount();
+  } finally {
+    unasked.resolve(treeAnswer([]));
+    for (const stub of stubs) stub.mockRestore();
+    client.clear();
+  }
+});
+
 // The page's stage mounts the tree's slot again on every
 // press of a view, and under the app's `staleTime` a read is stale 30 s after it answered
 // (`main.tsx`). The tree's reads are kept fresh by events instead: the slot mounted again more

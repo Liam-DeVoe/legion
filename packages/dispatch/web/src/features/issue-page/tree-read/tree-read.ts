@@ -166,12 +166,18 @@ export interface TreeRead {
    *  blocks here and costs no request of its own; the same value for a role until the answer or
    *  the read's state changes. */
   readonly blocksOf: (role: TreeFilter) => TreeBlocksRead;
-  /** Whether the read failed with nothing held: refused before it first answered, its retries
-   *  spent. A refetch that fails over a held answer is no such failure, since the page still
-   *  draws what it holds. */
+  /** Whether the read was refused with no answer held, its retries spent, and holds none yet:
+   *  from that refusal until a read answers, the reads asked again in between included, whoever
+   *  asked them - the reader's Retry, an event, the live feed coming back, a focus while the
+   *  feed is down. TanStack puts a query that holds no answer back to `pending` while it is read
+   *  again, so this reads its count of refusals instead, which only a reset of the query clears.
+   *  A refetch that fails over a held answer is no such failure, since the page still draws what
+   *  it holds. */
   readonly failed: boolean;
-  /** Whether the read has neither answered nor failed yet: what holds back a read that waits on
-   *  every other read of the page, as the batched name read does (`useIssueTree`). */
+  /** Whether the read holds no answer and has not settled since its last read began: its first
+   *  read is out, or a read asked again after a refusal is, while `failed` holds too. It is what
+   *  holds back a read that waits on every other read of the page, as the batched name read does
+   *  (`useIssueTree`). */
   readonly pending: boolean;
   /** Reads the tree again, every page from the first: what a Retry of a failed read asks. */
   readonly refetch: () => Promise<unknown>;
@@ -187,6 +193,7 @@ export interface TreeRead {
 export function useTreeRead(issue: IssueDetails): TreeRead {
   const {
     data: answer,
+    errorUpdateCount,
     isError,
     isPending,
     isSuccess,
@@ -206,11 +213,11 @@ export function useTreeRead(issue: IssueDetails): TreeRead {
       blocksHeld: answer !== undefined,
       blocksRead: isSuccess,
       blocksOf,
-      failed: isError && answer === undefined,
+      failed: answer === undefined && errorUpdateCount > 0,
       pending: isPending,
       refetch,
     }),
-    [answer, blocksOf, isError, isPending, isSuccess, refetch]
+    [answer, blocksOf, errorUpdateCount, isPending, isSuccess, refetch]
   );
 }
 
