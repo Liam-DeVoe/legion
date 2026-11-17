@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -18,9 +19,11 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
+	"github.com/sjawhar/envoy/internal/dispatch/admission"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // admissionRendering is what a document socket's admission check made of the state it read: the
@@ -50,27 +53,72 @@ type preloadedDocument struct {
 	rendered admissionRendering
 }
 
-// takePreload is the update a socket's admission check loaded for room, with what that check read
-// and rendered of it (admissionRendering, whose rendering is nil for an empty history), while the
-// durable head is still the one it loaded: every write that changes a document's stored state
-// raises its head (an append, a rebuild), and compaction keeps both the head and the state. The
-// head is read from the store, one query. A stale or absent preload is no answer, and the caller
-// loads the room itself. Either way the entry gives up the state it held, and no preload outlives
-// this load of the room: one offered while the load runs is swept where the load records itself
-// (onLoadDocument), and one offered after is not stored (offerPreload).
-func (s *Service) takePreload(room string) (persistence.LoadResult, admissionRendering, bool) {
+// takePreload puts on load, room's load record, the update a socket's admission check loaded for
+// room, with what that check read and rendered of it (admissionRendering, whose rendering is nil
+// for an empty history), and reports whether it did, which it does while the durable head is
+// still the one that check loaded: every write that changes a document's stored state raises its
+// head (an append, a rebuild), and compaction keeps both the head and the state. A stale or absent
+// preload is no answer, and the caller loads the room itself. Either way the entry gives up the
+// state it held, and no preload outlives this load of the room: one offered while the load runs
+// is swept where the load records itself (onLoadDocument), and one offered after is not stored
+// (offerPreload).
+//
+// The head is read from the store in one statement on the pool that owns loads, beside the
+// document's pending-settlement row the room's load reads next (preloadCheckStatement). What it
+// read of that row goes on the record whether or not the preload is current
+// (roomLoad.readSettlement), with where the room's record stood as to its edit source just before
+// the read (markEditSource), so the load's hook reads the row no second time (onLoadDocument). A
+// load that takes a socket's preload therefore reads the store once: the socket's admission read
+// the history, and the issue (admittedIssueRead). A read that fails is the load's failure,
+// returned to its caller (LoadDoc): nothing was read to load from, and the pool that refused it is
+// the one a read of the whole history would wait on next.
+func (s *Service) takePreload(room string, load *roomLoad) (bool, error) {
 	value, ok := s.preloads.LoadAndDelete(room)
 	if !ok {
-		return persistence.LoadResult{}, admissionRendering{}, false
+		return false, nil
 	}
 	preload := value.(*preloadedDocument)
 	loaded, rendered := preload.loaded, preload.rendered
 	preload.loaded, preload.rendered = persistence.LoadResult{}, admissionRendering{}
-	head, err := s.persistence.Head(context.Background(), room)
-	if err != nil || head != loaded.Version {
-		return persistence.LoadResult{}, admissionRendering{}, false
+	settlement := &owedSettlement{mark: s.markEditSource(room)}
+	head, err := s.readPreloadCheck(room, settlement)
+	if err != nil {
+		return false, err
 	}
-	return loaded, rendered, true
+	load.readSettlement(settlement)
+	if head != loaded.Version {
+		return false, nil
+	}
+	load.read(loaded.Version, loaded.Update, rendered)
+	return true, nil
+}
+
+// preloadCheckStatement reads, for the room $1 names, what a load that takes a socket's preload
+// reads of the store (takePreload): the head, as PgVersioned.Head reads it (headVersion), and
+// whether the document's pending-settlement row stands, with the latest edit source it names, as
+// readOwedSettlement reads that row.
+const preloadCheckStatement = `
+	select ` + headVersion + `, pending.artifact_id is not null, pending.last_actor
+	from (values (1)) as one
+		left join doc_settlements_pending pending on pending.artifact_id = $1`
+
+// readPreloadCheck reads preloadCheckStatement for room on the pool that owns loads, where
+// PgVersioned.Head reads the head, and puts what it read of the pending-settlement row on
+// settlement.
+func (s *Service) readPreloadCheck(room string, settlement *owedSettlement) (persistence.Version, error) {
+	rooms, err := s.store.Pool.Rooms()
+	if err != nil {
+		return 0, err
+	}
+	var head int64
+	var encoded []byte
+	if err := rooms.QueryRow(context.Background(), preloadCheckStatement, room).Scan(&head, &settlement.owed, &encoded); err != nil {
+		return 0, fmt.Errorf("read document head and pending settlement: %w", err)
+	}
+	if settlement.lastActor, err = decodeOwedEditSource(encoded); err != nil {
+		return 0, err
+	}
+	return persistence.Version(head), nil
 }
 
 // documentSchemaCloseCode closes a document websocket whose room is outside the Proof schema
@@ -157,6 +205,13 @@ func socketRoom(r *http.Request) string {
 // load failed or panicked - gives it back. The room's place the socket gives back however it ends,
 // and a room ygo loaded keeps a place of its own until it unloads (releaseUnloadedRoom).
 //
+// A socket whose document could not be admitted is refused 503 with Retry-After before the upgrade
+// (refuseUnservedSocket), and so is one whose room's load, once ygo joins the socket to the room,
+// found a pool busy or met a request the server ended: ygo answers such a join with a 500 of its
+// own, which the socket's writer answers in its place (socketAnswerWriter). A cold socket's load
+// reads the store once, in the statement that checks its preload against the head (takePreload),
+// so it is refused within one acquire bound of the pool it found busy.
+//
 // The room's name has to be the document's id as Dispatch writes it, lower case and hyphenated,
 // and a name uuid.Parse takes in any other spelling - upper case, braced, a dash-free run of hex,
 // urn:uuid:<id> - is refused below rather than rewritten. That is what makes one document one
@@ -229,6 +284,9 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}()
 	held := s.holdForAdmission(room, issue)
 	defer s.releaseAdmission(room, held)
+	// A load of the room that failed before this socket held its record failed no join of this
+	// socket's (socketAnswerWriter.refuse).
+	failedBefore := held.latestLoadFailure()
 	if s.afterSocketIssueRead != nil {
 		s.afterSocketIssueRead(room)
 	}
@@ -256,24 +314,114 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			accesslog.ClientGone(r.Context())
 			return
 		}
-		// The 503 alone names neither the room nor what refused it, so a refusal that reached a
-		// person could be placed only from a neighbouring line: the reason is logged here, with
-		// the pool the admission's load read through (loadPoolName), and with what ended the
-		// request's context when something did.
 		attrs := []any{"room", room, "pool", loadPoolName(r.Context()), "error", err}
 		if cause != nil {
 			attrs = append(attrs, "cause", cause)
 		}
-		slog.Warn("dispatch: a document socket was refused: its document could not be admitted", attrs...)
-		http.Error(w, ErrServiceUnavailable.Error(), http.StatusServiceUnavailable)
+		refuseUnservedSocket(w, "dispatch: a document socket was refused: its document could not be admitted", attrs...)
 		return
 	}
 	defer withdraw()
 	connection.admission.documentSince = documentSince
 	ctx = context.WithValue(ctx, connectionContextKey{}, connection)
 	// The awareness clients the socket's peer may announce are bounded before ygo reads its
-	// frames (awareness_limit.go).
-	s.srv.ServeHTTP(&awarenessLimitWriter{ResponseWriter: w, room: room}, r.WithContext(ctx))
+	// frames (awareness_limit.go), and a join whose room's load fails is answered with the
+	// socket's own refusal where it has one (socketAnswerWriter).
+	s.srv.ServeHTTP(&socketAnswerWriter{
+		awarenessLimitWriter: awarenessLimitWriter{ResponseWriter: w, room: room},
+		request:              r,
+		socket:               ctx,
+		held:                 held,
+		failedBefore:         failedBefore,
+	}, r.WithContext(ctx))
+}
+
+// refuseUnservedSocket refuses a document socket the server could not serve now, before any
+// upgrade: 503 with Retry-After (admission.RetryAfter), as the API's 503s carry it, and why at
+// WARN with attrs. The 503 alone names neither the room nor what refused it, so a refusal that
+// reached a person could be placed only from a neighbouring line: attrs carry the room, the pool
+// its document was read through (loadPoolName), the error, and what ended the request's context
+// when something did.
+func refuseUnservedSocket(w http.ResponseWriter, message string, attrs ...any) {
+	slog.Warn(message, attrs...)
+	w.Header().Set("Retry-After", admission.RetryAfter)
+	http.Error(w, ErrServiceUnavailable.Error(), http.StatusServiceUnavailable)
+}
+
+// socketAnswerWriter is a document socket's response writer while ygo serves the socket: the
+// awareness bound's writer (awarenessLimitWriter), whose Hijack holds the upgraded socket to its
+// clients, and the socket's own answer to a join whose room did not load. ygo answers that join
+// 500 "room unavailable", whatever ended the load (sjawhar/ygo v1.55.1-sami.2,
+// provider/websocket/server.go:2088-2096), and offers no hook on that answer, so the answer is
+// decided where ygo writes it: a WriteHeader of 500 is that one or the upgrader's own failure to
+// hijack the connection (gorilla/websocket's returnError), which no load recorded and refuse leaves
+// as it is. When refuse answers in ygo's place, the body ygo writes next is dropped. Every other
+// answer, and the upgrade, pass through as ygo wrote them.
+type socketAnswerWriter struct {
+	awarenessLimitWriter
+	// request is the socket's request as ServeHTTP took it, whose context tells a browser that
+	// left from a request the server ended, and socket the context ygo serves the join on. held is
+	// the room's record the socket's admission holds, and failedBefore the load failure that record
+	// held as the admission took it (latestLoadFailure).
+	request      *http.Request
+	socket       context.Context
+	held         *roomState
+	failedBefore *roomLoadFailure
+	// answered is set once refuse has answered in ygo's place.
+	answered bool
+}
+
+func (w *socketAnswerWriter) WriteHeader(status int) {
+	if status == http.StatusInternalServerError && !w.answered && w.refuse() {
+		w.answered = true
+		return
+	}
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *socketAnswerWriter) Write(p []byte) (int, error) {
+	if w.answered {
+		return len(p), nil
+	}
+	return w.ResponseWriter.Write(p)
+}
+
+// refuse gives the socket's own answer in place of ygo's 500 to a join whose room did not load,
+// when it has one, and reports whether it did:
+//
+//   - the browser left while the room loaded (the request's context ended with net/http's own
+//     context.Canceled): nothing is written, nobody being left to read it, and the access line
+//     carries the client gone (accesslog.ClientGone), as for a browser that left while its
+//     admission loaded the document (ServeHTTP);
+//   - the server ended the socket's request while its room loaded - the heartbeat's re-resolution
+//     of the caller failed (api's whileCallerResolves), which under load is a busy pool, or a
+//     re-check revoked the socket's admission (RunSchemaAdmission) - which ends the join's wait
+//     for the load, or the load's own reads: refused, with what ended it, as the admission refuses
+//     a request the server ended under it;
+//   - a load of the room failed, since the admission took the room's record, on a pool that could
+//     not serve it (store.Unserved: no connection came free within the pool's acquire bound, or
+//     the database stopped answering under it): refused, with the load's error. ygo hands every
+//     join waiting on a load that load's error, so this is the socket's own load's failure or that
+//     of the load its join waited on - a settlement's warm-up, a committed write's publish, another
+//     socket's - and the load recorded it on the room's record (noteLoadFailed).
+//
+// Any other failure keeps ygo's 500, since no bound of a pool made it: a history that does not
+// decode, a room being rebuilt, a load that panicked, a room that failed for one of those.
+func (w *socketAnswerWriter) refuse() bool {
+	if context.Cause(w.request.Context()) == context.Canceled {
+		accesslog.ClientGone(w.request.Context())
+		return true
+	}
+	attrs := []any{"room", w.room, "pool", store.RoomsPool}
+	if err := w.socket.Err(); err != nil {
+		attrs = append(attrs, "error", err, "cause", context.Cause(w.socket))
+	} else if failure := w.held.loadFailureSince(w.failedBefore); store.Unserved(w.socket, failure) {
+		attrs = append(attrs, "error", failure)
+	} else {
+		return false
+	}
+	refuseUnservedSocket(w.ResponseWriter, "dispatch: a document socket was refused: its room could not load", attrs...)
+	return true
 }
 
 // ProcessHeader names, on every answer to a document socket's request and on its upgrade above

@@ -144,6 +144,13 @@ type roomState struct {
 	// returns, and the replacement is not the reserving close's to answer for (closeRoomBehindHead).
 	reloading   bool
 	reservedFor *crdt.Doc
+	// loadFailure is the latest failure of a load of this room: the error its read of the store or
+	// its load hook ended it with (servicePersistenceAdapter.LoadDoc, onLoadDocument;
+	// noteLoadFailed). ygo answers every join waiting on a failed load with its own 500, and this is
+	// what the socket of such a join reads to tell a pool that was busy from a load that broke
+	// (socketAnswerWriter.refuse). It is never cleared: a socket reads only a failure recorded
+	// since its admission took this record (loadFailureSince), so an older one answers for nothing.
+	loadFailure *roomLoadFailure
 	// released marks a state the service has forgotten (forgetLocked), so a lookup that found it
 	// before it went takes the document's current state instead.
 	released bool
@@ -752,6 +759,42 @@ func (s *Service) releaseAdmission(room string, state *roomState) {
 	state.mu.Lock()
 	state.admitting--
 	s.unlockState(room, state)
+}
+
+// roomLoadFailure is one failed load of a room as the load recorded it on the room's record
+// (noteLoadFailed): the error it ended with. Each failure is a record of its own, so a socket tells
+// a failure recorded since it looked (loadFailureSince) from the one it found there.
+type roomLoadFailure struct{ err error }
+
+// noteLoadFailed records err, what a load of room ended with, on room's record, for the sockets
+// whose joins ygo answers with that load's failure (socketAnswerWriter.refuse). A document with no
+// record has no socket being admitted to it, so nothing is recorded for it.
+func (s *Service) noteLoadFailed(room string, err error) {
+	state := s.lockExistingState(room)
+	if state == nil {
+		return
+	}
+	state.loadFailure = &roomLoadFailure{err: err}
+	s.unlockState(room, state)
+}
+
+// latestLoadFailure is the load failure last recorded on state (noteLoadFailed), nil for none.
+func (state *roomState) latestLoadFailure() *roomLoadFailure {
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	return state.loadFailure
+}
+
+// loadFailureSince is the error of the load failure last recorded on state, unless that is before,
+// the one a socket found there as its admission took the record: nil when no load of the room has
+// failed since.
+func (state *roomState) loadFailureSince(before *roomLoadFailure) error {
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if state.loadFailure == before {
+		return nil
+	}
+	return state.loadFailure.err
 }
 
 // roomSlots is the places the room cap (roomCap) counts: every room ygo holds, from its load

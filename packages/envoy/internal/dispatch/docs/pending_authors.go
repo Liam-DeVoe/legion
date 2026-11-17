@@ -750,7 +750,9 @@ func readLastPerson(ctx context.Context, q Queryer, room string) (*model.Actor, 
 // readOwedSettlement reports whether room owes a settlement and the latest edit source its row
 // names. A room's load reads it on the pool reserved for loads and takes no advisory lock, which
 // a durable writer can hold for as long as its transaction runs; a settlement reads the source in
-// its own transaction under that lock (readSettlementEditSource).
+// its own transaction under that lock (readSettlementEditSource). A load that takes a socket's
+// preload reads the same row in the statement that checks the preload's head instead
+// (preloadCheckStatement).
 func readOwedSettlement(ctx context.Context, q Queryer, room string) (owed bool, lastActor *model.Actor, err error) {
 	var encoded []byte
 	err = q.QueryRow(ctx, `
@@ -762,14 +764,34 @@ func readOwedSettlement(ctx context.Context, q Queryer, room string) (owed bool,
 	if err != nil {
 		return false, nil, fmt.Errorf("read the document's pending settlement: %w", err)
 	}
+	if lastActor, err = decodeOwedEditSource(encoded); err != nil {
+		return false, nil, err
+	}
+	return true, lastActor, nil
+}
+
+// decodeOwedEditSource is the latest edit source a pending-settlement row's last_actor names, nil
+// for a row that names none.
+func decodeOwedEditSource(encoded []byte) (*model.Actor, error) {
 	if encoded == nil {
-		return true, nil, nil
+		return nil, nil
 	}
 	var actor model.Actor
 	if err := json.Unmarshal(encoded, &actor); err != nil {
-		return false, nil, fmt.Errorf("decode the document's latest edit source: %w", err)
+		return nil, fmt.Errorf("decode the document's latest edit source: %w", err)
 	}
-	return true, &actor, nil
+	return &actor, nil
+}
+
+// owedSettlement is what a room's load read of the document's pending-settlement row
+// (readOwedSettlement): whether the document owes a settlement and the latest edit source the row
+// names, with where the room's record stood as to its edit source just before the read (mark),
+// which tells the load whether it may take the row's source in place of the record's own
+// (rowIsCurrent).
+type owedSettlement struct {
+	mark      editSourceMark
+	owed      bool
+	lastActor *model.Actor
 }
 
 // readSettlementEditSource reads, for a settlement in its own transaction under the document's

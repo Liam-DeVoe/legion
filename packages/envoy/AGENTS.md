@@ -1173,6 +1173,8 @@ a connection's place is its count from the reservation to `removeConnection`.
 Each is a count kept as rooms load and unload and browsers come and go, so admission walks no rooms.
 A socket's admission resolves the caller and reads the issue once each and hands both to ygo's authorization of the same request;
 a warm room's schema verdict is the one its replica observer recorded, and a cold open renders its document once.
+A cold socket's room load reads the store once, the head its preload is checked against and the document's pending-settlement row in one statement (`takePreload`), and a socket whose document could not be admitted, or whose room's load found a pool busy or met a request the server ended, is refused `503` with `Retry-After: 1` and a WARN line (`a document socket was refused`) naming the room, the pool and the error, never ygo's `500 room unavailable`, whether the load was its own or one its join waited on, a settlement's warm-up or a publish (`refuseUnservedSocket`, `socketAnswerWriter`);
+a load that failed any other way - a history that does not decode, a room being rebuilt - is still ygo's `500`.
 A room an `Apply` opened with no peer is idle-evicted only by a ygo whose `Apply` stamps the empty room idle (LEGION-484).
 `PgVersioned`'s per-room locks likewise live only while a caller holds or waits for one.
 

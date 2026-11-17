@@ -158,7 +158,12 @@ type servicePersistenceAdapter struct {
 // load's record (roomLoad.read), and the room's own load hook decodes it (bootstrapLoadedState,
 // whose comment states how), because ygo's own apply runs the format cleanup a remote apply runs
 // and the room's stored history already holds every cleanup the room made. A preload
-// (takePreload), which the socket's admission check decoded, goes on the record as a read would.
+// (takePreload), which the socket's admission check decoded, goes on the record as a read would,
+// once the one statement that checks it against the head has read that head and the document's
+// pending-settlement row, which goes on the record too. A load whose preload check fails has read
+// nothing it could load from, and fails with that read's error: reading the whole history again
+// on the pool that just refused the check waited out that pool's bound a second time before the
+// socket that offered the preload was answered.
 //
 // The record also carries the history's size and what a socket's admission made of that history
 // when the load takes that socket's preload: the tree it read from it and the rendering it made of
@@ -184,7 +189,8 @@ type servicePersistenceAdapter struct {
 // healthy, which left the failure to whichever caller's Apply met it - a caller that cannot tell
 // the load it waited on from the load that began after it, since ygo removes the room before any
 // waiter wakes (server.go:2025-2034). Recovered here, a load's failure is the load's own
-// (sjawhar/legion#2519).
+// (sjawhar/legion#2519). It is recorded on the room's record before the room fails
+// (noteLoadFailed), for the sockets whose joins ygo answers with it.
 func (a *servicePersistenceAdapter) LoadDoc(room string) (_ []byte, err error) {
 	load := a.service.beginRoomLoad(room)
 	defer func() {
@@ -192,12 +198,12 @@ func (a *servicePersistenceAdapter) LoadDoc(room string) (_ []byte, err error) {
 			err = fmt.Errorf("panic: %v", recovered)
 		}
 		if err != nil {
+			a.service.noteLoadFailed(room, err)
 			a.service.failRoomLoad(room, load, err)
 		}
 	}()
-	if loaded, rendered, ok := a.service.takePreload(room); ok {
-		load.read(loaded.Version, loaded.Update, rendered)
-		return nil, nil
+	if taken, err := a.service.takePreload(room, load); err != nil || taken {
+		return nil, err
 	}
 	result, err := a.store.Load(context.Background(), room)
 	if err == nil {
@@ -524,10 +530,15 @@ func (s *Service) onLoadDocument(ctx context.Context, room string, doc *crdt.Doc
 	// created the placeholder owns the load and every other caller for that name waits on its
 	// ready barrier (sjawhar/ygo v1.55.1-sami.2, provider/websocket/server.go:1744-1764) - and
 	// this runs on that load's own goroutine, so the record read here is this load's own
-	// (sjawhar/legion#2519).
+	// (sjawhar/legion#2519). Whatever ends it, the failure is recorded on the room's record for
+	// the sockets whose joins ygo answers with it (noteLoadFailed).
 	load, held := s.roomLoads.Load(room)
 	defer func() {
-		if err != nil && held {
+		if err == nil {
+			return
+		}
+		s.noteLoadFailed(room, err)
+		if held {
 			s.roomLoads.CompareAndDelete(room, load)
 		}
 	}()
@@ -599,11 +610,24 @@ func (s *Service) onLoadDocument(ctx context.Context, room string, doc *crdt.Doc
 	// transaction runs: the row it reads is written whole by each writer's transaction, so a
 	// plain read sees one writer's commit or the one before it. What the record has recorded by
 	// then is taken first, so an edit source recorded after the read is told from one before it.
-	mark := s.markEditSource(room)
-	owed, lastActor, err := readOwedSettlement(ctx, rooms, room)
-	if err != nil {
-		return err
+	// A load that checked a socket's preload against the head read the row in that statement, and
+	// its record holds what it read and where the room's record stood just before (takePreload):
+	// that is this load's read of the row, so an admitted cold socket's load reads the rooms pool
+	// once.
+	var checked *owedSettlement
+	if held {
+		checked = load.(*roomLoad).takeSettlement()
 	}
+	var settlement owedSettlement
+	if checked != nil {
+		settlement = *checked
+	} else {
+		settlement.mark = s.markEditSource(room)
+		if settlement.owed, settlement.lastActor, err = readOwedSettlement(ctx, rooms, room); err != nil {
+			return err
+		}
+	}
+	mark, owed, lastActor := settlement.mark, settlement.owed, settlement.lastActor
 	// The room is still loading: ygo hands its document to no peer or caller until this hook
 	// returns (sjawhar/ygo v1.55.1-sami.2, provider/websocket/server.go:1903-1994: loadRoom closes
 	// the room's ready barrier after it), so nothing writes the tree while this walks it. Its

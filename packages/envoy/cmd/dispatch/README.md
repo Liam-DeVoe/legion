@@ -4840,6 +4840,8 @@ A write whose client goes away ends there and then instead: no commit is started
 A wait for a database connection is bounded on every pool but three: 3 seconds for a request's, a document load's, a live reader's or the event horizon's, 30 for background work, settlements, compaction, the display tree fill and the rooms' appends, 2 for a lease and 10 for a LISTEN dial.
 The outbox's, the registry's and the health probe's acquires have no bound: the registry is its pool's only caller, the outbox's pool has one connection for each of its two callers - its scan and its publisher hold's renewal - each running one statement or transaction at a time, so neither waits behind the other, and the probe bounds its own wait, dial and query together at 2 seconds instead.
 The document and delivery websockets are neither admitted nor bounded.
+A document socket the server cannot serve now - its document could not be admitted, or its room's load found a pool busy or met a request the server ended while the room loaded - is refused `503` with `Retry-After: 1` before it upgrades, never ygo's `500 room unavailable`, and logged at WARN (`a document socket was refused`) with the room, the pool and the error;
+a cold socket's room load reads the database once, so a pool with no connection free refuses the socket within that pool's 3 seconds.
 
 A slow client is bounded as well, so that it holds neither the admission units it was admitted with nor the database connection its read pinned for as long as it cares to, while a client that is merely slow is served in full.
 A request's body, and a read's answer, are bounded on the silence between their bytes and on the rate those bytes keep, never on how long the whole transfer takes:

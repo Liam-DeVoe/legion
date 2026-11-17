@@ -1,0 +1,3 @@
+kind: Fixed
+body: |-
+  A document socket whose room's load finds a database pool busy, or whose request the server ends while the room loads, is now refused `503` with `Retry-After: 1` and a WARN line naming the room, the pool and the error, and a cold socket's load reads the database once, so a busy pool refuses it after one 3-second wait for a connection where ygo answered `500 room unavailable` after two.
