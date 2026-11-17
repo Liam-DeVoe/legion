@@ -3,6 +3,7 @@ package bus
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -262,5 +263,73 @@ func TestAPullWhoseConnectionDropsEndsAtTheDrop(t *testing.T) {
 		t.Logf("the pull whose connection dropped ended %s after the drop: %v", took, err)
 	case <-time.After(lostReplyWait):
 		t.Fatalf("the pull whose connection dropped was still waiting %s after the drop, want it ended within %s", lostReplyWait, lostReplyWithin)
+	}
+}
+
+// A pull whose connection drops in the moment between its read of the connection's life and its
+// wait still ends within 100 ms of the drop with ErrConnectionLost: the wait it then makes is on
+// that life, which has ended. The row forces that moment (beforeWait): the drop is made there and
+// the hook returns only once the life has ended, so the wait begins on a life already over.
+//
+// The control is the same row at 2b8a5d7cbb with the hook placed in that moment: that take read
+// the life a second time after its loss check, found it ended, took that for a stopped client's and
+// waited on nothing, so the pull heard of the loss only when it stalled, at twice
+// sessionPullHeartbeat (30 s).
+func TestAPullWhoseConnectionDropsBeforeItsWaitStillEndsAtTheDrop(t *testing.T) {
+	hold := testnats.StartReplyHold(t, testnats.URL(t))
+	owner, err := ConnectOwningStream([]string{hold.URL()}, WithReplicas(1))
+	if err != nil {
+		t.Fatalf("connect the stream's owner: %v", err)
+	}
+	t.Cleanup(owner.Close)
+	consumers, err := ConnectSessionConsumers([]string{hold.URL()}, 0, nil)
+	if err != nil {
+		t.Fatalf("connect the session consumers: %v", err)
+	}
+	t.Cleanup(consumers.Close)
+	const sessionID = "ses_lost_pull_before_wait"
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := consumers.Ensure(ctx, sessionID, []string{contracts.AgentSubject(sessionID)}, 0); err != nil {
+		t.Fatalf("create the session's consumer: %v", err)
+	}
+	pull, err := consumers.Pull(ctx, sessionID)
+	if err != nil {
+		t.Fatalf("pull the session's consumer: %v", err)
+	}
+	t.Cleanup(pull.Stop)
+	dropped := make(chan time.Time, 1)
+	var once sync.Once
+	pull.beforeWait = func() {
+		once.Do(func() {
+			dropped <- time.Now()
+			hold.Drop()
+			for deadline := time.Now().Add(time.Second); pull.life.Err() == nil && time.Now().Before(deadline); {
+				time.Sleep(time.Millisecond)
+			}
+		})
+	}
+	answered := make(chan error, 1)
+	go func() {
+		_, err := pull.Next(context.Background())
+		answered <- err
+	}()
+	var at time.Time
+	select {
+	case at = <-dropped:
+	case err := <-answered:
+		t.Fatalf("the pull answered %v before it waited", err)
+	case <-time.After(lostReplyWait):
+		t.Fatalf("the pull made no wait within %s", lostReplyWait)
+	}
+	select {
+	case err := <-answered:
+		took := time.Since(at)
+		if !errors.Is(err, ErrConnectionLost) || took > lostReplyWithin {
+			t.Fatalf("the pull whose connection dropped before its wait ended %s after the drop with %v, want ErrConnectionLost within %s", took, err, lostReplyWithin)
+		}
+		t.Logf("the pull whose connection dropped before its wait ended %s after the drop: %v", took, err)
+	case <-time.After(lostReplyWait):
+		t.Fatalf("the pull whose connection dropped before its wait was still waiting %s after the drop, want it ended within %s", lostReplyWait, lostReplyWithin)
 	}
 }

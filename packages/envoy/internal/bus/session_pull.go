@@ -95,6 +95,10 @@ type SessionPull struct {
 	heartbeat time.Duration
 	// wake holds a token once receive has queued a message for Next.
 	wake chan struct{}
+	// beforeWait, when not nil, runs in take once it has read the pull's life and before it waits,
+	// where a loss that lands is one the wait itself must see. It is nil outside tests: a test sets
+	// it to end the connection at exactly that moment.
+	beforeWait func()
 	// detachOnce runs the drain of the inbox subscription once and detachErr holds what it ended
 	// with, so that Detach can be called twice -- by a caller that detaches before it naks
 	// messages it holds elsewhere, and by the Release that follows -- and the second call
@@ -247,6 +251,11 @@ func (p *SessionPull) lostConnection() bool {
 // ctx ends, the pull's connection is lost (ErrConnectionLost, lostConnection), or the server has
 // sent nothing for twice sessionPullHeartbeat. What the pull already holds is handed over before
 // the loss is.
+//
+// The life is read once a pass, and what the pass waits on is decided from that one read: a life
+// that has ended with the client still running is the loss, answered at once; one that has ended
+// on a client that stopped ends no wait; and one still running is waited on, so a loss that lands
+// after the read wakes the wait, whose next pass answers it.
 func (p *SessionPull) take(ctx context.Context) (*nats.Msg, error) {
 	for {
 		p.mu.Lock()
@@ -259,16 +268,18 @@ func (p *SessionPull) take(ctx context.Context) (*nats.Msg, error) {
 		}
 		stalled := time.Until(p.heard.Add(2 * p.heartbeat))
 		p.mu.Unlock()
-		if p.lostConnection() {
-			return nil, p.lost
+		ended := p.life.Done()
+		if p.life.Err() != nil {
+			if !p.client.stopped() {
+				return nil, p.lost
+			}
+			ended = nil
 		}
 		if stalled <= 0 {
 			return nil, ErrSessionPullStalled
 		}
-		// A life already ended belongs to a stopped client, which ends no wait here.
-		ended := p.life.Done()
-		if p.life.Err() != nil {
-			ended = nil
+		if p.beforeWait != nil {
+			p.beforeWait()
 		}
 		timer := time.NewTimer(stalled)
 		select {
