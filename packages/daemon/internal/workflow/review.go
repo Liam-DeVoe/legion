@@ -1007,7 +1007,7 @@ func (e *Engine) askMergeStateFor(ctx context.Context, tx pgx.Tx, pr *record.Pul
 // which every move back into an earlier phase opens, counts the move itself under its own pair,
 // and fires the deployment's hooks that stand on the move (fireWorkBackHooks). The counts are the
 // task's (record.Store.ReturnCounts): on its plan_tasks row for an issue with plan rows, and on the
-// implementer's phases row for an issue with none, where they lived before plans (B-12, R20).
+// implementer's phases row for an issue with none, where they lived before plans.
 //
 // The pass bounds nothing: it is the counter the handoff completion key carries
 // (api/handoff.go), and its whole job is to make a completion at a commit an earlier pass
