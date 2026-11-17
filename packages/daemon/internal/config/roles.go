@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"maps"
 	"os"
 	"regexp"
 	"slices"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/plan"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
 // rolesKey and roleTypesKey are the two top-level keys a deployment defines roles of its own with.
@@ -187,6 +189,31 @@ func CheckRolePrompts(roles []Role) error {
 	for _, role := range roles {
 		if _, err := os.ReadFile(role.PromptFile); err != nil {
 			return fmt.Errorf("%s.%s.prompt_file %s cannot be read: %w", rolesKey, role.Name, role.PromptFile, err)
+		}
+	}
+	return nil
+}
+
+// issueRoles are the roles of an issue the deployment runs: Legion's six (claim.Roles), in the
+// order the workflow reaches them, then each role of `roles`, in the file's order.
+func (c Config) issueRoles() []claim.Role {
+	roles := slices.Clone(claim.Roles)
+	for _, role := range c.Roles {
+		roles = append(roles, role.Name)
+	}
+	return roles
+}
+
+// checkDeploymentRoleKeys is the one check across keys of the names a role-keyed setting takes:
+// each key's reader takes a name of the role grammar beside Legion's own, since `roles` may be
+// read after it, and this check, run once every key it judges is set, refuses a name that is
+// neither one of Legion's roles for that key nor a role of `roles`, with the reader's text whose
+// list names both. Its keys: `worker_backends`.
+func checkDeploymentRoleKeys(cfg Config) error {
+	roles := cfg.issueRoles()
+	for _, role := range slices.Sorted(maps.Keys(cfg.WorkerBackends)) {
+		if !slices.Contains(roles, role) {
+			return fmt.Errorf("worker_backends names %q, which is not an issue role (%s)", role, runtime.JoinRoles(roles))
 		}
 	}
 	return nil

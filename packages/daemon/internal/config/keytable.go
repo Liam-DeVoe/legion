@@ -294,7 +294,7 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: "worker_backends", Default: "every role runs on Oh My Pi", RequiredBy: "no",
-			Description: "The issue roles that run on Claude Code instead of Oh My Pi: each key a phase worker's role (`planner`, `implementer`, `tester`, `reviewer`, `merger`), each value `omp` or `claude`; the architect and the controller always run on Oh My Pi.",
+			Description: "The issue roles that run on Claude Code instead of Oh My Pi: each key a phase worker's role (`planner`, `implementer`, `tester`, `reviewer`, `merger`) or a role of `roles`, each value `omp` or `claude`; the architect and the controller always run on Oh My Pi.",
 			Read:        reads(readWorkerBackends, func(f *fileConfig, v map[claim.Role]runtime.Backend) { f.WorkerBackends = v }),
 		},
 		{

@@ -1122,6 +1122,10 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 		return Config{}, err
 	}
 	cfg.Hooks = settleHooks(file.Hooks, configDir)
+	// Every key whose names it judges is set by now.
+	if err := checkDeploymentRoleKeys(cfg); err != nil {
+		return Config{}, err
+	}
 	if cfg.Runtime.Name == "kubernetes" {
 		if err := checkPodReachable(cfg); err != nil {
 			return Config{}, err

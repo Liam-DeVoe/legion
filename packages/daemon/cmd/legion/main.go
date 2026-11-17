@@ -261,13 +261,18 @@ func pluginsLine(cfg config.Config) string {
 		line = fmt.Sprintf("plugins: @sjawhar/pi-legion %s @sjawhar/pi-envoy %s (from %s)",
 			pair.PiLegion, pair.PiEnvoy, pluginsSourceWords(source))
 	}
-	// The roles Claude Code may run at all (runtime.Backends), in the order the workflow reaches
-	// them: a role worker_backends puts on it is always one of them, since the loader refuses any
-	// other.
+	// The roles Claude Code runs here: Legion's phase workers that worker_backends puts on it, in
+	// the order the workflow reaches them, then each role of the deployment it puts there, in the
+	// file's order; the loader refuses any other.
 	var claude []string
 	for _, role := range runtime.Backends[runtime.BackendClaude].Roles {
 		if cfg.BackendFor(role) == runtime.BackendClaude {
 			claude = append(claude, string(role))
+		}
+	}
+	for _, role := range cfg.Roles {
+		if cfg.BackendFor(role.Name) == runtime.BackendClaude {
+			claude = append(claude, string(role.Name))
 		}
 	}
 	if len(claude) == 0 {
