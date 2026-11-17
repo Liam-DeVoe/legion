@@ -20,7 +20,8 @@ import (
 // through this before it selects a line, so that a comment opened before that line still hides it.
 // It is the daemon's reader of the same name (packages/daemon/internal/textcheck/visible_markdown_test.go),
 // written again because a test package of one module cannot import a test file of another; its
-// test below holds the same cases.
+// test below holds the same cases, and TestVisibleMarkdownIsTheDaemonsReader holds the two files
+// the same Go, comments aside.
 func visibleMarkdown(text string) string {
 	lines := strings.Split(text, "\n")
 	fenced, commented, html := false, false, false
