@@ -3422,6 +3422,33 @@ test("inside NoTooltips Add in the priority form keeps the focus on the add cont
   }
 });
 
+// The line's own `disabled`, which today's header sets on a closed issue, disables the add
+// control on both sides of `NoTooltips`. Inside, `aria-disabled` holds the control only while a
+// write of the line is out, and never stands in for the line's `disabled`: a press opens no form.
+test("inside NoTooltips the add control of a disabled priority line is disabled and opens no form", async () => {
+  const user = userEvent.setup();
+  for (const surface of ["inside", "outside"] as const) {
+    const view = draw(
+      <IssuePriorityLine
+        disabled
+        inRow={surface === "inside"}
+        issue={{ advances: [], advances_revision: 1, key: "CORE-1" }}
+      />,
+      surface
+    );
+    try {
+      const add = addControlOf(view, surface);
+      expect(add).toBeDisabled();
+      expect(add.hasAttribute("aria-disabled")).toBe(false);
+      await user.click(add);
+      await settleReads();
+      expect(pickerShown(view)).toBe(false);
+    } finally {
+      undraw(view);
+    }
+  }
+});
+
 /** A document header's approval chip, on the document as `ProofDocument` reads it: an approval
  *  invalidates that read, and the chip draws the document the read answers next. */
 function ReadApprovalChip({ id }: { id: string }): ReactNode {
@@ -3531,6 +3558,7 @@ test("inside NoTooltips the Request changes dialog keeps the focus inside it whi
         expect(createArtifactReview).toHaveBeenCalledTimes(1);
       } else {
         expect(reason.hasAttribute("disabled")).toBe(true);
+        expect(reason.hasAttribute("readonly")).toBe(false);
         expect(submit.hasAttribute("disabled")).toBe(true);
         expect(submit.hasAttribute("aria-disabled")).toBe(false);
       }
@@ -3606,6 +3634,47 @@ test("inside NoTooltips a change request that lands gives the focus back to Requ
       await settleReads();
       expect(scope.queryByRole("dialog")).toBeNull();
       if (surface === "inside") expect(document.activeElement).toBe(requestChanges);
+    } finally {
+      answered.reject(new Error("the connection dropped"));
+      createArtifactReview.mockRestore();
+      undraw(view);
+    }
+  }
+});
+
+// While Approve's write is out, Request changes is refused too. Inside `NoTooltips` it is
+// `aria-disabled` in place of `disabled`, which refuses no press by itself, so the button's own
+// press does nothing then: no dialog opens over a write that is still out, and the focus stays
+// on the button. Outside `NoTooltips` it is `disabled`, as on `main`.
+test("inside NoTooltips Request changes opens no dialog while Approve's write is out", async () => {
+  const user = userEvent.setup();
+  stubs.getArtifact.mockResolvedValue(
+    doc(SPEC_ID, "spec.md", { latest_version: 2, state: "awaiting", waiting_on: "human" })
+  );
+  for (const surface of ["inside", "outside"] as const) {
+    const answered = Promise.withResolvers<ArtifactReview>();
+    const createArtifactReview = spyOn(api, "createArtifactReview").mockImplementation(
+      () => answered.promise
+    );
+    const view = draw(<ReadApprovalChip id={SPEC_ID} />, surface);
+    try {
+      const scope = within(view.container);
+      const approve = await scope.findByRole("button", { name: "Approve" });
+      approve.focus();
+      await user.keyboard("{Enter}");
+      await waitFor(() => expect(createArtifactReview).toHaveBeenCalledTimes(1));
+      const requestChanges = scope.getByRole("button", { name: "Request changes" });
+      if (surface === "inside") {
+        expect(requestChanges.getAttribute("aria-disabled")).toBe("true");
+        requestChanges.focus();
+        await user.keyboard("{Enter}");
+        await settleReads();
+        expect(scope.queryByRole("dialog")).toBeNull();
+        expect(document.activeElement).toBe(requestChanges);
+      } else {
+        expect(requestChanges).toBeDisabled();
+        expect(requestChanges.hasAttribute("aria-disabled")).toBe(false);
+      }
     } finally {
       answered.reject(new Error("the connection dropped"));
       createArtifactReview.mockRestore();
