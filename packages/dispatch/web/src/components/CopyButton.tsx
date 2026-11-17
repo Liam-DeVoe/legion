@@ -1,4 +1,4 @@
-import { type MouseEvent, type ReactNode, useEffect, useRef } from "react";
+import { type MouseEvent, type ReactNode, useEffect, useRef, useState } from "react";
 
 import { focusOnDocument } from "../features/shell/roving";
 import { useCopyFeedback } from "../hooks/useCopyFeedback";
@@ -43,21 +43,26 @@ export function CopyButton({
   // is the page's passed green or failed red.
   const look = tooltips ? `${linkText} ${linkHoverText}` : `${pageMutedText} ${pageRowAct}`;
   const { copy, reset, status } = useCopyFeedback();
-  // Inside `NoTooltips` a press records where the focus is while its copy is out: its button,
-  // then each element the focus lands on after it. `copyText`'s fallback, which runs where the
-  // clipboard is missing or refuses, puts the focus in a temporary text box and removes it, which
-  // leaves the focus on the document (`focusOnDocument`); the focus then goes back to the last of
-  // those still on the page, the button or wherever the reader moved it while the copy was out:
-  // right after `copy` returns, where the fallback ran at once, and once `status` changes, where
-  // it ran after the clipboard refused. Each press clears `status` first, so a copy that lands
-  // "Copied" while the last one still shows it changes `status` too. The press is forgotten then.
-  // A focus anywhere else is left where it is.
+  // Inside `NoTooltips` the clipboard write is the button's own write. From a press until `status`
+  // leaves `idle` the copy is out: the button carries `aria-disabled` (never `disabled`, which
+  // would drop the focus to the page's body in a browser) and a press of it does nothing. The
+  // press records where the focus is meanwhile: its button, then each element the focus lands on
+  // after it. `copyText`'s fallback, which runs where the clipboard is missing or refuses, puts
+  // the focus in a temporary text box and removes it, which leaves the focus on the document
+  // (`focusOnDocument`); the focus then goes back to the last of those still on the page, the
+  // button or wherever the reader moved it while the copy was out: right after `copy` returns,
+  // where the fallback ran at once, and once `status` leaves `idle`, where it ran after the
+  // clipboard refused. A press clears `status` first, so a copy that lands "Copied" while the
+  // last one still shows it changes `status` too. The copy is no longer out then and the press is
+  // forgotten, so the next press copies again. A focus anywhere else is left where it is.
   const trail = useRef<FocusTrail | null>(null);
+  const [copyOut, setCopyOut] = useState(false);
   useEffect(() => {
     if (status === "idle" || trail.current === null) return;
     returnFocus(trail.current);
     trail.current.stop();
     trail.current = null;
+    setCopyOut(false);
   }, [status]);
   useEffect(() => () => trail.current?.stop(), []);
   const name = label ?? (typeof value === "string" ? `Copy ${what} ${value}` : `Copy ${what}`);
@@ -74,16 +79,18 @@ export function CopyButton({
   return (
     <>
       <button
+        aria-disabled={copyOut || undefined}
         aria-label={name}
         className={`inline-flex min-h-11 ${width} items-center rounded-lg md:min-h-8 ${shape} ${look} ${className ?? ""}`}
         onClick={(event) => {
+          if (!tooltips && trail.current !== null) return;
           const text = typeof value === "string" ? value : value(event);
           if (tooltips) {
             copy(text);
             return;
           }
-          trail.current?.stop();
           trail.current = followFocus(event.currentTarget);
+          setCopyOut(true);
           reset();
           copy(text);
           returnFocus(trail.current);
