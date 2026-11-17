@@ -194,6 +194,48 @@ test("the Steps tab never leaves a number or a single letter of an id on a line 
   }
 });
 
+// Each task of the plan shows the tasks it needs and each step the plan gives it, with where the
+// step stands, before its runs; a task none of whose steps ran yet says so in place of a table.
+// The fault is a task of the plan, or a step of one, that a person cannot see; the control is the
+// tab that draws the runs alone, under which task b has no section and step 2 of a no line.
+test("the Steps tab draws each step of the plan with its state, and each task's needs", async () => {
+  const tab = renderTab(async () => ({
+    issue: "CORE-1",
+    tasks: [
+      {
+        planned: ["implementer", "reviewer"],
+        steps: [record({ ended_at: null, id: "a-1", result: "", step: 1, task: "a" })],
+        task: "a",
+      },
+      { needs: ["a"], planned: ["tester"], steps: null, task: "b" },
+    ],
+  }));
+  try {
+    const planned = await screen.findByRole("list", { name: "Planned steps of task a" });
+    expect(
+      within(planned)
+        .getAllByRole("listitem")
+        .map((item) => item.textContent)
+    ).toEqual(["1 implementer running", "2 reviewer not started"]);
+    expect(
+      bodyRows(screen.getByRole("table", { name: "Steps of task a" })).map((row) => row[0])
+    ).toEqual(["1"]);
+
+    const b = screen.getByRole("region", { name: "Task b" });
+    expect(within(b).getByText("Needs a")).toBeDefined();
+    expect(
+      within(within(b).getByRole("list", { name: "Planned steps of task b" }))
+        .getAllByRole("listitem")
+        .map((item) => item.textContent)
+    ).toEqual(["1 tester not started"]);
+    expect(within(b).queryByRole("table")).toBeNull();
+    expect(within(b).getByText("No step of task b has run yet.")).toBeDefined();
+    expect(within(screen.getByRole("region", { name: "Task a" })).queryByText(/^Needs/)).toBeNull();
+  } finally {
+    tab.restore();
+  }
+});
+
 // An issue Legion never ran - or ran before the release that records steps - has no task.
 test("the Steps tab says so when no step of the issue has run in Legion", async () => {
   const tab = renderTab(async () => ({ issue: "CORE-1", tasks: [] }));

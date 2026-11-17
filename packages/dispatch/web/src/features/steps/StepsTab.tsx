@@ -17,7 +17,7 @@ import {
   textSecondaryOnCanvas,
   textSecondaryOnSurface,
 } from "../../theme/classes";
-import { type StepRow, stepTasks } from "./steps-model";
+import { type PlannedStep, type StepRow, type StepTaskRows, stepTasks } from "./steps-model";
 
 const COLUMNS = [
   "Step",
@@ -145,70 +145,122 @@ function Result({ row }: { row: StepRow }): ReactNode {
   }
 }
 
-/** One task's runs, one row each, in the order the server read them. */
-function TaskTable({ rows, task }: { rows: readonly StepRow[]; task: string }): ReactNode {
+/** Where a step of the plan stands, in the words and colours a run's result uses: `not started`
+ *  before any run of it, then its newest run's state. */
+function PlannedState({ step }: { step: PlannedStep }): ReactNode {
+  switch (step.state) {
+    case "not started":
+      return <span className={textMutedOnSurface}>not started</span>;
+    case "running":
+      return (
+        <span
+          className={`rounded-sm px-1.5 py-0.5 text-xs font-medium ${badgeMed.bg} ${badgeMed.text}`}
+        >
+          running
+        </span>
+      );
+    case "passed":
+      return <span className={`font-medium ${successText}`}>passed</span>;
+    case "failed":
+      return <span className={`font-medium ${dangerText}`}>failed</span>;
+    case "stopped":
+      return <span className="font-medium">stopped</span>;
+    case "other":
+      return step.result;
+  }
+}
+
+/** One task: the tasks of the plan it needs, each step the plan gives it with where it stands,
+ *  then its runs, one row each, in the order the server read them. A task none of whose steps has
+ *  run says so in place of the table. */
+function TaskSection({ task: { needs, planned, rows, task } }: { task: StepTaskRows }): ReactNode {
   return (
-    <section className="min-w-0 space-y-2">
+    <section aria-label={`Task ${task}`} className="min-w-0 space-y-2">
       <h2 className={`text-sm font-semibold ${textSecondaryOnCanvas}`}>Task {task}</h2>
-      {/* `relative` keeps the scrolled table's cells inside this box, as the Settings tables do
-          (`features/settings/classes.ts`); the table scrolls sideways where the page is narrower
-          than its columns. */}
-      <div className={`relative overflow-x-auto rounded-xl border ${card}`}>
-        <table aria-label={`Steps of task ${task}`} className="w-full text-left text-xs">
-          <thead
-            className={`border-b ${surfaceMutedBg} ${borderDefault} ${textSecondaryOnSurface}`}
-          >
-            <tr>
-              {COLUMNS.map((column) => (
-                <th
-                  className="px-1.5 py-1.5 font-semibold whitespace-nowrap"
-                  key={column}
-                  scope="col"
-                >
-                  {column}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((row) => (
-              <tr className={`border-b last:border-0 ${borderDefault}`} key={row.id}>
-                <Cell className={`font-medium whitespace-nowrap ${textPrimaryOnSurface}`}>
-                  {row.label}
-                </Cell>
-                <Cell className={`whitespace-nowrap ${textPrimaryOnSurface}`}>{row.role}</Cell>
-                <Cell className={`whitespace-nowrap ${textSecondaryOnSurface}`}>
-                  {row.type === "" ? NONE : row.type}
-                </Cell>
-                <Cell className={`font-mono break-words ${textSecondaryOnSurface}`}>
-                  <Identifier value={row.agent} />
-                </Cell>
-                <Cell className={`font-mono break-words ${textSecondaryOnSurface}`}>
-                  <Identifier value={row.model} />
-                </Cell>
-                <Cell className={`tabular-nums ${textSecondaryOnSurface}`}>{row.attempt}</Cell>
-                <Cell className={textMutedOnSurface}>
-                  <Time at={row.started} />
-                </Cell>
-                <Cell className={textMutedOnSurface}>
-                  <Time at={row.ended} />
-                </Cell>
-                <Cell className={textPrimaryOnSurface}>
-                  <Result row={row} />
-                </Cell>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+      {needs.length === 0 ? null : (
+        <p className={`text-xs ${textSecondaryOnCanvas}`}>{`Needs ${needs.join(", ")}`}</p>
+      )}
+      {planned.length === 0 ? null : (
+        <ol aria-label={`Planned steps of task ${task}`} className="flex flex-wrap gap-2 text-xs">
+          {planned.map((step) => (
+            <li className={`rounded-md border px-2 py-1 ${card}`} key={step.step}>
+              <span className={`tabular-nums ${textMutedOnSurface}`}>{step.step}</span>{" "}
+              <span className={`font-medium ${textPrimaryOnSurface}`}>{step.name}</span>{" "}
+              <PlannedState step={step} />
+            </li>
+          ))}
+        </ol>
+      )}
+      {rows.length === 0 ? (
+        <p className={`text-xs ${textMutedOnCanvas}`}>{`No step of task ${task} has run yet.`}</p>
+      ) : (
+        <RunsTable rows={rows} task={task} />
+      )}
     </section>
   );
 }
 
+/** One task's runs, one row each, in the order the server read them. */
+function RunsTable({ rows, task }: { rows: readonly StepRow[]; task: string }): ReactNode {
+  return (
+    // `relative` keeps the scrolled table's cells inside this box, as the Settings tables do
+    // (`features/settings/classes.ts`); the table scrolls sideways where the page is narrower than
+    // its columns.
+    <div className={`relative overflow-x-auto rounded-xl border ${card}`}>
+      <table aria-label={`Steps of task ${task}`} className="w-full text-left text-xs">
+        <thead className={`border-b ${surfaceMutedBg} ${borderDefault} ${textSecondaryOnSurface}`}>
+          <tr>
+            {COLUMNS.map((column) => (
+              <th
+                className="px-1.5 py-1.5 font-semibold whitespace-nowrap"
+                key={column}
+                scope="col"
+              >
+                {column}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => (
+            <tr className={`border-b last:border-0 ${borderDefault}`} key={row.id}>
+              <Cell className={`font-medium whitespace-nowrap ${textPrimaryOnSurface}`}>
+                {row.label}
+              </Cell>
+              <Cell className={`whitespace-nowrap ${textPrimaryOnSurface}`}>{row.role}</Cell>
+              <Cell className={`whitespace-nowrap ${textSecondaryOnSurface}`}>
+                {row.type === "" ? NONE : row.type}
+              </Cell>
+              <Cell className={`font-mono break-words ${textSecondaryOnSurface}`}>
+                <Identifier value={row.agent} />
+              </Cell>
+              <Cell className={`font-mono break-words ${textSecondaryOnSurface}`}>
+                <Identifier value={row.model} />
+              </Cell>
+              <Cell className={`tabular-nums ${textSecondaryOnSurface}`}>{row.attempt}</Cell>
+              <Cell className={textMutedOnSurface}>
+                <Time at={row.started} />
+              </Cell>
+              <Cell className={textMutedOnSurface}>
+                <Time at={row.ended} />
+              </Cell>
+              <Cell className={textPrimaryOnSurface}>
+                <Result row={row} />
+              </Cell>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 /**
- * The steps Legion ran on the issue (`GET /issues/{key}/steps`): one table per task, in the order
- * of each task's first step, and one row per run of a step - its role, type, agent, model,
- * attempt, start, end and result. The records are the Legion daemon's; this tab only reads them.
+ * The steps of the issue (`GET /issues/{key}/steps`): one section per task, in the server's order
+ * - the tasks of the issue's plan first, then each other task that ran - each with the tasks it
+ * needs, each step the plan gives it and where that step stands, and one row per run of a step:
+ * its role, type, agent, model, attempt, start, end and result. The records are the Legion
+ * daemon's; this tab only reads them.
  */
 export function StepsTab({ issueKey }: { issueKey: string }): ReactNode {
   const query = useQuery(issueStepsQuery(issueKey));
@@ -232,8 +284,8 @@ export function StepsTab({ issueKey }: { issueKey: string }): ReactNode {
   }
   return (
     <div className="min-w-0 space-y-6">
-      {tasks.map(({ rows, task }) => (
-        <TaskTable key={task} rows={rows} task={task} />
+      {tasks.map((task) => (
+        <TaskSection key={task.task} task={task} />
       ))}
     </div>
   );

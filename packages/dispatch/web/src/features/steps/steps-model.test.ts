@@ -114,8 +114,80 @@ test("stepTasks reads a null list as empty", () => {
   expect(stepTasks({ issue: "LEG-1", tasks: null })).toEqual([]);
   expect(stepTasks({ issue: "LEG-1", tasks: [] })).toEqual([]);
   expect(stepTasks({ issue: "LEG-1", tasks: [{ steps: null, task: "default" }] })).toEqual([
-    { rows: [], task: "default" },
+    { needs: [], planned: [], rows: [], task: "default" },
   ]);
+});
+
+// The tasks of the plan come with what the plan says of them: the tasks each needs, and each step
+// the plan gives it, in its place, standing where its newest run stands - not started before any
+// run of it. A retro or a merge is no step of the plan, and a run that failed and then passed
+// reads passed. The fault is a planned step that a person cannot see; the control is the model
+// that keeps the runs alone, under which b has no step and a no second one.
+test("stepTasks gives each step of the plan the state of its newest run", () => {
+  const tasks = stepTasks({
+    issue: "LEG-1",
+    tasks: [
+      {
+        planned: ["implementer", "reviewer"],
+        steps: [record({ ended_at: null, id: "a-1", result: "", step: 1, task: "a" })],
+        task: "a",
+      },
+      { needs: ["a"], planned: ["tester"], steps: null, task: "b" },
+    ],
+  });
+  expect(
+    tasks.map((task) => ({
+      needs: task.needs,
+      planned: task.planned.map((step) => [step.step, step.name, step.state]),
+      task: task.task,
+    }))
+  ).toEqual([
+    {
+      needs: [],
+      planned: [
+        [1, "implementer", "running"],
+        [2, "reviewer", "not started"],
+      ],
+      task: "a",
+    },
+    { needs: ["a"], planned: [[1, "tester", "not started"]], task: "b" },
+  ]);
+
+  const [retried] = stepTasks({
+    issue: "LEG-1",
+    tasks: [
+      {
+        planned: ["implementer", "acceptance:owner"],
+        steps: [
+          record({ id: "implement-1", result: "failed", returned_to: 1, step: 1 }),
+          record({ attempt: 2, id: "implement-2", result: "passed", step: 1 }),
+          record({ id: "accept-1", result: "stopped", role: "acceptance", step: 2 }),
+          record({ id: "retro-1", kind: "retro", result: "failed", step: 0 }),
+          record({ id: "newer", result: "skipped", step: 1 }),
+        ],
+        task: "default",
+      },
+    ],
+  });
+  expect(retried?.planned).toEqual([
+    { name: "implementer", result: "skipped", state: "other", step: 1 },
+    { name: "acceptance:owner", result: "stopped", state: "stopped", step: 2 },
+  ]);
+  expect(
+    stepTasks({
+      issue: "LEG-1",
+      tasks: [
+        {
+          planned: ["implementer"],
+          steps: [
+            record({ id: "implement-1", result: "failed", step: 1 }),
+            record({ attempt: 2, id: "implement-2", result: "passed", step: 1 }),
+          ],
+          task: "default",
+        },
+      ],
+    })[0]?.planned.map((step) => step.state)
+  ).toEqual(["passed"]);
 });
 
 // A result or a kind this build has no word for comes from a newer Dispatch: the run is kept, in
