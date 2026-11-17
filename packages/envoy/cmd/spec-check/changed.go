@@ -28,7 +28,7 @@ import (
 // meanwhile changes neither the base line nor the paths.
 func runChanged(args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("changed", flag.ContinueOnError)
-	repoFlag := flags.String("repo", "", "the root of the git clone")
+	repoFlag := flags.String("repo", "", "the top of the git clone")
 	base := flags.String("base", "", "the commit where each carried result stands: the merge base with the default branch")
 	head := flags.String("head", "HEAD", "the commit the change ends at")
 	if code, ok := parse(flags, args, stderr, "repo", "base", "head"); !ok {

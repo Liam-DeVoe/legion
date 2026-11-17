@@ -38,6 +38,12 @@ func gitCommand(repo string, args ...string) *exec.Cmd {
 	return cmd
 }
 
+// oneLine is what git wrote to its standard error, its white space runs as one space each, so a
+// line of the command that names it stays one line.
+func oneLine(stderr *bytes.Buffer) string {
+	return strings.Join(strings.Fields(stderr.String()), " ")
+}
+
 // commitName is the full object name of the commit that rev names in the git clone at repo, and
 // whether git could read one. --end-of-options makes git read a rev that starts with "-" as a
 // revision, never as an option, as GitHistory does.
@@ -58,7 +64,7 @@ func isCloneTop(stderr io.Writer, repo string) bool {
 	show.Stderr = &gitErr
 	out, err := show.Output()
 	if err != nil {
-		say(stderr, "%s: git finds no work tree there: %s", repo, strings.Join(strings.Fields(gitErr.String()), " "))
+		say(stderr, "%s: git finds no work tree there: %s", repo, oneLine(&gitErr))
 		return false
 	}
 	top := strings.TrimSuffix(string(out), "\n")
@@ -225,7 +231,7 @@ func writeTree(repo, commit, root string) error {
 	list.Stderr = &stderr
 	out, err := list.Output()
 	if err != nil {
-		return fmt.Errorf("git ls-tree: %w: %s", err, strings.Join(strings.Fields(stderr.String()), " "))
+		return fmt.Errorf("git ls-tree: %w: %s", err, oneLine(&stderr))
 	}
 	if err := os.Mkdir(root, 0o755); err != nil {
 		return err
@@ -313,7 +319,7 @@ func writeBlobs(repo, root string, blobs []treeEntry) (links []treeLink, err err
 			return
 		}
 		if waitErr := cat.Wait(); waitErr != nil {
-			err = fmt.Errorf("git cat-file --batch: %w: %s", waitErr, strings.Join(strings.Fields(stderr.String()), " "))
+			err = fmt.Errorf("git cat-file --batch: %w: %s", waitErr, oneLine(&stderr))
 		}
 	}()
 	r := bufio.NewReader(stdout)

@@ -44,7 +44,7 @@ type citationFault struct {
 func runCitations(args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("citations", flag.ContinueOnError)
 	dir := flags.String("dir", "", "the directory of spec files")
-	repo := flags.String("repo", "", "the root of the repository at the commit")
+	repo := flags.String("repo", "", "the top of the git clone of the repository at the commit")
 	workflow := flags.String("workflow", "", "the workflow that holds the spec-citations job")
 	changedFile := flags.String("changed", "", "what spec-check changed printed: the base line, then the paths that changed since the base")
 	allChanged := flags.Bool("all-changed", false, "the commit has no base commit, so every file counts as changed")
