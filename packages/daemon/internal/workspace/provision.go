@@ -364,10 +364,10 @@ func stateDirOf(dir string) string {
 // legion/, so <KEY> for the issue's own branch and <KEY>.<part> for a task's, the part being what
 // claim.BranchTask reads after the key, a slug or a slug and the number of a later give of it.
 // Location takes the name in place of an issue key, which gives the working copy's directory, the
-// name lower-cased, beside the issue's, and its bookmark, the branch itself. A branch of no issue
-// or of no task of one is refused, and so is the part `removing`: Remove renames a working copy
-// aside to its directory with removingSuffix added and deletes it there, so the issue's own
-// working copy would be renamed onto that task's, or a leftover of its removal deleted with it.
+// name lower-cased, beside the issue's, and its bookmark, the branch itself. A branch that
+// claim.BranchTask refuses is refused: one of no issue, of no task of one, or whose part is a word
+// no slug may be, such as `removing`, which would put the working copy where Remove renames a
+// working copy aside (removingSuffix) before it deletes it.
 func Name(branch string) (string, error) {
 	issue, part, ok := claim.BranchTask(branch)
 	if !ok {
@@ -375,9 +375,6 @@ func Name(branch string) (string, error) {
 	}
 	if part == "" {
 		return issue, nil
-	}
-	if "."+part == removingSuffix {
-		return "", fmt.Errorf("the working copy of branch %s would lie where the removal of the issue's own working copy renames that working copy before it deletes it", branch)
 	}
 	return issue + "." + part, nil
 }
