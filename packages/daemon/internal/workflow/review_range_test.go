@@ -306,6 +306,44 @@ func TestALaterReviewRoundIsToldTheCommitTheReviewBeforeItRead(t *testing.T) {
 	}
 }
 
+// The commit a later round names is the one the reviewer's own NEWEST deciding review read, not
+// its first (record.PhaseRow.ReviewedHead, "the commit that the reviewer's own newest deciding
+// review read"): round 1 requests changes at headOne; the implementer's push moves the pull
+// request to headTwo; round 2 names headOne and requests changes at headTwo; round 3 names headTwo
+// and not headOne. A review that kept only the first commit it saw would hand round 3 a range
+// that reads round 2's work again.
+func TestALaterRoundNamesTheCommitOfTheReviewersNewestDecidingReview(t *testing.T) {
+	pool, engine, apply := reviewRoundOne(t)
+	apply("request-changes-1", reviewAt(1, "changes_requested", headOne, reviewTestedAt))
+	if got := issuePhase(t, pool); got != phase.Implementing {
+		t.Fatalf("after round 1's request for changes the issue is in %s, want implementing", got)
+	}
+	mergesForward(t, pool, engine, headOne, headTwo, reviewTestedAt.Add(time.Hour))
+	if got := recordedHead(t, pool); got != headTwo {
+		t.Fatalf("after the implementer's push the record holds the head %s, want %s", got, headTwo)
+	}
+	backToReviewing(t, apply, 2)
+	second := reviewerRow(t, pool).EntryTask
+	readsReviewingTask(t, "round 2", second, 2)
+	if !strings.Contains(second, reviewedPartOf(headOne)) {
+		t.Fatalf("round 2's task = %q, want it to name %s, the commit round 1's review read", second, headOne)
+	}
+
+	apply("request-changes-2", reviewAt(2, "changes_requested", headTwo, reviewTestedAt.Add(2*time.Hour)))
+	if got := issuePhase(t, pool); got != phase.Implementing {
+		t.Fatalf("after round 2's request for changes the issue is in %s, want implementing", got)
+	}
+	if got := reviewerRow(t, pool).ReviewedHead; got != headTwo {
+		t.Fatalf("after round 2's review the reviewer's row reads the reviewed commit %q, want %s, the head that newer review read", got, headTwo)
+	}
+	backToReviewing(t, apply, 3)
+	third := reviewerRow(t, pool).EntryTask
+	readsReviewingTask(t, "round 3", third, 3)
+	if !strings.Contains(third, reviewedPartOf(headTwo)) || strings.Contains(third, headOne) {
+		t.Fatalf("round 3's task = %q, want it to name %s, the commit round 2's review read, and not round 1's %s", third, headTwo, headOne)
+	}
+}
+
 // Every way back into reviewing that keeps the generation tells the reviewer the commit its last
 // deciding review read: a transition's start whichever move came before it (enter stores that
 // task, so a claim behind its entry is sent the same text), the retry of a held phase, each start
