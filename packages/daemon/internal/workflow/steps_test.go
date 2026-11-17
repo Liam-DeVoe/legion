@@ -109,6 +109,12 @@ func TestAStepIDIsStableAndDistinct(t *testing.T) {
 	if want := uuid.NewSHA1(namespace, []byte("LEG-1/1/default/step/2/1")).String(); first != want {
 		t.Fatalf("StepID = %s, want %s: the name is <issue>/<generation>/<task>/<kind>/<step>/<starts>", first, want)
 	}
+	// The generation, the place and the count are three different numbers here, so no two of the
+	// name's numbers can trade places unseen.
+	if got, want := StepID("LEG-1", 7, record.StepPlace{Task: "default", Kind: "step", Place: 3}, 4),
+		uuid.NewSHA1(namespace, []byte("LEG-1/7/default/step/3/4")).String(); got != want {
+		t.Fatalf("StepID of generation 7, place 3, count 4 = %s, want %s: the name is <issue>/<generation>/<task>/<kind>/<step>/<starts>", got, want)
+	}
 	seen := map[string]string{first: "the first"}
 	for name, id := range map[string]string{
 		"issue":      StepID("LEG-2", 1, record.StepPlace{Task: "default", Kind: "step", Place: 2}, 1),
