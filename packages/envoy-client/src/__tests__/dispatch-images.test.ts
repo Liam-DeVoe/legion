@@ -15,6 +15,7 @@ import {
 } from "../dispatch-picture-tools";
 import { pictureAddresses } from "../dispatch-pictures";
 import { ToolInputError } from "../tool-input-errors";
+import { routeAnswer } from "./dispatch-route-answers";
 
 const config = {
   enabled: true,
@@ -41,6 +42,27 @@ function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
     headers: { "Content-Type": "application/json" },
+  });
+}
+
+/** The upload route of each owner a picture goes to, as the OpenAPI document writes it. */
+const UPLOAD_ROUTES: Readonly<Record<string, string>> = {
+  issues: "POST /api/v1/issues/{key}/artifacts",
+  projects: "POST /api/v1/projects/{key}/artifacts",
+  agents: "POST /api/v1/agents/{session_id}/artifacts",
+};
+
+/** The answer of an upload to `pathname` (`/api/v1/<owner>/<key>/artifacts`): the document
+ *  `artifact` and the version `number` Dispatch gave it, as the owner's route answers them. */
+function uploaded(pathname: string, artifact: Record<string, unknown>, number: number) {
+  const [, , , owner = "", key] = pathname.split("/");
+  const route = UPLOAD_ROUTES[owner];
+  if (route === undefined) throw new Error(`no upload route for ${pathname}`);
+  const where =
+    owner === "projects" ? { project: key } : owner === "issues" ? { issue_key: key } : {};
+  return routeAnswer(route, {
+    artifact: { id: `artifact-${artifact.slug}`, ...where, ...artifact },
+    version: { number },
   });
 }
 
@@ -92,7 +114,7 @@ function dispatch(
       const number = (versions.get(slug) ?? 0) + 1;
       versions.set(slug, number);
       uploads.push({ path: target.pathname, name, type: partType?.[1] ?? "", size: upload.size });
-      return json({ artifact: { slug, name }, version: { number } });
+      return json(uploaded(target.pathname, { slug, name }, number));
     }
     throw new Error(`unexpected request: ${method} ${target.pathname}`);
   };
@@ -506,7 +528,7 @@ describe("sending pictures", () => {
     const over = `body block 1 (paragraph) is 1 characters over the ${DISPATCH_BLOCK_UNITS}-character block limit (${DISPATCH_BLOCK_UNITS + 1}/${DISPATCH_BLOCK_UNITS})`;
     const server = dispatch((pathname, init) => {
       if (pathname === "/api/v1/issues/DSP-41/artifacts" && init.method === "POST") {
-        return json({ artifact: { slug: "shot-png" }, version: { number: 12 } });
+        return json(uploaded(pathname, { slug: "shot-png", name: "shot.png" }, 12));
       }
       return pathname === "/api/v1/issues/DSP-41/messages" && init.method === "POST"
         ? json({ code: "CAP_EXCEEDED", error: over }, 400)

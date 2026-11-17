@@ -77,7 +77,11 @@ export interface RequestCredential {
    * credential awaits for it, so a caller's bound reaches the credential as it reaches the
    * request. A broker credential's trade is shared by every call that needs a token at once and
    * runs under its own bound, so the signal ends this call's wait on the trade, and the trade
-   * goes on for the others (`BrokerTokenClient.token`). A bearer awaits nothing and ignores it.
+   * goes on for the others (`BrokerTokenClient.token`). While the broker holds no registration
+   * for this pod's session yet, the call stops with `RegistrationPendingError`
+   * (`@legion/broker-client/token-client`), naming the session, and the trade goes on in the
+   * background, so a later call takes the token once the registration lands. A caller that
+   * passes none waits as long as that takes. A bearer awaits nothing and ignores it.
    */
   headers(
     method: string,

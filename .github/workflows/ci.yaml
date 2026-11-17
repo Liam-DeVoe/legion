@@ -1639,6 +1639,10 @@ jobs:
               # guide_layout below, and a guide-only change has to select this job for it.
               - *guide_layout_files
               - 'scripts/third-party-notices.test.ts'
+              # scripts/third-party-notices.test.ts:102-105 lists the Dispatch web app's typeface:
+              # it resolves the font file's path, lists that directory and reads the package.json
+              # and LICENSE.txt in it.
+              - 'packages/dispatch/web/src/fonts/inter/**'
               - 'scripts/third-party-notices.ts'
               - 'scripts/semantic-line-breaks.ts'
               - 'scripts/semantic-line-breaks.test.ts'
@@ -3289,13 +3293,17 @@ jobs:
               # an edit of the list alone must start both jobs, or the side it disagrees with
               # stays green.
               - 'packages/contracts/fixtures/go-unicode-isspace.json'
+              # src/__tests__/dispatch-route-answers.ts:23-25 reads the OpenAPI document: every
+              # keyed write of the client is driven against each 2xx answer it declares, and each
+              # test's stub of a keyed write serves its route's answer.
+              - 'packages/contracts/schemas/dispatch-openapi.json'
               # The Go copy its test holds the TypeScript to: src/__tests__/askgate-new-asks.test.ts
               # reads the Dispatch server's decision-block table, which the Go API test reads too.
               - 'packages/envoy/internal/dispatch/api/testdata/**'
               # src/__tests__/dispatch-advice.test.ts:683-690 holds every skill section a notice
               # cites to a heading of that skill's SKILL.md.
               - 'skills/**'
-              # src/__tests__/dispatch-asked-of.test.ts:374-382 reads every package's AGENTS.md,
+              # src/__tests__/dispatch-asked-of.test.ts:377-385 reads every package's AGENTS.md,
               # and its ALLOWED names lines of four of them, so rewording one of those lines
               # fails that test and this job has to run for it.
               - 'packages/*/AGENTS.md'
