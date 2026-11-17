@@ -1366,8 +1366,9 @@ These arrive as messages on the Dispatch issue:
   round, so an approval or request for changes from anyone else leaves it undecided too. A review
   from the review App decides a round only when it comes from the reviewer's own session: the
   daemon reads the review's Legion footer
-  (`<!-- legion: {"session":"…","phase":"review","head":"…"} -->`) and requires the session it
-  names to match the session recorded on the reviewer's claim. That footer also names the head the
+  (`<!-- legion: {"session":"…","phase":"review","head":"…","entry":…} -->`) and requires the
+  session it names to match the session recorded on the reviewer's claim. That footer also names
+  the head the
   review read, and a review the review App submitted decides the round only when that head is the
   pull request's current head, compared exactly, whether the daemon heard of the review from its
   webhook or read it from GitHub's list. GitHub rewrites a review's `commit_id` to the current
@@ -1386,11 +1387,12 @@ These arrive as messages on the Dispatch issue:
   nothing, logged at warn as `workflow: a review decides nothing: the review App submitted it from
   a session that is not the reviewer's`, with `footer_session`, `reviewer_session` and
   `body_truncated`. The reviewer's session is the one the claims record holds for the claim the
-  daemon starts the reviewer under, in its first round as in every later one, recorded when the
-  reviewer's agent registers. While that claim records no session, or has no row - from the
-  reviewer's start until its agent registers, and again after its session is forgotten until the
-  next one registers - a review-App review decides nothing and moves no commit, whoever submitted
-  it, logged at warn as `workflow: a review of the review App waits: the reviewer's claim records
+  daemon starts the reviewer under, in its first round as in every later one: recorded when the
+  reviewer's agent registers, it stays on the claim through later rounds, releases and relaunches.
+  While that claim records no session, or has no row - from the creation of the reviewer's claim
+  until its agent registers, and again after its session is forgotten until the next one
+  registers - a review-App review decides nothing and moves no commit, whoever submitted it,
+  logged at warn as `workflow: a review of the review App waits: the reviewer's claim records
   no session, so the next read of the pull request's reviews judges it again`. That read, which
   the daemon makes when a role of the issue hands off and when it starts, judges the review again
   by the session recorded then.
@@ -1416,6 +1418,17 @@ These arrive as messages on the Dispatch issue:
   from that head leaves it undecided until the new head arrives. The remedy is the reviewer's
   approval of the head itself, which ends the round once the record reaches that head and GitHub
   reports that head one the issue may advance on.
+- **A later review round reads the whole change, or from an older commit.** The reviewer's task of
+  a later round names `Last reviewed commit: <sha>`, and the reviewer reads the difference from that
+  commit to the head. A review moves that commit only when it is the reviewer's own (its Legion
+  footer names the session the reviewer's claim records), the reviewer's phase row holds the task of
+  an entry, and the footer's `entry` is the entry on that row, the number the reviewer's task names
+  as its last sentence, `Review entry: <n>.`. A review whose footer names no entry, or another one,
+  such as a review of a round before a new generation or a carried hand-over's promotion entered
+  the reviewer again, decides its round as any other and leaves the commit where it stands; so
+  does a person's review. The next round then reads from an older commit, or the whole change
+  where none stands, and a new generation clears the commit, so its first round reads the whole
+  change. The footer of the reviewer's newest deciding review on GitHub shows which case holds.
 - **The merger merges nothing.** It merges nothing while the head conflicts with its base, which
   GitHub can neither merge nor start pull-request CI for: the daemon sends such a head back to
   `implementing` on its own. And it enqueues nothing on a merge-queue base whose

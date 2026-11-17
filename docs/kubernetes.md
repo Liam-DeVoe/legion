@@ -1944,7 +1944,7 @@ Rolling back afterwards needs nothing of those rows: the notice told an architec
 
 #### Rolling back the release that keeps the commit a reviewer last read
 
-The change that keeps that commit adds, in its migration `20261116234034_phase_reviewed_head.up.sql`, the column `phases.reviewed_head`: the commit that the reviewer's newest recorded review read, its own deciding review whose Legion footer names the entry its row stands at, which the task of the reviewer's next round names as `Last reviewed commit: <sha>.`.
+The change that keeps that commit adds, in its migration `20261116234034_phase_reviewed_head.up.sql`, the column `phases.reviewed_head`: the commit read by the newest deciding review of the reviewer's own whose Legion footer named the entry its row held (`phases.entry`, while `phases.entry_task` held that entry's task), which the task of the reviewer's next round names as `Last reviewed commit: <sha>.`.
 An earlier release boots with the column in place: its phases read and its phases write name each column they touch, so it never reads the column, and every row it inserts takes the default, the empty string.
 At the rollback, with the daemon stopped, run the way back that the migration's header gives: it drops the column and deletes the migration's version row, so the roll-forward's `Migrate` adds the column again at its default (`versionRecorded` in `internal/store/store.go` decides each migration on its own row).
 That way back is owed to the roll-forward, not to the earlier release.

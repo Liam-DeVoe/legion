@@ -130,8 +130,8 @@ as the fingerprint decides (*The reviewer*, below, and
   reviewed — always named by SHA — carrying every inline comment in that single
   call: `gh api --method POST repos/{owner}/{repo}/pulls/{number}/reviews --input body.json`
   with `commit_id`, `event` (`REQUEST_CHANGES` or `APPROVE`), `body` (with the
-  Legion footer, which names the head the review read:
-  `<!-- legion: {"session":"<session-id>","phase":"review","head":"<the head you reviewed>"} -->`),
+  Legion footer, which names the head the review read and the entry of your round:
+  `<!-- legion: {"session":"<session-id>","phase":"review","head":"<the head you reviewed>","entry":<entry>} -->`),
   and a `comments[]` array of `{path, line, side, body}`, one entry per
   finding — never one `pr review` call per finding (each submission fires a `pr-review` wake).
   That `head` is the full 40-character SHA of the head whose diff and checks you read, which is
@@ -145,6 +145,8 @@ as the fingerprint decides (*The reviewer*, below, and
   A review whose footer names another head, or no head, decides no round:
   it is set aside, the round stays open and the
   architect is told the reason when the review's own webhook arrived, so the reviewer submits again at the head it read.
+  That `entry` is the number your newest task names as `Review entry: <n>.`, written bare, as a JSON number: by it the daemon tells a review of this round from a review of an earlier round, and only a review of this round moves the commit a later round reads from (the next item).
+  A review with no entry, or with another one, still decides the round, and the next round then reads more: from an older commit, or the whole change.
   A `COMMENT` decides nothing. After a
   forward merge, compute the fingerprint (*The unchanged-diff check* in
   `skill://legion-worker/references/conflicts-and-rewrites.md`) at the head your last submitted
@@ -186,7 +188,7 @@ as the fingerprint decides (*The reviewer*, below, and
   nothing restarts. Different, or either run printed no fingerprint: a new round — thermo again,
   one review.
 - **A later round reads from the commit its task names.**
-  The task of a later round names `Last reviewed commit: <sha>`, the head read by the newest of your own deciding reviews that the daemon recorded (the daemon part of your role prompt says which reviews it records and where the commit comes from).
+  The task of a later round names `Last reviewed commit: <sha>`, the head read by the newest of your own deciding reviews whose footer named the entry of its round, the number its task named as `Review entry: <n>.` (the daemon part of your role prompt gives the whole rule and where the commit comes from).
   Read the difference from that commit to the head (`git diff <sha> <head>`), and each thread: you need not read again what you read before that commit.
   Each agent of the pair reviews only the diff its task supplies, so name in each task the commit, the head and `git diff <sha> <head>` as the diff to review.
   The commit limits what you must read, never what you report: a defect you see outside the difference is a finding like any other, and *No deferrals* in `skill://legion-worker` holds for it.
