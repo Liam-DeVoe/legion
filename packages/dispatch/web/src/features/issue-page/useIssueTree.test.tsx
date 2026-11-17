@@ -2383,15 +2383,18 @@ function focusWindow(): void {
   focusManager.setFocused(true);
 }
 
-/** The live feed of `client` up, as the shell's event feed holds it: its socket open. Answers the
- *  socket, which a case sends Dispatch's heartbeat on, and the end of the feed, which puts the
- *  page's WebSocket back. */
+/** The live feed of `client` up, as the shell's event feed holds it: its socket open, and the
+ *  feed's subscription on it started by Dispatch (`events_start`). Answers the socket, which a
+ *  case sends Dispatch's heartbeat on, and the end of the feed, which puts the page's WebSocket
+ *  back. */
 function liveFeedOn(client: QueryClient) {
   const sockets = installFakeLiveSockets();
   const live = liveSocketFor(client);
   live.subscribeEvents({ onEvent: () => undefined, onStart: () => undefined, since: () => null });
   const socket = sockets.latest();
   socket.open();
+  const { sub } = socket.subscribed("events");
+  socket.receive({ type: "events_start", sub, since: "1", replay_complete: true });
   return {
     end: () => {
       live.close();
