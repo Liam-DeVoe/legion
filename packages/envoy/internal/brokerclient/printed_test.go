@@ -11,6 +11,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"errors"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -18,7 +20,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
+
+	"golang.org/x/oauth2"
 )
 
 // printedSecret stands for a credential in a place it does not belong. No printed text holds it.
@@ -88,6 +94,22 @@ func TestATokenFilePrintsItsSettingAndNeverItsPath(t *testing.T) {
 		t.Fatal("the trade went ahead with no token")
 	}
 	holdsNoSecret(t, "the trade's error", err.Error())
+	namesAll(t, "the trade's error", err.Error(), MachineTokenFileVar)
+	// Token answers the failure and logs nothing. The renewal loop logs it before it waits to
+	// ask again, and that first wait ends the loop here.
+	loop, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	client.after = func(time.Duration) <-chan time.Time {
+		cancel()
+		return nil
+	}
+	if err := client.Run(loop, func(context.Context, *Token) error {
+		t.Error("the loop handed its caller a token from a file that is not there")
+		return nil
+	}); err != nil {
+		t.Fatalf("Run = %v, want the failed trade logged and asked again", err)
+	}
+	namesAll(t, "the client's log", log.String(), "asking again", MachineTokenFileVar)
 	holdsNoSecret(t, "the client's log", log.String())
 }
 
@@ -245,6 +267,93 @@ func TestAnIssuersAnswerPrintsItsStatusAndCodeAlone(t *testing.T) {
 		namesAll(t, "the refused refresh", err.Error(), "400", "invalid_client")
 	}
 }
+
+// TestDiscoveryGoesThroughTheClientEveryOtherCallDoes: a DeviceFlow with no client of its own
+// reads the discovery document through the client the device and refresh calls use - the one the
+// context carries (oauth2.HTTPClient), else http.DefaultClient - and not through a client of
+// discovery's own, which a proxy, a CA bundle or a test transport set on those would not reach.
+func TestDiscoveryGoesThroughTheClientEveryOtherCallDoes(t *testing.T) {
+	const issuer = "https://issuer.invalid"
+	document := `{"issuer":"` + issuer + `","device_authorization_endpoint":"` + issuer + `/device","token_endpoint":"` + issuer + `/token","authorization_endpoint":"` + issuer + `/auth","jwks_uri":"` + issuer + `/jwks"}`
+	answering := func(asked *int) *http.Client {
+		return &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			*asked++
+			if r.URL.String() != issuer+"/.well-known/openid-configuration" {
+				return &http.Response{StatusCode: http.StatusNotFound, Body: http.NoBody, Request: r}, nil
+			}
+			return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(document)), Request: r}, nil
+		})}
+	}
+	for name, ctx := range map[string]func(t *testing.T, client *http.Client) context.Context{
+		"the context's client": func(_ *testing.T, client *http.Client) context.Context {
+			return context.WithValue(context.Background(), oauth2.HTTPClient, client)
+		},
+		"http.DefaultClient": func(t *testing.T, client *http.Client) context.Context {
+			saved := http.DefaultClient
+			http.DefaultClient = client
+			t.Cleanup(func() { http.DefaultClient = saved })
+			return context.Background()
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var asked int
+			config, err := exampleFlow(issuer).discover(ctx(t, answering(&asked)))
+			if err != nil {
+				t.Fatalf("discover = %v, want the document %s answered", err, name)
+			}
+			if asked == 0 || config.Endpoint.DeviceAuthURL != issuer+"/device" {
+				t.Fatalf("discover asked %s %d times and read the device endpoint %q", name, asked, config.Endpoint.DeviceAuthURL)
+			}
+		})
+	}
+}
+
+// TestARedirectedDiscoveryPrintsWhereItEnded: the status a failed discovery prints is the last
+// request's, so a 302 whose target refuses the connection prints as the refused connection it
+// ended in, and unwraps to it, not as the 302 that sent it there. A discovery the issuer answered
+// 404 prints that status, and its error still unwraps to go-oidc's own: the control.
+func TestARedirectedDiscoveryPrintsWhereItEnded(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	closed := listener.Addr().String()
+	listener.Close()
+	redirected := newRawServer(t, func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "http://"+closed+"/.well-known/openid-configuration", http.StatusFound)
+	})
+	_, err = exampleFlow(redirected).Start(context.Background())
+	if err == nil {
+		t.Fatal("Start read a discovery document from a port that is closed")
+	}
+	namesAll(t, "the redirected discovery", err.Error(), "connection refused")
+	if strings.Contains(err.Error(), "302") || !errors.Is(err, syscall.ECONNREFUSED) {
+		t.Errorf("the redirected discovery = %q (errors.Is ECONNREFUSED: %t), want the refused connection it ended in", err, errors.Is(err, syscall.ECONNREFUSED))
+	}
+
+	missing := newRawServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		w.Write([]byte("echo of " + printedSecret))
+	})
+	_, err = exampleFlow(missing).Start(context.Background())
+	if err == nil {
+		t.Fatal("Start read a discovery document the issuer answered 404")
+	}
+	holdsNoSecret(t, "the 404 discovery", err.Error())
+	namesAll(t, "the 404 discovery", err.Error(), "the server answered HTTP 404")
+	reached := false
+	for cause := errors.Unwrap(err); cause != nil; cause = errors.Unwrap(cause) {
+		reached = reached || strings.Contains(cause.Error(), printedSecret)
+	}
+	if !reached {
+		t.Errorf("the 404 discovery %q does not unwrap to go-oidc's error, which quotes the body", err)
+	}
+}
+
+// roundTripFunc is a transport that answers every request with f.
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
 // TestAnIdentityTokenThatDoesNotParseIsNotQuoted: the identity token a sign-in answers is a
 // credential, and go-jose's and encoding/json's errors quote the parts of it they could not read

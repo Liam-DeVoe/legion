@@ -33,6 +33,16 @@ func Class(err error) error {
 	return &classified{text, err}
 }
 
+// Masked is err printed as text alone: for a failure a caller has already put in words it may
+// print - a status its transport recorded, fixed text - where err's own text quotes what it may
+// not. It unwraps to err, so errors.Is and errors.As still classify it. Masked(nil, text) is nil.
+func Masked(err error, text string) error {
+	if err == nil {
+		return nil
+	}
+	return &classified{text, err}
+}
+
 // Answered is a server's refusal, an HTTP status with the body it came with, as a message may
 // print it: "the server answered HTTP <status>", followed by the answer's error code where body
 // names a registered one (answerCodes) as an OAuth error (`{"error":"invalid_grant"}`) or as a

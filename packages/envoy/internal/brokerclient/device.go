@@ -43,7 +43,8 @@ type DeviceFlow struct {
 	// secret of the person's, and the broker checks the audience of the token it mints rather
 	// than trusting this client.
 	ClientID, ClientSecret string
-	// HTTP is the client every call goes through; nil is http.DefaultClient.
+	// HTTP is the client every call goes through; nil is the client the context carries
+	// (oauth2.HTTPClient), else http.DefaultClient.
 	HTTP *http.Client
 
 	mu     sync.Mutex
@@ -69,8 +70,9 @@ type SignIn struct {
 //
 // go-oidc's own error quotes the issuer, the issuer the document names and the body of an answer
 // that is not a success, so none of its text prints: a document the issuer did not serve prints
-// as its status (redact.Answered), one that does not read as this issuer's as fixed text, and a
-// request that failed as its class (redact.Class).
+// as the status of the last request (redact.Answered, through redact.Masked, so the error still
+// unwraps to go-oidc's), one that does not read as this issuer's as fixed text, and a request
+// that failed as its class (redact.Class). A redirect whose target fails is that failure.
 func (d *DeviceFlow) discover(ctx context.Context) (*oauth2.Config, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -78,10 +80,10 @@ func (d *DeviceFlow) discover(ctx context.Context) (*oauth2.Config, error) {
 		return d.config, nil
 	}
 	answered := &statusOf{}
-	provider, err := gooidc.NewProvider(withStatusOf(ctx, d.HTTP, answered), d.Issuer)
+	provider, err := gooidc.NewProvider(withStatusOf(d.context(ctx), answered), d.Issuer)
 	switch {
 	case err != nil && answered.status/100 > 2:
-		return nil, fmt.Errorf("read %s: %s", d.issuer(), redact.Answered(answered.status, nil))
+		return nil, fmt.Errorf("read %s: %w", d.issuer(), redact.Masked(err, redact.Answered(answered.status, nil)))
 	case err != nil && answered.status != 0:
 		return nil, fmt.Errorf("read %s: its discovery document names another issuer or is not one", d.issuer())
 	case err != nil:
@@ -111,15 +113,13 @@ func (d *DeviceFlow) context(ctx context.Context) context.Context {
 	return context.WithValue(ctx, oauth2.HTTPClient, d.HTTP)
 }
 
-// withStatusOf is ctx carrying the client x/oauth2 and go-oidc send their requests with: client
-// (an empty one, which is http.DefaultClient's settings, where it is nil), timeout and all, with
-// its transport wrapped so answered records the status of each answer it carries. A library
-// whose error quotes an answer's body is printed by that status (redact.Answered) instead.
-func withStatusOf(ctx context.Context, client *http.Client, answered *statusOf) context.Context {
-	wrapped := http.Client{}
-	if client != nil {
-		wrapped = *client
-	}
+// withStatusOf is ctx carrying a copy of the client x/oauth2 and go-oidc send their requests
+// with - the one ctx carries (oauth2.HTTPClient), else http.DefaultClient, as every other call
+// of a DeviceFlow resolves it - timeout and all, with its transport wrapped so answered records
+// the status of each answer it carries. A library whose error quotes an answer's body is
+// printed by that status (redact.Answered) instead.
+func withStatusOf(ctx context.Context, answered *statusOf) context.Context {
+	wrapped := *oauth2.NewClient(ctx, nil)
 	answered.base = wrapped.Transport
 	if answered.base == nil {
 		answered.base = http.DefaultTransport
@@ -128,8 +128,10 @@ func withStatusOf(ctx context.Context, client *http.Client, answered *statusOf) 
 	return context.WithValue(ctx, oauth2.HTTPClient, &wrapped)
 }
 
-// statusOf is a transport that records the status of the last answer it carried, which is all a
-// refusal may say of an answer whose library error quotes its body. One call at a time uses it.
+// statusOf is a transport that records the status of the last request it carried, which is all a
+// refusal may say of an answer whose library error quotes its body: the answer's status, or 0
+// where the request got no answer, so a redirect whose target fails is not read as the redirect.
+// One call at a time uses it.
 type statusOf struct {
 	base   http.RoundTripper
 	status int
@@ -137,6 +139,7 @@ type statusOf struct {
 
 func (s *statusOf) RoundTrip(request *http.Request) (*http.Response, error) {
 	response, err := s.base.RoundTrip(request)
+	s.status = 0
 	if err == nil {
 		s.status = response.StatusCode
 	}

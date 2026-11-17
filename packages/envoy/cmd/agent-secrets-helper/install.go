@@ -80,11 +80,17 @@ const unitEscapingRule = `a character a unit's Environment= line would need esca
 // -<name>, invalid value "<v>" for flag -<name>), where a --url's credential, or a secret
 // pasted where a flag goes, would print. So the flag set writes nothing, and a failure is this
 // function's own words: which of install's flags the argument was for, where it was for one, and
-// the flags install takes otherwise. -h and -help still print the flags, whose texts and defaults
-// hold nothing from args, and answer flag.ErrHelp.
+// the flags install takes otherwise. Which flag that is comes from the parse itself and from
+// args, never from the failure's text, which an argument can make read as anything: a flag
+// whose Set refused its value is the one the parse records (failedSet), and a value-taking flag
+// that is the last argument the parse read is one that needs a value. -h and -help still print
+// the flags, whose texts and defaults hold nothing from args, and answer flag.ErrHelp.
 func parseInstallFlags(fs *flag.FlagSet, args []string) error {
 	fs.SetOutput(io.Discard)
+	var refused string
+	fs.VisitAll(func(f *flag.Flag) { f.Value = failedSet{Value: f.Value, name: f.Name, refused: &refused} })
 	err := fs.Parse(args)
+	fs.VisitAll(func(f *flag.Flag) { f.Value = f.Value.(failedSet).Value })
 	switch {
 	case err == nil:
 		return nil
@@ -93,25 +99,52 @@ func parseInstallFlags(fs *flag.FlagSet, args []string) error {
 		fmt.Fprintln(os.Stderr, "Usage of install:")
 		fs.PrintDefaults()
 		return err
+	case refused != "":
+		return fmt.Errorf("install --%s was given a value it does not take (the argument is not printed)", refused)
 	}
-	// The flag package quotes a value it could not set with %q, so the text after the last quote
-	// is its own: " for -<name>: <reason>" or " for flag -<name>: <reason>". Only a name install
-	// defined is ever read out of it.
-	msg := err.Error()
-	tail := msg[strings.LastIndex(msg, `"`)+1:]
-	var named, problem string
-	fs.VisitAll(func(f *flag.Flag) {
-		switch {
-		case msg == "flag needs an argument: -"+f.Name:
-			named, problem = f.Name, "needs a value"
-		case strings.HasPrefix(tail, " for -"+f.Name+": "), strings.HasPrefix(tail, " for flag -"+f.Name+": "):
-			named, problem = f.Name, "was given a value it does not take"
+	// The flag package stops at the first argument it cannot read, so a flag that needs a value
+	// failed only when it is the last argument (-url or --url) and the parse read every argument.
+	if last := len(args) - 1; last >= 0 && fs.NArg() == 0 && strings.HasPrefix(args[last], "-") {
+		name := strings.TrimPrefix(strings.TrimPrefix(args[last], "-"), "-")
+		if f := fs.Lookup(name); f != nil && !isBoolFlag(f.Value) {
+			return fmt.Errorf("install --%s needs a value (the argument is not printed)", name)
 		}
-	})
-	if named != "" {
-		return fmt.Errorf("install --%s %s (the argument is not printed)", named, problem)
 	}
 	return errors.New("install takes only --url URL and --restart-with-sessions, and an argument is neither (it is not printed)")
+}
+
+// failedSet is a flag's value during parseInstallFlags' parse, recording in refused the name of
+// the flag whose Set refused the value it was given. It is a bool flag exactly when the value it
+// wraps is one, so `--restart-with-sessions` still takes no value.
+type failedSet struct {
+	flag.Value
+	name    string
+	refused *string
+}
+
+func (f failedSet) Set(value string) error {
+	err := f.Value.Set(value)
+	if err != nil {
+		*f.refused = f.name
+	}
+	return err
+}
+
+func (f failedSet) IsBoolFlag() bool { return isBoolFlag(f.Value) }
+
+// String is the wrapped value's; the flag package also calls it on a zero failedSet, which wraps
+// none.
+func (f failedSet) String() string {
+	if f.Value == nil {
+		return ""
+	}
+	return f.Value.String()
+}
+
+// isBoolFlag reports whether value is a bool flag's, which the flag package sets with no value.
+func isBoolFlag(value flag.Value) bool {
+	b, ok := value.(interface{ IsBoolFlag() bool })
+	return ok && b.IsBoolFlag()
 }
 
 // install writes the helper's systemd user unit for the binary at exe (symlinks resolved), the

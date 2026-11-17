@@ -11,6 +11,9 @@ package main
 
 import (
 	"bytes"
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
@@ -126,6 +129,19 @@ func TestKeyPemInTheOutDirectoryIsNamedByItsFlagNeverItsPath(t *testing.T) {
 				t.Fatal(err)
 			}
 		}, "not a PKCS#8 private key"},
+		{"key.pem is a PKCS#8 key that is not ECDSA", func(t *testing.T, key string) {
+			_, ed, err := ed25519.GenerateKey(rand.Reader)
+			if err != nil {
+				t.Fatal(err)
+			}
+			der, err := x509.MarshalPKCS8PrivateKey(ed)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(key, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}, "not an ECDSA private key"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			tokenFile := writePodToken(t, fakePodToken(t, testPodAccount, testPodUID))

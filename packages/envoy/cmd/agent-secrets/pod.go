@@ -20,8 +20,10 @@ package main
 import (
 	"context"
 	"crypto/ecdsa"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
@@ -380,19 +382,28 @@ const outDir = "the directory --out (or AGENT_SECRETS_KEY_DIR) names"
 
 // loadOutKey is loadKey for the key.pem in the directory --out names, saying outKeyFile where
 // loadKey says the key's path: the system's reason it cannot be read prints through redact.File,
-// and content that is no PKCS#8 key is refused in fixed text, never in the parser's words about
-// the key's bytes.
+// and content that is no PEM file, no PKCS#8 key or no ECDSA key is refused in this function's
+// own fixed text, never in the parser's words about the key's bytes. It parses the key itself
+// rather than through main.go's parseKeyPEM, so what it prints depends on no other function's
+// wrapping. dispatch://INFRA-4152 merges it with main.go's loadKey after the stack lands.
 func loadOutKey(path string) (*ecdsa.PrivateKey, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read %s: %w", outKeyFile, redact.File(err))
 	}
-	key, err := parseKeyPEM(data, outKeyFile)
-	if errors.Unwrap(err) != nil {
-		// parseKeyPEM's one wrapped error is the PKCS#8 parser's; its others are fixed text.
-		return nil, fmt.Errorf("%s: not a PKCS#8 private key", outKeyFile)
+	block, _ := pem.Decode(data)
+	if block == nil {
+		return nil, errors.New(outKeyFile + ": not a PEM file")
 	}
-	return key, err
+	parsed, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+	if err != nil {
+		return nil, errors.New(outKeyFile + ": not a PKCS#8 private key")
+	}
+	key, ok := parsed.(*ecdsa.PrivateKey)
+	if !ok {
+		return nil, errors.New(outKeyFile + ": not an ECDSA private key")
+	}
+	return key, nil
 }
 
 // enrollLockFile is the lock a pod's self-enrollment is serialized on, in the key dir it writes.

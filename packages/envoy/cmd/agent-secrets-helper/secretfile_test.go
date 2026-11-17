@@ -197,6 +197,15 @@ func TestInstallFlagErrorsPrintNoArgument(t *testing.T) {
 		{[]string{"--https://" + fixtureUserinfo("B2") + "@broker.invalid"}, []string{"--url", "--restart-with-sessions"}},
 		{[]string{"---url=https://" + fixtureUserinfo("C3") + "@broker.invalid"}, []string{"--url", "--restart-with-sessions"}},
 		{[]string{"--url"}, []string{"--url", "needs a value"}},
+		// A made-up secret given to the bool flag, whose text names the other flag after a quote:
+		// the flag that refused it is named, whatever its value says.
+		{[]string{"--restart-with-sessions=hunter2pw-flag-D4\" for -url: x"}, []string{"--restart-with-sessions", "was given a value it does not take"}},
+		// A flag install does not define whose name ends as a refused value's text does: it is no
+		// flag of install's, so neither flag is named as the one it was for.
+		{[]string{"--hunter2pw-flag-E5\" for -url: x"}, []string{"--url", "--restart-with-sessions", "neither"}},
+		{[]string{"-url"}, []string{"--url", "needs a value"}},
+		// --url last, after an argument the parse already stopped at, is not what failed.
+		{[]string{"--hunter2pw-flag-F6", "--url"}, []string{"--url", "--restart-with-sessions", "neither"}},
 	} {
 		r := newInstallRig(t)
 		var err error

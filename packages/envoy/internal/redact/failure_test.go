@@ -142,3 +142,25 @@ func TestFilePrintsTheOperationAndTheSystemsReasonAlone(t *testing.T) {
 		t.Error("File(nil) is not nil")
 	}
 }
+
+// TestMaskedPrintsItsTextAndUnwrapsToTheError: a failure a caller has put in words of its own - a
+// status the transport recorded, fixed text - prints those words alone and none of the error's
+// text, and still unwraps to the error, so errors.Is and errors.As classify it as before.
+func TestMaskedPrintsItsTextAndUnwrapsToTheError(t *testing.T) {
+	cause := &net.OpError{Op: "dial", Net: "tcp", Err: os.NewSyscallError("connect", syscall.ECONNREFUSED)}
+	err := fmt.Errorf("get https://%s@issuer.example: %w", failureSecret, cause)
+	got := Masked(err, "the server answered HTTP 404")
+	if got.Error() != "the server answered HTTP 404" {
+		t.Errorf("Masked = %q, want the text it was given alone", got)
+	}
+	if errors.Unwrap(got) != err {
+		t.Errorf("Masked unwraps to %v, want the error it masks", errors.Unwrap(got))
+	}
+	var op *net.OpError
+	if !errors.Is(got, syscall.ECONNREFUSED) || !errors.As(got, &op) || op != cause {
+		t.Error("errors.Is and errors.As do not reach through Masked to the cause")
+	}
+	if Masked(nil, "the server answered HTTP 404") != nil {
+		t.Error("Masked(nil, text) is not nil")
+	}
+}
