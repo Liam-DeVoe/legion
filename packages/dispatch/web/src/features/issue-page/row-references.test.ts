@@ -26,6 +26,15 @@ test("what a text cites is every whole address and every bare key, each once", (
   expect(citedReferences("")).toEqual([]);
 });
 
+// Decision 142 of dispatch://INFRA-1196/artifact/part-decisions-md: the batched read refuses a
+// person's reference, which has no target to name, so a text that cites a person and an issue
+// asks for the issue alone, and a row draws the person's words as written.
+test("a text citing a person and an issue cites the issue alone", () => {
+  expect(
+    citedReferences("Ask [Alice](dispatch://person/alice@example.com) about dispatch://CORE-7.")
+  ).toEqual(["dispatch://CORE-7"]);
+});
+
 // dispatch://INFRA-1196 R9 and decision 55: the batched read resolves an item id or a block id
 // written short in the owner its reference names, and answers under the reference as the request
 // wrote it. So an address written short is asked as written, beside one written whole, and a row

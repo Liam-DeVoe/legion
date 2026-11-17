@@ -17,12 +17,12 @@ import type {
   AskWithTrees,
   DisplayTree,
 } from "../../api/types";
-import { QueryError } from "../../components/QueryError";
 import { RefusableButton } from "../../components/RefusableButton";
-import { pageComposer, pageComposerControl, pageRowAct } from "../../theme/classes";
+import { pageComposer, pageComposerControl, pageFailedText, pageRowAct } from "../../theme/classes";
 import type { ReplyTarget } from "../conversation/composer-model";
 import { useHeldSend } from "../conversation/held-sends";
 import {
+  keepFocusOnPress,
   MentionComposer,
   type OutlineKind,
   OutlineTargetLine,
@@ -54,7 +54,8 @@ import {
   useOutlineWriter,
 } from "./outline-writer";
 import { authorText, pageChrome } from "./page-structure";
-import { CONTROL_LABELS } from "./page-words";
+import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
+import { TAB_STOP_ROW } from "./slots/stage";
 
 /** The kinds the line writes, as its chips before Send, in this order: a comment, which is on at
  *  first, and a question, which is an ask of the issue with no options (R2). A later part adds a
@@ -90,11 +91,6 @@ const STALE_ASK: Readonly<Record<string, true>> = {
   ASK_RESOLVED: true,
   NOT_ANSWERER: true,
 };
-
-/** The row of the stage's tree that holds its one tab stop, the outline's and each view's alike
- *  (`slots/stage.tsx` reads the same row): where the focus goes back to when the element the
- *  reader came to the box from is gone. */
-const TAB_STOP_ROW = '[data-issue-page] [role="tree"] [role="treeitem"][tabindex="0"]';
 
 /** Where the box stands on the page, as the slot reads it off the address (`slots/foot.tsx`). */
 export interface BoxPlace {
@@ -199,12 +195,13 @@ export function IssueComposer({
     if (givenBack === 0) return;
     const from = cameFrom.current;
     cameFrom.current = null;
-    // The element the reader came from while it is still drawn; else the stage tree's tab-stop
-    // row, outside Details' drawer: the row the reader last stood on, or the view's own.
+    // The element the reader came from while it is still drawn; else the tab-stop row of the
+    // stage's tree, the outline's and each view's alike, outside Details' drawer: the row the
+    // reader last stood on, or the view's own.
     const back =
       from?.isConnected === true && from.closest("[hidden]") === null
         ? from
-        : [...document.querySelectorAll<HTMLElement>(TAB_STOP_ROW)].find(
+        : [...document.querySelectorAll<HTMLElement>(`[data-issue-page] ${TAB_STOP_ROW}`)].find(
             (row) => row.closest(`aside[${DETAILS_ATTRIBUTE}]`) === null
           );
     back?.focus({ preventScroll: true });
@@ -300,12 +297,17 @@ interface LinePlace {
 /**
  * Ends the line's target and puts the reader back: on the outline, on the row `landing` names
  * once its read draws it (R4); under a view, where no outline is drawn to consume a landing and
- * one would act on the outline the next time it mounts, where the reader came to the box from.
+ * one would act on the outline the next time it mounts, and where the line names no row to land
+ * on - a statement it took up from a held send - where the reader came to the box from.
  */
-function finish(writer: OutlineWriter, place: LinePlace, landing: Landing): void {
-  if (place.outlineDrawn) writer.land(landing);
+function finish(writer: OutlineWriter, place: LinePlace, landing: Landing | undefined): void {
+  if (place.outlineDrawn && landing !== undefined) {
+    writer.land(landing);
+    writer.clear();
+    return;
+  }
   writer.clear();
-  if (!place.outlineDrawn) place.giveBack();
+  place.giveBack();
 }
 
 /** The line that writes a comment, a question, a reply, or a comment on a statement: the
@@ -332,19 +334,26 @@ function WriteLine({
     [statement]
   );
   const owner = useMemo(() => ({ issueKey, kind: "issue" as const }), [issueKey]);
-  // What the line is aimed at, which a landing names: the entry a reply answers, or the statement
-  // a comment is on; nothing for a write on the issue itself.
-  const aimedAt: Landing["under"] =
+  // The statement's row, where the line names one: a statement the line took up from a held send
+  // is its document and its words alone (`OutlineWriter.statement`), which name no row.
+  const statementRow = statement !== undefined && "id" in statement ? statement : undefined;
+  // Whether the line is aimed at something: the entry a reply answers, or the statement a comment
+  // is on; not for a write on the issue itself.
+  const aimed = reply !== null || statement !== undefined;
+  // What a landing names: that entry, or that statement's row; nothing for a write on the issue.
+  const under: Landing["under"] =
     reply !== null
       ? { id: reply.id, kind: reply.parentKind }
-      : statement === undefined
+      : statementRow === undefined
         ? undefined
-        : { id: statement.id, kind: "statement" };
+        : { id: statementRow.id, kind: "statement" };
+  // A write to a statement whose row the line cannot name lands on none (`finish`).
+  const lands = !aimed || under !== undefined;
   // A reply and a statement's comment are comments under the row they are aimed at, so the kinds
   // are drawn only while the line writes on the issue. A closed issue takes a comment and no
   // question, so the line writes a comment there whatever chip was pressed while it was open,
   // rather than holding a question the issue refuses.
-  const writesKinds = aimedAt === undefined && !isClosed;
+  const writesKinds = !aimed && !isClosed;
   return (
     <MentionComposer
       box="issue-page-composer"
@@ -360,7 +369,7 @@ function WriteLine({
           writer.writeOnIssue();
           return;
         }
-        finish(writer, place, { to: "self", under: aimedAt });
+        finish(writer, place, lands ? { to: "self", under } : undefined);
       }}
       onClose={place.giveBack}
       onKindChange={(next) => {
@@ -370,33 +379,39 @@ function WriteLine({
       // The reader is taken to what they wrote - their newest node under the row the line was
       // aimed at, or under the issue - and the line writes on the issue again. Neither is refused
       // here: the write store drops the send before it calls this, so no send is out by then.
-      onSent={() => finish(writer, place, { to: "newest", under: aimedAt })}
+      onSent={() => finish(writer, place, lands ? { to: "newest", under } : undefined)}
       outline={{
         anchor,
         cancelReply: CONTROL_LABELS.write_on_issue,
         kinds: writesKinds ? KINDS : [],
-        placeholder:
-          aimedAt === undefined
-            ? place.phone
-              ? CONTROL_LABELS.issue_placeholder_phone
-              : CONTROL_LABELS.issue_placeholder
-            : place.phone
-              ? CONTROL_LABELS.reply_placeholder_phone
-              : CONTROL_LABELS.reply_placeholder,
+        placeholder: aimed
+          ? place.phone
+            ? CONTROL_LABELS.reply_placeholder_phone
+            : CONTROL_LABELS.reply_placeholder
+          : place.phone
+            ? CONTROL_LABELS.issue_placeholder_phone
+            : CONTROL_LABELS.issue_placeholder,
         send: CONTROL_LABELS.send,
+        sending: ANSWER_LINES.sending,
+        statementTwice: ANSWER_LINES.statement_twice,
         target:
           reply !== null ? (
             <ReplyTargetLine issueKey={issueKey} reply={reply} />
           ) : statement === undefined ? undefined : (
             <>
               <span {...pageChrome}>{CONTROL_LABELS.replying_to}</span>{" "}
+              {/* A statement taken up from a held send is its words alone, named in plain
+                  words as a row's statement is. A row's text is the coverage read's words, which
+                  leave every reference out, so its tree's references are named whole. */}
               <TargetWords
-                markdown={statement.text}
-                source={statement.source}
-                tree={statement.tree}
+                markdown={statementRow?.text ?? statement.quote}
+                namesAll={statementRow !== undefined}
+                source={statementRow?.source}
+                tree={statementRow?.tree}
               />
             </>
           ),
+        uploading: ANSWER_LINES.uploading,
       }}
       owner={owner}
       replyTo={reply}
@@ -493,6 +508,7 @@ function EditLine({
           ? CONTROL_LABELS.edit_placeholder_phone
           : CONTROL_LABELS.edit_placeholder,
         send: CONTROL_LABELS.save,
+        sending: ANSWER_LINES.saving_field,
         target: (
           <>
             <span {...pageChrome}>{CONTROL_LABELS.editing}</span>{" "}
@@ -503,6 +519,7 @@ function EditLine({
             />
           </>
         ),
+        uploading: ANSWER_LINES.uploading,
       }}
       owner={owner}
       saveEdit={async (id, body, carried, bounds) => {
@@ -724,7 +741,10 @@ function AnswerForm({
             }
             writing={dispatchWritingBox("issue-page-composer", "ask-answer")}
           />
-          <div className={pageComposer.controls}>
+          {/* A press here leaves the focus where it is (`keepFocusOnPress`), so on a phone the
+              line keeps its form under the pointer and the press lands where it was aimed. */}
+          {/* biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the handler only keeps a press on the buttons inside from moving the focus, and each of them is its own control. */}
+          <div className={pageComposer.controls} onMouseDown={keepFocusOnPress}>
             {options.map((option) => (
               <button
                 // Pressed while its label is among the picks: the label is matched here and
@@ -752,7 +772,7 @@ function AnswerForm({
               />
             ) : null}
             <RefusableButton
-              busy={pending ? "Sending…" : undefined}
+              busy={pending ? ANSWER_LINES.sending : undefined}
               look="page-send-answer"
               refusal={refusal}
               type="submit"
@@ -762,11 +782,25 @@ function AnswerForm({
           </div>
         </div>
         {failure === null ? null : (
-          <QueryError
-            message={failure.message}
-            onRetry={failure.retryable ? send : undefined}
-            retrying={pending}
-          />
+          // The refusal in the page's own colour (decision 56 of dispatch://INFRA-1196), its
+          // Retry a 24 px target at every width (R2) that a press leaves the focus beside.
+          <div
+            className={`flex flex-wrap items-center gap-3 text-sm ${pageFailedText}`}
+            onMouseDown={keepFocusOnPress}
+            role="alert"
+          >
+            <p>{failure.message}</p>
+            {failure.retryable ? (
+              <button
+                className={`font-medium underline disabled:cursor-not-allowed disabled:opacity-50 ${pageComposerControl}`}
+                disabled={pending}
+                onClick={send}
+                type="button"
+              >
+                {CONTROL_LABELS.retry}
+              </button>
+            ) : null}
+          </div>
         )}
       </fieldset>
     </form>
@@ -920,10 +954,17 @@ function CriterionForm({
  */
 function TargetWords({
   markdown,
+  namesAll = false,
   source,
   tree,
 }: {
   markdown: string;
+  /** Whether the line names every reference `tree` holds, rather than only those `markdown`
+   *  cites (`ReferenceNaming.cited`): a statement row's `markdown` is the coverage read's words,
+   *  which leave each of its references out (`blockWords` in Go's `api/results.go`), so it cites
+   *  none of them, and the line names them as the statement's row draws them (`RowText`). Its
+   *  words are still what the line draws until the engine has answered. */
+  namesAll?: boolean;
   source: TextSource | undefined;
   tree: DisplayTree | undefined;
 }): ReactNode {
@@ -932,7 +973,7 @@ function TargetWords({
   return (
     <PlainText
       firstLine
-      markdown={markdown}
+      markdown={namesAll ? undefined : markdown}
       source={source}
       surface="issue-page-composer-target"
       tree={tree}

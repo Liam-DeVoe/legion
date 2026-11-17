@@ -16,8 +16,15 @@ import {
   useState,
 } from "react";
 
+import { useTooltips } from "../../components/tooltips";
 import {
+  focusBorder,
   inputClasses,
+  pageHairBorder,
+  pageInkText,
+  pageMutedText,
+  pagePaperBg,
+  pageQuietText,
   textMutedOnSurface,
   textPrimaryOnSurface,
   textSecondaryOnSurface,
@@ -195,6 +202,13 @@ export function MentionField({
   );
   const listboxId = useId();
   const hintId = useId();
+  // Inside `NoTooltips`, the new issue page's surface, a box the host does not draw in a look of
+  // its own is in the page's colours (dispatch://INFRA-3935 R6), as are its label, its mention
+  // targets and its hint: the paper inside its hairline rule, the ink typed on it, the quiet grey
+  // of a placeholder and of the hint, the muted grey of the label, and `main`'s focus rule, the
+  // application's one focus indicator (decision 58 of
+  // dispatch://INFRA-1196/artifact/part-decisions-md). Everywhere else each class is `main`'s.
+  const tooltips = useTooltips();
   const picker = useRefPicker({
     caret,
     enabled: !disabled && focused,
@@ -317,7 +331,9 @@ export function MentionField({
       <label
         className={
           labelClassName ??
-          (look === undefined ? `block text-sm font-medium ${textSecondaryOnSurface}` : "contents")
+          (look === undefined
+            ? `block text-sm font-medium ${tooltips ? textSecondaryOnSurface : pageMutedText}`
+            : "contents")
         }
       >
         {labelHidden ? null : label}
@@ -328,7 +344,7 @@ export function MentionField({
           aria-label={label}
           className={
             look === undefined
-              ? `mt-1 block w-full rounded-lg border px-3 py-2 font-normal outline-none ${inline ? "min-h-11 resize-none" : "min-h-24"} ${inputClasses(true)} ${textPrimaryOnSurface} ${className ?? ""}`
+              ? `mt-1 block w-full rounded-lg border px-3 py-2 font-normal outline-none ${inline ? "min-h-11 resize-none" : "min-h-24"} ${tooltips ? `${inputClasses(true)} ${textPrimaryOnSurface}` : `${pageHairBorder} ${pagePaperBg} ${pageInkText} placeholder:text-page-quiet ${focusBorder}`} ${className ?? ""}`
               : `${look} ${className ?? ""}`
           }
           disabled={disabled}
@@ -373,7 +389,9 @@ export function MentionField({
         <ul
           aria-label="Mention targets"
           className={
-            look === undefined ? `flex flex-wrap gap-2 text-xs ${textPrimaryOnSurface}` : "sr-only"
+            look === undefined
+              ? `flex flex-wrap gap-2 text-xs ${tooltips ? textPrimaryOnSurface : pageInkText}`
+              : "sr-only"
           }
         >
           {parties.map((target) => (
@@ -396,7 +414,9 @@ export function MentionField({
           box and the list that drives the browser rows cannot drift apart. */}
       <p
         className={
-          look === undefined ? (hintClassName ?? `text-xs ${textMutedOnSurface}`) : "sr-only"
+          look === undefined
+            ? (hintClassName ?? `text-xs ${tooltips ? textMutedOnSurface : pageQuietText}`)
+            : "sr-only"
         }
         id={hintId}
       >

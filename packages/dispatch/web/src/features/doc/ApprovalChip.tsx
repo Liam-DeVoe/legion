@@ -13,7 +13,6 @@ import {
   backdrop40,
   card,
   dangerText,
-  focusBorder,
   focusVisibleRing,
   pageFailedText,
   pageHairBorder,
@@ -48,11 +47,11 @@ import { useKeyedWrite } from "../writes/useKeyedWrite";
  * issue page's (dispatch://INFRA-3935 R6, decision 56 of
  * dispatch://INFRA-1196/artifact/part-decisions-md), by the role `main`'s colour has: a dialog is
  * the page's paper inside its hairline rule over the icon rail's dark, the one page colour dark
- * in both schemes; its heading and a review are the ink, the reviewer's reason and a label the
- * muted grey, Close and a pending read the quiet grey, a refusal the failed red; Approve and the
- * dialog's Request changes are filled with the ink, as the header's one filled control is, and
- * the other actions are the header's control. The reason box keeps `main`'s focus rule, the
- * application's one focus indicator (decision 58 of the same artifact).
+ * in both schemes; its heading and a review are the ink, the reviewer's reason the muted grey,
+ * Close and a pending read the quiet grey, a refusal the failed red; Approve and the dialog's
+ * Request changes are filled with the ink, as the header's one filled control is, and the other
+ * actions are the header's control. The reason box and its label are the shared field's, which
+ * draws them in the page's colours there itself (`MentionField`).
  *
  * They stand in this table, not beside `main`'s classes, because `theme/text-on-background.test.ts`
  * pairs each text class with the nearest enclosing ground of the same file across both branches
@@ -68,10 +67,8 @@ const ON_PAGE = {
   failure: pageFailedText,
   filled: `${pageInkFill} refused:cursor-not-allowed refused:bg-page-hair refused:text-page-muted`,
   heading: pageInkText,
-  label: pageMutedText,
   pending: pageQuietText,
   reason: pageMutedText,
-  reasonBox: `${pageHairBorder} ${pagePaperBg} ${pageInkText} ${focusBorder}`,
   review: pageInkText,
 } as const;
 
@@ -257,10 +254,8 @@ function RequestChangesDialog({
           >
             Request changes
           </h2>
-          {/* #3125's field, in the page's colours inside `NoTooltips` (part I's `ON_PAGE`): its
-              label as part I draws it there, and the page's box colours after the field's own. */}
           <MentionField
-            className={page === null ? "text-sm" : `text-sm ${ON_PAGE.reasonBox}`}
+            className="text-sm"
             body={reason}
             disabled={saving}
             fieldRef={(handle) => {
@@ -268,9 +263,6 @@ function RequestChangesDialog({
             }}
             issueKey={issueKey}
             label="Reason"
-            labelClassName={
-              page === null ? undefined : `block text-sm font-medium ${ON_PAGE.label}`
-            }
             onChange={(change) => setReason(change.body)}
             onKeyDown={(event) =>
               submitOnModifiedEnter(event, {
@@ -333,6 +325,16 @@ function ActionsGroup({
 }
 
 export interface ApprovalChipProps {
+  /** The words naming the document Approve and Request changes review ("the spec"), for a host
+   *  whose line carries more than one document's actions: `ApprovalSteps` passes it where
+   *  `actionsOn` names two or more documents. Inside `NoTooltips` each action's name then begins
+   *  with the action's own words and says its document, "Approve the spec", "Approve v5 of the
+   *  spec" for a stale approval, "Request changes to the spec", so no two actions of the line
+   *  share a name and a voice user says what they read (WCAG 2.5.3, decision 99 of
+   *  dispatch://INFRA-1196/artifact/part-decisions-md). Not given, the default, and everywhere
+   *  outside `NoTooltips`, where no caller passes it today and the words to join them are not
+   *  loaded, each action is named by its words alone, as on `main` (dispatch://INFRA-3935 R1). */
+  actionsDocument?: string;
   artifact: Artifact;
   /** `header`: shown on the document header, with an approval-state chip.
    * `list` (default): shown in a compact list row. */
@@ -364,6 +366,7 @@ export interface ApprovalChipProps {
  * carries the Approve / Request changes actions that write a new review.
  */
 export function ApprovalChip({
+  actionsDocument,
   artifact,
   keepActionsTogether = false,
   layout = "inline",
@@ -412,6 +415,18 @@ export function ApprovalChip({
 
   const approveLabel =
     approval.state === "stale" ? `Approve v${approval.latest_version}` : "Approve";
+  const requestChangesLabel = "Request changes";
+  // Each name begins with the words its action draws (`actionsDocument` says why it is given).
+  const actionNames =
+    page === null || actionsDocument === undefined
+      ? undefined
+      : {
+          approve:
+            approval.state === "stale"
+              ? `${approveLabel} ${page.CONTROL_LABELS.approval_version_of} ${actionsDocument}`
+              : `${approveLabel} ${actionsDocument}`,
+          requestChanges: `${requestChangesLabel} ${page.CONTROL_LABELS.approval_request_changes_to} ${actionsDocument}`,
+        };
 
   return (
     <div
@@ -440,6 +455,7 @@ export function ApprovalChip({
             // two outline buttons made a reader choose before reading either. At the new issue
             // page header's size it is filled with that page's ink, not the application's blue.
             <button
+              aria-label={actionNames?.approve}
               className={
                 size === "compact"
                   ? `inline-flex min-h-6 shrink-0 items-center rounded-[7px] border px-2.5 text-xs leading-5 font-medium disabled:cursor-not-allowed disabled:opacity-50 md:min-h-0 md:py-px ${pageInkBorder} ${pageInkFill} ${focusVisibleRing}`
@@ -453,6 +469,7 @@ export function ApprovalChip({
             </button>
           )}
           <button
+            aria-label={actionNames?.requestChanges}
             className={
               size === "compact"
                 ? pageHeaderControl
@@ -462,7 +479,7 @@ export function ApprovalChip({
             onClick={() => setRequestChangesOpen(true)}
             type="button"
           >
-            Request changes
+            {requestChangesLabel}
           </button>
         </ActionsGroup>
       ) : null}

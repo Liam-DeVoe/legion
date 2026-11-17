@@ -17,14 +17,15 @@ import {
 import { sessionIds } from "./session-ids";
 
 /**
- * The reading list's walk (INFRA-1702's R9 and its check A7): each rendered row of
+ * The reading list's walk (INFRA-1702's R9 and its checks A7 and A8): each rendered row of
  * `DISPATCH_READING_SURFACES` has a driver, a row of a `reading-*.e2e.ts` spec titled with the
  * row's own id followed by a colon, that reaches the surface the way the row says and reads
  * there a stored text holding each form a text names a node by (`DISPATCH_READING_FORMS`): an
  * issue key written bare, a `dispatch://` address, a URL of this dashboard, a question block's
- * `#id`, an address whose item id is written short, and a picked party (`readingText`). Each
- * must draw through the one renderer: as its node's current name, opening that node where the
- * host allows a link, and never left as the characters written (R6, R8).
+ * `#id`, an address whose item id is written short, a picked party, and a link whose words its
+ * author wrote (`readingText`). Each must draw through the one renderer: the first six as their
+ * node's current name, the worded link as its author's words, each opening its node where the
+ * host allows a link, and none left as the characters written (R6, R8).
  *
  * A row says in the list which forms its surface cannot carry, and why (`cannotCarry`): a
  * surface whose text is no record, or is a record that belongs to no document, carries no
@@ -59,6 +60,11 @@ const READING_SESSION_PICKED_NAME = "Old reading name";
  *  search palette's rows search for, so their hits are the records holding the text. */
 export const READING_LEAD = "Compare";
 
+/** The words the text's worded link writes for the host: a link a person worded keeps those
+ *  words, so a surface that showed the host's title instead would have read it as a bare
+ *  address (R8). No title of the world holds them. */
+const WORDED_LINK_WORDS = "kept words";
+
 /** The id of the question block the text names as `#<id>`, and what that question asks, which
  *  is what a reference to its ask reads as. */
 const READING_QUESTION_ID = "q1";
@@ -84,7 +90,8 @@ const readingSession: FakeSession = {
 /** The issues and records the text names, the issue that hosts what a world writes, and the
  *  forms the driven row's surface carries. */
 export interface ReadingWorld {
-  /** CORE-1, where a world writes the records it reads. Its spec declares the question block. */
+  /** CORE-1, where a world writes the records it reads, and the node the worded link names,
+   *  which no other form names. Its spec declares the question block. */
   readonly host: Issue;
   /** CORE-2, named by its bare key. */
   readonly keyed: Issue;
@@ -194,7 +201,8 @@ export interface FormReading {
   readonly reference: string;
   /** An issue's title, the question an ask asks, a comment's words, a session's title. */
   readonly name: string;
-  /** An issue as its key and title, a party as `@` and its name, any other as its name. */
+  /** An issue as its key and title, a party as `@` and its name, a worded link as its words,
+   *  any other as its name. */
   readonly reads: string;
   readonly opens: string | RegExp;
   readonly unread: string | undefined;
@@ -259,6 +267,14 @@ function formReading(world: ReadingWorld, form: DispatchReadingForm): FormReadin
         unread: READING_SESSION_PICKED_NAME,
         written: `[@${READING_SESSION_PICKED_NAME}](${READING_SESSION_REFERENCE})`,
       };
+    case "worded-link":
+      // The link's own words, and not the host's name, which a bare address would read as.
+      return {
+        ...issue(world.host),
+        reads: WORDED_LINK_WORDS,
+        unread: undefined,
+        written: `[${WORDED_LINK_WORDS}](dispatch://${world.host.key})`,
+      };
   }
 }
 
@@ -294,7 +310,7 @@ const FIRST_LINE_CHARACTERS = 160;
 /** The forms the driven row's surface carries, in as few groups as each make a text a first
  *  line holds whole: what a driver writes one record apiece for where its surface shows the
  *  head the server cut of a record's first line. The cut leaves out whole a reference it would
- *  cross, and no one line of that length holds all six forms, so such a surface is held to
+ *  cross, and no one line of that length holds every form, so such a surface is held to
  *  every form over as many records as it takes. */
 export function firstLineForms(world: ReadingWorld): DispatchReadingForm[][] {
   const groups: DispatchReadingForm[][] = [];
@@ -325,9 +341,10 @@ export type ReadingShape = "link" | "inert" | "written";
  * Holds `scope` to what R6 and R8 say a surface of `shape` shows for `readingText(world,
  * forms)`. `link` and `inert`: each form reads as its node's current name - an issue's key and
  * title, the question a `#id` names, the comment a short id names, and `@` and the session's
- * current title rather than the name the text wrote for it - and none is left as the characters
- * written: no `dispatch://`, no origin of this dashboard, no `#id`, no id prefix. `link` makes
- * each a link that opens its node, `inert` none. `written`: the text as stored.
+ * current title rather than the name the text wrote for it - but a worded link, which reads as
+ * the words its author wrote; and none is left as the characters written: no `dispatch://`, no
+ * origin of this dashboard, no `#id`, no id prefix. `link` makes each a link that opens its
+ * node, `inert` none. `written`: the text as stored.
  */
 export async function expectReadsReferences(
   scope: Locator,

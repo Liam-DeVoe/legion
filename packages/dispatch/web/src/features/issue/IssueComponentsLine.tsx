@@ -4,8 +4,13 @@ import { Link } from "react-router-dom";
 
 import { api } from "../../api/client";
 import { projectArchitectureSourcesQuery } from "../../api/queries";
-import type { IssueDetails } from "../../api/types";
-import { usePageWords, useTooltips } from "../../components/tooltips";
+import type { IssueComponents, IssueDetails } from "../../api/types";
+import {
+  type PageWords,
+  usePageWords,
+  useTooltips,
+  withoutEllipsis,
+} from "../../components/tooltips";
 import {
   badgeHigh,
   badgePrimary,
@@ -26,12 +31,46 @@ import { MarkdownBody } from "../refs/MarkdownBody";
 import { buildIssuePath } from "../refs/routes";
 import { useIssueComponents } from "./useIssueComponents";
 
-/** The name the components picker's trigger answers to, in its words on every page: what it
- *  opens and the issue it is on, so a voice user saying what they read presses it (WCAG
- *  2.5.3). The new issue page's add menu reaches this trigger by this name rather than drawing
- *  a second picker, so a word changed here changes both sides at once. */
-export function componentsControlName(issueKey: string): string {
-  return `Edit components of ${issueKey}`;
+/** Whether the components picker's trigger draws a bare "+": the issue's own explicit set, which
+ *  the picker edits. Any other attachment, an ancestor's set among them, draws "Set components". */
+function editsOwnSet(components: Pick<IssueComponents, "inherited_from" | "mode">): boolean {
+  return components.mode === "explicit" && components.inherited_from === null;
+}
+
+/** The name the components picker's trigger answers to: what it opens and the issue it is on, so
+ *  a voice user saying what they read presses it (WCAG 2.5.3). The new issue page's add menu
+ *  reaches this trigger by this name rather than drawing a second picker, so a word changed here
+ *  changes both sides at once.
+ *
+ *  Called with the issue's key alone it is `main`'s "Edit components of CORE-1", the name the
+ *  trigger answers to in every state outside `NoTooltips` (R1). Inside, `drawn` carries the page's
+ *  words (`CONTROL_LABELS`) and the issue's attachment, and, while a save is in flight, the page's
+ *  `ANSWER_LINES` as `saving`; the name begins with the words the trigger draws, then "of" and
+ *  the issue's key (dispatch://INFRA-3935 R8, decision 114 of
+ *  dispatch://INFRA-1196/artifact/part-decisions-md): "Set components of CORE-1" while it draws
+ *  `components_set`, and while it saves, when `ComponentPicker` draws `saving_components`
+ *  ("Saving components…") in place of the trigger's words, those words with their trailing
+ *  ellipsis dropped ("Saving components of CORE-1"), as `labelsControlName` names a saving labels
+ *  control. On the issue's own set the trigger draws a bare "+", a symbol rather than words a
+ *  voice user can say, so the name stays `main`'s word-first "Edit components of CORE-1", as the
+ *  labels control keeps `main`'s "Edit labels" beside its "+". The words are passed in rather
+ *  than imported: the page names the trigger outside React from the list it imports, and this
+ *  file imports nothing of that list (`components/tooltips.tsx`). */
+export function componentsControlName(
+  issueKey: string,
+  drawn?: {
+    readonly components: Pick<IssueComponents, "inherited_from" | "mode">;
+    readonly controlLabels: PageWords["CONTROL_LABELS"];
+    readonly saving?: Pick<PageWords["ANSWER_LINES"], "saving_components">;
+  }
+): string {
+  if (drawn?.saving !== undefined) {
+    return `${withoutEllipsis(drawn.saving.saving_components)} of ${issueKey}`;
+  }
+  if (drawn === undefined || editsOwnSet(drawn.components)) {
+    return `Edit components of ${issueKey}`;
+  }
+  return `${drawn.controlLabels.components_set} of ${issueKey}`;
 }
 
 /**
@@ -81,10 +120,14 @@ export function IssueComponentsLine({
     inDetails
       ? ((tree.data?.components ?? []).find((component) => component.id === id)?.title ?? id)
       : id;
-  // In a row of Details nothing of the line stops its wrap (dispatch://INFRA-3935 R4): the
-  // words break between themselves, and a long name breaks inside its chip only where no break
-  // between words is left. Everywhere else each part stays whole, as on `main`.
-  const part = inDetails ? "min-w-0 [overflow-wrap:anywhere]" : "shrink-0";
+  // Inside `NoTooltips` nothing of the line stops its wrap, in a row of Details
+  // (dispatch://INFRA-3935 R4) and in the header alike: the words break between themselves, and
+  // a long name breaks inside its chip only where no break between words is left, since a
+  // component, the issue it is inherited from and a reason are values, which wrap there
+  // (decision 104 of dispatch://INFRA-1196/artifact/part-decisions-md). Outside it each part
+  // stays whole, as on `main`.
+  const part = page === null ? "shrink-0" : "min-w-0 [overflow-wrap:anywhere]";
+  const value = "max-w-full [overflow-wrap:anywhere]";
   // Inside `NoTooltips` each colour is one of the new issue page's (dispatch://INFRA-3935 R6,
   // decision 56 of dispatch://INFRA-1196/artifact/part-decisions-md): the line is the ink in a row
   // of Details (the prototype's `.frow .fv`) and the muted grey elsewhere (its `#hdr-props`); a
@@ -98,7 +141,7 @@ export function IssueComponentsLine({
       <span className={`${part} text-xs ${quiet}`} {...page?.pageChrome}>
         {page?.CONTROL_LABELS.components_inherited_from ?? "inherited from"}{" "}
         <Link
-          className={`dispatch-inline-link underline ${page === null ? `${linkText} ${linkHoverText}` : pageInkText}`}
+          className={`dispatch-inline-link underline ${page === null ? `${linkText} ${linkHoverText}` : `${pageInkText} ${value}`}`}
           to={buildIssuePath({ key: components.inherited_from, kind: "issue" })}
           {...page?.authorText}
         >
@@ -111,6 +154,7 @@ export function IssueComponentsLine({
   // (`components_reason_tree`).
   const reason = (
     <MarkdownBody
+      className={page === null ? undefined : value}
       markdown={components.reason ?? ""}
       surface="issue-components-reason"
       tree={issue.components_reason_tree}
@@ -119,7 +163,7 @@ export function IssueComponentsLine({
   );
   return (
     <div
-      className={`flex ${inDetails ? "min-w-0 flex-wrap" : "shrink-0"} items-center gap-2 text-sm ${page === null ? textSecondaryOnSurface : inDetails ? pageInkText : pageMutedText}`}
+      className={`flex ${page === null ? "shrink-0" : "min-w-0 flex-wrap"} items-center gap-2 text-sm ${page === null ? textSecondaryOnSurface : inDetails ? pageInkText : pageMutedText}`}
       data-testid="issue-components"
     >
       {inDetails ? null : (
@@ -134,7 +178,13 @@ export function IssueComponentsLine({
       ) : components.mode === "none" ? (
         <span className={quiet} {...page?.pageChrome}>
           {page === null ? "None" : page.CONTROL_LABELS.components_none} —{" "}
-          {page === null ? reason : <span {...page.authorText}>{reason}</span>}
+          {page === null ? (
+            reason
+          ) : (
+            <span className={value} {...page.authorText}>
+              {reason}
+            </span>
+          )}
         </span>
       ) : (
         <>
@@ -160,7 +210,10 @@ export function IssueComponentsLine({
                 <>retired: {id}</>
               ) : (
                 <>
-                  {page.CONTROL_LABELS.components_retired}: <span {...page.authorText}>{id}</span>
+                  {page.CONTROL_LABELS.components_retired}:{" "}
+                  <span className={value} {...page.authorText}>
+                    {id}
+                  </span>
                 </>
               )}
             </span>
@@ -178,31 +231,38 @@ export function IssueComponentsLine({
             void write.submit(ids.length === 0 ? { mode: "inherit" } : { ids, mode: "explicit" })
           }
           saving={write.pending}
-          selected={
-            components.mode === "explicit" && components.inherited_from === null
-              ? (components.ids ?? [])
-              : []
-          }
-          triggerAriaLabel={componentsControlName(issue.key)}
+          selected={editsOwnSet(components) ? (components.ids ?? []) : []}
+          // Inside `NoTooltips` the name begins with the words the trigger draws, the page's
+          // "Saving components…" while it saves among them, so a voice user says what they read;
+          // the page's add menu finds it by the same name (dispatch://INFRA-3935 R8, decision 114
+          // of dispatch://INFRA-1196/artifact/part-decisions-md). Outside it is `main`'s (R1).
+          triggerAriaLabel={componentsControlName(
+            issue.key,
+            page === null
+              ? undefined
+              : {
+                  components,
+                  controlLabels: page.CONTROL_LABELS,
+                  saving: write.pending ? page.ANSWER_LINES : undefined,
+                }
+          )}
         >
           {page === null ? (
-            components.mode === "explicit" && components.inherited_from === null ? (
+            editsOwnSet(components) ? (
               "+"
             ) : (
               "Set components"
             )
           ) : (
             <span {...page.pageChrome}>
-              {components.mode === "explicit" && components.inherited_from === null
-                ? "+"
-                : page.CONTROL_LABELS.components_set}
+              {editsOwnSet(components) ? "+" : page.CONTROL_LABELS.components_set}
             </span>
           )}
         </ComponentPicker>
       )}
       {write.error === null ? null : (
         <span
-          className={`shrink-0 text-xs ${page === null ? dangerText : pageFailedText}`}
+          className={`${page === null ? "shrink-0" : value} text-xs ${page === null ? dangerText : pageFailedText}`}
           role="alert"
           {...page?.authorText}
         >

@@ -66,6 +66,14 @@ const NO_ISSUE_KEY = "CORE-404";
  *  the preview takes rows of at most 160 characters with no line break, and this body has two. */
 const DECISION_BLOCK_ROW = ":::ask{#q2}\nWhich region first?\n:::";
 
+/** Why a row that nests blocks past the server's bound is no line of a document: the server
+ *  counts quotes, lists, list items and footnote definitions toward `maxNesting` and refuses a
+ *  document that opens a block past it (`nestingGuard` and `nestingRefusal`,
+ *  `packages/envoy/internal/dispatch/pmdoc/nesting.go`). Such a row is about where the readers of
+ *  text stop nesting, as the renderer does, not about the editor. */
+const NESTED_PAST_THE_BOUND =
+  "it nests blocks past the bound the server holds a document to, so the upload of every row would be refused whole";
+
 /** Rows no document can hold as a line of its text, each with the reason. They are read on the
  *  rendered and preview surfaces like any other.
  *
@@ -92,6 +100,8 @@ const EDITOR_EXCLUDED: Readonly<Record<string, string>> = {
     "a document stores no numeric character reference: the parse reads it as the text `See #q2 here.`",
   "See \\#q2 and #q3 here.":
     "a document stores no backslash escape: the parse reads it as the text `See #q2 and #q3 here.`",
+  [`${"- ".repeat(51)}    dispatch://role/reviewer\n`]: NESTED_PAST_THE_BOUND,
+  [`${"> ".repeat(100)}>     dispatch://role/reviewer\n`]: NESTED_PAST_THE_BOUND,
 };
 
 /** Whether `row` writes a prefix two of its own items carry: the table proves an ambiguous

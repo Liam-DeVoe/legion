@@ -1,6 +1,10 @@
 import type { Locator, Page } from "@playwright/test";
 
-import { CONTROL_LABELS, PRESET_NAMES } from "../web/src/features/issue-page/page-words";
+import {
+  ANSWER_LINES,
+  CONTROL_LABELS,
+  PRESET_NAMES,
+} from "../web/src/features/issue-page/page-words";
 import { getArtifactBlocks, getIssueEvents, getMyState, listComments } from "./api";
 import { seedReplyNesting } from "./issue-layout-seed";
 import { gotoIssue, phase } from "./issue-page";
@@ -47,7 +51,7 @@ import {
   sendFromComposer,
   wordsInField,
 } from "./issue-page-l";
-import { watchWrites } from "./keyed-writes";
+import { runClockUntil, watchWrites } from "./keyed-writes";
 import { commentWithBody } from "./margin-helpers";
 import { expect, test } from "./test";
 
@@ -56,7 +60,8 @@ import { expect, test } from "./test";
  * box to write in, held at the foot of the screen; a reply drawn under what it answers; and the
  * read mark at the outline's end. Each row is one check of
  * dispatch://INFRA-3949/artifact/verification-md, named by its `-g` string: rows (1) to (4) are
- * c-replies, (5) and (6) c-box, (7) c-mark and (8) the outline's half of c-statement-reply.
+ * c-replies, (5) and (6) c-box, (7) c-mark, (8) the outline's half of c-statement-reply, and (9)
+ * its Spec view half, owed on part J and skipped until J is under this part's head (`@owed`).
  *
  * The rows are on the real stack, each through D's `phase` (a reset database, alice signed in,
  * the new page turned on with `withIssuePage`): every row writes from the box and then reads its
@@ -106,6 +111,54 @@ async function expectControlsLeast(page: Page, when: string): Promise<void> {
     ),
     `a control of the box is smaller than ${CONTROL_LEAST} by ${CONTROL_LEAST} px ${when}`
   ).toEqual([]);
+}
+
+/**
+ * Fails unless the box's refusal of a send - its Retry, and the Discard draft a send the reader
+ * stopped offers beside it - draws each control of the box at least 24 by 24 px at `size` (R2,
+ * decision 43 of the parts). Read on a page of its own in the same sign-in, whose comment sends
+ * Dispatch answers `500` every time: a 5xx is no verdict, so the send is tried again under its
+ * key until its deadline, goes late, and the reader stops it (`Stop trying`). The page's own
+ * clock runs past the deadline (`runClockUntil`), which costs no real time, and the page this
+ * row reads is left as it was.
+ */
+async function expectRefusalControlsLeast(
+  page: Page,
+  key: string,
+  size: { readonly height: number; readonly width: number },
+  at: string
+): Promise<void> {
+  const refusing = await page.context().newPage();
+  try {
+    await refusing.setViewportSize({ height: size.height, width: size.width });
+    await refusing.route(`**/api/v1/issues/${key}/comments`, (route) =>
+      route.request().method() === "POST"
+        ? route.fulfill({
+            body: JSON.stringify({ code: "UNAVAILABLE", error: "Dispatch is down." }),
+            contentType: "application/json",
+            status: 500,
+          })
+        : route.fallback()
+    );
+    await refusing.clock.install();
+    await gotoIssue(refusing, `/issues/${key}`);
+    await expectIssuePageDrawn(refusing);
+    const field = composerField(refusing);
+    await field.fill(`A comment Dispatch never takes ${at}.`);
+    await field.press("Enter");
+    const stop = composer(refusing).getByRole("button", { name: "Stop trying" });
+    await runClockUntil(refusing, expect(stop).toBeVisible({ timeout: 60_000 }));
+    await stop.click();
+    const retry = composer(refusing).getByRole("button", { exact: true, name: "Retry" });
+    const discard = composer(refusing).getByRole("button", { name: "Discard draft" });
+    await expect(retry, `the stopped send draws no Retry ${at}`).toBeVisible();
+    await expect(discard, `the stopped send draws no Discard draft ${at}`).toBeVisible();
+    await expectControlsLeast(refusing, `${at}, the send stopped`);
+    await discard.click();
+    await expect(retry).toHaveCount(0);
+  } finally {
+    await refusing.close();
+  }
 }
 
 /** The box of the line that is drawn. */
@@ -658,6 +711,8 @@ test("the box stays at the foot, grows as it is typed and writes both kinds @pho
         await expect(next, `Tab does not go on to ${name} ${at}`).toBeFocused();
       }
       await expectControlsLeast(page, `${at}, writing on the issue`);
+      // A send refused and its controls, read where nothing else lifts them to 24 px.
+      if (!phone) await expectRefusalControlsLeast(page, seeded.key, size, at);
 
       // Ten lines typed with Shift+Enter: the line grows to 150 px and scrolls inside itself.
       await field.focus();
@@ -715,7 +770,14 @@ test("the box stays at the foot, grows as it is typed and writes both kinds @pho
           blurred.height,
           `the draft after blur is ${blurred.height.toFixed(1)} px tall ${at}, past what the field holds unscrolled`
         ).toBeLessThan(LINE_AT_MOST);
-        await field.fill("");
+        // Send pressed once with the pointer, while a row of the outline holds the focus, sends
+        // the draft: a press on the box's controls leaves the focus where it is, so the line
+        // keeps the form it has without the focus and Send stays under the pointer.
+        const draft = await field.inputValue();
+        await composer(page)
+          .getByRole("button", { exact: true, name: CONTROL_LABELS.send })
+          .click();
+        await oneRowHolding(page, draft, `the draft sent with one press of Send ${at}`);
       }
 
       // Enter sends a comment, then a question: each one new row by the reader.
@@ -833,11 +895,12 @@ test("the end of the outline on screen for a second marks the issue read", async
       head
     );
 
-    await scrollEndUnderBox(page);
+    // The last row ends under the middle of the box: on screen, under the box, unread.
+    await scrollEndUnderBox(page, last);
     const under = await endPlace(page, last);
     expect(
-      under !== null && under.lastBottom > under.boxTop && under.endTop >= under.viewport,
-      `the outline's end is not under the box: ${JSON.stringify(under)}`
+      under !== null && under.lastBottom > under.boxTop && under.lastBottom < under.viewport,
+      `the outline's last row does not end under the box: ${JSON.stringify(under)}`
     ).toBe(true);
     await page.waitForTimeout(2_000);
     expect(fortyWrites, "the end of the outline under the box wrote the read mark").toEqual([]);
@@ -878,6 +941,8 @@ test("the end of the outline on screen for a second marks the issue read", async
       await page.evaluate(() => window.scrollY),
       "the page scrolled to mark an outline shorter than the screen read"
     ).toBe(0);
+    // Read once more after the write has settled, so a second write is counted too.
+    await page.waitForTimeout(1_000);
     expect(shortWrites, "the short outline's end did not write the mark once").toHaveLength(1);
 
     // A view's end is not the conversation's: the Spec view, whole on screen, marks nothing.
@@ -906,9 +971,10 @@ test("the end of the outline on screen for a second marks the issue read", async
 // c-statement-reply, its outline half (R11, decision 74 of the parts): `r` on a focused statement
 // aims the box at it, and what is sent is a comment anchored to that statement - its document
 // and its block - drawn under it and focused; the box then writes on the issue again. A
+// statement's address in its words reads in the target line as its name, never raw. A
 // statement of two paragraphs is anchored to the statement itself, and one whose words the spec
-// holds twice is refused with the draft kept. The Spec view's half is added once part J's keymap
-// passes the writer (owed, decision 75).
+// holds twice is refused, in the page's words and with no Retry, the draft kept. The Spec view's
+// half is the row after this one, owed on part J (decisions 74 and 61).
 // SLOW(>=2s): five writes from the box, each read back from the server and the outline.
 test("r on a statement writes a comment under it", async ({ browser }) => {
   test.setTimeout(180_000);
@@ -919,6 +985,7 @@ test("r on a statement writes a comment under it", async ({ browser }) => {
     for (const one of [
       {
         block: STATEMENT_BLOCKS.cites,
+        cited: seeded.cited,
         first: STATEMENT_WORDS.citesLead,
         what: "the statement that cites an issue",
         words: "A comment on the statement that cites an issue.",
@@ -943,6 +1010,17 @@ test("r on a statement writes a comment under it", async ({ browser }) => {
         one.first
       );
       if (one.not !== undefined) await expect(target).not.toContainText(one.not);
+      // The issue it cites by its address reads as that issue's name, never as the address
+      // (R7, the reading list's `issue-page-composer-target`).
+      if (one.cited !== undefined) {
+        await expect(target, `the target line draws ${one.what}'s address raw`).not.toContainText(
+          "dispatch://"
+        );
+        await expect(
+          target,
+          `the target line does not name the issue ${one.what} cites`
+        ).toContainText(one.cited);
+      }
       await page.keyboard.type(one.words);
       await page.keyboard.press("Enter");
 
@@ -989,7 +1067,9 @@ test("r on a statement writes a comment under it", async ({ browser }) => {
         .toBeNull();
     }
 
-    // Words the spec holds twice: the server refuses the quote, and the draft stays.
+    // Words the spec holds twice: the server refuses the quote, and the box says why in the
+    // page's words - not the server's, which ask for an occurrence no control sends - with no
+    // Retry, which would send the same quote to the same refusal; the draft stays.
     const twice = blockNode(seeded.specSlug, STATEMENT_BLOCKS.twice);
     const refused = "A comment on the statement whose words the spec holds twice.";
     await focusRow(page, twice);
@@ -1001,10 +1081,16 @@ test("r on a statement writes a comment under it", async ({ browser }) => {
     await expect(composerTarget(page)).toContainText(STATEMENT_WORDS.twice);
     await page.keyboard.type(refused);
     await page.keyboard.press("Enter");
+    const refusal = composer(page).getByRole("alert");
     await expect(
-      composer(page).getByRole("alert"),
-      "the box does not say the twice-held statement's comment was refused"
-    ).toBeVisible();
+      refusal,
+      "the box does not say in the page's words why the twice-held statement's comment was refused"
+    ).toContainText(ANSWER_LINES.statement_twice);
+    await expect(refusal, "the box draws the server's advice").not.toContainText("occurrence");
+    await expect(
+      composer(page).getByRole("button", { exact: true, name: "Retry" }),
+      "the box offers a Retry of the quote the server refuses"
+    ).toHaveCount(0);
     await expect(composerField(page), "the refused comment's draft is gone").toHaveValue(refused);
     await expect(composerTarget(page), "the refused comment's target is gone").toContainText(
       STATEMENT_WORDS.twice
@@ -1013,5 +1099,53 @@ test("r on a statement writes a comment under it", async ({ browser }) => {
       (await listComments(seeded.key)).some((one) => one.body === refused),
       "Dispatch holds the comment it refused"
     ).toBe(false);
+  });
+});
+
+// c-statement-reply, its Spec view half (R11): `r` on a focused statement of the Spec view aims
+// the box at it as on the outline, and what is sent is a comment anchored to that statement.
+// Owed on part J (decision 74 of the parts: J passes the writer to the view's keymap; decision
+// 61: the check names an owed reading and the part it waits on). Until J is under this part's
+// head the Spec view draws no rows (`issue-page-switch.e2e.ts`), so the reading is skipped with
+// an annotation naming J and those decisions (decision 127) and tagged `@owed`, which the
+// check's run leaves out (decision 135). The round that brings J under the head takes the skip
+// and the tag off.
+test.skip("r on a statement in the Spec view writes a comment under it @owed", {
+  annotation: {
+    description:
+      "Owed on part J of INFRA-1196 (decisions 74 and 61): the Spec view's rows take the writer's r only once J passes the writer to the view's keymap; skipped under decision 127.",
+    type: "owed",
+  },
+}, async ({ browser }) => {
+  await phase(browser, seedStatements, async (page, seeded) => {
+    await gotoIssue(page, `/issues/${seeded.key}/spec`);
+    await expectActivePreset(page, PRESET_NAMES.spec);
+    const statement = blockNode(seeded.specSlug, STATEMENT_BLOCKS.two);
+    await expect(
+      nodeRow(page, statement),
+      "the Spec view draws no row of the statement"
+    ).toHaveCount(1);
+    await focusRow(page, statement);
+    await page.keyboard.press("r");
+    await expect(
+      composerField(page),
+      "r on the Spec view's statement put no caret in the box"
+    ).toBeFocused();
+    await expect(composerTarget(page)).toContainText(STATEMENT_WORDS.first);
+    const words = "A comment on the statement from the Spec view.";
+    await page.keyboard.type(words);
+    await page.keyboard.press("Enter");
+    const comment = await commentWithBody(seeded.key, undefined, words);
+    const blocks = await getArtifactBlocks(seeded.specArtifactId);
+    const range = blocks.find((block) => block.id === STATEMENT_BLOCKS.two);
+    const anchored = blocks.find((block) => block.id === comment.anchor?.block_id);
+    expect(
+      comment.anchor?.artifact_id === seeded.specArtifactId &&
+        range !== undefined &&
+        anchored !== undefined &&
+        anchored.from >= range.from &&
+        anchored.to <= range.to,
+      `the comment from the Spec view is anchored to ${JSON.stringify(comment.anchor)}, not inside ${STATEMENT_BLOCKS.two}`
+    ).toBe(true);
   });
 });

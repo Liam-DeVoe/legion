@@ -47,7 +47,10 @@
  * while a paragraph is open is that paragraph's own text, a lazy continuation line, which
  * opens nothing and leaves those containers open; any other line closes the containers it does
  * not carry. A thematic break is read too, since a line of `-`, `_` or `*` would otherwise
- * open a list item.
+ * open a list item. A quote or a list opened past the renderer's bound on nesting opens
+ * nothing, its marker being the line's own text as the renderer reads it
+ * (`MAX_BLOCK_NESTING`, which says how blocks are counted), so a line of thousands of markers
+ * opens at most a hundred containers.
  *
  * What it deliberately does not read. Each of these was measured on 2026-11-11 against three
  * parsers - goldmark 1.8.6 with the footnote, table and linkify extensions; this editor's own
@@ -100,16 +103,26 @@ export interface CodeRange {
 interface Container {
   readonly quote: boolean;
   readonly content: number;
+  /** A list item's type, as CommonMark says two markers are of the same type: its bullet, or
+   *  an ordered item's `.` or `)`. A later item of the same list repeats it. 0 for a block
+   *  quote and a footnote definition. */
+  readonly listType: number;
+  /** How many blocks the renderer counts around this container's content, which a container
+   *  opened inside it on a later line counts from (`MAX_BLOCK_NESTING`): a quote's own count,
+   *  the count of the list an item belongs to, and, for a footnote definition, which the
+   *  renderer does not count, the count of the container around it. */
+  readonly nest: number;
 }
 
 /** Where a scan of a line stopped, which the server's reader returns beside its offset: the
- *  column there, and a list item's own content column. One record is made per reading of a text
- *  and written by every scan of it, so a body of many lines allocates no more than a body of
- *  one. */
+ *  column there, a list item's own content column, and the type of its marker (`listType`).
+ *  One record is made per reading of a text and written by every scan of it, so a body of many
+ *  lines allocates no more than a body of one. */
 interface Scan {
   at: number;
   column: number;
   content: number;
+  listType: number;
 }
 
 const BACKTICK = 0x60;
@@ -136,6 +149,28 @@ const COLON = 0x3a;
 
 /** The stop a tab advances the column to, as CommonMark measures indentation. */
 const TAB_WIDTH = 4;
+
+/**
+ * How many blocks a text may open one inside another before the renderer reads the next opener
+ * as the text it is: `maxBlockNesting` in `packages/proof-editor/src/block-nesting.ts`, which is
+ * `maxNesting` in `packages/envoy/internal/dispatch/pmdoc/nesting.go`. A refused opener's marker
+ * and the rest of its line are the content of the innermost container still open, so the four
+ * columns after such a marker are that content's own text and open no code block.
+ *
+ * It is counted as the renderer counts it. A list item that opens a list counts two, the list
+ * and the item; a later item of the list open at its depth counts nothing, standing where the
+ * first item did, and is never refused. A block quote counts one; a `>` that carries on a quote
+ * open above it is that quote's and opens nothing. A footnote definition counts nothing: pmdoc's
+ * server-side bound counts one, but the renderer reads definitions through
+ * micromark-extension-gfm-footnote, which its bound does not reach, and this reader follows what
+ * a reader of the text sees. A container opened after a footnote definition on the
+ * definition's own line counts from 0, since the renderer takes a container with no count of
+ * its own as 0 there (`blocksAround`), and one opened inside the definition on a later line
+ * counts from the container around the definition. A typed block (`:::`) counts one for the
+ * renderer but is no container of this reader's, so a list or a quote inside typed blocks is
+ * counted one block less per typed block than the renderer counts it.
+ */
+const MAX_BLOCK_NESTING = 100;
 
 /** Where the line starting at `at` ends, before its line ending: at the `\n` that ends it, at
  *  the `\r` of a `\r\n`, or at the end of the text. A lone `\r` is the line's own character, as
@@ -253,11 +288,11 @@ function quoteContent(text: string, marker: number, end: number, column: number,
 /** Whether a list item marker stands at `marker`, the first character of a line's own content,
  *  in column `column`: a `-`, `+` or `*`, or one to nine digits and a `.` or `)`, followed by a
  *  space, a tab or the end of the line. `scan` reads where the item's content begins on this
- *  line, the column there, and the column the item's content is indented to, which the lines
- *  under it carry to stay inside it. Five columns or more of spaces after the marker are
- *  indented code inside the item, so the item takes one of them and leaves the rest. A marker
- *  that cannot interrupt a paragraph opens nothing while one is open: an empty item's, and an
- *  ordered one that does not count from 1. */
+ *  line, the column there, the column the item's content is indented to, which the lines under
+ *  it carry to stay inside it, and the marker's type (`Container.listType`). Five columns or
+ *  more of spaces after the marker are indented code inside the item, so the item takes one of
+ *  them and leaves the rest. A marker that cannot interrupt a paragraph opens nothing while one
+ *  is open: an empty item's, and an ordered one that does not count from 1. */
 function listMarker(
   text: string,
   marker: number,
@@ -291,6 +326,8 @@ function listMarker(
     past += 1;
   }
   const width = column + past - marker;
+  // The bullet, or the `.` or `)` an ordered marker ends with: the last character of either.
+  scan.listType = text.charCodeAt(past - 1);
   indentEnd(text, past, end, width, scan);
   const spaces = scan.at;
   const spacesColumn = scan.column;
@@ -508,7 +545,7 @@ interface Blocks {
 function codeBlocks(text: string): Blocks {
   const blocks: CodeRange[] = [];
   const breaks: number[] = [];
-  const scan: Scan = { at: 0, column: 0, content: 0 };
+  const scan: Scan = { at: 0, column: 0, content: 0, listType: 0 };
   const stack: Container[] = [];
   let paragraph = false;
   let fence: { character: number; width: number } | undefined;
@@ -559,8 +596,11 @@ function codeBlocks(text: string): Blocks {
     }
 
     // The containers this line opens of its own, each inside the last: its content is what is
-    // left after them.
+    // left after them. `around` is how many blocks the renderer counts around the next of them
+    // (`MAX_BLOCK_NESTING`): at first the count of the innermost container the line carried,
+    // then that of the last one it opened.
     let depth = matched;
+    let around = matched > 0 ? stack[matched - 1].nest : 0;
     let thematic = false;
     let setext = false;
     while (indent < end && reached - column <= 3) {
@@ -578,8 +618,13 @@ function codeBlocks(text: string): Blocks {
         break;
       }
       if (text.charCodeAt(indent) === GREATER_THAN) {
+        if (around + 1 > MAX_BLOCK_NESTING) {
+          // A quote past the bound opens nothing: its `>` is the line's own text.
+          break;
+        }
+        around += 1;
         stack.length = depth;
-        stack.push({ content: 0, quote: true });
+        stack.push({ content: 0, listType: 0, nest: around, quote: true });
         depth += 1;
         quoteContent(text, indent, end, reached, scan);
         content = scan.at;
@@ -601,9 +646,17 @@ function codeBlocks(text: string): Blocks {
         // indented one to three spaces would put too far right, reading its note's lines as an
         // indented code block. So the indented lines under it are the note's own text: a party
         // written there is named to every reader of the record, and every parser measured for
-        // INFRA-1702 reads those lines as prose.
+        // INFRA-1702 reads those lines as prose. The renderer counts no block for it, so a
+        // container opened inside it on a later line counts from the one around it, and one
+        // opened after it on this line counts from 0 (`MAX_BLOCK_NESTING`).
         stack.length = depth;
-        stack.push({ content: column + 4, quote: false });
+        stack.push({
+          content: column + 4,
+          listType: 0,
+          nest: depth > 0 ? stack[depth - 1].nest : 0,
+          quote: false,
+        });
+        around = 0;
         depth += 1;
         content = note;
         column = reached + (note - indent);
@@ -620,10 +673,22 @@ function codeBlocks(text: string): Blocks {
       if (!listMarker(text, indent, end, reached, paragraph && matched === stack.length, scan)) {
         break;
       }
+      // A later item of the list open at this depth, on a line that carried every container
+      // around that list, goes on in it where its first item stood, and the renderer never
+      // refuses it; any other item opens a list of its own, which past the bound opens nothing
+      // and leaves its marker as the line's own text.
+      const open = depth === matched && depth < stack.length ? stack[depth] : undefined;
+      let nest = around + 2;
+      if (open !== undefined && open.listType === scan.listType) {
+        nest = open.nest;
+      } else if (nest > MAX_BLOCK_NESTING) {
+        break;
+      }
+      around = nest;
       const itemContent = scan.at;
       const itemColumn = scan.column;
       stack.length = depth;
-      stack.push({ content: scan.content, quote: false });
+      stack.push({ content: scan.content, listType: scan.listType, nest, quote: false });
       depth += 1;
       content = itemContent;
       column = itemColumn;

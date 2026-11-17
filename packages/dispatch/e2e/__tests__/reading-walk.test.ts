@@ -89,8 +89,8 @@ function driversOf(rows: readonly ListedRow[]): Driver[] {
 // rather than in the first test that awaits it, and its rejection waits for that test rather
 // than being reported as unhandled before it runs (`retained`).
 const drivers = retained(
-  listing("e2e/playwright.config.ts", {}, READING_LISTING_ARGUMENTS).then((report) =>
-    driversOf(rowsOfListing(report))
+  listing(import.meta.url, "e2e/playwright.config.ts", {}, READING_LISTING_ARGUMENTS).then(
+    (report) => driversOf(rowsOfListing(report))
   )
 );
 
@@ -243,7 +243,7 @@ function readRepositoryFile(file: string): string | undefined {
 
 test("every proof a row names is a test its file declares", () => {
   const proved = DISPATCH_READING_SURFACES.flatMap((row) =>
-    row.proof === undefined ? [] : [[row.surface, row.proof] as const]
+    row.proof === undefined ? [] : [row.proof].flat().map((proof) => [row.surface, proof] as const)
   );
   // A guard on the list itself: were no row to name a proof, this rule would hold nothing.
   expect(proved.length).toBeGreaterThan(5);

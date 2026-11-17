@@ -1,8 +1,17 @@
+import { dispatchWritingBox } from "@legion/contracts";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { createContext, type ReactNode, useContext, useId, useMemo, useState } from "react";
+import {
+  createContext,
+  type ReactNode,
+  useContext,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
 import { api } from "../../api/client";
-import type { Artifact, Decision, DisplayTree, IssueDecisions } from "../../api/types";
+import type { Artifact, Decision, IssueDecisions } from "../../api/types";
 import {
   borderDefault,
   dangerText,
@@ -10,6 +19,7 @@ import {
   textMutedOnCanvas,
   textSecondaryOnCanvas,
 } from "../../theme/classes";
+import { MentionField, type MentionFieldHandle } from "../conversation/MentionField";
 import { issueDecisionsQuery } from "../doc/spec-marks";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { anchorQuote, type ChangeAnchor, changeAnchor } from "./decision-review";
@@ -149,6 +159,7 @@ function DecisionControls({
   const quote = useMemo(() => anchorQuote(decision), [decision]);
   const keep = useKeyedWrite({
     inline: true,
+    // A write's label holds no markup: the reading list's `issue-page-decision-heading`.
     label: () => `${CONTROL_LABELS.keep_decision} ${decision.heading}`,
     // The sum of the text this node showed: a decision the agent changed since is refused
     // (`409 DECISION_CHANGED`), so a Keep never stands over words the reader did not see.
@@ -253,37 +264,26 @@ function ChangeComposer({
   // The words the reader typed before the body last closed, if it did.
   const [body, setBody] = useState(() => drafts?.get(decision.ref) ?? "");
   const queryClient = useQueryClient();
-  const fieldId = useId();
+  const field = useRef<MentionFieldHandle | null>(null);
   const send = useKeyedWrite({
     inline: true,
+    // A write's label holds no markup: the reading list's `issue-page-decision-heading`.
     label: () => `${CONTROL_LABELS.change_decision} ${decision.heading}`,
     // A comment on an issue's document is the issue's own write: the artifact route refuses it,
     // naming the issue route (`send-request.ts` follows the same rule for a thread's replies).
-    // Which of the quote's places in the decisions document is this decision's own is counted
-    // over that document's own reading, read here, at the send, and again on a retry under the
-    // same key (`changeAnchor`, decision 92 as amended); `changeAnchor` also reads every
-    // decision above this one, which no render of a row pays for.
-    write: async (input: { body: string }, bounds) => {
-      const text = await api.getArtifactText(documentId);
-      const anchor: ChangeAnchor = changeAnchor(
-        decision,
-        queryClient.getQueryData<IssueDecisions>(issueDecisionsQuery(issueKey, true).queryKey)
-          ?.decisions,
-        "markdown_tree" in text ? (text.markdown_tree as DisplayTree | undefined) : undefined
-      ) ?? { occurrence: 0, quote };
-      return api.createComment(
+    write: (input: { anchor: ChangeAnchor; body: string }, bounds) =>
+      api.createComment(
         issueKey,
         {
           anchor: {
             artifact: documentId,
-            occurrence: anchor.occurrence,
-            quote: anchor.quote,
+            occurrence: input.anchor.occurrence,
+            quote: input.anchor.quote,
           },
           body: input.body,
         },
         bounds
-      );
-    },
+      ),
     // The change is a comment of the issue's, and the comments read is what tells the page a
     // decision was changed (`decision-review.ts`): read again, so the decision says so, leaves
     // the review list and draws the change under it as soon as the comment lands.
@@ -302,6 +302,14 @@ function ChangeComposer({
       drafts?.set(decision.ref, input.body);
     },
   });
+  // The caret goes into the field as it mounts, where `focusField` says so: the comment on the
+  // form below says why.
+  useLayoutEffect(() => {
+    if (focusField) field.current?.textarea()?.focus();
+  }, [focusField]);
+  // Whether the send is reading the decisions document's text, which it does before the comment
+  // goes out: Send is off while it does, as it is while the comment is out.
+  const [reading, setReading] = useState(false);
   // The one place inside a row that takes the tab order, and only while it is open: this is a
   // form a reader is typing in, so Tab walks its field, Send change and Cancel as it does in
   // every other form of the app. At rest - no form open - the tree is still one tab stop (R9).
@@ -313,18 +321,45 @@ function ChangeComposer({
   // (`focusField`): the reader moved to the row, not into the field.
   return (
     <form
+      // A form's name holds no markup: the reading list's `issue-page-decision-heading`.
       aria-label={`${CONTROL_LABELS.change_decision} ${decision.heading}`}
       className="flex min-w-0 flex-col gap-1"
       onSubmit={(event) => {
         event.preventDefault();
-        if (body.trim() === "") return;
+        if (body.trim() === "" || reading) return;
         // Send is disabled while the comment is out, and the form goes once it lands. The draft
         // goes while the send is out: a body that closes then comes back with Change closed, and
         // the shell's pending-writes indicator holds the send, so a second press cannot write the
         // change twice. A refusal gives the words back to the draft (`onError`).
         keepFocusOnRow(event.currentTarget);
         drafts?.delete(decision.ref);
-        send.mutate({ body });
+        // Which of the quote's places in the decisions document is this decision's own, counted
+        // here, at the send, over the document's own reading, which the send reads once now:
+        // `changeAnchor` walks every decision above this one, which no render of a row pays for
+        // (decision 92). With no reading - the read failed - the anchor names no place: Dispatch
+        // takes it where the quote stands once, and refuses it where the quote stands more than
+        // once, which the form says in the page's words with the draft kept.
+        setReading(true);
+        void queryClient
+          .fetchQuery({
+            queryFn: () => api.getArtifactText(documentId),
+            queryKey: ["artifact", documentId, "text"],
+            staleTime: 0,
+          })
+          .then(
+            (text) => text.markdown_tree,
+            () => undefined
+          )
+          .then((tree) => {
+            setReading(false);
+            const anchor = changeAnchor(
+              decision,
+              queryClient.getQueryData<IssueDecisions>(issueDecisionsQuery(issueKey, true).queryKey)
+                ?.decisions,
+              tree
+            );
+            send.mutate({ anchor: anchor ?? { quote }, body });
+          });
       }}
     >
       <blockquote
@@ -332,23 +367,34 @@ function ChangeComposer({
         data-testid="decision-quote"
         {...authorText}
       >
+        {/* The decision's own words, as they are: the reading list's
+            `issue-page-decision-quote`. */}
         {quote}
       </blockquote>
-      <label className={`text-xs ${textMutedOnCanvas}`} htmlFor={fieldId} {...pageChrome}>
+      {/* The field's name is its `aria-label`; these are the same words, drawn above it as the
+          page's own, as the form drew them before. */}
+      <p className={`text-xs ${textMutedOnCanvas}`} {...pageChrome}>
         {CONTROL_LABELS.your_change}
-      </label>
-      <textarea
-        // biome-ignore lint/a11y/noAutofocus: the form mounts because a reader asked to type in it
-        autoFocus={focusField}
-        className={`block w-full min-w-0 rounded-lg border px-2 py-1 text-sm outline-none ${inputClasses(true)}`}
-        id={fieldId}
-        onChange={(event) => {
-          setBody(event.target.value);
-          drafts?.set(decision.ref, event.target.value);
-        }}
-        rows={3}
-        value={body}
-      />
+      </p>
+      {/* A column of its own, so the picker's open list, which the field's `look` puts last
+          among the field's own elements, stands under the field rather than under the form's
+          buttons. */}
+      <div className="flex min-w-0 flex-col">
+        <MentionField
+          body={body}
+          fieldRef={field}
+          issueKey={issueKey}
+          label={CONTROL_LABELS.your_change}
+          labelHidden
+          look={`block w-full min-w-0 rounded-lg border px-2 py-1 text-sm outline-none ${inputClasses(true)}`}
+          onChange={(change) => {
+            setBody(change.body);
+            drafts?.set(decision.ref, change.body);
+          }}
+          rows={3}
+          writing={dispatchWritingBox("issue-page-decision-change", "comment")}
+        />
+      </div>
       {send.error === null ? null : (
         <p className={`text-xs ${dangerText}`} role="alert" {...pageChrome}>
           {ANSWER_LINES.change_not_sent}
@@ -357,7 +403,7 @@ function ChangeComposer({
       <p className="flex min-w-0 flex-wrap items-baseline gap-2">
         <button
           className={`rounded border px-1 text-xs ${borderDefault} ${textMutedOnCanvas}`}
-          disabled={send.isPending || body.trim() === ""}
+          disabled={send.isPending || reading || body.trim() === ""}
           type="submit"
           {...pageChrome}
         >

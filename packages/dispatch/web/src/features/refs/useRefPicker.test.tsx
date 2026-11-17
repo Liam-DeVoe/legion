@@ -1,7 +1,7 @@
 import { afterEach, beforeAll, expect, type Mock, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor, within } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
+import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
 import { MemoryRouter } from "react-router-dom";
 
@@ -23,10 +23,14 @@ import { warmMarkdownRenderer } from "./markdown-engine";
 import { RefPickerList } from "./RefPickerList";
 import {
   applyInsertion,
+  REF_PICKER_HEADINGS,
   REF_PICKER_INSTRUCTION,
+  REF_PICKER_KIND_NAMES,
+  REF_PICKER_KINDS,
   REF_PICKER_PARTS_WORDS,
   REF_PICKER_WORDS,
   type RefPickerInsertion,
+  type RefPickerKind,
 } from "./ref-picker";
 import { useRefPicker } from "./useRefPicker";
 
@@ -409,6 +413,186 @@ test("the `[[` door ranks the same rows with the documents first and the parties
   await user.clear(comment);
   await user.keyboard(`${BRACKETS}plan`);
   await waitFor(() => expect(drawnRows()).toEqual(["Agents: Planner", "Roles: planner"]));
+});
+
+/** A hit of each kind the search route ranks, each holding the word the query is: the issue and
+ *  the comment of `hitRows`, and a document, an ask and a message of the same issue. */
+const everyKindHits: SearchResult[] = [
+  ...hitRows,
+  {
+    artifact: { name: "notes.md", slug: "notes-md" },
+    href: "/issues/CORE-2/artifacts/notes-md",
+    id: "document-1",
+    kind: "document",
+    owner: { key: "CORE-2", kind: "issue", status: "open", title: "Relay drops a reply" },
+    rank: 0.08,
+    snippet: "Notes on the <mark>relay</mark>",
+  },
+  {
+    href: "/issues/CORE-2/asks/ask-1",
+    id: "ask-1",
+    kind: "ask",
+    owner: { key: "CORE-2", kind: "issue", status: "open", title: "Relay drops a reply" },
+    rank: 0.07,
+    snippet: "Should the <mark>relay</mark> retry?",
+  },
+  {
+    href: "/issues/CORE-2/messages/message-1",
+    id: "message-1",
+    kind: "message",
+    owner: { key: "CORE-2", kind: "issue", status: "open", title: "Relay drops a reply" },
+    rank: 0.06,
+    snippet: "The <mark>relay</mark> is back",
+  },
+];
+
+/** Each kind that holds blocks, and the kind its blocks are listed under. */
+const BLOCK_HOLDERS = [
+  ["document", "document-block"],
+  ["ask", "ask-part"],
+  ["comment", "comment-block"],
+  ["message", "message-block"],
+] as const satisfies readonly (readonly [RefPickerKind, RefPickerKind])[];
+
+/** The four block kinds, which share one glyph by design, each under its own name
+ *  (`kind-icons.tsx`): a block is a part of the node above it. */
+const BLOCK_KINDS: readonly RefPickerKind[] = BLOCK_HOLDERS.map(([, block]) => block);
+
+/** One drawn row: the heading of the group it sits in, and the icon it wears - the label the
+ *  icon carries for a reader who cannot see it (its `<title>`), and its glyph, written as the
+ *  tag and the attributes of each shape it draws. */
+interface DrawnIcon {
+  readonly glyph: string;
+  readonly heading: string;
+  readonly label: string;
+}
+
+/** The icon each row of the open list wears, in the order the rows are drawn. A row with no icon
+ *  reads as an empty label and an empty glyph. */
+function drawnIcons(): DrawnIcon[] {
+  const list = screen.getByRole("listbox", { name: "References" });
+  return within(list)
+    .getAllByRole("group")
+    .flatMap((group) => {
+      const heading = group.firstElementChild?.textContent ?? "";
+      return within(group)
+        .getAllByRole("option")
+        .map((option) => {
+          const icon = Array.from(option.children).find(
+            (child) => child.tagName.toLowerCase() === "svg"
+          );
+          const parts = Array.from(icon?.children ?? []);
+          const label =
+            parts.find((part) => part.tagName.toLowerCase() === "title")?.textContent ?? "";
+          const glyph = parts
+            .filter((part) => part.tagName.toLowerCase() !== "title")
+            .map((shape) => {
+              const attributes = shape
+                .getAttributeNames()
+                .sort()
+                .map((name) => `${name}=${shape.getAttribute(name)}`);
+              return `${shape.tagName.toLowerCase()}(${attributes.join(" ")})`;
+            })
+            .join(" ");
+          return { glyph, heading, label };
+        });
+    });
+}
+
+/** Clicks the control that lists the blocks of the row under `heading`. */
+async function openBlocks(user: UserEvent, heading: string) {
+  const list = screen.getByRole("listbox", { name: "References" });
+  const group = within(list)
+    .getAllByRole("group")
+    .find((one) => one.firstElementChild?.textContent === heading);
+  if (group === undefined) throw new Error(`the list draws no group headed "${heading}"`);
+  await user.click(
+    within(group).getByRole("button", { name: REF_PICKER_PARTS_WORDS.blocks.control })
+  );
+}
+
+// R2: the rows are grouped under a heading per kind and carry the kind's own icon
+// (`RefKindIcon`). Every kind the picker reaches is drawn here, as a reader reaches it: the
+// parties and the components before a character is typed, the five kinds the search answers,
+// and the blocks of each of the four kinds that hold blocks, one node's at a time. The icon is
+// read by what it carries - its label and the attributes of its shapes - so a kind drawn with no
+// icon, with another kind's label or with a glyph another kind wears fails the row.
+test("each kind's rows sit under that kind's heading and wear that kind's own icon", async () => {
+  const user = userEvent.setup();
+  renderHost({ searchAnswer: async () => searchResponse(everyKindHits) });
+  const seen: DrawnIcon[] = [];
+
+  const comment = await field();
+  await user.click(comment);
+  await user.keyboard("@");
+  await waitFor(() =>
+    expect(drawnRows()).toEqual([
+      "People: alice@theorem.dev",
+      "Agents: Planner",
+      "Agents: Worker",
+      "Roles: planner",
+      "Roles: reviewer",
+      "Components: The relay",
+    ])
+  );
+  seen.push(...drawnIcons());
+
+  await user.clear(comment);
+  await user.keyboard("#relay");
+  await waitFor(() =>
+    expect(drawnRows()).toEqual([
+      "Issues: Relay drops a reply",
+      "Documents: notes.md",
+      "Asks: Should the relay retry?",
+      "Comments: I saw the relay drop one",
+      "Messages: The relay is back",
+      "Components: The relay",
+    ])
+  );
+  seen.push(...drawnIcons());
+  for (const [holder, block] of BLOCK_HOLDERS) {
+    await openBlocks(user, REF_PICKER_HEADINGS[holder]);
+    await waitFor(() =>
+      expect(drawnRows()).toContain(`${REF_PICKER_HEADINGS[block]}: The first words of the block`)
+    );
+    seen.push(...drawnIcons());
+  }
+
+  const kindOf = new Map(REF_PICKER_KINDS.map((kind) => [REF_PICKER_HEADINGS[kind], kind]));
+  const worn = new Map<RefPickerKind, { glyphs: Set<string>; labels: Set<string> }>();
+  for (const row of seen) {
+    const kind = kindOf.get(row.heading);
+    if (kind === undefined) throw new Error(`no kind's rows are headed "${row.heading}"`);
+    const icons = worn.get(kind) ?? { glyphs: new Set<string>(), labels: new Set<string>() };
+    icons.glyphs.add(row.glyph);
+    icons.labels.add(row.label);
+    worn.set(kind, icons);
+  }
+  // Every kind the picker reaches was drawn, each under its own heading.
+  expect([...worn.keys()].sort()).toEqual([...REF_PICKER_KINDS].sort());
+  const glyphOf = new Map<RefPickerKind, string>();
+  for (const [kind, icons] of worn) {
+    // Every row of a kind wears one icon, which carries that kind's own name.
+    expect([...icons.labels], `the label ${kind}'s icon carries`).toEqual([
+      REF_PICKER_KIND_NAMES[kind],
+    ]);
+    const glyphs = [...icons.glyphs];
+    expect(glyphs, `the glyphs ${kind}'s rows draw`).toHaveLength(1);
+    expect(glyphs[0], `${kind}'s rows draw no glyph`).not.toBe("");
+    glyphOf.set(kind, glyphs[0] ?? "");
+  }
+  // And the glyph is the kind's own: no two kinds draw the same one, but the four block kinds.
+  const shared = [...glyphOf].flatMap(([kind, glyph]) =>
+    [...glyphOf]
+      .filter(
+        ([other, theirs]) =>
+          other > kind &&
+          theirs === glyph &&
+          !(BLOCK_KINDS.includes(kind) && BLOCK_KINDS.includes(other))
+      )
+      .map(([other]) => `${kind} and ${other}`)
+  );
+  expect(shared, "kinds that draw one glyph").toEqual([]);
 });
 
 test("the picker filters as the reader types, moves with the arrows and takes the row on Enter", async () => {

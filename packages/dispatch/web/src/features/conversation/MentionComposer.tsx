@@ -9,6 +9,7 @@ import {
   type DragEvent,
   type FormEvent,
   type KeyboardEvent,
+  type MouseEvent,
   type ReactNode,
   type SyntheticEvent,
   useCallback,
@@ -21,6 +22,7 @@ import {
 } from "react";
 
 import {
+  ApiError,
   type ArtifactOwner,
   api,
   apiErrorMessage,
@@ -52,6 +54,8 @@ import {
   linkText,
   pageComposer,
   pageComposerControl,
+  pageFailedText,
+  pageMutedText,
   primaryButtonBg,
   quoteAccentBorder,
   quoteBodyText,
@@ -265,7 +269,9 @@ export interface OutlineKind {
  * as chips before Send, and above the line the entry its target names, with the control that
  * ends the target. The host words every part of it, since the composer imports nothing of the
  * page's; what the composer says in answer to a send - a refusal, a delivery warning, the
- * picker - is its own, as on every surface that draws it.
+ * picker - is its own, as on every surface that draws it, save the one refusal the host words
+ * (`statementTwice`), and it is drawn in the page's colours. A new target keeps the words the
+ * line holds, since the line is the page's one draft.
  */
 export interface OutlineLook {
   /** A statement of the issue's own documents the line comments on, by the document and the
@@ -282,9 +288,32 @@ export interface OutlineLook {
   readonly placeholder: string;
   /** Send's word. */
   readonly send: string;
+  /** What Send says while the send is out: the host's own busy word, as its other controls say
+   *  theirs. */
+  readonly sending: string;
+  /** What Send says while a file pasted or dropped into the draft is still uploading. */
+  readonly uploading: string;
+  /** What the line says, in place of the server's words, when Dispatch refused a comment on a
+   *  statement because the statement's words stand twice in its document (`409
+   *  TARGET_AMBIGUOUS`). The server's words ask for an occurrence, which no control of the line
+   *  sends, and the same words are refused again, so the line draws no Retry for it; the draft
+   *  stays. */
+  readonly statementTwice?: string;
   /** The entry the target names - the row a reply answers, the statement a comment is on, the
    *  comment an edit changes - drawn above the line while there is one. */
   readonly target?: ReactNode;
+}
+
+/** A press on a control of the issue page's box leaves the focus where it is, as a row's own
+ *  controls do: on a phone the box's line takes its form from whether the box holds the focus
+ *  (`pageComposer`'s `group-focus-within:`), so a press that moved the focus into the box would
+ *  lay the line out again under the pointer and its click would land on nothing. The keyboard
+ *  still reaches each control, and a press inside a dialog a control opens - drawn elsewhere in
+ *  the document, whose events React hands to the control's own parents - is the dialog's. */
+export function keepFocusOnPress(event: MouseEvent<HTMLElement>): void {
+  if (event.target instanceof Node && event.currentTarget.contains(event.target)) {
+    event.preventDefault();
+  }
 }
 
 /** Enter on a line of the issue page's box sends, as the prototype's does, and Shift+Enter
@@ -329,6 +358,7 @@ export function OutlineTargetLine({
         aria-label={clearLabel}
         className={`${pageComposer.targetClear} ${pageComposerControl}`}
         onClick={onClear}
+        onMouseDown={keepFocusOnPress}
         type="button"
       >
         <span aria-hidden="true">×</span>
@@ -626,9 +656,14 @@ export function MentionComposer({
       (mention, index) =>
         initial.findIndex((candidate) => candidate.target === mention.target) === index
     );
-    replaceDraft({ body: seededDraft(deduplicated, "", owner) });
+    // The issue page's line is the page's one draft at every width, so a new target keeps the
+    // words the reader has typed there, the reply's mentions written in front of them as a
+    // channel's seed is written into a live draft; every other surface's reply is a draft of its
+    // own, which starts from the seed alone.
+    const typed = outlined && previousBody.current.trim() !== "" ? previousBody.current : "";
+    replaceDraft({ body: seededDraft(deduplicated, typed, owner) });
     takeFocus();
-  }, [owner, replaceDraft, replyTo, standing]);
+  }, [outlined, owner, replaceDraft, replyTo, standing]);
 
   /** A send the server took, while this composer is mounted: the store has refreshed what it
    *  wrote. The draft is the composer's own, so it clears to what the channel it addresses now
@@ -1000,24 +1035,28 @@ export function MentionComposer({
       </button>
     </div>
   ) : null;
+  // The colours the send's own lines are drawn in: the page's on the issue page's box (decision
+  // 56 of dispatch://INFRA-1196), the dashboard's on every other surface.
+  const mutedTone = outlined ? pageMutedText : textMutedOnSurface;
+  const failedTone = outlined ? pageFailedText : dangerText;
   const deliveryNotices = (
     <>
       {plainNotice.length > 0 ? (
-        <p className={`text-sm ${textMutedOnSurface}`}>
+        <p className={`text-sm ${mutedTone}`}>
           Sending as {MODE_LABELS[plainMode]}:{" "}
           {plainNotice.map((option) => option.title).join(" and ")}{" "}
           {plainNotice.length > 1 ? "do" : "does"} not advertise Send.
         </p>
       ) : null}
       {deaf ? (
-        <p className={`text-sm ${dangerText}`}>
+        <p className={`text-sm ${failedTone}`}>
           {unsupportedOptions.map((option) => option.title).join(" and ")}{" "}
           {unsupportedOptions.length > 1 ? "advertise" : "advertises"} no delivery mode, so sending
           it records a failed attempt. A session advertises none while its plugin cannot reach its
           conversation.
         </p>
       ) : unsupported ? (
-        <p className={`text-sm ${dangerText}`}>
+        <p className={`text-sm ${failedTone}`}>
           {unsupportedOptions.map((option) => option.title).join(" and ")}{" "}
           {unsupportedOptions.length > 1 ? "do" : "does"} not advertise{" "}
           {outboundMode === undefined ? null : MODE_LABELS[outboundMode]}, so sending it records a
@@ -1031,23 +1070,61 @@ export function MentionComposer({
       ) : null}
     </>
   );
+  // A comment on a statement Dispatch refused because the statement's words stand twice in its
+  // document: the host's words for it (`OutlineLook.statementTwice`), and no Retry, which would
+  // send the same words to the same refusal.
+  const statementTwice =
+    refusal instanceof ApiError && refusal.status === 409 && refusal.code === "TARGET_AMBIGUOUS"
+      ? outline?.statementTwice
+      : undefined;
+  // Retry sends the draft as it stands, so it asks what Send asks of it.
+  const retry = canSubmit && statementTwice === undefined ? send : undefined;
   const sendState = (
     <>
       {uploadOwner === undefined ? null : <DraftUploadStatus upload={upload} />}
       {refusal === undefined ? null : (
-        <div className="flex flex-wrap items-center gap-3">
-          <QueryError
-            message={refusalMessage(refusal, anchor, anchorRefusal)}
-            // Retry sends the draft as it stands, so it asks what Send asks of it.
-            onRetry={canSubmit ? send : undefined}
-            retrying={sending}
-          />
+        // A press here on the issue page's box leaves the focus where it is, as one on the line's
+        // own controls does (`keepFocusOnPress`).
+        // biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the handler only keeps a press on the buttons inside from moving the focus, and each of them is its own control.
+        <div
+          className="flex flex-wrap items-center gap-3"
+          onMouseDown={outlined ? keepFocusOnPress : undefined}
+        >
+          {outlined ? (
+            // `QueryError`'s line in the page's colour, its Retry a 24 px target (R2).
+            <div
+              className={`flex flex-wrap items-center gap-3 text-sm ${pageFailedText}`}
+              role="alert"
+            >
+              <p>{statementTwice ?? refusalMessage(refusal, anchor, anchorRefusal)}</p>
+              {retry === undefined ? null : (
+                <button
+                  className={`font-medium underline disabled:cursor-not-allowed disabled:opacity-50 ${pageComposerControl}`}
+                  disabled={sending}
+                  onClick={retry}
+                  type="button"
+                >
+                  Retry
+                </button>
+              )}
+            </div>
+          ) : (
+            <QueryError
+              message={refusalMessage(refusal, anchor, anchorRefusal)}
+              onRetry={retry}
+              retrying={sending}
+            />
+          )}
           {/* A kind the closed issue refuses takes no Retry, so the refusal's own way out is to
               drop the draft it handed back, once the reader has it; a send the reader stopped
               offers both ways. */}
           {refusedKind || refusal instanceof SendStoppedError ? (
             <button
-              className={`text-sm font-medium underline ${dangerText}`}
+              className={
+                outlined
+                  ? `text-sm font-medium underline ${pageFailedText} ${pageComposerControl}`
+                  : `text-sm font-medium underline ${dangerText}`
+              }
               onClick={discard}
               type="button"
             >
@@ -1069,7 +1146,13 @@ export function MentionComposer({
     uploadOwner === undefined
       ? undefined
       : (event: ClipboardEvent<HTMLTextAreaElement>) => upload.paste(event, uploadOwner);
-  const sendBusy = sending ? "Sending…" : upload.pending > 0 ? "Uploading file…" : undefined;
+  // Send's busy word: the page's own in the issue page's look (`OutlineLook`), the composer's
+  // everywhere else.
+  const sendBusy = sending
+    ? (outline?.sending ?? "Sending…")
+    : upload.pending > 0
+      ? (outline?.uploading ?? "Uploading file…")
+      : undefined;
   const heldFieldset = {
     disabled: sending,
     onChangeCapture: stopHeldComposerInput,
@@ -1116,7 +1199,10 @@ export function MentionComposer({
           project={pickerProject}
           writing={dispatchWritingBox(box, writes)}
         />
-        <div className={pageComposer.controls}>
+        {/* A press here leaves the focus where it is (`keepFocusOnPress`), so on a phone the
+            line keeps its form under the pointer and the press lands where it was aimed. */}
+        {/* biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the handler only keeps a press on the buttons inside from moving the focus, and each of them is its own control. */}
+        <div className={pageComposer.controls} onMouseDown={keepFocusOnPress}>
           {outline.kinds.map((choice) => (
             <button
               aria-pressed={kind === choice.kind}

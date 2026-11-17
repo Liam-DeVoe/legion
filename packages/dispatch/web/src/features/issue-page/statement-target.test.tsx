@@ -1,12 +1,12 @@
 import { beforeAll, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render, waitFor } from "@testing-library/react";
+import { act, cleanup, render, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { displayTree } from "../../__tests__/display-trees";
-import { api } from "../../api/client";
+import { ApiError, api } from "../../api/client";
 import type { Ask } from "../../api/types";
 import { heldSends } from "../conversation/held-sends";
 import type { SentRequest } from "../conversation/send-request";
@@ -111,14 +111,18 @@ function PageBody({ held, root }: { held: { writer?: OutlineWriter }; root: Tree
 }
 
 /** The tree under the page's writer, every read of the writer's answered before it mounts, so
- *  nothing asks the network. */
-function renderPage(root: TreeNode, asks: readonly Ask[]) {
-  const client = new QueryClient({
+ *  nothing asks the network. Drawn with an earlier page's `client`, it is that page mounted again
+ *  in the same tab, its held sends with it. */
+function renderPage(
+  root: TreeNode,
+  asks: readonly Ask[],
+  client = new QueryClient({
     defaultOptions: {
       mutations: { retry: false },
       queries: { retry: false, staleTime: Number.POSITIVE_INFINITY },
     },
-  });
+  })
+) {
   client.setQueryData(["whoami"], { kind: "user", login: "alice" });
   client.setQueryData(["asks", KEY], asks);
   for (const read of ["comments", "issue-messages"]) client.setQueryData([read, KEY], []);
@@ -329,5 +333,138 @@ test("r on a statement aims the writer at it, and every other aim ends it", asyn
     }
   } finally {
     page.view.unmount();
+  }
+});
+
+// The reviewer's finding 4593511280: while a comment on a statement Dispatch refused is held,
+// every other aim - a Reply on another row or on another statement, an Answer, an option, a
+// change of answer, an Edit - leaves the writer on that statement, so the refused words are
+// neither replaced by another target's seed nor sent under another target, as a refused reply
+// holds its reply (`redirectedReplyTarget`). A writer that mounts again over the refused send
+// takes its statement up from it - the document and the words the send keeps - and a Reply on
+// that same statement takes its row's whole target again.
+test("a refused comment on a statement holds the writer on it, and a writer mounted again takes it up", async () => {
+  const tree = displayTree(STATEMENT_WORDS);
+  if (tree === undefined) throw new Error("the engine read no statement");
+  const statement = node({
+    id: "spec#b-r1",
+    reference: `dispatch://${KEY}/spec#b-r1`,
+    source: SPEC_SOURCE,
+    text: STATEMENT_WORDS,
+    tree,
+    type: "requirement",
+  });
+  const other = node({
+    id: "spec#b-r2",
+    reference: `dispatch://${KEY}/spec#b-r2`,
+    text: "The box takes the focus.",
+    type: "requirement",
+  });
+  const comment = node({
+    author: { id: "bob", kind: "user" },
+    id: "comment-1",
+    reference: `dispatch://${KEY}/comment/comment-1`,
+    text: "Earlier comment",
+    type: "comment",
+  });
+  const asked = (id: string, state: "answered" | "open") =>
+    node({
+      author: { id: "planner", kind: "session" },
+      id,
+      options: [{ label: "Yes" }, { label: "No" }],
+      question: state === "open",
+      reference: `dispatch://${KEY}/ask/${id}`,
+      state,
+      text: `Question ${id}?`,
+      type: "ask",
+    });
+  const open = asked("ask-1", "open");
+  const answered = asked("ask-2", "answered");
+  const root = node({
+    children: [statement, other, comment, open, answered],
+    id: KEY,
+    type: "issue",
+  });
+  const asks = [
+    askRecord("ask-1", null),
+    askRecord("ask-2", { at: "2026-11-06T00:00:00Z", selected: ["Yes"], text: "", user: "alice" }),
+  ];
+  const aimed: StatementTarget = {
+    artifact: "spec",
+    blockId: "r1",
+    id: "spec#b-r1",
+    kind: "statement",
+    quote: "The page draws one box. It sits at the foot.",
+    source: SPEC_SOURCE,
+    text: STATEMENT_WORDS,
+    tree,
+  };
+  const sendKey = ["issue-composer", KEY];
+  const request: SentRequest = {
+    anchor: undefined,
+    ask: { multiple: false, options: [], urgency: "med" },
+    draft: { body: "On the statement", replacement: "" },
+    edit: undefined,
+    kind: "comment",
+    owner: { issueKey: KEY, kind: "issue" },
+    plainDelivery: "steer",
+    replyTo: null,
+    sendKey: "send-1",
+    statement: { artifact: aimed.artifact, quote: aimed.quote },
+  };
+  const user = userEvent.setup();
+  // Dispatch refuses the comment.
+  const createComment = spyOn(api, "createComment").mockRejectedValue(
+    new ApiError(400, { code: "INVALID_INPUT", error: "The comment was refused." })
+  );
+  const first = renderPage(root, asks);
+  try {
+    const press = async (nodeId: string, key: string) => {
+      const row = document.querySelector<HTMLElement>(`[data-node-row][data-node-id="${nodeId}"]`);
+      if (row === null) throw new Error(`the tree drew no row for ${nodeId}`);
+      await act(async () => row.focus());
+      await user.keyboard(key);
+    };
+    await press("spec#b-r1", "r");
+    await waitFor(() => expect(first.writer().statement).toEqual(aimed));
+    act(() => {
+      heldSends(first.client).send(sendKey, request);
+    });
+    await waitFor(() => expect(heldSends(first.client).get(sendKey)?.status).toBe("refused"));
+
+    const aims: readonly { readonly aim: () => Promise<void>; readonly name: string }[] = [
+      { aim: () => press("comment-1", "r"), name: "a reply" },
+      { aim: () => press("spec#b-r2", "r"), name: "another statement" },
+      { aim: () => press("ask-1", "a"), name: "an answer" },
+      { aim: () => act(async () => first.writer().pick(open, "No")), name: "an option" },
+      {
+        aim: () => act(async () => first.writer().changeAnswer(answered)),
+        name: "a change of answer",
+      },
+      {
+        aim: () => act(async () => first.writer().edit("comment-1", "My own words")),
+        name: "an edit",
+      },
+    ];
+    for (const { aim, name } of aims) {
+      await aim();
+      expect(first.writer().statement, name).toEqual(aimed);
+      expect(first.writer().reply, name).toBeNull();
+      expect(first.writer().answer, name).toBeUndefined();
+      expect(first.writer().editing, name).toBeUndefined();
+    }
+
+    // The writer mounted again in the same tab, over the send Dispatch refused.
+    first.view.unmount();
+    const again = renderPage(root, asks, first.client);
+    expect(again.writer().statement).toEqual({ artifact: aimed.artifact, quote: aimed.quote });
+    await press("comment-1", "r");
+    expect(again.writer().statement).toEqual({ artifact: aimed.artifact, quote: aimed.quote });
+    expect(again.writer().reply).toBeNull();
+    await press("spec#b-r1", "r");
+    await waitFor(() => expect(again.writer().statement).toEqual(aimed));
+  } finally {
+    cleanup();
+    createComment.mockRestore();
   }
 });

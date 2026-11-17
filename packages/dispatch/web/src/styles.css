@@ -303,6 +303,20 @@ html:has([data-issue-page]) {
   font-family: var(--font-sans);
 }
 
+/* What a scroll brings into view on the new issue page stands below everything that stays at the
+   top of the screen above its rows (decision 113 of
+   dispatch://INFRA-1196/artifact/part-decisions-md). The page scrolls the document, so the
+   padding is on `html`. `--issue-identity-height` is the band the header publishes
+   (`identity-block.ts`): its identity block from 761 px up, and at 760 px and below the view row,
+   where the header scrolls away. `--issue-view-row-height` is the view row's own height while it
+   stays, at 760 px and below, and 0 px above (`slots/view-row.tsx`), so the row is counted on a
+   page that draws no header too. At 760 px and below, on a page with a header, both name the
+   same row, so the padding is the larger of the two rather than their sum: at every width, it is
+   the height of what stays. */
+html:has([data-issue-page]) {
+  scroll-padding-top: max(var(--issue-identity-height, 0px), var(--issue-view-row-height, 0px));
+}
+
 /* Compact layouts reserve vertical space for the fixed review sheet. Keep controls touch-sized
    through tablet widths so the sheet remains directly operable. */
 @media (max-width: 1279px) {
@@ -310,6 +324,19 @@ html:has([data-issue-page]) {
   select,
   textarea {
     font-size: 1rem;
+  }
+  /* The new issue page's header draws its status and its title's editor in its own type at
+     every width, as the prototype does: the status at 12 px, sized to its value, so the header
+     at 390 px holds to eight lines and 250 px, nine lines and 280 px while an approval request
+     waits (ruling 8 of dispatch://INFRA-1196/artifact/build-rulings-md), and the title's editor
+     at the heading's own size, which it must match so ending an edit moves nothing
+     (dispatch://INFRA-1196 R13). This file's rules are in no cascade layer and Tailwind's are, so
+     `revert-layer` gives back the size the control's own classes set. A menu or a dialog a
+     header control opens keeps the 1rem floor above, so a phone does not zoom into its fields. */
+  html:has([data-issue-page]) [data-issue-page]
+    [data-issue-header]
+    :is(select, textarea):not([role="menu"] *):not([role="dialog"] *) {
+    font-size: revert-layer;
   }
 }
 
@@ -341,6 +368,20 @@ html:has([data-issue-page]) {
     :is(button, a, input, select):not([role="menu"] *):not([role="dialog"] *) {
     min-width: 24px;
     min-height: 24px;
+  }
+
+  /* The new issue page's header, `[data-issue-header]`, draws its controls at the prototype's
+     size: each at least 24 by 24 px, or spaced so that a 24 px circle on it meets no other
+     target (WCAG 2.2's 2.5.8), because the header at 390 px is held to eight lines and 250 px,
+     nine lines and 280 px while an approval request waits (ruling 8 of
+     dispatch://INFRA-1196/artifact/build-rulings-md). `revert-layer` takes the floor above off
+     and gives back the size the control's own classes set. A menu or a dialog a header control
+     opens keeps the 44 px floor. */
+  html:has([data-issue-page]) [data-issue-page]
+    [data-issue-header]
+    :is(button, a, select, textarea):not([role="menu"] *):not([role="dialog"] *) {
+    min-width: revert-layer;
+    min-height: revert-layer;
   }
 
   button,
@@ -433,21 +474,26 @@ html:has([data-issue-page]) {
   }
 }
 
-/* Below 1280 px the new issue page's box, `[data-issue-composer]` (dispatch://INFRA-3949 R1, R2,
-   R6), takes none of the 44 px floor above on its buttons and its line: at rest it is one line,
-   its form at most 40 px tall, its line 26 px, so each of its controls takes WCAG 2.2's 24 px
-   target (2.5.8) instead, and its line the height its own classes give it. Each button also takes
-   back the display its own classes give it, which the floor's `inline-flex`, in no layer, would
-   outrank: a kind's chip is hidden at 760 px and below until the box holds the caret
-   (`pageComposer.chip`). A menu or a dialog the box opens, and the reference picker's list, keep
-   the floor, as every box's do. */
+/* Each button of the new issue page's box, `[data-issue-composer]` (dispatch://INFRA-3949 R1,
+   R2, R6), is at least WCAG 2.2's 24 px target (2.5.8) at every width: a refusal's Retry and
+   Discard draft too, which their own classes draw 20 px tall. Below 1280 px that 24 px stands in
+   place of the 44 px floor above on its buttons, and its line takes none of the floor: at rest
+   it is one line, its form at most 40 px tall, its line 26 px, the height its own classes give
+   it. There each button also takes back the display its own classes give it, which the floor's
+   `inline-flex`, in no layer, would outrank: a kind's chip is hidden at 760 px and below until
+   the box holds the caret (`pageComposer.chip`). A menu or a dialog the box opens, and the
+   reference picker's list, keep the floor, as every box's do. */
+html:has([data-issue-page]) [data-issue-composer]
+  button:not([role="menu"] *):not([role="dialog"] *):not([role="listbox"] *) {
+  min-width: 24px;
+  min-height: 24px;
+}
+
 @media (max-width: 1279px) {
   html:has([data-issue-page])
     [data-issue-composer]
     button:not([role="menu"] *):not([role="dialog"] *):not([role="listbox"] *) {
     display: revert-layer;
-    min-width: 24px;
-    min-height: 24px;
   }
 
   html:has([data-issue-page]) [data-issue-composer] textarea:not([role="dialog"] *) {

@@ -1,19 +1,20 @@
 /**
  * The issue's read mark at the end of the new page's outline (dispatch://INFRA-3949 R9): the end
  * three-quarters on screen for a second writes the issue's head as read, once, and a mark already
- * at the head is written again by nothing.
+ * at the head is written again by nothing; nor is the end on screen before the outline holds the
+ * reads it draws the conversation from.
  */
 
 import { afterEach, expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, waitFor } from "@testing-library/react";
+import { act, cleanup, render, waitFor } from "@testing-library/react";
 
 import { jump, realClock } from "../../__tests__/fake-clock";
 import { dwellOn, installIntersectionObserver } from "../../__tests__/intersection-observer";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerIssueStates } from "../../__tests__/send-answers";
 import { api } from "../../api/client";
-import type { DispatchEvent, UserIssueState, UserState } from "../../api/types";
+import type { CommentWithTrees, DispatchEvent, UserIssueState, UserState } from "../../api/types";
 import { IssueReadMark } from "./IssueReadMark";
 
 afterEach(() => {
@@ -38,14 +39,23 @@ function issueState(lastReadSeq: number): UserIssueState {
   return { dismissed: [], last_read_seq: lastReadSeq, pinned: false, seq: 0 };
 }
 
+/** The reads the outline draws the conversation from, under the keys it reads them by
+ *  (`useIssueTree.ts`), which the end waits on. */
+const OUTLINE_READS = ["asks", "comments", "issue-messages"] as const;
+
 /** Draws the mark for CORE-1 on a page of its own, signed in as alice, and hands back the mark's
- *  element; the reads it makes are the test's to answer. */
-function drawMark() {
+ *  element; the reads it makes are the test's to answer. The outline's reads hold their answers
+ *  before it mounts, as the outline drawn above it holds them, save those `unanswered` names:
+ *  the test answers those. */
+function drawMark(unanswered: readonly (typeof OUTLINE_READS)[number][] = []) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
   // The mark goes as the person reading.
   client.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
+  for (const read of OUTLINE_READS) {
+    if (!unanswered.includes(read)) client.setQueryData([read, "CORE-1"], []);
+  }
   const view = render(
     <QueryClientProvider client={client}>
       <IssueReadMark issueKey="CORE-1" />
@@ -111,6 +121,58 @@ test("the end on screen for a second writes the mark once, and nothing when it i
   } finally {
     getMyState.mockRestore();
     getIssueEvents.mockRestore();
+    putIssueState.mockRestore();
+    viewport.restore();
+  }
+});
+
+// The reviewer's finding 4593511267: while the outline's comments read is out the outline draws
+// none of the conversation, and the end under it on screen is no end the reader has read to, so
+// it writes nothing however long it stays there; once the read answers, the same end on screen
+// for a second writes the mark, once.
+test("the end on screen writes nothing until the outline holds its reads, and then once", async () => {
+  const viewport = installIntersectionObserver();
+  const getMyState = spyOn(api, "getMyState").mockResolvedValue({ "CORE-1": issueState(1) });
+  const getIssueEvents = spyOn(api, "getIssueEvents").mockResolvedValue([headEvent(7)]);
+  const comments = Promise.withResolvers<CommentWithTrees[]>();
+  const listComments = spyOn(api, "listComments").mockReturnValue(comments.promise);
+  const putIssueState = answerIssueStates().mockImplementation(async (_key, input) =>
+    issueState(input.last_read_seq ?? 0)
+  );
+  try {
+    const page = drawMark(["comments"]);
+    await waitFor(() =>
+      expect(page.client.getQueryData<UserState>(["user-state"])?.["CORE-1"]?.last_read_seq).toBe(1)
+    );
+    await waitFor(() => expect(getIssueEvents).toHaveBeenCalledTimes(1));
+    expect(listComments).toHaveBeenCalledWith("CORE-1");
+    jest.useFakeTimers();
+    try {
+      // The end on screen for two seconds while the comments read is out.
+      await dwellOn(viewport, page.mark, { height: 1 });
+      await jump(1_000);
+    } finally {
+      realClock();
+    }
+    expect(putIssueState).not.toHaveBeenCalled();
+
+    await act(async () => comments.resolve([]));
+    await waitFor(() => expect(viewport.observed()).toContain(page.mark));
+    jest.useFakeTimers();
+    try {
+      await dwellOn(viewport, page.mark, { height: 1 });
+      expect(putIssueState.mock.calls).toEqual([["CORE-1", { last_read_seq: 7 }, keyedAttempt]]);
+      await dwellOn(viewport, page.mark, { height: 1 });
+      await jump(2_000);
+    } finally {
+      realClock();
+    }
+    expect(putIssueState).toHaveBeenCalledTimes(1);
+    expect(listComments).toHaveBeenCalledTimes(1);
+  } finally {
+    getMyState.mockRestore();
+    getIssueEvents.mockRestore();
+    listComments.mockRestore();
     putIssueState.mockRestore();
     viewport.restore();
   }

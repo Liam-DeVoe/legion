@@ -251,7 +251,7 @@ test("a refusal keeps the text", async () => {
     answerEdits(() => answered.promise);
     act(() => line.result.current.send());
     expect(line.result.current.pending).toBe(true);
-    expect(line.result.current.busy).toBe(ANSWER_LINES.saving_criterion);
+    expect(line.result.current.busy).toBe(ANSWER_LINES.sending);
     expect(line.result.current.answer).toBeUndefined();
     expect(line.result.current.text).toBe(`${TEXT} Still.`);
     expect(textAtLanding).toEqual([]);

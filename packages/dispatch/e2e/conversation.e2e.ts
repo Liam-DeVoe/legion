@@ -356,8 +356,8 @@ test("a reply in a session-authored comment thread pre-fills a deletable agent m
       delivery: "steer",
       reply_to: parent.id,
     });
-    // The link's words are what the reader sees in the stored reply.
-    await expect(threadReply(page, card, "planner It is green now - ship it.")).toBeVisible();
+    // The link's words, `@planner`, are what the reader sees in the stored reply (R8).
+    await expect(threadReply(page, card, "@planner It is green now - ship it.")).toBeVisible();
     await expect.poll(() => getSentMessages()).toMatchObject([{ target_session: "s1" }]);
   } finally {
     await alice.close();

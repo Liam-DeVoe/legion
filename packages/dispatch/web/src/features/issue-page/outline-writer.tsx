@@ -11,6 +11,7 @@ import type { StatementAnchor } from "../conversation/send-request";
 import { type AgentText, useAgentText } from "../refs/AgentName";
 import { buildIssuePath, parseNodeReference, sessionOfAddress } from "../refs/routes";
 import { wordsOf } from "../refs/tree-fragment";
+import { blockOfNodeId } from "./issue-artifacts";
 import type { TreeNode } from "./issue-tree";
 import { criterionOffered } from "./model-rows/criterion-write";
 import { useRoomFacts } from "./model-rows/room-target";
@@ -77,10 +78,14 @@ export interface OutlineWriter {
   readonly setKind: (kind: WriterKind) => void;
   readonly setReply: (reply: ReplyTarget | null) => void;
   /** The statement the line comments on (`StatementTarget`), where a Reply on a statement's row,
-   *  its control or `r`, aimed it at one (`replyTo`); undefined otherwise. It never stands beside
-   *  a reply, an answer or an edit: setting it ends them, and setting any of them, or `clear`,
-   *  ends it. */
-  readonly statement: StatementTarget | undefined;
+   *  its control or `r`, aimed it at one (`replyTo`); or, where the line mounted over a send held
+   *  under its name that was aimed at one (`SentRequest.statement`) - after the reader left the
+   *  issue and came back, or a reload - that send's document and words alone, which are all a
+   *  held send keeps of it; undefined otherwise. It never stands beside a reply, an answer or an
+   *  edit: setting it ends them, and setting any of them, or `clear`, ends it. While a comment on
+   *  a statement Dispatch refused is held, every other aim puts the line back on that statement
+   *  instead, until the comment is sent or the reader ends the statement in the line. */
+  readonly statement: StatementTarget | StatementAnchor | undefined;
   /** Whether `node` carries the act that writes a criterion under it (dispatch://INFRA-4066 R2):
    *  an ask, a comment or a message (`criterionItemOf`) whose own address names this issue, on
    *  an issue whose tree read answers a tree and no `view_of` (`criterionOffered`). False for
@@ -193,10 +198,14 @@ export function OutlineWriterProvider({
   const landed = useCallback(() => setLanding(undefined), []);
   // The reader's own comment the line is editing, if it is: its id and its words as they stand.
   const [editing, setEditing] = useState<{ readonly body: string; readonly id: string }>();
-  // The statement the line comments on, if it does: set by a Reply on a statement's row alone,
-  // and ended by every other target the line takes and by `clear`, so no path holds it beside a
-  // reply, an answer or an edit.
-  const [statement, setStatement] = useState<StatementTarget>();
+  // The statement the line comments on, if it does: set by a Reply on a statement's row, and
+  // taken up from the send held under the line's name, as the reply is (`useHeldReplyTo`), so a
+  // line that mounts again over a refused comment on a statement names the statement it was
+  // written to and sends it there. Ended by every other target the line takes and by `clear`,
+  // so no path holds it beside a reply, an answer or an edit.
+  const [statement, setStatement] = useState<StatementTarget | StatementAnchor | undefined>(
+    () => store.get(sendKey)?.request.statement
+  );
   // The node the line writes a criterion under, if it does: set by a row's Write a criterion
   // alone, and ended, as the statement is, by every other target and by `clear`.
   const [criterion, setCriterion] = useState<CriterionItem>();
@@ -242,17 +251,26 @@ export function OutlineWriterProvider({
       if (store.sendingNow(sendKey)) return;
       // Nor while the criterion line's write is out: the line keeps its text and its refusal.
       if (criterionOut.has(sendKey)) return;
+      // A comment on a statement Dispatch refused keeps the line on that statement
+      // (`keptOnStatement`), whatever the Reply is on.
+      const line = { focus, setAnswer, setEditing, setReply, setStatement };
       // A statement is no entry of the conversation: the line writes a comment on the issue
       // anchored to the statement's whole words, and holds no reply beside it.
       if (item.kind === "statement") {
+        const target: StatementTarget = {
+          ...item,
+          quote: item.tree === undefined ? item.text : wordsOf(item.tree),
+        };
+        if (keptOnStatement(store.get(sendKey)?.request.statement, line, target)) return;
         setReply(null);
         setAnswer(undefined);
         setEditing(undefined);
         setCriterion(undefined);
-        setStatement({ ...item, quote: item.tree === undefined ? item.text : wordsOf(item.tree) });
+        setStatement(target);
         focus();
         return;
       }
+      if (keptOnStatement(store.get(sendKey)?.request.statement, line)) return;
       const target = replyTargetOf(item, issueKey, comments.data, messages.data, agentText);
       setAnswer(undefined);
       setEditing(undefined);
@@ -276,6 +294,8 @@ export function OutlineWriterProvider({
       if (criterionOut.has(sendKey)) return;
       const target = takesAnswer(node) ? answering(node) : undefined;
       if (target === undefined) return;
+      const line = { focus, setAnswer, setEditing, setReply, setStatement };
+      if (keptOnStatement(store.get(sendKey)?.request.statement, line)) return;
       setReply(null);
       setEditing(undefined);
       setStatement(undefined);
@@ -292,6 +312,8 @@ export function OutlineWriterProvider({
       const target = answering(node);
       const recorded = (asks.data ?? []).find((ask) => ask.id === target?.askId)?.answer;
       if (target === undefined || recorded === null || recorded === undefined) return;
+      const line = { focus, setAnswer, setEditing, setReply, setStatement };
+      if (keptOnStatement(store.get(sendKey)?.request.statement, line)) return;
       const offered = new Set((node.options ?? []).map((option) => option.label));
       setReply(null);
       setEditing(undefined);
@@ -312,6 +334,8 @@ export function OutlineWriterProvider({
       if (criterionOut.has(sendKey)) return;
       const target = takesAnswer(node) ? answering(node) : undefined;
       if (target === undefined) return;
+      const line = { focus, setAnswer, setEditing, setReply, setStatement };
+      if (keptOnStatement(store.get(sendKey)?.request.statement, line)) return;
       setReply(null);
       setEditing(undefined);
       setStatement(undefined);
@@ -343,6 +367,8 @@ export function OutlineWriterProvider({
     (id: string, body: string) => {
       if (store.sendingNow(sendKey)) return;
       if (criterionOut.has(sendKey)) return;
+      const line = { focus, setAnswer, setEditing, setReply, setStatement };
+      if (keptOnStatement(store.get(sendKey)?.request.statement, line)) return;
       setReply(null);
       setAnswer(undefined);
       setStatement(undefined);
@@ -355,11 +381,14 @@ export function OutlineWriterProvider({
   const criterionUnder = useCallback(
     (node: TreeNode) => {
       // Refused while a send of the line's own is out, and while the criterion's own write is,
-      // as every other target is.
+      // as every other target is; and a comment on a statement Dispatch refused keeps the line
+      // on that statement (`keptOnStatement`), as it does for every other aim.
       if (store.sendingNow(sendKey)) return;
       if (criterionOut.has(sendKey)) return;
       const item = criterionItemOf(node);
       if (item === undefined) return;
+      const line = { focus, setAnswer, setEditing, setReply, setStatement };
+      if (keptOnStatement(store.get(sendKey)?.request.statement, line)) return;
       setReply(null);
       setAnswer(undefined);
       setEditing(undefined);
@@ -452,6 +481,51 @@ function picked(target: AnswerTarget, label: string): AnswerTarget {
       ? [...target.selected, label]
       : [label];
   return { ...target, selected };
+}
+
+/** The writer's own setters and its caret, which `keptOnStatement` sets the line by. */
+interface StatementLine {
+  readonly focus: () => void;
+  readonly setAnswer: (answer: undefined) => void;
+  readonly setEditing: (editing: undefined) => void;
+  readonly setReply: (reply: null) => void;
+  readonly setStatement: (
+    next: (
+      current: StatementTarget | StatementAnchor | undefined
+    ) => StatementTarget | StatementAnchor
+  ) => void;
+}
+
+/**
+ * Keeps the line on `held`, the statement of a comment Dispatch refused that is held under the
+ * line's name, and says whether it did; with none held it does nothing. A press that would aim
+ * the line elsewhere - a Reply, an Answer, an option, a change of answer, an Edit - puts the
+ * caret back in the line on that statement instead, as a Reply elsewhere is put back on a refused
+ * reply (`redirectedReplyTarget`), so the refused words are neither replaced by another target's
+ * seed nor sent under another target. A Reply on that same statement, `aimed`, takes its row's
+ * whole target. Each caller's `sendingNow` guard runs first, so a send held then was refused.
+ * The writer's setters are handed in, so each setter that calls this keeps the dependencies it
+ * had.
+ */
+function keptOnStatement(
+  held: StatementAnchor | undefined,
+  line: StatementLine,
+  aimed?: StatementTarget
+): boolean {
+  if (held === undefined) return false;
+  line.setReply(null);
+  line.setAnswer(undefined);
+  line.setEditing(undefined);
+  // The same statement is the same document and the same words.
+  line.setStatement((current) =>
+    aimed?.artifact === held.artifact && aimed.quote === held.quote
+      ? aimed
+      : current?.artifact === held.artifact && current.quote === held.quote
+        ? current
+        : held
+  );
+  line.focus();
+  return true;
 }
 
 /** One item of the conversation the line can reply to: a row of the outline that takes a reply,
@@ -549,14 +623,14 @@ export function replyItemOf(node: TreeNode): ReplyItem | StatementItem | undefin
 
 /** The statement a row of the outline is: a `requirement` block of one of the issue's own
  *  documents, read from its node id `<slug>#b-<block id>` as `issue-artifacts.ts` reads a
- *  block's document. Undefined for every other row. */
+ *  block's document (`blockOfNodeId`). Undefined for every other row. */
 function statementItemOf(node: TreeNode): StatementItem | undefined {
   if (node.type !== "requirement") return undefined;
-  const cut = node.id.indexOf("#b-");
-  if (cut <= 0 || cut + "#b-".length === node.id.length) return undefined;
+  const block = blockOfNodeId(node.id);
+  if (block === undefined) return undefined;
   return {
-    artifact: node.id.slice(0, cut),
-    blockId: node.id.slice(cut + "#b-".length),
+    artifact: block.slug,
+    blockId: block.blockId,
     id: node.id,
     kind: "statement",
     ...(node.source === undefined ? {} : { source: node.source }),

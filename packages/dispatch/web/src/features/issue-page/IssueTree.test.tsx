@@ -8,11 +8,14 @@ import { MemoryRouter, useLocation } from "react-router-dom";
 import { jump, realClock } from "../../__tests__/fake-clock";
 import { userOnFakeClock } from "../../__tests__/user";
 import { api } from "../../api/client";
-import type { Artifact, Decision, IssueDecisions } from "../../api/types";
+import { issueCoverageQuery, issueResultsQuery } from "../../api/queries";
+import type { Artifact, Decision, IssueDecisions, IssueDetails } from "../../api/types";
+import { pageFocusedRow } from "../../theme/classes";
 import { MarginProvider } from "../margin/margin-context";
 import { buildDispatchReference, buildIssuePath } from "../refs/routes";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { useKeymapScope } from "../shell/keymap";
+import { issueDetails } from "./decisions-filter/decisions-fixtures";
 import { type FocusedNode, FocusedNodeProvider, useFocusedNode } from "./focused-node";
 import { IssueTree, LANDING_WAIT_MS, ZOOMED_TREE_QUERY } from "./IssueTree";
 import type { TreeNode } from "./issue-tree";
@@ -29,7 +32,10 @@ import {
   useOutlineWriter,
 } from "./outline-writer";
 import { KEY_REPORTS } from "./page-structure";
-import { CONTROL_LABELS, NODE_TYPE_NAMES, type NodeType } from "./page-words";
+import { CONTROL_LABELS, EMPTY_STATE_LINES, NODE_TYPE_NAMES, type NodeType } from "./page-words";
+import { BodySlot } from "./slots/body";
+import { ProvidersSlot } from "./slots/providers";
+import { addressesAsShortForms } from "./tree-drafts";
 
 /**
  * What a reader does to the tree with the keyboard alone (dispatch://INFRA-1196 R6, R9, R23).
@@ -597,14 +603,15 @@ test("a press on a row draws nothing new until it ends, and then the row opens",
   expect(first.querySelector("[data-node-body]")).toBeNull();
 });
 
-// The architect's decision 105 on R7: a press on a control outside the outline - a view control,
-// a control of Details, one under the outline - focuses that control as it goes down, and the
-// focused row's body closing then shortened the page under the pointer: the press ended on
-// something else, and the control never fired. The body and the row's acts stay drawn while the
-// focus is on another control of the page, until another row takes the focus. happy-dom lays
-// nothing out, so the browser row reads the presses firing (c-focus-opens, `a body opens on
-// focus and nothing opens on hover`); this reads the rule that keeps the page still.
-test("a press on a control outside the outline keeps the focused row's body until another row takes the focus", async () => {
+// The architect's decision 105 on R7, as amended: a press on a control outside the outline - a
+// view control, a control of Details, one under the outline - focuses that control as it goes
+// down, and the focused row's body closing then shortened the page under the pointer: the press
+// ended on something else, and the control never fired. The body and the row's acts stay drawn
+// while the press is held and through its click, and the row is let go one task after the press
+// ends. happy-dom lays nothing out, so the browser row reads the presses firing (c-focus-opens,
+// `a body opens on focus and nothing opens on hover`); this reads the rule that keeps the page
+// still, and that lets the row go once nothing is under the pointer any more.
+test("a press on a control outside the outline keeps the focused row's body through its click, and lets the row go once it ends", async () => {
   setViewport(1440);
   const user = userEvent.setup();
   const view = renderTree(
@@ -620,9 +627,13 @@ test("a press on a control outside the outline keeps the focused row's body unti
   const outside = controlOutside();
   await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
   const [first] = rowsFor(view.container, "comment-1");
-  const [second] = rowsFor(view.container, "comment-2");
-  if (first === undefined || second === undefined) throw new Error("the rows are not drawn");
+  if (first === undefined) throw new Error("the first row is not drawn");
   await waitFor(() => expect(first.querySelector("[data-node-body]")).not.toBeNull());
+  // Whether the row's body was drawn as each click of the control landed.
+  const drawnAtClick: boolean[] = [];
+  outside.control.addEventListener("click", () =>
+    drawnAtClick.push(first.querySelector("[data-node-body]") !== null)
+  );
 
   await user.pointer({ keys: "[MouseLeft>]", target: outside.control });
   expect(document.activeElement, "the press did not focus the control it went down on").toBe(
@@ -638,28 +649,65 @@ test("a press on a control outside the outline keeps the focused row's body unti
   ).not.toBeNull();
   await user.pointer({ keys: "[/MouseLeft]" });
   expect(outside.presses(), "the press did not fire the control").toBe(1);
-  expect(
-    first.querySelector("[data-node-body]"),
-    "the body closed once the press ended"
-  ).not.toBeNull();
+  expect(drawnAtClick, "the body closed before the press's click landed").toEqual([true]);
   // The panel goes back to the issue's own facts, as for any focus that leaves the outline for
   // anything but Details.
   expect(view.focusedNode()).toBeUndefined();
 
-  // Another row taking the focus closes the body the control kept, and opens its own.
-  await act(async () => second.focus());
-  await waitFor(() => expect(second.querySelector("[data-node-body]")).not.toBeNull());
+  // The press over, the row is let go: its body, its acts and its focused look.
+  await waitFor(() =>
+    expect(
+      first.querySelector("[data-node-body]"),
+      "the body stayed drawn after the press on a control outside the outline ended"
+    ).toBeNull()
+  );
+  expect(first.querySelector("[data-row-acts]")).toBeNull();
+  expect(first.querySelector("[data-node-card]")?.className).not.toContain(pageFocusedRow);
+});
+
+// Decision 105 as amended: Tab is no press, so the focus leaving the outline by it lets go of the
+// row at once - its body, its focused look and what a key reported at it, which lasts until the
+// next key (R9), and Tab is one (the reviewer's finding on e3136741, where both stayed drawn).
+test("Tab out of the outline lets go of the row at once: no body, no focused look and no report", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const view = renderTree(
+    node({
+      children: [
+        addressedComment("comment-1", "The first words."),
+        addressedComment("comment-2", "The second words."),
+      ],
+      id: KEY,
+      type: "issue",
+    })
+  );
+  const outside = controlOutside();
+  await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
+  const [first] = rowsFor(view.container, "comment-1");
+  if (first === undefined) throw new Error("the first row is not drawn");
+  await user.keyboard("w");
+  await waitFor(() => expect(rowReport(view.container)).toBe(KEY_REPORTS.no_decision));
+  expect(first.querySelector("[data-node-card]")?.className).toContain(pageFocusedRow);
+
+  await user.tab();
+  expect(document.activeElement).toBe(outside.control);
+  await waitFor(() =>
+    expect(rowReport(view.container), "Tab out of the outline left the key's report drawn").toBe(
+      undefined
+    )
+  );
   expect(
-    first.querySelector("[data-node-body]"),
-    "the kept body stayed open beside the body of the row that took the focus"
-  ).toBeNull();
+    first.querySelector("[data-node-card]")?.className,
+    "Tab out of the outline left the row it left looking focused"
+  ).not.toContain(pageFocusedRow);
+  expect(first.querySelector("[data-node-body]")).toBeNull();
   expect(first.querySelector("[data-row-acts]")).toBeNull();
 });
 
-// Decision 105's end: Escape closes a body the focus kept as it left for another control - an
-// Escape the page gets while the focus is there, and the outline's own Escape, which leaves the
-// outline from its row with nothing open after the focus has been out to a control and back.
-test("Escape closes the body a control outside the outline kept, from the page or from the outline", async () => {
+// Decision 105's Escape: Escape anywhere on the page closes at once the body a press outside the
+// outline keeps, with the press still held; and the outline's own Escape leaves the outline from
+// its row with nothing open after the focus has been out to a control and back.
+test("Escape closes the body a press outside the outline keeps, from the page or from the outline", async () => {
   setViewport(1440);
   const user = userEvent.setup();
   const view = renderTree(
@@ -678,29 +726,22 @@ test("Escape closes the body a control outside the outline kept, from the page o
   if (first === undefined) throw new Error("the first row is not drawn");
   await waitFor(() => expect(first.querySelector("[data-node-body]")).not.toBeNull());
 
-  await act(async () => outside.control.focus());
+  await user.pointer({ keys: "[MouseLeft>]", target: outside.control });
+  expect(document.activeElement).toBe(outside.control);
   expect(
     first.querySelector("[data-node-body]"),
-    "the focus leaving for a control outside the outline closed the focused row's body"
+    "the press held on a control outside the outline closed the focused row's body"
   ).not.toBeNull();
   await user.keyboard("{Escape}");
   await waitFor(() => expect(first.querySelector("[data-node-body]")).toBeNull());
   expect(first.querySelector("[data-row-acts]")).toBeNull();
+  await user.pointer({ keys: "[/MouseLeft]" });
 
-  // Out to the control and back by Shift+Tab, to the row the reader left, whose body opens again
-  // and stays drawn while the focus is out; back on it, the outline's own Escape leaves the
-  // outline and closes the body.
+  // Back by Shift+Tab, to the row the reader left, whose body opens again; on it, the outline's
+  // own Escape leaves the outline and closes the body.
   await user.tab({ shift: true });
   await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
   await waitFor(() => expect(first.querySelector("[data-node-body]")).not.toBeNull());
-  await user.tab();
-  expect(document.activeElement).toBe(outside.control);
-  expect(
-    first.querySelector("[data-node-body]"),
-    "Tab out of the outline closed the body"
-  ).not.toBeNull();
-  await user.tab({ shift: true });
-  await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
   await user.keyboard("{Escape}");
   expect(document.activeElement).toBe(document.body);
   await waitFor(() => expect(first.querySelector("[data-node-body]")).toBeNull());
@@ -708,10 +749,10 @@ test("Escape closes the body a control outside the outline kept, from the page o
 
 // Safari focuses no button a press lands on, so a press on a control outside the outline takes
 // the focus from the row to no control at all, and the blur names no element. A blur naming no
-// element that a press outside the tree caused is a leave for a control, and keeps the body
-// until another row or Escape; a blur with no press - a script's, as the browser rows'
-// `focusThePage` makes - closes it as it always has.
-test("a press outside the outline that leaves the focus on no control keeps the body, and a blur with no press closes it", async () => {
+// element that a press caused keeps the body through the press's click, as any press's does, and
+// lets the row go one task after the press ends; a blur with no press - a script's, as the
+// browser rows' `focusThePage` makes - lets it go at once.
+test("a press outside the outline that leaves the focus on no control keeps the body through its click, and a blur with no press lets it go at once", async () => {
   setViewport(1440);
   const user = userEvent.setup();
   const view = renderTree(
@@ -733,13 +774,19 @@ test("a press outside the outline that leaves the focus on no control keeps the 
   await waitFor(() => expect(first.querySelector("[data-node-body]")).not.toBeNull());
   const blurredTo: (EventTarget | null)[] = [];
   first.addEventListener("focusout", (event) => blurredTo.push(event.relatedTarget));
+  // Whether the row's body was drawn as each click on the words landed.
+  const drawnAtClick: boolean[] = [];
+  plain.addEventListener("click", () =>
+    drawnAtClick.push(first.querySelector("[data-node-body]") !== null)
+  );
 
   // A blur with no press closes the body.
   await act(async () => first.blur());
   expect(blurredTo).toEqual([null]);
   await waitFor(() => expect(first.querySelector("[data-node-body]")).toBeNull());
 
-  // A press outside the tree, on what takes no focus, blurs the row to no element and keeps it.
+  // A press outside the tree, on what takes no focus, blurs the row to no element and keeps it
+  // while it is held and through its click.
   await act(async () => first.focus());
   await waitFor(() => expect(first.querySelector("[data-node-body]")).not.toBeNull());
   await user.pointer({ keys: "[MouseLeft>]", target: plain });
@@ -750,12 +797,15 @@ test("a press outside the outline that leaves the focus on no control keeps the 
     "the press outside the outline that left the focus on no control closed the row's body"
   ).not.toBeNull();
   await user.pointer({ keys: "[/MouseLeft]" });
-  expect(
-    first.querySelector("[data-node-body]"),
-    "the body closed once the press ended"
-  ).not.toBeNull();
-  await user.keyboard("{Escape}");
-  await waitFor(() => expect(first.querySelector("[data-node-body]")).toBeNull());
+  expect(drawnAtClick, "the body closed before the press's click landed").toEqual([true]);
+  await waitFor(() =>
+    expect(
+      first.querySelector("[data-node-body]"),
+      "the body stayed drawn after the press that left the focus on no control ended"
+    ).toBeNull()
+  );
+  expect(first.querySelector("[data-row-acts]")).toBeNull();
+  expect(first.querySelector("[data-node-card]")?.className).not.toContain(pageFocusedRow);
 });
 
 // R9, WCAG 2.1.1, decision 69: every control of a row is out of the tab order, so `f` steps
@@ -846,6 +896,76 @@ test("Escape leaves the caret for the placement it was taken from, not the node'
   await user.keyboard("{Escape}");
   await waitFor(() => expect(view.edited.at(-1)).toBeUndefined());
   expect(document.activeElement).toBe(second);
+});
+
+// Decision 123, the tester's red row on c-keys (`the caret Enter puts in a statement deep in its
+// document stays on screen while the reader writes`): the row the reader is editing in grows as
+// they write, and put back at its top at each change of its size (`NodeRow.tsx`'s
+// `useRowOnScreen`) it took the caret off the screen. The editor keeps its caret on screen, and
+// the row places nothing of its own. happy-dom lays nothing out and observes no size, so the
+// row's box is given, and each size observer still observing is called by hand once it grows.
+test("the row the reader is editing in places nothing of its own as it grows", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const spec: Artifact = { ...decisionsDocument, id: "artifact-spec", name: "Spec", slug: "spec" };
+  const root = node({
+    children: [
+      node({ id: "comment-1", text: "The first words.", type: "comment" }),
+      node({ id: "spec#b-r1", text: "A statement of the spec.", type: "requirement" }),
+    ],
+    id: KEY,
+    type: "issue",
+  });
+  // The statement's row 100 px down and 40 px tall, whole on the screen, until it grows to three
+  // windows' height, its foot far below the window's.
+  let grown = false;
+  const boxes = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: HTMLElement
+  ) {
+    return this.matches("[data-node-row]") && this.dataset.nodeId === "spec#b-r1"
+      ? new DOMRect(0, 100, 800, grown ? 3 * window.innerHeight : 40)
+      : new DOMRect();
+  });
+  const observing = new Set<{ readonly callback: ResizeObserverCallback; observer: unknown }>();
+  const RealResizeObserver = globalThis.ResizeObserver;
+  globalThis.ResizeObserver = class {
+    readonly #held: { readonly callback: ResizeObserverCallback; observer: unknown };
+    constructor(callback: ResizeObserverCallback) {
+      this.#held = { callback, observer: this };
+    }
+    observe() {
+      observing.add(this.#held);
+    }
+    unobserve() {}
+    disconnect() {
+      observing.delete(this.#held);
+    }
+  } as unknown as typeof ResizeObserver;
+  const scrolled = spyOn(window, "scrollBy").mockImplementation(() => {});
+  try {
+    const view = renderTree(root, { artifacts: [spec] });
+    await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
+    await user.keyboard("j");
+    await waitFor(() => expect(focusedRow(view.container)).toBe("spec#b-r1"));
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(view.edited.at(-1)).toBe("artifact-spec"));
+    scrolled.mockClear();
+
+    grown = true;
+    await act(async () => {
+      for (const { callback, observer } of observing) {
+        callback([], observer as ResizeObserver);
+      }
+    });
+    expect(
+      scrolled,
+      "the row being edited was put back on screen as it grew"
+    ).not.toHaveBeenCalled();
+  } finally {
+    globalThis.ResizeObserver = RealResizeObserver;
+    boxes.mockRestore();
+    scrolled.mockRestore();
+  }
 });
 
 test("q reaches every open question while the tree is read one node at a time", async () => {
@@ -1250,6 +1370,67 @@ test("an address's node takes the focus back until the reader acts, and not afte
   view.redraw();
   expect(document.activeElement, "a tree drawn after the reader acted took the focus back").toBe(
     document.body
+  );
+});
+
+// The tester's red row on c-outline (`an issue opened by a link opens with the focus on its
+// question, or on its first row where none waits`): the app focuses its main element at each
+// page change but the first (`app.tsx`), and that element holds the tree, whose reads have drawn
+// no row yet. Read as somebody's focus, that ended the opening, and the page opened with the
+// focus on no row. It is nobody's, as the page itself is nobody's, and the opening places the
+// focus once the rows are drawn. The case's container stands for the app's main element.
+test("the page opens on its question, or its first row, with the focus on what holds the tree", async () => {
+  setViewport(1440);
+  const first = node({ id: "comment-1", text: "The first words.", type: "comment" });
+  const question = node({
+    id: "ask-1",
+    question: true,
+    text: "Which flag?",
+    type: "ask",
+    waiting: true,
+  });
+  for (const [children, opensOn] of [
+    [[first], "comment-1"],
+    [[first, question], "ask-1"],
+  ] as const) {
+    const tree = renderPageTree(node({ id: KEY, type: "issue" }));
+    const { container } = tree.view;
+    container.tabIndex = -1;
+    await act(async () => container.focus());
+    expect(document.activeElement).toBe(container);
+    tree.redraw(node({ children: [...children], id: KEY, type: "issue" }));
+    await waitFor(() =>
+      expect(
+        focusedRow(container),
+        `the page opened with the focus on no row, not on ${opensOn}, with the focus on what holds the tree`
+      ).toBe(opensOn)
+    );
+    tree.view.unmount();
+  }
+});
+
+// The same focus meets an address that names a node, opened by a link: the row the address took
+// the focus to is given it back from what holds the tree, as from the page itself, until the
+// reader acts.
+test("an address's node takes the focus back from what holds the tree", async () => {
+  setViewport(1440);
+  const named = node({ id: "comment-2", text: "The second words.", type: "comment" });
+  const root = node({
+    children: [node({ id: "comment-1", text: "The first words.", type: "comment" }), named],
+    id: KEY,
+    type: "issue",
+  });
+  const view = renderTree(root, { reveal: [root, named] });
+  await waitFor(() => expect(focusedRow(view.container)).toBe("comment-2"));
+
+  view.container.tabIndex = -1;
+  await act(async () => view.container.focus());
+  view.redraw();
+  await waitFor(() =>
+    expect(
+      focusedRow(view.container),
+      "the address's node left the focus on what holds the tree"
+    ).toBe("comment-2")
   );
 });
 
@@ -1769,4 +1950,102 @@ test("a crumb of a node with no words is its kind's word, not its id", async () 
     return found;
   });
   expect(crumbs[1]?.textContent).toBe(NODE_TYPE_NAMES.plan_task);
+});
+
+// Decision 95, with part F's 6e7522e2: the focused node's title in the panel and a crumb each
+// draw one line for a node, cut from `lineWords`, so a comment whose words are only a bare
+// address is named by that address's short form, as a link to it draws it, and never by the
+// address as written (R22).
+test("a node whose words are only a bare address is named by its short form, in the panel and in its crumb", async () => {
+  setViewport(1000);
+  const user = userEvent.setup();
+  const address = `dispatch://${KEY}/spec#b-r1`;
+  const short = addressesAsShortForms(address);
+  expect(short, "the address has no short form to name the node by").not.toContain("dispatch://");
+  const root = node({
+    children: [
+      node({
+        children: [node({ id: "comment-2", text: "Under it.", type: "comment" })],
+        held: 1,
+        id: "comment-1",
+        text: address,
+        type: "comment",
+      }),
+    ],
+    id: KEY,
+    text: `${KEY} The issue's own title`,
+    type: "issue",
+  });
+  const view = renderTree(root);
+  await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
+  expect(view.focusedNode()?.title, "the panel names the node by its address as written").toBe(
+    short
+  );
+  await user.keyboard(".");
+  await waitFor(() => expect(rowsFor(view.container, "comment-2")).toHaveLength(1));
+  await user.keyboard("j");
+  await waitFor(() => expect(focusedRow(view.container)).toBe("comment-2"));
+  await user.keyboard(".");
+  const crumbs = await waitFor(() => {
+    const found = [...view.container.querySelectorAll<HTMLElement>("[data-crumb]")];
+    if (found.length < 2) throw new Error("the breadcrumb holds no crumb of the comment");
+    return found;
+  });
+  expect(crumbs[1]?.textContent, "the crumb names the node by its address as written").toBe(short);
+});
+
+// The reviewer's finding on the outline's empty line: a tree with no node is also one whose reads
+// are still out - the asks, the comments, the messages, the decisions, the coverage, the results
+// and the documents' blocks each draw nodes once they answer, and only the children come with the
+// issue - so the line that the issue holds nothing was drawn on every cold load of an issue with
+// no children, and rows then drawn in its place. The body draws it only once those reads have
+// answered, and nothing in its place before. Here every read has answered but the comments'.
+test("the outline says the issue holds nothing only once the reads its nodes come from have answered", async () => {
+  setViewport(1440);
+  const issue: IssueDetails = { ...issueDetails(), artifacts: [] };
+  const route = { key: KEY, kind: "issue" } as const;
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  client.setQueryData(["whoami"], { kind: "user", login: "alice" });
+  client.setQueryData(issueCoverageQuery(KEY).queryKey, { requirements: [] } as never);
+  client.setQueryData(issueResultsQuery(KEY).queryKey, { checks: [] } as never);
+  client.setQueryData(["decisions", KEY], { decisions: [], document: null, open_questions: [] });
+  client.setQueryData(["asks", KEY], []);
+  client.setQueryData(["issue-messages", KEY], []);
+  // The comments' read, held out until the case answers it.
+  const held = Promise.withResolvers<never[]>();
+  const comments = spyOn(api, "listComments").mockReturnValue(held.promise as never);
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  try {
+    const view = render(
+      <MemoryRouter>
+        <QueryClientProvider client={client}>
+          <KeymapProvider>
+            <MarginProvider>
+              <ProvidersSlot issue={issue} route={route}>
+                <BodySlot issue={issue} route={route} />
+              </ProvidersSlot>
+            </MarginProvider>
+          </KeymapProvider>
+        </QueryClientProvider>
+      </MemoryRouter>
+    );
+    await waitFor(() => expect(comments).toHaveBeenCalled());
+    expect(
+      view.container.textContent,
+      "the outline said the issue holds nothing with its comments' read still out"
+    ).not.toContain(EMPTY_STATE_LINES.conversation);
+
+    await act(async () => held.resolve([]));
+    await waitFor(() =>
+      expect(
+        view.container.textContent,
+        "the outline does not say the issue holds nothing once every read has answered empty"
+      ).toContain(EMPTY_STATE_LINES.conversation)
+    );
+  } finally {
+    comments.mockRestore();
+    names.mockRestore();
+  }
 });

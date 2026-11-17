@@ -249,6 +249,12 @@ function* paintBlockInSlices(
  *  surface drawing it says about it. One shape for the public body and for the painted one it
  *  hands its props to (`PaintedBody`). */
 interface MarkdownBodyProps {
+  /** Classes a host's line asks of the body's own element, after the renderer's: a reason drawn
+   *  as a value of a line inside `NoTooltips`, held to that line's width so a long word wraps
+   *  there (`ApprovalSteps`, `IssueComponentsLine`; decision 104 of
+   *  dispatch://INFRA-1196/artifact/part-decisions-md). None, the default, draws the renderer's
+   *  classes alone. */
+  className?: string;
   /** The text this body holds: parsed and drawn where it has no `tree`, and written into the
    *  element as its literal characters where neither the tree nor the markdown could be drawn -
    *  no engine, a tree the schema refuses, a parse the parser refuses (`useRenderedMarkdown`).
@@ -342,6 +348,7 @@ export function MarkdownBody(props: MarkdownBodyProps): ReactNode {
 /** The body as a host that draws markup draws it: painted, with its references linked where the
  *  host links them, and the cards under a body that is nothing but references. */
 function PaintedBody({
+  className,
   markdown,
   onRendered,
   referenceText = markdown,
@@ -372,11 +379,12 @@ function PaintedBody({
   // Each reference drawn in the body reads its role by the issue the record is on, and by no
   // issue for a text that is no record's (`RecordIssue`).
   const links = <RecordIssue.Provider value={source?.issue}>{portals}</RecordIssue.Provider>;
+  const classes = className === undefined ? markdownClassName : `${markdownClassName} ${className}`;
 
   if (inline) {
     return (
       <span
-        className={markdownClassName}
+        className={classes}
         data-markdown-fallback={isFallback || undefined}
         data-markdown-pending={isPending || undefined}
         ref={inlineRoot}
@@ -388,7 +396,7 @@ function PaintedBody({
   return (
     <>
       <div
-        className={`${markdownClassName} max-w-none`}
+        className={`${classes} max-w-none`}
         data-markdown-fallback={isFallback || undefined}
         data-markdown-pending={isPending || undefined}
         ref={blockRoot}

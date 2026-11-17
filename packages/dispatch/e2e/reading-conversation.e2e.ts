@@ -1,6 +1,9 @@
 import { createAsk, createComment, createHandoff, createIssueArtifact, createMessage } from "./api";
+import { expectIssuePageDrawn, nodeRow } from "./issue-page-g";
+import { withIssuePage } from "./issue-page-option";
 import {
   expectReadsReferences,
+  formReadings,
   READING_LEAD,
   READING_SESSION_ID,
   READING_SESSION_TITLE,
@@ -24,6 +27,11 @@ import { expect, test } from "./test";
  * above a reply: the quote is the link to its parent's turn, so the references inside it draw as
  * their names and link nothing. A handoff is no record of the reference graph, so a `#id` in
  * its words names nothing, and its driver holds the other five forms.
+ *
+ * The new issue page's outline is one more of an issue's own pages (dispatch://INFRA-1196,
+ * `RowText.tsx`): a row draws its node's words through the renderer, and the row's own pass makes
+ * the chips its references read as. A row leaves a `#id` as written, so its driver holds the
+ * other five forms too.
  */
 
 /** The agent session these rows write as, so a write is never the reader's own. */
@@ -218,4 +226,43 @@ test("issue-decision: a decision's paragraph draws every form of a stored refere
   // The card draws its heading through the renderer as well, as one line; its paragraphs are
   // its one block body, which is where the stored text is.
   await expectReadsReferences(card.locator(`div${RENDERED_BODY}`), world, "link");
+});
+
+// SLOW(>=2s): the reading world's seeding and a comment, then one cold load of the new issue page,
+// whose one batched read names what the comment's words cite.
+test("issue-page-row-text: a comment's row on the new issue page draws every form but a question id, a bare key, an address and a short id as the row's own chips", async ({
+  page,
+}) => {
+  const world = await seedReadingWorld();
+  // The reader's own comment, which the outline's Conversation, the view the page opens on, draws
+  // as a row of its own.
+  const comment = await createComment(world.host.key, { body: readingText(world) });
+  await withIssuePage(page.context(), "alice");
+  await page.goto(`/issues/${world.host.key}`);
+  await expectIssuePageDrawn(page);
+
+  // The renderer draws the row's words from the reading the server sent, and links nothing in
+  // them itself: the row's own pass makes a chip of each bare key, address and short id, named
+  // from the page's batched read, under the reference as the text writes it, a bare key as its
+  // issue's own (`linkRowReferences`). A dashboard URL and a party are links the text writes,
+  // which the renderer draws as it draws a link anywhere.
+  const words = nodeRow(page, comment.id).first().locator("[data-node-words] .dispatch-markdown");
+  for (const { form, opens, reads, reference, unread, written } of formReadings(world)) {
+    const chip = form === "bare-key" || form === "address" || form === "short-id";
+    const drawn = chip
+      ? words.locator(`a[data-row-reference="${form === "bare-key" ? reference : written}"]`)
+      : words.locator(`a[data-dispatch-ref="${reference}"]`);
+    await expect(drawn, `the ${form} reads as its node's name`).toHaveText(reads);
+    // A short id's chip opens the address as the text writes it, whose page resolves the id and
+    // puts the whole one in its place (`IssuePage`); every other link opens its node's own path.
+    const path =
+      form === "short-id" && typeof opens === "string"
+        ? opens.replace(/[^/]+$/u, written.slice(written.lastIndexOf("/") + 1))
+        : opens;
+    await expect(drawn, `the ${form} opens its node`).toHaveAttribute("href", path);
+    if (unread !== undefined) {
+      await expect(words, `the ${form} is not left as written`).not.toContainText(unread);
+    }
+  }
+  await expect(words).not.toContainText("dispatch://");
 });

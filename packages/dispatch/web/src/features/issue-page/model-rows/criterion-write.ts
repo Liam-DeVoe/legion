@@ -174,9 +174,9 @@ export interface CriterionLine {
   readonly send: () => void;
   /** Whether the criterion's write is out. */
   readonly pending: boolean;
-  /** What the line's Send says while the write is out (`ANSWER_LINES.saving_criterion`), read
-   *  from part B's list as a refusal's sentence is (`criterionAnswerLine`); undefined while
-   *  none is out. */
+  /** What the line's Send says while the write is out (`ANSWER_LINES.sending`, as the box's
+   *  other Sends say it), read from part B's list as a refusal's sentence is
+   *  (`criterionAnswerLine`); undefined while none is out. */
   readonly busy: string | undefined;
   /** The key of `ANSWER_LINES` the last refusal draws, until the next change of the text or the
    *  next send; `undefined` while there is none. */
@@ -202,7 +202,7 @@ export function useCriterionLine({ onLanded, ...aim }: CriterionWriteOptions): C
   const pending = write.isPending;
   return {
     answer: write.error === null ? undefined : criterionAnswer(write.error),
-    busy: pending ? ANSWER_LINES.saving_criterion : undefined,
+    busy: pending ? ANSWER_LINES.sending : undefined,
     pending,
     send: () => {
       if (pending || text.trim() === "") return;
