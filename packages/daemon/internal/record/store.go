@@ -2344,11 +2344,22 @@ type RoleHolder struct {
 }
 
 // LiveRoleHolders is the session of each live claim of issue, by role: a claim in one of
-// liveClaimStates that records a session. It is what a role-holder publication sends.
+// liveClaimStates that records a session it holds. It is what a role-holder publication sends.
+//
+// A claim holds its session when claim_sessions holds the session's id for it (internal/store's
+// HoldSessions, plan E's t-e-54): every session a registration records is held first, and the boot
+// holds every recorded name no row held before any machine exists. So a live claim's session is
+// left out only where the claim records a session it does not hold, which the boot suspends: a
+// name two claims recorded under a daemon from before the hold, or one past the bound, while that
+// claim's suspension waits for the end of its turn, or after a suspension the runtime refused.
+// Published, such a session would name the claim's role as the holder of another claim's session,
+// or of one no claim holds.
 func (s *Postgres) LiveRoleHolders(ctx context.Context, tx pgx.Tx, issue string) ([]RoleHolder, error) {
-	rows, err := tx.Query(ctx, `select role, session from claims
-		where issue = $1 and session <> '' and state = any($2)
-		order by role`, issue, liveClaimStates)
+	rows, err := tx.Query(ctx, `select c.role, c.session from claims c
+		where c.issue = $1 and c.session <> '' and c.state = any($2)
+			and exists (select 1 from claim_sessions h
+				where h.project = c.project and h.kind = 'session' and h.name = c.session and h.claim = c.token)
+		order by c.role`, issue, liveClaimStates)
 	if err != nil {
 		return nil, fmt.Errorf("read the live role holders of %s: %w", issue, err)
 	}

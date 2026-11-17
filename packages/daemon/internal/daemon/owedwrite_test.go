@@ -377,11 +377,15 @@ func newOwedWriteRig(t *testing.T, write time.Duration, roles ...owedRole) *owed
 }
 
 // boot builds the supervision over the store the rig holds and takes up every claim the store
-// holds now, which is what a daemon's boot does. It is called again by the restart test, so a
-// second supervision is this one and not a test's own arrangement; the rig's handles read the
-// newest from here on.
+// holds now, which is what a daemon's boot does: it holds every recorded session name first, as
+// the boot does before restore builds a machine (holdRecordedSessions). It is called again by the
+// restart test, so a second supervision is this one and not a test's own arrangement; the rig's
+// handles read the newest from here on.
 func (r *owedWriteRig) boot() {
 	r.t.Helper()
+	if _, err := r.st.HoldRecordedSessions(r.ctx, owedProject); err != nil {
+		r.t.Fatalf("hold the recorded session names: %v", err)
+	}
 	logs := &syncBuffer{}
 	switcher := &switchStore{target: r.real}
 	sup := newSupervisor(r.ctx, r.st, owedProject, r.t.TempDir(), quietLogger())

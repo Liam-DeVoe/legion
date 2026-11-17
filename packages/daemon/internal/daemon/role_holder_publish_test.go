@@ -84,7 +84,8 @@ func newRoleHoldersRig(t *testing.T) *roleHoldersRig {
 func (r *roleHoldersRig) clock() time.Time { return time.Now().UTC().Add(r.ahead) }
 
 // seedClaim writes the claim of issue's role in state, with session, last changed ago before now:
-// the row the daemon's supervision leaves.
+// the row the daemon's supervision leaves, the hold of the session's id for the claim included,
+// which a registration writes before it records the session (supervise's holdRecorded).
 func (r *roleHoldersRig) seedClaim(issue string, role claim.Role, session string, state supervise.ClaimState, ago time.Duration) claim.Token {
 	r.t.Helper()
 	token, err := claim.NewToken("legion", issue, role)
@@ -96,6 +97,12 @@ func (r *roleHoldersRig) seedClaim(issue string, role claim.Role, session string
 		values ($1, 'legion', $2, $2, $3, 1, $4, '', $5, 0, 0, 0, 0, now() - $6::interval)`,
 		string(token), issue, string(role), session, string(state), fmt.Sprintf("%d seconds", int(ago.Seconds()))); err != nil {
 		r.t.Fatalf("seed the %s claim of %s: %v", role, issue, err)
+	}
+	if session != "" {
+		if _, err := r.pool.Exec(r.ctx, `insert into claim_sessions (project, kind, name, claim) values ('legion', 'session', $1, $2)`,
+			session, string(token)); err != nil {
+			r.t.Fatalf("hold %s for the %s claim of %s: %v", session, role, issue, err)
+		}
 	}
 	return token
 }
@@ -166,6 +173,55 @@ func TestTheExecutorPublishesTheLiveSetAtRunTime(t *testing.T) {
 	want = []roleHoldersPublished{{Issue: issue, Holders: []dispatch.RoleHolder{}}}
 	if got := r.published(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("after the tester failed, published %+v, want %+v", got, want)
+	}
+}
+
+// The publication names only a session its claim holds (plan E's t-e-54): a live claim that records
+// a session held for another claim, held for none, or held by no row at all — which the boot finds
+// where a daemon from before the hold ran, and suspends, but not before a working claim's turn
+// ends, nor after a suspension the runtime refused — is left out, so Dispatch is never told that
+// its role holds a session that is not its own. The claim holding its own session is published as
+// before.
+//
+// The control (the pull request records the run): LiveRoleHolders without its claim_sessions
+// clause publishes all four sessions.
+func TestTheExecutorPublishesNoSessionItsClaimDoesNotHold(t *testing.T) {
+	const issue = "LEGION-209"
+	r := newRoleHoldersRig(t)
+	r.seedClaim(issue, claim.RoleTester, "ses-own", supervise.StateReady, time.Minute)
+	// Three live claims whose sessions the table holds for another claim, for none, and not at all.
+	for _, seeded := range []struct {
+		role    claim.Role
+		session string
+		holder  string
+		held    bool
+	}{
+		{claim.RoleReviewer, "ses-another-claims", "legion-legion-legion-299-tester", true},
+		{claim.RoleImplementer, "ses-held-for-none", "", true},
+		{claim.RolePlanner, "ses-held-by-no-row", "", false},
+	} {
+		token, err := claim.NewToken("legion", issue, seeded.role)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := r.pool.Exec(r.ctx, `insert into claims (token, project, tree, issue, role, generation, session, session_file,
+			state, launch_failures, prompt_failures, prompt_retires, uncertain_streak, updated_at)
+			values ($1, 'legion', $2, $2, $3, 1, $4, '', 'working', 0, 0, 0, 0, now())`,
+			string(token), issue, string(seeded.role), seeded.session); err != nil {
+			t.Fatalf("seed the %s claim: %v", seeded.role, err)
+		}
+		if seeded.held {
+			if _, err := r.pool.Exec(r.ctx, `insert into claim_sessions (project, kind, name, claim) values ('legion', 'session', $1, $2)`,
+				seeded.session, seeded.holder); err != nil {
+				t.Fatalf("hold %s for %q: %v", seeded.session, seeded.holder, err)
+			}
+		}
+	}
+
+	r.enqueue(issue)
+	want := []roleHoldersPublished{{Issue: issue, Holders: []dispatch.RoleHolder{{Role: "tester", Session: "ses-own"}}}}
+	if got := r.published(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("published %+v, want %+v: only the tester holds the session it records", got, want)
 	}
 }
 
