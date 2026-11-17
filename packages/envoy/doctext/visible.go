@@ -107,8 +107,8 @@ func cmarkGFMRawHTML(n *ast.RawHTML, raw, source []byte, noBang map[ast.Node]boo
 	if !ok || bytes.HasPrefix(inner, []byte(">")) || bytes.HasPrefix(inner, []byte("->")) {
 		return true
 	}
-	after := inlineTextAfter(block, n.Segments.At(n.Segments.Len()-1).Stop, source)
-	if cmarkGFMCommentEnd.Match(append(bytes.Clone(inner), after...)) {
+	if cmarkGFMCommentEnd.Match(inner) ||
+		commentEndAfter(block, n.Segments.At(n.Segments.Len()-1).Stop, source) {
 		return true
 	}
 	noBang[block] = true
@@ -117,7 +117,8 @@ func cmarkGFMRawHTML(n *ast.RawHTML, raw, source []byte, noBang map[ast.Node]boo
 
 // markTextOpener records in noBang the block of n, inline text, when n holds a `<!--` that
 // cmark-gfm's scan finds no end for: one that no backslash escapes, outside a code span, which
-// cmark-gfm reads as a `<` to scan (inlines.c:913), and whose text has no cmarkGFMCommentEnd.
+// cmark-gfm reads as a `<` to scan (inlines.c:913), and that neither opens `<!-->` or `<!--->` nor
+// has a cmarkGFMCommentEnd after it.
 func markTextOpener(n *ast.Text, source []byte, noBang map[ast.Node]bool) {
 	if parent := n.Parent(); parent == nil || parent.Kind() == ast.KindCodeSpan {
 		return
@@ -134,9 +135,9 @@ func markTextOpener(n *ast.Text, source []byte, noBang map[ast.Node]bool) {
 		for p := opener - 1; p >= 0 && source[p] == '\\'; p-- {
 			slashes++
 		}
-		inner := inlineTextAfter(block, opener+len("<!--"), source)
-		if slashes%2 == 0 && !bytes.HasPrefix(inner, []byte(">")) && !bytes.HasPrefix(inner, []byte("->")) &&
-			!cmarkGFMCommentEnd.Match(inner) {
+		next := source[opener+len("<!--"):]
+		if slashes%2 == 0 && !bytes.HasPrefix(next, []byte(">")) && !bytes.HasPrefix(next, []byte("->")) &&
+			!commentEndAfter(block, opener+len("<!--"), source) {
 			noBang[block] = true
 			return
 		}
@@ -153,23 +154,23 @@ func inlineBlock(n ast.Node) ast.Node {
 	return block
 }
 
-// inlineTextAfter is the inline text of block from source offset from on: the bytes of its lines,
-// without the prefix a block quote or a list item puts before each, that cmark-gfm's inline
-// scanner reads as one subject.
-func inlineTextAfter(block ast.Node, from int, source []byte) []byte {
+// commentEndAfter is whether the inline text of block, from source offset from on, holds a
+// cmarkGFMCommentEnd: the text cmark-gfm's inline scanner reads as one subject, the bytes of the
+// block's lines without the prefix a block quote or a list item puts before each. Each line is
+// matched where it lies in source, with nothing copied: a `-->` holds no line break, and what
+// stands before a line's first byte in that subject is a line break, never a `-`.
+func commentEndAfter(block ast.Node, from int, source []byte) bool {
 	if block == nil {
-		return nil
+		return false
 	}
-	var after []byte
 	lines := block.Lines()
 	for i := range lines.Len() {
 		line := lines.At(i)
-		if line.Stop <= from {
-			continue
+		if line.Stop > from && cmarkGFMCommentEnd.Match(source[max(line.Start, from):line.Stop]) {
+			return true
 		}
-		after = append(after, source[max(line.Start, from):line.Stop]...)
 	}
-	return after
+	return false
 }
 
 // VisibleMarkdown is doc as a reader of the page GitHub renders sees it, for a check that holds a

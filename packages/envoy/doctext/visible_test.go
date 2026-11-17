@@ -2,6 +2,7 @@ package doctext
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -11,6 +12,26 @@ import (
 	"golang.org/x/net/html"
 	"golang.org/x/net/html/atom"
 )
+
+// manyComments is one paragraph of count pairs of inline comments, the second of each pair ending
+// in `--->` so that cmark-gfm's scan runs on to the next comment's end, and what VisibleMarkdown
+// makes of it: every comment gone, every word between them kept, as cmark-gfm 0.29.0.gfm.13 reads
+// it. Each `<!--` is checked against the rest of the paragraph, so the paragraph holds the cost of
+// that check as well as its result.
+func manyComments(count int) (doc, want string) {
+	var d, w strings.Builder
+	d.WriteString("p")
+	w.WriteString("p")
+	for i := range count {
+		fmt.Fprintf(&d, " <!-- c%d --> w%d <!-- d%d ---> v%d", i, i, i, i)
+		fmt.Fprintf(&w, "  w%d  v%d", i, i)
+	}
+	d.WriteString(" -->\n")
+	w.WriteString(" -->\n")
+	return d.String(), w.String()
+}
+
+var manyCommentsDoc, manyCommentsWant = manyComments(500)
 
 // exactRows are documents and what VisibleMarkdown makes of each, CommonMark's reading of it.
 var exactRows = []struct{ name, doc, want string }{
@@ -81,6 +102,7 @@ var exactRows = []struct{ name, doc, want string }{
 	// cmark-gfm opens an HTML block at `<source>`, which CommonMark 0.31.2 does not, so a comment
 	// the block leaves open runs on over what follows.
 	{"a source block's open comment hides what follows", "<source><!--\n\nb\n", "<source>\n\n\n"},
+	{"a thousand inline comments in one paragraph, half ending in --->", manyCommentsDoc, manyCommentsWant},
 	{"no comment at all", "# Title\n\n- `x` — y\n", "# Title\n\n- `x` — y\n"},
 }
 
