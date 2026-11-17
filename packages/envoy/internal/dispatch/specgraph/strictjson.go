@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strconv"
 	"unicode/utf8"
 )
 
@@ -28,6 +29,9 @@ import (
 //     "<JSON pointer>" is of another type", and "it is not in the form <form>" for the whole text.
 //     The words are the package's, since encoding/json/v2 names a Go type, and picks its verb,
 //     "cannot" or "unable to", once in each process;
+//   - in each of those lines, "<JSON pointer>" is the place as quoted prints it: whole up to 100
+//     bytes, else its first and its last 50 bytes with … between them, since a map of a format
+//     takes the names that its writer picks, and a long name would make the line as long;
 //   - a text that is not JSON, in the words of encoding/json/jsontext, which name the place too.
 //
 // A map of the format, such as the paths of a commit's tree, takes any name, in its own letters,
@@ -45,13 +49,13 @@ func decodeJSON(data []byte, v any, form string) error {
 	case errors.Is(err, io.EOF):
 		return errors.New("it holds no JSON value")
 	case errors.As(err, &semantic) && errors.Is(err, json.ErrUnknownName):
-		return fmt.Errorf("member %q is not in the format", semantic.JSONPointer)
+		return fmt.Errorf("member %s is not in the format", quoted(string(semantic.JSONPointer)))
 	case errors.As(err, &semantic) && semantic.JSONPointer == "":
 		return fmt.Errorf("it is not in the form %s", form)
 	case errors.As(err, &semantic):
-		return fmt.Errorf("it is not in the form %s: the value at %q is of another type", form, semantic.JSONPointer)
+		return fmt.Errorf("it is not in the form %s: the value at %s is of another type", form, quoted(string(semantic.JSONPointer)))
 	case errors.As(err, &syntactic) && errors.Is(err, jsontext.ErrDuplicateName):
-		return fmt.Errorf("member %q is in one object two times", syntactic.JSONPointer)
+		return fmt.Errorf("member %s is in one object two times", quoted(string(syntactic.JSONPointer)))
 	case err != nil:
 		return err
 	}
@@ -68,4 +72,29 @@ func decodeJSONFrom(r io.Reader, v any, form string) error {
 		return err
 	}
 	return decodeJSON(data, v, form)
+}
+
+// quotedBound is the most bytes of a value of the input that quoted prints whole. encoding/json/v2
+// and encoding/json/jsontext cut a JSON pointer to about 100 bytes in their own errors
+// (jsonwire.TruncatePointer(pointer, 100) in Go 1.27's src/encoding/json), so a refusal in the
+// package's words is no longer than the library's was, and still names the place.
+const quotedBound = 100
+
+// quoted is s, a value of the input that a refusal prints, such as a JSON pointer or a node id, as
+// a Go string literal: whole when it holds at most quotedBound bytes, else its first and its last
+// quotedBound/2 bytes, each cut at a whole UTF-8 character, with … in place of the rest. So the
+// start of the value and its last part stay, the line grows with no name of the input, and each
+// control character in it is an escape, as %q writes it.
+func quoted(s string) string {
+	if len(s) > quotedBound {
+		start, end := quotedBound/2, len(s)-quotedBound/2
+		for start > 0 && !utf8.RuneStart(s[start]) {
+			start--
+		}
+		for end < len(s) && !utf8.RuneStart(s[end]) {
+			end++
+		}
+		s = s[:start] + "…" + s[end:]
+	}
+	return strconv.Quote(s)
 }

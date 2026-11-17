@@ -34,18 +34,20 @@ var compareCall = regexp.MustCompile(regexp.QuoteMeta(string(commandName)) + `(?
 // another word. Right after compare, a letter, a digit, _, -, . or / makes compare part of another
 // word or a path, such as compare-all, compare.sh or compare/. Each other byte ends the word: white
 // space, a quote, ;, |, &, (, ), <, >, a comma, a bracket, and the start or the end of the file.
-// A backslash right after compare is an escape, and the byte after it takes its place. After a
-// backslash, n, t and r stand for white space, so \n, \t and \r end the word on each side, as a
-// backslash before a space or a line break does after compare. So a name right after \7 or \- is
-// not named, nor compare before \x20 or \x64. The rule reads the file's bytes and runs no shell
-// expansion, so it does not find a command that an expansion, an escape or an alias builds, one
-// with another word between the two, such as a redirection, a here-document or an image, or a
-// run: | block whose two line continuations need the indentation after one kept and after the
-// other removed. Before the name, only \n, \t and \r of the escapes stand for white space; each
-// other escape or expansion of one language that builds the boundary is outside the claim (\x20,
-// \x0a, \012, \u000a, PowerShell's `n, a batch file's %~dp0, $1). It is no defence against an
-// author who hides the command: compare itself refuses to run in a CI job. It reads each file as
-// text (textHits), and knows nothing of shell or of YAML.
+// A backslash right after compare is an escape, and the byte after it takes its place. A quote
+// there ends the word only when no letter, digit or _ follows the quote, so "compare"d and
+// compare\"d are other words. After a backslash, n, t and r stand for white space, so \n, \t and
+// \r end the word on each side, as a backslash before a space or a line break does after compare.
+// So a name right after \7 or \- is not named, nor compare before \x20 or \x64. The rule reads the
+// file's bytes and runs no shell expansion, so it does not find a command that an expansion, an
+// escape or an alias builds, one with another word between the two, such as a redirection, a
+// here-document or an image, or a run: | block whose two line continuations need the indentation
+// after one kept and after the other removed. Before the name, only \n, \t and \r of the escapes
+// stand for white space; each other escape or expansion of one language that builds the boundary
+// is outside the claim (\x20, \x0a, \012, \u000a, PowerShell's `n, a batch file's %~dp0, $1), and
+// so are \0 before the name, whose NUL byte Bash skips, and \t between the two words. It is no
+// defence against an author who hides the command: compare itself refuses to run in a CI job. It
+// reads each file as text (textHits), and knows nothing of shell or of YAML.
 //
 // The keys are the repository paths of the files that guard reads (ciDirs): every file under
 // .github/workflows/, .github/actions/, .github/scripts/ and scripts/, which hold the workflows
@@ -154,9 +156,10 @@ func nameStart(content, kept []byte, at []int32, match []int) int {
 // right after compare, a letter, a digit, _, -, . or / makes compare part of another word or a
 // path, such as compare-all, compare.sh or compare/. Each other byte ends the word: white space, a
 // quote, ;, |, &, (, ), <, >, a comma, a bracket, and the end of the file. A backslash right after
-// compare is an escape, and the byte after it takes its place. After a backslash, n, t and r stand
-// for white space, so \n, \t and \r end the word, as a backslash before a space or a line break
-// does, and compare before \x20 or \x64 is not named.
+// compare is an escape, and the byte after it takes its place. A quote there ends the word only
+// when no letter, digit or _ follows the quote, so "compare"d and compare\"d are other words.
+// After a backslash, n, t and r stand for white space, so \n, \t and \r end the word, as a
+// backslash before a space or a line break does, and compare before \x20 or \x64 is not named.
 func compareEnds(content []byte, after int) bool {
 	escape := after < len(content) && content[after] == '\\'
 	if escape {
@@ -165,11 +168,14 @@ func compareEnds(content []byte, after int) bool {
 	if after == len(content) {
 		return true
 	}
-	c := content[after]
-	if escape && spaceEscape(c) {
+	switch c := content[after]; {
+	case escape && spaceEscape(c):
 		return true
+	case c == '\'' || c == '"':
+		return after+1 == len(content) || !nameByte(content[after+1])
+	default:
+		return !wordByte(c) && c != '.' && c != '/'
 	}
-	return !wordByte(c) && c != '.' && c != '/'
 }
 
 // spaceEscape reports whether c, right after a backslash, makes an escape that stands for white
@@ -182,7 +188,13 @@ func spaceEscape(c byte) bool {
 // command's name, such as envoy-spec-check or spec-checker. compareCall's [^\w\s,\[(-] is the same
 // set, beside the separators.
 func wordByte(c byte) bool {
-	return c == '_' || c == '-' || 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' || '0' <= c && c <= '9'
+	return c == '-' || nameByte(c)
+}
+
+// nameByte reports whether c is an ASCII letter, a digit or _: a byte that, right after a quote
+// that follows compare, makes one word of compare and that byte, as Bash joins "compare"d.
+func nameByte(c byte) bool {
+	return c == '_' || 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' || '0' <= c && c <= '9'
 }
 
 // quoteAfter reports whether a quote character, ' or ", is at i of content once the backslashes
