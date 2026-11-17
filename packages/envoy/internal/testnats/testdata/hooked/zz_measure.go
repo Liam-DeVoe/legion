@@ -34,6 +34,9 @@ type MeasureEvent struct {
 	Err error
 	// Server is the server's name, at a server point.
 	Server string
+	// ServerID is the server's ID at server.shutdown and server.down: nats-server makes a new one
+	// at each start, so it names one run of a server where its name and its store do not.
+	ServerID string
 	// Account is the account's name, at a server point.
 	Account string
 	// Subject is the request's subject at api.worker, the message's at client.publish and
@@ -114,9 +117,11 @@ func measureApply(s *Server, mset *stream, subject string, seq uint64, recoverin
 
 // measureServer reports a point of the server's own life: server.shutdown when its Shutdown
 // begins, before it stops anything, and server.down once every goroutine it waits for has ended.
+// v2.10.29 can report server.shutdown more than once for one run, from concurrent Shutdown calls,
+// and a late report can follow server.down: the run's ID is what lets the harness ignore it.
 func measureServer(s *Server, point string) {
 	if MeasureHook.Load() == nil {
 		return
 	}
-	measure(&MeasureEvent{Point: point, Server: s.Name(), Store: s.getOpts().StoreDir})
+	measure(&MeasureEvent{Point: point, Server: s.Name(), ServerID: s.ID(), Store: s.getOpts().StoreDir})
 }

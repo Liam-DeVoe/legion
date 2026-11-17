@@ -68,7 +68,10 @@ const (
 
 	// ServerShutdown and ServerDown are no hold points: they are where a server's Shutdown begins,
 	// before it stops anything, and where it has waited for every goroutine of its own. Between
-	// the two the hook releases the server's held goroutines and parks none of them again.
+	// the two the hook releases the server's held goroutines and parks none of them again. Each
+	// carries the ID of the server's run (Event.ServerID), and a ServerShutdown of a run whose
+	// ServerDown the hook has seen changes nothing: v2.10.29 can report one late, from a second
+	// concurrent Shutdown call, after a restart on the same store.
 	ServerShutdown Point = "server.shutdown"
 	ServerDown     Point = "server.down"
 )
@@ -115,8 +118,9 @@ type Event struct {
 	// Server, Account, Subject, Stream, Client and Kind describe a server point's request or
 	// message: Account is the account that sent the request at APIWorker, the publishing
 	// connection's at ClientPublish and the stream's at StreamApply; Client is the publishing
-	// connection's name, Kind its kind.
-	Server, Account, Subject, Stream, Client, Kind string
+	// connection's name, Kind its kind. ServerID is the ID of the server's run at ServerShutdown
+	// and ServerDown.
+	Server, ServerID, Account, Subject, Stream, Client, Kind string
 	// Recovering is set at StreamApply while the server replays its log at start.
 	Recovering bool
 }
@@ -151,7 +155,7 @@ func (e Event) String() string {
 func eventOf(me *natsserver.MeasureEvent) Event {
 	e := Event{
 		Point: Point(me.Point), Gen: me.Gen, Consumer: me.Name, Store: me.Store, Path: me.Path, Seq: me.Seq,
-		Server: me.Server, Account: me.Account, Subject: me.Subject, Stream: me.Stream, Client: me.Client,
+		Server: me.Server, ServerID: me.ServerID, Account: me.Account, Subject: me.Subject, Stream: me.Stream, Client: me.Client,
 		Kind: me.Kind, Recovering: me.Recovering,
 	}
 	if me.Err != nil {
@@ -257,8 +261,10 @@ type Hooks struct {
 	events  []Event
 	holds   []*Hold
 	changed chan struct{}
-	// stopping are the store directories of the servers between ServerShutdown and ServerDown.
-	stopping map[string]bool
+	// stopping maps the store directory of each server between ServerShutdown and ServerDown to
+	// the ID of that server's run, and down holds the IDs of the runs whose ServerDown was reported.
+	stopping map[string]string
+	down     map[string]bool
 }
 
 // Hook installs the process's hook for t and returns it. Call it after starting the servers the
@@ -270,7 +276,7 @@ func Hook(t testing.TB) *Hooks {
 	if !installed.CompareAndSwap(false, true) {
 		t.Fatal("another test's forced-order hook is installed: tests that hook the server cannot run in parallel")
 	}
-	h := &Hooks{t: t, changed: make(chan struct{}), stopping: map[string]bool{}}
+	h := &Hooks{t: t, changed: make(chan struct{}), stopping: map[string]string{}, down: map[string]bool{}}
 	hook := h.report
 	natsserver.MeasureHook.Store(&hook)
 	t.Cleanup(func() {
@@ -293,23 +299,27 @@ func Hook(t testing.TB) *Hooks {
 
 // report is the hook itself: it records the event, and parks the calling goroutine when the
 // event is the first to meet a hold's matches. A server's ServerShutdown releases the holds that
-// park its goroutines, and none of its goroutines is parked until its ServerDown.
+// park its goroutines, and none of its goroutines is parked until its ServerDown. A ServerShutdown
+// of a run already down, reported late, changes nothing.
 func (h *Hooks) report(me *natsserver.MeasureEvent) {
 	e := eventOf(me)
 	var released []*Hold
 	h.mu.Lock()
 	e.N = len(h.events) + 1
 	h.events = append(h.events, e)
-	switch e.Point {
-	case ServerShutdown:
-		h.stopping[e.Store] = true
+	switch {
+	case e.Point == ServerShutdown && !h.down[e.ServerID]:
+		h.stopping[e.Store] = e.ServerID
 		for _, hold := range h.holds {
 			if hold.fired && underStore(e.Store, hold.event.Store) {
 				released = append(released, hold)
 			}
 		}
-	case ServerDown:
-		delete(h.stopping, e.Store)
+	case e.Point == ServerDown:
+		h.down[e.ServerID] = true
+		if h.stopping[e.Store] == e.ServerID {
+			delete(h.stopping, e.Store)
+		}
 	}
 	var parked *Hold
 	if !h.stoppingLocked(e.Store) {

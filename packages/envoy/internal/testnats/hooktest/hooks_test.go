@@ -8,6 +8,8 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -328,6 +330,112 @@ func TestForcedOrderAStopReleasesTheHoldOnItsServer(t *testing.T) {
 	unanswered(t, done, "the stream info after the restart")
 	second.Release()
 	answered(t, done, "the stream info after the restart")
+}
+
+// On v2.10.29 two concurrent Shutdown calls can each report server.shutdown, and the first can
+// reach the hook after the second has finished the shutdown and reported server.down. That late
+// report belongs to a run that is over: after a restart on the same store, holds on the new run
+// must still park. The test delays the first report until the second call has returned, then
+// restarts the server on its store and holds a request on it. Before the harness kept its
+// shutdown state by run, the late report marked the store stopping for good and the request was
+// answered through the armed hold. On v2.15.1 Shutdown reports once, and the test checks that.
+func TestForcedOrderALateShutdownOfAnEndedRunHoldsNothing(t *testing.T) {
+	store := t.TempDir()
+	start := func() *natsserver.Server {
+		srv, err := natsserver.NewServer(&natsserver.Options{
+			Host: "127.0.0.1", Port: -1, JetStream: true, StoreDir: store, NoLog: true, NoSigs: true,
+		})
+		if err != nil {
+			t.Fatalf("create the server: %v", err)
+		}
+		t.Cleanup(srv.Shutdown)
+		go srv.Start()
+		if !srv.ReadyForConnections(reachWithin) {
+			t.Fatal("the server did not accept connections")
+		}
+		return srv
+	}
+	first := start()
+	hooks := testnats.Hook(t)
+	original := natsserver.MeasureHook.Load()
+	entered, resume := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	unblock := func() { once.Do(func() { close(resume) }) }
+	t.Cleanup(unblock)
+	var calls atomic.Int32
+	delayFirst := func(event *natsserver.MeasureEvent) {
+		if event.Point == string(testnats.ServerShutdown) && event.ServerID == first.ID() && calls.Add(1) == 1 {
+			close(entered)
+			<-resume
+		}
+		(*original)(event)
+	}
+	natsserver.MeasureHook.Store(&delayFirst)
+	t.Cleanup(func() { natsserver.MeasureHook.Store(original) })
+
+	finished := make(chan struct{})
+	go func() {
+		first.Shutdown()
+		close(finished)
+	}()
+	select {
+	case <-entered:
+	case <-time.After(reachWithin):
+		t.Fatal("the first Shutdown did not report server.shutdown")
+	}
+	// The second call runs while the first one's report waits.
+	first.Shutdown()
+	unblock()
+	select {
+	case <-finished:
+	case <-time.After(reachWithin):
+		t.Fatal("the delayed Shutdown did not return")
+	}
+	natsserver.MeasureHook.Store(original)
+
+	runs := hooks.Events(testnats.ServerShutdown, testnats.Where("the first run", func(e testnats.Event) bool { return e.ServerID == first.ID() }))
+	downs := hooks.Events(testnats.ServerDown, testnats.Where("the first run", func(e testnats.Event) bool { return e.ServerID == first.ID() }))
+	for _, e := range append(runs, downs...) {
+		t.Logf("first run: %s", e)
+	}
+	if len(downs) != 1 {
+		t.Fatalf("the first run reported server.down %d times, want once", len(downs))
+	}
+	switch natsserver.VERSION {
+	case "2.10.29":
+		// The control that the interleaving under test happened: a report after the run's down.
+		if len(runs) != 2 || runs[1].N < downs[0].N {
+			t.Fatalf("want two server.shutdown reports, the second after server.down #%d; got %v", downs[0].N, runs)
+		}
+	default:
+		if len(runs) != 1 {
+			t.Fatalf("nats-server %s reported server.shutdown %d times for one run, want once", natsserver.VERSION, len(runs))
+		}
+	}
+
+	restarted := start()
+	conn, err := natsgo.Connect(restarted.ClientURL(), natsgo.Timeout(time.Second))
+	if err != nil {
+		t.Fatalf("connect to the restarted server: %v", err)
+	}
+	t.Cleanup(conn.Close)
+	const subject = "$JS.API.INFO"
+	hold := hooks.Hold(testnats.APIWorker, testnats.Subject(subject))
+	done := answer(func() error {
+		_, err := conn.Request(subject, nil, reachWithin)
+		return err
+	})
+	// The request reaches api.worker either way; with the store left stopping it is answered
+	// through the hold rather than parked there.
+	hooks.Await(t, testnats.APIWorker, testnats.Subject(subject))
+	select {
+	case err := <-done:
+		t.Fatalf("the restarted server answered through the armed hold (%v): a late server.shutdown of the ended run left its store stopping", err)
+	case <-time.After(held):
+	}
+	t.Logf("held on the restarted server %s", hold.Reached(t))
+	hold.Release()
+	answered(t, done, "the request on the restarted server")
 }
 
 func TestForcedOrderHoldsAPublishBeforeItIsMatched(t *testing.T) {
