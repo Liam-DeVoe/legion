@@ -233,6 +233,11 @@ func parsePlans(project, out string) ([]planLine, error) {
 	if _, err := fmt.Sscanf(header, "%d finished issues", &count); err != nil {
 		return nil, fmt.Errorf("the header %q: %v", lines[0], err)
 	}
+	// Sscanf stops at the end of its format, so the line must also be that header and nothing more,
+	// as plan-ratings-read.sh's awk anchors it.
+	if header != fmt.Sprintf("%d finished issues", count) {
+		return nil, fmt.Errorf("the header %q is no `%s: <n> finished issues`", lines[0], project)
+	}
 	var parsed []planLine
 	for _, text := range lines[1:] {
 		match := planLinePattern.FindStringSubmatch(text)
@@ -289,7 +294,8 @@ func parseRatings(text string) ([]printedRating, error) {
 // The parser of `dispatch plans` reads only what envoy-client's plans.ts prints, as
 // plan-ratings-read.sh's awk does, so the driver and the read script judge the same line alike:
 // a rating is `<n>/5 ` and then its reason as one JSON string, so a `null` in the reason's place
-// or a space before it is no rating.
+// or a space before it is no rating, and the header is `<project>: <n> finished issues` with
+// nothing after it.
 func TestThePlansParserReadsOnlyWhatTheCommandPrints(t *testing.T) {
 	out := func(ratings string) string {
 		return "SR1: 1 finished issues\nSR1-1 closed 2026-11-17T00:00:00Z plan default (1 tasks: planner) ratings " + ratings + " time 0h1m failed steps 0"
@@ -301,6 +307,9 @@ func TestThePlansParserReadsOnlyWhatTheCommandPrints(t *testing.T) {
 		if parsed, err := parsePlans("SR1", out(ratings)); err == nil {
 			t.Errorf("the ratings %q parsed as %+v, want an error: the command prints each reason as a JSON string right after `<n>/5 `", ratings, parsed)
 		}
+	}
+	if parsed, err := parsePlans("SR1", strings.Replace(out(`4/5 "x"`), "1 finished issues", "1 finished issues (of 4)", 1)); err == nil {
+		t.Errorf("the header `SR1: 1 finished issues (of 4)` parsed as %+v, want an error: the command prints the header with nothing after it", parsed)
 	}
 }
 
