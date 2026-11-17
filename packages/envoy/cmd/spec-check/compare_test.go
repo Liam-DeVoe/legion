@@ -25,9 +25,13 @@ const (
 // ciRefusal is what compare writes, and all it writes, when GITHUB_ACTIONS is true.
 const ciRefusal = "spec-check: compare does not run in a CI job (GITHUB_ACTIONS=true): R2 gives the comparison of the files with the approved spec at each push to Dispatch\n"
 
+// timeForm is a time as the forms of the JSON files name its type: Z or an offset, and an
+// upper-case T.
+const timeForm = `<RFC 3339 time with an upper-case T, and Z or an offset such as +01:00>`
+
 // approvedForm is the form of approved.json, as compare and print name it before the place of a
 // value of another type.
-const approvedForm = `{"nodes":[{"id":"<id>","removed":<true or false>,"partly_checked":<true or false>,"versions":[{"version":<whole number from 1>,"at":"<RFC 3339 time with an upper-case T and Z>","block":"<block>"}, …]}, …]}`
+const approvedForm = `{"nodes":[{"id":"<id>","removed":<true or false>,"partly_checked":<true or false>,"versions":[{"version":<whole number from 1>,"at":"` + timeForm + `","block":"<block>"}, …]}, …]}`
 
 // testCompare runs compare over each fixture of specgraph's comparison tests (testdata/compare),
 // each the approved spec and the files of one change: a node in a text that the approved spec

@@ -12,17 +12,20 @@ import (
 // one transaction"). A check of production or of the graph has a state only at a Point that names a
 // Deploy, whatever its GraphTx. It is not named Subject, which is what a check reads.
 type Point struct {
-	Commit  string `json:"commit"`
-	Branch  string `json:"branch"`
-	Deploy  string `json:"deploy"`
-	GraphTx string `json:"graph_tx"`
+	Commit  string `json:"commit" input:"nonzero"`
+	Branch  string `json:"branch" input:"one of deploy: a subject is the head of a branch or the commit that production runs"`
+	Deploy  string `json:"deploy" input:"one of branch: a subject is the head of a branch or the commit that production runs"`
+	GraphTx string `json:"graph_tx" input:"zero: the subject reads no transaction, so a check of the graph reads unknown"`
 }
 
-// subjectFault is the first member of a subject, the point p and the time now that the states at
-// it are derived at, that it does not set, as a refusal names it, and "" when it sets each: its
-// commit, its now, and a branch or a deploy. With no now no time limit of a check would end, and
-// with neither a branch nor a deploy no check of production would be judged. The reader of
-// subjects.json and the entry of the derivation both refuse a subject by it.
+// subjectFault is the first fault of a subject, the point p and the time now that the states at it
+// are derived at, as a refusal names it, and "" when it has none: it sets no commit or no now, or it
+// does not set exactly one of a branch and a deploy, or it sets graph_tx with no deploy. With no now
+// no time limit of a check would end; with neither a branch nor a deploy no check of production
+// would be judged, and with both or with a transaction of the graph at the head of a branch the
+// subject would be none of the two that R10 names ("The subject is the head of the branch that the
+// files are read from, or the commit that production runs"). The reader of subjects.json and the
+// entry of the derivation both refuse a subject by it.
 func subjectFault(p Point, now time.Time) string {
 	switch {
 	case p.Commit == "":
@@ -31,6 +34,10 @@ func subjectFault(p Point, now time.Time) string {
 		return "it sets no now"
 	case p.Branch == "" && p.Deploy == "":
 		return "it sets neither branch nor deploy; a subject sets exactly one of them"
+	case p.Branch != "" && p.Deploy != "":
+		return "it sets both branch and deploy; a subject sets exactly one of them"
+	case p.GraphTx != "" && p.Deploy == "":
+		return "it sets graph_tx with no deploy; the commit that production runs reads the graph, and the head of a branch does not"
 	}
 	return ""
 }
@@ -38,17 +45,19 @@ func subjectFault(p Point, now time.Time) string {
 // Input is what the states at one subject are derived from: the spec files at Subject.Commit, the
 // approved spec, every stored result, the runs of CI jobs, the tie of each check at each commit, the
 // history of the repository, the time of the derivation, and the checks that CI refused at
-// Subject.Commit (R48), each with the rule that refused it.
+// Subject.Commit (R48), each with the rule that refused it. Its tag input marks how each member
+// reads when the caller does not set it (memberMark): a run of a job and a refusal by CI only lower
+// a state, so the caller gives JobRuns and Uncited, empty for none, and Input.check refuses nil.
 type Input struct {
-	Files    Tree
-	Approved Approved
-	Results  []Result
-	JobRuns  []JobRun
-	Ties     CommitTies
-	History  History
-	Subject  Point
-	Now      time.Time
-	Uncited  map[string]string
+	Files    Tree              `input:"zero: no spec file, so each statement reads not built"`
+	Approved Approved          `input:"zero: no approved node, so no state is derived"`
+	Results  []Result          `input:"zero: no result, so each check reads unknown"`
+	JobRuns  []JobRun          `input:"nonzero"`
+	Ties     CommitTies        `input:"zero: no tie is known, so no result carries (R18)"`
+	History  History           `input:"zero: no history, so no result carries"`
+	Subject  Point             `input:"nonzero"`
+	Now      time.Time         `input:"nonzero"`
+	Uncited  map[string]string `input:"nonzero"`
 }
 
 // CheckState is the state of one check at the subject (R7): State "true", "false" or "unknown",
@@ -123,13 +132,15 @@ const (
 //     C's tie is known at A and at S.Commit and no path that changed between them is covered by the
 //     tie at either commit (R8; R18: "At each commit, Dispatch derives four ties"), every such
 //     commit, and with a tie that is not known at one of the two only runs at S.Commit. For a
-//     production check, the runs under S.Deploy; for a graph check, the runs at S.GraphTx, and none
-//     when S names no transaction (R7: "A result counts only for the procedure that ran it and for
-//     the subject that it read"). For a program check of production or the graph, only a run whose
-//     TestCommit counts at S.Commit by the same rule, as for its failing example (R7: "The
-//     procedure is the text of the check and the code that runs it, so a change to either ends the
-//     standing of earlier results"); Input.check refuses a result of such a check that names no
-//     TestCommit, as it refuses one that names no subject of its check's kind. No run counts:
+//     production check, the runs under S.Deploy; for a graph check, the runs at S.GraphTx, and each
+//     run that could not run and names no transaction, which read none (R13: "A query that cannot
+//     read its data, or that passes a time or row limit, gives unknown"), and none when S names no
+//     transaction (R7: "A result counts only for the procedure that ran it and for the subject that
+//     it read"). For a program check of production or the graph, only a run whose TestCommit counts
+//     at S.Commit by the same rule, as for its failing example (R7: "The procedure is the text of the
+//     check and the code that runs it, so a change to either ends the standing of earlier results");
+//     Input.check refuses a result of such a check that names no TestCommit, as it refuses one that
+//     names no subject of its check's kind. No run counts:
 //     unknown, ci_fault when a run of C's job ended at S.Commit (R9), else subject_moved when C has
 //     a run, else no_result. A code check, or a program check of production or the graph, whose job
 //     ended at S.Commit in a leg with no run that counts: unknown, ci_fault (R7: "silence is not a
@@ -169,7 +180,10 @@ func CheckStates(in Input) ([]CheckState, error) {
 // approved text of each node the files hold, the checks and statements of the files that the tree
 // rules refuse, and the results of each check; or the first fault of in (Input.check).
 func newCheckJudge(in Input) (*checkJudge, error) {
-	current, _ := in.Approved.Current() // Input.check refuses each node whose block Current leaves out
+	// Current leaves out a node that the approved spec removed, and Input.check refuses each other
+	// node that it would leave out: one under another key than its id, one with no version, and one
+	// whose block is not its one block.
+	current, _ := in.Approved.Current()
 	if err := in.check(current); err != nil {
 		return nil, err
 	}
@@ -437,7 +451,9 @@ func (j *checkJudge) countingRuns(c Check, runs []Result) []Result {
 	}
 	s := j.in.Subject
 	subject := readOf(c, s.Commit, s.Deploy, s.GraphTx)
-	return resultsWhere(runs, func(r Result) bool { return subject != "" && readOf(c, r.Commit, r.Deploy, r.GraphTx) == subject })
+	return resultsWhere(runs, func(r Result) bool {
+		return subject != "" && (readOf(c, r.Commit, r.Deploy, r.GraphTx) == subject || readNoTransaction(c, r))
+	})
 }
 
 // readOf is, of a commit, a deploy and a transaction of the graph, the subject that a check like c
@@ -452,6 +468,13 @@ func readOf(c Check, commit, deploy, graphTx string) string {
 		return graphTx
 	}
 	return commit
+}
+
+// readNoTransaction is whether r is a run of the check c of the graph that could not run and names
+// no subject: it read no transaction (R13: "A query that cannot read its data, or that passes a time
+// or row limit, gives unknown"), so it names none, and it counts at each transaction of a subject.
+func readNoTransaction(c Check, r Result) bool {
+	return c.Subject == SubjectGraph && r.Kind == ResultRun && r.Outcome == OutcomeCouldNotRun && len(namedSubjects(r)) == 0
 }
 
 // countingFaults is the failing examples of c that count at the subject (step 7).
@@ -491,9 +514,7 @@ func (j *checkJudge) carries(check, commit string) bool {
 
 // jobEnded is whether a run of job, in any leg, ended at the subject's commit.
 func (j *checkJudge) jobEnded(job string) bool {
-	return slices.ContainsFunc(j.in.JobRuns, func(r JobRun) bool {
-		return r.Job == job && r.Commit == j.in.Subject.Commit && r.Ended
-	})
+	return slices.ContainsFunc(j.in.JobRuns, func(r JobRun) bool { return r.Job == job && r.Commit == j.in.Subject.Commit })
 }
 
 // silentLeg is the first leg, by name, of a run of job that ended at the subject's commit with no
@@ -501,7 +522,7 @@ func (j *checkJudge) jobEnded(job string) bool {
 func (j *checkJudge) silentLeg(job string, newest map[string]Result) (string, bool) {
 	var silent []string
 	for _, r := range j.in.JobRuns {
-		if _, reported := newest[r.Leg]; r.Job == job && r.Commit == j.in.Subject.Commit && r.Ended && !reported {
+		if _, reported := newest[r.Leg]; r.Job == job && r.Commit == j.in.Subject.Commit && !reported {
 			silent = append(silent, r.Leg)
 		}
 	}

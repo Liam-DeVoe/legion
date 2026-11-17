@@ -321,11 +321,11 @@ func TestReadApprovedRefusesAMalformedFixture(t *testing.T) {
 // picks "cannot" or "unable to" once in each process, reaches the person. A time that is not RFC
 // 3339 as the writer writes it, also one with a lower-case t and z, is of another type too, and so
 // is a version number above 2^63-1, the largest that the reader holds: the form in the same line
-// gives the time as an RFC 3339 time with an upper-case T and Z and the version as a whole number
-// from 1, without that bound.
+// gives the time as an RFC 3339 time with an upper-case T, and Z or an offset, and the version as a
+// whole number from 1, without that bound.
 func TestReadApprovedNamesTheFormAndThePlaceOfAValueOfAnotherType(t *testing.T) {
 	t.Parallel()
-	const notInTheForm = `specgraph: approved spec: it is not in the form {"nodes":[{"id":"<id>","removed":<true or false>,"partly_checked":<true or false>,"versions":[{"version":<whole number from 1>,"at":"<RFC 3339 time with an upper-case T and Z>","block":"<block>"}, …]}, …]}`
+	const notInTheForm = `specgraph: approved spec: it is not in the form {"nodes":[{"id":"<id>","removed":<true or false>,"partly_checked":<true or false>,"versions":[{"version":<whole number from 1>,"at":"<RFC 3339 time with an upper-case T, and Z or an offset such as +01:00>","block":"<block>"}, …]}, …]}`
 	version := func(n, at, block string) string {
 		return `{"nodes":[{"id":"a-page-shows-it","versions":[{"version":` + n + `,"at":` + at + `,"block":` + block + `}]}]}`
 	}

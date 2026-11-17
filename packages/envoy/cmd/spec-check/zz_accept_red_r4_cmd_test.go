@@ -1,11 +1,11 @@
 package main
 
-// Red test of the fresh acceptance of #4191 at 286049fa73 (not a file of the branch; laid over a
-// git archive with go test -overlay). R7: "A pass and a failure on one such subject and one
-// procedure make the state unknown", and "a later failure cancels an earlier pass". The scenario
-// reader refuses a subject with no now and an approved version with no time, and takes a result
-// with no "at" as the zero time. The derivation then reads that failure as older than the approval
-// of its statement and drops it, so the check reads true beside a failure at the same commit.
+// Red test of the fresh acceptance of #4191 at 286049fa73, a file of the branch whose body is as its
+// tester wrote it. R7: "A pass and a failure on one such subject and one procedure make the state
+// unknown", and "a later failure cancels an earlier pass". At 286049fa73 the scenario reader took a
+// result with no "at" as the zero time, and the derivation read that failure as older than the
+// approval of its statement and dropped it, so the check read true beside a failure at the same
+// commit. The reader now refuses a result with no at, and the first row takes that refusal.
 
 import (
 	"path/filepath"

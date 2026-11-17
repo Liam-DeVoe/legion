@@ -658,11 +658,19 @@ func newCheckCase(t *testing.T) *checkCase {
 }
 
 // input is the Input of the case: the files parsed, each result with no digest given the digest of
-// its check's current approved text, each result's Seq its place in Results, and Now, unless the
-// row set it, one hour after the newest result, or after checkStateRun when there is none.
+// its check's current approved text, each result's Seq its place in Results, Now, unless the row set
+// it, one hour after the newest result, or after checkStateRun when there is none, and an empty
+// JobRuns and Uncited, unless the row set them, for a case at whose commit no job ran and CI refused
+// no check.
 func (s *checkCase) input() Input {
 	s.t.Helper()
 	in := s.Input
+	if in.JobRuns == nil {
+		in.JobRuns = []JobRun{}
+	}
+	if in.Uncited == nil {
+		in.Uncited = map[string]string{}
+	}
 	in.Files = s.parse()
 	current, problems := in.Approved.Current()
 	if len(problems) != 0 {
@@ -688,6 +696,16 @@ func (s *checkCase) input() Input {
 // parse is the tree of the case's spec files.
 func (s *checkCase) parse() Tree {
 	s.t.Helper()
+	tree, problems := Parse(s.specFiles())
+	if len(problems) != 0 {
+		s.t.Fatalf("the files of the case: %+v", problems)
+	}
+	return tree
+}
+
+// specFiles is the text of each spec file of the case, by name: its nodes as Print writes them.
+func (s *checkCase) specFiles() map[string][]byte {
+	s.t.Helper()
 	files := map[string][]byte{}
 	for name, nodes := range s.files {
 		var blocks []string
@@ -700,11 +718,7 @@ func (s *checkCase) parse() Tree {
 		}
 		files[name] = []byte(strings.Join(blocks, "\n"))
 	}
-	tree, problems := Parse(files)
-	if len(problems) != 0 {
-		s.t.Fatalf("the files of the case: %+v", problems)
-	}
-	return tree
+	return files
 }
 
 // approve adds a version of each node to the approved spec, approved at at.
