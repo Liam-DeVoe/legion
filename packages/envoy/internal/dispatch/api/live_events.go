@@ -409,13 +409,9 @@ func (s *server) sendRun(ctx context.Context, stream liveStreamer, sub string, r
 // readerEvents is every event of run that reader may read (eventReadableSQL), in id order, read
 // and encoded as reader reads it (readEventRows), for a reader that does not see every object.
 func (s *server) readerEvents(ctx context.Context, reader model.Actor, run []relayedEvent) ([]relayedEvent, error) {
-	ids := make([]int64, len(run))
-	for i, event := range run {
-		ids[i] = event.Event.ID
-	}
 	events, err := s.readEventRows(ctx, reader, eventSelect+`
 		where e.id = any($1) and `+eventReadableSQL("e", "$2")+` order by e.id
-	`, ids, refs.VisibilityArg(reader))
+	`, relayedEventIDs(run), refs.VisibilityArg(reader))
 	if err != nil {
 		return nil, err
 	}
@@ -433,17 +429,22 @@ func (s *server) readerEvents(ctx context.Context, reader model.Actor, run []rel
 // readableEventIDs is the ids of the events of run that reader may read (eventReadableSQL), in id
 // order, run's own.
 func (s *server) readableEventIDs(ctx context.Context, reader model.Actor, run []relayedEvent) ([]int64, error) {
-	ids := make([]int64, len(run))
-	for i, event := range run {
-		ids[i] = event.Event.ID
-	}
 	rows, err := s.deps.Store.Pool.Query(ctx, `
 		select e.id from events e where e.id = any($1) and `+eventReadableSQL("e", "$2")+` order by e.id
-	`, ids, refs.VisibilityArg(reader))
+	`, relayedEventIDs(run), refs.VisibilityArg(reader))
 	if err != nil {
 		return nil, err
 	}
 	return pgx.CollectRows(rows, pgx.RowTo[int64])
+}
+
+// relayedEventIDs is the id of each event of run, in run's order.
+func relayedEventIDs(run []relayedEvent) []int64 {
+	ids := make([]int64, len(run))
+	for i, event := range run {
+		ids[i] = event.Event.ID
+	}
+	return ids
 }
 
 // resolveAgain resolves caller again at event, one that can move what it sees (movesSight), keeps
@@ -471,17 +472,19 @@ func sightMoved(held, next *model.Viewer, event model.Event) bool {
 	if held.Open != next.Open {
 		return true
 	}
-	if sameProjects(held.Sees, next.Sees) {
+	if sameSet(held.Sees, next.Sees) {
 		return false
 	}
 	if event.Type == projectCreatedEvent && !slices.Contains(held.Sees, event.Project) {
-		return !sameProjects(append(slices.Clone(held.Sees), event.Project), next.Sees)
+		return !sameSet(append(slices.Clone(held.Sees), event.Project), next.Sees)
 	}
 	return true
 }
 
-// sameProjects reports whether a and b hold the same project keys, each holding a key once.
-func sameProjects(a, b []string) bool {
+// sameSet reports whether a and b hold the same strings, each holding a string once: the projects
+// two viewers see, or the projects and the scopes two resolutions of one credential grant
+// (sameCredentialGrant).
+func sameSet(a, b []string) bool {
 	return len(a) == len(b) && slices.Equal(slices.Sorted(slices.Values(a)), slices.Sorted(slices.Values(b)))
 }
 

@@ -19,7 +19,7 @@ import (
 
 // parseDeliveryLiveView resolves a subscribed view as the matching GET route reads its query, or
 // answers the error frame refusing it: INVALID_FRAME for a view of no known shape, INVALID_QUERY
-// for one the route would refuse.
+// for one the route would refuse. The spec it answers names no reader yet (readFor).
 func parseDeliveryLiveView(view DeliveryLiveView) (deliveryLiveSpec, *LiveError) {
 	invalid := func(code, message string) (deliveryLiveSpec, *LiveError) {
 		refusal := liveRefusal("", code, message)
@@ -52,14 +52,14 @@ func parseDeliveryLiveView(view DeliveryLiveView) (deliveryLiveSpec, *LiveError)
 				return invalid("INVALID_FRAME", "window.preset must be 7, 14, 28 or 84")
 			}
 			spec.preset = *window.Preset
-			spec.key = view.Kind + "|preset:" + strconv.Itoa(spec.preset) + "|" + spec.query.Encode()
+			spec.shape = view.Kind + "|preset:" + strconv.Itoa(spec.preset) + "|" + spec.query.Encode()
 		case window.Preset == nil && window.From != nil && window.To != nil:
 			from, to, err := parseDeliveryWindow(url.Values{"from": {*window.From}, "to": {*window.To}})
 			if err != nil {
 				return invalid("INVALID_QUERY", err.Error())
 			}
 			spec.from, spec.to = from.UTC(), to.UTC()
-			spec.key = view.Kind + "|" + spec.from.Format(time.RFC3339Nano) + "," + spec.to.Format(time.RFC3339Nano) + "|" + spec.query.Encode()
+			spec.shape = view.Kind + "|" + spec.from.Format(time.RFC3339Nano) + "," + spec.to.Format(time.RFC3339Nano) + "|" + spec.query.Encode()
 		default:
 			return invalid("INVALID_FRAME", "a window is a preset or a from and to")
 		}
@@ -67,7 +67,7 @@ func parseDeliveryLiveView(view DeliveryLiveView) (deliveryLiveSpec, *LiveError)
 		if view.Window != nil || view.Query != nil {
 			return invalid("INVALID_FRAME", "a pipeline view names at most an at")
 		}
-		spec.key = "pipeline|now|"
+		spec.shape = "pipeline|now|"
 		if view.At != nil {
 			at, err := parseOptionalRFC3339(url.Values{"at": {*view.At}}, "at", time.Time{})
 			if err != nil {
@@ -75,12 +75,19 @@ func parseDeliveryLiveView(view DeliveryLiveView) (deliveryLiveSpec, *LiveError)
 			}
 			at = at.UTC()
 			spec.at = &at
-			spec.key = "pipeline|" + at.Format(time.RFC3339Nano) + "|"
+			spec.shape = "pipeline|" + at.Format(time.RFC3339Nano) + "|"
 		}
 	default:
 		return invalid("INVALID_FRAME", "view.kind must be timeline, measures or pipeline")
 	}
 	return spec, nil
+}
+
+// readFor makes spec the view reader reads: the reader, its part of the key (deliveryReaderKey),
+// and the key itself, the view's shape and that part.
+func (spec *deliveryLiveSpec) readFor(reader model.Actor) {
+	spec.reader, spec.viewer = reader, deliveryReaderKey(reader)
+	spec.key = spec.shape + "|" + spec.viewer
 }
 
 // deliveryReaderKey is the part of a view's key its reader decides: whether the reader is the

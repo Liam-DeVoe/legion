@@ -57,7 +57,8 @@ const eventSelect = `select e.id, e.issue_key, e.artifact_id::text, coalesce(e.p
 // An event whose one subject is a session (sessionSubjectEvents) passes, beside that, only when the
 // viewer sees that session (access.SessionClause): a follow, a subscription, a delivery and its
 // acceptance are the session's, so to a viewer the session is hidden from they are absent, as the
-// session is (references_seen.go). An open viewer sees every session, so it reads every one.
+// session is (references_seen.go). An open viewer sees every session but one that acted in a
+// project it does not see.
 func eventReadableSQL(eventAlias, viewerParam string) string {
 	e := eventAlias
 	project := `coalesce(` + e + `.project_key,
@@ -86,8 +87,11 @@ const sessionSubjectEvents = `'ask.follower_added', 'ask.follower_removed', 'sub
 // readableEvents is eventReadableSQL for who as the events and delivery packages' statements bind
 // a read rule (events.Readable): over the events row named events, the viewer at $2.
 func readableEvents(who model.Actor) events.Readable {
-	return events.Readable{Where: eventReadableSQL("events", "$2"), Viewer: refs.VisibilityArg(who)}
+	return events.Readable{Where: readableEventsWhere, Viewer: refs.VisibilityArg(who)}
 }
+
+// readableEventsWhere is readableEvents' rule, the same text for every reader, built once.
+var readableEventsWhere = eventReadableSQL("events", "$2")
 
 // listIssueEvents answers an issue's activity feed under an ETag of metadata alone: every append
 // to this feed advances the issue's last_seq in the append's own transaction (events.Broker), so
@@ -188,12 +192,12 @@ func (s *server) listIssueEvents(w http.ResponseWriter, r *http.Request) {
 // a deployment that holds no private project sees every project, so it files under the owner
 // alone, as every reader did before a project could be private.
 func keptViewOf(who model.Actor) string {
-	viewer := who.Viewer
-	switch {
-	case viewer == nil:
-		return "\x00closed"
-	case viewer.All || (viewer.Open && !viewer.AnyPrivate):
+	if seesEveryObject(who) {
 		return ""
+	}
+	viewer := who.Viewer
+	if viewer == nil {
+		return "\x00closed"
 	}
 	return fmt.Sprintf("\x00%s\x00%s\x00%t\x00%s", viewer.Person, viewer.Session, viewer.Open, strings.Join(viewer.Sees, ","))
 }

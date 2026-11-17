@@ -100,9 +100,19 @@ func TestEveryLiveViewKeepsTheRuleOfItsHTTPRead(t *testing.T) {
 	}
 
 	for _, caller := range privateCallers {
+		// The agent view of the absent session, and its GET row's status, which the session rule's
+		// checks below read again.
+		var absentStatus int
+		var absent *socketClient
+		var absentFrame any
 		for _, kind := range kinds {
 			answer := seed.request(t, caller, http.MethodGet, target(kind, liveReadsAbsentSession), nil)
-			_, frame := first(caller, kind, liveReadsAbsentSession)
+			client, frame := first(caller, kind, liveReadsAbsentSession)
+			if kind == liveAgentView {
+				absentStatus, absent, absentFrame = answer.Code, client, frame
+			} else {
+				_ = client.conn.Close()
+			}
 			refusal, refused := frame.(LiveError)
 			if answer.Code >= http.StatusBadRequest {
 				var body struct {
@@ -120,7 +130,10 @@ func TestEveryLiveViewKeepsTheRuleOfItsHTTPRead(t *testing.T) {
 		}
 
 		// The agent view's session rule, for a caller its row serves.
-		if answer := seed.request(t, caller, http.MethodGet, target(liveAgentView, liveReadsAbsentSession), nil); answer.Code != http.StatusOK {
+		if absent == nil {
+			t.Fatalf("%s: no agent view was asked for among the kinds %v", caller, kinds)
+		}
+		if absentStatus != http.StatusOK {
 			continue
 		}
 		listed := map[string]bool{}
@@ -129,7 +142,6 @@ func TestEveryLiveViewKeepsTheRuleOfItsHTTPRead(t *testing.T) {
 		}](t, seed.mustRequest(t, caller, http.MethodGet, "/api/v1/agents", nil, http.StatusOK)) {
 			listed[agent.SessionID] = true
 		}
-		absent, absentFrame := first(caller, liveAgentView, liveReadsAbsentSession)
 		absent.quiet(t, liveReadsQuiet, fmt.Sprintf("%s's agent view of a session nobody answers for", caller))
 		for _, session := range []string{liveReadsPrivSession, liveReadsPubSession} {
 			watched := source.Watches(session)

@@ -645,15 +645,14 @@ func (s *server) sendOwedBroadcastRecipients(ctx context.Context, read broadcast
 // broadcast and the visibility argument at viewerParam (refs.VisibilityArg): the person who sent
 // it reads it, and so does a viewer that may see every session it was sent to
 // (access.SessionClause: an open viewer sees every session but one that acted in a project it does
-// not see). To any other viewer it is a broadcast nobody sent. The clause is negated under a
-// coalesce because it answers null rather than false for a viewer that names no session, and `not
-// null` would let a hidden recipient pass.
+// not see). To any other viewer it is a broadcast nobody sent. SessionClause answers true or false
+// and never null, so its negation lets no hidden recipient pass.
 func broadcastVisibleSQL(broadcast, viewerParam string) string {
 	return `((` + broadcast + `.author->>'kind' = 'user' and ` + broadcast + `.author->>'id' = ` + viewerParam + `::jsonb->>'person')
 		or not exists (
 			select 1 from messages recipient
 			where recipient.broadcast_id = ` + broadcast + `.id
-				and not coalesce(` + access.SessionClause("substr(recipient.target, 9)", viewerParam) + `, false)
+				and not ` + access.SessionClause("substr(recipient.target, 9)", viewerParam) + `
 			offset 0))`
 }
 

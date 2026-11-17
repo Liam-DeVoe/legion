@@ -80,16 +80,13 @@ type liveSocket struct {
 	// resolves. Each events or agent subscription runs on a context derived from it.
 	ctx    context.Context
 	cancel context.CancelFunc
-	// credential is the caller's credential as the upgrade resolved it, which is where every
-	// socket's authorization is decided: a frame carries no credential of its own, so a view the
-	// socket serves reads what the caller proved when it opened (holds).
-	credential *model.Credential
-	// reader is the caller as a read answers for it, with what it sees, resolved once at the
-	// upgrade (readerFor): each delivery view the socket subscribes is read for it. The delivery hub
-	// takes a reader resolved again on each event that can move what the caller sees, and an events
-	// subscription resolves what it sees again from it (caller), as it starts and on each such event
-	// (feedEvents).
-	reader model.Actor
+	// actor is the caller as the upgrade resolved it (optionalActor), its credential kept, which
+	// is where every socket's authorization is decided: a frame carries no credential of its own,
+	// so a view the socket serves reads what the caller proved when it opened (holds), and resolves
+	// from it what the caller sees now (caller, readerFor): the delivery hub at each subscribe and
+	// at each event that can move what the caller sees, and an events or agent subscription as it
+	// starts and at each such event (feedEvents, relayAgentConversation).
+	actor model.Actor
 	// queue holds the hub's frames and the socket's own refusals (Send).
 	queue chan any
 	// stream holds the frames of the events and agent subscriptions (SendWait).
@@ -110,8 +107,9 @@ type liveSocket struct {
 	// writer sets once it has closed; closing stops further extensions.
 	deadline sync.Mutex
 	closing  bool
-	// subs is every subscription the socket holds, by sub. Only the handler's goroutine touches it:
-	// the read loop, then the cleanup once the loop has ended.
+	// subs is every subscription the socket holds, by sub. A delivery view's stays here after the
+	// hub drops it on its own until the socket next counts at the cap (subscribeLive). Only the
+	// handler's goroutine touches it: the read loop, then the cleanup once the loop has ended.
 	subs map[string]*liveSub
 	// ending counts the subscriptions stopping beside the read loop, which the socket waits for
 	// once it ends.
@@ -123,34 +121,32 @@ type liveSocket struct {
 	beforePick func(socket *liveSocket, takesStream bool)
 }
 
-func newLiveSocket(ctx context.Context, conn *gws.Conn, credential *model.Credential) *liveSocket {
+func newLiveSocket(ctx context.Context, conn *gws.Conn, actor model.Actor) *liveSocket {
 	ctx, cancel := context.WithCancel(ctx)
 	return &liveSocket{
-		conn:       conn,
-		ctx:        ctx,
-		cancel:     cancel,
-		credential: credential,
-		queue:      make(chan any, liveSocketQueue),
-		stream:     make(chan liveStreamFrame, liveSocketStream),
-		full:       make(chan struct{}),
-		shut:       make(chan struct{}),
-		closed:     make(chan struct{}),
-		subs:       map[string]*liveSub{},
+		conn:   conn,
+		ctx:    ctx,
+		cancel: cancel,
+		actor:  actor,
+		queue:  make(chan any, liveSocketQueue),
+		stream: make(chan liveStreamFrame, liveSocketStream),
+		full:   make(chan struct{}),
+		shut:   make(chan struct{}),
+		closed: make(chan struct{}),
+		subs:   map[string]*liveSub{},
 	}
 }
 
 // holds reports whether the caller's credential holds scope: the socket's own test of what the
 // caller may watch, which is model.Credential.Holds over the credential the upgrade kept.
 func (socket *liveSocket) holds(scope string) bool {
-	return socket.credential.Holds(scope)
+	return socket.actor.Credential.Holds(scope)
 }
 
-// caller is the caller as the upgrade resolved it, its credential kept: what an events subscription
-// resolves again (readerFor) to learn what the caller sees now.
+// caller is the caller as the upgrade resolved it, its credential kept: what a view resolves
+// again (readerFor) to learn what the caller sees now.
 func (socket *liveSocket) caller() model.Actor {
-	caller := socket.reader
-	caller.Credential = socket.credential
-	return caller
+	return socket.actor
 }
 
 // liveSocketAge is how long a socket opening now lives: Deps.LiveSocketAge's, or
@@ -337,18 +333,19 @@ func (socket *liveSocket) writeFrame(frame any) bool {
 }
 
 // serveLiveSocket serves GET /ws/live to a signed-in person or an agent's bearer, keeping what
-// that caller's credential may do and what it sees: a frame carries no credential, so the
-// credential the caller proved here is what each of its views is answered against
-// (liveSocket.credential, liveSocket.reader). The upgrade keeps gorilla's same-origin check, so
-// another site's page cannot open the socket with a person's cookie.
+// that caller's credential may do: a frame carries no credential, so the credential the caller
+// proved here is what each of its views is answered against (liveSocket.actor). The upgrade
+// keeps gorilla's same-origin check, so another site's page cannot open the socket with a
+// person's cookie.
 func (s *server) serveLiveSocket(w http.ResponseWriter, r *http.Request) {
 	actor, _, err := s.optionalActor(r)
 	if err != nil {
 		s.writeAuthenticationError(w, err)
 		return
 	}
-	reader, err := s.readerFor(r.Context(), actor)
-	if err != nil {
+	// A caller whose viewer does not resolve is refused here, as every read refuses one; each view
+	// resolves what the caller sees again for itself (readerFor).
+	if _, err := s.readerFor(r.Context(), actor); err != nil {
 		s.writeAuthenticationError(w, err)
 		return
 	}
@@ -363,9 +360,8 @@ func (s *server) serveLiveSocket(w http.ResponseWriter, r *http.Request) {
 		return // the upgrader has answered the request
 	}
 	age := s.liveSocketAge()
-	socket := newLiveSocket(r.Context(), conn, actor.Credential)
+	socket := newLiveSocket(r.Context(), conn, actor)
 	socket.beforePick = s.liveWriterBeforePick
-	socket.reader = reader
 	s.liveSockets.add(socket)
 	defer s.liveSockets.remove(socket)
 	defer conn.Close()

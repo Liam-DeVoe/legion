@@ -5,7 +5,6 @@ import (
 	"log/slog"
 	"net/url"
 	"strconv"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -95,8 +94,7 @@ func (h *deliveryHub) Subscribe(conn deliveryLiveConn, frame deliverySubscriptio
 		conn.Send(*refusal)
 		return false
 	}
-	spec.reader, spec.viewer = reader, deliveryReaderKey(reader)
-	spec.key += "|" + spec.viewer
+	spec.readFor(reader)
 	var held *DeliveryLiveRevs
 	if frame.Resume != nil {
 		seq, err := strconv.ParseInt(frame.Resume.Seq, 10, 64)
@@ -135,20 +133,28 @@ func (h *deliveryHub) Subscribe(conn deliveryLiveConn, frame deliverySubscriptio
 		// conn keeps a sub, so the generation runs on.
 		g.leaveLocked(replaced)
 	}
-	h.joinLocked(g, conn, frame.Sub, spec, held, frame.Resolve, frame.Holds, now)
+	sub := h.joinLocked(g, conn, frame.Sub, spec, held, frame.Resolve, frame.Holds, now)
 	if checks != h.readerChecks && frame.Resolve != nil {
-		// A re-check began after this subscribe resolved its reader, and walked the subs before
-		// this one was among them, so another re-check reads it again.
-		h.recheckReadersAfter(g)
+		// A re-check of every sub's reader began after this subscribe resolved its reader, and may
+		// have walked the subs before this one was among them. Every other sub it walked it read,
+		// so this one alone is read again, after it: a re-check reads the database, which no hub
+		// lock is held across.
+		h.running.Add(1)
+		go func() {
+			defer h.running.Done()
+			h.recheckMu.Lock()
+			defer h.recheckMu.Unlock()
+			h.recheckSubs(g, []*deliverySub{sub})
+		}()
 	}
 	return true
 }
 
 // joinLocked makes id conn's sub of the view spec names, creating the view if no sub holds it, and
 // answers it as a new subscription is answered: at once from a body the view holds, else by the
-// recompute under way or one it is marked for.
+// recompute under way or one it is marked for. It answers the sub.
 func (h *deliveryHub) joinLocked(g *hubGeneration, conn deliveryLiveConn, id string, spec deliveryLiveSpec, held *DeliveryLiveRevs,
-	resolve func(context.Context) (model.Actor, error), holds func(string) bool, now time.Time) {
+	resolve func(context.Context) (model.Actor, error), holds func(string) bool, now time.Time) *deliverySub {
 	view := g.views[spec.key]
 	if view == nil {
 		view = &deliveryView{spec: spec, subs: map[*deliverySub]struct{}{}}
@@ -168,27 +174,11 @@ func (h *deliveryHub) joinLocked(g *hubGeneration, conn deliveryLiveConn, id str
 	default:
 		h.markDirtyLocked(g, view, now, deliveryCauseSubscribe)
 	}
+	return sub
 }
 
-// recheckReadersAfter runs a re-check of every sub's reader (recheckReaders) on a goroutine of its
-// own, after any running one: a re-check reads the database, which no hub lock is held across.
-func (h *deliveryHub) recheckReadersAfter(g *hubGeneration) {
-	h.readerChecks++
-	h.running.Add(1)
-	go func() {
-		defer h.running.Done()
-		h.recheckMu.Lock()
-		defer h.recheckMu.Unlock()
-		h.recheckReaders(g)
-	}()
-}
-
-// recheckReaders resolves the reader of each sub that resolves one (deliverySub.resolve) again,
-// and moves each sub whose reader now reads other rows (deliveryReaderKey) to the view of its new
-// reader, which answers it with a snapshot: the page drops the rows of a project its caller no
-// longer sees and reads one it now sees. A sub whose new reader its view's GET row refuses
-// (liveReadRefusal) is dropped and sent that refusal instead. A sub replaced or dropped meanwhile
-// is left as it is; a reader that does not resolve keeps its view until the next re-check.
+// recheckReaders resolves the reader of every sub that resolves one (deliverySub.resolve) again
+// (recheckSubs).
 func (h *deliveryHub) recheckReaders(g *hubGeneration) {
 	h.mu.Lock()
 	var subs []*deliverySub
@@ -200,6 +190,16 @@ func (h *deliveryHub) recheckReaders(g *hubGeneration) {
 		}
 	}
 	h.mu.Unlock()
+	h.recheckSubs(g, subs)
+}
+
+// recheckSubs resolves the reader of each of subs again, and moves each sub whose reader now reads
+// other rows (deliveryReaderKey) to the view of its new reader, which answers it with a snapshot:
+// the page drops the rows of a project its caller no longer sees and reads one it now sees. A sub
+// whose new reader its view's GET row refuses (liveReadRefusal) is dropped and sent that refusal
+// instead. A sub replaced or dropped meanwhile is left as it is; a reader that does not resolve
+// keeps its view until the next re-check.
+func (h *deliveryHub) recheckSubs(g *hubGeneration, subs []*deliverySub) {
 	for _, sub := range subs {
 		reader, err := sub.resolve(g.readContext())
 		if err != nil {
@@ -219,8 +219,7 @@ func (h *deliveryHub) recheckReaders(g *hubGeneration) {
 			sub.conn.Send(*refusal)
 		case sub.view.spec.viewer != viewer:
 			spec := sub.view.spec
-			spec.key = strings.TrimSuffix(spec.key, "|"+spec.viewer) + "|" + viewer
-			spec.reader, spec.viewer = reader, viewer
+			spec.readFor(reader)
 			g.leaveLocked(sub)
 			h.joinLocked(g, sub.conn, sub.id, spec, nil, sub.resolve, sub.holds, h.clock.Now())
 		}
@@ -246,6 +245,15 @@ func (h *deliveryHub) Close(conn deliveryLiveConn) {
 	for id := range h.generation.conns[conn] {
 		h.dropLocked(conn, id)
 	}
+}
+
+// Holds reports whether conn holds sub, a delivery view's subscription. The hub drops one on its
+// own when a re-check finds that the view's GET row refuses the sub's new reader (recheckReaders),
+// and the socket asks here before it counts its subscriptions against the cap (subscribeLive).
+func (h *deliveryHub) Holds(conn deliveryLiveConn, sub string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.generation != nil && h.generation.conns[conn][sub] != nil
 }
 
 // dropLocked drops conn's sub id, the view it leaves without a sub, and conn once it holds none. The
@@ -334,8 +342,9 @@ type deliveryHub struct {
 	closed bool
 	// generation is the running generation, nil while no conn holds a sub.
 	generation *hubGeneration
-	// readerChecks counts the re-checks of the subs' readers begun (recheckReadersAfter), under mu;
-	// recheckMu runs one re-check at a time, so the last to run reads the freshest readers.
+	// readerChecks counts the re-checks of every sub's reader begun (recheckStaleReaders), under mu;
+	// recheckMu runs one re-check at a time, a subscribe's own of its sub among them (Subscribe), so
+	// the last to run reads the freshest readers.
 	readerChecks uint64
 	recheckMu    sync.Mutex
 }
@@ -352,9 +361,11 @@ type hubGeneration struct {
 	// Each wake holds at most one pending signal: what it asks for covers every signal before it.
 	wakeWork, wakeChanges, connected chan struct{}
 	barrier                          chan chan struct{}
-	// readersStale is set when an access change may have moved what a subscriber sees: one was
-	// announced on access.ChangedChannel, or the listener (re)connected and may have missed one. The
-	// worker resolves every sub's reader again before its next recompute (recheckStaleReaders).
+	// readersStale is set when something may have moved what a subscriber sees: an access change
+	// announced on access.ChangedChannel, a relayed event that can move it (movesSight, receive),
+	// or the listener's (re)connection, which may have missed an announcement. The worker resolves
+	// every sub's reader again before its next recompute (recheckStaleReaders), once for however
+	// many came since its last pass.
 	readersStale atomic.Bool
 	// feeds hands the intake the relay subscription seedEvents took; one slot, as one runs at a
 	// time.
@@ -470,15 +481,17 @@ type deliverySub struct {
 }
 
 // deliveryLiveSpec is a subscribed view, resolved: its kind, its window (a preset's length in days,
-// or a custom range), its query without from and to, a pipeline view's pinned at, the reader it is
-// read for and that reader's part of the key (deliveryReaderKey), and the canonical key identical
-// views share.
+// or a custom range), its query without from and to, a pipeline view's pinned at, and its shape,
+// the key of the view whoever reads it; then the reader it is read for, that reader's part of the
+// key (deliveryReaderKey), and the canonical key identical views share, the shape and that part
+// (readFor).
 type deliveryLiveSpec struct {
 	kind     string
 	preset   int
 	from, to time.Time
 	query    url.Values
 	at       *time.Time
+	shape    string
 	reader   model.Actor
 	viewer   string
 	key      string
@@ -630,8 +643,8 @@ func (h *deliveryHub) onNotify(g *hubGeneration, channel, payload string) {
 }
 
 // recheckStaleReaders resolves every sub's reader again (recheckReaders), on the worker's goroutine,
-// when an access change may have moved one since the last time (hubGeneration.readersStale), so no
-// recompute after the change reads for a reader it moved.
+// when an access change or a relayed event may have moved one since the last time
+// (hubGeneration.readersStale), so no recompute after the change reads for a reader it moved.
 func (h *deliveryHub) recheckStaleReaders(g *hubGeneration) {
 	if !g.readersStale.Swap(false) {
 		return
