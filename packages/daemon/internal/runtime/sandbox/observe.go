@@ -193,13 +193,13 @@ func displaced(v view, loc runtime.Locator, obs observation) bool {
 }
 
 // verdict is the observation mapping for one recorded role process, from the stores' view of its
-// Sandbox and pod. The process's role is its claim's (loc.Claim.Role, which Validate holds); its
-// container is its pod's one container, `roles` in an issue pod, whose launcher runs every role of
-// the issue, and `controller` in the controller's. Pod loss applies to every role in the pod, and so
-// does the one container's end: a launcher that exits takes every role's process with it. A live
-// pod is judged through that role's own launcher state: Ready changes during the container's
-// restart and is never a whole-pod death verdict, and a role's own process ending is that role's
-// alone.
+// Sandbox and pod. The process's slot is its claim's agent (slotOf, which reads no role off the
+// token); its container is its pod's one container, `roles` in an issue pod, whose launcher runs
+// every role of the issue, and `controller` in the controller's. Pod loss applies to every role in
+// the pod, and so does the one container's end: a launcher that exits takes every role's process
+// with it. A live pod is judged through that role's own launcher state: Ready changes during the
+// container's restart and is never a whole-pod death verdict, and a role's own process ending is
+// that role's alone.
 //
 // A live pod that holds, for the recorded role, something fixed for its life that a pod created now
 // is not handed and whose worker this daemon cannot ask to push its work first (movedInPod: the
@@ -225,7 +225,7 @@ func (r *Runtime) verdict(ctx context.Context, loc runtime.Locator, v view) obse
 		return observation{Observation: runtime.Observation{Locator: loc, Kind: kind, At: r.now(), Detail: fmt.Sprintf(format, args...)}}
 	}
 	name, container := loc.Sandbox.Name, loc.Sandbox.Container
-	role, _ := loc.Claim.Role()
+	slot := slotOf(loc.Claim)
 	switch {
 	case v.sandbox == nil:
 		return observe(runtime.Gone, "sandbox %s/%s is absent", r.namespace, name)
@@ -237,7 +237,7 @@ func (r *Runtime) verdict(ctx context.Context, loc runtime.Locator, v view) obse
 	pod := v.pod
 	initName, initExit := failedInit(pod)
 	if terminal(pod) || initExit != nil {
-		detail, ranOutOfMemory := r.ended(ctx, v, container, role, initName, initExit)
+		detail, ranOutOfMemory := r.ended(ctx, v, container, slot, initName, initExit)
 		ended := observe(runtime.Gone, "%s", detail)
 		ended.initFailed = initExit != nil && pod.DeletionTimestamp == nil
 		ended.OutOfMemory = ranOutOfMemory
@@ -263,7 +263,7 @@ func (r *Runtime) verdict(ctx context.Context, loc runtime.Locator, v view) obse
 	default:
 		return observe(runtime.Uncertain, "pod %s (uid %s) phase %s", name, pod.UID, pod.Status.Phase)
 	}
-	if moved := r.movedInPod(pod, role); len(moved) > 0 {
+	if moved := r.movedInPod(pod, slot); len(moved) > 0 {
 		return observe(runtime.StaleAddress, "pod %s (uid %s) holds addresses a pod launched now is not handed: %s", name, pod.UID, describeMoved(moved))
 	}
 	if pod.Status.Phase != corev1.PodRunning {
@@ -278,39 +278,39 @@ func (r *Runtime) verdict(ctx context.Context, loc runtime.Locator, v view) obse
 	// Kubernetes restarts it.
 	state, connected := r.launchers.state(loc.Claim, loc.Sandbox.PodUID)
 	if connected && state.Child != nil && state.Child.Generation == loc.Sandbox.Generation {
-		moved, err := r.movedEnvironment(v.sandbox, pod, role, loc.Sandbox.Generation)
+		moved, err := r.movedEnvironment(v.sandbox, pod, slot, loc.Sandbox.Generation)
 		if err != nil {
 			return observe(runtime.StaleAddress, "pod %s (uid %s) role %s runs generation %d, whose addresses cannot be compared: %v",
-				name, pod.UID, role, state.Child.Generation, err)
+				name, pod.UID, slot, state.Child.Generation, err)
 		}
 		if len(moved) > 0 {
 			return observe(runtime.StaleAddress, "pod %s (uid %s) role %s runs generation %d, started with addresses a generation started now is not handed: %s",
-				name, pod.UID, role, state.Child.Generation, describeMoved(moved))
+				name, pod.UID, slot, state.Child.Generation, describeMoved(moved))
 		}
-		return observe(runtime.Alive, "pod %s (uid %s) role %s runs generation %d", name, pod.UID, role, state.Child.Generation)
+		return observe(runtime.Alive, "pod %s (uid %s) role %s runs generation %d", name, pod.UID, slot, state.Child.Generation)
 	}
 	if ended := status.State.Terminated; ended != nil {
 		gone := observe(runtime.Gone, "pod %s (uid %s) container %s terminated (%s, exit code %d); last lines of %s:\n%s",
-			name, pod.UID, container, ended.Reason, ended.ExitCode, role, r.roleLog(ctx, name, container, role))
+			name, pod.UID, container, ended.Reason, ended.ExitCode, slot, r.roleLog(ctx, name, container, slot))
 		gone.OutOfMemory = outOfMemory(container, ended)
 		return gone
 	}
 	if !connected {
-		return observe(runtime.Uncertain, "pod %s (uid %s) role %s's launcher is disconnected%s", name, pod.UID, role, containerRestarts(status))
+		return observe(runtime.Uncertain, "pod %s (uid %s) role %s's launcher is disconnected%s", name, pod.UID, slot, containerRestarts(status))
 	}
 	switch {
 	case state.Child != nil:
 		return observe(runtime.NotRecordedProcess, "pod %s (uid %s) role %s runs generation %d, not the recorded %d",
-			name, pod.UID, role, state.Child.Generation, loc.Sandbox.Generation)
+			name, pod.UID, slot, state.Child.Generation, loc.Sandbox.Generation)
 	case state.LastExit != nil && state.LastExit.Generation == loc.Sandbox.Generation && state.LastExit.Code == shimwire.LauncherExitSetupFailed:
 		return observe(runtime.Gone, "pod %s (uid %s) role %s reports generation %d failed setting up its namespaces before its shim started; last lines of %s:\n%s",
-			name, pod.UID, role, state.LastExit.Generation, role, r.roleLog(ctx, name, container, role))
+			name, pod.UID, slot, state.LastExit.Generation, slot, r.roleLog(ctx, name, container, slot))
 	case state.LastExit != nil && state.LastExit.Generation == loc.Sandbox.Generation:
 		return observe(runtime.Gone, "pod %s (uid %s) role %s reports generation %d exited (code %d, signal %s)",
-			name, pod.UID, role, state.LastExit.Generation, state.LastExit.Code, state.LastExit.Signal)
+			name, pod.UID, slot, state.LastExit.Generation, state.LastExit.Code, state.LastExit.Signal)
 	case state.LastExit != nil:
 		return observe(runtime.NotRecordedProcess, "pod %s (uid %s) role %s last exited generation %d, not the recorded %d",
-			name, pod.UID, role, state.LastExit.Generation, loc.Sandbox.Generation)
+			name, pod.UID, slot, state.LastExit.Generation, loc.Sandbox.Generation)
 	default:
 		// A launcher that reports no child has no record of any generation, so it is one the
 		// kubelet started with the container, and the recorded generation died with the container
@@ -322,7 +322,7 @@ func (r *Runtime) verdict(ctx context.Context, loc runtime.Locator, v view) obse
 		// last exit in memory (internal/launcher/launcher.go) and this side makes a fresh, empty
 		// state for each connection (accept) — so the container did not end under it, and the
 		// role's process ended on its own.
-		gone := observe(runtime.Gone, "pod %s (uid %s) role %s's launcher reports no child%s", name, pod.UID, role, containerRestarts(status))
+		gone := observe(runtime.Gone, "pod %s (uid %s) role %s's launcher reports no child%s", name, pod.UID, slot, containerRestarts(status))
 		gone.OutOfMemory = outOfMemory(container, status.LastTerminationState.Terminated)
 		return gone
 	}

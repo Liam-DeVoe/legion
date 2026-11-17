@@ -841,6 +841,19 @@ func podContainer(role claim.Role) string {
 	return runtime.IssuePodContainer
 }
 
+// slotOf is the slot of its pod that token's process runs in, named in the type the pod's code
+// names a slot by (roleVolume, roleDir, roleSecretName): the name of the agent a claim of an issue
+// ends in (claim.Token.Cut), which can be no role, and RoleController for the controller's token.
+// It is the one place that picks a slot, and it reads no role off the token: a claim's role is
+// the one its record holds. A token that is neither has no slot, "".
+func slotOf(token claim.Token) claim.Role {
+	if token.IsController() {
+		return claim.RoleController
+	}
+	_, agent, _ := token.Cut()
+	return claim.Role(agent)
+}
+
 // checkLocator refuses a locator this runtime did not mint.
 func (r *Runtime) checkLocator(loc runtime.Locator) error {
 	if err := loc.Validate(); err != nil {
@@ -1114,7 +1127,7 @@ func (r *Runtime) ReconcileOrphans(ctx context.Context, known []runtime.Known, g
 	// controllers are the Sandboxes of the known controller claims, which the sweep keeps.
 	controllers := map[string]bool{}
 	for _, k := range known {
-		if role, ok := k.Claim.Role(); ok && role == claim.RoleController {
+		if k.Claim.IsController() {
 			controllers[SandboxName(k.Claim)] = true
 		}
 		if err := k.Validate(); err != nil {
