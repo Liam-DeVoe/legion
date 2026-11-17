@@ -37,6 +37,10 @@ export type AddressTarget =
    *  wrote outside every thread a person wrote in, an entry of the panel's history
    *  (`agentsOnlyItem`). */
   | { readonly kind: "item"; readonly id: string }
+  /** One node, by its id in the tree read, which `?node=` names (dispatch://INFRA-4065 R7): the
+   *  row a chip of a lens line links to, and the row of a lens the reader just invoked. Only
+   *  the outline reads it, on an address that opens no document (`issueAddress`). */
+  | { readonly kind: "node"; readonly id: string }
   /** The issue's children, by the issue's own key: the children's own address (`/children`,
    *  `t h`) names the first row of their group in the outline (the architect's ruling 5 on R12),
    *  which the page unfolds the path to and puts the focus on. */
@@ -175,6 +179,21 @@ export function issueAddress(
   // `useOpensDocument`).
   const version = pinnedVersion(search) ?? (route.kind === "artifact" ? route.version : undefined);
   const addressed = routeDocument(route, specSlug);
+  // `?node=` names a node by its id in the tree read (R7). It is read only on an address whose
+  // preset is the outline and which opens no document, and there it wins over `#b-`, `?ask=`
+  // and `?comment=`.
+  const nodeId = query.get("node") ?? "";
+  if (nodeId !== "" && ROUTE_PRESETS[route.kind] === undefined && addressed === undefined) {
+    return {
+      document: undefined,
+      documentItem: undefined,
+      filter: query.get("q") ?? "",
+      nodeMenu: false,
+      preset: "conversation",
+      target: { id: nodeId, kind: "node" },
+      version,
+    };
+  }
   const marked = query.get("mark") ?? "";
   const documentItem = documentItemOf(addressed, item, version, marked);
   const outlineItem = documentItem === undefined && item !== null && item !== undefined;

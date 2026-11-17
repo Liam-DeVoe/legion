@@ -2,6 +2,7 @@ import {
   type CSSProperties,
   type ReactNode,
   type RefObject,
+  useContext,
   useLayoutEffect,
   useRef,
   useState,
@@ -42,6 +43,10 @@ import {
   type ParentLine,
   type TreeNode,
 } from "./issue-tree";
+import { LensChain } from "./lenses/LensChain";
+import { LensLines } from "./lenses/LensLines";
+import { LensActContext, LensMenu, lensActFor } from "./lenses/LensMenu";
+import { kindWords } from "./lenses/lens-drafts";
 import { DETAILS_ATTRIBUTE } from "./margin-slot";
 import { NodeFacts } from "./NodeFacts";
 import { NodeGlyph } from "./NodeGlyph";
@@ -59,6 +64,7 @@ import {
   GAP_LINES,
   GAP_WORDS,
   GLYPH_TOKENS,
+  LENS_WORDS,
   NODE_TYPE_NAMES,
   type NodeType,
   nodeStateWord,
@@ -301,9 +307,15 @@ export function NodeRow({
             <p
               className={`text-[15px] leading-6 break-words ${context ? pageQuietText : pageWordsText}`}
             >
-              <span data-node-first-line="" {...authorText}>
-                {drawnLine(first)}
-              </span>
+              {node.type === "lens" && node.text === "" ? (
+                <span data-node-first-line="" {...pageChrome}>
+                  {LENS_WORDS.no_verdict}
+                </span>
+              ) : (
+                <span data-node-first-line="" {...authorText}>
+                  {drawnLine(first)}
+                </span>
+              )}
               {count === null ? null : (
                 <span className={`ml-1.5 text-xs ${pageQuietText}`}>{count}</span>
               )}
@@ -320,12 +332,18 @@ export function NodeRow({
               {editing !== undefined ? (
                 <div className="flex min-w-0 flex-col" ref={stage} {...authorText} />
               ) : node.child === undefined ? (
-                <RowText
-                  markdown={node.text}
-                  source={node.source}
-                  tabStops={tabStops}
-                  tree={node.tree}
-                />
+                node.type === "lens" && node.text === "" ? (
+                  <p className="break-words" {...pageChrome}>
+                    {LENS_WORDS.no_verdict}
+                  </p>
+                ) : (
+                  <RowText
+                    markdown={node.text}
+                    source={node.source}
+                    tabStops={tabStops}
+                    tree={node.tree}
+                  />
+                )
               ) : (
                 // A child issue's row is one line, as the prototype's `.kr` draws it: its title,
                 // then how it stands, what blocks it and who holds it, small and grey (ruling 5).
@@ -378,6 +396,9 @@ export function NodeRow({
               <NodeMarks compact marks={node.parentLine} />
             </p>
           )}
+          {node.lens === undefined || oneLine ? null : (
+            <LensLines body={body} node={node} tabStops={tabStops} />
+          )}
           {body ? (
             <NodeBody
               author={author}
@@ -389,6 +410,7 @@ export function NodeRow({
               tabStops={tabStops}
             />
           ) : null}
+          {focused && node.type === "lens" ? <LensChain node={node} tabStops={tabStops} /> : null}
           {focused ? (
             <RowActs node={node} ownAnswer={ownAnswer} tabStops={tabStops} writer={writer} />
           ) : null}
@@ -573,6 +595,10 @@ function toneOf(type: NodeType, author: AuthorKind): Tone {
       return author === "person" ? "person" : "agent";
     case "decision":
       return "decision";
+    case "finding":
+    case "lens":
+    case "risk":
+      return "lens";
     case "plan_task":
       return "step";
     // A reading is what an agent read under a decision it made: the agent's tone.
@@ -580,6 +606,7 @@ function toneOf(type: NodeType, author: AuthorKind): Tone {
       return "agent";
     // A criterion is a sentence that must be true of the software, as a requirement is.
     case "criterion":
+    case "constraint":
     case "requirement":
       return "statement";
     case "callout":
@@ -711,7 +738,11 @@ export function RowMargin({
             data-node-tag=""
           >
             <NodeGlyph className="size-3 shrink-0" token={GLYPH_TOKENS.types[node.type]} />
-            <span {...pageChrome}>{NODE_TYPE_NAMES[node.type]}</span>
+            {node.lens?.kind === undefined ? (
+              <span {...pageChrome}>{NODE_TYPE_NAMES[node.type]}</span>
+            ) : (
+              <span {...authorText}>{chipWords(kindWords(node.lens.kind))}</span>
+            )}
           </span>
         )}
         {!authored && time === "" ? null : (
@@ -908,6 +939,11 @@ export function NodeOptions({
  * the writer's acts alone. Its answer, copied or failed, is said after it in the page's words.
  * Settle (`SettleAct`) carries `data-row-act` but needs no writer: a cookie proves a person.
  *
+ * In the outline, after Copy reference and its answer, a node of this issue that the invoke
+ * route takes draws the Lens act and its menu of lens kinds (`lenses/LensMenu.tsx`,
+ * dispatch://INFRA-4065 R4), offered through the context `TreeRows.tsx` provides. It writes as
+ * the reader, whether or not a writer is, and carries `data-row-lens` rather than `data-row-act`.
+ *
  * A press leaves the focus where it is until the action moves it to the line, as the row's other
  * controls do, so the press never lands on a row that moved under it. Each is out of the tab
  * order unless `tabStops` holds (`NodeRow`'s).
@@ -924,6 +960,7 @@ export function RowActs({
   writer: OutlineWriter | undefined;
 }): ReactNode {
   const { copy, status } = useCopyFeedback();
+  const lensAct = useContext(LensActContext);
   const acts: { readonly act: string; readonly label: string; readonly run: () => void }[] = [];
   if (writer !== undefined && takesAnswer(node)) {
     acts.push({ act: "answer", label: CONTROL_LABELS.answer, run: () => writer.answerNode(node) });
@@ -984,6 +1021,9 @@ export function RowActs({
           {status === "copied" ? ANSWER_LINES.copied : ANSWER_LINES.copy_failed}
         </span>
       )}
+      {lensAct !== undefined && lensActFor(node, lensAct) ? (
+        <LensMenu node={node} tabStops={tabStops} />
+      ) : null}
     </p>
   );
 }

@@ -1,12 +1,17 @@
 import { useQuery } from "@tanstack/react-query";
 import type { CSSProperties, ReactNode } from "react";
+import { useMemo } from "react";
+import { useLocation } from "react-router-dom";
 
 import { whoAmIQuery } from "../../api/queries";
 import type { Artifact } from "../../api/types";
 import { pageGuideLineBg, pageQuietText } from "../../theme/classes";
 import { useAgentText } from "../refs/AgentName";
+import { parseIssuePath } from "../refs/routes";
+import { issueAddress } from "./issue-address";
 import { documentOfNode } from "./issue-artifacts";
 import type { TreeNode } from "./issue-tree";
+import { LensActContext } from "./lenses/LensMenu";
 import { NodeRow } from "./NodeRow";
 import { OvertakenLine } from "./node-states/OvertakenLine";
 import type { ThreadMark } from "./outline-thread-read";
@@ -92,76 +97,90 @@ export function TreeRows({
   const agentText = useAgentText();
   // The reader, whose own words carry the ink rule and whose name is drawn in the ink (R34).
   const reader = useQuery(whoAmIQuery()).data?.login;
+  // The Lens act a focused row offers (dispatch://INFRA-4065 R4): the issue the address names and
+  // whether its preset is the outline, read as the page's slots read their address. A route that
+  // names no issue offers no act. One value while the address stands, so no row draws again.
+  const { pathname, search } = useLocation();
+  const route = parseIssuePath(pathname, search);
+  const issueKey = route?.key;
+  const outline =
+    route !== undefined && issueAddress(route, search, "", undefined).preset === "conversation";
+  const lensAct = useMemo(
+    () => (issueKey === undefined ? undefined : { issueKey, outline }),
+    [issueKey, outline]
+  );
   return (
     <>
-      {rows.map((row) => {
-        const key = rowKeyOf(row);
-        // A node's overtaken children fold to one line, which takes the focus as a row does and
-        // opens them in place (dispatch://INFRA-4063 R5).
-        if (row.kind === "overtaken") {
+      <LensActContext.Provider value={lensAct}>
+        {rows.map((row) => {
+          const key = rowKeyOf(row);
+          // A node's overtaken children fold to one line, which takes the focus as a row does and
+          // opens them in place (dispatch://INFRA-4063 R5).
+          if (row.kind === "overtaken") {
+            return (
+              <OvertakenLine
+                key={key}
+                onOvertaken={onOvertaken}
+                onStop={() => onStop?.(key)}
+                {...(report?.row === key ? { report: report.line } : {})}
+                row={row}
+                tabStop={tabStop === key}
+              />
+            );
+          }
+          if (row.kind === "deeper") {
+            return (
+              <BranchMore
+                held={row.held}
+                key={key}
+                level={row.level}
+                onOpen={() => onOpenDeeper(row.of.id)}
+              />
+            );
+          }
+          const place = documentOfNode(row.node.id, artifacts);
+          const mark = threads.get(row.node.id);
           return (
-            <OvertakenLine
-              key={key}
-              onOvertaken={onOvertaken}
-              onStop={() => onStop?.(key)}
-              {...(report?.row === key ? { report: report.line } : {})}
-              row={row}
-              tabStop={tabStop === key}
-            />
-          );
-        }
-        if (row.kind === "deeper") {
-          return (
-            <BranchMore
-              held={row.held}
+            <NodeRow
+              {...(row.node.answer === undefined
+                ? {}
+                : { answerer: agentText.author(row.node.answer.by) })}
+              author={{
+                kind: authorKind(row.node.author),
+                name: agentText.author(row.node.author),
+                reader: isReader(row.node.author, reader),
+              }}
+              body={
+                focused === key ||
+                pinned.has(key) ||
+                editing?.row === key ||
+                row.node.id === openBody ||
+                drawsBody(cycle, row.level)
+              }
+              context={context.has(row.node.id)}
+              {...(place === undefined ? {} : { document: place.artifact })}
+              {...(editing?.row === key ? { editing: editing.artifactId } : {})}
+              expanded={row.expanded}
+              focused={focused === key}
+              folded={row.folded}
+              isClosed={isClosed}
               key={key}
               level={row.level}
-              onOpen={() => onOpenDeeper(row.of.id)}
+              node={row.node}
+              onFocus={() => onFocus(key, row.node)}
+              onPin={() => onPin(key)}
+              onToggle={() => onToggle(row.node, row.expanded)}
+              ownAnswer={isReader(row.node.answer?.by, reader)}
+              pinned={pinned.has(key)}
+              placesItself={unplaced !== key}
+              {...(report?.row === key ? { report: report.line } : {})}
+              rowKey={key}
+              tabStop={tabStop === key}
+              {...(mark === undefined ? {} : { threadRead: mark })}
             />
           );
-        }
-        const place = documentOfNode(row.node.id, artifacts);
-        const mark = threads.get(row.node.id);
-        return (
-          <NodeRow
-            {...(row.node.answer === undefined
-              ? {}
-              : { answerer: agentText.author(row.node.answer.by) })}
-            author={{
-              kind: authorKind(row.node.author),
-              name: agentText.author(row.node.author),
-              reader: isReader(row.node.author, reader),
-            }}
-            body={
-              focused === key ||
-              pinned.has(key) ||
-              editing?.row === key ||
-              row.node.id === openBody ||
-              drawsBody(cycle, row.level)
-            }
-            context={context.has(row.node.id)}
-            {...(place === undefined ? {} : { document: place.artifact })}
-            {...(editing?.row === key ? { editing: editing.artifactId } : {})}
-            expanded={row.expanded}
-            focused={focused === key}
-            folded={row.folded}
-            isClosed={isClosed}
-            key={key}
-            level={row.level}
-            node={row.node}
-            onFocus={() => onFocus(key, row.node)}
-            onPin={() => onPin(key)}
-            onToggle={() => onToggle(row.node, row.expanded)}
-            ownAnswer={isReader(row.node.answer?.by, reader)}
-            pinned={pinned.has(key)}
-            placesItself={unplaced !== key}
-            {...(report?.row === key ? { report: report.line } : {})}
-            rowKey={key}
-            tabStop={tabStop === key}
-            {...(mark === undefined ? {} : { threadRead: mark })}
-          />
-        );
-      })}
+        })}
+      </LensActContext.Provider>
     </>
   );
 }

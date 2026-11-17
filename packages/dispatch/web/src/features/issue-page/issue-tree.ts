@@ -16,6 +16,7 @@ import type {
 } from "../../api/types";
 import type { TextSource } from "../refs/text-references";
 import { wordsOf } from "../refs/tree-fragment";
+import type { LensFacts } from "./lenses/lens-drafts";
 import type { GapKind, NodeState, NodeType } from "./page-words";
 import {
   addressesAsShortForms,
@@ -243,6 +244,9 @@ export interface TreeNode {
   /** The node's life, where it has one (`NodeLife`): what its row draws in its state line, and
    *  every chip and parent line naming it after its name (dispatch://INFRA-4063 R1, R2). */
   readonly life?: NodeLife;
+  /** What a lens, a finding, a risk or a constraint carries beyond these fields, and the chips of
+   *  a statement a constraint names (dispatch://INFRA-4065 R1 to R5); absent on every other node. */
+  readonly lens?: LensFacts;
   /** The choices an ask offers, in its own order; absent for every other node and for an ask
    *  that offers none. */
   readonly options?: readonly NodeOption[];
@@ -662,6 +666,7 @@ export function assemble(
       id: draft.id,
       ...(draft.child === undefined ? {} : { child: draft.child }),
       ...(draft.keptBy === undefined ? {} : { keptBy: draft.keptBy }),
+      ...(draft.lens === undefined ? {} : { lens: draft.lens }),
       ...(draft.multiple === undefined ? {} : { multiple: draft.multiple }),
       ...(draft.options === undefined ? {} : { options: draft.options }),
       question: draft.question,

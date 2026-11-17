@@ -35,6 +35,8 @@ import {
   GLYPH_TOKENS,
   ISSUE_STATUS_WORDS,
   isReader,
+  LENS_ANSWERS,
+  LENS_WORDS,
   NODE_FACT_LABELS,
   NODE_REFERENCES_WORDS,
   NODE_STATE_WORDS,
@@ -123,6 +125,7 @@ const UNASKED: readonly unknown[] = [
   PLAN_WORDS,
   NODE_REFERENCES_WORDS,
   ROW_MARK_WORDS,
+  LENS_WORDS,
 ];
 
 const ANSWERS: readonly unknown[] = [
@@ -131,6 +134,7 @@ const ANSWERS: readonly unknown[] = [
   HELP_LINES,
   KEY_REPORTS,
   SETTLE_ANSWERS,
+  LENS_ANSWERS,
 ];
 
 const WORD_SOURCES: readonly unknown[] = [...UNASKED, ...ANSWERS];

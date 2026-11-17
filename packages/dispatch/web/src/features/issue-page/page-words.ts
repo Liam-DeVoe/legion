@@ -86,15 +86,24 @@ export const NODE_TYPE_NAMES = freeze({
   check: "check",
   child_issue: "child issue",
   comment: "comment",
+  /** A constraint of the issue or of the lens catalogue: a standard the work keeps, or a
+   *  measurement taken of it (dispatch://INFRA-4065 R5). */
+  constraint: "constraint",
   /** A `criterion` block, and a `reading` below: block types INFRA-1253's block schema
    *  (version 6) declares, named here so every type the schema declares has a name. Part Y of
    *  dispatch://INFRA-1196 draws them (decision 130). */
   criterion: "criterion",
   decision: "decision",
   document: "document",
+  /** One block a lens wrote under itself: a `block` node whose parent is a lens, which the model
+   *  gives no kind of its own (dispatch://INFRA-4065 R1). */
+  finding: "finding",
   handoff: "handoff",
   image: "image",
   issue: "issue",
+  /** One analysis of a kind of the lens catalogue, invoked on a node of the issue
+   *  (dispatch://INFRA-4065 R1). Its row's tag draws its kind's words; this names its shape. */
+  lens: "lens",
   message: "message",
   plan_task: "plan task",
   reading: "reading",
@@ -102,6 +111,8 @@ export const NODE_TYPE_NAMES = freeze({
    *  sentence that must be true of the software. */
   requirement: "statement",
   result: "result",
+  /** What a pre-mortem says could go wrong, a row under that lens (dispatch://INFRA-4065 R1, R3). */
+  risk: "risk",
 } as const);
 
 /** One kind of node the page draws, by the model's own token for it. */
@@ -460,11 +471,14 @@ export const NODE_REFERENCES_WORDS = freeze({
     attached_to: "attached document",
     blocked_by: "blocked issue",
     child_of: "child issue",
+    constrained_by: "constrained statement",
     followed_by: "follower",
     needs: "needed by",
     owned_by: "owned item",
+    prevented_by: "prevented risk",
     replies_to: "reply",
     serves: "served by",
+    triggered_by: "triggered lens",
   },
   /** The page's word for each kind of node the graph answers with, which names a row whose
    *  edge is a mention. `artifact` and `block` are both a document to a reader, and a session is
@@ -475,14 +489,72 @@ export const NODE_REFERENCES_WORDS = freeze({
     block: "document",
     comment: "comment",
     component: "component",
+    constraint: "constraint",
     issue: "issue",
+    lens: "lens",
+    /** A lens's finding, whose address is the lens's with the block's anchor after it. */
+    lens_block: "finding",
+    lens_kind: "lens kind",
     message: "message",
+    risk: "risk",
     session: "agent",
   },
   /** The control in Details that lists what references the row the reader is on (R14, R19).
    *  It names the row, because Details' References section holds the issue's own Referenced by
    *  beside it and two lists cannot share one name. */
   what_references: "What references this row",
+} as const);
+
+/**
+ * The words the rows of a lens, a finding, a risk and a constraint draw of their own
+ * (dispatch://INFRA-4065 R1 to R5, R8): the lines under a lens's, a risk's and a statement's
+ * words, the chain a focused lens unfolds, and the act that opens the menu of lens kinds with
+ * that menu's heading. `taken_at` is lowercase because a measurement's line draws it between
+ * the author's own words. What a read or an invocation the reader started says while it is out
+ * and when it failed is `LENS_ANSWERS`.
+ */
+export const LENS_WORDS = freeze({
+  /** Where a lens's verdict goes, as its words, when it has none (R1). */
+  no_verdict: "No verdict yet",
+  /** The line of chips for the lenses this lens's `triggered_by` names, and the line for the
+   *  lenses whose `triggered_by` names this one (R2). */
+  triggered_by: "Triggered by",
+  triggered: "Triggered",
+  /** A risk's line that opens its `early_warning` words, the line of chips for the checks that
+   *  prevent it or the one line saying none does, and the focused body's line that opens its
+   *  `prevention` words (R3). */
+  early_warning: "Early warning:",
+  prevented_by: "Prevented by",
+  prevented_by_nothing: "Prevented by nothing",
+  prevention: "Prevention:",
+  /** The control of a focused lens that reads its chain, and the end of a chain the read cut
+   *  short, before the chip of the lens it stopped at (R2). */
+  show_chain: "Show the whole chain",
+  more_lenses: "More lenses past this one",
+  /** The menu of lens kinds' heading, and the act of a focused row that opens it (R4). */
+  menu_title: "Examine through a lens",
+  act: "Lens",
+  /** A statement's line of chips for the constraints it names, and what a measurement's line
+   *  draws before where it was taken (R5). */
+  constrained_by: "Constrained by",
+  taken_at: "taken at",
+} as const);
+
+/**
+ * What the lens rows say in answer to the reader's own act, and never on load
+ * (dispatch://INFRA-4065 R2, R4, R8): the menu of lens kinds while its catalogue is read and
+ * when that read failed, an invocation while it is out and when Dispatch refused it, and a
+ * chain while it is read and when that read failed. Each is at most one sentence.
+ */
+export const LENS_ANSWERS = freeze({
+  loading_kinds: "Loading lens kinds…",
+  kinds_failed: "Could not load the lens kinds.",
+  examining: "Examining…",
+  /** A refusal with 404, of an invocation and of a chain's read alike. */
+  gone: "This is no longer here.",
+  failed: "Could not examine this through a lens.",
+  loading_chain: "Loading the chain…",
+  chain_failed: "Could not load the chain.",
 } as const);
 
 /**
@@ -1365,17 +1437,21 @@ export const GLYPH_TOKENS = freeze({
     check: "check",
     child_issue: "child-issue",
     comment: "comment",
+    constraint: "constraint",
     criterion: "criterion",
     decision: "decision",
     document: "document",
+    finding: "finding",
     handoff: "handoff",
     image: "image",
     issue: "issue",
+    lens: "lens",
     message: "message",
     plan_task: "plan-task",
     reading: "reading",
     requirement: "requirement",
     result: "result",
+    risk: "risk",
   },
 } as const satisfies {
   readonly authors: Record<AuthorKind, string>;
@@ -1503,6 +1579,7 @@ export const UNASKED_SOURCES: readonly unknown[] = freeze([
   PLAN_WORDS,
   NODE_REFERENCES_WORDS,
   ROW_MARK_WORDS,
+  LENS_WORDS,
 ]);
 
 /** What the page says only in answer to the reader's own act, and never on load
@@ -1513,6 +1590,7 @@ export const ANSWER_SOURCES: readonly unknown[] = freeze([
   HELP_LINES,
   KEY_REPORTS,
   SETTLE_ANSWERS,
+  LENS_ANSWERS,
 ]);
 
 /** Every string the answers above hold, in the order they hold them: a browser check reads a
