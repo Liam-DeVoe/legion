@@ -360,6 +360,34 @@ test("Change anchors to the node's document and quotes its first paragraph", asy
   }
 });
 
+// R3 (dispatch://INFRA-4097/spec#b-r-change): the Change names the decision node's own block as
+// `anchor.block_id`, so the server finds the quote inside that block alone. A quote alone is
+// refused wherever the decision's first paragraph also stands elsewhere in the document, as a
+// converted decision's old heading often does (`pmdoc.FindQuote`'s `ErrTargetAmbiguous`), and
+// the reader can never send that Change. This is the case c-unit names.
+test("Change anchors to the node's document and block", async () => {
+  const createComment = spyOn(api, "createComment").mockImplementation(
+    () => new Promise<never>(() => {})
+  );
+  const user = userEvent.setup();
+  const { unmount } = renderActions([ONE], SPEC_DOCUMENT);
+  try {
+    await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.change_decision }));
+    await user.type(screen.getByLabelText(CONTROL_LABELS.your_change), "Say where.");
+    await user.click(screen.getByRole("button", { name: CONTROL_LABELS.send_change }));
+    await waitFor(() =>
+      expect(createComment, "the Change was never sent").toHaveBeenCalledTimes(1)
+    );
+    expect(
+      createComment.mock.calls[0]?.[1]?.anchor,
+      "the Change anchors to its decision's block"
+    ).toMatchObject({ artifact: document_.id, block_id: ONE.id, quote: "One tree, five presets" });
+  } finally {
+    unmount();
+    createComment.mockRestore();
+  }
+});
+
 // Keep is written against the decision node's own
 // document, block and sum, as the tree read answers them on the node, whatever document the row
 // that draws it stands in. Kept, the tree is read again.
