@@ -134,7 +134,9 @@ func resolveThenLock[R, T any](
 // resolved before a crash, which cannot tell whose mention it is - is answered so too while the
 // deployment holds a private project (roleResolvesWithoutAReader): its holder is chosen now, and
 // could be a session the author may not see. A session route was held to its author's reader
-// when it was written.
+// when it was written. The role's reads run whatever the listener answers, a holder or none, so a
+// role held by a session the reader may not see costs what an unheld role costs, and the time a
+// resolve takes tells nothing of the holder (roleHolderHidden).
 func (s *server) resolveDeliveryTarget(ctx context.Context, route model.Route, delivery string) (string, string, string) {
 	if s.deps.Envoy == nil {
 		return "", "", listenerNotConfiguredText
@@ -143,17 +145,13 @@ func (s *server) resolveDeliveryTarget(ctx context.Context, route model.Route, d
 	var err error
 	if route.Kind == "role" {
 		target, err = s.deps.Envoy.Role(ctx, route.ID)
-		if err == nil {
-			hidden, hiddenErr := s.sessionHiddenFromReader(ctx, target.SessionID)
-			if hiddenErr == nil && !hidden {
-				hidden, hiddenErr = s.roleResolvesWithoutAReader(ctx)
-			}
-			if hiddenErr != nil {
-				return "", "", hiddenErr.Error()
-			}
-			if hidden {
-				target, err = dispatchenvoy.Session{}, dispatchenvoy.NoRoleHolder(route.ID)
-			}
+		hidden, hiddenErr := s.roleHolderHidden(ctx, target.SessionID)
+		switch {
+		case err != nil:
+		case hiddenErr != nil:
+			return "", "", hiddenErr.Error()
+		case hidden:
+			target, err = dispatchenvoy.Session{}, dispatchenvoy.NoRoleHolder(route.ID)
 		}
 	} else {
 		hidden, hiddenErr := s.sessionHiddenFromReader(ctx, route.ID)
@@ -179,6 +177,19 @@ func (s *server) resolveDeliveryTarget(ctx context.Context, route model.Route, d
 			fmt.Sprintf("session %s (%s) does not advertise %s", target.SessionID, target.Title, delivery)
 	}
 	return target.SessionID, target.Title, ""
+}
+
+// roleHolderHidden reports whether a role's holder, session id (empty for a role the listener
+// says no session holds), must be answered as no holder: the request's reader may not see it
+// (sessionHiddenFromReader), or the resolve has no reader while a project is private
+// (roleResolvesWithoutAReader). It runs the same reads for an empty id as for a holder's, so a
+// role held by a hidden session and an unheld one cost the same.
+func (s *server) roleHolderHidden(ctx context.Context, session string) (bool, error) {
+	hidden, err := s.sessionHiddenFromReader(ctx, session)
+	if err != nil || hidden {
+		return hidden, err
+	}
+	return s.roleResolvesWithoutAReader(ctx)
 }
 
 // roleResolvesWithoutAReader reports whether a role resolved with no reader in ctx must answer as
