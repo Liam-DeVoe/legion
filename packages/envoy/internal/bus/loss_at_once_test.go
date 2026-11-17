@@ -32,7 +32,7 @@ func TestASessionConsumerCallWhileTheConnectionIsDownAnswersAtOnce(t *testing.T)
 	}
 	t.Cleanup(consumers.Close)
 	const sessionID = "ses_loss_at_once"
-	filter := []string{contracts.AgentSubject(sessionID)}
+	filter := []string{contracts.AgentSubject(contracts.NoProject, sessionID)}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if _, err := consumers.Ensure(ctx, sessionID, filter, 0); err != nil {

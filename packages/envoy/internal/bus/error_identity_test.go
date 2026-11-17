@@ -67,7 +67,7 @@ func TestAStoredPublishWhoseAckTheDropLostIsSentAgainOnTheNewConnection(t *testi
 	client, hold := heldClient(t)
 	// An agent subject, which the stream stores, so the reply the hold withholds is the stream's
 	// acknowledgement of the first send.
-	subject := contracts.AgentSubject("ses_lost_stored")
+	subject := contracts.AgentSubject(contracts.NoProject, "ses_lost_stored")
 	item := contracts.Envelope{Topic: subject, Source: "test", DedupeKey: "lost-stored"}
 	held := hold.Hold(subject)
 	type answer struct {

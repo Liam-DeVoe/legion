@@ -931,7 +931,7 @@ func (m *sessionRelays) storedFilter(ctx context.Context, sessionID string) ([]s
 	if m.delivery.afterStoredRowRead != nil {
 		m.delivery.afterStoredRowRead()
 	}
-	return m.delivery.sessionConsumerFilter(sessionID, topics), revision, nil
+	return m.delivery.storedRowFilter(m.registry, sessionID, topics), revision, nil
 }
 
 // storedFilterFailed is the outcome of a restart whose read of the session's interests failed with

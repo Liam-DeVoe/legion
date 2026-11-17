@@ -99,7 +99,7 @@ func TestARelayRestartWhoseInterestReadTheDropCutOffGivesTheSessionUpAndRestarts
 	if err != nil {
 		t.Fatalf("open JetStream on the server: %v", err)
 	}
-	item := listenerTestEnvelope(contracts.AgentSubject(sessionID), "lost-restart")
+	item := listenerTestEnvelope(contracts.AgentSubject(contracts.NoProject, sessionID), "lost-restart")
 	if _, err := js.Publish(item.Topic, marshalListenerEnvelope(t, item)); err != nil {
 		t.Fatalf("store a message for the session: %v", err)
 	}

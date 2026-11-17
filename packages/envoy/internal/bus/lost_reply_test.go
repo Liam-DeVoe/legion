@@ -123,8 +123,8 @@ func TestARequestWhoseReplyTheDropLostFailsAtTheDrop(t *testing.T) {
 		}},
 		// An agent subject, which the stream stores, so the withheld reply is the stream's
 		// acknowledgement of the forward.
-		{"forward", contracts.AgentSubject("ses_lost_forward"), withFlush, func(_ *testing.T, c *Client) func() error {
-			item := contracts.Envelope{Topic: contracts.AgentSubject("ses_lost_forward"), Source: "test", DedupeKey: "lost-reply"}
+		{"forward", contracts.AgentSubject(contracts.NoProject, "ses_lost_forward"), withFlush, func(_ *testing.T, c *Client) func() error {
+			item := contracts.Envelope{Topic: contracts.AgentSubject(contracts.NoProject, "ses_lost_forward"), Source: "test", DedupeKey: "lost-reply"}
 			return func() error {
 				forward, err := c.StartRequestStoredTo(item.Topic, item, "lost-reply", 3*time.Second)
 				if err != nil {
@@ -235,7 +235,7 @@ func TestAPullWhoseConnectionDropsEndsAtTheDrop(t *testing.T) {
 	const sessionID = "ses_lost_pull"
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if _, err := consumers.Ensure(ctx, sessionID, []string{contracts.AgentSubject(sessionID)}, 0); err != nil {
+	if _, err := consumers.Ensure(ctx, sessionID, []string{contracts.AgentSubject(contracts.NoProject, sessionID)}, 0); err != nil {
 		t.Fatalf("create the session's consumer: %v", err)
 	}
 	pull, err := consumers.Pull(ctx, sessionID)
@@ -292,7 +292,7 @@ func TestAPullWhoseConnectionDropsBeforeItsWaitStillEndsAtTheDrop(t *testing.T) 
 	const sessionID = "ses_lost_pull_before_wait"
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if _, err := consumers.Ensure(ctx, sessionID, []string{contracts.AgentSubject(sessionID)}, 0); err != nil {
+	if _, err := consumers.Ensure(ctx, sessionID, []string{contracts.AgentSubject(contracts.NoProject, sessionID)}, 0); err != nil {
 		t.Fatalf("create the session's consumer: %v", err)
 	}
 	pull, err := consumers.Pull(ctx, sessionID)
