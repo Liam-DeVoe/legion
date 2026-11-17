@@ -49,17 +49,20 @@
 #      its env: key for key (a PATH there picks the bash release-push.sh's `#!/usr/bin/env bash`
 #      runs), and its if: as the module names it, with no key but name and id free (an `if:
 #      false`, a continue-on-error: or a timeout-minutes: can end it with its decision thrown
-#      away); its job's version and skip outputs as the module names them, since the publish steps
-#      read the decision there (a `skip: "true"` skips the release the step chose); the if:s that
+#      away); the job outputs that carry a decision on as JOB_OUTPUTS names them (each build job's
+#      version, skip and notes, publish's version and tag), since later jobs read the decision
+#      there (a `skip: "true"` skips the release the step chose); the if:s that
 #      read the decision - dotted references, in any case and with any whitespace around a `.`,
 #      to those outputs, to the step's own, or to an earlier reader step's outcome - each the one
-#      DECISION_READERS names, by the step's id:, name: or position, in its order, with the four
-#      decision jobs' own if: and the steps a listed if: reads, no continue-on-error: on a listed
-#      step, no two steps of one name in a listed job, and no reader it does not name (an `if:
-#      false` on a publish step skips the release as surely); every if: of the two workflows
-#      reaching the needs or steps context by dotted names alone, no `[` and no `.*`, and naming
-#      the output it reads of a JOB_OUTPUTS job or a checked step rather than its outputs whole
-#      (`fromJSON(toJSON(needs.legion_build.outputs)).skip` is refused); every step
+#      DECISION_READERS names, by the step's id:, name: or position, in its order, with the steps
+#      a listed if: reads, no continue-on-error: on a listed step, no two steps of one name in a
+#      listed job, and no reader it does not name, in any job (an `if: false` on a publish step
+#      skips the release as surely); the own if: of the four decision jobs, of every job they
+#      need and of worker_image_release as DECISION_READERS names it, and the needs: of the
+#      decision jobs and the jobs they need as JOB_NEEDS names them, order aside; every if: of the
+#      two workflows reaching the needs or steps context by dotted names alone, no `[` and no
+#      `.*`, and naming the output it reads of a JOB_OUTPUTS job or a checked step rather than its
+#      outputs whole (`fromJSON(toJSON(needs.legion_build.outputs)).skip` is refused); every step
 #      before it one of STEPS_BEFORE_VERSION_STEPS on every key but name, id, if, timeout-minutes
 #      and continue-on-error; the workflow's env: a literal mapping of WORKFLOW_ENV_KEYS' variables
 #      alone, so a BASH_ENV, PATH, LD_PRELOAD, GIT_DIR or GH_REPO is refused as one more unlisted
@@ -67,10 +70,12 @@
 #      defaults: or reusable workflow, on its runs-on: (a self-hosted runner runs its own hooks
 #      first); the workflow with no defaults but `run: {shell: bash}`; and the step under `bash`
 #      itself (`bash --rcfile x -i {0}` sources x first). An expression in place of any of those
-#      mappings is refused, since no one can read what it sets. Whether a release workflow runs
-#      at all - its on: triggers, concurrency: and timeout-minutes:, a job's if: outside the four
-#      decision jobs, the runner image behind the label - is outside this rule, and so is the
-#      decision passed on through the env context or another step's output, env: or run:;
+#      mappings is refused, since no one can read what it sets. Each workflow's on: holds the
+#      events TRIGGERS names, a push trigger of PUSH_KEYS' keys and the branches PUSH_BRANCHES
+#      names. Free are the if: of a job that is neither a decision job nor one they need, where it
+#      reads no decision; the values of concurrency:, cache-mode: and timeout-minutes:; the paths
+#      a push filters on; and the runner image behind the label; and so is the decision passed on
+#      through the env context or another step's output, env: or run:;
 #   4. a path go names for the legion-envoy archives that no path of $LEGION_ENVOY_VERSION_ARGS
 #      covers, naming it and the listing that names it;
 #   5. an exclude of either line's paths that drops a path go names for it, or that drops anything
