@@ -59,23 +59,24 @@
 // it" (R28). The kind is statement, check, component, interface or term. It exits 2, and makes no
 // comparison, for an approved.json that ReadApproved refuses (JSON that is not UTF-8, or that
 // gives a member that the format does not name in its own letters or one member two times, is one
-// of them), and for files with a problem of Parse that can lose a node or change one
-// (specgraph.LosesNode), such as a block whose opening line the grammar refuses or a line outside
-// a block, since the comparison would not see that text; it names only those problems. A
+// of them), and for files with a problem of Parse that can lose a node or change one (its Effect
+// is specgraph.LosesNode), such as a block whose opening line the grammar refuses or a line
+// outside a block, since the comparison would not see that text; it names only those problems. A
 // directory that does not exist or holds no spec file is exit 2 too, with a line that names
 // --allow-empty. With --allow-empty, compare reads it as the empty tree, with a line on standard
 // error that says so, since git keeps no empty directory and a revert of the last spec file leaves
 // none. The comparison does not judge the tree, which is tree's work: a problem of Parse that
-// leaves each node as the files write it, such as a heading that names code, is no reason for
-// compare to refuse. R2 gives the comparison at each push to Dispatch, and no CI job runs compare.
-// So compare exits 2, before it reads an argument, when GITHUB_ACTIONS is "true", with the one
-// line "spec-check: compare does not run in a CI job (GITHUB_ACTIONS=true): R2 gives the comparison
-// of the files with the approved spec at each push to Dispatch". GitHub sets GITHUB_ACTIONS=true in
-// each step of each job. CI=true alone, as an agent's shell sets it, is no CI job, and compare runs
-// there. The refusal covers each route that passes the runner's environment on to the command. A
-// route that drops it, such as sudo or a container that docker run starts, does not pass
-// GITHUB_ACTIONS, and the command compares there: only guard names such a line, in the files that
-// it reads, when the command's name and compare stand next to each other there.
+// leaves each node as the files write it (specgraph.KeepsEachNode), such as a heading that names
+// code, is no reason for compare to refuse. A heading is no node, so compare never compares it.
+// R2 gives the comparison at each push to Dispatch, and no CI job runs compare. So compare exits
+// 2, before it reads an argument, when GITHUB_ACTIONS is "true", with the one line "spec-check:
+// compare does not run in a CI job (GITHUB_ACTIONS=true): R2 gives the comparison of the files with
+// the approved spec at each push to Dispatch". GitHub sets GITHUB_ACTIONS=true in each step of each
+// job. CI=true alone, as an agent's shell sets it, is no CI job, and compare runs there. The
+// refusal covers each route that passes the runner's environment on to the command. A route that
+// drops it, such as sudo or a container that docker run starts, does not pass GITHUB_ACTIONS, and
+// the command compares there: only guard names such a line, in the files that it reads, when the
+// command's name and compare stand next to each other there.
 //
 // print writes the current approved block of each node it is named, in the order named, and after
 // a statement the block of each current check that serves it, each block once and the blocks
@@ -92,16 +93,22 @@
 // read no workflow" when <dir>/.github/workflows holds no file, since an instrument that read
 // nothing has not passed, and 0 otherwise, with "spec-check: <dir>: no line of <k> CI files names
 // the command that compares the files". The guard names each place of a CI file where the
-// command's name and then the word compare follow each other with only white space, commas or
-// opening brackets between them, and with quote characters (also a $ before one), backslashes, and
-// line breaks with the indentation after them ignored. The name is spec-check, under any path, as
-// a word of its own: a word that only holds it, such as envoy-spec-check or spec-checker, is
-// another name. So it also names a comment or a quoted text that no shell runs, and the author
-// rewords that line. It does not find a command that an expansion, an escape or an alias builds,
-// or one with another word between the two, and it is no defence against an author who hides the
-// command: compare itself refuses to run in a CI job. A step can run the comparison from a file it
-// does not read, such as a package script or a make target: compare's refusal covers that route
-// when the step passes the runner's environment on, and nothing covers it when the step does not.
+// command's name and then the word compare follow each other with only white space, commas, ( or [
+// between them, and with quote characters (also a $ before one), backslashes, and line breaks with
+// the indentation after them ignored. So it also names a comment or a quoted text that no shell
+// runs, and the author rewords that line. The name is spec-check, under any path, as a word of its
+// own: a word that only holds it, such as envoy-spec-check or spec-checker, is another name.
+// compare is a word of its own too: a letter, a digit, _, -, . or / right after it makes another
+// word or a path, such as compare-all, compare.sh or compare/. A letter right after a backslash
+// ends an escape, such as the \n of a double-quoted text, so it is no byte of a word before the
+// name, and after compare a \n or a \t ends the word.
+// It does not find a command that an expansion, an escape or an alias builds, a name right after an
+// escape that ends in a digit or that another character starts, such as \x20, PowerShell's `n or a
+// batch file's %~dp0, or one with another word between the two, and it is no defence against an
+// author who hides the command: compare itself refuses to run in a CI job. A step can run the
+// comparison from a file it does not read, such as a package script or a make target: compare's
+// refusal covers that route when the step passes the runner's environment on, and nothing covers it
+// when the step does not.
 // The guard follows no symbolic link at or under the four directories (the path to them, --root
 // and .github included, resolves as the system resolves it), and it reads each file whole, with
 // no bound on its size.
@@ -121,9 +128,10 @@
 // waits: none". --json prints the states as one line of JSON instead, []State, or with units.json
 // {"states":[…],"cycle":[…]}. It exits 0 for a scenario it reads, and 2, with one line on standard
 // error naming the file and the fault, for one it does not: a file or a field that the format does
-// not hold (JSON that is not UTF-8, or a member written in other letters or given two times, too),
-// a missing file, spec files that do not parse or that the rules of tree refuse, or a loop of parent
-// and support relations in the approved spec. A check of production or of the graph is judged only
+// not hold (JSON that is not UTF-8, a member written in other letters or given two times, or a
+// value of another type, named with the form of the file and its place, too), a missing file, spec
+// files that do not parse or that the rules of tree refuse, or a loop of parent and support
+// relations in the approved spec. A check of production or of the graph is judged only
 // at a subject that names a deploy, and there a check of the graph counts only the results at the
 // subject's graph_tx, so it reads unknown when the subject names no graph_tx or one that no result
 // read; a result of a graph check at another transaction reads as a subject that moved. A subject

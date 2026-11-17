@@ -35,11 +35,16 @@ type FixtureCommit struct {
 	Files  map[string]string `json:"files"`
 }
 
-// ReadFixtureHistory reads a history.json. It refuses what decodeJSON refuses, a commit with no
-// id, and an id on two commits.
+// historyForm is the form of history.json, with the type of each value, as ReadFixtureHistory
+// names it for a value of another type.
+const historyForm = `{"commits":[{"id":"<commit>","parent":"<commit>","files":{"<repository path>":"<content label>"}}, …]}`
+
+// ReadFixtureHistory reads a history.json. It refuses what decodeJSON refuses, a value of another
+// type than historyForm needs named by its place among them, a commit with no id, and an id on two
+// commits.
 func ReadFixtureHistory(r io.Reader) (FixtureHistory, error) {
 	var h FixtureHistory
-	if err := decodeJSONFrom(r, &h); err != nil {
+	if err := decodeJSONFrom(r, &h, historyForm); err != nil {
 		return FixtureHistory{}, fmt.Errorf("specgraph: history: %w", err)
 	}
 	seen := map[string]bool{}

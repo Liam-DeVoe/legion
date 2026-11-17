@@ -14,8 +14,8 @@ import (
 
 // ApprovedVersion is one text that the approved spec held for a node (R2: "Dispatch keeps each
 // text that the approved spec held"): its version number, the time of the approval that wrote it,
-// an RFC 3339 time in approved.json, and Block, the node's block as Print writes it, which a change
-// copies into the files.
+// in approved.json an RFC 3339 time as time.RFC3339Nano writes it, with an upper-case T and Z, and
+// Block, the node's block as Print writes it, which a change copies into the files.
 type ApprovedVersion struct {
 	Version int       `json:"version"`
 	At      time.Time `json:"at"`
@@ -40,27 +40,30 @@ type Approved struct {
 }
 
 // ApprovedFile is approved.json, the approved spec as a file holds it, and the one definition of
-// that form: WriteApproved writes it, and ReadApproved reads it.
-//
-//	{"nodes":[{"id","removed","partly_checked","versions":[{"version","at","block"}]}]}
-//
-// "at" is an RFC 3339 time, such as "2026-11-10T00:00:00Z". An approved spec that holds no node is
-// {"nodes":[]}.
+// that form (approvedForm): WriteApproved writes it, and ReadApproved reads it. "at" is an RFC 3339
+// time as time.RFC3339Nano writes it, with an upper-case T and Z, such as "2026-11-10T00:00:00Z":
+// the reader refuses a lower-case t or z, which RFC 3339 allows, and the writer writes upper case.
+// An approved spec that holds no node is {"nodes":[]}.
 type ApprovedFile struct {
 	Nodes []ApprovedNode `json:"nodes"`
 }
 
+// approvedForm is the form of approved.json, with the type of each value, as ReadApproved names it
+// for a value of another type.
+const approvedForm = `{"nodes":[{"id":"<id>","removed":<true or false>,"partly_checked":<true or false>,"versions":[{"version":<whole number from 1>,"at":"<RFC 3339 time>","block":"<block>"}, …]}, …]}`
+
 // ReadApproved reads an approved spec in the form of approved.json (ApprovedFile). It refuses
 // what decodeJSON refuses (a byte that is not UTF-8, a field it does not know or that is written
-// in other letters, a field that one object gives two times, no object or text after it), a file
-// with no list of nodes (null, {} or "nodes": null), a node with no id, an id on two nodes, a node
-// with no version, version numbers that do not go up from 1, a version with no time, with a time
-// that is not RFC 3339 or with one older than the one before it, and a block that is not its
-// node's one block as Print writes it. The error names the node and the version. It reads the
-// whole file, with no bound on its size.
+// in other letters, a field that one object gives two times, a value of another type than
+// approvedForm needs, such as a time that is not RFC 3339, named by its place, no object or text
+// after it), a file with no list of nodes (null, {} or "nodes": null), a node with no id, an id on
+// two nodes, a node with no version, version numbers that do not go up from 1, a version with no
+// time or with one older than the one before it, and a block that is not its node's one block as
+// Print writes it. The error names the node and the version. It reads the whole file, with no
+// bound on its size.
 func ReadApproved(r io.Reader) (Approved, error) {
 	var file ApprovedFile
-	if err := decodeJSONFrom(r, &file); err != nil {
+	if err := decodeJSONFrom(r, &file, approvedForm); err != nil {
 		return Approved{}, fmt.Errorf("specgraph: approved spec: %w", err)
 	}
 	return file.approved()
