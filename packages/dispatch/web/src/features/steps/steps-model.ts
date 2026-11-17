@@ -22,8 +22,9 @@ export interface StepRow {
   ended: string | null;
   state: StepState;
   result: string;
-  /** The step a failed or stopped run sent its task back to, when it sent it back. */
-  returnedTo: number | null;
+  /** Where a failed or stopped run sent its task back to, when it sent it back, as its Result
+   *  cell names it: `step <n>`, or `the retro` for place 0 (`returnPlace`). */
+  returnedTo: string | null;
 }
 
 /** One task's runs, in the order the server read them. */
@@ -38,6 +39,15 @@ const KIND_LABELS: Readonly<Record<Exclude<StepRecord["kind"], "step">, string>>
   merge: "Merge",
   retro: "Retro",
 };
+
+/** The place a move back sent the task to, in words. Place 0 is the retro's: of the two runs no
+ *  plan names, a move back can reach only the retro, since the merge is the task's last run
+ *  (Dispatch reads `returned_to` 0 as a return to the retro). It is no step, so it never reads
+ *  `step 0`. */
+function returnPlace(place: number | null): string | null {
+  if (place === null) return null;
+  return place === 0 ? "the retro" : `step ${place}`;
+}
 
 function stepState(result: string): StepState {
   switch (result) {
@@ -63,7 +73,7 @@ function stepRow(record: StepRecord): StepRow {
     label: record.kind === "step" ? String(record.step) : (KIND_LABELS[record.kind] ?? record.kind),
     model: record.model,
     result: record.result,
-    returnedTo: record.returned_to,
+    returnedTo: returnPlace(record.returned_to),
     role: record.role,
     started: record.started_at,
     state: stepState(record.result),

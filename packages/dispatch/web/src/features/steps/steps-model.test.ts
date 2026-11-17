@@ -74,7 +74,7 @@ test("stepTasks keeps the server's order and names each run's step, state and ti
     label: "4",
     model: "openai/gpt-6.1-sol",
     result: "failed",
-    returnedTo: 2,
+    returnedTo: "step 2",
     role: "reviewer",
     started: "2026-11-16T10:00:00Z",
     state: "failed",
@@ -90,6 +90,46 @@ test("stepTasks reads a null list as empty", () => {
   expect(stepTasks({ issue: "CORE-1", tasks: [] })).toEqual([]);
   expect(stepTasks({ issue: "CORE-1", tasks: [{ steps: null, task: "default" }] })).toEqual([
     { rows: [], task: "default" },
+  ]);
+});
+
+// A move back names where it sent the task. Place 0 is the retro's, which a merger's move back
+// reaches and no plan names, so it reads as the retro and never as `step 0`; and a return to place
+// 0 is a return, not the nothing a run that returned nowhere names.
+test("stepTasks names where a run returned its task, the retro for place 0", () => {
+  const [task] = stepTasks({
+    issue: "CORE-1",
+    tasks: [
+      {
+        steps: [
+          record({
+            id: "review-1",
+            result: "stopped",
+            returned_to: 2,
+            role: "reviewer",
+            step: 4,
+            type: "review",
+          }),
+          record({
+            id: "merge-1",
+            kind: "merge",
+            result: "failed",
+            returned_to: 0,
+            role: "merger",
+            step: 0,
+            type: "",
+          }),
+          record({ id: "implement-1" }),
+        ],
+        task: "default",
+      },
+    ],
+  });
+
+  expect(task?.rows.map((row) => [row.id, row.returnedTo])).toEqual([
+    ["review-1", "step 2"],
+    ["merge-1", "the retro"],
+    ["implement-1", null],
   ]);
 });
 
