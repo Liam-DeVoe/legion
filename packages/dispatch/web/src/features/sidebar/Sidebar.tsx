@@ -12,6 +12,7 @@ import {
 import type { AuthenticatedUser } from "../../api/types";
 import { ChevronIcon } from "../../components/DisclosureToggle";
 import { PinButton } from "../../components/PinButton";
+import { isRestrictedMember } from "../../hooks/useRestrictedMember";
 import {
   railAccentText,
   railActiveBg,
@@ -157,7 +158,7 @@ export function Sidebar({
   // so their rail draws none of the views over every project - Priorities, Delivery and
   // Pipeline - and no Peek, and never reads the priorities. `app.tsx` answers those pages
   // NotFound for them.
-  const restricted = user.member_kind === "restricted";
+  const restricted = isRestrictedMember(user);
   const inbox = useQuery(inboxQuery());
   const pinned = useQuery({
     queryKey: ["issues", "pinned"],

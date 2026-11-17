@@ -74,6 +74,7 @@ import { PendingWritesIndicator } from "./features/writes/PendingWritesIndicator
 import { useKeyedWrite } from "./features/writes/useKeyedWrite";
 import { type Write, writesOf } from "./features/writes/write-store";
 import { FOOT_STATUS_INSET_PROPERTY, useFootInset } from "./hooks/useFootInset";
+import { isRestrictedMember } from "./hooks/useRestrictedMember";
 import {
   backdrop50,
   badgeBlocking,
@@ -572,7 +573,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   const routeProject = routeProjectOf(location.pathname);
   // A restricted member is offered none of the deployment's own pages (`DeploymentPages`), and
   // no Peek either: in the rail (`Sidebar`), in the phone header or by its key.
-  const restricted = user.member_kind === "restricted";
+  const restricted = isRestrictedMember(user);
   useKeymap("global", [
     {
       // Opens only: while the bar is open the `dialog` scope is the only one consulted, and
