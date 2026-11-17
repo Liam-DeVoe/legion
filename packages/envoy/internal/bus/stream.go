@@ -2,6 +2,7 @@ package bus
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -147,6 +148,26 @@ const DeliverSubjectPrefix = NotificationTopicPrefix + "envoy.deliver."
 // from a plain NATS subscription of its own ("Session consumers" in packages/envoy/AGENTS.md).
 func DeliverSubject(sessionID string) string {
 	return DeliverSubjectPrefix + sessionID
+}
+
+// SessionReplySubject is the reply subject of one request made of session sessionID, which only
+// that session may answer: inbox, a reply inbox of the requester's own (nats.NewInbox), then the
+// session's id, then 128 random bits (crypto/rand.Text). Every request a session answers carries
+// one - the relay's frames (cmd/listener's sessionRelays), the listener's connection probe and
+// Dispatch's agent stream replay (internal/dispatch/agentstream) - and a session's own grant
+// admits replies under its id alone (SessionReplies). So a session can neither answer a request
+// made of another session nor guess the subject of one: it cannot read another session's relay or
+// control subject, and the random part is not derived from anything it can see. sessionID is one
+// subject token, as every session with a consumer's is (SessionConsumerName).
+func SessionReplySubject(inbox, sessionID string) string {
+	return inbox + "." + sessionID + "." + rand.Text()
+}
+
+// SessionReplies is the one publish entry under _INBOX. a grant of session sessionID needs: it
+// admits every reply subject SessionReplySubject makes for that session, and none it makes for
+// another, nor a requester's plain inbox (_INBOX.<id> or nats.go's _INBOX.<id>.<token>).
+func SessionReplies(sessionID string) string {
+	return nats.InboxPrefix + "*." + sessionID + ".>"
 }
 
 // ConnectionProbeHeader is the one header the listener's connection probe carries on a session's

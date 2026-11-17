@@ -163,7 +163,8 @@ const (
 // sessionRelays relays the session consumers this listener owns (sessionRelays.wanted): one relay
 // per session, which restarts the session's consumer at its ack floor whenever it starts, then pulls
 // it and hands each message on in stream order, as a core frame on the session's relay subject,
-// answered on a reply subject under the listener's one reply inbox.
+// answered on a reply subject of its own under the listener's one reply inbox, which names the
+// session the frame was sent to (bus.SessionReplySubject).
 //
 // Among the tasks of one machine id, only the one holding the machine's durable binding relays
 // (setOwned), so a rolling deploy's second task relays nothing until the first lets go. The relay
@@ -184,8 +185,10 @@ type sessionRelays struct {
 	sessions  *session.SessionRegistry
 	machineID string
 	logger    *logging.Logger
-	// replyPrefix is the listener's reply inbox and a dot: a frame's reply subject is
-	// replyPrefix<token>, and one subscription to the inbox's wildcard hears every reply.
+	// inbox is the listener's reply inbox, and replyPrefix it and a dot: a frame's reply subject is
+	// replyPrefix<session id>.<token> (bus.SessionReplySubject), and one subscription to the
+	// inbox's wildcard hears every reply.
+	inbox       string
 	replyPrefix string
 	// pauseFirst and pauseMax are the bounds of a paused relay's backoff, relayPauseFirst and
 	// relayPauseMax; a test shortens them. receiptWait is relayReceiptWait, how long the oldest
@@ -226,9 +229,9 @@ type sessionRelays struct {
 
 	// framesMu guards frames and each relay's outstanding and unanswered frames.
 	framesMu sync.Mutex
-	// frames maps the token of every frame awaiting done or nak to it.
-	frames    map[string]*relayFrame
-	nextToken atomic.Uint64
+	// frames maps the token of every frame awaiting done or nak to it: the random last token of
+	// its reply subject, which the session the frame was sent to alone can read.
+	frames map[string]*relayFrame
 }
 
 // relayCancelReason is why the loop cancelled a run. It is the cause the cancellation carries
@@ -483,6 +486,7 @@ func startSessionRelays(delivery *sessionDelivery, cfg listenerDeliveryHandlerCo
 		sessions:    cfg.sessions,
 		machineID:   cfg.machineID,
 		logger:      cfg.logger,
+		inbox:       inbox,
 		replyPrefix: inbox + ".",
 		pauseFirst:  relayPauseFirst,
 		pauseMax:    relayPauseMax,
@@ -1049,10 +1053,11 @@ func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutco
 	}
 }
 
-// publishFrame publishes msg as a frame on the session's relay subject, its reply subject a token
-// of its own under the listener's reply inbox.
+// publishFrame publishes msg as a frame on the session's relay subject, its reply subject one of
+// its own under the listener's reply inbox that names the session (bus.SessionReplySubject).
 func (m *sessionRelays) publishFrame(ctx context.Context, run *relayRun, msg bus.SessionMessage, streamID string, gap bool) error {
-	token := strconv.FormatUint(m.nextToken.Add(1), 36)
+	reply := bus.SessionReplySubject(m.inbox, run.sessionID)
+	token := reply[strings.LastIndexByte(reply, '.')+1:]
 	frame := &relayFrame{run: run, acker: msg.SessionAcker, sentAt: time.Now(), delivered: msg.Delivered}
 	m.framesMu.Lock()
 	if run.outstanding == nil {
@@ -1073,7 +1078,7 @@ func (m *sessionRelays) publishFrame(ctx context.Context, run *relayRun, msg bus
 	}
 	return m.delivery.consumers.Publish(ctx, &nats.Msg{
 		Subject: bus.DeliverSubject(run.sessionID),
-		Reply:   m.replyPrefix + token,
+		Reply:   reply,
 		Header:  header,
 		Data:    msg.Data,
 	})
@@ -1163,28 +1168,43 @@ func relayNakDelayFor(delivered uint64) time.Duration {
 // delivery count earns (relayNakDelayFor); done and nak end the frame. Any of them is the session
 // answering, which puts the run's pause backoff back to its first wait. A reply to a token no
 // frame awaits, or with any other body, is ignored.
+//
+// A reply moves only the frame of the session its subject names, the session the frame was sent
+// to: one whose subject names another session is logged and moves nothing, so a session that
+// learned another's token cannot acknowledge that session's message away under its own reply
+// prefix, the one its grant lets it publish to (bus.SessionReplies).
 func (m *sessionRelays) onReply(msg *nats.Msg) {
-	token, ok := strings.CutPrefix(msg.Subject, m.replyPrefix)
+	rest, ok := strings.CutPrefix(msg.Subject, m.replyPrefix)
 	if !ok {
 		return
 	}
+	dot := strings.LastIndexByte(rest, '.')
+	if dot < 0 {
+		return
+	}
+	sessionID, token := rest[:dot], rest[dot+1:]
 	reply := string(bytes.TrimSpace(msg.Data))
+	switch reply {
+	case relayReplyReceived, relayReplyProgress, relayReplyDone, relayReplyNak:
+	default:
+		return
+	}
 	m.framesMu.Lock()
 	frame := m.frames[token]
 	if frame == nil {
 		m.framesMu.Unlock()
 		return
 	}
-	switch reply {
-	case relayReplyReceived, relayReplyProgress:
-		frame.answered = true
-	case relayReplyDone, relayReplyNak:
-		frame.answered = true
+	if frame.run.sessionID != sessionID {
+		m.framesMu.Unlock()
+		m.logger.Warn("session relay refused a reply naming another session than the one its frame was sent to; the frame is unchanged",
+			slog.String("session_id", frame.run.sessionID), slog.String("reply_session_id", sessionID), slog.String("reply", reply))
+		return
+	}
+	frame.answered = true
+	if reply == relayReplyDone || reply == relayReplyNak {
 		delete(m.frames, token)
 		delete(frame.run.outstanding, token)
-	default:
-		m.framesMu.Unlock()
-		return
 	}
 	frame.run.answered.Store(true)
 	m.framesMu.Unlock()
