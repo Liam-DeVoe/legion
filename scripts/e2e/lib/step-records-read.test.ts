@@ -216,6 +216,15 @@ describe("step-records-read.sh", () => {
     expect(short.code).toBe(2);
   });
 
+  test("an answer with a line that is no run is UNKNOWN, exit 2, even when the count holds", () => {
+    const { code, stdout } = read(
+      `${key}: 11 steps in 1 tasks\n${whole.slice(1).join("\n")}\nwarning: the server is slow\n`
+    );
+    expect(stdout).toContain("UNKNOWN: the line is no run: warning: the server is slow");
+    expect(stdout).not.toContain("PASS");
+    expect(code).toBe(2);
+  });
+
   test("no issue, two issues or a malformed key is refused, exit 2, reading nothing", () => {
     for (const args of [[], [key, "INFRA-43"], ["infra-42"]]) {
       const { code, stderr, calls } = read(whole.join("\n") + "\n", args);
