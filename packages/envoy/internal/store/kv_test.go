@@ -1353,7 +1353,7 @@ func TestPlanInterestKeepsTheControllerLaneAHeartbeatOmits(t *testing.T) {
 		role      = "legion-acme-controller"
 		lane      = "notifications.legion.acme.controller"
 	)
-	own := contracts.AgentSubject(sessionID)
+	own := contracts.LegacyAgentSubject(sessionID)
 	if _, err := reg.SetRole(sessionID, "m1", role, false); err != nil {
 		t.Fatalf("SetRole: %v", err)
 	}
@@ -1431,7 +1431,7 @@ func TestUpsertPlannedKeepsAnUnsubscribeThatOutranItsPlan(t *testing.T) {
 		sessionID = "ses_unsubscribe_race"
 		followed  = "notifications.dispatch.issue.KEY-1.>"
 	)
-	own := contracts.AgentSubject(sessionID)
+	own := contracts.LegacyAgentSubject(sessionID)
 	ctx := context.Background()
 	registration, err := reg.PlanInterest(ctx, sessionID, []string{followed, own})
 	if err != nil {
@@ -3231,7 +3231,7 @@ func TestRewatchOntoARecreatedBucketRefillsTheCache(t *testing.T) {
 	putInterest(t, recreated, Interest{SessionID: "ses_b", MachineID: "m1", Topics: []string{"notifications.b"}})
 	var swept []string
 	completion := held.holdCompletion(t, func() { swept = cachedIDs(reg) })
-	if err := reg.Rewatch(conn); err != nil {
+	if err := reg.Rewatch(context.Background(), conn); err != nil {
 		t.Fatalf("Rewatch: %v", err)
 	}
 	waitClosed(t, completion.reached, "the new bucket's read to deliver every record")
@@ -3281,7 +3281,7 @@ func TestARewatchThatCannotOpenTheRoleBucketMovesNothing(t *testing.T) {
 	roles, roleWatch := reg.roles(), reg.roleWatcher.KV()
 	roleWatcher := reg.roleWatcher
 	second, closeSecond := connectNATS(t)
-	if err := reg.Rewatch(second); err == nil {
+	if err := reg.Rewatch(context.Background(), second); err == nil {
 		t.Fatal("Rewatch onto a connection without the role bucket succeeded")
 	}
 	closeSecond()
@@ -3331,7 +3331,7 @@ func TestARewatchWhoseInterestWatcherCannotMoveMovesNothing(t *testing.T) {
 	roles, roleWatch := reg.roles(), reg.roleWatcher.KV()
 	roleWatcher := reg.roleWatcher
 	second, closeSecond := connectNATS(t)
-	if err := reg.Rewatch(second); err == nil {
+	if err := reg.Rewatch(context.Background(), second); err == nil {
 		t.Fatal("Rewatch onto a connection without the interest bucket succeeded")
 	}
 	closeSecond()

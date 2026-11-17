@@ -433,6 +433,7 @@ func TestWhoamiAlwaysPrintsJSON(t *testing.T) {
 	t.Parallel()
 	binary := buildAgentSecrets(t)
 	broker, _ := fakeBroker(t)
+	defer broker.Close()
 	keyDir := newKeyDir(t)
 
 	selfOut, selfErr, selfCode := runAgentSecrets(t, binary, broker.URL, keyDir, nil, "self", "--json")

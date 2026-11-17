@@ -104,7 +104,7 @@ func unpinnedRoleMentionPastItsLease(ctx context.Context, t *testing.T) lapsedMe
 		t.Fatalf("%s was sent %+v once the lease of its own mention of %s lapsed, want nothing: no attempt names that session while the sender has pinned none, so this copy carries the event's own key %s - one that host never claimed - and the mention lands beside it. The copy is the fallback pass's to key, from the attempts as they stand when it publishes them",
 			holder, got, target, fmt.Sprintf("dispatch-%d", comment.ID))
 	}
-	row := readHeldCopy(t, rig.database, commentID, contracts.AgentSubject(holder))
+	row := readHeldCopy(t, rig.database, commentID, contracts.LegacyAgentSubject(holder))
 	if row.settled || row.published || row.attempts != 0 {
 		t.Fatalf("the copy held for %s reads settled=%v published=%v attempt_count=%d, want an unsettled row no pass has decided yet",
 			holder, row.settled, row.published, row.attempts)
@@ -115,9 +115,9 @@ func unpinnedRoleMentionPastItsLease(ctx context.Context, t *testing.T) lapsedMe
 			attempts, failure, reached)
 	}
 	_, _, reached := eventState(t, rig.database, comment.ID)
-	if slices.Contains(reached, contracts.AgentSubject(holder)) {
+	if slices.Contains(reached, contracts.LegacyAgentSubject(holder)) {
 		t.Fatalf("the comment reached %v, want %s not among them: the copy bound for it is the fallback row's",
-			reached, contracts.AgentSubject(holder))
+			reached, contracts.LegacyAgentSubject(holder))
 	}
 	return lapsedMention{rig: rig, commentID: commentID, comment: comment, target: target, holder: holder, claimant: claimant}
 }
@@ -157,7 +157,7 @@ func TestACopyKeptPastAnUnpinnedRoleMentionsLeaseIsKeyedByThatMention(t *testing
 		publishFallbackCopies(ctx, staged.rig.deps(), unfenced{}, holdingProcess(t, staged.rig.database))
 		staged.claimant.drained(t)
 
-		row := readHeldCopy(t, staged.rig.database, staged.commentID, contracts.AgentSubject(staged.holder))
+		row := readHeldCopy(t, staged.rig.database, staged.commentID, contracts.LegacyAgentSubject(staged.holder))
 		if !row.settled || row.published {
 			t.Fatalf("the copy held for %s reads settled=%v published=%v, want it settled with nothing published: the mention delivered the comment",
 				staged.holder, row.settled, row.published)
@@ -182,7 +182,7 @@ func TestACopyKeptPastAnUnpinnedRoleMentionsLeaseIsKeyedByThatMention(t *testing
 
 		publishFallbackCopies(ctx, staged.rig.deps(), unfenced{}, holdingProcess(t, staged.rig.database))
 
-		row := readHeldCopy(t, staged.rig.database, staged.commentID, contracts.AgentSubject(staged.holder))
+		row := readHeldCopy(t, staged.rig.database, staged.commentID, contracts.LegacyAgentSubject(staged.holder))
 		if !row.settled || !row.published {
 			t.Fatalf("the copy held for %s reads settled=%v published=%v, want it published: its mention failed, so the outbox owes that session the comment",
 				staged.holder, row.settled, row.published)

@@ -78,7 +78,7 @@ func TestARequestIsAnsweredByTheStreamsAcknowledgementAlone(t *testing.T) {
 	_, url, client := requestClient(t)
 	window := client.WindowUntil(nil)
 
-	stored := contracts.AgentSubject("ses_request_stored")
+	stored := contracts.LegacyAgentSubject("ses_request_stored")
 	if err := answerOf(t, window.Request(stored, forwardEnvelope("stored"), bus.RequestOptions{MsgID: bus.ForwardMsgID("stored", stored), Timeout: busWait}), busWait); err != nil {
 		t.Fatalf("a Request the stream acknowledged, with nobody subscribed to its subject, returned %v, want nil", err)
 	}
@@ -162,8 +162,8 @@ func TestRequestsUnderOneMsgIDLeaveTheStreamOneCopy(t *testing.T) {
 	_, _, client := requestClient(t)
 	window := client.WindowUntil(nil)
 	item := forwardEnvelope("once")
-	holder := contracts.AgentSubject("ses_request_once")
-	other := contracts.AgentSubject("ses_request_other")
+	holder := contracts.LegacyAgentSubject("ses_request_once")
+	other := contracts.LegacyAgentSubject("ses_request_other")
 
 	for attempt := 1; attempt <= 2; attempt++ {
 		opts := bus.RequestOptions{MsgID: bus.ForwardMsgID(item.DedupeKey, holder), Timeout: busWait}
@@ -257,7 +257,7 @@ func TestARequestAFullStreamRefusesIsAnsweredByThatRefusalAtOnce(t *testing.T) {
 	_, _, client := requestClient(t, bus.WithStreamMaxBytes(limit))
 	bustest.FillStream(t, client, 1024)
 
-	holder := contracts.AgentSubject("ses_request_full")
+	holder := contracts.LegacyAgentSubject("ses_request_full")
 	item := forwardEnvelope("full")
 	started := time.Now()
 	err := answerOf(t, client.WindowUntil(nil).Request(holder, item,
@@ -278,7 +278,7 @@ func TestManyRequestsInFlightOnOneWindowEachTakeTheirOwnAnswer(t *testing.T) {
 	t.Parallel()
 	const senders = 20
 	_, _, client := requestClient(t)
-	subject := contracts.AgentSubject("ses_request_many")
+	subject := contracts.LegacyAgentSubject("ses_request_many")
 	window := client.WindowUntil(nil)
 
 	var wg sync.WaitGroup
@@ -348,7 +348,7 @@ func TestProbeAnswersWhetherTheWindowsConnectionStillAnswers(t *testing.T) {
 func TestAWindowSendsNothingPastItsDeadline(t *testing.T) {
 	// Serial: its assertion is a time: it holds the send's answer to about its 200 ms deadline.
 	server, _, client := requestClient(t)
-	subject := contracts.AgentSubject("ses_window_deadline")
+	subject := contracts.LegacyAgentSubject("ses_window_deadline")
 	server.Stop(t)
 	waitUntil := time.Now().Add(busWait)
 	for client.Connected() {

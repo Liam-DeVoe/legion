@@ -353,9 +353,10 @@ jobs:
         run: .github/scripts/postgres-service-settings.sh "${{ job.services.postgres_pgmigrate.id }}" postgres_pgmigrate
       - name: Read the events service's settings back
         run: .github/scripts/postgres-service-settings.sh "${{ job.services.postgres_events.id }}" postgres_events
-      # Every image the tests here start: testnats.Image and testnats.HubImage, which the
-      # natslive call of the unit step below runs the two-image matrix on, and tests3.Image,
-      # pulled first for the reason the action gives.
+      # Every image the tests here start: testnats.HubImage, which the natslive call of the unit
+      # step below runs Envoy on, testnats.Image (nats:2.10), which only the tests of that server
+      # itself and of the listener's refusal of it start, and tests3.Image, pulled first for the
+      # reason the action gives.
       - name: Pull test container images
         uses: ./.github/actions/pull-test-images
         with:
@@ -599,18 +600,21 @@ jobs:
           DISPATCH_TEST_DATABASE_URL=postgres://postgres:ci@localhost:5434/postgres?sslmode=disable go test -json -count=1 -timeout 3m -run '^(TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument)$' ./cmd/dispatch/ > "$RUNNER_TEMP/go-test-json/shutdown.json" 2> "$RUNNER_TEMP/go-test-logs/shutdown.log" &
           shutdown=$!
           # internal/testnats runs its server in the test process, so the package list above
-          # starts no container. The two-image matrix, which proves a rendered authorization on
-          # nats:2.10 and on the image the hub runs, is the one thing an in-process server cannot
-          # reproduce: it sits behind the natslive tag, and this call is where it runs
-          # (INFRA-250). internal/bus has one test of its own on that matrix: the module links
-          # nats-server v2.15.1 in process, which caps a stream that sets no cap at a default of
-          # its own and takes a change of MaxConsumers on a stream that already exists, so the
-          # raise of an uncapped ENVOY_NOTIFICATIONS to the consumer cap this binary compiles and
-          # the keeper's restore of a cap an operator lowered or unset are proved in process.
-          # What is left for a real image is the pair of 2.10 cases - the stream with no cap the
-          # binary must leave alone, and the refusal of the raise of a lower cap, naming the
-          # field, the cap and the first server taking the change - and the hub's own reconcile
-          # on the nats:2.15.1-alpine image the deployment runs (INFRA-1384). Each package runs
+          # starts no container. The real-server tests, a rendered authorization on the image the
+          # hub runs among them, are the one thing an in-process server cannot reproduce: they sit
+          # behind the natslive tag, and this call is where they run (INFRA-250). internal/bus has
+          # tests of its own there. One is the consumer cap: the module links nats-server v2.15.1
+          # in process, which caps a stream that sets no cap at a default of its own and takes a
+          # change of MaxConsumers on a stream that already exists, so the raise of an uncapped
+          # ENVOY_NOTIFICATIONS to the consumer cap this binary compiles and the keeper's restore of
+          # a cap an operator lowered or unset are proved in process. What is left for a real image
+          # is the pair of 2.10 cases - the stream with no cap the binary must leave alone, and the
+          # refusal of the raise of a lower cap, naming the field, the cap and the first server
+          # taking the change - and the hub's own reconcile on the nats:2.15.1-alpine image the
+          # deployment runs (INFRA-1384). The others are a session consumer's own messages behind
+          # other sessions' traffic on the hub's image, the listener's refusal of nats:2.10
+          # (natsversion), and that refusal's control: on 2.10, stepped past, the consumer loses
+          # its old-form message. Each package runs
           # only the tests its tag adds: `-tags natslive ./pkg` would re-run the package's
           # untagged tests, which already run elsewhere - internal/testnats in the package list
           # above, and internal/bus in envoy-go-race, which that list's grep -Ev leaves out - so

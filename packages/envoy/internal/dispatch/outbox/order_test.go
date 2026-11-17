@@ -216,7 +216,7 @@ func holdsBackASessionRouteTheStreamRefuses(t *testing.T) {
 	second, third := write("second"), write("third")
 
 	topic := "notifications.dispatch.issue.T-1.message.created"
-	session := contracts.AgentSubject("S")
+	session := contracts.LegacyAgentSubject("S")
 	// The two later events reach the topic family while the first event is still unreached at S:
 	// the back-off holds back its own destination and no other. It is read here, while that hold
 	// is on, and not from where two subjects' copies fell in one stream's sequence afterwards:
@@ -279,7 +279,7 @@ func holdsBackARoleHolderWhoseForwardIsNotAcknowledged(t *testing.T) {
 		mu       sync.Mutex
 		arrivals []int64
 	)
-	sub, err := rig.conn.Subscribe(contracts.AgentSubject(holder), func(msg *natsgo.Msg) {
+	sub, err := rig.conn.Subscribe(contracts.LegacyAgentSubject(holder), func(msg *natsgo.Msg) {
 		id := envelopeEventID(t, msg.Data)
 		mu.Lock()
 		arrivals = append(arrivals, id)
@@ -582,7 +582,7 @@ func TestTheBatchResolvesFollowersAuthorsRecipientsAndMentionDeliveriesInAtMostS
 		if strings.HasPrefix(item.Topic, contracts.AgentTopicPrefix) {
 			agents++
 		}
-		if item.Topic == contracts.AgentSubject("claimant") {
+		if item.Topic == contracts.LegacyAgentSubject("claimant") {
 			claimant++
 		}
 	}
@@ -655,7 +655,7 @@ func TestOneBrokenRowOfARecipientReadCostsTheBatchAboutTwoStatementsPerHalving(t
 			}
 			continue
 		}
-		want := []string{contracts.AgentSubject(fmt.Sprintf("author-%d", index))}
+		want := []string{contracts.LegacyAgentSubject(fmt.Sprintf("author-%d", index))}
 		if row.publishedAt == nil || row.attempts != 0 || !slices.Equal(agentTopics(row.destinations), want) {
 			t.Fatalf("edit %d has published_at %v, attempt_count %d and published_destinations %v, want it published to %v",
 				index, row.publishedAt, row.attempts, row.destinations, want)

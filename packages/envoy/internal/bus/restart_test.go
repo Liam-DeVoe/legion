@@ -5,6 +5,7 @@ package bus_test
 // (dispatch://INFRA-1075).
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -287,7 +288,7 @@ func TestAReconnectInPlaceKeepsTheSubscriptionsNATSRestored(t *testing.T) {
 		t.Fatalf("role subscribe: %v", err)
 	}
 	reconnected := make(chan struct{}, 1)
-	client.AddReconnectHook(func(*natsgo.Conn) error {
+	client.AddReconnectHook(func(context.Context, *natsgo.Conn) error {
 		reconnected <- struct{}{}
 		return nil
 	})
@@ -361,7 +362,7 @@ func TestAReconnectHookFailureIsReportedByItsStallUnlessTheClientStopped(t *test
 			}
 			t.Cleanup(client.Close)
 			hooked := make(chan struct{}, 1)
-			client.AddReconnectHook(func(*natsgo.Conn) error {
+			client.AddReconnectHook(func(context.Context, *natsgo.Conn) error {
 				if tc.stop {
 					// The shutdown begins while the hook is still running, and the hook's next
 					// server request fails on the closed connection.

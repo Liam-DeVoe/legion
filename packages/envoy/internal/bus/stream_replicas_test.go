@@ -2,6 +2,7 @@ package bus
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -235,7 +236,7 @@ func TestEnsureKeyValueRaisesAnR1BucketToThreeCopiesChangingNothingElse(t *testi
 	before := testnats.AwaitSettledStream(t, js, "KV_"+bucket)
 
 	counting := &countingJetStream{JetStreamContext: js}
-	if _, err := OpenKeyValue(conn, counting, bucket); err != nil {
+	if _, err := OpenKeyValue(context.Background(), conn, counting, bucket); err != nil {
 		t.Fatalf("open the bucket for a rebuild: %v", err)
 	}
 	if writes := counting.written(); len(writes) != 0 {
