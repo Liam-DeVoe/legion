@@ -84,7 +84,7 @@ function renderLine(advances: Issue["advances"], closed = false, read: Prioritie
     /** The issue read again, with another set and revision, under the same line. */
     reread: (entries: Issue["advances"], revision: number) =>
       view.rerender(line(entries, revision)),
-    trigger: () => q.getByRole("button", { name: "Add a priority to CORE-9" }),
+    trigger: () => q.getByRole("button", { name: "Edit priorities" }),
     unmountAll: () => {
       view.unmount();
       listPriorities.mockRestore();

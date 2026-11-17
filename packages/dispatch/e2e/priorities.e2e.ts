@@ -805,9 +805,7 @@ test("an issue's header names the priorities it advances and links to each", asy
     await page.goto(`/issues/${seed.clock}`);
     await expect(page.getByTestId("issue-advances").getByRole("link")).toHaveCount(0);
     await expect(page.getByTestId("issue-advances")).not.toContainText("Advances");
-    await expect(
-      page.getByRole("button", { name: `Add a priority to ${seed.clock}` })
-    ).toBeVisible();
+    await expect(page.getByRole("button", { name: "Edit priorities" })).toBeVisible();
 
     // A priority an issue inherits says so, and the picker offers no row that would take it off:
     // that relation is the ancestor's, and a relation on a child places nothing above it. The
@@ -816,7 +814,7 @@ test("an issue's header names the priorities it advances and links to each", asy
     const inherited = page.getByTestId("issue-advances");
     await expect(inherited.getByRole("link", { name: `P3 ${seed.titles[2]}` })).toBeVisible();
     await expect(inherited).toContainText("inherited");
-    await page.getByRole("button", { name: `Add a priority to ${seed.child}` }).click();
+    await page.getByRole("button", { name: "Edit priorities" }).click();
     const offered = page.getByRole("listbox", { name: "Priorities options" });
     await expect(
       offered.getByRole("option", { exact: true, name: `P1 ${seed.titles[0]}` })
@@ -902,7 +900,7 @@ test("a person places an issue under a priority from the issue and takes it off 
     await page.goto(`/issues/${seed.clock}`);
 
     // The header's picker, as the labels beside it: a tick stages the set and the close writes it.
-    const picker = page.getByRole("button", { name: `Add a priority to ${seed.clock}` });
+    const picker = page.getByRole("button", { name: "Edit priorities" });
     const option = page
       .getByRole("listbox", { name: "Priorities options" })
       .getByRole("option", { exact: true, name: `P2 ${seed.titles[1]}` });
@@ -994,7 +992,7 @@ test("another person's delete of a priority leaves an open issue page, whose nex
     // The reader places the issue under P2 from the header's own picker, which holds P1 ticked
     // and writes on its close. The write sends P1 and P2, which the server takes; a set still
     // naming P3 would be refused, a priority that is gone.
-    const picker = reader.getByRole("button", { name: `Add a priority to ${seed.smoke}` });
+    const picker = reader.getByRole("button", { name: "Edit priorities" });
     const offered = reader.getByRole("listbox", { name: "Priorities options" });
     await picker.click();
     await expect(

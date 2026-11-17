@@ -750,9 +750,6 @@ export const CONTROL_LABELS = freeze({
   accept: "Accept",
   /** The one control that reaches a property with no value yet (R11, which bans "more"). */
   add: "Add",
-  /** The control that places an issue under a priority, where the issue advances none: the
-   *  words its name begins with, which `IssuePriorityLine.tsx` ends with the issue's key. */
-  add_priority: "Add a priority",
   /** What the priority row says of a priority the issue advances because an issue above it
    *  does, which is that issue's to remove (dispatch://INFRA-2947 R4). */
   advances_inherited: "inherited",
@@ -847,6 +844,10 @@ export const CONTROL_LABELS = freeze({
   editing: "Editing:",
   /** Gives an issue that has a parent a different one (R11, row one). */
   edit_parent: "Edit parent issue",
+  /** Opens the picker of the priorities an issue advances, which adds one and takes one off
+   *  alike, named as the labels' control beside it is ("Edit labels"); `IssuePriorityLine.tsx`
+   *  draws it. */
+  edit_priorities: "Edit priorities",
   /** What an external link says of an address the browser will not open. */
   external_link_unsafe: "unsafe external link",
   /** The box that narrows the outline to the rows whose words hold what is typed, which is

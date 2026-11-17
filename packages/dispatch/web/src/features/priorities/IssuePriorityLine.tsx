@@ -16,6 +16,7 @@ import {
   textSecondaryHoverToPrimary,
   textSecondaryOnSurface,
 } from "../../theme/classes";
+import { CONTROL_LABELS } from "../issue-page/page-words";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { orderLabel } from "./priorities-model";
 import { priorityPath } from "./priority-routes";
@@ -186,7 +187,7 @@ export function IssuePriorityLine({
         // visible text for WCAG 2.5.3 to match. The character is a plain "+" (U+002B): the
         // fullwidth "＋" this line held draws as an empty box where no CJK font is installed,
         // which is this pod's Chromium and some readers' browsers.
-        triggerAriaLabel={`Add a priority to ${issue.key}`}
+        triggerAriaLabel={CONTROL_LABELS.edit_priorities}
         triggerClassName={`inline-flex min-h-11 shrink-0 items-center rounded-full px-2 py-2 text-sm whitespace-nowrap outline-none ${surfaceMutedStrongBg} ${textSecondaryOnSurface} ${textSecondaryHoverToPrimary}`}
       >
         +
