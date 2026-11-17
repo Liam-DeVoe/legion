@@ -947,7 +947,7 @@ func sameCredentialGrant(admitted, now *model.Credential) bool {
 	if admitted == nil || now == nil {
 		return admitted == now
 	}
-	return sameProjects(admitted.Projects, now.Projects) && sameProjects(admitted.Scopes, now.Scopes)
+	return sameSet(admitted.Projects, now.Projects) && sameSet(admitted.Scopes, now.Scopes)
 }
 
 type apiError struct {
