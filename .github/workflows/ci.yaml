@@ -2805,13 +2805,14 @@ jobs:
               - 'packages/daemon/internal/prompts/roles/architect-root.md'
               - 'packages/daemon/internal/workflow/design_approved_wake_extract.txt'
               - 'packages/daemon/internal/runtime/sandbox/reclaim_doc_extract.txt'
-              # The store's migrations, which the text checks read through migrations.All to hold
-              # the guide to them: its list of those above the phase entry, and its way back of the
-              # step records, to the block the roll forward's header carries.
+              # The store's migrations, which the text checks read through migrations.All and
+              # migrations.WayBack to hold the guide to them: its list of those above the phase
+              # entry, and its way backs of the step records and of the plan ratings, to the block
+              # each migration's header carries.
               - 'packages/daemon/internal/store/migrations/*.up.sql'
               # The seven copies of shipped texts that readExtract (waiting_line_texts_test.go:475)
               # reads to hold them to the texts themselves: the waiting line's four, the two way
-              # backs' (way_back_doc_test.go:123) and the troubleshooting page's refusal table's
+              # backs' (way_back_doc_test.go:127) and the troubleshooting page's refusal table's
               # (troubleshooting_refusals_doc_test.go:41), each committed beside the package whose
               # own check reads it. They are .txt files, which the module's `**/*.go` above does
               # not match.
@@ -2843,8 +2844,8 @@ jobs:
               - 'scripts/e2e/README.md'
               # The guide packages/envoy/internal/broker/oauth, packages/daemon/internal/runtime/sandbox
               # and packages/daemon/internal/daemon hold their committed extracts to
-              # (internal/textcheck/claims_doc_test.go:43,50, reclaim_doc_test.go:51,277 and
-              # way_back_doc_test.go:146).
+              # (internal/textcheck/claims_doc_test.go:43,50, reclaim_doc_test.go:51,281 and
+              # way_back_doc_test.go:150).
               - 'docs/kubernetes.md'
               # The three files packages/daemon/internal/textcheck/design_approved_wake_test.go
               # holds the architect's prompt to (:32-38).
