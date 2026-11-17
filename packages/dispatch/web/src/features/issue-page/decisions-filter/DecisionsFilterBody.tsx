@@ -12,6 +12,7 @@ import {
 import { useNavigate } from "react-router-dom";
 
 import type { Artifact, IssueDetails } from "../../../api/types";
+import { QueryError } from "../../../components/QueryError";
 import {
   focusVisibleRing,
   pageInkText,
@@ -22,6 +23,7 @@ import {
 import { useAgentText } from "../../refs/AgentName";
 import { useSetFocusedNode } from "../focused-node";
 import { focusedNodeOf, type OutlineRequest, useReleaseFocus } from "../IssueTree";
+import { bringOnScreen } from "../identity-block";
 import { documentOfNode } from "../issue-artifacts";
 import { lineWords, type TreeNode } from "../issue-tree";
 import { chipWords } from "../node-row-chip";
@@ -29,7 +31,13 @@ import { useTakeOutlineRequest } from "../outline-request";
 import { threadMarks } from "../outline-thread-read";
 import { useOutlineWriter } from "../outline-writer";
 import { authorText, pageChrome } from "../page-structure";
-import { CONTROL_LABELS, DECISIONS_WORDS, isReader, PRESET_NAMES } from "../page-words";
+import {
+  ANSWER_LINES,
+  CONTROL_LABELS,
+  DECISIONS_WORDS,
+  isReader,
+  PRESET_NAMES,
+} from "../page-words";
 import { usePressFocus } from "../press-focus";
 import type { DrawnRow } from "../tree-fold";
 import { nodesInOrder } from "../tree-keys";
@@ -87,6 +95,14 @@ const NOTHING = (): void => {};
  * that say which questions and decisions there are hold their answers, `q` and `w` with nowhere
  * to go say nothing: no question or decision to go to may mean only that they have not arrived
  * (`decisions-entries.ts`).
+ *
+ * A read that says which entries there are and was refused before it first answered - the
+ * decisions, the asks - draws one line in the page's words over the list, with a Retry that
+ * asks that read alone again, in place of the entries it would give. A Retry takes the focus
+ * the tree is given only where the list draws no row, which is how `t d` reaches it; where
+ * rows are drawn the tab stop takes it, and Shift+Tab from a row goes up to the Retry. A Retry
+ * pressed from the keyboard whose line then goes leaves the focus in the list, never on the
+ * page.
  *
  * The reads are the seam's: the ones the page's tree is built from, under the keys it reads them
  * by (`useIssueTree.ts`), so the body costs no request of its own (R20).
@@ -258,7 +274,8 @@ export function DecisionsFilterBody({
   // The foot's control is inside the list, so the focus going to it from a row, by Tab or a
   // press, never leaves the list and `releaseFocus` does not act. The focus is off every row
   // all the same, so it does what the list's leave does, and the panel goes back to the issue's
-  // own facts.
+  // own facts. A refused read's line is inside the list too, and a focus on it, by Shift+Tab
+  // from a row say, is off every row the same way.
   const footFocused = useCallback(() => {
     leave();
     setFocusedNode(undefined);
@@ -340,17 +357,52 @@ export function DecisionsFilterBody({
   }, [drawn, partOf, reveal]);
 
   // The tree element takes the focus only to pass it on: to the list's tab stop, else, where
-  // the list draws no row, to the foot's control. `t d` focuses the tree where it finds no tab
-  // stop in it (`useIssueKeymap.ts`), and a list that holds only the foot has none. On an issue
-  // the view draws nothing for there is neither, and the tree keeps the focus, which leaves it
-  // in the list. A focus that came up from a row is the row's own. The tab stop is looked for
-  // in the whole list, since the foot's rows stand after the tree element and are its rows all
-  // the same (`aria-owns`).
+  // the list draws no row, to the first Retry where a read was refused, else to the foot's
+  // control. `t d` focuses the tree where it finds no tab stop in it (`useIssueKeymap.ts`): a
+  // list that holds only the foot has none, nor has one whose read was refused and that draws
+  // no row, and no key in the tree reaches a Retry, which stands over it. A Retry takes the
+  // focus only where no row is drawn: where one is, the reader is on the list's entries, and
+  // Shift+Tab from a row goes up to the Retry. On an issue the view draws nothing for there is
+  // none of them, and the tree keeps the focus, which leaves it in the list. A focus that came
+  // up from a row is the row's own. The tab stop is looked for in the whole list, since the
+  // foot's rows stand after the tree element and are its rows all the same (`aria-owns`).
   const passFocus = useCallback((event: FocusEvent<HTMLDivElement>) => {
     if (event.target !== event.currentTarget) return;
-    const stopRow = body.current?.querySelector<HTMLElement>('[data-node-row][tabindex="0"]');
-    (stopRow ?? footControl.current)?.focus();
+    const stopRow = body.current?.querySelector<HTMLElement>(STOP_ROW);
+    const retry = body.current?.querySelector<HTMLElement>(UNREADABLE_RETRY);
+    if (stopRow == null && retry != null) focusOn(retry);
+    else (stopRow ?? footControl.current)?.focus();
   }, []);
+  // The read whose Retry the reader pressed with the focus on its line, while that line is
+  // drawn; then `tree` while the tree holds the focus that line held, for want of anywhere else
+  // to put it, until the read brings its rows or is refused again.
+  const retried = useRef<DecisionsRead | "tree" | undefined>(undefined);
+  // A read asked again that holds no answer is out again rather than refused (TanStack Query's
+  // `pending`), so its line goes, and the focus on its Retry with it. The focus is kept in the
+  // list, in the order the tree passes it on (`passFocus`): on the list's tab stop, else, where
+  // no row is drawn, on the next refused read's Retry, else on the tree, which passes it to the
+  // foot's control where the list draws one and else holds it until a row or a Retry comes to
+  // take it. A press by the keyboard never leaves it on the page's body. This looks after every
+  // render, since any render can take a line away or bring the rows.
+  useLayoutEffect(() => {
+    const held = retried.current;
+    if (held === undefined) return;
+    // While the read's line is drawn, the focus is on its Retry or where the reader put it.
+    if (held !== "tree" && parts.unreadable.includes(held)) return;
+    const active = document.activeElement;
+    const lost = active === null || active === document.body || !active.isConnected;
+    // A focus the reader moved elsewhere in the meantime stays where they put it.
+    if (held === "tree" ? active !== tree.current : !lost) {
+      retried.current = undefined;
+      return;
+    }
+    const stopRow = body.current?.querySelector<HTMLElement>(STOP_ROW);
+    const retry = body.current?.querySelector<HTMLElement>(UNREADABLE_RETRY);
+    if (stopRow != null) stopRow.focus();
+    else if (retry != null) focusOn(retry);
+    else if (lost) tree.current?.focus();
+    retried.current = document.activeElement === tree.current ? "tree" : undefined;
+  });
   // A page opened on a list that holds only the foot has no row for the stage to focus
   // (`slots/stage.tsx`), so the tree takes the focus once, on the stage's own terms: no address
   // names an entry and nothing holds the focus. It goes through the tree, so `t d` and a page
@@ -525,10 +577,35 @@ export function DecisionsFilterBody({
       className="mx-auto mt-3.5 mb-[120px] flex w-full max-w-[960px] min-w-0 flex-col max-[761px]:mt-2.5"
       data-decisions-body=""
       onBlur={releaseFocus}
+      // A focus on a refused read's line is off every row, as one on the foot's control is.
+      onFocus={(event) => {
+        if (event.target.closest(UNREADABLE_LINE) !== null) footFocused();
+      }}
       // A press in the list, whose focus a row takes once the press is over (`press`).
       onMouseDown={press.onMouseDown}
       ref={body}
     >
+      {/* Each read that was refused before it first answered, one line in the page's words with
+          a Retry that asks that read alone again, the decisions before the questions. The lines
+          stand over the tree and never in it: a tree holds rows and groups of rows alone. They
+          stand in place of the entries the read would give: the tree is built from the same
+          reads (`useIssueTree.ts`), so a read that holds nothing gives the list no entry of its
+          own, and no part is drawn for it. */}
+      {parts.unreadable.map((read) => (
+        <div data-decisions-unreadable={read} key={read}>
+          <QueryError
+            message={UNREADABLE_LINES[read]}
+            onRetry={() => {
+              // A press with the focus on this line, as Enter or Space on its Retry makes,
+              // marks the read, so the focus stays in the list once the line is gone. A
+              // pointer's press that left the focus where it was marks nothing.
+              const line = document.activeElement?.closest<HTMLElement>(UNREADABLE_LINE);
+              if (line?.dataset.decisionsUnreadable === read) retried.current = read;
+              parts.retry(read);
+            }}
+          />
+        </div>
+      ))}
       {/* The foot's rows stand after its control, outside this element, and are this tree's
           all the same (`aria-owns`), so the page holds one tree. The element itself takes the
           focus only to pass it on (`passFocus`), and only from a script: a press on it outside
@@ -647,8 +724,8 @@ export function DecisionsFilterBody({
           names is no entry of the list, so its row and this line are drawn together. Until the
           reads that say which questions and decisions there are hold their answers
           (`decisions-entries.ts`), a list with nothing in it may be one whose entries have not
-          arrived, so no line says the issue holds nothing, as the outline draws none then
-          (`slots/body.tsx`). */}
+          arrived, or whose read was refused and says so in its own line, so no line says the
+          issue holds nothing, as the outline draws none then (`slots/body.tsx`). */}
       {parts.readsHeld &&
       parts.open_questions.length === 0 &&
       parts.review.length === 0 &&
@@ -683,4 +760,33 @@ function neighbourOf(
   const at = stood.indexOf(id);
   const stays = (entry: string) => now.get(entry) === part;
   return stood.slice(at + 1).find(stays) ?? stood.slice(0, at).reverse().find(stays);
+}
+
+/** The two reads the seam says may be refused, by the names it gives them. The seam's answer is
+ *  its own, so the body names them here; a read the seam adds fails `UNREADABLE_LINES` and the
+ *  Retry's mark until the body has a line for it. */
+type DecisionsRead = "decisions" | "asks";
+
+/** What the body says of each read refused before it first answered, in the page's words: the
+ *  decisions for the decisions read, and the questions for the asks. */
+const UNREADABLE_LINES: Readonly<Record<DecisionsRead, string>> = {
+  asks: ANSWER_LINES.questions_unreadable,
+  decisions: ANSWER_LINES.decisions_unreadable,
+};
+
+/** The line the body draws for a refused read, and its Retry; and the row that holds the list's
+ *  one tab stop, which `passFocus` and the Retry's kept focus look for in the whole list. */
+const UNREADABLE_LINE = "[data-decisions-unreadable]";
+const UNREADABLE_RETRY = `${UNREADABLE_LINE} button`;
+const STOP_ROW = '[data-node-row][tabindex="0"]';
+
+/** Puts the focus on `to` without scrolling to it, then brings it on screen on the next frame
+ *  where it still holds the focus (`bringOnScreen`). The frame is for `t d` with a read refused:
+ *  the chord shows the tree from its top once it has focused it (`useIssueKeymap.ts`), which
+ *  would leave a Retry that stands over the tree above the screen. */
+function focusOn(to: HTMLElement): void {
+  to.focus({ preventScroll: true });
+  requestAnimationFrame(() => {
+    if (document.activeElement === to) bringOnScreen(to);
+  });
 }

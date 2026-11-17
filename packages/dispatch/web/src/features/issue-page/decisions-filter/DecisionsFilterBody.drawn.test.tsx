@@ -25,6 +25,7 @@ import { NoTooltips } from "../NoTooltips";
 import { OutlineRequestProvider } from "../outline-request";
 import { KEY_REPORTS } from "../page-structure";
 import {
+  ANSWER_LINES,
   CONTROL_LABELS,
   DECISIONS_WORDS,
   EMPTY_STATE_LINES,
@@ -218,7 +219,7 @@ function decisionsText(made: readonly Decision[]): string {
 }
 
 /** The body over the issue whose tree holds `children`, with `asks`, `comments` and the
- *  decisions read of `made` as the cache holds them. `made` null leaves the decisions read out
+ *  decisions read of `made` as the cache holds them. `made` or `asks` null leaves that read out
  *  of the cache, as before it answers. */
 function renderBody(
   {
@@ -227,7 +228,7 @@ function renderBody(
     comments = [],
     made = [],
   }: {
-    asks?: DecisionsAsk[];
+    asks?: DecisionsAsk[] | null;
     children: TreeNode[];
     comments?: Comment[];
     made?: Decision[] | null;
@@ -246,7 +247,7 @@ function renderBody(
   });
   // The reads the page's tree is built from, under the keys it reads them by.
   if (made !== null) client.setQueryData(["decisions", KEY], decisionsRead(made));
-  client.setQueryData(["asks", KEY], asks);
+  if (asks !== null) client.setQueryData(["asks", KEY], asks);
   client.setQueryData(["comments", KEY], comments);
   // The decisions document's blocks (`issueDetails` names it by its role): none, so a Change is
   // placed by its quote alone, and no case makes a request for them.
@@ -497,7 +498,8 @@ test("the foot's heading agrees with how many decisions it holds", () => {
 });
 
 // R2: a part that holds nothing is not drawn, and an issue that holds no ask and no decision
-// says so in the page's one line for that.
+// says so in the page's one line for that. A read refused before it first answers says so in a
+// line of its own instead, with a Retry, and the focus stays in the list.
 test("a part that holds nothing is not drawn, and an empty issue says so once", async () => {
   const some = renderBody({ children: [openAsk("q-open")] });
   expect(
@@ -532,6 +534,107 @@ test("a part that holds nothing is not drawn, and an empty issue says so once", 
   } finally {
     getIssueDecisions.mockRestore();
   }
+
+  // The line a refused read draws over the list, read as a reader reads it: what it says, and
+  // its Retry.
+  const failedLine = (drawn: RenderResult, read: string) => {
+    const line = drawn.container.querySelector(`[data-decisions-unreadable="${read}"]`);
+    return line === null
+      ? null
+      : { retry: words(line.querySelector("button")), says: words(line.querySelector("p")) };
+  };
+  const retryOf = (drawn: RenderResult, read: string) =>
+    drawn.container.querySelector(`[data-decisions-unreadable="${read}"] button`);
+  const user = userEvent.setup();
+
+  // The decisions read is refused before it first answers. In place of the decisions it would
+  // give, its line says so over the list with a Retry that asks that read alone again, and no
+  // line says the issue holds nothing. The tree's own focus, which `t d` gives it, goes to that
+  // Retry. Enter on it asks again; the read answers this time, and its decision is drawn with
+  // the focus on its row: at no point is the focus left on the page's body.
+  const made = [decision("first", { links: [shaped(specRef("s1"))] })];
+  const refused = spyOn(api, "getIssueDecisions").mockRejectedValue(
+    new ApiError(503, { code: "UNAVAILABLE", error: "the store is not reachable" })
+  );
+  try {
+    const failed = renderBody({ children: [statement("s1")], made: null });
+    await waitFor(() =>
+      expect(failedLine(failed, "decisions")).toEqual({
+        retry: "Retry",
+        says: ANSWER_LINES.decisions_unreadable,
+      })
+    );
+    expect(failedLine(failed, "asks")).toBeNull();
+    expect(failed.container.querySelectorAll("[data-decisions-part]").length).toBe(0);
+    expect(failed.queryByText(EMPTY_LINE)).toBeNull();
+    const tree = failed.getByRole("tree", { name: CONTROL_LABELS.tree });
+    expect(tree.contains(retryOf(failed, "decisions"))).toBe(false);
+    await act(async () => tree.focus());
+    expect(document.activeElement).toBe(retryOf(failed, "decisions"));
+
+    refused.mockResolvedValue(decisionsRead(made));
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(failed.client.getQueryData(["decisions", KEY])).toBeDefined());
+    expect(refused).toHaveBeenCalledTimes(2);
+    expect(failedLine(failed, "decisions")).toBeNull();
+    // The line is gone and the tree the page builds from that read does not hold its decision
+    // yet: the tree holds the focus, in the list.
+    expect(document.activeElement).toBe(tree);
+    failed.again({ children: [statement("s1"), decisionNode("first")] });
+    await waitFor(() => expect(focusedRow(failed)).toBe(D("first")));
+    expect(document.activeElement).not.toBe(document.body);
+    failed.unmount();
+  } finally {
+    refused.mockRestore();
+  }
+
+  // The asks read is refused the same way: its line in place of the questions it would give,
+  // no line that the issue holds nothing, and the tree's focus on its Retry where no row is
+  // drawn.
+  const refusedAsks = spyOn(api, "listIssueAsks").mockRejectedValue(new Error("refused"));
+  try {
+    const failed = renderBody({ asks: null, children: [statement("s1")] });
+    await waitFor(() =>
+      expect(failedLine(failed, "asks")).toEqual({
+        retry: "Retry",
+        says: ANSWER_LINES.questions_unreadable,
+      })
+    );
+    expect(failedLine(failed, "decisions")).toBeNull();
+    expect(failed.container.querySelectorAll("[data-decisions-part]").length).toBe(0);
+    expect(failed.queryByText(EMPTY_LINE)).toBeNull();
+    await act(async () => failed.getByRole("tree", { name: CONTROL_LABELS.tree }).focus());
+    expect(document.activeElement).toBe(retryOf(failed, "asks"));
+    failed.unmount();
+
+    // With the decisions read drawn, its rows take the focus and the Retry does not: a focus on
+    // the tree, as the page's chord gives one where it finds no tab-stop row, or on the tab-stop
+    // row itself goes to a decision. Shift+Tab from that row takes the focus up to the Retry
+    // over the list, which is off every row, as the foot's control is, so the row the reader
+    // left is drawn as one they are not on.
+    const partial = renderBody({
+      asks: null,
+      children: [statement("s1"), decisionNode("first")],
+      made,
+    });
+    await waitFor(() => expect(retryOf(partial, "asks")).not.toBeNull());
+    await act(async () => partial.getByRole("tree", { name: CONTROL_LABELS.tree }).focus());
+    expect(focusedRow(partial)).toBe(D("first"));
+    await act(async () => (document.activeElement as HTMLElement).blur());
+    const row = rowOf(partial, D("first"));
+    await act(async () => row.focus());
+    expect(focusedRow(partial)).toBe(D("first"));
+    expect(row.querySelector("[data-node-body]")).not.toBeNull();
+    expect(row.querySelector("[data-node-card]")?.className).toContain(pageFocusedRow);
+    await user.tab({ shift: true });
+    expect(document.activeElement).toBe(retryOf(partial, "asks"));
+    expect(row.querySelector("[data-node-body]")).toBeNull();
+    expect(row.querySelector("[data-node-card]")?.className).not.toContain(pageFocusedRow);
+    expect(focusedRow(partial)).toBeUndefined();
+    partial.unmount();
+  } finally {
+    refusedAsks.mockRestore();
+  }
 });
 
 // R2: wherever a decision is drawn, one waiting for a person's review reads "Waiting for
@@ -564,7 +667,8 @@ test("a decision reads how it stands in the three states the page names", async 
     word: NODE_STATE_WORDS.decision.waiting_review,
   });
   // The name is the person's own, drawn as an author's text and never as an id of the page's.
-  expect(state(D("kept"))).toMatchObject({
+  expect(state(D("kept"))).toEqual({
+    colour: "decision",
     shape: GLYPH_NAMES[GLYPH_TOKENS.states.decision.kept],
     token: "kept",
     word: `${NODE_STATE_WORDS.decision.kept} alice`,
@@ -572,7 +676,8 @@ test("a decision reads how it stands in the three states the page names", async 
   expect(
     rowOf(view, D("kept")).querySelector("[data-kept-by][data-author-text]")?.textContent
   ).toBe("alice");
-  expect(state(D("replaced"))).toMatchObject({
+  expect(state(D("replaced"))).toEqual({
+    colour: "quiet",
     shape: GLYPH_NAMES[GLYPH_TOKENS.states.decision.replaced],
     token: "replaced",
     word: NODE_STATE_WORDS.decision.replaced,

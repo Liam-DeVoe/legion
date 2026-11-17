@@ -635,6 +635,9 @@ export const ANSWER_LINES = freeze({
   /** What the Spec filter says over its columns when the decisions could not be read, so the
    *  column beside each statement cannot say what shaped it. */
   decisions_unreadable: "Could not load the decisions.",
+  /** What the Decisions view says over its list when the asks could not be read, so it cannot
+   *  say which questions there are; of the decisions read it says `decisions_unreadable`. */
+  questions_unreadable: "Could not load the questions.",
   /** What the list of what references the focused row says while its read, which the reader
    *  opened, is out, and when it failed (`node-references/NodeReferences.tsx`). */
   references_loading: "Loading references…",

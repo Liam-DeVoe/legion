@@ -1,6 +1,6 @@
 import { expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, renderHook } from "@testing-library/react";
+import { act, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 
 import { commentDeliveryFields } from "../../../__tests__/comment-fixture";
@@ -246,7 +246,9 @@ test("the seam gives four parts from today's reads and makes no request", async 
 // Such a read holds its answer all the same (`readsHeld`). While any one of the four reads has
 // not answered, the questions are drawn all the same. The reads hold once the decisions read and
 // the asks have answered, which say which questions and decisions there are; the comments and
-// the blocks only move a decision between parts, so the reads hold while those are out.
+// the blocks only move a decision between parts, so the reads hold while those are out. Either
+// of the first two refused before it first answers is the seam's to name, with a retry of its
+// own, so the body can say so without naming a read.
 test("an empty decisions member gives the questions alone and no error", async () => {
   const children = [statement("s1"), openAsk("q-open")];
   // A read with no `decisions` member, which its type does not allow and an answer can still be.
@@ -324,6 +326,48 @@ test("an empty decisions member gives the questions alone and no error", async (
       hook.unmount();
     } finally {
       started.mockRestore();
+    }
+  }
+
+  // Each of the two reads that say which entries there are is refused in turn before it first
+  // answers, with the other read in the cache. The refused read holds no answer, so the seam
+  // says it is unreadable and the reads do not hold; its retry asks that read again, which is
+  // refused again, and asks the other read nothing.
+  const refused = [
+    {
+      mount: () => mountEntries(children, null),
+      other: "listIssueAsks",
+      read: "decisions",
+      request: "getIssueDecisions",
+    },
+    {
+      mount: () => mountEntries(children, noDecision, null),
+      other: "getIssueDecisions",
+      read: "asks",
+      request: "listIssueAsks",
+    },
+  ] as const;
+  for (const { mount, other, read, request } of refused) {
+    const asked = spyOn(api, request).mockRejectedValue(new Error("refused"));
+    const notAsked = spyOn(api, other);
+    try {
+      const { hook } = await mount();
+      const reading = () => ({
+        read,
+        readsHeld: hook.result.current.readsHeld,
+        unreadable: hook.result.current.unreadable,
+      });
+      const unreadable = { read, readsHeld: false, unreadable: [read] };
+      await waitFor(() => expect(reading()).toEqual(unreadable));
+      expect(asked).toHaveBeenCalledTimes(1);
+      await act(async () => hook.result.current.retry(read));
+      await waitFor(() => expect(asked).toHaveBeenCalledTimes(2));
+      await waitFor(() => expect(reading()).toEqual(unreadable));
+      expect(notAsked).not.toHaveBeenCalled();
+      hook.unmount();
+    } finally {
+      asked.mockRestore();
+      notAsked.mockRestore();
     }
   }
 });
