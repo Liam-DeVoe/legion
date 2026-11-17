@@ -84,32 +84,37 @@ func TestADecidingReviewRecordsTheCommitItRead(t *testing.T) {
 	}
 }
 
+// undecidingReview is a review that decides no round: a comment, a review refused for the head
+// its footer names, or a review of an issue outside reviewing.
+type undecidingReview struct {
+	name   string
+	review intake.PullRequestReview
+	// outsideReviewing puts the issue in testing before the review arrives.
+	outsideReviewing bool
+}
+
+// reviewsThatDecideNothing are the three undeciding reviews, each the review App's review id of
+// head submitted at at.
+func reviewsThatDecideNothing(id int64, head string, at time.Time) []undecidingReview {
+	refused := reviewAt(id, "changes_requested", head, at)
+	refused.Body = reviewBody("the review", headEarlier)
+	return []undecidingReview{
+		{name: "a comment", review: reviewAt(id, "commented", head, at)},
+		{name: "a review its footer's head refuses", review: refused},
+		{name: "a review outside reviewing", review: reviewAt(id, "approved", head, at), outsideReviewing: true},
+	}
+}
+
 // Only a review that decides the round in reviewing moves the commit: a comment decides nothing, a
 // review refused for the head its footer names decides nothing, and a review of an issue outside
 // reviewing decides no round.
 func TestAReviewThatDecidesNothingRecordsNoCommit(t *testing.T) {
-	for _, tc := range []struct {
-		name   string
-		review intake.PullRequestReview
-		// seed puts the issue where the review finds it, after seedReviewOf.
-		seed func(t *testing.T, pool *pgxpool.Pool)
-	}{
-		{name: "a comment", review: reviewAt(1, "commented", headOne, reviewTestedAt)},
-		{name: "a review its footer's head refuses", review: func() intake.PullRequestReview {
-			r := reviewAt(1, "changes_requested", headOne, reviewTestedAt)
-			r.Body = reviewBody("the review", headEarlier)
-			return r
-		}()},
-		{name: "a review outside reviewing", review: reviewAt(1, "approved", headOne, reviewTestedAt), seed: func(t *testing.T, pool *pgxpool.Pool) {
-			seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root",
-				Phase: phase.Testing, Generation: 1, Status: "testing", Rank: "U"})
-		}},
-	} {
+	for _, tc := range reviewsThatDecideNothing(1, headOne, reviewTestedAt) {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
 			seedReviewOf(t, pool, headOne, "green")
-			if tc.seed != nil {
-				tc.seed(t, pool)
+			if tc.outsideReviewing {
+				standsIn(t, pool, phase.Testing, "testing")
 			}
 			apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
 			apply("review", tc.review)
@@ -131,23 +136,7 @@ func TestAReviewThatDecidesNothingRecordsNoCommit(t *testing.T) {
 // other than headOne. A path that cleared the commit would read none, and one that moved it would
 // read the head that review names.
 func TestAReviewThatDecidesNothingKeepsTheCommitAnEarlierReviewRecorded(t *testing.T) {
-	later := reviewTestedAt.Add(2 * time.Hour)
-	for _, tc := range []struct {
-		name   string
-		review intake.PullRequestReview
-		// leave puts the issue where the review finds it, after round 2 began.
-		leave func(t *testing.T, pool *pgxpool.Pool)
-	}{
-		{name: "a comment", review: reviewAt(2, "commented", headTwo, later)},
-		{name: "a review its footer's head refuses", review: func() intake.PullRequestReview {
-			r := reviewAt(2, "changes_requested", headTwo, later)
-			r.Body = reviewBody("the review", headEarlier)
-			return r
-		}()},
-		{name: "a review outside reviewing", review: reviewAt(2, "approved", headTwo, later), leave: func(t *testing.T, pool *pgxpool.Pool) {
-			standsIn(t, pool, phase.Testing, "testing")
-		}},
-	} {
+	for _, tc := range reviewsThatDecideNothing(2, headTwo, reviewTestedAt.Add(2*time.Hour)) {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
 			seedReviewOf(t, pool, headOne, "green")
@@ -162,8 +151,8 @@ func TestAReviewThatDecidesNothingKeepsTheCommitAnEarlierReviewRecorded(t *testi
 			if got := reviewerRow(t, pool).ReviewedHead; got != headOne {
 				t.Fatalf("round 2's reviewer row reads the reviewed commit %q, want %s, the head round 1's review read", got, headOne)
 			}
-			if tc.leave != nil {
-				tc.leave(t, pool)
+			if tc.outsideReviewing {
+				standsIn(t, pool, phase.Testing, "testing")
 			}
 			apply("review", tc.review)
 			row := reviewerRow(t, pool)
