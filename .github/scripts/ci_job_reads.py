@@ -481,10 +481,10 @@ RULES = {
         (f"{DAEMON}/**/*_test.go", "internal/textcheck/temp_dir_placement_test.go:22 has packages/envoy/testtmp's CheckPlacements walk every "
                                    "test file under packages/daemon (../..)")),
     f"{DAEMON}/internal/textcheck/envoy_helper_copies_test.go": reads(
-        (f"{DAEMON}/**/*.go", "internal/textcheck/envoy_helper_copies_test.go:81 reads every .go file under packages/daemon (../.., :66) "
+        (f"{DAEMON}/**/*.go", "internal/textcheck/envoy_helper_copies_test.go:83 reads every .go file under packages/daemon (../.., :68) "
                               "but testdata's"),
-        (f"{ENVOY}/**/*.go", "internal/textcheck/envoy_helper_copies_test.go:67 reads the package clause and imports of every non-test .go file "
-                             "under packages/envoy (../../../envoy, :66) but testdata's, infra included, and every .go file of a helper "
+        (f"{ENVOY}/**/*.go", "internal/textcheck/envoy_helper_copies_test.go:69 reads the package clause and imports of every non-test .go file "
+                             "under packages/envoy (../../../envoy, :68) but testdata's, infra included, and every .go file of a helper "
                              "package (a test helper, or a public package) whole")),
     f"{DAEMON}/internal/textcheck/classify_imports_test.go": [
         Read(path, "internal/textcheck/classify_imports_test.go:19 globs ../classify/*.go, and :29 parses each file it finds but the test files (:26)")
@@ -780,9 +780,9 @@ RULES = {
                   "TestNoPackageOutsideTheRigsImportsOrDrivesAContainerRuntime at :825)")
           for g in envoy_go_files_but_infra()]],
     f"{ENVOY}/internal/textcheck/claims_doc_test.go": reads(
-        ("docs/kubernetes.md", "internal/textcheck/claims_doc_test.go:37,46,72 reads it under ../../../.."),
+        ("docs/kubernetes.md", "internal/textcheck/claims_doc_test.go:39,48,74 reads it under ../../../.."),
         (f"{ENVOY}/internal/broker/oauth/claims_doc_extract.txt",
-         "internal/textcheck/claims_doc_test.go:123 reads the committed copy it holds the guide's list to (extractLines, called with it at :56 and :76)")),
+         "internal/textcheck/claims_doc_test.go:125 reads the committed copy it holds the guide's list to (extractLines, called with it at :58 and :78)")),
     f"{ENVOY}/internal/textcheck/environment_reads_test.go": [
         Read(path, "internal/textcheck/environment_reads_test.go:117 environmentReads walks it (:36), testdata and "
                    "node_modules passed over (:41-42), and :49 parses each .go file but the test files (:46)")
@@ -794,7 +794,7 @@ RULES = {
         (f"{ENVOY}/**/*_test.go", "internal/textcheck/temp_dir_placement_test.go:24 has packages/envoy/testtmp's CheckPlacements walk every "
                                   "test file under packages/envoy (../..), infra included")),
     f"{ENVOY}/internal/textcheck/readme_commands_test.go": reads(
-        (f"{ENVOY}/loadtest/README.md", "internal/textcheck/readme_commands_test.go:23 reads packages/envoy/loadtest/README.md under ../../../..")),
+        (f"{ENVOY}/loadtest/README.md", "internal/textcheck/readme_commands_test.go:25 reads packages/envoy/loadtest/README.md under ../../../..")),
     # --- envoy-infra
     f"{INFRA}/core/permissions_live_test.go": [
         run(ENVOY, ["./cmd/dispatch", "./cmd/listener"], "infra/core/permissions_live_test.go:404 buildEnvoyCommand builds . in ../../cmd/<dispatch|listener> (root go.work)", mode="build")],

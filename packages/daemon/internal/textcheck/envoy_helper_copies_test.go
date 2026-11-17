@@ -22,13 +22,15 @@ import (
 //
 // What that catches is a copy of a whole file, or nearly a whole file, in either direction: a
 // helper file copied whole into a daemon file of any size (the daemon's fixtureenv held Envoy's
-// whole fixtureenv.go beside 138 lines of its own), and a daemon file that is nearly all one
-// helper file, even if the helper file is larger (the daemon's testnkeys held Envoy's
-// testnats/nkeys.go, User alone, beside three more functions). It does not catch a part of a
-// helper file pasted into a larger daemon file: testwait's WithinPolling and waitUntil appended
-// to internal/daemon/stop_budget_nats_test.go share 26 of testwait.go's 36 code lines, 72%, and
-// pass. Nor does it catch a copy shorter than copyFloor code lines, or one whose identifiers were
-// renamed, since a line counts only when its tokens are the same. Review is what reads those.
+// whole fixtureenv.go beside 138 lines of its own, and the daemon's testnkeys held the whole of
+// Envoy's 19-line testnats/nkeys.go beside three more functions), and a daemon file that is nearly
+// all one helper file, even if the helper file is larger (a daemon file holding testnkeys's User
+// alone, 19 code lines, is all lines of today's 46-line packages/envoy/testnkeys/nkeys.go). It
+// does not catch a part of a helper file pasted into a larger daemon file: testwait's
+// WithinPolling and waitUntil appended to internal/daemon/stop_budget_nats_test.go share 26 of
+// testwait.go's 36 code lines, 72%, and pass. Nor does it catch a copy shorter than copyFloor code
+// lines, or one whose identifiers were renamed, since a line counts only when its tokens are the
+// same. Review is what reads those.
 //
 // The share is not lower because pairs that are no copy already come close to it: with the share
 // set to one half, this tree's highest such pairs were the nine-line TestMain of

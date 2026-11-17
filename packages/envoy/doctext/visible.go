@@ -8,158 +8,173 @@
 // packages/daemon/internal/textcheck's envoy_helper_copies_test.go fails a copy of it there.
 package doctext
 
-import "strings"
+import (
+	"slices"
+	"strings"
+
+	"github.com/yuin/goldmark"
+	"github.com/yuin/goldmark/ast"
+	"github.com/yuin/goldmark/extension"
+	"github.com/yuin/goldmark/text"
+)
+
+// markdown parses a document as GitHub and the documentation site render one: CommonMark (0.31.2,
+// which goldmark implements) with GitHub Flavored Markdown's extensions. A parser is safe for
+// concurrent use.
+var markdown = goldmark.New(goldmark.WithExtensions(extension.GFM))
 
 // VisibleMarkdown is doc as a reader of the rendered page sees it, for a check that holds a
-// guide's text to something: every HTML comment (`<!-- … -->`, on one line or across several) is
-// gone, so a passage moved inside one no longer counts as the guide stating it. A check that read
-// the raw bytes passed while the page showed nothing, since a comment is in the file and on no
-// page.
+// guide's text to something: every HTML comment is gone, so a passage moved inside one no longer
+// counts as the guide stating it. A check that read the raw bytes passed while the page showed
+// nothing, since a comment is in the file and on no page.
 //
-// A comment's newlines stay, so a line number a caller reports from the result is the line in the
-// file. A `<!--` inside a fenced code block or inside a code span is text a reader sees, and stays
-// (packages/envoy/AGENTS.md shows the `<!-- legion:` footer in one, and
-// docs/site/src/content/docs/legion/troubleshooting.md a whole comment in one), and a `-->` with
-// no comment open is text too. A fence of backticks or of tildes is a fence at any indentation,
-// since a list item's own fence is indented by the item, four spaces or more in a nested one. A
-// comment that opens before a fence or a list and closes after it hides the whole of it, as a page
-// does. A comment that never closes runs to the end of the document, as CommonMark's HTML block
-// does. It reads no other HTML, and three shapes are not modelled: a comment that a list item or a
-// block quote around it would end early, and an indented code block (four spaces or a tab): a
-// `<!--` in one, which a reader sees as code, is taken out, and a line of backticks in one reads
-// as a fence. Modelling the last would misread a list item's own indented text as code as often
-// as it read a code block right.
+// It parses doc as CommonMark with GitHub Flavored Markdown's extensions, and takes out exactly the
+// bytes a browser reads as comment text: an inline comment (raw HTML that is a comment), and each
+// comment inside an HTML block, as an HTML parser ends it (`-->`, or the empty `<!-->` and
+// `<!--->`; a comment a block opens and does not close runs to the end of that block, which for a
+// block that opens with `<!--` is the line holding `-->`, or the end of the document). Every other
+// byte stays as written, so a `<!--` in a fenced or indented code block, or in a code span, is
+// text a reader sees, and so is a `<!--` the parser reads as text (one in the middle of a line
+// whose comment does not close in its paragraph). Each newline of a comment stays too, so a line
+// number a caller reports from the result is the line in the file.
+//
+// Two shapes are not modelled. A comment inside a `<script>`, `<style>` or `<textarea>` block is
+// that element's text, and stays. And a comment that an HTML block other than a comment opens and
+// does not close hides, on a page, what follows up to the next raw `-->`; this takes out the rest
+// of that block only.
 func VisibleMarkdown(doc string) string {
+	source := []byte(doc)
+	var hidden [][2]int
+	root := markdown.Parser().Parse(text.NewReader(source))
+	err := ast.Walk(root, func(node ast.Node, entering bool) (ast.WalkStatus, error) {
+		if !entering {
+			return ast.WalkContinue, nil
+		}
+		switch n := node.(type) {
+		case *ast.HTMLBlock:
+			hidden = append(hidden, blockComments(n, source)...)
+			return ast.WalkSkipChildren, nil
+		case *ast.RawHTML:
+			if r, ok := inlineComment(n, source); ok {
+				hidden = append(hidden, r)
+			}
+		}
+		return ast.WalkContinue, nil
+	})
+	if err != nil || len(hidden) == 0 {
+		// The walk returns no error of its own: the function above returns none.
+		return doc
+	}
+	slices.SortFunc(hidden, func(a, b [2]int) int { return a[0] - b[0] })
 	var out strings.Builder
 	out.Grow(len(doc))
-	fence := ""
-	for len(doc) > 0 {
-		line, rest, newline := strings.Cut(doc, "\n")
-		if marker := fenceMarker(line); fence == "" && marker != "" {
-			fence = marker
-		} else if fence != "" {
-			if marker != "" && strings.HasPrefix(marker, fence[:1]) && len(marker) >= len(fence) &&
-				strings.TrimSpace(strings.TrimLeft(strings.TrimSpace(line), fence[:1])) == "" {
-				fence = ""
-			}
-		} else {
-			// Outside a fence, a line is read with the rest of its paragraph, since a code span
-			// and a comment may both run across lines.
-			paragraph, after := cutParagraph(doc)
-			out.WriteString(withoutComments(paragraph, &after))
-			doc = after
+	at := 0
+	for _, r := range hidden {
+		if r[0] < at {
+			r[0] = at
+		}
+		if r[1] <= r[0] {
 			continue
 		}
-		out.WriteString(line)
-		if newline {
-			out.WriteByte('\n')
-		}
-		doc = rest
+		out.WriteString(doc[at:r[0]])
+		out.WriteString(strings.Repeat("\n", strings.Count(doc[r[0]:r[1]], "\n")))
+		at = r[1]
 	}
+	out.WriteString(doc[at:])
 	return out.String()
 }
 
-// fenceMarker is the run of backticks or tildes, three or more, that opens or closes a fenced
-// code block on line, at any indentation; "" when line is no fence. A run of backticks followed by
-// text holding another backtick is a code span, not a fence, as CommonMark reads it.
-func fenceMarker(line string) string {
-	trimmed := strings.TrimLeft(line, " \t")
-	if len(trimmed) < 3 || (trimmed[0] != '`' && trimmed[0] != '~') {
-		return ""
+// inlineComment is the source range of n when n is an inline comment: raw HTML whose text opens
+// with `<!--`. A comment that runs across lines is one range, from its first byte to its last.
+func inlineComment(n *ast.RawHTML, source []byte) ([2]int, bool) {
+	segments := n.Segments
+	if segments == nil || segments.Len() == 0 {
+		return [2]int{}, false
 	}
-	run := len(trimmed) - len(strings.TrimLeft(trimmed, trimmed[:1]))
-	if run < 3 || (trimmed[0] == '`' && strings.Contains(trimmed[run:], "`")) {
-		return ""
+	first, last := segments.At(0), segments.At(segments.Len()-1)
+	if !strings.HasPrefix(string(source[first.Start:first.Stop]), "<!--") {
+		return [2]int{}, false
 	}
-	return trimmed[:run]
+	return [2]int{first.Start, last.Stop}, true
 }
 
-// cutParagraph splits doc before the first line, after its first, that is blank or opens a fence:
-// the span a code span can run across.
-func cutParagraph(doc string) (paragraph, after string) {
-	at := 0
-	for first := true; at < len(doc); first = false {
-		end := strings.IndexByte(doc[at:], '\n')
-		line := doc[at:]
-		if end >= 0 {
-			line = doc[at : at+end]
-		}
-		if !first && (strings.TrimSpace(line) == "" || fenceMarker(line) != "") {
-			break
-		}
-		if end < 0 {
-			at = len(doc)
-			break
-		}
-		at += end + 1
+// blockComments are the source ranges of the comments inside an HTML block, read as an HTML
+// parser reads them over the block's own lines (without the prefix a block quote or a list item
+// puts before each). A `<script>`, `<style>` or `<textarea>` block holds text, not comments.
+func blockComments(n *ast.HTMLBlock, source []byte) [][2]int {
+	lines := n.Lines()
+	var segments []text.Segment
+	for i := range lines.Len() {
+		segments = append(segments, lines.At(i))
 	}
-	return doc[:at], doc[at:]
+	if n.HasClosure() {
+		segments = append(segments, n.ClosureLine)
+	}
+	if len(segments) == 0 {
+		return nil
+	}
+	// The block's text, and the source offset of each of its bytes.
+	var html []byte
+	var offsets []int
+	for _, s := range segments {
+		for at := s.Start; at < s.Stop; at++ {
+			html = append(html, source[at])
+			offsets = append(offsets, at)
+		}
+	}
+	if n.HTMLBlockType == ast.HTMLBlockType1 {
+		opening := strings.ToLower(strings.TrimLeft(string(html), " \t"))
+		for _, raw := range []string{"<script", "<style", "<textarea"} {
+			if strings.HasPrefix(opening, raw) {
+				return nil
+			}
+		}
+	}
+	var ranges [][2]int
+	for _, c := range htmlComments(string(html)) {
+		// A comment's bytes map to source ranges that may skip a container's prefix between two
+		// lines; each run of consecutive source offsets is one range.
+		start := offsets[c[0]]
+		for i := c[0] + 1; i < c[1]; i++ {
+			if offsets[i] != offsets[i-1]+1 {
+				ranges = append(ranges, [2]int{start, offsets[i-1] + 1})
+				start = offsets[i]
+			}
+		}
+		ranges = append(ranges, [2]int{start, offsets[c[1]-1] + 1})
+	}
+	return ranges
 }
 
-// withoutComments is paragraph with each comment that opens in it replaced by the newlines it
-// held. A comment that runs past the paragraph takes what it needs of *after, through its `-->`,
-// and *after is left holding the rest.
-func withoutComments(paragraph string, after *string) string {
-	var out strings.Builder
-	for i := 0; i < len(paragraph); {
+// htmlComments are the byte ranges of html an HTML parser reads as comments: from `<!--` to the
+// `-->` that ends it, `<!-->` and `<!--->` being whole empty comments, and a comment with no end
+// running to the end of html.
+func htmlComments(html string) [][2]int {
+	var ranges [][2]int
+	for i := 0; i < len(html); {
+		at := strings.Index(html[i:], "<!--")
+		if at < 0 {
+			break
+		}
+		start := i + at
+		body := start + len("<!--")
 		switch {
-		case paragraph[i] == '`':
-			run := len(paragraph[i:]) - len(strings.TrimLeft(paragraph[i:], "`"))
-			closing := codeSpanEnd(paragraph[i+run:], run)
-			if closing < 0 {
-				out.WriteString(paragraph[i : i+run])
-				i += run
-				continue
-			}
-			end := i + run + closing + run
-			out.WriteString(paragraph[i:end])
-			i = end
-		case strings.HasPrefix(paragraph[i:], "<!--"):
-			body := paragraph[i+len("<!--"):]
-			if end := strings.Index(body, "-->"); end >= 0 {
-				out.WriteString(strings.Repeat("\n", strings.Count(body[:end], "\n")))
-				i += len("<!--") + end + len("-->")
-				continue
-			}
-			// The comment runs past this paragraph: through the `-->` in what follows, or to the end.
-			out.WriteString(strings.Repeat("\n", strings.Count(body, "\n")))
-			end := strings.Index(*after, "-->")
-			if end < 0 {
-				out.WriteString(strings.Repeat("\n", strings.Count(*after, "\n")))
-				*after = ""
-				return out.String()
-			}
-			out.WriteString(strings.Repeat("\n", strings.Count((*after)[:end], "\n")))
-			rest := (*after)[end+len("-->"):]
-			*after = ""
-			// What follows the comment's end on its line, and the paragraph it is in, are read
-			// again, since they may hold a comment or a code span of their own.
-			restParagraph, restAfter := cutParagraph(rest)
-			out.WriteString(withoutComments(restParagraph, &restAfter))
-			*after = restAfter
-			return out.String()
-		default:
-			out.WriteByte(paragraph[i])
-			i++
+		case strings.HasPrefix(html[body:], ">"):
+			ranges = append(ranges, [2]int{start, body + 1})
+			i = body + 1
+			continue
+		case strings.HasPrefix(html[body:], "->"):
+			ranges = append(ranges, [2]int{start, body + 2})
+			i = body + 2
+			continue
 		}
+		end := strings.Index(html[body:], "-->")
+		if end < 0 {
+			ranges = append(ranges, [2]int{start, len(html)})
+			break
+		}
+		ranges = append(ranges, [2]int{start, body + end + len("-->")})
+		i = body + end + len("-->")
 	}
-	return out.String()
-}
-
-// codeSpanEnd is where in text the run of exactly run backticks that closes a code span starts,
-// or -1 when none does.
-func codeSpanEnd(text string, run int) int {
-	for at := 0; at < len(text); {
-		next := strings.IndexByte(text[at:], '`')
-		if next < 0 {
-			return -1
-		}
-		start := at + next
-		length := len(text[start:]) - len(strings.TrimLeft(text[start:], "`"))
-		if length == run {
-			return start
-		}
-		at = start + length
-	}
-	return -1
+	return ranges
 }
