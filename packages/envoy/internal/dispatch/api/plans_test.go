@@ -134,7 +134,8 @@ func rateRetro(t *testing.T, handler http.Handler, project, issue, id string, ge
 // The read of a project lists each of its issues that is done, newest close first, each with the
 // plan its run wrote, the rating of its retro with the reason, the time from its first start to its
 // last end, and its count of failed steps; the issue still in progress is not listed. The two plans
-// differ in id and in steps, so a plan read onto another issue's row is seen.
+// differ in id and in steps, so a plan read onto another issue's row is seen, and the first issue's
+// last end is 30.7 seconds past a whole minute, so its time is whole seconds, cut, not minutes.
 func TestTheReadOfAProjectListsEachFinishedIssue(t *testing.T) {
 	handler := newTestHandler(t)
 	issues := stepIssues(t, handler, "LEG", 3)
@@ -145,6 +146,7 @@ func TestTheReadOfAProjectListsEachFinishedIssue(t *testing.T) {
 		Tasks: []model.PlanTask{{ID: "default", Steps: defaultStepLine}}}
 	fittedPlan := model.PlanRecord{ID: uuid.NewString(), Issue: fitted, Generation: 1, Source: "default",
 		Tasks: []model.PlanTask{{ID: "default", Steps: fittedSteps}}}
+	merged := at(50).Add(30*time.Second + 700*time.Millisecond)
 
 	putPlanRecordOK(t, handler, reviewed, reviewedPlan.ID, defaultPlanBody(daemon, 1))
 	runs := recordRuns(t, handler, "LEG", reviewed,
@@ -154,7 +156,7 @@ func TestTheReadOfAProjectListsEachFinishedIssue(t *testing.T) {
 		run{"step", "implementer", 2, new(at(25)), new(at(35)), "passed"},
 		run{"step", "reviewer", 4, new(at(35)), new(at(40)), "passed"},
 		run{"retro", "implementer", 0, new(at(40)), new(at(42)), "passed"},
-		run{"merge", "merger", 0, nil, new(at(50)), "passed"},
+		run{"merge", "merger", 0, nil, &merged, "passed"},
 	)
 	reviewedRetro := runs[5]
 	rateRetro(t, handler, "LEG", reviewed, reviewedRetro, 1, 4, "The tester found the bug.")
@@ -193,7 +195,7 @@ func TestTheReadOfAProjectListsEachFinishedIssue(t *testing.T) {
 		started, ended time.Time
 	}{
 		{read.Issues[0], "A run of steps 2", fittedPlan, 5, "The plan fit the work.", fittedRetro, at(141), 3600, 0, at(100), at(160)},
-		{read.Issues[1], "A run of steps 1", reviewedPlan, 4, "The tester found the bug.", reviewedRetro, at(42), 3000, 1, at(0), at(50)},
+		{read.Issues[1], "A run of steps 1", reviewedPlan, 4, "The tester found the bug.", reviewedRetro, at(42), 3030, 1, at(0), merged},
 	} {
 		issue := want.issue
 		if issue.Plan == nil || !reflect.DeepEqual(*issue.Plan, want.plan) {
@@ -213,8 +215,12 @@ func TestTheReadOfAProjectListsEachFinishedIssue(t *testing.T) {
 		}
 		if issue.DurationSeconds == nil || *issue.DurationSeconds != want.duration ||
 			issue.StartedAt == nil || !issue.StartedAt.Equal(want.started) || issue.EndedAt == nil || !issue.EndedAt.Equal(want.ended) {
-			t.Fatalf("%s's time is %v to %v, %v seconds, want %s to %s, %d seconds", issue.Issue, issue.StartedAt, issue.EndedAt,
-				issue.DurationSeconds, want.started, want.ended, want.duration)
+			seconds := "no"
+			if issue.DurationSeconds != nil {
+				seconds = fmt.Sprint(*issue.DurationSeconds)
+			}
+			t.Fatalf("%s's time is %v to %v, %s seconds, want %s to %s, %d seconds", issue.Issue, issue.StartedAt, issue.EndedAt,
+				seconds, want.started, want.ended, want.duration)
 		}
 		if issue.FailedSteps != want.failed {
 			t.Fatalf("%s counts %d failed steps, want %d", issue.Issue, issue.FailedSteps, want.failed)
