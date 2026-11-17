@@ -4294,7 +4294,10 @@ Each item below names a path with its method and identity, then its purpose.
 
   - A `default_branch` check is compared with that repository's default branch alone, whatever branch the pull request merged into.
 
-  - A result of an `after_merge` or `default_branch` check whose commit only a repository the issue links a pull request in holds is compared in that repository: the record route keeps that repository with the result (`check_results.commit_repo`), and the read asks that repository's branches, for `after_merge` the base branch of the merged linked pull request (`delivery.BaseBranchMergedIn`) and then its default branch, for `default_branch` its default branch alone. Asked of the issue's own repository, GitHub answers `404` for such a commit. Every other result keeps no repository and is compared as above.
+  - A result of an `after_merge` or `default_branch` check whose commit only a repository the issue links a pull request in holds is compared in that repository:
+    the record route keeps that repository with the result (`check_results.commit_repo`), and the read asks that repository's branches, for `after_merge` the base branch of the merged linked pull request (`delivery.BaseBranchMergedIn`) and then its default branch, for `default_branch` its default branch alone.
+    Asked of the issue's own repository, GitHub answers `404` for such a commit.
+    Every other result keeps no repository and is compared as above.
 
   - A check compared with nothing says why in `compared_nothing`:
     `no_pull_request_or_branch` where the issue resolves to no repository, and where a `before_merge` check's issue holds no pull request at all;
