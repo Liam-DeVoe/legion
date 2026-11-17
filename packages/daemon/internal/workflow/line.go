@@ -95,6 +95,35 @@ func (w Walk) steps() []phase.Phase {
 	return w.Line[:len(w.Line)-2]
 }
 
+// MovesBack says whether a move of w's task from the phase from to the phase to goes back by the
+// task's own order: the place of to stands before the place of from, a step before a later step
+// by its position, every step before the retro, and the retro before the merge. A phase the line
+// does not hold has no place, so a move into or out of it goes back nowhere. A run with no plan
+// rows walks today's line, so it reads phase.MovesBack, as it always did. A task in another order
+// than today's so counts its move back from testing to reviewing (the steps
+// `implementer reviewer tester`), and not the review's approval from reviewing to testing, which
+// moves it on.
+func (w Walk) MovesBack(from, to phase.Phase) bool {
+	if !w.Stored {
+		return phase.MovesBack(from, to)
+	}
+	at, ok := w.PlaceOf(from)
+	back, before := w.PlaceOf(to)
+	return ok && before && w.rank(back) < w.rank(at)
+}
+
+// rank is the order of place on w's line: a step at its position from 1, then the retro, then the
+// merge.
+func (w Walk) rank(place record.TaskPlace) int {
+	switch place.Kind {
+	case record.PlaceRetro:
+		return len(w.steps()) + 1
+	case record.PlaceMerge:
+		return len(w.steps()) + 2
+	}
+	return place.Position
+}
+
 // issuePhaseOf is the phase an issue whose one task stands at place in state stands in (A-8): done
 // for a task that is done or left the workflow before it was done (record.TaskLeft), whatever its
 // place, which is the phase of an issue out of the workflow; the phase of the step at place, retro

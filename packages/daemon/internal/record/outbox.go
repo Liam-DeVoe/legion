@@ -1273,7 +1273,7 @@ func (HookPrompt) OutboxKind() OutboxKind { return OutboxKindHookPrompt }
 // starts with (`Legion hook `), which its role prompt and skill both name. The pull-request
 // sentence is left out for an issue with no pull request.
 //
-// The counts are listed in the order phase.BackwardPairs() gives rather than the map's own, so
+// The counts are listed in the order phase.MovePairs() gives rather than the map's own, so
 // two readings of one row read alike; a pair the map does not hold is left out. An empty map
 // reads `Counts by move: none.` rather than dropping the sentence: the firing counted the move
 // that fired it, so the map cannot normally be empty, and a sentence that says `none` tells a
@@ -1281,7 +1281,7 @@ func (HookPrompt) OutboxKind() OutboxKind { return OutboxKindHookPrompt }
 // would leave it to guess.
 func (p HookPrompt) Message(issue string) string {
 	listed := make([]string, 0, len(p.Counts))
-	for _, pair := range phase.BackwardPairs() {
+	for _, pair := range phase.MovePairs() {
 		if count, ok := p.Counts[pair]; ok {
 			listed = append(listed, fmt.Sprintf("%s=%d", pair, count))
 		}
@@ -1815,7 +1815,9 @@ func validateOutboxPayload(payload OutboxPayload) error {
 		if !claim.IsRole(value.Role) || value.Role == claim.RoleArchitect {
 			return fmt.Errorf("a hook prompt goes to a phase worker of the issue, never to an architect, whose own wake the daemon writes as a notice; %q is neither", value.Role)
 		}
-		if !phase.MovesBack(value.From, value.To) {
+		// A move back is one by the order of the issue's task (workflow's Walk.MovesBack), which need
+		// not be today's, so the pair is any of two different workflow phases (phase.MovePairs).
+		if !phase.IsMovePair(value.From, value.To) {
 			return fmt.Errorf("a hook prompt names the move back that fired it; %q to %q is no move back", value.From, value.To)
 		}
 		if value.Count <= 0 {

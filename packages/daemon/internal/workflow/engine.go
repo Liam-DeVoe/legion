@@ -1612,8 +1612,10 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	// move back asks for its work to be done again, and the completion of the entry before it
 	// does not answer for that however its commit reads (record.PhaseRow.EntryMovedBack,
 	// api/handoff.go). It is read here and not below because issue.Phase is moved onto row.To a
-	// few lines down, which would leave the start comparing a phase with itself.
-	movedBack := phase.MovesBack(issue.Phase, row.To)
+	// few lines down, which would leave the start comparing a phase with itself. A move back is one
+	// by the order of the walk's task (Walk.MovesBack), so a task in another order than today's
+	// counts its own moves back, and an issue with no plan rows counts by today's line.
+	movedBack := w.MovesBack(issue.Phase, row.To)
 	if movedBack {
 		if err := e.recordPass(ctx, tx, issue, w.Task, issue.Phase, row.To, pr); err != nil {
 			return err

@@ -64,10 +64,12 @@ func TestParsePairReadsOnlyKnownMovesBack(t *testing.T) {
 	}{
 		{name: "a move back", text: "reviewing-implementing", from: Reviewing, to: Implementing, ok: true},
 		{name: "the phase word holding an underscore", text: "awaiting_person-planning"},
-		// A pair of two phases of Order that moves forward is no move back, and the list is what
-		// ParsePair answers against.
-		{name: "a pair outside the list", text: "retro-merging"},
-		{name: "a forward move", text: "planning-implementing"},
+		// MovePairs holds each pair of two different phases of Order, a forward one as well as a
+		// move back, since a task in another order moves back by its own order; ParsePair answers
+		// against that list.
+		{name: "a forward pair of Order, which MovePairs holds", text: "retro-merging", from: Retro, to: Merging, ok: true},
+		{name: "another forward pair of Order", text: "planning-implementing", from: Planning, to: Implementing, ok: true},
+		{name: "a phase paired with itself", text: "testing-testing"},
 		{name: "a phase that is no part of the line", text: "held-planning"},
 		{name: "rubbish", text: "not a pair at all"},
 		{name: "nothing", text: ""},
@@ -93,5 +95,44 @@ func TestMovesBackIgnoresPhasesOutsideOrder(t *testing.T) {
 		if MovesBack(Merging, outside) || MovesBack(outside, Planning) {
 			t.Fatalf("%s stands outside Order, so no move into or out of it moves back", outside)
 		}
+	}
+}
+
+// MovePairs is every move between two different phases of Order the daemon counts: a task in
+// another order than today's moves back by its own order (workflow's Walk.MovesBack), so a move
+// back of one task, testing-reviewing, is a forward pair of Order. It holds BackwardPairs first,
+// in their order, then the 21 forward pairs, each phase of Order paired with every phase after it.
+// No pair holds one phase two times, and a phase outside Order is in no pair.
+func TestMovePairsHoldsEveryPairOfTwoDifferentPhases(t *testing.T) {
+	pairs := MovePairs()
+	if len(pairs) != 42 {
+		t.Fatalf("MovePairs has %d pairs, want 42: %q", len(pairs), pairs)
+	}
+	if !slices.Equal(pairs[:21], BackwardPairs()) {
+		t.Fatalf("MovePairs begins %q, want BackwardPairs %q in their order", pairs[:21], BackwardPairs())
+	}
+	var forward []string
+	for at, from := range Order {
+		for _, to := range Order[at+1:] {
+			forward = append(forward, Pair(from, to))
+		}
+	}
+	if !slices.Equal(pairs[21:], forward) {
+		t.Fatalf("MovePairs ends %q, want the forward pairs %q", pairs[21:], forward)
+	}
+	for _, tc := range []struct {
+		from, to Phase
+		want     bool
+	}{
+		{Testing, Reviewing, true}, {Reviewing, Testing, true}, {Implementing, Planning, true}, {Retro, Merging, true},
+		{Testing, Testing, false}, {Held, Planning, false}, {Merging, Done, false}, {Admitted, Planning, false},
+	} {
+		if got := IsMovePair(tc.from, tc.to); got != tc.want {
+			t.Fatalf("IsMovePair(%s, %s) = %t, want %t", tc.from, tc.to, got, tc.want)
+		}
+	}
+	pairs[0] = "rubbish"
+	if MovePairs()[0] == "rubbish" {
+		t.Fatal("MovePairs returned the stored slice, which a caller can overwrite")
 	}
 }
