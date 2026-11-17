@@ -110,6 +110,9 @@ export async function buildGoBinaries(build: GoBuild): Promise<void> {
  * `count` distinct loopback ports nothing listens on now. Every probe socket stays open until all
  * of them are bound, so the kernel cannot hand one ephemeral port out twice; one at a time, each
  * closed before the next opened, it can, and two processes of one stack then race for one port.
+ * A port handed back can still be taken by another process before its own process binds it, so a
+ * process that can bind port 0 and log the port it got does that instead (natsd and the listener
+ * here, `natsdPorts` and `listenerPort`); this is for one that cannot.
  */
 export async function freePorts(count: number): Promise<number[]> {
   const servers: Server[] = [];
@@ -145,6 +148,43 @@ export function tail(file: string, lines: number): string {
   } catch {
     return "(no log)";
   }
+}
+
+/** The ports a natsd bound, read from its log. */
+export interface NatsdPorts {
+  readonly natsPort: number;
+  readonly monitorPort: number;
+}
+
+/**
+ * The ports the natsd that logs to `log` bound; undefined until it has logged both. natsd is
+ * started with `-p -1 -m -1`, so the kernel picks each port as natsd binds it: a port chosen
+ * beforehand and let go (`freePorts`) can be taken by another process before natsd binds it,
+ * and natsd then exits with "address already in use" (seen on this repository's dev box under
+ * load).
+ */
+export function natsdPorts(log: string): NatsdPorts | undefined {
+  const text = readFileSync(log, "utf8");
+  const client = /Listening for client connections on 127\.0\.0\.1:(\d+)/.exec(text);
+  const monitor = /Starting http monitor on 127\.0\.0\.1:(\d+)/.exec(text);
+  if (client === null || monitor === null) return undefined;
+  return { natsPort: Number(client[1]), monitorPort: Number(monitor[1]) };
+}
+
+/** Whether the natsd that logs to `log` has bound its ports and its health check answers `ok`. */
+export async function natsdHealthy(log: string): Promise<boolean> {
+  const ports = natsdPorts(log);
+  if (ports === undefined) return false;
+  const health = await getJson(`http://127.0.0.1:${ports.monitorPort}/healthz`, StatusSchema);
+  return health?.status === "ok";
+}
+
+/** The port a listener started with `PORT=0` bound, read from the listening line it logs
+ *  (`envoy-listener listening`, its `addr`); undefined until it has logged it. */
+export function listenerPort(log: string): number | undefined {
+  const text = readFileSync(log, "utf8");
+  const line = /envoy-listener listening[^\n]*?addr[=":\s]+"?127\.0\.0\.1:(\d+)/.exec(text);
+  return line === null ? undefined : Number(line[1]);
 }
 
 /** How long a rig gives a process to come up, and how much of its log an error quotes. */
@@ -236,28 +276,17 @@ export async function startEnvoyStack(options: EnvoyStackOptions): Promise<Envoy
       stack: "Envoy",
       binaries: "natsd and the listener",
     });
-    const [natsPort, monitorPort, listenerPort] = await freePorts(3);
+    // No port is chosen before its process binds it: a port picked and let go (`freePorts`) can
+    // be taken by another process first, and natsd or the listener then exits with "address
+    // already in use" (seen on this repository's dev box under load). natsd takes `-1` and the
+    // listener `PORT=0`, so the kernel picks each as the process binds it, and each port is read
+    // from the line its process logs then.
     const natsHome = path.join(work, "nats-home");
     const listenerHome = path.join(work, "listener-home");
     mkdirSync(natsHome);
     mkdirSync(listenerHome);
     const machineID = `envoy-stack-${process.pid}`;
-    const natsArgs = [
-      "-p",
-      String(natsPort),
-      "-m",
-      String(monitorPort),
-      "-store_dir",
-      path.join(work, "nats-store"),
-    ];
-    const listenerEnv = {
-      PATH,
-      HOME: listenerHome,
-      PORT: String(listenerPort),
-      ENVOY_LISTEN_HOST: "127.0.0.1",
-      ENVOY_MACHINE_ID: machineID,
-      NATS_URLS: `nats://127.0.0.1:${natsPort}`,
-    };
+    const natsArgs = ["-p", "-1", "-m", "-1", "-store_dir", path.join(work, "nats-store")];
     const natsLog = path.join(work, "natsd.log");
     const natsOut = openSync(natsLog, "a");
     const natsd = Bun.spawn([path.join(bin, "natsd"), ...natsArgs], {
@@ -267,18 +296,22 @@ export async function startEnvoyStack(options: EnvoyStackOptions): Promise<Envoy
     });
     closeSync(natsOut);
     processes.push(natsd);
+    await awaitReady("natsd", natsd, natsLog, ENVOY_READY, () => natsdHealthy(natsLog));
+    const ports = natsdPorts(natsLog);
+    if (ports === undefined) throw new Error(`natsd named no port in ${natsLog}`);
+    const { natsPort, monitorPort } = ports;
     const monitor = `http://127.0.0.1:${monitorPort}`;
-    await awaitReady(
-      "natsd",
-      natsd,
-      natsLog,
-      ENVOY_READY,
-      async () => (await getJson(`${monitor}/healthz`, StatusSchema))?.status === "ok"
-    );
 
     const natsHostPort = `127.0.0.1:${natsPort}`;
     const natsUrl = `nats://${natsHostPort}`;
-    const envoyUrl = `http://127.0.0.1:${listenerPort}`;
+    const listenerEnv = {
+      PATH,
+      HOME: listenerHome,
+      PORT: "0",
+      ENVOY_LISTEN_HOST: "127.0.0.1",
+      ENVOY_MACHINE_ID: machineID,
+      NATS_URLS: natsUrl,
+    };
     const listenerLog = path.join(work, "listener.log");
     const listenerOut = openSync(listenerLog, "a");
     const listener = Bun.spawn([path.join(bin, "listener")], {
@@ -289,13 +322,13 @@ export async function startEnvoyStack(options: EnvoyStackOptions): Promise<Envoy
     });
     closeSync(listenerOut);
     processes.push(listener);
-    await awaitReady(
-      "the listener",
-      listener,
-      listenerLog,
-      ENVOY_READY,
-      async () => (await getJson(`${envoyUrl}/healthz`, StatusSchema))?.status === "healthy"
-    );
+    let envoyUrl = "";
+    await awaitReady("the listener", listener, listenerLog, ENVOY_READY, async () => {
+      const port = listenerPort(listenerLog);
+      if (port === undefined) return false;
+      envoyUrl = `http://127.0.0.1:${port}`;
+      return (await getJson(`${envoyUrl}/healthz`, StatusSchema))?.status === "healthy";
+    });
     await awaitReady(
       "natsd's ENVOY_NOTIFICATIONS stream",
       natsd,

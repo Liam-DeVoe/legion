@@ -16,6 +16,14 @@ body: |-
   first trade's 503 and then fail naming it. A session switch ends every wait for the session
   before. The loop logs as the Go client does: a pending
   registration once, every 30 minutes and when it ends; any other failure at each wait.
+  A request's credential waits the request's deadline less a reserve of `min(1 s, half)`: 4 s of
+  a listener call's 5 s attempt, and a Dispatch call's client deadline (`DispatchClient`'s new
+  `deadlineMs` option, 60 s when absent) less 1 s. A wait that ends with a live token in hand
+  presents it; one with none lets the request go without a credential in the reserve. A listener
+  that wants a credential answers that request 401, and the call's error names both the 401 and
+  why the credential could not be minted; any other answer, a 403 included, is the listener's
+  own. A caller whose wait ends before any trade has ended is told the trade is still unanswered
+  (`TradeUnansweredError`), not the runtime's "The operation timed out.".
 time: 2026-11-17T12:39:04Z
 custom:
     Issue: pr4140

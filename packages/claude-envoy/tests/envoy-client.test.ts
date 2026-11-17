@@ -99,6 +99,59 @@ test("a send hands the credential its deadline: waiting on a pod's missing regis
   expect(requests.map((one) => one.authorization)).toEqual(["DPoP registered-token"])
 })
 
+/** A credential whose trade never answers: it rejects only when its signal ends. */
+function silentCredential() {
+  return {
+    scheme: "DPoP" as const,
+    headers: (_method: string, _url: string, _session?: string, signal?: AbortSignal) => {
+      const { promise, reject } = Promise.withResolvers<Readonly<Record<string, string>>>()
+      signal?.addEventListener(
+        "abort",
+        () => reject(new Error("the secrets broker has not yet answered the trade")),
+        { once: true },
+      )
+      return promise
+    },
+    stale: () => {},
+    secret: () => "",
+  }
+}
+
+test("a send whose credential's trade never answers goes without it, and a listener that asks for none takes it", async () => {
+  // The credential waits the send's 5 s less the request's 1 s reserve
+  // (`credentialDeadline`), then the send goes without it, as envoy-client's transport does.
+  requests.length = 0
+  const started = Date.now()
+  await sendEnvoyMessage({
+    baseUrl: `http://127.0.0.1:${server.port}`,
+    credential: silentCredential(),
+    targetSession: "ses_receiver",
+    message: "sent without a credential",
+  })
+  expect(Date.now() - started).toBeLessThan(5_000)
+  expect(requests.map((one) => one.authorization)).toEqual([null])
+}, 20_000)
+
+test("a listener that wants a credential answers 401, and the send's error names both halves", async () => {
+  const wanting = Bun.serve({
+    port: 0,
+    fetch: () => Response.json({ error: "this listener wants a credential" }, { status: 401 }),
+  })
+  try {
+    const refused = await sendEnvoyMessage({
+      baseUrl: `http://127.0.0.1:${wanting.port}`,
+      credential: silentCredential(),
+      targetSession: "ses_receiver",
+      message: "refused",
+    }).catch((error: unknown) => error)
+    expect((refused as Error).message).toBe(
+      "the send answered 401, and this machine's Envoy credential could not be minted: the secrets broker has not yet answered the trade",
+    )
+  } finally {
+    wanting.stop(true)
+  }
+}, 20_000)
+
 test("envoy-send sends to the listener and with the bearer its envoy.json names", async () => {
   requests.length = 0
   const listenerToken = fixtureSecret("listener")

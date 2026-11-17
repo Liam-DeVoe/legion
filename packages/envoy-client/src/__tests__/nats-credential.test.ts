@@ -24,7 +24,8 @@ import {
   awaitReady,
   buildGoBinaries,
   envoyStackEnabled,
-  freePorts,
+  natsdHealthy,
+  natsdPorts,
   stopProcess,
   useEnvoyStackDirectory,
 } from "../../test/envoy-stack";
@@ -453,13 +454,13 @@ interface CalloutHub {
 }
 
 /** Starts a {@link CalloutHub} in its own directory under the stack directory, from the binaries
- *  the describe's `beforeAll` built. */
+ *  the describe's `beforeAll` built. natsd binds kernel-chosen ports (`-p -1 -m -1`), read from
+ *  its log by the stack's `natsdPorts`. */
 async function startCalloutHub(name: string, brokerUrl: string): Promise<CalloutHub> {
   const work = path.join(stackDirectory, name);
   const bin = path.join(stackDirectory, "bin");
   const keys = path.join(work, "callout-keys");
   mkdirSync(keys, { recursive: true });
-  const [natsPort, monitorPort] = await freePorts(2);
   const { PATH = "" } = process.env;
   const budget = { timeoutMs: 60_000, tailLines: 10 };
   const processes: Subprocess[] = [];
@@ -472,18 +473,17 @@ async function startCalloutHub(name: string, brokerUrl: string): Promise<Callout
     const natsd = Bun.spawn(
       [
         path.join(bin, "natsd"),
-        ...["-p", String(natsPort), "-m", String(monitorPort)],
+        ...["-p", "-1", "-m", "-1"],
         ...["-store_dir", path.join(work, "nats-store"), "-callout-keys", keys],
       ],
       { env: { PATH, HOME: work }, stdout: natsOut, stderr: natsOut }
     );
     closeSync(natsOut);
     processes.push(natsd);
-    await awaitReady("natsd", natsd, natsLog, budget, async () => {
-      const answer = await fetch(`http://127.0.0.1:${monitorPort}/healthz`);
-      return answer.ok;
-    });
-    const natsUrl = `nats://127.0.0.1:${natsPort}`;
+    await awaitReady("natsd", natsd, natsLog, budget, () => natsdHealthy(natsLog));
+    const ports = natsdPorts(natsLog);
+    if (ports === undefined) throw new Error(`natsd named no port in ${natsLog}`);
+    const natsUrl = `nats://127.0.0.1:${ports.natsPort}`;
     const calloutLog = path.join(work, "calloutd.log");
     const calloutOut = openSync(calloutLog, "a");
     const calloutd = Bun.spawn(
@@ -687,35 +687,29 @@ describe.skipIf(!envoyStackEnabled)(
       const broker = stubBroker(600);
       const work = path.join(stackDirectory, "no-auth");
       mkdirSync(work, { recursive: true });
-      const [natsPort, monitorPort] = await freePorts(2);
       const natsLog = path.join(work, "natsd.log");
       const natsOut = openSync(natsLog, "a");
       const { PATH = "" } = process.env;
       const natsd = Bun.spawn(
         [
           path.join(stackDirectory, "bin", "natsd"),
-          ...["-p", String(natsPort), "-m", String(monitorPort)],
+          ...["-p", "-1", "-m", "-1"],
           ...["-store_dir", path.join(work, "nats-store")],
         ],
         { env: { PATH, HOME: work }, stdout: natsOut, stderr: natsOut }
       );
       closeSync(natsOut);
       try {
-        await awaitReady(
-          "natsd",
-          natsd,
-          natsLog,
-          { timeoutMs: 60_000, tailLines: 10 },
-          async () => {
-            const answer = await fetch(`http://127.0.0.1:${monitorPort}/healthz`);
-            return answer.ok;
-          }
+        await awaitReady("natsd", natsd, natsLog, { timeoutMs: 60_000, tailLines: 10 }, () =>
+          natsdHealthy(natsLog)
         );
+        const ports = natsdPorts(natsLog);
+        if (ports === undefined) throw new Error(`natsd named no port in ${natsLog}`);
         const credential = brokerNatsCredential(podEnvironment(broker.url), "ses_no_auth");
         await credential.ready();
         const dialled = connect(
           natsConnectionOptions({
-            servers: [`nats://127.0.0.1:${natsPort}`],
+            servers: [`nats://127.0.0.1:${ports.natsPort}`],
             name: "nats-credential-no-auth",
             credential: { kind: "broker", broker: credential },
           })

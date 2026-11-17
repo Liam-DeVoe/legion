@@ -2,8 +2,9 @@ import { describe, expect, test } from "bun:test";
 import { createServer } from "node:net";
 import { freePorts } from "../../test/envoy-stack";
 
-// The ports the real-stack harness gives one stack (natsd's client port, natsd's monitoring port
-// and the listener's) must differ from each other, and each must be free for its process to bind.
+// The ports one `freePorts` call hands out must differ from each other, and each must be free for
+// its process to bind. (natsd and the listener no longer take theirs from it: each binds port 0
+// and logs the port it got, `natsdPorts` and `listenerPort`; a process that cannot still does.)
 //
 // Choosing them one at a time, each probe socket closed before the next is opened, lets the kernel
 // hand the same ephemeral port out twice: natsd then binds it and the listener's own bind fails

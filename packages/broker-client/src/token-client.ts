@@ -45,6 +45,7 @@ import {
   isFinalRefusal,
   RegistrationPendingError,
   TradeRetryingError,
+  TradeUnansweredError,
 } from "./token-errors";
 import {
   ACTOR_TOKEN_TYPE_MACHINE,
@@ -398,10 +399,13 @@ export class BrokerTokenClient {
   }
 
   /** What a caller whose wait ended before the loop's answer is told: the loop's last failure,
-   *  as {@link token} says, or `reason` where no trade has failed yet. */
+   *  as {@link token} says; where no trade has ended yet, that the trade still out has not been
+   *  answered (`TradeUnansweredError`), the caller's deadline being no answer about the trade;
+   *  or `reason` where no trade is out at all. */
   #stopped(reason: unknown): unknown {
     const last = this.#last;
-    if (last === null) return reason;
+    if (last === null)
+      return this.#loop === null ? reason : new TradeUnansweredError(this.describe());
     return last.kind === "pending"
       ? new RegistrationPendingError(this.#session, last.refusal)
       : new TradeRetryingError(last.said);

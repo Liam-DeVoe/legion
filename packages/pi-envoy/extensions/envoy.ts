@@ -706,7 +706,7 @@ if (CONFIG_FILE.path !== null) process.env.ENVOY_CONFIG_FILE = CONFIG_FILE.path;
  * is on by the time the request goes out.
  */
 const timedDispatchClient = (ms: number, session: () => string = currentSessionID) =>
-  sessionDispatchClient(CONFIG_FILE, process.cwd(), AbortSignal.timeout(ms), session)?.client;
+  sessionDispatchClient(CONFIG_FILE, process.cwd(), { deadlineMs: ms }, session)?.client;
 
 /** The host's logger, every message and field it is handed passing the scrub of the secrets this
  *  process holds (`../src/scrubbed-host`). */
@@ -835,6 +835,9 @@ export default function envoyExtension(hostApi: PiApi): void {
   // off, unlike `requireEnvoy`, which throws: the queues exist whatever the session resolved, and
   // a queue cannot answer a throw with a deadline.
   const passDeadlineMs = (): number => active?.settings.passDeadlineMs ?? MIN_PASS_DEADLINE_MS;
+  /** What a pass needs beside the start's wait for its broker token: the dial, its subscribes and
+   *  the registration (`TRADE_DEADLINE_MS` is the default pass deadline less this). */
+  const PASS_REST_MS = 10_000;
   const delivered = createDeliveryDedupe();
   let connection: NatsConnection | undefined;
   // Stops the keeper of `connection`'s broker token (`keepNatsCredential`): one per connection,
@@ -1185,11 +1188,15 @@ export default function envoyExtension(hostApi: PiApi): void {
     const { natsUrls, natsCredential } = requireInbound();
     // A broker token is signed into the CONNECT itself, so a live one is taken before the dial.
     // The start has nothing to do until it holds one, so it waits for ready within its bound
-    // (`TRADE_DEADLINE_MS`, inside the pass's deadline): a first trade's 503 is ridden out rather
-    // than costing the session its registration until the next heartbeat, and a broker that never
-    // grants fails the start naming the trade's cause.
+    // (`TRADE_DEADLINE_MS`, or the pass deadline less the 10 s the rest of the pass needs where
+    // that is shorter): a first trade's 503 is ridden out rather than costing the session its
+    // registration until the next heartbeat, and a broker that never grants fails the start
+    // naming the trade's cause.
     if (natsCredential.kind === "broker") {
-      await natsCredential.broker.ready({ waitForReady: true });
+      await natsCredential.broker.ready({
+        waitForReady: true,
+        boundMs: passDeadlineMs() - PASS_REST_MS,
+      });
     }
     // nats.js re-subscribes existing subscriptions on its own once reconnected.
     return (natsConnectStore[NATS_CONNECT] ?? connect)(
@@ -3167,10 +3174,13 @@ export default function envoyExtension(hostApi: PiApi): void {
    *  it left at a `/new`, a fork or a branch — once that session's registration has settled or
    *  `settleMs` have passed. The DELETE carries this client instance's id
    *  (`registrationState.deregister`), so it removes only a record this instance's registration
-   *  wrote. */
+   *  wrote. Where the caller must be done by `endsAt` (a shutdown), the DELETE gets what is left
+   *  until then: its credential waits on that less the request's reserve, so a broker credential
+   *  still waiting on a trade leaves the DELETE time to go without it. */
   const deregisterSession = async (
     id: string,
-    settleMs: number = REGISTRATION_SETTLE_MS
+    settleMs: number = REGISTRATION_SETTLE_MS,
+    endsAt?: number
   ): Promise<void> => {
     if (id === "" || active === undefined) return;
     const registering = registrationsInFlight.get(id);
@@ -3183,7 +3193,7 @@ export default function envoyExtension(hostApi: PiApi): void {
         clearTimeout(timer);
       }
     }
-    await registrationState.deregister(id);
+    await registrationState.deregister(id, endsAt === undefined ? undefined : endsAt - Date.now());
   };
 
   // Said once per outage: the listener refused this session's registration, so no consumer
@@ -4262,6 +4272,7 @@ export default function envoyExtension(hostApi: PiApi): void {
     // refused and warned about as a failure, at a stop nobody asked to be warned of.
     stopNatsKeeper();
     const deadline = Promise.withResolvers<void>();
+    const endsAt = Date.now() + SHUTDOWN_DEADLINE_MS;
     const timer = setTimeout(deadline.resolve, SHUTDOWN_DEADLINE_MS);
     try {
       // The heartbeat has stopped (`shuttingDown`), so no new registration starts; one already on
@@ -4272,7 +4283,7 @@ export default function envoyExtension(hostApi: PiApi): void {
       // record left behind outlives the process by the gone horizon. The drain runs beside the
       // wait: it needs no listener call, and both share that deadline, which is what the host's
       // own limit on a shutdown handler leaves them.
-      const deregistration = deregisterSession(sessionID, SHUTDOWN_SETTLE_MS).catch(
+      const deregistration = deregisterSession(sessionID, SHUTDOWN_SETTLE_MS, endsAt).catch(
         () => undefined
       );
       const draining = connection?.drain().catch(() => undefined) ?? Promise.resolve();

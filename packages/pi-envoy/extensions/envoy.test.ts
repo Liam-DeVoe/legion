@@ -19737,7 +19737,7 @@ console.log(JSON.stringify(args));
   test("a broker that never grants: the start fails at its 20 s bound, naming the 503, inside its pass", async () => {
     // The start waits for ready within its bound (`TRADE_DEADLINE_MS`, 20 s), through the retry
     // loop's retries, and then fails naming what the last trade came to, before the pass's
-    // deadline, 30 s at its floor: a pass abandoned at that deadline names no cause at all.
+    // deadline, 30 s by default: a pass abandoned at that deadline names no cause at all.
     brokerPod(() => "503");
     const started = Date.now();
     const { context, notifications } = timedContext("ses_broker_503", started);

@@ -21,6 +21,7 @@ import {
   RegistrationPendingError,
   SignInEndedError,
   TradeRetryingError,
+  TradeUnansweredError,
 } from "@legion/broker-client/token-errors";
 import { scrub } from "@legion/contracts/held-secrets";
 // Types alone: `envoySettings` imports this module, and every bundle of it — the `dispatch`
@@ -101,6 +102,9 @@ export interface ReadyOptions {
   /** Waits for ready for `tradeDeadlineMs`, a startup's bound inside its pass, and then fails
    *  naming the trade's last failure. */
   readonly waitForReady?: boolean | undefined;
+  /** The most the wait may take, where that is less than `tradeDeadlineMs`: a startup whose pass
+   *  deadline is shorter than the default leaves its pass the time the rest of it needs. */
+  readonly boundMs?: number | undefined;
 }
 
 /** Why a CONNECT presenting the broker token fails at a hub that sent no nonce: it runs no auth
@@ -116,9 +120,10 @@ export function noAuthService(source: string): string {
  * How long {@link BrokerNatsCredential.ready} waits for a trade: nats.js's own dial timeout, so a
  * secrets broker that never answers fails a start as a hub that never answers does, named,
  * rather than holding it in silence. A startup that waits for ready (`ReadyOptions.waitForReady`)
- * waits this long: it is the pass's deadline at its 30 s floor (`MIN_PASS_DEADLINE_MS`; longer
- * where the heartbeat is) less 10 s for the rest of the pass (the dial, its subscribes and the
- * registration), so the start fails naming the trade's cause before the pass is abandoned; and it
+ * waits this long: it is the pass's deadline at its 30 s default (`ENVOY_PASS_DEADLINE_MS`; the
+ * heartbeat is its floor) less 10 s for the rest of the pass (the dial, its subscribes and the
+ * registration), so the start fails naming the trade's cause before the pass is abandoned, and
+ * a start whose pass deadline is shorter bounds the wait by it (`ReadyOptions.boundMs`); and it
  * is longer than the retry loop's longest first
  * wait (15 s, `RETRY_FIRST_WAIT_MS`, with its jitter at its longest) and that trade's answer, so
  * one transient failure is always ridden out.
@@ -150,6 +155,7 @@ export function tradeFailureReason(error: unknown): string {
   }
   if (error instanceof RegistrationPendingError) return scrub(error.message);
   if (error instanceof TradeRetryingError) return scrub(error.message);
+  if (error instanceof TradeUnansweredError) return scrub(error.message);
   if (error instanceof SessionMovedError) return error.message;
   if (error instanceof BrokerTradeFailedError) return scrub(error.message);
   if (error instanceof SignInEndedError)
@@ -157,9 +163,14 @@ export function tradeFailureReason(error: unknown): string {
   return natsFailureReason(error);
 }
 
-/** Whether `error` is the reason an `AbortSignal.timeout` ends with: the caller's deadline. */
+/** Whether `error` says the caller's deadline ended with no trade answered: an
+ *  `AbortSignal.timeout`'s reason, or the token client's own words for it
+ *  (`TradeUnansweredError`). */
 function isDeadline(error: unknown): boolean {
-  return error instanceof DOMException && error.name === "TimeoutError";
+  return (
+    (error instanceof DOMException && error.name === "TimeoutError") ||
+    error instanceof TradeUnansweredError
+  );
 }
 
 /**
@@ -257,13 +268,14 @@ export function brokerNatsCredential(
     ready: async (options: ReadyOptions = {}) => {
       if (live()) return;
       const { life } = options;
+      const boundMs = Math.max(0, Math.min(tradeDeadlineMs, options.boundMs ?? tradeDeadlineMs));
       try {
         await (life === undefined
-          ? take(AbortSignal.timeout(tradeDeadlineMs), options.waitForReady === true)
+          ? take(AbortSignal.timeout(boundMs), options.waitForReady === true)
           : take(life, true));
       } catch (error) {
         if (life?.aborted === true) throw life.reason;
-        throw notReady(error, tradeDeadlineMs);
+        throw notReady(error, boundMs);
       }
     },
     renew,
@@ -410,7 +422,7 @@ export function keepNatsCredential(
 
 /** How long a session switch waits for its connection to come back as the new session, once its
  *  token is in hand: with the trade's `TRADE_DEADLINE_MS` before it, the follow fits inside the
- *  pass's deadline at its 30 s floor (`MIN_PASS_DEADLINE_MS`) with 2 s to spare. */
+ *  pass's deadline at its 30 s default (`ENVOY_PASS_DEADLINE_MS`) with 2 s to spare. */
 const FOLLOW_RECONNECT_MS = 8_000;
 
 /** nats.js's status of a connection that is back (`Events.Reconnect`), written out so this module

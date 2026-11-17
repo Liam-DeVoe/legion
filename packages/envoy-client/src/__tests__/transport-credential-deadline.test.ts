@@ -253,3 +253,61 @@ test("inside the renewal window, a broker that hangs leaves the call its live to
   expect(trades).toBe(2);
   expect(fetched).toEqual([live, live]);
 });
+
+test("an open listener's 403 to a call that went without its credential stands as the listener's answer", async () => {
+  // A listener that requires a credential answers a request without one 401 and nothing else
+  // (`apiauth.go`); a 403 is the listener's own refusal of what the call asked, such as a send's
+  // capability, and its reason is the call's answer, not a credential that could not be minted.
+  const client = createEnvoyClient({
+    baseUrl: "http://listener.test",
+    retry: false,
+    fetch: async (_url, init) => {
+      if (init?.signal?.aborted) throw init.signal.reason;
+      return Response.json(
+        { error: "this session may not send to that one", reason: "capability" },
+        { status: 403 }
+      );
+    },
+    credential: brokerCredential(
+      podEnvironment(
+        brokerAt(() => new Promise<Response>(() => {})),
+        "http://dispatch.test"
+      ),
+      POD_SESSION
+    ),
+  });
+  const refused = await client.getRole("implementer").catch((error: unknown) => error);
+  expect(refused).toBeInstanceOf(Error);
+  expect((refused as Error).message).toContain("this session may not send to that one");
+  expect((refused as Error).message).not.toContain("could not be minted");
+}, 20_000);
+
+test("a deregistration given a shutdown's remaining time goes out in it, without a credential still waiting", async () => {
+  // pi-envoy's shutdown has 1 s for its DELETE (`SHUTDOWN_DEADLINE_MS`). Given that time, the
+  // call makes one attempt whose credential waits on half of it, so the DELETE goes without the
+  // credential a silent broker holds back, inside the shutdown's second.
+  const deleted: { readonly at: number; readonly authorization: string | null }[] = [];
+  const started = Date.now();
+  const client = createEnvoyClient({
+    baseUrl: "http://listener.test",
+    fetch: async (_url, init) => {
+      if (init?.signal?.aborted) throw init.signal.reason;
+      deleted.push({
+        at: Date.now() - started,
+        authorization: new Headers(init?.headers).get("Authorization"),
+      });
+      return Response.json({ kept: false });
+    },
+    credential: brokerCredential(
+      podEnvironment(
+        brokerAt(() => new Promise<Response>(() => {})),
+        "http://dispatch.test"
+      ),
+      POD_SESSION
+    ),
+  });
+  await client.unregisterSession({ sessionID: POD_SESSION, timeoutMs: 750 });
+  expect(deleted).toHaveLength(1);
+  expect(deleted[0]?.authorization).toBeNull();
+  expect(deleted[0]?.at).toBeLessThan(1_000);
+}, 20_000);

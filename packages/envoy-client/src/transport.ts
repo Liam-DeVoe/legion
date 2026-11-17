@@ -829,11 +829,15 @@ export type EnvoyClient = {
    * deletes the registration a successor instance made under the same session id; without one
    * the entry is deleted as before. The listener's answer says whether the entry stayed, and
    * this resolves `void` because no caller acts on it: a deregistering client has nothing to
-   * retry either way.
+   * retry either way. `timeoutMs` is the time its caller has left, a shutdown's budget: one
+   * attempt, its credential waiting on that time less the request's reserve
+   * (`credentialDeadline`), so a credential still waiting on a trade leaves the DELETE time to go
+   * without it.
    */
   readonly unregisterSession: (input: {
     readonly sessionID: string;
     readonly clientInstanceID?: string;
+    readonly timeoutMs?: number;
   }) => Promise<void>;
   /**
    * Claims `role` for the session. A soft claim (`soft`) naming a predecessor
@@ -917,8 +921,8 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
     // What a credential that could not mint said, where one could not. A listener that asks for
     // no credential answers the same with or without one, so a broker that is down or refused
     // this machine's trade must not take those calls down: the request goes without the headers
-    // and stands or falls on the listener's own answer. A listener that did want one answers 401
-    // or 403, and that is reported as the failed trade it really is, below.
+    // and stands or falls on the listener's own answer. A listener that did want one answers 401,
+    // and that is reported as the failed trade it really is, below.
     let unminted: unknown;
     // One deadline for the whole attempt, `deadlineMs` (the listener's 5 s), and the credential
     // waits on all of it but the request's reserve (`credentialDeadline`: 4 s of 5, the request
@@ -952,10 +956,12 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
     } catch (error) {
       return { unanswered: noAnswer(init.method, url, error) };
     }
-    if (unminted !== undefined && (response.status === 401 || response.status === 403)) {
-      // The listener wanted the credential this machine could not mint. That is no answer about
-      // the call itself, so it retries like any other unanswered attempt — the broker may have
-      // come back — and the error names both halves.
+    if (unminted !== undefined && response.status === 401) {
+      // The listener wanted the credential this machine could not mint: a listener that requires
+      // one answers a request without it 401 and nothing else (`apiauth.go`). That is no answer
+      // about the call itself, so it retries like any other unanswered attempt — the broker may
+      // have come back — and the error names both halves. A 403 is the listener's own refusal of
+      // what the call asked (a send's capability, a denied publish), and stands as its answer.
       return {
         unanswered: new Error(
           `${init.method ?? "GET"} ${shown(url)} answered ${response.status}, and this machine's Envoy credential could not be minted: ${messageFor(unminted)}`,
@@ -1186,7 +1192,12 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
       await request(
         `/v1/sessions/${encodeURIComponent(input.sessionID)}${query}`,
         { method: "DELETE" },
-        { actingSession: input.sessionID }
+        {
+          actingSession: input.sessionID,
+          ...(input.timeoutMs === undefined
+            ? {}
+            : { timeoutMs: Math.max(1, input.timeoutMs), retry: false }),
+        }
       );
     },
     setRole: async (input) => {

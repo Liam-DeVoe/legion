@@ -156,6 +156,22 @@ export class TradeRetryingError extends Error {
 }
 
 /**
+ * A call that stopped waiting, its signal ended, while the client's first trade since its last
+ * token was still out, so no trade had ended yet to say what it came to: a broker that does not
+ * answer, named as that rather than as the signal's bare "The operation timed out.". The trade
+ * goes on, so it is not final ({@link isFinalRefusal}). Its message names the identity traded and
+ * nothing a peer wrote.
+ */
+export class TradeUnansweredError extends Error {
+  constructor(identity: string) {
+    super(
+      `the secrets broker has not yet answered the trade of ${identity}, and the trade goes on in the background`
+    );
+    this.name = "TradeUnansweredError";
+  }
+}
+
+/**
  * A trade that ended other than in a refusal: the broker gave no answer, a 5xx, or an answer
  * that is not this grant's. Its message names the identity traded, the broker as `urlForText`
  * names it and the failure by its class (`errorClass`), and nothing a peer wrote, so a caller

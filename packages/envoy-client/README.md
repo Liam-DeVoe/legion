@@ -195,8 +195,9 @@ fast: a failure the loop trades again on fails it at once, naming that failure, 
 not registered yet is waited out for 20 s (`TRADE_DEADLINE_MS`, nats.js's own dial timeout).
 `ready({ waitForReady: true })`, an Oh My Pi session's start, waits for ready for those 20 s,
 through every failure the loop trades again on, and then fails naming the last one: 20 s is the
-pass's deadline at its 30 s floor (`MIN_PASS_DEADLINE_MS`; it is longer where the heartbeat is)
-less 10 s for the rest of the pass, and longer than the loop's longest first
+pass's deadline at its 30 s default (`ENVOY_PASS_DEADLINE_MS`; the heartbeat is its floor) less
+10 s for the rest of the pass, and a start bounds it by its own pass deadline less those 10 s
+where that is shorter; and it is longer than the loop's longest first
 wait, 15 s. `ready({ life })`, a Claude Code channel server's start, waits for ready until a token
 lands, a refusal no trade cures ends the loop, or `life` ends. `authenticator(nonce)` signs one
 snapshot of it per CONNECT and presents

@@ -364,10 +364,11 @@ export interface IssueReadOptions {
  *  `limit` (`parseEventLimit` in packages/envoy/internal/dispatch/api/events.go). */
 const ISSUE_EVENTS_PAGE_MAX = 200;
 
+/** A client's own deadline, counted from when it was made, where its maker names none. */
 export const DISPATCH_TOOL_DEADLINE_MS = 60_000;
 
-function requestSignal(signal: AbortSignal | undefined): AbortSignal {
-  const deadline = AbortSignal.timeout(DISPATCH_TOOL_DEADLINE_MS);
+function requestSignal(signal: AbortSignal | undefined, deadlineMs: number): AbortSignal {
+  const deadline = AbortSignal.timeout(deadlineMs);
   return signal === undefined ? deadline : AbortSignal.any([signal, deadline]);
 }
 
@@ -871,11 +872,15 @@ export class DispatchClient {
   readonly #retryNoRoute: boolean;
   readonly writeRetry: DispatchWriteRetry;
   /**
-   * When this client was made, on the write clock (`#now`): its 60 s deadline counts from here, so
+   * When this client was made, on the write clock (`#now`): its deadline counts from here, so
    * no write asks again later than `writeRetry.inFlightWithinMs` after it, however late in the
    * client's life the write began.
    */
   readonly #madeAt: number;
+  /** When the client's own deadline ends, on the process's monotonic clock, which the deadline's
+   *  timer keeps too: the time a credential is given to present is read off it
+   *  (`#credentialSignal`). */
+  readonly #deadlineAt: number;
   /**
    * `fetchImpl`, with a transport failure named by the Dispatch URL as `urlForText` names it and
    * the failure's class (`errorClass`), never the runtime's message: that message repeats the host
@@ -892,6 +897,10 @@ export class DispatchClient {
     readonly fetchImpl: typeof fetch = fetch,
     options: {
       readonly signal?: AbortSignal | undefined;
+      /** The client's own deadline, counted from now: `DISPATCH_TOOL_DEADLINE_MS` when absent. A
+       *  maker with a budget of its own names it here rather than as a timed `signal`, so the
+       *  credential is given that budget less the request's reserve (`#credentialSignal`). */
+      readonly deadlineMs?: number | undefined;
       readonly writeRetry?: DispatchWriteRetry | undefined;
       readonly sleep?: Sleep | undefined;
       /** Whether a request a Dispatch process answered with no route for it is asked again
@@ -923,7 +932,9 @@ export class DispatchClient {
       },
       { preconnect: fetchImpl.preconnect }
     );
-    this.#signal = requestSignal(options.signal);
+    const deadlineMs = options.deadlineMs ?? DISPATCH_TOOL_DEADLINE_MS;
+    this.#signal = requestSignal(options.signal, deadlineMs);
+    this.#deadlineAt = performance.now() + deadlineMs;
     this.writeRetry = options.writeRetry ?? DISPATCH_WRITE_RETRY;
     this.#sleep = options.sleep ?? sleep;
     this.#retryNoRoute = options.retryNoRoute ?? true;
@@ -2045,10 +2056,17 @@ export class DispatchClient {
     // that cannot answer throws here, out of the loop's reach, rather than being taken for a
     // failed attempt.
     const headers: Record<string, string> = { Accept: accept };
-    // The call's own deadline and the client's, which the credential is given too: a broker
-    // credential waiting on a pod's missing registration stops at it, naming the session.
+    // The call's own deadline and the client's, which the credential is given too, less the
+    // request's reserve (`#credentialSignal`): a broker credential waiting on a pod's missing
+    // registration stops at it, naming the session, and one whose renewal goes unanswered answers
+    // with the live token in hand while the request can still be sent with it.
     const limit = signal === undefined ? this.#signal : AbortSignal.any([this.#signal, signal]);
-    let presented = await this.#credential.headers(method, url, undefined, limit);
+    let presented = await this.#credential.headers(
+      method,
+      url,
+      undefined,
+      this.#credentialSignal(limit)
+    );
     if (body !== undefined) headers["Content-Type"] = body.type;
     if (key === undefined) {
       return this.#fetch(url, {
@@ -2089,7 +2107,14 @@ export class DispatchClient {
       try {
         // Each attempt after the first presents the credential afresh: a resource server that
         // keeps a replay store refuses a proof it has already seen.
-        if (attempt > 1) presented = await this.#credential.headers(method, url, undefined, limit);
+        if (attempt > 1) {
+          presented = await this.#credential.headers(
+            method,
+            url,
+            undefined,
+            this.#credentialSignal(limit)
+          );
+        }
         const sent = { ...headers, ...presented };
         answer = await writeAnswer(await this.#attempt(url, method, sent, body, silenceMs), key);
         if (answer.echoed) KEYED_LAYER_SEEN.set(this.#baseUrl, this.#now());
@@ -2153,6 +2178,16 @@ export class DispatchClient {
         throw thrown;
       }
     }
+  }
+
+  /**
+   * The signal a credential presents within: the call's `limit`, and the time left on the
+   * client's own deadline less the request's reserve (`credentialDeadline`). For the 60 s
+   * default the credential waits 59 s and the request has 1 s. A caller's own `signal` ends
+   * `limit` where it ends first, and its length is the caller's, so no reserve is taken from it.
+   */
+  #credentialSignal(limit: AbortSignal): AbortSignal {
+    return credentialDeadline(limit, Math.max(1, this.#deadlineAt - performance.now()));
   }
 
   /** The write clock: `writeRetry.now`, or the process's monotonic one. */

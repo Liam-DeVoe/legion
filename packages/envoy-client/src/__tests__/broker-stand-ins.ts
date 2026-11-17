@@ -168,11 +168,20 @@ export function natsBrokerStandIns(prefix: string) {
    * pod session no registration names yet (`registeredPodSession`,
    * packages/envoy/internal/broker/oauth/exchange.go), in its own words. `state.seconds`, at first
    * `lifeSeconds`, is how long the next token lives: a row may change it, as a broker that is back mints tokens of their
-   * usual life.
+   * usual life. A trade whose DPoP proof is missing or whose header is no JSON is answered as the
+   * broker answers it, `invalid_dpop_proof` (RFC 9449 Section 7.1), and counted in `badProofs`,
+   * rather than thrown: a throw in the handler fails the row running and skips its cleanup.
    */
   function stubBroker(lifeSeconds: number) {
     const minted: Minted[] = [];
-    const state = { down: false, unregistered: false, minted, trades: 0, seconds: lifeSeconds };
+    const state = {
+      down: false,
+      unregistered: false,
+      minted,
+      trades: 0,
+      seconds: lifeSeconds,
+      badProofs: 0,
+    };
     const server = Bun.serve({
       port: 0,
       hostname: "127.0.0.1",
@@ -204,12 +213,21 @@ export function natsBrokerStandIns(prefix: string) {
             { status: 400 }
           );
         }
-        const header = JSON.parse(
-          Buffer.from(
-            (request.headers.get("DPoP") ?? "").split(".")[0] ?? "",
-            "base64url"
-          ).toString()
-        ) as { readonly jwk: JsonWebKey };
+        let header: { readonly jwk: JsonWebKey };
+        try {
+          header = JSON.parse(
+            Buffer.from(
+              (request.headers.get("DPoP") ?? "").split(".")[0] ?? "",
+              "base64url"
+            ).toString()
+          ) as { readonly jwk: JsonWebKey };
+        } catch {
+          state.badProofs += 1;
+          return Response.json(
+            { error: "invalid_dpop_proof", error_description: "the request carries no DPoP proof" },
+            { status: 400 }
+          );
+        }
         // Random, as the broker's are: the client holds each one, and two trades in flight at once
         // must not be answered the same token.
         const value = fixtureSecret("access");

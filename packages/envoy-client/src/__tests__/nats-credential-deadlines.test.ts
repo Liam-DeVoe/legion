@@ -45,6 +45,33 @@ describe("ready", () => {
     expect(Date.now() - started).toBeLessThan(5_000);
   }, 15_000);
 
+  test("a startup's bound shorter than the trade deadline ends its wait first, naming the broker's silence", async () => {
+    // A start whose pass deadline is shorter than the default bounds its wait by that deadline
+    // less what the rest of its pass needs (`ReadyOptions.boundMs`), so its pass is not abandoned
+    // with no cause named.
+    const server = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      fetch: () => new Promise<Response>(() => undefined),
+    });
+    servers.push(server);
+    const credential = brokerNatsCredential(
+      podEnvironment(`http://127.0.0.1:${server.port}`),
+      "ses_short_pass",
+      "NATS_AUTH",
+      10_000
+    );
+    const started = Date.now();
+    const outcome = await credential.ready({ waitForReady: true, boundMs: 400 }).then(
+      () => "ready",
+      (error: unknown) => (error instanceof Error ? error.message : String(error))
+    );
+    expect(outcome).toBe(
+      "NATS_AUTH is broker, but the secrets broker did not answer the trade for the session's token within 0.4 s"
+    );
+    expect(Date.now() - started).toBeLessThan(3_000);
+  }, 20_000);
+
   test("a pod session the broker holds no registration for fails it at the deadline, naming the session", async () => {
     // The token client waits out a missing registration for as long as its caller waits (#4153),
     // so a start that handed it no deadline waited until the registration landed, and then said

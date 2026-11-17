@@ -13,7 +13,12 @@ import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { newDpopKey } from "../dpop";
 import type { SubjectToken, TokenSource } from "../source";
 import { type BrokerToken, BrokerTokenClient } from "../token-client";
-import { BrokerRefusedError, RegistrationPendingError, TradeRetryingError } from "../token-errors";
+import {
+  BrokerRefusedError,
+  RegistrationPendingError,
+  TradeRetryingError,
+  TradeUnansweredError,
+} from "../token-errors";
 import { SUBJECT_TOKEN_TYPE_KUBERNETES } from "../wire";
 import { accepted } from "./stub";
 
@@ -264,11 +269,16 @@ const ROWS: [string, Row][] = [
       answer: () => "silent",
       budget: 0,
       drive: async ({ client, waits }) => {
-        // A deadline before any trade has failed is the caller's own.
+        // A deadline before any trade has ended is told the trade still out has not been
+        // answered, by the identity it trades: the caller's deadline is no answer about it.
         const early = new AbortController();
         const before = client.token(early.signal);
         early.abort(new Error("the caller's own deadline"));
-        expect(((await outcome(before)) as Error).message).toBe("the caller's own deadline");
+        const unanswered = await outcome(before);
+        expect(unanswered).toBeInstanceOf(TradeUnansweredError);
+        expect((unanswered as Error).message).toBe(
+          "the secrets broker has not yet answered the trade of a pod's projected service-account token, and the trade goes on in the background"
+        );
         // A fail-fast caller with no deadline of its own is told when the trade's time runs out:
         // a trade that never returns ends, and so does the wait on it.
         const fast = client.token().catch((error: unknown) => error);
