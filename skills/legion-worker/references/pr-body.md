@@ -86,19 +86,17 @@ about whether the head merges.
 ledger the reviewer and merger check against GitHub. The implementer writes `Outcome`, `Why`,
 `Change`, `Proven by`, and `Size` when the pull request opens, and keeps them true after every
 push; `Outcome` is a sentence a user of the repository would recognise, never "fix bug" or a file
-name, and `Why` ends with the Dispatch key, never a URL. Where the task has a review step, the
-reviewer writes `Look at first` and `Not proven / risk` at each round, into the live body (`gh api
-repos/{owner}/{repo}/pulls/{number} --jq .body`, edit, then `--method PATCH ... -F body=@body.md`);
-`Not proven / risk` copies every claim recorded as unproven before the merge — the tester's
-`failures`, where the task has a tester step, the reviewer's own review, any proof-check comment
-already on the pull request — word for word, and `none` is a finding while one stands. On a task
-whose `Steps:` line names no reviewer, the implementer writes both lines at each of its rounds,
-into the live body the same way. It writes `Not proven / risk` from what its own evidence does not
-prove, and copies word for word the tester's `failures`, where the task has a tester step, and any
-proof-check comment already on the pull request; `none` is invalid there too while such a claim
-stands. The merger reads `Outcome` and `Not proven / risk` from the body at the head it merges, and
-a stale `Outcome` that no longer describes the diff is a finding against the implementer, not a
-line the merger rewrites.
+name, and `Why` ends with the Dispatch key, never a URL. `Look at first` and `Not proven / risk`
+are the reviewer's where the task has a review step, and the implementer's on a task whose `Steps:`
+line names no reviewer; whoever owns them writes both at each of its rounds, into the live body
+(`gh api repos/{owner}/{repo}/pulls/{number} --jq .body`, edit, then `--method PATCH ... -F
+body=@body.md`). `Not proven / risk` copies every claim recorded as unproven before the merge word
+for word — the tester's `failures`, where the task has a tester step, the reviewer's own review
+where the reviewer writes it, any proof-check comment already on the pull request — and, where the
+implementer writes it, what the implementer's own evidence does not prove; `none` is a finding
+while such a claim stands. The merger reads `Outcome` and `Not proven / risk` from the body at the
+head it merges, and a stale `Outcome` that no longer describes the diff is a finding against the
+implementer, not a line the merger rewrites.
 
 ## What a result is
 

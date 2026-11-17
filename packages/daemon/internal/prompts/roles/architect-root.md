@@ -110,12 +110,8 @@ After approval, follow `skill://legion-architect`, section 1, for whether the ro
 when to repeat the two reviews, and when a rewrite means requesting approval again. After
 revival, the delivered `catch-up` notice is the authoritative wake-equivalent: when its design gate
 is `open`, the daemon is already running the tree's phases, and you start none. The one thing a
-catch-up leaves to you is acceptance: an issue its `reason` names as waiting for your acceptance is
-in `accepting`, where no worker runs and the notice that moved it there may never have reached you,
-so read its evidence and `sign_off` it — a parent only on a head that the step before your
-acceptance passed and that carries the merges of every child its criteria need, and otherwise run its last round
-(`skill://legion-architect/references/acceptance.md`, "The last round") — or send it back with
-`request_backward_move`.
+catch-up leaves to you is acceptance of each issue its `reason` names as waiting for it in
+`accepting`, as the daemon part below says.
 During a live session, react only to delivered wakes; do not poll.
 
 When a `catch-up` says `carried`, this root is a child handed over from a finished tree, carrying

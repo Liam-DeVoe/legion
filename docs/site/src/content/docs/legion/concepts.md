@@ -175,9 +175,12 @@ plan, until the owner stops that task with `stop_task` and gives a plan whose on
 A step a plan leaves out hands its duty on. With no tester step, the implementer's own results
 against the issue's checks are the evidence, and a reviewer step refuses to approve while any of
 them has no pass at the head. With no reviewer step, nothing approves the head, so on a base that
-requires an approving review the merger waits and tells the architect which review is missing. With
-no acceptance step, the last step passing starts the retro; a parent that gets there while an issue
-beneath it is still in the workflow is held before its retro until the last one leaves.
+requires an approving review the merger waits and tells the architect which review is missing.
+The implementer then writes the pull request body's `Look at first` and `Not proven / risk` lines
+at each round, and before each completion, its retro's included, answers and resolves each bot
+review thread still open, naming each one it declined to the architect. With no acceptance step,
+the last step passing starts the retro; a parent that gets there while an issue beneath it is
+still in the workflow is held before its retro until the last one leaves.
 `dispatch steps --issue <KEY>` prints each run of each step of an issue.
 
 ## Admission and the `legion` label

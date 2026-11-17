@@ -989,6 +989,46 @@ func TestTheMergerWaitsForAMissingReview(t *testing.T) {
 	}
 }
 
+// On a task whose `Steps:` line names no reviewer, the implementer writes the two lines of the PR
+// body's brief the reviewer writes on any other task. What it writes there is stated once, in *The
+// brief for the human* of `skill://legion-worker/references/pr-body.md`, so the implementer's
+// prompt names the case and points there, as the reviewer's prompt does, and restates none of that
+// rule. This shows the text is loaded, never that an implementer follows it.
+func TestTheImplementerPointsToTheBriefOnATaskWithNoReviewer(t *testing.T) {
+	composer, err := New(t.TempDir())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	text := foldWhitespace(composedText(t, composer, claim.RoleImplementer, false))
+	pointer := "On a task whose `Steps:` line names no reviewer, also fill `Look at first` and `Not proven / risk` in the live PR body at each round (*The brief for the human* in that file)."
+	if !strings.Contains(text, pointer) {
+		t.Errorf("the composed implementer prompt omits %q", pointer)
+	}
+	if restated := "write `Not proven / risk` from what your own evidence does not prove"; strings.Contains(text, restated) {
+		t.Errorf("the composed implementer prompt still restates %q, which pr-body.md states", restated)
+	}
+}
+
+// A catch-up that names an issue waiting in `accepting` leaves the root architect its acceptance.
+// The daemon part states what to do, in two sentences: sign off or send back, and the head a
+// parent's sign-off needs; the role part points to it rather than saying it again, so the composed
+// root prompt holds the parent's head rule once. This shows the text is loaded, never that an
+// architect follows it.
+func TestTheRootsCatchUpStatesItsAcceptanceOnce(t *testing.T) {
+	composer, err := New(t.TempDir())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	text := foldWhitespace(composedText(t, composer, claim.RoleArchitect, true))
+	stated := "No worker runs there and the notice that moved it there may never have reached you, so read each one's evidence, then `sign_off` it or send it back with `request_backward_move`. Sign off a parent only on a head that the step before your acceptance passed and that carries the merges of every child its criteria need; otherwise run its last round (`skill://legion-architect/references/acceptance.md`, \"The last round\")."
+	if !strings.Contains(text, stated) {
+		t.Errorf("the composed root architect prompt omits %q", stated)
+	}
+	if n := strings.Count(text, "carries the merges of every child its criteria need"); n != 1 {
+		t.Errorf("the composed root architect prompt says the head a parent's sign-off needs %d times, want 1", n)
+	}
+}
+
 // A planner step of an owner's plan adds no task block. The owner's plan and a planner's plan are
 // one document, `plan.md`, and Legion carries out each task block of a version the owner gives, so
 // a block the planner wrote there would become work of its own. The planner tells the two cases
