@@ -46,9 +46,10 @@ func runOf(ctx context.Context) string {
 func MadeForRun(ctx context.Context) bool { return runOf(ctx) != "" }
 
 // changedByRunMarks is the TupleChangedByRun each node a write marks changed owes the run ctx
-// carries, one for each node: out of each node handed with Node.Changed, dated, signed and caused
-// as that node's write is, and out of the node each fact marked Tuple.Changes goes out of, as that
-// fact is. It answers nil, and allocates nothing, on a context that carries no run.
+// carries, one for each node: out of each node handed with Node.Changed, caused as that node's
+// write is and dated and signed as it is, or as its ChangedAt and ChangedBy say where it carries
+// them, and out of the node each fact marked Tuple.Changes goes out of, as that fact is. It
+// answers nil, and allocates nothing, on a context that carries no run.
 //
 // A write holds each node once (Write), so the nodes need no comparison among themselves; a
 // marked fact is compared with what is already marked, since a retarget states two facts out of
@@ -66,9 +67,14 @@ func changedByRunMarks(ctx context.Context, nodes []Node, tuples []Tuple) []Tupl
 		})
 	}
 	for _, node := range nodes {
-		if node.Changed {
-			mark(node.Kind, node.ID, node.MadeAt, node.MadeBy, node.SourceEvent)
+		if !node.Changed {
+			continue
 		}
+		at, who := node.MadeAt, node.MadeBy
+		if !node.ChangedAt.IsZero() {
+			at, who = node.ChangedAt, node.ChangedBy
+		}
+		mark(node.Kind, node.ID, at, who, node.SourceEvent)
 	}
 	for _, tuple := range tuples {
 		if !tuple.Changes || slices.ContainsFunc(marks, func(marked Tuple) bool {

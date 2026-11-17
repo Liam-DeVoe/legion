@@ -525,21 +525,32 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	// An issue's own field write made for a run (graphstore.WithRun, which withinGoingRun puts on
-	// a request naming its run) names the issue as changed by that run
-	// (dispatch://INFRA-1950/spec#b-r-interaction). Nothing else this route writes reaches the
+	// a request naming its run) names the issue as changed by that run when it changed a field of
+	// it (dispatch://INFRA-1950/spec#b-r-interaction), as changedFields, which compares every field
+	// this route writes, says; a write that sent only values the issue already held appends its
+	// event with nothing changed and names no change. Nothing else this route writes reaches the
 	// store, so under a run it writes the issue's node as the create and the backfill write it
-	// (graphstore.IssueNode), marked changed: the node restates the issue, so it keeps the state and
-	// the visibility the store holds and moves nothing else of it, and an issue created before its
-	// node existed gets one here. It is dated and signed by this write, which is who and when the
-	// changed_by_run tuple names; a node already there keeps its own made_at and made_by. It is the
-	// last node row this transaction takes, after every row and document above, and what it states
-	// waits for the issue's own event (graphstore.Caused), as the create's does. A write made for
-	// no run writes no node and sends no statement more than it did, and a write that changed
-	// nothing returned above, with no event and so no node.
+	// (graphstore.IssueNode), marked changed: made by the issue's creator at its created_at, the
+	// two columns of the issue's row the backfill reads them from (graphcensus/projects.go's
+	// objectKinds), so an issue created before its node existed gets here the node the backfill
+	// would give it, which the backfill, writing only a node the store lacks, then leaves as it is.
+	// The node restates the issue, so a node already there keeps the state and the visibility the
+	// store holds and its own made_at and made_by, and moves nothing else. The changed_by_run
+	// tuple is this write's, dated now and signed by its writer (graphstore.Node's ChangedAt and
+	// ChangedBy). It is the last node row this transaction takes, after every row and document
+	// above, and what it states waits for the issue's own event (graphstore.Caused), as the
+	// create's does. A write made for no run writes no node and sends no statement more than it
+	// did.
 	var issueNode graphstore.Uncaused
-	if graphstore.MadeForRun(r.Context()) {
-		node := graphstore.IssueNode(key, before.Project, actor, time.Now().UTC())
-		node.Changed = true
+	if graphstore.MadeForRun(r.Context()) && len(changedFields) > 0 {
+		// The backfill decodes created_by into a model.Actor, so a stored JSON null is the zero
+		// actor there, and here.
+		var creator model.Actor
+		if before.CreatedBy != nil {
+			creator = *before.CreatedBy
+		}
+		node := graphstore.IssueNode(key, before.Project, creator, before.CreatedAt)
+		node.Changed, node.ChangedAt, node.ChangedBy = true, time.Now().UTC(), actor
 		if issueNode, err = graphstore.WriteUncaused(r.Context(), tx, []graphstore.Node{node}, nil); err != nil {
 			s.writeHandlerError(w, err)
 			return

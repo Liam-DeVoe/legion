@@ -127,6 +127,16 @@ type Node struct {
 	// nothing a node write compares. A node a write only names - an author's person or session
 	// node, a block row a pass gives the node it lacked - is never marked. No read answers it.
 	Changed bool
+	// ChangedAt and ChangedBy date and sign the changed_by_run a node marked Changed owes, for a
+	// writer that changes a node it writes as another write made it: the issue PATCH (api's
+	// patchIssue) writes the issue's node as the create and the backfill write it, made at the
+	// issue's created_at by its creator, while its tuple says that the PATCH changed the issue,
+	// then and by its writer. A writer sets both or neither: the zero ChangedAt leaves the tuple
+	// dated and signed as the node is, MadeAt and MadeBy, which is every other writer, since the
+	// zero actor names a writer of its own (the deployment's shared token) and so cannot say that
+	// ChangedBy is unset. No column holds either, and no read answers them.
+	ChangedAt time.Time
+	ChangedBy model.Actor
 }
 
 // Tuple is one fact stated about a node. ToKind KindValue makes it an attribute, whose ToID is

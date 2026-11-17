@@ -36,8 +36,9 @@ import (
 //
 // On a context that carries a run (WithRun), the write also appends, with its own tuples, one
 // changed_by_run tuple from each node it marks changed (Node.Changed, Tuple.Changes) to that run's
-// interaction, dated, signed and caused as the node's write or the fact that marked it, unless the
-// node already holds one to that run (changedByRun), read once the node rows are held.
+// interaction, dated, signed and caused as the node's write or the fact that marked it, or dated
+// and signed as a node's ChangedAt and ChangedBy say where it carries them, unless the node
+// already holds one to that run (changedByRun), read once the node rows are held.
 func Write(ctx context.Context, tx pgx.Tx, nodes []Node, tuples []Tuple) error {
 	base, err := writeNodes(ctx, tx, nodes, tuples)
 	if err != nil {
