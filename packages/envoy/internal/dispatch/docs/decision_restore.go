@@ -177,9 +177,14 @@ type convertedSection struct {
 }
 
 // sectionKeep is a person's standing Keep of a section's heading (decision_keeps), and whether
-// the sum it recorded is the section's sum as it stands.
+// the sum it recorded is the section's sum as it stands. keeper is the actor the Keep's own
+// decision.kept event recorded, which the kept_by and kept_text_sum the conversion carries it onto
+// are written by: a row derived from an earlier write carries that write's actor, and so its
+// Proven mark (model.Actor.Proven). A Keep no such event names that person for is the person alone,
+// with no mark, since nothing read says a credential proved them.
 type sectionKeep struct {
 	keptBy  string
+	keeper  model.Actor
 	keptAt  time.Time
 	matches bool
 }
@@ -1039,25 +1044,42 @@ func (r *issueRestore) sectionAuthors(ctx context.Context, tree *pmdoc.Node, sec
 // (decision_keeps, which Keep writes for such a heading until the document is retired, F3), by
 // heading block id, with whether the sum it recorded is the section's text sum as it stands: the
 // sum the release before's Decisions read served, over the section's markdown from its heading to
-// its last block (decisionread.TextSum), which the Keep posts back.
+// its last block (decisionread.TextSum), which the Keep posts back. Each carries the actor of the
+// newest decision.kept the issue holds for its heading, the event Keep appended in the transaction
+// that wrote the row (sectionKeep.keeper).
 func (r *issueRestore) sectionKeeps(ctx context.Context, tree *pmdoc.Node, sections []decisionSection) (map[string]*sectionKeep, error) {
 	rows, err := r.tx.Query(ctx, `
-		select block_id, text_sha256, kept_by, kept_at from decision_keeps where artifact_id = $1::uuid
-	`, r.decisions.id)
+		select k.block_id, k.text_sha256, k.kept_by, k.kept_at, kept.actor
+		from decision_keeps k
+		left join lateral (
+			select e.actor from events e
+			where e.issue_key = $2 and e.type = 'decision.kept'
+			  and e.payload->>'artifact_id' = k.artifact_id::text and e.payload->>'block_id' = k.block_id
+			order by e.id desc
+			limit 1
+		) kept on true
+		where k.artifact_id = $1::uuid
+	`, r.decisions.id, r.issue)
 	if err != nil {
 		return nil, fmt.Errorf("read the Keeps of the decisions document of %s: %w", r.issue, err)
 	}
 	type recorded struct {
 		sum, keptBy string
+		keeper      model.Actor
 		keptAt      time.Time
 	}
 	held := map[string]recorded{}
 	for rows.Next() {
 		var block string
 		var keep recorded
-		if err := rows.Scan(&block, &keep.sum, &keep.keptBy, &keep.keptAt); err != nil {
+		var actor *model.Actor
+		if err := rows.Scan(&block, &keep.sum, &keep.keptBy, &keep.keptAt, &actor); err != nil {
 			rows.Close()
 			return nil, fmt.Errorf("read a Keep of the decisions document of %s: %w", r.issue, err)
+		}
+		keep.keeper = model.Actor{Kind: "user", ID: model.CanonicalLogin(keep.keptBy)}
+		if actor != nil && actor.Kind == "user" && model.CanonicalLogin(actor.ID) == keep.keeper.ID {
+			keep.keeper = *actor
 		}
 		held[block] = keep
 	}
@@ -1097,7 +1119,7 @@ func (r *issueRestore) sectionKeeps(ctx context.Context, tree *pmdoc.Node, secti
 		}
 		matches := start >= 0 && end <= len(markdown) && start <= end &&
 			decisionread.TextSum(markdown[start:end]) == keep.sum
-		keeps[section.headingID()] = &sectionKeep{keptBy: keep.keptBy, keptAt: keep.keptAt, matches: matches}
+		keeps[section.headingID()] = &sectionKeep{keptBy: keep.keptBy, keeper: keep.keeper, keptAt: keep.keptAt, matches: matches}
 	}
 	return keeps, nil
 }
@@ -1516,7 +1538,7 @@ func (r *issueRestore) writeFacts(ctx context.Context, cause int64) error {
 			}
 			sum := decisionread.TextSum(words)
 			login := model.CanonicalLogin(converted.keep.keptBy)
-			keeper := model.Actor{Kind: "user", ID: login}
+			keeper := converted.keep.keeper
 			nodes = append(nodes, graphstore.PersonNode(login, DecisionStepActor, r.at, cause))
 			tuples = append(tuples, graphstore.Tuple{
 				FromKind: refs.BlockNodeKind, FromID: address, Kind: refs.TupleKeptBy,

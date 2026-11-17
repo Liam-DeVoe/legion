@@ -44,7 +44,7 @@ func TestClosingAnIssueWithAnUnloadableDocumentWithdrawsItsAsksAndReopeningResto
 	if closed.Code != http.StatusOK {
 		t.Fatalf("close beside the unloadable notes: status=%d body=%s", closed.Code, closed.Body.String())
 	}
-	requireWithdrawn(t, f.handler, issue.Key, plainAsk, model.Actor{Kind: "user", ID: "alice"})
+	requireWithdrawn(t, f.handler, issue.Key, plainAsk, model.Actor{Kind: "user", ID: "alice", Proven: true})
 	reopened := dispatchRequest(t, f.handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]string{"status": "todo"}, "alice")
 	if reopened.Code != http.StatusOK {
 		t.Fatalf("reopen beside the unloadable notes: status=%d body=%s", reopened.Code, reopened.Body.String())
@@ -101,7 +101,7 @@ func TestRebuildingAClosedIssuesUnloadableDocumentShowsItsWithdrawnDecisionBlock
 	if closed := dispatchRequest(t, f.handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]string{"status": "done"}, "alice"); closed.Code != http.StatusOK {
 		t.Fatalf("close beside the unloadable notes: status=%d body=%s", closed.Code, closed.Body.String())
 	}
-	requireWithdrawn(t, f.handler, issue.Key, blockAsk, model.Actor{Kind: "user", ID: "alice"})
+	requireWithdrawn(t, f.handler, issue.Key, blockAsk, model.Actor{Kind: "user", ID: "alice", Proven: true})
 
 	rebuilt := dispatchRequest(t, f.handler, http.MethodPost, "/api/v1/artifacts/"+notes+"/rebuild", map[string]any{}, "alice")
 	if rebuilt.Code != http.StatusOK {
@@ -115,7 +115,7 @@ func TestRebuildingAClosedIssuesUnloadableDocumentShowsItsWithdrawnDecisionBlock
 		t.Fatalf("the rebuilt notes' live tree:\n%s\nshows the withdrawn ask block open on a closed issue", live)
 	}
 	requireLiveText(t, f.handler, notes, `#rebuilt-decision urgency="med" multiple="false" state="resolved"`)
-	requireWithdrawn(t, f.handler, issue.Key, blockAsk, model.Actor{Kind: "user", ID: "alice"})
+	requireWithdrawn(t, f.handler, issue.Key, blockAsk, model.Actor{Kind: "user", ID: "alice", Proven: true})
 
 	if reopened := dispatchRequest(t, f.handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]string{"status": "todo"}, "alice"); reopened.Code != http.StatusOK {
 		t.Fatalf("reopen: status=%d body=%s", reopened.Code, reopened.Body.String())
@@ -174,7 +174,7 @@ func TestRebuildingAClosedIssuesDocumentWritesTheAskAttributesOnlyWhileAnotherBu
 			if closed := dispatchRequest(t, f.handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]string{"status": "done"}, "alice"); closed.Code != http.StatusOK {
 				t.Fatalf("close beside the unloadable notes: status=%d body=%s", closed.Code, closed.Body.String())
 			}
-			requireWithdrawn(t, f.handler, issue.Key, own, model.Actor{Kind: "user", ID: "alice"})
+			requireWithdrawn(t, f.handler, issue.Key, own, model.Actor{Kind: "user", ID: "alice", Proven: true})
 			if rebuilt := dispatchRequest(t, f.handler, http.MethodPost, "/api/v1/artifacts/"+notes+"/rebuild", map[string]any{}, "alice"); rebuilt.Code != http.StatusOK {
 				t.Fatalf("rebuild the notes: status=%d body=%s", rebuilt.Code, rebuilt.Body.String())
 			}

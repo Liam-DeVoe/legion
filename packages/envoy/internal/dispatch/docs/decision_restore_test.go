@@ -2,6 +2,8 @@ package docs
 
 import (
 	"context"
+	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -307,6 +309,86 @@ func TestTheConversionTurnsEachSectionIntoANodeOrARuleDeletesIt(t *testing.T) {
 	}
 	if work, err := graphcensus.ReadRestoreWork(context.Background(), issue.database.Pool); err != nil || len(work) != 0 {
 		t.Errorf("the restore leaves work %+v (%v), want none", work, err)
+	}
+}
+
+// A standing Keep the conversion carries onto a decision's node (dispatch://INFRA-1150 F3) is
+// written by the actor the Keep's own decision.kept event recorded, so the kept_by and the
+// kept_text_sum it becomes keep the Proven mark the Keep's credential gave it: a row derived from
+// an earlier write carries that write's actor, and so its mark (model.Actor.Proven). A Keep whose
+// row no decision.kept names is the person alone, with no mark, since nothing the step reads says
+// a credential proved them.
+func TestTheConversionWritesAKeepAsTheActorItsEventRecorded(t *testing.T) {
+	ctx := context.Background()
+	issue := newRestoreIssue(t, "# Spec\n\n:::requirement{#r1}\nThe store holds the corpus.\n:::\n")
+	decisions := issue.document("decisions-md", "decisions.md", false, "decisions", "# Decisions\n\n"+
+		"## Files stay out of the corpus\n\nWe write no file beside the database.\n\n"+
+		"## The census runs first\n\nThe census reads the corpus before any view of it.\n")
+	headings := map[string]string{}
+	for _, section := range decisionSectionsOf(liveTree(t, issue.service, decisions)) {
+		headings[section.title] = section.headingID()
+	}
+	proven, unnamed := headings["Files stay out of the corpus"], headings["The census runs first"]
+	if proven == "" || unnamed == "" {
+		t.Fatalf("the decisions document's sections are %v, want the two headings", headings)
+	}
+	alice := model.Actor{Kind: "user", ID: "alice", Proven: true,
+		Act: &model.ActorAct{Session: "session-alice", SessionProven: true, Scopes: []string{model.ScopePerson}}}
+	recorded, err := json.Marshal(alice)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keep := func(block, login string) {
+		t.Helper()
+		section, found, err := issue.service.DecisionHeading(ctx, issue.database.Pool, decisions, block)
+		if err != nil || !found {
+			t.Fatalf("the heading %s reads no section (%t, %v)", block, found, err)
+		}
+		if _, err := issue.database.Pool.Exec(ctx, `
+			insert into decision_keeps (artifact_id, block_id, text_sha256, changed_version, kept_by)
+			values ($1::uuid, $2, $3, 1, $4)
+		`, decisions, block, section.TextSHA256, login); err != nil {
+			t.Fatalf("write %s's Keep of %s: %v", login, block, err)
+		}
+	}
+	keep(proven, "alice")
+	keep(unnamed, "bob")
+	// alice's Keep appended its decision.kept beside the row, as Keep does (api's
+	// keepDecisionHeading); bob's row has none.
+	if _, err := issue.database.Pool.Exec(ctx, `
+		with bumped as (update issues set last_seq = last_seq + 1 where key = 'DOC-1' returning last_seq)
+		insert into events (issue_key, seq, type, actor, payload, notify)
+		select 'DOC-1', bumped.last_seq, 'decision.kept', $1::jsonb,
+		       jsonb_build_object('artifact_id', $2::text, 'block_id', $3::text, 'changed_version', 1), false
+		from bumped
+	`, string(recorded), decisions, proven); err != nil {
+		t.Fatalf("append alice's decision.kept: %v", err)
+	}
+
+	if result := issue.run(true); result.Decisions != 2 || !result.Retired {
+		t.Fatalf("the conversion did %+v, want both sections decisions and the document retired", result)
+	}
+	moves := issue.movedTo(decisions)
+	for _, test := range []struct {
+		heading string
+		want    model.Actor
+	}{
+		{proven, alice},
+		{unnamed, model.Actor{Kind: "user", ID: "bob"}},
+	} {
+		address := moves[issue.refKey(decisions)+"#"+test.heading]
+		if address == "" {
+			t.Fatalf("the conversion stated no move from the heading %s: %v", test.heading, moves)
+		}
+		keptBy, err := graphstore.History(ctx, issue.database.Pool, refs.BlockNodeKind, address, refs.TupleKeptBy)
+		if err != nil || len(keptBy) != 1 || keptBy[0].ToID != test.want.ID || !reflect.DeepEqual(keptBy[0].Who, test.want) {
+			t.Errorf("the decision %s holds the kept_by tuples %+v (%v), want one to %s written by %+v", address, keptBy, err, test.want.ID, test.want)
+		}
+		// Each Keep was of the section as it stands, so each decision holds a kept_text_sum too.
+		keptSum, err := graphstore.History(ctx, issue.database.Pool, refs.BlockNodeKind, address, refs.ValueKeptTextSum)
+		if err != nil || len(keptSum) != 1 || !reflect.DeepEqual(keptSum[0].Who, test.want) {
+			t.Errorf("the decision %s holds the kept_text_sum values %+v (%v), want one written by %+v", address, keptSum, err, test.want)
+		}
 	}
 }
 
