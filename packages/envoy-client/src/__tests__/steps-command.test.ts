@@ -241,6 +241,36 @@ describe("dispatch steps", () => {
     }
   });
 
+  // A run is of a step, a retro or a merge (model.StepRecord.Kind). The read's generated type
+  // admits those kinds and no other, so `bun run typecheck` fails at the directive below once the
+  // field loses its enum and the contract is generated again.
+  test("a retro's run prints its kind at place 0, a kind the read's type holds", async () => {
+    const kinds: readonly StepRecord["kind"][] = ["step", "retro", "merge"];
+    // @ts-expect-error - a kind Dispatch never stores is no kind.
+    const notStored: StepRecord["kind"] = "pause";
+    expect(kinds).not.toContain(notStored);
+    // The implementer runs the retro, at place 0 and of no type, and names no report.
+    const retro: StepRecord = {
+      ...implementer,
+      id: "6e8a0c2e-4b6d-5f8a-9c1e-3a5c7e9b1d47",
+      step: 0,
+      kind: "retro",
+      type: "",
+      started_at: "2026-11-16T11:30:00Z",
+      ended_at: "2026-11-16T11:45:00Z",
+      report: null,
+    };
+
+    const { result } = await readSteps({
+      issue: "LEG-1",
+      tasks: [{ task: "default", steps: [implementer, retro] }],
+    });
+
+    expect(result.text.split("\n")[2]).toBe(
+      "default 0 retro implementer - attempt 1 legion-leg-leg-1-implementer anthropic/claude-opus-5 2026-11-16T11:30:00Z 2026-11-16T11:45:00Z passed"
+    );
+  });
+
   // Dispatch lists the tasks in the order each first ran, which is neither the order of their
   // names nor the order of all runs' starts: docs first ran before default, and ran again after.
   test("each task's runs print together, in the order the read lists the tasks", async () => {
