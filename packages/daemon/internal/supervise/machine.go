@@ -1376,10 +1376,11 @@ type Machine struct {
 	identity       *heldIdentity
 	enrollmentSent bool
 	// heldNames is every name of the session the claim records that the store answered as this
-	// claim's (holdRecorded): such a name is not asked again while the claim records that session,
-	// since only an operator's release frees a hold, and it frees no name of the current session
-	// (ReleaseOldNamesStatement). forgetSession empties it. Memory only: a restarted machine asks
-	// once more.
+	// claim's (holdRecorded): such a name is not asked again while the claim records that session.
+	// An operator's release keeps the names of the recorded file and id, and may free one of an
+	// earlier file of the session whose name contains no id, which the cache still holds; that moves
+	// no grant, since the broker enrolls a session by its id (holdRecorded says more).
+	// forgetSession empties it. Memory only: a restarted machine asks once more.
 	heldNames map[Hold]bool
 	// stale is every stale event already logged, so a repeated one is dropped in silence.
 	stale map[string]bool

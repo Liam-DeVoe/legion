@@ -554,6 +554,42 @@ func TestAClaimAtTheCapOfHeldNamesIsRefusedANewSession(t *testing.T) {
 		if release, ok := lines[0].attr("release"); !ok || release.String() != ReleaseOldNamesStatement(h.claim().Project, h.token) {
 			t.Fatalf("the refusal's line gives the statement %v, want %q", release, ReleaseOldNamesStatement(h.claim().Project, h.token))
 		}
+		// A claim that never switched sessions frees its holds by their age alone.
+		if after, ok := lines[0].attr("release_after"); !ok || !strings.HasPrefix(after.String(), "now: ") {
+			t.Fatalf("the refusal's line gives release_after %v, want the never-switched answer", after)
+		}
+	})
+
+	// The usual way to the cap's refusal: an operator gave the claim a new session with
+	// forget-session, and the statement frees nothing for ReleaseWindow after that forget, so the
+	// refusal's line says when it can (review round 5 of #4220), as an absolute time.
+	t.Run("a claim refused just after a forget is told when the release can free anything", func(t *testing.T) {
+		h := newHarness(t)
+		h.reach(StateReady)
+		h.must(RequestSuspend{Claim: h.token, By: SuspendedByOperator})
+		h.must(RequestForgetSession{Claim: h.token, Session: session})
+		switched := h.claim().Abandoned.At
+		if switched.IsZero() {
+			t.Fatal("the forget recorded no switch time")
+		}
+		const fresh, freshFile = "ses_after_forget", "/state/sessions/after-forget.jsonl"
+		fill(h, MaxHeldNamesPerClaim-h.store.heldBy(h.token)-len(RecordedHolds(fresh, freshFile))+1)
+		h.must(RequestResume{Claim: h.token})
+		h.connect()
+		err := h.handle(RequestRegister{Claim: h.token, Generation: h.generation(), Session: fresh, SessionFile: freshFile,
+			CapabilityHash: []byte("capability"), PluginContract: h.deps.PluginContract})
+		var refusal claim.Refusal
+		if !errors.As(err, &refusal) || refusal != claim.HeldNamesCapRefusal(MaxHeldNamesPerClaim) {
+			t.Fatalf("registering a new session at the cap = %v, want %v", err, claim.HeldNamesCapRefusal(MaxHeldNamesPerClaim))
+		}
+		lines := h.records.of(heldNamesCapLine)
+		if len(lines) != 1 {
+			t.Fatalf("the refusal was logged %d times, want once", len(lines))
+		}
+		want := switched.Add(13 * time.Hour).UTC().Format(time.RFC3339)
+		if after, ok := lines[0].attr("release_after"); !ok || after.String() != want {
+			t.Fatalf("the refusal's line gives release_after %v, want %s, 13 hours after the forget at %s", after, want, switched.UTC().Format(time.RFC3339))
+		}
 	})
 
 	t.Run("a registration that fills the cap exactly", func(t *testing.T) {

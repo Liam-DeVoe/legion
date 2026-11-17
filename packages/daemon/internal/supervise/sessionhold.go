@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/claudelaunch"
@@ -38,16 +39,37 @@ var ErrHeldNamesCap = errors.New("the claim would hold more session names than o
 
 // heldNamesCapLine is the Warn line of a registration refused at MaxHeldNamesPerClaim. Its
 // `release` field is the claim's ReleaseOldNamesStatement, the operator's way to let it start a new
-// session; an operator reads the line whole, so it is pinned here.
-const heldNamesCapLine = "supervise: refused a session whose names would take the claim past the most one claim may hold; a session it records still resumes, and the statement frees the names of its older sessions for a new one"
+// session, and its `release_after` field the earliest time that statement can free anything
+// (ReleaseAfter); an operator reads the line whole, so it is pinned here.
+const heldNamesCapLine = "supervise: refused a session whose names would take the claim past the most one claim may hold; a session it records still resumes, and the statement frees the names of its older sessions for a new one, once release_after has passed"
+
+// ReleaseWindow is how long after a claim's last session switch, and after a hold was written,
+// ReleaseOldNamesStatement waits before it frees a hold: the broker's default carry window plus
+// its longest lease (ReleaseOldNamesStatement says why).
+const ReleaseWindow = 13 * time.Hour
+
+// ReleaseAfter is the earliest time ReleaseOldNamesStatement can free any of the claim's holds: its
+// last session switch plus ReleaseWindow, or the zero time for a claim that has never switched,
+// whose holds are freed by their age alone. A claim refused at the cap that needs a new session was
+// usually just given one by an operator's forget-session, so the statement frees nothing for a
+// whole ReleaseWindow after it (review round 5 of #4220); the claim's record does not show the
+// switch on any operator's view, so the refusal's line gives the time.
+func ReleaseAfter(c Claim) time.Time {
+	if c.Abandoned.At.IsZero() {
+		return time.Time{}
+	}
+	return c.Abandoned.At.Add(ReleaseWindow).UTC()
+}
 
 // ReleaseOldNamesStatement is the statement an operator runs to let a claim at MaxHeldNamesPerClaim
-// start a new session again: it frees the claim's holds recorded more than 13 hours ago, and only
-// once the claim's last session switch is more than 13 hours ago, except every name of the session
-// it records and of the one it last abandoned. A name of its current or abandoned session is its
-// id, a name that contains that id (each of its files' base names and ids does), or a part of its
-// file's path (RecordedHolds), so a hold of any of those stays, which keeps a few more names than
-// it must and frees none it must keep.
+// start a new session again: it frees the claim's holds recorded more than ReleaseWindow, 13 hours,
+// ago, and only once the claim's last session switch is more than 13 hours ago, except every name
+// of the session it records and of the one it last abandoned. A name of either session is kept when
+// it is that session's id, contains that id, or is a part of that session's recorded file path, so
+// a hold of any of those stays. That keeps the names of the recorded file, and the names of every
+// earlier file of the session whose name contains its id, as an Oh My Pi `<timestamp>_<id>.jsonl`
+// does; an earlier file of the current session whose name contains no id is freed, which frees no
+// grant, since the broker enrolls a session by its id (review round 5 of #4220).
 //
 // The hours count from the switch, not from the hold (review R4-1 of #4220): a hold is written
 // when its session is first registered, and the session may have run long after. A claim changes
@@ -63,16 +85,25 @@ const heldNamesCapLine = "supervise: refused a session whose names would take th
 // within the project is readable to its roles anyway. A claim that has never switched, whose
 // abandoned session is empty, frees by its holds' age alone.
 //
+// One case the 13 hours do not cover (review round 5 of #4220): a lease does not run while no
+// broker is serving, and the daemon's revoke is three tries ten seconds apart (revokeAttempts), so
+// after a broker outage longer than about 45 minutes an enrollment the revoke missed can lapse, and
+// go dormant, later than an hour after its process ended. The daemon logs that missed revoke at
+// Error, `supervise: agent-secrets: enrollment not revoked after every attempt; the lease ends it`.
+// An operator who finds that line for the claim waits 13 hours after it, not after the switch,
+// before running the statement.
+//
 // The daemon is not told the broker's settings: they are the broker's own (envoy's broker/config),
 // read by its sweeper and answered on no route the daemon calls, so the statement writes the
 // defaults, and a deployment with a longer carry window puts that window plus an hour in both
 // intervals. The project and token are written as SQL literals, their quotes doubled.
 func ReleaseOldNamesStatement(project string, token claim.Token) string {
+	window := fmt.Sprintf("interval '%d hours'", int(ReleaseWindow/time.Hour))
 	return "delete from claim_sessions h using claims c" +
 		" where c.project = h.project and c.token = h.claim" +
 		" and h.project = " + SQLLiteral(project) + " and h.claim = " + SQLLiteral(string(token)) +
-		" and h.recorded_at < now() - interval '13 hours'" +
-		" and coalesce((c.abandoned_session ->> 'at')::timestamptz, '-infinity') < now() - interval '13 hours'" +
+		" and h.recorded_at < now() - " + window +
+		" and coalesce((c.abandoned_session ->> 'at')::timestamptz, '-infinity') < now() - " + window +
 		" and h.name <> c.session and h.name <> coalesce(c.abandoned_session ->> 'session', '')" +
 		" and (c.session = '' or strpos(h.name, c.session) = 0)" +
 		" and (coalesce(c.abandoned_session ->> 'session', '') = '' or strpos(h.name, c.abandoned_session ->> 'session') = 0)" +
@@ -179,15 +210,19 @@ func checkSessionNames(session, sessionFile string) error {
 // every claim.
 //
 // A name of the current session the store answered as this claim's is kept and not asked again
-// while the claim records that session, since only an operator's release frees a hold and it frees
-// no name of the current session: the enrollment that follows a registration asks nothing more,
-// and forgetSession empties the cache (Machine.heldNames). A refusal
+// while the claim records that session: the enrollment that follows a registration asks nothing
+// more, and forgetSession empties the cache (Machine.heldNames). An operator's release may free a
+// cached name the current session's recorded file no longer gives, an earlier file of it whose name
+// contains no id; the cache keeps that name until the forget, which moves no grant, since the broker
+// enrolls a session by its id, and the claim's own resume and enrollment use the recorded file and
+// id, whose names the release keeps. A refusal
 // is asked again every time, because an operator settles a name held for no claim by recording its
 // rightful holder, and that claim's next decision on this same machine must see it. A hold that
 // would take the claim past MaxHeldNamesPerClaim is refused with claim.HeldNamesCapRefusal and
 // records nothing; one of names the claim holds already adds none, so a claim that records a
 // session still resumes it, while one that needs a new session starts none until an operator runs
-// the line's ReleaseOldNamesStatement. A store that does not answer refuses nothing: its error
+// the line's ReleaseOldNamesStatement after its `release_after` (ReleaseAfter).
+// A store that does not answer refuses nothing: its error
 // wraps errHoldUnanswered, which a launch tries again at the probe interval charging nothing
 // (launchNow), and any other decision is asked again by the next one.
 func (m *Machine) holdRecorded(ctx context.Context, session, sessionFile string) error {
@@ -206,9 +241,13 @@ func (m *Machine) holdRecorded(ctx context.Context, session, sessionFile string)
 		holders, err = m.deps.Store.HoldSessions(ctx, m.claim.Project, m.claim.Token, ask)
 		return err
 	}); errors.Is(err, ErrHeldNamesCap) {
+		releaseAfter := "now: the claim has never switched sessions, so its holds go by their own age"
+		if after := ReleaseAfter(m.claim); !after.IsZero() {
+			releaseAfter = after.Format(time.RFC3339)
+		}
 		m.log.Warn(heldNamesCapLine,
 			"claim", m.claim.Token, "names", len(ask), "cap", MaxHeldNamesPerClaim, "error", err,
-			"release", ReleaseOldNamesStatement(m.claim.Project, m.claim.Token))
+			"release", ReleaseOldNamesStatement(m.claim.Project, m.claim.Token), "release_after", releaseAfter)
 		return fmt.Errorf("hold the session of %s: %w", m.claim.Token, claim.HeldNamesCapRefusal(MaxHeldNamesPerClaim))
 	} else if err != nil {
 		return fmt.Errorf("hold the session of %s: %w: %w", m.claim.Token, errHoldUnanswered, err)
