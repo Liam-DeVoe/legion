@@ -190,19 +190,27 @@ func TestTheRecordsOfAnOwnersPlanAreItsTaskAndSteps(t *testing.T) {
 	})
 
 	t.Run("an issue with no plan rows records today's steps of the task default", func(t *testing.T) {
-		pool := migratedPool(t)
-		stepRoot(t, pool, phase.Implementing)
-		move(t, pool, returnEngine(), "LEGION-208", TriggerImplementationReady, "", record.PhaseRow{})
-		// The implementer's run started under no count of this release (EndUncountedStep), so
-		// its end is the record of count 0; the tester's start is the first of its place.
-		assertStepWrites(t, pool, "LEGION-208", 1, []walkedWrite{
-			{task: defaultTask, kind: record.PlaceStep, step: 2, role: "implementer", typ: "implementation", result: "passed", attempt: 0},
-			{start: true, task: defaultTask, kind: record.PlaceStep, step: 3, role: "tester", typ: "testing", attempt: 1},
-		})
-		if got, want := stepStartCounts(t, pool, "LEGION-208"), []string{"default/step/2=0", "default/step/3=1"}; !slices.Equal(got, want) {
-			t.Fatalf("the starts of LEGION-208 = %v, want %v", got, want)
-		}
+		assertNoPlanRowsRunTodaysSteps(t, returnEngine())
 	})
+}
+
+// assertNoPlanRowsRunTodaysSteps fails unless an issue with no plan rows that engine moves out of
+// implementing records today's steps of the task default at today's places (R20): its
+// implementer's end at step 2 and its tester's start at step 3. The implementer's run started
+// under no count of this release (EndUncountedStep), so its end is the record of count 0; the
+// tester's start is the first of its place.
+func assertNoPlanRowsRunTodaysSteps(t *testing.T, engine *Engine) {
+	t.Helper()
+	pool := migratedPool(t)
+	stepRoot(t, pool, phase.Implementing)
+	move(t, pool, engine, "LEGION-208", TriggerImplementationReady, "", record.PhaseRow{})
+	assertStepWrites(t, pool, "LEGION-208", 1, []walkedWrite{
+		{task: defaultTask, kind: record.PlaceStep, step: 2, role: "implementer", typ: "implementation", result: "passed", attempt: 0},
+		{start: true, task: defaultTask, kind: record.PlaceStep, step: 3, role: "tester", typ: "testing", attempt: 1},
+	})
+	if got, want := stepStartCounts(t, pool, "LEGION-208"), []string{"default/step/2=0", "default/step/3=1"}; !slices.Equal(got, want) {
+		t.Fatalf("the starts of LEGION-208 = %v, want %v", got, want)
+	}
 }
 
 // stepOfRow is the step role's phases row of key names (record.PhaseRow.StepTask, StepPlace), as
@@ -575,15 +583,6 @@ func TestThereIsOneDefinitionOfTheDefaultSteps(t *testing.T) {
 	})
 
 	t.Run("an issue with no plan rows keeps today's places under the project's default_steps", func(t *testing.T) {
-		pool := migratedPool(t)
-		stepRoot(t, pool, phase.Implementing)
-		move(t, pool, engineRunningByDefault(t, "implementer", "reviewer"), "LEGION-208", TriggerImplementationReady, "", record.PhaseRow{})
-		assertStepWrites(t, pool, "LEGION-208", 1, []walkedWrite{
-			{task: defaultTask, kind: record.PlaceStep, step: 2, role: "implementer", typ: "implementation", result: "passed", attempt: 0},
-			{start: true, task: defaultTask, kind: record.PlaceStep, step: 3, role: "tester", typ: "testing", attempt: 1},
-		})
-		if got, want := stepStartCounts(t, pool, "LEGION-208"), []string{"default/step/2=0", "default/step/3=1"}; !slices.Equal(got, want) {
-			t.Fatalf("the starts of LEGION-208 = %v, want %v", got, want)
-		}
+		assertNoPlanRowsRunTodaysSteps(t, engineRunningByDefault(t, "implementer", "reviewer"))
 	})
 }
