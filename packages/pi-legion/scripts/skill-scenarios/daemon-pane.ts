@@ -21,7 +21,7 @@
  * daemon-pane.ts gh-selectors <checkout> <file>` writes the checkout's gh selectors to `file`
  * (gh-selectors.ts's RUN_SELECTORS, rig.sh's worker_boot), exiting 1 when they cannot be read.
  */
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomInt, randomUUID } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
@@ -653,9 +653,11 @@ export interface DaemonPane {
  * `ghs_` and 36 letters and digits, drawn afresh by each process, so no word of it is the rig's
  * (it was `ghs_rig_token`) and no literal of one is in the source a push's leak check reads. A
  * placeholder, never a secret: the gh stand-in reads no token. */
-export const RIG_GH_TOKEN = `ghs_${[...randomBytes(36)]
-  .map((byte) => "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"[byte % 62])
-  .join("")}`;
+const TOKEN_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+export const RIG_GH_TOKEN = `ghs_${Array.from(
+  { length: 36 },
+  () => TOKEN_ALPHABET[randomInt(TOKEN_ALPHABET.length)]
+).join("")}`;
 
 /** Where a worker pane runs: the run directory that stands for the daemon's state directory and
  * the issue's workspace, the stand-in daemon's port, and the Oh My Pi profile. */
