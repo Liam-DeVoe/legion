@@ -1055,6 +1055,115 @@ test("loading older history entries keeps the reader anchor", async ({ browser }
   }
 });
 
+// R3 of dispatch://INFRA-3948: "Load older" adds entries under the reader, and the line they
+// read keeps its place on the screen; R2 and the focus rule of `IssueHistory.tsx`: a press of
+// Load older made by keyboard hands the focus to a control the page it read added, never one out
+// of the reader's view. One author's uploads in one minute are one entry (`history-model.ts`),
+// so a run whose uploads straddle the log's 200-event page is extended by the older page: its
+// files are listed oldest first, and the entry is keyed by its oldest upload read so far. Found
+// by the tester on a running build of e3bf280f with INFRA-1196's copy: a reader on a file of such
+// a run saw it move 572 px down when Load older landed (the entry's key went from uploads:4736 to
+// uploads:4709), where an event line in the same place stayed put; and Load older pressed by
+// keyboard put the focus on that run's author link 752 px above Details' view (6,624 px on the
+// next press).
+test("loading older keeps the reader's place on an upload run the older page extends, and the focus in view", async ({
+  browser,
+}) => {
+  test.setTimeout(240_000);
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "Uploads across a page" });
+  // Ten uploads by one author, one after another: one run. The 199 messages after them push all
+  // but the newest upload onto the log's second page.
+  for (let index = 0; index < 10; index += 1) {
+    await uploadIssueFile(issue.key, {
+      bytes: new Uint8Array(Buffer.from(ONE_PIXEL_PNG, "base64")),
+      contentType: "image/png",
+      name: `shot-${index}.png`,
+    });
+  }
+  for (let index = 0; index < 199; index += 1) {
+    await createMessage(issue.key, { body: `Later message ${index}` }, attentionSession);
+  }
+  const newest = "shot-9.png";
+
+  const context = await reader(browser, "alice");
+  try {
+    const page = await context.newPage();
+    const putFileAtCentre = async (): Promise<void> => {
+      await page.evaluate((name) => {
+        const link = [
+          ...document.querySelectorAll<HTMLElement>(
+            '[data-testid="issue-history"] [data-history-uploads] a'
+          ),
+        ].find((one) => one.textContent === name);
+        let box = link?.parentElement ?? null;
+        while (box !== null && !/(auto|scroll)/.test(getComputedStyle(box).overflowY)) {
+          box = box.parentElement;
+        }
+        if (link === undefined || box === null) throw new Error(`${name} is drawn nowhere`);
+        const view = box.getBoundingClientRect();
+        box.scrollTop += link.getBoundingClientRect().top - (view.top + view.height / 2);
+      }, newest);
+      await nextFrames(page);
+    };
+    const file = historyPanel(page)
+      .locator("[data-history-uploads]")
+      .getByRole("link", { exact: true, name: newest });
+    const loadOlder = historyPanel(page).getByRole("button", { name: CONTROL_LABELS.load_older });
+
+    // By pointer: the reader is on the newest file of the run, and the older page lands.
+    await gotoIssue(page, `/issues/${issue.key}/activity`);
+    await withoutScrollAnchoring(page);
+    await expect(file).toHaveCount(1);
+    await expect(loadOlder).toBeVisible();
+    const run = historyPanel(page).locator("[data-history-uploads]");
+    const firstPage = Number(await run.getAttribute("data-history-uploads"));
+    expect(
+      firstPage > 0 && firstPage < 10,
+      `the log's first page holds ${firstPage} of the run's 10 uploads, so the run does not straddle the page and the row proves nothing`
+    ).toBe(true);
+    await putFileAtCentre();
+    const before = (await file.boundingBox())?.y;
+    expect(before, `${newest} has no box`).toBeDefined();
+    await loadOlder.dispatchEvent("click");
+    await expect(
+      historyPanel(page).locator("[data-history-uploads]"),
+      "the older page did not extend the run"
+    ).toHaveAttribute("data-history-uploads", "10");
+    await nextFrames(page);
+    await expect
+      .poll(
+        async () => (await file.boundingBox())?.y,
+        "loading older entries moved the upload the reader is on"
+      )
+      .toBe(before);
+
+    // By keyboard: Load older pressed with the focus on it hands the focus to a control in view.
+    await gotoIssue(page, `/issues/${issue.key}/activity`);
+    await expect(file).toHaveCount(1);
+    await putFileAtCentre();
+    await loadOlder.focus();
+    await page.keyboard.press("Enter");
+    await expect(historyPanel(page).locator("[data-history-uploads]")).toHaveAttribute(
+      "data-history-uploads",
+      "10"
+    );
+    await nextFrames(page);
+    const clip = await historyViewport(page);
+    const focused = await page.evaluate(() => {
+      const box = document.activeElement?.getBoundingClientRect();
+      return box === undefined ? null : { bottom: box.bottom, top: box.top };
+    });
+    expect(focused, "Load older left the focus nowhere").not.toBeNull();
+    expect(
+      (focused?.top ?? -1) >= clip.top - 1 && (focused?.bottom ?? 0) <= clip.bottom + 1,
+      `Load older handed the focus to a control out of Details' view (${Math.round(focused?.top ?? 0)} px, the view ${Math.round(clip.top)} to ${Math.round(clip.bottom)})`
+    ).toBe(true);
+  } finally {
+    await context.close();
+  }
+});
+
 // The read mark draws one line in the history, "New since you last read", where the mark falls
 // among its entries (`history-model.ts`): a mark that moves back adds that line under the
 // entries the reader has not read, above the reader's place, so the reader's own entry has to
