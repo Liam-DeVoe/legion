@@ -16,7 +16,7 @@ import {
   type NodeType,
   type Preset,
 } from "./page-words";
-import type { TreeAnswer, TreeAnswerNode } from "./tree-read/tree-read";
+import type { TreeAnswer, TreeAnswerNode, TreeFilter } from "./tree-read/tree-read";
 
 /**
  * The page with no filter on, and the four filters, as views of the one tree
@@ -270,7 +270,7 @@ function filterView(
  */
 function heldFilterView(
   root: TreeNode,
-  filter: Exclude<Filter, "decisions">,
+  filter: TreeFilter,
   answer: TreeAnswer,
   wanted: string,
   named: ReadonlySet<string>
@@ -305,17 +305,21 @@ function heldFilterView(
     if (node.parent !== null && rowIds.has(node.parent)) homes.set(node.id, [node.parent]);
   }
   for (const tuple of filter === "verification" ? answer.tuples : []) {
-    const held = homes.get(tuple.from) ?? [];
-    if (tuple.kind === "serves" && rowIds.has(tuple.to) && !held.includes(tuple.to)) {
-      homes.set(tuple.from, [...held, tuple.to]);
-    }
+    if (tuple.kind !== "serves" || !rowIds.has(tuple.to)) continue;
+    const held = homes.get(tuple.from);
+    if (held === undefined) homes.set(tuple.from, [tuple.to]);
+    else if (!held.includes(tuple.to)) held.push(tuple.to);
   }
   const below = new Map<string, TreeAnswerNode[]>();
   const top: TreeAnswerNode[] = [];
   for (const node of rows) {
     const at = homes.get(node.id) ?? [];
     if (at.length === 0) top.push(node);
-    for (const home of at) below.set(home, [...(below.get(home) ?? []), node]);
+    for (const home of at) {
+      const under = below.get(home);
+      if (under === undefined) below.set(home, [node]);
+      else under.push(node);
+    }
   }
   const counted: readonly NodeType[] = COUNTED_KINDS[filter];
   const context = new Set<string>();
@@ -422,15 +426,16 @@ function viewLines(
   const add = (rowId: string, node: TreeAnswerNode | undefined, type: PresetLine["type"]) => {
     const row = byRead.get(rowId)?.id;
     if (node?.supertag !== type || row === undefined || !drawn.has(row)) return;
-    const held = lines.get(row) ?? [];
-    if (held.some((line) => line.id === node.id)) return;
+    const held = lines.get(row);
+    if (held?.some((line) => line.id === node.id) === true) return;
     const line: PresetLine = {
       id: node.id,
       text: node.text,
       ...(node.text_tree === undefined ? {} : { tree: node.text_tree }),
       type,
     };
-    lines.set(row, [...held, line]);
+    if (held === undefined) lines.set(row, [line]);
+    else held.push(line);
   };
   for (const tuple of answer.tuples) {
     if (tuple.kind === "shaped") add(tuple.to, nodes.get(tuple.from), "decision");
@@ -517,7 +522,7 @@ export function filterSignals(
   const view = (filter: Filter) => presetView(root, filter, query);
   // Once a filter's view read is held, its count is that read's own nodes of its main kind whose
   // words hold the query (R4); until then, what the view read off the tree draws.
-  const count = (filter: Exclude<Filter, "decisions">): number => {
+  const count = (filter: TreeFilter): number => {
     const held = root.views?.[filter];
     if (held === undefined) return view(filter).matches;
     const kinds: readonly string[] = COUNTED_KINDS[filter];

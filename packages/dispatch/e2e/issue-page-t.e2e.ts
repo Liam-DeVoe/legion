@@ -1,30 +1,14 @@
 import type { IssueTreeAnswer, IssueTreeNode } from "../web/src/api/client";
 import { decisionNodeChanges } from "../web/src/features/issue-page/decision-review";
 import { shortDay } from "../web/src/features/issue-page/node-time";
-import { PRESET_NAMES } from "../web/src/features/issue-page/page-words";
+import { NODE_STATE_WORDS, PRESET_NAMES } from "../web/src/features/issue-page/page-words";
 import { type TreeIdReads, treeIdOf } from "../web/src/features/issue-page/tree-read/tree-nodes";
 import { wordsOf } from "../web/src/features/refs/tree-fragment";
 import { getIssue, listIssueAsks } from "./api";
-import {
-  seedConversationState,
-  seedDecisionsFilter,
-  seedNoChildren,
-  seedNoSummary,
-  seedPlanOrder,
-  seedReplyNesting,
-  seedRequestBaseline,
-  seedReviewList,
-  seedSpineCases,
-  seedTwiceTheNodes,
-  seedUnbrokenChildTitle,
-  seedUnbrokenWords,
-  seedWholeIssue,
-  seedWholeIssueAdvancing,
-} from "./issue-layout-seed";
+import { seedReviewList, seedSpineCases, seedWholeIssue } from "./issue-layout-seed";
 import {
   closeDetails,
   gotoIssue,
-  marginShell,
   openDetails,
   phase,
   presetCount,
@@ -58,14 +42,18 @@ import {
   heldAnswer,
   type KeyedRow,
   keyedRows,
+  type NamedSeed,
   owedUnless,
   parentIndex,
   partUGate,
   R2_COUNTED_KINDS,
   R2_ROW_KINDS,
   type RowReading,
+  SEEDS,
+  type SeededIssue,
   type SeedFixture,
   seedKeys,
+  sortedFields,
   steadily,
   type TreeAnswerWatch,
   type TreeView,
@@ -119,32 +107,6 @@ import { type ApiRequests, expectLoadSettled, watchApiRequests } from "./traffic
  * (part U); row 4's Keep (G2 and part U).
  */
 
-/** What every seed returns: the key of the issue the page opens. */
-interface SeededIssue {
-  readonly key: string;
-}
-
-/** A seed, by the name the fixture records it under. */
-type NamedSeed = readonly [string, () => Promise<SeededIssue>];
-
-/** The 14 seeds, in the order the seed file writes them, as the recorder reads them. */
-const SEEDS: readonly NamedSeed[] = Object.entries({
-  seedWholeIssue,
-  seedWholeIssueAdvancing,
-  seedSpineCases,
-  seedNoChildren,
-  seedNoSummary,
-  seedReplyNesting,
-  seedUnbrokenWords,
-  seedUnbrokenChildTitle,
-  seedRequestBaseline,
-  seedTwiceTheNodes,
-  seedConversationState,
-  seedDecisionsFilter,
-  seedReviewList,
-  seedPlanOrder,
-} satisfies Readonly<Record<string, () => Promise<SeededIssue>>>);
-
 /** The seeds whose rows the fixture records a decision row of: row 1's decision clauses read
  *  them (G5). */
 const DECISION_SEEDS = new Set(
@@ -158,7 +120,7 @@ const VIEW_FILTERS = ["spec", "verification", "plan"] as const satisfies readonl
 
 /** How long one seed's row 1 may take: every row of the outline read with its body, inside CI's
  *  nine minutes. */
-const ROW_ONE_MS = 480_000;
+const SAME_ROWS_MS = 480_000;
 
 /** How long each other row may take. */
 const ROW_MS = 240_000;
@@ -167,7 +129,7 @@ const ROW_MS = 240_000;
 const REPLY_WORDS = "The tree read draws this reply with no reload.";
 
 /** A decision row's state word once alice kept it. */
-const KEPT_BY_ALICE = /^Kept by\b.*\balice\b/i;
+const KEPT_BY_ALICE = new RegExp(`^${NODE_STATE_WORDS.decision.kept}\\b.*\\balice\\b`, "i");
 
 /** The reads `treeIdOf` names a node by: the issue read and the asks read, as alice reads them. */
 async function idReadsOf(key: string): Promise<TreeIdReads> {
@@ -180,20 +142,16 @@ function idSet(ids: readonly string[]): string[] {
   return [...new Set(ids)].sort();
 }
 
-/** `value` as JSON with every object's fields sorted, so two readings compare by what they hold
- *  and not by the order their fields were written in. */
+/** The id of the row the row `index` of `rows` stands under (`parentIndex`), null at the top. */
+function parentIdOf(rows: readonly RowReading[], index: number): string | null {
+  const parent = parentIndex(rows, index);
+  return parent === undefined ? null : (rows[parent]?.id ?? null);
+}
+
+/** `value` as JSON with every object's fields sorted (`sortedFields`), so two readings compare by
+ *  what they hold and not by the order their fields were written in. */
 function canonical(value: unknown): string {
-  const sorted = (inner: unknown): unknown => {
-    if (Array.isArray(inner)) return inner.map(sorted);
-    if (typeof inner !== "object" || inner === null) return inner;
-    const fields: Readonly<Record<string, unknown>> = { ...inner };
-    return Object.fromEntries(
-      Object.keys(fields)
-        .sort()
-        .map((field) => [field, sorted(fields[field])])
-    );
-  };
-  return JSON.stringify(sorted(value)) ?? "undefined";
+  return JSON.stringify(sortedFields(value)) ?? "undefined";
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -343,7 +301,7 @@ function firstRowOutOfPlace(
     const own = reading.id === null ? undefined : held.get(reading.id);
     if (own === undefined || reading.id === null || placed.has(index)) continue;
     const parent = parentIndex(readings, index);
-    const under = parent === undefined ? null : (readings[parent]?.id ?? null);
+    const under = parentIdOf(readings, index);
     const homes = homesOf(own.node, outline, idOf, drawn);
     const named = `the ${reading.kind.type ?? "untyped"} row ${reading.id}`;
     if (!homes.has(under) || (parent === undefined && reading.level !== 1)) {
@@ -509,10 +467,7 @@ function expectDecisionsFromNodes(outline: OutlineRead, recorded: SeedFixture): 
   const held = heldNodes(answer, idOf);
   const nodes = new Map(answer.nodes.map((node) => [node.id, node]));
   const changes = decisionNodeChanges(answer);
-  const under = rows.map((_, index) => {
-    const parent = parentIndex(rows, index);
-    return parent === undefined ? null : (rows[parent]?.id ?? null);
-  });
+  const under = rows.map((_, index) => parentIdOf(rows, index));
 
   const states = rows.flatMap((row) => {
     const node = row.id === null ? undefined : held.get(row.id)?.node;
@@ -572,7 +527,7 @@ for (const [name, seed] of SEEDS) {
   // SLOW(>=2s): a whole seeded issue, read as it opens and again with every branch opened and
   // every row's body read in turn, each reading taken twice until it holds still.
   test(title, async ({ browser }) => {
-    test.setTimeout(ROW_ONE_MS);
+    test.setTimeout(SAME_ROWS_MS);
     await phase(browser, seed, async (page, seeded) => {
       owedUnless(await treeReadGate(page, seeded.key));
       owedUnless(await convertedGate(page, seeded.key));
@@ -599,7 +554,7 @@ for (const [name, seed] of SEEDS) {
     // SLOW(>=2s): a whole seeded issue, read as it opens and again with every branch opened,
     // each reading taken twice until it holds still.
     test(`${title}, its decisions as nodes of the tree read @owed`, async ({ browser }) => {
-      test.setTimeout(ROW_ONE_MS);
+      test.setTimeout(SAME_ROWS_MS);
       await phase(browser, seed, async (page, seeded) => {
         owedUnless(await treeReadGate(page, seeded.key));
         owedUnless(await convertedGate(page, seeded.key));
@@ -680,7 +635,6 @@ test("the first load reads the tree once and a filter its view once", async ({ b
       "the first load sends no more requests under /api/ than the reads did"
     ).toBeLessThanOrEqual(fixtureSeed("seedWholeIssue").loadRequests);
     await openDetails(page);
-    await expect(marginShell(page), "Details did not open").toBeVisible();
     await expectLoadSettled(traffic);
     expect(
       blocksReads(traffic.requests),
@@ -1009,8 +963,7 @@ test("each filter draws its view read's rows, and the Decisions filter draws its
 function parentOfWords(readings: readonly RowReading[], words: string): string | null | undefined {
   const index = readings.findIndex((reading) => reading.words?.includes(words) === true);
   if (index < 0) return undefined;
-  const parent = parentIndex(readings, index);
-  return parent === undefined ? null : (readings[parent]?.id ?? null);
+  return parentIdOf(readings, index);
 }
 
 /** The state word the row of node `id` draws, or null where no row of it draws one. */

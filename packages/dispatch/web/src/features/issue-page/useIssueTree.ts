@@ -22,33 +22,15 @@ import { usePublishReferenceNames } from "./reference-names";
 import { citedReferences } from "./row-references";
 import {
   REFRESHED_BY_EVENTS,
-  type TreeBlocksRead,
-  type TreeFilter,
+  TREE_VIEWS,
+  type TreeRead,
   useTreeRead,
   viewQuery,
 } from "./tree-read/tree-read";
 
-/** The issue's tree, and how far the tree read it is built from has got. */
-export interface IssueTreeView {
-  /** Whether the tree read holds an answer for every page, which `root` is built from: what a
-   *  view that draws from the blocks it holds waits on. A refetch that fails over an answer
-   *  already held keeps it held - TanStack keeps a query's data through a failed refetch, and
-   *  `root` is still built from it - so the view keeps the text it drew, which waiting on
-   *  `blocksRead` would blank, since that failure turns it false (dispatch://INFRA-1196 decision
-   *  98). That is the one case where the two differ: both are false before the first answer and
-   *  after a first read that fails. */
-  readonly blocksHeld: boolean;
-  /** The typed blocks of the document that plays `role` - the spec, the plan, the Verification
-   *  document - from the tree read, answered as that document's blocks read answered them
-   *  (`tree-read/tree-nodes.ts`'s `blocksOfRole`, dispatch://INFRA-4062 R5), so a view reads its
-   *  blocks here and costs no request of its own. */
-  readonly blocksOf: (role: TreeFilter) => TreeBlocksRead;
-  /** Whether the tree read has answered every page. Until then a typed block - the spec's
-   *  summary among them - may be missing from `root` because it has not arrived rather than
-   *  because the issue holds none, which is what the head waits on before it says a spec has no
-   *  summary (`IssueThreeThings.tsx`). A read that failed has not answered either: the page
-   *  cannot say what a read it could not make holds. */
-  readonly blocksRead: boolean;
+/** The issue's tree, and how far the tree read it is built from has got (`TreeRead`): `root` is
+ *  built from what that read holds, and keeps standing on it through a refetch that fails. */
+export interface IssueTreeView extends Pick<TreeRead, "blocksHeld" | "blocksOf" | "blocksRead"> {
   readonly root: TreeNode;
 }
 
@@ -139,6 +121,8 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
     queryKey: ["comments", key],
     queryFn: () => api.listComments(key),
   });
+  // Under the key the history and the margin read too, and one of the reads the names wait on
+  // (`answered`); the model reads no message from it, since the tree read answers each as a node.
   const messages = useQuery({
     ...REFRESHED_BY_EVENTS,
     queryKey: ["issue-messages", key],
@@ -149,14 +133,9 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
   const who = useQuery(whoAmIQuery());
   const viewer = who.data?.login;
   // Each filter's view read, watched by an observer that is never enabled, so it sends nothing
-  // and holds whatever `ViewReadProvider` read for the load.
+  // and holds whatever `ViewReadProvider` read for the load; the answers in `TREE_VIEWS`' order.
   const [specView, verificationView, planView, decisionsView] = useQueries({
-    queries: [
-      { ...viewQuery(key, "spec"), enabled: false },
-      { ...viewQuery(key, "verification"), enabled: false },
-      { ...viewQuery(key, "plan"), enabled: false },
-      { ...viewQuery(key, "decisions"), enabled: false },
-    ],
+    queries: TREE_VIEWS.map((view) => ({ ...viewQuery(key, view), enabled: false })),
   });
   const spec = specView?.data;
   const verification = verificationView?.data;
@@ -177,12 +156,11 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
       asks: asks.data,
       coverage: coverage.data,
       issue,
-      messages: messages.data,
       results: results.data,
       tree: read.answer,
       viewer,
     }),
-    [asks.data, coverage.data, issue, messages.data, read.answer, results.data, viewer]
+    [asks.data, coverage.data, issue, read.answer, results.data, viewer]
   );
   const unnamed = useMemo(() => buildIssueTree(reads), [reads]);
   const refs = useMemo(() => treeReferences(unnamed), [unnamed]);
