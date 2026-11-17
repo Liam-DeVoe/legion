@@ -50,6 +50,34 @@ func stepChild(t *testing.T, pool *pgxpool.Pool, key string, at phase.Phase, hol
 	return child
 }
 
+// seedChildPR gives LEGION-209 its pull request #43 in state, with its merge commit where merged.
+func seedChildPR(t *testing.T, pool *pgxpool.Pool, state record.PullRequestState) {
+	t.Helper()
+	pr := record.PullRequest{State: state, Issue: "LEGION-209", Repo: "sjawhar/legion", Number: 43,
+		Branch: "legion/LEGION-209", HeadSHA: "head-43", Failing: []string{}}
+	if state == record.PullRequestMerged {
+		pr.MergeSHA = "merge-43"
+	}
+	seedPR(t, pool, pr)
+}
+
+// mergingChild seeds LEGION-209 at the retro under LEGION-208, with its open pull request, and
+// moves it into merging through engine: the start of its merge step, which the test then ends.
+func mergingChild(t *testing.T, pool *pgxpool.Pool, engine *Engine) {
+	t.Helper()
+	stepChild(t, pool, "LEGION-209", phase.Retro, nil)
+	seedChildPR(t, pool, record.PullRequestOpen)
+	move(t, pool, engine, "LEGION-209", TriggerRetroCompleted, "", record.PhaseRow{})
+}
+
+// holdFrom holds key from the phase from, where the death of that phase's worker's claim leaves it.
+func holdFrom(t *testing.T, pool *pgxpool.Pool, key string, from phase.Phase) {
+	t.Helper()
+	held := issueRecord(t, pool, key)
+	held.Phase, held.Hold = phase.Held, &record.Hold{From: from}
+	seedIssue(t, pool, *held)
+}
+
 // onStored runs write in one transaction on key's record as the store holds it.
 func onStored(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, write func(ctx context.Context, tx pgx.Tx, issue record.Issue) error) {
 	t.Helper()
@@ -540,8 +568,7 @@ func TestAChildsAcceptanceIsItsTreeArchitects(t *testing.T) {
 		pool := migratedPool(t)
 		stepRoot(t, pool, phase.Implementing)
 		stepChild(t, pool, "LEGION-209", at, nil)
-		seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-209", Repo: "sjawhar/legion", Number: 43,
-			Branch: "legion/LEGION-209", HeadSHA: "head-43", Failing: []string{}})
+		seedChildPR(t, pool, record.PullRequestOpen)
 		engine := stepEngine(agent)
 		enter(pool, engine)
 		applyFacts(t, pool, engine)("sign-off", intake.SignOff{Issue: "LEGION-209"})
@@ -602,11 +629,8 @@ func TestAChildsAcceptanceIsItsTreeArchitects(t *testing.T) {
 func TestALingeringTreesMergeEndsTheMergeStep(t *testing.T) {
 	pool := migratedPool(t)
 	stepRoot(t, pool, phase.Reviewing)
-	stepChild(t, pool, "LEGION-209", phase.Retro, nil)
-	seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-209", Repo: "sjawhar/legion", Number: 43,
-		Branch: "legion/LEGION-209", HeadSHA: "head-43", Failing: []string{}})
 	engine := stepEngine(nil)
-	move(t, pool, engine, "LEGION-209", TriggerRetroCompleted, "", record.PhaseRow{})
+	mergingChild(t, pool, engine)
 	var merge string
 	for _, w := range stepWrites(t, pool, "LEGION-209") {
 		if w.Kind == "merge" && isStart(w) {
@@ -623,8 +647,7 @@ func TestALingeringTreesMergeEndsTheMergeStep(t *testing.T) {
 			t.Fatalf("the linger ended LEGION-209's merge %+v; a merge that awaits its landing stays open", w)
 		}
 	}
-	seedPR(t, pool, record.PullRequest{State: record.PullRequestMerged, Issue: "LEGION-209", Repo: "sjawhar/legion", Number: 43,
-		Branch: "legion/LEGION-209", HeadSHA: "head-43", MergeSHA: "merge-43", Failing: []string{}})
+	seedChildPR(t, pool, record.PullRequestMerged)
 	onStored(t, pool, engine, "LEGION-209", func(ctx context.Context, tx pgx.Tx, member record.Issue) error {
 		pr, err := engine.store.PullRequest(ctx, tx, "LEGION-209")
 		if err != nil {
@@ -661,14 +684,9 @@ func TestAMergeEventEndsAHeldMergeStep(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			pool := migratedPool(t)
 			stepRoot(t, pool, phase.Reviewing)
-			stepChild(t, pool, "LEGION-209", phase.Retro, nil)
-			seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-209", Repo: "sjawhar/legion", Number: 43,
-				Branch: "legion/LEGION-209", HeadSHA: "head-43", Failing: []string{}})
 			engine := stepEngine(nil)
-			move(t, pool, engine, "LEGION-209", TriggerRetroCompleted, "", record.PhaseRow{})
-			child := issueRecord(t, pool, "LEGION-209")
-			child.Phase, child.Hold = phase.Held, &record.Hold{From: phase.Merging}
-			seedIssue(t, pool, *child)
+			mergingChild(t, pool, engine)
+			holdFrom(t, pool, "LEGION-209", phase.Merging)
 			apply := applyFacts(t, pool, engine)
 			if lingering {
 				apply("park-root", intake.DispatchIssue{Key: "LEGION-208", ResolvedRepo: "sjawhar/legion", Seq: 2, Type: "issue.updated",
@@ -703,15 +721,10 @@ func TestALingerCloseEndsAMergeThatItDoesNotHandOver(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
 			root := stepRoot(t, pool, phase.Reviewing)
-			stepChild(t, pool, "LEGION-209", phase.Retro, nil)
-			seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-209", Repo: "sjawhar/legion", Number: 43,
-				Branch: "legion/LEGION-209", HeadSHA: "head-43", Failing: []string{}})
 			engine := stepEngine(nil)
-			move(t, pool, engine, "LEGION-209", TriggerRetroCompleted, "", record.PhaseRow{})
+			mergingChild(t, pool, engine)
 			if tc.held {
-				child := issueRecord(t, pool, "LEGION-209")
-				child.Phase, child.Hold = phase.Held, &record.Hold{From: phase.Merging}
-				seedIssue(t, pool, *child)
+				holdFrom(t, pool, "LEGION-209", phase.Merging)
 			}
 			apply := applyFacts(t, pool, engine)
 			apply("park-root", intake.DispatchIssue{Key: root.Key, ResolvedRepo: "sjawhar/legion", Seq: 2, Type: "issue.updated",
