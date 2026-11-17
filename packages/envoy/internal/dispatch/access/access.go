@@ -248,18 +248,3 @@ func Resolve(ctx context.Context, q Querier, actor model.Actor) (model.Viewer, e
 	viewer.Open = !viewer.Restricted && !viewer.Listed
 	return viewer, nil
 }
-
-// BrowserReader is the reader of login's browser: the person as model.BrowserActor names them,
-// without the credential (model.Actor.Reader), carrying what that browser sees (Resolve). A read
-// a person's cookie opened - a document socket's, and the access re-check of its sockets - reads
-// for this reader.
-func BrowserReader(ctx context.Context, q Querier, login string) (model.Actor, error) {
-	browser := model.BrowserActor(login)
-	viewer, err := Resolve(ctx, q, browser)
-	if err != nil {
-		return model.Actor{}, err
-	}
-	reader := browser.Reader()
-	reader.Viewer = &viewer
-	return reader, nil
-}

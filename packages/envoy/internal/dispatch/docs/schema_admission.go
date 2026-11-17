@@ -12,6 +12,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/access"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -261,7 +262,7 @@ func (s *Service) accessChanged(ctx context.Context, _ string) {
 
 // recheckAccess closes each document socket this process holds whose person may no longer read its
 // room (errAccessRevoked): for each person with a socket here it reads what they see now
-// (access.BrowserReader) and which of their rooms they may read (access.DocumentClause), and
+// (access.Resolve) and which of their rooms they may read (access.DocumentClause), and
 // revokes the rest (revokeUnless). It runs on each access change and after each LISTEN stands,
 // since a change notified while the hub had no connection reached nobody. A socket whose admission
 // read its room before this pass began and that is recorded only after the pass looked is read
@@ -313,12 +314,14 @@ func (s *Service) recheckAdmission(ctx context.Context, admission *schemaAdmissi
 var readableRoomsStatement = `select a.id::text from artifacts a where a.id = any($1::uuid[]) and ` + access.DocumentClause("a", "$2")
 
 // readableRooms is the rooms of admissions, all person's sockets, that person may read now, as the
-// person's browser sees them (access.BrowserReader): every document socket is a cookie's.
+// person's browser sees them (model.BrowserActor): every document socket is a cookie's.
 func (s *Service) readableRooms(ctx context.Context, person string, admissions []*schemaAdmission) (map[string]bool, error) {
-	who, err := access.BrowserReader(ctx, s.store.Pool, person)
+	who := model.Actor{Kind: "user", ID: person}
+	viewer, err := access.Resolve(ctx, s.store.Pool, model.BrowserActor(person))
 	if err != nil {
 		return nil, err
 	}
+	who.Viewer = &viewer
 	rooms := make([]string, len(admissions))
 	for i, admission := range admissions {
 		rooms[i] = admission.key.room
