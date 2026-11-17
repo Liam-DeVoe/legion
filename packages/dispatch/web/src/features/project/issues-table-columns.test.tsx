@@ -588,7 +588,7 @@ test("Closed filters by a date range, and a table another page draws offers it h
   });
   await screen.findByRole("table", { name: "Issues" });
   const leaves = table?.getAllLeafColumns() ?? [];
-  expect(leaves.map(({ id }) => id)).toEqual(ISSUE_TABLE_COLUMNS.ids);
+  expect(leaves.map(({ id }) => id)).toEqual([...ISSUE_TABLE_COLUMNS.ids]);
   expect(table?.getColumn("closed")?.getIsVisible()).toBe(false);
   expect(table?.getColumn("closed")?.columnDef.meta?.range).toBe(true);
   // Today's Queue: Start next's number, its filter in the words it has always had.
