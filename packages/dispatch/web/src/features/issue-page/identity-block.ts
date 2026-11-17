@@ -13,7 +13,8 @@ import { DETAILS_ATTRIBUTE } from "./margin-slot";
 export const IDENTITY_HEIGHT_PROPERTY = "--issue-identity-height";
 
 /** The widths the header scrolls away at and the filter row stays: the prototype's own media
- *  query, which the header's and the filter row's `max-[760px]:` classes repeat. */
+ *  query, which the header's and the filter row's `max-[761px]:` classes repeat, Tailwind's
+ *  `max-[761px]:` being a width under 761 px (dispatch://INFRA-1196 decision 72). */
 export const HEADER_SCROLLS_QUERY = "(max-width: 760px)";
 
 /** The mark the filter row's own element carries (`IssuePresets.tsx`), by which the band is found

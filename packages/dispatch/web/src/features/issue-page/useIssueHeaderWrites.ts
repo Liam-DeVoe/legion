@@ -7,7 +7,11 @@ import type { Issue, IssueDetails, UserIssueState, UserState } from "../../api/t
 import { type SubmitGuard, useSubmitGuard } from "../../hooks/useSubmitGuard";
 import { stateForIssue } from "../issue/pins";
 import { type IssueDrafts, type IssueUpdateInput, useIssueDrafts } from "../issue/useIssueDrafts";
-import { type KeyedWriteResult, useKeyedWrite } from "../writes/useKeyedWrite";
+import {
+  type KeyedWriteOptions,
+  type KeyedWriteResult,
+  useKeyedWrite,
+} from "../writes/useKeyedWrite";
 import { PROPERTY_LABELS } from "./page-structure";
 import { CONTROL_LABELS, issueStatusWord } from "./page-words";
 
@@ -134,19 +138,25 @@ export function useIssueHeaderWrites(
   // goes in the issue's line (`issue:<key>`), so an older one still being tried never lands after
   // a newer one, whatever left the page meanwhile. A landing with no answer to give is merged by
   // reading the issue again. Each carries the issue's mutation key, which every caller of this
-  // hook on the page reads its pending status by.
-  const updateIssue = useKeyedWrite({
-    mutationKey: ["issue-update", issue.key],
-    inline: (input) => !statusPickOnly(input),
+  // hook on the page reads its pending status by (`pendingStatuses`, below).
+  const mutationKey = ["issue-update", issue.key];
+  // What the two writes of the issue's fields share, written once so the pick can never part
+  // from `updateIssue`'s key, line, request or landing (dispatch://INFRA-3935 R8).
+  const fieldWrite: KeyedWriteOptions<Issue, IssueUpdateInput, unknown> = {
+    mutationKey,
     label: (input) => issueUpdateLabel(issue.key, input),
     target: () => `issue:${issue.key}`,
-    request: (input: IssueUpdateInput) => issuePatchRequest(issue.key, input),
-    onSettled: (_data, error) => {
-      drafts.onIssueSettled(error);
-    },
+    request: (input) => issuePatchRequest(issue.key, input),
     onSuccess: (next, input) => {
       landIssueWrite(queryClient, issue.key, next);
       drafts.onIssueSuccess(next ?? issue, input);
+    },
+  };
+  const updateIssue = useKeyedWrite({
+    ...fieldWrite,
+    inline: (input) => !statusPickOnly(input),
+    onSettled: (_data, error) => {
+      drafts.onIssueSettled(error);
     },
   });
   // The Status pill's pick (`IssueHeaderWrites.pickStatus` says why it is not `updateIssue`'s).
@@ -155,17 +165,7 @@ export function useIssueHeaderWrites(
   // still being tried, and `pendingStatus` reads it. It lets go of no guard and drains no draft
   // (`drafts.onIssueSettled`): the guard and the drafts are `updateIssue`'s, and a drain here,
   // after a title Dispatch refused, would send that title again.
-  const statusWrite = useKeyedWrite({
-    mutationKey: ["issue-update", issue.key],
-    inline: false,
-    label: (input) => issueUpdateLabel(issue.key, input),
-    target: () => `issue:${issue.key}`,
-    request: (input: IssueUpdateInput) => issuePatchRequest(issue.key, input),
-    onSuccess: (next, input) => {
-      landIssueWrite(queryClient, issue.key, next);
-      drafts.onIssueSuccess(next ?? issue, input);
-    },
-  });
+  const statusWrite = useKeyedWrite({ ...fieldWrite, inline: false });
   // The labels are a field of the issue too, so they land as every field write does: a landing
   // with no answer reads the issue again rather than leave the old labels showing
   // (`landIssueWrite`, dispatch://INFRA-3935 R8).
@@ -218,7 +218,7 @@ export function useIssueHeaderWrites(
   // the last that holds a status is the newest pick. A pick waiting its turn in the issue's line
   // is pending from its press, so it shows at once.
   const pendingStatuses = useMutationState({
-    filters: { exact: true, mutationKey: ["issue-update", issue.key], status: "pending" },
+    filters: { exact: true, mutationKey, status: "pending" },
     select: (mutation) => (mutation.state.variables as IssueUpdateInput | undefined)?.status,
   });
   const pickStatus = (next: string) => {

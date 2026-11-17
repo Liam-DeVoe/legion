@@ -4,6 +4,7 @@ import type { IssueDetails } from "../../api/types";
 import { pageHeaderControl, pageMenu, pageMenuItem } from "../../theme/classes";
 import { assigneeControlName } from "../issue/AssigneeControl";
 import { componentsControlName } from "../issue/IssueComponentsLine";
+import { labelsControlName } from "../issue/IssueLabels";
 import { repoControlName } from "../issue/RepoControl";
 import { addPriorityControlName } from "../priorities/IssuePriorityLine";
 import { roveFocus } from "../shell/roving";
@@ -12,9 +13,6 @@ import type { IssueField } from "./IssueFieldForms";
 import { useMarginDrawer } from "./margin-slot";
 import { PROPERTY_LABELS, pageChrome } from "./page-structure";
 import { CONTROL_LABELS } from "./page-words";
-
-/** The name `main`'s `IssueLabels` gives its control, which the add menu and the key `l` press. */
-export const LABELS_CONTROL_NAME = "Edit labels";
 
 /**
  * The one control that reaches a property this issue has no value for (dispatch://INFRA-1196
@@ -25,10 +23,10 @@ export const LABELS_CONTROL_NAME = "Edit labels";
  * Six of the fields it lists are edited by a control drawn elsewhere on the page (the assignee,
  * the labels, the issues this one waits on, the repository, the components and the priorities
  * it advances), so the menu presses those rather than holding a second copy of them. It finds
- * each by the name that control exports - `assigneeControlName`, `blockedByControlName`,
- * `repoControlName`, `componentsControlName`, `addPriorityControlName` - so the two sides
- * cannot drift apart, and lists one only while the page draws it: a project that maps no
- * repository offers no repository to set.
+ * each by the name that control exports - `assigneeControlName`, `labelsControlName`,
+ * `blockedByControlName`, `repoControlName`, `componentsControlName`, `addPriorityControlName` -
+ * so the two sides cannot drift apart, and lists one only while the page draws it: a project
+ * that maps no repository offers no repository to set.
  */
 export function IssueAddMenu({
   isClosed,
@@ -176,9 +174,12 @@ export function IssueAddMenu({
       });
     }
     if ((details.labels ?? []).length === 0) {
-      // The labels popover spells its own name inline (`IssueLabels.tsx`), so it is typed once,
-      // as `LABELS_CONTROL_NAME`, until that control exports it too.
-      fields.push({ label: PROPERTY_LABELS.labels, ...atControl(LABELS_CONTROL_NAME) });
+      // Listed only while the issue has no label, so the control is found by the name it has
+      // then: the words it draws and the issue's key.
+      fields.push({
+        label: PROPERTY_LABELS.labels,
+        ...atControl(labelsControlName([], details.key, CONTROL_LABELS)),
+      });
     }
     if (details.route === null || details.route === "") {
       fields.push({
@@ -200,9 +201,18 @@ export function IssueAddMenu({
       });
     }
     if ((details.components.ids ?? []).length === 0) {
+      // Listed only while the issue names no component, so the picker's trigger is found by the
+      // name it has then, from the attachment the components line draws: the words it draws
+      // and the issue's key ("Set components of CORE-1" on an issue not attached, or attached
+      // to none). A save in flight renames it, and the busy trigger is not reached.
       fields.push({
         label: PROPERTY_LABELS.components,
-        ...atControl(componentsControlName(details.key)),
+        ...atControl(
+          componentsControlName(details.key, {
+            components: details.components,
+            controlLabels: CONTROL_LABELS,
+          })
+        ),
       });
     }
     if ((details.advances ?? []).length === 0) {

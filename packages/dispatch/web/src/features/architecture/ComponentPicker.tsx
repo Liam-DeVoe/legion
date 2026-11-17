@@ -114,7 +114,19 @@ export function ComponentPicker({
       triggerAriaLabel={triggerAriaLabel}
       triggerClassName={page === null ? secondaryButtonCompact : PAGE_TRIGGER}
     >
-      {saving ? "Saving…" : (children ?? "Components")}
+      {/* While it saves, inside `NoTooltips` the trigger says the page's words with their mark
+          (dispatch://INFRA-3935 R8 and R9, decision 114 of
+          dispatch://INFRA-1196/artifact/part-decisions-md), which the components line's name
+          begins with (`componentsControlName`); outside it says `main`'s "Saving…" (R1). */}
+      {saving ? (
+        page === null ? (
+          "Saving…"
+        ) : (
+          <span {...page.pageChrome}>{page.ANSWER_LINES.saving_components}</span>
+        )
+      ) : (
+        (children ?? "Components")
+      )}
     </MultiSelect>
   );
 }

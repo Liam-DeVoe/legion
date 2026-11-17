@@ -17,7 +17,9 @@ import { sessionOfAddress } from "../refs/routes";
 // what needs a person's eye: a route that reaches nobody is the page's waiting chip, and a reach
 // nobody could judge or a holder that stopped answering is its words in that colour, as the
 // page's margin says such a state (dispatch://INFRA-3935 R6, decision 56 of
-// dispatch://INFRA-1196/artifact/part-decisions-md).
+// dispatch://INFRA-1196/artifact/part-decisions-md). There a route a marker names is a value, so
+// it breaks anywhere rather than ellipsize behind a tooltip that page does not draw (decision 104
+// of the same artifact); everywhere else it ellipsizes, as on `main`.
 
 type RoutedIssue = Pick<
   IssueDetails,
@@ -118,7 +120,11 @@ export function UnresponsiveRouteMarker({
       style={{ flexShrink: showRoute ? 1 : 0 }}
       title={tooltips ? explanation : undefined}
     >
-      {showRoute ? <span className="min-w-0 truncate">{issue.route}:</span> : null}
+      {showRoute ? (
+        <span className={tooltips ? "min-w-0 truncate" : "min-w-0 [overflow-wrap:anywhere]"}>
+          {issue.route}:
+        </span>
+      ) : null}
       <span className="shrink-0">Unresponsive, still reached</span>
       <span className="sr-only">. {explanation}</span>
     </span>
@@ -149,7 +155,7 @@ function UnreachableRoute({
         ⚠
       </span>
       {showRoute ? (
-        <span className="min-w-0 truncate">
+        <span className={tooltips ? "min-w-0 truncate" : "min-w-0 [overflow-wrap:anywhere]"}>
           {sessionId === undefined ? (
             route
           ) : (
