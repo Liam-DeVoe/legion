@@ -56,6 +56,14 @@ async function eventually(ready: () => boolean | Promise<boolean>, ms: number): 
   return ready();
 }
 
+/** The processes whose parent is `pid`, as `pgrep -P` lists them. */
+function childrenOf(pid: number): number[] {
+  const listed = Bun.spawnSync(["pgrep", "-P", String(pid)])
+    .stdout.toString()
+    .trim();
+  return listed === "" ? [] : listed.split("\n").map(Number);
+}
+
 /** Groups a failing row found alive, killed after it so the row leaks nothing itself. */
 const survivors: number[] = [];
 afterEach(() => {
@@ -155,9 +163,17 @@ test(
     );
     try {
       expect(await eventually(async () => await Bun.file(ready).exists(), ROW_MS / 2)).toBe(true);
+      // The reaper is the parent's one child, the leader of a session and group of its own, and it
+      // exits only once every stop it makes has ended, by itself within a minute: its group's end
+      // is the moment every call it was going to make is in.
+      const reapers = childrenOf(parent.pid);
+      const [reaperGroup] = reapers;
+      if (reapers.length !== 1 || reaperGroup === undefined) {
+        throw new Error(`the parent should have one child, its reaper; it has ${reapers.length}`);
+      }
       parent.kill("SIGKILL");
       await parent.exited;
-      await eventually(async () => await Bun.file(calls).exists(), 15_000);
+      expect(await eventually(() => !groupAlive(reaperGroup), 15_000)).toBe(true);
       expect((await Bun.file(calls).text()).trim().split("\n")).toEqual([
         "-D /data/held -m immediate -w stop",
       ]);
