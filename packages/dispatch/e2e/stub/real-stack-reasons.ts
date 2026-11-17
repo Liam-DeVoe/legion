@@ -182,6 +182,8 @@ export const realStackReasons: Record<string, string> = {
   "issue-page-q.e2e.ts": "the server's decisions read sorts the view; a sent Change is re-read",
   "issue-page-v.e2e.ts":
     "the rows record and withdraw results and file a child through the server, and the view draws its coverage and results reads",
+  "issue-page-z.e2e.ts":
+    "the rows ask a command bar run of the server and change an issue inside it, and read what Details and the run's page draw for its asker and for another login, which the server's reads answer for the asker alone",
   "issues-table.e2e.ts":
     "every row writes and then reads its own write: parents, ranks, epics and merges patched through the API and read back through `getIssue`, plus a refused write retried from the store and an interrupted action finished after a reload",
   "issue-page-d.e2e.ts":
