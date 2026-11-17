@@ -477,7 +477,7 @@ var nestedKeys = []memberGroup{
 		{Name: "repository", Default: "`LEGION_LEAK_CHECK_REPOSITORY` in the daemon's environment", RequiredBy: "when `checker_sha256` is set: the two are set together or not at all",
 			Description: "The repository the shared public leak check is published from, as `owner/name`: its `leak-check` directory at the tag the worker image pins (`LEGION_LEAK_CHECK_TAG`) is what the daemon reads, with a read-only token of its implement App, and pushes to every pod."},
 		{Name: "checker_sha256", Default: "`LEGION_LEAK_CHECK_SHA256` in the daemon's environment", RequiredBy: "when `repository` is set: the two are set together or not at all",
-			Description: "The sha256 of that tag's `leak-check/public_leak_check.py`, 64 lowercase hex digits: every role is told it, a call of `legion gh` that writes nothing is read by the check alone only under a check whose program hashes to it, and its presence is what has a role refuse a write for want of a check."},
+			Description: "The sha256 of that tag's `leak-check/public_leak_check.py`, 64 lowercase hex digits: every role is told it, its presence is what has a role refuse a write for want of a check, and a call of `legion gh` that writes nothing is read by the check alone only where it is the digest that release's read rule was proven against and the check's program hashes to it."},
 	}},
 	{Path: hooksKey + "[]", Members: []member{
 		{Name: "name", Default: "none: a hook that names no `name` is refused", RequiredBy: "yes",

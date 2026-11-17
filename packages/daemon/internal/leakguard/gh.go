@@ -50,8 +50,9 @@ type GhRequest struct {
 	// the whole guard.
 	WritesNothing bool
 	// ProvenCheck is the sha256, in hex, of the shared check's public_leak_check.py that the
-	// caller's rule for WritesNothing was proven against: the deployment's checker
-	// (Setting.CheckerSHA256), which `legion gh` reads from CheckerVar. WritesNothing is honoured
+	// caller's rule for WritesNothing was proven against. `legion gh` hands the digest compiled
+	// into it (cmd/legion's ghReadsProvenCheck), and only where the deployment's checker its role
+	// is told (CheckerVar) is that same digest; it hands none otherwise. WritesNothing is honoured
 	// only where the public_leak_check.py beside the resolved check hashes to it (provenCheck), so
 	// a check of another version, or one edited under the same tag, gets the whole guard, and so
 	// does every call where it is empty.

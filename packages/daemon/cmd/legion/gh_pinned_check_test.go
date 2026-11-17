@@ -13,7 +13,8 @@ import (
 
 // ghPinnedCheckPortSHA256 is the sha256 of the public_leak_check.py ghPinnedCheckReads was ported
 // from, leak-check-v15's. TestGhReadsAreProvenAgainstThePinnedCheck fails while it is not
-// ghReadsProvenCheck's sha256, so a bump of the pin fails until this port moves with it.
+// ghReadsProvenCheck's sha256, the digest this binary trusts its read rule under, so a bump of the
+// pin fails until this port moves with it.
 const ghPinnedCheckPortSHA256 = "86d087b3c70ee36907dfca54fec83dcff77f2cd87d888de914145f7f122bc554"
 
 // ghPinnedCheckReads says whether the pinned check, the public_leak_check.py whose sha256 is

@@ -1820,6 +1820,7 @@ func TestLegionGhLetsOnlyTheRateLimitReadBypassTheGuard(t *testing.T) {
 				"LEGION_GH_PATH":       stub,
 				"PUBLIC_LEAK_CHECK":    ghCheckAt(t, tc.check),
 				leakguard.CheckerVar:   ghProvenProgramSHA256,
+				testProvenCheckEnv:     ghProvenProgramSHA256,
 			}
 			if code, _, stderr := legionGhIn(t, repository, env, "", tc.args...); code != tc.wantCode {
 				t.Fatalf("legion gh %q = exit %d, stderr %q; want exit %d", tc.args, code, stderr, tc.wantCode)
