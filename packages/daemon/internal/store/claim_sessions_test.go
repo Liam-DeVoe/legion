@@ -468,8 +468,8 @@ func TestTheReleaseStatementLetsAClaimAtTheCapStartANewSession(t *testing.T) {
 		session, file string
 	}{{holder, current, currentFile}, {holder, current, earlierFile}, {holder, abandoned, abandonedFile},
 		{other, "ses_other", "/state/sessions/--w--/2026-11-16T09-00-00-000Z_ses_other.jsonl"},
-		{other, "ses_other_old_1", "/state/sessions/--w--/2026-11-01T00-00-00-000Z_ses_other_old_1.jsonl"},
-		{other, "ses_other_old_2", "/state/sessions/--w--/2026-11-01T00-00-00-000Z_ses_other_old_2.jsonl"}} {
+		{other, "ses_elder_1", "/state/sessions/--w--/2026-11-01T00-00-00-000Z_ses_elder_1.jsonl"},
+		{other, "ses_elder_2", "/state/sessions/--w--/2026-11-01T00-00-00-000Z_ses_elder_2.jsonl"}} {
 		if err := hold(s.token, s.session, s.file); err != nil {
 			t.Fatalf("hold %s %s: %v", s.session, s.file, err)
 		}
