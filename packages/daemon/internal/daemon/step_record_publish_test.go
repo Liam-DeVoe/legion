@@ -3,7 +3,6 @@ package daemon
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"reflect"
@@ -213,9 +212,10 @@ func TestAReturnToTheRetroReachesDispatchAsPlaceZero(t *testing.T) {
 // What a retry can change is retried: an outage, "come back later", a codeless answer from a
 // proxy, and a credential an operator restores, as the shared rule rides each of them out
 // (dispatch.PermanentRefusal). So is the old router's NOT_FOUND, and an older Dispatch's refusal of
-// a field this daemon added. None of them ends the row.
+// a field this daemon added. Each is the answer to a real PUT of the queued row: the row stays,
+// its failed attempt is the outbox's own Error line and nothing says the record was dropped, and
+// once Dispatch answers again the next run writes the same record under the same id and ends it.
 func TestAStepRecordRetriesAnOutageAndACredential(t *testing.T) {
-	row := mustOutboxRow(t, stepIssue, stepRecordOf(), time.Now())
 	for _, tc := range []struct {
 		name string
 		err  error
@@ -232,9 +232,31 @@ func TestAStepRecordRetriesAnOutageAndACredential(t *testing.T) {
 			Message: `invalid JSON body: json: unknown field "labels_add"`}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			wrapped := fmt.Errorf("write the step record %s of %s: %w", stepRecordID, stepIssue, tc.err)
-			if permanentRefusal(row, wrapped) {
-				t.Fatalf("permanentRefusal(%v) = true, want the row retried", tc.err)
+			rig := newStepRecordRig(t, answersInTurn(tc.err))
+			rig.run()
+			if left := rig.left(); left != 1 {
+				t.Fatalf("rows left after Dispatch answered %v = %d, want the record kept for its retry", tc.err, left)
+			}
+			if puts := rig.client.received(); len(puts) != 1 {
+				t.Fatalf("PUTs of the record after the first run = %d, want the one Dispatch answered %v", len(puts), tc.err)
+			}
+			logs := rig.logs.String()
+			if failed := loggedLines(t, logs, "outbox row failed"); len(failed) != 1 {
+				t.Fatalf("logged %d failed attempts, want the one Dispatch answered: %s", len(failed), logs)
+			}
+			if warned := loggedLines(t, logs, `"level":"WARN"`); len(warned) != 0 {
+				t.Fatalf("logged %d warnings, want none for a record that is retried: %s", len(warned), logs)
+			}
+			rig.run()
+			if left := rig.left(); left != 0 {
+				t.Fatalf("rows left after Dispatch took the record = %d, want none", left)
+			}
+			puts := rig.client.received()
+			if len(puts) != 2 {
+				t.Fatalf("PUTs of the record = %d, want two: the one answered %v and the retry Dispatch stored", len(puts), tc.err)
+			}
+			if !reflect.DeepEqual(puts[1], puts[0]) {
+				t.Fatalf("the retry wrote %+v, want the same record under the same id as the first PUT, %+v", puts[1], puts[0])
 			}
 		})
 	}
