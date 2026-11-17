@@ -1713,6 +1713,63 @@ test("an arrow key on the move or merge select writes nothing", async () => {
   await waitFor(() => expect(send).toHaveBeenCalled());
 });
 
+/** The text boxes in the page now: a list's own box is one that appears when the list opens. */
+function textBoxes(): Element[] {
+  return [
+    ...document.querySelectorAll('input[type="search"], input[type="text"], input:not([type])'),
+  ];
+}
+
+/** Every option or button named `name`: what a reader picks from a list, however it is drawn. */
+function picks(name: RegExp): HTMLElement[] {
+  return [
+    ...screen.queryAllByRole("option", { name }),
+    ...screen.queryAllByRole("button", { name }),
+  ];
+}
+
+// INFRA-3135, R3: "Every list of options a reader picks from holds a text box that narrows the
+// options." The List's two lists of epics - the selection bar's Move to epic and an epic's own
+// Merge into another epic - are such lists: opened, each holds a text box of its own, and a word
+// typed into it leaves only the epics that match.
+test("the List's Move to epic and Merge into another epic each hold a text box that narrows the epics", async () => {
+  const user = userEvent.setup();
+  table(
+    [
+      issue("CORE-1", { labels: ["epic"], title: "Source" }),
+      issue("CORE-2", { labels: ["epic"], title: "Target" }),
+      issue("CORE-4", { labels: ["epic"], title: "Rollout" }),
+      issue("CORE-3", { parent: "CORE-1" }),
+    ],
+    "?group=epic"
+  );
+  const source = (await screen.findByRole("link", { name: "CORE-1 · Source" })).closest("tr");
+  if (!source) throw new Error("The source epic has no heading row");
+  await user.click(await screen.findByRole("checkbox", { name: "Select CORE-3" }));
+  for (const [name, open] of [
+    ["Move to epic", async () => undefined],
+    [
+      "Merge into another epic",
+      async () => {
+        await user.click(within(source).getByRole("button", { name: "Epic actions ▾" }));
+      },
+    ],
+  ] as const) {
+    await open();
+    const before = new Set(textBoxes());
+    const control = screen.getByLabelText(name);
+    await user.click(control);
+    const own = textBoxes().filter((box) => !before.has(box));
+    expect(own, `${name} holds no text box of its own`).toHaveLength(1);
+    await user.type(own[0] as HTMLElement, "Targ");
+    await waitFor(() =>
+      expect(picks(/Rollout/), `"Targ" leaves Rollout in ${name}`).toHaveLength(0)
+    );
+    expect(picks(/Target/).length, `"Targ" takes Target out of ${name}`).toBeGreaterThan(0);
+    await user.keyboard("{Escape}");
+  }
+});
+
 // B2: Start next over a selection the reader cannot see all of says how many it will move.
 test("Start next on a selection larger than the page asks first", async () => {
   const user = userEvent.setup();

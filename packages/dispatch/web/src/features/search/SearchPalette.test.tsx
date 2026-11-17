@@ -1372,6 +1372,67 @@ test("a project picked in the panel narrows the search and reads back as its chi
   }
 });
 
+/** The text boxes in the page now: a list's own box is one that appears when the list opens. */
+function textBoxes(): Element[] {
+  return [
+    ...document.querySelectorAll('input[type="search"], input[type="text"], input:not([type])'),
+  ];
+}
+
+/** Every element whose own name or text is `name`, as a button or an option: what a reader
+ *  picks from a list, however the list draws it. */
+function picks(name: RegExp): HTMLElement[] {
+  return [
+    ...screen.queryAllByRole("button", { name }),
+    ...screen.queryAllByRole("option", { name }),
+  ];
+}
+
+// INFRA-3135, R3: "Every list of options a reader picks from holds a text box that narrows the
+// options." The bar's Project and Status lists are such lists. Each one, opened from the panel,
+// holds a text box of its own, and a word typed into it leaves only the options that match.
+test("the bar's Project and Status lists each hold a text box that narrows their options", async () => {
+  const user = userOnFakeClock();
+  const listProjects = spyOn(api, "listProjects").mockResolvedValue(
+    ["INFRA", "CORE"].map((key) => ({
+      created_at: "2026-09-01T00:00:00Z",
+      gated_steps: [],
+      key,
+      name: key === "INFRA" ? "Infra" : "Core",
+      open_asks: 0,
+    }))
+  );
+  const view = renderPalette();
+
+  try {
+    const lists = [
+      { menu: "Project", word: "COR", kept: /^CORE\b/, gone: /^INFRA\b/ },
+      { menu: "Status", word: "progress", kept: /^In progress\b/, gone: /^Todo\b/ },
+    ];
+    for (const { menu, word, kept, gone } of lists) {
+      await openFilters(user);
+      const before = new Set(textBoxes());
+      await user.click(await screen.findByRole("button", { name: menu }));
+      await waitFor(() => expect(picks(gone).length).toBeGreaterThan(0));
+      const own = textBoxes().filter((box) => !before.has(box));
+      expect(own, `the ${menu} list holds no text box of its own`).toHaveLength(1);
+      await user.type(own[0] as HTMLElement, word);
+      await waitFor(() =>
+        expect(picks(gone), `"${word}" leaves ${gone} in the ${menu} list`).toHaveLength(0)
+      );
+      expect(picks(kept).length, `"${word}" takes ${kept} out of the ${menu} list`).toBeGreaterThan(
+        0
+      );
+      await user.keyboard("{Escape}");
+      await user.keyboard("{Escape}");
+    }
+  } finally {
+    listProjects.mockRestore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
 // INFRA-3135, review round 1 (thread PRRT_kwDORFy7ds63p6zJ): Shift+Tab out of the Project list
 // left both panels open with the focus on Updated since, and every Escape after it was refused
 // while the list stood open, so the bar could not be closed from the keyboard.
