@@ -33,6 +33,7 @@ import {
   issueTreeKey,
   issueTreeQuery,
   subscribeTreeFreshness,
+  type TreeAnswer,
   type TreeAnswerNode,
   viewKey,
   viewQuery,
@@ -701,11 +702,12 @@ test("Retry on the decisions' failed line reads them again and draws what they h
     down = false;
     await user.click(drawn.getByRole("button", { name: "Retry" }));
     await waitFor(() => {
-      expect(client.getQueryData(issueTreeKey(KEY)), "Retry did not read the tree again").toEqual(
-        treeAnswer(made)
-      );
       expect(
-        client.getQueryData(viewKey(KEY, "decisions")),
+        client.getQueryData<TreeAnswer>(issueTreeKey(KEY)),
+        "Retry did not read the tree again"
+      ).toEqual(treeAnswer(made));
+      expect(
+        client.getQueryData<TreeAnswer>(viewKey(KEY, "decisions")),
         "Retry did not read the decisions view again"
       ).toEqual(treeAnswer(made));
     });
@@ -1567,7 +1569,8 @@ test("a decision the reader sent a Change on says so, leaves the review list and
     await waitFor(() => expect(create).toHaveBeenCalled());
     // The comment is anchored to the decision's own block and words in the spec, the document
     // the decision is a block of.
-    expect(create.mock.calls[0]?.slice(0, 2)).toEqual([
+    // Compared as `unknown`: the API's `AnchorInput` does not declare the `block_id` it carries.
+    expect<unknown>(create.mock.calls[0]?.slice(0, 2)).toEqual([
       KEY,
       {
         anchor: { artifact: SPEC_DOCUMENT.id, block_id: "second", quote: "The decision second." },

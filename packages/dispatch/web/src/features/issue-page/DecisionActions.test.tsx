@@ -344,7 +344,8 @@ test("Change anchors to the node's document and quotes its first paragraph", asy
     await waitFor(() =>
       expect(createComment, "the Change was never sent").toHaveBeenCalledTimes(1)
     );
-    expect(createComment.mock.calls[0]?.slice(0, 2)).toEqual([
+    // Compared as `unknown`: the API's `AnchorInput` does not declare the `block_id` it carries.
+    expect<unknown>(createComment.mock.calls[0]?.slice(0, 2)).toEqual([
       KEY,
       {
         anchor: { artifact: document_.id, block_id: ONE.id, quote: "One tree, five presets" },
