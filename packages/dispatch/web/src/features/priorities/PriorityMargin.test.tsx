@@ -1,7 +1,6 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, within } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
 import { api } from "../../api/client";
 import type { PriorityAct } from "../../api/types";
 import { PriorityMargin } from "./PriorityMargin";
@@ -73,20 +72,11 @@ const HISTORY: PriorityAct[] = [
 const restores: (() => void)[] = [];
 afterEach(() => {
   for (const restore of restores.splice(0)) restore();
-  localStorage.clear();
 });
 
 function margin(acts: PriorityAct[] = HISTORY) {
   const history = spyOn(api, "getPriorityHistory").mockResolvedValue(acts);
-  // The margin's state is the signed-in person's own preference, so the margin is read as a
-  // signed-in person (`features/shell/userPreference.ts`).
-  const viewer = spyOn(api, "whoAmI").mockResolvedValue({
-    event_head: "0",
-    kind: "user",
-    login: "alice",
-  });
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  client.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
   const view = render(
     <QueryClientProvider client={client}>
       <PriorityMargin id="rocq-lean" />
@@ -96,7 +86,6 @@ function margin(acts: PriorityAct[] = HISTORY) {
     view.unmount();
     client.clear();
     history.mockRestore();
-    viewer.mockRestore();
   });
   return { client, history, view };
 }
@@ -117,7 +106,7 @@ function entries(): { at: string; who: string; words: string }[] {
     });
 }
 
-test("everything lists the priority's own history, newest first, with each actor and time", async () => {
+test("the margin lists the priority's own history, newest first, with each actor and time", async () => {
   const { history } = margin();
   await screen.findByText("retracted the relation to the issue CORE-4");
   expect(history).toHaveBeenCalledWith("rocq-lean");
@@ -183,30 +172,19 @@ test("a history that cannot be read says so, and lists nothing", async () => {
   expect(screen.queryAllByRole("listitem")).toEqual([]);
 });
 
-test("the other three states each say in one line why nothing of that kind is there", async () => {
-  const { history } = margin();
+test("the margin is the history alone: no control of states and no view that can only be empty", async () => {
+  margin();
   await screen.findByText("moved the order");
-  const state = screen.getByRole("combobox", { name: /Margin/ });
-  for (const [option, line] of [
-    ["words", "A priority carries no comments yet, so nobody has written anything here."],
-    ["questions", "A priority carries no asks yet, so no question has been asked about this one."],
-    ["pinned", "A priority carries nothing a reader can pin yet."],
-  ]) {
-    await userEvent.selectOptions(state, option as string);
-    expect(screen.getByText(line as string)).toBeDefined();
-    expect(screen.queryAllByRole("listitem")).toEqual([]);
-    expect(screen.queryAllByRole("link")).toEqual([]);
+  // A priority carries no comments, questions or pins until dispatch://INFRA-1098 makes its
+  // description a document, so the margin offers no choice of what it shows.
+  const aside = screen.getByRole("complementary", { name: "Margin" });
+  expect(within(aside).queryAllByRole("combobox")).toEqual([]);
+  expect(within(aside).queryAllByRole("listbox")).toEqual([]);
+  expect(within(aside).queryAllByRole("tab")).toEqual([]);
+  expect(aside.querySelectorAll("select")).toHaveLength(0);
+  const text = aside.textContent ?? "";
+  for (const word of ["Words anyone wrote", "Questions", "Pinned"]) {
+    expect(text).not.toContain(word);
   }
-  expect(history).toHaveBeenCalledTimes(1);
-});
-
-test("the state the reader chose survives a return to the page", async () => {
-  margin();
-  await screen.findByText("moved the order");
-  await userEvent.selectOptions(screen.getByRole("combobox", { name: /Margin/ }), "pinned");
-  for (const restore of restores.splice(0)) restore();
-
-  margin();
-  expect(screen.getByRole("combobox", { name: /Margin/ })).toHaveValue("pinned");
-  expect(screen.getByText("A priority carries nothing a reader can pin yet.")).toBeDefined();
+  expect(within(aside).getAllByRole("listitem")).toHaveLength(HISTORY.length);
 });

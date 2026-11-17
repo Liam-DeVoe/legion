@@ -6,23 +6,12 @@ import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import {
   borderDefault,
   dangerText,
-  surfaceBg,
   textMutedOnCanvas,
   textSecondaryOnCanvas,
 } from "../../theme/classes";
 import { dateKey, dayLabel } from "../activity/activity-model";
 import { AgentName } from "../refs/AgentName";
 import { Timestamp } from "../refs/Timestamp";
-import { MARGIN_STATES, type MarginState, useMarginState } from "./priority-margin-state";
-
-/** Why each state but Everything is empty on a priority. A priority is a node of the graph and
- *  not a Dispatch document: nothing hangs off it that a person can write on, ask about or pin,
- *  so these are facts about what a priority is, not a list that failed to load. */
-const NOTHING_OF_THAT_KIND: Record<Exclude<MarginState, "everything">, string> = {
-  words: "A priority carries no comments yet, so nobody has written anything here.",
-  questions: "A priority carries no asks yet, so no question has been asked about this one.",
-  pinned: "A priority carries nothing a reader can pin yet.",
-};
 
 /** One act of the history in the words a person reads, with no field name and no value a
  *  reader cannot use: a write names what it wrote, a description names itself rather than
@@ -54,8 +43,7 @@ function actWords(act: PriorityAct): string {
 /** Everything that happened to the priority, newest first, as the server answers it
  *  (`GET /api/v1/priorities/{id}/history`): each write of its title, description, owner and
  *  order, and each `advances` relation an issue asserted or retracted on it, each naming who
- *  stated it and when, under the day it happened on. It is mounted only while Everything is the
- *  chosen state, so no other state reads the history. */
+ *  stated it and when, under the day it happened on. */
 function PriorityHistory({ id }: { id: string }): ReactNode {
   const history = useQuery(priorityHistoryQuery(id));
   if (history.isPending) return <LoadingSkeleton label="Loading what happened" />;
@@ -98,41 +86,20 @@ function PriorityHistory({ id }: { id: string }): ReactNode {
 }
 
 /**
- * The margin of a priority: one list of what happened to it, beside the page, newest first,
- * under the one labelled control that holds its four states. The page carries no tab strip and
- * this carries no tabs of its own, because a tab and a state are the same object.
- *
- * Everything is the priority's own history, every act of it the server holds. The other three
- * each say in one line why nothing of that kind is on a priority, which is what a priority is
- * and not a list that failed to load.
+ * The margin of a priority: the list of what happened to it, beside the page, newest first,
+ * each act naming who made it and when. That history is the whole margin, with no control and
+ * no view of its own: a priority carries no comments, questions or pins until
+ * dispatch://INFRA-1098 makes its description a document, so a choice of what the margin
+ * shows would only offer views that are always empty.
  */
 export function PriorityMargin({ id }: { id: string }): ReactNode {
-  const [state, setState] = useMarginState();
   return (
     <aside
       aria-label="Margin"
       className={`w-full shrink-0 space-y-3 border-t pt-4 lg:w-80 lg:border-t-0 lg:border-l lg:pt-0 lg:pl-4 ${borderDefault}`}
       data-testid="priority-margin"
     >
-      <label className={`flex items-center gap-2 text-sm ${textSecondaryOnCanvas}`}>
-        Margin
-        <select
-          className={`rounded-lg border px-2 py-1 ${borderDefault} ${surfaceBg}`}
-          onChange={(event) => setState(event.target.value as MarginState)}
-          value={state}
-        >
-          {MARGIN_STATES.map((option) => (
-            <option key={option.id} value={option.id}>
-              {option.label}
-            </option>
-          ))}
-        </select>
-      </label>
-      {state === "everything" ? (
-        <PriorityHistory id={id} />
-      ) : (
-        <p className={`text-sm ${textMutedOnCanvas}`}>{NOTHING_OF_THAT_KIND[state]}</p>
-      )}
+      <PriorityHistory id={id} />
     </aside>
   );
 }

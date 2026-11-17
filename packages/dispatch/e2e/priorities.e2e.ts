@@ -71,16 +71,6 @@ const PARKED_RULE =
   "Work that advances a priority and stands in the backlog or the icebox, with the time it was " +
   "moved there and whoever moved it. No reason is recorded for a move yet.";
 
-/** What the margin says of each state but Everything (`PriorityMargin.tsx`). */
-const MARGIN_SENTENCES: readonly (readonly [string, string])[] = [
-  [
-    "Words anyone wrote",
-    "A priority carries no comments yet, so nobody has written anything here.",
-  ],
-  ["Questions", "A priority carries no asks yet, so no question has been asked about this one."],
-  ["Pinned", "A priority carries nothing a reader can pin yet."],
-];
-
 /** The corpus every row seeds: three priorities in one order, work under each in three
  *  projects, an issue in each of the four in-flight statuses that advances none, and an issue
  *  that advances one through its parent and stands in the backlog. */
@@ -691,8 +681,8 @@ test("a priority's own page writes its title and description and lists only its 
     await expect(page.getByRole("link", { name: "‹ Priorities" })).toBeVisible();
     await expect(page.getByRole("textbox", { name: "Title" })).toHaveValue(seed.titles[0]);
     await expect(page.getByRole("combobox", { name: "Owner" })).toHaveValue("alice");
-    // One page and no tab strip: a tab and a margin state are the same object, and the margin
-    // holds the states (dispatch://INFRA-1196).
+    // One page and no tab strip: everything of the priority is on this page, and what happened
+    // to it is in the margin beside it.
     await expect(page.getByRole("tablist")).toHaveCount(0);
     await expect(page.getByRole("tab")).toHaveCount(0);
 
@@ -808,8 +798,8 @@ test("an issue's header names the priorities it advances and links to each", asy
   }
 });
 
-// SLOW(>=2s): the seed, two writes, and the margin read in each of its four states.
-test("the margin lists a priority's history newest first and keeps the state a reader chose", async ({
+// SLOW(>=2s): the seed, two writes, and the margin read for its history and for what it lacks.
+test("a priority's margin is its history alone, newest first, each act with who made it and when", async ({
   browser,
 }) => {
   const seed = await seedPriorities();
@@ -824,44 +814,45 @@ test("the margin lists a priority's history newest first and keeps the state a r
     await priorityPage(page);
     await page.goto(`/priorities/${seed.ids[0]}`);
     const margin = page.getByRole("complementary", { name: "Margin" });
-    const state = margin.getByRole("combobox", { name: /Margin/ });
-    await expect(state).toHaveValue("everything");
+    const entries = margin.getByRole("listitem");
+    // The history has answered once its newest act is drawn, so what the margin lacks below is
+    // read off a margin that is all there rather than off its skeleton.
+    await expect(entries.first()).toContainText(retitled);
 
-    // The acts the server holds are in the order they were recorded, newest first, and that is
-    // the order the list draws them in: the rename above the owner write, and both above the
-    // making. The order is the record's own, not the wall clock's: each write stamps its own
-    // moment and the rows are kept in the order they reached the table, so two writes a
-    // millisecond apart can carry their moments the other way round, which a comparison of
-    // timestamps would read as a failure of an order that is right.
+    // The page carries no tab strip.
+    await expect(page.getByRole("tablist")).toHaveCount(0);
+    await expect(page.getByRole("tab")).toHaveCount(0);
+
+    // The margin carries no control of states and no view that can only be empty: a priority
+    // carries no comments, questions or pins until dispatch://INFRA-1098 makes its description
+    // a document (dispatch://INFRA-2947/ask/e31ca6f8-216b-4729-933a-333c949a2a59).
+    await expect(margin.getByRole("combobox")).toHaveCount(0);
+    await expect(margin.getByRole("listbox")).toHaveCount(0);
+    await expect(margin.locator("select")).toHaveCount(0);
+    for (const word of ["Words anyone wrote", "Questions", "Pinned"]) {
+      await expect(margin).not.toContainText(word);
+    }
+
+    // The margin lists the priority's own acts in the order the server holds them, newest
+    // first: the rename, then the owner write, then everything before them. The order is the
+    // record's own, not the wall clock's: each write stamps its own moment and the rows are kept
+    // in the order they reached the table, so two writes a millisecond apart can carry their
+    // moments the other way round, which a comparison of timestamps would read as a failure of
+    // an order that is right. So each entry is read against the act the server holds at its
+    // place: who made it, and the moment it carries.
     const acts = await getPriorityHistory(seed.ids[0]);
     expect(acts[0]?.field).toBe("title");
     expect(acts[0]?.value).toBe(retitled);
     expect(acts[1]?.field).toBe("owner");
     expect(acts[1]?.value).toBe("bob");
-    const entries = await margin.getByRole("listitem").allInnerTexts();
-    expect(entries.length).toBe(acts.length);
-    const renamedAt = entries.findIndex((entry) => entry.includes(retitled));
-    const ownedAt = entries.findIndex((entry) => entry.includes("bob"));
-    expect(renamedAt).toBe(0);
-    expect(ownedAt).toBeGreaterThan(renamedAt);
-    expect(entries[0]).toContain("alice");
-
-    // The other three states are what a priority carries none of, each said in one sentence
-    // rather than drawn as an empty list.
-    for (const [label, sentence] of MARGIN_SENTENCES) {
-      await state.selectOption({ label });
-      await expect(margin.getByText(sentence)).toBeVisible();
-      await expect(margin.getByRole("listitem")).toHaveCount(0);
+    await expect(entries).toHaveCount(acts.length);
+    for (const [place, act] of acts.entries()) {
+      const entry = entries.nth(place);
+      await expect(entry).toContainText(act.actor.id);
+      await expect(entry.locator("time")).toHaveAttribute("datetime", act.at);
     }
-
-    // The state a reader chose is the one they come back to.
-    await state.selectOption({ label: "Pinned" });
-    await page.goto(PRIORITIES_PATH);
-    await expect(page.getByRole("heading", { level: 1, name: "Priorities" })).toBeVisible();
-    await page.goto(`/priorities/${seed.ids[0]}`);
-    await expect(
-      page.getByRole("complementary", { name: "Margin" }).getByRole("combobox")
-    ).toHaveValue("pinned");
+    await expect(entries.nth(0)).toContainText(`wrote the title “${retitled}”`);
+    await expect(entries.nth(1)).toContainText("wrote the owner “bob”");
   } finally {
     await context.close();
   }

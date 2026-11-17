@@ -120,7 +120,7 @@ function page(id = "rocq-lean", issues: IssueSummary[] = [], writer = true) {
     : ({ event_head: "0", kind: "token", login: "ci" } as never);
   const viewer = spyOn(api, "whoAmI").mockResolvedValue(whoami);
   const patch = spyOn(api, "patchPriority").mockImplementation(async (key) => saved(key));
-  // The margin reads the priority's own history as soon as it opens on Everything.
+  // The margin reads the priority's own history as soon as the page opens.
   const history = spyOn(api, "getPriorityHistory").mockResolvedValue([]);
   const descriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
   Object.defineProperty(HTMLElement.prototype, "clientHeight", {
@@ -303,10 +303,10 @@ test("the work under the priority is the issues table, scoped and under its own 
   expect(listing).toHaveBeenCalledWith({ advances: ["rocq-lean"], open: true });
 });
 
-test("the margin stands beside the page, with no tabs of its own", async () => {
+test("the margin stands beside the page, with no tabs and no control of its own", async () => {
   page();
   const margin = await screen.findByRole("complementary", { name: "Margin" });
-  expect(within(margin).getByRole("combobox", { name: /Margin/ })).toBeDefined();
+  expect(within(margin).queryAllByRole("combobox")).toEqual([]);
   expect(within(margin).queryAllByRole("tab")).toEqual([]);
 });
 
