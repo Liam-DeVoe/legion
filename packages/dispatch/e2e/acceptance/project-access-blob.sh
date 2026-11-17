@@ -360,18 +360,32 @@ event_log_reaches() {
   [ "$status" = 200 ] && jq -e --argjson id "$2" 'any(.[]; .id >= $id)' "$work/body" >/dev/null
 }
 
+# spec_blocks_windowed BUILD PROJECT: every block of PROJECT's spec on BUILD, as carol reads it, is
+# in a window of the meaning index: its embedding reads other than "none", which is a block no
+# window covers yet (refs.BlockEmbeddingStates). With no embedder, "pending" is where it stays.
+spec_blocks_windowed() {
+  send "$1" carol GET "$(resolve "$1" "/api/v1/artifacts/{$2 spec}/blocks")"
+  [ "$status" = 200 ] && jq -e 'length > 0 and all(.[]; .embedding != "none")' "$work/body" >/dev/null
+}
+
 begin reads
 # A build pages its event log only up to its safe horizon (listEventLog, sinceHorizon), and a
 # build can answer a read before that horizon has passed what the seed wrote: one run read [] from
 # the merge base's log where this build listed the seed's events. So each build is read only once
 # its log, as carol reads it, holds the newest event its database holds after the projects above,
-# the project.created of a public project.
+# the project.created of a public project. Likewise the windows of each spec's blocks are written
+# behind the write, in each build's own time: two runs in five read `"embedding":"pending"` at the
+# merge base where this build still read `"none"`. So each spec is read only once every one of its
+# blocks is in a window on that build. A build that never writes them fails the wait, naming it.
 for build in base head; do
   url_var=${build}_database_url
   newest=$(psql "${!url_var}" -X -tAc 'select coalesce(max(id), 0) from events') ||
     fail "$build: could not read the newest event of its database"
   [ "$newest" -gt 0 ] || fail "$build: its database holds no event after the seed"
   until_true 120 "the $build build's event log to reach its newest event, $newest" event_log_reaches "$build" "$newest"
+  for project in PUB PRIV; do
+    until_true 120 "the $build build to window every block of $project-1's spec" spec_blocks_windowed "$build" "$project"
+  done
 done
 for caller in "${callers[@]}"; do
   for path in "${reads[@]}"; do
