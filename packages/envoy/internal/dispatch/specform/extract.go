@@ -41,19 +41,22 @@ type extraction struct {
 	texts      map[[2]string]int
 	kept       map[[3]string]bool
 	termsLevel int
-	// footnotes is each footnote definition of the document by the key that a reference finds it
-	// by (pmdoc.FootnoteLabelKey), the first one where two share a key, as the parser resolves a
-	// reference; notes is the reading of each one that a text refers to, made once.
-	footnotes map[string]*pmdoc.Node
-	notes     map[string]reading
+	// footnotes is each footnote definition of the document, read once (readFootnotes), by the key
+	// that a reference finds it by (pmdoc.FootnoteLabelKey), the first one where two share a key, as
+	// the parser resolves a reference.
+	footnotes map[string]*Footnote
 }
 
-// add keeps a text once for each body and what it holds: the same node, kind, body and held
-// again is the same text, and the same node and kind with another body or held is another text,
-// named "<node> (2)", "<node> (3)".
-func (e *extraction) add(node string, kind Kind, body string, held Held) {
+// add keeps a text once for each body, what it holds and the footnotes it refers to: the same
+// node, kind, body, held and footnotes again is the same text, and the same node and kind with
+// another of them is another text, named "<node> (2)", "<node> (3)".
+func (e *extraction) add(node string, kind Kind, body string, held Held, notes []*Footnote) {
 	key := [2]string{node, string(kind)}
-	text := [3]string{node, string(kind), fmt.Sprintf("%q %q", body, held)}
+	labels := make([]string, len(notes))
+	for index, note := range notes {
+		labels[index] = note.Label
+	}
+	text := [3]string{node, string(kind), fmt.Sprintf("%q %q %q", body, held, labels)}
 	if e.kept[text] {
 		return
 	}
@@ -62,7 +65,7 @@ func (e *extraction) add(node string, kind Kind, body string, held Held) {
 	if n := e.texts[key]; n > 1 {
 		node = fmt.Sprintf("%s (%d)", node, n)
 	}
-	e.out.Texts = append(e.out.Texts, Text{Node: node, Kind: kind, Body: body, Where: e.where, Held: held})
+	e.out.Texts = append(e.out.Texts, Text{Node: node, Kind: kind, Body: body, Where: e.where, Held: held, Notes: notes})
 	e.out.Counts[kind]++
 }
 
@@ -97,9 +100,10 @@ func (e *UnreadableError) Finding() Finding {
 // its words, an image its alternative text, a character reference its character and a hard break
 // a space. Its Body keeps code in code font, for the rules of a sentence and ste-lint, and its
 // Held.Shown is the same words exactly as the page shows them, for the reference rules. Each
-// address and title of its links and images is held beside the words (Held), and the footnote that
-// it refers to is part of it. The run and the negative_control of a check are attributes, which a
-// text holds as they are written.
+// address and title of its links and images is held beside the words (Held), and each footnote
+// that it refers to is part of it (Text.Notes): ExtractDocument reads each footnote once, and Check
+// judges it once. The run and the negative_control of a check are attributes, which a text holds
+// as they are written.
 //
 // The texts are each requirement block (a statement, of its paragraphs), each entry line of the
 // how-to (a statement, of its bold text), each check block (a claim of its paragraphs, a procedure
@@ -126,23 +130,63 @@ func ExtractDocument(document string, version int, markdown string) (Extracted, 
 		out:       Extracted{Counts: map[Kind]int{}},
 		texts:     map[[2]string]int{},
 		kept:      map[[3]string]bool{},
-		footnotes: map[string]*pmdoc.Node{},
-		notes:     map[string]reading{},
+		footnotes: map[string]*Footnote{},
 	}
 	for _, kind := range kinds {
 		e.out.Counts[kind] = 0
 	}
+	e.readFootnotes(tree)
+	e.blocks(tree.Children, "")
+	return e.out, nil
+}
+
+// readFootnotes reads each footnote definition of tree once: its words, the words of each
+// paragraph and heading in it, one to a line, what they hold, and each footnote that they refer to.
+// A footnote that a footnote refers to is read here too, so every text that refers to one shares
+// it, whatever their count.
+func (e *extraction) readFootnotes(tree *pmdoc.Node) {
+	definitions := map[*Footnote]*pmdoc.Node{}
+	var order []*Footnote
 	pmdoc.Walk(tree, func(node *pmdoc.Node) bool {
 		if node.Type == "footnote_definition" {
 			label, _ := node.Attrs["label"].(string)
 			if key := pmdoc.FootnoteLabelKey(label); e.footnotes[key] == nil {
-				e.footnotes[key] = node
+				note := &Footnote{Label: label}
+				e.footnotes[key], definitions[note] = note, node
+				order = append(order, note)
 			}
 		}
 		return true
 	})
-	e.blocks(tree.Children, "")
-	return e.out, nil
+	for _, note := range order {
+		var parts []reading
+		pmdoc.Walk(definitions[note], func(node *pmdoc.Node) bool {
+			if node.Type == "paragraph" || node.Type == "heading" {
+				parts = append(parts, e.read(node.Children))
+				return false
+			}
+			return node.Type != "code_block"
+		})
+		read := joined("\n", parts)
+		note.Body, note.Held = read.words, read.held.unique()
+		note.Held.Shown = read.shown
+		note.Notes = e.notesOf(read.notes)
+	}
+	holdsWords(order)
+}
+
+// notesOf is the footnote of each key, once and in the order of keys, less a key that no
+// footnote of the document defines.
+func (e *extraction) notesOf(keys []string) []*Footnote {
+	var notes []*Footnote
+	seen := make(map[*Footnote]bool, len(keys))
+	for _, key := range keys {
+		if note := e.footnotes[key]; note != nil && !seen[note] {
+			seen[note] = true
+			notes = append(notes, note)
+		}
+	}
+	return notes
 }
 
 // blocks reads each block of one container in document order. container is the container's node
@@ -153,17 +197,17 @@ func (e *extraction) blocks(nodes []*pmdoc.Node, container string) {
 		case "heading":
 			e.heading(node, nodes[index+1:])
 		case "requirement":
-			body, held := e.text(e.paragraphs(node)...)
-			e.add(blockID(node), KindStatement, body, held)
+			body, held, notes := e.text(e.paragraphs(node)...)
+			e.add(blockID(node), KindStatement, body, held, notes)
 		case "check":
 			id := blockID(node)
-			body, held := e.text(e.paragraphs(node)...)
-			e.add(id, KindClaim, body, held)
+			body, held, notes := e.text(e.paragraphs(node)...)
+			e.add(id, KindClaim, body, held, notes)
 			if run, _ := node.Attrs["run"].(string); run != "" {
-				e.add(id, KindProcedure, run, Held{})
+				e.add(id, KindProcedure, run, Held{}, nil)
 			}
 			if example, _ := node.Attrs["negative_control"].(string); example != "" {
-				e.add(id, KindFailingExample, example, Held{})
+				e.add(id, KindFailingExample, example, Held{}, nil)
 			}
 		case "paragraph":
 			e.paragraph(node)
@@ -210,12 +254,12 @@ func (e *extraction) heading(node *pmdoc.Node, after []*pmdoc.Node) {
 		return
 	}
 	heading = heading.part(0, len(heading.words)-len(component[1]))
-	name, held := e.text(heading)
-	e.add(component[2], KindName, name, held)
+	name, held, notes := e.text(heading)
+	e.add(component[2], KindName, name, held, notes)
 	if len(after) > 0 && after[0].Type == "paragraph" {
 		if purpose := e.read(after[0].Children); purpose.words != "" {
-			body, held := e.text(purpose)
-			e.add(component[2], KindPurpose, body, held)
+			body, held, notes := e.text(purpose)
+			e.add(component[2], KindPurpose, body, held, notes)
 		}
 	}
 }
@@ -225,8 +269,8 @@ func (e *extraction) paragraph(node *pmdoc.Node) {
 	paragraph := e.read(node.Children)
 	if match := purposeLine.FindStringSubmatch(paragraph.words); match != nil {
 		paragraph = paragraph.part(len(paragraph.words)-len(match[2]), 0)
-		body, held := e.text(paragraph)
-		e.add(match[1], KindPurpose, body, held)
+		body, held, notes := e.text(paragraph)
+		e.add(match[1], KindPurpose, body, held, notes)
 		return
 	}
 	e.line(paragraph.words)
@@ -236,7 +280,7 @@ func (e *extraction) paragraph(node *pmdoc.Node) {
 // named by its body in quotes. Outside a Terms part, or for a block with no text, it keeps nothing.
 func (e *extraction) line(body string) {
 	if e.termsLevel > 0 && body != "" {
-		e.add(fmt.Sprintf("%q", body), KindLine, body, Held{})
+		e.add(fmt.Sprintf("%q", body), KindLine, body, Held{}, nil)
 	}
 }
 
@@ -255,14 +299,15 @@ func (e *extraction) listItem(node *pmdoc.Node, list string) {
 // " · under:" are an entry line, a statement of the bold text. Under a heading Terms, bold text,
 // ": " and a definition in an item of a bullet list are a term line, and any other item is a line.
 // A footnote of a term line is part of its definition before the line is read, so a definition
-// can stand wholly in its footnote.
+// can stand wholly in its footnote: a line whose definition has no words of its own is a term
+// line when a footnote that it refers to holds words (Footnote.words).
 func (e *extraction) itemLine(paragraph *pmdoc.Node, list string) {
 	lead, rest := strongLead(paragraph.Children)
 	strong, after := e.read(lead), e.inline(rest)
 	if strong.words != "" {
 		if match := entryTail.FindStringSubmatch(after.words); match != nil {
-			body, held := e.text(strong)
-			e.add(match[1], KindStatement, body, held)
+			body, held, notes := e.text(strong)
+			e.add(match[1], KindStatement, body, held, notes)
 			return
 		}
 	}
@@ -274,10 +319,11 @@ func (e *extraction) itemLine(paragraph *pmdoc.Node, list string) {
 			tail := after.part(len(after.words)-len(match[1]), 0)
 			tail.words, tail.shown = strings.TrimSpace(tail.words), strings.TrimSpace(tail.shown)
 			tail.notes = append(slices.Clip(strong.notes), after.notes...)
-			if definition, held := e.text(tail); definition != "" {
+			if definition, held, notes := e.text(tail); definition != "" || slices.ContainsFunc(notes, func(note *Footnote) bool { return note.words }) {
 				nameHeld := strong.held.unique()
 				nameHeld.Shown = strong.shown
-				e.out.Terms = append(e.out.Terms, Term{Name: strong.words, Definition: definition, Where: e.where, NameHeld: nameHeld, DefinitionHeld: held})
+				e.out.Terms = append(e.out.Terms, Term{Name: strong.words, Definition: definition, Where: e.where,
+					NameHeld: nameHeld, DefinitionHeld: held, DefinitionNotes: notes})
 				e.out.Counts[KindDefinition]++
 				return
 			}
@@ -321,12 +367,12 @@ func (e *extraction) table(node *pmdoc.Node) {
 		}
 		node := strings.Trim(cells[0].words, "`")
 		if cells[2].words != "" {
-			name, held := e.text(cells[2])
-			e.add(node, KindName, name, held)
+			name, held, notes := e.text(cells[2])
+			e.add(node, KindName, name, held, notes)
 		}
 		if cells[3].words != "" {
-			purpose, held := e.text(cells[3])
-			e.add(node, KindPurpose, purpose, held)
+			purpose, held, notes := e.text(cells[3])
+			e.add(node, KindPurpose, purpose, held, notes)
 		}
 	}
 }
@@ -406,53 +452,14 @@ func joined(sep string, readings []reading) reading {
 	return out
 }
 
-// text is the body of a text of readings, the words of each on a line, then the words of each
-// footnote that they refer to, once and in the order of the first reference, also a footnote
-// that a footnote refers to, and everything they hold, each address and title once, with the same
-// lines as the page shows them (Held.Shown).
-func (e *extraction) text(readings ...reading) (string, Held) {
+// text is the body of a text of readings, the words of each on a line, everything they hold, each
+// address and title once, with the same lines as the page shows them (Held.Shown), and each
+// footnote that they refer to, once and in the order of the first reference.
+func (e *extraction) text(readings ...reading) (string, Held, []*Footnote) {
 	out := joined("\n", readings)
-	var lines, shown []string
-	if out.words != "" {
-		lines, shown = append(lines, out.words), append(shown, out.shown)
-	}
-	seen := map[string]bool{}
-	// The list grows while it is read: a footnote can refer to another one.
-	for index := 0; index < len(out.notes); index++ {
-		key := out.notes[index]
-		if seen[key] {
-			continue
-		}
-		seen[key] = true
-		note := e.note(key)
-		if note.words != "" {
-			lines, shown = append(lines, note.words), append(shown, note.shown)
-		}
-		out.notes = append(out.notes, note.notes...)
-		out.held = out.held.with(note.held)
-	}
-	out.held.Shown = strings.Join(shown, "\n")
-	return strings.Join(lines, "\n"), out.held.unique()
-}
-
-// note is the reading of the footnote whose key is key: the words of each paragraph and heading
-// in it, one to a line, read once.
-func (e *extraction) note(key string) reading {
-	if note, read := e.notes[key]; read {
-		return note
-	}
-	var parts []reading
-	if definition := e.footnotes[key]; definition != nil {
-		pmdoc.Walk(definition, func(node *pmdoc.Node) bool {
-			if node.Type == "paragraph" || node.Type == "heading" {
-				parts = append(parts, e.read(node.Children))
-				return false
-			}
-			return node.Type != "code_block"
-		})
-	}
-	e.notes[key] = joined("\n", parts)
-	return e.notes[key]
+	held := out.held.unique()
+	held.Shown = out.shown
+	return out.words, held, e.notesOf(out.notes)
 }
 
 // read is inline content as a person reads it (inline), without the white space at the ends of
@@ -468,7 +475,7 @@ func (e *extraction) read(nodes []*pmdoc.Node) reading {
 // without its address, an image's alternative text, a hard break as a space (a soft one is a
 // space in the tree), and code in code font, as ste-lint reads code. Its shown words are the same
 // with code as its characters alone, as the page shows them. A footnote reference is no word: the
-// footnote is part of the text (note). It holds the address and the title of each link and image
+// footnote is part of the text (Text.Notes). It holds the address and the title of each link and image
 // (linkHeld). These are the three readings of a text that the reference rules judge (breaks):
 // the shown words, each title as words, and each address as an address.
 func (e *extraction) inline(nodes []*pmdoc.Node) reading {
@@ -510,10 +517,11 @@ func (e *extraction) inline(nodes []*pmdoc.Node) reading {
 // linkHeld is held with the address and the title of the link that starts at nodes[index]: the
 // link of that node, which the node before it does not carry. A link is the nodes in a row that
 // carry it. Its address is judged as an address, whatever stands beside the link, but for one
-// form: a link whose address is "mailto:" and its own shown words is the form in which Dispatch
-// stores an email address that the words hold, such as the host of git@github.com:owner/repo.git,
-// so it is judged one time, in the shown words, where its neighbours are, and holds its title
-// alone.
+// form: a link whose shown words are one whole email address (email) and whose address is
+// "mailto:" and those words is the form in which Dispatch stores an email address that the words
+// hold, such as the host of git@github.com:owner/repo.git, so it is judged one time, in the shown
+// words, where its neighbours are, and holds its title alone. A mail link whose words are anything
+// else, such as [dispatch://ACME-1](mailto:dispatch://ACME-1), is judged in its address too.
 func linkHeld(held Held, nodes []*pmdoc.Node, index int) Held {
 	href, title, ok := link(nodes[index])
 	if !ok {
@@ -531,10 +539,16 @@ func linkHeld(held Held, nodes []*pmdoc.Node, index int) Held {
 		}
 		words.WriteString(shownWords(node))
 	}
-	if href != "mailto:"+words.String() {
+	if shown := words.String(); href != "mailto:"+shown || !wholeEmail(shown) {
 		held = held.withAddress(href)
 	}
 	return held.withTitle(title)
+}
+
+// wholeEmail reports whether words are one email address and nothing else (email).
+func wholeEmail(words string) bool {
+	found := email.find(words)
+	return len(found) == 1 && found[0].start == 0 && found[0].end == len(words)
 }
 
 // link is the address and the title of the link that node carries, and whether it carries one.

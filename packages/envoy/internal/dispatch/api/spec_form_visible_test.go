@@ -22,7 +22,11 @@ func formRequirement(id, body string) string {
 
 // The red team's and the review's inputs of a link, through the approval request route: the
 // rules of a sentence and of a name judge the words that the person reads, and the reference
-// rules also read each address and title. A footnote of a statement is part of it.
+// rules also read each address and title. A footnote of a statement is part of it, and its
+// findings are given once, to the first text that refers to it and whose kind the rule reads: a
+// statement that holds a broken footnote is refused also when the first text that refers to it is
+// a component's name, which the form rules do not read. A path of the page of a record links to
+// the record, and so does a mail link whose words are no email address.
 func TestTheRequestJudgesTheWordsAndTheAddressesOfALink(t *testing.T) {
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	requireFormRows(t, tree, []formRow{
@@ -43,6 +47,20 @@ func TestTheRequestJudgesTheWordsAndTheAddressesOfALink(t *testing.T) {
 		{name: "a footnote that links to an issue",
 			spec: formRequirement("footnote", "Dispatch stores each record.[^note]") + "\n[^note]: See [the issue](dispatch://ACME-12).\n",
 			want: []string{"statement footnote dispatch-link"}},
+		{name: "a footnote that two statements refer to, which names a person",
+			spec: formRequirement("first", "Dispatch stores each record.[^note]") + "\n" + formRequirement("second", "Dispatch shows each record.[^note]") +
+				"\n[^note]: Ada Lovelace wrote it.\n",
+			want: []string{"statement first person"}},
+		{name: "a broken footnote that a component's name refers to first",
+			spec: "## Records[^note] (component `record`)\n\n" + formRequirement("later", "Dispatch keeps each record.[^note]") +
+				"\n[^note]: Dispatch keeps it; it waits.\n",
+			want: []string{"statement later ste100-semicolon"}},
+		{name: "a path of a document of a project", spec: formRequirement("path", "Dispatch keeps [the terms](/projects/ACME/documents/terms-md)."),
+			want: []string{"statement path dispatch-link"}},
+		{name: "the control: a path of a page that is no record", spec: formRequirement("page", "Dispatch keeps [the guide](/docs/guide)."),
+			reads: specform.KindStatement},
+		{name: "a mail link whose words are a reference", spec: formRequirement("mail", "Dispatch keeps [dispatch://ACME-12](mailto:dispatch://ACME-12)xyz."),
+			want: []string{"statement mail dispatch-link"}},
 		{name: "the control: the address of a link to an issue", spec: formRequirement("issue", "Dispatch keeps [the issue](dispatch://ACME-12)."),
 			want: []string{"statement issue dispatch-link"}},
 	})
@@ -173,6 +191,12 @@ func TestTheRequestReadsEachFormOfANameAsAWholeWord(t *testing.T) {
 			reads: specform.KindStatement},
 		{name: "the control: an email address, then a colon and a word", spec: formRequirement("mail-please", "Dispatch mails ada@example.com: please read each change."),
 			want: []string{"statement mail-please person"}},
+		{name: "an email address in straight quotes, then a colon", spec: formRequirement("mail-quoted", "The field reads \"ada@example.com:\" each day."),
+			want: []string{"statement mail-quoted person"}},
+		{name: "the stated limit: a copy to the remote home folder", spec: formRequirement("scp-home", "Legion runs `scp report.txt deploy@build.example.com:` each day."),
+			want: []string{"statement scp-home person"}},
+		{name: "the way out of the limit: a path after the colon", spec: formRequirement("scp-home-path", "Legion runs `scp report.txt deploy@build.example.com:~/` each day."),
+			reads: specform.KindStatement},
 		{name: "an autolink of a record that a word joins", spec: formRequirement("record-glued", "Dispatch stores each comment, as <dispatch://ACME-1>xyz shows."),
 			want: []string{"statement record-glued dispatch-link"}},
 		{name: "a link of a record whose words are its address, that a word joins", spec: formRequirement("record-words-glued",

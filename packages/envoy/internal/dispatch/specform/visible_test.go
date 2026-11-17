@@ -32,12 +32,12 @@ func requireJudged(t *testing.T, rows []judgedRow) {
 			var bodies []string
 			for _, text := range extracted.Texts {
 				if text.Node == row.node && text.Kind == row.kind {
-					bodies = append(bodies, text.Body)
+					bodies = append(bodies, heldWords(text.Body, text.Notes))
 				}
 			}
 			for _, term := range extracted.Terms {
 				if term.Name == row.node && row.kind == KindDefinition {
-					bodies = append(bodies, term.Definition)
+					bodies = append(bodies, heldWords(term.Definition, term.DefinitionNotes))
 				}
 			}
 			if !slices.Equal(bodies, []string{row.body}) {
@@ -49,6 +49,30 @@ func requireJudged(t *testing.T, rows []judgedRow) {
 			t.Errorf("%s: stored %q gives the findings %q, want %q", row.name, stored, got, row.want)
 		}
 	}
+}
+
+// heldWords is body and the words of each footnote that notes holds, directly or in turn, once
+// and in the order of the first reference, each on a line: the words of a text that a person
+// reads.
+func heldWords(body string, notes []*Footnote) string {
+	var lines []string
+	if body != "" {
+		lines = append(lines, body)
+	}
+	seen := map[*Footnote]bool{}
+	queue := slices.Clone(notes)
+	for index := 0; index < len(queue); index++ {
+		note := queue[index]
+		if seen[note] {
+			continue
+		}
+		seen[note] = true
+		if note.Body != "" {
+			lines = append(lines, note.Body)
+		}
+		queue = append(queue, note.Notes...)
+	}
+	return strings.Join(lines, "\n")
 }
 
 // requirement is a requirement block of id that holds body.
@@ -178,7 +202,127 @@ func TestAnAutolinkIsJudgedOnceInTheWordsOfThePage(t *testing.T) {
 			[]string{"statement pull-before pull-request"}, "", "", ""},
 		{"the stated limit: a mail link after a /, judged in the words", requirement("mail-path", "Dispatch stores each comment, as x/[ada@example.com](mailto:ada@example.com) shows."),
 			nil, "", "", ""},
+		{"a mail link whose words are a reference, a word joined after it", requirement("mail-reference",
+			"Dispatch stores each comment, as [dispatch://ACME-1](mailto:dispatch://ACME-1)xyz shows."), []string{"statement mail-reference dispatch-link"}, "", "", ""},
+		{"a mail link whose words are a key, a word joined after it", requirement("mail-key",
+			"Dispatch stores each comment, as [ACME-1](mailto:ACME-1)xyz shows."), []string{"statement mail-key dispatch-link"}, "", "", ""},
+		{"a mail link whose words are an email address and more", requirement("mail-more",
+			"Legion clones [git@github.com:ACME-1](mailto:git@github.com:ACME-1) for each run."), []string{"statement mail-more dispatch-link"}, "", "", ""},
 	})
+}
+
+// One link gives one finding: where the address of a link and the words of the page name one
+// record of Dispatch by one rule, the text has one finding, the address's. So an autolink of a
+// record beside a closing mark, a dash or a "_" gives one finding, and two links to two records give
+// two. The stated scope: a digit joined after an autolink makes the words name another record,
+// so that text names two records and gives two findings.
+func TestOneLinkGivesOneFinding(t *testing.T) {
+	requireJudged(t, []judgedRow{
+		{"an autolink of a record in curly quotes", requirement("curly", "Dispatch stores each comment, as \u201c<dispatch://ACME-1>\u201d shows."),
+			[]string{"statement curly dispatch-link"}, "", "", ""},
+		{"an autolink of a record, then a dash", requirement("dash", "Dispatch stores each comment, as <dispatch://ACME-1>\u2014 it shows."),
+			[]string{"statement dash dispatch-link"}, "", "", ""},
+		{"an autolink of a record, then a _", requirement("connector", "Dispatch stores each comment, as <dispatch://ACME-1>_ shows."),
+			[]string{"statement connector dispatch-link"}, "", "", ""},
+		{"a link of a record whose words are its key", requirement("key", "Dispatch stores each comment, as [ACME-1](dispatch://ACME-1) shows."),
+			[]string{"statement key dispatch-link"}, "", "", ""},
+		{"two links to two records", requirement("two", "Dispatch stores each comment, as <dispatch://ACME-1> and <dispatch://ACME-2> show."),
+			[]string{"statement two dispatch-link", "statement two dispatch-link"}, "", "", ""},
+		{"the stated scope: a digit after an autolink names another record", requirement("digit", "Dispatch stores each comment, as <dispatch://ACME-1>5 shows."),
+			[]string{"statement digit dispatch-link", "statement digit dispatch-link"}, "", "", ""},
+	})
+}
+
+// A link whose address is a path of a page of a record of Dispatch, on the server that shows the
+// document, links to that record, as the whole address of the page does: an issue, a document of
+// an issue or of a project, an ask and a comment, as the server reads the address of its pages. A
+// path of another page, and an address of another host, link to no record. A context that names
+// no server still reads a path, which names one page on each server.
+func TestARelativeLinkToARecordLinksToTheRecord(t *testing.T) {
+	const id = "0195f3c2-7b1d-7c3e-9a4f-2b6d8e1f0a37"
+	requireJudged(t, []judgedRow{
+		{"a path of a document of a project", requirement("project", "Dispatch keeps [the terms](/projects/ACME/documents/terms-md)."),
+			[]string{"statement project dispatch-link"}, "", "", ""},
+		{"a path of a document of a project on the server's host", requirement("host", "Dispatch keeps [the terms](//dispatch.example.com/projects/ACME/documents/terms-md)."),
+			[]string{"statement host dispatch-link"}, "", "", ""},
+		{"a path of the spec of an issue", requirement("spec", "Dispatch keeps [the spec](/issues/ACME-12/spec)."),
+			[]string{"statement spec dispatch-link"}, "", "", ""},
+		{"a path of an issue", requirement("issue", "Dispatch keeps [the issue](/issues/ACME-12)."),
+			[]string{"statement issue dispatch-link"}, "", "", ""},
+		{"a path of an ask", requirement("ask", "Dispatch keeps [the ask](/issues/ACME-12/asks/"+id+")."),
+			[]string{"statement ask dispatch-link"}, "", "", ""},
+		{"a path of a comment on a document", requirement("comment", "Dispatch keeps [the comment](/projects/ACME/documents/terms-md?comment="+id+")."),
+			[]string{"statement comment dispatch-link"}, "", "", ""},
+		{"the control: a path of a page that is no record", requirement("guide", "Dispatch keeps [the guide](/docs/guide)."),
+			nil, "", "", ""},
+		{"the control: a path of a project", requirement("projects", "Dispatch keeps [the projects](/projects/ACME)."),
+			nil, "", "", ""},
+		{"the control: a path of a document on another host", requirement("other", "Dispatch keeps [the terms](//other.example.com/projects/ACME/documents/terms-md)."),
+			nil, "", "", ""},
+	})
+	text := Text{Node: "planted", Kind: KindStatement, Body: "Dispatch keeps the terms.", Where: where, Held: Held{Addresses: []string{"/projects/ACME/documents/terms-md"}}}
+	want := []Finding{finding(text, "dispatch-link", `it links to a record of Dispatch: "/projects/ACME/documents/terms-md"`)}
+	if got := Check(Context{}, Input{Texts: []Text{text}}); !sameFindings(got, want) {
+		t.Errorf("with no server: Check = %#v, want %#v", got, want)
+	}
+}
+
+// A footnote is part of each text that refers to it, directly or through another footnote, and
+// Check judges it once: each of its findings is given once, to the first text that holds it and
+// whose kind the rule judges, and its words name the footnote and how many other texts refer to
+// it. One footnote that breaks two rules gives two findings, and two footnotes that break one rule
+// give two. The sentences of a footnote count in each statement that holds it.
+func TestAFootnoteIsJudgedOnceAndGivesEachFindingOnce(t *testing.T) {
+	shared := requirement("first", "Dispatch stores each record.[^n]") + "\n" + requirement("second", "Dispatch shows each record.[^n]") +
+		"\n[^n]: Ada Lovelace wrote it.\n"
+	for _, test := range []struct {
+		name, markdown string
+		from           int
+		want           []string
+	}{
+		{"two statements that share a footnote", shared, 0,
+			[]string{`statement first person: in its footnote [^n] (1 other text also refers to it): it names a person: "Ada Lovelace"`}},
+		{"the second of them alone", shared, 1,
+			[]string{`statement second person: in its footnote [^n]: it names a person: "Ada Lovelace"`}},
+		{"one footnote that breaks two rules", requirement("both", "Dispatch stores each record.[^n]") +
+			"\n[^n]: Ada Lovelace performs a validation of each upload.\n", 0,
+			[]string{`statement both ste100-nominalization: in its footnote [^n]: ASD-STE100 does not permit an action frozen into a noun: "performs a validation"`,
+				`statement both person: in its footnote [^n]: it names a person: "Ada Lovelace"`}},
+		{"two footnotes that break one rule", ":::check{#claim}\nDispatch keeps each record.[^a][^b]\n:::\n\n[^a]: Dispatch keeps it; it waits.\n\n[^b]: Dispatch shows it; it waits.\n", 0,
+			[]string{`claim claim ste100-semicolon: in its footnote [^a]: ASD-STE100 does not permit a semicolon: ";"`,
+				`claim claim ste100-semicolon: in its footnote [^b]: ASD-STE100 does not permit a semicolon: ";"`}},
+		{"a footnote that a footnote refers to", requirement("chain", "Dispatch stores each record.[^a]") +
+			"\n[^a]: The note[^b].\n\n[^b]: Ada Lovelace wrote it.\n", 0,
+			[]string{`statement chain sentences: it has 3 sentences, and a statement has one or two`,
+				`statement chain person: in the footnote [^b], which its footnote [^a] refers to: it names a person: "Ada Lovelace"`}},
+		{"the first text is a name that the form rules do not judge", "## Records[^n] (component `record`)\n\n" +
+			requirement("later", "Dispatch keeps each record.[^n]") + "\n[^n]: Dispatch keeps it; it waits.\n", 0,
+			[]string{`statement later ste100-semicolon: in its footnote [^n] (1 other text also refers to it): ASD-STE100 does not permit a semicolon: ";"`}},
+		{"the sentences of a shared footnote count in each statement", requirement("a", "Dispatch stores it. Dispatch shows it.[^n]") + "\n" +
+			requirement("b", "Dispatch keeps it. Dispatch reads it.[^n]") + "\n[^n]: The note says so.\n", 0,
+			[]string{"statement a sentences: it has 3 sentences, and a statement has one or two",
+				"statement b sentences: it has 3 sentences, and a statement has one or two"}},
+		{"the sentences of a long chain of footnotes", requirement("long", "Dispatch stores it.[^1]") +
+			"\n[^1]: One.[^2]\n\n[^2]: Two.[^3]\n\n[^3]: Three.[^4]\n\n[^4]: Four.\n", 0,
+			[]string{"statement long sentences: it has at least 4 sentences with those of its footnotes, and a statement has one or two"}},
+		{"two footnotes that refer to each other", requirement("cycle", "Dispatch stores it.[^a]") +
+			"\n[^a]: The note[^b].\n\n[^b]: The other note[^a].\n", 0,
+			[]string{"statement cycle sentences: it has 3 sentences, and a statement has one or two"}},
+		{"the control: two statements that share a clean footnote", requirement("c1", "Dispatch stores it.[^n]") + "\n" +
+			requirement("c2", "Dispatch shows it.[^n]") + "\n[^n]: The note says so.\n", 0, nil},
+	} {
+		extracted, err := ExtractDocument("spec.md", 1, storedMarkdown(t, test.markdown))
+		if err != nil {
+			t.Fatalf("%s: %v", test.name, err)
+		}
+		var got []string
+		for _, finding := range Check(planted("ada.lovelace@example.com"), Input{Texts: extracted.Texts[test.from:], Proposed: extracted.Terms}) {
+			got = append(got, fmt.Sprintf("%s %s %s: %s", finding.Kind, finding.Node, finding.Rule, finding.Detail))
+		}
+		if !slices.Equal(got, test.want) {
+			t.Errorf("%s: the findings\n%q\nwant\n%q", test.name, got, test.want)
+		}
+	}
 }
 
 // The red team's two inputs of a part of Terms and a container, with their controls: a heading in

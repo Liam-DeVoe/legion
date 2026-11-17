@@ -4,6 +4,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -149,7 +150,11 @@ func TestEachReferenceFormIsAWholeWord(t *testing.T) {
 		{"an rsync address before a path from a variable", "deploy@build.example.com:$HOME/app/", nil},
 		{"an scp address before a pattern", "deploy@build.example.com:*.log", nil},
 		{"an rsync address before a module", "ops@backup.example.com::backups", nil},
-		{"the cost of the rule: a quote after the colon", `ada@example.com:"`, nil},
+		{"an email address, then a colon and a straight quote at the end", `ada@example.com:"`, []string{"person ada@example.com"}},
+		{"an email address in straight double quotes, then a colon", `The field reads "ada@example.com:" each day.`, []string{"person ada@example.com"}},
+		{"an email address in straight single quotes, then a colon", "The field reads 'ada@example.com:' each day.", []string{"person ada@example.com"}},
+		{"an email address in straight quotes, then a colon and a comma", `"ada@example.com:", she says`, []string{"person ada@example.com"}},
+		{"an scp address before a path in quotes, in words", `Legion copies it to deploy@build.example.com:"/srv/my reports/" each day.`, nil},
 		{"the control: an email address after mailto:", "mailto:ada@example.com", []string{"person ada@example.com"}},
 		{"a handle", "@josé", []string{"person @josé"}},
 		{"a handle", "é@legion", nil},
@@ -239,10 +244,65 @@ func TestNoFormHoldsAnotherNotionOfAWord(t *testing.T) {
 	}
 }
 
-// Every regular expression of the package is built through the guard: no call of a compile
-// function of package regexp stands outside wordRegexp in a file of the package that is no test,
-// so no form of a name can hold a notion of a word that the guard did not read. The test sees the
-// one call inside wordRegexp, so it reads the files it names.
+// patternFunctions is each function of package regexp that takes a pattern. QuoteMeta takes text
+// and makes none, so it is not one.
+var patternFunctions = []string{"Compile", "CompilePOSIX", "MustCompile", "MustCompilePOSIX", "Match", "MatchReader", "MatchString"}
+
+// patternsOutsideTheGuard reads source, the file path of the package, and counts the calls of a
+// function of package regexp that takes a pattern (patternFunctions) inside wordRegexp, and names
+// each one outside it. A dot import of regexp is named too, since a call through it names no
+// package, and so is each other name that the file gives the package.
+func patternsOutsideTheGuard(t *testing.T, path, source string) (inside int, outside []string) {
+	t.Helper()
+	file, err := parser.ParseFile(token.NewFileSet(), path, source, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := ""
+	for _, spec := range file.Imports {
+		if spec.Path.Value != `"regexp"` {
+			continue
+		}
+		name = "regexp"
+		if spec.Name != nil {
+			name = spec.Name.Name
+		}
+		if name == "." {
+			return 0, []string{path + `: import . "regexp"`}
+		}
+	}
+	if name == "" {
+		return 0, nil
+	}
+	for _, declaration := range file.Decls {
+		function, ok := declaration.(*ast.FuncDecl)
+		guard := ok && function.Recv == nil && function.Name.Name == "wordRegexp"
+		ast.Inspect(declaration, func(node ast.Node) bool {
+			selector, ok := node.(*ast.SelectorExpr)
+			if !ok {
+				return true
+			}
+			if pkg, ok := selector.X.(*ast.Ident); !ok || pkg.Name != name || !slices.Contains(patternFunctions, selector.Sel.Name) {
+				return true
+			}
+			if guard {
+				inside++
+			} else {
+				outside = append(outside, path+": "+name+"."+selector.Sel.Name)
+			}
+			return true
+		})
+	}
+	return inside, outside
+}
+
+// Every regular expression of the package is built through the guard: no call of a function of
+// package regexp that takes a pattern stands outside wordRegexp in a file of the package that is no
+// test, and no file imports regexp into its own names, so no form of a name can hold a notion of a
+// word that the guard did not read. The test sees the one call inside wordRegexp, so it reads the
+// files it names, and it names each planted file of its controls: a call of MustCompile, of Compile
+// through another name of the package, of MatchString and of Match, and a dot import. The control
+// in the other direction: a call of QuoteMeta, which takes no pattern, is no finding.
 func TestEveryPatternOfTheRulesIsBuiltThroughTheGuard(t *testing.T) {
 	files, err := filepath.Glob("*.go")
 	if err != nil {
@@ -253,51 +313,34 @@ func TestEveryPatternOfTheRulesIsBuiltThroughTheGuard(t *testing.T) {
 		if strings.HasSuffix(path, "_test.go") {
 			continue
 		}
-		file, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
+		source, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatal(err)
 		}
 		read++
-		name := ""
-		for _, spec := range file.Imports {
-			if spec.Path.Value == `"regexp"` {
-				name = "regexp"
-				if spec.Name != nil {
-					name = spec.Name.Name
-				}
-			}
-		}
-		if name == "" {
-			continue
-		}
-		for _, declaration := range file.Decls {
-			guard := false
-			if function, ok := declaration.(*ast.FuncDecl); ok && function.Recv == nil && function.Name.Name == "wordRegexp" {
-				guard = true
-			}
-			ast.Inspect(declaration, func(node ast.Node) bool {
-				selector, ok := node.(*ast.SelectorExpr)
-				if !ok {
-					return true
-				}
-				if pkg, ok := selector.X.(*ast.Ident); !ok || pkg.Name != name ||
-					!strings.HasPrefix(selector.Sel.Name, "Compile") && !strings.HasPrefix(selector.Sel.Name, "MustCompile") {
-					return true
-				}
-				if guard {
-					inside++
-				} else {
-					outside = append(outside, path+": "+name+"."+selector.Sel.Name)
-				}
-				return true
-			})
-		}
+		in, out := patternsOutsideTheGuard(t, path, string(source))
+		inside, outside = inside+in, append(outside, out...)
 	}
 	if read < 2 || inside == 0 {
-		t.Fatalf("the test read %d files of the package and saw %d compile calls in wordRegexp, so it reads nothing", read, inside)
+		t.Fatalf("the test read %d files of the package and saw %d calls in wordRegexp, so it reads nothing", read, inside)
 	}
 	if len(outside) > 0 {
-		t.Errorf("the package compiles %q outside wordRegexp; build each pattern through wordRegexp", outside)
+		t.Errorf("the package builds %q outside wordRegexp; build each pattern through wordRegexp", outside)
+	}
+	const head = "package specform\n\n"
+	for _, plant := range []struct{ name, source string }{
+		{"a call of MustCompile", head + "import \"regexp\"\n\nvar x = regexp.MustCompile(`\\bx`)\n"},
+		{"a call of Compile through another name", head + "import re \"regexp\"\n\nvar x, _ = re.Compile(`\\bx`)\n"},
+		{"a call of MatchString", head + "import \"regexp\"\n\nvar x, _ = regexp.MatchString(`\\bx`, \"x\")\n"},
+		{"a call of Match", head + "import \"regexp\"\n\nvar x, _ = regexp.Match(`\\bx`, nil)\n"},
+		{"a dot import", head + "import . \"regexp\"\n\nvar x = MustCompile(`\\bx`)\n"},
+	} {
+		if _, out := patternsOutsideTheGuard(t, "plant.go", plant.source); len(out) != 1 {
+			t.Errorf("the control %s: the guard names %q, want the one planted call", plant.name, out)
+		}
+	}
+	if _, out := patternsOutsideTheGuard(t, "plant.go", head+"import \"regexp\"\n\nvar x = regexp.QuoteMeta(\"x.y\")\n"); len(out) != 0 {
+		t.Errorf("the control a call of QuoteMeta: the guard names %q, want nothing", out)
 	}
 }
 

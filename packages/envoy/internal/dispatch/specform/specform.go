@@ -33,15 +33,35 @@ var kinds = []Kind{KindStatement, KindClaim, KindProcedure, KindFailingExample, 
 // Rule is the stable id of a rule of the form, such as "sentences" or "ste100-semicolon".
 type Rule string
 
-// Text is one text of The Spec: the words that a person reads, with code in code font (Body), and
-// what its node holds beside them (Held). The rules of a sentence and the port of ste-lint read the
-// Body, since ste-lint reads code font. Where is "<file>:<line>" or "<document> version <n>".
+// Text is one text of The Spec: the words that a person reads, with code in code font (Body), what
+// its node holds beside them (Held), and each footnote that it refers to (Notes). The rules of a
+// sentence and the port of ste-lint read the Body, since ste-lint reads code font. Where is
+// "<file>:<line>" or "<document> version <n>".
 type Text struct {
 	Node  string
 	Kind  Kind
 	Body  string
 	Where string
 	Held  Held
+	// Notes is each footnote that the text refers to, once and in the order of the first
+	// reference. Each one, and each footnote that it refers to in turn, is part of the text.
+	Notes []*Footnote
+}
+
+// Footnote is one footnote of a document, which ExtractDocument reads once for each document: its
+// label as the markdown writes it, its words, with code in code font (Body), what they hold beside
+// them (Held), and each footnote that it refers to (Notes), once and in the order of the first
+// reference. A footnote is part of each text that refers to it, directly or through another
+// footnote: Check judges it once, gives its findings once, and counts its sentences in each
+// statement that holds it.
+type Footnote struct {
+	Label string
+	Body  string
+	Held  Held
+	Notes []*Footnote
+	// words is whether the footnote, or a footnote that it refers to, directly or in turn, holds
+	// words, so that a definition can stand wholly in its footnotes (holdsWords).
+	words bool
 }
 
 // Held is what the reference rules read of a text: the words exactly as the page shows them, with
@@ -95,11 +115,13 @@ func firstOfEach(values []string) []string {
 	return kept
 }
 
-// Term is a term and its definition, with what each holds beside its words. Where of a listed
-// term is "<document> version <n> of <issue key>" or "<file>:<line>".
+// Term is a term and its definition, with what each holds beside its words and each footnote that
+// its line refers to, which is part of the definition. Where of a listed term is "<document>
+// version <n> of <issue key>" or "<file>:<line>".
 type Term struct {
 	Name, Definition, Where  string
 	NameHeld, DefinitionHeld Held
+	DefinitionNotes          []*Footnote
 }
 
 // Context is what Check knows of the system: which project keys exist, the email of each person
@@ -135,19 +157,22 @@ const excerptRunes = 160
 
 // Check judges each text of in, and each proposed term as two texts named by the term: its name,
 // of Kind term, and its definition, of Kind definition. It judges them by the rules of R49, in the
-// order of the texts.
+// order of the texts. It judges each footnote that the texts refer to once (footnoteJudge), so its
+// work is in proportion to the texts and their footnotes, whatever the count of texts that share
+// one footnote.
 func Check(c Context, in Input) []Finding {
 	texts := make([]Text, 0, len(in.Texts)+2*len(in.Proposed))
 	texts = append(texts, in.Texts...)
 	for _, term := range in.Proposed {
 		texts = append(texts,
 			Text{Node: term.Name, Kind: KindTerm, Body: term.Name, Where: term.Where, Held: term.NameHeld},
-			Text{Node: term.Name, Kind: KindDefinition, Body: term.Definition, Where: term.Where, Held: term.DefinitionHeld})
+			Text{Node: term.Name, Kind: KindDefinition, Body: term.Definition, Where: term.Where, Held: term.DefinitionHeld, Notes: term.DefinitionNotes})
 	}
 	people := peopleNames(c, in)
+	notes := newFootnoteJudge(c, people, texts)
 	var findings []Finding
 	for _, text := range texts {
-		for _, broken := range breaks(c, people, text) {
+		for _, broken := range breaks(c, people, text, notes) {
 			findings = append(findings, Finding{
 				Node: text.Node, Kind: text.Kind, Where: text.Where,
 				Rule: broken.rule, Detail: broken.detail, Excerpt: excerpt(text.Body),

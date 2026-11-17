@@ -4104,7 +4104,9 @@ Each item below names a path with its method and identity, then its purpose.
   it stays `resolved`, now with resolution kind `resolved`, the findings as its reason and the reopener as its actor, and gets one `ask.resolved` after the `ask.opened` events.
   Dispatch judges the request at the versions that it names when the reopen ends.
   A settlement or a version write after the reopen moves an open request with no judgment, as it moves each open request.
-  The request then waits on its agent, unless the new version holds the text that Dispatch judged.
+  The request then waits on its agent.
+  Only a settlement's version that holds, byte for byte, the text of the version that the request names, while the request waits on the person, keeps the person's turn.
+  A named version and an upload of the same text leave the request with its agent.
   And Dispatch refuses a person's approval of a version that breaks the form.
   The reopen still answers `200`, and the repair pass treats an issue an older build reopened the same way.
   The reopen also marks owed each document whose ask blocks wait for it, and the settlement after the reopen opens the ask of a block that has none, credited to its recorded author, retracts a restored ask whose block left its document while the issue was closed, restores a retracted ask whose block came back, and takes into a restored ask the wording that a person gave its block while the issue was closed.
@@ -4625,11 +4627,23 @@ Each item below names a path with its method and identity, then its purpose.
       These rules also read each address and title of a link or an image.
       An address names a record only as a link to Dispatch, as the address of a pull request or as an email address.
       Dispatch reads the address of each link as an address, whatever stands beside the link.
-      A `mailto:` link whose address is its own words is the one other form.
+      A `mailto:` link whose words are one whole email address and whose address is `mailto:` and those words is the one other form.
       Dispatch stores an email address in the words as such a link, such as the host in `git@github.com:owner/repo.git`.
       So it reads that address in the words of the page, beside the words before and after it.
-      Where the address and the words give the same finding, the text holds it once.
-      A footnote that a text refers to is part of that text, so its sentences count and each rule reads it.
+      A `mailto:` link with other words, such as `[dispatch://ACME-1](mailto:dispatch://ACME-1)`, is read in its address too.
+      An address that starts with `/` opens a page of the server that shows the document.
+      So a path of the page of a record, such as `/projects/ACME/documents/terms-md` or `/issues/ACME-12/spec`, is a link to that record.
+      The server's own reading of the address of its pages decides which paths are pages of a record: an issue, a document of an issue or of a project, an ask, a comment and a block.
+      A path of another page, such as `/docs/guide`, and an address of another host link to no record.
+      Where the address of a link and the words of the page name one record, the text has one finding for it, the address's.
+      So one link gives one finding, and two links to two records give two.
+      A digit right after an autolink, as in `<dispatch://ACME-1>5`, makes the words name another record, so that text gives two findings.
+      A footnote that a text refers to is part of that text, and so is a footnote that such a footnote refers to.
+      Dispatch judges each footnote one time for each document.
+      Each finding of a footnote is in the refusal one time, under the first text that refers to the footnote and whose kind the rule reads.
+      Its words name the footnote and how many other texts refer to it, as in `in its footnote [^n] (2 other texts also refer to it)`.
+      The sentences of a footnote count in each statement that refers to it.
+      When the footnotes of a statement hold more than two sentences, the finding says `at least`, because Dispatch stops the count there.
       A definition can stand wholly in its footnote, as in `- **lease**: [^1]`.
       A heading opens or closes a part of `Terms` only among the blocks of its own block quote, list item, callout or footnote.
 
@@ -4697,8 +4711,13 @@ Each item below names a path with its method and identity, then its purpose.
       The owner of `<owner>/<repo>#<n>` starts with a letter or a digit, as an owner on GitHub does, so `-acme/widgets#12` and `.github/workflows#12` name no pull request.
       An email address after a `/` is part of a longer address, which names nothing, so `ssh://git@github.com/owner/repo.git` names no person.
       A `:` after an email address makes it part of a remote path, unless white space, a closing mark or `,;!?` follows, or the text ends.
+      A closing mark is a closing bracket, a closing curly quote, or a straight quote that no character of a path follows.
       Such an address names no person, so `git@github.com:owner/repo.git` and `deploy@build.example.com:'/srv/my reports/'` name none.
-      But `(ada@example.com:)` and `ada@example.com: she` name a person.
+      But `(ada@example.com:)`, `ada@example.com: she` and `the field reads "ada@example.com:" each day` name a person.
+      An address `user@host` with no path after it reads as the address of a person, also in a command that names a machine.
+      So `scp report.txt deploy@build.example.com:`, `rsync -a dist/ deploy@build.example.com:`, `ssh deploy@build.example.com` and the remote glob `deploy@build.example.com:?.log` break the form.
+      The finding gives the ways out: write the path after the colon, as in `deploy@build.example.com:~/` or `deploy@build.example.com:./?.log`.
+      Or write the user and the host apart, as in `ssh -l deploy build.example.com`.
       An email address takes letters and marks beside it into its own parts, and a digit or connector punctuation before it too.
       So `xada@example.com` is an email address too.
       A digit or connector punctuation after its domain makes it no address, as in `ada@example.com5`.

@@ -111,6 +111,11 @@ the Dispatch specs behind the `dispatch` command:
 - Build field shapes through `zodSchemaApi(hostZod)` so option bags apply to the
   host's Zod. Use `dispatchToolSchema(spec, zodSchemaApi(hostZod))` when the
   host validates a call so tool-level cross-field validation also applies.
+  A host first resolves a `ref` to the owner and document arguments it names,
+  and then validates the resolved arguments, as the `dispatch` command does
+  (`resolveOwnerArguments` in `envoy-client/src/dispatch-commands/check.ts`):
+  the cross-field rules read those arguments, so `dispatch_spec_form` takes a
+  `version` only beside the `artifact` that a ref of a document resolves to.
 - `dispatch doc-edit` supports `replace`, `delete`, `insert`, `retype`, `move`, `delete_row`, and
   `delete_column`. `retype` names a stable block id, a server-declared type, and optional
   client-owned attributes; `delete` and `move` also address a whole block by id; and table row or

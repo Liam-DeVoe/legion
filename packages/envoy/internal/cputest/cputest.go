@@ -32,13 +32,45 @@ func Process() time.Duration {
 // OfCall is the CPU time that one run of call spends on the thread that runs it (Thread): it holds
 // the calling goroutine on its thread (runtime.LockOSThread) from the reading before call to the
 // reading after it, so both readings are of that thread. Work that call hands to another goroutine
-// is not in it, and nor is the collector's work on another thread; work that allocates nothing is.
+// is not in it, and nor is the collector's work on another thread, or the work of another process
+// that call waits for, such as a database server; work that allocates nothing is.
 func OfCall(call func()) time.Duration {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 	before := Thread()
 	call()
 	return Thread() - before
+}
+
+// Growth is how many times the work of large grows over the work of small, where the input of
+// large is scale times the input of small. The work of each is its CPU time on the thread that
+// runs it (OfCall). Small runs scale times in one timed window and large once in another, so that
+// for work in proportion to the input the two windows last about as long, and a load of the
+// machine that comes and goes reaches both alike: a window that is much shorter than the other is
+// more likely to fall between two bursts. Each window is timed samples times, the two in turn,
+// each after a collection of the heap (runtime.GC), so that neither pays for the garbage of the
+// other. A busy machine only adds to the CPU time of a window, so the least of each is its work,
+// and the answer holds the least of each window. The growth is scale times the work of the large
+// window over the work of the small one: about scale for work in proportion to the input, and
+// about scale times scale for work for each pair of units. It counts the thread of the caller
+// alone, as OfCall does: the work of a database server that the call waits for is not in it, so a
+// test that judges work through one also counts what the call sends to the server.
+func Growth(samples, scale int, small, large func()) (growth float64, smallWindow, largeWindow time.Duration) {
+	windows := []func(){func() {
+		for range scale {
+			small()
+		}
+	}, large}
+	least := make([]time.Duration, len(windows))
+	for sample := range samples {
+		for index, window := range windows {
+			runtime.GC()
+			if took := OfCall(window); sample == 0 || took < least[index] {
+				least[index] = took
+			}
+		}
+	}
+	return float64(scale) * float64(least[1]) / float64(least[0]), least[0], least[1]
 }
 
 // resolution is the smallest step Process moves in on this machine, measured once: the fewest

@@ -365,6 +365,50 @@ func TestParseIsLinearInATableOfEscapedPipes(t *testing.T) {
 	})
 }
 
+// A document of many footnote references and many definitions parses in time linear in its size,
+// up to the 1 MiB a document may be: one paragraph that refers to each definition, many paragraphs
+// that each refer to a definition of their own, and references that match their definitions only
+// up to case. goldmark's footnote reference parser walked its whole list of definitions for each
+// reference: on one machine at a load of about 800, one paragraph of 16,000 references parsed in
+// 1.1 s, 16 times the 65 ms of 4,000. footnoteReferenceParser finds each definition in a map built
+// once for each parse.
+func TestParseIsLinearInFootnoteReferences(t *testing.T) {
+	references := func(size int, each func(index int) (reference, definition string)) string {
+		var markdown, definitions strings.Builder
+		for index := 1; markdown.Len()+definitions.Len() < size; index++ {
+			reference, definition := each(index)
+			markdown.WriteString(reference)
+			definitions.WriteString(definition)
+		}
+		return markdown.String() + "\n\n" + definitions.String()
+	}
+	for _, shape := range []struct {
+		name string
+		each func(index int) (reference, definition string)
+	}{
+		{"one paragraph that refers to each definition", func(index int) (string, string) {
+			return fmt.Sprintf("x[^%d]", index), fmt.Sprintf("[^%d]: Note %[1]d.\n\n", index)
+		}},
+		{"many paragraphs that each refer to their own definition", func(index int) (string, string) {
+			return fmt.Sprintf("Text %d[^%[1]d].\n\n", index), fmt.Sprintf("[^%d]: Note %[1]d.\n\n", index)
+		}},
+		{"references that match their definitions up to case", func(index int) (string, string) {
+			return fmt.Sprintf("x[^N%d]", index), fmt.Sprintf("[^n%d]: Note %[1]d.\n\n", index)
+		}},
+	} {
+		t.Run(shape.name, func(t *testing.T) {
+			growsLinearly(t, "parsing "+shape.name, []int{16 << 10, 256 << 10, 1 << 20}, growthAllowance, func(size int) (time.Duration, error) {
+				markdown := references(size, shape.each)
+				return cpuTimeOf(again(func() {
+					if _, err := ParseRendering(markdown); err != nil {
+						t.Fatalf("parse %d bytes of footnotes: %v", size, err)
+					}
+				}))
+			})
+		})
+	}
+}
+
 // A bare URL or email is read and written in time linear in its line. A line can hold an address
 // opening at every place the browser editor's engine starts one - after whitespace, any
 // punctuation, an escape, a character reference or a letter outside ASCII, in the markdown its
