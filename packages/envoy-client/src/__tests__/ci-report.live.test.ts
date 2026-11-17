@@ -179,12 +179,14 @@ describe.skipIf(!dispatchStackEnabled)(
     }
 
     /** The job's last step: ci-report in the checkout, over the report `fixture`, for the checks
-     *  of `job`, with the job's variables and nothing of this process's own but PATH. */
+     *  of `job`, with the job's variables, `overrides` over them, and nothing of this process's
+     *  own but PATH. */
     async function lastStep(
       checkout: Checkout,
       run: JobRun,
       fixture: string,
-      job: string = JOB
+      job: string = JOB,
+      overrides: Readonly<Record<string, string>> = {}
     ): Promise<Reported> {
       const child = Bun.spawn(
         [
@@ -208,6 +210,7 @@ describe.skipIf(!dispatchStackEnabled)(
             DISPATCH_STATE_DIR: cliState,
             GITHUB_SHA: run.sha,
             ...running().jobEnv(run),
+            ...overrides,
           },
           stdout: "pipe",
           stderr: "pipe",
@@ -563,6 +566,73 @@ describe.skipIf(!dispatchStackEnabled)(
         tested: [],
         moved: [],
       });
+    }, 120_000);
+
+    // A write whose 201 gives no stored result - here the JSON {}, which is not the route's row -
+    // landed, since Dispatch answers a write's 2xx only after the write committed: the CLI prints
+    // {"landed_without_answer":"ANSWER_LOST"} and exits 0. The step counts that one result as
+    // written, and its line says that the answer was lost, with no id. The job's token is traded
+    // at the stack's real broker; only Dispatch is a stand-in, on a raw socket, so its answer is
+    // exactly these bytes.
+    test("a write whose 201 gives no stored result counts as written, and its line says that the answer was lost", async () => {
+      const checkout = checkoutOf("answer-lost", SPEC_WITHOUT_SECOND);
+      const body = "{}";
+      let posts = 0;
+      const lost = Bun.listen({
+        hostname: "127.0.0.1",
+        port: 0,
+        socket: {
+          data(socket, request) {
+            if (!request.subarray(0, 5).toString("latin1").startsWith("POST ")) return;
+            posts += 1;
+            socket.write(
+              "HTTP/1.1 201 Created\r\nContent-Type: application/json\r\n" +
+                `Content-Length: ${body.length}\r\n\r\n${body}`
+            );
+            socket.end();
+          },
+        },
+      });
+      try {
+        const reported = await lastStep(
+          checkout,
+          jobOf(checkout, 951),
+          "go-test-all-pass.jsonl",
+          JOB,
+          {
+            DISPATCH_URL: `http://127.0.0.1:${lost.port}`,
+          }
+        );
+        expect({
+          code: reported.code,
+          lines: reported.lines.map(({ check, outcome, exit, result_id, why }) => ({
+            check,
+            outcome,
+            exit,
+            result_id,
+            why,
+          })),
+          counted: /; (\d+ results written, \d+ calls failed)$/m.exec(reported.stderr)?.[1],
+          posts,
+        }).toEqual({
+          code: 0,
+          lines: [
+            {
+              check: PROBE,
+              outcome: "pass",
+              exit: 0,
+              result_id: "",
+              why: "the result was stored, and its answer was lost on the way back (ANSWER_LOST), so its id is unknown",
+            },
+          ],
+          counted: "1 results written, 0 calls failed",
+          posts: 1,
+        });
+      } finally {
+        lost.stop(true);
+      }
+      // The write went to the stand-in alone: the stack's Dispatch holds no row at the commit.
+      expect(await rowsAt(checkout.sha)).toEqual([]);
     }, 120_000);
   }
 );
