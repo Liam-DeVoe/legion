@@ -41,6 +41,7 @@ import {
   type PinnedRead,
   pinnedRead,
   pinnedReads,
+  RECORD_READ,
   shapeDiff,
   shapeOf,
 } from "./production-shapes";
@@ -4055,6 +4056,74 @@ test("the pin is derived with production's values as placeholders, and refused w
   expect(() => derive(rulesets, file)).toThrow(
     'the pin would hold production\'s values: "a title of the pull request"'
   );
+});
+
+// Catches: a pin of production's `read_record` that keeps a name of the one issue it was read
+// from — the roles that issue had run, the pairs of phases it had moved between, which would
+// hold every world to that issue's history — or a value of it that the record uses as a key (a
+// map by issue key or by session), which is how a shape, holding no value, can still carry one.
+test("the record is pinned by its shape with its roles and moves as lists, and refused where a key is a value", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "production-shapes-"));
+  made.push(dir);
+  const rulesets = path.join(dir, "rulesets");
+  const prs = path.join(dir, "prs");
+  mkdirSync(rulesets);
+  mkdirSync(prs);
+  writeFileSync(path.join(rulesets, "README.txt"), "Reads, read at 2026-01-02T03:04:05Z.\n");
+  writeFileSync(path.join(rulesets, "rulesets.json"), "[]");
+  writeFileSync(path.join(rulesets, "rulesets.err"), "");
+  writeFileSync(path.join(rulesets, "rulesets.exit"), "0\n");
+  writeFileSync(path.join(prs, "README.txt"), "Reads (read 2026-01-02 about 03:00Z; cut).\n");
+  const reads = path.join(prs, "reads.json");
+  // Production values no word of a pin spells, so the derivation's own check passes them.
+  const substitutions = {
+    repo: "octo-org/octo-repo",
+    pr: "31337",
+    head: "a".repeat(40),
+    base: "b".repeat(40),
+    review: "777777777",
+    comment: "888888888",
+  };
+  writeFileSync(reads, JSON.stringify({ substitutions, reads: [] }));
+  const record = {
+    key: "OCTO-31337",
+    workers: {
+      implementer: { pass: 2, backwardMoves: { "reviewing-implementing": 1 } },
+      reviewer: { pass: 0, claim: { session: "0190a1b2-0000-7000-8000-000000000001" } },
+    },
+  };
+  const file = path.join(dir, "record.json");
+  const note = "One read_record, read 2026-01-02T03:04:05Z from an issue pod.";
+  writeFileSync(file, JSON.stringify({ note, record }));
+  expect(derive(rulesets, reads, file).reads.at(-1)).toEqual({
+    name: RECORD_READ,
+    command: [RECORD_READ],
+    read_at: "2026-01-02T03:04:05Z",
+    exit: 0,
+    stderr: "",
+    shape: {
+      ".": "object",
+      ".key": "string",
+      ".workers": "array",
+      ".workers[]": "object",
+      ".workers[].pass": "number",
+      ".workers[].backwardMoves": "array",
+      ".workers[].backwardMoves[]": "number",
+      ".workers[].claim": "object",
+      ".workers[].claim.session": "string",
+    },
+  });
+  // A map the record keys by one of its own values: the issue's key.
+  writeFileSync(
+    file,
+    JSON.stringify({ note, record: { children: { "OCTO-31338": { pass: 1 } } } })
+  );
+  expect(() => derive(rulesets, reads, file)).toThrow(
+    "the pin would hold production's values: .children.OCTO-31338, .children.OCTO-31338.pass"
+  );
+  // A record whose note says nothing of when it was read is no dated read.
+  writeFileSync(file, JSON.stringify({ note: "One read_record.", record }));
+  expect(() => derive(rulesets, reads, file)).toThrow("names no time it was read");
 });
 /** A shape no different from production's. */
 const SAME_SHAPE = { missing: [], extra: [], kinds: [] };

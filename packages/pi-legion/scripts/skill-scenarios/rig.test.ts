@@ -17,6 +17,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { z } from "zod";
 import { scriptFunctions } from "../../../../scripts/e2e/lib/script-functions";
 import { ANSWERS, BOOTED, SKIPS, scenarioOf } from "./completion-answers";
 import { routeFor } from "./gh-call";
@@ -1223,6 +1224,7 @@ describe("cmd_batch numbering", () => {
         "services_from() { printf 'envoy-listener label %s -\\n' \"$co\"; }",
         'go() { : >"$3"; }',
         "label_facts() { :; }",
+        "label_contract() { :; }",
         "work=$1 here=$2 root=$3 tag=rig-test containers=()",
         "services_postgres=$work/services/postgres-url tokens=$work/services/tokens",
         'cmd_batch "$4" 1 head',
@@ -3232,12 +3234,17 @@ describe("health", () => {
     expect(stdout).toEndWith("health: 3 of 3 runs unhealthy\n");
   });
 
-  // Catches: the same code read as allowed whatever role it answered. This checkout's daemon,
-  // which the run is built from, refuses a reviewer 409 HANDOFF_NOT_CURRENT_PHASE only once its
-  // row holds a completion, which no threads-closed world gives it before the run, so a reviewer
-  // refused so with no earlier 200 of its own is a world the daemon would not have served.
+  // A threads-closed reviewer's review round stands on its row from before the run: the world's
+  // seeds record its review handoff (rig.sh's run_threads_closed, seed.ts review-handoff), which
+  // the stand-in reads onto the row (daemon-standin.ts's `HANDOFFS`). So this checkout's daemon,
+  // which the run is built from, refuses that reviewer's late completion 409
+  // HANDOFF_NOT_CURRENT_PHASE with no earlier 200 of its own (`leftItsPhase`'s
+  // `row.Completed()`), and the run is healthy. Catches: the table of before INFRA-764's ruling
+  // on the completions production refuses, which read no seeded row and called this refusal a
+  // world the daemon would not have served, where the daemon serves exactly it (this row held
+  // the run unhealthy until then).
   test.skipIf(withoutGo)(
-    "a head threads-closed reviewer refused not-current-phase is unhealthy",
+    "a head threads-closed reviewer refused not-current-phase is healthy: its seeded round stands",
     () => {
       const named = run(
         "threads-closed-text-fixes-head-2",
@@ -3245,10 +3252,8 @@ describe("health", () => {
         { checkout: CHECKOUT }
       );
       const { code, stdout } = health(named);
-      expect(code).toBe(1);
-      expect(verdict(stdout, named)).toContain(
-        "unhealthy: refused completion: POST /legion/v1/handoff/complete of the reviewer answered 409 HANDOFF_NOT_CURRENT_PHASE"
-      );
+      expect(code).toBe(0);
+      expect(verdict(stdout, named)).toBe("threads-closed-text-fixes-head-2  healthy");
     }
   );
 
@@ -3289,16 +3294,22 @@ describe("health", () => {
 
   // Catches: a reviewer's late refusal by this checkout's daemon read by its code alone. This
   // checkout's route reads back the review record a late reviewer names, and its engine records
-  // that completion 200 unless the reviewer's row already holds one: a completion of its own taken
-  // earlier in the run, after which the engine refuses a repeat 409 HANDOFF_NOT_CURRENT_PHASE
-  // (completion-answers.ts's `ANSWERS`, `AFTER_TAKEN`). So that refusal is this daemon's answer
-  // after an earlier 200 of the same reviewer on the run's log alone: not with none, not with the
-  // 200 after it, and not after another role's 200. This route refuses no reviewer 409
-  // HANDOFF_RECORD_MISMATCH in this rig, `accepting` included, since the phase its completion is
-  // of is `reviewing`, which writes a record. Each run is built from this checkout, whose daemon
-  // health reads for those answers.
+  // that completion 200 unless the reviewer's row already holds one, after which it refuses a
+  // late one 409 HANDOFF_NOT_CURRENT_PHASE. In reviewer-text-findings the row holds one only
+  // once a completion of the reviewer's own was taken earlier in the run (completion-answers.ts's
+  // `ANSWERS`, `AFTER_TAKEN`): not with none before it, and not with the 200 after it. In
+  // threads-closed the world's seeds stand for the reviewer's round, so the refusal is the
+  // daemon's answer whatever came before it (the three threads-closed runs here were held
+  // unhealthy until INFRA-764's ruling on the completions production refuses). This route
+  // refuses no reviewer 409 HANDOFF_RECORD_MISMATCH in this rig, `accepting` included, since the
+  // phase its completion is of is `reviewing`, which writes a record. A completion naming a
+  // record another session wrote is refused 403 HANDOFF_SESSION_MISMATCH, which a role with a
+  // seeded record can meet (threads-closed's two) and a reviewer-text-findings reviewer, whose
+  // world seeds no review record, cannot; and a role's repeat of its own completion is answered
+  // 409 HANDOFF_ALREADY_RECORDED, in any world, once the workflow was handed one of that role's.
+  // Each run is built from this checkout, whose daemon health reads for those answers.
   test.skipIf(withoutGo)(
-    "a head reviewer refused not-current-phase is healthy only as a repeat of its own earlier 200",
+    "a head reviewer refused not-current-phase is healthy where its row holds a completion: the seeds' in threads-closed, its own earlier 200 elsewhere",
     () => {
       const built = { checkout: CHECKOUT };
       const fixes = run(
@@ -3349,6 +3360,21 @@ describe("health", () => {
         ],
         built
       );
+      const first = run(
+        "reviewer-text-findings-text-only-head-5",
+        [[complete(409, NOT_CURRENT, "reviewer", "implementing")]],
+        built
+      );
+      const beforeTaken = run(
+        "reviewer-text-findings-text-only-head-6",
+        [
+          [
+            complete(409, NOT_CURRENT, "reviewer", "implementing"),
+            complete(200, undefined, "reviewer", "implementing"),
+          ],
+        ],
+        built
+      );
       const MISMATCH = "HANDOFF_RECORD_MISMATCH";
       const accepting = run(
         "threads-closed-code-defect-head-2",
@@ -3358,20 +3384,62 @@ describe("health", () => {
         ],
         built
       );
-      const { code, stdout } = health(fixes, review, alone, before, another, accepting);
+      const SESSION = "HANDOFF_SESSION_MISMATCH";
+      const RECORDED = "HANDOFF_ALREADY_RECORDED";
+      const anotherSession = run(
+        "threads-closed-text-fixes-head-9",
+        [
+          [
+            complete(403, SESSION, "implementer", "reviewing"),
+            complete(409, NOT_CURRENT, "implementer", "reviewing"),
+            complete(409, RECORDED, "implementer", "reviewing"),
+          ],
+          [complete(403, SESSION, "reviewer", "reviewing")],
+        ],
+        built
+      );
+      const noSeededReview = run(
+        "reviewer-text-findings-text-only-head-7",
+        [[complete(403, SESSION, "reviewer", "reviewing")]],
+        built
+      );
+      const neverHanded = run(
+        "reviewer-text-findings-text-only-head-8",
+        [[complete(409, RECORDED, "reviewer", "reviewing")]],
+        built
+      );
+      const { code, stdout } = health(
+        fixes,
+        review,
+        alone,
+        before,
+        another,
+        first,
+        beforeTaken,
+        accepting,
+        anotherSession,
+        noSeededReview,
+        neverHanded
+      );
       expect(code).toBe(1);
-      expect(verdict(stdout, fixes)).toBe("threads-closed-text-fixes-head-4  healthy");
-      expect(verdict(stdout, review)).toBe("reviewer-text-findings-text-only-head-3  healthy");
+      for (const dir of [fixes, review, alone, before, another, anotherSession])
+        expect(verdict(stdout, dir)).toBe(`${path.basename(dir)}  healthy`);
       const refused = (answer: string) =>
         `unhealthy: refused completion: POST /legion/v1/handoff/complete of the reviewer answered ${answer}, which the head label's daemon does not answer it with in this world`;
-      for (const dir of [alone, before, another])
+      for (const dir of [first, beforeTaken])
         expect(verdict(stdout, dir)).toBe(
           `${path.basename(dir)}  ${refused(`409 ${NOT_CURRENT}`)}`
         );
       expect(verdict(stdout, accepting)).toBe(
         `threads-closed-code-defect-head-2  ${refused(`409 ${MISMATCH}`)}`
       );
-      expect(stdout).toEndWith("health: 4 of 6 runs unhealthy\n");
+      expect(verdict(stdout, noSeededReview)).toBe(
+        `reviewer-text-findings-text-only-head-7  ${refused(`403 ${SESSION}`)}`
+      );
+      expect(verdict(stdout, neverHanded)).toBe(
+        `reviewer-text-findings-text-only-head-8  ${refused(`409 ${RECORDED}`)}`
+      );
+      expect(stdout).toEndWith("health: 5 of 11 runs unhealthy\n");
     }
   );
 
@@ -8914,8 +8982,10 @@ sleep() { command sleep 0.05; }`;
 // build runs in and writes a binary naming it, a `bun` that records each read of a label's
 // daemon facts (label_facts) with the work directory and the build it was given, and refuses it
 // when FACTS_REFUSE names why, and runs every other call as bun does (services_from's read of
-// the programs a run runs, run-programs.ts), and a load_label whose label's checkout is a
-// directory of the row's own (<work>/checkouts/<label>).
+// the programs a run runs, run-programs.ts, and label_contract's reading of the label's own
+// contract, standin-record.ts), and a load_label whose label's checkout is a directory of the
+// row's own (<work>/checkouts/<label>), holding a contract of the row's own: one that describes
+// every state body unless the row gives the label another (`contracts`).
 describe("services_up and services_down", () => {
   const stubs = `
 until_true() { shift 2; "$@"; }
@@ -8949,6 +9019,7 @@ docker() {
       "go_binary",
       "daemon_pane_binary",
       "label_facts",
+      "label_contract",
       "file_digest",
       "read_nats_image",
       "services_from",
@@ -8971,14 +9042,27 @@ docker() {
       "builds",
       new Bun.CryptoHasher("sha256").update(checkout).digest("hex").slice(0, 16)
     );
-  /** services_up for `labels`, each with a checkout of its own under the work directory. */
-  function up(env: Record<string, string>, labels: string[] = ["head"]) {
+  /** A label's contract that describes every state body: the rows that hold services_up to
+   * anything but the contract check give each label this one. */
+  const DESCRIBES =
+    "export const LegionStateResponse = { safeParse: () => ({ success: true }) };\n";
+  /** services_up for `labels`, each with a checkout of its own under the work directory, whose
+   * packages/contracts/src/legion-api.ts is `contracts`' source for that label, or `DESCRIBES`. */
+  function up(
+    env: Record<string, string>,
+    labels: string[] = ["head"],
+    contracts: Record<string, string> = {}
+  ) {
     const work = freshDir("services-up");
     const S = path.join(work, "services");
     mkdirSync(S);
-    for (const label of labels)
+    for (const label of labels) {
       for (const module of ["envoy", "daemon"])
         mkdirSync(path.join(work, "checkouts", label, "packages", module), { recursive: true });
+      const contract = path.join(work, "checkouts", label, "packages", "contracts", "src");
+      mkdirSync(contract, { recursive: true });
+      writeFileSync(path.join(contract, "legion-api.ts"), contracts[label] ?? DESCRIBES);
+    }
     const result = bash(
       `${servicesUp}\n${stubs}\nwork=$1 S=$1/services root=$2 here=$3 tag=rig-test\nservices_postgres=$S/postgres-url tokens=$S/tokens\nshift 3\nservices_up "$@"`,
       [work, root, import.meta.dir, ...labels],
@@ -9165,6 +9249,84 @@ docker() {
       expect(existsSync(path.join(S, "listeners"))).toBe(false);
       expect(existsSync(path.join(S, "services-from-base"))).toBe(false);
       expect(existsSync(path.join(S, "env-base"))).toBe(false);
+    });
+  });
+
+  // The state a daemon stand-in serves is read by the plugin of the run's own label, with that
+  // label's own contract. Catches: a batch that starts a label whose contract does not describe
+  // that state, whose agents then meet the refusal in their own turns, every `read_record` of
+  // theirs answered `a body the daemon API contract does not describe`, while the other label
+  // reads its own: all 30 base runs of 2026-11-09 measured a world of their own so. services_up
+  // hands each label's own schema every kind of body a stand-in can serve (label_contract) and
+  // stops before that label's listener starts, naming the label and the schema's error. The base
+  // label's contract here is a fixture's: one of a daemon that runs its claims in tmux panes
+  // alone, which the sandbox locator of the stand-in's claims is no value of.
+  describe("each label's contract", () => {
+    const tmuxOnly = `
+const claims = (issue) => [["architect", issue.architect], ...Object.entries(issue.workers).map(([role, row]) => ["workers." + role + ".claim", row.claim])];
+export const LegionStateResponse = {
+  safeParse(body) {
+    for (const [key, issue] of Object.entries(body.issues))
+      for (const [at, claim] of claims(issue))
+        if (claim?.locator !== undefined && claim.locator.runtime !== "tmux")
+          return { success: false, error: { message: "issues." + key + "." + at + ".locator.runtime: Invalid input: expected \\"tmux\\"" } };
+    return { success: true };
+  },
+};
+`;
+
+    test("a label whose own contract does not describe the stand-in's state stops the batch before its listener starts, naming the label and the error", () => {
+      const { work, S, code, stderr } = up(
+        { ...given, SKILL_SCENARIOS_PARALLEL: "1" },
+        ["head", "base"],
+        { base: tmuxOnly }
+      );
+      const contract = path.join(
+        work,
+        "checkouts",
+        "base",
+        "packages",
+        "contracts",
+        "src",
+        "legion-api.ts"
+      );
+      expect({ code, stderr }).toEqual({
+        code: 1,
+        stderr: [
+          `standin-record contract: label base: ${contract} does not describe the state body the stand-in serves (planning, pull request 0): issues.WID-1.architect.locator.runtime: Invalid input: expected "tmux"`,
+          `skill-scenarios: label base's own contract (${contract}) does not describe the state the daemon stand-in serves (above), so every read_record of that label's agents would be refused`,
+          "",
+        ].join("\n"),
+      });
+      // The head label, whose contract describes the state, was started before the base label
+      // was read; nothing of the base label was.
+      expect(readFileSync(path.join(S, "listeners"), "utf8")).toMatch(/^head \S+\n$/);
+      expect(existsSync(path.join(S, "env-head"))).toBe(true);
+      expect(existsSync(path.join(S, "env-base"))).toBe(false);
+      expect(existsSync(path.join(S, "services-from-base"))).toBe(false);
+    });
+
+    // Catches: a check that reads the rig's own contract for every label, which describes the
+    // rig's own stand-in by construction, or one that passes a label it could read no schema
+    // of: the base label's checkout here holds a contract that exports no `LegionStateResponse`.
+    test("a label whose contract exports no state schema is refused, naming the file, and nothing of it starts", () => {
+      const { work, S, code, stderr } = up({ ...given, SKILL_SCENARIOS_PARALLEL: "1" }, ["base"], {
+        base: "export const Unrelated = 1;\n",
+      });
+      const contract = path.join(
+        work,
+        "checkouts",
+        "base",
+        "packages",
+        "contracts",
+        "src",
+        "legion-api.ts"
+      );
+      expect(code).toBe(1);
+      expect(stderr).toContain(
+        `standin-record contract: label base: ${contract} exports no LegionStateResponse to read a state body with\n`
+      );
+      expect(existsSync(path.join(S, "listeners"))).toBe(false);
     });
   });
 
@@ -9633,6 +9795,12 @@ describe.skipIf(testPostgres === undefined || withoutGo)(
     /** The Dispatch server of this checkout, built once for every world here, as services_up
      * builds a label's (go_binary). */
     let server = "";
+    /** The caller's go caches, which a stand-in's read of its daemon's facts compiles with
+     * (health's `goSettings` says why a HOME of childEnv's holds none), and the one work
+     * directory whose facts cache every stand-in of this block reads, so one world pays for the
+     * read (daemon-pane.ts's `factsCache`). */
+    let go: Record<string, string> = {};
+    let factsWork = "";
     beforeAll(() => {
       server = path.join(freshDir("world-dispatch-build"), "dispatch-e2e");
       const built = spawnChecked(["go", "build", "-o", server, "./cmd/dispatch"], {
@@ -9640,6 +9808,17 @@ describe.skipIf(testPostgres === undefined || withoutGo)(
         env: process.env,
       });
       expect({ code: built.exitCode, err: built.stderr.toString() }).toEqual({ code: 0, err: "" });
+      const printed = spawnChecked(
+        ["go", "env", "-json", "GOCACHE", "GOMODCACHE", "GOPATH", "GOFLAGS", "GOTOOLCHAIN"],
+        { stdout: "pipe", stderr: "pipe" }
+      );
+      expect(printed.exitCode).toBe(0);
+      go = Object.fromEntries(
+        Object.entries(JSON.parse(printed.stdout.toString()) as Record<string, string>).filter(
+          ([, value]) => value !== ""
+        )
+      );
+      factsWork = freshDir("world-daemon-facts");
     }, 900_000);
     // The databases this block makes, each named with a prefix of its own and never rig.sh's
     // `run_`: in CI LEGION_TEST_PG_DSN names the shared test Postgres, and the acceptance batch's
@@ -9671,7 +9850,14 @@ describe.skipIf(testPostgres === undefined || withoutGo)(
       planRead: string;
       verification: string;
       results: string;
+      /** The state the daemon stand-in served the booted agent, and `dispatch read` of the
+       * issue after it, each "" for a world no stand-in was booted on. */
+      state: string;
+      readAfter: string;
     }
+
+    /** The session the agent booted on a world registers under: a UUIDv7, as a session's is. */
+    const BOOT_SESSION = "01a2d000-0000-7000-8000-00000000f006";
 
     /** The world CASE names (worker_fixture's), built and seeded by rig.sh's own functions, and
      * what its Dispatch answers about its issue: `dispatch read` of the issue and of its plan.md,
@@ -9679,15 +9865,24 @@ describe.skipIf(testPostgres === undefined || withoutGo)(
      * real `dispatch` entry an agent runs. With `pushed`, the implementer's one commit of text
      * fixes is pushed to the pull request's branch first and the head moved as run_threads_closed
      * moves it between its halves (seed.ts pull-request), which is the state the reviewer reads.
+     * With `boot`, the daemon stand-in is started on the world as worker_boot starts it for that
+     * role, phase and completed roles, on a built-from naming this checkout; the agent's claim
+     * boot is made against it (its registration under BOOT_SESSION, then its ready); and the
+     * state it serves is read, as the agent's first `read_record` reads it, with `dispatch read`
+     * of the issue after it.
      * The server is stopped and the run's database dropped before this returns. */
-    function seededWorld(caseName: string, pushed = false): SeededWorld {
+    function seededWorld(
+      caseName: string,
+      pushed = false,
+      boot?: { role: string; phase: string; completed: string }
+    ): SeededWorld {
       const dir = freshDir("seeded-world");
       const run = path.join(dir, `${Date.now().toString(16)}${dirs.toString(16).padStart(2, "0")}`);
       worldDatabases.add(`${WORLD_DATABASE_PREFIX}${path.basename(run)}`);
       expect(ownDispatch).toContain("database=run_");
       const script = [
         "set -euo pipefail",
-        "R=$1 work=$2 co=$3 server=$4 case_name=$5 pushed=$6 root=$3 here=$3/packages/pi-legion/scripts/skill-scenarios",
+        "R=$1 work=$2 co=$3 server=$4 case_name=$5 pushed=$6 boot_role=$7 boot_phase=$8 boot_completed=$9 root=$3 here=$3/packages/pi-legion/scripts/skill-scenarios",
         `. ${JSON.stringify(path.join(root, "scripts/e2e/lib/rig.sh"))}`,
         ...[
           "fail",
@@ -9744,8 +9939,8 @@ describe.skipIf(testPostgres === undefined || withoutGo)(
         'printf "%s\\n" "$TEST_POSTGRES" >"$services_postgres"',
         'ln -s "$server" "$(build_dir "$co")/dispatch-e2e"',
         `database=${WORLD_DATABASE_PREFIX}$(basename "$R")`,
-        'trap \'stop_pid "$watcher_pid"; stop_pid "$dispatch_pid"; stop_pid "$github_pid"; pg_sql "$TEST_POSTGRES" "DROP DATABASE IF EXISTS $database WITH (FORCE)" >/dev/null 2>&1 || true\' EXIT',
-        "dispatch_pid='' github_pid='' watcher_pid=''",
+        'trap \'stop_pid "$standin_pid"; stop_pid "$watcher_pid"; stop_pid "$dispatch_pid"; stop_pid "$github_pid"; pg_sql "$TEST_POSTGRES" "DROP DATABASE IF EXISTS $database WITH (FORCE)" >/dev/null 2>&1 || true\' EXIT',
+        "dispatch_pid='' github_pid='' watcher_pid='' standin_pid=''",
         'worker_run_world 1 1700000000 "$case_name"',
         'case $case_name in text-only | defect) seed_ts tester-result "$R/fixture.json" "$R/test.json" "$head" ;; esac',
         'case $case_name in text-fixes | code-defect) seed_ts tester-result "$R/fixture.json" "$R/test.json" "$head"; seed_ts review-handoff "$R/fixture.json" "$R/review.json" ;; esac',
@@ -9764,10 +9959,46 @@ describe.skipIf(testPostgres === undefined || withoutGo)(
         'cli doc-read --issue "$worker_key" --artifact verification-md >"$R/verification.txt"',
         'cli results --issue "$worker_key" >"$R/results.txt"',
         'printf "%s %s %s\\n" "$worker_key" "$pr" "$head" >"$R/seeded.txt"',
+        'if [ -n "$boot_role" ]; then',
+        '  printf "checkout %s\\n" "$co" >"$R/built-from"',
+        '  printf "rig-boot-token\\n" >"$R/boot-token"',
+        '  SKILL_SCENARIOS_WORK="$FACTS_WORK" DISPATCH_URL="http://127.0.0.1:$dispatch_port" DISPATCH_TOKEN_FILE="$tokens/dispatch-token" bun "$here/daemon-standin.ts" 0 "$R/daemon.log" "$R/boot-token" "worldrow$(basename "$R")" "$worker_key" "$R" "$boot_role" "$boot_phase" "$boot_completed" >"$R/logs/daemon.log" 2>&1 &',
+        "  standin_pid=$!",
+        '  for _ in $(seq 1500); do grep -q "^listening on " "$R/logs/daemon.log" && break; kill -0 "$standin_pid" 2>/dev/null || break; sleep 0.2; done',
+        '  at=$(sed -n "s|^listening on ||p" "$R/logs/daemon.log")',
+        '  [ -n "$at" ] || { cat "$R/logs/daemon.log" >&2; exit 1; }',
+        '  contract=$(jq -r .legion.daemonApiVersion "$co/packages/pi-legion/package.json")',
+        '  secret=$(curl -fsS -d "{\\"bootToken\\":\\"rig-boot-token\\",\\"sessionId\\":\\"$BOOT_SESSION\\",\\"pluginContract\\":$contract}" "$at/legion/v1/claims/register" | jq -r .secret)',
+        '  curl -fsS -o /dev/null -d "{\\"secret\\":\\"$secret\\"}" "$at/legion/v1/claims/ready"',
+        '  curl -fsS -o "$R/state.json" "$at/legion/v1/state"',
+        '  cli read --issue "$worker_key" >"$R/read-after.txt"',
+        "fi",
       ].join("\n");
       const seeded = spawnChecked(
-        ["bash", "-c", script, "-", run, dir, root, server, caseName, pushed ? "1" : ""],
-        { env: { ...childEnv, TEST_POSTGRES: testPostgres ?? "" } }
+        [
+          "bash",
+          "-c",
+          script,
+          "-",
+          run,
+          dir,
+          root,
+          server,
+          caseName,
+          pushed ? "1" : "",
+          boot?.role ?? "",
+          boot?.phase ?? "",
+          boot?.completed ?? "",
+        ],
+        {
+          env: {
+            ...childEnv,
+            ...go,
+            TEST_POSTGRES: testPostgres ?? "",
+            FACTS_WORK: factsWork,
+            BOOT_SESSION,
+          },
+        }
       );
       const read = (name: string) =>
         existsSync(path.join(run, name)) ? readFileSync(path.join(run, name), "utf8") : "";
@@ -9787,6 +10018,8 @@ describe.skipIf(testPostgres === undefined || withoutGo)(
         planRead: read("plan.txt"),
         verification: read("verification.txt"),
         results: read("results.txt"),
+        state: read("state.json"),
+        readAfter: read("read-after.txt"),
       };
     }
 
@@ -10027,6 +10260,152 @@ describe.skipIf(testPostgres === undefined || withoutGo)(
       expect(issueState(world)).toEqual(expectedState(world, "needs_review", "no"));
       expect(readFileSync(path.join(world.run, "heads.txt"), "utf8")).toContain(
         `"pushed":"${world.head}","ok":true`
+      );
+    }, 300_000);
+
+    /** The record of the world's issue the stand-in booted on it served (seededWorld's `boot`). */
+    function servedRecord(world: SeededWorld) {
+      const record = z
+        .looseObject({
+          issues: z.record(
+            z.string(),
+            z.looseObject({
+              status: z.string(),
+              workers: z.record(z.string(), z.record(z.string(), z.unknown())),
+              pullRequest: z.record(z.string(), z.unknown()),
+              designGate: z.looseObject({
+                currentVersion: z.number(),
+                approvedVersion: z.number().nullable(),
+              }),
+            })
+          ),
+        })
+        .parse(JSON.parse(world.state)).issues[world.issue];
+      if (record === undefined) throw new Error(`the state holds no record of ${world.issue}`);
+      return record;
+    }
+    /** The handoff records the world's seeds wrote, as the run keeps them (fixture.json): each
+     * the id and version the run's Dispatch holds it under. */
+    function seededRecords(world: SeededWorld) {
+      const record = z.object({ id: z.string(), version: z.number() });
+      return z
+        .looseObject({ plan: record, implement: record, test: record, review: record.optional() })
+        .parse(JSON.parse(readFileSync(path.join(world.run, "fixture.json"), "utf8")));
+    }
+    /** The world's pull request as its gh answers `gh pr view`, in the record's own members and
+     * the daemon's lower-case spelling: the decision absent where gh names none. */
+    function ghSays(world: SeededWorld) {
+      const fields = "number,headRefOid,state,mergeStateStatus,reviewDecision";
+      const view = spawnChecked(
+        ["bun", GH_STANDIN, "gh", "pr", "view", world.pr, "--repo", WORLD_REPO, "--json", fields],
+        { env: { ...childEnv, GH_DATA_DIR: world.run } }
+      );
+      expect({ code: view.exitCode, err: view.stderr.toString() }).toEqual({ code: 0, err: "" });
+      const said = z
+        .object({
+          number: z.number(),
+          headRefOid: z.string(),
+          state: z.string(),
+          mergeStateStatus: z.string(),
+          reviewDecision: z.string(),
+        })
+        .parse(JSON.parse(view.stdout.toString()));
+      return {
+        repo: WORLD_REPO,
+        number: said.number,
+        head: said.headRefOid,
+        state: said.state.toLowerCase(),
+        mergeState: said.mergeStateStatus.toLowerCase(),
+        ...(["", "REVIEW_REQUIRED"].includes(said.reviewDecision)
+          ? {}
+          : { reviewDecision: said.reviewDecision.toLowerCase() }),
+      };
+    }
+
+    // The record an agent's first `read_record` answers on a world the rig built, held to what
+    // that world's own seeds, Dispatch and gh say of the issue. Catches: a record that says less
+    // of the issue than its world does — no row of the implementer's standing round (INFRA-764
+    // round 25: `workers: {}` in every counted threads-closed run, read before any write), a
+    // handoff record under another id or version than the run's Dispatch holds, a pull request
+    // other than the one gh answers, a design gate the spec's approval does not give, or a
+    // status the run's Dispatch does not show; and a stand-in that writes a status to the run's
+    // Dispatch at a read that moved nothing.
+    test("threads-closed's text-fixes world: the record its implementer reads holds each seeded round, gh's pull request and the approved spec", () => {
+      const world = seededWorld("text-fixes", false, {
+        role: "implementer",
+        phase: "reviewing",
+        completed: "implementer",
+      });
+      const record = servedRecord(world);
+      const seeds = seededRecords(world);
+      expect(Object.keys(record.workers)).toEqual(["implementer", "planner", "reviewer", "tester"]);
+      expect(record).toMatchObject({
+        key: world.issue,
+        phase: "reviewing",
+        status: "needs_review",
+        repo: WORLD_REPO,
+        defaultBranch: "main",
+        architect: { state: "idle" },
+        workers: {
+          planner: { claim: { state: "idle" }, handoffRecord: seeds.plan },
+          implementer: {
+            claim: { session: BOOT_SESSION, state: "working" },
+            handoffCommit: world.head,
+            handoffRecord: seeds.implement,
+            pass: 0,
+            rounds: 0,
+          },
+          tester: {
+            claim: { state: "idle" },
+            handoffCommit: world.head,
+            handoffRecord: seeds.test,
+          },
+          reviewer: { claim: { state: "idle" }, handoffRecord: seeds.review },
+        },
+        gatedSteps: [{ step: "spec", status: "approved" }],
+        slot: { index: 0 },
+        // The approval stands on a head the open threads hold BLOCKED (approved_world).
+        mergeWait: { waitsOn: world.head, mergeState: "blocked" },
+      });
+      expect(record.pullRequest).toEqual({ ...ghSays(world), reviewDecision: "approved" });
+      expect(record.designGate.approvedVersion).toBe(record.designGate.currentVersion);
+      expect(issueState({ ...world, issueRead: world.readAfter }).status).toBe(
+        `Status: ${record.status}`
+      );
+    }, 300_000);
+
+    test("reviewer-text-findings' text-only world: the record its reviewer reads holds the rounds before its own, its own task and no decision", () => {
+      const world = seededWorld("text-only", false, { role: "reviewer", phase: "", completed: "" });
+      const record = servedRecord(world);
+      const seeds = seededRecords(world);
+      expect(Object.keys(record.workers)).toEqual(["implementer", "planner", "reviewer", "tester"]);
+      expect(record).toMatchObject({
+        key: world.issue,
+        phase: "reviewing",
+        status: "needs_review",
+        workers: {
+          planner: { handoffRecord: seeds.plan },
+          implementer: { handoffCommit: world.head, handoffRecord: seeds.implement },
+          tester: { handoffCommit: world.head, handoffRecord: seeds.test },
+          reviewer: {
+            claim: { session: BOOT_SESSION, state: "working", pendingTask: { phase: "reviewing" } },
+            pass: 0,
+            rounds: 0,
+          },
+        },
+        gatedSteps: [{ step: "spec", status: "approved" }],
+        slot: { index: 0 },
+        phaseEntry: 1,
+        givenEntry: 1,
+      });
+      expect(
+        ["handoffRecord", "handoffCommit"].filter((key) => key in (record.workers.reviewer ?? {}))
+      ).toEqual([]);
+      expect("mergeWait" in record).toBe(false);
+      expect(record.pullRequest).toEqual(ghSays(world));
+      expect("reviewDecision" in record.pullRequest).toBe(false);
+      expect(issueState({ ...world, issueRead: world.readAfter }).status).toBe(
+        `Status: ${record.status}`
       );
     }, 300_000);
   }

@@ -41,12 +41,17 @@
  * daemon refuses it: 404 HANDOFF_RECORD_NOT_FOUND for a record Dispatch has not got, 409
  * HANDOFF_RECORD_MISMATCH for one of another issue, phase or version, 502 DISPATCH_READ_FAILED
  * where Dispatch does not answer, and 500 DISPATCH_UNAVAILABLE for a run that names no Dispatch
- * (DISPATCH_URL). The daemon also holds the record to the session the claim registered
- * (HANDOFF_SESSION_MISMATCH), which this does not: the session a claim registers under and the
- * one Dispatch names a record's author by are not measured to agree in the rig, and holding them
- * unmeasured would refuse what production takes. This took every named record as found, a
- * success production does not give a completion naming a record that is not there; a
+ * (DISPATCH_URL), and 403 HANDOFF_SESSION_MISMATCH for one another session than the claim's
+ * wrote, the claim's being the one its grant was minted for (`handoffRecord` says what was
+ * measured: every record an agent of round 25 wrote names the session that agent registered).
+ * This took every named record as found, a success production does not give a completion
+ * naming a record that is not there; a
  * completion naming one of a phase that ends with none is refused 409 HANDOFF_RECORD_MISMATCH.
+ * Then the fact: a completion is one fact by its role, the phase the issue stands in, the
+ * implementer's pass, what it reported and its verdict (handoff.go's `eventID`), marked
+ * processed before the workflow reads it, so a call repeating one the workflow was handed,
+ * taken or refused, is refused 409 HANDOFF_ALREADY_RECORDED (`FACTS`), the completions the
+ * world's seeds stand for among them.
  * Then the workflow (`packages/daemon/internal/workflow/engine.go`, `handoff`): a completion from
  * the role whose phase the issue stands in is taken `{}` and moves nothing, since the record
  * moves on the review, as main's engine moves it (`servedPhase`). A completion from any other
@@ -56,15 +61,24 @@
  *     (`row.Completed()`). The completion is then one of the phase the role left (`phase.Of`),
  *     whose record it must name, or it is refused 409 HANDOFF_RECORD_REQUIRED
  *     (`phase.Handoff(reported)`, through `refused`). A role whose row holds a completion is
- *     refused 409 HANDOFF_NOT_CURRENT_PHASE. That holds for the roles the run's world says have
- *     completed (the [completed] argument: threads-closed's implementer, whose implementing round
- *     stands) and for a role whose completion was taken here, since the engine writes the
- *     completion's commit and record on the row (`row.HandoffCommit`, `row.HandoffRecord`).
+ *     refused 409 HANDOFF_NOT_CURRENT_PHASE. That holds for each role the world's seeds record
+ *     a round of (`HISTORY`: threads-closed's implementer and its reviewer, whose seeded
+ *     records are on their rows), for the roles the rig says completed with a commit (the
+ *     [completed] argument), and for a role whose completion was taken here, since the engine
+ *     writes the completion's commit and record on the row (`row.HandoffCommit`,
+ *     `row.HandoffRecord`; `completed`). It read the [completed] roles alone, and took a
+ *     threads-closed reviewer's first late completion, which production refuses.
  *     Every rig half is a worker the daemon started, so the refusal of a role the daemon never
  *     started is not modelled;
  *   - an older engine (`refused`, main `ff2a10ef`'s among them) has no `leftItsPhase` and refuses
  *     every late completion 409 HANDOFF_NOT_CURRENT_PHASE (`if RoleFor(issue.Phase) !=
  *     fact.Role`).
+ * A completion the engine takes that names the record its role's row last named is refused 409
+ * HANDOFF_NOT_NEW (`LAST_HANDOFF`). Each of HANDOFF_SESSION_MISMATCH, HANDOFF_ALREADY_RECORDED
+ * and HANDOFF_NOT_NEW is answered only where the label's own daemon source holds the code
+ * (`daemonAnswers`). The route's rules on a completion's own fields are not modelled: a tester's
+ * verdict (TESTER_VERDICT_REQUIRED), a verdict from any other role (VERDICT_ROLE_FORBIDDEN), an
+ * implementer's or a merger's commit (MISSING_FIELD) and a `wakeAt` (CHECK_WAKE_UNEXPECTED).
  * The phase a completion is of (`phase.Of`) is the served phase when the role works it and
  * otherwise the role's own, its first (below): the implementer's would be retro once the issue
  * stands in merging, where no run of this rig stands. The route's entry fence (`entryFence`:
@@ -95,6 +109,18 @@
  * nothing, a success the daemon gives no move it refuses. The tree's linger (`TREE_LINGERING`)
  * is not modelled, since no tree of the rig leaves the workflow.
  *
+ * The state document's record of the issue is production's (standin-record.ts, which says what
+ * each member is): the tree's architect and a row for each role the world's history ran and
+ * each agent the run booted, read back from the run's own Dispatch by the seeds <run
+ * dir>/fixture.json names (`HISTORY`) and off the run's log of the stand-ins before this one;
+ * this stand-in's own claim as its agent registers, readies and ends its turn (`OWN`); the pull
+ * request as the world's gh answers it at the read (`worldPull`); the design gate as the run's
+ * Dispatch holds the spec at the read (`gateNow`); and the slot, the entries and the counts of
+ * the moves. Every move of the record — the round's, a backward move — is one `enter`: the
+ * phase, the implementer's pass, pair and round, the start of the role that works the phase,
+ * and the status that phase shows, written to the run's Dispatch as the daemon's own session
+ * before the request is answered (`writeStatuses`).
+ *
  * Every request appends one JSON line to the log file: `{at, method, path, status, role, code?,
  * grantId?, sessionId?, mintedGrantId?, handoffId?, handoffVersion?, to?, reason?, phase?,
  * failed?}`, the run's
@@ -111,8 +137,9 @@
  *
  * Usage: `bun daemon-standin.ts <port> <log file> <boot token file> <project> <issue> <run dir>
  * <role> [phase] [completed]`. The daemon whose routes it answers is the one of the checkout
- * <run dir>/built-from names (`ROUTES`). The run's own Dispatch, which a completion's handoff
- * record is read back from, is the one DISPATCH_URL names, read with the bearer in the file
+ * <run dir>/built-from names (`ROUTES`). The run's own Dispatch, which the world's history, the
+ * spec's approval and a completion's handoff record are read back from and a move's status is
+ * written to, is the one DISPATCH_URL names, reached with the bearer in the file
  * DISPATCH_TOKEN_FILE names (rig.sh's worker_boot gives both, the ones the run's panes read).
  * The state document holds that one issue, on the repository and default branch of the run's own
  * world, which it reads from <run dir>/world.json, as the gh stand-in does: a record naming
@@ -122,7 +149,9 @@
  * where the caller names none, in the first phase its role works (daemon-pane.go's `phase
  * <role>`): the implementer works implementing and retro, and the daemon starts it in either.
  * [completed] is the roles, comma-separated, whose row the run's world gives a handoff commit:
- * each completed its phase before the run began (`COMPLETED_ROWS`).
+ * each completed its phase before the run began (`COMPLETED`). A run directory holding a
+ * fixture.json is a run with seeds: each record it names is read back from the run's Dispatch
+ * at the boot, and a boot that cannot read one exits 2 naming it.
  * An issue in `reviewing` moves on what the same run directory reports: its remote's tip, the
  * reviews of its world and of its gh record, and the merge state its world reports for that tip
  * (`servedPhase`).
@@ -152,8 +181,16 @@ import {
   standinFacts,
 } from "./daemon-pane";
 import { routeFor, worldOf } from "./gh-call";
-import { mergeStateOf, recordedCalls, threadState } from "./gh-threads";
-import { CALLS, openingLine } from "./run-records";
+import { heldPullRequest, mergeStateOf, recordedCalls, threadState } from "./gh-threads";
+import { CALLS, Opened, openingLine } from "./run-records";
+import {
+  type CapabilityFacts,
+  type GateFacts,
+  type PullRequestFacts,
+  phaseStatus,
+  type RowFacts,
+  stateBody,
+} from "./standin-record";
 
 const GRANT_TTL_MS = 60_000;
 const [
@@ -185,13 +222,12 @@ if (!isLegionRole(role)) {
   console.error(`${role} is not a Legion role`);
   process.exit(2);
 }
-/** The roles whose phase row holds a completion, which a `recorded` engine refuses a late
- * completion from (`leftItsPhase`'s `row.Completed()`, a handoff commit or a handoff record on
- * the row): the roles the run's world says completed their phase with a commit before the run
- * began, and a role whose completion was taken here naming a commit or a record (`handle`'s
- * `handoff/complete`). */
-const COMPLETED_ROWS = new Set(completedArg.split(",").filter((named) => named !== ""));
-for (const named of COMPLETED_ROWS) {
+/** The roles the run's world says completed their phase with a commit before the run began
+ * (rig.sh's worker_boot COMPLETED): each one's row holds that commit (`HANDOFFS`), and a row
+ * that holds a completion is one a `recorded` engine refuses a late completion from
+ * (`completed`). */
+const COMPLETED = completedArg.split(",").filter((named) => named !== "");
+for (const named of COMPLETED) {
   if (!isLegionRole(named)) {
     console.error(`daemon-standin: [completed] names ${named}, which is not a Legion role`);
     process.exit(2);
@@ -214,6 +250,10 @@ if (REPO_OWNER === "" || !repo.includes("/")) {
 /** Encoded exactly as the daemon encodes it (`legion-<project>-<key>-<role>`, lower-cased),
  * since the worker claims this token on the real Envoy and Envoy rejects uppercase. */
 const ROLE_TOKEN = roleToken(project, issue, role);
+/** The session the daemon writes every Dispatch status of the issue under, and the author of a
+ * handoff record it carried: `legion-daemon:<PROJECT>`, PROJECT being the key's
+ * (packages/daemon/internal/dispatch/client.go's `DaemonSession`). */
+const DAEMON_SESSION = `legion-daemon:${issue.split("-")[0]}`;
 /** The secret a registration answers, in the shape the daemon mints one (Go's `rand.Text()`, 26
  * letters and digits of base32: packages/daemon/internal/api/claims.go): a word of the rig's
  * (`rig-secret`) was what the agent's plugin held. Fixed, since daemon-standin.test.ts sends it. */
@@ -257,6 +297,19 @@ const {
   phase: PHASE,
   notCurrentPhase: NOT_CURRENT_PHASE,
 } = bootRead(() => standinFacts(CHECKOUT, role, phaseArg));
+/** Whether the label's daemon gives the refusal `code` to a completion at all: its own source
+ * of the completion route and of the workflow names it. HANDOFF_SESSION_MISMATCH,
+ * HANDOFF_ALREADY_RECORDED and HANDOFF_NOT_NEW are this checkout's daemon's, each answered here
+ * in its own sentence, and a label built from a daemon that holds none of one is never answered
+ * it. */
+const COMPLETION_SOURCE = bootRead(() =>
+  ["api/handoff.go", "workflow/engine.go"]
+    .map((file) => readFileSync(`${CHECKOUT}/packages/daemon/internal/${file}`, "utf8"))
+    .join("\n")
+);
+function daemonAnswers(code: string): boolean {
+  return COMPLETION_SOURCE.includes(`"${code}"`);
+}
 /** The answer of a claim refusal read at boot, in the daemon's shape (claim.Refusal marshals as
  * `{error}`). */
 function refuse(refusal: { status: number; message: string }): Response {
@@ -278,63 +331,9 @@ function authenticates(secret: string | undefined): boolean {
   return capabilityHeld && secret === SESSION_SECRET;
 }
 
+/** When this stand-in started: the daemon's boot in the state it serves, and the time of every
+ * fact of the record that stood before any request reached it (`recordFacts`). */
 const startedAt = new Date().toISOString();
-/** `GET /legion/v1/state`: the one issue the worker holds, standing in the phase this stand-in
- * was started for, on the run's own world: its repository and the branch its pull request is
- * open against, both read from that world and written nowhere else here. A record that named
- * one repository while the run's gh stand-in served another had agents query both, the second
- * answering 404, and cost recorded runs their review: rig.sh's worker world comment holds that
- * story. `capabilities` is the
- * deployment's capability report, `strandedClaims` the claims nothing will wake, `heldOutboxRows`
- * the lifecycle rows held behind their issues' running ones, `consumers` the lag of the daemon's
- * durable consumers and `repositories` the project's mapping, each of which the reader requires;
- * the rig has no deployment to report on, its one claim runs, it has no outbox and no NATS, so
- * the first four are the empty lists the daemon's MarshalJSON emits when there is none.
- * `wakesWaiting`, the wakes the pacing holds until their turn, is optional to the reader; the rig
- * carries it empty, as a daemon at this contract serves a caller in no pod holding no wake.
- * `settings` is the daemon's resolved legion.yaml with no credential in it, also required; the rig
- * has no file, so it carries the two keys the reader types at the daemon's defaults. */
-const stateIn = (phase: string) =>
-  LegionStateResponse.parse({
-    daemon: { project, schemaVersion: 1, boots: 1, firstBootAt: startedAt, startedAt },
-    admission: { cap: 1, active: [issue], waiting: [], trees: [issue], blocked: [] },
-    issues: {
-      [issue]: {
-        key: issue,
-        generation: 1,
-        phase,
-        status: "in_progress",
-        tree: issue,
-        repo,
-        defaultBranch: base,
-        workers: {},
-      },
-    },
-    pendingStatusWrites: [],
-    heldOutboxRows: [],
-    strandedClaims: [],
-    wakesWaiting: [],
-    capabilities: [],
-    repositories: {
-      owners: [REPO_OWNER],
-      mapped: [{ repo, default: true }],
-      refused: [],
-      withoutWebhookApp: [],
-      caches: [],
-    },
-    // Every key any label's contract requires, not this checkout's alone: a label's agents load
-    // the plugin of their own checkout, and `legionSettings` is a loose object in each, so a body
-    // carrying both keys is described by both contracts while one carrying either alone is
-    // refused by the other. Measured on 2026-11-10: the base label, then built from main
-    // `ff2a10ef`, whose contract requires `settings.max_fix_attempts`, had every state read of
-    // all 30 of its runs refused `a body the daemon API contract does not describe`, so its
-    // agents spent turns on the daemon and no reviewer of that label could reach the
-    // `read_record` the rule asks for — the negative control of k1 and k2 measured in a world of
-    // its own. A key a later contract drops stays here for as long as a label the rig builds
-    // still requires it.
-    settings: { max_fix_attempts: 3, review_round_cap: 3, worker_boot_timeout_seconds: 120 },
-    consumers: [],
-  });
 
 /** The phase the stand-in serves now, which starts as the phase it was started for and moves as
  * main's engine moves it: `reviewRound` (`packages/daemon/internal/workflow/review.go`), and the
@@ -402,9 +401,15 @@ const DECIDES = ["APPROVED", "CHANGES_REQUESTED"];
 /** The merge states the issue may advance on (`record.MergeState.Mergeable`). */
 const MERGEABLE = ["CLEAN", "UNSTABLE", "HAS_HOOKS"];
 
-/** The phase the review round moves the issue to on what the run's world reports now, or
- * undefined while it stays in `reviewing` (`servedPhase`). */
-function roundOutcome(): "accepting" | "implementing" | undefined {
+/** The run's pull request as its world says it now, read from the files the gh stand-in answers
+ * it from, so the record and gh say one thing: the head its branch is at on the run's remote,
+ * the state and the merge state GitHub reports for that head (gh-threads.ts's `heldPullRequest`
+ * and `mergeStateOf`), and the review that last decided the round, the last `APPROVED` or
+ * `CHANGES_REQUESTED` among the reviews the world held and those the run left, its head written
+ * whole where the review names the pull request's head by a prefix. `round` is whether the world
+ * holds a round to read at all: a run with no remote or no fixtures.json has none, and its pull
+ * request is the one its world.json names, open, with no merge state read. */
+function worldPull(): { pull: PullRequestFacts; round: boolean } {
   const tip = Bun.spawnSync([
     "git",
     "-C",
@@ -412,8 +417,9 @@ function roundOutcome(): "accepting" | "implementing" | undefined {
     "rev-parse",
     `refs/heads/${BRANCH}`,
   ]);
-  if (tip.exitCode !== 0 || !existsSync(`${runDir}/fixtures.json`)) return undefined;
-  const head = tip.stdout.toString().trim();
+  const head = tip.exitCode === 0 ? tip.stdout.toString().trim() : world.head;
+  if (tip.exitCode !== 0 || !existsSync(`${runDir}/fixtures.json`))
+    return { pull: { number: PR, head, state: "OPEN" }, round: false };
   const { routes, mergeStates } = Fixtures.parse(
     JSON.parse(readFileSync(`${runDir}/fixtures.json`, "utf8"))
   );
@@ -428,20 +434,41 @@ function roundOutcome(): "accepting" | "implementing" | undefined {
           return review === undefined ? [] : [review];
         })
     : [];
-  const decision = [
+  const named = [
     ...(Array.isArray(listed) ? listed : []).flatMap((review: unknown) => {
       const read = ListedReview.safeParse(review);
       return read.success ? [{ state: read.data.state, head: read.data.commit_id }] : [];
     }),
     ...recorded,
   ].findLast((review) => DECIDES.includes(review.state));
-  if (decision?.state === "CHANGES_REQUESTED") return "implementing";
-  const stands =
-    decision !== undefined && decision.head.length >= 7 && head.startsWith(decision.head);
   const at = { routes, world };
   const threads = threadState(at, existsSync(record) ? recordedCalls(record) : []);
-  const state = mergeStateOf(at, threads, mergeStates, head);
-  return stands && MERGEABLE.includes(state) ? "accepting" : undefined;
+  const held = heldPullRequest(routes).state;
+  return {
+    pull: {
+      number: PR,
+      head,
+      state: typeof held === "string" ? held : "OPEN",
+      mergeState: mergeStateOf(at, threads, mergeStates, head),
+      decision:
+        named === undefined
+          ? undefined
+          : {
+              state: named.state,
+              head: named.head.length >= 7 && head.startsWith(named.head) ? head : named.head,
+            },
+    },
+    round: true,
+  };
+}
+
+/** The phase the review round moves the issue to on the pull request `pull` (`worldPull`), or
+ * undefined while it stays in `reviewing` (`servedPhase`). */
+function roundOutcome(pull: PullRequestFacts): "accepting" | "implementing" | undefined {
+  if (pull.decision?.state === "CHANGES_REQUESTED") return "implementing";
+  return pull.decision?.head === pull.head && MERGEABLE.includes(pull.mergeState ?? "")
+    ? "accepting"
+    : undefined;
 }
 
 interface LogLine {
@@ -468,10 +495,13 @@ if (expectedBootToken.length === 0) {
   process.exit(2);
 }
 
-const grants = new Map<string, { readonly expiresAt: number }>();
+/** The grants the tool minted, each with the session it was minted for: the claim's own, which
+ * the record a completion names is held to (`handoffRecord`). */
+const grants = new Map<string, { readonly expiresAt: number; readonly sessionId: string }>();
 
 /** `POST /legion/v1/handoff/complete`'s body: every key any label's contract sends, not this
- * checkout's alone, for the reason the state body carries every settings key (`stateIn`): a
+ * checkout's alone, for the reason the state body carries every settings key (standin-record.ts's
+ * `stateBody`): a
  * label's agents load the plugin of their own checkout. The base label, then built from main
  * `ff2a10ef`, sent `ready`, a boolean its contract requires on every completion; #2539 took it
  * out of this checkout's request, a strict object, so a stand-in parsing with this checkout's
@@ -483,10 +513,29 @@ const grants = new Map<string, { readonly expiresAt: number }>();
  * label the rig builds still sends it. */
 const CompleteRequest = LegionHandoffCompleteRequest.extend({ ready: z.boolean().optional() });
 
-/** The phase a state read serves now: `servedPhase`, moved where the round sends the issue the
- * first time a read finds the round over while the record is `reviewing` (`roundOutcome`). */
+/** The reviewer's decision the record holds: the round's, read from the world while the issue
+ * stands in `reviewing` and kept as it stood when the issue left it, since a review outside a
+ * round decides none (`api.PullRequestView`: "from the review that decided it until the next
+ * round opens"). A stand-in started outside `reviewing` holds the one the world held then. */
+let decided: PullRequestFacts["decision"];
+let decisionRead = false;
+
+/** The pull request the record holds on `read` of the world, after moving the record where the
+ * round sends the issue the first time a read finds the round over while it is `reviewing`
+ * (`roundOutcome`, `enter`). */
+function settled(read = worldPull()): PullRequestFacts {
+  if (servedPhase === "reviewing" || !decisionRead) {
+    decided = read.pull.decision;
+    decisionRead = true;
+  }
+  const outcome = servedPhase === "reviewing" && read.round ? roundOutcome(read.pull) : undefined;
+  if (outcome !== undefined) enter(outcome, outcome === "implementing" ? "review" : undefined);
+  return { ...read.pull, decision: decided };
+}
+
+/** The phase a state read serves now: `servedPhase`, as the world's round leaves it (`settled`). */
 function served(): string {
-  if (servedPhase === "reviewing") servedPhase = roundOutcome() ?? servedPhase;
+  settled();
   return servedPhase;
 }
 
@@ -592,25 +641,547 @@ function backwardRefusal(phase: string, to: string): string | undefined {
 const DISPATCH_URL = process.env.DISPATCH_URL ?? "";
 const DISPATCH_TOKEN_FILE = process.env.DISPATCH_TOKEN_FILE ?? "";
 /** A handoff record as Dispatch answers `GET /api/v1/handoffs/{id}`, as far as the daemon reads
- * it (dispatch/client.go's `handoffResponse`). */
+ * it (dispatch/client.go's `handoffResponse`): what it is a record of, and who wrote it. */
 const HandoffRecord = z.looseObject({
   issue_key: z.string(),
   phase: z.string(),
   version: z.number(),
+  author: z.looseObject({ kind: z.string(), id: z.string() }).optional(),
 });
 /** A refusal Dispatch answers in its error body, `{code, error}` (dispatch/api's `errorBody`). */
 const DispatchError = z.looseObject({ code: z.string().optional(), error: z.string().optional() });
 
+/** `GET route` of the run's own Dispatch as the run's agent bearer, its JSON answer. Throws naming
+ * the route and what Dispatch answered, or that the run names no Dispatch. */
+async function dispatchRead(route: string): Promise<unknown> {
+  if (DISPATCH_URL === "") throw new Error("the run names no Dispatch (DISPATCH_URL)");
+  const token =
+    DISPATCH_TOKEN_FILE === "" ? "" : (await Bun.file(DISPATCH_TOKEN_FILE).text()).trim();
+  const answer = await fetch(`${DISPATCH_URL}${route}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  const text = await answer.text();
+  if (!answer.ok)
+    throw new Error(`Dispatch answered GET ${route} ${answer.status}: ${text.trim()}`);
+  return JSON.parse(text);
+}
+
+/** The run's seeds, <run>/fixture.json (seed-handoffs.ts's TesterFixture, which rig.sh's
+ * worker_run_world and its runners write before any agent of the run boots): the handoff record
+ * each phase before the one under test left on the run's issue, by its handoff word. A run with
+ * none seeded no history, and its record holds the booted role's claim alone. */
+const SEEDS = `${runDir}/fixture.json`;
+const Seed = z.object({ id: z.string().min(1), version: z.number().int().positive() });
+const Seeds = z.looseObject({
+  plan: Seed.optional(),
+  implement: Seed.optional(),
+  test: Seed.optional(),
+  review: Seed.optional(),
+});
+/** The roles a seed records a phase of, in the order the workflow runs them, each with the word
+ * its record is seeded under, the phase its completion was of, the verdict it reported (a
+ * tester's alone reports one, and the seeded tester's passed: seed-handoffs.ts records its
+ * passing result and the status its pass moves the issue to), and whether it named a commit:
+ * the implementer's names its code commit and the tester's the head it tested, both the pull
+ * request's head when the run began (world.json's `head`, which the seeds record the implement
+ * handoff and both results at: rig.sh's worker_run_world); a planner's and a reviewer's name
+ * none, as production's rows of those two carry none (production-shapes.json's `legion
+ * read_record`). */
+const SEEDED = [
+  { role: "planner", word: "plan", phase: "planning", verdict: "", commit: false },
+  { role: "implementer", word: "implement", phase: "implementing", verdict: "", commit: true },
+  { role: "tester", word: "test", phase: "testing", verdict: "pass", commit: true },
+  { role: "reviewer", word: "review", phase: "reviewing", verdict: "", commit: false },
+] as const;
+/** An actor as Dispatch names one, the issue as it answers `GET /api/v1/issues/{key}`, a seeded
+ * record with its author, and the spec's approval as `GET /api/v1/artifacts/{id}` carries it
+ * (dispatch/model's `ArtifactApproval`), each as far as the record reads it. */
+const Actor = z.looseObject({ kind: z.string(), id: z.string() });
+const FiledIssue = z.looseObject({
+  created_at: z.string(),
+  created_by: Actor.nullable(),
+  primary_artifact_id: z.string().min(1),
+});
+const SeededHandoff = HandoffRecord.extend({ author: Actor });
+const Spec = z.looseObject({
+  approval: z
+    .looseObject({
+      state: z.string(),
+      latest_version: z.number(),
+      version: z.number().optional(),
+      reason: z.string().nullable().optional(),
+    })
+    .optional(),
+});
+
+/** What the run's world seeded before any agent of it booted, read back from the run's own
+ * Dispatch so the record and Dispatch say one thing: when the issue was filed, which is when the
+ * seeds hand it to Legion and it takes its slot (seed.ts's `testerProofIssue` files it and writes
+ * the daemon's `in_progress` in one step); the session that filed it, the tree's architect
+ * (seed.ts's FILER); its spec, the document the design gate is on; and each seeded record with
+ * the session that wrote it, the role's own. A record the run's Dispatch holds as another
+ * issue's, phase's or version's is a world the rig seeded wrongly, refused here. */
+interface History {
+  readonly admittedAt: string;
+  readonly architect: string;
+  readonly spec: string;
+  readonly seeded: readonly {
+    readonly role: string;
+    readonly session: string;
+    readonly record: { readonly id: string; readonly version: number };
+    readonly commit: boolean;
+    readonly phase: string;
+    readonly verdict: string;
+  }[];
+}
+const seededHistory = async (): Promise<History> => {
+  const seeds = Seeds.parse(JSON.parse(readFileSync(SEEDS, "utf8")));
+  const filed = FiledIssue.parse(await dispatchRead(`/api/v1/issues/${encodeURIComponent(issue)}`));
+  const seeded: History["seeded"][number][] = [];
+  for (const { role: named, word, commit, phase, verdict } of SEEDED) {
+    const record = seeds[word];
+    if (record === undefined) continue;
+    const held = SeededHandoff.parse(
+      await dispatchRead(`/api/v1/handoffs/${encodeURIComponent(record.id)}`)
+    );
+    if (held.issue_key !== issue || held.phase !== word || held.version !== record.version)
+      throw new Error(
+        `${SEEDS} names ${record.id} as version ${record.version} of ${issue}'s ${word} handoff, which the run's Dispatch holds as version ${held.version} of ${held.issue_key}'s ${held.phase} handoff`
+      );
+    seeded.push({ role: named, session: held.author.id, record, commit, phase, verdict });
+  }
+  return {
+    admittedAt: filed.created_at,
+    architect: filed.created_by?.kind === "session" ? filed.created_by.id : "",
+    spec: filed.primary_artifact_id,
+    seeded,
+  };
+};
+/** The run's history, or the boot failed with why it could not be read: a run whose seeds
+ * cannot be read back is never answered with a record of some other history. */
+let HISTORY: History | undefined;
+if (existsSync(SEEDS)) {
+  try {
+    HISTORY = await seededHistory();
+  } catch (error) {
+    console.error(
+      `daemon-standin: the history ${SEEDS} names could not be read back from the run's Dispatch: ${error instanceof Error ? error.message : String(error)}`
+    );
+    process.exit(2);
+  }
+}
+
+/** A claim of the issue as this stand-in holds it (standin-record.ts's `ClaimFacts`). */
+interface Claim {
+  session: string;
+  state: string;
+  generation: number | undefined;
+  capabilities: CapabilityFacts | undefined;
+  served: boolean;
+  pendingTask: { phase?: string; queuedAt: string } | undefined;
+  lastTurnStart: string | undefined;
+  lastTurnEnd: string | undefined;
+  lastReady: string | undefined;
+}
+/** A claim in `state` under `session`, of the process `generation` names (none: no process). */
+function claimOf(
+  session: string,
+  state: string,
+  generation: number | undefined,
+  served: boolean
+): Claim {
+  return {
+    session,
+    state,
+    generation,
+    capabilities: undefined,
+    served,
+    pendingTask: undefined,
+    lastTurnStart: undefined,
+    lastTurnEnd: undefined,
+    lastReady: undefined,
+  };
+}
+/** The processes the issue's pod has started so far: each claim's process is the next, as an
+ * issue pod's launcher numbers them (`runtime.SandboxLocator.Generation`). */
+let launches = 0;
+function launched(): number {
+  launches += 1;
+  return launches;
+}
+/** The claims of the issue, by role (the architect's among them), and the handoff each role's
+ * completion of its current phase named: what the record's `architect` and `workers` are built
+ * from (`recordFacts`). */
+const CLAIMS = new Map<string, Claim>();
+const HANDOFFS = new Map<
+  string,
+  { commit: string | undefined; record: { id: string; version: number } | undefined }
+>();
+/** Whether `named`'s row holds a completion (`record.PhaseRow.Completed`): a handoff commit or a
+ * handoff record, which a `recorded` engine refuses a late completion from (`leftItsPhase`). */
+function completed(named: string): boolean {
+  const held = HANDOFFS.get(named);
+  return held?.commit !== undefined || held?.record !== undefined;
+}
+/** The record each role's row last named (`record.PhaseRow.LastHandoff`), which a move that
+ * clears the row's handoff keeps, and the completions the workflow has been handed, each by the
+ * key its route gives one (`factOf`). */
+const LAST_HANDOFF = new Map<string, string>();
+const FACTS = new Set<string>();
+/** The key of one completion (handoff.go's `eventID`, less the issue and its generations, which
+ * are one in a run): the role, the phase the issue stands in, the implementer's pass through
+ * it, what the completion reported — the record it names where it is record-backed, else its
+ * commit — and its verdict. */
+function factOf(
+  named: string,
+  phase: string,
+  passes: number,
+  reported: string,
+  verdict: string
+): string {
+  return [named, phase, passes, reported, verdict].join("\0");
+}
+
+/** A registration of `claim`'s agent under `session`: a claim that was registered before is
+ * relaunched, a new process of the pod. */
+function register(claim: Claim, session: string | undefined): void {
+  if (claim.state !== "launching") claim.generation = launched();
+  claim.session = session ?? claim.session;
+  claim.state = "registered";
+  claim.lastTurnStart = undefined;
+}
+/** `claim`'s agent saying at `at` that it can be prompted. A rig agent is `omp -p`, handed its
+ * prompt at its launch, so the turn the daemon would record at the task's delivery
+ * (supervise's `LastTurnStart`, `StateWorking`) begins where the agent first says so. */
+function ready(claim: Claim, at: string): void {
+  claim.lastReady = at;
+  if (claim.state !== "registered") return;
+  claim.state = "working";
+  claim.lastTurnStart = at;
+}
+/** The end of a turn of `claim`'s agent at `at`, which retires the task the turn confirmed
+ * (`servingGeneration`); a turn that failed the claim leaves it with no process. */
+function endTurn(claim: Claim, at: string, failed: boolean): void {
+  claim.lastTurnEnd = at;
+  if (claim.pendingTask !== undefined) {
+    claim.pendingTask = undefined;
+    claim.served = true;
+  }
+  claim.state = failed ? "failed" : "idle";
+  if (failed) claim.generation = undefined;
+}
+
+// The history first, in the order the workflow ran it: the architect, then each role whose
+// record a seed wrote, each a claim whose turn ended before this daemon recorded it, so each is
+// idle and carries no time of a turn (standin-record.ts's header). A seeded record stands for
+// the completion that named it: it is on its role's row, it is the record that role last named,
+// and it is a fact the workflow already took, of the role's own phase on the issue's first pass.
+if (HISTORY !== undefined) {
+  CLAIMS.set("architect", claimOf(HISTORY.architect, "idle", launched(), true));
+  for (const seed of HISTORY.seeded) {
+    CLAIMS.set(seed.role, claimOf(seed.session, "idle", launched(), true));
+    HANDOFFS.set(seed.role, { commit: seed.commit ? world.head : undefined, record: seed.record });
+    LAST_HANDOFF.set(seed.role, seed.record.id);
+    FACTS.add(factOf(seed.role, seed.phase, 0, seed.record.id, seed.verdict));
+  }
+}
+// A role the rig says completed its phase with a commit before the run began (`COMPLETED`) holds
+// that commit on its row, the head the run began at, where no seed gave the row its record too.
+for (const named of COMPLETED)
+  if (!HANDOFFS.has(named)) HANDOFFS.set(named, { commit: world.head, record: undefined });
+/** One line of the run's record of what reached its daemon, as an earlier stand-in of the run
+ * wrote it (`LogLine`). */
+const Logged = z.looseObject({
+  at: z.string(),
+  path: z.string(),
+  status: z.number(),
+  role: z.string().optional(),
+  sessionId: z.string().optional(),
+  failed: z.boolean().optional(),
+});
+// Then each agent the run booted before this one, read off the run's one record of what reached
+// its daemon, which every stand-in of the run appends to (rig.sh's worker_boot): the session it
+// registered, when it said it could be prompted and when its turn ended. rig.sh boots an agent
+// only after the one before it has exited, so each such claim is idle now, or failed where a
+// turn outcome failed it. threads-closed's reviewer reads the implementer's claim so.
+if (existsSync(logFile)) {
+  const earlier = new Set<Claim>();
+  for (const text of readFileSync(logFile, "utf8").split("\n")) {
+    if (text.trim() === "") continue;
+    const value: unknown = JSON.parse(text);
+    const line = Opened.safeParse(value).success ? undefined : Logged.safeParse(value).data;
+    if (line?.role === undefined) continue;
+    if (line.path === "/legion/v1/claims/register" && line.status === 200) {
+      const claim = CLAIMS.get(line.role) ?? claimOf("", "launching", launched(), false);
+      register(claim, line.sessionId);
+      CLAIMS.set(line.role, claim);
+      earlier.add(claim);
+    }
+    const claim = CLAIMS.get(line.role);
+    if (claim === undefined || !earlier.has(claim)) continue;
+    if (line.path === "/legion/v1/claims/ready" && line.status === 204) ready(claim, line.at);
+    if (line.path === "/legion/v1/claims/turn-outcome" && line.status === 200)
+      endTurn(claim, line.at, line.failed === true);
+  }
+  for (const claim of earlier) if (claim.state !== "failed") claim.state = "idle";
+}
+/** This stand-in's own claim, the booted agent's: a new process of its role's claim, which the
+ * daemon is launching until the agent registers. */
+const OWN = claimOf(
+  CLAIMS.get(role)?.session ?? "",
+  "launching",
+  launched(),
+  CLAIMS.get(role)?.served ?? false
+);
+CLAIMS.set(role, OWN);
+
+/** The entry each role stands on and the entry its claim was last given a task of
+ * (`record.PhaseRow.Entry`, `supervise.Claim.GivenEntry`). A start raises its role's entry
+ * (workflow's `enter`), and the task it queues is of that entry, so the two are equal for a role
+ * that holds a claim and the second is 0 for one that holds none. */
+const ENTRIES = new Map<string, { entry: number; given: number }>();
+function raise(named: string): void {
+  const held = ENTRIES.get(named) ?? { entry: 0, given: 0 };
+  held.entry += 1;
+  if (CLAIMS.has(named)) held.given = held.entry;
+  ENTRIES.set(named, held);
+}
+/** The task a start of `phase` queues to its role at `at` (`api.PendingTaskView`): of that phase,
+ * and of no phase for the architect's. */
+function taskOf(phase: string, at: string): NonNullable<Claim["pendingTask"]> {
+  return roleFor(phase) === "architect" ? { queuedAt: at } : { phase, queuedAt: at };
+}
+// The entries the history raised: the architect's at the issue's admission, each seeded role's
+// at the start of its phase, and the start of the phase the issue stands in, where that is the
+// first of its role or the architect's second, its acceptance. The role working that phase holds
+// its task until a turn of its retires it, unless its row already holds the phase's completion:
+// tester-proof's tester and reviewer-text-findings' reviewer hold the task their prompt is, and
+// threads-closed's halves hold none, since the daemon starts no phase for that loop.
+raise("architect");
+for (const { role: named } of HISTORY?.seeded ?? []) raise(named);
+if (roleFor(PHASE) !== "" && (PHASE === "accepting" || !ENTRIES.has(roleFor(PHASE))))
+  raise(roleFor(PHASE));
+const WORKING = CLAIMS.get(roleFor(PHASE));
+if (WORKING !== undefined && !completed(roleFor(PHASE)))
+  WORKING.pendingTask = taskOf(PHASE, startedAt);
+
+/** The implementer's counts, which every move back raises (workflow's `recordPass`: the pass and
+ * the move's own pair) and a review that requested changes raises once more (`recordRound`). */
+let pass = 0;
+let rounds = 0;
+const backwardMoves: Record<string, number> = {};
+/** When the issue took the slot it holds, and when the daemon last saw anything of its tree move:
+ * a request of the claim's that it took, or a move of the record. No move of the rig brings an
+ * issue back before its review once it is past it (a backward move is its phase's own role's,
+ * and `accepting` is the architect's, which no run boots), so a slot given up is never taken
+ * again and the time it was taken at never moves. */
+const admittedAt = HISTORY?.admittedAt ?? startedAt;
+let movedAt = startedAt;
+
+/** The Dispatch status the record holds: the one its phase shows, and for a stand-in started in
+ * a phase with none of its own the hand-over's `in_progress` (`phaseStatus`). */
+let shownStatus = phaseStatus(PHASE) || "in_progress";
+/** The status writes the record's moves owe the run's Dispatch and have not finished, oldest
+ * first (`writeStatuses`). */
+const OWED: { status: string; observed: string; attempts: number; lastError?: string }[] = [];
+
+/** Moves the record to `to`, as the engine's transition writes it (engine.go's `transition`):
+ * the phase and, where the phase it enters shows another status than the record holds, that
+ * status, queued for the run's Dispatch as the engine queues its outbox row (`Engine.status`);
+ * for a move back (`back`), the implementer's pass and the move's pair, and its
+ * round where a review requested the changes; and the start of the role that works
+ * `to` — its handoff cleared (`clearHandoff`), its entry raised, and the task of that entry
+ * queued to its claim, which the start makes where the role held none. The slot follows the
+ * phase (`keepsSlot`, at each read). */
+function enter(to: string, back: "review" | "move" | undefined): void {
+  const from = servedPhase;
+  const now = new Date().toISOString();
+  servedPhase = to;
+  movedAt = now;
+  const shown = phaseStatus(to);
+  if (shown !== "" && shown !== shownStatus) {
+    OWED.push({ status: shown, observed: shownStatus, attempts: 0 });
+    shownStatus = shown;
+  }
+  if (back !== undefined) {
+    pass += 1;
+    backwardMoves[`${from}-${to}`] = (backwardMoves[`${from}-${to}`] ?? 0) + 1;
+    if (back === "review") rounds += 1;
+  }
+  const starts = roleFor(to);
+  if (starts === "") return;
+  HANDOFFS.delete(starts);
+  const claim = CLAIMS.get(starts) ?? claimOf("", "queued", undefined, false);
+  CLAIMS.set(starts, claim);
+  raise(starts);
+  claim.pendingTask = taskOf(to, now);
+}
+
+/** The run's issue as its Dispatch answers it, as far as a status write reads it. */
+const ShownIssue = z.looseObject({ status: z.string() });
+/** Writes each status the record's moves owe the run's Dispatch, in the order they were queued,
+ * as the daemon's outbox runs a `dispatch_status` row (packages/daemon/internal/daemon/
+ * outbox.go's `writeStatus`): it reads the issue, writes nothing where Dispatch already shows
+ * the status or shows another than the one the move observed — a change someone made since,
+ * which stands — and otherwise writes it through `PATCH /api/v1/issues/{key}` as the daemon's
+ * own session, `legion-daemon:<PROJECT>` (dispatch/client.go's `SetStatus`, the session the
+ * world's seeds write each status as: seed-handoffs.ts's DAEMON). So a `dispatch read` after a
+ * move shows the status the record names; the record moved and Dispatch kept the status of the
+ * phase it had left. Each request this stand-in answers runs the writes before its answer, and a
+ * write the run's Dispatch does not take stays owed, with why, for the next (the state's
+ * `pendingStatusWrites`), where the outbox waits out a backoff. The write carries no
+ * `expected_sequence`, as the outbox's does: the read above it is of the same moment, and a
+ * fenced write refused for an agent's own write of that moment would stand in the run's
+ * Dispatch log as a refusal of that agent's (health.ts's rule 16). */
+async function writeStatuses(): Promise<void> {
+  for (let owed = OWED[0]; owed !== undefined; owed = OWED[0]) {
+    try {
+      const route = `/api/v1/issues/${encodeURIComponent(String(issue))}`;
+      const shown = ShownIssue.parse(await dispatchRead(route)).status;
+      if (shown === owed.observed) {
+        const token =
+          DISPATCH_TOKEN_FILE === "" ? "" : (await Bun.file(DISPATCH_TOKEN_FILE).text()).trim();
+        const answer = await fetch(`${DISPATCH_URL}${route}`, {
+          method: "PATCH",
+          headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+          body: JSON.stringify({
+            status: owed.status,
+            actor: { kind: "session", id: DAEMON_SESSION },
+          }),
+        });
+        if (!answer.ok)
+          throw new Error(
+            `Dispatch answered PATCH ${route} ${answer.status}: ${(await answer.text()).trim()}`
+          );
+      }
+      OWED.shift();
+    } catch (error) {
+      owed.attempts += 1;
+      owed.lastError = error instanceof Error ? error.message : String(error);
+      return;
+    }
+  }
+}
+
+/** The contract the label's plugin declares at its registration (`pluginContract`, the
+ * `legion.daemonApiVersion` of its package: packages/pi-legion/src/claim-session.ts), which
+ * every claim of the issue's pod records, since they all load the one plugin: read from the
+ * label's checkout until the agent registers, and the registration's own from then on. 0 is the
+ * daemon's word for no contract recorded, which is a checkout whose package names none. */
+const PluginPackage = z.looseObject({
+  legion: z.looseObject({ daemonApiVersion: z.number().int().nonnegative() }),
+});
+let pluginContract = (() => {
+  const file = `${CHECKOUT}/packages/pi-legion/package.json`;
+  if (!existsSync(file)) return 0;
+  return (
+    PluginPackage.safeParse(JSON.parse(readFileSync(file, "utf8"))).data?.legion.daemonApiVersion ??
+    0
+  );
+})();
+
+/** A `claims/ready` as far as the record reads it: the capability report a session sends on one
+ * of its own (`claim.CapabilityReport`). The daemon's own normalising of the rows (the live
+ * table's order, a name it does not know dropped, a live row not reported marked open:
+ * `capabilities.Normalize`) is not modelled: a row is `ok` or open as the session reported it,
+ * an open one with the daemon's own words where it gave none (`capabilities.NewRow`). */
+const ReadyReport = z.looseObject({
+  capabilities: z
+    .looseObject({
+      measuredAt: z.string(),
+      rows: z.array(
+        z.looseObject({ name: z.string().min(1), ok: z.boolean(), detail: z.string() })
+      ),
+    })
+    .optional(),
+});
+
+/** The design gate as the run's Dispatch holds the issue's spec now (dispatch/model's
+ * `ArtifactApproval`), read at each state read since a write of the spec moves it: the document,
+ * its latest version, the version a person approved — `approved` at the latest, `stale` at an
+ * older one — and the reason of a request for changes at the latest. Undefined for a run that
+ * seeded no history, and for a spec with no version, which is no registered gate. */
+async function gateNow(): Promise<GateFacts | undefined> {
+  if (HISTORY === undefined) return undefined;
+  const { approval } = Spec.parse(
+    await dispatchRead(`/api/v1/artifacts/${encodeURIComponent(HISTORY.spec)}`)
+  );
+  if (approval === undefined || approval.latest_version < 1) return undefined;
+  const approved = approval.state === "approved" || approval.state === "stale";
+  return {
+    artifactId: HISTORY.spec,
+    currentVersion: approval.latest_version,
+    approvedVersion: approved && approval.version !== undefined ? approval.version : null,
+    changesReason:
+      approval.state === "changes_requested" && approval.version === approval.latest_version
+        ? (approval.reason ?? "")
+        : undefined,
+  };
+}
+
+/** `GET /legion/v1/state`: the record of the run's issue as the world stands now
+ * (standin-record.ts's `stateBody`), read through this checkout's own contract so a body it does
+ * not describe is never served. A world that cannot be read — the run's Dispatch not answering
+ * for the spec — is answered 500 with why, as a daemon that cannot build its state answers,
+ * never with a record of what the world last said. */
+const stateAnswer = async (): Promise<Response> => {
+  try {
+    const pullRequest = settled();
+    await writeStatuses();
+    const workers: Record<string, RowFacts> = {};
+    for (const [named, claim] of CLAIMS) {
+      if (named === "architect") continue;
+      const handoff = HANDOFFS.get(named);
+      workers[named] = { claim, handoffCommit: handoff?.commit, handoffRecord: handoff?.record };
+    }
+    const body = stateBody(
+      {
+        project,
+        issue,
+        phase: servedPhase,
+        status: shownStatus,
+        statusWrites: OWED,
+        repo,
+        defaultBranch: base,
+        pluginContract,
+        architect: CLAIMS.get("architect"),
+        workers,
+        pass,
+        rounds,
+        backwardMoves,
+        pullRequest,
+        gate: await gateNow(),
+        admittedAt,
+        entries: Object.fromEntries(ENTRIES),
+        movedAt,
+        now: new Date().toISOString(),
+      },
+      startedAt
+    );
+    return json(200, LegionStateResponse.parse(body));
+  } catch (error) {
+    return json(500, {
+      error: `the state could not be built: ${error instanceof Error ? error.message : String(error)}`,
+    });
+  }
+};
+
 /** The refusal of a completion naming handoff record `id` at `version`, read back from the run's
  * own Dispatch as the daemon reads it (handoff.go's `handoffRecord`), or undefined where the
- * record is this issue's, of the phase's handoff word and at that version. A record Dispatch
+ * record is this issue's, of the phase's handoff word, at that version and written by `session`,
+ * the claim's own. A record Dispatch
  * answers 404 for, or refuses with a code that says the id names nothing it holds
  * (dispatch.PermanentRefusal: a 4xx with a code, but 401, 403, 408, 429 and a contended
  * parent), is HANDOFF_RECORD_NOT_FOUND, 404; any other answer, or none, DISPATCH_READ_FAILED,
- * 502; a record of another issue, phase or version HANDOFF_RECORD_MISMATCH, 409; and a run that
+ * 502; a record of another issue, phase or version HANDOFF_RECORD_MISMATCH, 409; one another
+ * session wrote HANDOFF_SESSION_MISMATCH, 403; and a run that
  * names no Dispatch DISPATCH_UNAVAILABLE, 500. Each sentence is the daemon's, the Dispatch error
  * in it as Go prints one (`<code>: <message>`). */
-async function handoffRecord(id: string, version: number): Promise<Response | undefined> {
+async function handoffRecord(
+  id: string,
+  version: number,
+  session: string
+): Promise<Response | undefined> {
   const write = `\`dispatch handoff-write --issue ${issue} --phase ${HANDOFF_WORD} --body-file <file>\``;
   const read = `\`dispatch handoff-read --issue ${issue} --phase ${HANDOFF_WORD}\``;
   if (DISPATCH_URL === "") return failure(500, "DISPATCH_UNAVAILABLE", "Dispatch is unavailable");
@@ -660,12 +1231,35 @@ async function handoffRecord(id: string, version: number): Promise<Response | un
   if (!record.success)
     return unanswered(`a handoff record no reader can take: ${record.error.message}`);
   const held = record.data;
-  if (held.issue_key === issue && held.phase === HANDOFF_WORD && held.version === version)
-    return undefined;
+  if (held.issue_key !== issue || held.phase !== HANDOFF_WORD || held.version !== version)
+    return failure(
+      409,
+      "HANDOFF_RECORD_MISMATCH",
+      `handoff record ${id} is version ${held.version} of ${held.issue_key}'s ${held.phase} handoff, and this completion is of ${issue}'s ${HANDOFF_WORD} handoff at version ${version}: name the record ${read} shows; this completion changed nothing`
+    );
+  // The record is the claim's own session's (handoff.go's `handoff.Author.IsSession(session)`):
+  // one another session wrote is refused 403, and one the daemon's own session wrote, a record
+  // carried from before handoffs moved to the Dispatch issue, with its own sentence. The claim's
+  // session is the one its grant was minted for, which is the one it registered: measured on
+  // INFRA-764 round 25's 40 worker runs, every one of the 31 handoff records an agent wrote
+  // names as its author the session that agent registered with the stand-in. A record a seed
+  // wrote for the role an agent now plays is another session's, the seed's, so a completion
+  // naming it is refused as production refuses a claim naming a record an earlier session of
+  // its role wrote, and told to write its own.
+  const author = held.author;
+  if (!daemonAnswers("HANDOFF_SESSION_MISMATCH")) return undefined;
+  if (author?.kind === "session" && author.id === session) return undefined;
+  const named = `handoff record ${id} (${HANDOFF_WORD} version ${held.version})`;
+  if (author?.kind === "session" && author.id === DAEMON_SESSION)
+    return failure(
+      403,
+      "HANDOFF_SESSION_MISMATCH",
+      `${named} was written by the daemon's own session ${author.id}, as a record carried from before handoffs moved to the Dispatch issue is, not by this claim's session ${session}: read it with ${read}, write it again with ${write} from this session, then complete naming the new record; this completion changed nothing`
+    );
   return failure(
-    409,
-    "HANDOFF_RECORD_MISMATCH",
-    `handoff record ${id} is version ${held.version} of ${held.issue_key}'s ${held.phase} handoff, and this completion is of ${issue}'s ${HANDOFF_WORD} handoff at version ${version}: name the record ${read} shows; this completion changed nothing`
+    403,
+    "HANDOFF_SESSION_MISMATCH",
+    `${named} was written by ${author?.kind ?? ""} ${author?.id ?? ""}, not by this claim's session ${session}: write the handoff again with ${write} from this session, then complete naming the new record; this completion changed nothing`
   );
 }
 
@@ -718,6 +1312,7 @@ function turnOutcome(body: unknown): Response {
     refusedRun++;
   const failed = refusedRun >= TURN_OUTCOME_LIMIT;
   if (failed) capabilityHeld = false;
+  endTurn(OWN, new Date().toISOString(), failed);
   return json(200, { refusedRun, failed });
 }
 
@@ -752,6 +1347,10 @@ async function handle(
       if (stringField(body, "bootToken") !== expectedBootToken) {
         return { response: refuse(INVALID_BOOT_TOKEN) };
       }
+      // The claim is the registering session's from here, under the contract its plugin
+      // declares (`register`, `pluginContract`).
+      register(OWN, stringField(body, "sessionId"));
+      pluginContract = numberField(body, "pluginContract") ?? pluginContract;
       return {
         response: json(200, {
           claimToken: ROLE_TOKEN,
@@ -768,6 +1367,18 @@ async function handle(
       if (!authenticates(stringField(body, "secret"))) {
         return { response: refuse(INVALID_SECRET) };
       }
+      // The agent can be prompted, and its turn begins (`ready`); a ready of the session's own
+      // carries its capability report, which the claim keeps (`ReadyReport`).
+      ready(OWN, new Date().toISOString());
+      const report = ReadyReport.safeParse(body).data?.capabilities;
+      if (report !== undefined)
+        OWN.capabilities = {
+          measuredAt: report.measuredAt,
+          ok: report.rows.filter((row) => row.ok).map((row) => row.name),
+          open: report.rows
+            .filter((row) => !row.ok)
+            .map((row) => ({ name: row.name, detail: row.detail.trim() || "no detail reported" })),
+        };
       return { response: new Response(null, { status: 204 }) };
     }
     case "/legion/v1/claims/activity": {
@@ -784,7 +1395,7 @@ async function handle(
       }
       const grantId = randomUUID();
       const expiresAt = Date.now() + GRANT_TTL_MS;
-      grants.set(grantId, { expiresAt });
+      grants.set(grantId, { expiresAt, sessionId: parsed.data.sessionId });
       return {
         response: json(200, { grantId, expiresAt: new Date(expiresAt).toISOString() }),
         mintedGrantId: grantId,
@@ -830,7 +1441,11 @@ async function handle(
             ),
           };
         }
-        const unread = await handoffRecord(handoffId, handoffVersion);
+        const unread = await handoffRecord(
+          handoffId,
+          handoffVersion,
+          grants.get(parsed.data.grantId)?.sessionId ?? ""
+        );
         if (unread !== undefined) return { phase, response: unread };
       } else if (!RECORD_PHASES.includes(of) && namesRecord) {
         return {
@@ -842,12 +1457,45 @@ async function handle(
           ),
         };
       }
+      // The fact (intake's `ApplyFact`): one phase's completion is identified by where the
+      // issue stands — its phase and its pass through it — with the role and what it reported,
+      // the record a record-backed completion names or else its commit, and the verdict
+      // (handoff.go's `eventID`), and it is marked processed before the workflow reads it. So a
+      // call that repeats one the workflow already answered, taken or refused, is answered 409
+      // HANDOFF_ALREADY_RECORDED and reaches no workflow, and the completions the world's seeds
+      // stand for are such facts too (`FACTS`). This answered a repeat as its first call was
+      // answered, a second success among them, which production gives none of.
+      const fact = factOf(
+        role,
+        phase,
+        pass,
+        recordBacked ? (handoffId ?? "") : (commit ?? ""),
+        parsed.data.verdict
+      );
+      if (FACTS.has(fact) && daemonAnswers("HANDOFF_ALREADY_RECORDED")) {
+        const received = recordBacked
+          ? `naming handoff record ${handoffId} (${HANDOFF_WORD} version ${handoffVersion})`
+          : `at commit ${commit ?? ""}`;
+        return {
+          phase,
+          response: failure(
+            409,
+            "HANDOFF_ALREADY_RECORDED",
+            `the ${role} completion of phase ${phase} (pass ${pass} through it) ${received} was already received; this call changed nothing`
+          ),
+        };
+      }
+      FACTS.add(fact);
       // The workflow (packages/daemon/internal/workflow/engine.go, `handoff`): a late role's
-      // completion is answered by the label's engine (LATE_ROLE). The refusal's code and message
-      // are the daemon's own, read from its code at boot (NOT_CURRENT_PHASE), because the skill
-      // has the worker quote them to its architect.
+      // completion is answered by the label's engine (LATE_ROLE): an older engine refuses every
+      // one, and this checkout's records it unless the role's row holds a completion
+      // (`leftItsPhase`'s `row.Completed()`), which is a row the world's seeds completed, one
+      // the rig says completed with a commit, and one whose completion was taken here
+      // (`completed`). The refusal's code and message are the daemon's own, read from its code
+      // at boot (NOT_CURRENT_PHASE), because the skill has the worker quote them to its
+      // architect.
       if (phase !== ROLE_PHASE) {
-        if (LATE_ROLE === "refused" || COMPLETED_ROWS.has(role)) {
+        if (LATE_ROLE === "refused" || completed(role)) {
           if (NOT_CURRENT_PHASE === undefined)
             throw new Error(`no refusal was read at boot for ${role}'s completion in ${phase}`);
           return {
@@ -872,11 +1520,40 @@ async function handle(
           };
         }
       }
+      // A phase that ends with a record ends with a new one: the record the role's row last
+      // named, its previous completion's or the one its seed stands for (`LAST_HANDOFF`), means
+      // this completion wrote none (the engine's HANDOFF_NOT_NEW). A repeat of a whole
+      // completion never reaches here (HANDOFF_ALREADY_RECORDED above): this is the same record
+      // under another verdict, or in a phase the issue has since entered.
+      if (
+        HANDOFF_WORD !== "" &&
+        handoffId !== undefined &&
+        handoffId === LAST_HANDOFF.get(role) &&
+        daemonAnswers("HANDOFF_NOT_NEW")
+      ) {
+        return {
+          phase,
+          response: failure(
+            409,
+            "HANDOFF_NOT_NEW",
+            `the ${role} named handoff record ${handoffId} for its previous phase of ${issue}; write this phase's handoff with \`dispatch handoff-write --issue ${issue} --phase ${HANDOFF_WORD} --body-file <file>\` before completing`
+          ),
+        };
+      }
       // A taken completion is written on the role's row, its commit as the row's handoff commit
-      // and its record as the row's handoff record, either of which completes the row
-      // (`row.Completed()`), and it moves nothing: the review decides the round, and the record
-      // moves when the world reports a decision that ends it (`servedPhase`, `roundOutcome`).
-      if (commit !== undefined || handoffId !== undefined) COMPLETED_ROWS.add(role);
+      // and its record as the row's handoff record (engine.go's `handoff` writes both from the
+      // completion, a commit or a record it does not name included), either of which completes
+      // the row (`row.Completed()`), and it moves nothing: the review decides the round, and the
+      // record moves when the world reports a decision that ends it (`servedPhase`,
+      // `roundOutcome`).
+      if (HANDOFF_WORD !== "" && handoffId !== undefined) LAST_HANDOFF.set(role, handoffId);
+      HANDOFFS.set(role, {
+        commit,
+        record:
+          handoffId === undefined || handoffVersion === undefined
+            ? undefined
+            : { id: handoffId, version: handoffVersion },
+      });
       return { response: json(200, {}), phase };
     }
     case "/legion/v1/phase/backward": {
@@ -894,13 +1571,13 @@ async function handle(
         };
       }
       // The workflow (engine.go's `backward`): a move it refuses changes nothing; one it takes
-      // moves the issue to the phase it names and clears the completion of the role it starts
-      // there (`transition`'s `clearHandoff`), so that role's next completion is of that phase.
+      // moves the issue to the phase it names, counts the move on the implementer's row and
+      // starts the role that works that phase, clearing its completion (`enter`), so that role's
+      // next completion is of that phase.
       const { to } = parsed.data;
       const why = backwardRefusal(served(), to);
       if (why !== undefined) return { response: failure(409, "BACKWARD_REFUSED", why) };
-      servedPhase = to;
-      COMPLETED_ROWS.delete(roleFor(to));
+      enter(to, "move");
       return { response: json(200, {}) };
     }
     default:
@@ -928,8 +1605,14 @@ const server = Bun.serve({
       : request.method === "POST"
         ? await handle(path, body)
         : request.method === "GET" && path === "/legion/v1/state"
-          ? { response: json(200, stateIn(served())) }
+          ? { response: await stateAnswer() }
           : { response: json(404, { error: `no route for ${request.method} ${path}` }) };
+    // What the daemon last saw of the issue's tree move (`treeMovedAt`): a request of the
+    // claim's that it took.
+    if (request.method === "POST" && response.status < 300) movedAt = new Date().toISOString();
+    // A move this request made owes the run's Dispatch its status, written before the answer
+    // (`writeStatuses`); a state read has written its own before it built the state.
+    if (request.method === "POST") await writeStatuses();
     // A refusal's line carries its code, the daemon's `Failure` code where the answer has one, so
     // a reader of the log can tell the daemon's own answer to a run (HANDOFF_NOT_CURRENT_PHASE)
     // from a body this stand-in could not take at all, whose 400 has none (score.ts's

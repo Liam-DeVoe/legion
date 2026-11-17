@@ -1702,12 +1702,11 @@ function toldArchitect(runDir: string, sender: string, threads: z.infer<typeof T
  * The completions the daemon stand-in refused as the daemon refuses them are reported
  * (`refusedCompletions`) and scored by neither case: what a role should have done instead of
  * one is no part of the rule these words give. They are the 409 HANDOFF_NOT_CURRENT_PHASE of a
- * late completion — the implementer's, whose round already stands, in `reviewing` or
- * `accepting`; on a daemon of an older engine (`refused`) the reviewer's once the round has moved
- * the issue; and on one of this checkout's engine (`recorded`) the reviewer's repeat, a late
- * completion after its own earlier one was answered 200 — which the daemon of the run's label's
- * checkout answers so (daemon-standin.ts, completion-answers.ts's ANSWERS), and which is a
- * reading of the run; every other refusal of a completion is a rig error
+ * late completion from a role whose round already stands on its row, as the world's seeds
+ * leave both roles': the implementer's, in `reviewing` or `accepting`, and the reviewer's once
+ * the round has moved the issue, or from its boot in `accepting` — which the daemon of the
+ * run's label's checkout answers so (daemon-standin.ts, completion-answers.ts's ANSWERS), and
+ * which is a reading of the run; a refusal that table does not allow is a rig error
  * (`unscored`). The reviewer's completion in text-fixes' `reviewing` is its own phase's and is
  * accepted.
  * `ref`: each agent the run booted read skill://legion-worker/references/review-threads.md,
@@ -4617,7 +4616,7 @@ function unscored(
   // agent whose `read_record` is refused cannot take the step the rule names, and it spends its
   // turns on the daemon instead of on its work. Each label's agents load the plugin of their own
   // checkout, so a stand-in body one contract describes and another does not breaks one label
-  // alone and silently; the measurement that found it is told at `daemon-standin.ts`'s `settings`
+  // alone and silently; the measurement that found it is told at `standin-record.ts`'s `settings`
   // line, and this is what says so the next time one is missed.
   for (const [role, booted] of halves) {
     const refused = CONTRACT_REFUSED.exec(transcriptText(booted));
@@ -4653,11 +4652,13 @@ function unscored(
   }
   // A completion the daemon stand-in refused is the rig's fault and never the run's, unless the
   // run's label's daemon refuses that role's completion so in this world
-  // (completion-answers.ts's ANSWERS): threads-closed's implementer, whose round already stands,
-  // is refused 409 HANDOFF_NOT_CURRENT_PHASE by a daemon of either shape, and so is a reviewer
-  // whose round has moved the issue on a daemon of the older `refused` engine, and a repeat on
-  // one of this checkout's `recorded` engine, a late completion after its own earlier one was
-  // answered 200, which threadsClosed reports. Which daemon the label runs is read out of the
+  // (completion-answers.ts's ANSWERS): threads-closed's implementer and its reviewer, whose
+  // rounds the world's seeds leave standing on their rows, are refused a late completion 409
+  // HANDOFF_NOT_CURRENT_PHASE by a daemon of either shape, which threadsClosed reports; so is a
+  // reviewer-text-findings reviewer whose round has moved the issue on a daemon of the older
+  // `refused` engine, and on one of this checkout's `recorded` engine after its own earlier
+  // completion was answered 200; and a role's repeat of a completion the workflow was handed is
+  // refused as the daemon refuses one. Which daemon the label runs is read out of the
   // checkout the run's built-from names, never off the label's name. Every other refusal says the
   // stand-in and the agent's own plugin disagree about the completion — a body the stand-in's
   // request contract does not take (400 with no code), a completion with no record the tool always

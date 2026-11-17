@@ -450,6 +450,16 @@ work=$(realpath -m -- "$work")
 # pane's own system prompt (worker-pane.ts). This is the one place that story is told, and every
 # other comment on it points here.
 #
+# That record is production's record of the run's issue (standin-record.ts), and what it says of
+# the issue's history it reads from where this script's seeds left it, never from a list of its
+# own: the seeded handoff records by the ids $R/fixture.json names (worker_run_world and its
+# runners), each read back from the run's own Dispatch with the session that wrote it, as the
+# row of the role whose round it stands for; the spec's approval, which is the record's design
+# gate (seed.ts tester-proof approves the spec); the pull request as the run's gh answers it;
+# and the agents this script boots, by what each sends its stand-in. In INFRA-764's round 25 the
+# record held eight keys and `workers: {}`, and every counted threads-closed run read it before
+# its first write and saw no row of the implementer's round this script says stands.
+#
 # A second name is a second world, and an agent follows whichever name it is given. Of the forty
 # runs recorded on 2026-11-10, six submitted their review to a repository their world has not
 # got: four to `sjawhar/legion-smoke`, which the daemon stand-in's record named while the world
@@ -1644,6 +1654,24 @@ label_facts() {
     fail "a fact of the daemon of label $1's checkout $co could not be read (above), so no daemon stand-in of the label could boot"
 }
 
+# label_contract LABEL holds the state the daemon stand-in serves to LABEL's own contract: the
+# `LegionStateResponse` of the checkout load_label loaded last (packages/contracts/src/
+# legion-api.ts), the schema the plugin that label's agents load reads every state answer with.
+# standin-record.ts's `contract` hands that schema every kind of body a stand-in of the rig can
+# serve (its sampleFacts: each phase a scenario boots in or the round moves to, each claim state,
+# each merge state and decision of the pull request, each state of the design gate) and names the
+# first it refuses, with the schema's own error. A label's agents load the plugin of their own
+# checkout, so a body one label's contract describes and the other's does not breaks one arm
+# alone, in its agents' own turns: every state read of all 30 base runs of 2026-11-09 was
+# refused `a body the daemon API contract does not describe` (standin-record.ts's `settings`
+# line). A label whose contract does not describe the state fails the batch here, naming the
+# label and the error, before that label's listener or any run starts; so does a checkout whose
+# contract cannot be read.
+label_contract() {
+  bun "$here/standin-record.ts" contract "$1" "$co" ||
+    fail "label $1's own contract ($co/packages/contracts/src/legion-api.ts) does not describe the state the daemon stand-in serves (above), so every read_record of that label's agents would be refused"
+}
+
 # start_listener LABEL BINARY serves LABEL's Envoy listener, BINARY (go_binary of the label's own
 # checkout), on a port the kernel chose, held from that choice until the listener serves on it
 # (lib/rig.sh's start_held), and sets envoy_port. Each label's listener is a service of its own,
@@ -1882,7 +1910,8 @@ containers=()
 # LABEL, out of that label's own checkout: an Envoy listener (go_binary, start_listener), the
 # Dispatch server each run of the label starts its own Dispatch on (own_dispatch), daemon-pane.go
 # built in its daemon module (daemon_pane_binary) and every fact of that daemon a stand-in reads at
-# its boot (label_facts), the label's services file (label_services) naming that listener, and the
+# its boot (label_facts), the check that the label's own contract describes the state a stand-in
+# serves (label_contract), the label's services file (label_services) naming that listener, and the
 # label's service provenance (services_from, label_provenance). A label's agents load the plugins
 # of its own checkout, so one listener built from this checkout paired a base label's plugins,
 # main ff2a10ef's from before #2603, with a listener from after it, a pairing no deploy ever had,
@@ -1943,6 +1972,7 @@ services_up() {
     dispatch=$(go_binary "$co" envoy ./cmd/dispatch dispatch-e2e) || fail "the Dispatch server of label $label's checkout $co did not build"
     pane=$(daemon_pane_binary "$co") || fail "daemon-pane.go did not build in the daemon module of label $label's checkout $co"
     label_facts "$label" "$pane"
+    label_contract "$label"
     start_listener "$label" "$listener"
     {
       echo "ENVOY_URL=http://127.0.0.1:$envoy_port"
@@ -3434,7 +3464,9 @@ run_project() {
 # not the reviewer's, so a completion there is a late one, which the stand-in answers as the run's
 # label's daemon answers it (daemon-standin.ts). COMPLETED is the roles, comma-separated, whose
 # phase the run's world says was completed with a commit before the run began, which the daemon
-# refuses a late completion from (HANDOFF_NOT_CURRENT_PHASE); empty for none.
+# refuses a late completion from (HANDOFF_NOT_CURRENT_PHASE); empty for none. A role whose
+# seeded record stands on its row is such a role without being named here (the stand-in reads
+# the seeds); the argument names one for a run whose seeds record none of it.
 #
 # A run that boots a second agent calls this again with that agent's role, after writing its
 # prompt: the two run one after the other on the one run directory, so the second reads the gh
@@ -3780,13 +3812,18 @@ skip_reason() {
 #                architect as the one route (score.ts's threadsClosed). So each half's
 #                `read_record` answers `accepting`, the architect's phase
 #                (packages/daemon/internal/workflow/engine.go, RoleFor).
-# The implementer's implementing round already stands on its row with its commit, which is what
-# the world says to each half's stand-in (worker_boot's COMPLETED), so its `handoff_complete` is
-# refused 409 HANDOFF_NOT_CURRENT_PHASE in either phase by either label's daemon: the one
-# deliberate refusal. The reviewer's completion in `reviewing` is of its own phase; once the round
-# has moved the issue it is a late one, answered as the run's label's daemon answers it
-# (daemon-standin.ts). What each label's daemon may answer each half here is
-# completion-answers.ts's ANSWERS["threads-closed"], which `rig.sh health` and the score read.
+# Both roles' rounds already stand on their rows: the implementer's implementing round with its
+# commit and its record (worker_boot's COMPLETED, and the seeded implement record), and the
+# reviewer's review round with the review record seeded below, which the stand-in reads onto
+# the row. So the implementer's `handoff_complete` is refused 409 HANDOFF_NOT_CURRENT_PHASE in
+# either phase by either label's daemon, the one deliberate refusal, and so is the reviewer's
+# once the round has moved the issue, or from its boot in `accepting` (the engine's
+# `leftItsPhase` refuses a role whose row holds a completion). The reviewer's completion in
+# `reviewing` is of its own phase and is taken. A completion naming a seeded record is one
+# naming a record another session wrote, which the daemon's route refuses 403
+# HANDOFF_SESSION_MISMATCH: the agent writes its own. What each label's daemon may answer each
+# half here is completion-answers.ts's ANSWERS["threads-closed"], which `rig.sh health` and the
+# score read.
 run_threads_closed() {
   local name=$1 project=$2 index=$3 start=$4 threads_case=$5 pr head open wake skip \
     phase=reviewing completed=implementer

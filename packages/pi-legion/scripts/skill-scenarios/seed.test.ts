@@ -120,6 +120,8 @@ class FakeDispatch {
   repoProjects: { repo: string; who: string; body: Record<string, unknown> }[] = [];
   /** Each plan review, as `POST /api/v1/artifacts/{id}/plan-reviews` took it. */
   planReviews: { artifact: string; body: Record<string, unknown> }[] = [];
+  /** Each person's review of a document, as `POST /api/v1/artifacts/{id}/reviews` took it. */
+  reviews: { artifact: string; who: string; body: Record<string, unknown> }[] = [];
   projects: Record<string, unknown>[] = [];
   /** A seeded spec's ask blocks no settlement has indexed yet, by issue. Dispatch settles a
    * seeded document a moment after the issue is created; here the issue's second read of its asks
@@ -406,6 +408,13 @@ class FakeDispatch {
         (artifact) => {
           this.planReviews.push({ artifact, body: body ?? {} });
           return json({ artifact_id: artifact, state: "approved", version: body?.version }, 201);
+        },
+      ],
+      [
+        /^POST \/api\/v1\/artifacts\/([^/]+)\/reviews$/,
+        (artifact) => {
+          this.reviews.push({ artifact, who, body: body ?? {} });
+          return json({ artifact_id: artifact, state: body?.state, version: 1 }, 201);
         },
       ],
       [
@@ -1141,6 +1150,24 @@ describe("tester-proof", () => {
       },
     ]);
     expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({ issue: KEY, covers: "r2" });
+  });
+
+  // Catches: an issue under test whose spec no person approved. The issue is its tree's root,
+  // whose work waits behind its design gate until a person approves the spec, so the run's
+  // Dispatch said of an issue already in its tester's hands that its spec was unreviewed, and
+  // the record the daemon stand-in reads the gate into named a gate no production issue past
+  // `admitted` has. The approval is the person's, of the issue's own spec, after the hand-over.
+  test("the person approves the issue's spec once the issue is Legion's", async () => {
+    const file = path.join(freshDir("seed"), "fixture.json");
+    await seed.testerProofIssue(file);
+    const spec = dispatch.issues.get(KEY)?.spec_artifact;
+    expect(dispatch.reviews).toEqual([
+      { artifact: spec ?? "no spec", who: "alice", body: { state: "approved" } },
+    ]);
+    const order = dispatch.calls.map((call) => `${call.method} ${call.path}`);
+    expect(order.indexOf(`POST /api/v1/artifacts/${spec}/reviews`)).toBeGreaterThan(
+      order.lastIndexOf(`PATCH /api/v1/issues/${KEY}`)
+    );
   });
 
   // Catches: the world whose CLI dropped the blank-name guard given a check that covers the blank

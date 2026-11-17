@@ -3687,7 +3687,7 @@ reviewRun("reviewer-text-findings-text-only-head-41", {
 });
 // head-36: the stand-in answered the read 200 and the agent's own plugin refused the body, which
 // is what a label whose contract requires a key the stand-in stopped serving reads on every state
-// read (`daemon-standin.ts`'s `settings` line tells that measurement). An agent whose
+// read (`standin-record.ts`'s `settings` line tells that measurement). An agent whose
 // `read_record` is refused cannot take the step the rule names, so the run is a rig error naming
 // the refused read rather than a row whose wake was never sent.
 reviewRun(

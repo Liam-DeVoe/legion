@@ -741,6 +741,20 @@ starts, reads with that build every fact a stand-in of any scenario boots on (`r
 naming it. A boot reads each fact out of a file, and the stand-in and the worker pane run the
 label's build for anything else they read.
 
+The state a stand-in serves is read by the plugin of the run's own label, with that label's own
+contract, so a batch holds it to each label's before any run starts (`rig.sh`'s `label_contract`,
+`bun standin-record.ts contract <label> <checkout>`): the `LegionStateResponse` of the label's
+checkout (`packages/contracts/src/legion-api.ts`) is handed every kind of state body a stand-in
+can serve (`standin-record.ts`'s `sampleFacts`: each phase a scenario boots in or the round moves
+the issue to, each state a claim is given, each merge state and decision of the pull request,
+each state of the design gate, and a run with no history), and the first it refuses fails the
+batch before that label's listener starts, naming the label, the body and the schema's own error
+(`standin-record contract: label base: … does not describe the state body the stand-in serves
+(<body>): <error>`). A checkout whose contract cannot be loaded, or exports no such schema, fails
+it the same way. `daemon-standin.test.ts` holds every member and every enum word its rows read
+from a running stand-in to be among those bodies, and reads the base label's own contract where
+`SKILL_SCENARIOS_BASE_CHECKOUT` names its checkout.
+
 How the label's daemon takes a completion is one of those facts, and it is read the same way,
 never by the label's name: `daemon-completion.go` reads the checkout's
 `internal/workflow/engine.go` for how its engine answers a role that does not run the issue's
@@ -829,8 +843,9 @@ the five reads of a branch a ruleset alone protects (`rules/branches/main`, `rul
 distinct reads the 44 runs of INFRA-764's round 25 made, read against a pull request of the same
 repository at about 15:40Z that day. `production-shapes.ts` derives it from those reads' own
 files, which stay out of the tree, and refuses to write a value of theirs into it: `bun
-production-shapes.ts <ruleset reads dir> <production reads json> production-shapes.json` writes
-it and formats it with the repository's biome. A row holds a world's answer to a pinned read with
+production-shapes.ts <ruleset reads dir> <production reads json> <read_record json>
+production-shapes.json` writes it and formats it with the repository's biome (the third input is
+the issue record below). A row holds a world's answer to a pinned read with
 `shapeDiff`, which reports the paths production has that the world lacks, the paths the world
 has that production does not, and the paths whose kinds differ, none of them below a path whose
 kind differs. An array the world holds empty is not compared below itself, nor is a variant of a
@@ -847,6 +862,80 @@ account by the address the commit carries and the key it signs with (`rig.sh`'s
 `fixture_first_commit` writes `<run>/accounts.json` and `<run>/allowed-signers`), so the commit's
 `author` and `committer` are that account and its `verification` is the one `git verify-commit`
 gives against that key, as production's head is linked and verified.
+
+### The issue record a `read_record` answers
+
+The daemon stand-in answers `GET /legion/v1/state`, the `legion` tool's `read_record`, with
+production's record of the run's issue (`standin-record.ts`, built from what the run's world
+says at each read), field for field as the daemon's projection builds one. Until INFRA-764 round
+25 it held 8 keys and `workers: {}`, so a threads-closed implementer that read it before its
+first write saw no row of its own completed round. It holds:
+
+- `architect` and a row of `workers` for each role the world's history ran and each agent the
+  run booted. The history is read back from the run's own Dispatch at the stand-in's boot, by
+  the records `<run>/fixture.json` names (the seeds of `worker_run_world` and its runners): the
+  architect is the session that filed the issue; a role's session is the author of its seeded
+  handoff record; its `handoffRecord` is that record's id and version; and `handoffCommit` is the
+  head the run began at for the implementer and the tester, whose completions name one, and
+  absent for the planner and the reviewer, as on production's rows. A seed the run's Dispatch
+  does not hold as that issue's record of that phase and version stops the boot, naming it. The
+  booted agent's claim carries the session it registered, `launching` until it registers,
+  `registered` until it says it can be prompted, `working` from then until its turn's outcome
+  and `idle` after it, with the times of each; the second agent of a run reads the first's claim
+  off the run's `daemon.log`. Each claim's `locator` is production's sandbox locator for the
+  run's own issue pod (`legion-<project>-<issue>`, the pod's uid drawn from the two), its
+  generation the order the pod's processes started in.
+- `pendingTask` on the claim the daemon queued a task to: the booted role's where the daemon
+  started its phase (tester-proof's tester, reviewer-text-findings' reviewer) until its turn
+  ends, none for threads-closed's two halves, whose loop the daemon starts no phase for, and the
+  role's that a move of the record starts.
+- `pullRequest` as gh answers the world's pull request at that read: its number, the head its
+  branch is at on the run's remote, its state, its merge state as the run's review threads leave
+  it, and the decision of the review that last decided the round; and `mergeWait` while an
+  approval of the head waits in `reviewing` on a merge state the issue may not advance on.
+- `designGate` and `gatedSteps` as the run's Dispatch holds the issue's spec at that read: its
+  document, its latest version and the version a person approved. The seed approves the spec
+  (`seed.ts`'s `testerProofIssue`: the issue is its tree's root, whose work waits behind that
+  gate), so a world's gate reads approved at version 1, and a later write of the spec reads
+  `waiting`. A read the run's Dispatch does not answer for the spec is answered 500 with why.
+- `slot` while the issue holds one (none in `accepting`, as an issue past its review holds none,
+  and `admission.active` lists it accordingly), `phaseEntry` and `givenEntry` of the role working
+  the phase, the status its phase shows on Dispatch (`testing`, `needs_review`, `in_progress`),
+  and `treeMovedAt` with `quietHours`, counted from the last request of the claim's the stand-in
+  took or the last move of the record.
+
+The record moves as the stand-in's served phase moves: a request for changes sends the issue to
+`implementing`, raises the implementer's `pass` and `rounds`, counts
+`backwardMoves["reviewing-implementing"]`, clears its handoff and queues its task; a worker's own
+move back counts its pair and no round; an approval of a mergeable head moves the issue to
+`accepting`, gives up the slot and queues the architect's task; and a completion the stand-in
+takes is written on its role's row. Each move into a phase that shows another status writes
+that status to the run's own Dispatch before the request that made the move is answered, as
+the daemon's outbox runs a `dispatch_status` row: under the daemon's own session,
+`legion-daemon:<PROJECT>` (the session the seeds write each status as), and only while
+Dispatch still shows the status the move observed, so `dispatch read` and `read_record` name
+one status and a status someone else gave the issue since stands. A write the run's Dispatch
+does not take stays owed and is tried again at the stand-in's next request; the state's
+`pendingStatusWrites` lists it with why.
+
+Its shape is held to production's: `production-shapes.json`'s `legion read_record` is the shape
+of one issue's record as the tool answered it in a Legion issue pod at 2026-11-17T16:49Z, the
+two maps keyed by a name of the issue's (`workers`, by role, and `backwardMoves`, by pair) read
+as lists, so the pin names no role and no move of that one issue. The derivation refuses a
+record whose shape would carry a value as a key: every key of the daemon's record is one
+camel-cased word of letters, and a path holding anything else (a map by issue key or by
+session) fails it by name. `daemon-standin.test.ts` compares a running stand-in's record with
+the pin (`shapeDiff`), naming every difference, and `rig.test.ts` holds the record a stand-in
+serves on a world `rig.sh` built, against a real Dispatch, to that world's own facts: the ids
+and versions of the seeded handoff records, the pull request as the world's `gh pr view` prints
+it, the spec's approval and the status `dispatch read` shows, for a threads-closed world and a
+reviewer-text-findings one. Three members production holds are in no world's
+record, each for a reason of the rig's (`WORLD_NEVER_HOLDS`, `standin-record.ts`'s header):
+`step`, which the daemon builds from the tool frames of the launcher's worker stream, where a
+rig agent runs under no launcher; the architect's `capabilities`, since no architect's session
+runs and a claim carries a report only once its session sent one on a `claims/ready` of its
+own, which a `-p` run that works until it exits does not reach; and the three turn times of a
+claim no agent of the run booted, which the stand-in's daemon never recorded.
 
 Every REST route the world serves — each `GET`, `POST`, `PUT` and `PATCH` of `gh-routes.ts`'s
 `WORLD_ROUTES` and each route of `github-routes.ts`'s `GITHUB_ROUTES`, the HTTP stand-in
@@ -956,7 +1045,20 @@ its review's body read back unchanged with no rule seeing it. The daemon stand-i
 the daemon the same way: a backward move the workflow has no row for, or by a role not running the
 issue's phase, is refused `BACKWARD_REFUSED` in the engine's sentence and one it takes moves the
 issue; a completion naming a handoff record reads it back from the run's own Dispatch and is
-refused `HANDOFF_RECORD_NOT_FOUND` or `HANDOFF_RECORD_MISMATCH` as the daemon refuses it.
+refused `HANDOFF_RECORD_NOT_FOUND` or `HANDOFF_RECORD_MISMATCH` as the daemon refuses it, and
+`HANDOFF_SESSION_MISMATCH` where another session than the claim's wrote it (measured on round
+25's 40 worker runs: each of the 31 records an agent wrote names the session that agent
+registered, so the check holds a record to the right session; a record a seed wrote for the
+role an agent plays is the seed's session's, and the agent is told to write its own). A
+completion is then one fact, by its role, the phase the issue stands in, the pass, the record or
+commit it reports and its verdict: a call that repeats one the workflow was handed, the
+completions the seeds stand for among them, is answered `HANDOFF_ALREADY_RECORDED`; a late
+completion of a role whose row holds one, seeded or taken, `HANDOFF_NOT_CURRENT_PHASE`; and
+one naming the record the role's row last named `HANDOFF_NOT_NEW`, each in the daemon's own
+sentence and only where the label's own daemon source holds that code. So a threads-closed
+reviewer's late completion is refused, its seeded review round standing on its row, where
+the stand-in took it until it read the seeded rows (3 of round 25's runs).
+`completion-answers.ts`'s `ANSWERS` allows those answers accordingly.
 
 Each role commits as its App's bot, `<slug>[bot]` and
 `<id>+<slug>[bot]@users.noreply.github.com`, as production gives it (`packages/daemon/internal/appauth`'s
@@ -979,9 +1081,13 @@ Stated limits, each known and kept so:
   measured on 2026-11-17 (a reply to a reply is filed in its thread, replying to the thread's
   first comment); the `in_reply_to` of `POST …/pulls/<n>/comments` is read the same way, which is
   not measured.
-- A daemon stand-in's completion naming a handoff record is not held to the session that wrote
-  the record (the daemon's `HANDOFF_SESSION_MISMATCH`): the session a claim registers under and the
-  one Dispatch names a record's author by are not measured to agree in the rig.
+- `mergeWait.checkRuns` is 0, the reading the contract gives no evidence by: it counts the runs
+  a CI settlement brought the record, and no settlement reaches a stand-in. The check runs a head
+  reports are the gh stand-in's.
+- The record holds the fields production's did at the read the pin was made from, served to a
+  plugin at contract 144. The two times of the architect's entry handshake and the architect's
+  stalls, which a daemon at contract 146 writes for a root, and an issue's experiment
+  assignments, which that read held none of, are not served.
 - An endpoint written with gh's `{owner}/{repo}` placeholders is not filled in from `GH_REPO` as gh
   fills it, so such a write is refused as one the world does not model; no recorded run made one.
 - A GET of a repository the world's workflow names (an action's tag, read to check the commit its

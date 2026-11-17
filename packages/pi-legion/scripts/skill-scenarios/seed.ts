@@ -13,11 +13,12 @@
 //   seed.ts tester-proof <file> [no-name]  one run's own issue, the greet() issue a phase worker's
 //                                          world implements (world-issue.ts's words), handed to
 //                                          Legion as production hands it: `todo` by the person,
-//                                          then `in_progress` and the `legion` label by the daemon;
-//                                          writes {issue, covers} to <file>. `no-name` gives its
-//                                          check the words that miss R2's blank name (the world
-//                                          whose CLI dropped the blank-name guard); without it the
-//                                          check covers R2
+//                                          then `in_progress` and the `legion` label by the daemon,
+//                                          then the person's approval of its spec, the design gate
+//                                          a root's work waits behind; writes {issue, covers} to
+//                                          <file>. `no-name` gives its check the words that miss
+//                                          R2's blank name (the world whose CLI dropped the
+//                                          blank-name guard); without it the check covers R2
 //   seed.ts plan <file> <implement body file> <base commit>
 //                                          the issue's plan.md, its plan review's approval of
 //                                          version 1 and its plan handoff at <base commit>, all
@@ -143,6 +144,7 @@ import {
   listIssueMessages,
   patchIssue,
   putRepoProject,
+  reviewArtifact,
 } from "../../../dispatch/e2e/api";
 import { ENTRY_HEADER } from "./fetch-spec-sources";
 import { parseInstant } from "./production-dispatch";
@@ -645,10 +647,16 @@ export async function seedProject(): Promise<void> {
  * marks what rig.sh's worker_fixture meets as `requirement` blocks, and whose Verification
  * document holds the one `check` block the implementer's result and every role's own run are
  * recorded against, serving those requirements, in the words `covers` names. Then the issue is
- * handed to Legion as production hands it: the person moves it to `todo`, and the daemon writes
- * `in_progress` with the `legion` label, which hands it the issue's status. Each run's records go
- * on its own issue alone, and `force` passes Dispatch's duplicate check should the issue be filed
- * again. */
+ * handed to Legion as production hands it: the person moves it to `todo`, the daemon writes
+ * `in_progress` with the `legion` label, which hands it the issue's status, and the person
+ * approves the spec, version 1, from its header. The issue is its tree's own root, and a root's
+ * work waits behind its design gate until a person approves the spec the gate is on
+ * (packages/daemon/internal/classify's `DesignGateOpen`), so an issue whose plan, code and tests
+ * are in is one whose spec was approved: without the approval the run's Dispatch said no person
+ * had reviewed the spec of an issue already under test, and the record its daemon stand-in
+ * answers, which reads the gate from that Dispatch (daemon-standin.ts's `gateNow`), would name a
+ * gate no production issue past `admitted` has. Each run's records go on its own issue alone,
+ * and `force` passes Dispatch's duplicate check should the issue be filed again. */
 export async function testerProofIssue(file: string, covers: CheckCovers = "r2"): Promise<void> {
   const issue = await createIssue(
     { project: WORLD_PROJECT, force: true, title: WORLD_TITLE, spec: WORLD_SPEC },
@@ -661,6 +669,7 @@ export async function testerProofIssue(file: string, covers: CheckCovers = "r2")
   );
   await patchIssue(issue.key, { status: "todo" }, { login: PERSON });
   await daemonStatus(issue.key, "in_progress", ["legion"]);
+  await reviewArtifact(issue.primary_artifact_id, { state: "approved" }, { login: PERSON });
   const fixture: z.input<typeof TesterFixture> = { issue: issue.key, covers };
   writeFileSync(file, `${JSON.stringify(fixture)}\n`);
   console.log(`seeded ${issue.key}`);

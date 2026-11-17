@@ -16,9 +16,14 @@
 // is the world's state and no shape; an array production held empty has no item shape pinned, so
 // an item the world holds there is a path production does not show.
 //
-//   bun production-shapes.ts <ruleset reads dir> <production reads json> <out json>
+// One read is no gh call: `legion read_record` (`RECORD_READ`), the issue record the `legion`
+// tool's `read_record` answered in a Legion issue pod, which the daemon stand-in's record is held
+// to (daemon-standin.test.ts). Its two maps keyed by a name of the issue's are pinned as lists
+// (`rolesListed`), so the pin names no role and no pair of phases.
 //
-// writes the pin from the two sets of production reads INFRA-764 made, then formats it as the
+//   bun production-shapes.ts <ruleset reads dir> <production reads json> <read_record json> <out json>
+//
+// writes the pin from the three sets of production reads INFRA-764 made, then formats it as the
 // repository's biome does.
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
@@ -210,12 +215,49 @@ function parsed(text: string): unknown {
   }
 }
 
-/** The pin of the two sets of production reads: `rulesetDir`, one `NAME.json`, `NAME.err` and
+/** The name the pin holds production's `read_record` under. */
+export const RECORD_READ = "legion read_record";
+
+/** An issue record with its two maps keyed by a name of the issue's read as lists of their
+ * values: `workers`, keyed by role, and a row's `backwardMoves`, keyed by the pair of phases a
+ * move went between. Which roles hold a row and which moves an issue has made are its state and
+ * no shape, so a shape that named them would hold a world to the roles production's one issue
+ * happened to have run; as lists, every row is read under one path and the kinds of each member
+ * are joined over the rows. A list the world holds empty is compared no further down
+ * (`shapeDiff`), so a record with no row at all passes this comparison: the row that holds a
+ * world's record to the pin holds its roles by name as well. */
+export function rolesListed(record: unknown): unknown {
+  if (!isObject(record) || !isObject(record.workers)) return record;
+  return {
+    ...record,
+    workers: Object.values(record.workers).map((row) =>
+      isObject(row) && isObject(row.backwardMoves)
+        ? { ...row, backwardMoves: Object.values(row.backwardMoves) }
+        : row
+    ),
+  };
+}
+
+/** A production `read_record` as INFRA-764 kept it: a note naming when it was read, and the
+ * record the tool answered. */
+const RecordRead = z.object({ note: z.string(), record: z.unknown() });
+
+/** A path of a record's shape whose every key is a word of the contract's: the root, or keys of
+ * letters starting in lower case, each a list or not. */
+const RECORD_PATH = /^\.$|^(\.[a-z][A-Za-z]*(\[\])*)+$/;
+
+/** The pin of the sets of production reads: `rulesetDir`, one `NAME.json`, `NAME.err` and
  * `NAME.exit` per read of a branch a ruleset alone protects, with its README naming when they were
- * read; and `readsFile`, every distinct read of a pull request INFRA-764's round 25 made, with its
- * `substitutions` naming the production values its commands carry and its README when it was read.
- * Throws where a value of production would be left in the pin. */
-export function derive(rulesetDir: string, readsFile: string): z.infer<typeof Pin> {
+ * read; `readsFile`, every distinct read of a pull request INFRA-764's round 25 made, with its
+ * `substitutions` naming the production values its commands carry and its README when it was read;
+ * and, where one is given, `recordFile`, one `read_record` of a Legion issue with a note naming
+ * when it was read, pinned last under `RECORD_READ` by its shape alone (`rolesListed`). Throws
+ * where a value of production would be left in the pin. */
+export function derive(
+  rulesetDir: string,
+  readsFile: string,
+  recordFile?: string
+): z.infer<typeof Pin> {
   const readme = (dir: string) => readFileSync(path.join(dir, "README.txt"), "utf8");
   const rulesetAt = /read at (\d{4}-\d\d-\d\dT[\d:]+Z)/.exec(readme(rulesetDir))?.[1];
   const readsAt = /\(read (\d{4}-\d\d-\d\d about [\d:]+Z)/.exec(
@@ -302,11 +344,36 @@ export function derive(rulesetDir: string, readsFile: string): z.infer<typeof Pi
     };
   });
   const reads = [...rulesetReads, ...prReads];
+  if (recordFile !== undefined) {
+    const { note, record } = RecordRead.parse(JSON.parse(readFileSync(recordFile, "utf8")));
+    const readAt = /read (\d{4}-\d\d-\d\dT[\d:]+Z)/.exec(note)?.[1];
+    if (readAt === undefined) throw new Error(`${recordFile}'s note names no time it was read`);
+    const shape = shapeOf(rolesListed(record));
+    // The record's values can reach the pin through its shape alone, whose paths are its keys:
+    // a map keyed by a value of the issue's (an issue key, a session, a pair of phases) would
+    // write that value there. Every key the daemon's contract gives the record is one
+    // camel-cased word of letters (all 112 paths of the read pinned on 2026-11-17 are), so a
+    // path holding anything else holds a value, and is refused by name.
+    const valued = Object.keys(shape).filter((at) => !RECORD_PATH.test(at));
+    if (valued.length > 0)
+      throw new Error(`the pin would hold production's values: ${valued.slice(0, 5).join(", ")}`);
+    reads.push({
+      name: RECORD_READ,
+      // The tool and its op as one word, since it is no argv a row runs: the tool's own name,
+      // alone, is the name of production's repository, a value the gh reads' answers hold and
+      // the check below refuses.
+      command: [RECORD_READ],
+      read_at: readAt,
+      exit: 0,
+      stderr: "",
+      shape,
+    });
+  }
   const unique = new Set(reads.map(({ name }) => name));
   if (unique.size !== reads.length) throw new Error("two reads share a name");
   const pin = {
     made_by:
-      "production-shapes.ts (bun production-shapes.ts <ruleset reads dir> <production reads json> <out json>), from INFRA-764's production reads of a branch a ruleset alone protects and of every distinct read round 25's runs made, each read from a Legion issue pod with the role App token its gh gives",
+      "production-shapes.ts (bun production-shapes.ts <ruleset reads dir> <production reads json> <read_record json> <out json>), from INFRA-764's production reads of a branch a ruleset alone protects, of every distinct read round 25's runs made, and of one issue's record as the legion tool's read_record answers it, each read from a Legion issue pod with the role App token its gh gives",
     reads,
   };
   const text = JSON.stringify(pin);
@@ -342,14 +409,20 @@ function leaves(answer: unknown): string[] {
 }
 
 if (import.meta.main) {
-  const [rulesetDir, readsFile, out, ...rest] = Bun.argv.slice(2);
-  if (rulesetDir === undefined || readsFile === undefined || out === undefined || rest.length > 0) {
+  const [rulesetDir, readsFile, recordFile, out, ...rest] = Bun.argv.slice(2);
+  if (
+    rulesetDir === undefined ||
+    readsFile === undefined ||
+    recordFile === undefined ||
+    out === undefined ||
+    rest.length > 0
+  ) {
     console.error(
-      "usage: bun production-shapes.ts <ruleset reads dir> <production reads json> <out json>"
+      "usage: bun production-shapes.ts <ruleset reads dir> <production reads json> <read_record json> <out json>"
     );
     process.exit(2);
   }
-  writeFileSync(out, `${JSON.stringify(derive(rulesetDir, readsFile), null, 2)}\n`);
+  writeFileSync(out, `${JSON.stringify(derive(rulesetDir, readsFile, recordFile), null, 2)}\n`);
   const formatted = Bun.spawnSync(["bunx", "biome", "format", "--write", out], {
     stdout: "inherit",
     stderr: "inherit",

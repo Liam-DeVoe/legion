@@ -23,6 +23,20 @@ export const NOT_CURRENT_PHASE = "HANDOFF_NOT_CURRENT_PHASE";
 /** The suffix of an entry of `ANSWERS` that allows its answer only as a repeat: after a
  * completion of the same role earlier in the same run was answered 200 (`allows`). */
 const AFTER_TAKEN = " after 200";
+/** The suffix of an answer allowed only after a completion of the same role earlier in the same
+ * run was handed to the workflow: one it took (200) or one it refused (409, but the route's own
+ * HANDOFF_RECORD_MISMATCH, which is refused before the workflow is handed anything). */
+const AFTER_HANDED = " after one";
+/** The answers a daemon gives a role's repeat of its own completion, in any world and of any
+ * role: 409 HANDOFF_ALREADY_RECORDED for a call that repeats one the workflow was already
+ * handed, whose fact is marked processed whether the workflow took it or refused it (intake's
+ * `ApplyFact`; handoff.go's `eventID`), and 409 HANDOFF_NOT_NEW for a completion naming the
+ * record the role's last taken completion named (engine.go's `handoff`). Each is production's
+ * answer to what the agent sent again and no refusal of a world that should have taken it. */
+const REPEATS = [
+  `409 HANDOFF_ALREADY_RECORDED${AFTER_HANDED}`,
+  `409 HANDOFF_NOT_NEW${AFTER_TAKEN}`,
+];
 
 /** One line of the daemon stand-in's log (daemon-standin.ts): what reached it, when, and what it
  * answered, with the refusal's code where the answer carried one; the role of the agent the
@@ -169,21 +183,30 @@ export function answerOf(line: Pick<DaemonLine, "status" | "code">): string {
   return line.code === undefined ? String(line.status) : `${line.status} ${line.code}`;
 }
 
-/** Whether `allowed` (an entry of `ANSWERS`) allows the answer of `lines[index]`, `lines` being
- * the run's log in the order it was written: the answer alone, or the answer followed by
- * `AFTER_TAKEN` when a completion of the same role on an earlier line was answered 200. */
+/** Whether `allowed` (an entry of `ANSWERS`, or `REPEATS`) allows the answer of `lines[index]`,
+ * `lines` being the run's log in the order it was written: the answer alone; the answer followed
+ * by `AFTER_TAKEN` when a completion of the same role on an earlier line was answered 200; or
+ * the answer followed by `AFTER_HANDED` when one on an earlier line was handed to the workflow. */
 function allows(allowed: readonly string[], lines: readonly DaemonLine[], index: number): boolean {
   const line = lines[index];
   if (line === undefined) return false;
   const answer = answerOf(line);
   if (allowed.includes(answer)) return true;
-  if (!allowed.includes(`${answer}${AFTER_TAKEN}`)) return false;
-  for (let at = 0; at < index; at += 1) {
-    const earlier = lines[at];
-    if (earlier?.path === COMPLETE_PATH && earlier.role === line.role && earlier.status === 200)
-      return true;
-  }
-  return false;
+  const after = [AFTER_TAKEN, AFTER_HANDED].find((suffix) =>
+    allowed.includes(`${answer}${suffix}`)
+  );
+  if (after === undefined) return false;
+  return lines
+    .slice(0, index)
+    .some(
+      (earlier) =>
+        earlier.path === COMPLETE_PATH &&
+        earlier.role === line.role &&
+        (earlier.status === 200 ||
+          (after === AFTER_HANDED &&
+            earlier.status === 409 &&
+            earlier.code !== "HANDOFF_RECORD_MISMATCH"))
+    );
 }
 
 /** What one scenario's world takes, for each role the scenario boots:
@@ -221,24 +244,29 @@ function allows(allowed: readonly string[], lines: readonly DaemonLine[], index:
  * own, which is the world's own failure, and approves it could move the issue there.
  *
  * threads-closed boots the implementer, then the reviewer, in `reviewing` (text-fixes) or
- * `accepting` (code-defect) (rig.sh's run_threads_closed). The implementer's implementing round
- * already stands on its row, so a daemon of either shape refuses its completion there 409
- * HANDOFF_NOT_CURRENT_PHASE, the one deliberate refusal of the implementer. The reviewer's
- * completion is of its own phase in `reviewing` and is taken 200. Once the round has moved it is
- * late, which a `refused` engine refuses 409 HANDOFF_NOT_CURRENT_PHASE. A late reviewer of a
- * `recorded left` daemon stands in `accepting`: one that completes after its approval of the fix
- * head moved text-fixes there, or a code-defect reviewer, which is booted there. Its completion
- * names its review record, which the `left` route reads back and the `recorded` engine answers as
- * in reviewer-text-findings: 200, or 409 HANDOFF_NOT_CURRENT_PHASE after an earlier 200 of the
- * reviewer's. The `left` route refuses no reviewer 409 HANDOFF_RECORD_MISMATCH in this rig: the
- * phase a reviewer's completion is of is `reviewing`, which writes a record, and the record of
- * another issue, phase or version that the route also refuses so (`handoffRecord`) is one no
- * world of this rig gives. So that code is a broken world in any phase. HANDOFF_STALE_ASSIGNMENT,
- * HANDOFF_ALREADY_RECORDED and HANDOFF_NOT_NEW are left out: the stand-in models no assignment,
- * no duplicate key and no earlier record of a role, so no run of this rig can get them. A daemon
- * of either shape pairs this checkout's two (`recorded left`) or an older daemon's two (`refused
- * issue`); one that pairs either with the other's has no answers here, and a run of it is read
- * as no world this rig knows (`answered`). */
+ * `accepting` (code-defect) (rig.sh's run_threads_closed). The world's seeds stand for each
+ * role's completion of its round (seed-handoffs.ts: the implement record and the review record
+ * are on those roles' rows, daemon-standin.ts's `HANDOFFS`), so a late completion of either is
+ * one from a role whose row holds a completion, which a daemon of either shape refuses 409
+ * HANDOFF_NOT_CURRENT_PHASE: the `refused` engine as it refuses every late one, the `recorded`
+ * engine by `leftItsPhase`'s `row.Completed()`. That is the implementer's in either phase, and
+ * the reviewer's once the round has moved the issue, or from its boot in `accepting`. Until the
+ * stand-in read the seeded rows, a `recorded` daemon's stand-in took such a reviewer's first
+ * completion 200 (3 of round 25's runs, in `accepting`), a success production gives none of.
+ * The reviewer's completion in `reviewing` is of its own phase and is taken 200. Either role
+ * may also be refused 403 HANDOFF_SESSION_MISMATCH: its seeded record was written by another
+ * session than the one the agent registered (the seed's), so a completion naming it is one
+ * naming a record another session wrote, as the completion route of a `left` daemon reads the
+ * record a late role names (this checkout's plugin names the newest record of the phase the
+ * role left where the agent wrote none: packages/pi-shared/src/handoff-record.ts). The route
+ * refuses no completion 409 HANDOFF_RECORD_MISMATCH in this rig: the phase a completion is of
+ * writes a record, and the record of another issue, phase or version is one no world of this
+ * rig gives. So that code is a broken world in any phase. HANDOFF_STALE_ASSIGNMENT is left out:
+ * the stand-in models no assignment, so no run of this rig can get it. A role's repeat of its
+ * own completion is answered as `REPEATS` says, in every scenario. A daemon of either shape
+ * pairs this checkout's two (`recorded left`) or an older daemon's two (`refused issue`); one
+ * that pairs either with the other's has no answers here, and a run of it is read as no world
+ * this rig knows (`answered`). */
 export const ANSWERS: Readonly<
   Record<
     string,
@@ -263,11 +291,11 @@ export const ANSWERS: Readonly<
   },
   "threads-closed": {
     boots: ["implementer", "reviewer"],
-    answers: { implementer: [`409 ${NOT_CURRENT_PHASE}`], reviewer: ["200"] },
-    byShape: {
-      "recorded left": { reviewer: [`409 ${NOT_CURRENT_PHASE}${AFTER_TAKEN}`] },
-      "refused issue": { reviewer: [`409 ${NOT_CURRENT_PHASE}`] },
+    answers: {
+      implementer: [`409 ${NOT_CURRENT_PHASE}`, "403 HANDOFF_SESSION_MISMATCH"],
+      reviewer: ["200", `409 ${NOT_CURRENT_PHASE}`, "403 HANDOFF_SESSION_MISMATCH"],
     },
+    byShape: { "recorded left": {}, "refused issue": {} },
   },
 };
 
@@ -335,6 +363,7 @@ function answered(
   index: number,
   daemon: () => LabelDaemon
 ): boolean {
+  if (allows(REPEATS, lines, index)) return true;
   const entry = ANSWERS[scenario];
   if (entry === undefined) return allows(["200"], lines, index);
   if (allows(entry.answers[role] ?? [], lines, index)) return true;

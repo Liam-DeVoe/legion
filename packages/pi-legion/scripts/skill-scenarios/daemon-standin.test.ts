@@ -7,6 +7,8 @@ import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { z } from "zod";
 import { claimRefusal, countDefault, labelDaemon, notCurrentPhase, refusalIn } from "./daemon-pane";
+import { pinnedRead, RECORD_READ, rolesListed, shapeDiff, shapeOf } from "./production-shapes";
+import { contractRefusal, issueRecord, sampleFacts } from "./standin-record";
 import { bundled, spawnChecked, writeGhSelectors } from "./test-programs";
 
 /** The daemon stand-in and the gh stand-in the rows start, each a bundle built from its source
@@ -47,18 +49,46 @@ const HANDOFF_WORDS: Record<string, string> = {
   reviewer: "review",
 };
 
-/** The run's own Dispatch as the daemon stand-in reads a handoff record from it: `GET
- * /api/v1/handoffs/{id}` answered from `records`, as Dispatch answers it, and Dispatch's own 404
- * HANDOFF_NOT_FOUND for an id it holds none of (dispatch/api's `getHandoff`), behind the bearer
- * in `token`. A request with another bearer is Dispatch's 401. */
-function dispatchOf(records: Record<string, object>, token: string) {
+/** What a run's seeds leave on its own Dispatch, as far as the stand-in reads it back for the
+ * record (daemon-standin.ts's `seededHistory` and `gateNow`) and writes it (`writeStatuses`):
+ * the run's issue as `GET /api/v1/issues/{key}` answers it — when it was filed, the session
+ * that filed it, its spec — with the status it shows now, which a `PATCH` of the issue moves and
+ * `statusWrites` keeps the body of; and the spec's approval as `GET /api/v1/artifacts/{id}`
+ * carries it, which a row moves as a person's review or a new version of the spec moves it. */
+interface SeededWorld {
+  readonly issue: { created_at: string; created_by: object | null; primary_artifact_id: string };
+  status: string;
+  readonly statusWrites: unknown[];
+  approval: object | undefined;
+}
+
+/** The run's own Dispatch as the daemon stand-in reads it: `GET /api/v1/handoffs/{id}` answered
+ * from `records`, as Dispatch answers it, and Dispatch's own 404 HANDOFF_NOT_FOUND for an id it
+ * holds none of (dispatch/api's `getHandoff`), and, for a run with seeds, its issue, read and
+ * written, and its spec (`seeded`), each behind the bearer in `token`. A request with another
+ * bearer is Dispatch's 401, and any other route its 404. */
+function dispatchOf(records: Record<string, object>, token: string, seeded?: SeededWorld) {
   return Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
-    fetch(request) {
+    async fetch(request) {
       if (request.headers.get("authorization") !== `Bearer ${token}`)
         return Response.json({ code: "UNAUTHORIZED", error: "no bearer" }, { status: 401 });
-      const id = /^\/api\/v1\/handoffs\/([^/]+)$/.exec(new URL(request.url).pathname)?.[1];
+      const route = new URL(request.url).pathname;
+      if (seeded !== undefined && route === "/api/v1/issues/LWEVAL-1") {
+        if (request.method === "PATCH") {
+          const write = z.looseObject({ status: z.string() }).parse(await request.json());
+          seeded.statusWrites.push(write);
+          seeded.status = write.status;
+        }
+        return Response.json({ key: "LWEVAL-1", status: seeded.status, ...seeded.issue });
+      }
+      if (seeded !== undefined && route === `/api/v1/artifacts/${seeded.issue.primary_artifact_id}`)
+        return Response.json({
+          id: seeded.issue.primary_artifact_id,
+          ...(seeded.approval === undefined ? {} : { approval: seeded.approval }),
+        });
+      const id = /^\/api\/v1\/handoffs\/([^/]+)$/.exec(route)?.[1];
       const record = id === undefined ? undefined : records[decodeURIComponent(id)];
       return record === undefined
         ? Response.json(
@@ -70,6 +100,26 @@ function dispatchOf(records: Record<string, object>, token: string) {
   });
 }
 
+/** The session each role of a seeded world wrote its record as, and the one that filed its
+ * issue: ids of this file's own, in the shape of a session's, so a record that names them read
+ * them from the run's Dispatch and from no constant of the rig's. */
+const SEEDED_SESSIONS = {
+  architect: "01a2c001-0000-7000-8000-00000000a001",
+  plan: "01a2c002-0000-7000-8000-00000000b002",
+  implement: "01a2c003-0000-7000-8000-00000000c003",
+  test: "01a2c004-0000-7000-8000-00000000d004",
+  review: "01a2c005-0000-7000-8000-00000000e005",
+} as const;
+type SeededWord = Exclude<keyof typeof SEEDED_SESSIONS, "architect">;
+/** The spec of a seeded world's issue, and when the issue was filed. */
+const SEEDED_SPEC = "5d0c7a52-9b1e-4c3f-8a67-2e4f6b8d0c13";
+const SEEDED_AT = "2026-11-17T10:00:00.123456Z";
+/** The record a seed wrote under `word`: version 2 of the implement handoff, so a record that
+ * answered every version 1 would show, and version 1 of each other. */
+function seededRecord(word: SeededWord) {
+  return { id: `seed-${word}`, version: word === "implement" ? 2 : 1 };
+}
+
 /** The stand-in, started on a port the kernel picks, with its own log and boot token file, on a
  * run directory holding `world`, which defaults to the world rig.sh builds, and in `phase` when
  * the caller names one. `completed` is the roles the run's world says completed their phase with
@@ -78,7 +128,12 @@ function dispatchOf(records: Record<string, object>, token: string) {
  * the rest, this one by default and none at all for "". Nothing of the run directory's name is
  * read: the daemon a run's label runs is its checkout's, never the label's. `records` is the
  * handoff records the run's own Dispatch holds (`dispatchOf`), by id: by default `h-review`,
- * the one `complete` names, version 1 of the issue's handoff of this role's phase. It prints
+ * the one `complete` names, version 1 of the issue's handoff of this role's phase. `seeds` is
+ * the handoff words the run's seeds recorded before it (rig.sh's worker_run_world and its
+ * runners): each is written into the run's fixture.json and held by its Dispatch under the
+ * session of `SEEDED_SESSIONS`, beside the run's issue and its spec, approved at version 1
+ * (`seeded`, which a row moves); none, by default, is a run with no seeds at all. `dir` is the
+ * run directory of an earlier stand-in of the same run, for the second agent of a run. It prints
  * `listening on http://127.0.0.1:<port>` once the socket is open, which is what this waits for. */
 let started = 0;
 async function standin(
@@ -97,18 +152,68 @@ async function standin(
         author: { kind: "session", id: "01a0f2cc" },
       },
     } as Record<string, object>,
+    seeds = undefined as readonly SeededWord[] | undefined,
+    dir: given = undefined as string | undefined,
   } = {}
 ) {
   // One directory per start, so a second stand-in of the same role writes its own log: a test
   // that reads the log reads its own run's lines and no earlier run's.
   started += 1;
-  const dir = path.join(work, `${role}-${started}`);
+  const dir = given ?? path.join(work, `${role}-${started}`);
   mkdirSync(dir, { recursive: true });
   const token = path.join(dir, "boot-token");
   writeFileSync(token, "rig-boot-token\n");
   const bearer = path.join(dir, "dispatch-token");
   writeFileSync(bearer, "the-run's-dispatch-token\n");
-  const dispatch = dispatchOf(records, "the-run's-dispatch-token");
+  // The status the seeds leave the issue at is the one the daemon writes as the last seeded
+  // phase ends (seed-handoffs.ts's PHASE_SEED): `testing` after the implementer's, and
+  // `needs_review` after the tester's, which a review round keeps.
+  const seeded: SeededWorld | undefined =
+    seeds === undefined
+      ? undefined
+      : {
+          issue: {
+            created_at: SEEDED_AT,
+            created_by: { kind: "session", id: SEEDED_SESSIONS.architect },
+            primary_artifact_id: SEEDED_SPEC,
+          },
+          status: seeds.includes("test")
+            ? "needs_review"
+            : seeds.includes("implement")
+              ? "testing"
+              : "in_progress",
+          statusWrites: [],
+          approval: { state: "approved", latest_version: 1, version: 1 },
+        };
+  if (seeds !== undefined)
+    writeFileSync(
+      path.join(dir, "fixture.json"),
+      JSON.stringify({
+        issue: "LWEVAL-1",
+        covers: "r2",
+        ...Object.fromEntries(seeds.map((word) => [word, seededRecord(word)])),
+      })
+    );
+  const dispatch = dispatchOf(
+    // A row's own record of a seeded id stands in the seed's place: one its agent's session
+    // wrote, where the seed's is another session's.
+    {
+      ...Object.fromEntries(
+        (seeds ?? []).map((word) => [
+          seededRecord(word).id,
+          {
+            ...seededRecord(word),
+            issue_key: "LWEVAL-1",
+            phase: word,
+            author: { kind: "session", id: SEEDED_SESSIONS[word] },
+          },
+        ])
+      ),
+      ...records,
+    },
+    "the-run's-dispatch-token",
+    seeded
+  );
   // The world the run keeps, in the shape fixture_write writes it: the stand-in reads the
   // repository its record names, and the branch it gives as the default, out of this file.
   writeFileSync(
@@ -198,7 +303,22 @@ async function standin(
     child.kill();
     dispatch.stop(true);
   };
-  return { dir, body, phase, record, complete, post, settings, logged, stop };
+  /** Stops the run's Dispatch alone, so the stand-in's next read of it gets no answer. */
+  const dispatchDown = () => dispatch.stop(true);
+  return {
+    dir,
+    url,
+    body,
+    phase,
+    record,
+    complete,
+    post,
+    settings,
+    logged,
+    stop,
+    seeded,
+    dispatchDown,
+  };
 }
 
 /** Runs git in `dir` under an identity of its own and no configuration of the host's. */
@@ -574,7 +694,7 @@ test.skipIf(skip)(
 
 // Catches: a stand-in that serves the settings of this checkout's contract alone, which breaks
 // every label whose contract requires a key this one dropped — silently, in that label alone
-// (the measurement that found it is told once, at `daemon-standin.ts`'s `settings` line).
+// (the measurement that found it is told once, at `standin-record.ts`'s `settings` line).
 test.skipIf(skip)(
   "the state read serves every settings key a label's contract requires",
   async () => {
@@ -735,6 +855,31 @@ test.skipIf(skip)(
   600_000
 );
 
+/** The record `complete` names and a newer one of the same phase, as a reviewer that wrote its
+ * handoff a second time holds them: each the issue's, written by the session the rows' grants
+ * are minted for. */
+const TWO_REVIEW_RECORDS = Object.fromEntries(
+  [1, 2].map((version) => [
+    version === 1 ? "h-review" : "h-review-2",
+    {
+      id: version === 1 ? "h-review" : "h-review-2",
+      issue_key: "LWEVAL-1",
+      phase: "review",
+      version,
+      author: { kind: "session", id: "01a0f2cc" },
+    },
+  ])
+);
+/** The daemon's answer to a call that repeats a completion the workflow was already handed
+ * (handoff.go's HANDOFF_ALREADY_RECORDED), for the reviewer's completion naming `h-review` in
+ * `phase` on the issue's pass `pass`. */
+function alreadyRecorded(phase: string, pass: number) {
+  return {
+    code: "HANDOFF_ALREADY_RECORDED",
+    error: `the reviewer completion of phase ${phase} (pass ${pass} through it) naming handoff record h-review (review version 1) was already received; this call changed nothing`,
+  };
+}
+
 // Catches: a stand-in that decides "record required" from the phase the role was booted in
 // rather than the phase the issue stands in now, which answered every completion after a
 // reviewer's own REQUEST_CHANGES 400 HANDOFF_RECORD_REQUIRED (the batch at a61c46a7). After the
@@ -743,12 +888,16 @@ test.skipIf(skip)(
 // checkout's engine then takes the reviewer's late completion (`leftItsPhase`), as one of
 // `reviewing`, whose record it must name: naming none is refused 409 HANDOFF_RECORD_REQUIRED by
 // the engine, never 400 by the route; naming one is taken and moves nothing. A taken completion
-// completes the reviewer's row, so a second late completion is refused 409
-// HANDOFF_NOT_CURRENT_PHASE.
+// completes the reviewer's row, so a second late completion, one naming a newer record, is
+// refused 409 HANDOFF_NOT_CURRENT_PHASE; and the same call made again is no second completion
+// at all but the fact the workflow was already handed, which the daemon answers 409
+// HANDOFF_ALREADY_RECORDED before any workflow reads it (intake's `ApplyFact`). This row held
+// the repeated call to HANDOFF_NOT_CURRENT_PHASE until the stand-in kept the facts it was
+// handed (INFRA-764's ruling on the completions production refuses).
 test.skipIf(skip)(
   "on the head label, a reviewer's completion after its change request is answered as leftItsPhase answers it",
   async () => {
-    const daemon = await standin("reviewer");
+    const daemon = await standin("reviewer", "", undefined, { records: TWO_REVIEW_RECORDS });
     try {
       pullRequest(daemon.dir).requestChanges();
       expect(await daemon.phase()).toBe("implementing");
@@ -764,7 +913,10 @@ test.skipIf(skip)(
       expect(await daemon.phase()).toBe("implementing");
       const again = await daemon.complete(true, { commit: "0".repeat(40) });
       expect(again.status).toBe(409);
-      expect(await again.json()).toEqual(lateRefusal("reviewer", "implementing"));
+      expect(await again.json()).toEqual(alreadyRecorded("implementing", 1));
+      const newer = await daemon.complete(true, { handoffId: "h-review-2", handoffVersion: 2 });
+      expect(newer.status).toBe(409);
+      expect(await newer.json()).toEqual(lateRefusal("reviewer", "implementing"));
     } finally {
       daemon.stop();
     }
@@ -779,11 +931,13 @@ test.skipIf(skip)(
 // the record back (`recordBacked`'s `namesRecord`), so the engine takes it 200 and moves
 // nothing. One naming none passes the route and the engine holds it to the record of
 // `reviewing`: 409 HANDOFF_RECORD_REQUIRED, never MISMATCH. A taken one completes the row, so a
-// repeat is refused 409 HANDOFF_NOT_CURRENT_PHASE.
+// later completion naming a newer record is refused 409 HANDOFF_NOT_CURRENT_PHASE, and the same
+// call made again 409 HANDOFF_ALREADY_RECORDED, the fact the workflow was already handed (the
+// row above says when this row held the repeat to the first of the two).
 test.skipIf(skip)(
   "on the head label, a reviewer's completion after an approval that moved the issue is answered as the daemon answers it",
   async () => {
-    const daemon = await standin("reviewer");
+    const daemon = await standin("reviewer", "", undefined, { records: TWO_REVIEW_RECORDS });
     try {
       pullRequest(daemon.dir).approve();
       expect(await daemon.phase()).toBe("accepting");
@@ -800,7 +954,10 @@ test.skipIf(skip)(
       expect(await daemon.phase()).toBe("accepting");
       const again = await daemon.complete(true, { commit: "0".repeat(40) });
       expect(again.status).toBe(409);
-      expect(await again.json()).toEqual(lateRefusal("reviewer", "accepting"));
+      expect(await again.json()).toEqual(alreadyRecorded("accepting", 0));
+      const newer = await daemon.complete(true, { handoffId: "h-review-2", handoffVersion: 2 });
+      expect(newer.status).toBe(409);
+      expect(await newer.json()).toEqual(lateRefusal("reviewer", "accepting"));
     } finally {
       daemon.stop();
     }
@@ -865,7 +1022,11 @@ test.skipIf(skip)(
 // HANDOFF_NOT_CURRENT_PHASE, whatever record it names, once its route has let it through. That
 // route holds a completion to the record of the phase the issue stands in, so in `accepting` it
 // refuses a named record 409 HANDOFF_RECORD_MISMATCH first. Both are read out of the checkout the
-// run's built-from names (daemon-pane.ts's `labelDaemon`).
+// run's built-from names (daemon-pane.ts's `labelDaemon`). The completion naming a record
+// reports a commit beside it: that route identifies a late completion by its commit, the
+// record being none of a phase it holds one to, so the two calls with no commit were one fact,
+// and the second is that daemon's 409 HANDOFF_ALREADY_RECORDED, which this row's third call
+// holds (it held both to HANDOFF_NOT_CURRENT_PHASE before the stand-in kept its facts).
 test.skipIf(skip)(
   "on an older daemon, a reviewer's late completion is refused HANDOFF_NOT_CURRENT_PHASE",
   async () => {
@@ -875,10 +1036,17 @@ test.skipIf(skip)(
       pullRequest(rejected.dir).requestChanges();
       expect(await rejected.phase()).toBe("implementing");
       for (const handoff of [false, true]) {
-        const refused = await rejected.complete(handoff);
+        const refused = await rejected.complete(handoff, handoff ? { commit: "0".repeat(40) } : {});
         expect([handoff, refused.status]).toEqual([handoff, 409]);
         expect(await refused.json()).toEqual(lateRefusal("reviewer", "implementing", checkout));
       }
+      const repeated = await rejected.complete(true);
+      expect(repeated.status).toBe(409);
+      expect(await repeated.json()).toEqual({
+        code: "HANDOFF_ALREADY_RECORDED",
+        error:
+          "the reviewer completion of phase implementing (pass 1 through it) at commit  was already received; this call changed nothing",
+      });
     } finally {
       rejected.stop();
     }
@@ -1582,4 +1750,1179 @@ test.skipIf(skip)(
     }
   },
   600_000
+);
+
+/** Production's `read_record` as the pin holds it (production-shapes.json's `legion
+ * read_record`, read in a Legion issue pod on 2026-11-17), and the keys it holds at its top. */
+const PINNED_RECORD = pinnedRead(RECORD_READ);
+const PINNED_KEYS = Object.keys(PINNED_RECORD.shape).flatMap(
+  (at) => /^\.(\w+)$/.exec(at)?.[1] ?? []
+);
+/** The members production's record holds that no world of the rig does, each for a reason of
+ * the rig's and none of shape (standin-record.ts's header tells each once):
+ *   - the architect's `capabilities` and the three times of its turns: no architect's session
+ *     runs in a rig run, so none reported its capabilities and the stand-in's daemon recorded no
+ *     ready and no turn of it, which is the claim the contract describes as one "whose last turn
+ *     ran before the daemon recorded them";
+ *   - `step`, the architect's and every worker's: the daemon builds it from the tool frames of
+ *     the launcher's worker stream, and a rig agent runs under no launcher. */
+const WORLD_NEVER_HOLDS = [
+  ".architect.capabilities",
+  ".architect.lastTurnStart",
+  ".architect.lastTurnEnd",
+  ".architect.lastReady",
+  ".architect.step",
+  ".workers[].claim.step",
+];
+/** The session a row's agent registers under, and the report of its capabilities a session
+ * sends on a `claims/ready` of its own (`claim.CapabilityReport`). */
+const AGENT = "01a2d000-0000-7000-8000-00000000f006";
+const REPORT = {
+  measuredAt: "2026-11-17T10:05:00.000Z",
+  elapsedMs: 12,
+  rows: [
+    { name: "github", ok: true, detail: "" },
+    { name: "mcp", ok: true, detail: "2 servers" },
+  ],
+};
+/** The claim boot of the plugin against the stand-in `post` reaches: its registration under
+ * `session`, declaring the contract its package names, then its ready, with `capabilities`
+ * where the row gives a report. */
+async function boots(
+  post: (route: string, payload: unknown) => Promise<Response>,
+  session = AGENT,
+  capabilities?: object
+) {
+  const registered = await post("/legion/v1/claims/register", {
+    bootToken: "rig-boot-token",
+    sessionId: session,
+    pluginContract: 146,
+  });
+  const readied = await post("/legion/v1/claims/ready", {
+    secret: SECRET,
+    ...(capabilities === undefined ? {} : { capabilities }),
+  });
+  expect([registered.status, readied.status]).toEqual([200, 204]);
+}
+/** The state body as far as these rows read it before any contract: the issue's record, and
+ * the issues holding a slot. */
+const ServedState = z.looseObject({
+  admission: z.looseObject({ active: z.array(z.string()) }),
+  issues: z.record(
+    z.string(),
+    z.looseObject({
+      architect: z.record(z.string(), z.unknown()).optional(),
+      workers: z.record(
+        z.string(),
+        z.looseObject({ claim: z.looseObject({ locator: z.unknown().optional() }) })
+      ),
+      pullRequest: z.record(z.string(), z.unknown()).optional(),
+    })
+  ),
+});
+/** The record the stand-in whose state `body` reads serves now, and the issues in `active`. */
+async function served(body: () => Promise<unknown>) {
+  const state = ServedState.parse(await body());
+  const issue = state.issues["LWEVAL-1"];
+  if (issue === undefined) throw new Error("the state holds no record of LWEVAL-1");
+  return { issue, active: state.admission.active };
+}
+/** Every path and every word of a kind a contract holds to an enum that the contract check hands
+ * a label (standin-record.ts's `sampleFacts`), and what of `issue` is in neither: a member or a
+ * word the stand-in serves that no label's contract was held to before its runs began. */
+const SAMPLED = sampleFacts().map(({ facts }) => rolesListed(issueRecord(facts)));
+const ENUMS = ["state", "status", "phase", "mergeState", "reviewDecision", "runtime", "step"];
+function words(value: unknown, key = ""): string[] {
+  if (typeof value === "string") return ENUMS.includes(key) ? [`${key}=${value}`] : [];
+  if (Array.isArray(value)) return value.flatMap((item) => words(item, key));
+  if (typeof value !== "object" || value === null) return [];
+  return Object.entries(value).flatMap(([name, inner]) => words(inner, name));
+}
+function unsampled(issue: unknown) {
+  const { extra, kinds } = shapeDiff([rolesListed(issue)], { shape: shapeOf(SAMPLED) });
+  const sampled = new Set(words(SAMPLED));
+  return { extra, kinds, words: words(issue).filter((word) => !sampled.has(word)) };
+}
+const ALL_SAMPLED = { extra: [], kinds: [], words: [] };
+
+// The record a threads-closed implementer reads before its first write (rig.sh's
+// run_threads_closed, text-fixes: booted in `reviewing` on a world whose reviewer approved the
+// head and left threads open, the base requiring them resolved). Catches: the record of
+// INFRA-764's round 25, 8 keys and `workers: {}`, in which every counted threads-closed run saw
+// no implementer row where rig.sh said the record held the implementer's completed round; a
+// record missing a key production's holds (the tester's read search names fourteen); a row whose
+// session, record or commit is no value of the run's world — the sessions are the ones the run's
+// Dispatch names each seeded record's author, the records the seeds' own ids and versions, the
+// commit the head the run began at; a locator in another shape than production's sandbox
+// locator or naming another project or issue than the run's; a pull request, a gate or a slot
+// the world's other answers contradict; and a member in another kind than production's. The
+// members production holds and this read does not are named: `WORLD_NEVER_HOLDS`, and four of
+// this state — no capability report yet, no task (the daemon starts no phase for this loop), a
+// turn still open, and no move back — each of which the next row reads in a state that has it.
+// `mergeWait` is the one member production's read lacks: production's issue stood in
+// `implementing`, and a round waits on GitHub's merge state in `reviewing` alone.
+test.skipIf(skip)(
+  "a read_record answers production's record: its keys, a row for each role the world's history ran, and production's shape",
+  async () => {
+    const daemon = await standin("implementer", "reviewing", undefined, {
+      completed: "implementer",
+      seeds: ["plan", "implement", "test", "review"],
+    });
+    try {
+      const pull = pullRequest(daemon.dir, "BLOCKED");
+      pull.approve();
+      await boots(daemon.post);
+      const { issue, active } = await served(daemon.body);
+      expect(
+        [
+          ...PINNED_KEYS,
+          ...["key", "generation", "phase", "status", "tree", "repo", "defaultBranch"],
+          ...["architect", "workers", "pullRequest", "designGate", "gatedSteps"],
+          ...["phaseEntry", "givenEntry"],
+        ].filter((key) => !(key in issue))
+      ).toEqual([]);
+      expect(Object.keys(issue.workers)).toEqual(["implementer", "planner", "reviewer", "tester"]);
+      const idle = (word: SeededWord) => ({
+        session: SEEDED_SESSIONS[word],
+        state: "idle",
+        servingGeneration: 1,
+        pluginContract: 146,
+      });
+      const world = "0".repeat(40);
+      expect(issue).toMatchObject({
+        key: "LWEVAL-1",
+        generation: 1,
+        phase: "reviewing",
+        status: "needs_review",
+        tree: "LWEVAL-1",
+        repo: WORLD_REPO,
+        defaultBranch: WORLD_BASE,
+        architect: {
+          session: SEEDED_SESSIONS.architect,
+          state: "idle",
+          servingGeneration: 1,
+          pluginContract: 146,
+        },
+        workers: {
+          implementer: {
+            claim: { session: AGENT, state: "working", servingGeneration: 1, pluginContract: 146 },
+            handoffCommit: world,
+            handoffRecord: seededRecord("implement"),
+            pass: 0,
+            rounds: 0,
+          },
+          planner: { claim: idle("plan"), handoffRecord: seededRecord("plan"), pass: 0, rounds: 0 },
+          tester: {
+            claim: idle("test"),
+            handoffCommit: world,
+            handoffRecord: seededRecord("test"),
+            pass: 0,
+            rounds: 0,
+          },
+          reviewer: {
+            claim: idle("review"),
+            handoffRecord: seededRecord("review"),
+            pass: 0,
+            rounds: 0,
+          },
+        },
+        pullRequest: {
+          repo: WORLD_REPO,
+          number: 1001,
+          head: pull.head,
+          state: "open",
+          mergeState: "blocked",
+          reviewDecision: "approved",
+        },
+        designGate: { artifactId: SEEDED_SPEC, currentVersion: 1, approvedVersion: 1 },
+        gatedSteps: [
+          {
+            step: "spec",
+            artifactId: SEEDED_SPEC,
+            currentVersion: 1,
+            approvedVersion: 1,
+            status: "approved",
+          },
+        ],
+        slot: { index: 0, admittedAt: SEEDED_AT },
+        mergeWait: { waitsOn: pull.head, mergeState: "blocked", checkRuns: 0 },
+        phaseEntry: 1,
+        givenEntry: 1,
+      });
+      expect(active).toEqual(["LWEVAL-1"]);
+      // A planner's and a reviewer's completion names no commit, as production's rows of the
+      // two carry none.
+      expect(
+        ["planner", "reviewer"].filter((named) => "handoffCommit" in (issue.workers[named] ?? {}))
+      ).toEqual([]);
+      // Each claim's process is one of the run's own issue pod: production's sandbox locator,
+      // naming the run's project and issue, the architect's the pod's first process and the
+      // booted agent's its sixth, after the five the history ran.
+      const located = z.object({
+        runtime: z.literal("sandbox"),
+        claim: z.string(),
+        incarnation: z.string(),
+        sandbox: z.object({
+          namespace: z.string(),
+          name: z.literal("legion-skills1-lweval-1"),
+          podUid: z.uuid(),
+          container: z.literal("roles"),
+          generation: z.number(),
+        }),
+      });
+      const architect = located.parse(issue.architect?.locator);
+      const own = located.parse(issue.workers.implementer?.claim.locator);
+      expect([architect.claim, architect.incarnation, architect.sandbox.generation]).toEqual([
+        roleToken("skills1", "LWEVAL-1", "architect"),
+        `${own.sandbox.podUid}/1`,
+        1,
+      ]);
+      expect([own.claim, own.incarnation, own.sandbox.generation]).toEqual([
+        roleToken("skills1", "LWEVAL-1", "implementer"),
+        `${own.sandbox.podUid}/6`,
+        6,
+      ]);
+      expect(shapeDiff(rolesListed(issue), PINNED_RECORD)).toEqual({
+        missing: [
+          ...WORLD_NEVER_HOLDS.slice(0, 5),
+          ".workers[].claim.capabilities",
+          ".workers[].claim.pendingTask",
+          ".workers[].claim.lastTurnEnd",
+          ".workers[].claim.step",
+          ".workers[].backwardMoves",
+        ],
+        extra: [".mergeWait"],
+        kinds: [],
+      });
+      expect(unsampled(issue)).toEqual(ALL_SAMPLED);
+    } finally {
+      daemon.stop();
+    }
+  },
+  600_000
+);
+
+// The record a reviewer-text-findings reviewer reads (rig.sh's run_reviewer_text_findings: booted
+// in `reviewing`, its own phase, on a world whose tester has finished), and the record after its
+// request for changes ended the round. Catches: a booted claim that holds no task where the
+// daemon started its phase, or keeps it past the turn that confirmed it; a claim that reports its
+// capabilities and whose record holds none; a record that stays as it was when the stand-in
+// moves the issue — the phase and its status, the implementer's pass, round and pair of the move
+// (workflow's `recordPass` and `recordRound`), its handoff cleared and its entry raised with the
+// task queued to its claim (`transition`'s start), and the round's decision on the pull request
+// — which is the record a reviewer told to read it after its review would read; and, in the
+// state that holds every member the row above lacked, any difference from production's shape but
+// `WORLD_NEVER_HOLDS`.
+test.skipIf(skip)(
+  "a booted reviewer's claim holds the task of its phase, and a request for changes moves the whole record",
+  async () => {
+    const daemon = await standin("reviewer", "", undefined, {
+      seeds: ["plan", "implement", "test"],
+    });
+    try {
+      const pull = pullRequest(daemon.dir, "BLOCKED");
+      await boots(daemon.post, AGENT, REPORT);
+      const before = (await served(daemon.body)).issue;
+      expect(Object.keys(before.workers)).toEqual(["implementer", "planner", "reviewer", "tester"]);
+      expect(before).toMatchObject({
+        phase: "reviewing",
+        status: "needs_review",
+        workers: {
+          reviewer: {
+            claim: {
+              session: AGENT,
+              state: "working",
+              capabilities: { measuredAt: REPORT.measuredAt, ok: ["github", "mcp"], open: [] },
+              pendingTask: { phase: "reviewing" },
+            },
+            pass: 0,
+            rounds: 0,
+          },
+        },
+        pullRequest: { head: pull.head, state: "open", mergeState: "blocked" },
+        phaseEntry: 1,
+        givenEntry: 1,
+      });
+      // No review has decided the round, the reviewer has retired no task and named no record,
+      // and a round nobody approved waits on nothing from GitHub; its turn began where it said
+      // it could be prompted, and has not ended.
+      const reviewer = before.workers.reviewer ?? { claim: {} };
+      expect([
+        "reviewDecision" in (before.pullRequest ?? {}),
+        "mergeWait" in before,
+        "servingGeneration" in reviewer.claim,
+        "lastTurnEnd" in reviewer.claim,
+        "handoffRecord" in reviewer,
+        "lastTurnStart" in reviewer.claim,
+        "lastReady" in reviewer.claim,
+      ]).toEqual([false, false, false, false, false, true, true]);
+      expect(unsampled(before)).toEqual(ALL_SAMPLED);
+
+      pull.requestChanges();
+      expect(
+        (await daemon.post("/legion/v1/claims/turn-outcome", turn("reviewer", 1, "clean"))).status
+      ).toBe(200);
+      const { issue } = await served(daemon.body);
+      expect(issue).toMatchObject({
+        phase: "implementing",
+        status: "in_progress",
+        workers: {
+          implementer: {
+            claim: {
+              session: SEEDED_SESSIONS.implement,
+              state: "idle",
+              pendingTask: { phase: "implementing" },
+            },
+            pass: 1,
+            rounds: 1,
+            backwardMoves: { "reviewing-implementing": 1 },
+          },
+          reviewer: { claim: { state: "idle", servingGeneration: 1 } },
+          tester: { handoffCommit: "0".repeat(40), handoffRecord: seededRecord("test") },
+        },
+        pullRequest: { reviewDecision: "changes_requested" },
+        slot: { index: 0, admittedAt: SEEDED_AT },
+        phaseEntry: 2,
+        givenEntry: 2,
+      });
+      const implementer = issue.workers.implementer ?? {};
+      expect([
+        "handoffCommit" in implementer,
+        "handoffRecord" in implementer,
+        "pendingTask" in (issue.workers.reviewer?.claim ?? {}),
+        "lastTurnEnd" in (issue.workers.reviewer?.claim ?? {}),
+      ]).toEqual([false, false, false, true]);
+      expect(shapeDiff(rolesListed(issue), PINNED_RECORD)).toEqual({
+        missing: WORLD_NEVER_HOLDS,
+        extra: [],
+        kinds: [],
+      });
+      expect(unsampled(issue)).toEqual(ALL_SAMPLED);
+      // A review after the round has ended decides no round: the record keeps the decision
+      // that ended it (`api.PullRequestView`: from the review that decided it until the next
+      // round opens), where a record read off the world's last review would call it approved.
+      pull.approve();
+      expect((await served(daemon.body)).issue).toMatchObject({
+        phase: "implementing",
+        pullRequest: { reviewDecision: "changes_requested" },
+      });
+    } finally {
+      daemon.stop();
+    }
+  },
+  600_000
+);
+
+/** A move of the issue back to `to` through the stand-in `post` reaches, on a grant minted for
+ * it, as the tool's `request_backward_move` makes one: the answer's status. */
+async function movesBack(
+  post: (route: string, payload: unknown) => Promise<Response>,
+  to: string
+): Promise<number> {
+  const minted = await (
+    await post("/legion/v1/grants", {
+      sessionId: AGENT,
+      secret: SECRET,
+      tree: "LWEVAL-1",
+      issue: "LWEVAL-1",
+    })
+  ).json();
+  const { grantId } = z.object({ grantId: z.string() }).parse(minted);
+  return (await post("/legion/v1/phase/backward", { grantId, to, reason: "the fix needs code" }))
+    .status;
+}
+
+// Catches: a pull request the record reads once, at boot, so a push the gh stand-in already
+// answers at its new head is a head the record does not name; an issue the round's approval
+// moved to `accepting` that still holds its slot and stands in `admission.active` (an issue past
+// its review holds none: record's `PastReview`), or whose acceptance was queued to no one (the
+// architect's entry and the task of it, of no phase); a completion the stand-in took that its
+// role's row does not carry, so the next reader finds no handoff to read; and a worker's own
+// move back that counts as a review round, or that leaves the handoff of the role it starts.
+test.skipIf(skip)(
+  "the record follows the world: a push, an approval that ends the round, a completion, and a worker's move back",
+  async () => {
+    const reviewer = await standin("reviewer", "", undefined, {
+      seeds: ["plan", "implement", "test"],
+    });
+    try {
+      const pull = pullRequest(reviewer.dir);
+      await boots(reviewer.post);
+      pull.approve();
+      const accepted = await served(reviewer.body);
+      expect(accepted.issue).toMatchObject({
+        phase: "accepting",
+        status: "needs_review",
+        architect: { state: "idle" },
+        pullRequest: { head: pull.head, mergeState: "clean", reviewDecision: "approved" },
+        phaseEntry: 2,
+        givenEntry: 2,
+      });
+      expect([
+        accepted.active,
+        "slot" in accepted.issue,
+        "mergeWait" in accepted.issue,
+        "phase" in
+          z.looseObject({ pendingTask: z.looseObject({}) }).parse(accepted.issue.architect)
+            .pendingTask,
+      ]).toEqual([[], false, false, false]);
+      expect(unsampled(accepted.issue)).toEqual(ALL_SAMPLED);
+      const pushed = pull.push();
+      expect((await served(reviewer.body)).issue).toMatchObject({
+        phase: "accepting",
+        pullRequest: { head: pushed, reviewDecision: "approved" },
+      });
+    } finally {
+      reviewer.stop();
+    }
+    const tester = await standin("tester", "", undefined, { seeds: ["plan", "implement"] });
+    try {
+      await boots(tester.post);
+      const commit = "7".repeat(40);
+      expect((await tester.complete(true, { commit })).status).toBe(200);
+      expect((await served(tester.body)).issue).toMatchObject({
+        phase: "testing",
+        status: "testing",
+        workers: {
+          tester: { handoffCommit: commit, handoffRecord: { id: "h-review", version: 1 } },
+        },
+      });
+      expect(await movesBack(tester.post, "implementing")).toBe(200);
+      const { issue } = await served(tester.body);
+      expect(issue).toMatchObject({
+        phase: "implementing",
+        status: "in_progress",
+        workers: {
+          implementer: {
+            claim: { pendingTask: { phase: "implementing" } },
+            pass: 1,
+            rounds: 0,
+            backwardMoves: { "testing-implementing": 1 },
+          },
+          tester: { handoffCommit: commit, handoffRecord: { id: "h-review", version: 1 } },
+        },
+        phaseEntry: 2,
+        givenEntry: 2,
+      });
+      expect("handoffRecord" in (issue.workers.implementer ?? {})).toBe(false);
+      expect(unsampled(issue)).toEqual(ALL_SAMPLED);
+    } finally {
+      tester.stop();
+    }
+  },
+  600_000
+);
+
+/** A handoff record of `word` at `version` the session the rows' grants are minted for wrote,
+ * or `session` did, by its id. */
+function ownRecord(id: string, word: string, version: number, session = "01a0f2cc") {
+  return {
+    [id]: {
+      id,
+      issue_key: "LWEVAL-1",
+      phase: word,
+      version,
+      author: { kind: "session", id: session },
+    },
+  };
+}
+
+// The completions production refuses of a role whose round the world's seeds stand for
+// (threads-closed: the implementer's implementing round and the reviewer's review round, each
+// with its record on its row). Catches: a stand-in whose engine reads no row but the ones the
+// rig names (`COMPLETED`), which took a threads-closed reviewer's first late completion 200 —
+// 3 of INFRA-764 round 25's runs, in `accepting` — where the daemon's `leftItsPhase` refuses a
+// role whose row holds a completion; one that takes a completion naming a record another
+// session wrote, the seed's, which the daemon's route refuses 403 HANDOFF_SESSION_MISMATCH and
+// tells the claim to write its own (measured on round 25: each of the 31 records an agent wrote
+// named the session that agent registered, so the check holds a record to the right session);
+// and one that answers each in words of its own rather than the daemon's.
+test.skipIf(skip)(
+  "a role whose seeded round stands is refused as the daemon refuses it: late, and naming a record another session wrote",
+  async () => {
+    const seeds = ["plan", "implement", "test", "review"] as const;
+    const mismatch = (word: SeededWord, version: number) => ({
+      code: "HANDOFF_SESSION_MISMATCH",
+      error: `handoff record seed-${word} (${word} version ${version}) was written by session ${SEEDED_SESSIONS[word]}, not by this claim's session 01a0f2cc: write the handoff again with \`dispatch handoff-write --issue LWEVAL-1 --phase ${word} --body-file <file>\` from this session, then complete naming the new record; this completion changed nothing`,
+    });
+    for (const phase of ["reviewing", "accepting"]) {
+      const implementer = await standin("implementer", phase, undefined, {
+        seeds,
+        records: ownRecord("own-implement", "implement", 3),
+      });
+      try {
+        const seeded = await implementer.complete(true, {
+          handoffId: "seed-implement",
+          handoffVersion: 2,
+        });
+        expect([phase, seeded.status, await seeded.json()]).toEqual([
+          phase,
+          403,
+          mismatch("implement", 2),
+        ]);
+        const own = await implementer.complete(true, {
+          handoffId: "own-implement",
+          handoffVersion: 3,
+          commit: "7".repeat(40),
+        });
+        expect([phase, own.status, await own.json()]).toEqual([
+          phase,
+          409,
+          lateRefusal("implementer", phase),
+        ]);
+      } finally {
+        implementer.stop();
+      }
+    }
+    // The reviewer booted where the round has ended: its seeded completion stands, so its
+    // first completion here is a late one of a completed row, whatever record it names.
+    const late = await standin("reviewer", "accepting", undefined, {
+      seeds,
+      records: ownRecord("own-review", "review", 2),
+    });
+    try {
+      const seeded = await late.complete(true, { handoffId: "seed-review", handoffVersion: 1 });
+      expect([seeded.status, await seeded.json()]).toEqual([403, mismatch("review", 1)]);
+      const own = await late.complete(true, { handoffId: "own-review", handoffVersion: 2 });
+      expect([own.status, await own.json()]).toEqual([409, lateRefusal("reviewer", "accepting")]);
+      expect(
+        late
+          .logged()
+          .filter((line) => line.path === "/legion/v1/handoff/complete")
+          .map((line) => [line.status, line.code])
+      ).toEqual([
+        [403, "HANDOFF_SESSION_MISMATCH"],
+        [409, "HANDOFF_NOT_CURRENT_PHASE"],
+      ]);
+    } finally {
+      late.stop();
+    }
+    // In `reviewing`, its own phase, a completion naming a record of its own is taken, and the
+    // row then carries that record.
+    const current = await standin("reviewer", "reviewing", undefined, {
+      seeds,
+      records: ownRecord("own-review", "review", 2),
+    });
+    try {
+      const own = await current.complete(true, { handoffId: "own-review", handoffVersion: 2 });
+      expect(own.status).toBe(200);
+      expect((await served(current.body)).issue.workers.reviewer).toMatchObject({
+        handoffRecord: { id: "own-review", version: 2 },
+      });
+    } finally {
+      current.stop();
+    }
+  },
+  600_000
+);
+
+// Catches: a stand-in that takes the record a role's last completion named as a new phase's
+// handoff (the engine's HANDOFF_NOT_NEW: the row's `LastHandoff`, which a seed's completion
+// set as much as one taken here), or answers the seeded completion sent again as a new one (its
+// fact is one the workflow was handed: HANDOFF_ALREADY_RECORDED); and one that refuses a record
+// the daemon's own session wrote in the words for another worker's, where the daemon says the
+// record was carried from before handoffs moved to the Dispatch issue. The seeded review record
+// here is one the completing session wrote itself, which is the one case the route's session
+// check lets through.
+test.skipIf(skip)(
+  "the record a role's row last named is no new handoff, and a completion the workflow was handed is not handed again",
+  async () => {
+    const reviewer = await standin("reviewer", "reviewing", undefined, {
+      seeds: ["plan", "implement", "test", "review"],
+      records: {
+        ...ownRecord("seed-review", "review", 1),
+        ...ownRecord("daemon-review", "review", 3, "legion-daemon:LWEVAL"),
+      },
+    });
+    try {
+      const named = { handoffId: "seed-review", handoffVersion: 1 };
+      // The seeded completion, sent again: the reviewer's of `reviewing`, with no verdict.
+      const again = await reviewer.complete(true, { ...named, verdict: "" });
+      expect([again.status, await again.json()]).toEqual([
+        409,
+        {
+          code: "HANDOFF_ALREADY_RECORDED",
+          error:
+            "the reviewer completion of phase reviewing (pass 0 through it) naming handoff record seed-review (review version 1) was already received; this call changed nothing",
+        },
+      ]);
+      // The same record under another verdict is another fact, of a record that is not new.
+      const stale = await reviewer.complete(true, named);
+      expect([stale.status, await stale.json()]).toEqual([
+        409,
+        {
+          code: "HANDOFF_NOT_NEW",
+          error:
+            "the reviewer named handoff record seed-review for its previous phase of LWEVAL-1; write this phase's handoff with `dispatch handoff-write --issue LWEVAL-1 --phase review --body-file <file>` before completing",
+        },
+      ]);
+      const carried = await reviewer.complete(true, {
+        handoffId: "daemon-review",
+        handoffVersion: 3,
+      });
+      expect([carried.status, await carried.json()]).toEqual([
+        403,
+        {
+          code: "HANDOFF_SESSION_MISMATCH",
+          error:
+            "handoff record daemon-review (review version 3) was written by the daemon's own session legion-daemon:LWEVAL, as a record carried from before handoffs moved to the Dispatch issue is, not by this claim's session 01a0f2cc: read it with `dispatch handoff-read --issue LWEVAL-1 --phase review`, write it again with `dispatch handoff-write --issue LWEVAL-1 --phase review --body-file <file>` from this session, then complete naming the new record; this completion changed nothing",
+        },
+      ]);
+      // None of the three wrote the row.
+      expect((await served(reviewer.body)).issue.workers.reviewer).toMatchObject({
+        handoffRecord: seededRecord("review"),
+      });
+    } finally {
+      reviewer.stop();
+    }
+  },
+  600_000
+);
+
+let codeless: string | undefined;
+/** A third checkout of this one's daemon module, standing in for a daemon from before its
+ * completion route and workflow held three of their refusals: a copy, as `olderCheckout` is,
+ * in whose `api/handoff.go` and `workflow/engine.go` none of HANDOFF_SESSION_MISMATCH,
+ * HANDOFF_ALREADY_RECORDED and HANDOFF_NOT_NEW is named. Made once for the file. */
+function codelessCheckout(): string {
+  if (codeless !== undefined) return codeless;
+  const checkout = path.join(work, "codeless-checkout");
+  const daemon = path.join(checkout, "packages", "daemon");
+  cpSync(path.join(CHECKOUT, "packages", "daemon"), daemon, { recursive: true });
+  symlinkSync(path.join(CHECKOUT, "packages", "envoy"), path.join(checkout, "packages", "envoy"));
+  let renamed = 0;
+  for (const file of ["api/handoff.go", "workflow/engine.go"]) {
+    const source = path.join(daemon, "internal", file);
+    writeFileSync(
+      source,
+      readFileSync(source, "utf8").replaceAll(
+        /"HANDOFF_(SESSION_MISMATCH|ALREADY_RECORDED|NOT_NEW)"/g,
+        () => {
+          renamed += 1;
+          return '"HANDOFF_REFUSED"';
+        }
+      )
+    );
+  }
+  expect(renamed).toBeGreaterThanOrEqual(3);
+  expect(labelDaemon(checkout)).toEqual(labelDaemon(CHECKOUT));
+  codeless = checkout;
+  return checkout;
+}
+
+// Catches: a stand-in that answers every label with this checkout's refusals. A label's agents
+// meet the daemon of their own checkout, so a refusal that daemon's source does not hold is one
+// it could not have given: the seeded completion sent again, the record its row last named and
+// a record another session wrote are each taken here, where the row above refuses all three.
+test.skipIf(skip)(
+  "a daemon whose source holds none of a completion's refusal is never answered with it",
+  async () => {
+    const reviewer = await standin("reviewer", "reviewing", undefined, {
+      checkout: codelessCheckout(),
+      seeds: ["plan", "implement", "test", "review"],
+      records: {
+        ...ownRecord("seed-review", "review", 1),
+        ...ownRecord("other-review", "review", 2, SEEDED_SESSIONS.test),
+      },
+    });
+    try {
+      const named = { handoffId: "seed-review", handoffVersion: 1 };
+      const taken = [
+        await reviewer.complete(true, { ...named, verdict: "" }),
+        await reviewer.complete(true, named),
+        await reviewer.complete(true, { handoffId: "other-review", handoffVersion: 2 }),
+      ];
+      expect(taken.map((answer) => answer.status)).toEqual([200, 200, 200]);
+    } finally {
+      reviewer.stop();
+    }
+  },
+  600_000
+);
+
+// Every move of the record writes the status its phase shows to the run's own Dispatch, as the
+// daemon's outbox runs a `dispatch_status` row, under the daemon's own session
+// (`legion-daemon:<PROJECT>`, the session the world's seeds write each status as). Catches: a
+// record that moves while the issue on Dispatch keeps the status of the phase it left, so
+// `dispatch read` and `read_record` disagree after a reviewer's request for changes
+// (`needs_review` there, `in_progress` here); a write made under another identity than the
+// daemon's, or for a move into a phase that shows the status the record already holds (an
+// approval's move to `accepting`); a write over a status someone else gave the issue since the
+// move (the outbox's row writes only while Dispatch still shows the status the move observed);
+// and a write the run's Dispatch did not take that is forgotten rather than owed.
+test.skipIf(skip)(
+  "a move of the record writes its phase's status to the run's Dispatch as the daemon's session, once, and owes one Dispatch did not take",
+  async () => {
+    const seeds = ["plan", "implement", "test"] as const;
+    const pending = async (daemon: { body: () => Promise<unknown> }) =>
+      z.looseObject({ pendingStatusWrites: z.array(z.unknown()) }).parse(await daemon.body())
+        .pendingStatusWrites;
+    const rejected = await standin("reviewer", "", undefined, { seeds });
+    try {
+      const world = rejected.seeded;
+      pullRequest(rejected.dir, "BLOCKED").requestChanges();
+      expect(await rejected.phase()).toBe("implementing");
+      expect([world?.status, world?.statusWrites, await pending(rejected)]).toEqual([
+        "in_progress",
+        [{ status: "in_progress", actor: { kind: "session", id: "legion-daemon:LWEVAL" } }],
+        [],
+      ]);
+      // A later read writes nothing more.
+      expect(await rejected.phase()).toBe("implementing");
+      expect(world?.statusWrites).toHaveLength(1);
+    } finally {
+      rejected.stop();
+    }
+    const approved = await standin("reviewer", "", undefined, { seeds });
+    try {
+      pullRequest(approved.dir).approve();
+      expect(await approved.phase()).toBe("accepting");
+      expect([approved.seeded?.status, approved.seeded?.statusWrites]).toEqual([
+        "needs_review",
+        [],
+      ]);
+    } finally {
+      approved.stop();
+    }
+    // A person closed the issue between the review and the read that finds the round over: the
+    // status they gave stands.
+    const closed = await standin("reviewer", "", undefined, { seeds });
+    try {
+      pullRequest(closed.dir, "BLOCKED").requestChanges();
+      if (closed.seeded !== undefined) closed.seeded.status = "done";
+      expect(await closed.phase()).toBe("implementing");
+      expect([closed.seeded?.status, closed.seeded?.statusWrites, await pending(closed)]).toEqual([
+        "done",
+        [],
+        [],
+      ]);
+    } finally {
+      closed.stop();
+    }
+    // A worker's own move back is answered once its status is on the run's Dispatch: no read
+    // of the state comes between the move and what `dispatch read` shows.
+    const moved = await standin("tester", "", undefined, { seeds: ["plan", "implement"] });
+    try {
+      await boots(moved.post);
+      expect(await movesBack(moved.post, "implementing")).toBe(200);
+      expect([moved.seeded?.status, moved.seeded?.statusWrites]).toEqual([
+        "in_progress",
+        [{ status: "in_progress", actor: { kind: "session", id: "legion-daemon:LWEVAL" } }],
+      ]);
+    } finally {
+      moved.stop();
+    }
+    // The run's Dispatch does not answer: the move is taken and nothing is written. The state
+    // of a run with seeds cannot be built without that Dispatch either (its gate), so the write
+    // it owes is read below, in a run with none.
+    const tester = await standin("tester", "", undefined, { seeds: ["plan", "implement"] });
+    try {
+      await boots(tester.post);
+      tester.dispatchDown();
+      expect(await movesBack(tester.post, "implementing")).toBe(200);
+      expect(z.looseObject({ error: z.string() }).parse(await tester.body()).error).toStartWith(
+        "the state could not be built: "
+      );
+      expect(tester.seeded?.statusWrites).toEqual([]);
+    } finally {
+      tester.stop();
+    }
+    // A run with no seeds reads no gate, so its state shows the write it owes.
+    const unseeded = await standin("reviewer");
+    try {
+      pullRequest(unseeded.dir, "BLOCKED").requestChanges();
+      expect(await unseeded.phase()).toBe("implementing");
+      expect(await pending(unseeded)).toEqual([
+        {
+          issue: "LWEVAL-1",
+          payload: { kind: "ordinary", status: "in_progress", observedStatus: "needs_review" },
+          attempts: 2,
+          nextAt: expect.any(String),
+          lastError: expect.stringContaining("Dispatch answered GET /api/v1/issues/LWEVAL-1 404"),
+        },
+      ]);
+    } finally {
+      unseeded.stop();
+    }
+  },
+  600_000
+);
+
+// The second agent of a run reads the first's claim (rig.sh's run_threads_closed boots the
+// reviewer on the run directory the implementer left, each with a stand-in of its own that
+// appends to the run's one daemon.log). Catches: a stand-in that knows no agent but its own, so
+// the reviewer's record names the implementer by the session a seed wrote its handoff as, which
+// is not the session that pushed the fix the reviewer is reading, and gives the two agents'
+// processes one generation.
+test.skipIf(skip)(
+  "the second agent of a run reads the claim the first left: its session, its turn, and the process before its own",
+  async () => {
+    const seeds = ["plan", "implement", "test", "review"] as const;
+    const first = await standin("implementer", "reviewing", undefined, {
+      completed: "implementer",
+      seeds,
+    });
+    const fixer = "01a2d000-0000-7000-8000-00000000f007";
+    try {
+      await boots(first.post, fixer);
+      expect(
+        (await first.post("/legion/v1/claims/turn-outcome", turn("implementer", 1, "clean"))).status
+      ).toBe(200);
+    } finally {
+      first.stop();
+    }
+    const at = (route: string) =>
+      first.logged().find((line) => line.path === `/legion/v1/claims/${route}`)?.at;
+    const second = await standin("reviewer", "reviewing", undefined, {
+      completed: "implementer",
+      seeds,
+      dir: first.dir,
+    });
+    try {
+      await boots(second.post);
+      const { issue } = await served(second.body);
+      expect(issue).toMatchObject({
+        workers: {
+          implementer: {
+            claim: {
+              session: fixer,
+              state: "idle",
+              locator: { sandbox: { generation: 6 } },
+              lastTurnStart: at("ready"),
+              lastReady: at("ready"),
+              lastTurnEnd: at("turn-outcome"),
+            },
+            handoffRecord: seededRecord("implement"),
+          },
+          reviewer: {
+            claim: { session: AGENT, state: "working", locator: { sandbox: { generation: 7 } } },
+            handoffRecord: seededRecord("review"),
+          },
+        },
+      });
+      expect([at("ready"), at("turn-outcome")].map((time) => typeof time)).toEqual([
+        "string",
+        "string",
+      ]);
+    } finally {
+      second.stop();
+    }
+  },
+  600_000
+);
+
+// Catches: a design gate the record makes up — approved whatever the run's Dispatch says of the
+// issue's spec, or one a write of the spec does not move — and a state read that answers a
+// record of what the world last said, or of no gate, when the run's Dispatch cannot be read for
+// the spec. Each approval is the one Dispatch's `GET /api/v1/artifacts/{id}` carries
+// (dispatch/model's `ArtifactApproval`): approved at the latest version; `stale`, approved at an
+// older one; a request for changes at the latest; and a spec nobody ever reviewed.
+test.skipIf(skip)(
+  "the design gate is the spec's approval as the run's Dispatch holds it now",
+  async () => {
+    const daemon = await standin("tester", "", undefined, { seeds: ["plan", "implement"] });
+    const seeded = daemon.seeded;
+    if (seeded === undefined) throw new Error("the stand-in was started with no seeds");
+    const gate = async () => {
+      const { designGate, gatedSteps } = z
+        .looseObject({ designGate: z.unknown().optional(), gatedSteps: z.unknown() })
+        .parse((await served(daemon.body)).issue);
+      return { designGate, gatedSteps };
+    };
+    const spec = { step: "spec", artifactId: SEEDED_SPEC };
+    try {
+      seeded.approval = { state: "stale", latest_version: 2, version: 1 };
+      expect(await gate()).toEqual({
+        designGate: { artifactId: SEEDED_SPEC, currentVersion: 2, approvedVersion: 1 },
+        gatedSteps: [{ ...spec, currentVersion: 2, approvedVersion: 1, status: "waiting" }],
+      });
+      seeded.approval = {
+        state: "changes_requested",
+        latest_version: 2,
+        version: 2,
+        reason: "say what R2 covers",
+      };
+      expect(await gate()).toEqual({
+        designGate: { artifactId: SEEDED_SPEC, currentVersion: 2, approvedVersion: null },
+        gatedSteps: [
+          {
+            ...spec,
+            currentVersion: 2,
+            approvedVersion: null,
+            status: "changes_requested",
+            changesReason: "say what R2 covers",
+          },
+        ],
+      });
+      // A request for changes at an older version than the spec stands at is none of this one
+      // (the daemon's `ToldChangesVersion == LatestVersion`): the step waits, with no reason.
+      seeded.approval = {
+        state: "changes_requested",
+        latest_version: 3,
+        version: 2,
+        reason: "say what R2 covers",
+      };
+      expect(await gate()).toEqual({
+        designGate: { artifactId: SEEDED_SPEC, currentVersion: 3, approvedVersion: null },
+        gatedSteps: [{ ...spec, currentVersion: 3, approvedVersion: null, status: "waiting" }],
+      });
+      seeded.approval = { state: "draft", latest_version: 1 };
+      expect(await gate()).toEqual({
+        designGate: { artifactId: SEEDED_SPEC, currentVersion: 1, approvedVersion: null },
+        gatedSteps: [{ ...spec, currentVersion: 1, approvedVersion: null, status: "waiting" }],
+      });
+      // The run's Dispatch no longer answers for the spec: no record, and why.
+      seeded.approval = undefined;
+      daemon.dispatchDown();
+      const unread = await fetch(`${daemon.url}/legion/v1/state`);
+      expect(unread.status).toBe(500);
+      expect(z.object({ error: z.string() }).parse(await unread.json()).error).toStartWith(
+        "the state could not be built: "
+      );
+      expect(daemon.logged().at(-1)).toMatchObject({ path: "/legion/v1/state", status: 500 });
+    } finally {
+      daemon.stop();
+    }
+  },
+  600_000
+);
+
+// A run with no seeds, which is every row above this section and no run of the rig. Catches: a
+// record that makes up a history where the world seeded none (an architect, the rows of roles
+// that never ran, a gate on no document); a claim that reads as working before its agent has
+// said it can be prompted; and a pull request other than the one the run's world.json names,
+// open at the head the run began at, with no merge state where the world holds no answers to
+// read one from.
+test.skipIf(skip)(
+  "a run with no seeds holds its own claim alone, launching until it registers, and no history",
+  async () => {
+    const daemon = await standin("reviewer");
+    try {
+      const launching = (await served(daemon.body)).issue;
+      expect(Object.keys(launching.workers)).toEqual(["reviewer"]);
+      expect(launching).toMatchObject({
+        workers: { reviewer: { claim: { session: "", state: "launching" }, pass: 0, rounds: 0 } },
+        pullRequest: { repo: WORLD_REPO, number: 1001, head: "0".repeat(40), state: "open" },
+        gatedSteps: [{ step: "spec", approvedVersion: null, status: "unregistered" }],
+        phaseEntry: 1,
+        givenEntry: 1,
+      });
+      expect([
+        "architect" in launching,
+        "designGate" in launching,
+        "mergeState" in (launching.pullRequest ?? {}),
+      ]).toEqual([false, false, false]);
+      expect(unsampled(launching)).toEqual(ALL_SAMPLED);
+      // The tree's quiet time is the time since the daemon last saw it move, which is its own
+      // start until a request of the claim's is taken, and the registration is one.
+      const tree = (issue: object) =>
+        z.looseObject({ treeMovedAt: z.string(), quietHours: z.number() }).parse(issue);
+      await Bun.sleep(40);
+      const quiet = tree((await served(daemon.body)).issue);
+      expect(quiet.treeMovedAt).toBe(tree(launching).treeMovedAt);
+      expect(quiet.quietHours).toBeGreaterThanOrEqual(30 / 3_600_000);
+      expect(quiet.quietHours).toBeLessThanOrEqual(
+        (Date.now() - Date.parse(quiet.treeMovedAt)) / 3_600_000
+      );
+      const registered = await daemon.post("/legion/v1/claims/register", {
+        bootToken: "rig-boot-token",
+        sessionId: AGENT,
+        pluginContract: 144,
+      });
+      expect(registered.status).toBe(200);
+      const { issue } = await served(daemon.body);
+      expect(issue.workers.reviewer).toMatchObject({
+        claim: { session: AGENT, state: "registered", pluginContract: 144 },
+      });
+      expect(Date.parse(tree(issue).treeMovedAt)).toBeGreaterThan(Date.parse(quiet.treeMovedAt));
+    } finally {
+      daemon.stop();
+    }
+  },
+  600_000
+);
+
+/** The stand-in's boot on the run directory `dir`, a tester's, under `env`: its exit and what it
+ * printed to stderr. Awaited rather than spawned synchronously, since the Dispatch a row gives
+ * it is served by this process. */
+async function bootOn(dir: string, env: Record<string, string>) {
+  const child = Bun.spawn(
+    [
+      "bun",
+      DAEMON_STANDIN,
+      "0",
+      path.join(dir, "daemon.log"),
+      path.join(dir, "boot-token"),
+      "skills1",
+      "LWEVAL-1",
+      dir,
+      "tester",
+    ],
+    { stdout: "ignore", stderr: "pipe", env: { ...process.env, ...env } }
+  );
+  // A boot that is not refused listens until it is stopped, which is this row's failure and
+  // not its wait.
+  const timer = setTimeout(() => child.kill(), 120_000);
+  try {
+    const [code, err] = await Promise.all([child.exited, new Response(child.stderr).text()]);
+    return { code, err };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// Catches: a stand-in that boots on seeds it cannot read back — a record the run's Dispatch
+// holds none of, or holds as another issue's, or a run that names no Dispatch at all — and
+// serves a record of some other history: the rows of roles whose records are not there. Such a
+// world is one the rig seeded wrongly, refused at the boot, naming the seeds and why, where no
+// agent has started.
+test.skipIf(skip)(
+  "a stand-in whose run's seeds cannot be read back from its Dispatch refuses to boot, naming why",
+  async () => {
+    const dir = path.join(work, "unread-seeds");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(path.join(dir, "boot-token"), "rig-boot-token\n");
+    writeFileSync(path.join(dir, "dispatch-token"), "the-run's-dispatch-token\n");
+    writeFileSync(path.join(dir, "built-from"), `checkout ${CHECKOUT}\n`);
+    writeFileSync(
+      path.join(dir, "world.json"),
+      JSON.stringify({
+        key: "LWEVAL-1",
+        branch: "legion/LWEVAL-1",
+        pr: 1001,
+        head: "0".repeat(40),
+        repo: WORLD_REPO,
+        base: WORLD_BASE,
+      })
+    );
+    const fixture = path.join(dir, "fixture.json");
+    writeFileSync(fixture, JSON.stringify({ issue: "LWEVAL-1", plan: seededRecord("plan") }));
+    const refused = `daemon-standin: the history ${fixture} names could not be read back from the run's Dispatch: `;
+    expect(await bootOn(dir, { DISPATCH_URL: "" })).toEqual({
+      code: 2,
+      err: `${refused}the run names no Dispatch (DISPATCH_URL)\n`,
+    });
+    const issue = {
+      created_at: SEEDED_AT,
+      created_by: { kind: "session", id: SEEDED_SESSIONS.architect },
+      primary_artifact_id: SEEDED_SPEC,
+    };
+    const held = { id: "seed-plan", issue_key: "LWEVAL-1", phase: "plan", version: 1 };
+    for (const [records, why] of [
+      [
+        {},
+        'Dispatch answered GET /api/v1/handoffs/seed-plan 404: {"code":"HANDOFF_NOT_FOUND","error":"handoff seed-plan not found"}',
+      ],
+      [
+        {
+          "seed-plan": {
+            ...held,
+            issue_key: "OTHER-9",
+            author: { kind: "session", id: SEEDED_SESSIONS.plan },
+          },
+        },
+        `${fixture} names seed-plan as version 1 of LWEVAL-1's plan handoff, which the run's Dispatch holds as version 1 of OTHER-9's plan handoff`,
+      ],
+    ] as const) {
+      const dispatch = dispatchOf(records, "the-run's-dispatch-token", {
+        issue,
+        status: "in_progress",
+        statusWrites: [],
+        approval: undefined,
+      });
+      try {
+        expect(
+          await bootOn(dir, {
+            DISPATCH_URL: `http://127.0.0.1:${dispatch.port}`,
+            DISPATCH_TOKEN_FILE: path.join(dir, "dispatch-token"),
+          })
+        ).toEqual({ code: 2, err: `${refused}${why}\n` });
+      } finally {
+        dispatch.stop(true);
+      }
+    }
+  },
+  600_000
+);
+
+/** A checkout holding a contract alone, `packages/contracts/src/legion-api.ts` with `source`,
+ * under this file's work directory. */
+function contractCheckout(name: string, source: string): string {
+  const checkout = path.join(work, name);
+  const dir = path.join(checkout, "packages", "contracts", "src");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(path.join(dir, "legion-api.ts"), source);
+  return checkout;
+}
+/** A contract of a label whose daemon runs its claims in tmux panes alone: it describes a state
+ * body unless a claim of it is located anywhere else, and says where, as zod names a path. */
+const TMUX_ONLY_CONTRACT = `
+const located = (issue) => [["architect", issue.architect], ...Object.entries(issue.workers).map(([role, row]) => ["workers." + role + ".claim", row.claim])];
+export const LegionStateResponse = {
+  safeParse(body) {
+    for (const [key, issue] of Object.entries(body.issues))
+      for (const [at, claim] of located(issue))
+        if (claim?.locator !== undefined && claim.locator.runtime !== "tmux")
+          return { success: false, error: { message: "issues." + key + "." + at + ".locator.runtime: Invalid input: expected \\"tmux\\"" } };
+    return { success: true };
+  },
+};
+`;
+
+// Catches: a label started on a contract that does not describe the state its stand-in serves,
+// which that label's agents meet in their own turns, every `read_record` of theirs refused `a
+// body the daemon API contract does not describe`, while the other label's read theirs: the base
+// arm of 2026-11-09 measured a world of its own so (30 runs). The check hands every kind of
+// body the stand-in can serve (standin-record.ts's `sampleFacts`) to the schema of the label's
+// own checkout and names the first it refuses with the schema's own sentence; a checkout whose
+// contract cannot be read, or exports no schema, is refused too, naming the file. This
+// checkout's own contract describes them all.
+test("a label's own contract is handed every state body the stand-in serves, and a refusal names the body and the error", async () => {
+  expect(await contractRefusal(CHECKOUT)).toBeUndefined();
+  const refusing = contractCheckout("tmux-only-contract", TMUX_ONLY_CONTRACT);
+  const contract = path.join(refusing, "packages", "contracts", "src", "legion-api.ts");
+  const refusal = `${contract} does not describe the state body the stand-in serves (planning, pull request 0): issues.WID-1.architect.locator.runtime: Invalid input: expected "tmux"`;
+  expect(await contractRefusal(refusing)).toBe(refusal);
+  expect(
+    await contractRefusal(
+      contractCheckout(
+        "any-contract",
+        "export const LegionStateResponse = { safeParse: () => ({ success: true }) };\n"
+      )
+    )
+  ).toBeUndefined();
+  const schemaless = contractCheckout("schemaless-contract", "export const Other = 1;\n");
+  expect(await contractRefusal(schemaless)).toBe(
+    `${path.join(schemaless, "packages", "contracts", "src", "legion-api.ts")} exports no LegionStateResponse to read a state body with`
+  );
+  const missing = path.join(work, "no-contract");
+  expect(await contractRefusal(missing)).toStartWith(
+    `${path.join(missing, "packages", "contracts", "src", "legion-api.ts")} could not be loaded: `
+  );
+  // As rig.sh's services_up runs it for each label of a batch: the refusal names the label.
+  const program = path.join(import.meta.dir, "standin-record.ts");
+  const refused = spawnChecked(["bun", program, "contract", "base", refusing]);
+  expect([refused.exitCode, refused.stderr.toString()]).toEqual([
+    1,
+    `standin-record contract: label base: ${refusal}\n`,
+  ]);
+  const described = spawnChecked(["bun", program, "contract", "head", CHECKOUT]);
+  expect([described.exitCode, described.stderr.toString()]).toEqual([0, ""]);
+  const usage = spawnChecked(["bun", program, "contract", "head"]);
+  expect([usage.exitCode, usage.stderr.toString()]).toEqual([
+    2,
+    "usage: bun standin-record.ts contract <label> <checkout>\n",
+  ]);
+}, 120_000);
+
+// The same check against the base label's own checkout, where the host names one
+// (SKILL_SCENARIOS_BASE_CHECKOUT, the row "the state body is described by the base label's own
+// contract" above says what it is): every kind of body, where that row hands the label's schema
+// the one body a reviewer's stand-in serves at its boot.
+test.skipIf(baseCheckout === undefined)(
+  "the base label's own contract describes every state body the stand-in serves",
+  async () => {
+    expect(await contractRefusal(baseCheckout ?? "")).toBeUndefined();
+  },
+  120_000
 );
