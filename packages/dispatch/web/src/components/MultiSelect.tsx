@@ -1,6 +1,5 @@
 import { type KeyboardEvent, type ReactNode, useEffect, useId, useRef, useState } from "react";
 
-import { focusOnDocument } from "../features/shell/roving";
 import {
   borderDefault,
   borderStrong,
@@ -17,6 +16,7 @@ import {
 } from "../theme/classes";
 import { AnchoredPanel, type PanelDismissal } from "./AnchoredPanel";
 import { type ControlName, type ControlSize, controlPadding } from "./control-names";
+import { focusLost } from "./focus-place";
 import { TruncatedText } from "./TruncatedText";
 
 function fold(value: string | undefined): string {
@@ -219,13 +219,18 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
 
   // Opening starts a fresh search on the value a single pick holds, and focuses the search unless
   // the host hands the focus in itself. Closing returns the focus to the trigger when the close
-  // left it nowhere - the list that held it is gone - and leaves a focus that is somewhere.
+  // left it nowhere - the list that held it is gone - and leaves a focus that is somewhere. A
+  // focus still on the text box the close took away is nowhere (`focusLost`): an engine that
+  // moves the focus off a removed element only at its next rendering update still names the box
+  // focused when this effect runs, before that update, and a Tab out of the box would otherwise
+  // leave the focus there to the page's rescue rather than on the trigger. A press outside moves
+  // the focus after this runs, so the focus ends where that press put it.
   useEffect(() => {
     if (open) {
       setQuery("");
       setActiveValue(opensOn.current);
       if (focusesOnOpen.current) inputRef.current?.focus();
-    } else if (wasOpen.current && focusOnDocument()) {
+    } else if (wasOpen.current && focusLost()) {
       triggerRef.current?.focus();
     }
     wasOpen.current = open;

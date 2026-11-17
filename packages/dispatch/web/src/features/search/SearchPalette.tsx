@@ -1,6 +1,6 @@
 import { snippetSegments } from "@legion/contracts/dispatch-snippet";
 import { SEARCH_QUERY_MAX } from "@legion/contracts/dispatch-tools";
-import { useQuery } from "@tanstack/react-query";
+import { type UseQueryResult, useQuery } from "@tanstack/react-query";
 import {
   Fragment,
   type KeyboardEvent,
@@ -394,6 +394,10 @@ type FilterListName = "project" | "status";
  * and no list holds both. It is taken when the person presses Enter or leaves the box, so a
  * half-typed login never searches. The box keeps what was typed while the panel is shut, so a
  * reader who opens it again finds their half-typed login where they left it.
+ *
+ * The Project list is drawn from the bar's one read of the projects, which can still be out or
+ * have failed when the panel opens: it says which, as the Agents composer's Issue list does,
+ * rather than call an unread list empty.
  */
 function SearchNarrowing({
   filters,
@@ -402,8 +406,9 @@ function SearchNarrowing({
 }: {
   filters: SearchBarFilters;
   onFilters: (filters: SearchBarFilters) => void;
-  projects: readonly Project[];
+  projects: UseQueryResult<Project[]>;
 }): ReactNode {
+  const projectList = projects.data ?? emptyProjects;
   const [open, setOpen] = useState(false);
   const filterList = useNestedPanels<FilterListName>(open);
   const [author, setAuthor] = useState("");
@@ -433,11 +438,18 @@ function SearchNarrowing({
           {filters.project === undefined ? (
             <MultiSelect
               {...filterList("project")}
-              emptyMessage={projects.length === 0 ? "No projects yet" : "No project matches that."}
+              emptyMessage={
+                projects.isPending
+                  ? "Loading projects…"
+                  : projects.isError || projectList.length > 0
+                    ? "No project matches that."
+                    : "No projects yet"
+              }
+              error={projects.isError ? "Could not load projects." : null}
               label="Project"
               mode="single"
               onPick={(project) => set({ project })}
-              options={projects.map((project) => project.key)}
+              options={projectList.map((project) => project.key)}
               searchLabel="Search projects"
             />
           ) : null}
@@ -897,11 +909,7 @@ function PaletteDialog({
               />
             }
             trigger={
-              <SearchNarrowing
-                filters={filters}
-                onFilters={setFilters}
-                projects={projects.data ?? emptyProjects}
-              />
+              <SearchNarrowing filters={filters} onFilters={setFilters} projects={projects} />
             }
           />
           {/* What the words themselves can do, between the controls and the hits: the three
