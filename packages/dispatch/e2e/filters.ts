@@ -27,7 +27,7 @@ export async function openFilterPanel(page: Page, within: Locator | Page = page)
   const trigger = control(controlRow(within), CONTROL.panelTrigger);
   if ((await trigger.getAttribute("aria-expanded")) !== "true") await trigger.click();
   // `Filter` on the Inbox, the Agents page, the Delivery page and the search bar; `Filters` on
-  // the project List and Board, where the trigger also counts what is on.
+  // the project's Issues table and Board, where the trigger also counts what is on.
   const panel = page.getByRole("dialog", { name: /^Filters?$/ });
   await expect(panel).toHaveCount(1);
   return panel;

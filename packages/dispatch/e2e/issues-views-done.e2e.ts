@@ -732,7 +732,7 @@ test("while the items read of Done's rows is held or failing, Done narrowed to L
     const held = items.calls;
     items.mode = "fail";
     items.release();
-    const error = page.getByText("Could not read the Legion facts, which this view needs.");
+    const error = page.getByText("Could not read the Legion columns, which this view needs.");
     await expect(error).toBeVisible({ timeout: 15_000 });
     await neverWrong("once the read failed");
     expect(items.calls, "each items request tried once and retried twice").toBe(held * 3);
@@ -761,10 +761,10 @@ test("while the items read of Done's rows is held or failing, Done narrowed to L
     await expect(
       second
         .getByRole("alert")
-        .filter({ hasText: "Could not read the Legion facts of the closed issues" })
-    ).toHaveText(`Could not read the Legion facts of the closed issues: ${message} Retry`);
+        .filter({ hasText: "Could not read the Legion columns of the closed issues" })
+    ).toHaveText(`Could not read the Legion columns of the closed issues: ${message} Retry`);
     await expect(
-      second.getByRole("button", { name: "Retry reading the Legion facts" })
+      second.getByRole("button", { name: "Retry reading the Legion columns" })
     ).toBeVisible();
   } finally {
     await context.close();
@@ -805,10 +805,10 @@ test("an items route that answers 404 EVAL_NOT_FOUND draws the error mark in eve
     await expect(
       page
         .getByRole("alert")
-        .filter({ hasText: "Could not read the Legion facts of the closed issues" })
-    ).toHaveText(`Could not read the Legion facts of the closed issues: ${refusal} Retry`);
+        .filter({ hasText: "Could not read the Legion columns of the closed issues" })
+    ).toHaveText(`Could not read the Legion columns of the closed issues: ${refusal} Retry`);
     await expect(
-      page.getByRole("button", { name: "Retry reading the Legion facts" })
+      page.getByRole("button", { name: "Retry reading the Legion columns" })
     ).toBeVisible();
   } finally {
     await context.close();

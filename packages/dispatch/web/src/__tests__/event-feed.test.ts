@@ -58,7 +58,7 @@ const READS = {
       true
     ).queryKey,
   },
-  // The other fault list: the work in flight under no priority, which a delete can add to.
+  // The other fault list: the work active under no priority, which a delete can add to.
   noPriorityWork: {
     key: advancesIssuesQuery(
       { advances: "none", statuses: ["in_progress", "testing", "needs_review", "retro"] },

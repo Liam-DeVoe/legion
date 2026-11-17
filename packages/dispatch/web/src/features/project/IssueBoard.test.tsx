@@ -672,7 +672,7 @@ test("under another sort a move within a column is refused with the sort named, 
   const region = await boardRegion();
   const todo = within(region).getByRole("region", { name: "Todo" });
   await waitFor(() => expect(cardKeys(todo)).toEqual(["CORE-2", "CORE-3", "CORE-1"]));
-  const refusal = "Sorted by Created. Sort by Queue to move cards in a column.";
+  const refusal = "The view sorts by Created. Sort by Queue to move cards in a column.";
   act(() => within(region).getByRole("article", { name: "CORE-1 Alpha" }).focus());
   await user.keyboard("{Shift>}J{/Shift}");
   expect(liveRegion().textContent).toBe(refusal);

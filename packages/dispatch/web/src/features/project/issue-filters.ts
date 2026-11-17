@@ -41,10 +41,10 @@ export interface IssueFiltersState {
   readonly matches: (issue: IssueSummary, lastReadSequence: number) => boolean;
 }
 
-/** The one query key for a project's issue list: the plain list, or the server-filtered list
- *  when labels are active. List and Board build their keys here, so one set of labels is one
- *  key in both; `api/queries.ts` then forks on `open`, so the open-only read of a view that
- *  hides closed issues is a key of its own under the same prefix. */
+/** The one query key prefix of a project's issue listings: the plain list, or the server-filtered
+ *  list when labels are given. `api/queries.ts` builds every listing of the project under it -
+ *  the open listing the Issues tab reads forks on `open`, and its done reads and Open's count take
+ *  suffixes of their own - so a Board move cancels and refreshes them all (`board-moves.ts`). */
 export function projectIssuesQueryKey(
   project: string,
   labels: readonly string[]

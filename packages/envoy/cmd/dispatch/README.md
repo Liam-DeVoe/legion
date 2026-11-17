@@ -3839,7 +3839,8 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/api/v1/projects/{key}/legion/board` (GET; cookie, trusted header, or bearer)
 
-  The Legion board of the project its path names, from what the sampler recorded of that project's daemon and from the per-issue Legion facts the facts consumer stored; the `/ws/live` `legion` view carries the same body and pushes each change, and no page draws it.
+  The Legion board of the project its path names, from what the sampler recorded of that project's daemon and from the per-issue Legion facts the facts consumer stored; the `/ws/live` `legion` view carries the same body and pushes each change.
+  The project's Issues tab reads that view for its Legion columns, its Board by Legion phase and its (i) hint, in a project whose daemon setting names a daemon.
   Eleven columns (`queue`, `design`, `planning`, `implementing`, `testing`, `reviewing`, `accepting`, `retro`, `merging`, `awaiting_person`, `held`), each card naming its issue's key, title, priority, phase and when that phase began, the slot it holds with what that slot is used for and when it was taken, its tree's slot, the roles in a turn now, the issues a blocker link holds it on, what it waits on from a person, why it waits with its place in the daemon's line, its tree root and the children of its tree that have not started.
   Beside them `issues`, a map keyed by issue key of the stored facts of every open issue with Legion phase work and of every issue the board shows: each card's issue and every issue of a tree a card stands in, those on no card included.
   A closed issue the board does not show has no entry: `GET /api/v1/projects/{key}/evals/{slug}/items` serves its facts by its close day, so every issue has one source and the body follows the open work and what the daemon runs, not the project's history.

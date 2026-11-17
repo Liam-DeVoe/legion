@@ -34,7 +34,7 @@ export function NarrowingList({ narrowings }: { narrowings: readonly FilterChip[
   if (narrowings.length === 0) return null;
   return (
     <ul
-      aria-label="Other narrowings"
+      aria-label="Other filters"
       className={`flex w-full flex-col gap-1 border-t pt-2 ${borderDefault}`}
     >
       {narrowings.map(({ key, label, remove }) => (

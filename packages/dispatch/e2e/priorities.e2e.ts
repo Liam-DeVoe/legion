@@ -69,7 +69,7 @@ interface Seeded {
   readonly ledger: string;
   readonly cutover: string;
   readonly child: string;
-  /** The one issue in flight under no priority this file writes to. */
+  /** The one issue active under no priority this file writes to. */
   readonly clock: string;
 }
 
@@ -508,8 +508,8 @@ test("the rail's Priorities count falls as work leaves flight and as a parent li
     await expect(entry).toBeVisible();
     await expect(entry.locator("span").last()).toHaveText("5");
 
-    // Four in flight under no priority plus one parked. An issue that leaves `in_progress` is
-    // no longer in flight, so the first fault loses it - with no reload: the event that moved
+    // Four active under no priority plus one parked. An issue that leaves `in_progress` is
+    // no longer active, so the first fault loses it - with no reload: the event that moved
     // it refreshes the two counts (`web/src/api/event-refresh.ts`).
     await patchIssue(seed.clock, { status: "done" });
     await expect(entry.locator("span").last()).toHaveText("4");
@@ -563,7 +563,7 @@ test("another person's rename and delete of a priority redraw an open page with 
       `P3 ${seed.titles[2]}`,
     ]);
     await expect(childRow).toBeVisible();
-    // Four in flight under no priority plus the one parked.
+    // Four active under no priority plus the one parked.
     await expect(badge).toHaveText("5");
 
     // Reader B: bob renames P3 on his own page. Alice's row takes the new title, and so does

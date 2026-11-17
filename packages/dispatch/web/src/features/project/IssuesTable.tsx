@@ -1247,7 +1247,7 @@ function IssueTableBody({
           />
         ) : (
           <QueryError
-            message="Could not read the Legion facts, which this view needs."
+            message="Could not read the Legion columns, which this view needs."
             onRetry={() => void factsRead.refetch()}
             retrying={factsRead.isFetching}
           />

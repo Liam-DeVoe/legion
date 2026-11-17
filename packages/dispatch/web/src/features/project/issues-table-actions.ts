@@ -237,7 +237,7 @@ export function useIssueTableActions({
             : ` ${outside} selected issues are not Todo issues labelled legion. They stay where they are.`;
       setConfirming({
         title: "Start these next?",
-        body: `${moves} Dispatch sends one write for each issue.${stays}`,
+        body: `${moves} Dispatch sends one change for each issue.${stays}`,
         confirmLabel: "Start next",
         run: () => runQueued(queued),
       });

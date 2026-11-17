@@ -171,9 +171,9 @@ test("a failed items read names its error, with a Retry that reads the facts aga
   const retry = mock(() => {});
   tabs({ factsFailure: { message: "No eval legion-work-time.", retry, retrying: false } });
   expect(screen.getByRole("alert").textContent).toBe(
-    "Could not read the Legion facts of the closed issues: No eval legion-work-time. Retry"
+    "Could not read the Legion columns of the closed issues: No eval legion-work-time. Retry"
   );
-  await user.click(screen.getByRole("button", { name: "Retry reading the Legion facts" }));
+  await user.click(screen.getByRole("button", { name: "Retry reading the Legion columns" }));
   expect(retry).toHaveBeenCalledTimes(1);
 });
 
@@ -189,7 +189,7 @@ test("every failed read is a line of its own, in one place under the tabs", () =
     "Could not read the Legion daemon setting: a Retry",
     "The last read of the Legion daemon failed: c",
     "Could not read the Legion board: b Retry",
-    "Could not read the Legion facts of the closed issues: d Retry",
+    "Could not read the Legion columns of the closed issues: d Retry",
   ]);
 });
 

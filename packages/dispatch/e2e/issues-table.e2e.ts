@@ -380,7 +380,7 @@ test("compact tables keep three full issues readable after scrolling the page @p
   }
 });
 
-test("List and Board share case-insensitive every-label matching", async ({ browser }) => {
+test("the table and the Board share case-insensitive every-label matching", async ({ browser }) => {
   await createProject({ key: "CORE", name: "Core" });
   const both = await createIssue({ project: "CORE", title: "Carries both labels" });
   await patchIssue(both.key, { labels: ["FrontEnd", "BACKEND"] });

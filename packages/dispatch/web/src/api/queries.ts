@@ -340,8 +340,9 @@ function sharePageByKey(cached: unknown, next: unknown): unknown {
 }
 
 /**
- * A project's issue list - plain, or server-filtered by labels - shared by the Board, the List,
- * the filter strip and the issue header's label picker. Every observer sets the query's function,
+ * A project's issue list - plain, open only (`open`), or server-filtered by labels - which the
+ * Issues tab reads open only, for its table and its Board alike, and the issue header's label
+ * picker reads plain. Every observer sets the query's function,
  * so each one takes it from here. A fetch that starts while a board move on the project is
  * unanswered waits for the answer: until then the server may not have applied the move, and its
  * list would put the card back where it came from.

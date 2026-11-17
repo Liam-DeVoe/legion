@@ -913,8 +913,9 @@ export const defaultView: View = {
 };
 const hasLabel = (issue: Pick<IssueSummary, "labels">, label: string) =>
   (issue.labels ?? []).some((value) => value.toLowerCase() === label);
-/** The server matches a label on `lower(label)`, so the table does too: an issue labelled
- *  `Legion` is in Legion's queue. */
+/** A Todo issue labelled `legion`: the set Start next moves, and the one the Queue column numbers
+ *  in a project with no Legion daemon. The server matches a label on `lower(label)`, so the
+ *  table does too: an issue labelled `Legion` is one. */
 export const isQueued = (issue: Pick<IssueSummary, "status" | "labels">) =>
   issue.status === "todo" && hasLabel(issue, "legion");
 
@@ -1217,8 +1218,8 @@ export function readUrl(params: URLSearchParams, stateKey?: string): View {
         ]
       : [];
   });
-  // `?unclaimed=1` is the Board control row's own parameter and what shared List links carry: it picks
-  // the Claimed by filter's "Nobody or lapsed", so both views read one URL.
+  // `?unclaimed=1` is the parameter the Board's Unclaimed flag writes and what shared table links
+  // carry: it picks the Claimed by filter's "Nobody or lapsed", so both layouts read one URL.
   if (params.get(key("unclaimed")) === "1") {
     const claim = filters.find((filter) => filter.id === "claim");
     if (claim === undefined) filters.push({ id: "claim", value: [UNCLAIMED_FACET] });

@@ -317,7 +317,7 @@ test("under another sort a move within a column is refused with a text that name
   const board = lines(TODO());
   expect(planMove(board, SORTED, "CORE-1", { column: "todo", lane: undefined, index: 2 })).toEqual({
     kind: "refused",
-    text: "Sorted by Created. Sort by Queue to move cards in a column.",
+    text: "The view sorts by Created. Sort by Queue to move cards in a column.",
   });
 });
 
@@ -445,10 +445,10 @@ test("a key move is refused before its place is looked at, by Legion phase but w
 test("the rank decides a move only under the Place sort, first to last", () => {
   expect(rankRefusal({ id: "queue", desc: false }, "Queue")).toBeUndefined();
   expect(rankRefusal({ id: "queue", desc: true }, "Queue")).toBe(
-    "Sorted by Queue from last to first. Sort from first to last to move cards in a column."
+    "The view sorts by Queue from last to first. Sort from first to last to move cards in a column."
   );
   expect(rankRefusal({ id: "priority", desc: false }, "Priority")).toBe(
-    "Sorted by Priority. Sort by Queue to move cards in a column."
+    "The view sorts by Priority. Sort by Queue to move cards in a column."
   );
   expect(rankRefusal(undefined, "")).toBe(
     "The view has no sort. Sort by Queue to move cards in a column."

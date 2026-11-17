@@ -1494,7 +1494,7 @@ test("Start next on a mixed selection names how many selected issues stay where 
   );
   const asked = await screen.findByRole("dialog", { name: "Start these next?" });
   expect(asked.textContent).toContain(
-    "1 issue moves ahead of the other Todo issues labelled legion. Dispatch sends one write for each issue. 2 selected issues are not Todo issues labelled legion. They stay where they are."
+    "1 issue moves ahead of the other Todo issues labelled legion. Dispatch sends one change for each issue. 2 selected issues are not Todo issues labelled legion. They stay where they are."
   );
   expect(send).not.toHaveBeenCalled();
   await user.click(within(asked).getByRole("button", { name: /^Start next$/ }));
@@ -2514,11 +2514,11 @@ test("a view that filters by a fact waits for the facts, and a failed read of th
 
   answer.reject(new ApiError(404, { code: "EVAL_NOT_FOUND", error: "No eval legion-work-time." }));
   expect(
-    await screen.findByText("Could not read the Legion facts, which this view needs.")
+    await screen.findByText("Could not read the Legion columns, which this view needs.")
   ).toBeDefined();
   expect(
     screen.getByText(
-      "Could not read the Legion facts of the closed issues: No eval legion-work-time."
+      "Could not read the Legion columns of the closed issues: No eval legion-work-time."
     )
   ).toBeDefined();
   expect(screen.getByRole("tab", { name: "Done, changed" })).toBeDefined();
@@ -2543,13 +2543,13 @@ test("a failed items read marks the done rows' facts cells and names the error u
   await answerBoard(sockets, legionBoard());
   expect(
     await screen.findByText(
-      "Could not read the Legion facts of the closed issues: The facts store did not answer."
+      "Could not read the Legion columns of the closed issues: The facts store did not answer."
     )
   ).toBeDefined();
   const row = screen.getByRole("row", { name: "CORE-5 Work CORE-5" });
   expect(row.querySelectorAll('[data-facts-read="error"]').length).toBeGreaterThan(0);
   expect(
-    screen.getByRole("button", { name: "Retry reading the Legion facts" })
+    screen.getByRole("button", { name: "Retry reading the Legion columns" })
   ).toBeInTheDocument();
 });
 
@@ -2601,7 +2601,7 @@ test("each tree exclude_tree leaves out is a chip of the row and a line of the F
   expect(screen.getByRole("button", { name: "Remove Not in tree CORE-5 filter" })).toBeDefined();
 
   await user.click(screen.getByRole("button", { name: /^Filters/ }));
-  const panel = screen.getByRole("list", { name: "Other narrowings" });
+  const panel = screen.getByRole("list", { name: "Other filters" });
   expect(within(panel).getByText("Not in tree CORE-3")).toBeDefined();
   await user.click(within(panel).getByRole("button", { name: "Remove Not in tree CORE-5" }));
   await waitFor(() => expect(routeSearch()).not.toContain("exclude_tree=CORE-5"));

@@ -246,8 +246,8 @@ export function IssueViewTabs({
           {factsFailure === undefined ? null : (
             <Alert
               failure={factsFailure}
-              retryName="Retry reading the Legion facts"
-              text={`Could not read the Legion facts of the closed issues: ${factsFailure.message}`}
+              retryName="Retry reading the Legion columns"
+              text={`Could not read the Legion columns of the closed issues: ${factsFailure.message}`}
             />
           )}
         </div>

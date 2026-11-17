@@ -274,9 +274,10 @@ export function rankRefusal(
   header: string
 ): string | undefined {
   if (sort === undefined) return "The view has no sort. Sort by Queue to move cards in a column.";
-  if (sort.id !== "queue") return `Sorted by ${header}. Sort by Queue to move cards in a column.`;
+  if (sort.id !== "queue")
+    return `The view sorts by ${header}. Sort by Queue to move cards in a column.`;
   return sort.desc
-    ? "Sorted by Queue from last to first. Sort from first to last to move cards in a column."
+    ? "The view sorts by Queue from last to first. Sort from first to last to move cards in a column."
     : undefined;
 }
 

@@ -30,7 +30,7 @@ function tableIn(tab: string, client: QueryClient) {
 }
 
 const OTHER_TAB_ACTION =
-  "Another tab has not finished moving these issues. Finish or discard that move first.";
+  "Another tab has not finished moving these issues. Finish or Dismiss that move first.";
 
 // k18 Two (R14, D12): two tabs keep one record for a listing. A bulk action in a second tab while
 // the first tab's move is in the store is refused with a text that names that move, and the
@@ -55,7 +55,7 @@ test("a second tab's bulk action is refused while the first tab's record is live
   expect(begun).toEqual({ kind: "refused", text: OTHER_TAB_ACTION });
   expect(record?.tab).toBe("tab-one");
   expect(first.current.current.current).toEqual(record);
-  // The second tab offers to finish or discard the first tab's move, as it would after a reload.
+  // The second tab offers to Finish or Dismiss the first tab's move, as it would after a reload.
   expect(second.current.action).toEqual(record);
 });
 

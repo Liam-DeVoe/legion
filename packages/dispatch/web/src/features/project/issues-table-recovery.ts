@@ -82,7 +82,7 @@ function thisTab(): string {
 
 /** What a bulk action says while another tab's record is in the store (D12). */
 const OTHER_TAB_ACTION =
-  "Another tab has not finished moving these issues. Finish or discard that move first.";
+  "Another tab has not finished moving these issues. Finish or Dismiss that move first.";
 /** What a bulk action says while this tab's own interrupted action is in the store. */
 const OWN_ACTION = "Finish or Dismiss the interrupted action before starting another one.";
 
