@@ -198,6 +198,7 @@ func TestTheLegionBoardPutsEachIssueInOneColumn(t *testing.T) {
 		legionColumnTesting:      {},
 		legionColumnReviewing:    {},
 		legionColumnAccepting:    {},
+		legionColumnRetro:        {},
 		legionColumnMerging:      {},
 	} {
 		if got := legionColumnKeys(t, board, id); !slices.Equal(got, want) {
@@ -250,25 +251,34 @@ func TestTheLegionBoardPutsEachIssueInOneColumn(t *testing.T) {
 	}
 }
 
-// TestTheMergingColumnHoldsEveryPhaseTheMergerWorks: the merger's phases are one declaration
-// (legion.MergerPhases), which the board's column map reads rather than spelling them again, so
-// an issue in any of the three is on the Merging column's cards and on no other.
-func TestTheMergingColumnHoldsEveryPhaseTheMergerWorks(t *testing.T) {
+// TestTheMergingColumnHoldsMergingAndAwaitingMerge: Merging holds `merging` and `awaiting_merge`
+// alone, and `retro` has the Retro column to itself, between Accepting and Merging, so time spent
+// in retro is never shown under Merging.
+func TestTheMergingColumnHoldsMergingAndAwaitingMerge(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 	seedLegionProjects(t, handler, "INFRA")
 	nameLegionDaemon(t, handler, "INFRA", "http://legion-infra.internal:13370")
 	now := time.Now().UTC()
-	var want []string
-	for index, phase := range legion.MergerPhases {
-		key := seedLegionIssue(t, database, "INFRA", index+1, "An issue the merger works", string(rune('a'+index)), nil, "")
+	for index, phase := range []string{legion.PhaseRetro, legion.PhaseMerging, legion.PhaseAwaitingMerge} {
+		key := seedLegionIssue(t, database, "INFRA", index+1, "An issue in "+phase, string(rune('a'+index)), nil, "")
 		seedLegionObservation(t, database, "INFRA", key, legion.FieldPhase, `"`+phase+`"`, now.Add(-time.Hour))
-		want = append(want, key)
 	}
 	seedLegionRead(t, database, "INFRA", now.Add(-time.Minute), "")
 
 	board := legionBoardOf(t, handler, "INFRA")
-	if got := legionColumnKeys(t, board, legionColumnMerging); !slices.Equal(got, want) {
-		t.Errorf("the Merging column holds %v, want the issue of each of %v", got, legion.MergerPhases)
+	ids := make([]string, len(board.Columns))
+	for index, column := range board.Columns {
+		ids[index] = column.ID
+	}
+	if retro := slices.Index(ids, legionColumnRetro); retro < 1 || retro+1 >= len(ids) ||
+		ids[retro-1] != legionColumnAccepting || ids[retro+1] != legionColumnMerging {
+		t.Errorf("the columns are %v, want retro between accepting and merging", ids)
+	}
+	if got := legionColumnKeys(t, board, legionColumnRetro); !slices.Equal(got, []string{"INFRA-1"}) {
+		t.Errorf("the Retro column holds %v, want the issue in retro alone", got)
+	}
+	if got := legionColumnKeys(t, board, legionColumnMerging); !slices.Equal(got, []string{"INFRA-2", "INFRA-3"}) {
+		t.Errorf("the Merging column holds %v, want the issues in merging and awaiting_merge", got)
 	}
 }
 

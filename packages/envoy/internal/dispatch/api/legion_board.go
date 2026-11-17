@@ -39,8 +39,8 @@ import (
 // The board's columns. Queue holds the daemon's waiting line and, after it, the issues a blocker
 // link holds; Design the issues whose phase is still `admitted` that are on a card at all — the
 // slot holders, and the ones no card stands above, which are on no other issue's count
-// (legionBoardCompute); Merging `retro`, `merging` and `awaiting_merge`; and Held the phase
-// metric 2 puts on the "no role" bar beside `awaiting_person` (the plan's D11).
+// (legionBoardCompute); Retro `retro` alone; Merging `merging` and `awaiting_merge`; and Held the
+// phase metric 2 puts on the "no role" bar beside `awaiting_person` (the plan's D11).
 const (
 	legionColumnQueue        = "queue"
 	legionColumnDesign       = "design"
@@ -49,6 +49,7 @@ const (
 	legionColumnTesting      = "testing"
 	legionColumnReviewing    = "reviewing"
 	legionColumnAccepting    = "accepting"
+	legionColumnRetro        = "retro"
 	legionColumnMerging      = "merging"
 	legionColumnAwaiting     = "awaiting_person"
 	legionColumnHeld         = "held"
@@ -65,6 +66,7 @@ var legionBoardColumnOrder = []struct{ id, label string }{
 	{legionColumnTesting, "Testing"},
 	{legionColumnReviewing, "Reviewing"},
 	{legionColumnAccepting, "Accepting"},
+	{legionColumnRetro, "Retro"},
 	{legionColumnMerging, "Merging"},
 	{legionColumnAwaiting, "Waiting on a person"},
 	{legionColumnHeld, "Held"},
@@ -72,25 +74,23 @@ var legionBoardColumnOrder = []struct{ id, label string }{
 
 // legionPhaseColumns is the column each phase the daemon reports falls in. A phase this does not
 // name (`done`, and any phase a later daemon adds) puts the issue on no card: the board shows the
-// work in flight, and a phase Dispatch has never heard of is not something it can place. The
-// Merging column holds the merger's phases, which are declared once beside the phases themselves
-// (legion.MergerPhases) and read here rather than spelled again.
-var legionPhaseColumns = func() map[string]string {
-	columns := map[string]string{
-		legion.PhaseAdmitted:       legionColumnDesign,
-		legion.PhasePlanning:       legionColumnPlanning,
-		legion.PhaseImplementing:   legionColumnImplementing,
-		legion.PhaseTesting:        legionColumnTesting,
-		legion.PhaseReviewing:      legionColumnReviewing,
-		legion.PhaseAccepting:      legionColumnAccepting,
-		legion.PhaseAwaitingPerson: legionColumnAwaiting,
-		legion.PhaseHeld:           legionColumnHeld,
-	}
-	for _, phase := range legion.MergerPhases {
-		columns[phase] = legionColumnMerging
-	}
-	return columns
-}()
+// work in flight, and a phase Dispatch has never heard of is not something it can place. Which
+// phases share a column is the board's own choice, made here: `retro` has a column of its own, as
+// it has a word of its own in the spec's tables ("Phase words in tables"), and Merging holds the
+// two phases those tables name merging, `merging` and `awaiting_merge`.
+var legionPhaseColumns = map[string]string{
+	legion.PhaseAdmitted:       legionColumnDesign,
+	legion.PhasePlanning:       legionColumnPlanning,
+	legion.PhaseImplementing:   legionColumnImplementing,
+	legion.PhaseTesting:        legionColumnTesting,
+	legion.PhaseReviewing:      legionColumnReviewing,
+	legion.PhaseAccepting:      legionColumnAccepting,
+	legion.PhaseRetro:          legionColumnRetro,
+	legion.PhaseMerging:        legionColumnMerging,
+	legion.PhaseAwaitingMerge:  legionColumnMerging,
+	legion.PhaseAwaitingPerson: legionColumnAwaiting,
+	legion.PhaseHeld:           legionColumnHeld,
+}
 
 // legionNotConfiguredCode and legionNotConfiguredMessage are the one refusal a project with no
 // Legion daemon gets, whichever route or live view asked (getLegionBoard, the live hub's worker).
@@ -130,10 +130,10 @@ type legionBoardHeader struct {
 }
 
 // legionBoardColumn is one column: its id, the label the view shows, and its cards in the order
-// the view draws them. ID is one of the ten columns, in the order legionBoardColumnOrder draws
+// the view draws them. ID is one of the eleven columns, in the order legionBoardColumnOrder draws
 // them; the enum is what makes the generated type carry that set rather than a bare string.
 type legionBoardColumn struct {
-	ID    string            `json:"id" enum:"queue,design,planning,implementing,testing,reviewing,accepting,merging,awaiting_person,held"`
+	ID    string            `json:"id" enum:"queue,design,planning,implementing,testing,reviewing,accepting,retro,merging,awaiting_person,held"`
 	Label string            `json:"label"`
 	Cards []legionBoardCard `json:"cards"`
 }
