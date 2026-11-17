@@ -382,10 +382,13 @@ export function createLegionTool(deps: {
         "(ISSUE_OUTSIDE_TREE), an issue the daemon has not recorded whose Dispatch status is not triage, backlog, icebox or todo " +
         "(ISSUE_ALREADY_RELEASED), a version that changes a task that is done (TASK_DONE), and a plan given for a run of the issue " +
         "that ended before Legion applied it: give it again (PLAN_STALE_GENERATION). " +
+        "Legion takes no plan for a recorded issue whose experiment's group runs the project's default steps (PLAN_NOT_TAKEN, naming " +
+        "the group): it records nothing, and the same plan given again gets the same answer. " +
         "stop_task (issue, task) stops one task of the plan Legion runs for a recorded issue: its running step stops, and the issue is " +
         "held, `holdReason` task-stopped, until a later version of the plan, given with register_plan, changes or replaces that task, " +
         "which then starts at its first step; retry_or_escalate does not start it again (TASK_STOPPED). The daemon refuses a task the plan " +
-        "does not hold (TASK_NOT_FOUND) and one that is done (TASK_DONE). " +
+        "does not hold (TASK_NOT_FOUND), one that is done (TASK_DONE), and every task of an issue whose experiment's group runs the " +
+        "project's default steps, since Legion takes no plan from its owner (PLAN_NOT_TAKEN). " +
         "sign_off is the architect's acceptance of an issue in accepting, moving it to retro; the daemon refuses it in every " +
         "other phase (SIGNOFF_OUTSIDE_ACCEPTING) and while an issue beneath it is still in the workflow " +
         "(SIGNOFF_CHILD_IN_WORKFLOW, naming each one), since a parent's head proves its children's merged work: run each one " +

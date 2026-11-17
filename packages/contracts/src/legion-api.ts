@@ -1789,7 +1789,9 @@ export const LegionPlanRegisterRequest = z.strictObject({
 /** `api.TaskStopRequest`, stop_task (contract 156): the owner of a recorded issue stops one task of
  * the plan Legion runs for it, so that a later version of the plan may change that task; the issue
  * is then held with `holdReason` `task-stopped`. A task the plan does not hold is refused
- * (`TASK_NOT_FOUND`), and so is one that is done (`TASK_DONE`). */
+ * (`TASK_NOT_FOUND`), and so is one that is done (`TASK_DONE`), and every task of an issue whose
+ * experiment's group runs the project's default steps, since Legion takes no plan from its owner
+ * (`PLAN_NOT_TAKEN`). */
 export const LegionTaskStopRequest = z.strictObject({
   grantId: nonEmptyString,
   issue: nonEmptyString,

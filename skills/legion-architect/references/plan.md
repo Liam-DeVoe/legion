@@ -93,9 +93,10 @@ need from the planner's plan into your task's text.
 
 - `stop_task` (`issue`, `task`) stops a task that is not done. Legion ends its running step, stops
   that step's process and keeps its session, and holds the issue, which keeps its admission slot.
-  It refuses a task the plan does not hold (`404 TASK_NOT_FOUND`, naming the plan's tasks) and one
-  that is done or left the workflow with its issue (`409 TASK_DONE`). A stop of a task already
-  stopped changes nothing.
+  It refuses a task the plan does not hold (`404 TASK_NOT_FOUND`, naming the plan's tasks), one
+  that is done or left the workflow with its issue (`409 TASK_DONE`), and every task of an issue
+  whose experiment's group runs the project's default steps (`409 PLAN_NOT_TAKEN`, below). A stop
+  of a task already stopped changes nothing.
 - A stopped task stays held until you give a later version of the plan that changes it, or, on a
   root, until a person sets the root `todo`. Legion then starts it at its first step.
   `retry_or_escalate` refuses the hold, a retry and an escalation alike (`409 TASK_STOPPED`), as
@@ -117,6 +118,11 @@ need from the planner's plan into your task's text.
 - An issue that started its work before Legion took plans has no task, and Legion takes no plan for
   it: `<KEY> started its work before Legion took plans, so it runs the steps it started with to
   their end. This plan changed nothing.`
+- An issue that a project's experiment drew into a group whose issues run the project's default
+  steps takes no plan from you: once the daemon records it, `register_plan` is answered
+  `PLAN_NOT_TAKEN`, naming the group, and records nothing, and the same plan given again gets the
+  same answer; `stop_task` of any of its tasks is answered `PLAN_NOT_TAKEN` too. It runs the
+  default steps.
 
 ## The notices
 
@@ -133,10 +139,13 @@ need from the planner's plan into your task's text.
   leaves. Run each issue it names to done, or park one with `park_child` under the park rule.
   `retry_or_escalate` refuses that hold, a retry and an escalation alike (`409 HELD_FOR_CHILDREN`,
   naming each issue beneath it still in the workflow), and a `todo` on the root leaves it held.
-- **`plan-not-taken`:** an earlier owner of the issue gave it a plan, and Legion did not take it
-  at the issue's first step. Its reason names the version, who gave it, and the plan the first
-  step runs: yours, or the default steps. To run the earlier plan, `stop_task` the task that runs
-  now, then give the earlier plan again with `register_plan` as your own.
+- **`plan-not-taken`:** Legion did not take a plan at the issue's first step, one of two cases. An
+  earlier owner of the issue gave the plan: its reason names the version, who gave it, and the
+  plan the first step runs, yours or the default steps. To run the earlier plan, `stop_task` the
+  task that runs now, then give the earlier plan again with `register_plan` as your own. Or the
+  issue's experiment drew it into a group whose issues run the project's default steps: its
+  reason names each version passed over and the group, and offers no `register_plan`, which that
+  issue's owner is answered `PLAN_NOT_TAKEN` for.
 
 ## Reading how plans went
 
