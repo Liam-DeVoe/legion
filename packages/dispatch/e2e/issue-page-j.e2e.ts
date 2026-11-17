@@ -1296,7 +1296,7 @@ test("a requirement whose words hold an unbroken run keeps the page inside its v
 // each statement it names, and the stage gives the focus to the tab-stop row instead.
 // SLOW(>=2s): a seeded issue and a load of the Spec view with two reads refused, waited on until
 // the refused reads' line is drawn.
-test("the Spec view opened at its address with the spec's blocks refused puts the focus on that read's Retry", async ({
+test("the Spec view opened at its address with its statements' reads refused puts the focus on their Retry", async ({
   browser,
 }) => {
   await phase(browser, seedNoChildren, async (page, seeded) => {
