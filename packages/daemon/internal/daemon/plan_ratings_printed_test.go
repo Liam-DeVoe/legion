@@ -25,13 +25,18 @@ func readScriptPassed(out string, line planLine) bool {
 	return strings.Contains(out, fmt.Sprintf("PASS: %s: plan %s, ratings %s, time ", line.issue, line.plan, line.printedRatings))
 }
 
+// plansPrintedWith is what `dispatch plans --project SR1` prints of one finished issue whose
+// ratings print as ratings, the answer both tests below parse.
+func plansPrintedWith(ratings string) string {
+	return "SR1: 1 finished issues\nSR1-1 closed 2026-11-17T00:00:00Z plan default (1 tasks: planner) ratings " + ratings + " time 0h1m failed steps 0"
+}
+
 // The read script prints the ratings as the command printed them, and plans.ts prints each reason
 // with JSON.stringify, which leaves `<`, `>` and `&` as they are, where Go's encoder escapes them;
 // so the driver's check of the script's PASS line holds for a reason that holds them. The control
 // is a PASS line naming another reason.
 func TestTheReadScriptsPassIsReadAsTheCommandPrintedTheRatings(t *testing.T) {
-	printed := `SR1: 1 finished issues
-SR1-1 closed 2026-11-17T00:00:00Z plan default (1 tasks: planner) ratings 4/5 "Done in <1 day & no rework." time 0h1m failed steps 0`
+	printed := plansPrintedWith(`4/5 "Done in <1 day & no rework."`)
 	lines, err := parsePlans("SR1", printed)
 	if err != nil {
 		t.Fatal(err)
@@ -138,18 +143,15 @@ func parseRatings(text string) ([]printedRating, error) {
 // or a space before it is no rating, and the header is `<project>: <n> finished issues` with
 // nothing after it.
 func TestThePlansParserReadsOnlyWhatTheCommandPrints(t *testing.T) {
-	out := func(ratings string) string {
-		return "SR1: 1 finished issues\nSR1-1 closed 2026-11-17T00:00:00Z plan default (1 tasks: planner) ratings " + ratings + " time 0h1m failed steps 0"
-	}
-	if parsed, err := parsePlans("SR1", out(`4/5 "x"`)); err != nil || len(parsed) != 1 || len(parsed[0].ratings) != 1 || parsed[0].ratings[0] != (printedRating{rating: 4, reason: "x"}) {
+	if parsed, err := parsePlans("SR1", plansPrintedWith(`4/5 "x"`)); err != nil || len(parsed) != 1 || len(parsed[0].ratings) != 1 || parsed[0].ratings[0] != (printedRating{rating: 4, reason: "x"}) {
 		t.Fatalf("the line the command prints parsed as %+v, %v; want one rating 4/5 \"x\"", parsed, err)
 	}
 	for _, ratings := range []string{`4/5 null`, `4/5  "x"`} {
-		if parsed, err := parsePlans("SR1", out(ratings)); err == nil {
+		if parsed, err := parsePlans("SR1", plansPrintedWith(ratings)); err == nil {
 			t.Errorf("the ratings %q parsed as %+v, want an error: the command prints each reason as a JSON string right after `<n>/5 `", ratings, parsed)
 		}
 	}
-	if parsed, err := parsePlans("SR1", strings.Replace(out(`4/5 "x"`), "1 finished issues", "1 finished issues (of 4)", 1)); err == nil {
+	if parsed, err := parsePlans("SR1", strings.Replace(plansPrintedWith(`4/5 "x"`), "1 finished issues", "1 finished issues (of 4)", 1)); err == nil {
 		t.Errorf("the header `SR1: 1 finished issues (of 4)` parsed as %+v, want an error: the command prints the header with nothing after it", parsed)
 	}
 }
