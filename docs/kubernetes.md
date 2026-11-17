@@ -2026,7 +2026,7 @@ delete from outbox where kind = 'step_record' and payload->>'rating' is not null
 The header of `20261117023932_outbox_kinds_with_the_plan_record.up.sql` carries this same block.
 
 Each deleted row is a write the daemon does not send again; the rollback deletes no node of Dispatch.
-A deleted `plan_record` row whose plan had not reached Dispatch leaves that run with no plan: the read of the project's finished issues then shows the plan of the issue's latest earlier run that has one (it takes the plan of the highest generation it holds, `newerPlan` in `workflowstore/read.go`), and no plan where no run has one.
+A deleted `plan_record` row whose plan had not reached Dispatch leaves that run with no plan: the read of the project's finished issues then shows the plan of the highest generation Dispatch holds for the issue, whether that run came before the deleted one or after it (`newerPlan` in `workflowstore/read.go`), and no plan where Dispatch holds none.
 A deleted rating row whose rating had not reached Dispatch leaves that retro's record with no rating, and nothing else of the issue changes.
 A row can stand after its write reached Dispatch, when the daemon stopped, or failed to record the row as done, after the write (it runs such a row again when its lease expires, `settle` in `daemon/outbox.go`); that plan or rating stays in Dispatch.
 An earlier release puts `plan_record` in no outbox lane (`laneKinds` in `record/outbox.go`), so a `plan_record` row left in place is never decoded or run, and it writes its plan at the roll forward.
