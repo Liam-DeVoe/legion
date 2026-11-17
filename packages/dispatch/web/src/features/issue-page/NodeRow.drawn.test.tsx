@@ -1436,10 +1436,10 @@ test("while the line's send is out, Answer, an option, Edit and the issue's Repl
 });
 
 /** A focused row whose box the browser lays out at `top`, 24 px tall, placed by the hook every
- *  row of the outline places itself with. */
-function FocusedRowAt({ top }: { top: number }): ReactNode {
+ *  row of the outline places itself with, by its default step or by `below`. */
+function FocusedRowAt({ below, top }: { below?: number; top: number }): ReactNode {
   const row = useRef<HTMLDivElement | null>(null);
-  useRowOnScreen(row, true);
+  useRowOnScreen(row, true, below);
   return (
     <div
       ref={(element) => {
@@ -1469,6 +1469,21 @@ test("a focused row under the view row that stays is placed below it, and one be
     scrollBy.mockClear();
     render(<FocusedRowAt top={60} />).unmount();
     expect(scrollBy, "a row already below the view row was scrolled").not.toHaveBeenCalled();
+  } finally {
+    scrollBy.mockRestore();
+    document.documentElement.style.removeProperty("scroll-padding-top");
+  }
+});
+
+// Decision 188: a view that places its rows by a step of its own passes it, and a focused row
+// under what stays is placed that far below it rather than 8 px.
+test("a focused row under the view row that stays is placed the step it is given below it", () => {
+  document.documentElement.style.setProperty("scroll-padding-top", "44px");
+  const scrollBy = spyOn(window, "scrollBy").mockImplementation(() => {});
+  try {
+    render(<FocusedRowAt below={20} top={10} />).unmount();
+    expect(scrollBy).toHaveBeenCalledTimes(1);
+    expect(scrollBy).toHaveBeenCalledWith({ top: 10 - 44 - 20 });
   } finally {
     scrollBy.mockRestore();
     document.documentElement.style.removeProperty("scroll-padding-top");

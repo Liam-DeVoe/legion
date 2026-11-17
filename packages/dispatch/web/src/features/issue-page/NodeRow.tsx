@@ -463,9 +463,15 @@ export const NODE_ROW_LAYOUT = {
  * they could see, so there is nothing to bring on screen.
  *
  * Answers the row's own `onPointerDown`, which marks a press. Every row of the outline and of a
- * filter's body places itself by this one hook.
+ * filter's body places itself by this one hook. `below` is how far below what stays a row that
+ * lay under it is placed, `BELOW_WHAT_STAYS` unless a view places its rows by a step of its own
+ * (decision 188).
  */
-export function useRowOnScreen(row: RefObject<HTMLElement | null>, focused: boolean): () => void {
+export function useRowOnScreen(
+  row: RefObject<HTMLElement | null>,
+  focused: boolean,
+  below: number = BELOW_WHAT_STAYS
+): () => void {
   const pressed = useRef(false);
   const press = () => {
     pressed.current = true;
@@ -483,14 +489,14 @@ export function useRowOnScreen(row: RefObject<HTMLElement | null>, focused: bool
     const place = () => {
       if (pressed.current) return;
       bringOnScreen(element);
-      belowWhatStays(element);
+      belowWhatStays(element, below);
     };
     place();
     if (typeof ResizeObserver === "undefined") return;
     const grown = new ResizeObserver(place);
     grown.observe(element);
     return () => grown.disconnect();
-  }, [focused, row]);
+  }, [below, focused, row]);
   return press;
 }
 
@@ -499,9 +505,9 @@ export function useRowOnScreen(row: RefObject<HTMLElement | null>, focused: bool
 const BELOW_WHAT_STAYS = 8;
 
 /**
- * Scrolls `element`, which `bringOnScreen` has placed, down below everything that stays at the
- * top of the screen above the rows where its top still lies under it (decision 113 of
- * dispatch://INFRA-1196/artifact/part-decisions-md, root R11). That height is the page's
+ * Scrolls `element`, which `bringOnScreen` has placed, down to `below` px below everything that
+ * stays at the top of the screen above the rows where its top still lies under it (decision 113
+ * of dispatch://INFRA-1196/artifact/part-decisions-md, root R11). That height is the page's
  * `scroll-padding-top`, which `styles.css` keeps equal to it, so this reads the padding itself
  * and no height of its own. `bringOnScreen` clears the header's band alone, which at 760 px and
  * below, under a header that publishes no band, leaves the view row that stays over the row.
@@ -510,12 +516,12 @@ const BELOW_WHAT_STAYS = 8;
  * A row in Details' drawer is brought into the drawer's own scroll box, which stands over the
  * page and nothing of the page's top covers, so it is left where `bringOnScreen` put it.
  */
-function belowWhatStays(element: HTMLElement): void {
+function belowWhatStays(element: HTMLElement, below: number): void {
   if (element.closest(`aside[${DETAILS_ATTRIBUTE}]`) !== null) return;
   const stays = Number.parseFloat(getComputedStyle(document.documentElement).scrollPaddingTop);
   if (!Number.isFinite(stays)) return;
   const top = element.getBoundingClientRect().top;
-  if (top < stays) window.scrollBy({ top: top - stays - BELOW_WHAT_STAYS });
+  if (top < stays) window.scrollBy({ top: top - stays - below });
 }
 
 /** The kinds of node the page draws no tag for: what somebody said, which is the conversation's
