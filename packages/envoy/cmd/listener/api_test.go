@@ -3829,66 +3829,12 @@ func TestInterestSubscribeLeavesOutEveryPrivateStreamSubject(t *testing.T) {
 	}
 }
 
-// A registration naming a topic no stream subject captures stores it with the rest of itself: the
-// answer stays 200 and one warning names it. The body here is the one a session sends that follows
-// notifications.team.>, which a plugin registers with its base, the bare notifications.team, beside
-// the team topic it follows; a refusal would leave it with no session consumer at all, at every
-// heartbeat.
-func TestInterestSubscribeKeepsAnUncapturedTopicWithTheRest(t *testing.T) {
-	rig := newInterestRig(t)
-	own := contracts.AgentSubject(interestSession)
-	const stale, team = "notifications.team", "notifications.team.deploy-squad"
-
-	answer := subscribeInterest(t, rig.mux, []string{stale, team})
-
-	want := []string{own, stale, team}
-	if !slices.Equal(answer.Topics, want) {
-		t.Fatalf("answered topics = %v, want %v", answer.Topics, want)
-	}
-	if len(answer.Warnings) != 1 || answer.Warnings[0] != contracts.UncapturedTopicWarning(stale, interestSession) {
-		t.Fatalf("warnings = %q, want only %q", answer.Warnings, contracts.UncapturedTopicWarning(stale, interestSession))
-	}
-	stored, err := rig.deps.registry.Get(context.Background(), interestSession)
-	if err != nil {
-		t.Fatalf("read the stored interest: %v", err)
-	}
-	if !slices.Equal(stored.Topics, want) {
-		t.Fatalf("stored topics = %v, want %v", stored.Topics, want)
-	}
-}
-
-// A registration whose every named topic is one no stream subject captures is answered 200 too,
-// with those topics stored beside the session's own agent subject: the session is registered, so
-// its consumer is created and its entry written, and the warning tells it that nothing is
-// delivered on the topic until a stream subject captures it.
-func TestInterestSubscribeStoresEveryTopicWhenEveryTopicIsUncaptured(t *testing.T) {
-	rig := newInterestRig(t)
-	own := contracts.AgentSubject(interestSession)
-	const stale = "notifications.team"
-
-	answer := subscribeInterest(t, rig.mux, []string{stale})
-
-	if want := []string{own, stale}; !slices.Equal(answer.Topics, want) {
-		t.Fatalf("answered topics = %v, want %v", answer.Topics, want)
-	}
-	if len(answer.Warnings) != 1 || answer.Warnings[0] != contracts.UncapturedTopicWarning(stale, interestSession) {
-		t.Fatalf("warnings = %q, want only %q", answer.Warnings, contracts.UncapturedTopicWarning(stale, interestSession))
-	}
-	stored, err := rig.deps.registry.Get(context.Background(), interestSession)
-	if err != nil {
-		t.Fatalf("read the stored interest: %v", err)
-	}
-	if want := []string{own, stale}; !slices.Equal(stored.Topics, want) {
-		t.Fatalf("stored topics = %v, want %v", stored.Topics, want)
-	}
-	if _, err := rig.deps.sessions.Get(interestSession); err != nil {
-		t.Fatalf("the registration wrote no session entry: %v", err)
-	}
-}
-
 // The two kinds of topic a registration warns about are told apart: one reaching another
 // session's inbox, which it leaves out, and one no stream subject captures, which it stores, each
-// draw their own warning, naming themselves, and the topics the listener does store are stored.
+// draw their own warning, naming themselves. The registration is still answered 200, its session
+// entry is written, and the topics the listener does store are stored. The uncaptured topic is the
+// bare notifications.team, the base a plugin registers beside the team topic it follows under
+// notifications.team.>. A refusal would leave that session with no consumer at every heartbeat.
 func TestInterestSubscribeWarnsAboutAnUncapturedTopicAndAPrivateOneTogether(t *testing.T) {
 	rig := newInterestRig(t)
 	own, other := contracts.AgentSubject(interestSession), contracts.AgentSubject("ses_other")
@@ -3915,6 +3861,9 @@ func TestInterestSubscribeWarnsAboutAnUncapturedTopicAndAPrivateOneTogether(t *t
 	}
 	if !slices.Equal(stored.Topics, want) {
 		t.Fatalf("stored topics = %v, want %v", stored.Topics, want)
+	}
+	if _, err := rig.deps.sessions.Get(interestSession); err != nil {
+		t.Fatalf("the registration wrote no session entry: %v", err)
 	}
 }
 

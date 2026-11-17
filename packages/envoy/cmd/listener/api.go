@@ -1163,7 +1163,8 @@ const publishDedupePrefix = "publish."
 // stored it, with the counts of the sessions it is for (recipientCounts), and any other
 // notifications. topic is refused by name, since nothing would store it for a session to read,
 // only once a read of the deployed stream's subjects that started after the request asked agrees
-// (bus.SubjectsAsk.Uncaptured), and never where no such read can be made. An
+// (bus.SubjectsAsk.Uncaptured), and never where no such read can be made, except under a NATS user
+// that may not read the stream, which refuses on the subjects it holds. An
 // explicit dedupe_key is used verbatim (a re-send a receiver's own dedupe
 // recognises); it is mutually exclusive with idempotency_key, may not begin
 // with roleForwardDedupePrefix, the mark the role arbiter drops on sight, and
@@ -2669,21 +2670,19 @@ func unwiredRepositoryWarning(ctx context.Context, d *listenerDeps, topic string
 // reaches nothing, and every topic of the registration shares that one read. Where no such read
 // can be made - no connection, ctx ending first, a read that fails - no topic is named; a NATS
 // user that may not read the stream is judged on the subjects m.stream holds, which are all it
-// will ever have. A nil m judges the subjects this build compiles; such a listener refuses every
-// registration anyway.
+// will ever have. Its one caller runs after the registration was stored, which a nil m refuses
+// (consumerFor), and a nil m.stream judges the subjects this build compiles.
 //
 // The sentence is written once, as uncapturedTopicWarning in packages/contracts, which
-// scripts/gen-go.ts emits as contracts.UncapturedTopicWarning, and the plugins show the
-// listener's warning as they receive it.
+// scripts/gen-go.ts emits as contracts.UncapturedTopicWarning. The plugins read it whole: a
+// plugin hides the warning of a topic its caller did not name only when the warning is this exact
+// text for that topic and the answer's session_id (warningsForNamedTopics in
+// @legion/envoy-client), so the warning is built with body.SessionID, the id the answer carries.
 func (m *sessionDelivery) uncapturedTopics(ctx context.Context, requested []string) map[string]struct{} {
-	var stream *bus.Client
-	if m != nil {
-		stream = m.stream
-	}
-	ask := stream.AskDeployedSubjects()
+	ask := m.stream.AskDeployedSubjects()
 	uncaptured := make(map[string]struct{})
 	for _, topic := range requested {
-		if stream.ReachesNoSession(topic) && ask.Uncaptured(ctx, topic) {
+		if m.stream.ReachesNoSession(topic) && ask.Uncaptured(ctx, topic) {
 			uncaptured[topic] = struct{}{}
 		}
 	}
@@ -3188,7 +3187,7 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 			}
 		}
 		if len(warnings) > 0 {
-			logger.Warn("listener subscribe warned about topics of the registration",
+			logger.Warn("listener subscribe warned about private or uncaptured topics of the registration",
 				slog.String("session_id", body.SessionID), slog.Any("warnings", warnings))
 		}
 		if delivery.relayed() {

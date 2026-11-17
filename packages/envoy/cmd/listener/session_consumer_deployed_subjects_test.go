@@ -17,9 +17,9 @@ import (
 // does not compile) is registered through this build's listener with no warning, and the session's
 // consumer filters on it, so a message stored on it while the two builds run is the consumer's to
 // deliver. A topic no stream captures is registered and filtered on too, with the warning that
-// nothing is delivered on it until a stream subject captures it: the registration route and the
-// consumer filter keep every followed notification topic, so a route that stored the topic and a
-// filter that left it out can never answer the session 200 for a topic it is not delivered.
+// nothing is delivered on it until a stream subject captures it: neither the registration route
+// nor the consumer filter asks the stream's subjects, so the filter carries both topics the route
+// stored, and the consumer delivers what the stream stores on a topic once a subject captures it.
 func TestSessionConsumerFiltersOnATopicOnlyTheDeployedStreamCaptures(t *testing.T) {
 	const (
 		sessionID  = "ses_deployed_subject"
@@ -177,15 +177,7 @@ func TestADeliveryExceptionOnALaneAddedSinceTheLastReadIsStoredOnce(t *testing.T
 	}
 	client := connectToNewerBuildsStream(t)
 	js := client.JS()
-	info, err := js.StreamInfo(bus.Stream)
-	if err != nil {
-		t.Fatalf("read %s: %v", bus.Stream, err)
-	}
-	config := info.Config
-	config.Subjects = append(slices.Clone(config.Subjects), added)
-	if _, err := js.UpdateStream(&config); err != nil {
-		t.Fatalf("another build adds %s: %v", added, err)
-	}
+	addStreamSubject(t, js, added)
 	if client.DeployedStreamCaptures(lane) {
 		t.Fatalf("the listener judged %s captured before reading the stream's subjects again; the row needs a stale read", lane)
 	}
@@ -196,7 +188,7 @@ func TestADeliveryExceptionOnALaneAddedSinceTheLastReadIsStoredOnce(t *testing.T
 			t.Fatalf("publish the delivery exception: %v", err)
 		}
 	}
-	info, err = js.StreamInfo(bus.Stream, &natsgo.StreamInfoRequest{SubjectsFilter: lane})
+	info, err := js.StreamInfo(bus.Stream, &natsgo.StreamInfoRequest{SubjectsFilter: lane})
 	if err != nil {
 		t.Fatalf("read %s: %v", bus.Stream, err)
 	}

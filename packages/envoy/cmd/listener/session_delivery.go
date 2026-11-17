@@ -165,8 +165,8 @@ type sessionDelivery struct {
 	// stream is the client whose read of the deployed stream's subjects decides which topics
 	// /v1/interests/subscribe names in its warning that no stream subject captures them yet
 	// (uncapturedTopics). It decides neither the topics a registration stores nor those a
-	// consumer's filter carries (sessionConsumerFilter): both keep every followed notification
-	// topic. main gives it the listener's own client. nil judges the subjects this build compiles
+	// consumer's filter carries (sessionConsumerFilter): neither asks the stream's subjects. main
+	// gives it the listener's own client. nil judges the subjects this build compiles
 	// (bus.Client.DeployedStreamCaptures), which only a test's listener does.
 	stream *bus.Client
 	logger *logging.Logger
@@ -279,8 +279,8 @@ type sessionDelivery struct {
 // slog.Logger (logging.Logger.Slog) for the same reason, so the lines its creates write of a
 // start they lowered to a resume record or clamped from past the stream's end to its first
 // sequence are this listener's JSON, with its machine_id. stream is the listener's own client,
-// whose read of the deployed stream's subjects both a registration's stored topics and every
-// consumer filter are judged on (sessionDelivery.stream).
+// whose read of the deployed stream's subjects decides only which topics a registration's answer
+// warns that no stream subject captures (sessionDelivery.stream).
 //
 // Every session takes its messages from the consumer this connection manages, so a failure is
 // the whole start's: main ends the process with it, as it does for the live topics lane.

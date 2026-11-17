@@ -419,10 +419,9 @@ func TestTwoBuildsTheOlderPodsRelayKeepsATopicTheNewerPodRegisteredInsideTheRefr
 // (bus.SubjectsAsk.Uncaptured); the registration comes inside A's refresh window
 // (tbRoll.requireInsideRefresh), and A is active and B standby throughout.
 //
-// Before that rule, a build of this release judged the topic on a read again before it left it
-// out, and a build before this release left the topic out of the registration on the subjects it
-// read at its connect, with a warning naming it, so the session's row never held it and no message
-// on it reached the session.
+// Before that rule, a build left the topic out of the registration on the subjects it read at its
+// connect, with a warning naming it, so the session's row never held it and no message on it
+// reached the session.
 func TestTwoBuildsTheOlderPodStoresATopicTheNewerBuildAddedInsideTheRefreshWindow(t *testing.T) {
 	const (
 		sessionID = "ses_tb_roll_window_register"
@@ -461,17 +460,15 @@ func TestTwoBuildsTheOlderPodStoresATopicTheNewerBuildAddedInsideTheRefreshWindo
 // (bus.SubjectsAsk.Uncaptured); the publish and the receipt come inside A's refresh window
 // (tbRoll.requireInsideRefresh), and A is active and B standby throughout.
 //
-// The session registers twice, so that nothing but the publish asks A to read the subjects: a
-// registration through A following the topic has A read them for its warning
-// (uncapturedTopics). A relay A starts on hearing a registration through B reads nothing of them
-// (sessionRelays.restart, sessionConsumerFilter). So the session first registers through A
-// following its own inbox alone,
-// which A judges with no read, and A's relay starts the session's consumer on that filter and
-// pulls; the session then registers through B following the topic, and B stores it on the
-// session's row and sets the consumer's filter to it in place
-// (bus.SessionConsumers.Ensure). A hears that entry change, and its relay, already pulling that
-// consumer, restarts nothing (sessionRelays.apply): the row reads the filter
-// with the topic, and A's pull standing on it, as its own client reads the consumer.
+// The topic is registered through B, because nothing but the publish may ask A to read the
+// subjects, and a registration through A following the topic has A read them for its warning
+// (uncapturedTopics). A relay reads nothing of them (sessionRelays.restart, sessionConsumerFilter).
+// So the session first registers through A following its own inbox alone, which A judges with no
+// read, and A's relay starts the session's consumer on that filter and pulls. The session then
+// registers through B following the topic, and B stores it on the session's row and sets the
+// consumer's filter to it in place (bus.SessionConsumers.Ensure). A hears that entry change, and
+// its relay, already pulling that consumer, restarts nothing (sessionRelays.apply): the row reads
+// the filter with the topic, and A's pull standing on it, as its own client reads the consumer.
 //
 // Before the publish route refused a topic only on a read of the subjects that started after the
 // request asked, A refused the publish 400 on the subjects it read at its connect

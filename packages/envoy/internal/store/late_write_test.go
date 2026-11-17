@@ -21,7 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/kvwatch"
 )
 
-// lateKeyWrite runs late, once, before the first write through it of key (Put, Create or Update)
+// lateKeyWrite runs late, once, before the first write through it of key (Put or Update)
 // reaches the bucket: what another writer does between a plan's read and its write. late's own
 // writes go through the raw handle and are not hooked again.
 type lateKeyWrite struct {
@@ -35,11 +35,6 @@ type lateKeyWrite struct {
 func (kv *lateKeyWrite) Put(key string, value []byte) (uint64, error) {
 	kv.before(key)
 	return kv.KeyValue.Put(key, value)
-}
-
-func (kv *lateKeyWrite) Create(key string, value []byte) (uint64, error) {
-	kv.before(key)
-	return kv.KeyValue.Create(key, value)
 }
 
 func (kv *lateKeyWrite) Update(key string, value []byte, revision uint64) (uint64, error) {
@@ -124,9 +119,12 @@ func TestALatePlannedInterestWriteIsRefusedOverADeleteMadeAfterItsPlan(t *testin
 }
 
 // A soft claim of a role no claim record holds, which another session's claim and its release
-// overtake before the claim's write lands, is refused by the bucket (an error matching
-// nats.ErrKeyExists, which POST /v1/roles/set answers by deciding again), and the role is left
-// unclaimed, as the release left it.
+// overtake before the claim's write lands, is refused by the bucket, and the role is left
+// unclaimed, as the release left it. The claim is answered its write's own refusal, an error
+// matching nats.ErrKeyExists, since the release left no holder to name in an *ErrRoleHeld. POST
+// /v1/roles/set never meets this answer: its soft claim names the revision it decided on
+// (IfClaimRevision), so it is answered *ErrRoleClaimRevisionMismatch, on which it decides once
+// more.
 func TestALateSoftClaimIsRefusedOverAReleaseMadeAfterItsRead(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	t.Cleanup(cleanup)
@@ -156,6 +154,6 @@ func TestALateSoftClaimIsRefusedOverAReleaseMadeAfterItsRead(t *testing.T) {
 			stood.HolderSessionID, stood.Revision, err)
 	}
 	if !errors.Is(err, natsgo.ErrKeyExists) {
-		t.Fatalf("the late soft claim answered %v, want its write's refusal (nats.ErrKeyExists), so its caller decides again", err)
+		t.Fatalf("the late soft claim answered %v, want its write's refusal (nats.ErrKeyExists)", err)
 	}
 }

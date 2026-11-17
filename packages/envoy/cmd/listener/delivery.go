@@ -749,7 +749,7 @@ func agentSubjectDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMes
 	deliveryTimer := metrics.NewTimer()
 	// The durable path's message carries the stream sequence that says whether the session's
 	// consumer already holds it, and the core path's message is in no consumer (storedSeq 0). The
-	// capture is the deployed stream's, which the session's consumer filter is judged on too.
+	// capture is the deployed stream's: a session's consumer holds only what that stream stores.
 	result := session.HandleAgentMessage(item, sessionID, cfg.machineID, interestPtr, entryPtr, message.storedSeq(),
 		cfg.client.DeployedStreamCaptures(item.Topic))
 	if result.Relayed {

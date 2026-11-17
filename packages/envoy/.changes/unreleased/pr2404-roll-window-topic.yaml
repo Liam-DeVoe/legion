@@ -9,11 +9,9 @@ body: |-
     message on that topic published in that window was then never delivered to the session, and
     the older pod's later read did not bring it back.
 
-    The listener now keeps every followed `notifications.` topic that a session consumer can filter
-    on, whatever the stream's subjects capture. It keeps the topic in the session's interest record
-    and in its consumer's filter. A role lane, and a topic that is not a valid filter subject, stay
-    out of the filter. For a topic that no stream subject captures yet, the registration answers
-    200 with a warning that nothing is delivered on the topic until a stream subject captures it.
+    The listener now keeps a followed topic under the new subject in the session's interest record
+    and in its consumer's filter. It does so whatever subjects it last read from the stream. A role
+    lane, and a topic that is not a valid filter subject, stay out of the filter.
     nats-server 2.15.1 accepts a consumer filter subject that no stream subject captures. When a
     later subject captures the topic, the consumer delivers what the stream stores on it. A topic
     that the listener left out and added again later would lose every message stored on it in

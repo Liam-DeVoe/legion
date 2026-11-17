@@ -736,6 +736,58 @@ func TestGet_ColdCacheMissReturnsError(t *testing.T) {
 	}
 }
 
+// countingGets counts the Gets made through it, each one read of the bucket.
+type countingGets struct {
+	natsgo.KeyValue
+	gets int
+}
+
+func (kv *countingGets) Get(key string) (natsgo.KeyValueEntry, error) {
+	kv.gets++
+	return kv.KeyValue.Get(key)
+}
+
+// A read of a session whose interest record a delete ended answers not found from the one Get of
+// the bucket that found no record: Get and RefreshAt read no marker revision, which only a write
+// planned over the missing record needs (getLatest). The marker read here would fail, on a
+// connection already closed, so a read that made it would turn the not-found into a failure,
+// which GET /v1/interests/{id} answers 503 rather than 404.
+func TestAReadOfADeletedInterestAnswersNotFoundFromOneBucketRead(t *testing.T) {
+	conn, cleanup := connectNATS(t)
+	defer cleanup()
+	reg, kv := coldRegistry(t, conn)
+	const sessionID = "ses_deleted"
+	putInterest(t, kv, Interest{SessionID: sessionID, MachineID: "m1", Topics: []string{"topic.a"}})
+	if err := kv.Delete(sessionID); err != nil {
+		t.Fatalf("delete %s's interest record: %v", sessionID, err)
+	}
+	handle := reg.watcher.KV()
+	if latest, err := handle.GetLatest(sessionID); !errors.Is(err, natsgo.ErrKeyNotFound) || latest.Revision == 0 {
+		t.Fatalf("GetLatest(%s) = %+v, %v; the row needs a delete marker as the key's newest entry", sessionID, latest, err)
+	}
+	closed := testnats.Connect(t, testnats.URL(t))
+	closed.Close()
+	streams, err := jetstream.New(closed)
+	if err != nil {
+		t.Fatalf("open a jetstream context on the closed connection: %v", err)
+	}
+	counted := &countingGets{KeyValue: kv}
+	reg.watcher = kvwatch.New("interest registry", bus.NewKeyValue(counted, handle.WatchHandle(), streams), interestCache{reg})
+
+	if _, err := reg.Get(context.Background(), sessionID); !errors.Is(err, natsgo.ErrKeyNotFound) {
+		t.Fatalf("Get(%s) = %v, want nats.ErrKeyNotFound: the read of a deleted record failed on a marker read", sessionID, err)
+	}
+	if counted.gets != 1 {
+		t.Fatalf("Get(%s) read the bucket %d times, want 1", sessionID, counted.gets)
+	}
+	if _, revision, err := reg.RefreshAt(context.Background(), sessionID); !errors.Is(err, natsgo.ErrKeyNotFound) || revision != 0 {
+		t.Fatalf("RefreshAt(%s) = revision %d, %v; want revision 0 and nats.ErrKeyNotFound", sessionID, revision, err)
+	}
+	if counted.gets != 2 {
+		t.Fatalf("RefreshAt(%s) read the bucket %d times, want 1", sessionID, counted.gets-1)
+	}
+}
+
 // A read whose context has already ended still answers from the cache: Get's cache hit never
 // consults ctx. Every read that would go to the bucket - a Get that misses, a claim read, and a
 // release's read - instead returns ctx's end, naming the call, and a release left that way deletes
@@ -2607,10 +2659,8 @@ func useKV(t *testing.T, r *Registry, kv natsgo.KeyValue) {
 type failingKeyValue struct {
 	natsgo.KeyValue
 
-	failCreateAt int
 	failUpdateAt int
 	failPutAt    int
-	creates      int
 	updates      int
 	puts         int
 	err          error
@@ -2622,14 +2672,6 @@ func (kv *failingKeyValue) Put(key string, value []byte) (uint64, error) {
 		return 0, kv.err
 	}
 	return kv.KeyValue.Put(key, value)
-}
-
-func (kv *failingKeyValue) Create(key string, value []byte) (uint64, error) {
-	kv.creates++
-	if kv.failCreateAt == kv.creates {
-		return 0, kv.err
-	}
-	return kv.KeyValue.Create(key, value)
 }
 
 func (kv *failingKeyValue) Update(key string, value []byte, revision uint64) (uint64, error) {
@@ -2971,20 +3013,13 @@ func TestRemoveDoesNotOverwriteNewerWatcherValue(t *testing.T) {
 
 // racingWriteOverNoEntry loses the first write through it over a key that holds no entry - an
 // Update at revision 0, the write a plan that found no entry makes (putInterestAt,
-// SetRoleWithPrevious), or a Create - to whatever beforeFirstWrite stores: it runs that and
-// answers the refusal the bucket would, nats.ErrKeyExists.
+// SetRoleWithPrevious) - to whatever beforeFirstWrite stores: it runs that and answers the
+// refusal the bucket would, nats.ErrKeyExists.
 type racingWriteOverNoEntry struct {
 	natsgo.KeyValue
 
 	writes           int
 	beforeFirstWrite func()
-}
-
-func (kv *racingWriteOverNoEntry) Create(key string, value []byte) (uint64, error) {
-	if kv.racing() {
-		return 0, natsgo.ErrKeyExists
-	}
-	return kv.KeyValue.Create(key, value)
 }
 
 func (kv *racingWriteOverNoEntry) Update(key string, value []byte, revision uint64) (uint64, error) {
@@ -3289,17 +3324,6 @@ func TestARewatchWhoseInterestWatcherCannotMoveMovesNothing(t *testing.T) {
 	if _, err := reg.RoleClaim(context.Background(), "reviewer"); err != nil {
 		t.Fatalf("a role claim read after the failed Rewatch: %v; the role handle moved to the closed connection", err)
 	}
-}
-
-// pending counts the requests sub has received. conn.Flush has already round-tripped every request
-// the store sent, so the server has echoed each one back to sub before this reads the count.
-func pending(t *testing.T, sub *natsgo.Subscription) int {
-	t.Helper()
-	count, _, err := sub.Pending()
-	if err != nil {
-		t.Fatalf("pending on %s: %v", sub.Subject, err)
-	}
-	return count
 }
 
 func putRoleClaim(t *testing.T, kv natsgo.KeyValue, role, holder string) uint64 {

@@ -562,11 +562,11 @@ func main() {
 	//     (api/suggestion_outcomes.go). The keyed writes' own sweep - the Idempotency-Keys past
 	//     their window, and the deliveries a process that died left owed - keeps a timer of its
 	//     own below, because no wake announces either: a death commits nothing.
-	//   - boot passes, which run once at start: the embedding coverage pass (on a process with an
-	//     embedder, embedqueue.Run starts it once this process has registered, runs it again whole
-	//     every identityRecheckInterval while it fails, and after it succeeds repeats only its
-	//     identity steps on that interval for as long as the process runs) and the task progress
-	//     reconciliation (retrying, briefly, rows another writer held).
+	//   - boot passes, which run at start, and again only as stated here: the embedding coverage
+	//     pass (on a process with an embedder, embedqueue.Run starts it once this process has
+	//     registered, runs it again whole every identityRecheckInterval while it fails, and after
+	//     it succeeds repeats only its identity steps on that interval for as long as the process
+	//     runs) and the task progress reconciliation (retrying, briefly, rows another writer held).
 	//   - timers that stay, because GitHub has no feed of what they would miss - a webhook that
 	//     never arrived, a delivery that failed, a source's branch head: the delivery reconcile
 	//     and the architecture import every 5 minutes, each starting after a random delay within

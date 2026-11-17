@@ -8,8 +8,8 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 )
 
-// lateSessionWrite runs late, once, before the first write of key through it (Put, Create or
-// Update) reaches the bucket - what another writer does between a registration's read and its
+// lateSessionWrite runs late, once, before the first write of key through it (Put or Update)
+// reaches the bucket - what another writer does between a registration's read and its
 // write - and records what the bucket answered that first write. late's own writes go through the
 // raw handle and are not hooked.
 type lateSessionWrite struct {
@@ -23,10 +23,6 @@ type lateSessionWrite struct {
 
 func (kv *lateSessionWrite) Put(key string, value []byte) (uint64, error) {
 	return kv.wrote(key, func() (uint64, error) { return kv.KeyValue.Put(key, value) })
-}
-
-func (kv *lateSessionWrite) Create(key string, value []byte) (uint64, error) {
-	return kv.wrote(key, func() (uint64, error) { return kv.KeyValue.Create(key, value) })
 }
 
 func (kv *lateSessionWrite) Update(key string, value []byte, revision uint64) (uint64, error) {

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -200,22 +199,6 @@ func TestAPublishByAUserThatMayNotReadTheStreamIsJudgedOnTheSubjectsItHolds(t *t
 	}
 }
 
-// registerFollowing registers sessionID following topics, with consumer delivery, and returns the
-// answer's topics and warnings.
-func registerFollowing(t *testing.T, rig *sessionConsumerRig, sessionID string, topics ...string) interestSubscribeAnswer {
-	t.Helper()
-	body, err := json.Marshal(map[string]any{"session_id": sessionID, "self_subscribed": true, "topics": topics,
-		"delivery": map[string]any{"consumer": true, "epoch": "e"}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	var answer interestSubscribeAnswer
-	if err := json.Unmarshal([]byte(rig.post(t, "/v1/interests/subscribe", string(body))), &answer); err != nil {
-		t.Fatalf("decode the registration's answer: %v", err)
-	}
-	return answer
-}
-
 // pullOnce sends one pull request to sessionID's consumer, as a session's relay does, acks what it
 // delivers, and returns the subjects of those messages.
 func pullOnce(t *testing.T, js natsgo.JetStreamContext, sessionID string) []string {
@@ -259,11 +242,11 @@ func TestATopicAddedAfterItsRegistrationIsDeliveredAcrossAnEmptyPull(t *testing.
 	url := testnats.URL(t)
 	rig, js := rollWindowRig(t, url, url)
 
-	registerFollowing(t, rig, sessionID, rollTopic)
+	rig.subscribe(t, consumerRegistration(sessionID, "e", rollTopic))
 	addStreamSubject(t, js, rollNewerSubject)
 	sequence := rig.store(t, rollTopic)
 	delivered := pullOnce(t, js, sessionID)
-	registerFollowing(t, rig, sessionID, rollTopic)
+	rig.subscribe(t, consumerRegistration(sessionID, "e", rollTopic))
 	delivered = append(delivered, pullOnce(t, js, sessionID)...)
 
 	if !slices.Contains(delivered, rollTopic) {
@@ -285,7 +268,7 @@ func TestATopicAddedAfterItsRegistrationIsDeliveredAcrossAMessageDeliveredBefore
 	rig, js := rollWindowRig(t, url, url)
 	own := contracts.AgentSubject(sessionID)
 
-	registerFollowing(t, rig, sessionID, rollTopic)
+	rig.subscribe(t, consumerRegistration(sessionID, "e", rollTopic))
 	addStreamSubject(t, js, rollNewerSubject)
 	sequence := rig.store(t, rollTopic)
 	rig.store(t, own)
@@ -293,7 +276,7 @@ func TestATopicAddedAfterItsRegistrationIsDeliveredAcrossAMessageDeliveredBefore
 	if !slices.Contains(delivered, own) {
 		t.Fatalf("the pull before the next registration delivered %v, want the message on %s among them; the row needs a message delivered in between", delivered, own)
 	}
-	registerFollowing(t, rig, sessionID, rollTopic)
+	rig.subscribe(t, consumerRegistration(sessionID, "e", rollTopic))
 	delivered = append(delivered, pullOnce(t, js, sessionID)...)
 
 	if !slices.Contains(delivered, rollTopic) {
@@ -319,7 +302,7 @@ func TestATopicNoStreamCapturesIsKeptInTheRowAndTheFilterAndDeliversNothing(t *t
 	own := contracts.AgentSubject(sessionID)
 
 	for registration := range 2 {
-		answer := registerFollowing(t, rig, sessionID, topic)
+		answer := rig.subscribe(t, consumerRegistration(sessionID, "e", topic))
 		stored, _, err := rig.harness.registry.RefreshAt(t.Context(), sessionID)
 		if err != nil {
 			t.Fatalf("read %s's interest row: %v", sessionID, err)

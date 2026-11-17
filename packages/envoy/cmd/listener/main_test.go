@@ -449,9 +449,9 @@ func setupPublishTestClient(t *testing.T, options ...bus.ConnectOption) *bus.Cli
 // test that drives the registration route: a listener without one refuses every registration
 // (consumer_error), as a session receives only what its own consumer holds. Its relay records
 // what it is told and relays nothing, since no test here reads a frame. client is the rig's
-// listener client, whose read of the deployed stream's subjects both the registration's stored
-// topics and its consumer filter are judged on (sessionDelivery.stream), as main's listener
-// judges them.
+// listener client, whose read of the deployed stream's subjects decides only which topics the
+// registration's answer warns that no stream subject captures (sessionDelivery.stream), as main's
+// listener's does.
 func setupSessionConsumers(t *testing.T, client *bus.Client) *sessionDelivery {
 	t.Helper()
 	delivery, err := connectSessionDelivery([]string{testnats.URL(t)}, bus.SessionConsumerInactiveThreshold, client, logging.NewWithWriter("test", io.Discard))

@@ -52,12 +52,13 @@ type KeyValue struct {
 	// goes through.
 	watch jetstream.KeyValue
 	// streams is the same connection's jetstream context, which every read of the bucket's stream
-	// goes through (ReadStreamState), and whose connection the leader read takes (GetFromLeader):
-	// each read fetches the stream afresh. The jetstream handle's own Status stores the info it
-	// read in the handle's shared stream value with no lock (the `s.info = &cached` of nats.go's
-	// `(*stream).Info`, which `(*kvs).Status` calls on the stream `mapStreamToKVS` built that
-	// handle over), so two reads of one handle at once -- a watcher's stream probe beside its
-	// completion check -- race on it.
+	// goes through (ReadStreamState), and whose connection the reads of a key's newest message
+	// take (newestMessage: GetFromLeader, and GetLatest's marker read): each read fetches the
+	// stream afresh. The jetstream handle's own Status stores the info it read in the handle's
+	// shared stream value with no lock (the `s.info = &cached` of nats.go's `(*stream).Info`,
+	// which `(*kvs).Status` calls on the stream `mapStreamToKVS` built that handle over), so two
+	// reads of one handle at once -- a watcher's stream probe beside its completion check -- race
+	// on it.
 	streams jetstream.JetStream
 }
 
@@ -751,20 +752,13 @@ func (kv KeyValue) GetLatest(key string) (LatestEntry, error) {
 // newestMarker is the revision of key's newest entry where that is a delete or purge marker, and 0
 // where it is a value or the bucket holds no entry for key (GetLatest).
 func (kv KeyValue) newestMarker(key string) (uint64, error) {
-	js, err := kv.streams.Conn().JetStream(nats.MaxWait(RequestTimeout))
-	if err != nil {
-		return 0, err
-	}
-	bucket := kv.Bucket()
-	message, err := js.GetLastMsg("KV_"+bucket, "$KV."+bucket+"."+key, nats.DirectGet())
-	if errors.Is(err, nats.ErrMsgNotFound) {
+	message, marker, err := kv.newestMessage(key, nats.MaxWait(RequestTimeout), nats.DirectGet())
+	switch {
+	case errors.Is(err, nats.ErrMsgNotFound):
 		return 0, nil
-	}
-	if err != nil {
-		return 0, fmt.Errorf("read the newest entry of key %s of KV bucket %s: %w", key, bucket, err)
-	}
-	switch message.Header.Get(kvOperationHeader) {
-	case kvDeleteMarker, kvPurgeMarker:
+	case err != nil:
+		return 0, fmt.Errorf("read the newest entry of key %s of KV bucket %s: %w", key, kv.Bucket(), err)
+	case marker:
 		return message.Sequence, nil
 	}
 	return 0, nil

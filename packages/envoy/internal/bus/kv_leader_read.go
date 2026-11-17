@@ -1,5 +1,6 @@
 // The leader-answered read of one key of a KV bucket (KeyValue.GetFromLeader), beside its test:
 // the one read of this package that may not be a direct get, because what it decides is a delete.
+// The read of a key's newest message it makes (newestMessage) is GetLatest's marker read too.
 
 package bus
 
@@ -22,6 +23,27 @@ const (
 	kvDeleteMarker    = "DEL"
 	kvPurgeMarker     = "PURGE"
 )
+
+// newestMessage is key's newest message in the bucket's stream, the one GetLastMsg sent with opts
+// answers for the key's subject `$KV.<bucket>.<key>`, and whether it is a delete or purge marker:
+// the read GetFromLeader and GetLatest's marker read (newestMarker) both make. It goes out on the
+// legacy JetStream context of the connection this handle reads the bucket's stream through;
+// building one sends nothing, so each read builds its own rather than keep one on the handle. A
+// subject that holds no message answers nats.ErrMsgNotFound, and every error is nats.go's own,
+// which each caller names.
+func (kv KeyValue) newestMessage(key string, opts ...nats.JSOpt) (*nats.RawStreamMsg, bool, error) {
+	js, err := kv.streams.Conn().JetStream()
+	if err != nil {
+		return nil, false, err
+	}
+	bucket := kv.Bucket()
+	message, err := js.GetLastMsg("KV_"+bucket, "$KV."+bucket+"."+key, opts...)
+	if err != nil {
+		return nil, false, err
+	}
+	operation := message.Header.Get(kvOperationHeader)
+	return message, operation == kvDeleteMarker || operation == kvPurgeMarker, nil
+}
 
 // leaderEntry is a key's newest message, read from the bucket's own stream (GetFromLeader), as
 // the nats.KeyValueEntry Get answers for that key: the bucket, the key, the value, the stream
@@ -88,26 +110,12 @@ func (kv KeyValue) GetFromLeader(ctx context.Context, key string) (nats.KeyValue
 		defer cancel()
 	}
 	bucket := kv.Bucket()
-	named := func(err error) error {
-		return fmt.Errorf("read key %s of KV bucket %s from its stream's leader: %w", key, bucket, err)
-	}
-	// The legacy JetStream context of the connection this handle reads the bucket's stream
-	// through: building one sends nothing, and this read is the only caller, so it is built here
-	// rather than kept on the handle.
-	js, err := kv.streams.Conn().JetStream()
-	if err != nil {
-		return nil, named(err)
-	}
-	message, err := js.GetLastMsg("KV_"+bucket, "$KV."+bucket+"."+key, nats.Context(ctx))
-	if errors.Is(err, nats.ErrMsgNotFound) {
+	message, marker, err := kv.newestMessage(key, nats.Context(ctx))
+	if errors.Is(err, nats.ErrMsgNotFound) || marker {
 		return nil, nats.ErrKeyNotFound
 	}
 	if err != nil {
-		return nil, named(err)
-	}
-	switch message.Header.Get(kvOperationHeader) {
-	case kvDeleteMarker, kvPurgeMarker:
-		return nil, nats.ErrKeyNotFound
+		return nil, fmt.Errorf("read key %s of KV bucket %s from its stream's leader: %w", key, bucket, err)
 	}
 	return leaderEntry{
 		bucket:   bucket,

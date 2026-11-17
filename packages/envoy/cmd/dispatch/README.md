@@ -1385,7 +1385,7 @@ A process that finds it held tries again
 — every 2 s for the excerpts, every 5 s for the edit notices, plus up to a tenth again
 — until a pass of its own runs, because the other process's pass may have read before the change that woke this one.
 
-**Boot passes** run once at start:
+**Boot passes** run at start, and again only as each item below states:
 
 - The embedding coverage pass (`embedqueue.Cover`, Search below) runs at start, with no lease, on a process with an embedder.
   A boot pass that fails runs again whole every `identityRecheckInterval` until it succeeds.

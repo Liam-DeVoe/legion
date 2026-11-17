@@ -113,7 +113,7 @@ func (r *Registry) Upsert(item Interest, topics []string) (Interest, error) {
 // this build cannot decode (ErrMalformedInterest) is replaced by item and topics alone, and the
 // registry logs that at WARN naming the session.
 //
-// The row it merges into is the one the bucket holds, read with its revision (getWithRevision)
+// The row it merges into is the one the bucket holds, read with its revision (getLatest)
 // and never from the cache, and the write is one compare-and-swap at that revision
 // (putInterestAt), as an unsubscribe's is (removeInterestTopics). A role claim - the one
 // production caller, through SetRoleWithPrevious - built from a cached row a write on another
@@ -144,7 +144,7 @@ func (r *Registry) Upsert(item Interest, topics []string) (Interest, error) {
 // plans once and writes that plan instead (PlanInterest, UpsertPlanned).
 func (r *Registry) UpsertWithin(ctx context.Context, item Interest, topics []string) (Interest, error) {
 	for range interestWriteAttempts {
-		cur, revision, getErr := r.getWithRevision(ctx, item.SessionID, true)
+		cur, revision, getErr := r.getLatest(ctx, item.SessionID, true)
 		roles, err := r.controllerLaneRoles(ctx, item.SessionID, cur.Topics, item.Topics, topics)
 		if err != nil {
 			return Interest{}, err
@@ -196,7 +196,7 @@ func (r *Registry) PlanInterestAfterConflict(ctx context.Context, sessionID stri
 // fromBucket is set: a plan made again after the bucket refused a write at the revision the last
 // plan read must see the row that refused it, which the cache may not hold yet.
 func (r *Registry) planInterest(ctx context.Context, sessionID string, requested []string, fromBucket bool) (InterestPlan, error) {
-	cur, revision, err := r.getWithRevision(ctx, sessionID, fromBucket)
+	cur, revision, err := r.getLatest(ctx, sessionID, fromBucket)
 	if err != nil && !errors.Is(err, nats.ErrKeyNotFound) && !errors.Is(err, ErrMalformedInterest) {
 		return InterestPlan{}, err
 	}
@@ -244,7 +244,7 @@ var ErrInterestPlanConflict = errors.New("the interest record changed under the 
 // the skip, which is one call wide rather than the seconds the consumer call takes: a row
 // stored inside it refuses the write, and the skip inside it answers from the row that moved.
 func (r *Registry) UpsertPlanned(ctx context.Context, item Interest, plan InterestPlan) (Interest, error) {
-	cur, revision, getErr := r.getWithRevision(ctx, item.SessionID, true)
+	cur, revision, getErr := r.getLatest(ctx, item.SessionID, true)
 	if revision != plan.Revision {
 		return Interest{}, fmt.Errorf("write %s's interest record: %w", item.SessionID, ErrInterestPlanConflict)
 	}
@@ -343,9 +343,10 @@ func (r *Registry) recordInterest(merged Interest, revision, epoch uint64, getEr
 }
 
 // putInterestAt writes sessionID's interest record only while the key's newest entry is the one at
-// revision, the revision its plan read (getWithRevision): the plan's own row, the delete or purge
-// marker that ended the row it found gone, or, at revision 0, no entry at all. It is an Update at
-// that revision every time, which nats.go conditions on the key's newest entry, 0 included, so the
+// revision, the revision its plan read (getLatest, or getWithRevision for an unsubscribe, which
+// writes only over a row it found): the plan's own row, the delete or purge marker that ended the
+// row it found gone, or, at revision 0, no entry at all. It is an Update at that revision every
+// time, which nats.go conditions on the key's newest entry, 0 included, so the
 // write is refused over any entry stored since the plan read, a marker among them. It reports the
 // revision written, the epoch of the handle it was written through, and whether the bucket took
 // the write: a bucket that refused it holds another writer's entry since, which is no error here

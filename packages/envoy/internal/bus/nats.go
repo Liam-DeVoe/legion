@@ -403,7 +403,7 @@ type Client struct {
 	// read there while a read that started after it ends.
 	beforeSubjectsKept func()
 	// subjectsRefused is set once the server refused a read of the deployed stream's subjects under
-	// the NATS user's permissions (readDeployedSubjects): the client then reads them no more.
+	// the NATS user's permissions (readDeployedSubjectsAs): the client then reads them no more.
 	subjectsRefused atomic.Bool
 	// subjectsRereading is the read of the deployed subjects a judgement has in flight
 	// (startRereadLocked: a fresh judgement's, subjectsReadSince, or a publish transport's,
@@ -1900,9 +1900,9 @@ func (c *Client) UsesCoreTransport(topic string) bool {
 // published through JetStream, with its MsgId, by the older build too once its transport has read
 // the subjects again (PublishTakesJetStream), and the older build's listener refuses a publish of
 // it only on a read made after the publish asked (SubjectsAsk.Uncaptured). That listener's
-// registration and session consumer filter keep every followed notification topic whatever this
-// answers (cmd/listener's subscribeHandler and sessionConsumerFilter), so neither takes a no
-// from subjects read before the newer build added its own.
+// registration stores, and its session consumer filter carries, a followed topic whatever this
+// answers (cmd/listener's subscribeHandler and sessionConsumerFilter), so neither takes a no from
+// subjects read before the newer build added its own.
 func (c *Client) DeployedStreamCaptures(topic string) bool {
 	if subjectsCapture(roleLaneSubjects, topic) {
 		return false
@@ -2063,8 +2063,9 @@ func (c *Client) startRereadLocked(conn *nats.Conn) (chan struct{}, uint64) {
 // and its exception lane read nothing and keep core NATS.
 //
 // It is not a refusal: a core publish of a topic the stream captures is stored too, under no
-// MsgId and with no acknowledgement, so it waits for no read in flight and none past the gap, as
-// a fresh judgement does (SubjectsAsk.Uncaptured). A core publish of a topic no stream captures - a
+// MsgId and with no acknowledgement, so it waits out neither the gap nor a read in flight that
+// started within firstStreamSubjectsRead, where a fresh judgement waits for both
+// (SubjectsAsk.Uncaptured). A core publish of a topic no stream captures - a
 // delivery exception on a github, dispatch, slack or legion lane, an ad-hoc topic - would
 // otherwise wait out a read the server leaves unanswered, as during a JetStream leader change, for
 // up to firstStreamSubjectsRead, and taking JetStream for such a topic on no read would wait out
