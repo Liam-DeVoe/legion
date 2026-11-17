@@ -1,6 +1,6 @@
 import { expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
 import { MemoryRouter } from "react-router-dom";
@@ -23,6 +23,7 @@ import { issue as marginIssue } from "../margin/margin-fixture";
 import type { BlockItemKind } from "../refs/block-reference";
 import { ReferencedBy } from "../refs/ReferencedBy";
 import { buildDispatchReference } from "../refs/routes";
+import { emulateChromiumFocusFixup } from "./chromium-focus-fixup";
 import type { IssueField } from "./IssueFieldForms";
 import { IssueMarginPanel } from "./IssueMargin";
 import { type MarginDrawer, MarginSlotProvider } from "./margin-slot";
@@ -162,6 +163,61 @@ test("with page false an issue's own comment that references it is listed, and w
       "the page's list draws the application's colours"
     ).toEqual([]);
   } finally {
+    view.unmount();
+    client.clear();
+    getReferences.mockRestore();
+  }
+});
+
+// In Details the Retry of a failed read of what references the issue is not disabled while it
+// reads: Chromium would drop its focus to the page (`chromium-focus-fixup.ts`). A keyboard
+// reader on the Retry above the list Details holds stays on it while the read is out, and a
+// press then sends nothing.
+test("Details' Referenced by Retry pressed by keyboard over the list it holds keeps the focus while it reads", async () => {
+  const getReferences = spyOn(api, "getReferences").mockResolvedValue(READ);
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const view = render(
+    <MemoryRouter>
+      <QueryClientProvider client={client}>
+        <ReferencedBy page reference={REFERENCE} />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  let restoreFocus: (() => void) | undefined;
+
+  try {
+    const list = await screen.findByRole("region", { name: "Referenced by" });
+    await within(list).findByText(WORDS.otherComment);
+    getReferences.mockRejectedValue(new Error("the references are down"));
+    await act(async () => {
+      await client.invalidateQueries();
+    });
+    const retry = within(list).getByRole("button", { name: "Retry" });
+    expect(
+      within(list).queryByText(WORDS.otherComment),
+      "the failed read erased the list Details held"
+    ).not.toBeNull();
+    restoreFocus = emulateChromiumFocusFixup();
+    // The read the Retry sends is held out until the case lets it land.
+    const again = Promise.withResolvers<GraphReferences>();
+    getReferences.mockImplementation(() => again.promise);
+    retry.focus();
+    await userEvent.keyboard("{Enter}");
+    // The Retry as the list draws it while its read is out, whichever way it draws that.
+    await waitFor(() => expect(retry.matches(":disabled, [aria-busy='true']")).toBe(true));
+    expect(
+      document.activeElement,
+      "Details' Referenced by Retry left the focus on the page while it read"
+    ).toBe(retry);
+    await userEvent.keyboard("{Enter}");
+    expect(getReferences, "a press while the list is read sent another read").toHaveBeenCalledTimes(
+      3
+    );
+
+    again.resolve(READ);
+    await waitFor(() => expect(within(list).queryByRole("button", { name: "Retry" })).toBeNull());
+  } finally {
+    restoreFocus?.();
     view.unmount();
     client.clear();
     getReferences.mockRestore();

@@ -7,13 +7,14 @@ import { MemoryRouter } from "react-router-dom";
 
 import { api } from "../../api/client";
 import { prependEventToLog } from "../../api/event-feed";
-import type { Artifact, DispatchEvent, IssueDetails, MessageRead } from "../../api/types";
+import type { Artifact, DispatchEvent, Handoff, IssueDetails, MessageRead } from "../../api/types";
 import { linkText, pageInkText } from "../../theme/classes";
 import { dateKey, dayLabel } from "../activity/activity-model";
 import { emulateChromiumFocusFixup } from "./chromium-focus-fixup";
+import { HistoryHandoff } from "./HistoryHandoff";
 import { IssueHistory } from "./IssueHistory";
 import { type OutlineWriter, OutlineWriterProvider, useOutlineWriter } from "./outline-writer";
-import { CONTROL_LABELS } from "./page-words";
+import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
 
 const KEY = "CORE-1";
 
@@ -853,5 +854,215 @@ test("a history Retry pressed by keyboard keeps the focus while it reads and whe
     restoreFocus?.();
     unmount?.();
     for (const read of reads) read.mockRestore();
+  }
+});
+
+// Load older is not disabled while its page is read either: Chromium would drop its focus to
+// the page (`chromium-focus-fixup.ts`). A keyboard reader stays on it while the page is out, and
+// once the page lands with older pages still left, Load older hands the focus on to a control
+// that page added, as it does when the log's end takes it away.
+test("Load older pressed by keyboard keeps the focus while its page is read, then hands it to the page it read", async () => {
+  const firstPage = Array.from({ length: 200 }, (_, index) => claimAgo(600 - index, index + 1));
+  const secondPage = Array.from({ length: 200 }, (_, index) => claimAgo(400 - index, index + 201));
+  // The next page is held out until the case lets it land.
+  const older = Promise.withResolvers<DispatchEvent[]>();
+  const reads = [
+    spyOn(api, "getIssueEvents").mockImplementation(async (_key, options) =>
+      options?.before === undefined ? [...firstPage] : older.promise
+    ),
+    spyOn(api, "listComments").mockResolvedValue([]),
+    spyOn(api, "listIssueMessages").mockResolvedValue([]),
+    spyOn(api, "listIssueAsks").mockResolvedValue([]),
+  ];
+  let unmount: (() => void) | undefined;
+  let restoreFocus: (() => void) | undefined;
+
+  try {
+    const drawn = drawHistory(undefined);
+    unmount = drawn.unmount;
+    const fetchStatus = () => drawn.queryClient.getQueryState(["events", KEY])?.fetchStatus;
+    const load = await screen.findByRole("button", { name: CONTROL_LABELS.load_older });
+    const list = screen.getByRole("list", { name: CONTROL_LABELS.history_list });
+    const before = new Set(list.querySelectorAll("a[href], button"));
+    restoreFocus = emulateChromiumFocusFixup();
+    load.focus();
+    await userEvent.keyboard("{Enter}");
+    await waitFor(() => expect(fetchStatus()).toBe("fetching"));
+    expect(
+      document.activeElement,
+      "Load older left the focus on the page while its page was read"
+    ).toBe(load);
+    expect(load.getAttribute("aria-busy")).toBe("true");
+
+    older.resolve([...secondPage]);
+    await waitFor(() => expect(fetchStatus()).toBe("idle"));
+    await waitFor(() => expect(load.textContent).toBe(CONTROL_LABELS.load_older));
+    expect(
+      screen.getByRole("button", { name: CONTROL_LABELS.load_older }),
+      "the log has older pages after the second, so Load older stays"
+    ).toBe(load);
+    const active = document.activeElement;
+    expect(
+      active !== null && list.contains(active) && !before.has(active),
+      "Load older kept the focus once its page landed, rather than handing it to a control that page added"
+    ).toBe(true);
+  } finally {
+    restoreFocus?.();
+    unmount?.();
+    for (const read of reads) read.mockRestore();
+  }
+});
+
+// The first page holds 199 claims of today and 1 of yesterday, and the last page 2 more claims
+// of yesterday. They go into yesterday's day, drawn folded, so that page adds no control, and the
+// log's end takes Load older away: the focus goes to the last control drawn before the press,
+// which stood just above Load older, rather than to the history's heading above the whole list,
+// off screen for a reader at its foot.
+test("Load older whose last page adds no control hands the focus to the control above where it stood", async () => {
+  // A claim at sequence `seq`, `seconds` before noon of yesterday in the reader's own time.
+  const yesterday = (seq: number, seconds: number): DispatchEvent => {
+    const noon = new Date();
+    noon.setHours(12, 0, 0, 0);
+    noon.setDate(noon.getDate() - 1);
+    return { ...claim(seq), created_at: new Date(noon.getTime() - seconds * 1000).toISOString() };
+  };
+  const firstPage = [
+    ...Array.from({ length: 199 }, (_, index) => claimAgo(400 - index, index + 1)),
+    yesterday(201, 0),
+  ];
+  const lastPage = [yesterday(10, 1), yesterday(9, 2)];
+  const reads = [
+    spyOn(api, "getIssueEvents").mockImplementation(async (_key, options) =>
+      options?.before === undefined ? [...firstPage] : [...lastPage]
+    ),
+    spyOn(api, "listComments").mockResolvedValue([]),
+    spyOn(api, "listIssueMessages").mockResolvedValue([]),
+    spyOn(api, "listIssueAsks").mockResolvedValue([]),
+  ];
+  const yesterdayDate = dateKey(yesterday(0, 0).created_at);
+  let unmount: (() => void) | undefined;
+  let restoreFocus: (() => void) | undefined;
+
+  try {
+    unmount = drawHistory(undefined).unmount;
+    const load = await screen.findByRole("button", { name: CONTROL_LABELS.load_older });
+    const list = screen.getByRole("list", { name: CONTROL_LABELS.history_list });
+    const line = await waitFor(() => {
+      const element = list.querySelector<HTMLElement>(
+        `[data-history-day="${yesterdayDate}"] > button`
+      );
+      if (element === null) throw new Error("yesterday's day draws no line");
+      return element;
+    });
+    const before = [...list.querySelectorAll("a[href], button")];
+    expect(before.at(-1), "yesterday's line is not the last control above Load older").toBe(line);
+    restoreFocus = emulateChromiumFocusFixup();
+    load.focus();
+    await userEvent.keyboard("{Enter}");
+    await waitFor(() => expect(load.isConnected).toBe(false));
+    expect(line.textContent, "the last page's claims are not in yesterday's day").toBe(
+      `${dayLabel(yesterdayDate, dateKey(new Date().toISOString()))} · 3`
+    );
+    expect(
+      list.querySelectorAll("a[href], button"),
+      "the last page added a control, so the row proves nothing"
+    ).toHaveLength(before.length);
+
+    const active = document.activeElement;
+    expect(
+      active,
+      `the log's end took Load older away and the focus left the foot of the list (focus: ${active?.tagName} ${active?.textContent})`
+    ).toBe(line);
+  } finally {
+    restoreFocus?.();
+    unmount?.();
+    for (const read of reads) read.mockRestore();
+  }
+});
+
+/** Version 1 of a handoff of `KEY`, whose body's summary is `summary`. */
+function handoffRecord(summary: string): Handoff {
+  return {
+    author: { id: "fedcba9876543210", kind: "session", origin: { session_title: "Implementer" } },
+    body: JSON.stringify({ schemaVersion: 1, summary }),
+    created_at: new Date().toISOString(),
+    id: "handoff-1",
+    issue_key: KEY,
+    phase: "implement",
+    version: 1,
+  };
+}
+
+/** A handoff's line's disclosure in the history, with nothing above it but a query client that
+ *  never retries. */
+function drawHandoff(): { queryClient: QueryClient; unmount: () => void } {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const { unmount } = render(
+    <QueryClientProvider client={queryClient}>
+      <HistoryHandoff handoffId="handoff-1" />
+    </QueryClientProvider>
+  );
+  return { queryClient, unmount };
+}
+
+// A handoff's opened fields hold its body whatever the last read's outcome, as the history holds
+// its log: an invalidation of every read after a write reads the body again, and a read that
+// fails then says so with its Retry above the fields, never in their place.
+test("a handoff's opened fields stay drawn when a read of them again fails", async () => {
+  const getHandoff = spyOn(api, "getHandoff").mockResolvedValue(handoffRecord("Second pass"));
+  let unmount: (() => void) | undefined;
+
+  try {
+    const drawn = drawHandoff();
+    unmount = drawn.unmount;
+    await userEvent.click(screen.getByRole("button", { name: CONTROL_LABELS.show_fields }));
+    await screen.findByText("Second pass");
+
+    getHandoff.mockRejectedValue(new Error("the handoff is down"));
+    await act(async () => {
+      await drawn.queryClient.invalidateQueries();
+    });
+    expect(getHandoff).toHaveBeenCalledTimes(2);
+    expect(screen.getByRole("alert")).toHaveTextContent(ANSWER_LINES.handoff_unreadable);
+    expect(screen.getByRole("button", { name: CONTROL_LABELS.retry })).toBeInTheDocument();
+    expect(
+      screen.queryByText("Second pass"),
+      "a failed read again of the handoff erased the fields it held"
+    ).not.toBeNull();
+  } finally {
+    unmount?.();
+    getHandoff.mockRestore();
+  }
+});
+
+// With no body held, the read a handoff's Retry sends is pending, and the loading line takes the
+// place of the line that said the read failed, Retry and all. The focus of a keyboard reader on
+// that Retry moves to the Show fields toggle above it before the read goes out, rather than
+// falling to the page with the Retry.
+test("a handoff's Retry pressed by keyboard hands the focus to its toggle before its line goes", async () => {
+  const getHandoff = spyOn(api, "getHandoff")
+    .mockRejectedValueOnce(new Error("the handoff is down"))
+    .mockResolvedValue(handoffRecord("Second pass"));
+  let unmount: (() => void) | undefined;
+
+  try {
+    unmount = drawHandoff().unmount;
+    const toggle = screen.getByRole("button", { name: CONTROL_LABELS.show_fields });
+    toggle.focus();
+    await userEvent.keyboard("{Enter}");
+    const retry = await screen.findByRole("button", { name: CONTROL_LABELS.retry });
+    retry.focus();
+    await userEvent.keyboard("{Enter}");
+    await screen.findByText("Second pass");
+
+    expect(getHandoff).toHaveBeenCalledTimes(2);
+    const active = document.activeElement;
+    expect(
+      active,
+      `the handoff's Retry went with its line and the focus fell to the page (retry connected: ${retry.isConnected} focus: ${active?.tagName})`
+    ).toBe(toggle);
+  } finally {
+    unmount?.();
+    getHandoff.mockRestore();
   }
 });

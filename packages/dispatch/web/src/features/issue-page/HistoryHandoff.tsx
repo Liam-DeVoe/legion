@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { type ReactNode, useId, useMemo, useState } from "react";
+import { type ReactNode, type RefObject, useId, useMemo, useRef, useState } from "react";
 
 import { api } from "../../api/client";
 import {
@@ -33,11 +33,12 @@ interface FieldRow extends HandoffField {
  * version's body under the line - each top-level field a labelled row, the `proof` list one row
  * per entry, as the old conversation's handoff card drew it - and Hide fields closes it. The
  * body is read when the reader opens it, and a version never changes once written, so the read
- * is kept for the page's life.
+ * is kept for the page's life: it is never stale, and closing the fields never lets it go.
  */
 export function HistoryHandoff({ handoffId }: { handoffId: string }): ReactNode {
   const [expanded, setExpanded] = useState(false);
   const fieldsId = useId();
+  const toggle = useRef<HTMLButtonElement>(null);
   return (
     <span className="basis-full">
       <button
@@ -45,22 +46,34 @@ export function HistoryHandoff({ handoffId }: { handoffId: string }): ReactNode 
         aria-expanded={expanded}
         className={`dispatch-inline-link text-xs font-medium ${pageMutedText} ${pageRowAct}`}
         onClick={() => setExpanded((open) => !open)}
+        ref={toggle}
         type="button"
         {...pageChrome}
       >
         {expanded ? CONTROL_LABELS.hide_fields : CONTROL_LABELS.show_fields}
       </button>
-      {expanded ? <HandoffFields handoffId={handoffId} id={fieldsId} /> : null}
+      {expanded ? <HandoffFields handoffId={handoffId} id={fieldsId} toggle={toggle} /> : null}
     </span>
   );
 }
 
-function HandoffFields({ handoffId, id }: { handoffId: string; id: string }): ReactNode {
+function HandoffFields({
+  handoffId,
+  id,
+  toggle,
+}: {
+  handoffId: string;
+  id: string;
+  /** The Show fields and Hide fields control above the body. */
+  toggle: RefObject<HTMLButtonElement | null>;
+}): ReactNode {
   const handoff = useQuery({
+    gcTime: Number.POSITIVE_INFINITY,
     queryKey: ["handoff", handoffId],
     queryFn: () => api.getHandoff(handoffId),
     staleTime: Number.POSITIVE_INFINITY,
   });
+  const failure = useRef<HTMLSpanElement>(null);
   const fields = useMemo(
     () => (handoff.data === undefined ? undefined : fieldRows(handoff.data.body)),
     [handoff.data]
@@ -72,54 +85,73 @@ function HandoffFields({ handoffId, id }: { handoffId: string; id: string }): Re
       </span>
     );
   }
-  if (handoff.isError) {
-    return (
-      <span className="mt-1 block" id={id}>
-        <DetailsErrorLine
-          message={ANSWER_LINES.handoff_unreadable}
-          onRetry={() => void handoff.refetch()}
-          retrying={handoff.isFetching}
-        />
-      </span>
-    );
-  }
+  // The fields hold the body whatever the last read's outcome, as the history holds its log: an
+  // invalidation of every read after a write reads the body again, and a read that fails then
+  // says so with its Retry above the fields, never in their place. The line stands alone only
+  // while no body is held.
+  const failed = handoff.isError ? (
+    <span className="mt-1 block" id={handoff.data === undefined ? id : undefined} ref={failure}>
+      <DetailsErrorLine
+        message={ANSWER_LINES.handoff_unreadable}
+        onRetry={() => {
+          // The Retry goes with its line: at once where no body is held, as the read it sends
+          // draws the loading line in this one's place, else once that read lands. A focus on
+          // a control that goes falls to the page, so a focus on the Retry moves first to the
+          // toggle above it, where the reader opened the fields, as `DecisionActions.tsx` moves
+          // a focus before its write takes its control away.
+          if (failure.current?.contains(document.activeElement) === true) {
+            toggle.current?.focus({ preventScroll: true });
+          }
+          void handoff.refetch();
+        }}
+        retrying={handoff.isFetching}
+      />
+    </span>
+  ) : null;
+  if (handoff.data === undefined) return failed;
   if (fields === undefined) {
     return (
-      <pre className={handoffPre} data-handoff-raw id={id} {...authorText}>
-        {handoff.data.body}
-      </pre>
+      <>
+        {failed}
+        <pre className={handoffPre} data-handoff-raw id={id} {...authorText}>
+          {handoff.data.body}
+        </pre>
+      </>
     );
   }
   return (
-    <dl className={`mt-1 flex flex-col gap-2 text-xs ${pageInkText}`} id={id} {...authorText}>
-      {fields.map(({ entry, field, json, label, text }) => {
-        const known = Object.hasOwn(KNOWN_FIELDS, field) ? KNOWN_FIELDS[field] : undefined;
-        // The element keeps the field's key, which a reader of the page selects by; the label
-        // is the page's name for the field, or the words its key spells.
-        return (
-          <div data-handoff-field={field} key={`${field}/${label}`}>
-            <dt className={`font-medium ${pageMutedText}`}>
-              {entry !== undefined ? (
-                <span {...pageChrome}>
-                  {CONTROL_LABELS.handoff_fields.proof} <span {...authorText}>{entry}</span>
-                </span>
-              ) : known !== undefined ? (
-                <span {...pageChrome}>{known}</span>
-              ) : (
-                <span {...authorText}>{keyWords(field)}</span>
-              )}
-            </dt>
-            <dd className="min-w-0">
-              {json ? (
-                <pre className={handoffPre}>{text}</pre>
-              ) : (
-                <span className="break-words whitespace-pre-wrap">{text}</span>
-              )}
-            </dd>
-          </div>
-        );
-      })}
-    </dl>
+    <>
+      {failed}
+      <dl className={`mt-1 flex flex-col gap-2 text-xs ${pageInkText}`} id={id} {...authorText}>
+        {fields.map(({ entry, field, json, label, text }) => {
+          const known = Object.hasOwn(KNOWN_FIELDS, field) ? KNOWN_FIELDS[field] : undefined;
+          // The element keeps the field's key, which a reader of the page selects by; the label
+          // is the page's name for the field, or the words its key spells.
+          return (
+            <div data-handoff-field={field} key={`${field}/${label}`}>
+              <dt className={`font-medium ${pageMutedText}`}>
+                {entry !== undefined ? (
+                  <span {...pageChrome}>
+                    {CONTROL_LABELS.handoff_fields.proof} <span {...authorText}>{entry}</span>
+                  </span>
+                ) : known !== undefined ? (
+                  <span {...pageChrome}>{known}</span>
+                ) : (
+                  <span {...authorText}>{keyWords(field)}</span>
+                )}
+              </dt>
+              <dd className="min-w-0">
+                {json ? (
+                  <pre className={handoffPre}>{text}</pre>
+                ) : (
+                  <span className="break-words whitespace-pre-wrap">{text}</span>
+                )}
+              </dd>
+            </div>
+          );
+        })}
+      </dl>
+    </>
   );
 }
 

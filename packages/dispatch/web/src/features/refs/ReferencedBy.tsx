@@ -337,10 +337,16 @@ export function ReferencedBy({
       {query.isError ? (
         <p className={`flex flex-wrap items-center gap-2 text-sm ${tokens.line}`}>
           <span>Referenced by unavailable.</span>
+          {/* In Details (`page`) the Retry is not disabled while it reads, since Chromium drops
+              the focus of a focused button that turns disabled to the page: a keyboard reader
+              stays on it, and a press then sends nothing. */}
           <button
+            aria-busy={page ? query.isFetching || undefined : undefined}
             className={`font-medium underline ${tokens.link}`}
-            disabled={query.isFetching}
-            onClick={() => void query.refetch()}
+            disabled={!page && query.isFetching}
+            onClick={() => {
+              if (!query.isFetching) void query.refetch();
+            }}
             type="button"
           >
             Retry

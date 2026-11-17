@@ -311,18 +311,31 @@ export function IssueHistory({
     );
   };
   // A control of the history that goes away under the reader's focus leaves the focus in the
-  // history, never on the page, as Details' Unpin does (`IssuePins.tsx`). Load older, which a
-  // press disables while its page is read and the log's end takes away, hands it to a control
-  // the page it read added that the reader can see, where Load older stood first, else to one
-  // out of view, else to Load older again where pages are left, else to the heading, and so
-  // does the Retry of a failed next page, which stands where Load older stood; the Retry of a
-  // failed read of the log, gone once the read lands, hands it to the heading. Each is held
-  // from its press, made with the focus on it, until the reads settle, and only a focus left on
-  // the page moves: a reader who has put it elsewhere by then keeps it there. No such move
-  // scrolls Details, whose reader keeps their place, so a control the page pushed out of
-  // view - under files it added to a run above - takes the focus only when none is in view.
+  // history, never on the page, as Details' Unpin does (`IssuePins.tsx`). Load older, which the
+  // log's end takes away, hands it on to a control the page it read added: first one the reader
+  // can see, one under the list drawn before the press before one above it, as the page lands
+  // where Load older stood; else one out of view under that list; else any the page added;
+  // else Load older again, where pages are left; else the last control drawn before the press,
+  // which stood just above Load older, for a last page that adds no control (its events go into
+  // a day drawn folded, or are all events the outline draws); and only then the heading, above
+  // the whole list. The Retry of a failed next page, which stands where Load older stood, hands
+  // it on the same way; the Retry of a failed read of the log, gone once the read lands, hands
+  // it to the heading. None of them is disabled while it reads, since Chromium drops the focus
+  // of a focused button that turns disabled to the page, so the focus stays on the control
+  // pressed while its read is out. Each press, made with the focus on its control, is held
+  // until the reads settle; then a focus left on the page moves, and so does one still on that
+  // control once its read has landed - Load older where pages are left hands it on as if it had
+  // gone - while a read that failed leaves it there, beside the line that says so. A reader who
+  // has put the focus elsewhere by then keeps it there. No such move scrolls Details, whose
+  // reader keeps their place, so a control the page pushed out of view - under files it added
+  // to a run above - takes the focus only when none is in view.
   const pressed = useRef<
-    { readonly kind: "older"; readonly before: ReadonlySet<Element> } | { readonly kind: "retry" }
+    | {
+        readonly before: ReadonlySet<HTMLElement>;
+        readonly control: Element;
+        readonly kind: "older";
+      }
+    | { readonly control: Element; readonly kind: "retry" }
   >(undefined);
   const loadOlder = useRef<HTMLButtonElement>(null);
   const failure = useRef<HTMLDivElement>(null);
@@ -334,12 +347,14 @@ export function IssueHistory({
     if (press === undefined || log.isFetching) return;
     pressed.current = undefined;
     const active = document.activeElement;
-    if (active !== null && active !== document.body) return;
+    const onPage = active === null || active === document.body;
+    const onPressedAfterRead = active === press.control && !log.isError;
+    if (!onPage && !onPressedAfterRead) return;
     // The page it read lands under every control drawn before it, where Load older stood. Its
     // entries can push one another out of Details' view: files the page added to a run above
     // move the entries under that run down, so a new control is in view or not by where it is
     // drawn once the reader's place is held (`ViewportAnchor` holds it before this runs).
-    const before = press.kind === "older" ? press.before : new Set<Element>();
+    const before = press.kind === "older" ? press.before : new Set<HTMLElement>();
     const lastBefore = [...before].filter((control) => control.isConnected).at(-1);
     const added = controlsOfList().filter((control) => !before.has(control));
     const isBelow = (control: HTMLElement) =>
@@ -359,7 +374,8 @@ export function IssueHistory({
           added.find(inView) ??
           added.find(isBelow) ??
           added[0] ??
-          loadOlder.current)
+          loadOlder.current ??
+          lastBefore)
         : failure.current?.querySelector("button");
     (target ?? heading.current)?.focus({ preventScroll: true });
   });
@@ -377,13 +393,14 @@ export function IssueHistory({
         onRetry={() => {
           // The next page's Retry stands where Load older stood, and hands the focus on as it
           // does; the log's Retry, under the heading, to the heading. Neither is disabled while
-          // it reads again, since Chromium drops the focus of a focused button that turns
-          // disabled to the page, so a read that fails again leaves the focus on it; a press
-          // while the log is read sends nothing.
-          if (failure.current?.contains(document.activeElement) === true) {
+          // it reads, since Chromium drops the focus of a focused button that turns disabled
+          // to the page, so a read that fails again leaves the focus on it; a press while the
+          // log is read sends nothing.
+          const active = document.activeElement;
+          if (active !== null && failure.current?.contains(active) === true) {
             pressed.current = log.isFetchNextPageError
-              ? { before: new Set(controlsOfList()), kind: "older" }
-              : { kind: "retry" };
+              ? { before: new Set(controlsOfList()), control: active, kind: "older" }
+              : { control: active, kind: "retry" };
           }
           if (log.isFetching) return;
           void (log.isFetchNextPageError ? log.fetchNextPage() : log.refetch());
@@ -482,11 +499,18 @@ export function IssueHistory({
       {log.isFetchNextPageError ? failed : null}
       {log.hasNextPage ? (
         <button
+          aria-busy={log.isFetchingNextPage || undefined}
           className={`dispatch-inline-link self-start text-xs font-medium underline ${pageMutedText}`}
-          disabled={log.isFetchingNextPage}
           onClick={(event) => {
+            // Not disabled while its page is read, since Chromium drops the focus of a focused
+            // button that turns disabled to the page: a press then sends nothing.
+            if (log.isFetchingNextPage) return;
             if (document.activeElement === event.currentTarget) {
-              pressed.current = { before: new Set(controlsOfList()), kind: "older" };
+              pressed.current = {
+                before: new Set(controlsOfList()),
+                control: event.currentTarget,
+                kind: "older",
+              };
             }
             void log.fetchNextPage();
           }}
