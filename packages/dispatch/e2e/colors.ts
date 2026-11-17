@@ -6,7 +6,7 @@
  *  Chromium serializes `getComputedStyle` colors in the color space they were declared in —
  *  Tailwind v4's default palette is `oklch()`, so `backgroundColor`/`color`/`borderBottomColor`
  *  come back as e.g. `oklch(0.208 0.042 265.755)`, not `rgb(...)`, and a color an opacity modifier
- *  writes (`bg-slate-950/40`, a `color-mix()` in oklab) comes back as `oklab(... / 0.4)`. Rather
+ *  writes (a `color-mix()` in oklab) comes back as `oklab(... / 0.4)`. Rather
  *  than pin that literal string (brittle against browser/Tailwind version formatting changes),
  *  this converts the actual computed color through the same OKLCH→sRGB math `palette.test.ts`
  *  uses to verify contrast (`web/src/theme/contrast.ts`, which this tree does not change). */
