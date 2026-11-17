@@ -1221,6 +1221,7 @@ describe("cmd_batch numbering", () => {
         "rig_mise() { :; }",
         "push_guard() { :; }",
         "require_namespace() { :; }",
+        "tmux_ready() { :; }",
         "stop_batch() { services_down; }",
         "stop_tree() { :; }",
         'until_true() { shift 2; "$@"; }',
@@ -1438,6 +1439,7 @@ describe("a run or live read of a name already taken", () => {
     "load_label() { P=$work/profiles/$1; I=$P; co=$work/checkout; }",
     "push_guard() { :; }",
     "require_namespace() { :; }",
+    "tmux_ready() { :; }",
     "rig_mise() { :; }",
     "scratch_before() { :; }",
     'stop_run() { echo stop_run >>"$work/stopped"; }',
@@ -1559,6 +1561,7 @@ describe("cmd_run and its label's services", () => {
         "load_label() { P=$work/profiles/$1; I=$P; co=/co/$1; }",
         "push_guard() { :; }",
         "require_namespace() { :; }",
+        "tmux_ready() { :; }",
         "scratch_before() { :; }",
         "stop_run() { :; }",
         'run_ask_on_message() { cp "$R/services-from" "$R/at-start" && printf \'%s\\n\' "$services_env" >"$R/services-env" && echo exit=0 >"$R/out.txt"; }',
@@ -1621,6 +1624,261 @@ describe("cmd_run and its label's services", () => {
       );
       expect(run).toBeUndefined();
       expect(existsSync(path.join(work, "runs"))).toBe(false);
+    }
+  });
+});
+
+// Every run's agent starts in a detached tmux session (rig.sh's launch). A worker pod's image
+// carries no tmux, and a tmux binary put there alone cannot load libevent_core-2.1.so.7, and a
+// batch met either only mid-run, once its databases and services were up. So a batch and a run
+// check their tmux before they make anything (tmux_ready): `tmux -V`, then one detached session
+// started and killed on a socket of the check's own. Each row puts a `tmux` stand-in of its own
+// first on PATH, or gives a PATH with no tmux on it at all, and holds a refused command's work
+// directory to its state before the command: no database, service or run directory.
+describe("tmux_ready, before a batch or a run makes anything", () => {
+  /** The end of every refusal of a tmux. */
+  const NOTHING = "every run's agent starts in a detached tmux session (launch), so nothing starts";
+  /** What a pod's bare tmux binary printed on 2026-11-17 for every call, `-V` included, the loader
+   * failing before tmux ran. */
+  const UNLOADABLE =
+    "error while loading shared libraries: libevent_core-2.1.so.7: cannot open shared object file: No such file or directory";
+  /** A directory holding a `tmux` that logs each call's arguments to <dir>/calls and answers as
+   * tmux does: `-V` with its version, `new-session -d` and `kill-session` with nothing. The step
+   * `failing` names (`-V`, `new-session` or `kill-session`, read past `-S <socket>`) prints its
+   * own path and `message` on stderr instead, and exits 127. */
+  function tmuxStandIn(failing?: { step: string; message: string }): string {
+    const dir = freshDir("tmux-standin");
+    writeFileSync(
+      path.join(dir, "tmux"),
+      [
+        "#!/usr/bin/env bash",
+        `printf '%s\\n' "$*" >>${JSON.stringify(path.join(dir, "calls"))}`,
+        'step=$1; [ "$1" != -S ] || step=$3',
+        ...(failing === undefined
+          ? []
+          : [
+              `if [ "$step" = ${failing.step} ]; then echo "$0: ${failing.message}" >&2; exit 127; fi`,
+            ]),
+        '[ "$step" != -V ] || echo "tmux 3.5a"',
+        "",
+      ].join("\n"),
+      { mode: 0o755 }
+    );
+    return dir;
+  }
+  /** A directory holding a link to each program a batch or a run here runs besides tmux, and no
+   * tmux: a PATH of it alone is a host with no tmux, whatever this host has. */
+  function noTmux(): string {
+    const dir = freshDir("no-tmux");
+    for (const program of ["bash", "mkdir", "mktemp", "rm", "date", "seq", "xargs", "dirname"]) {
+      const found = Bun.which(program, { PATH: childEnv.PATH });
+      if (found === null) throw new Error(`no ${program} on this host's PATH`);
+      symlinkSync(found, path.join(dir, program));
+    }
+    return dir;
+  }
+  /** Each step at which a batch and a run refuse a tmux: `none`, no tmux on PATH; `-V`, a tmux
+   * whose `-V` fails; `new-session`, one that answers `-V` and starts no session (the libevent
+   * case); `kill-session`, one that starts the session and cannot kill it. */
+  const REFUSED = ["none", "-V", "new-session", "kill-session"] as const;
+  /** A PATH whose tmux a batch and a run refuse at `step`, and the refusal's stderr. */
+  function refusal(step: (typeof REFUSED)[number]): { PATH: string; stderr: string } {
+    if (step === "none")
+      return { PATH: noTmux(), stderr: `skill-scenarios: tmux -V: no tmux on PATH; ${NOTHING}\n` };
+    const message = step === "kill-session" ? "can't find session: ready" : UNLOADABLE;
+    const bin = tmuxStandIn({ step, message });
+    const tmux = path.join(bin, "tmux");
+    return {
+      PATH: `${bin}:${childEnv.PATH}`,
+      stderr: `skill-scenarios: tmux ${step}: ${tmux} exited 127: ${tmux}: ${message}; ${NOTHING}\n`,
+    };
+  }
+
+  /** `rig.sh batch ask-on-message 1 head` on PATH `PATH`, in a work directory of its own: its
+   * status and stderr, the work directory and its digest before the batch, and each line the
+   * batch's `rig.sh run` logged, a stand-in rig that logs its arguments and the tmux its batch
+   * handed it. Each step a batch takes after its checks is a stub that makes in the work
+   * directory what that step makes there: the rig's mise, the services' lock and a label's
+   * services file. */
+  function batch(PATH: string) {
+    const work = freshDir("tmux-batch");
+    mkdirSync(path.join(work, "profiles", "head"), { recursive: true });
+    const here = freshDir("tmux-batch-rig");
+    writeFileSync(
+      path.join(here, "rig.sh"),
+      'printf \'%s %s\\n\' "$*" "$RIG_TMUX_CHECKED" >>"$(dirname "$0")/runs.log"\n'
+    );
+    const before = treeDigest(work);
+    const result = bash(
+      [
+        "set -euo pipefail",
+        ...["fail", "note", "on_exit", "tmux_ready", "cmd_batch"].map(fn),
+        "scenario_case() { :; }",
+        "load_label() { :; }",
+        "push_guard() { :; }",
+        "require_namespace() { :; }",
+        'rig_mise() { mkdir -p "$work/tools/bin"; }',
+        'lock_services() { S=$work/services; mkdir -p "$S/logs"; : >"$S/up"; }',
+        'services_up() { : >"$S/env-$1"; }',
+        "stop_batch() { :; }",
+        "next_run() { echo 1; }",
+        "work=$1 here=$2",
+        "PATH=$3",
+        "cmd_batch ask-on-message 1 head",
+      ].join("\n"),
+      [work, here, PATH],
+      { SKILL_SCENARIOS_PARALLEL: "1" }
+    );
+    return { ...result, work, before, runs: fileLines(path.join(here, "runs.log")) };
+  }
+
+  /** `rig.sh run ask-on-message base 1 1 100` on PATH `PATH`, with RIG_TMUX_CHECKED `checked`
+   * (unset for undefined), in a work directory whose batch left the label's services, as the
+   * "cmd_run and its label's services" rows build one: its status and stderr, the work directory
+   * and its digest before the run, and the run's directory, undefined for none. */
+  function run(PATH: string, checked?: string) {
+    const work = freshDir("tmux-run");
+    mkdirSync(path.join(work, "services"));
+    writeFileSync(path.join(work, "services", "env-base"), "");
+    writeFileSync(path.join(work, "services", "services-from-base"), "");
+    mkdirSync(path.join(work, "profiles", "base"), { recursive: true });
+    writeFileSync(path.join(work, "profiles", "base", "built-from"), "checkout /co/base\n");
+    const before = treeDigest(work);
+    const result = bash(
+      [
+        "set -euo pipefail",
+        ...[
+          "fail",
+          "on_exit",
+          "scenario_case",
+          "run_named",
+          "run_project",
+          "label_services",
+          "label_provenance",
+          "tmux_ready",
+          "cmd_run",
+        ].map(fn),
+        "load_label() { P=$work/profiles/$1; I=$P; co=/co/$1; }",
+        "push_guard() { :; }",
+        "require_namespace() { :; }",
+        "scratch_before() { :; }",
+        "stop_run() { :; }",
+        'run_ask_on_message() { echo exit=0 >"$R/out.txt"; }',
+        "work=$1 here=$2 tag=legion-00000000 worker_repo=fernbrook/widgets",
+        "PATH=$3",
+        "cmd_run ask-on-message base 1 1 100",
+      ].join("\n"),
+      [work, import.meta.dir, PATH],
+      { RIG_TMUX_CHECKED: checked }
+    );
+    return {
+      ...result,
+      work,
+      before,
+      ran: namedRun(path.join(work, "runs"), "ask-on-message-base-1"),
+    };
+  }
+
+  /** The steps of each call a stand-in tmux at `bin` logged, its `-S <socket>` read off. */
+  const steps = (bin: string) =>
+    fileLines(path.join(bin, "calls")).map((call) => call.replace(/^-S \S+ /, ""));
+  /** What tmux_ready asks of a tmux, in order. */
+  const CHECK = ["-V", "new-session -d -s ready -x 200 -y 50 sleep 60", "kill-session -t =ready"];
+
+  /** Holds a batch whose tmux is refused at `step` to its refusal: status 1, the refusal's
+   * stderr, no run started, and its work directory as it was. */
+  function refusedBatch(step: (typeof REFUSED)[number]) {
+    const { PATH, stderr } = refusal(step);
+    const refused = batch(PATH);
+    expect({ code: refused.code, stderr: refused.stderr }).toEqual({ code: 1, stderr });
+    expect(refused.runs).toEqual([]);
+    expect(treeDigest(refused.work)).toBe(refused.before);
+  }
+
+  // Catches: a batch that meets the missing tmux only at its first launch, once its services are up.
+  test("a batch with no tmux on PATH is refused, naming tmux -V, and makes nothing", () => {
+    refusedBatch("none");
+  });
+
+  // Catches: a batch that never runs `tmux -V`, which starts its services on a tmux that cannot run.
+  test("a batch whose tmux -V fails is refused, naming tmux -V and what tmux printed, and makes nothing", () => {
+    refusedBatch("-V");
+  });
+
+  // Catches: a check that only asks `tmux -V`, which a tmux that starts no session answers: the
+  // libevent case, refused only at the session start.
+  test("a batch whose tmux answers -V and starts no session is refused, naming new-session and what tmux printed, and makes nothing", () => {
+    refusedBatch("new-session");
+  });
+
+  // Catches: a check that starts a session and never kills it, or takes a kill that failed.
+  test("a batch whose tmux cannot kill the session it started is refused, naming kill-session, and makes nothing", () => {
+    refusedBatch("kill-session");
+  });
+
+  // Catches: a check on the work directory's own tmux server (<work>/tmux.sock), which every run
+  // reads, a check that leaves its socket's directory behind, and a batch that does not hand its
+  // runs the tmux it checked.
+  test("a batch whose tmux starts and kills a session on a socket of its own goes on, handing its runs that tmux", () => {
+    const bin = tmuxStandIn();
+    const started = batch(`${bin}:${childEnv.PATH}`);
+    expect({ code: started.code, stderr: started.stderr }).toEqual({ code: 0, stderr: "" });
+    expect(started.runs.map((line) => line.split(" "))).toEqual([
+      [
+        "run",
+        "ask-on-message",
+        "head",
+        "1",
+        "1",
+        expect.stringMatching(/^\d+$/),
+        path.join(bin, "tmux"),
+      ],
+    ]);
+    expect(steps(bin)).toEqual(CHECK);
+    const sockets = fileLines(path.join(bin, "calls")).map((call) => call.split(" ")[1]);
+    const socket = sockets[1] ?? "";
+    expect(sockets.slice(1)).toEqual([socket, socket]);
+    expect(path.dirname(path.dirname(socket))).toBe(started.work);
+    expect(socket).not.toBe(path.join(started.work, "tmux.sock"));
+    expect(existsSync(path.dirname(socket))).toBe(false);
+    expect(readdirSync(path.join(started.work, "services")).sort()).toEqual([
+      "env-head",
+      "logs",
+      "up",
+    ]);
+  });
+
+  // Catches: a run started on its own that meets its tmux only at its launch, once its own
+  // Dispatch database and server are made.
+  test("a run its batch did not check is refused for each tmux a batch refuses, before it makes its directory", () => {
+    for (const step of REFUSED) {
+      const { PATH, stderr } = refusal(step);
+      const refused = run(PATH);
+      expect({ step, code: refused.code, stderr: refused.stderr }).toEqual({
+        step,
+        code: 1,
+        stderr,
+      });
+      expect(refused.ran).toBeUndefined();
+      expect(treeDigest(refused.work)).toBe(refused.before);
+    }
+  });
+
+  // Catches: a batch's runs each checked again, which a batch of N runs pays N times for the one
+  // tmux their batch checked, and a run that takes a check of another tmux than its PATH's.
+  test("a run its batch checked the tmux of asks nothing of it, and any other run checks its tmux", () => {
+    const bin = tmuxStandIn();
+    const PATH = `${bin}:${childEnv.PATH}`;
+    const checked = run(PATH, path.join(bin, "tmux"));
+    expect({ code: checked.code, stderr: checked.stderr }).toEqual({ code: 0, stderr: "" });
+    expect(checked.ran).toBeDefined();
+    expect(steps(bin)).toEqual([]);
+    for (const other of [undefined, path.join(freshDir("other-tmux"), "tmux")]) {
+      rmSync(path.join(bin, "calls"), { force: true });
+      const own = run(PATH, other);
+      expect({ code: own.code, stderr: own.stderr }).toEqual({ code: 0, stderr: "" });
+      expect(own.ran).toBeDefined();
+      expect(steps(bin)).toEqual(CHECK);
     }
   });
 });
@@ -8464,63 +8722,67 @@ sleep() { command sleep 0.05; }`;
   // and the head's passed only because its legion.js was over a size bound, so the plant here is
   // small. And what the run has written before a later agent's launch holds the agents' own
   // words: the first agent's transcript refused threads-closed-text-fixes-head-1's reviewer. Each
-  // row plants a word in one such file, and the agent starts.
-  test("a word in the label's install or in what the run wrote does not refuse the launch", () => {
-    const name = "threads-closed-text-fixes-head-1";
-    const plants: { what: string; options: (work: string) => Launch }[] = [
-      {
-        what: "the label's packed plugin",
-        options: (work) => {
-          const dist = path.join(installOf(work, "head"), "pi-legion", "dist");
-          mkdirSync(dist, { recursive: true });
-          writeFileSync(
-            path.join(dist, "legion.js"),
-            'var SPEC_WRITING_POINTER = "dispatch://WID/artifact/spec";\n'
-          );
-          return {};
-        },
-      },
-      {
-        what: "the first agent's transcript",
-        options: () => ({
-          files: {
-            "sessions/2026-11-16T00-00-00-000Z_s1.jsonl": `${JSON.stringify({
-              type: "message",
-              message: {
-                role: "assistant",
-                content: [{ type: "text", text: "These are text-only threads." }],
-              },
-            })}\n`,
+  // row plants a word in one such file, and the agent starts, so the row needs the namespace the
+  // agent starts in, as its siblings that start one do.
+  test.skipIf(withoutNamespace)(
+    "a word in the label's install or in what the run wrote does not refuse the launch",
+    () => {
+      const name = "threads-closed-text-fixes-head-1";
+      const plants: { what: string; options: (work: string) => Launch }[] = [
+        {
+          what: "the label's packed plugin",
+          options: (work) => {
+            const dist = path.join(installOf(work, "head"), "pi-legion", "dist");
+            mkdirSync(dist, { recursive: true });
+            writeFileSync(
+              path.join(dist, "legion.js"),
+              'var SPEC_WRITING_POINTER = "dispatch://WID/artifact/spec";\n'
+            );
+            return {};
           },
-        }),
-      },
-      {
-        what: "the first agent's output",
-        options: () => ({
-          files: { "out-implementer.txt": "The code-defect is fixed.\nexit=0\n" },
-        }),
-      },
-      {
-        what: "a file an agent wrote in the working directory",
-        options: () => ({ files: { "cwd/notes.md": "text-fixes, both threads\n" } }),
-      },
-      {
-        what: "the gh answers a body edit rewrote",
-        options: () => ({
-          files: { "fixtures.json": '{"routes":[{"stdout":"threads-closed"}]}\n' },
-        }),
-      },
-    ];
-    const refused: string[] = [];
-    for (const plant of plants) {
-      const work = freshDir("launch-unread");
-      const ran = path.join(runDirOf(work, name), "agent-ran");
-      const { result } = launched(work, name, `: >${ran}`, [], plant.options(work));
-      if (result.code !== 0 || !existsSync(ran))
-        refused.push(`${plant.what}: exit ${result.code}: ${result.stderr.trim()}`);
+        },
+        {
+          what: "the first agent's transcript",
+          options: () => ({
+            files: {
+              "sessions/2026-11-16T00-00-00-000Z_s1.jsonl": `${JSON.stringify({
+                type: "message",
+                message: {
+                  role: "assistant",
+                  content: [{ type: "text", text: "These are text-only threads." }],
+                },
+              })}\n`,
+            },
+          }),
+        },
+        {
+          what: "the first agent's output",
+          options: () => ({
+            files: { "out-implementer.txt": "The code-defect is fixed.\nexit=0\n" },
+          }),
+        },
+        {
+          what: "a file an agent wrote in the working directory",
+          options: () => ({ files: { "cwd/notes.md": "text-fixes, both threads\n" } }),
+        },
+        {
+          what: "the gh answers a body edit rewrote",
+          options: () => ({
+            files: { "fixtures.json": '{"routes":[{"stdout":"threads-closed"}]}\n' },
+          }),
+        },
+      ];
+      const refused: string[] = [];
+      for (const plant of plants) {
+        const work = freshDir("launch-unread");
+        const ran = path.join(runDirOf(work, name), "agent-ran");
+        const { result } = launched(work, name, `: >${ran}`, [], plant.options(work));
+        if (result.code !== 0 || !existsSync(ran))
+          refused.push(`${plant.what}: exit ${result.code}: ${result.stderr.trim()}`);
+      }
+      expect(refused).toEqual([]);
     }
-    expect(refused).toEqual([]);
-  });
+  );
 
   // Catches: a probe that reads a refusal as a namespace, or reports none of the host's words:
   // the skip of every namespace row and the refusal of every run carry the text it prints.
@@ -8576,13 +8838,13 @@ docker() {
       "daemon_pane_binary",
       "label_facts",
       "file_digest",
+      "read_nats_image",
       "services_from",
       "label_services",
       "label_provenance",
       "services_up",
     ].map(fn),
     assignment("postgres_image"),
-    `root=${JSON.stringify(CHECKOUT)}; . "$root/scripts/e2e/lib/nats-image.sh"`,
     assignment("worker_boots"),
   ].join("\n");
   const given = {

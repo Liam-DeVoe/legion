@@ -262,6 +262,16 @@
 # or an archive whose SHA-256 is any other, is refused, naming the step, and installs nothing; a
 # mise an earlier call installed from that archive is reused. It is <work>/tools/bin/mise, first
 # on the PATH the rig, the profile installer and every agent run on.
+# Every run's agent starts in a detached tmux session (launch), and the rig brings no tmux of its
+# own: `batch` and `run` first run `tmux -V` and start and kill one detached session on a socket
+# of their own under the work directory (tmux_ready), and refuse, before they make any database,
+# service or run directory, naming tmux, the step that failed and what tmux printed on stderr. A
+# batch's runs take its PATH, and so the tmux it checked, and are not checked again. A worker
+# pod's image carries no tmux, and a tmux binary put there alone does not start: it cannot load
+# libevent_core-2.1.so.7. What gave a Debian 13 (trixie) pod a tmux on 2026-11-17, a method and
+# not a pin: unpack the tmux and libevent-core-2.1-7t64 packages of the pod's own Debian release
+# (`dpkg-deb -x <package>.deb <dir>`), and run the rig from a shell whose PATH starts with
+# <dir>/usr/bin and whose LD_LIBRARY_PATH names <dir>/usr/lib/x86_64-linux-gnu.
 # Optional:
 #   SKILL_SCENARIOS_WORK      work directory, outside any checkout, and with no `.omp` in it or in
 #                             any directory above it (default ${TMPDIR:-/tmp}/work); its path
@@ -1241,6 +1251,38 @@ require_namespace() {
   why=$(namespace_probe) || fail "this host refuses the namespace every agent of a run starts in (unshare -Urm -p --fork --mount-proc), so nothing starts: $why"
 }
 
+# tmux_ready refuses a run or a batch before it makes any database, service or run directory,
+# where the tmux on PATH cannot start the detached session every agent starts in (launch): a
+# worker pod's image carries no tmux, and a tmux binary that cannot load libevent_core-2.1.so.7
+# starts no session either, which a batch met only mid-run, once its databases and services were
+# up. It runs `tmux -V`, then starts one detached session as launch starts an agent's and kills
+# it, on a socket of its own in a directory it makes under the work directory and removes, never
+# the work directory's tmux server (tmux_socket), so it leaves nothing a run reads. A step that
+# fails is refused, naming tmux, the step and what tmux printed on stderr, and a tmux on PATH that
+# does not start is refused as a missing one is. It sets RIG_TMUX_CHECKED to the tmux it checked,
+# by path: a batch exports it to its runs, each of which takes the batch's PATH and so that tmux,
+# and a run its batch checked is not checked again (cmd_batch, cmd_run).
+tmux_ready() {
+  local path tmp step=-V err status=0
+  path=$(type -P tmux) ||
+    fail "tmux -V: no tmux on PATH; every run's agent starts in a detached tmux session (launch), so nothing starts"
+  err=$("$path" -V 2>&1 >/dev/null) || status=$?
+  if [ "$status" = 0 ]; then
+    tmp=$(mktemp -d "$work/.tmux.XXXXXX")
+    step=new-session
+    err=$("$path" -S "$tmp/s" new-session -d -s ready -x 200 -y 50 'sleep 60' 2>&1 >/dev/null) || status=$?
+    if [ "$status" = 0 ]; then
+      step=kill-session
+      err=$("$path" -S "$tmp/s" kill-session -t =ready 2>&1 >/dev/null) || status=$?
+    fi
+    [ "$status" = 0 ] || "$path" -S "$tmp/s" kill-server >/dev/null 2>&1 || true
+    rm -rf -- "$tmp"
+  fi
+  [ "$status" = 0 ] ||
+    fail "tmux $step: $path exited $status: ${err:-no message}; every run's agent starts in a detached tmux session (launch), so nothing starts"
+  RIG_TMUX_CHECKED=$path
+}
+
 # launch NAME [OMP_ARG]... runs `omp -p "$(cat $R/prompt.txt)"` and then each OMP_ARG in $R/cwd
 # under $R/pane.env, followed by $R/system-args (one --append-system-prompt argument, as shell text)
 # when it exists, as the tmux session <tag>-<name>. It waits for the session to exit or time out. A
@@ -1531,12 +1573,18 @@ services_postgres=$work/services/postgres-url
 tokens=$work/services/tokens
 # The two images a batch starts when it is given no servers, by digest (services_up), which each
 # run's provenance names (services_from): ghcr.io/cybermonklabs/legion/ci's copy of
-# pgvector/pgvector (.github/ci-images.yaml), and the hub's nats-server, which
-# scripts/e2e/lib/nats-image.sh reads from testnats.HubImage: the listener and the daemon refuse a
-# nats-server below the floor packages/envoy/natsversion holds, every 2.10 among them.
+# pgvector/pgvector (.github/ci-images.yaml), and the hub's nats-server (read_nats_image).
 postgres_image=ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
-# shellcheck source-path=SCRIPTDIR/../../../.. source=scripts/e2e/lib/nats-image.sh
-. "$root/scripts/e2e/lib/nats-image.sh"
+# read_nats_image sets nats_image to the hub's nats-server, which scripts/e2e/lib/nats-image.sh
+# reads from testnats.HubImage: the listener and the daemon refuse a nats-server below the floor
+# packages/envoy/natsversion holds, every 2.10 among them. Only what starts that image or names it
+# reads it, services_up's container and services_from's line for it: sourced at the top of this
+# script, it refused every command, judge-omp's among them, on a root with no
+# packages/envoy/internal/testnats/nats.go before that command reached its own checks.
+read_nats_image() {
+  # shellcheck source-path=SCRIPTDIR/../../../.. source=scripts/e2e/lib/nats-image.sh
+  . "$root/scripts/e2e/lib/nats-image.sh"
+}
 
 # build_dir CHECKOUT prints where the Go binaries built from CHECKOUT are kept:
 # $work/builds/<the first 16 hex digits of the digest of CHECKOUT's path>, beside the daemon facts
@@ -1674,6 +1722,7 @@ services_from() {
     printf 'nats shared %s -\n' "$(safe_url "$nats_url")"
     printf 'postgres shared %s -\n' "$(safe_url "$pg_url")"
   else
+    read_nats_image
     printf 'nats shared %s sha256:%s\n' "${nats_image%@*}" "${nats_image#*@sha256:}"
     printf 'postgres shared %s sha256:%s\n' "${postgres_image%@*}" "${postgres_image#*@sha256:}"
   fi
@@ -1859,6 +1908,8 @@ services_up() {
     nats_url=$SKILL_SCENARIOS_NATS_URL
     (umask 077 && printf '%s\n' "$pg_url" >"$services_postgres")
   else
+    # Read before either container starts, so an image that cannot be read starts neither.
+    read_nats_image
     docker run -d --name "$tag-pg" --cpus 2 --memory 2g --mount type=tmpfs,destination=/var/lib/postgresql \
       -e POSTGRES_PASSWORD=ci -p 127.0.0.1::5432 "$postgres_image" \
       -c max_connections=$needs >/dev/null
@@ -3749,6 +3800,10 @@ cmd_run() {
   push_guard >/dev/null
   # A host that refuses the namespace its agent runs in starts nothing of it (require_namespace).
   require_namespace
+  # Nor does a tmux that starts no session for its agent (tmux_ready). A run its batch started
+  # takes the batch's PATH, and with it the tmux the batch checked, which RIG_TMUX_CHECKED names:
+  # that run is not checked again, and any other run is.
+  if [ -z "${RIG_TMUX_CHECKED:-}" ] || [ "$RIG_TMUX_CHECKED" != "$(type -P tmux)" ]; then tmux_ready; fi
   [[ $n =~ ^[0-9]+$ ]] || fail "run number '$n' is not a number"
   [[ $index =~ ^[0-9]+$ && $start =~ ^[0-9]+$ ]] || fail "run index '$index' or batch start '$start' is not a number"
   # The run's services are its label's in its batch (services_up): its listener, built from the
@@ -3859,6 +3914,10 @@ cmd_batch() {
   push_guard >/dev/null
   # And a host that refuses the agents' namespace, likewise (require_namespace).
   require_namespace
+  # And a tmux that starts no agent's session, likewise (tmux_ready). Each `rig.sh run` the batch
+  # starts takes this PATH, and so the tmux checked here, and is not checked again (cmd_run).
+  tmux_ready
+  export RIG_TMUX_CHECKED
   # A spec run reads its source and the label's superpowers skills: refused here, before any
   # service starts.
   case $batch_scenario in spec-writing | spec-rewrite)

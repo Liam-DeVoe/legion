@@ -386,6 +386,17 @@ fetches, install it as `$SKILL_SCENARIOS_WORK/tools/bin/mise`, and put that dire
 PATH the profile installer and every agent run on. A fetch that fails, or an archive whose SHA-256
 is any other, is refused, naming the step and what it expected and got, and installs nothing; a
 later call reuses the mise an earlier one installed from that archive.
+Every run's agent starts in a detached tmux session, and the rig brings no tmux of its own:
+`rig.sh batch` and `rig.sh run` first run `tmux -V` and start and kill one detached session on a
+socket of their own under the work directory, and refuse, before they make any database, service
+or run directory, naming `tmux`, the step that failed and what tmux printed on stderr. A batch's
+runs take its PATH, and so the tmux it checked, and are not checked again. A worker pod's image
+carries no tmux, and a `tmux` binary put there alone does not start: it cannot load
+`libevent_core-2.1.so.7`. This gave a Debian 13 (trixie) pod a tmux on 2026-11-17, and it is a
+method, not a pin: unpack the `tmux` and `libevent-core-2.1-7t64` packages of the pod's own
+Debian release (`dpkg-deb -x <package>.deb <dir>`; there they were 3.5a-3 and
+2.1.12-stable-10+b1), and run the rig from a shell whose PATH starts with `<dir>/usr/bin` and
+whose `LD_LIBRARY_PATH` names `<dir>/usr/lib/x86_64-linux-gnu`.
 `SKILL_SCENARIOS_WORK` must have no `.omp` in it or above it, so not under your home directory: Oh
 My Pi would load that directory's plugins and not the label's. Its bounded waits, port picks and
 process stops are

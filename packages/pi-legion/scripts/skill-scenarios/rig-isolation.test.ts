@@ -104,17 +104,16 @@ stagings.push(() => {
     copyFileSync(path.join(import.meta.dir, program), path.join(path.dirname(rig), program));
   symlinkSync(path.join(root, "node_modules"), path.join(co, "node_modules"));
   // Every file of scripts/e2e/lib, read off the directory as RIG_PROGRAMS is, since rig.sh sources
-  // what it needs from there by name (rig.sh, nats-image.sh, the loopback and port helpers), and a
-  // list kept here fell short the day it began to source nats-image.sh. That one reads the hub's
-  // nats-server image out of packages/envoy/internal/testnats/nats.go, so that file comes too.
+  // what it needs from there by name (rig.sh, the loopback and port helpers), and a list kept here
+  // fell short the day it began to source nats-image.sh. The nats.go of
+  // packages/envoy/internal/testnats, out of which nats-image.sh reads the hub's image, stays
+  // behind: only a batch that starts a NATS container reads that image (rig.sh's
+  // read_nats_image), and a run never does.
   const libs = path.join(root, "scripts/e2e/lib");
   mkdirSync(path.join(co, "scripts/e2e/lib"), { recursive: true });
   for (const entry of readdirSync(libs, { withFileTypes: true }))
     if (entry.isFile())
       copyFileSync(path.join(libs, entry.name), path.join(co, "scripts/e2e/lib", entry.name));
-  const natsGo = "packages/envoy/internal/testnats/nats.go";
-  mkdirSync(path.dirname(path.join(co, natsGo)), { recursive: true });
-  copyFileSync(path.join(root, natsGo), path.join(co, natsGo));
   mkdirSync(stub);
 });
 put(
@@ -280,7 +279,9 @@ function namedRun(name: string): string | undefined {
  * nothing under a fresh HOME without them. A caller that names neither gets neither, so the
  * developer's own home decides nothing here. The caller's PUBLIC_LEAK_CHECK goes through where it
  * names one: on a Legion pod the `git` on PATH is the leak-check wrapper, and rig.sh refuses a run
- * whose wrapper has no check to run (its push_guard). */
+ * whose wrapper has no check to run (its push_guard). And RIG_TMUX_CHECKED names the tmux stand-in,
+ * as a batch hands each of its runs the tmux it checked (rig.sh's tmux_ready), so a run here, a
+ * batch's, does not check it again. */
 const miseData =
   process.env.MISE_DATA_DIR ??
   (process.env.XDG_DATA_HOME === undefined
@@ -299,6 +300,7 @@ const env = {
     ? {}
     : { PUBLIC_LEAK_CHECK: process.env.PUBLIC_LEAK_CHECK }),
   STUB_DIR: stub,
+  RIG_TMUX_CHECKED: path.join(bin, "tmux"),
   SKILL_SCENARIOS_WORK: work,
   SKILL_SCENARIOS_ASKGATE_CASE: "facts",
 };
