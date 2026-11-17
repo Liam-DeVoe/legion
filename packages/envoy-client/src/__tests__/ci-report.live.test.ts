@@ -81,7 +81,11 @@ interface Row {
       readonly verdict: string;
       readonly job: string;
       readonly leg: string;
-      readonly run: { readonly run_id: string; readonly attempt: number };
+      readonly run: {
+        readonly run_id: string;
+        readonly attempt: number;
+        readonly check_run_id: string;
+      };
     };
   };
 }
@@ -290,6 +294,20 @@ describe.skipIf(!dispatchStackEnabled)(
             `attempt ${predicate.run.attempt}`,
             `at ${subject[0]?.digest.gitCommit}`,
           ].join(" ")
+        );
+    }
+
+    /** Each row as its check, its check run and the member leg of its predicate as the read gives
+     *  it, JSON-quoted, or "no leg" where the read leaves the member out, oldest first. A reader of
+     *  the results takes a row with no leg as the leg of no matrix. */
+    function legsOf(rows: readonly Row[]): string[] {
+      return [...rows]
+        .sort((a, b) => a.seq - b.seq)
+        .map(
+          ({ attestation: { predicate } }) =>
+            `${predicate.check} check run ${predicate.run.check_run_id}: ${
+              Object.hasOwn(predicate, "leg") ? `leg ${JSON.stringify(predicate.leg)}` : "no leg"
+            }`
         );
     }
 
@@ -516,6 +534,39 @@ describe.skipIf(!dispatchStackEnabled)(
       expect(new Set(rows.map((row) => row.attestation.predicate.run.run_id)).size).toBe(1);
       expect(before).toBeDefined();
       expect(rows.find((row) => row.attestation.predicate.leg === "a")).toEqual(before as Row);
+    }, 180_000);
+
+    test("each stored result of a job with no matrix holds the member leg, and it is empty", async () => {
+      const checkout = checkoutOf("no-matrix-leg", SPEC);
+      const reported = await lastStep(checkout, jobOf(checkout, 611), "go-test-second-fails.jsonl");
+      expect(reported.code).toBe(0);
+
+      expect(legsOf(await rowsAt(checkout.sha))).toEqual([
+        `${PROBE} check run 611: leg ""`,
+        `${SECOND} check run 611: leg ""`,
+      ]);
+    }, 120_000);
+
+    test("each stored result of each leg of a matrix job holds the member leg, with the values of its own leg", async () => {
+      const checkout = checkoutOf("matrix-leg", SPEC);
+      const legA = await lastStep(
+        checkout,
+        jobOf(checkout, 612, { legName: "a" }),
+        "go-test-all-pass.jsonl"
+      );
+      const legB = await lastStep(
+        checkout,
+        jobOf(checkout, 613, { legName: "b" }),
+        "go-test-second-fails.jsonl"
+      );
+      expect([legA.code, legB.code]).toEqual([0, 0]);
+
+      expect(legsOf(await rowsAt(checkout.sha))).toEqual([
+        `${PROBE} check run 612: leg "a"`,
+        `${SECOND} check run 612: leg "a"`,
+        `${PROBE} check run 613: leg "b"`,
+        `${SECOND} check run 613: leg "b"`,
+      ]);
     }, 180_000);
 
     // This row cannot fail for a fault of the reporter: it reads no rows at a commit where no step

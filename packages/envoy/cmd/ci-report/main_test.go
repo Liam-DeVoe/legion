@@ -716,15 +716,22 @@ Failing example: A read that waits for a lock that nobody holds.
 		}
 	})
 
-	t.Run("each required flag left out exits 2 with the usage", func(t *testing.T) {
+	// A job's step passes each flag from a variable (.github/actions/dispatch-results), so an empty
+	// variable gives the flag with an empty value: refused as a flag left out is, before any call,
+	// and never sent on as an empty --project.
+	t.Run("each required flag left out or given empty exits 2 with the usage", func(t *testing.T) {
 		t.Parallel()
 		all := []string{"--dir", ".dispatch/spec", "--job", job, "--report", report, "--project", "ACME"}
 		for i := 0; i < len(all); i += 2 {
-			args := slices.Concat(all[:i], all[i+2:])
-			got := runReporter(t, binary, t.TempDir(), nil, args...)
-			want := "ci-report: " + all[i] + " is required\n" + usage + "\n"
-			if got.code != 2 || got.stdout != "" || got.stderr != want {
-				t.Errorf("without %s: exit %d, stdout %q, stderr %q; want exit 2 and stderr %q", all[i], got.code, got.stdout, got.stderr, want)
+			for form, args := range map[string][]string{
+				"without": slices.Concat(all[:i], all[i+2:]),
+				"empty":   slices.Concat(all[:i+1], []string{""}, all[i+2:]),
+			} {
+				got := runReporter(t, binary, t.TempDir(), nil, args...)
+				want := "ci-report: " + all[i] + " is required\n" + usage + "\n"
+				if got.code != 2 || got.stdout != "" || got.stderr != want {
+					t.Errorf("%s %s: exit %d, stdout %q, stderr %q; want exit 2 and stderr %q", form, all[i], got.code, got.stdout, got.stderr, want)
+				}
 			}
 		}
 	})
