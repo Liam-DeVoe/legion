@@ -1334,13 +1334,14 @@ func storeCensus(ctx context.Context, databaseURL string, sizing bool, afterKind
 //
 // The read walks graph_tuples_store_only (migration 20261116220307), the partial index of these
 // two kinds, in its own column order, so it reads their tuples and no other, and a store that
-// holds none of them reads two zero counts.
+// holds none of them reads two zero counts. It states the index's to_kind predicate, which leaves
+// out no tuple of either kind, since a far end of either is never a value.
 var storeOnlyRead = `
 	with recursive stated as (
 		select held.from_kind, held.from_id, held.kind, held.to_kind, held.to_id from (
 			` + graphstore.CurrentTupleRead(`t.kind, t.from_kind, t.from_id, t.to_kind, t.to_id`,
 	`t.from_kind, t.from_id, t.kind, t.to_kind, t.to_id, t.asserted`,
-	`t.kind in ('`+graphstore.TupleCopiedFrom+`', '`+graphstore.TupleMovedTo+`')`) + `
+	`t.kind in ('`+graphstore.TupleCopiedFrom+`', '`+graphstore.TupleMovedTo+`') and t.to_kind <> '`+graphstore.KindValue+`'`) + `
 		) held where held.asserted
 	),
 	followed (start, kind, address, hops, path) as (

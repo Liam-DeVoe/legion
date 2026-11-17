@@ -223,7 +223,7 @@ var danglingRead = `
 		select moved.from_id, '` + DanglingMoved + `' from (
 			` + graphstore.CurrentTupleRead(`t.from_id, t.to_kind, t.to_id`,
 	`t.from_id, t.asserted`,
-	`t.kind = '`+graphstore.TupleMovedTo+`' and t.from_kind = '`+refs.BlockNodeKind+`'`) + `
+	`t.kind = '`+graphstore.TupleMovedTo+`' and t.from_kind = '`+refs.BlockNodeKind+`' and t.to_kind <> '`+graphstore.KindValue+`'`) + `
 		) moved where moved.asserted
 		union
 		select distinct a.ref_key || '#' || held.block_id, '` + DanglingMoved + `'
