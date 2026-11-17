@@ -57,7 +57,7 @@ func oldPluginRegistration(sessionID, plugin, version string) string {
 	body, err := json.Marshal(map[string]any{
 		"session_id":         sessionID,
 		"dir":                "/home/agent/project",
-		"topics":             []string{contracts.AgentSubject(sessionID)},
+		"topics":             []string{contracts.LegacyAgentSubject(sessionID)},
 		"port":               0,
 		"title":              "",
 		"capabilities":       []string{"aside", "btw", "steer"},
@@ -97,7 +97,7 @@ func TestANewOldPluginSessionRegistersAfterAFailedFirstPass(t *testing.T) {
 
 			// The first pass: NATS is down, so nothing subscribes the relay subject yet.
 			requireConsumer(t, rig.subscribe(t, registration))
-			stored, seq := rig.storeEvent(t, contracts.AgentSubject(sessionID))
+			stored, seq := rig.storeEvent(t, contracts.LegacyAgentSubject(sessionID))
 
 			// NATS is back: the next pass opens the relay subject and registers again, still with
 			// no delivery field.

@@ -107,7 +107,7 @@ func interestRecord(set recordSet, index int, now int64, role string) store.Inte
 		SessionID: id,
 		MachineID: machineID,
 		Dir:       sessionDir(set.name, set.variant),
-		Topics:    append(topics(index, role), contracts.AgentSubject(id)),
+		Topics:    append(topics(index, role), contracts.LegacyAgentSubject(id)),
 		UpdatedAt: now,
 	}
 }

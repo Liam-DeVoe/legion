@@ -7,7 +7,9 @@ body: |-
   task of a role woken by a message says what reaches it when Envoy stored or kept the message,
   and that a message Envoy did not store or keep must be sent again; the task of a role woken by
   a message to its session no longer says that nothing kept the message. A role wake report of
-  another project decodes to no fact and writes no `processed_events` row. A waiting retry logs
+  another project decodes to no fact and writes no `processed_events` row. The role is read in
+  either form of its name, the token alone or `<PROJECT>.<token>`, and a token named under
+  another project is no fact either. A waiting retry logs
   `an intake fact waits and is applied again after its delay` at info.
 time: 2026-11-16T18:39:58Z
 custom:

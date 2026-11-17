@@ -82,7 +82,10 @@ func wakeSpec(logs *lockedBuffer) ConsumerSpec {
 // R6: a daemon reads every report on the wake subject, and a role report of another project is
 // no fact. The consumer acknowledges it with no transaction, so it leaves no processed_events row.
 // An agent report names a session and no project, and a listener_ready report names neither, so
-// both decode as before. The daemon's project is INFRA, whose token is infra.
+// both decode as before. The daemon's project is INFRA, whose token is infra. A role is read in
+// either form of its name: the token alone, or a project and then the token. A role of INFRA named
+// under INFRA is a wake of its token. In the new form, a role of another project is no fact, and
+// so is a role named under another project.
 func TestAWakeReportForAnotherProjectIsNoFact(t *testing.T) {
 	at := time.Date(2026, 11, 2, 9, 0, 0, 0, time.UTC)
 	millis := strconv.FormatInt(at.UnixMilli(), 10)
@@ -109,7 +112,7 @@ func TestAWakeReportForAnotherProjectIsNoFact(t *testing.T) {
 			return Result{}, nil
 		})
 		delivery := &wakeDelivery{data: envelopeJSON(t, "wake-bet", "envoy", payload)}
-		if !consumeMessage(context.Background(), delivery, wakeSpec(&lockedBuffer{}), nil, pool, []Handler{handler}) {
+		if !consumeMessage(context.Background(), delivery, wakeSpec(&lockedBuffer{}), nil, pool, []Handler{handler}, &issueNames{}) {
 			t.Fatal("consumeMessage = false, want the report handled")
 		}
 		acks, delays, others := delivery.answers()
@@ -151,6 +154,26 @@ func TestAWakeReportForAnotherProjectIsNoFact(t *testing.T) {
 		ready := ListenerWake{Kind: ListenerWakeReady, At: at, Report: "wake-ready"}
 		if fact := decode(t, "wake-ready", `{"kind":"listener_ready","at":`+millis+`}`); !reflect.DeepEqual(fact, ready) {
 			t.Fatalf("decoded listener_ready report = %#v, want %#v", fact, ready)
+		}
+	})
+
+	t.Run("(e) a role of the project infra named under INFRA is a wake of its token", func(t *testing.T) {
+		const token = "legion-infra-infra-12-implementer"
+		want := ListenerWake{Kind: ListenerWakeRole, Role: token, At: at, Report: "wake-infra-new-form"}
+		if fact := decode(t, "wake-infra-new-form", roleReport("INFRA."+token)); !reflect.DeepEqual(fact, want) {
+			t.Fatalf("decoded fact = %#v, want %#v", fact, want)
+		}
+	})
+
+	t.Run("(f) in the new form, a role of another project or under another project is no fact", func(t *testing.T) {
+		for _, role := range []string{
+			"BET.legion-bet-bet-12-implementer",
+			"INFRA.legion-bet-bet-12-implementer",
+			"BET.legion-infra-infra-12-implementer",
+		} {
+			if fact := decode(t, "wake-"+role, roleReport(role)); fact != nil {
+				t.Errorf("decoded fact for %s = %#v, want none", role, fact)
+			}
 		}
 	})
 }

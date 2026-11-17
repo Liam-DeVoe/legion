@@ -77,7 +77,7 @@ func TestRelayStoredNearLimitEnvelopeDoesNotBlockFollowingFrame(t *testing.T) {
 
 	t.Run("a message 64 bytes under the limit is acknowledged with one WARN", func(t *testing.T) {
 		const sessionID = "ses_near_limit"
-		agent := contracts.AgentSubject(sessionID)
+		agent := contracts.LegacyAgentSubject(sessionID)
 		standIn := startSessionStandIn(t, rig.url, sessionID, answerDone)
 		rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
 		large, largeSeq := storeEnvelopeOfSize(t, rig, agent, limit-64)
@@ -104,7 +104,7 @@ func TestRelayStoredNearLimitEnvelopeDoesNotBlockFollowingFrame(t *testing.T) {
 
 	t.Run("a message half the limit is relayed with no WARN", func(t *testing.T) {
 		const sessionID = "ses_half_limit"
-		agent := contracts.AgentSubject(sessionID)
+		agent := contracts.LegacyAgentSubject(sessionID)
 		standIn := startSessionStandIn(t, rig.url, sessionID, answerDone)
 		rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
 		half, _ := storeEnvelopeOfSize(t, rig, agent, limit/2)

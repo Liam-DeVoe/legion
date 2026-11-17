@@ -25,7 +25,7 @@ func TestPlainSendDistinguishesUnavailableConversationReceiver(t *testing.T) {
 	rig := newKnownSessionRig(t)
 
 	const terminal = "ses_terminal_without_mod"
-	subject := contracts.AgentSubject(terminal)
+	subject := contracts.LegacyAgentSubject(terminal)
 	plugin := startSessionStandIn(t, rig.url, terminal, answerDone)
 	rig.register(t, terminal, map[string]any{
 		"title":          "a terminal without its mod",

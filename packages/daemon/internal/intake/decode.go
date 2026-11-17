@@ -2,6 +2,7 @@ package intake
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"regexp"
@@ -10,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/sjawhar/envoy/subjectforms"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
@@ -27,7 +30,17 @@ type decodedMessage struct {
 	// Unread names each optional field the decoder could not read and took as absent. The consumer
 	// logs it; the message is not poison.
 	Unread []string
+	// LegacyName is set for an issue event named in the old form, its key alone
+	// (subjectforms.IssueEventKey), of any project: the consumer counts and logs those while the
+	// old form is still published (consumeMessage).
+	LegacyName bool
 }
+
+// errIssueNameInNeitherForm is an issue event's name that carries its issue's key in neither form
+// (subjectforms.IssueEventKey). It is poison, never another project's event acknowledged with no
+// fact: a daemon that took a name it could not read for another project's would stop working its
+// own in silence, which is what a daemon reading only the old form would do with the new one.
+var errIssueNameInNeitherForm = errors.New("issue event named in neither form of an issue's name")
 
 type envoyEnvelope struct {
 	EventID        string `json:"event_id"`
@@ -57,17 +70,18 @@ func decodeMessage(subject, project string, repositories []ghrepo.Repository, da
 	var fact Fact
 	var unread []string
 	var err error
+	var legacy bool
 	switch {
 	case subject == legionWakeSubject:
 		if envelope.Source != "envoy" {
 			return decodedMessage{}, fmt.Errorf("the listener wake subject has envelope source %q", envelope.Source)
 		}
 		fact, err = decodeListenerWake(envelope.EventID, project, envelope.Payload)
-	case strings.HasPrefix(subject, "notifications.dispatch.issue."):
+	case strings.HasPrefix(subject, subjectforms.IssueTopicPrefix):
 		if envelope.Source != "dispatch" {
 			return decodedMessage{}, fmt.Errorf("Dispatch subject has envelope source %q", envelope.Source)
 		}
-		fact, unread, err = decodeDispatchFact(subject, project, envelope.Payload)
+		fact, unread, legacy, err = decodeDispatchFact(subject, project, envelope.Payload)
 	case strings.HasPrefix(subject, dispatchProjectPrefix):
 		if envelope.Source != "dispatch" {
 			return decodedMessage{}, fmt.Errorf("Dispatch subject has envelope source %q", envelope.Source)
@@ -84,7 +98,7 @@ func decodeMessage(subject, project string, repositories []ghrepo.Repository, da
 	if err != nil {
 		return decodedMessage{}, err
 	}
-	return decodedMessage{Source: envelope.Source, EventID: envelope.factID(), Fact: fact, Unread: unread}, nil
+	return decodedMessage{Source: envelope.Source, EventID: envelope.factID(), Fact: fact, Unread: unread, LegacyName: legacy}, nil
 }
 
 func (e envoyEnvelope) valid() error {
@@ -148,8 +162,10 @@ const legionWakeSubject = "notifications.legion.wake"
 // project. A role token is `legion-<project token>-<issue project>-<number>-<role>`
 // (claim.NewToken), and the controller's is `legion-<project token>-controller`; a project token
 // holds no hyphen (claim.ProjectToken). So a token of this project begins with
-// `legion-<project token>-`, and a token of any other project does not. Every daemon reads every
-// report, and without this test each daemon would record each other project's role report in
+// `legion-<project token>-`, and a token of any other project does not. The role is read in
+// either form of a role's name, the token alone or a project and then the token
+// (roleOfProject), and the fact names the token alone. Every daemon reads every report, and
+// without this test each daemon would record each other project's role report in
 // processed_events, where nothing deletes it. An agent report names a session and no project,
 // and a `listener_ready` report names neither, so both decode for every project.
 //
@@ -174,9 +190,11 @@ func decodeListenerWake(eventID, project, payload string) (Fact, error) {
 	switch report.Kind {
 	case ListenerWakeReady:
 	case ListenerWakeRole:
-		if report.Role == "" || !roleOfProject(report.Role, project) {
+		role, ok := roleOfProject(report.Role, project)
+		if !ok {
 			return nil, nil
 		}
+		report.Role = role
 	case ListenerWakeAgent:
 		if report.Session == "" {
 			return nil, nil
@@ -194,12 +212,18 @@ func decodeListenerWake(eventID, project, payload string) (Fact, error) {
 	return ListenerWake{Kind: report.Kind, Role: report.Role, Session: report.Session, At: at, Report: eventID}, nil
 }
 
-// roleOfProject is whether role is a role token of project, the daemon's Dispatch project key: it
-// begins with `legion-<project token>-`. A project with no token holds no claim, so no role is
-// its.
-func roleOfProject(role, project string) bool {
+// roleOfProject reads role in either form of a role's name (subjectforms.CanonicalRole): the
+// token alone, or a Dispatch project and then the token. It returns the token, and whether the
+// token is a role token of project, the daemon's Dispatch project key: the token begins with
+// `legion-<project token>-`, and a name in the new form names project. A project with no token
+// holds no claim, so no role is its.
+func roleOfProject(role, project string) (string, bool) {
 	token, err := claim.ProjectToken(project)
-	return err == nil && strings.HasPrefix(role, "legion-"+token+"-")
+	if err != nil {
+		return "", false
+	}
+	named, name, legacy := subjectforms.CanonicalRole(role)
+	return name, (legacy || named == project) && strings.HasPrefix(name, "legion-"+token+"-")
 }
 
 type dispatchEvent struct {
@@ -223,18 +247,26 @@ func (e dispatchEvent) mark() record.EventMark {
 	return record.EventMark{Seq: e.Seq, At: e.CreatedAt.UTC()}
 }
 
-// decodeDispatchFact decodes one Dispatch issue event of project. The stream carries every
-// project's events; one whose subject key is not a project issue key is another daemon's, and is
+// decodeDispatchFact decodes one Dispatch issue event of project from its name in either form
+// (subjectforms.IssueEventKey), reporting whether the name was the old one. A name that carries
+// its key in neither form is poison (errIssueNameInNeitherForm).
+func decodeDispatchFact(subject, project, payload string) (Fact, []string, bool, error) {
+	key, legacy, ok := subjectforms.IssueEventKey(subject)
+	if !ok {
+		return nil, nil, false, fmt.Errorf("%w: %s", errIssueNameInNeitherForm, subject)
+	}
+	fact, unread, err := decodeDispatchIssueEvent(key, project, payload)
+	return fact, unread, legacy, err
+}
+
+// decodeDispatchIssueEvent decodes one Dispatch event of issue key, for project. The stream carries
+// every project's events; one whose key is not a project issue key is another daemon's, and is
 // skipped before its payload is read, so it is never poison here. A field the mirror only records
 // (an issue's claim, an ask's kind) that cannot be read is taken as unknown and named in unread,
 // rather than making the event poison: an event the workflow acts on is never lost to a field it
 // does not act on.
-func decodeDispatchFact(subject, project, payload string) (Fact, []string, error) {
-	subjectKey, ok := dispatchSubjectKey(subject)
-	if !ok {
-		return nil, nil, fmt.Errorf("Dispatch durable subject has no issue key: %s", subject)
-	}
-	if keyProject, _, _ := strings.Cut(subjectKey, "-"); keyProject != project || !claim.IsIssueKey(subjectKey) {
+func decodeDispatchIssueEvent(key, project, payload string) (Fact, []string, error) {
+	if keyProject, _, _ := strings.Cut(key, "-"); keyProject != project || !claim.IsIssueKey(key) {
 		return nil, nil, nil
 	}
 	var event dispatchEvent
@@ -244,8 +276,8 @@ func decodeDispatchFact(subject, project, payload string) (Fact, []string, error
 	if event.ID <= 0 || event.Seq <= 0 || event.Notify == nil || !claim.IsIssueKey(event.IssueKey) || event.Type == "" || !isJSONObject(event.Payload) {
 		return nil, nil, fmt.Errorf("Dispatch durable message payload is not a valid Dispatch event")
 	}
-	if subjectKey != event.IssueKey {
-		return nil, nil, fmt.Errorf("Dispatch durable subject key %s disagrees with event issue_key %s", subjectKey, event.IssueKey)
+	if key != event.IssueKey {
+		return nil, nil, fmt.Errorf("Dispatch durable subject key %s disagrees with event issue_key %s", key, event.IssueKey)
 	}
 	var unread []string
 	fact, err := decodeDispatchEvent(event, &unread)
@@ -261,7 +293,7 @@ func decodeDispatchFact(subject, project, payload string) (Fact, []string, error
 // becomes the fact its live delivery would have been. It returns the fields it took as unknown,
 // as the live decoder logs them.
 func DecodeDispatchEvent(project, key string, event []byte) (Fact, []string, error) {
-	return decodeDispatchFact("notifications.dispatch.issue."+key, project, string(event))
+	return decodeDispatchIssueEvent(key, project, string(event))
 }
 
 // decodeDispatchEvent decodes a checked Dispatch event of the daemon's project by its type, adding
@@ -486,13 +518,6 @@ func decodeDispatchEvent(event dispatchEvent, unread *[]string) (Fact, error) {
 	default:
 		return nil, nil
 	}
-}
-
-func dispatchSubjectKey(subject string) (string, bool) {
-	const prefix = "notifications.dispatch.issue."
-	remaining := strings.TrimPrefix(subject, prefix)
-	key, _, _ := strings.Cut(remaining, ".")
-	return key, key != ""
 }
 
 // issueEventClaim reads an issue event's claim, `<kind>:<id>`, "" for null, and whether the event

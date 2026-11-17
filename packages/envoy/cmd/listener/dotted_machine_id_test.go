@@ -51,7 +51,7 @@ func TestADottedMachineIDStartsAndDelivers(t *testing.T) {
 		// escape it.
 		listener.awaitSessionMachine(t, sessionID, machineID)
 
-		item := newEnvelope("agent", contracts.AgentSubject(sessionID), "a message for a session on a machine with a dotted id")
+		item := newEnvelope("agent", contracts.LegacyAgentSubject(sessionID), "a message for a session on a machine with a dotted id")
 		publish(t, publisher, item)
 		requireFrames(t, standIn.collect(t, 1, 15*time.Second), item)
 		standIn.none(t, 2*time.Second)

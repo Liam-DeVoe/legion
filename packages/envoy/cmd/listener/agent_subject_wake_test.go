@@ -122,7 +122,7 @@ func startAloneRig(t *testing.T) *aloneRig {
 // sequence and the time the stream stored it.
 func (r *aloneRig) store(t *testing.T, sessionID string) (contracts.Envelope, uint64, time.Time) {
 	t.Helper()
-	item := newEnvelope("dispatch", contracts.AgentSubject(sessionID), "a comment for "+sessionID)
+	item := newEnvelope("dispatch", contracts.LegacyAgentSubject(sessionID), "a comment for "+sessionID)
 	data, err := json.Marshal(item)
 	if err != nil {
 		t.Fatalf("encode the message for %s: %v", sessionID, err)
@@ -199,7 +199,7 @@ func (r *aloneRig) requireQuiet(t *testing.T, sessionID string) {
 			}
 		}
 	}
-	lane := bus.ExceptionTopicPrefix + contracts.AgentSubject(sessionID)
+	lane := bus.ExceptionTopicPrefix + contracts.LegacyAgentSubject(sessionID)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for _, subject := range r.exceptions {
@@ -339,7 +339,7 @@ func startAloneDelivery(t *testing.T, harness listenerDeliveryHarness, sessionID
 	cfg.unplaceableRetryWindow = aloneWindow
 	handler := jetStreamDeliveryHandler(cfg)
 	seen := &aloneDeliveries{}
-	item := listenerTestEnvelope(contracts.AgentSubject(sessionID), "l1-"+sessionID)
+	item := listenerTestEnvelope(contracts.LegacyAgentSubject(sessionID), "l1-"+sessionID)
 	run := startEnvelopeDeliveryThrough(t, harness, func(msg *natsgo.Msg) {
 		meta, err := msg.Metadata()
 		if err != nil {
@@ -536,7 +536,7 @@ func TestAnAgentMessageIsTheSessionConsumersAlone(t *testing.T) {
 		if status != http.StatusOK || json.Unmarshal([]byte(body), &answer) != nil || answer.State != "stopped" {
 			t.Fatalf("the send to the stopped %s answered %d %s, want 200 with state stopped", sessionID, status, body)
 		}
-		subject := contracts.AgentSubject(sessionID)
+		subject := contracts.LegacyAgentSubject(sessionID)
 		storedMsg, err := rig.publisher.JS().GetLastMsg(bus.Stream, subject)
 		if err != nil {
 			t.Fatalf("read the stored copy on %s: %v", subject, err)

@@ -35,7 +35,7 @@ func TestAWaitingRetryIsNakedAfterItsDelayAtInfo(t *testing.T) {
 			delivery := &wakeDelivery{data: envelopeJSON(t, "wake-"+tc.level, "envoy",
 				`{"kind":"agent_message","session":"session-1","at":`+at+`}`)}
 
-			if consumeMessage(context.Background(), delivery, wakeSpec(logs), nil, pool, []Handler{handler}) {
+			if consumeMessage(context.Background(), delivery, wakeSpec(logs), nil, pool, []Handler{handler}, &issueNames{}) {
 				t.Fatal("consumeMessage = true, want false: a naked delivery is not handled")
 			}
 			acks, delays, others := delivery.answers()

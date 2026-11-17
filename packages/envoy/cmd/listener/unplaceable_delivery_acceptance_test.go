@@ -156,7 +156,7 @@ func TestAgentDeliveryReadsTheSessionStoreWhileTheCacheIsCold(t *testing.T) {
 	}
 
 	wakes := agentWakeProbe(t, harness)
-	item := listenerTestEnvelope(contracts.AgentSubject(target), "cold-cache-agent-delivery")
+	item := listenerTestEnvelope(contracts.LegacyAgentSubject(target), "cold-cache-agent-delivery")
 	harness.handler(&natsgo.Msg{Data: marshalListenerEnvelope(t, item)})
 
 	// The record only the bucket holds is the session's, so the message is its own consumer's
@@ -226,7 +226,7 @@ func startUnplaceableDelivery(t *testing.T, harness listenerDeliveryHarness, cfg
 // for a run that must put something in front of the listener's own handler.
 func startDeliveryThrough(t *testing.T, harness listenerDeliveryHarness, handler natsgo.MsgHandler, target string, soak time.Duration) unplaceableDeliveryRun {
 	t.Helper()
-	return startEnvelopeDeliveryThrough(t, harness, handler, target, listenerTestEnvelope(contracts.AgentSubject(target), "unplaceable-"+target), soak)
+	return startEnvelopeDeliveryThrough(t, harness, handler, target, listenerTestEnvelope(contracts.LegacyAgentSubject(target), "unplaceable-"+target), soak)
 }
 
 // startEnvelopeDeliveryThrough is startDeliveryThrough with the envelope given whole, for a run

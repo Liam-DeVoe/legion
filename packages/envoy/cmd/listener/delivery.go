@@ -434,7 +434,7 @@ func listenerDeliveryHandler(cfg listenerDeliveryHandlerConfig) func(deliveryMes
 		// own, delivered by the relay of its session consumer, and not a message for this
 		// listener to deliver again.
 		if message.mode == durableDelivery && strings.HasPrefix(message.msg.Subject, contracts.AgentTopicPrefix) && item.Topic != message.msg.Subject {
-			cfg.logger.DeliveryLog(slog.LevelDebug, "listener acknowledged a stored forward copy", strings.TrimPrefix(message.msg.Subject, contracts.AgentTopicPrefix), item.Topic, item.EventID, "forward_copy", slog.String("subject", message.msg.Subject))
+			cfg.logger.DeliveryLog(slog.LevelDebug, "listener acknowledged a stored forward copy", agentSubjectSession(message.msg.Subject), item.Topic, item.EventID, "forward_copy", slog.String("subject", message.msg.Subject))
 			message.finalize(false)
 			return
 		}
@@ -593,7 +593,9 @@ func roleTopicDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMessag
 		message.finalize(false)
 		return
 	}
-	role := strings.TrimPrefix(item.Topic, contracts.RoleTopicPrefix)
+	// The lane names its role in either form (contracts.CanonicalRole); the claim it resolves is
+	// keyed by the bare role name either way (store.Registry.ClaimedRole).
+	_, role, _ := contracts.CanonicalRole(strings.TrimPrefix(item.Topic, contracts.RoleTopicPrefix))
 	sessionID, holder, ok := resolveCoreRoleHolder(cfg, item, role)
 	if !ok {
 		message.finalize(false)
@@ -701,8 +703,9 @@ func finishRoleForward(cfg listenerDeliveryHandlerConfig, forward roleForward, e
 // and the alternative - taking the cache's miss for an answer - ACKs the message away.
 const deliverySessionReadTimeout = 2 * time.Second
 
-// agentSubjectDelivery decides a message on the agent subject of a session
-// (notifications.agent.<session>). The session's own consumer delivers every such message, relayed
+// agentSubjectDelivery decides a message on the agent subject of a session, in either form
+// (notifications.agent.<session> or notifications.agent.<PROJECT or _>.<session>,
+// agentSubjectSession). The session's own consumer delivers every such message, relayed
 // by the listener that owns the session, so this path delivers nothing: it reads the session's
 // interest row and record, and it acts on what session.HandleAgentMessage answers. A session
 // another listener's row names is that listener's to decide, so this one acknowledges the message
@@ -710,7 +713,7 @@ const deliverySessionReadTimeout = 2 * time.Second
 // once and then gets one wake report (noRecordAgentDelivery). A read of the record that did not
 // answer sends the message back for the wait (unreadAgentDelivery).
 func agentSubjectDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMessage, item contracts.Envelope) {
-	sessionID := strings.TrimPrefix(item.Topic, contracts.AgentTopicPrefix)
+	sessionID := agentSubjectSession(item.Topic)
 	// A message this listener held back for the agent wait has left that wait by the time it is
 	// delivered again, so its slot goes back before any branch below takes one: the delivery
 	// itself is what freed it, not what this attempt decides to do with the message. The release

@@ -75,7 +75,7 @@ func TestARelayReplyTokenCannotBeGuessed(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		msg := bus.SessionMessage{
-			Subject:      contracts.AgentSubject(sessions[i]),
+			Subject:      contracts.LegacyAgentSubject(sessions[i]),
 			Data:         []byte(`{}`),
 			StreamSeq:    seq,
 			Delivered:    1,
