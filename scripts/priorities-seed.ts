@@ -10,11 +10,11 @@
  * its Dispatch status is `done`: `backlog` and `icebox` are related, because priority work that
  * stands in either is what the second fault of that spec reads.
  *
- * Every create names the priority's id (`priorityId`), made from the title by the rule
- * `POST /api/v1/priorities` makes an id by when a body names none (`priorityIDFromTitle`): the
- * title written as a slug, cut to at most `PRIORITY_ID_MAX` characters at the end of a word.
- * `packages/contracts/fixtures/priority-ids.json` holds the cases of that rule, and both the
- * server's tests and this seed's are held to them.
+ * Every create names the priority's id (`priorityId`, in `priorities-seed-ids.ts`), made from the
+ * title by the rule `POST /api/v1/priorities` makes an id by when a body names none
+ * (`priorityIDFromTitle`): the title written as a slug, cut to at most `PRIORITY_ID_MAX`
+ * characters at the end of a word. `packages/contracts/fixtures/priority-ids.json` holds the
+ * cases of that rule, and both the server's tests and this seed's are held to them.
  *
  * Each priority's description ends in the record below, which is what the check of R10 reads and
  * what makes a second run write no second priority and no second relation:
@@ -59,7 +59,7 @@
  */
 import { parseArgs } from "node:util";
 import type { ArtifactText, ArtifactVersionText } from "../packages/contracts/src/dispatch-api";
-import { ISSUE_TITLE_MAX, PRIORITY_ID_MAX } from "../packages/contracts/src/dispatch-api-limits";
+import { ISSUE_TITLE_MAX } from "../packages/contracts/src/dispatch-api-limits";
 import {
   type ActiveDispatchConfig,
   activeDispatchSettings,
@@ -70,9 +70,7 @@ import {
   sessionConfigFile,
   sessionDispatchSettings,
 } from "../packages/envoy-client/src/session-settings";
-
-/** Every issue key written in a row, a key inside a `dispatch://` reference included. */
-const KEY_PATTERN = /\b[A-Z][A-Z0-9]*-[0-9]+\b/g;
+import { priorityId, rowKeys, type TableRow } from "./priorities-seed-ids";
 
 /** The columns this seed reads, as the table's header writes them; `\#` is how a table escapes
  *  the first one's name. A document holding no table with all four is refused. */
@@ -100,15 +98,6 @@ type DispatchConfig = Pick<ActiveDispatchConfig, "url" | "credential"> & {
   readonly session?: string;
 };
 
-/** One row of the table, each cell as it is written. */
-export interface TableRow {
-  /** The `#` cell: the row number, which is this seed's idempotency key. */
-  readonly number: string;
-  readonly title: string;
-  readonly owner: string;
-  readonly where: string;
-}
-
 /** Which row of which document a priority was written from, as its description records it. */
 export interface RowMarker {
   readonly row: string;
@@ -129,8 +118,8 @@ export interface SeededRow {
   /** The priority's id, the one this run wrote or the one the row already had. */
   readonly priority: string;
   /** How the run found a priority it did not write: `marker` where a run before this one wrote
-   *  it and its record names this row's number, `id` where a priority this seed did not write
-   *  already has the row's id. Null where this run wrote the priority. */
+   *  it and its record names this row's number, `id` where a priority that carries no record of
+   *  this table already has the row's id. Null where this run wrote the priority. */
   readonly kept: "marker" | "id" | null;
   readonly related: readonly string[];
   readonly excluded: readonly ExcludedKey[];
@@ -245,38 +234,6 @@ function columnPlaces(header: readonly string[]): Record<string, number> | null 
 }
 
 /**
- * The id the seed names for a row's priority: the id `POST /api/v1/priorities` makes from the
- * same title when a body names none (`priorityIDFromTitle` in `priorities.go`), in its two steps.
- *
- * First the slug, as `artifactSlug` writes one: the title lower-cased by Go's simple case
- * mapping, each run of characters other than `a`-`z` and `0`-`9` one hyphen, and no hyphen at
- * either end. A title holding no ASCII letter or digit has no slug, and the empty string is
- * answered for it. The guard reads the raw title, so a title whose only letter is U+212A, which
- * lower-cases to `k`, has no slug, as in Go. Go maps U+0130 to `i`, where JavaScript's
- * `toLowerCase` maps it to `i` and U+0307, which the slug would write as `i-`; so U+0130 is
- * mapped to `i` first, and every other code point is lower-cased on its own. A literal `i`
- * followed by U+0307 stays two code points, and gives `i-` here as it does in Go.
- *
- * Then the cut: a slug of at most `PRIORITY_ID_MAX` characters is the id whole, a longer one is
- * cut to its longest start of at most that many characters that ends at the end of a word,
- * which is where the next character of the slug is a hyphen, and when the first word is longer
- * than the bound, the id is its first `PRIORITY_ID_MAX` characters.
- * `packages/contracts/fixtures/priority-ids.json` holds the cases.
- */
-export function priorityId(title: string): string {
-  if (!/[A-Za-z0-9]/.test(title)) return "";
-  let lowered = "";
-  for (const point of title) lowered += point === "\u0130" ? "i" : point.toLowerCase();
-  const slug = lowered.replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
-  if (slug.length <= PRIORITY_ID_MAX) return slug;
-  // slug[PRIORITY_ID_MAX] is the character after the longest start that fits, so the last
-  // hyphen at it or before it ends the last word within the bound. The slug never begins with
-  // one, so a hyphen found at 0 is none.
-  const end = slug.lastIndexOf("-", PRIORITY_ID_MAX);
-  return end > 0 ? slug.slice(0, end) : slug.slice(0, PRIORITY_ID_MAX);
-}
-
-/**
  * The rows of the first table in `markdown` carrying all four columns, in the table's order.
  * Refuses a document that holds no such table, a row with an empty `#` cell and two rows with
  * the same one, because the row number is what a second run reads to write nothing twice, and a
@@ -319,12 +276,6 @@ export function parseTable(markdown: string): TableRow[] {
   throw new Error("this document holds no table with the columns #, Priority, Owner and Where");
 }
 
-/** Every issue key the row names, each once, in the order they are written. */
-export function rowKeys(row: TableRow): string[] {
-  const text = [row.number, row.title, row.owner, row.where].join("\n");
-  return [...new Set(text.match(KEY_PATTERN) ?? [])];
-}
-
 /** The record this seed writes at the end of a priority's description. */
 export function priorityDescription(
   row: TableRow,
@@ -355,10 +306,11 @@ export function rowMarker(description: string): RowMarker | undefined {
 
 /**
  * A request to Dispatch, presenting the bearer or the access token this machine traded its own
- * identity for, with the proof that goes with it. Two of the four routes it carries have no
- * DispatchClient method of their own - the priority list and write (`model.Priority`), and a
- * document's text by its owner and slug - so all four go through this one helper rather than
- * the client for the issue read and patch and a second layer for the other two.
+ * identity for, with the proof that goes with it. The priority list and write
+ * (`model.Priority`), a priority's history (`GET /api/v1/priorities/{id}/history`) and a
+ * document's text by its owner and slug have no DispatchClient method of their own, so every
+ * route the seed reads or writes goes through this one helper rather than the client for the
+ * issue read and patch and a second layer for the rest.
  */
 async function request(
   config: DispatchConfig,
@@ -403,9 +355,8 @@ async function send<T>(
   return (await response.json()) as T;
 }
 
-/** The issue `key`, or undefined where no issue carries that key. */
-async function readIssue(config: DispatchConfig, key: string): Promise<SeedIssue | undefined> {
-  const path = `/api/v1/issues/${encodeURIComponent(key)}`;
+/** The answer of `GET path`, or undefined where Dispatch answers 404; any other failure throws. */
+async function readOptional<T>(config: DispatchConfig, path: string): Promise<T | undefined> {
   const response = await request(config, "GET", path);
   if (response.status === 404) {
     await response.text();
@@ -414,7 +365,12 @@ async function readIssue(config: DispatchConfig, key: string): Promise<SeedIssue
   if (!response.ok) {
     throw new Error(`GET ${path}: ${response.status} ${await response.text()}`);
   }
-  return (await response.json()) as SeedIssue;
+  return (await response.json()) as T;
+}
+
+/** The issue `key`, or undefined where no issue carries that key. */
+async function readIssue(config: DispatchConfig, key: string): Promise<SeedIssue | undefined> {
+  return readOptional<SeedIssue>(config, `/api/v1/issues/${encodeURIComponent(key)}`);
 }
 
 /**
@@ -492,11 +448,7 @@ async function readTable(
  *  carries (`priorityHistory` in `priorities.go`). */
 async function priorityEverWritten(config: DispatchConfig, id: string): Promise<boolean> {
   const path = `/api/v1/priorities/${encodeURIComponent(id)}/history`;
-  const response = await request(config, "GET", path);
-  const text = await response.text();
-  if (response.status === 404) return false;
-  if (!response.ok) throw new Error(`GET ${path}: ${response.status} ${text}`);
-  return true;
+  return (await readOptional<unknown>(config, path)) !== undefined;
 }
 
 /** A row the run writes, as the board stands before its first write: the priority it keeps,
@@ -578,7 +530,7 @@ async function placeRows(
       continue;
     }
     const other = recordOf.get(id);
-    if (other === undefined || other === row.number) {
+    if (other === undefined) {
       placed.push({ row, priority: id, kept: "id" });
       continue;
     }
@@ -615,8 +567,8 @@ async function placeRows(
 /**
  * Writes the priorities of `reference`'s table, and the relations from the work each row names.
  * A row whose priority a run before this one wrote keeps that priority, its order and its text,
- * as a row whose id a priority this seed did not write already has keeps that one, and this run
- * states only the relations that are missing from it.
+ * as a row whose id a priority that carries no record of this table already has keeps that one,
+ * and this run states only the relations that are missing from it.
  */
 export async function seedPriorities(
   config: DispatchConfig,

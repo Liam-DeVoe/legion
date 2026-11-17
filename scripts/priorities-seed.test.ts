@@ -3,7 +3,8 @@ import { readFileSync } from "node:fs";
 import { PRIORITY_ID_MAX } from "../packages/contracts/src/dispatch-api-limits";
 import { bearerCredential } from "../packages/envoy-client/src/bearer";
 import { holdDeadlines } from "./dispatch/__tests__/held-deadlines";
-import { priorityDescription, priorityId, rowMarker, seedPriorities } from "./priorities-seed";
+import { priorityDescription, rowMarker, seedPriorities } from "./priorities-seed";
+import { priorityId } from "./priorities-seed-ids";
 
 /** One priority as the fake Dispatch below holds it. A gone one is a priority somebody deleted:
  *  the listing leaves it out, and its id is still held. */
@@ -23,7 +24,8 @@ type IdCase =
 
 /** The cases of the rule by which a priority's id is made from its title, which the server's
  *  tests read as well (its `description` names them), read by path rather than imported. The
- *  file is this repository's own, and the first test below fails on a case of another shape. */
+ *  file is this repository's own, and the test `priority id: every case of the shared list gives
+ *  its id or its refusal` fails on a case of another shape. */
 const idFixture: { readonly cases: readonly IdCase[] } = JSON.parse(
   readFileSync(`${import.meta.dir}/../packages/contracts/fixtures/priority-ids.json`, "utf8")
 );

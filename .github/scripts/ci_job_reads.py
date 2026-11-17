@@ -2025,31 +2025,26 @@ SCRIPT_TEST_GATES = [
         (f"{SCRIPTS}/disk_watch.py", "the module under test"),
     ]),
     # The one harness of the job that is not under .github/scripts and sources no test-lib.sh.
-    # The check it tests loads the seed's own priorityId and rowKeys through bun at run time, so
-    # the step reads the seed and every module the seed loads; check-ts-filters.sh derives no
-    # shell step's run-time loads. That closure, measured with `bun build --metafile` of the
-    # seed, holds sources of packages/contracts/src, packages/envoy-client/src and
-    # packages/broker-client/src and of no other package of this repository; the three packages'
-    # globs stand for it, because a list of those files would go short, unseen, the first time
-    # one of them imports another.
+    # The check it tests loads the seed's own priorityId and rowKeys through bun at run time, from
+    # scripts/priorities-seed-ids.ts, so the step reads that module and every module it loads;
+    # check-ts-filters.sh derives no shell step's run-time loads. That closure, measured with
+    # `bun build --metafile` of the module, is the module itself and
+    # packages/contracts/src/dispatch-api-limits.ts, which imports nothing, so the two files stand
+    # for it rather than the globs of the packages the rest of the seed loads.
     harness("priorities_seed_check_test", "Test the priorities seed check (a stand-in Dispatch)",
             "scripts/priorities-seed-check.test.sh", [
         ("scripts/priorities-seed-check.sh", "the script under test (scripts/priorities-seed-check.test.sh:16 names it)"),
-        ("scripts/priorities-seed.ts", "scripts/priorities-seed-check.sh:349-350 imports it through bun --eval (the path at :100)"),
-        (CONTRACTS_SRC, "scripts/priorities-seed.ts:62 imports dispatch-api-limits.ts by relative path, and the "
-                        "envoy-client modules it imports import @legion/contracts (dispatch-config.ts:1, "
-                        "dispatch-http.ts:76-93, dispatch-owner.ts:1-6), all loaded by priorities-seed-check.sh:349-350"),
-        *[(read.glob, read.why) for read in envoy_client_dep(
-            "scripts/priorities-seed.ts:63-72 imports four of its modules, which "
-            "priorities-seed-check.sh:349-350 loads through bun --eval")],
+        ("scripts/priorities-seed-ids.ts", "scripts/priorities-seed-check.sh:352-353 imports it through bun --eval (the path at :100)"),
+        ("packages/contracts/src/dispatch-api-limits.ts", "scripts/priorities-seed-ids.ts:8 imports it by relative path, "
+                                                          "loaded by the same bun --eval"),
     ], lib=False),
     harness("check_ci_filters_test", "Test the CI filter check", f"{SCRIPTS}/check-ci-filters.test.sh", [
         (f"{SCRIPTS}/check-ci-filters.sh", "the script under test, symlinked into every fixture (check-ci-filters.test.sh:76-78)"),
         (f"{SCRIPTS}/ci_filter_coverage.py", "the engine the fixtures link in beside it"),
         (f"{SCRIPTS}/ci_workflow_rules.py", "the rules the fixtures link in beside it"),
         (f"{SCRIPTS}/workflow_paths.py", "the path model the fixtures link in beside it"),
-        (f"{SCRIPTS}/ci_job_reads.py", "check-ci-filters.test.sh:2241 imports this table to derive the plain step's -run lists"),
-        ("AGENTS.md", "check-ci-filters.test.sh:2695-2717 holds the guide's slow-suite list to the jobs the full-ci label gates"),
+        (f"{SCRIPTS}/ci_job_reads.py", "check-ci-filters.test.sh:2253 imports this table to derive the plain step's -run lists"),
+        ("AGENTS.md", "check-ci-filters.test.sh:2707-2729 holds the guide's slow-suite list to the jobs the full-ci label gates"),
     ]),
     harness("check_ts_filters_test", "Test the TypeScript filter check", f"{SCRIPTS}/check-ts-filters.test.sh", [
         (f"{SCRIPTS}/check-ts-filters.sh", "the script under test, symlinked into every fixture (check-ts-filters.test.sh:49-50)"),
@@ -2227,12 +2222,14 @@ GATES = [
         ("scripts/semantic-line-breaks.ts", "scripts/semantic-line-breaks.test.ts:6,28 spawns it"),
         ("scripts/priorities-seed.test.ts", at("test", "Test the priorities seed")),
         ("scripts/priorities-seed.ts", "scripts/priorities-seed.test.ts:6 imports it"),
-        (f"{FIX}/priority-ids.json", "scripts/priorities-seed.test.ts:28 reads the shared list of the priority id "
+        ("scripts/priorities-seed-ids.ts", "scripts/priorities-seed.test.ts:7 and scripts/priorities-seed.ts:73 import it"),
+        (f"{FIX}/priority-ids.json", "scripts/priorities-seed.test.ts:30 reads the shared list of the priority id "
                                      "rule's cases by path"),
         ("scripts/e2e/**", f"{at('test', 'bun test scripts/e2e/lib')} (lib/script-functions.test.ts:105-108 scans scripts/e2e/*.sh and lib/*); "
                            f"{at('test', 'Test the e2e proof selector')}: the selector reads scripts/e2e/*.sh"),
         (CONTRACTS_SRC, "scripts/e2e/lib/envoy-bridge.ts:9-10, session-settings-services.ts:6; scripts/dispatch/ask-census.ts:3-9 (tsc -p scripts/dispatch); "
-                        "scripts/priorities-seed.ts:62 and priorities-seed.test.ts:3 import dispatch-api-limits.ts by relative path"),
+                        "scripts/priorities-seed.ts:62, priorities-seed-ids.ts:8 and priorities-seed.test.ts:3 import "
+                        "dispatch-api-limits.ts by relative path"),
         (TEST_FIXTURES_SRC, f"{at('test', 'bun test scripts/e2e/lib')} and the other bun test steps import @legion/test-fixtures"),
         # The envoy-client sources, and broker-client's with them, are the shared read below:
         # scripts/e2e/lib/nats-stream.ts:16-18, operator-dispatch.ts:17-22, envoy-bridge.ts:11

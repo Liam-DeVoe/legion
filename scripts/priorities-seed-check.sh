@@ -9,14 +9,14 @@
 # found by that marker is held to the record: the issues its `Advances:` line names must each
 # name the priority in their own advances. A priority whose marker names another document belongs
 # to another table and is passed over, and one the seed did not write carries no marker at all.
-# The seed keeps such a priority, rather than writing a second one, when it already has the id a
-# row gives, so a row no marker names is looked for by that id: the id the seed's own priorityId
-# makes from the row's title, which one call of bun reads for every such row, so the rule is
-# written once. A priority found by its id carries no record of the seed's, so the check reads the
-# relations the row itself names, as the seed's rowKeys reads them, and passes over a key whose
-# issue is done or that no issue carries, as the seed does. The rows run in the table's order only
-# among the priorities found by their marker, since the rank of a priority kept by its id is its
-# owner's.
+# The seed keeps a priority that carries no record of this table, rather than writing a second
+# one, when it already has the id a row gives, so a row no marker names is looked for by that id:
+# the id the seed's own priorityId makes from the row's title, which one call of bun reads for
+# every such row from scripts/priorities-seed-ids.ts, so the rule is written once. A priority
+# found by its id carries no record of this table, so the check reads the relations the row itself
+# names, as the seed's rowKeys reads them, and passes over a key whose issue is done or that no
+# issue carries, as the seed does. The rows run in the table's order only among the priorities
+# found by their marker, since the rank of a priority kept by its id is its owner's.
 #
 # The table is read at the version the board records, never at whatever version it stands at now:
 # this check reads the table at the greatest version this table's markers name, so a row a person
@@ -96,8 +96,8 @@ done
 for tool in curl jq sed bun; do
   command -v "$tool" >/dev/null || stop "$tool is required and is not on PATH"
 done
-# The seed whose priorityId and rowKeys this check reads a row's id and keys through.
-seed="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/priorities-seed.ts"
+# The seed's priorityId and rowKeys, which this check reads a row's id and keys through.
+seed_ids="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/priorities-seed-ids.ts"
 [[ -n ${DISPATCH_URL:-} ]] || stop "DISPATCH_URL is not set: name Dispatch's own API root"
 [[ -n ${DISPATCH_TOKEN_FILE:-} ]] || stop "DISPATCH_TOKEN_FILE is not set: name the file holding the bearer"
 token=$(cat -- "$DISPATCH_TOKEN_FILE") || stop "could not read DISPATCH_TOKEN_FILE"
@@ -204,17 +204,18 @@ for recorded in ${board_versions[@]+"${board_versions[@]}"}; do
   [[ $recorded == none ]] && continue
   if [[ -z $version ]] || ((10#$recorded > 10#$version)); then version=$recorded; fi
 done
-if ((${#board_ids[@]} == 0)); then
-  read_json "/api/v1/$owner_path/text" "$work/table.json"
-  newest=$(jq -r '.version // empty' "$work/table.json")
-  read_at="its newest version${newest:+, $newest}"
-  echo "$name: no priority of the board records a row of $document, so the table is read at $read_at and each row is looked for by its id"
-elif [[ -n $version ]]; then
+if [[ -n $version ]]; then
   read_json "/api/v1/$owner_path/versions/$version" "$work/table.json"
   read_at="version $version"
 else
   read_json "/api/v1/$owner_path/text" "$work/table.json"
-  read_at="its latest text (no marker of the board names a version)"
+  if ((${#board_ids[@]} == 0)); then
+    newest=$(jq -r '.version // empty' "$work/table.json")
+    read_at="its newest version${newest:+, $newest}"
+    echo "$name: no priority of the board records a row of $document, so the table is read at $read_at and each row is looked for by its id"
+  else
+    read_at="its latest text (no marker of the board names a version)"
+  fi
 fi
 
 mapfile -t lines < <(jq -r '.markdown' "$work/table.json")
@@ -334,8 +335,10 @@ done
 
 # The id and the keys of each row no marker names, as the seed makes them: one call of bun over
 # those rows, through the seed's own priorityId and rowKeys, so neither rule is written a second
-# time. A row stands on the board by its id where a live priority has that id and carries no
-# marker of this table; one whose id the priority of another row holds is a row the seed refuses.
+# time. bun imports them from scripts/priorities-seed-ids.ts, which imports dispatch-api-limits.ts
+# alone, rather than from the seed, whose imports would load envoy-client with them. A row stands
+# on the board by its id where a live priority has that id and carries no marker of this table;
+# one whose id the priority of another row holds is a row the seed refuses.
 id_rows=() id_priorities=() id_keys=()
 if ((${#lookup[@]} > 0)); then
   fields=()
@@ -346,11 +349,11 @@ if ((${#lookup[@]} > 0)); then
     | {number: .[0], title: .[1], owner: .[2], where: .[3]}]' --args "${fields[@]}" >"$work/rows.json" ||
     stop "could not write the rows no marker names as JSON"
   # shellcheck disable=SC2016 # the backquotes and ${} are JavaScript's, for bun to read
-  PRIORITIES_SEED=$seed bun --eval '
-    const { priorityId, rowKeys } = await import(process.env.PRIORITIES_SEED);
+  PRIORITIES_SEED_IDS=$seed_ids bun --eval '
+    const { priorityId, rowKeys } = await import(process.env.PRIORITIES_SEED_IDS);
     for (const row of JSON.parse(await Bun.stdin.text())) {
       console.log(`${priorityId(row.title)}\t${rowKeys(row).join(" ")}`);
-    }' <"$work/rows.json" >"$work/ids.txt" || stop "bun could not read the rows' ids through $seed"
+    }' <"$work/rows.json" >"$work/ids.txt" || stop "bun could not read the rows' ids through $seed_ids"
   mapfile -t answers <"$work/ids.txt"
   ((${#answers[@]} == ${#lookup[@]})) || stop "bun answered ${#answers[@]} ids for ${#lookup[@]} rows"
   for ((i = 0; i < ${#lookup[@]}; i++)); do
@@ -390,13 +393,16 @@ declare -A issue_own=() issue_status=() issue_missing=()
 # priorities it advances by a relation of its own), issue_status, and issue_missing for a key no
 # issue carries.
 read_issue() {
-  local key=$1 status
+  local key=$1 status fields
   [[ -n ${issue_own[$key]+held} ]] && return 0
   status=$(get "/api/v1/issues/$key" "$work/issue.json")
   case $status in
   200)
-    issue_own[$key]=$(jq -r '[.advances[]? | select(.inherited != true) | .id] | join(" ")' "$work/issue.json")
-    issue_status[$key]=$(jq -r '.status // ""' "$work/issue.json")
+    # One read of the answer: its status, a tab, then the priorities it advances by a relation of
+    # its own. Either may be empty, so the two are cut at the tab rather than read by IFS.
+    fields=$(jq -r '"\(.status // "")\t\([.advances[]? | select(.inherited != true) | .id] | join(" "))"' "$work/issue.json")
+    issue_status[$key]=${fields%%$'\t'*}
+    issue_own[$key]=${fields#*$'\t'}
     ;;
   404)
     issue_own[$key]=''
@@ -435,7 +441,7 @@ for ((p = 0; p < ${#board_ids[@]}; p++)); do
   done
 done
 
-# A priority kept by its id carries no record of the seed's, so the keys its row names stand in
+# A priority kept by its id carries no record of this table, so the keys its row names stand in
 # for one: each must say it advances the priority, but for a key whose issue is done or that no
 # issue carries, which the seed relates to nothing.
 for ((i = 0; i < ${#id_rows[@]}; i++)); do
