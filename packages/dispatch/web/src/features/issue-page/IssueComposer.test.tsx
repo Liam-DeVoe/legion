@@ -783,6 +783,20 @@ test("the box sets the foot height while drawn and removes it while hidden", asy
   expect(footHeight()).toBe("");
 });
 
+// The reach the box publishes is its own height wherever it stands. At the outline's end the read
+// mark, which the reach moves down (`slots/foot.tsx`), can make the page longer than the box's
+// place, so a box that has just shrunk stands above the screen's foot; a reach read off that
+// place would hold the mark there, and the box above the foot, until the box next changed size.
+test("the box publishes its own height while it stands above the screen's foot", () => {
+  const page = renderPage({ viewOn: true });
+  const section = composerBox();
+  // A box of one line, 54 px tall, whose foot stands 15 px above the screen's.
+  section.getBoundingClientRect = () => new DOMRect(0, window.innerHeight - 69, 1000, 54);
+  page.redraw({});
+  expect(section).not.toHaveAttribute("hidden");
+  expect(footHeight()).toBe("54px");
+});
+
 // IC:92: the line that writes on the issue stays mounted while the box answers a question or
 // edits a comment, so what the reader was typing there is still there when that ends.
 test("a comment typed in the box is still there after an answer or an edit ends", async () => {

@@ -18,7 +18,13 @@ import type {
   DisplayTree,
 } from "../../api/types";
 import { RefusableButton } from "../../components/RefusableButton";
-import { pageComposer, pageComposerControl, pageFailedText, pageRowAct } from "../../theme/classes";
+import {
+  pageComposer,
+  pageComposerAnswerControls,
+  pageComposerControl,
+  pageFailedText,
+  pageRowAct,
+} from "../../theme/classes";
 import type { ReplyTarget } from "../conversation/composer-model";
 import { useHeldSend } from "../conversation/held-sends";
 import {
@@ -166,16 +172,18 @@ export function IssueComposer({
   const [givenBack, setGivenBack] = useState(0);
   // How far up from the screen's foot the box reaches while it is drawn, on the document element,
   // so a row that takes the focus is brought clear of it as it is of the band at the top
-  // (`identity-block.ts`'s `bringOnScreen`). Unset while the box is hidden.
+  // (`identity-block.ts`'s `bringOnScreen`). Unset while the box is hidden. The reach is the
+  // section's own height - the box, the 8 px under it and the fade above it - which is how far up
+  // it reaches while it is stuck to the foot, and not read off where it stands: at the outline's
+  // end the read mark, which this reach moves down (`slots/foot.tsx`), lengthens the page, so a
+  // box that has just shrunk stands above the foot, and a reach read off its place would hold the
+  // mark that low, and the box that high, until the box next changed size.
   useLayoutEffect(() => {
     const element = section.current;
     if (!shown || element === null) return;
     const root = document.documentElement;
     const publish = () =>
-      root.style.setProperty(
-        FOOT_HEIGHT_PROPERTY,
-        `${Math.max(0, window.innerHeight - element.getBoundingClientRect().top)}px`
-      );
+      root.style.setProperty(FOOT_HEIGHT_PROPERTY, `${element.getBoundingClientRect().height}px`);
     publish();
     const sizes = typeof ResizeObserver === "undefined" ? undefined : new ResizeObserver(publish);
     sizes?.observe(element);
@@ -705,8 +713,10 @@ function AnswerForm({
             </>
           )}
         </OutlineTargetLine>
-        {/* The line wraps for what asks a row of its own: the open picker's list, and on a phone
-            the options and the controls under the field, which has the line's whole width. */}
+        {/* The line wraps for what asks a row of its own: the open picker's list, on a phone the
+            options and the controls under the field, which has the line's whole width, and at
+            any width a row of them wider than the room beside the field, which then wraps
+            inside the line's width (`pageComposerAnswerControls`). */}
         <div className={`${pageComposer.line} flex-wrap`}>
           <MentionField
             body={text}
@@ -729,7 +739,7 @@ function AnswerForm({
           {/* A press here leaves the focus where it is (`keepFocusOnPress`), so on a phone the
               line keeps its form under the pointer and the press lands where it was aimed. */}
           {/* biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the handler only keeps a press on the buttons inside from moving the focus, and each of them is its own control. */}
-          <div className={pageComposer.controls} onMouseDown={keepFocusOnPress}>
+          <div className={pageComposerAnswerControls} onMouseDown={keepFocusOnPress}>
             {options.map((option) => (
               <button
                 // Pressed while its label is among the picks: the label is matched here and

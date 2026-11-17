@@ -986,6 +986,13 @@ export const pageSendAnswer = `${pageSendBox} bg-page-waiting-text`;
  *  `styles.css` holds every button of the box to the same 24 px in place of the 44 px floor. */
 export const pageComposerControl = "inline-flex min-h-6 min-w-6 items-center justify-center";
 
+/** The answer line's options, Decline to answer and Send answer, as one row of the box beside or
+ *  under the field (`IssueComposer.tsx`): `pageComposer.controls` with no `flex-none`, so a row
+ *  that a question's options make wider than the line shrinks to the line's width and wraps
+ *  there, and every control stands inside the box and the screen. The write line's kinds and
+ *  Send, which fit any width, keep `pageComposer.controls`. */
+export const pageComposerAnswerControls = "flex min-w-0 flex-wrap items-center gap-[5px] pb-px";
+
 /** The quiet line of what the focused row's reader can do with it, under its words (the
  *  prototype's `.acts`): plain words in the muted grey, each a control that underlines on hover,
  *  and an open question's options as the choices of its answer, the picked one on the waiting
