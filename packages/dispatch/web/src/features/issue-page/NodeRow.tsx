@@ -45,6 +45,7 @@ import {
 import { NodeFacts } from "./NodeFacts";
 import { NodeGlyph } from "./NodeGlyph";
 import { chipWords } from "./node-row-chip";
+import { NodeMarks } from "./node-states/NodeMarks";
 import { shortDay } from "./node-time";
 import { type ThreadMark, ThreadReadMark } from "./outline-thread-read";
 import { type OutlineWriter, replyItemOf, takesAnswer, useOutlineWriter } from "./outline-writer";
@@ -387,6 +388,7 @@ export function NodeRow({
                 {NODE_TYPE_NAMES[node.parentLine.type]}
               </span>
               <ParentLink line={node.parentLine} tabStops={tabStops} />
+              <NodeMarks compact marks={node.parentLine} />
             </p>
           )}
           {body ? (
@@ -633,6 +635,9 @@ function Bullet({
  * reader's own name and a state that asks something of the reader. A node the model holds no
  * author for draws none here: its body says so (`NodeBody`, ruling 5). From 761 px up it is a
  * column as wide as its first line; on a phone it is one small line under the words (ruling 4).
+ * After the state, on that line, stand the node's marks - proposed or overtaken, then reserved
+ * for its author - each by a word and a shape (`NodeMarks`, dispatch://INFRA-4063 R2, R7), on a
+ * line of their own where the node has no state.
  */
 function RowMargin({
   author,
@@ -713,6 +718,16 @@ function RowMargin({
           </span>
         )}
       </div>
+      {/* A node's marks stand where a state stands, on its own line where it has no state, so a
+          proposed statement's mark is never drawn between its bullet and its words
+          (dispatch://INFRA-4063 R2, R7). */}
+      {node.state === undefined &&
+      node.unsure !== true &&
+      (node.life !== undefined || node.onlyYou === true) ? (
+        <div className={NODE_ROW_LAYOUT.marginState}>
+          <NodeMarks marks={node} />
+        </div>
+      ) : null}
       {node.state === undefined && node.unsure !== true ? null : (
         <div className={NODE_ROW_LAYOUT.marginState}>
           {node.state === undefined ? null : (
@@ -741,6 +756,7 @@ function RowMargin({
               {CONTROL_LABELS.unsure}
             </span>
           ) : null}
+          <NodeMarks marks={node} />
         </div>
       )}
     </div>
@@ -1098,6 +1114,7 @@ function Chip({
           {words}
         </Link>
       )}
+      <NodeMarks compact marks={chip} />
     </span>
   );
 }

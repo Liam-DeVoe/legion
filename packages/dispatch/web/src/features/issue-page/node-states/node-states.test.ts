@@ -1,13 +1,29 @@
 import { expect, test } from "bun:test";
+import { render } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { createElement } from "react";
 
 import { heldBy, type NodeChip, type ParentLine, type TreeNode } from "../issue-tree";
 import type { NodeType } from "../page-words";
-import { type NodeStates, overtakenRefs, stampStates, statesByReference } from "./node-states";
+import { NOTHING_OPENED, type OpenedBranches, type OvertakenRow, pathTo } from "../tree-fold";
+import { NodeMarks } from "./NodeMarks";
+import {
+  lineFor,
+  linesIn,
+  type NodeStates,
+  overtakenRefs,
+  stampStates,
+  statesByReference,
+  withLine,
+} from "./node-states";
+import { OvertakenLine } from "./OvertakenLine";
 
 /**
  * A node's life and who may read it, put on a tree built by hand (dispatch://INFRA-4063 R1, R2,
  * R5, R7, `dispatch://INFRA-4063/artifact/plan-md#b-t3`): the states arrive by node id, and every
- * place that draws a node, and every count over the tree, reads them from the one tree.
+ * place that draws a node, and every count over the tree, reads them from the one tree. The
+ * lines a path opens, and the marks and the line as a row draws them, are read here too
+ * (`dispatch://INFRA-4063/artifact/plan-md#b-t6`); the rows of a whole page are the browser's.
  */
 
 const KEY = "CORE-1";
@@ -234,4 +250,130 @@ test("what waits leaves out each closed node's reference and each closed ask's i
     [`${decisions}#b-d1`, `dispatch://${KEY}/ask/ask-1`, "ask-1", "ask-2", "spec#b-q2"].sort()
   );
   expect(overtakenRefs(root).size).toBe(0);
+});
+
+// R6: an address, a chip, a Contents entry, `q` or `w` that names an overtaken node, or a node
+// under one, opens the line that holds it - each line, where an overtaken node stands under
+// another - and a path through no overtaken node leaves the fold as it was.
+test("a path opens the line of each overtaken node it runs through, and none for a path through none", () => {
+  const deep = node("comment-2", "comment", [], { closed: true });
+  const inner = node("verification-md#b-c1", "check", [deep], { closed: true, life: "overtaken" });
+  const outer = node("spec#b-r8", "requirement", [inner], { closed: true, life: "overtaken" });
+  const root = node(KEY, "issue", [
+    node("spec", "document", [node("spec#b-r7", "requirement"), outer]),
+  ]);
+  const opened: OpenedBranches = { ...NOTHING_OPENED, overtaken: new Set(["elsewhere"]) };
+
+  expect(lineFor(pathTo(root, "comment-2"))).toBe("spec");
+  const both = withLine(opened, pathTo(root, "comment-2"));
+  expect([...(both.overtaken ?? [])]).toEqual(["elsewhere", "spec", "spec#b-r8"]);
+  expect(both.branches).toBe(opened.branches);
+  expect(both.closed).toBe(opened.closed);
+  expect(both.deeper).toBe(opened.deeper);
+  expect([...(withLine(NOTHING_OPENED, pathTo(root, "spec#b-r8")).overtaken ?? [])]).toEqual([
+    "spec",
+  ]);
+  // The set the reader's own lines are held in is a new one, never the one they had.
+  expect(opened.overtaken).toEqual(new Set(["elsewhere"]));
+
+  expect(lineFor(pathTo(root, "spec#b-r7"))).toBeUndefined();
+  expect(withLine(opened, pathTo(root, "spec#b-r7"))).toBe(opened);
+  expect(withLine(opened, undefined)).toBe(opened);
+});
+
+// R6: under the words filter each line of the view holds a match, so each is drawn open: the
+// lines are the nodes that hold an overtaken child, at any depth, and no other.
+test("each node that holds an overtaken child holds a line, in reading order", () => {
+  const root = node(KEY, "issue", [
+    node("spec", "document", [
+      node("spec#b-r8", "requirement", [node("verification-md#b-c1", "check")], {
+        life: "overtaken",
+      }),
+      node("spec#b-r9", "requirement", [
+        node("verification-md#b-c2", "check", [], { life: "overtaken" }),
+      ]),
+    ]),
+    node("plan-md", "document", [node("plan-md#b-t1", "plan_task", [], { life: "proposed" })]),
+  ]);
+
+  expect(linesIn(root)).toEqual(["spec", "spec#b-r9"]);
+  expect(linesIn(node(KEY, "issue"))).toEqual([]);
+});
+
+// R2, R7, R9: a node's marks are its words and its shapes, its life first, in every place that
+// draws it; a node that has none draws nothing at all, not even an empty box.
+test("a proposed node is marked Proposed with its shape, and a node with no mark draws none", () => {
+  const proposed = render(createElement(NodeMarks, { marks: { life: "proposed" } }));
+  try {
+    const marks = proposed.container.querySelectorAll('[data-node-mark="proposed"]');
+    expect(marks).toHaveLength(1);
+    expect(marks[0]?.textContent).toBe("Proposed");
+    expect(marks[0]?.querySelector("svg")).toHaveAttribute("data-glyph", "mark-proposed");
+    expect(proposed.container.querySelectorAll("[data-node-mark]")).toHaveLength(1);
+  } finally {
+    proposed.unmount();
+  }
+
+  const both = render(createElement(NodeMarks, { marks: { life: "overtaken", onlyYou: true } }));
+  try {
+    const marks = [...both.container.querySelectorAll<HTMLElement>("[data-node-mark]")];
+    expect(marks.map((mark) => mark.dataset.nodeMark)).toEqual(["overtaken", "only_you"]);
+    expect(marks.map((mark) => mark.textContent)).toEqual(["Overtaken", "Only you"]);
+  } finally {
+    both.unmount();
+  }
+
+  const none = render(createElement(NodeMarks, { compact: true, marks: {} }));
+  try {
+    expect(none.container.innerHTML).toBe("");
+  } finally {
+    none.unmount();
+  }
+});
+
+// R5: a parent's overtaken children fold to one line after its other children, which says how
+// many it holds in one text node, takes the focus with `aria-expanded`, and opens and closes in
+// place. It is no line of a deeper branch and holds no Unfold, so nothing that opens every
+// branch opens it.
+test("a parent's overtaken children fold to one line that a press opens and closes", async () => {
+  const of = node("spec", "document", [
+    node("spec#b-r8", "requirement", [], { life: "overtaken" }),
+    node("spec#b-r9", "requirement", [], { life: "overtaken" }),
+  ]);
+  const pressed: [string, boolean][] = [];
+  const lineOf = (open: boolean) =>
+    createElement(OvertakenLine, {
+      onOvertaken: (id: string, opening: boolean) => pressed.push([id, opening]),
+      row: { held: 2, level: 2, of, open, trail: [KEY] } satisfies OvertakenRow,
+      tabStop: false,
+    });
+  const user = userEvent.setup();
+  const view = render(lineOf(false));
+  try {
+    const line = view.getByRole("treeitem");
+    expect(line).toHaveAttribute("aria-expanded", "false");
+    expect(line).toHaveAttribute("aria-level", "2");
+    expect(line).toHaveAttribute("data-overtaken-line", "");
+    expect(line).toHaveAttribute("tabindex", "-1");
+    const texts: string[] = [];
+    const walker = document.createTreeWalker(line, NodeFilter.SHOW_TEXT);
+    for (let text = walker.nextNode(); text !== null; text = walker.nextNode()) {
+      texts.push(text.textContent ?? "");
+    }
+    expect(texts).toEqual(["2 overtaken"]);
+    expect(view.container.querySelector("[data-branch-more]")).toBeNull();
+    expect(view.queryByRole("button")).toBeNull();
+
+    await user.click(line);
+    expect(pressed).toEqual([["spec", true]]);
+    view.rerender(lineOf(true));
+    expect(view.getByRole("treeitem")).toHaveAttribute("aria-expanded", "true");
+    await user.click(view.getByRole("treeitem"));
+    expect(pressed).toEqual([
+      ["spec", true],
+      ["spec", false],
+    ]);
+  } finally {
+    view.unmount();
+  }
 });

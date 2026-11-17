@@ -8,6 +8,7 @@ import { useAgentText } from "../refs/AgentName";
 import { documentOfNode } from "./issue-artifacts";
 import type { TreeNode } from "./issue-tree";
 import { NodeRow } from "./NodeRow";
+import { OvertakenLine } from "./node-states/OvertakenLine";
 import type { ThreadMark } from "./outline-thread-read";
 import { authorText, pageChrome } from "./page-structure";
 import { authorKind, CONTROL_LABELS, isReader } from "./page-words";
@@ -21,6 +22,8 @@ import { rowKeyOf } from "./tree-keys";
  * reader opened, pinned, focused and is editing in is `IssueTree.tsx`'s, which hands each row
  * what it is. A row below the levels the fold drew is one line saying how many nodes it holds
  * and opening them in place.
+ * A node's overtaken children fold to one line of their own after its other children, which
+ * takes the focus and opens them in place (`OvertakenLine`, dispatch://INFRA-4063 R5).
  */
 export function TreeRows({
   artifacts,
@@ -31,6 +34,7 @@ export function TreeRows({
   isClosed,
   onFocus,
   onOpenDeeper,
+  onOvertaken,
   onPin,
   onToggle,
   openBody,
@@ -56,6 +60,9 @@ export function TreeRows({
   isClosed: boolean;
   onFocus: (row: string, node: TreeNode) => void;
   onOpenDeeper: (id: string) => void;
+  /** Opens or closes the line a node's overtaken children fold to, by that node's id
+   *  (dispatch://INFRA-4063 R5). */
+  onOvertaken?: (id: string, open: boolean) => void;
   onPin: (row: string) => void;
   onToggle: (node: TreeNode, expanded: boolean | undefined) => void;
   /** The node whose body the preset opens without being asked (R7). */
@@ -84,6 +91,18 @@ export function TreeRows({
     <>
       {rows.map((row) => {
         const key = rowKeyOf(row);
+        // A node's overtaken children fold to one line, which takes the focus as a row does and
+        // opens them in place (dispatch://INFRA-4063 R5).
+        if (row.kind === "overtaken") {
+          return (
+            <OvertakenLine
+              key={key}
+              onOvertaken={onOvertaken}
+              row={row}
+              tabStop={tabStop === key}
+            />
+          );
+        }
         if (row.kind === "deeper") {
           return (
             <BranchMore

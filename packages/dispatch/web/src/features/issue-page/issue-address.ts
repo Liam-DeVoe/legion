@@ -6,6 +6,7 @@ import { agentsOnlyIds } from "./agents-only";
 import type { TreeNode } from "./issue-tree";
 import type { Preset } from "./page-words";
 import { blockNodeId } from "./tree-drafts";
+import { isOvertaken } from "./tree-fold";
 
 /**
  * What one address of the issue page says (dispatch://INFRA-1196 R19,
@@ -260,4 +261,19 @@ export function pathToTarget(
   if (byId !== undefined) return byId;
   const address = `/${target.id}`;
   return pathToNode(root, (node) => node.reference?.endsWith(address) === true);
+}
+
+/**
+ * The node whose line of overtaken children must be open for the node at the end of `path` to
+ * be drawn (dispatch://INFRA-4063 R6): the node before the first overtaken node the path runs
+ * through, which is that node's parent. An overtaken node is no row until its parent's line is
+ * opened (`tree-fold.ts`'s `OvertakenRow`), so an address, a chip or a key that names it, or a
+ * node under it, opens that line. `pathToTarget` runs through an overtaken node like any
+ * other, so the path alone says which line it is. Undefined where the path holds no overtaken
+ * node, and for no path at all.
+ */
+export function overtakenLineOf(path: readonly TreeNode[] | undefined): string | undefined {
+  // The path's first node is where it starts, which no line in the path stands above.
+  const at = path?.findIndex((node, index) => index > 0 && isOvertaken(node)) ?? -1;
+  return at === -1 ? undefined : path?.[at - 1]?.id;
 }

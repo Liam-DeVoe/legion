@@ -1,5 +1,6 @@
+import { overtakenLineOf } from "../issue-address";
 import type { NodeChip, NodeLife, ParentLine, TreeNode } from "../issue-tree";
-import { isOvertaken, isProposed } from "../tree-fold";
+import { isOvertaken, isProposed, type OpenedBranches } from "../tree-fold";
 
 /**
  * A node's life and who may read it, on the issue's tree (dispatch://INFRA-4063 R1, R2, R5, R7).
@@ -119,4 +120,43 @@ export function overtakenRefs(root: TreeNode): ReadonlySet<string> {
  *  a place naming a node by its address draws beside it (R2, R7). */
 export function statesByReference(root: TreeNode): ReadonlyMap<string, NodeStates> {
   return marksByReference(root, marksOf);
+}
+
+/** The node whose line of overtaken children must be open for the node at the end of `path` to
+ *  be drawn (R6, `issue-address.ts`'s `overtakenLineOf`): the parent of the first overtaken
+ *  node the path runs through; undefined where it runs through none. */
+export function lineFor(path: readonly TreeNode[] | undefined): string | undefined {
+  return overtakenLineOf(path);
+}
+
+/**
+ * `opened` with the line of every overtaken node `path` runs through opened (R6), so the node
+ * at its end is drawn as a row: an address, a chip, a Contents entry, `q` or `w` that names an
+ * overtaken node or a node under one opens the line that holds it. An overtaken node under
+ * another is behind two lines, and both open. `opened` itself where the path runs through no
+ * overtaken node.
+ */
+export function withLine(
+  opened: OpenedBranches,
+  path: readonly TreeNode[] | undefined
+): OpenedBranches {
+  const line = lineFor(path);
+  if (line === undefined || path === undefined) return opened;
+  // The rest of the path from the line's own node, which may stand above another line.
+  const below = path.slice(path.findIndex((node) => node.id === line) + 1);
+  return withLine({ ...opened, overtaken: new Set(opened.overtaken).add(line) }, below);
+}
+
+/** The id of each node of `root` that holds an overtaken child, in reading order: each node a
+ *  line of overtaken nodes is drawn under (`tree-fold.ts`'s `OvertakenRow`, R5). Under the words
+ *  filter the view holds only its matches and the chain above each, so each of these lines in
+ *  that view holds a match, which the outline draws open (R6). */
+export function linesIn(root: TreeNode): readonly string[] {
+  const parents: string[] = [];
+  const walk = (node: TreeNode): void => {
+    if (node.children.some(isOvertaken)) parents.push(node.id);
+    for (const child of node.children) walk(child);
+  };
+  walk(root);
+  return parents;
 }

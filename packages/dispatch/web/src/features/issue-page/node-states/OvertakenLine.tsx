@@ -1,0 +1,58 @@
+import type { CSSProperties, ReactNode } from "react";
+
+import { pageGuideLineBg, pageQuietText } from "../../../theme/classes";
+import { pageChrome } from "../page-structure";
+import { CONTROL_LABELS } from "../page-words";
+import type { OvertakenRow } from "../tree-fold";
+
+/**
+ * The one line a node's overtaken children fold to, after its other children and at their level
+ * (dispatch://INFRA-4063 R5, `tree-fold.ts`'s `OvertakenRow`): how many it holds directly, in
+ * one text node ("1 overtaken", "2 overtaken"), under the guides of the levels above it, as
+ * `TreeRows.tsx`'s line of a deeper branch draws them.
+ *
+ * Unlike that line it takes the focus as a row does, a `treeitem` with `aria-expanded`, and it
+ * is no `[data-branch-more]` and holds no button, so nothing that opens every deeper branch or
+ * every fold opens it: the reader does. A press opens or closes it in place, and so do the keys
+ * `useTreeKeymap.ts` binds on it (Enter, and the arrows). It stands for no node, so its focus
+ * focuses none: Details goes on drawing what it drew, as it does for a deeper branch's line.
+ */
+export function OvertakenLine({
+  onOvertaken,
+  row,
+  tabStop,
+}: {
+  /** Opens or closes the line, by the id of the node whose overtaken children it folds. */
+  onOvertaken?: (id: string, open: boolean) => void;
+  row: OvertakenRow;
+  /** Whether the line is the tree's one tab stop. */
+  tabStop: boolean;
+}): ReactNode {
+  const depth = row.level - 1;
+  return (
+    // biome-ignore lint/a11y/useKeyWithClickEvents: the tree's keymap opens and closes it from the keyboard (`useTreeKeymap.ts`'s Enter and arrows), as it moves through every row.
+    <div
+      aria-expanded={row.open}
+      aria-level={row.level}
+      className={`relative flex min-w-0 cursor-pointer pl-[calc(var(--row-depth)*23px+26px)] text-xs leading-7 max-[761px]:pl-[calc(var(--row-depth)*17px+22px)] ${pageQuietText}`}
+      data-overtaken-line=""
+      onClick={() => onOvertaken?.(row.of.id, !row.open)}
+      role="treeitem"
+      style={{ "--row-depth": depth } as CSSProperties}
+      tabIndex={tabStop ? 0 : -1}
+    >
+      {Array.from({ length: depth }, (_unused, guide) => (
+        <span
+          aria-hidden="true"
+          className={`absolute inset-y-0 w-px left-[calc(var(--guide)*23px+9px)] max-[761px]:left-[calc(var(--guide)*17px+8px)] ${pageGuideLineBg}`}
+          // biome-ignore lint/suspicious/noArrayIndexKey: a guide is its level and nothing else.
+          key={guide}
+          style={{ "--guide": guide } as CSSProperties}
+        />
+      ))}
+      <span className="font-medium" {...pageChrome}>
+        {`${row.held} ${CONTROL_LABELS.overtaken_count}`}
+      </span>
+    </div>
+  );
+}

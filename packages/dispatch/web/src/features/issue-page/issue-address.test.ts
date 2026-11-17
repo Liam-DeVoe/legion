@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 
 import type { Message } from "../../api/types";
+import * as addresses from "./issue-address";
 import { agentsOnlyItem, issueAddress, pathToTarget, presetPath } from "./issue-address";
 import type { TreeNode } from "./issue-tree";
 import type { NodeType } from "./page-words";
@@ -348,4 +349,60 @@ test("the children's address names the first row of their group, and the documen
   const documents = issueAddress({ key: "CORE-1", kind: "artifacts" }, "", "", "spec");
   expect(documents.nodeMenu).toBe(true);
   expect(documents.target).toBeUndefined();
+});
+
+// R6: an address that names an overtaken node, or a node under one, opens the line its parent
+// folds its overtaken children to, which the path to it runs through. Each kind of address
+// names that parent: a `#b-` block, an item's own route (`/asks/<id>`), and a node under an
+// overtaken one; an address whose path runs through no overtaken node opens no line.
+test("a path through an overtaken node opens its line", () => {
+  const overtakenAsk = node("spec#b-q8", "ask", {
+    life: "overtaken",
+    reference: "dispatch://CORE-1/ask/ask-8",
+  });
+  const under = node("comment-9", "comment", {
+    closed: true,
+    reference: "dispatch://CORE-1/comment/comment-9",
+  });
+  const overtaken = node("spec#b-r8", "requirement", { children: [under], life: "overtaken" });
+  const root = node("CORE-1", "issue", {
+    children: [
+      node("spec", "document", {
+        children: [node("spec#b-r7", "requirement"), overtaken, overtakenAsk],
+      }),
+    ],
+  });
+  const lineOf = (target: addresses.AddressTarget | undefined) =>
+    addresses.overtakenLineOf(pathToTarget(root, target));
+
+  const block = issueAddress({ key: "CORE-1", kind: "issue" }, "", "#b-r8", "spec").target;
+  expect(block).toEqual({ id: "r8", kind: "block" });
+  expect(lineOf(block)).toBe("spec");
+
+  const ask = issueAddress({ id: "ask-8", key: "CORE-1", kind: "ask" }, "", "", "spec").target;
+  expect(ask).toEqual({ id: "ask-8", kind: "item" });
+  expect(lineOf(ask)).toBe("spec");
+
+  const below = issueAddress(
+    { id: "comment-9", key: "CORE-1", kind: "comment" },
+    "",
+    "",
+    "spec"
+  ).target;
+  expect(pathToTarget(root, below)?.map((found) => found.id)).toEqual([
+    "CORE-1",
+    "spec",
+    "spec#b-r8",
+    "comment-9",
+  ]);
+  expect(lineOf(below)).toBe("spec");
+
+  const live = issueAddress({ key: "CORE-1", kind: "issue" }, "", "#b-r7", "spec").target;
+  expect(pathToTarget(root, live)?.map((found) => found.id)).toEqual([
+    "CORE-1",
+    "spec",
+    "spec#b-r7",
+  ]);
+  expect(lineOf(live)).toBeUndefined();
+  expect(addresses.overtakenLineOf(undefined)).toBeUndefined();
 });
