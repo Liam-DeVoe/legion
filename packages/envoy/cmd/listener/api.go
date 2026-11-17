@@ -1973,27 +1973,23 @@ func adminInterestsHandler(registry *store.Registry, sessions *session.SessionRe
 //
 // A soft claim names the process making it (client_instance_id), and the claim it writes records
 // that process as the role's holder. Where the role is already held under the claimant's own
-// session id that is the whole decision, made on the standing claim and on one thing the session
-// record says (roleOwnSessionVerdict): the claim is granted at once where it names this very
-// process, granted at once where the claimant's own registration superseded the process it names
-// (session.SessionRegistry.Supersedes), and otherwise only where nobody has answered for it
-// inside the live window the registry runs with (store.Registry.ClaimRenewedWithin, over the
-// window this listener's session registry judges a record's age by,
-// session.SessionRegistry.Windows). So a process that restarts with a new client instance takes
-// back at once the role its dead predecessor held. A second process that resumed a live session's
-// id and has not registered it is refused the 409 naming the holder, and reads the lookup to see
-// which process holds the role; a request that states no instance, and a claim record that names
-// none, both reach the renewal test rather than a case of their own, since an absent instance
-// matches nothing. A renewal older than the window is read as the holder having stopped only
-// while this listener can vouch for that: nothing but a registration renews a claim, and the
-// claim record reads the same whether its holder stopped registering or this listener failed to
-// renew it. So the claim is refused, naming the state and with nothing claimed, in three states.
-// While the role claim view cannot be served (store.Registry.RoleViewErr) it is the
-// bus-unavailable 503 with Retry-After: 1 (writeBusUnavailable). While the copy's last whole read
-// of the role bucket is past its repair bound or none has completed
-// (store.RoleClaimRepairReport.Err), and while this listener's own renewal of that role's claim
-// for its holder failed inside the live window (store.Registry.RenewalFailedWithin, which says
-// how long that record stands), it is the grant
+// session id that is the whole decision, made on the standing claim and never on the session
+// record (roleOwnSessionVerdict): the claim is granted at once where it names this very process,
+// and otherwise only where nobody has answered for it inside the live window the registry runs
+// with (store.Registry.ClaimRenewedWithin, over the window this listener's session registry
+// judges a record's age by, session.SessionRegistry.Windows). A second process that resumed a
+// live session's id is refused the 409 naming the holder, and reads the lookup to see which
+// process holds the role; a request that states no instance, and a claim record that names none,
+// both reach the renewal test rather than a case of their own, since an absent instance matches
+// nothing. A renewal older than the window is read as the holder having stopped only while this
+// listener can vouch for that: nothing but a registration renews a claim, and the claim record
+// reads the same whether its holder stopped registering or this listener failed to renew it. So
+// the claim is refused, naming the state and with nothing claimed, in three states. While the
+// role claim view cannot be served (store.Registry.RoleViewErr) it is the bus-unavailable 503
+// with Retry-After: 1 (writeBusUnavailable). While the copy's last whole read of the role bucket
+// is past its repair bound or none has completed (store.RoleClaimRepairReport.Err), and while
+// this listener's own renewal of that role's claim for its holder failed inside the live window
+// (store.Registry.RenewalFailedWithin, which says how long that record stands), it is the grant
 // guard's own answer (writeGrantGuardRefusal), since the bus answered: the 409 a second process
 // gets while the holder still answers for its claim, naming the claimant's own session id as the
 // holder, with an error that opens with grantGuardPrefix and names the state. The claimant waits
@@ -2002,16 +1998,8 @@ func adminInterestsHandler(registry *store.Registry, sessions *session.SessionRe
 // Legion pane. Without them a listener whose renewals stopped landing would hand a live holder's
 // role to the second process once the window passed. A claim from the process the standing claim
 // names rests on no renewal and is granted through all three, since it is that holder re-claiming
-// its own role after a listener restart, and so is a claim from the process that superseded it,
-// since the listener refuses every registration of the superseded process. A hard claim reads no
-// holder and lands last-claim-wins as it always has.
-//
-// Any claim, hard or soft, from a process a newer registration of the session superseded is
-// refused before anything is written, while the newer process's entry is live (supersededBy, as
-// the registration route refuses it): 409 with the error the registration's refusal carries, the
-// reason superseded_instance, the role, the claimant's own session id as holder and the newer
-// instance as client_instance_id. A released client reads that 409 as a role held under its own
-// session id by another process, and asks again on its own cadence.
+// its own role after a listener restart. A hard claim reads no holder and lands last-claim-wins
+// as it always has.
 //
 // A claim that landed also hands the role's kept lane to its new holder: whatever the listener
 // kept while the role had none is forwarded to the claimant (runKeptRoleDrain, which reads the
@@ -2032,20 +2020,16 @@ func adminInterestsHandler(registry *store.Registry, sessions *session.SessionRe
 // handed over once: by the handover of a claim that landed, and otherwise only where the copy
 // names it for the session. A copy that cannot be served names no role, which leaves the claim's
 // own handover and the sweep. These handovers run as the claim's own does, each in a goroutine
-// started once the answer is written. A claim of a superseded process is refused before the
-// refresh (supersededBy), so it refreshes nothing and hands nothing over.
+// started once the answer is written.
 //
-// logger is registerV1Routes's own. Four decisions of this route are logged with it. A soft claim
+// logger is registerV1Routes's own. Two decisions of this route are logged with it. A soft claim
 // that takes a role from the predecessor it names because the claimant's entry or the
 // predecessor's carries no client instance id, which is the one takeover the route cannot tell
-// from a different client instance's, and so names both session ids. A soft claim refused the
-// role held under its own session id, whether its holder still answers for the claim or the grant
-// guard refused, logged once with the role, that session id, the holder's client instance and the
-// claimant's - and, for the guard, the arm that refused - so an operator sees a second process
-// being held off rather than a bare 409. A soft claim that takes the role from a process the
-// claimant's registration superseded, logged with the same four. And a claim of a superseded
-// process, refused with the one WARN line per conflict the registration route shares
-// (supersededBy).
+// from a different client instance's, and so names both session ids. And a soft claim refused
+// the role held under its own session id, whether its holder still answers for the claim or the
+// grant guard refused, logged once with the role, that session id, the holder's client instance
+// and the claimant's - and, for the guard, the arm that refused - so an operator sees a second
+// process being held off rather than a bare 409.
 func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -2147,28 +2131,12 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 		}
 		// The process this claim is made by is the one the request states, and the claim records
 		// it: a session id names no process, since a second process can resume a live session's
-		// id. The record names the newest process that registered the id, and the instances it
-		// superseded, so it is read for three decisions here - the refusal of a superseded
-		// claimant just below, the pass of a superseded process's claim to the newer claimant
-		// (roleOwnSessionVerdict), and the predecessor rule's fallback below - and
-		// registeredInstanceID is read before the refresh overwrites nothing of it.
+		// id, and the session record then names whichever of them registered the id last. That
+		// record is the thing this route stops trusting, so it is read for one decision alone -
+		// the predecessor rule's fallback below - and registeredInstanceID is read before the
+		// refresh overwrites nothing of it.
 		claimantInstanceID := body.ClientInstanceID
 		registeredInstanceID := entry.ClientInstanceID
-		// A claim from a process a newer registration superseded is refused before anything is
-		// written, hard or soft, so the older process takes no role claim and its claim refreshes
-		// nothing of the newer process's entry. The holder the answer names is the claimant's own
-		// session id, which a released client reads as a role held under that id by another
-		// process, and waits out.
-		if newer, superseded := d.supersededBy(logger, body.SessionID, claimantInstanceID, entry); superseded {
-			writeJSON(w, http.StatusConflict, map[string]string{
-				"error":              supersededError(body.SessionID, claimantInstanceID, newer),
-				"reason":             supersededReason,
-				"role":               body.Role,
-				"holder":             body.SessionID,
-				"client_instance_id": newer,
-			})
-			return
-		}
 		entry.MachineID = machineID
 		entry.SelfSubscribed = true
 		// The claim renews the claimant's registration by writing back the entry it read, and
@@ -2244,9 +2212,8 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 		// relaunched Legion role takes its own role back: its predecessor keeps that claim while
 		// it is merely unresponsive, and nothing but the successor saying "this is me again" may
 		// move it before the gone horizon. A holder that is the claimant's own session id is the
-		// standing claim's call instead (roleOwnSessionVerdict, which reads of the session record
-		// only which processes the claimant's own registration superseded, since a session id
-		// names no process).
+		// standing claim's call instead (roleOwnSessionVerdict, which reads no session record,
+		// since a session id names no process).
 		decideSoftClaim := func() (supersedable []string, claim store.RoleClaim, verdict roleSupersession, err error) {
 			claim, err = d.registry.RoleClaim(ctx, body.Role)
 			if err != nil {
@@ -2258,7 +2225,7 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 				// An unheld role is the claimant's: there is nobody to supersede.
 				return nil, claim, roleUnclaimed, nil
 			case holder == body.SessionID:
-				verdict, err = roleOwnSessionVerdict(d.registry, d.sessions, entry, body.Role, claim, claimantInstanceID, liveWindow)
+				verdict, err = roleOwnSessionVerdict(d.registry, body.Role, claim, claimantInstanceID, liveWindow)
 			default:
 				// The predecessor rule reads the claimant's own registration where the
 				// request states no instance. Without that fallback a client that sends none
@@ -2272,7 +2239,7 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 				}
 				verdict, err = roleSupersessionVerdict(ctx, d.sessions, holder, previous, claimantInstance)
 			}
-			if verdict == roleTakenFromHolder || verdict == roleTakenFromUnidentifiedPredecessor || verdict == roleTakenFromSupersededProcess {
+			if verdict == roleTakenFromHolder || verdict == roleTakenFromUnidentifiedPredecessor {
 				supersedable = append(supersedable, holder)
 			}
 			return supersedable, claim, verdict, err
@@ -2379,16 +2346,6 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 					slog.String("session_id", body.SessionID),
 					slog.String("holder_client_instance_id", claim.ClientInstanceID),
 					slog.String("client_instance_id", claimantInstanceID))
-			case roleTakenFromSupersededProcess:
-				// A process that registered the session after the holder's process, so the claim
-				// passes to it at once, whatever the older claim's renewal says.
-				if err == nil {
-					logger.Info("listener role claim taken from an older process of this session id: the claimant's registration superseded it",
-						slog.String("role", body.Role),
-						slog.String("session_id", body.SessionID),
-						slog.String("holder_client_instance_id", claim.ClientInstanceID),
-						slog.String("client_instance_id", claimantInstanceID))
-				}
 			}
 			if mismatch {
 				writeJSON(w, http.StatusConflict, map[string]any{
@@ -2994,19 +2951,11 @@ func (d *listenerDeps) registerPass(
 	// this repair reads the bucket's newest record and interest row and makes the consumer what
 	// they ask for, creating it where that delete took it away and setting its filter where the
 	// live one is not what that row builds (sessionDelivery.confirmRegistered).
-	//
-	// The entry replaced is read once, under the session's lock, for two things: whether the
-	// plugin connected anew (epochChanged), and which client instances the new entry keeps as
-	// superseded (session.SessionRegistry.SupersededAfter). A registration of another instance
-	// than the one the entry names takes the session from it, and from then on the older
-	// instance's registrations are refused (subscribeHandler, session.SessionRegistry.NewerInstance).
-	previous, previousErr := d.sessions.Get(body.SessionID)
 	if outcome.relayed() {
-		registered.epochChanged = previousErr != nil || previous.Delivery != session.DeliveryConsumer || previous.Epoch != outcome.epoch
+		previous, err := d.sessions.Get(body.SessionID)
+		registered.epochChanged = err != nil || previous.Delivery != session.DeliveryConsumer || previous.Epoch != outcome.epoch
 	}
-	entry := sessionEntryFromSubscribe(body, machineID, outcome)
-	entry.SupersededInstances = d.sessions.SupersededAfter(previous, entry.ClientInstanceID)
-	if err := d.sessions.PutWithin(ctx, body.SessionID, entry); err != nil {
+	if err := d.sessions.PutWithin(ctx, body.SessionID, sessionEntryFromSubscribe(body, machineID, outcome)); err != nil {
 		// The row is stored and nothing tells another reader the session is here, so the
 		// registration travels as this error alone and no caller is handed it. The pass
 		// answers nothing: the error is the registration's, and the caller's switch over it
@@ -3044,16 +2993,6 @@ func (d *listenerDeps) registerPass(
 // reading a claim this listener failed to renew as one its holder abandoned
 // (roleOwnSessionVerdict); store.Registry.RenewalFailedWithin says what clears it and how long
 // it stands.
-//
-// A registration of a client instance that a newer instance's registration superseded is refused
-// 409 before anything is stored, while the newer instance's entry is live (supersededBy, which
-// logs the conflict at WARN once): it gets no consumer call, no interest write, no entry write, no
-// renewal and no handover of a kept lane, so the relay stays with the newer instance. The entry it
-// is weighed against is the session cache's (session.SessionRegistry.Lookup), which the
-// registration's own write and every other listener's, through the bucket's watch, keep current.
-// A check and the write after it are not one step, so two registrations racing at the very moment
-// of a takeover can leave either instance holding the session; the next heartbeat of the other is
-// then refused, and the WARN line names both.
 //
 // A registration that makes its session live again also hands that session the kept lane of each
 // role whose claim record its renewal read for the session (store.RoleRenewal.Set: the role topics
@@ -3114,16 +3053,6 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 		// field, as every other refusal of this route does, and says what to send instead.
 		if body.Port > 0 {
 			writeJSONError(w, http.StatusBadRequest, "port is not supported: this listener delivers nothing to a session's port. Register with no port (port 0) and receive the session's messages from its own consumer (delivery.consumer).", "port")
-			return
-		}
-		instance := strings.TrimSpace(body.ClientInstanceID)
-		cached, _ := d.sessions.Lookup(body.SessionID)
-		if newer, superseded := d.supersededBy(logger, body.SessionID, instance, cached); superseded {
-			writeJSON(w, http.StatusConflict, supersededRefusal{
-				Error:            supersededError(body.SessionID, instance, newer),
-				Reason:           supersededReason,
-				ClientInstanceID: newer,
-			})
 			return
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), sendRequestBudget)
@@ -3270,7 +3199,7 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 		// stands. A lost compare-and-swap, a claim another session or process holds, a
 		// handed-back claim and a role with no claim record are none: the record said what
 		// stands.
-		renewal, err := d.registry.RenewRoleClaims(ctx, body.SessionID, instance, registered.row)
+		renewal, err := d.registry.RenewRoleClaims(ctx, body.SessionID, strings.TrimSpace(body.ClientInstanceID), registered.row)
 		logger.LogEvent(slog.LevelDebug, "listener subscribe weighed the session's role claims",
 			slog.String("session_id", body.SessionID),
 			slog.Any("roles", renewal.Set),
@@ -3370,19 +3299,6 @@ func registerV1Routes(v1 *http.ServeMux, d *listenerDeps, machineID string, logg
 			return
 		}
 		logger.Info("listener unsubscribe", slog.String("session_id", body.SessionID), slog.Any("topics", body.Topics))
-		// A hand-back from a process a newer registration superseded is refused before anything
-		// is removed, as its registration and its role claim are (supersededBy): its removal
-		// would take topics out of the newer process's interest row and refollow that process's
-		// consumer on what was left. A request that names no process is never refused.
-		cached, _ := d.sessions.Lookup(body.SessionID)
-		if newer, superseded := d.supersededBy(logger, body.SessionID, body.ClientInstanceID, cached); superseded {
-			writeJSON(w, http.StatusConflict, supersededRefusal{
-				Error:            supersededError(body.SessionID, body.ClientInstanceID, newer),
-				Reason:           supersededReason,
-				ClientInstanceID: newer,
-			})
-			return
-		}
 		// The removal runs within sendRequestBudget of the request's own context, as subscribe's
 		// write does, and store work that did not answer is the bus-unavailable 503.
 		ctx, cancel := context.WithTimeout(r.Context(), sendRequestBudget)

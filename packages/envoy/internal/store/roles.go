@@ -600,16 +600,11 @@ type RoleClaimRequest struct {
 // either, when its record carries the claimant's own client instance id, or
 // when either it or the claimant carries no client instance id; and the
 // claimant's own session id when the standing claim names the claimant's own
-// process, when it names a process the claimant's own registration superseded
-// (session.SessionRegistry.Supersedes: the session's record names the
-// claimant's process and keeps the claim's process as an older one, whose
-// registrations the listener refuses), or when nobody has renewed that claim
-// inside the live window (Registry.ClaimRenewedWithin). So a resumed session
-// can recover a role its own earlier session held without ever taking one
-// from a live peer, from a live session of another client instance, or from
-// another process holding the role under the very session id it is claiming
-// as its own, and a process that restarted after a crash takes back at once
-// the role its dead predecessor held.
+// process, or when nobody has renewed that claim inside the live window
+// (Registry.ClaimRenewedWithin). So a resumed session can recover a role its
+// own earlier session held without ever taking one from a live peer, from a
+// live session of another client instance, or from another process holding
+// the role under the very session id it is claiming as its own.
 //
 // The claim it writes names no client instance (RoleClaim.ClientInstanceID): its callers hold
 // none to give, so each leaves RoleClaimRequest.ClientInstanceID empty, and the claim says which

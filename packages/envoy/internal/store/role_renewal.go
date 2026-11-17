@@ -73,10 +73,8 @@ type RoleRenewal struct {
 // instance states none, and nothing else moves that claim's renewal. Without it that renewal
 // would age out while the holder is still registering, and POST /v1/roles/set would hand the
 // role to a second process claiming it under the same session id, since that route decides a
-// claim held under the claimant's own session id on the renewal, unless the claimant's own
-// registration superseded the claim's process (roleOwnSessionVerdict, through
-// Registry.ClaimRenewedWithin). A claim that names no process is superseded by nobody, so its
-// renewal alone decides it.
+// claim held under the claimant's own session id on the renewal alone and reads no session
+// record (roleOwnSessionVerdict, through Registry.ClaimRenewedWithin).
 //
 // A hand-back is read off the claim and not out of this registration. A release that hands one
 // role back and may not free it marks the claim instead (RoleClaim.HandedBack, written by

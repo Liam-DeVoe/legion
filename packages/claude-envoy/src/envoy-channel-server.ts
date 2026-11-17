@@ -1045,15 +1045,13 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
    * and receives nothing. The session still runs, and the heartbeat registers again every tick
    * until one is accepted; the reason is the listener's own, one of those
    * `ErrorWireSchema.reason` lists (`@legion/envoy-client`'s `transport.ts`), which the error
-   * carries in its message and which `inboundUnavailableNoticeText` words for every host - as
-   * another process holding this session, where the listener refused this process as a
-   * superseded one.
+   * carries in its message and which `inboundUnavailableNoticeText` words for every host.
    */
-  const inboundOutage = inboundUnavailable((why, reason) => {
+  const inboundOutage = inboundUnavailable((why) => {
     process.stderr.write(
       `envoy-channel: this session receives nothing (${why}); registering again every heartbeat\n`,
     )
-    delivery.notice(inboundUnavailableNoticeText(why, reason)).catch((noticeError: unknown) => {
+    delivery.notice(inboundUnavailableNoticeText(why)).catch((noticeError: unknown) => {
       process.stderr.write(
         `envoy-channel: the session could not be told that it receives nothing — ${messageFor(noticeError)}\n`,
       )

@@ -3026,10 +3026,7 @@ export default function envoyExtension(pi: PiApi): void {
    *  that answers at all answers a release in tens of milliseconds. A release that has not
    *  answered by then is left as it is: the DELETE goes, and nothing sends the release again. The
    *  claim then stands until its last renewal is older than the listener's live window. The
-   *  listener's takeover of a superseded instance's claim does not apply: the DELETE removes the
-   *  session's record and its list of superseded instances, so the next process registers with
-   *  no previous entry, and nothing names this process as superseded. The DELETE goes all the
-   *  same, because it is what lets a message to the stopped session wake it. */
+   *  DELETE goes all the same, because it is what lets a message to the stopped session wake it. */
   const SHUTDOWN_RELEASE_MS = 250;
 
   /** Deregisters a session this process has stopped heartbeating — its own at shutdown, the one
@@ -3059,16 +3056,15 @@ export default function envoyExtension(pi: PiApi): void {
   // delivers to it and Envoy inbound is unavailable. The session still starts and runs; the
   // reason is the listener's own, one of those `ErrorWireSchema.reason` lists
   // (`@legion/envoy-client`'s `transport.ts`), carried in the error's message, which
-  // `inboundUnavailableNoticeText` words for every host - as another process holding this
-  // session, where the listener refused this process as a superseded one - and the heartbeat
-  // registers again every tick until one is accepted.
-  const inboundOutage = inboundUnavailable((why, reason) => {
+  // `inboundUnavailableNoticeText` words for every host, and the heartbeat registers again
+  // every tick until one is accepted.
+  const inboundOutage = inboundUnavailable((why) => {
     logger.warn(`envoy: this session receives nothing: ${why}`);
     activeSessionContext?.ui.notify(
       `envoy: inbound messages are unavailable (${why}); registering again every heartbeat`,
       "warning"
     );
-    unwritten.sendNotice(inboundUnavailableNoticeText(why, reason));
+    unwritten.sendNotice(inboundUnavailableNoticeText(why));
   });
 
   // Where this session's pane sits in tmux, so Dispatch can draw the machine's layout from what
@@ -4054,9 +4050,7 @@ export default function envoyExtension(pi: PiApi): void {
   // longer renewed inside the live window. The release names this process
   // (`handBackAllHolds`), so it frees no claim another process made. It gets its share of the
   // stop (`SHUTDOWN_RELEASE_MS`); one that has not answered by then is left, and the stop goes
-  // on to the DELETE. The claim then waits out the live window: the DELETE also removes the
-  // record's list of superseded instances, so the listener's takeover of a superseded
-  // instance's claim does not hand it to the next process.
+  // on to the DELETE. The claim then waits out the live window.
   const releaseRoleClaims = async (): Promise<void> => {
     if (active === undefined) return;
     try {

@@ -12,10 +12,8 @@ import { registrationTopics, subjectsOverlap } from "./stream-topics";
 import {
   type DeliveryAnswer,
   type DeliveryRequest,
-  EnvoyApiError,
   expandSubscriptionTopics,
   type ResumePoint,
-  SUPERSEDED_INSTANCE_REASON,
 } from "./transport";
 
 /**
@@ -324,16 +322,6 @@ export interface ConsumerDelivery {
   snapshot(): ConsumerDeliverySnapshot;
   /** Restores what a host persisted; call it before `setFollowed`. */
   restore(snapshot: ConsumerDeliverySnapshot): void;
-  /**
-   * Whether another process of this session id holds the session: the listener refused this
-   * process's registration with `SUPERSEDED_INSTANCE_REASON` (`registerWithRelay` sets it, and an
-   * accepted registration clears it). The relay subject is the session's own, so every process
-   * subscribed to it receives the frames the listener relays for the newer one. While this is
-   * set, each relay frame is dropped with no answer at all: it reaches no host, ledger or resume
-   * point, and the listener takes the newer process's answers. The connection probe is still
-   * answered, since it says only that a subscription is here.
-   */
-  setSuperseded(superseded: boolean): void;
   /** The session is replaced: every unsettled frame is answered `nak`, and so is any later one. */
   close(): void;
 }
@@ -400,9 +388,6 @@ export function createConsumerDelivery(options: ConsumerDeliveryOptions): Consum
   // A retention gap the registration answer told: the next frame's `Envoy-Gap` is the same one.
   let gapTold = false;
   let closed = false;
-  // Another process of this session id holds the session (`setSuperseded`): frames are dropped
-  // unanswered until a registration of this process is accepted again.
-  let superseded = false;
   // The snapshot the host last wrote (`persist`): an unchanged one is not offered again. A new
   // delivery holds nothing, which is what a host with no snapshot of its own stored.
   let persisted = JSON.stringify({ follows: {} } satisfies ConsumerDeliverySnapshot);
@@ -632,10 +617,6 @@ export function createConsumerDelivery(options: ConsumerDeliveryOptions): Consum
       if (message.reply !== undefined && message.reply !== "") send(message.reply, "done");
       return;
     }
-    // Another process holds this session: the frame is that process's, and it answers it. This
-    // one says nothing, so neither a `received`, a `done` nor a `nak` of its own reaches the
-    // listener first.
-    if (superseded) return;
     const decoded = decodeRelayFrame(message);
     if ("error" in decoded) {
       // Redelivery cannot fix a frame that does not decode, so it is acked away.
@@ -804,9 +785,6 @@ export function createConsumerDelivery(options: ConsumerDeliveryOptions): Consum
       // What a host restored is already stored: only a change after it is written.
       persisted = JSON.stringify(snapshot());
     },
-    setSuperseded(value) {
-      superseded = value;
-    },
     close() {
       closed = true;
       queue.length = 0;
@@ -840,20 +818,10 @@ export function gapNoticeText(notice: ConsumerGapNotice): string {
  * What a session is told when the listener can give it no consumer, worded once for every host:
  * its registration was refused, by one of the reasons `ErrorWireSchema.reason` lists
  * (`transport.ts`), or it failed, so nothing reaches it until a later registration is accepted.
- * `why` is the listener's own message, which carries its machine-readable reason, and `reason` is
- * that reason where the refusal named one. A refusal for `SUPERSEDED_INSTANCE_REASON` says that
- * another process holds this session, since no heartbeat of this process changes that. Each host
+ * `why` is the listener's own message, which carries its machine-readable reason. Each host
  * shows it where it shows a gap notice and says once per outage.
  */
-export function inboundUnavailableNoticeText(why: string, reason?: string): string {
-  if (reason === SUPERSEDED_INSTANCE_REASON) {
-    return envoyNoticeText({
-      notice: "Another process holds this session",
-      error: why,
-      detail:
-        "Another process registered this session id after this one. While it runs, the listener refuses this process's registrations and role claims, so this process holds no role. Stop this process, or start it under a session id of its own. This process registers again at every heartbeat, and takes the session back once the other process stops.",
-    });
-  }
+export function inboundUnavailableNoticeText(why: string): string {
   return envoyNoticeText({
     notice: "Envoy inbound unavailable",
     error: why,
@@ -866,8 +834,7 @@ export function inboundUnavailableNoticeText(why: string, reason?: string): stri
 export interface InboundUnavailable {
   /**
    * A registration was refused or failed: tells the session, through the host's `tell`, unless
-   * this outage already told it. A refusal for `SUPERSEDED_INSTANCE_REASON` is told once of its
-   * own, even when this outage already told another refusal.
+   * this outage already told it.
    */
   refused(error: unknown): void;
   /** A registration was accepted: the next outage tells the session again. */
@@ -878,42 +845,26 @@ export interface InboundUnavailable {
  * Says once per outage that the session receives nothing. The listener refuses a registration it
  * can give no consumer, and the host registers again at every heartbeat, so a host that told the
  * session each time would tell it every tick for as long as the outage lasts; one that never told
- * it again would leave a second outage silent. A refusal for `SUPERSEDED_INSTANCE_REASON` has a
- * telling of its own: it says another process holds the session, which a refusal told earlier in
- * the same outage did not say. `tell` takes the listener's own message (`messageFor`) and the
- * reason the listener refused with (`EnvoyApiError.reason`, undefined for a failure that names
- * none), which each host words with `inboundUnavailableNoticeText` and shows where it shows a gap
- * notice.
+ * it again would leave a second outage silent. `tell` takes the listener's own message
+ * (`messageFor`), which each host words with `inboundUnavailableNoticeText` and shows where it
+ * shows a gap notice.
  */
-export function inboundUnavailable(
-  tell: (why: string, reason: string | undefined) => void
-): InboundUnavailable {
+export function inboundUnavailable(tell: (why: string) => void): InboundUnavailable {
   let told = false;
-  let supersededTold = false;
   return {
     refused(error) {
-      const reason = error instanceof EnvoyApiError ? error.reason : undefined;
-      if (reason === SUPERSEDED_INSTANCE_REASON) {
-        if (supersededTold) return;
-        supersededTold = true;
-      } else {
-        if (told) return;
-        told = true;
-      }
-      tell(messageFor(error), reason);
+      if (told) return;
+      told = true;
+      tell(messageFor(error));
     },
     accepted() {
       told = false;
-      supersededTold = false;
     },
   };
 }
 
 /** What a registration needs of a session's relay; `ConsumerDelivery` is one. */
-export type RegisteringRelay = Pick<
-  ConsumerDelivery,
-  "setFollowed" | "registration" | "setSuperseded"
->;
+export type RegisteringRelay = Pick<ConsumerDelivery, "setFollowed" | "registration">;
 
 /** What `registerWithRelay` is handed; `Result` is the host client's registration answer. */
 export interface RelayRegistration<Result> {
@@ -944,12 +895,6 @@ export interface RelayRegistration<Result> {
  * store (`registrationTopics`), stamped on the relay before the registration carries them, then
  * sent, with the outage told once whichever way it ends.
  *
- * A refusal for `SUPERSEDED_INSTANCE_REASON` says another process of this session id registered
- * after this one, so the relay drops every frame unanswered from then on (`setSuperseded`): this
- * process gets no relay, and the newer one answers what the listener relays on the shared
- * subject. An accepted registration gives the relay back, which is how this process takes the
- * session again once the newer one stopped answering. Every other refusal leaves that as it was.
- *
  * A session with no relay subject open is refused here rather than registered: every
  * registration asks for consumer delivery, a session receives only what its own consumer holds,
  * and one carrying no relay would be refused `409 not_requested` and leave nothing registered.
@@ -975,15 +920,11 @@ export function registerWithRelay<Result>({
   relay.setFollowed(topics);
   return send(topics, relay.registration()).then(
     (result) => {
-      relay.setSuperseded(false);
       outage.accepted();
       answered(result);
       return result;
     },
     (error: unknown) => {
-      if (error instanceof EnvoyApiError && error.reason === SUPERSEDED_INSTANCE_REASON) {
-        relay.setSuperseded(true);
-      }
       outage.refused(error);
       throw error;
     }

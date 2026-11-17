@@ -139,14 +139,6 @@ const RoleHeldWireSchema = z.object({
 });
 
 /**
- * The reason the listener refuses a registration, and a role claim, of a process that another
- * process superseded: that process registered this session id after this one, and the listener
- * keeps the session, its relay and its role claims for it while it runs
- * (`cmd/listener/session_instances.go`). The 409's `client_instance_id` names that process.
- */
-export const SUPERSEDED_INSTANCE_REASON = "superseded_instance";
-
-/**
  * A listener's error body. Beyond the message and its `code`, a refusal that names a session
  * names that session's state and its last registration, and a role's 404 names its holder too:
  * a send's `no live session <id>` carries `state` and `last_seen`
@@ -161,18 +153,14 @@ export const SUPERSEDED_INSTANCE_REASON = "superseded_instance";
 const ErrorWireSchema = z.object({
   error: z.string(),
   code: z.string().optional(),
-  // Why the listener refused a registration. This list is the one every other comment in these
-  // packages points at, and it is the listener's own (`cmd/listener/session_delivery.go`'s
-  // delivery reason constants and the refusals that carry them, and
-  // `cmd/listener/session_instances.go`'s `supersededReason`): 503 `consumer_error` (a consumer
-  // call that failed, or a listener holding no session-consumer connection), 503 `no_grant` (the
-  // listener's NATS user may not manage session consumers), 503 `consumer_limit` (the stream
-  // holds as many consumers as its `max_consumers` allows, so the server creates no more), 409
-  // `not_requested` (the registration asked for no consumer), 409 `invalid_session_id` (the id
-  // names no consumer) and 409 `superseded_instance` (`SUPERSEDED_INSTANCE_REASON`: another
-  // process registered this session id after this one, so this process gets no relay and takes
-  // no role claim while that process runs; a role claim of this process is refused with the same
-  // reason).
+  // Why the listener refused a registration it can give the session no consumer. This list is
+  // the one every other comment in these packages points at, and it is the listener's own
+  // (`cmd/listener/session_delivery.go`'s delivery reason constants and the refusals that carry
+  // them): 503 `consumer_error` (a consumer call that failed, or a listener holding no
+  // session-consumer connection), 503 `no_grant` (the listener's NATS user may not manage
+  // session consumers), 503 `consumer_limit` (the stream holds as many consumers as its
+  // `max_consumers` allows, so the server creates no more), 409 `not_requested` (the
+  // registration asked for no consumer) and 409 `invalid_session_id` (the id names no consumer).
   reason: z.string().optional(),
   expected: z.array(z.string()).optional(),
   state: SessionStateSchema.optional(),

@@ -91,10 +91,6 @@ type listenerDeps struct {
 	// share of its traffic is going to sessions that have stopped answering, before any of them
 	// reaches the gone horizon.
 	sendsToUnresponsive *metrics.Counter
-	// supersededWarned is this listener's record of the superseded-instance conflicts it has
-	// logged, so a refused process costs one WARN line per conflict, not one per heartbeat
-	// (supersededWarnings). The zero value is ready to use.
-	supersededWarned supersededWarnings
 }
 
 // kvCache is what the listener asks of each KV-backed cache it keeps.
