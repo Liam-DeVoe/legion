@@ -680,11 +680,12 @@ func (f probeFill) besideValue() string {
 }
 
 // hiddenWriteSeed is the seed the walk calls, with the value of every probe kind, the trace of its
-// store and the record of its listener's calls.
+// store and the record of its listener's calls. digest is the one statement that digests every
+// table (tableDigests), built once from the tables the seed lists, which no call changes.
 type hiddenWriteSeed struct {
 	privateSeed
 	fills  map[probeObject]probeFill
-	tables []string
+	digest string
 	trace  *existenceTrace
 	calls  *listenerCalls
 }
@@ -917,9 +918,20 @@ func seedHiddenWrites(t *testing.T) hiddenWriteSeed {
 	if err != nil {
 		t.Fatalf("list the tables: %v", err)
 	}
-	if walk.tables, err = pgx.CollectRows(rows, pgx.RowTo[string]); err != nil || len(walk.tables) == 0 {
-		t.Fatalf("list the tables: %v (%d)", err, len(walk.tables))
+	tables, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil || len(tables) == 0 {
+		t.Fatalf("list the tables: %v (%d)", err, len(tables))
 	}
+	parts := make([]string, len(tables))
+	for index, table := range tables {
+		row := "to_jsonb(t)"
+		if column, volatile := volatileColumns[table]; volatile {
+			row += " - " + sqlString(column)
+		}
+		parts[index] = fmt.Sprintf(`select %s, md5(coalesce(string_agg((%s)::text, '|' order by (%s)::text), '')) from %s t`,
+			sqlString(table), row, row, table)
+	}
+	walk.digest = strings.Join(parts, " union all ")
 	return walk
 }
 
@@ -951,16 +963,7 @@ func (w hiddenWriteSeed) fill(t *testing.T, pattern string, probe writeProbe, op
 // tableDigests is a digest of every row of every table, by table, less volatileColumns.
 func (w hiddenWriteSeed) tableDigests(t *testing.T) map[string]string {
 	t.Helper()
-	parts := make([]string, len(w.tables))
-	for index, table := range w.tables {
-		row := "to_jsonb(t)"
-		if column, volatile := volatileColumns[table]; volatile {
-			row += " - " + sqlString(column)
-		}
-		parts[index] = fmt.Sprintf(`select %s, md5(coalesce(string_agg((%s)::text, '|' order by (%s)::text), '')) from %s t`,
-			sqlString(table), row, row, table)
-	}
-	rows, err := w.database.Pool.Query(context.Background(), strings.Join(parts, " union all "))
+	rows, err := w.database.Pool.Query(context.Background(), w.digest)
 	if err != nil {
 		t.Fatalf("digest the tables: %v", err)
 	}
