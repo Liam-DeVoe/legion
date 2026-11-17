@@ -243,8 +243,8 @@ func (e *Engine) upgradedStart(ctx context.Context, tx pgx.Tx, issue record.Issu
 		return "", time.Time{}, err
 	}
 	if at == phase.Merging {
-		// The retro's completion is the implementer's (phase.RoleFor), recorded on its row.
-		retro, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleImplementer)
+		// The retro's completion is recorded on the row of the role that works the retro.
+		retro, err := e.phaseRow(ctx, tx, issue.Key, phase.RoleFor(phase.Retro))
 		if err != nil {
 			return "", time.Time{}, err
 		}
