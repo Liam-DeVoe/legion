@@ -421,6 +421,33 @@ func TestAnUnknownStartCountsNoTime(t *testing.T) {
 	}
 }
 
+// An issue whose only known start comes after its last end holds no time Dispatch can count: a run
+// whose start Dispatch never got (one that started before the release) ended before a later run
+// started, and the later run's end has not reached Dispatch. The read answers no duration, where
+// the difference would be negative, and the start and the end as the records hold them.
+func TestAStartAfterTheLastEndCountsNoTime(t *testing.T) {
+	handler := newTestHandler(t)
+	issue := stepIssues(t, handler, "LEG", 1)[0]
+	recordRuns(t, handler, "LEG", issue,
+		run{"step", "planner", 1, nil, new(at(5)), "passed"},
+		run{"step", "implementer", 2, new(at(10)), nil, ""},
+	)
+	closeIssue(t, handler, issue)
+
+	finished := readPlans(t, handler, "LEG", "").Issues
+	if len(finished) != 1 {
+		t.Fatalf("the read lists %d issues, want %s", len(finished), issue)
+	}
+	read := finished[0]
+	if read.DurationSeconds != nil {
+		t.Fatalf("the issue's time is %d seconds, want no duration: its last end, %s, is before its first start, %s",
+			*read.DurationSeconds, at(5), at(10))
+	}
+	if read.StartedAt == nil || !read.StartedAt.Equal(at(10)) || read.EndedAt == nil || !read.EndedAt.Equal(at(5)) {
+		t.Fatalf("the time is %v to %v, want %s to %s, as the records hold them", read.StartedAt, read.EndedAt, at(10), at(5))
+	}
+}
+
 // A finished issue Legion never ran is listed with no plan, no rating, no time and no failed step,
 // each as null or empty on the wire, which is what Dispatch holds of it.
 func TestTheReadOfAnIssueLegionNeverRanHoldsNoTime(t *testing.T) {

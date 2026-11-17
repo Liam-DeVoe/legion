@@ -144,7 +144,10 @@ func (s *server) listProjectPlans(w http.ResponseWriter, r *http.Request) {
 		for place, rating := range issue.Ratings {
 			listed.Ratings[place] = model.PlanRating{Rating: rating.Rating, Reason: rating.Reason, StepID: rating.StepID, EndedAt: rating.EndedAt}
 		}
-		if issue.StartedAt != nil && issue.EndedAt != nil {
+		// The span is known only where the latest end is not before the earliest start: a run whose
+		// start Dispatch never got that ended before a later run started, whose end has not landed,
+		// holds no time to count.
+		if issue.StartedAt != nil && issue.EndedAt != nil && !issue.EndedAt.Before(*issue.StartedAt) {
 			seconds := int64(issue.EndedAt.Sub(*issue.StartedAt) / time.Second)
 			listed.DurationSeconds = &seconds
 		}
