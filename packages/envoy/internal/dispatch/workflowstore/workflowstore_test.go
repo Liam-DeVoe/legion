@@ -215,10 +215,7 @@ func TestAWriteThatMakesANodeNamesItsIdentity(t *testing.T) {
 			id := uuid.NewString()
 			write := startOf(implementer(id), minute(0))
 			without(&write)
-			err := tryWrite(pool, func(tx pgx.Tx) error {
-				_, err := PutStep(context.Background(), tx, write, daemon, minute(0))
-				return err
-			})
+			_, err := tryPut(pool, write, minute(0))
 			if !errors.Is(err, ErrStepInput) {
 				t.Fatalf("a first write with no %s answered %v, want %v", name, err, ErrStepInput)
 			}
@@ -248,10 +245,7 @@ func TestAnIDOfAnotherIssueIsRefused(t *testing.T) {
 
 	elsewhere := endOf(implementer(id), ResultPassed, minute(1))
 	elsewhere.Issue = "LEG-2"
-	err := tryWrite(pool, func(tx pgx.Tx) error {
-		_, err := PutStep(context.Background(), tx, elsewhere, daemon, minute(1))
-		return err
-	})
+	_, err := tryPut(pool, elsewhere, minute(1))
 	if !errors.Is(err, ErrStepOtherIssue) {
 		t.Fatalf("a write of LEG-1's step naming LEG-2 answered %v, want %v", err, ErrStepOtherIssue)
 	}
@@ -459,10 +453,7 @@ func TestAStepWriteRefusesAValueOutsideItsForm(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			write := startOf(implementer(uuid.NewString()), minute(0))
 			change(&write)
-			err := tryWrite(pool, func(tx pgx.Tx) error {
-				_, err := PutStep(context.Background(), tx, write, daemon, minute(0))
-				return err
-			})
+			_, err := tryPut(pool, write, minute(0))
 			if !errors.Is(err, ErrStepInput) {
 				t.Fatalf("the write answered %v, want %v", err, ErrStepInput)
 			}
@@ -479,30 +470,27 @@ func TestAStepWriteRefusesAValueOutsideItsForm(t *testing.T) {
 // put writes one step in a transaction of its own and commits it, as the route does.
 func put(t *testing.T, pool *store.Pool, write StepWrite, at time.Time) Step {
 	t.Helper()
-	var written Step
-	if err := tryWrite(pool, func(tx pgx.Tx) error {
-		var err error
-		written, err = PutStep(context.Background(), tx, write, daemon, at)
-		return err
-	}); err != nil {
+	written, err := tryPut(pool, write, at)
+	if err != nil {
 		t.Fatalf("write step %s: %v", write.ID, err)
 	}
 	return written
 }
 
-// tryWrite runs one write in a transaction of its own, commits it when the write is taken, and
+// tryPut runs one write in a transaction of its own, commits it when the write is taken, and
 // rolls it back and answers the refusal when it is not.
-func tryWrite(pool *store.Pool, write func(pgx.Tx) error) error {
+func tryPut(pool *store.Pool, write StepWrite, at time.Time) (Step, error) {
 	ctx := context.Background()
 	tx, err := pool.Begin(ctx)
 	if err != nil {
-		return err
+		return Step{}, err
 	}
 	defer tx.Rollback(ctx)
-	if err := write(tx); err != nil {
-		return err
+	written, err := PutStep(ctx, tx, write, daemon, at)
+	if err != nil {
+		return Step{}, err
 	}
-	return tx.Commit(ctx)
+	return written, tx.Commit(ctx)
 }
 
 func issueSteps(t *testing.T, pool *store.Pool, issue string) []StepRead {
