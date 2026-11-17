@@ -128,11 +128,13 @@ export function useHoldsWords(): boolean {
  * The lines of overtaken nodes the page's address opens in `root`, a view's own tree: the id of
  * each node whose line of overtaken children the path to the node the address names runs
  * through (`pathToTarget`, `withLine`), so that node is drawn as a row, as the outline opens its
- * own. The address is read as the slots read it (`issueAddress`); an address that opens a view
- * opens no document, so no spec slug is needed to read it. `target` says which node the address
- * names, so a view opens them once for each; `lines` is undefined for an address that names no
- * node and until `root` holds the one it names, and empty where the path runs through no
- * overtaken node.
+ * own. The first node of the path at or under an overtaken one (`closed`) is drawn in the line
+ * of the node above it, though in a view's tree it need not be overtaken itself - a row drawn
+ * under the line of a parent the view draws no row for - so that line opens too. The address is
+ * read as the slots read it (`issueAddress`); an address that opens a view opens no document, so
+ * no spec slug is needed to read it. `target` says which node the address names, so a view opens
+ * them once for each; `lines` is undefined for an address that names no node and until `root`
+ * holds the one it names, and empty where the path runs through no closed node.
  */
 export function useAddressLines(root: TreeNode): {
   readonly lines: ReadonlySet<string> | undefined;
@@ -144,9 +146,12 @@ export function useAddressLines(root: TreeNode): {
     const target =
       route === undefined ? undefined : issueAddress(route, search, hash, undefined).target;
     const path = pathToTarget(root, target);
+    const lines = path === undefined ? undefined : new Set(withLine(new Set<string>(), path));
+    const closed = path?.findIndex((node) => node.closed === true) ?? -1;
+    const above = closed > 0 ? path?.[closed - 1] : undefined;
+    if (above !== undefined) lines?.add(above.id);
     return {
-      lines:
-        path === undefined ? undefined : (withLine(new Set<string>(), path) ?? new Set<string>()),
+      lines,
       target: target === undefined ? undefined : JSON.stringify(target),
     };
   }, [hash, pathname, root, search]);

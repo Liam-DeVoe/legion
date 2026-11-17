@@ -137,8 +137,9 @@ export function isProposed(node: TreeNode): boolean {
 }
 
 /** Whether the node is overtaken: a later node took its place. It is no row until the reader
- *  opens its parent's line, and it and every node under it are `closed`. */
-export function isOvertaken(node: TreeNode): boolean {
+ *  opens its parent's line, and it and every node under it are `closed`. A parent line or a chip
+ *  carries its node's life, so it is read the same way. */
+export function isOvertaken(node: Pick<TreeNode, "life">): boolean {
   return node.life === "overtaken";
 }
 

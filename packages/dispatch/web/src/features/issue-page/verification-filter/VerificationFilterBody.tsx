@@ -179,16 +179,17 @@ export function VerificationFilterBody({
   whole?: TreeNode;
 }): ReactNode {
   // The lines of overtaken nodes, each by the id of the node whose overtaken children it folds: the
-  // issue's, for its overtaken statements and its overtaken checks that serve none, and a
-  // statement's, for its overtaken checks. Each is drawn closed until the reader opens it. While
-  // the words filter holds words, as the page's address carries them (`useHoldsWords`, trimmed as
-  // the view trims them), each is drawn open, since the view then holds only the query's matches
-  // and the statements they stand under, so every line in it holds a match; a line the reader
-  // closed under the words stays closed, as the outline's do (`IssueTree.tsx`'s `linesOpen`). The
-  // body reads the view as those lines leave it (`foldOvertaken`), so a statement's overtaken
-  // checks are rows of the tree only while its line is open, and the issue's overtaken rows are
-  // drawn under its own line, after every other row (`treeRows`). The issue's reading, which the
-  // summary and the chips count, is read from the view as it came, whatever the lines hold.
+  // issue's, for its statements and its checks that serve none at or under an overtaken node
+  // (`foldsToIssueLine`), and a statement's, for its overtaken checks. Each is drawn closed until
+  // the reader opens it. While the words filter holds words, as the page's address carries them
+  // (`useHoldsWords`, trimmed as the view trims them), each is drawn open, since the view then
+  // holds only the query's matches and the statements they stand under, so every line in it holds
+  // a match; a line the reader closed under the words stays closed, as the outline's do
+  // (`IssueTree.tsx`'s `linesOpen`). The body reads the view as those lines leave it
+  // (`foldOvertaken`), so a statement's overtaken checks are rows of the tree only while its line
+  // is open, and the issue's folded rows are drawn under its own line, after every other row
+  // (`treeRows`). The issue's reading, which the summary and the chips count, is read from the
+  // view as it came, whatever the lines hold.
   const [lines, setLines] = useState<OvertakenLines>(NO_LINES);
   const holdsWords = useHoldsWords();
   const unfolded = view;
@@ -259,10 +260,10 @@ export function VerificationFilterBody({
   // The rows are drawn once all three reads hold an answer, and not while one is out or failed.
   const answered = reads.state === "answered";
   const rows = answered && holds ? treeRows(view.id, shown, loose, others) : [];
-  // The rows the issue's line of overtaken nodes holds: its overtaken statements, each with its
-  // checks, and its overtaken checks that serve none.
-  const shownOvertaken = shown.filter((statement) => isOvertaken(statement.node));
-  const looseOvertaken = loose.filter((check) => isOvertaken(check.node));
+  // The rows the issue's line of overtaken nodes holds: its statements at or under an overtaken
+  // node, each with its checks, and its checks that serve none at or under one.
+  const shownOvertaken = shown.filter((statement) => foldsToIssueLine(statement.node));
+  const looseOvertaken = loose.filter((check) => foldsToIssueLine(check.node));
   // Each line of overtaken nodes the tree draws is one of its rows too, by its own id
   // (`lineRow`): the keys walk to it as to a row, and it takes the tree's one tab stop as a row
   // does.
@@ -307,9 +308,13 @@ export function VerificationFilterBody({
     setLines((held) => toggledLines(held, id, opening, holdsWords));
   };
   /** The line of overtaken nodes under the node `id`, as its row draws it, where `id` is the
-   *  issue's and it holds any overtaken row, or a statement's that holds an overtaken check. */
+   *  issue's and it holds any row, or a statement's that holds an overtaken check. The issue's
+   *  counts the overtaken nodes its rows fold with, each once (`foldedWith`). */
   const lineOf = (id: string): OvertakenFoldState | undefined => {
-    const held = id === view.id ? shownOvertaken.length + looseOvertaken.length : fold.held.get(id);
+    const held =
+      id === view.id
+        ? new Set([...shownOvertaken, ...looseOvertaken].map(({ node }) => foldedWith(node))).size
+        : fold.held.get(id);
     return held === undefined || held === 0
       ? undefined
       : {
@@ -520,9 +525,9 @@ export function VerificationFilterBody({
               {others.map((node) => (
                 <OtherRow key={node.id} node={node} tabIndex={tabIndexFor(node.id)} />
               ))}
-              {/* The issue's overtaken statements, and its overtaken checks that serve none, fold
-                  to one line after every other row, which the reader opens in place; opened, it
-                  holds them as rows of the tree. */}
+              {/* The issue's statements, and its checks that serve none, at or under an
+                  overtaken node fold to one line after every other row, which the reader opens in
+                  place; opened, it holds them as rows of the tree. */}
               {issueLine === undefined ? null : (
                 <OvertakenFold level={1} line={issueLine}>
                   {shownOvertaken.map((statement) => (
@@ -644,25 +649,25 @@ function treeRows(
   loose: readonly CheckReading[],
   others: readonly TreeNode[]
 ): string[] {
-  // The issue's overtaken statements and its overtaken checks stand under its line of overtaken
-  // nodes, after every other row the tree draws, so their ids follow every other row's. Read once:
-  // neither half holds a row of the other.
+  // The issue's statements and its checks that serve none at or under an overtaken node stand
+  // under its line of overtaken nodes, after every other row the tree draws, so their ids follow
+  // every other row's. Read once: neither half holds a row of the other.
   const lined = [
     ...statements.map((statement) => statement.node),
     ...loose.map((check) => check.node),
   ];
-  if (lined.some(isOvertaken) && (others.length > 0 || !lined.every(isOvertaken))) {
+  if (lined.some(foldsToIssueLine) && (others.length > 0 || !lined.every(foldsToIssueLine))) {
     return [
       ...treeRows(
         issue,
-        statements.filter((statement) => !isOvertaken(statement.node)),
-        loose.filter((check) => !isOvertaken(check.node)),
+        statements.filter((statement) => !foldsToIssueLine(statement.node)),
+        loose.filter((check) => !foldsToIssueLine(check.node)),
         others
       ),
       ...treeRows(
         issue,
-        statements.filter((statement) => isOvertaken(statement.node)),
-        loose.filter((check) => isOvertaken(check.node)),
+        statements.filter((statement) => foldsToIssueLine(statement.node)),
+        loose.filter((check) => foldsToIssueLine(check.node)),
         []
       ).slice(1),
     ];
@@ -678,6 +683,24 @@ function treeRows(
   ];
 }
 
+/** Whether the issue's line of overtaken nodes holds `node`, one of its statements or of its
+ *  checks that serve none: an overtaken one, and one at or under an overtaken node in the view's
+ *  tree (`closed`), such as a statement under the line of an overtaken question the view draws
+ *  no row for. Each is drawn as an overtaken one is, under that line and nowhere else. */
+function foldsToIssueLine(node: TreeNode): boolean {
+  return isOvertaken(node) || node.closed === true;
+}
+
+/** The overtaken node a row of the issue's line folds with, by its id, which the line counts
+ *  once however many of its rows fold with it: the row itself where it is overtaken and stands
+ *  under no overtaken parent, and else the parent the view draws as its parent line. The view
+ *  draws nothing above that parent, so a row under a parent that is not overtaken itself but
+ *  stands under an overtaken node is counted by that parent. */
+function foldedWith(node: TreeNode): string {
+  const line = node.parentLine;
+  return line !== undefined && (isOvertaken(line) || !isOvertaken(node)) ? line.id : node.id;
+}
+
 /** The id of a check's row under a statement. A check that serves two statements is drawn
  *  under each, so its node's id names two rows, and the statement's id beside it names one. */
 function checkRowId(statement: string, check: string): string {
@@ -685,11 +708,13 @@ function checkRowId(statement: string, check: string): string {
 }
 
 /**
- * The view as its lines of overtaken nodes leave it: each statement's
- * overtaken checks out of it, and, where its line is open (`open`, by the statement's id), after
- * its other checks, so they are drawn and read under the line that holds them; and how many
- * overtaken checks each statement that holds any holds, by its id, which its line says. A view
- * no statement of which holds an overtaken check is the view itself.
+ * The view as its lines of overtaken nodes leave it: each statement's overtaken checks out of
+ * it, with each result of one that the words filter lifted under the statement with the check as
+ * its parent line (`presets.ts`), which the body draws with that check (`keptChecks`), and, where
+ * its line is open (`open`, by the statement's id), after its other checks, so they are drawn and
+ * read under the line that holds them; and how many overtaken checks each statement that holds
+ * any holds, by its id, which its line says. A view no statement of which holds an overtaken
+ * check is the view itself.
  */
 function foldOvertaken(
   view: TreeNode,
@@ -697,13 +722,24 @@ function foldOvertaken(
 ): { readonly held: ReadonlyMap<string, number>; readonly view: TreeNode } {
   const held = new Map<string, number>();
   const children = view.children.map((child) => {
-    const under = child.type === "requirement" ? child.children.filter(isOvertaken) : [];
+    const under =
+      child.type === "requirement"
+        ? child.children.filter(
+            (one) =>
+              isOvertaken(one) ||
+              (one.type === "result" && one.parentLine !== undefined && isOvertaken(one.parentLine))
+          )
+        : [];
     if (under.length === 0) return child;
-    held.set(child.id, under.length);
+    // Each overtaken check once, whether the view holds the check or only results of it.
+    held.set(
+      child.id,
+      new Set(under.map((one) => (isOvertaken(one) ? one.id : one.parentLine?.id))).size
+    );
     return {
       ...child,
       children: [
-        ...child.children.filter((one) => !isOvertaken(one)),
+        ...child.children.filter((one) => !under.includes(one)),
         ...(open(child.id) ? under : []),
       ],
     };
@@ -1125,7 +1161,7 @@ function Statement({
   /** The line the statement's overtaken checks fold to, where it holds any. */
   line?: OvertakenFoldState;
   /** Whether the statement is drawn under the issue's line of overtaken nodes, which is where
-   *  an overtaken statement is drawn. */
+   *  an overtaken statement, and one at or under an overtaken node, is drawn. */
   lined?: boolean;
   /** Sets the press of the check row with this id (the body's `press`). */
   onPress: (row: string, pressed: boolean | undefined) => void;
@@ -1141,9 +1177,9 @@ function Statement({
   tabIndexFor: (id: string) => 0 | -1;
 }): ReactNode {
   const node = statement.node;
-  // An overtaken statement is drawn under the issue's line and nowhere else, and its overtaken
-  // checks under its own line, after its other checks.
-  if (isOvertaken(node) && lined !== true) return null;
+  // An overtaken statement, and one at or under an overtaken node, is drawn under the issue's line
+  // and nowhere else, and its overtaken checks under its own line, after its other checks.
+  if (foldsToIssueLine(node) && lined !== true) return null;
   const overtakenChecks = statement.checks.filter((check) => isOvertaken(check.node));
   statement = {
     ...statement,
@@ -1348,9 +1384,12 @@ function Check({
   // Whether the facts were drawn when the pointer went down: the focus its press puts in the row
   // draws them before the click, and the click must shut only what was drawn before it.
   const drawnAtPress = useRef<boolean | undefined>(undefined);
-  // An overtaken check is drawn under the line it folds to and nowhere else; its hooks stand above
-  // this, so every drawing calls them alike.
-  if (isOvertaken(check.node) && lined !== true) return null;
+  // An overtaken check is drawn under the line it folds to and nowhere else, and so is a check
+  // that serves no statement at or under an overtaken node, under the issue's line; its hooks
+  // stand above this, so every drawing calls them alike.
+  if ((loose ? foldsToIssueLine(check.node) : isOvertaken(check.node)) && lined !== true) {
+    return null;
+  }
   const node = check.node;
   const surface = node.facts.find((fact) => fact.name === "surface")?.value ?? "";
   const opened = pressed ?? focusInside;

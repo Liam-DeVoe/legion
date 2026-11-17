@@ -1189,6 +1189,53 @@ test("the Verification view draws an overtaken check the words match under an op
   }
 });
 
+// Under Verification a words match on a result of an overtaken check is drawn under the check's
+// open line, with the check: the view lifts the result under its statement, with the check as
+// its parent line, and the body draws the check that holds it under the statement's line. With
+// the check live the result is drawn with it, and no line is drawn.
+test("the Verification view draws a result of an overtaken check the words match under an open line", () => {
+  const passed = checkThat("c-one", true);
+  const seen: CheckBlock = {
+    ...checkThat("c-two", false),
+    results: [
+      result({
+        check_block_id: "c-two",
+        failed: 1,
+        id: "result-c-two",
+        observed: "zebrafinch seen",
+        verdict: "fail",
+      }),
+    ],
+  };
+  const seenId = checkNode(seen).id;
+  const issue = node(KEY, "issue", [
+    statementNode("r1", "The page draws the checks.", [checkNode(passed), checkNode(seen)]),
+  ]);
+  const overtaken = drawVerification(
+    stamped(issue, { [seenId]: { life: "overtaken" } }),
+    [passed, seen],
+    "zebrafinch"
+  );
+  try {
+    expect(overtaken.container.textContent).toContain("zebrafinch");
+    const line = theLine(overtaken.container);
+    expect(line).toHaveAttribute("aria-expanded", "true");
+    const check = rowOf(overtaken.container, seenId);
+    expect(check !== null && line.contains(check)).toBe(true);
+    expect(check?.textContent).toContain("zebrafinch seen");
+  } finally {
+    overtaken.unmount();
+  }
+
+  const live = drawVerification(issue, [passed, seen], "zebrafinch");
+  try {
+    expect(live.container.textContent).toContain("zebrafinch seen");
+    expect(live.container.querySelector("[data-overtaken-line]")).toBeNull();
+  } finally {
+    live.unmount();
+  }
+});
+
 /** An issue of one statement whose second check a later one took the place of, and the checks
  *  the results read answers for it: the live one, then the overtaken one. */
 function statementWithOvertakenCheck() {
@@ -2290,6 +2337,102 @@ test("a node the view holds live stays live whatever the outline says", () => {
     expect(markKeys(readNodeOf(view, readId)), readId).toEqual([]);
   }
   expect(linesIn(view)).toEqual([]);
+});
+
+// A statement whose parent in the tree read is an overtaken question, which the Spec view draws
+// no row for, stands under that question in a view's held read as it does in the outline: it is
+// closed in the Spec and the Verification views alike, draws no gap, "No check" included, and
+// under Spec folds to its group's line, which opens on it. Under Verification it folds as an
+// overtaken statement does, to the issue's line, which counts the question once and holds it
+// once opened, by a press or by an address that names it. With nothing overtaken it is a row
+// with the mark its check gives it, as the statement beside it is.
+test("a statement under an overtaken question a view draws no row for draws no No check", async () => {
+  const user = userEvent.setup();
+  const R3 = "spec#b-r3";
+  const rootWith = (asked: Partial<TreeAnswerNode>): TreeNode => {
+    const outline = outlineOf([
+      readBlock("r1", "requirement", "spec", 0),
+      readBlock("c1", "check", "verification-md", 0, { parent: "r1" }),
+      readNode("ask-1", "ask", asked),
+      readBlock("r3", "requirement", "spec", 1, { parent: "ask-1" }),
+      readBlock("c3", "check", "verification-md", 1, { parent: "r3" }),
+    ]);
+    const asks = { id: "ask-1", line: "Words of ask-1.", supertag: "ask" };
+    const spec = readAnswer([
+      readBlock("r1", "requirement", "spec", 0, { mark: "query" }),
+      readBlock("r3", "requirement", "spec", 1, {
+        mark: "query",
+        parent: "ask-1",
+        parent_line: asks,
+      }),
+    ]);
+    const verification = readAnswer([
+      readBlock("r1", "requirement", "spec", 0, { mark: "context" }),
+      readBlock("c1", "check", "verification-md", 0, { mark: "query", parent: "r1" }),
+      readBlock("r3", "requirement", "spec", 1, {
+        mark: "context",
+        parent: "ask-1",
+        parent_line: asks,
+      }),
+      readBlock("c3", "check", "verification-md", 1, { mark: "query", parent: "r3" }),
+    ]);
+    return { ...outline, views: { spec, verification } };
+  };
+  const closedIn = (root: TreeNode, preset: "spec" | "verification") =>
+    readNodeOf(presetView(root, preset, "").root, "r3")?.closed === true;
+
+  const overtaken = rootWith({ state: "overtaken" });
+  const detail = drawSpec(overtaken);
+  try {
+    expect(detail.container.querySelector('[data-spec-mark="no_check"]')).toBeNull();
+    expect(rowOf(detail.container, "spec#b-r1")).toHaveAttribute("data-spec-mark", "unknown");
+    expect(rowOf(detail.container, R3)).toBeNull();
+    const line = theLine(detail.container);
+    await user.click(line);
+    await waitFor(() => expect(line).toHaveAttribute("aria-expanded", "true"));
+    expect(rowOf(detail.container, R3)).not.toBeNull();
+    expect(rowOf(detail.container, R3)).not.toHaveAttribute("data-spec-mark");
+  } finally {
+    detail.unmount();
+  }
+  expect([closedIn(overtaken, "spec"), closedIn(overtaken, "verification")]).toEqual([true, true]);
+
+  const verification = drawVerification(overtaken, []);
+  try {
+    expect(rowOf(verification.container, "spec#b-r1")).not.toBeNull();
+    expect(rowOf(verification.container, R3)).toBeNull();
+    const line = theLine(verification.container);
+    expect(line).toHaveAttribute("aria-expanded", "false");
+    expect(line.textContent).toBe(`1 ${CONTROL_LABELS.overtaken_count}`);
+    await user.click(line);
+    expect(line).toHaveAttribute("aria-expanded", "true");
+    const folded = rowOf(verification.container, R3);
+    expect(folded !== null && line.contains(folded)).toBe(true);
+    expect(folded).toHaveAttribute("data-statement-state", "unknown");
+    expect(folded?.querySelector("[data-gap]")).toBeNull();
+  } finally {
+    verification.unmount();
+  }
+  const addressed = drawVerification(overtaken, [], "", `/issues/${KEY}/verification#b-r3`);
+  try {
+    const line = theLine(addressed.container);
+    await waitFor(() => expect(line).toHaveAttribute("aria-expanded", "true"));
+    const named = rowOf(addressed.container, R3);
+    expect(named !== null && line.contains(named)).toBe(true);
+  } finally {
+    addressed.unmount();
+  }
+
+  const live = rootWith({});
+  const control = drawSpec(live);
+  try {
+    expect(rowOf(control.container, "spec#b-r1")).toHaveAttribute("data-spec-mark", "unknown");
+    expect(rowOf(control.container, R3)).toHaveAttribute("data-spec-mark", "unknown");
+    expect(control.container.querySelector("[data-overtaken-line]")).toBeNull();
+  } finally {
+    control.unmount();
+  }
+  expect([closedIn(live, "spec"), closedIn(live, "verification")]).toEqual([false, false]);
 });
 
 /** Where the page's address stands, drawn by a probe that runs `useOvertakenTarget` as the

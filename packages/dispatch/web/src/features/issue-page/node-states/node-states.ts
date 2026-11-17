@@ -67,25 +67,29 @@ function carriesMarks(root: TreeNode): boolean {
  * none takes no states. Each takes the marks its entry holds and no other, whatever it carried
  * before, so a tree stamped again - a view's, whose rows are the outline's nodes - carries the
  * new states alone: a live or settled node has none. A node that is overtaken is `closed`, and so
- * is every node under it in `root`, and no other node is. A proposed node and a closed one
- * draw no gap, the page's own included: a gap says what the issue's work still lacks,
- * and neither is part of that work. No reader is waited on for a closed node either: a later
- * node took its place, so the page opens on none of them and draws none in the waiting tone,
- * though an open question among them is still a `question`, which `q` reaches. A gap
- * or a wait an earlier stamp took from a node is not given back. Each chip, in `chips` and in
- * `alsoUnder`, carries the marks of the node of `root` whose reference it names, whatever
- * version it pins, and a chip naming no node of `root` keeps its own, so a node is marked
- * wherever it is drawn. Every node's `held` is counted again by `heldBy` over its new
- * children, which counts a parent's overtaken children as the one row that folds them.
+ * is every node under it in `root`. So is a node drawn under its parent's line rather than under
+ * its parent's row - a view's row whose parent the view draws no row for - where that parent is
+ * overtaken, or is one of `closedAbove`, the read ids of the parents that stand at or under an
+ * overtaken node themselves: the node stands under that parent all the same. No other node is
+ * closed. A proposed node and a closed one draw no gap, the page's own included: a gap says what
+ * the issue's work still lacks, and neither is part of that work. No reader is waited on for a
+ * closed node either: a later node took its place, so the page opens on none of them and draws
+ * none in the waiting tone, though an open question among them is still a `question`, which `q`
+ * reaches. A gap or a wait an earlier stamp took from a node is not given back. Each chip, in
+ * `chips` and in `alsoUnder`, carries the marks of the node of `root` whose reference it names,
+ * whatever version it pins, and a chip naming no node of `root` keeps its own, so a node is marked
+ * wherever it is drawn. Every node's `held` is counted again by `heldBy` over its new children,
+ * which counts a parent's overtaken children as the one row that folds them.
  *
- * With no states, over a tree that carries no mark, it answers `root` itself.
+ * With no states and no `closedAbove`, over a tree that carries no mark, it answers `root` itself.
  */
 export function stampStates(
   root: TreeNode,
   states: ReadonlyMap<string, NodeStates>,
-  heldBy: (children: readonly TreeNode[]) => number
+  heldBy: (children: readonly TreeNode[]) => number,
+  closedAbove?: ReadonlySet<string>
 ): TreeNode {
-  if (states.size === 0 && !carriesMarks(root)) return root;
+  if (states.size === 0 && closedAbove === undefined && !carriesMarks(root)) return root;
   const statesOf = (readId: string | undefined): NodeStates | undefined =>
     readId === undefined ? undefined : marksOf(states.get(readId));
   // The marks of each node of `root` that has a reference, by that reference without the version
@@ -104,7 +108,16 @@ export function stampStates(
   };
   const stamp = (node: TreeNode, under: boolean): TreeNode => {
     const { closed: _closed, ...own } = withMarks(node, statesOf(node.readId));
-    const closed = under || isOvertaken(own);
+    const line =
+      own.parentLine === undefined
+        ? undefined
+        : withMarks(own.parentLine, statesOf(own.parentLine.readId));
+    const closed =
+      under ||
+      isOvertaken(own) ||
+      (line !== undefined &&
+        (isOvertaken(line) ||
+          (line.readId !== undefined && closedAbove?.has(line.readId) === true)));
     const children = own.children.map((child) => stamp(child, closed));
     return {
       ...own,
@@ -114,9 +127,7 @@ export function stampStates(
       ...(closed ? { closed: true, waiting: false } : {}),
       gaps: closed || isProposed(own) ? [] : own.gaps,
       held: heldBy(children),
-      ...(own.parentLine === undefined
-        ? {}
-        : { parentLine: withMarks(own.parentLine, statesOf(own.parentLine.readId)) }),
+      ...(line === undefined ? {} : { parentLine: line }),
     };
   };
   return stamp(root, false);
@@ -131,8 +142,10 @@ export function stampStates(
  * first line alone (`parent_line`), a node an address names that the view does not draw - takes
  * the marks the outline's node of that read id carries, which the read with no view gave it. A
  * node the view's answer holds takes that answer's marks alone, so a node the view holds live
- * stays live whatever the outline says. Both come from the tree read, which the page has already
- * made: no read is sent for them.
+ * stays live whatever the outline says. A row the view draws under the line of such a parent
+ * stands under it as the outline holds it: closed where the outline holds that parent at or under
+ * an overtaken node (`stampStates`'s `closedAbove`). Both come from the tree read, which the page
+ * has already made: no read is sent for them.
  */
 export function closeOvertaken(
   root: TreeNode,
@@ -155,17 +168,22 @@ export function closeOvertaken(
   };
   walk(root);
   if (missing.size === 0) return stampStates(root, states, heldBy);
-  // Each of those takes the marks of the outline's last node of that read id that carries any.
+  // Each of those takes the marks of the outline's last node of that read id that carries any,
+  // and each the outline holds at or under an overtaken node closes the rows drawn under its line.
   const merged = new Map(states);
+  const closedAbove = new Set<string>();
   const indexOutline = (node: TreeNode): void => {
     const marks = marksOf(node);
     if (node.readId !== undefined && marks !== undefined && missing.has(node.readId)) {
       merged.set(node.readId, marks);
     }
+    if (node.readId !== undefined && node.closed === true && missing.has(node.readId)) {
+      closedAbove.add(node.readId);
+    }
     for (const child of node.children) indexOutline(child);
   };
   indexOutline(outline);
-  return stampStates(root, merged, heldBy);
+  return stampStates(root, merged, heldBy, closedAbove);
 }
 
 /** The marks of each node of `root` that has a reference and a mark, by that reference without
