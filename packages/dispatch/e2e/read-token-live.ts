@@ -91,6 +91,10 @@ interface Answer {
   readonly code: string;
 }
 
+/** How long one request may take, its broker trade included: the token client waits out a pod
+ *  session's missing registration for as long as its caller does (`BrokerTokenClient.token`). */
+const REQUEST_DEADLINE_MS = 30_000;
+
 /** Sends `method path` to Dispatch under `credential`, with a DPoP proof for that very URL. */
 async function present(
   credential: RequestCredential,
@@ -100,14 +104,16 @@ async function present(
   headers: Readonly<Record<string, string>> = {}
 ): Promise<Answer> {
   const url = new URL(path, baseUrl).toString();
+  const deadline = AbortSignal.timeout(REQUEST_DEADLINE_MS);
   const response = await fetch(url, {
     body: body === undefined ? undefined : JSON.stringify(body),
     headers: {
       ...(body === undefined ? {} : { "Content-Type": "application/json" }),
       ...headers,
-      ...(await credential.headers(method, url)),
+      ...(await credential.headers(method, url, undefined, deadline)),
     },
     method,
+    signal: deadline,
   });
   const text = await response.text();
   let code = "";

@@ -702,7 +702,10 @@ export async function dialChannelNats(
   try {
     const { natsCredential } = inbound
     const broker = natsCredential.kind === "broker" ? natsCredential.broker : undefined
-    await unlessStopped(broker?.ready() ?? Promise.resolve())
+    // A pod session not registered yet is waited out for the server's life (#4153): Claude Code
+    // does not restart a channel server that ended, so a start that failed on it would leave the
+    // session with no delivery at all. `unlessStopped` still ends the wait at a stop.
+    await unlessStopped(broker?.ready(signal ?? new AbortController().signal) ?? Promise.resolve())
     const dialing = dial(
       natsConnectionOptions({ servers: inbound.natsUrls, name, credential: natsCredential }),
     )

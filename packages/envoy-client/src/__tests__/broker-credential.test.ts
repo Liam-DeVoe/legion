@@ -54,13 +54,14 @@ function noFile(env: DispatchEnvironment) {
   return readEnvoyConfig(path.join(tempDir(), "envoy.json"), env, { cwd: tempDir() });
 }
 
-/** One trade the stub broker was asked. */
+/** One trade the stub broker was asked, and the access token it answered. */
 interface Trade {
   readonly form: URLSearchParams;
   readonly proof: Record<string, unknown>;
+  readonly token: string;
 }
 
-/** A broker that mints an access token good for `seconds`, numbering each one. */
+/** A broker that mints a random access token good for `seconds`, kept with its trade. */
 function stubBroker(seconds: number): { url: string; trades: Trade[] } {
   const trades: Trade[] = [];
   const server = Bun.serve({
@@ -68,12 +69,14 @@ function stubBroker(seconds: number): { url: string; trades: Trade[] } {
     hostname: "127.0.0.1",
     fetch: async (request) => {
       const parts = (request.headers.get("DPoP") ?? "").split(".");
+      const token = fixtureSecret("broker");
       trades.push({
         form: new URLSearchParams(await request.text()),
         proof: JSON.parse(Buffer.from(parts[1] ?? "", "base64url").toString("utf8")),
+        token,
       });
       return Response.json({
-        access_token: `broker-access-token-${trades.length}`,
+        access_token: token,
         issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
         token_type: "DPoP",
         expires_in: seconds,
@@ -251,7 +254,7 @@ test("with no bearer at all, the session's credential is its own identity traded
   // The access token is presented under the DPoP scheme, with a proof naming this request and
   // hashing the token it is presented beside: a bearer copy of it buys nothing.
   const asked = dispatch.asked[0];
-  expect(asked?.authorization).toBe("DPoP broker-access-token-1");
+  expect(asked?.authorization).toBe(`DPoP ${broker.trades[0]?.token}`);
   const claims = JSON.parse(
     Buffer.from(asked?.proof.split(".")[1] ?? "", "base64url").toString("utf8")
   );
@@ -259,7 +262,7 @@ test("with no bearer at all, the session's credential is its own identity traded
   expect(claims.htu).toBe(`${dispatch.url}/api/v1/issues`);
   const digest = await crypto.subtle.digest(
     "SHA-256",
-    new TextEncoder().encode("broker-access-token-1")
+    new TextEncoder().encode(broker.trades[0]?.token ?? "")
   );
   expect(claims.ath).toBe(Buffer.from(digest).toString("base64url"));
 });
@@ -279,8 +282,8 @@ test("a session past its token's life trades again, with nothing restarted", asy
 
   expect(broker.trades.length).toBe(2);
   expect(dispatch.asked.map((one) => one.authorization)).toEqual([
-    "DPoP broker-access-token-1",
-    "DPoP broker-access-token-2",
+    `DPoP ${broker.trades[0]?.token}`,
+    `DPoP ${broker.trades[1]?.token}`,
   ]);
 });
 
@@ -307,9 +310,9 @@ test("each session of one process trades under its own name, read at every trade
     "session-two",
   ]);
   expect(dispatch.asked.map((one) => one.authorization)).toEqual([
-    "DPoP broker-access-token-1",
-    "DPoP broker-access-token-2",
-    "DPoP broker-access-token-1",
+    `DPoP ${broker.trades[0]?.token}`,
+    `DPoP ${broker.trades[1]?.token}`,
+    `DPoP ${broker.trades[0]?.token}`,
   ]);
 });
 
@@ -329,19 +332,22 @@ test("the listener takes the same credential, and a configured bearer still wins
   expect(written.credential?.secret()).toBe(listenerToken);
 });
 
-/** A broker whose tokens name the session the trade asked to write under, as the real one's do
- *  (the broker records the minted token against that session and the listener reads it back at
- *  the introspection route). */
-function sessionBroker(): { url: string; sessions: string[] } {
+/** A broker that mints a random token for each trade and records it against the session the
+ *  trade asked to write under, as the real one does (the listener reads that session back at the
+ *  introspection route): `sessionOf` maps each token minted to its session. */
+function sessionBroker(): { url: string; sessions: string[]; sessionOf: Map<string, string> } {
   const sessions: string[] = [];
+  const sessionOf = new Map<string, string>();
   const server = Bun.serve({
     port: 0,
     hostname: "127.0.0.1",
     fetch: async (request) => {
       const session = new URLSearchParams(await request.text()).get("session") ?? "";
       sessions.push(session);
+      const token = fixtureSecret("broker");
+      sessionOf.set(token, session);
       return Response.json({
-        access_token: `token-for-${session}`,
+        access_token: token,
         issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
         token_type: "DPoP",
         expires_in: 600,
@@ -349,21 +355,25 @@ function sessionBroker(): { url: string; sessions: string[] } {
     },
   });
   servers.push(server);
-  return { url: `http://127.0.0.1:${server.port}`, sessions };
+  return { url: `http://127.0.0.1:${server.port}`, sessions, sessionOf };
 }
 
-/** One call the stub listener was sent: the session its body acts as, and the session the token
- *  it presented names. */
+/** One call the stub listener was sent: the session its body acts as, and the token it
+ *  presented. */
 interface Acted {
   readonly path: string;
   readonly body: string;
   readonly token: string;
 }
 
-/** A listener that binds the session a broker token names, as the real one does
- *  (`sessionNotBound`, packages/envoy/cmd/listener/brokerauth.go): a body naming another session
- *  is 403, and nothing else about the call is judged. */
-function sessionBoundListener(): { url: string; acted: Acted[] } {
+/** A listener that binds the session a broker token was minted for (`sessionOf`, a
+ *  {@link sessionBroker}'s), as the real one does (`sessionNotBound`,
+ *  packages/envoy/cmd/listener/brokerauth.go): a body naming another session is 403, and nothing
+ *  else about the call is judged. */
+function sessionBoundListener(sessionOf: ReadonlyMap<string, string>): {
+  url: string;
+  acted: Acted[];
+} {
   const acted: Acted[] = [];
   const server = Bun.serve({
     port: 0,
@@ -375,7 +385,7 @@ function sessionBoundListener(): { url: string; acted: Acted[] } {
         typeof sent === "object" && sent !== null && "session_id" in sent ? sent.session_id : "";
       const body = typeof named === "string" ? named : "";
       acted.push({ path: new URL(request.url).pathname, body, token });
-      if (token !== `token-for-${body}`) {
+      if (sessionOf.get(token) !== body) {
         return Response.json(
           { error: `this request acts as session ${body}, and its credential names another` },
           { status: 403 }
@@ -401,7 +411,7 @@ test("a role handed back for the session this process left presents that session
   // hand-back fails, and the role stays with a session whose subject this process has closed
   // until the registration's TTL lapses.
   const broker = sessionBroker();
-  const listener = sessionBoundListener();
+  const listener = sessionBoundListener(broker.sessionOf);
   const env = podEnvironment(broker.url, listener.url);
   let current = "session-one";
   const resolution = envoySettings(env, noFile(env), { nats: false, session: () => current });
@@ -432,10 +442,13 @@ test("a role handed back for the session this process left presents that session
     delivery: { consumer: true, epoch: "epoch-1" },
   });
 
-  expect(listener.acted.map((one) => [one.path, one.body, one.token])).toEqual([
-    ["/v1/roles/set", "session-one", "token-for-session-one"],
-    ["/v1/interests/unsubscribe", "session-one", "token-for-session-one"],
-    ["/v1/interests/subscribe", "session-two", "token-for-session-two"],
+  // Each call presented a token the broker minted for the session its body acts as.
+  expect(
+    listener.acted.map((one) => [one.path, one.body, broker.sessionOf.get(one.token)])
+  ).toEqual([
+    ["/v1/roles/set", "session-one", "session-one"],
+    ["/v1/interests/unsubscribe", "session-one", "session-one"],
+    ["/v1/interests/subscribe", "session-two", "session-two"],
   ]);
   // One trade per session, and the session this process left answered out of the token it
   // already held rather than trading again.
@@ -449,7 +462,7 @@ test("a session the host has left keeps no key and no renewing token", async () 
   // that session's role is handed back, Claude Code's handoff once the old id is deregistered —
   // and that session's client goes, while the session running now keeps the token it holds.
   const broker = sessionBroker();
-  const listener = sessionBoundListener();
+  const listener = sessionBoundListener(broker.sessionOf);
   const env = podEnvironment(broker.url, listener.url);
   let current = "session-one";
   const resolution = envoySettings(env, noFile(env), { nats: false, session: () => current });
@@ -530,15 +543,19 @@ test("stale() has the session's client drop its token, so its next headers() tra
   await credential.headers("GET", url);
   expect(broker.trades).toHaveLength(1);
   credential.stale?.();
-  expect((await credential.headers("GET", url)).Authorization).toBe("DPoP broker-access-token-2");
+  expect((await credential.headers("GET", url)).Authorization).toBe(
+    `DPoP ${broker.trades[1]?.token}`
+  );
 
   // A session a call names is told apart as `headers` tells it apart: only its client drops.
   await credential.headers("POST", url, "session-two");
   credential.stale?.("session-two");
   expect((await credential.headers("POST", url, "session-two")).Authorization).toBe(
-    "DPoP broker-access-token-4"
+    `DPoP ${broker.trades[3]?.token}`
   );
-  expect((await credential.headers("GET", url)).Authorization).toBe("DPoP broker-access-token-2");
+  expect((await credential.headers("GET", url)).Authorization).toBe(
+    `DPoP ${broker.trades[1]?.token}`
+  );
   expect(broker.trades.map((trade) => trade.form.get("session"))).toEqual([
     "session-one",
     "session-one",
@@ -554,16 +571,18 @@ const MACHINE_SESSION = "legion-demo-controller";
 /** What the broker answers a trade proved with the box key of a sign-in its person revoked. */
 const REVOKED = `${PERSON} revoked this machine's sign-in, so the key this proof was signed with trades nothing. Sign in again with \`agent-secrets login\`.`;
 
-/** One trade the stub broker was asked, and the thumbprint of the key its proof was signed with. */
+/** One trade the stub broker was asked, the thumbprint of the key its proof was signed with, and
+ *  the access token it answered, none where it refused the trade. */
 interface ProvedTrade {
   readonly form: URLSearchParams;
   readonly thumbprint: string;
+  readonly token: string | undefined;
 }
 
 /**
- * A broker that mints a token good for ten minutes for every trade, numbering each, except a
- * trade proved with a key whose thumbprint `revoked` holds, which it refuses as it refuses a
- * sign-in its person revoked.
+ * A broker that mints a random token good for ten minutes for every trade, kept with the trade,
+ * except a trade proved with a key whose thumbprint `revoked` holds, which it refuses as it
+ * refuses a sign-in its person revoked.
  */
 function signInBroker(): { url: string; trades: ProvedTrade[]; revoked: Set<string> } {
   const trades: ProvedTrade[] = [];
@@ -575,15 +594,16 @@ function signInBroker(): { url: string; trades: ProvedTrade[]; revoked: Set<stri
       const header = (request.headers.get("DPoP") ?? "").split(".")[0] ?? "";
       const { jwk } = JSON.parse(Buffer.from(header, "base64url").toString("utf8"));
       const thumbprint = await thumbprintOf(jwk);
-      trades.push({ form: new URLSearchParams(await request.text()), thumbprint });
-      if (revoked.has(thumbprint)) {
+      const token = revoked.has(thumbprint) ? undefined : fixtureSecret("broker");
+      trades.push({ form: new URLSearchParams(await request.text()), thumbprint, token });
+      if (token === undefined) {
         return Response.json(
           { error: "invalid_grant", error_description: REVOKED },
           { status: 400 }
         );
       }
       return Response.json({
-        access_token: `broker-token-${trades.length}`,
+        access_token: token,
         issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
         token_type: "DPoP",
         expires_in: 600,
@@ -677,8 +697,8 @@ test("a person's trade asks under the caller's own session, else the sign-in's n
     [SUBJECT_TOKEN_TYPE_PERSON, "ses_01a9", record.thumbprint],
   ]);
   expect(dispatch.asked.map((one) => one.authorization)).toEqual([
-    "DPoP broker-token-1",
-    "DPoP broker-token-2",
+    `DPoP ${broker.trades[0]?.token}`,
+    `DPoP ${broker.trades[1]?.token}`,
   ]);
 });
 
@@ -714,14 +734,14 @@ test("a caller acting as no session and one acting as AGENT_SECRETS_SESSION's se
   ]);
   // Every call presents the token its own caller's trade was answered.
   expect(dispatch.asked.map((one) => one.authorization)).toEqual([
-    "DPoP broker-token-1",
-    "DPoP broker-token-2",
-    "DPoP broker-token-1",
-    "DPoP broker-token-2",
-    "DPoP broker-token-3",
-    "DPoP broker-token-4",
-    "DPoP broker-token-3",
-    "DPoP broker-token-4",
+    `DPoP ${broker.trades[0]?.token}`,
+    `DPoP ${broker.trades[1]?.token}`,
+    `DPoP ${broker.trades[0]?.token}`,
+    `DPoP ${broker.trades[1]?.token}`,
+    `DPoP ${broker.trades[2]?.token}`,
+    `DPoP ${broker.trades[3]?.token}`,
+    `DPoP ${broker.trades[2]?.token}`,
+    `DPoP ${broker.trades[3]?.token}`,
   ]);
 });
 
@@ -749,8 +769,9 @@ test("with nobody signed in, a caller acting as no session and one acting as AGE
     ]);
   }
   expect(dispatch.asked).toHaveLength(4);
+  const answered = broker.trades.map((trade) => `DPoP ${trade.token}`);
   for (const one of dispatch.asked) {
-    expect(one.authorization).toStartWith("DPoP broker-access-token-");
+    expect(answered).toContain(one.authorization);
   }
 });
 
@@ -771,7 +792,9 @@ test("a client the factory failed to make is not kept: a store the person correc
   await rm(signInPath(signins, grace.person));
   await client.listAllIssues({});
   expect(broker.trades.map((trade) => trade.thumbprint)).toEqual([ada.thumbprint]);
-  expect(dispatch.asked.map((one) => one.authorization)).toEqual(["DPoP broker-token-1"]);
+  expect(dispatch.asked.map((one) => one.authorization)).toEqual([
+    `DPoP ${broker.trades[0]?.token}`,
+  ]);
 });
 
 test("a sign-in the broker refused for good fails every later call in its words, asking nothing and never trading the machine", async () => {
@@ -825,7 +848,9 @@ test("after a refusal, a new sign-in with a new box key gets a client of its own
     record.thumbprint,
     renewed.thumbprint,
   ]);
-  expect(dispatch.asked.map((one) => one.authorization)).toEqual(["DPoP broker-token-2"]);
+  expect(dispatch.asked.map((one) => one.authorization)).toEqual([
+    `DPoP ${broker.trades[1]?.token}`,
+  ]);
 });
 
 test("a sign-in the issuer has ended is remembered too: no trade at the broker, and no second refresh", async () => {
@@ -882,8 +907,8 @@ test("a process that turns the person trade off writes Dispatch as the machine w
   expect(broker.trades[0]?.thumbprint).not.toBe(record.thumbprint);
   expect(broker.trades[1]?.thumbprint).toBe(record.thumbprint);
   expect(dispatch.asked.map((one) => one.authorization)).toEqual([
-    "DPoP broker-token-1",
-    "DPoP broker-token-2",
+    `DPoP ${broker.trades[0]?.token}`,
+    `DPoP ${broker.trades[1]?.token}`,
   ]);
 });
 
@@ -891,9 +916,15 @@ test("a process that turns the person trade off writes Dispatch as the machine w
 const POD_SESSION = "implementer-g1";
 
 /** A broker that refuses every trade as unregistered (`registeredPodSession`) until `registered()`
- *  says the pod's deployment registered its session, and then mints a token. */
-function registeringBroker(registered: () => boolean): { url: string; trades: number[] } {
+ *  says the pod's deployment registered its session, and then mints a random token, kept in
+ *  `minted`. */
+function registeringBroker(registered: () => boolean): {
+  url: string;
+  trades: number[];
+  minted: string[];
+} {
   const trades: number[] = [];
+  const minted: string[] = [];
   const server = Bun.serve({
     port: 0,
     hostname: "127.0.0.1",
@@ -909,8 +940,10 @@ function registeringBroker(registered: () => boolean): { url: string; trades: nu
           { status: 400 }
         );
       }
+      const token = fixtureSecret("broker");
+      minted.push(token);
       return Response.json({
-        access_token: `registered-token-${trades.length}`,
+        access_token: token,
         issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
         token_type: "DPoP",
         expires_in: 600,
@@ -918,7 +951,7 @@ function registeringBroker(registered: () => boolean): { url: string; trades: nu
     },
   });
   servers.push(server);
-  return { url: `http://127.0.0.1:${server.port}`, trades };
+  return { url: `http://127.0.0.1:${server.port}`, trades, minted };
 }
 
 /** Turns of the event loop until `ready()` holds: no timer, so the test runs at the client's pace. */
@@ -967,7 +1000,7 @@ test("an unregistered pod session's call fails at its deadline naming the sessio
     expect(await outcome(waiting)).toBe("pending");
     registered = true;
     const next = await credential.headers("GET", url, undefined, new AbortController().signal);
-    expect(next.Authorization).toStartWith("DPoP registered-token-");
+    expect(broker.minted.map((token) => `DPoP ${token}`)).toContain(next.Authorization);
     expect(((await waiting) as Record<string, string>).Authorization).toBe(next.Authorization);
   } finally {
     warned.mockRestore();

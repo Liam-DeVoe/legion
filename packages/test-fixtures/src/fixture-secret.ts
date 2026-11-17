@@ -37,8 +37,10 @@ export function fixtureSecret(prefix: string): string {
  *  shorter one is never held and scrubs nothing. */
 const SHORTEST_HELD = 10;
 
-/** A line exempted from the check, with the reason after the marker. */
+/** A line exempted from the check, with the reason after the marker: on the line itself, or
+ *  on the line above as `fixture-secret-next-line`, so a line can be exempted and left as it was. */
 const EXEMPT = /\/\/ fixture-secret: \S/;
+const EXEMPT_NEXT = /^\s*\/\/ fixture-secret-next-line: \S/;
 
 /** An upper-case name that names a secret, as an environment variable or a constant does. A claim
  *  token names a role, not a credential, and is never held. */
@@ -58,11 +60,11 @@ const SINKS: readonly (readonly [RegExp, RegExp | undefined])[] = [
     new RegExp(String.raw`writeFile(?:Sync)?\(.*?,\s*${LITERAL}\s*,\s*\{[^}]*mode:\s*0o600`, "g"),
     undefined,
   ],
-  // A token or secret file, written with any mode: the path names it (`tokenFile`,
-  // `path.join(dir, "LEGION_BOOT_TOKEN")`, `secretFile`).
+  // A token or secret file, written with any mode, by `writeFile` or `Bun.write`: the path names
+  // it (`tokenFile`, `path.join(dir, "LEGION_BOOT_TOKEN")`, `secretFile`).
   [
     new RegExp(
-      String.raw`writeFile(?:Sync)?\(([^,]*(?:[Tt]oken|[Ss]ecret|[Cc]apability|TOKEN|SECRET)[^,]*),\s*${LITERAL}`,
+      String.raw`(?:writeFile(?:Sync)?|Bun\.write)\(([^,]*(?:[Tt]oken|[Ss]ecret|[Cc]apability|TOKEN|SECRET)[^,]*),\s*${LITERAL}`,
       "g"
     ),
     /./,
@@ -80,9 +82,17 @@ const SINKS: readonly (readonly [RegExp, RegExp | undefined])[] = [
   ],
   // A plain bearer.
   [new RegExp(String.raw`bearerCredential\(\s*${LITERAL}`, "g"), undefined],
-  // A daemon's registration secret or a boot token, as a stand-in answers or sends them, and a
-  // config's token (an `envoy.json`'s `token`, or a `!` command whose output is the token).
-  [new RegExp(String.raw`\b(?:secret|bootToken|token)\s*:\s*${LITERAL}`, "g"), undefined],
+  // A daemon's registration secret or a boot token, as a stand-in answers or sends them, a
+  // config's token (an `envoy.json`'s `token`, or a `!` command whose output is the token), and a
+  // stand-in's answer (`access_token`, `clientSecret`), each as a key, quoted or not. A claim
+  // token names a role, not a credential.
+  [
+    new RegExp(
+      String.raw`\b([A-Za-z0-9_]*(?:secret|Secret|token|Token))["']?\s*:\s*${LITERAL}`,
+      "g"
+    ),
+    /^(?!claimToken$)/,
+  ],
 ];
 
 /** A call that returns random characters, which a template may build a secret around. */
@@ -137,15 +147,18 @@ function mayBeHeld(literal: string): boolean {
 }
 
 /** Every `.ts` file under `dir` that holds tests or their fixtures: a `.test.ts` file, or any file
- *  under a `test`, `__tests__` or `scripts` directory, where the stand-ins and rigs live. It skips
- *  `node_modules`, `dist` and dot directories. */
+ *  under a `test`, `tests`, `__tests__` or `scripts` directory, where the stand-ins and rigs live.
+ *  It skips `node_modules`, `dist` and dot directories. */
 function testSources(dir: string): string[] {
   const out: string[] = [];
   for (const entry of readdirSync(dir)) {
     if (entry === "node_modules" || entry === "dist" || entry.startsWith(".")) continue;
     const at = path.join(dir, entry);
     if (statSync(at).isDirectory()) out.push(...testSources(at));
-    else if (/\.test\.ts$/.test(entry) || /[\\/](?:test|__tests__|scripts)[\\/].*\.ts$/.test(at)) {
+    else if (
+      /\.test\.ts$/.test(entry) ||
+      /[\\/](?:tests?|__tests__|scripts)[\\/].*\.ts$/.test(at)
+    ) {
       out.push(at);
     }
   }
@@ -158,6 +171,14 @@ function testSources(dir: string): string[] {
  * be a `fixtureSecret`; a line that hands a value the clients refuse, and so never hold, says why
  * in a `// fixture-secret: <reason>` comment on it. An empty list is the pass; a root that holds no
  * test source is an error, since a check that read nothing has not passed.
+ *
+ * It reads `.ts` sources one line at a time, at the sinks above, so five forms pass it unseen,
+ * and its own rows hold each one unseen, so this list cannot drift from the code: a call whose
+ * literal is on a line of its own (`bearerCredential(` on the line above); a secret handed through
+ * a variable whose name says nothing of a secret (`const value = "…"`, then `token: value`); a
+ * header written whole (`Authorization: "Bearer …"`); a file written to a path whose text names
+ * no secret (`writeFileSync(file, "…")`); and a committed vector, which is no `.ts` file
+ * (`testdata/*.json`). Such a fixture is the reviewer's to see.
  */
 export function wordBuiltFixtureSecrets(root: string): string[] {
   const files = testSources(root);
@@ -169,6 +190,7 @@ export function wordBuiltFixtureSecrets(root: string): string[] {
     lines.forEach((line, at) => {
       // A comment hands the clients nothing, and an exempted line says why it is none.
       if (EXEMPT.test(line) || /^\s*(?:\/\/|\/\*|\*)/.test(line)) return;
+      if (EXEMPT_NEXT.test(lines[at - 1] ?? "")) return;
       for (const [sink, names] of SINKS) {
         for (const match of line.matchAll(sink)) {
           const literal = match[match.length - 1] ?? "";

@@ -29,6 +29,10 @@
       "types": "./src/projected-token.ts",
       "bun": "./src/projected-token.ts"
     },
+    "./refusal-text": {
+      "types": "./src/refusal-text.ts",
+      "bun": "./src/refusal-text.ts"
+    },
     "./signins": {
       "types": "./src/signins.ts",
       "bun": "./src/signins.ts"

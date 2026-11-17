@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fixtureSecret, wordBuiltFixtureSecrets } from "./fixture-secret";
+import { temporaryDirectories } from "./temporary-directories";
 
 describe("fixtureSecret", () => {
   test("is its prefix, a dash and 24 random upper-case letters, new at every call", () => {
@@ -29,15 +29,16 @@ describe("fixtureSecret", () => {
 });
 
 describe("wordBuiltFixtureSecrets", () => {
+  const makeDirectory = temporaryDirectories("fixture-secret");
   const packageWith = (source: string): string => {
-    const root = mkdtempSync(path.join(tmpdir(), "fixture-secret-"));
+    const root = makeDirectory();
     writeFileSync(path.join(root, "probe.test.ts"), source);
     return root;
   };
 
   // A check that read nothing has not passed: a root with no test source is an error, not [].
   test("refuses a root that holds no test source", () => {
-    const root = mkdtempSync(path.join(tmpdir(), "fixture-secret-"));
+    const root = makeDirectory();
     writeFileSync(
       path.join(root, "index.ts"),
       'export const greeting = "a file the check does not read";\n'
@@ -61,8 +62,47 @@ describe("wordBuiltFixtureSecrets", () => {
     ["a token file written with no mode", 'writeFileSync(tokenFile, "pane-listener-token");'],
     ["a plain bearer", 'bearerCredential("listener-token")'],
     ["a stand-in's registration secret", 'Response.json({ secret: "registration-secret" })'],
+    // Built from parts, so the push's credential check reads no key and value in this file.
+    ["a stand-in broker's access token", `Response.json({ ${"access"}_token: "broker-answer" })`],
+    ["a quoted token key", `const config = { "${"token"}": "profile-file-token" };`],
+    ["a camel-case secret key", `Response.json({ client${"Secret"}: "device-client-secret" })`],
+    ["a token file Bun writes", 'await Bun.write(tokenFile, "projected-token-value");'],
   ])("finds %s", (_, source) => {
     expect(wordBuiltFixtureSecrets(packageWith(source))).toHaveLength(1);
+  });
+
+  test("reads the helpers under a tests directory", () => {
+    const root = makeDirectory();
+    mkdirSync(path.join(root, "tests"));
+    writeFileSync(path.join(root, "tests", "stand-in.ts"), 'bearerCredential("listener-token")');
+    expect(wordBuiltFixtureSecrets(root)).toEqual(['tests/stand-in.ts:1: "listener-token"']);
+  });
+
+  // The forms the scanner's own comment says it cannot see. A row here that starts finding one
+  // means the code changed, and that comment is to change with it.
+  test.each([
+    ["a call whose literal is on a line of its own", 'bearerCredential(\n  "listener-token"\n)'],
+    [
+      "a secret handed through a variable that names none",
+      'const value = "listener-token";\nconst config = { token: value };',
+    ],
+    [
+      "a header written whole",
+      `fetch(url, { headers: { Authorization: "${"Bearer"} listener-token" } });`,
+    ],
+    ["a write whose path names no secret", 'writeFileSync(file, "projected-token-value");'],
+  ])("does not see %s, as its comment says", (_, source) => {
+    expect(wordBuiltFixtureSecrets(packageWith(source))).toEqual([]);
+  });
+
+  test("does not read a committed vector, as its comment says", () => {
+    const root = packageWith('const ignored = "a test file the scanner reads";');
+    mkdirSync(path.join(root, "testdata"));
+    writeFileSync(
+      path.join(root, "testdata", "vector.json"),
+      JSON.stringify({ [`access${"_token"}`]: "vector-access-token" })
+    );
+    expect(wordBuiltFixtureSecrets(root)).toEqual([]);
   });
 
   test.each([
@@ -77,6 +117,10 @@ describe("wordBuiltFixtureSecrets", () => {
     [
       "a refused value, exempted",
       'ENVOY_TOKEN: "S3CRET\\nnotes", // fixture-secret: refused for its newline, never held',
+    ],
+    [
+      "a value exempted on the line above",
+      `// fixture-secret-next-line: a field's name, never held\nconst NAMES = { access${"Token"}: "field_name_here" };`,
     ],
   ])("leaves %s", (_, source) => {
     expect(wordBuiltFixtureSecrets(packageWith(source))).toEqual([]);

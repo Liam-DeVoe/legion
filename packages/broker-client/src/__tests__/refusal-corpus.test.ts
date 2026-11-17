@@ -2,7 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { BrokerRefusedError, isKnownBrokerRefusal, KNOWN_OAUTH_ERROR_CODES } from "../token-client";
+import { isKnownBrokerRefusal, KNOWN_OAUTH_ERROR_CODES } from "../refusal-text";
+import { BrokerRefusedError } from "../token-client";
 
 // The broker's refusals as its own OAuth library writes them on the wire: the library's fixed
 // sentence, then the hint, or the broker's `<CODE>: ` ahead of its message. The Go broker's

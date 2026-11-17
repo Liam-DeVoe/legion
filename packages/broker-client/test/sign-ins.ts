@@ -9,6 +9,7 @@
 import { createHash, generateKeyPairSync } from "node:crypto";
 import { chmod, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { calculateJwkThumbprint, generateKeyPair, type JWK, SignJWT } from "jose";
 import type { SignInRecord } from "../src/signins";
 
@@ -142,7 +143,7 @@ export async function stubIssuer(options: {
         .sign(privateKey);
       idTokens.push(idToken);
       return Response.json({
-        access_token: `issuer-access-token-${refreshes}`,
+        access_token: fixtureSecret("issuer"),
         token_type: "Bearer",
         expires_in: 3600,
         scope: "openid email",

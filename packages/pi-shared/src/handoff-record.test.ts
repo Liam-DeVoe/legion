@@ -832,13 +832,14 @@ test("a pane whose Dispatch is the broker's reads the record under its own sessi
   scratch.push(root);
   const file = { path: path.join(root, "envoy.json"), error: null } as const;
   const trades: URLSearchParams[] = [];
+  const brokerToken = fixtureSecret("broker");
   const broker = Bun.serve({
     port: 0,
     hostname: "127.0.0.1",
     fetch: async (request) => {
       trades.push(new URLSearchParams(await request.text()));
       return Response.json({
-        access_token: "broker-access-token",
+        access_token: brokerToken,
         issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
         token_type: "DPoP",
         expires_in: 3600,
@@ -871,7 +872,7 @@ test("a pane whose Dispatch is the broker's reads the record under its own sessi
   }
 
   expect(trades.map((form) => form.get("session"))).toEqual(["pane-session"]);
-  expect(asked.map((one) => one.authorization)).toEqual(["DPoP broker-access-token"]);
+  expect(asked.map((one) => one.authorization)).toEqual([`DPoP ${brokerToken}`]);
   expect(asked[0]?.proof).toBeString();
 });
 

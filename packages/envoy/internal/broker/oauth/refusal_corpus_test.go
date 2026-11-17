@@ -112,7 +112,7 @@ var policyRefusals = []policyRefusal{
 	{"the subject token was not minted for %s, which is the audience this broker accepts from %s", []any{"legion-broker", "https://kubernetes.default.svc"}, "exchange.go"},
 }
 
-// The OAuth error codes broker-client shows (token-client.ts, KNOWN_OAUTH_ERROR_CODES), as this
+// The OAuth error codes broker-client shows (refusal-text.ts, KNOWN_OAUTH_ERROR_CODES), as this
 // broker's library writes them: each is the library's own error value's code, so the client's
 // list and the codes the broker can answer are read from one place. Every library error the
 // broker's token endpoint returns (exchange.go, provider.go, clientauth.go) must be one of these.

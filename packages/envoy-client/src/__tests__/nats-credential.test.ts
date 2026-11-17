@@ -12,6 +12,7 @@ import { closeSync, mkdirSync, openSync, readFileSync, writeFileSync } from "nod
 import { createRequire } from "node:module";
 import * as path from "node:path";
 import { thumbprintOf } from "@legion/broker-client/test/sign-ins";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import type { Subprocess } from "bun";
 import { connect, Events, type NatsConnection } from "nats";
@@ -57,11 +58,13 @@ interface Minted {
  * A secrets broker: its token exchange mints a token good for `seconds`, numbering each one and
  * binding it to the key the trade's DPoP proof embeds, and its introspection route answers each
  * token it minted live until it lapses, as a session's (`ProjectScopePerson`). While `down` is
- * set the exchange answers 503, as a broker that is away.
+ * set the exchange answers 503, as a broker that is away; while `unregistered` is set it refuses
+ * each trade as the broker refuses a pod session no registration names yet (`registeredPodSession`,
+ * packages/envoy/internal/broker/oauth/exchange.go), in its own words.
  */
 function stubBroker(seconds: number) {
   const minted: Minted[] = [];
-  const state = { down: false, minted };
+  const state = { down: false, unregistered: false, minted };
   const server = Bun.serve({
     port: 0,
     hostname: "127.0.0.1",
@@ -82,10 +85,22 @@ function stubBroker(seconds: number) {
         });
       }
       if (state.down) return new Response("the broker is away", { status: 503 });
+      if (state.unregistered) {
+        const session = form.get("session") ?? "";
+        return Response.json(
+          {
+            error: "invalid_grant",
+            error_description: `pod_session_not_registered: No registration says this pod may write under the session name '${session}'. A pod writes under a session name its deployment registered for it.`,
+          },
+          { status: 400 }
+        );
+      }
       const header = JSON.parse(
         Buffer.from((request.headers.get("DPoP") ?? "").split(".")[0] ?? "", "base64url").toString()
       ) as { readonly jwk: JsonWebKey };
-      const value = `session-access-${minted.length + 1}`;
+      // Random, as the broker's are: the client holds each one, and two trades in flight at once
+      // must not be answered the same token.
+      const value = fixtureSecret("access");
       minted.push({
         value,
         session: form.get("session") ?? "",
@@ -107,7 +122,7 @@ function stubBroker(seconds: number) {
 /** A pod's projected token file. */
 function projectedFile(): string {
   const file = path.join(tempDir(), "token");
-  writeFileSync(file, "projected.service.account.token\n");
+  writeFileSync(file, `${fixtureSecret("proj")}\n`);
   return file;
 }
 
@@ -374,6 +389,29 @@ describe("ready", () => {
     );
     expect(Date.now() - started).toBeLessThan(5_000);
   }, 15_000);
+
+  test("a pod session the broker holds no registration for fails it at the deadline, naming the session", async () => {
+    // The token client waits out a missing registration for as long as its caller waits (#4153),
+    // so a start that handed it no deadline waited until the registration landed, and then said
+    // the broker had not answered, which it had.
+    const broker = stubBroker(600);
+    broker.state.unregistered = true;
+    const credential = brokerNatsCredential(
+      podEnvironment(broker.url),
+      "ses_pending",
+      "NATS_AUTH",
+      300
+    );
+    const started = Date.now();
+    const outcome = await credential.ready().then(
+      () => "ready",
+      (error: unknown) => (error instanceof Error ? error.message : String(error))
+    );
+    expect(outcome).toBe(
+      "NATS_AUTH is broker, and the session's token waits on its registration: the secrets broker has no registration for this pod's session ses_pending yet, and the trade is being retried in the background until it lands (pod_session_not_registered: No registration says this pod may write under the session name 'ses_pending'. A pod writes under a session name its deployment registered for it.)"
+    );
+    expect(Date.now() - started).toBeLessThan(5_000);
+  }, 15_000);
 });
 
 describe("renew", () => {
@@ -381,16 +419,22 @@ describe("renew", () => {
     // A trade reads the session's name as it starts, so the keeper's renewal of the session
     // before can be in flight when the host switches. The switch's renewal must not be handed
     // that one: the connection would come back as the session before, and the new session's
-    // subscribes be refused. Two-second tokens, so each renewal is a real trade.
+    // subscribes be refused. The switch ends the wait for the session before, which a missing
+    // registration could hold for minutes. Two-second tokens, so each renewal is a real trade.
     const broker = stubBroker(2);
     let session = "ses_before";
     const credential = brokerNatsCredential(podEnvironment(broker.url), () => session);
     await credential.ready();
     credential.authenticator("nonce-1");
-    const keeperRenewal = credential.renew();
+    const keeperRenewal = credential.renew().then(
+      () => "renewed",
+      (error: unknown) => (error instanceof Error ? error.message : String(error))
+    );
     session = "ses_after";
     await credential.renew();
-    await keeperRenewal;
+    expect(await keeperRenewal).toBe(
+      "the host moved from the session ses_before to ses_after while ses_before's token was traded"
+    );
     expect(credential.needsReconnect()).toBe(true);
     const auth = credential.authenticator("nonce-2") as { auth_token: string };
     const presented = broker.state.minted.find((one) => one.value === auth.auth_token);
@@ -514,6 +558,25 @@ describe("followNatsCredential", () => {
     );
     expect(rig.stoppedReader()).toBe(true);
   }, 30_000);
+
+  test("a switch to a session with no registration yet stops waiting for its token at 15 s", async () => {
+    // The case the token client's wait exists for: a pod's host moves to a session whose
+    // registration has not landed. The follow must end at its own deadline, naming why, so the
+    // pass behind it (a registration, a role claim) runs again rather than stalling.
+    const broker = stubBroker(600);
+    let session = "ses_from";
+    const credential = brokerNatsCredential(podEnvironment(broker.url), () => session);
+    await credential.ready();
+    credential.authenticator("nonce-1");
+    broker.state.unregistered = true;
+    session = "ses_to";
+    const rig = controlledConnection(credential);
+    const started = Date.now();
+    await expect(followNatsCredential(rig.connection, credential)).rejects.toThrow(
+      "the secrets broker has no registration for this pod's session ses_to yet"
+    );
+    expect(Date.now() - started).toBeLessThan(20_000);
+  }, 40_000);
 
   test("a reconnect returns once its CONNECT presented the new session's token", async () => {
     const credential = await switched();
@@ -677,7 +740,7 @@ describe("keepNatsCredential", () => {
       while (warnings.length === 0 && Date.now() < deadline) await Bun.sleep(50);
       expect(warnings.length).toBeGreaterThan(0);
       expect(warnings.join("\n")).toContain("landed no new token");
-      expect(warnings.join("\n")).not.toContain("session-access-");
+      for (const one of broker.state.minted) expect(warnings.join("\n")).not.toContain(one.value);
       expect(fake.reconnects).toEqual([]);
     } finally {
       stop();
@@ -860,7 +923,9 @@ describe.skipIf(!envoyStackEnabled)(
           );
         expect(opened.isClosed()).toBe(false);
         expect(warnings.length).toBeGreaterThan(0);
-        expect(warnings.join("\n")).not.toContain("session-access-");
+        for (const one of broker.state.minted) {
+          expect(warnings.join("\n")).not.toContain(one.value);
+        }
 
         // The broker is back: a token is traded and the connection is admitted again.
         const back = Date.now();

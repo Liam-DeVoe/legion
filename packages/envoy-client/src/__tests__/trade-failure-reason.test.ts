@@ -1,11 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { randomBytes } from "node:crypto";
 import { newDpopKey } from "@legion/broker-client/dpop";
-import {
-  BrokerRefusedError,
-  BrokerTokenClient,
-  KNOWN_BROKER_REFUSALS,
-} from "@legion/broker-client/token-client";
+import { KNOWN_BROKER_REFUSALS } from "@legion/broker-client/refusal-text";
+import { BrokerRefusedError, BrokerTokenClient } from "@legion/broker-client/token-client";
 import { tradeFailureReason } from "../nats-credential";
 
 // What the NATS line prints of a failed trade for the session's token (`tradeFailureReason`). A

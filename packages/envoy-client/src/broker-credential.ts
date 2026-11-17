@@ -50,8 +50,9 @@ import type { RequestCredential } from "./bearer";
  */
 export type BrokerSessionName = string | (() => string);
 
-/** `naming` as one name, trimmed; "" when it names none. */
-function sessionName(naming: BrokerSessionName | undefined): string {
+/** `naming` as one name, trimmed; "" when it names none. A NATS credential reads it to tell the
+ *  session a token was traded for from the one the host is on now. */
+export function sessionName(naming: BrokerSessionName | undefined): string {
   if (naming === undefined) return "";
   return (typeof naming === "string" ? naming : naming()).trim();
 }
@@ -257,10 +258,11 @@ async function clientFor(
   return { entry, made: await making };
 }
 
-/** A live token of the broker's for a caller acting as `own`, and the key it is bound to. */
+/** A live token of the broker's for a caller acting as `session`, and the key it is bound to. */
 export interface TradedToken {
   readonly token: BrokerToken;
   readonly key: DpopKey;
+  readonly session: string;
 }
 
 /**
@@ -284,7 +286,7 @@ async function tradedToken(
     );
   }
   try {
-    return { token: await client.token(signal), key: client.key };
+    return { token: await client.token(signal), key: client.key, session: own };
   } catch (error) {
     if (made.signIn !== "" && isFinalRefusal(error)) entry.refused.set(made.signIn, error);
     throw error;
@@ -296,13 +298,14 @@ async function tradedToken(
  * answers the token {@link brokerCredential} presents for the same session, and the key it is
  * bound to, since both are this process's one client for that session (`CLIENTS`). A session
  * name read from a function is read at each call, so a process that moved to another session
- * takes that session's token.
+ * takes that session's token. A call whose `signal` ends stops waiting for a trade still waiting
+ * out a pod's missing registration, as `tradedToken` says.
  */
 export function brokerTokenFor(
   env: BrokerEnvironment,
   session: BrokerSessionName | undefined
-): () => Promise<TradedToken> {
-  return () => tradedToken(env, sessionName(session));
+): (signal?: AbortSignal) => Promise<TradedToken> {
+  return (signal) => tradedToken(env, sessionName(session), signal);
 }
 
 /**

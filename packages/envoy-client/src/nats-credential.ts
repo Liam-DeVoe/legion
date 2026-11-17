@@ -18,13 +18,19 @@ import { SIGNIN_COMMAND } from "@legion/broker-client/signins";
 import {
   BrokerRefusedError,
   BrokerTradeFailedError,
+  RegistrationPendingError,
   SignInEndedError,
 } from "@legion/broker-client/token-client";
 import { scrub } from "@legion/contracts/held-secrets";
 // Types alone: `envoySettings` imports this module, and every bundle of it — the `dispatch`
 // command's, each hook's — would otherwise carry nats.js whole.
 import type { Auth, Events, NatsConnection, Status } from "nats";
-import { type BrokerSessionName, brokerTokenFor, type TradedToken } from "./broker-credential";
+import {
+  type BrokerSessionName,
+  brokerTokenFor,
+  sessionName,
+  type TradedToken,
+} from "./broker-credential";
 import type { NatsSeed } from "./envoy-settings";
 import { LoggableError, natsFailureReason } from "./errors";
 
@@ -45,9 +51,16 @@ export type NatsCredential =
  * calls are given instead (`ENVOY_TOKEN`, a file's `token`) is theirs alone.
  */
 export interface BrokerNatsCredential {
-  /** Takes the token to present, trading for one where the token in hand is not live: a
-   *  connection is dialled only once this has answered, since the CONNECT is signed at once. */
-  ready(): Promise<void>;
+  /**
+   * Takes the token to present, trading for one where the token in hand is not live: a connection
+   * is dialled only once this has answered, since the CONNECT is signed at once. A broker that
+   * gives no answer within the trade's deadline fails it. A pod session the broker holds no
+   * registration for yet is no failure: the trade is retried for as long as the session runs
+   * (#4153), so where `life` is given, the wait goes on until the registration lands or `life`
+   * ends, the token client saying so once and every 30 minutes. A caller that cannot wait that
+   * long gives no `life`, and is told at the deadline that the registration is pending, by session.
+   */
+  ready(life?: AbortSignal): Promise<void>;
   /**
    * The CONNECT's credential for the server's `nonce`: the token in hand as `auth_token`, and as
    * `sig` the proof of its key over that nonce, base64url-encoded, as the auth service reads a
@@ -64,8 +77,11 @@ export interface BrokerNatsCredential {
   /** When the token in hand lapses; the epoch before any is taken. */
   expiresAt(): Date;
   /** Takes the session's token again: a renewed one inside the renewal window, and the token of
-   *  the session the name now reads, after a switch, even one made while a renewal was in flight. */
-  renew(): Promise<void>;
+   *  the session the name now reads, after a switch, even one made while a renewal was in flight.
+   *  It waits no longer than `signal`: the token client waits out a pod session's missing
+   *  registration for as long as its caller does, so every caller in this package names its
+   *  deadline, and a switch to another session ends the waits for the one before. */
+  renew(signal?: AbortSignal): Promise<void>;
   /** Whether the last CONNECT presented a token other than the one in hand, so the connection
    *  should reconnect to present it. */
   needsReconnect(): boolean;
@@ -94,7 +110,9 @@ function tradeUnanswered(source: string, deadlineMs: number): string {
  * Why a trade for the session's token failed, as a log may print it. A refusal is the broker's
  * HTTP status, OAuth code and what it said where that is one of its known refusals, else "(its
  * text is withheld)" (`BrokerRefusedError.said`: a peer at AGENT_SECRETS_URL can put the subject
- * token it was sent in its text); a trade that got no answer, or an answer that is not the
+ * token it was sent in its text); a pod session the broker holds no registration for yet is
+ * broker-client's own line, naming the session and the refusal as it prints
+ * (`RegistrationPendingError`); a trade that got no answer, or an answer that is not the
  * grant's, is broker-client's own text, which names the broker as `urlForText` does and the
  * failure by its class (`BrokerTradeFailedError`); an ended sign-in is its remedy; and any other
  * failure goes by `natsFailureReason`'s allowlist, since its text is the runtime's or the
@@ -106,10 +124,55 @@ export function tradeFailureReason(error: unknown): string {
     const said = error.said === "" ? "" : `: ${scrub(error.said)}`;
     return `the secrets broker refused the identity traded: HTTP ${error.status}${code}${said}`;
   }
+  if (error instanceof RegistrationPendingError) return scrub(error.message);
+  if (error instanceof SessionMovedError) return error.message;
   if (error instanceof BrokerTradeFailedError) return scrub(error.message);
   if (error instanceof SignInEndedError)
     return `the issuer no longer honours the sign-in on this machine; run: ${SIGNIN_COMMAND}`;
   return natsFailureReason(error);
+}
+
+/** Whether `error` is the reason an `AbortSignal.timeout` ends with: the caller's deadline. */
+function isDeadline(error: unknown): boolean {
+  return error instanceof DOMException && error.name === "TimeoutError";
+}
+
+/**
+ * `promise`, or `signal`'s reason once it ends, so a caller waits no longer than its own deadline
+ * even for a trade another caller started. The reason comes one turn after the end: the token
+ * client ends a wait for a trade this caller started in its own words at the same moment
+ * (`RegistrationPendingError`, naming the session), and those are what the caller is told.
+ */
+function within<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const stop = () => {
+      setTimeout(() => reject(signal.reason), 0);
+    };
+    if (signal.aborted) stop();
+    else signal.addEventListener("abort", stop, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener("abort", stop);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener("abort", stop);
+        reject(error);
+      }
+    );
+  });
+}
+
+/**
+ * A wait for one session's token that a switch to another session ended: the host has moved on,
+ * and the renewal for the session it is on now is the one that counts. The trade itself goes on
+ * in the token client, for that session's next caller.
+ */
+export class SessionMovedError extends LoggableError {
+  constructor(from: string, to: string) {
+    super(`the host moved from the session ${from} to ${to} while ${from}'s token was traded`);
+    this.name = "SessionMovedError";
+  }
 }
 
 /**
@@ -118,6 +181,16 @@ export function tradeFailureReason(error: unknown): string {
  * default, or a file's `envoy.natsAuth in <file>`), which a refusal at a hub with no auth service
  * names. Nothing is traded until {@link BrokerNatsCredential.ready} or
  * {@link BrokerNatsCredential.renew}; `ready` waits `tradeDeadlineMs` for it.
+ *
+ * Every wait for a trade ends at its caller's deadline: the token client waits out a pod
+ * session's missing registration for as long as its caller waits (`BrokerTokenClient.token`), so a
+ * wait with none would last as long as the registration is missing. Each caller trades through
+ * the token client, which makes one trade per session and lets each caller stop waiting for it on
+ * its own signal, so no caller waits behind another caller's trade, and one for another session
+ * least of all. A renewal for a session other than the last renewal's is a switch, and it ends
+ * every wait for the session before ({@link SessionMovedError}). A token is held only where it
+ * was traded for the session the name reads when it lands, so a trade for the session before a
+ * switch never takes the place of the new session's token.
  */
 export function brokerNatsCredential(
   env: BrokerEnvironment,
@@ -128,53 +201,63 @@ export function brokerNatsCredential(
   const take = brokerTokenFor(env, session);
   let held: TradedToken | undefined;
   let presented: string | undefined;
-  // The trade in flight, and the one every caller that came while it was in flight shares.
-  let taking: Promise<void> | undefined;
-  let next: Promise<void> | undefined;
+  // The session the last renewal was for, and what ends every wait for it at a switch.
+  let waitingFor: string | undefined;
+  let switched = new AbortController();
   const live = (): boolean => held !== undefined && held.token.expiresAt.getTime() > Date.now();
-  const trade = (): Promise<void> => {
-    taking = take()
-      .then((taken) => {
-        held = taken;
-      })
-      .finally(() => {
-        taking = undefined;
-      });
-    return taking;
-  };
-  // A trade reads the session's name as it starts (`brokerTokenFor`), so the one in flight can be
-  // for the session before a switch: a caller that comes meanwhile is not handed it, but waits for
-  // it to settle and then trades for the name it reads then.
-  const renew = (): Promise<void> => {
-    if (taking === undefined) return trade();
-    next ??= taking
-      .catch(() => {})
-      .then(() => {
-        next = undefined;
-        return taking ?? trade();
-      });
-    return next;
+  const renew = (signal?: AbortSignal): Promise<void> => {
+    const name = sessionName(session);
+    if (waitingFor !== undefined && name !== waitingFor) {
+      switched.abort(new SessionMovedError(waitingFor, name));
+      switched = new AbortController();
+    }
+    waitingFor = name;
+    const moved = switched.signal;
+    const limit = signal === undefined ? moved : AbortSignal.any([signal, moved]);
+    return within(take(limit), limit).then(
+      (taken) => {
+        if (taken.session === sessionName(session)) held = taken;
+      },
+      (error: unknown) => {
+        // A switch ended this wait: the token client's words for it name the session before,
+        // which is not what the caller needs to know.
+        if (moved.aborted && signal?.aborted !== true) throw moved.reason;
+        throw error;
+      }
+    );
   };
   return {
     // The trade itself goes on past the deadline, for the keeper and the next `ready`: only this
     // wait for it ends. Its failure is this package's own line, naming the setting that chose the
     // broker token and why as a log may print it (`tradeFailureReason`).
-    ready: () => {
-      if (live()) return Promise.resolve();
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      const deadline = new Promise<never>((_, reject) => {
-        timer = setTimeout(
-          () => reject(new LoggableError(tradeUnanswered(source, tradeDeadlineMs))),
-          tradeDeadlineMs
+    ready: async (life?: AbortSignal) => {
+      if (live()) return;
+      let pending: RegistrationPendingError;
+      try {
+        await renew(AbortSignal.timeout(tradeDeadlineMs));
+        return;
+      } catch (error) {
+        if (isDeadline(error)) throw new LoggableError(tradeUnanswered(source, tradeDeadlineMs));
+        if (!(error instanceof RegistrationPendingError)) {
+          throw new LoggableError(
+            `${source} is broker, but the trade for the session's token failed: ${tradeFailureReason(error)}`
+          );
+        }
+        pending = error;
+      }
+      if (life === undefined) {
+        throw new LoggableError(
+          `${source} is broker, and the session's token waits on its registration: ${tradeFailureReason(pending)}`
         );
-        timer.unref?.();
-      });
-      const traded = renew().catch((error: unknown) => {
+      }
+      try {
+        await renew(life);
+      } catch (error) {
+        if (life.aborted) throw life.reason;
         throw new LoggableError(
           `${source} is broker, but the trade for the session's token failed: ${tradeFailureReason(error)}`
         );
-      });
-      return Promise.race([traded, deadline]).finally(() => clearTimeout(timer));
+      }
     },
     renew,
     authenticator(nonce?: string): Auth {
@@ -182,8 +265,9 @@ export function brokerNatsCredential(
       const snapshot = held;
       if (snapshot === undefined || !live()) {
         // Nothing live to present: the server refuses this CONNECT, and the trade started here
-        // lands a token for the next one. Its failure is the keeper's to report.
-        renew().catch(() => {});
+        // lands a token for the next one, within `ready`'s deadline. Its failure is the keeper's
+        // to report.
+        renew(AbortSignal.timeout(tradeDeadlineMs)).catch(() => {});
         return undefined;
       }
       const accessToken = snapshot.token.accessToken;
@@ -277,10 +361,18 @@ export function keepNatsCredential(
     if (stopped || connection.isClosed()) return;
     const before = credential.expiresAt().getTime();
     try {
-      await credential.renew();
+      // Bounded as `ready` is: the token client waits out a missing registration for as long as
+      // its caller does, and the keeper's next tick is its own retry.
+      await credential.renew(AbortSignal.timeout(TRADE_DEADLINE_MS));
       if (stopped) return;
       if (credential.needsReconnect()) await connection.reconnect();
     } catch (error) {
+      // The host moved to another session meanwhile: that session's renewal is the one that
+      // counts, so the keeper renews again at once, for it, and has nothing to warn of.
+      if (error instanceof SessionMovedError) {
+        schedule(0);
+        return;
+      }
       warnOnce(`could not be renewed (${tradeFailureReason(error)})`);
       retry();
       return;
@@ -320,15 +412,25 @@ const RECONNECTED: `${Events.Reconnect}` = "reconnect";
  * presented. A reconnect counts only once the CONNECT it made presented the token in hand, so one
  * that began before the move does not end it; and since nats.js's `reconnect()` does nothing while
  * the connection is redialling, a redial that comes back with the old token is followed by another
- * reconnect, which presents the new one. Throws where the connection does not come back within
- * 15 s, or closes first. The status reader it opens is stopped on every way out: nats.js keeps a
- * reader registered until it is stopped, whatever becomes of the connection.
+ * reconnect, which presents the new one. Throws where the new session's token or the connection
+ * does not come back within one 15 s deadline, which the renewal is given as its signal, or where
+ * the connection closes first. The status reader it opens is stopped on every way out: nats.js
+ * keeps a reader registered until it is stopped, whatever becomes of the connection.
  */
 export async function followNatsCredential(
   connection: Pick<NatsConnection, "reconnect" | "status" | "closed">,
   credential: BrokerNatsCredential
 ): Promise<void> {
-  await credential.renew();
+  const deadline = AbortSignal.timeout(FOLLOW_TIMEOUT_MS);
+  try {
+    await credential.renew(deadline);
+  } catch (error) {
+    throw new LoggableError(
+      isDeadline(error)
+        ? `the NATS connection could not take the new session's token within ${FOLLOW_TIMEOUT_MS / 1000} s`
+        : `the NATS connection could not take the new session's token: ${tradeFailureReason(error)}`
+    );
+  }
   if (!credential.needsReconnect()) return;
   // nats.js's status() is a QueuedIterator, which has a stop() its declared type leaves out.
   const statuses: AsyncIterable<Status> & { stop?: () => void } = connection.status();
@@ -347,22 +449,22 @@ export async function followNatsCredential(
     throw new LoggableError("the NATS connection closed before it came back as the new session");
   });
   const late = Promise.withResolvers<never>();
-  const timer = setTimeout(
-    () =>
-      late.reject(
-        new LoggableError(
-          `the NATS connection did not come back as the new session within ${FOLLOW_TIMEOUT_MS / 1000} s`
-        )
-      ),
-    FOLLOW_TIMEOUT_MS
-  );
+  const expire = () =>
+    late.reject(
+      new LoggableError(
+        `the NATS connection did not come back as the new session within ${FOLLOW_TIMEOUT_MS / 1000} s`
+      )
+    );
+  if (deadline.aborted) expire();
+  else deadline.addEventListener("abort", expire, { once: true });
   try {
     await connection.reconnect();
     await Promise.race([back, closed, late.promise]);
   } finally {
-    clearTimeout(timer);
+    deadline.removeEventListener("abort", expire);
     statuses.stop?.();
     back.catch(() => {});
     closed.catch(() => {});
+    late.promise.catch(() => {});
   }
 }

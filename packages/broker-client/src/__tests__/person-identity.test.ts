@@ -73,7 +73,7 @@ test("each read refreshes once, with the client in the form, and answers the per
 
 test("an answer with no ID token is an error", async () => {
   const issuer = await issuerFor(() => ({
-    body: { access_token: "issuer-access-not-a-secret", token_type: "Bearer", expires_in: 3600 },
+    body: { access_token: fixtureSecret("issuer"), token_type: "Bearer", expires_in: 3600 },
   }));
   const source = personIdentity(await signedIn(PERSON), flowAt(issuer.url));
   const refusal = await refusalOf(() => source.read());

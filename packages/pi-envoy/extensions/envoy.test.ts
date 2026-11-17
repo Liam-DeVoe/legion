@@ -1356,20 +1356,38 @@ async function bootDirectSession(
 }
 
 /**
+ * The session a stand-in broker minted the token an `Authorization` header presents for, read in
+ * `minted` (each token the broker minted, to the session its trade wrote under). A header that
+ * presents no token the broker minted, under the DPoP scheme, reads as `unminted: <header>`, so a
+ * row that fails shows what was sent.
+ */
+function sessionSignedAs(
+  minted: ReadonlyMap<string, string>,
+  authorization: string | null
+): string {
+  const token = authorization?.startsWith("DPoP ")
+    ? authorization.slice("DPoP ".length)
+    : undefined;
+  return (token === undefined ? undefined : minted.get(token)) ?? `unminted: ${authorization}`;
+}
+
+/**
  * A stub secrets broker, for a row that reads which session a Dispatch request was signed as.
  *
  * Where no bearer is written, a session's Dispatch credential is this machine's own identity
  * traded at the secrets broker (`AGENT_SECRETS_URL`, stood in as
  * `packages/envoy-client/src/__tests__/broker-credential.test.ts` stands one in), and a trade
  * writes under one session: the broker records the minted token against it and Dispatch reads it
- * back there. That trade is the one place a session name reaches the wire, so this broker mints
- * `token-for-<session>` and every Dispatch request of the row says which session resolved it. The
- * listener keeps a written token (ENVOY_TOKEN), so every trade here is Dispatch's own.
+ * back there. That trade is the one place a session name reaches the wire, so this broker keeps
+ * each random token it mints against the session its trade wrote under, and every Dispatch
+ * request of the row says which session resolved it (`sessionSignedAs`). The listener keeps a
+ * written token (ENVOY_TOKEN), so every trade here is Dispatch's own.
  *
  * `trade` answers the broker's token endpoint, which a row hands the boot as its `dispatch`;
- * `watch` records what each Dispatch request presented, from the call on, so a row calls it once
- * the boot has installed its own fetch; `stop` puts the environment back and drops the tokens
- * this process traded, which are held under their session for the life of the process.
+ * `watch` records the session each Dispatch request was signed as, from the call on, so a row
+ * calls it once the boot has installed its own fetch; `signedAs` reads the session of a header
+ * the row recorded itself; `stop` puts the environment back and drops the tokens this process
+ * traded, which are held under their session for the life of the process.
  */
 function stubBroker(label: string) {
   const secrets = mkdtempSync(join(tmpdir(), `envoy-${label}-broker-`));
@@ -1378,8 +1396,10 @@ function stubBroker(label: string) {
   writeFileSync(identityFile, `${MACHINE_IDENTITY_TOKEN}\n`);
   /** The session each trade the stub broker was asked wrote its token under. */
   const traded: string[] = [];
-  /** The credential each Dispatch request presented, by the route it was made to. */
-  const presented: { readonly authorization: string | null; readonly path: string }[] = [];
+  /** Each token the stub broker minted, to the session its trade wrote under. */
+  const minted = new Map<string, string>();
+  /** The session each Dispatch request was signed as, by the route it was made to. */
+  const presented: { readonly signedAs: string; readonly path: string }[] = [];
   const restore = captureEnvironment([
     "AGENT_SECRETS_URL",
     "AGENT_SECRETS_MACHINE_IDENTITY",
@@ -1394,15 +1414,18 @@ function stubBroker(label: string) {
   return {
     presented,
     traded,
+    signedAs: (authorization: string | null) => sessionSignedAs(minted, authorization),
     trade: async (url: URL, init?: RequestInit): Promise<Response | undefined> => {
       if (url.origin !== "http://broker.test") return undefined;
-      // The trade's form names the session its token is written under, and the token this one
-      // mints names it back.
+      // The trade's form names the session its token is written under, and the broker keeps
+      // the token it mints against that session.
       const session =
         new URLSearchParams(await new Response(init?.body ?? null).text()).get("session") ?? "";
       traded.push(session);
+      const token = fixtureSecret("broker");
+      minted.set(token, session);
       return Response.json({
-        access_token: `token-for-${session}`,
+        access_token: token,
         expires_in: 600,
         issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
         token_type: "DPoP",
@@ -1414,7 +1437,7 @@ function stubBroker(label: string) {
         const url = new URL(input.toString());
         if (url.host === "dispatch.test") {
           presented.push({
-            authorization: new Headers(init?.headers).get("Authorization"),
+            signedAs: sessionSignedAs(minted, new Headers(init?.headers).get("Authorization")),
             path: url.pathname,
           });
         }
@@ -15147,16 +15170,16 @@ console.log(JSON.stringify(args));
       // `packages/envoy-client/src/__tests__/broker-credential.test.ts` stands one in), and a
       // trade writes under one session: the broker records the minted token against it and
       // Dispatch reads it back there. That trade is the one place a session name reaches the
-      // wire, so the broker below mints `token-for-<session>` and every Dispatch request of
-      // this row says which session resolved it. The listener keeps a written token
-      // (ENVOY_TOKEN), so every trade here is Dispatch's own and the registration of the
-      // session the host moves to adds none.
+      // wire, so the broker below keeps each random token it mints against its session, and
+      // every Dispatch request of this row says which session resolved it. The listener keeps a
+      // written token (ENVOY_TOKEN), so every trade here is Dispatch's own and the registration
+      // of the session the host moves to adds none.
       //
       // The command is accepted, run and answered for ses_delivery while the host leaves as it
       // ends, and both halves present the token the broker minted for ses_delivery. A reply
       // resolved for the session open when it goes out (`currentSessionID`) would be signed
-      // `token-for-ses_after_shell`, and the person's own message would be answered under the
-      // credential of the conversation they never wrote to.
+      // with the token minted for ses_after_shell, and the person's own message would be
+      // answered under the credential of the conversation they never wrote to.
       test("signs the accept and the reply as the addressed session when the host leaves as the command ends", async () => {
         const secrets = mkdtempSync(join(tmpdir(), "envoy-shell-broker-"));
         workDirectories.push(secrets);
@@ -15165,8 +15188,10 @@ console.log(JSON.stringify(args));
         writeFileSync(identityFile, `${MACHINE_IDENTITY_TOKEN}\n`);
         /** The session each trade the stub broker was asked wrote its token under. */
         const traded: string[] = [];
-        /** The credential each Dispatch request presented, by the route it was made to. */
-        const presented: { readonly authorization: string | null; readonly path: string }[] = [];
+        /** Each token the stub broker minted, to the session its trade wrote under. */
+        const minted = new Map<string, string>();
+        /** The session each Dispatch request was signed as, by the route it was made to. */
+        const presented: { readonly signedAs: string; readonly path: string }[] = [];
         const restore = captureEnvironment([
           "AGENT_SECRETS_URL",
           "AGENT_SECRETS_MACHINE_IDENTITY",
@@ -15202,14 +15227,16 @@ console.log(JSON.stringify(args));
               dispatch: async (url, init) => {
                 if (url.origin !== "http://broker.test") return undefined;
                 // The broker's token endpoint: the trade's form names the session its token is
-                // written under, and the token this one mints names it back.
+                // written under, and the broker keeps the token it mints against that session.
                 const session =
                   new URLSearchParams(await new Response(init?.body ?? null).text()).get(
                     "session"
                   ) ?? "";
                 traded.push(session);
+                const token = fixtureSecret("broker");
+                minted.set(token, session);
                 return Response.json({
-                  access_token: `token-for-${session}`,
+                  access_token: token,
                   expires_in: 600,
                   issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
                   token_type: "DPoP",
@@ -15226,7 +15253,7 @@ console.log(JSON.stringify(args));
             const url = new URL(input.toString());
             if (url.host === "dispatch.test") {
               presented.push({
-                authorization: new Headers(init?.headers).get("Authorization"),
+                signedAs: sessionSignedAs(minted, new Headers(init?.headers).get("Authorization")),
                 path: url.pathname,
               });
             }
@@ -15256,12 +15283,12 @@ console.log(JSON.stringify(args));
           // broker minted for ses_delivery, and the broker was asked for no other session.
           expect(presented.filter((one) => one.path.endsWith("/reply"))).toEqual([
             {
-              authorization: "DPoP token-for-ses_delivery",
+              signedAs: "ses_delivery",
               path: `/api/v1/messages/${DIRECT_MESSAGE_ID}/reply`,
             },
           ]);
-          expect(accepts.map((accept) => accept.authorization)).toEqual([
-            "DPoP token-for-ses_delivery",
+          expect(accepts.map((accept) => sessionSignedAs(minted, accept.authorization))).toEqual([
+            "ses_delivery",
           ]);
           expect(traded).toEqual(["ses_delivery"]);
         } finally {
@@ -15278,9 +15305,9 @@ console.log(JSON.stringify(args));
       // presents the credential afresh for every attempt (`#send`, in
       // `packages/envoy-client/src/dispatch-http.ts`), so the retry resolves its session after
       // the move, and it is still the session the person wrote to. A credential resolved for
-      // the session open now (`currentSessionID`) would sign that retry
-      // `token-for-ses_after_shell`, and Dispatch would record one person's message as taken by
-      // a conversation they never wrote to.
+      // the session open now (`currentSessionID`) would sign that retry with the token minted
+      // for ses_after_shell, and Dispatch would record one person's message as taken by a
+      // conversation they never wrote to.
       //
       // The command runs nowhere: the session it was addressed to is open nowhere by the time
       // Dispatch accepts it, so the person gets the refusal, answered as that session and
@@ -15322,9 +15349,9 @@ console.log(JSON.stringify(args));
             `/api/v1/messages/${DIRECT_MESSAGE_ID}/deliveries/1/accept`,
           ]);
           expect(accepts[1]?.key).toBe(accepts[0]?.key as string);
-          expect(accepts.map((accept) => accept.authorization)).toEqual([
-            "DPoP token-for-ses_delivery",
-            "DPoP token-for-ses_delivery",
+          expect(accepts.map((accept) => broker.signedAs(accept.authorization))).toEqual([
+            "ses_delivery",
+            "ses_delivery",
           ]);
           // The person's own message is answered as the session they wrote to, and that answer
           // is signed as it too.
@@ -15340,7 +15367,7 @@ console.log(JSON.stringify(args));
           ]);
           expect(broker.presented.filter((one) => one.path.endsWith("/reply"))).toEqual([
             {
-              authorization: "DPoP token-for-ses_delivery",
+              signedAs: "ses_delivery",
               path: `/api/v1/messages/${DIRECT_MESSAGE_ID}/reply`,
             },
           ]);
@@ -15854,8 +15881,8 @@ console.log(JSON.stringify(args));
       // (`stubBroker`), so both halves of this delivery say which session resolved them: the
       // accept, made before the move, and the refusal, posted after it. A configuration
       // resolved for the session open when the reply goes out (`currentSessionID`) would sign
-      // the person's answer `token-for-ses_after_send` and trade under a conversation they
-      // never wrote to.
+      // the person's answer with the token minted for ses_after_send and trade under a
+      // conversation they never wrote to.
       test("signs a typed Send's refusal as the addressed session when the host left inside the accept", async () => {
         const broker = stubBroker("typed-send-refusal");
         const warnings: string[] = [];
@@ -15893,11 +15920,11 @@ console.log(JSON.stringify(args));
           ]);
           // And signed as that session: the accept and the refusal both presented the token the
           // broker minted for ses_delivery, and the broker was asked for no other session.
-          expect(accepts.map((accept) => accept.authorization)).toEqual([
-            "DPoP token-for-ses_delivery",
+          expect(accepts.map((accept) => broker.signedAs(accept.authorization))).toEqual([
+            "ses_delivery",
           ]);
           expect(broker.presented.filter((one) => one.path === replyPath)).toEqual([
-            { authorization: "DPoP token-for-ses_delivery", path: replyPath },
+            { signedAs: "ses_delivery", path: replyPath },
           ]);
           // Two trades, both under the session the person wrote to: the accept's, and the
           // refusal's own, since leaving a session drops the key pair and token this process
@@ -16029,8 +16056,8 @@ console.log(JSON.stringify(args));
       // the person asked, and the host leaves while it answers. The answer is posted on that
       // person's message, as the session they asked and under that session's own Dispatch:
       // a configuration resolved for the session open when the reply goes out
-      // (`currentSessionID`) would sign one person's answer `token-for-ses_after_btw_answer`,
-      // the credential of a conversation that was never asked the question.
+      // (`currentSessionID`) would sign one person's answer with the token minted for
+      // ses_after_btw_answer, the credential of a conversation that was never asked the question.
       test("signs a BTW's answer as the session it was asked of when the host left inside the side turn", async () => {
         const broker = stubBroker("btw-answer");
         const warnings: string[] = [];
@@ -16071,7 +16098,7 @@ console.log(JSON.stringify(args));
           // And signed as the session the question was asked of: the broker minted that
           // session's token for this reply and was asked for no other session.
           expect(broker.presented.filter((one) => one.path === replyPath)).toEqual([
-            { authorization: "DPoP token-for-ses_delivery", path: replyPath },
+            { signedAs: "ses_delivery", path: replyPath },
           ]);
           expect(broker.traded).toEqual(["ses_delivery"]);
         } finally {
@@ -19615,14 +19642,18 @@ console.log(JSON.stringify(args));
     process.env.AGENT_SECRETS_MACHINE_IDENTITY = "kubernetes";
     process.env.AGENT_SECRETS_MACHINE_TOKEN_FILE = tokenFile;
     const traded: string[] = [];
+    /** Each token the stub broker minted, to the session its trade wrote under. */
+    const minted = new Map<string, string>();
     globalThis.fetch = async (input, init) => {
       const request = new Request(input, init);
       const url = new URL(request.url);
       if (url.host !== "broker.test") return responseWithRegistration(input, init, []);
       const session = new URLSearchParams(await request.text()).get("session") ?? "";
       traded.push(session);
+      const token = fixtureSecret("nats");
+      minted.set(token, session);
       return Response.json({
-        access_token: `nats-access-of-${session}`,
+        access_token: token,
         issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
         token_type: "DPoP",
         expires_in: 900,
@@ -19632,14 +19663,15 @@ console.log(JSON.stringify(args));
     const fixture = createPi();
     envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, sessionContext("ses_switch_from"));
-    expect(natsState.presented).toEqual(["nats-access-of-ses_switch_from"]);
+    // Each CONNECT presented a token the broker minted for the session it names here.
+    expect(natsState.presented.map((token) => minted.get(token))).toEqual(["ses_switch_from"]);
     expect(natsState.controls.get("notifications.agent.ses_switch_from")?.active()).toBe(true);
 
     natsState.timeline.length = 0;
     await fixture.handlers.get("session_switch")?.({}, sessionContext("ses_switch_to"));
-    expect(natsState.presented).toEqual([
-      "nats-access-of-ses_switch_from",
-      "nats-access-of-ses_switch_to",
+    expect(natsState.presented.map((token) => minted.get(token))).toEqual([
+      "ses_switch_from",
+      "ses_switch_to",
     ]);
     // The reconnect comes before every subscribe of the new session's subjects.
     const moved = natsState.timeline.filter(
@@ -19669,7 +19701,7 @@ console.log(JSON.stringify(args));
       const session = new URLSearchParams(await request.text()).get("session") ?? "";
       if (session !== "ses_failed_from") return new Response("the broker is away", { status: 503 });
       return Response.json({
-        access_token: `nats-access-of-${session}`,
+        access_token: fixtureSecret("nats"),
         issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
         token_type: "DPoP",
         expires_in: 900,
@@ -19751,14 +19783,15 @@ console.log(JSON.stringify(args));
     process.env.AGENT_SECRETS_URL = "http://broker.test";
     process.env.AGENT_SECRETS_MACHINE_IDENTITY = "kubernetes";
     process.env.AGENT_SECRETS_MACHINE_TOKEN_FILE = tokenFile;
-    let minted = 0;
+    const minted: string[] = [];
     globalThis.fetch = async (input, init) => {
       const request = new Request(input, init);
       if (new URL(request.url).host !== "broker.test")
         return responseWithRegistration(input, init, []);
-      minted += 1;
+      const token = fixtureSecret("nats");
+      minted.push(token);
       return Response.json({
-        access_token: `nats-access-${minted}`,
+        access_token: token,
         issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
         token_type: "DPoP",
         expires_in: 2,
@@ -19768,7 +19801,9 @@ console.log(JSON.stringify(args));
     const fixture = createPi();
     envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, sessionContext("ses_kept"));
-    expect(natsState.presented[0]).toBe("nats-access-1");
+    const [first] = minted;
+    expect(first).toBeString();
+    expect(natsState.presented[0]).toBe(first);
     // What the start did is done; from here a reconnect is the keeper's.
     natsState.timeline.length = 0;
     const before = natsState.presented.length;
@@ -19780,10 +19815,10 @@ console.log(JSON.stringify(args));
     await fixture.handlers.get("session_shutdown")?.({}, sessionContext("ses_kept"));
     // Stopped, it trades and reconnects no more.
     const reconnects = natsState.timeline.filter((entry) => entry === "reconnect").length;
-    const traded = minted;
+    const traded = minted.length;
     await Bun.sleep(2_500);
     expect(natsState.timeline.filter((entry) => entry === "reconnect").length).toBe(reconnects);
-    expect(minted).toBe(traded);
+    expect(minted).toHaveLength(traded);
   }, 15_000);
 
   test("rebinds the direct subscription after an in-process session switch", async () => {

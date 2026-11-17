@@ -34,16 +34,17 @@ afterEach(() => {
   for (const server of servers.splice(0)) server.stop(true)
 })
 
-/** A broker whose token exchange mints a numbered token that lives two seconds. */
+/** A broker whose token exchange mints a random token that lives two seconds, kept in `minted`. */
 function shortTokenBroker() {
-  const state = { minted: 0 }
+  const minted: string[] = []
   const server = Bun.serve({
     port: 0,
     hostname: "127.0.0.1",
     fetch: () => {
-      state.minted += 1
+      const token = fixtureSecret("channel")
+      minted.push(token)
       return Response.json({
-        access_token: `channel-access-${state.minted}`,
+        access_token: token,
         issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
         token_type: "DPoP",
         expires_in: 2,
@@ -51,7 +52,7 @@ function shortTokenBroker() {
     },
   })
   servers.push(server)
-  return { url: `http://127.0.0.1:${server.port}`, state }
+  return { url: `http://127.0.0.1:${server.port}`, minted }
 }
 
 /** A connection as the keeper sees it: each connect and reconnect asks the authenticator for the
@@ -105,21 +106,94 @@ test("dialChannelNats keeps the broker token renewed until it is stopped", async
     (text) => warnings.push(text),
     fake.dial,
   )
-  // The token is taken before the dial, so the first CONNECT presents it.
-  expect(fake.presented).toEqual(["channel-access-1"])
+  // The token is taken before the dial, so the first CONNECT presents the first one minted.
+  const [first] = broker.minted
+  if (first === undefined) throw new Error("the broker minted no token before the dial")
+  expect(fake.presented).toEqual([first])
   expect(opened.followSession).toBeDefined()
   const deadline = Date.now() + 5_000
   while (fake.reconnects() === 0 && Date.now() < deadline) await Bun.sleep(50)
   expect(fake.reconnects()).toBeGreaterThan(0)
-  expect(fake.presented.at(-1)).not.toBe("channel-access-1")
+  expect(fake.presented.at(-1)).not.toBe(first)
   expect(warnings).toEqual([])
   opened.stop()
   const reconnects = fake.reconnects()
-  const minted = broker.state.minted
+  const minted = broker.minted.length
   await Bun.sleep(2_500)
   expect(fake.reconnects()).toBe(reconnects)
-  expect(broker.state.minted).toBe(minted)
+  expect(broker.minted).toHaveLength(minted)
 }, 15_000)
+
+test("a pod session registered past the trade deadline still comes up, admitted", async () => {
+  // #4153's rule: a trade made before the pod's registration is retried for as long as the session
+  // runs. Claude Code does not restart its channel server, so a start that failed at the trade's
+  // deadline left the session with no delivery for its life, naming the wrong cause.
+  const SESSION = "ses_channel_pending"
+  let registered = false
+  const minted: string[] = []
+  const server = Bun.serve({
+    port: 0,
+    hostname: "127.0.0.1",
+    fetch: () => {
+      if (!registered) {
+        return Response.json(
+          {
+            error: "invalid_grant",
+            error_description: `pod_session_not_registered: No registration says this pod may write under the session name '${SESSION}'. A pod writes under a session name its deployment registered for it.`,
+          },
+          { status: 400 },
+        )
+      }
+      const token = fixtureSecret("channel")
+      minted.push(token)
+      return Response.json({
+        access_token: token,
+        issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
+        token_type: "DPoP",
+        expires_in: 900,
+      })
+    },
+  })
+  servers.push(server)
+  const home = await mkdtemp(join(tmpdir(), "channel-nats-"))
+  const tokenFile = join(home, "token")
+  await writeFile(tokenFile, `${fixtureSecret("machine")}\n`)
+  const credential = brokerNatsCredential(
+    {
+      HOME: home,
+      AGENT_SECRETS_URL: `http://127.0.0.1:${server.port}`,
+      AGENT_SECRETS_MACHINE_IDENTITY: "kubernetes",
+      AGENT_SECRETS_MACHINE_TOKEN_FILE: tokenFile,
+    },
+    SESSION,
+    "NATS_AUTH",
+    300,
+  )
+  // The registration lands well past the 300 ms deadline.
+  setTimeout(() => {
+    registered = true
+  }, 1_000)
+  const fake = fakeDial()
+  const opened = await dialChannelNats(
+    {
+      natsUrls: ["nats://nats.test:4222"],
+      natsServersSetting: "ENVOY_NATS_URL",
+      natsCredential: { kind: "broker", broker: credential },
+    },
+    `claude-envoy-channel-${SESSION}`,
+    () => {},
+    fake.dial,
+  ).then(
+    (dialled) => dialled,
+    (error: unknown) => (error instanceof Error ? error.message : String(error)),
+  )
+  if (typeof opened === "string") throw new Error(`the channel server's start failed: ${opened}`)
+  // Admitted with the token traded once the registration landed.
+  const [first] = minted
+  if (first === undefined) throw new Error("the broker minted no token before the dial")
+  expect(fake.presented).toEqual([first])
+  opened.stop()
+}, 90_000)
 
 test("dialChannelNats runs no keeper and no follow for a connection with no broker token", async () => {
   const fake = fakeDial()
