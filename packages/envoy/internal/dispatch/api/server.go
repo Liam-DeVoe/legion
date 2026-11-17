@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"mime"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -561,10 +560,14 @@ type queryer interface {
 // Every route refuses a path or query parameter holding U+0000 or a byte that is not UTF-8 before
 // its handler runs (refuseUnstorableParameters), as decodeJSON refuses a U+0000 in a body.
 //
-// Every POST and PATCH route takes an Idempotency-Key, and a repeat under one is answered from the
-// key rather than run again (keyedWrites, request_keys.go). Every write route - a POST, PATCH, PUT
-// or DELETE - that names its presser in Dispatch-Login runs only as that person
-// (refuseChangedLogin).
+// Every POST and PATCH route, and every PUT and DELETE route of /api/v2, takes an Idempotency-Key,
+// and a repeat under one is answered from the key rather than run again (keyedWrites,
+// keyedMethod, request_keys.go). Every write route - a POST, PATCH, PUT or DELETE - that names
+// its presser in Dispatch-Login runs only as that person (refuseChangedLogin).
+//
+// Every /api/v2 route reads its query and its body through one decoder, from the types its row
+// declares, and holds each value its row gives an authority to that authority before its handler
+// runs (decode_v2.go, authorities_v2.go).
 //
 // The server holds the delivery hub (LEGION-690), which starts its goroutines on the first
 // subscription and runs them until lifetime ends, and mounts GET /ws/live beside the document
@@ -741,81 +744,16 @@ func register(mux *http.ServeMux, lifetime context.Context, deps Deps) *server {
 		// routeRow with no IDs column - so the table is refused rather than mounted (idRoutes).
 		panic("api.Register: the route table holds a route whose id the prefix layer cannot decide: " + strings.Join(undecided, "; "))
 	}
+	if undecodable := undecodableRoutes(routes); len(undecodable) > 0 {
+		// A /api/v2 route whose query or body the decoder cannot read, or an authority rule that
+		// could never hold, would refuse or admit requests by a declaration nothing reads as
+		// written, so the table is refused rather than mounted (decode_v2.go).
+		panic("api.Register: the route table holds a route whose request declarations the /api/v2 decoder cannot read: " + strings.Join(undecodable, "; "))
+	}
 	s.routeIndex = routeIndexEntries(servedAt(apiV1, routes))
 	s.routeIndexV2 = routeIndexV2Entries(servedAt(apiV2, routes))
 	for _, route := range routes {
-		// Every fact a layer below reads is the route's own (routes_versions.go): its version, which
-		// reaches the error writers on the request (withAPIVersion) and the drain from here, its
-		// replay and its body bound, its owner's closed state, its write class and the object its
-		// path names, the session its path names, its id facts and its scopes.
-		handler := route.Handler
-		if keyedMethod(route.Method) {
-			handler = s.keyedWrites(route, handler)
-		}
-		if route.RefusesClosedOwner {
-			handler = s.refuseUploadToAClosedIssue(handler)
-		}
-		if route.Method != http.MethodGet {
-			// Outside the keyed layer and the upload's spool, so a write to another project's
-			// object, into another session's own rows, or by a credential that names no person
-			// claims no idempotency key and costs no body (withinProjectScope,
-			// withinSessionScope, writeNeedsASignedInPerson).
-			handler = s.withinProjectScope(route, handler)
-			handler = s.withinSessionScope(route, handler)
-			// Outermost of the three, so a caller that may make no write at all is told that
-			// rather than which session the write it tried belongs to. The project check has
-			// nothing to tell it: a token naming a service is held to no one project
-			// (broker_token.go).
-			handler = s.writeNeedsASignedInPerson(handler)
-			handler = s.refuseChangedLogin(handler)
-		}
-		// Outside the two scope checks and outside the GET test, so it runs before them and
-		// before every handler, on a read as on a write: the whole id it resolves a path
-		// prefix into is the value the project check resolves and the value the handler
-		// addresses its row by, one value for both (resolveIDPrefixes, project_scope.go).
-		handler = s.resolveIDPrefixes(route, handler)
-		handler = s.refuseUnstorableParameters(route.Pattern, handler)
-		if len(route.OAuthScopes) > 0 {
-			// Ahead of the keyed layer and the project and session checks, so the row's own
-			// scopes are the first thing a request is held to: a credential that holds none is
-			// told so rather than told its write belongs to another project or another session,
-			// and its refusal claims no idempotency key, so the person who ticks the scope back
-			// is not answered the stored refusal under the same key. It is inside the drain, so
-			// a client that asked to be told to continue is handled as it is for every other
-			// early answer.
-			handler = s.gateRouteScopes(route.OAuthScopes, handler)
-		}
-		// One place for the whole table: every answer says its body depends on Dispatch-Trees
-		// (varyOnDisplayTrees), so no cache between a browser and Dispatch hands a reader with
-		// trees an answer written for a reader without them. It is outside the scope gate, so a
-		// refusal of the row's own scopes carries the header too. The answer's other Vary, on
-		// Accept-Encoding, is added by the same loop, where the encoding is chosen
-		// (compressAnswers).
-		handler = varyOnDisplayTrees(handler)
-		if route.Method != http.MethodGet {
-			// Every layer above may answer before the body is read; the answer waits for the body.
-			//
-			// A client that asked to be told to continue before it sends its body (Expect:
-			// 100-continue) and is answered early sends none of it, and its connection closes after
-			// the answer, as long as nothing reads that body: net/http sends 100 Continue at the
-			// body's first read, and otherwise closes the connection once the answer begins rather
-			// than wait on a body that never comes. It decides from the expect-continue reader its
-			// own response keeps (go1.27's response.ecReader and reqBody), not from the request's
-			// Body, so it is not that trackTransactions hands this layer a copy of the request: the
-			// handling holds with the drain's body put on net/http's own request. What keeps the body
-			// unread is the drain's guard (drainingWriter.askedContinue) and the keyed layer's
-			// (answerDrainedRepeat), which TestAnEarlyAnswerToAClientWaitingToContinueAsksForNoBody
-			// pins: without either, the client is told to continue and the answer waits on its body.
-			handler = s.drainBeforeAnswer(route, handler)
-		}
-		// The access-log line is outermost but for the version, so it records what every layer
-		// answered - a keyed replay, a refused login, an early answer the drain held - and the
-		// caller the first of them resolved. Compression sits just inside it, so every one of those
-		// answers is compressed for a caller that takes gzip and the line counts the bytes that went
-		// on the wire. The two websockets below carry no compressed answer: the upgrade is not a
-		// body, and the frames after it are the socket's (compressAnswers). The version is put on
-		// the request before any of them, so every layer that refuses answers for it.
-		mux.HandleFunc(route.Method+" "+route.Pattern, withAPIVersion(route.Version, accesslog.HandlerFunc(route.Pattern, compressAnswers(s.decideBrokerToken(trackTransactions(handler))))))
+		mux.HandleFunc(route.Method+" "+route.Pattern, s.routeHandler(route))
 	}
 	if websocket, ok := deps.Docs.(interface {
 		ServeHTTP(http.ResponseWriter, *http.Request)
@@ -826,6 +764,111 @@ func register(mux *http.ServeMux, lifetime context.Context, deps Deps) *server {
 	const livePattern = "/ws/live"
 	mux.Handle("GET "+livePattern, accesslog.Handler(livePattern, s.whileCallerResolves(s.decideBrokerToken(trackTransactions(s.refuseUnstorableParameters(livePattern, s.serveLiveSocket))))))
 	return s
+}
+
+// routeHandler is route's handler wrapped in every layer register serves it through, in their
+// order: what register mounts at the route's method and pattern, and what a test mounts a
+// made-up row through to meet the chain a real one meets.
+func (s *server) routeHandler(route apiRoute) http.HandlerFunc {
+	// Every fact a layer below reads is the route's own (routes_versions.go): its version, which
+	// reaches the error writers on the request (withAPIVersion) and the drain from here, its
+	// replay and its body bound, its owner's closed state, its write class and the object its
+	// path names, the session its path names, its id facts and its scopes, and on a route the
+	// rules of /api/v2 bind its query and body types and its authorities.
+	var decoder *v2Decoder
+	if route.v2Bound() {
+		decoder = mustV2Decoder(route)
+	}
+	handler := route.Handler
+	if decoder != nil {
+		// Just around the handler, inside the keyed layer that spools an upload's body as it
+		// spools every upload's: the handler reads the upload's declared fields and its file
+		// through the decoder (v2Body, v2Upload), and never r.FormValue.
+		handler = s.readV2Upload(decoder, handler)
+	}
+	if keyedMethod(route) {
+		handler = s.keyedWrites(route, handler)
+	}
+	if route.RefusesClosedOwner {
+		handler = s.refuseUploadToAClosedIssue(handler)
+	}
+	if decoder != nil {
+		// After the decoder has read the body and outside the keyed layer, so a value the
+		// credential lacks the scope for is refused before the handler runs and claims no
+		// idempotency key (authorities_v2.go).
+		handler = s.gateV2Authorities(route, handler)
+		// After the project, session and login checks and before the authority gate and the
+		// keyed layer: a JSON body is read once, bounded by the route's BodyLimit, decoded, and
+		// put back as the bytes the keyed layer fingerprints (decode_v2.go).
+		handler = s.readV2Body(decoder, handler)
+	}
+	if route.Method != http.MethodGet {
+		// Outside the keyed layer and the upload's spool, so a write to another project's
+		// object, into another session's own rows, or by a credential that names no person
+		// claims no idempotency key and costs no body (withinProjectScope,
+		// withinSessionScope, writeNeedsASignedInPerson).
+		handler = s.withinProjectScope(route, handler)
+		handler = s.withinSessionScope(route, handler)
+		// Outermost of the three, so a caller that may make no write at all is told that
+		// rather than which session the write it tried belongs to. The project check has
+		// nothing to tell it: a token naming a service is held to no one project
+		// (broker_token.go).
+		handler = s.writeNeedsASignedInPerson(handler)
+		handler = s.refuseChangedLogin(handler)
+	}
+	// Outside the two scope checks and outside the GET test, so it runs before them and
+	// before every handler, on a read as on a write: the whole id it resolves a path
+	// prefix into is the value the project check resolves and the value the handler
+	// addresses its row by, one value for both (resolveIDPrefixes, project_scope.go).
+	handler = s.resolveIDPrefixes(route, handler)
+	handler = s.refuseUnstorableParameters(route.Pattern, handler)
+	if decoder != nil {
+		// Just inside the route's scope gate, so a query key the route does not declare is
+		// refused 400 QUERY_KEY_UNKNOWN before any lookup or write (R4), and every layer behind
+		// reads the session the decoded query names (decodedSession).
+		handler = s.readV2Query(decoder, handler)
+	}
+	if len(route.OAuthScopes) > 0 {
+		// Ahead of the keyed layer and the project and session checks, so the row's own
+		// scopes are the first thing a request is held to: a credential that holds none is
+		// told so rather than told its write belongs to another project or another session,
+		// and its refusal claims no idempotency key, so the person who ticks the scope back
+		// is not answered the stored refusal under the same key. It is inside the drain, so
+		// a client that asked to be told to continue is handled as it is for every other
+		// early answer.
+		handler = s.gateRouteScopes(route.OAuthScopes, handler)
+	}
+	// One place for the whole table: every answer says its body depends on Dispatch-Trees
+	// (varyOnDisplayTrees), so no cache between a browser and Dispatch hands a reader with
+	// trees an answer written for a reader without them. It is outside the scope gate, so a
+	// refusal of the row's own scopes carries the header too. The answer's other Vary, on
+	// Accept-Encoding, is added by the same loop, where the encoding is chosen
+	// (compressAnswers).
+	handler = varyOnDisplayTrees(handler)
+	if route.Method != http.MethodGet {
+		// Every layer above may answer before the body is read; the answer waits for the body.
+		//
+		// A client that asked to be told to continue before it sends its body (Expect:
+		// 100-continue) and is answered early sends none of it, and its connection closes after
+		// the answer, as long as nothing reads that body: net/http sends 100 Continue at the
+		// body's first read, and otherwise closes the connection once the answer begins rather
+		// than wait on a body that never comes. It decides from the expect-continue reader its
+		// own response keeps (go1.27's response.ecReader and reqBody), not from the request's
+		// Body, so it is not that trackTransactions hands this layer a copy of the request: the
+		// handling holds with the drain's body put on net/http's own request. What keeps the body
+		// unread is the drain's guard (drainingWriter.askedContinue) and the keyed layer's
+		// (answerDrainedRepeat), which TestAnEarlyAnswerToAClientWaitingToContinueAsksForNoBody
+		// pins: without either, the client is told to continue and the answer waits on its body.
+		handler = s.drainBeforeAnswer(route, handler)
+	}
+	// The access-log line is outermost but for the version, so it records what every layer
+	// answered - a keyed replay, a refused login, an early answer the drain held - and the
+	// caller the first of them resolved. Compression sits just inside it, so every one of those
+	// answers is compressed for a caller that takes gzip and the line counts the bytes that went
+	// on the wire. The two websockets register mounts carry no compressed answer: the upgrade is
+	// not a body, and the frames after it are the socket's (compressAnswers). The version is put
+	// on the request before any of them, so every layer that refuses answers for it.
+	return withAPIVersion(route.Version, accesslog.HandlerFunc(route.Pattern, compressAnswers(s.decideBrokerToken(trackTransactions(handler)))))
 }
 
 func trackTransactions(handler http.HandlerFunc) http.HandlerFunc {
@@ -1266,7 +1309,9 @@ func (s *server) gateRouteScopes(scopes []string, handler http.HandlerFunc) http
 // acted, and carries none. A credential that proved no session takes the one the `session` query
 // parameter names where the caller gives it, the convention messages.go already reads; one that
 // proved a session is refused a parameter naming another, 403 ACTOR_SESSION_MISMATCH, which is
-// what bearerSessionActor answers the same disagreement in a body.
+// what bearerSessionActor answers the same disagreement in a body. On a /api/v2 route the
+// parameter is the one the decoder read (decodedSession, R4); on every other route it is read off
+// the raw query, as it always was.
 func (s *server) actingPerson(w http.ResponseWriter, r *http.Request) (model.Actor, bool) {
 	actor, _, err := s.optionalActor(r)
 	if err != nil {
@@ -1288,7 +1333,11 @@ func (s *server) actingPerson(w http.ResponseWriter, r *http.Request) (model.Act
 	var act *model.ActorAct
 	if credential.TokenID != "" || credential.Session != "" {
 		session := credential.Session
-		if named := strings.TrimSpace(r.URL.Query().Get("session")); named != "" {
+		named, decoded := decodedSession(r)
+		if !decoded {
+			named = strings.TrimSpace(r.URL.Query().Get("session"))
+		}
+		if named != "" {
 			if session != "" && named != session {
 				writeError(w, r, apicode.ActorSessionMismatch, fmt.Sprintf(
 					"this request's credential acts for session %s; its session parameter names another session", session))
@@ -1510,9 +1559,8 @@ func refuseUndeclaredMembers(value any, body []byte) error {
 // read, for the caller to judge the members value does not declare by. A body past limit is
 // tooLarge, the 413 the route answers one with.
 func readJSONBody(r *http.Request, value any, limit int64, tooLarge *apiError) ([]byte, error) {
-	contentType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
-	if err != nil || (contentType != "application/json" && !strings.HasSuffix(contentType, "+json")) {
-		return nil, errorf(apicode.JSONContentType, "JSON mutations require Content-Type application/json")
+	if refusal := jsonContentTypeRefusal(r); refusal != nil {
+		return nil, refusal
 	}
 	r.Body = http.MaxBytesReader(maxBytesDiscarder{}, r.Body, limit)
 	var read bytes.Buffer

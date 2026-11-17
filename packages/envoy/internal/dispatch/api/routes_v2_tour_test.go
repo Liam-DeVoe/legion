@@ -1,0 +1,441 @@
+package api
+
+// routes_v2_tour_test.go is the route tour (plan t16 step 2 of dispatch://INFRA-4071): one step
+// per /api/v2 route the rules of /api/v2 bind - every route but the rows of the INFRA-979 tree and
+// the test hooks - each a request the route answers with a status the step names, on a server of
+// its own (newRouteTour), and subtests that send every step again in the ways R1, R4, R7 and R8
+// say every route answers alike.
+//
+// Each group of routes registers its steps in a file of its own, routes_v2_tour_<group>_test.go,
+// with an init function:
+//
+//	func init() { addTourSteps("asks", asksTourSteps) }
+//
+//	func asksTourSteps() []tourStep {
+//		return []tourStep{{
+//			Method: http.MethodGet, Pattern: "/asks/{id}", Status: http.StatusOK,
+//			Setup: func(t *testing.T, tour *routeTour) tourRequest {
+//				ask := tour.ask(t, tour.issue(t))
+//				return tourRequest{Path: map[string]string{"id": ask}, As: tourPerson("alice")}
+//			},
+//			Missing: []tourMissing{{Param: "id", Value: uuid.NewString(), Code: apicode.AskNotFound}},
+//		}}
+//	}
+//
+// so a group adds a file and edits no shared literal. The tour fails while a mounted route has no
+// step (every-route-has-a-step), which it does until every group has added its own.
+
+import (
+	"bytes"
+	"cmp"
+	"encoding/json"
+	"maps"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"reflect"
+	"slices"
+	"strings"
+	"testing"
+
+	"github.com/google/uuid"
+
+	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apitest"
+)
+
+// tourStep is one call of one /api/v2 route the tour makes: the route, what the call needs made
+// first, the request, and the status it is answered with.
+type tourStep struct {
+	// Method and Pattern name the route as its row writes it: its method and its version-free
+	// pattern, "/issues/{key}", and "" for the route index at /api/v2 itself.
+	Method  string
+	Pattern string
+	// Name tells apart two steps of one route; empty for a route's only step.
+	Name string
+	// Setup makes what the request names on the tour's database - an issue, a document, an ask -
+	// tells the tour's fakes what to answer, and answers the request. It runs once for each
+	// subtest that sends the step, so each send has objects of its own to change.
+	Setup func(t *testing.T, tour *routeTour) tourRequest
+	// Status is the status the request is answered with.
+	Status int
+	// Missing are the path values that name an object Dispatch stores (decision 11), each with a
+	// value no stored object has and the 404 code the route answers it with; empty for a route
+	// whose path names none. Never a {session_id}, the {id} of an agent mark or the
+	// app-installation read's {owner}/{repo}, which keep today's answer (ruling A).
+	Missing []tourMissing
+	// NoCredential is the 401 code the route answers a request with no credential, where it is
+	// not the identity layer's NO_IDENTITY: a route only a bearer may call answers its own.
+	NoCredential apicode.Code
+}
+
+// tourRequest is the request a step sends.
+type tourRequest struct {
+	// Path is the value of each wildcard of the route's pattern.
+	Path map[string]string
+	// Query is the query the request carries; nil for none.
+	Query url.Values
+	// Body is a JSON body, any value json.Marshal takes, or a tourUpload for a multipart upload;
+	// nil sends none.
+	Body any
+	// As is the credential the request carries.
+	As tourCaller
+}
+
+// tourUpload is a multipart upload's body: its fields, and its file.
+type tourUpload struct {
+	Fields      map[string]string
+	Filename    string
+	ContentType string
+	Content     []byte
+}
+
+// tourMissing is one path value that names a stored object, with a value no object has, and the
+// code its route answers that value with.
+type tourMissing struct {
+	Param string
+	Value string
+	Code  apicode.Code
+}
+
+// tourCaller is the credential a step's request carries: a person signed in at a browser
+// (Login), a bearer token (Token: a personal token, the shared agent token), or none at all.
+type tourCaller struct {
+	Login string
+	Token string
+}
+
+// tourPerson is login signed in at a browser, holding every scope.
+func tourPerson(login string) tourCaller { return tourCaller{Login: login} }
+
+// tourBearer is a bearer token.
+func tourBearer(token string) tourCaller { return tourCaller{Token: token} }
+
+// tourGroups are the tour's steps by group, each group's added by its own file (addTourSteps).
+var tourGroups = map[string]func() []tourStep{}
+
+// addTourSteps adds a group's steps to the tour. A group added twice is a mistake in the files
+// that name it, and panics naming it.
+func addTourSteps(group string, steps func() []tourStep) {
+	if _, added := tourGroups[group]; added {
+		panic("the route tour's group " + group + " is added twice")
+	}
+	tourGroups[group] = steps
+}
+
+// route is the "<method> <pattern>" of the /api/v2 route the step calls.
+func (step tourStep) route() string {
+	return step.Method + " /api/v2" + step.Pattern
+}
+
+// name is the step's subtest name: its route, and its own name where it has one.
+func (step tourStep) name() string {
+	if step.Name == "" {
+		return step.route()
+	}
+	return step.route() + ": " + step.Name
+}
+
+// tourSteps is every group's steps, sorted by route and name.
+func tourSteps() []tourStep {
+	var steps []tourStep
+	for _, group := range slices.Sorted(maps.Keys(tourGroups)) {
+		steps = append(steps, tourGroups[group]()...)
+	}
+	slices.SortStableFunc(steps, func(left, right tourStep) int { return strings.Compare(left.name(), right.name()) })
+	return steps
+}
+
+// TestV2RouteTour walks every /api/v2 route the rules of /api/v2 bind, one step at least each,
+// and holds each step to what every route answers alike:
+//
+//   - every-route-has-a-step: a mounted route with no step fails, so the tour covers the table.
+//   - steps: each step is answered its status.
+//   - unknown-keys: each step sent again with ?zz_undeclared=1 is answered 400 QUERY_KEY_UNKNOWN,
+//     naming the key and every key the route declares, and writes nothing (R4).
+//   - undeclared-members: each write step sent with a body member, or an upload's field, the
+//     route does not declare is answered as it is without it (R4).
+//   - missing-objects: each step whose path names a stored object, sent naming one that does not
+//     exist, is answered 404 with that object's code (decision 11, R7).
+//   - unauthenticated: each step of a route that is not public, sent with no credential, is
+//     answered 401 with the identity layer's code.
+//   - replays: each write step sent twice under one Idempotency-Key is answered the same body the
+//     second time, marked a replay, with no second event; a route whose answer holds a secret
+//     answers the repeat 409 KEY_COMMITTED (R8).
+func TestV2RouteTour(t *testing.T) {
+	tour := newRouteTour(t)
+	steps := tourSteps()
+
+	t.Run("every-route-has-a-step", func(t *testing.T) {
+		stepped := map[string]bool{}
+		for _, step := range steps {
+			stepped[step.route()] = true
+		}
+		var missing []string
+		for _, route := range slices.Sorted(maps.Keys(tour.routes)) {
+			if !stepped[route] {
+				missing = append(missing, route)
+			}
+		}
+		if len(missing) > 0 {
+			t.Errorf("%d of the %d /api/v2 routes have no step of the route tour:\n\t%s\n"+
+				"Add each its step in its group's routes_v2_tour_<group>_test.go (addTourSteps).",
+				len(missing), len(tour.routes), strings.Join(missing, "\n\t"))
+		}
+	})
+
+	t.Run("steps", func(t *testing.T) {
+		for _, step := range steps {
+			t.Run(step.name(), func(t *testing.T) {
+				route := tour.stepRoute(t, step)
+				request := step.Setup(t, tour)
+				if response := tour.send(t, route, request, ""); response.Code != step.Status {
+					t.Fatalf("answered %d %s, want %d", response.Code, response.Body.String(), step.Status)
+				}
+			})
+		}
+	})
+
+	// contract: plan t16 step 2's subtest that validates every step's answer body against
+	// dispatch-openapi-v2.json - every required member present and no undeclared one - is the
+	// v2 document's task's to add here, once that document is emitted.
+
+	t.Run("unknown-keys", func(t *testing.T) {
+		for _, step := range steps {
+			t.Run(step.name(), func(t *testing.T) {
+				route := tour.stepRoute(t, step)
+				request := step.Setup(t, tour)
+				write := route.Method != http.MethodGet
+				var before map[string]string
+				if write {
+					awaitBackgroundWrites(t, tour.served)
+					before = databaseFingerprint(t, tour.database)
+				}
+				request.Query = withQueryValue(request.Query, "zz_undeclared", "1")
+				response := tour.send(t, route, request, "")
+				refusal := decodeBody[queryKeyUnknownBody](t, response)
+				if want := declaredQueryKeys(route.Query); response.Code != http.StatusBadRequest || refusal.Code != "QUERY_KEY_UNKNOWN" ||
+					refusal.Key != "zz_undeclared" || !slices.Equal(refusal.Declared, want) {
+					t.Fatalf("answered %d %s, want 400 QUERY_KEY_UNKNOWN naming zz_undeclared and %v", response.Code, response.Body.String(), want)
+				}
+				if write {
+					awaitBackgroundWrites(t, tour.served)
+					assertUnchanged(t, step.name()+" with an undeclared key", before, databaseFingerprint(t, tour.database))
+				}
+			})
+		}
+	})
+
+	t.Run("undeclared-members", func(t *testing.T) {
+		for _, step := range steps {
+			if step.Method == http.MethodGet {
+				continue
+			}
+			t.Run(step.name(), func(t *testing.T) {
+				route := tour.stepRoute(t, step)
+				request := step.Setup(t, tour)
+				if request.Body == nil {
+					t.Skip("the step sends no body to add a member to")
+				}
+				request.Body = withUndeclaredMember(t, request.Body)
+				if response := tour.send(t, route, request, ""); response.Code != step.Status {
+					t.Fatalf("with a member the route does not declare: answered %d %s, want %d as without it",
+						response.Code, response.Body.String(), step.Status)
+				}
+			})
+		}
+	})
+
+	t.Run("missing-objects", func(t *testing.T) {
+		for _, step := range steps {
+			for _, missing := range step.Missing {
+				t.Run(step.name()+" "+missing.Param, func(t *testing.T) {
+					route := tour.stepRoute(t, step)
+					if !slices.Contains(patternWildcards(route.Pattern), missing.Param) || missing.Param == "session_id" {
+						t.Fatalf("names {%s}, which is no wildcard of %s whose object Dispatch stores", missing.Param, route.Pattern)
+					}
+					request := step.Setup(t, tour)
+					request.Path = maps.Clone(request.Path)
+					request.Path[missing.Param] = missing.Value
+					response := tour.send(t, route, request, "")
+					if code, _ := refusalOf(t, response); response.Code != http.StatusNotFound || code != missing.Code.Name() {
+						t.Fatalf("naming {%s} %q: answered %d %s, want 404 %s", missing.Param, missing.Value,
+							response.Code, response.Body.String(), missing.Code.Name())
+					}
+				})
+			}
+		}
+	})
+
+	t.Run("unauthenticated", func(t *testing.T) {
+		for _, step := range steps {
+			t.Run(step.name(), func(t *testing.T) {
+				route := tour.stepRoute(t, step)
+				if route.Auth == authPublic {
+					t.Skip("a public route answers a caller with no credential")
+				}
+				request := step.Setup(t, tour)
+				request.As = tourCaller{}
+				response := tour.send(t, route, request, "")
+				want := cmp.Or(step.NoCredential, apicode.NoIdentity)
+				if code, _ := refusalOf(t, response); response.Code != http.StatusUnauthorized || code != want.Name() {
+					t.Fatalf("with no credential: answered %d %s, want 401 %s", response.Code, response.Body.String(), want.Name())
+				}
+			})
+		}
+	})
+
+	t.Run("replays", func(t *testing.T) {
+		for _, step := range steps {
+			if step.Method == http.MethodGet {
+				continue
+			}
+			t.Run(step.name(), func(t *testing.T) {
+				route := tour.stepRoute(t, step)
+				request := step.Setup(t, tour)
+				key := uuid.NewString()
+				first := tour.send(t, route, request, key)
+				if first.Code != step.Status {
+					t.Fatalf("the first send answered %d %s, want %d", first.Code, first.Body.String(), step.Status)
+				}
+				events := tour.eventCount(t, "", "")
+				again := tour.send(t, route, request, key)
+				if route.AnswerHoldsSecret {
+					if code, _ := refusalOf(t, again); again.Code != http.StatusConflict || code != "KEY_COMMITTED" {
+						t.Fatalf("a repeat of a write whose answer holds a secret answered %d %s, want 409 KEY_COMMITTED",
+							again.Code, again.Body.String())
+					}
+				} else if again.Code != first.Code || !replayed(again) || again.Body.String() != first.Body.String() {
+					t.Fatalf("the repeat answered %d %s (replayed %v), want the first answer %d %s, replayed",
+						again.Code, again.Body.String(), replayed(again), first.Code, first.Body.String())
+				}
+				if after := tour.eventCount(t, "", ""); after != events {
+					t.Fatalf("the repeat appended %d events, want none", after-events)
+				}
+			})
+		}
+	})
+}
+
+// stepRoute is the mounted route step calls, and fails the test for a step of a route /api/v2
+// does not serve or that the rules of /api/v2 do not bind.
+func (tour *routeTour) stepRoute(t *testing.T, step tourStep) apiRoute {
+	t.Helper()
+	route, mounted := tour.routes[step.route()]
+	if !mounted {
+		t.Fatalf("the step calls %s, which is no /api/v2 route the tour walks: a route the server does not mount, "+
+			"a row of the INFRA-979 tree, or a test hook", step.route())
+	}
+	return route
+}
+
+// send carries request to route through the tour's server, under the Idempotency-Key key where
+// one is given.
+func (tour *routeTour) send(t *testing.T, route apiRoute, request tourRequest, key string) *httptest.ResponseRecorder {
+	t.Helper()
+	target := route.Pattern
+	for _, name := range patternWildcards(route.Pattern) {
+		value, named := request.Path[name]
+		if !named {
+			t.Fatalf("the request names no {%s} of %s", name, route.Pattern)
+		}
+		target = strings.Replace(target, "{"+name+"}", url.PathEscape(value), 1)
+		target = strings.Replace(target, "{"+name+"...}", value, 1)
+	}
+	if len(request.Query) > 0 {
+		target += "?" + request.Query.Encode()
+	}
+	var body *bytes.Buffer
+	contentType := "application/json"
+	switch sent := request.Body.(type) {
+	case nil:
+		body = &bytes.Buffer{}
+	case tourUpload:
+		upload, uploadType, err := apitest.MultipartUpload(sent.Fields, sent.Filename, sent.ContentType, sent.Content)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, contentType = upload, uploadType
+	default:
+		encoded, err := json.Marshal(sent)
+		if err != nil {
+			t.Fatalf("encode the request's body: %v", err)
+		}
+		body = bytes.NewBuffer(encoded)
+	}
+	sending := httptest.NewRequest(route.Method, target, body)
+	sending.Header.Set("Content-Type", contentType)
+	if request.As.Login != "" {
+		sending.Header.Set("X-Dispatch-User", request.As.Login)
+	}
+	if request.As.Token != "" {
+		sending.Header.Set("Authorization", "Bearer "+request.As.Token)
+	}
+	if key != "" {
+		sending.Header.Set(contracts.IdempotencyKeyHeader, key)
+	}
+	response := httptest.NewRecorder()
+	tour.handler.ServeHTTP(response, sending)
+	return response
+}
+
+// withQueryValue is query with one more key and value, query itself left as it was.
+func withQueryValue(query url.Values, key, value string) url.Values {
+	with := url.Values{}
+	for name, values := range query {
+		with[name] = slices.Clone(values)
+	}
+	with.Add(key, value)
+	return with
+}
+
+// withUndeclaredMember is body with a member no route declares, zz_undeclared: a JSON object's
+// member, or an upload's field.
+func withUndeclaredMember(t *testing.T, body any) any {
+	t.Helper()
+	if upload, ok := body.(tourUpload); ok {
+		upload.Fields = maps.Clone(upload.Fields)
+		if upload.Fields == nil {
+			upload.Fields = map[string]string{}
+		}
+		upload.Fields["zz_undeclared"] = "1"
+		return upload
+	}
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("encode the request's body: %v", err)
+	}
+	var members map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &members); err != nil {
+		t.Fatalf("the step's body %s is no JSON object to add a member to", encoded)
+	}
+	members["zz_undeclared"] = json.RawMessage(`{"deep":[1]}`)
+	return members
+}
+
+// declaredQueryKeys is every key a route whose query is query declares, read off its query tags
+// (an embedded struct's own included), and session, which every /api/v2 route declares, sorted:
+// what a refusal of an undeclared key names.
+func declaredQueryKeys(query any) []string {
+	keys := []string{"session"}
+	var collect func(typ reflect.Type)
+	collect = func(typ reflect.Type) {
+		for index := range typ.NumField() {
+			field := typ.Field(index)
+			tag, tagged := field.Tag.Lookup("query")
+			if field.Anonymous && !tagged && field.Type.Kind() == reflect.Struct {
+				collect(field.Type)
+				continue
+			}
+			if key, _, _ := strings.Cut(tag, ","); tagged {
+				keys = append(keys, key)
+			}
+		}
+	}
+	if query != nil {
+		collect(reflect.TypeOf(query))
+	}
+	slices.Sort(keys)
+	return keys
+}

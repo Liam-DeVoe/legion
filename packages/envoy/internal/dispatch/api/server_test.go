@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -137,6 +138,10 @@ type testServerOptions struct {
 	// buildCommit is the commit the server says it was built from (Deps.BuildCommit), which its
 	// list validators name; empty is a build nothing stamped, as every `go test` binary is.
 	buildCommit string
+	// agentSecretsURL points the credential pages' relay at a fake secrets broker
+	// (newFakeBrokerRig), Dispatch presenting credentialTestAccountToken to it; empty leaves the
+	// feature off, as every test but the route tour's and the credential routes' own does.
+	agentSecretsURL string
 }
 
 // testTakeoverWindow is the listener take-over window of a test server that sets none. A send to
@@ -239,7 +244,7 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 	if options.identity != nil {
 		people = options.identity
 	}
-	deps, err := NewDeps(DepsInput{
+	input := DepsInput{
 		Store:                  database,
 		Identity:               people,
 		AgentTokens:            sharedAgentTokens(t, "agent-token"),
@@ -265,7 +270,15 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		Files:                  options.files,
 		DashboardEntry:         options.dashboardEntry,
 		BuildCommit:            options.buildCommit,
-	})
+	}
+	if options.agentSecretsURL != "" {
+		tokenFile := filepath.Join(t.TempDir(), "token")
+		if err := os.WriteFile(tokenFile, []byte(credentialTestAccountToken), 0o600); err != nil {
+			t.Fatalf("write the account token file: %v", err)
+		}
+		input.AgentSecretsURL, input.AgentSecretsTokenFile = options.agentSecretsURL, tokenFile
+	}
+	deps, err := NewDeps(input)
 	if err != nil {
 		t.Fatalf("new API dependencies: %v", err)
 	}

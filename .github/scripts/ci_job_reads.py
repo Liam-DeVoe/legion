@@ -1523,13 +1523,13 @@ def go_top_level_spans(code: str, path) -> list:
     return spans
 
 
-# The eight static checks of internal/dispatch/api, keyed by their path in this repository: the
-# seven source guards and one_expression_guard_test.go, which reads the module's text for the same
+# The nine static checks of internal/dispatch/api, keyed by their path in this repository: the
+# eight source guards and one_expression_guard_test.go, which reads the module's text for the same
 # reason. Each reads the module's own source and carries `//go:build !race` for it, so the walk
-# below would put all fifteen of their tests in the plain step; they are left out of it instead,
+# below would put all sixteen of their tests in the plain step; they are left out of it instead,
 # because the text-check job runs them by name and a test run twice is a test whose second run
 # tells nobody anything. The exemption is held to the files it is about in three ways, so a
-# sixteenth such test cannot quietly rejoin the plain step: a file named here that does not
+# seventeenth such test cannot quietly rejoin the plain step: a file named here that does not
 # carry the tag is refused, a file whose tests are not exactly the names here is refused
 # (race_impossible_tests_of), and a name here the lane's walk never reads is refused
 # (race_impossible_tests). internal/bus's and internal/dispatch/docs' race-skipped tests are in
@@ -1558,6 +1558,8 @@ TEXT_CHECK_TESTS = {
         "TestOnlyWriteReviewWritesReviews",
         "TestTheReviewWriterPatternsReadEveryNameOfTheTable",
         "TestTheReviewWriterScanFindsAnIdentifierNamingTheTable"},
+    f"{ENVOY}/internal/dispatch/api/routes_v2_raw_query_test.go": {
+        "TestNoV2HandlerReadsTheRawQuery"},
 }
 
 
@@ -1691,12 +1693,12 @@ RACE_IMPOSSIBLE_PACKAGES = race_impossible_tests(ENVOY)
 RACE_IMPOSSIBLE_SCRIPT = race_impossible_script(RACE_IMPOSSIBLE_PACKAGES)
 
 
-# The text-check job: the three modules' text checks, and the fifteen tests of the Dispatch API's
-# eight static checks - its seven source guards and one_expression_guard_test.go. They read the
+# The text-check job: the three modules' text checks, and the sixteen tests of the Dispatch API's
+# nine static checks - its eight source guards and one_expression_guard_test.go. They read the
 # module's source and no database, so they belong here rather than in the Postgres-backed
 # suites, and they are the one thing here the job cannot name by package: their package holds
 # the API's own Postgres-backed tests too, so the step selects them by name. The -run list is
-# built from TEXT_CHECK_TESTS, the same declaration that leaves exactly those fifteen out of
+# built from TEXT_CHECK_TESTS, the same declaration that leaves exactly those sixteen out of
 # envoy-go's plain step, so neither step can lose one of them or run one twice. Each call passes
 # -count=1: these packages read files outside their own modules, which Go's test cache keys on
 # neither, so a cached pass would say nothing about the text as it now stands.
@@ -2768,12 +2770,12 @@ GATES = [
         *[step_run(TEXT_CHECK_JOB, TEXT_CHECK_STEPS[module], TEXT_CHECK_TEXT, module, [TEXT_CHECK_PKG])
           for module in TEXT_CHECK_MODULES],
     ], exact=[
-        # The fifteen static tests by name: a -run is outside the simple form, so the step is
+        # The sixteen static tests by name: a -run is outside the simple form, so the step is
         # pinned whole. A -run moves no closure - the whole package compiles whichever tests the
         # run selects - so the Run is the plain go test of the package, which is why this gate
         # reads everything the API's tests read.
         pinned_step(TEXT_CHECK_JOB, GUARD_STEP, ENVOY, GUARD_SCRIPT, [
-            (ENVOY, [GUARD_PACKAGE], f"go test -run of the API's fifteen source-check tests in {GUARD_PACKAGE}", {}),
+            (ENVOY, [GUARD_PACKAGE], f"go test -run of the API's sixteen source-check tests in {GUARD_PACKAGE}", {}),
         ]),
         # The supervise table's two pure pins by name (SUPERVISE_TABLE_TESTS), which the
         # daemon-go plain step skips: pinned whole for the same reason, and its Run is the plain

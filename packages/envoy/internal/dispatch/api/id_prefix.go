@@ -122,8 +122,14 @@ func (s *server) resolveIDPrefixes(route apiRoute, handler http.HandlerFunc) htt
 		r = r.WithContext(context.WithValue(r.Context(), resolvedCallerKey{}, resolvedCaller{actor: actor, human: human}))
 		// Who asks, which decides only whether a direct message's first line is listed among
 		// the candidates: a person reads any, and a bearer the conversations the session it
-		// names in ?session= is in, the claim the message routes already read.
-		viewer := refs.Viewer{Human: human, Session: strings.TrimSpace(r.URL.Query().Get("session"))}
+		// names in ?session= is in, the claim the message routes already read. A /api/v2
+		// route's session is the one its decoder read (decodedSession, R4); every other route's
+		// is read off the raw query, as it always was.
+		session, decoded := decodedSession(r)
+		if !decoded {
+			session = strings.TrimSpace(r.URL.Query().Get("session"))
+		}
+		viewer := refs.Viewer{Human: human, Session: session}
 		if id != "" {
 			scope := refs.Scope{}
 			if entry.WithinIssue {

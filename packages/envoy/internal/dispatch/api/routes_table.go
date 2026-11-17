@@ -891,7 +891,7 @@ func WriteRouteIndex(w io.Writer, version int) error {
 	case apiV1:
 		return json.NewEncoder(w).Encode(routeIndexBody(routeIndexEntries(servedAt(apiV1, routes))))
 	case apiV2:
-		return json.NewEncoder(w).Encode(routeIndexV2Body(routeIndexV2Entries(servedAt(apiV2, routes))))
+		return json.NewEncoder(w).Encode(routeIndexV2Body(routeIndexV2Entries(servedAt(apiV2, routes)), pageQuery{}))
 	}
 	return fmt.Errorf("the API has no version %d: its versions are 1 and 2", version)
 }

@@ -80,10 +80,10 @@ var decisionBlockGuardSees = []string{
 //
 // The inventory is the table (routes_table.go, the v2_<group>.go files) with its test hooks in,
 // read from the source so that each row's handler is read with it, joined to the Go type each
-// route takes (apiRoute.shape: its routeShapes entry, or a routeRow's own columns). A row is in
-// scope when its method is one register keys (keyedMethod: a POST or a PATCH) and its request
-// type carries a `body` string, the field every stored comment, message, broadcast and handoff
-// body is written into. A row in scope either runs the shared
+// route takes (apiRoute.shape: its routeShapes entry, or a routeRow's own columns). A route is in
+// scope when register keys it (keyedMethod: a POST or a PATCH, and on /api/v2 a PUT or a DELETE
+// too) and its request type carries a `body` string, the field every stored comment, message,
+// broadcast and handoff body is written into. A row in scope either runs the shared
 // check — somewhere in what its handler runs inside package api, a call of blockBoundError over a
 // call of itemblocks.Check, which is the one place DECISION_BLOCK_IN_BODY is worded — or stands
 // in decisionBlockExempt with the reason it does not. A row the shapes do not describe is named
@@ -212,13 +212,13 @@ func TestTheGuardReadsABodyStringOffARequestType(t *testing.T) {
 // that function's source runs.
 func decisionBlockRouteHandlers(t *testing.T, graph *lockGraph) map[string][]*lockFunction {
 	t.Helper()
+	keyed := keyedRouteNames()
 	routes := map[string][]*lockFunction{}
 	for _, row := range tableRowsInSource(t, graph) {
-		if !keyedMethod(row.method) {
-			continue
-		}
 		for _, name := range row.names {
-			routes[name] = graph.functionValue(row.handler)
+			if keyed[name] {
+				routes[name] = graph.functionValue(row.handler)
+			}
 		}
 	}
 	if len(routes) == 0 {

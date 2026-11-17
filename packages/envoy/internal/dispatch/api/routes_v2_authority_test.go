@@ -1,0 +1,119 @@
+package api
+
+import (
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"testing"
+
+	"github.com/google/uuid"
+
+	"github.com/sjawhar/envoy/internal/dispatch/model"
+)
+
+// TestV2DeclaredAuthority is c-authority of dispatch://INFRA-4071 (plan t4's acceptance): the
+// authority each state, field and query value of the /api/v2 routes needs holds at run time,
+// declared on the routes' rows and held by their wrapper (gateV2Authorities) before the handler
+// runs. A session token that holds no person scope - alice's personal token holding no scope,
+// acting for tourSession - resolves a comment and an ask, and changes a project's gated steps, but
+// is refused 403 OAUTH_SCOPE_REQUIRED naming person for a comment's accept, an ask's answer, an
+// ask's asked_of, waiting_on=me and a project's default assignee; a person's token without approve
+// is refused an approval naming approve; a broker token for one session cannot change another
+// session's agent mark. Each case runs once its route is mounted, and skips naming it until then.
+//
+// Its negative control: a scratch build whose gateV2Authorities skips the state rules lets the
+// session token accept the comment and answer the ask, and this test fails on both.
+func TestV2DeclaredAuthority(t *testing.T) {
+	tour := newRouteTour(t)
+	scopeless := tourBearer(tour.scopelessToken)
+	asSession := url.Values{"session": {tourSession}}
+
+	t.Run("a comment's states", func(t *testing.T) {
+		route := tour.requireMounted(t, http.MethodPut, "/comments/{id}/state")
+		issue := tour.issue(t)
+		resolved := tour.send(t, route, tourRequest{
+			Path: map[string]string{"id": tour.comment(t, issue)}, Query: asSession,
+			Body: map[string]any{"state": "resolved"}, As: scopeless,
+		}, "")
+		if resolved.Code != http.StatusOK {
+			t.Errorf("the session token resolving a comment: %d %s, want 200", resolved.Code, resolved.Body.String())
+		}
+		assertScopeRefused(t, "the session token accepting a comment", tour.send(t, route, tourRequest{
+			Path: map[string]string{"id": tour.comment(t, issue)}, Query: asSession,
+			Body: map[string]any{"state": "accepted"}, As: scopeless,
+		}, ""), model.ScopePerson)
+	})
+
+	t.Run("an ask's states", func(t *testing.T) {
+		route := tour.requireMounted(t, http.MethodPut, "/asks/{id}/state")
+		issue := tour.issue(t)
+		resolved := tour.send(t, route, tourRequest{
+			Path: map[string]string{"id": tour.ask(t, issue)}, Query: asSession,
+			Body: map[string]any{"state": "resolved"}, As: scopeless,
+		}, "")
+		if resolved.Code != http.StatusOK {
+			t.Errorf("the session token resolving an ask: %d %s, want 200", resolved.Code, resolved.Body.String())
+		}
+		assertScopeRefused(t, "the session token answering an ask", tour.send(t, route, tourRequest{
+			Path: map[string]string{"id": tour.ask(t, issue)}, Query: asSession,
+			Body: map[string]any{"state": "answered", "text": "Yes.", "expected_edited_at": nil}, As: scopeless,
+		}, ""), model.ScopePerson)
+	})
+
+	t.Run("an ask's asked_of", func(t *testing.T) {
+		route := tour.requireMounted(t, http.MethodPatch, "/asks/{id}")
+		assertScopeRefused(t, "the session token handing an ask to bob", tour.send(t, route, tourRequest{
+			Path: map[string]string{"id": tour.ask(t, tour.issue(t))}, Query: asSession,
+			Body: map[string]any{"asked_of": "bob"}, As: scopeless,
+		}, ""), model.ScopePerson)
+	})
+
+	t.Run("the asks waiting on me", func(t *testing.T) {
+		route := tour.requireMounted(t, http.MethodGet, "/asks")
+		assertScopeRefused(t, "the session token reading waiting_on=me", tour.send(t, route, tourRequest{
+			Query: url.Values{"waiting_on": {"me"}, "session": {tourSession}}, As: scopeless,
+		}, ""), model.ScopePerson)
+	})
+
+	t.Run("a project's fields", func(t *testing.T) {
+		route := tour.requireMounted(t, http.MethodPatch, "/projects/{key}")
+		project := tour.project(t)
+		gated := tour.send(t, route, tourRequest{
+			Path: map[string]string{"key": project}, Query: asSession,
+			Body: map[string]any{"gated_steps": []string{"spec"}}, As: scopeless,
+		}, "")
+		if gated.Code != http.StatusOK {
+			t.Errorf("the session token publishing gated steps: %d %s, want 200", gated.Code, gated.Body.String())
+		}
+		assertScopeRefused(t, "the session token setting the default assignee", tour.send(t, route, tourRequest{
+			Path: map[string]string{"key": project}, Query: asSession,
+			Body: map[string]any{"default_assignee": "bob"}, As: scopeless,
+		}, ""), model.ScopePerson)
+	})
+
+	t.Run("an approval without approve", func(t *testing.T) {
+		route := tour.requireMounted(t, http.MethodPut, "/credential-requests/{id}/state")
+		record := uuid.NewString()
+		assertScopeRefused(t, "a person's token without approve approving", tour.send(t, route, tourRequest{
+			Path: map[string]string{"id": record}, Body: map[string]any{"state": "approved", "code": "ABCD-1234"},
+			As: tourBearer(tour.personToken),
+		}, ""), model.ScopeApprove)
+		if relayed := tour.secrets.callsTo(http.MethodPost, "/v1/credential-requests/"+record+"/approve"); relayed != 0 {
+			t.Errorf("the refused approval reached the broker %d times, want never", relayed)
+		}
+	})
+
+	t.Run("another session's agent mark", func(t *testing.T) {
+		route := tour.requireMounted(t, http.MethodPatch, "/me/marks/{kind}/{id}")
+		caller := newBrokerCaller(t)
+		const token = "a-broker-token-for-one-session"
+		tour.brokerTokens.Says(token, liveNamedToken(caller.jkt))
+		response := httptest.NewRecorder()
+		tour.handler.ServeHTTP(response, caller.presenting(t, route.Method, "/api/v2/me/marks/agent/session-someone-else", token,
+			map[string]any{"pinned": true}))
+		if code, _ := refusalOf(t, response); response.Code != http.StatusForbidden || (code != "OAUTH_SCOPE_REQUIRED" && code != "SESSION_SCOPE") {
+			t.Errorf("a broker token for %s changing another session's agent mark: %d %s, want 403",
+				brokerTestSession, response.Code, response.Body.String())
+		}
+	})
+}

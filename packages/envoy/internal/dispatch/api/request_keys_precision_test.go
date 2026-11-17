@@ -231,7 +231,7 @@ func TestARequestKeysRowIsOneOfItsStates(t *testing.T) {
 func TestEveryKeyedRouteTableNamesARoute(t *testing.T) {
 	registered := map[string]bool{}
 	for _, route := range (&server{}).routes() {
-		if keyedMethod(route.Method) {
+		if keyedMethod(route) {
 			registered[route.Method+" "+route.Pattern] = true
 		}
 	}

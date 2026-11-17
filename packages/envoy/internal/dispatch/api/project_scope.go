@@ -378,26 +378,34 @@ func refuseWriteOutsideProjectScope(w http.ResponseWriter, r *http.Request, cove
 // declares any, the caller holds them. A row that declares none is open to every authenticated
 // caller, and this check refuses a session other than the one it proved as it always did.
 //
-// Every other row returns the handler unchanged, so no route it does not cover pays for it.
+// Every other row returns the handler unchanged, so no route it does not cover pays for it. A
+// /api/v2 row whose path names a session for one kind of object alone, or whose body names
+// several, is held to the same rule by gateV2Authorities (sessionAddressing).
 func (s *server) withinSessionScope(route apiRoute, handler http.HandlerFunc) http.HandlerFunc {
 	if !addressesOneSession(route) {
 		return handler
 	}
-	personsOwnWrite := len(route.OAuthScopes) > 0
 	return func(w http.ResponseWriter, r *http.Request) {
-		proved, provedOne := s.callerSession(r)
-		if !provedOne {
-			handler(w, r)
-			return
-		}
-		if addressed := r.PathValue(route.SessionPath); addressed != proved && !personsOwnWrite {
-			writeError(w, r, apicode.SessionScope, fmt.Sprintf(
-				"this request's credential acts for session %s; %s %s writes into session %s",
-				proved, route.Method, route.Pattern, addressed))
+		if s.refusesAnotherSession(w, r, route, r.PathValue(route.SessionPath)) {
 			return
 		}
 		handler(w, r)
 	}
+}
+
+// refusesAnotherSession holds one session a route's write goes into, addressed, to the rule
+// withinSessionScope's comment gives: it answers 403 SESSION_SCOPE and reports true when the
+// caller's credential proved another session and the row declares no OAuth scopes, and otherwise
+// writes nothing and reports false.
+func (s *server) refusesAnotherSession(w http.ResponseWriter, r *http.Request, route apiRoute, addressed string) bool {
+	proved, provedOne := s.callerSession(r)
+	if !provedOne || addressed == proved || len(route.OAuthScopes) > 0 {
+		return false
+	}
+	writeError(w, r, apicode.SessionScope, fmt.Sprintf(
+		"this request's credential acts for session %s; %s %s writes into session %s",
+		proved, route.Method, route.Pattern, addressed))
+	return true
 }
 
 // addressesOneSession answers whether route is a write to the rows of the one session its path

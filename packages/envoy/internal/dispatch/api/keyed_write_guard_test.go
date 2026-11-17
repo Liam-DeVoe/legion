@@ -199,7 +199,7 @@ func TestTheKeyedWriteGuardSeesWhatItGuards(t *testing.T) {
 	guard.offences()
 	var want []string
 	for _, route := range (&server{deps: Deps{TestHooksEnabled: true}}).routes() {
-		if keyedMethod(route.Method) {
+		if keyedMethod(route) {
 			want = append(want, route.Method+" "+route.Pattern)
 		}
 	}
@@ -276,18 +276,33 @@ func newKeyedWriteGuard(t *testing.T) *keyedWriteGuard {
 		t.Fatalf("read the SQL functions the migrations define: %v", err)
 	}
 	guard.writingCall = writingCallOf(writing)
+	keyed := keyedRouteNames()
 	for _, row := range tableRowsInSource(t, graph) {
-		if !keyedMethod(row.method) {
+		names := slices.DeleteFunc(slices.Clone(row.names), func(name string) bool { return !keyed[name] })
+		if len(names) == 0 {
 			continue
 		}
 		for _, handler := range graph.functionValue(row.handler) {
-			for _, name := range row.names {
+			for _, name := range names {
 				guard.routes[name] = handler
 			}
 			guard.walk(handler)
 		}
 	}
 	return guard
+}
+
+// keyedRouteNames is the "<method> <pattern>" of every route register keys (keyedMethod), its test
+// hooks in: what a guard over keyed writes reads. A row's mounts are judged one by one, since
+// /api/v2 keys the PUT and the DELETE of a row that /api/v1 serves unkeyed.
+func keyedRouteNames() map[string]bool {
+	keyed := map[string]bool{}
+	for _, route := range (&server{deps: Deps{TestHooksEnabled: true}}).routes() {
+		if keyedMethod(route) {
+			keyed[route.Method+" "+route.Pattern] = true
+		}
+	}
+	return keyed
 }
 
 // sourceRow is one row of the route table as its source declares it, for the guards that read

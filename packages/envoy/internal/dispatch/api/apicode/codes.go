@@ -456,6 +456,9 @@ var (
 	QueryKeyUnknown = v2Only("QUERY_KEY_UNKNOWN", http.StatusBadRequest)
 	// PositionInvalid is a position parameter that is not one of the route's position field.
 	PositionInvalid = v2Only("POSITION_INVALID", http.StatusBadRequest)
+	// StateInvalid is a state body whose `state` names no state its route takes, or none at all:
+	// the decoder of a union keyed by `state` names the states it takes.
+	StateInvalid = v2Only("STATE_INVALID", http.StatusBadRequest)
 
 	// The objects a v2 path names that have no not-found code of their own under /api/v1, each
 	// the 404 of a path whose object does not exist (decision 11). The broker's ids answer the

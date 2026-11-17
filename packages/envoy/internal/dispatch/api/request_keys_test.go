@@ -919,9 +919,10 @@ func TestBoundaryMaskFindsABoundaryAcrossWrites(t *testing.T) {
 	}
 }
 
-// Every POST and PATCH route takes a key, and no other: a header that is not a key is refused on
-// each of them before its handler runs, and ignored by a PUT and a DELETE, which are idempotent
-// already. A GET writes nothing and is never wrapped.
+// Every POST and PATCH route takes a key, and so does every PUT and DELETE route of /api/v2
+// (keyedMethod): a header that is not a key is refused on each of them before its handler runs,
+// and ignored by a PUT and a DELETE of /api/v1, which are idempotent already. A GET writes nothing
+// and is never wrapped.
 func TestEveryPostAndPatchRouteTakesAKey(t *testing.T) {
 	handler, _, _ := newTestServer(t, testServerOptions{})
 	for _, route := range (&server{}).routes() {
@@ -940,8 +941,8 @@ func TestEveryPostAndPatchRouteTakesAKey(t *testing.T) {
 		response := httptest.NewRecorder()
 		handler.ServeHTTP(response, request)
 		refused := strings.Contains(response.Body.String(), `"code":"`+contracts.IdempotencyKeyInvalid+`"`)
-		if keyedMethod(route.Method) != refused {
-			t.Errorf("%s %s: status=%d body=%.200s, want the key judged only on a POST or a PATCH",
+		if keyedMethod(route) != refused {
+			t.Errorf("%s %s: status=%d body=%.200s, want the key judged only where keyedMethod keys the route",
 				route.Method, route.Pattern, response.Code, response.Body.String())
 		}
 	}

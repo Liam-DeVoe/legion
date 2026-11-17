@@ -13,13 +13,19 @@ import (
 func (s *server) v2IndexRows() []routeRow {
 	return []routeRow{{
 		Method: http.MethodGet, Pattern: "", Auth: authPublic, Versions: onlyV2,
-		Description: "This index: every /api/v2 route with its method, path, auth, scopes and purpose, and what a client reads of it: the resource it serves and that resource's kind and key, the time fields a read windows on, the field a log is read in order by, the bounds of a list's limit, and whether it reads across projects. {docs, items, total, limit, offset}; every route is on one page.",
+		Description: "This index: every /api/v2 route with its method, path, auth, scopes and purpose, and what a client reads of it: the resource it serves and that resource's kind and key, the time fields a read windows on, the field a log is read in order by, the bounds of a list's limit, and whether it reads across projects. {docs, items, total, limit, offset}, sorted by path then method; every route is on one page unless the request names a limit (any of 1 or more) and an offset.",
 		Handler:     s.getRouteIndexV2,
 		Resource:    "routes",
 		Kind:        kindCollection,
 		List:        listBounds{Whole: true},
+		Query:       routeIndexV2Query{},
 		Shape:       routeShape{Status: http.StatusOK, Response: routeIndexV2{}},
 	}}
+}
+
+// routeIndexV2Query is the query GET /api/v2 reads: the page of the index it answers.
+type routeIndexV2Query struct {
+	pageQuery
 }
 
 // routeIndexV2Entry is the public shape of a route in GET /api/v2: its routeIndexEntry, every
@@ -64,11 +70,8 @@ type routeIndexList struct {
 // routeIndexV2 is the body GET /api/v2 answers: the list envelope of R1.4, with the agent-facing
 // guide beside it.
 type routeIndexV2 struct {
-	Docs   string              `json:"docs"`
-	Items  []routeIndexV2Entry `json:"items"`
-	Total  int                 `json:"total"`
-	Limit  int                 `json:"limit"`
-	Offset int                 `json:"offset"`
+	Docs string `json:"docs"`
+	page[routeIndexV2Entry]
 }
 
 // routeIndexV2Entries renders the routes /api/v2 serves for GET /api/v2, sorted by path then
@@ -105,13 +108,13 @@ func routeIndexV2Entries(routes []apiRoute) []routeIndexV2Entry {
 	return entries
 }
 
-// routeIndexV2Body wraps the rendered routes in the body GET /api/v2 answers. It answers every
-// route on one page, limit the whole list and offset 0: reading ?limit= and ?offset= is the v2
-// decoder's (plan t3), which replaces this whole page with the page a request asks for.
-func routeIndexV2Body(entries []routeIndexV2Entry) routeIndexV2 {
-	return routeIndexV2{Docs: routeIndexDocs, Items: entries, Total: len(entries), Limit: len(entries)}
+// routeIndexV2Body is the page query asks for of the rendered routes, in the body GET /api/v2
+// answers: every route, limit the whole list, where the query names no limit (pageOf), which is
+// the body WriteRouteIndex writes.
+func routeIndexV2Body(entries []routeIndexV2Entry, query pageQuery) routeIndexV2 {
+	return routeIndexV2{Docs: routeIndexDocs, page: pageOf(entries, query)}
 }
 
-func (s *server) getRouteIndexV2(w http.ResponseWriter, _ *http.Request) {
-	WriteJSON(w, http.StatusOK, routeIndexV2Body(s.routeIndexV2))
+func (s *server) getRouteIndexV2(w http.ResponseWriter, r *http.Request) {
+	WriteJSON(w, http.StatusOK, routeIndexV2Body(s.routeIndexV2, v2Query[routeIndexV2Query](r).pageQuery))
 }

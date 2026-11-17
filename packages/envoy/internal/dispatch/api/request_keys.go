@@ -30,12 +30,13 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// One keyed path for every write (INFRA-258). A caller names the intent behind a POST or PATCH with
-// an Idempotency-Key header, the same on every retry of that intent (the IETF Idempotency-Key
+// One keyed path for every write (INFRA-258). A caller names the intent behind a write with an
+// Idempotency-Key header, the same on every retry of that intent (the IETF Idempotency-Key
 // draft; Google AIP-155): the dashboard mints one per press and the agents' client one per command,
 // and both retry a failed fetch, a timeout, a 5xx, a 429 and a 409 KEY_IN_FLIGHT under it, none of
-// which says whether the first attempt ran. keyedWrites, which register wraps around every POST and
-// PATCH route, makes that retry safe with one request_keys row per key (migration 0137):
+// which says whether the first attempt ran. keyedWrites, which register wraps around every route
+// keyedMethod keys - every POST and PATCH, and every PUT and DELETE of /api/v2 - makes that retry
+// safe with one request_keys row per key (migration 0137):
 //
 //   - The row is inserted in flight, in a statement of its own, before the handler runs, and on a
 //     context the client's cancellation does not reach. A repeat that finds it answers from it
@@ -178,10 +179,23 @@ func (s *server) writeRefreshed(w http.ResponseWriter, r *http.Request, stored [
 	WriteJSON(w, http.StatusCreated, current)
 }
 
-// keyedMethod reports whether register keys a route of this method: a POST or a PATCH. A PUT and a
-// DELETE are idempotent already, and a GET writes nothing.
-func keyedMethod(method string) bool {
-	return method == http.MethodPost || method == http.MethodPatch
+// keyedMethod reports whether register keys route (decision 7 of the plan of
+// dispatch://INFRA-4071): every write method of a route the rules of /api/v2 bind (R8), a POST, a
+// PATCH, a PUT and a DELETE, and a POST or a PATCH of every other route. On /api/v1 a PUT and a
+// DELETE are idempotent already and stay unkeyed, so no /api/v1 answer changes; so do a test
+// hook's and a row of the INFRA-979 tree's at either version, which no rule of /api/v2 binds
+// (apiRoute.v2Bound). A GET writes nothing.
+//
+// The idempotency fingerprint holds the route's whole pattern (writeRequestFields), so one key sent
+// to a /api/v1 route and then to its /api/v2 route is two requests under one key, 422 KEY_REUSED.
+func keyedMethod(route apiRoute) bool {
+	switch route.Method {
+	case http.MethodPost, http.MethodPatch:
+		return true
+	case http.MethodPut, http.MethodDelete:
+		return route.v2Bound()
+	}
+	return false
 }
 
 // answerHoldsSecret is every route whose answer carries a credential, by method and pattern. A key
@@ -219,7 +233,7 @@ type resolvedCaller struct {
 	err   error
 }
 
-// keyedWrites wraps the handler of a POST or PATCH route in the keyed path above. It reads the
+// keyedWrites wraps the handler of a route keyedMethod keys in the keyed path above. It reads the
 // route's own facts: its method and pattern, which the fingerprint holds; its replay
 // (routeRow.Replay), nil for a route that commits no recovery point; whether its answer holds a
 // secret no key keeps (routeRow.AnswerHoldsSecret); and its body bound (routeRow.BodyLimit).

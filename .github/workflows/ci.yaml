@@ -3682,6 +3682,7 @@ jobs:
               - '!packages/envoy/internal/dispatch/api/one_expression_guard_test.go'
               - '!packages/envoy/internal/dispatch/api/review_order_guard_test.go'
               - '!packages/envoy/internal/dispatch/api/review_write_guard_test.go'
+              - '!packages/envoy/internal/dispatch/api/routes_v2_raw_query_test.go'
               - '!packages/envoy/internal/dispatch/api/apicode/**/*_test.go'
               - '!packages/envoy/internal/dispatch/architecture/**/*_test.go'
               - '!packages/envoy/internal/dispatch/auth/**/*_test.go'

@@ -47,7 +47,9 @@ func (s *server) armSlowWrite(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, r, err)
 		return
 	}
-	if !keyedMethod(input.Method) || !strings.HasPrefix(input.Path, "/") ||
+	// A POST or a PATCH, the methods every version keys (keyedMethod): a path names its version,
+	// and the hook takes the methods that are keyed whichever version it names.
+	if (input.Method != http.MethodPost && input.Method != http.MethodPatch) || !strings.HasPrefix(input.Path, "/") ||
 		input.DelayMS < 0 || input.DelayMS > keyedHandlerLimit.Milliseconds() {
 		writeError(w, r, apicode.InvalidBody,
 			"want {method: POST or PATCH, path: a request path, delay_ms: 0 to disarm, at most the keyed handler's limit}")
