@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -254,6 +255,195 @@ func TestAMergesOwnResolutionIsRead(t *testing.T) {
 	want := []string{"resolution.md: " + theClass}
 	if refused := refusal(t, err); !slices.Equal(refused.Lines, want) {
 		t.Errorf("the report is %q, want %q", refused.Lines, want)
+	}
+}
+
+// An octopus merge is read from its files, as every merge is: git's combined diff misreads a
+// merge of 33 parents or more (diffTree's doc), and cybermonklabs/oh-my-pi's release merges have
+// 51 to 53. The merges here have 52 parents, each of which adds a line of its own to one shared
+// file, and each merge's shared file holds every parent's line. One parent's line names a host:
+// the destination holds every parent, through a remote-tracking ref, so that line is text it
+// already has, and the merge is the whole of what each push adds. A merge's commit is written
+// with commit-tree over a tree of the fixture's own, so no octopus strategy resolves 52 heads.
+func TestAnOctopusMergeIsReadFromItsFiles(t *testing.T) {
+	home, root := t.TempDir(), t.TempDir()
+	remote, repo := filepath.Join(root, "remote.git"), filepath.Join(root, "repo")
+	fixture := fixturegit.Isolated(t, home)
+	fixture.Run(root, fixturegit.InitBare(remote, "main")...)
+	fixture.Run(root, fixturegit.InitWorkTree(repo, "main")...)
+	write := func(name, content string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(repo, name), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// tree is the tree of the working tree as it stands, which a commit-tree is made over.
+	tree := func() string {
+		t.Helper()
+		fixture.Run(repo, "git", "add", "-A")
+		return fixture.Run(repo, "git", "write-tree")
+	}
+	const shared, parents = "the shared file\n", 52
+	write("shared.md", shared)
+	fixture.Run(repo, "git", "add", "-A")
+	fixture.Run(repo, "git", "commit", "--quiet", "-m", "the commit the destination holds")
+	base := fixture.Run(repo, "git", "rev-parse", "HEAD")
+	// every is the shared file as it holds every parent's line, which is what each merge's
+	// shared file starts from.
+	every := shared
+	var merged []string
+	push := []string{"git", "push", "--quiet", "origin", "main"}
+	for i := range parents {
+		n := strconv.Itoa(i + 1)
+		line := "a line of parent " + n
+		if i == 16 {
+			line = "the runner of parent " + n + " answers at " + theHost
+		}
+		write("shared.md", shared+line+"\n")
+		parent := fixture.Run(repo, "git", "commit-tree", tree(), "-p", base, "-m", "parent "+n)
+		every += line + "\n"
+		merged = append(merged, "-p", parent)
+		push = append(push, parent+":refs/heads/parent-"+n)
+	}
+	fixture.Run(repo, "git", "remote", "add", "origin", remote)
+	fixture.Run(repo, push...)
+	// octopus is a merge of every parent whose shared file is as sharedFile has it, and whose
+	// resolution.md is as added has it, where added is not empty: a file no parent has.
+	octopus := func(sharedFile, added string) string {
+		t.Helper()
+		write("shared.md", sharedFile)
+		if err := os.RemoveAll(filepath.Join(repo, "resolution.md")); err != nil {
+			t.Fatal(err)
+		}
+		if added != "" {
+			write("resolution.md", added)
+		}
+		head := fixture.Run(repo, append([]string{"git", "commit-tree", tree(), "-m", "the merge"}, merged...)...)
+		if listed := fixture.Run(repo, "git", "rev-list", "--parents", "-n", "1", head); len(strings.Fields(listed)) != parents+1 {
+			t.Fatalf("the fixture's merge is %q, want a commit of %d parents", listed, parents)
+		}
+		if adds := fixture.Run(repo, "git", "rev-list", head, "--not", "--remotes=origin"); adds != head {
+			t.Fatalf("a push of the fixture's merge adds %q, want the merge alone", adds)
+		}
+		return head
+	}
+
+	for _, tc := range []struct {
+		name string
+		head string
+		// want is the report, and nil where the push passes.
+		want []string
+	}{
+		{
+			name: "the resolution adds a line to the file every parent changes",
+			head: octopus(every+"the resolution answers at "+theHost+"\n", ""),
+			want: []string{"shared.md: " + theClass},
+		},
+		{
+			name: "the host is one parent's line and the merge adds none",
+			head: octopus(every, ""),
+		},
+		{
+			name: "the resolution adds a file",
+			head: octopus(every, "the runner answers at "+theHost+"\n"),
+			want: []string{"resolution.md: " + theClass},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
+			err := guard.Push(bound(t), PushRequest{
+				Dir:     repo,
+				Remote:  "origin",
+				URL:     "https://github.com/invented-org/invented-repo.git",
+				Updates: []Update{{LocalRef: "refs/heads/main", LocalSHA: tc.head, RemoteRef: "refs/heads/main", RemoteSHA: base}},
+			})
+			if tc.want == nil {
+				if err != nil {
+					t.Fatalf("a merge that adds nothing of its own: %v", err)
+				}
+				return
+			}
+			if refused := refusal(t, err); !slices.Equal(refused.Lines, tc.want) {
+				t.Errorf("the report is %q, want %q", refused.Lines, tc.want)
+			}
+		})
+	}
+}
+
+// A record of a file names the file and, for an added line, the line's number in the pushed
+// commit's version of it: from the hunk's header in a commit of one parent, and from the merge's
+// own file in a merge. The records of paths come before the records of lines, each in path order
+// and a file's lines in line order, and a blank line is no record.
+func TestAFilesRecordsCarryItsPathAndLineNumber(t *testing.T) {
+	home, root := t.TempDir(), t.TempDir()
+	repo := filepath.Join(root, "repo")
+	fixture := fixturegit.Isolated(t, home)
+	fixture.Run(root, fixturegit.InitWorkTree(repo, "main")...)
+	write := func(name, content string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(repo, name), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tree := func() string {
+		t.Helper()
+		fixture.Run(repo, "git", "add", "-A")
+		return fixture.Run(repo, "git", "write-tree")
+	}
+	write("README.md", "one\ntwo\nthree\nfour\n")
+	base := fixture.Run(repo, "git", "commit-tree", tree(), "-m", "the base")
+	write("README.md", "one\nthe second\nthree\nfour\nfive\n")
+	write("new.md", "first\n\nthird\n")
+	edit := fixture.Run(repo, "git", "commit-tree", tree(), "-p", base, "-m", "an edit")
+	if err := os.Remove(filepath.Join(repo, "new.md")); err != nil {
+		t.Fatal(err)
+	}
+	write("README.md", "one\ntwo\nthree\nfour\nfrom the side\n")
+	side := fixture.Run(repo, "git", "commit-tree", tree(), "-p", base, "-m", "the side")
+	// new.md is as the edit has it, so it is that parent's and none of the merge's own.
+	write("README.md", "one\nthe second\nthree\nfour\nfive\nthe resolution's\nfrom the side\n")
+	write("new.md", "first\n\nthird\n")
+	write("merged.md", "only the merge\n")
+	merge := fixture.Run(repo, "git", "commit-tree", tree(), "-p", edit, "-p", side, "-m", "the merge")
+
+	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
+	for _, tc := range []struct {
+		name   string
+		commit string
+		want   []Record
+	}{
+		{
+			name:   "a commit of one parent",
+			commit: edit,
+			want: []Record{
+				{Label: "new.md", Text: "new.md", File: "new.md"},
+				{Label: "README.md", Text: "the second", File: "README.md", Line: 2},
+				{Label: "README.md", Text: "five", File: "README.md", Line: 5},
+				{Label: "new.md", Text: "first", File: "new.md", Line: 1},
+				{Label: "new.md", Text: "third", File: "new.md", Line: 3},
+			},
+		},
+		{
+			name:   "a merge",
+			commit: merge,
+			want: []Record{
+				{Label: "merged.md", Text: "merged.md", File: "merged.md"},
+				{Label: "README.md", Text: "the resolution's", File: "README.md", Line: 6},
+				{Label: "merged.md", Text: "only the merge", File: "merged.md", Line: 1},
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			records, err := guard.commitRecords(bound(t), repo, tc.commit)
+			if err != nil {
+				t.Fatalf("read the commit: %v", err)
+			}
+			// The identities and the message are records of no file.
+			files := slices.DeleteFunc(records, func(record Record) bool { return record.File == "" })
+			if !slices.Equal(files, tc.want) {
+				t.Errorf("the records of files are %+v, want %+v", files, tc.want)
+			}
+		})
 	}
 }
 

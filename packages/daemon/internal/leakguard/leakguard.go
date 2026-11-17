@@ -132,6 +132,12 @@ func (g *Guard) env(base []string, inherit func(name string) bool, extra ...stri
 type Record struct {
 	Label string
 	Text  string
+	// File is the path of the file in a pushed commit the record is about, and "" for a record
+	// of anything else: a ref name, an identity, a message.
+	File string
+	// Line is the 1-based number of the line a record of an added line is, in the pushed
+	// commit's version of File, and 0 for a record of a path.
+	Line int
 }
 
 // RefRecord is the record of a ref name, the whole of what the daemon's branch create has to

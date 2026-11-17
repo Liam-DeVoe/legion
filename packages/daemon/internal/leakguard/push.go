@@ -3,8 +3,10 @@ package leakguard
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -226,8 +228,11 @@ func zeroSHA(sha string) bool {
 }
 
 // commitRecords is one commit as records. The identities and the message come from the commit
-// itself; the added and renamed paths and the added lines come from its diff, read in the shape
-// its number of parents calls for (diffTree).
+// itself; the added and renamed paths and the added lines come from its diff where it has at
+// most one parent (diffTree), and from its files where it is a merge (mergeFiles). The records
+// come in one order whatever the shape, so that a report lists its lines alike from one run to
+// the next: the identities, the message, the paths in path order, then the lines in path order
+// and, within a file, line order.
 //
 // A record about a file carries that file's path as its label and the line or the path as its
 // text, so that the engine reads the path as a path: the rule file's one path-scoped allowlist
@@ -247,72 +252,71 @@ func (g *Guard) commitRecords(ctx context.Context, dir, commit string) ([]Record
 	if len(parts) < 5 {
 		return nil, fmt.Errorf("git show %s answered no identity, parents and message", short(commit))
 	}
-	parents := len(strings.Fields(parts[3]))
+	parents := strings.Fields(parts[3])
 	records := []Record{
 		{Label: "commit " + short(commit) + " author", Text: parts[1]},
 		{Label: "commit " + short(commit) + " committer", Text: parts[2]},
 		{Label: "commit " + short(commit) + " message", Text: parts[4]},
 	}
-	paths, err := g.addedPaths(ctx, dir, commit, parents)
-	if err != nil {
-		return nil, err
+	var paths []string
+	var added []Record
+	if len(parents) > 1 {
+		if paths, added, err = g.mergeFiles(ctx, dir, commit, parents); err != nil {
+			return nil, err
+		}
+	} else {
+		if paths, err = g.addedPaths(ctx, dir, commit, len(parents)); err != nil {
+			return nil, err
+		}
+		if added, err = g.addedLines(ctx, dir, commit, len(parents)); err != nil {
+			return nil, err
+		}
 	}
+	slices.Sort(paths)
 	for _, path := range paths {
-		records = append(records, Record{Label: path, Text: path})
+		records = append(records, Record{Label: path, Text: path, File: path})
 	}
-	added, err := g.addedLines(ctx, dir, commit, parents)
-	if err != nil {
-		return nil, err
-	}
+	// Stable, so that the lines of one file keep the order they were read in, which is theirs.
+	slices.SortStableFunc(added, func(a, b Record) int { return strings.Compare(a.File, b.File) })
 	return append(records, added...), nil
 }
 
-// diffTree is a diff-tree of one commit, in the shape its parents call for: --root for a root
-// commit, whose diff is otherwise empty, and -c for a merge.
+// diffTree is a diff-tree of a commit of at most one parent: --root for a root commit, whose
+// diff is otherwise empty.
 //
-// -c is the combined diff, which is the merge's own resolution: the lines of the result that
-// stand in none of the parents, and the files modified from all of them. That is what a merge
-// publishes of its own and what no other record of this push holds. Everything else the merge
-// carries came from one of its parents, and a parent is either a commit this same push adds —
-// read as records of its own, since Guard.commits lists every commit the destination does not
-// reach — or a commit the destination already holds. --cc, the dense form, drops more than this
-// (a hunk whose result matches one parent exactly), and -m, the diff against each parent in
-// turn, reads whole branches the destination already has; between the three, -c is the one that
-// reads the resolution and nothing the destination can already read.
+// A merge is read from its files (mergeFiles), not from its combined diff (-c), which would be
+// its resolution but for a defect: combine-diff.c marks the parent a line was lost from as
+// 1<<parent in an int, so from 33 parents a "-" lands under parent n-32 and a hunk disagrees
+// with its own counts, and from 64 a line only the merge adds is left out (sjawhar/dotfiles
+// 0ab92325). Merges that wide are pushed: cybermonklabs/oh-my-pi's release merges on sami have
+// 51 to 53 parents. On its 7ae9bc731cbc, of 52 parents, measured 2026-11-17, the combined diff
+// read 2946 added lines in 14 files, where the merge's files read none: 14 paths differ from
+// every parent, every line of each is held by some parent, and no path is added.
 //
-// A git that refuses the option answers a non-zero status, which Guard.git makes an error of and
+// A git that refuses the diff answers a non-zero status, which Guard.git makes an error of and
 // Guard.Push a setup failure: a diff that could not be read refuses the push, and is never a
 // commit read as clean.
 func diffTree(parents int, args ...string) []string {
 	argv := []string{"diff-tree", "-r", "-M", "--no-commit-id"}
-	switch {
-	case parents == 0:
+	if parents == 0 {
 		argv = append(argv, "--root")
-	case parents > 1:
-		argv = append(argv, "-c")
 	}
 	return append(argv, args...)
 }
 
-// addedPaths are the paths one commit adds or renames a file to, which are the paths the
-// destination would hold that it does not hold already.
-//
-// A merge's combined diff writes one status letter per parent and one path, with no path a
-// rename came from, where an ordinary diff writes one letter and, for a rename, the two paths.
-// Both are read here: a status of as many letters as the commit has parents is the combined
-// shape.
+// addedPaths are the paths a commit of at most one parent adds or renames a file to, which are
+// the paths the destination would hold that it does not hold already.
 func (g *Guard) addedPaths(ctx context.Context, dir, commit string, parents int) ([]string, error) {
 	out, err := g.git(ctx, dir, diffTree(parents, "--name-status", "--diff-filter=AR", "-z", commit)...)
 	if err != nil {
 		return nil, err
 	}
-	combined := parents > 1
 	fields := strings.Split(out, "\x00")
 	var paths []string
 	for i := 0; i < len(fields); i++ {
 		switch status := fields[i]; {
 		case status == "":
-		case !combined && strings.HasPrefix(status, "R"):
+		case strings.HasPrefix(status, "R"):
 			// A rename is three fields: the status, the path it was at, and the path it is at.
 			// The destination learns the new path alone.
 			if i+2 < len(fields) {
@@ -329,24 +333,19 @@ func (g *Guard) addedPaths(ctx context.Context, dir, commit string, parents int)
 	return paths, nil
 }
 
-// addedLines are the lines one commit adds, each as a record of the file it is added to. The
-// diff is read with no context lines, so every line of it that a patch marks as added is one.
-//
-// A merge's combined diff marks each line with one column per parent, so a line added against
-// any of them begins with that many characters, one of which is a "+" ("++text" for a line of
-// the resolution's own, in a merge of two). The whole prefix comes off, and a line added against
-// one parent alone is read as added: the destination gains it from this commit whatever a parent
-// holds. The "+++ b/<path>" that names the file is read only where a header stands, between a
-// "diff --" line and the hunk that follows it, so a line of content that reads like one is not
-// mistaken for the name of a file.
+// addedLines are the lines a commit of at most one parent adds, each as a record of the file it
+// is added to and of its number in the commit's version of that file. The diff is read with no
+// context lines, so every line of it that a patch marks as added is one, and the n-th of a hunk
+// headed "@@ -a[,b] +c[,d] @@" is line c+n-1. The "+++ b/<path>" that names the file is read
+// only where a header stands, between a "diff --" line and the hunk that follows it, so a line
+// of content that reads like one is not mistaken for the name of a file.
 func (g *Guard) addedLines(ctx context.Context, dir, commit string, parents int) ([]Record, error) {
 	out, err := g.git(ctx, dir, diffTree(parents, "--unified=0", "--no-color", commit)...)
 	if err != nil {
 		return nil, err
 	}
-	width := max(parents, 1)
 	var records []Record
-	path, header := "", false
+	path, header, next := "", false, 0
 	for line := range strings.Lines(out) {
 		line = strings.TrimRight(line, "\r\n")
 		switch {
@@ -356,14 +355,33 @@ func (g *Guard) addedLines(ctx context.Context, dir, commit string, parents int)
 			path = diffPath(strings.TrimPrefix(line, "+++ "))
 		case strings.HasPrefix(line, "@@"):
 			header = false
-		case header || path == "" || len(line) < width:
-		case strings.Contains(line[:width], "+"):
-			if text := line[width:]; strings.TrimSpace(text) != "" {
-				records = append(records, Record{Label: path, Text: text})
+			if next, err = hunkStart(line); err != nil {
+				return nil, err
 			}
+		case header || path == "":
+		case strings.HasPrefix(line, "+"):
+			if text := line[1:]; strings.TrimSpace(text) != "" {
+				records = append(records, Record{Label: path, Text: text, File: path, Line: next})
+			}
+			next++
 		}
 	}
 	return records, nil
+}
+
+// hunkStart is c of a hunk header "@@ -a[,b] +c[,d] @@": the number of the line of the commit's
+// file that the hunk's first added line is. A header of any other shape is an error rather than a
+// line numbered by guess, and the error does not quote it: what follows the second "@@" is a line
+// of the file, which no message of this package carries.
+func hunkStart(header string) (int, error) {
+	fields := strings.Fields(header)
+	if len(fields) >= 3 && fields[0] == "@@" && strings.HasPrefix(fields[2], "+") {
+		start, _, _ := strings.Cut(fields[2][1:], ",")
+		if n, err := strconv.Atoi(start); err == nil {
+			return n, nil
+		}
+	}
+	return 0, errors.New("git diff-tree wrote a hunk header of a shape it does not write")
 }
 
 // diffPath is the path a patch's "+++" line names, with the b/ prefix off and the C quoting a
@@ -376,6 +394,214 @@ func diffPath(field string) string {
 		field = unquoted
 	}
 	return strings.TrimPrefix(field, "b/")
+}
+
+// mergeFiles are the paths a merge adds and the lines it adds, read from its files (diffTree
+// says why not from its combined diff). What a merge publishes of its own is in the files that
+// differ from every parent's: a file one parent has as it is came with that parent, and a parent
+// is either a commit this same push adds — read as records of its own, since Guard.commits lists
+// every commit the destination does not reach — or a commit the destination already holds. Of a
+// file that differs from every parent's, a line that some parent's file at that path holds is
+// text that parent brings, wherever the merge puts it, since the rules read a line's text alone;
+// a line no parent's file holds is the resolution's own, and is read with its number in the
+// merge's file. A path the merge adds is one at which no parent has anything, and it is read as
+// a path too.
+//
+// A file is text as git's own diff tells one where no attribute says otherwise: no zero byte in
+// its first 8000 bytes (xdiff-interface.c's buffer_is_binary). A binary file of the merge's adds
+// no line, as a binary diff adds none, and a parent's file that is binary, absent or a submodule
+// holds none.
+func (g *Guard) mergeFiles(ctx context.Context, dir, merge string, parents []string) ([]string, []Record, error) {
+	changes, err := g.mergeChanges(ctx, dir, merge, parents)
+	if err != nil {
+		return nil, nil, err
+	}
+	var ids []string
+	asked := map[string]bool{}
+	ask := func(id string) {
+		if !asked[id] {
+			asked[id] = true
+			ids = append(ids, id)
+		}
+	}
+	for _, change := range changes {
+		// A path the merge has no file at has no line to read, so its parents' files are not
+		// read either.
+		if change.blob != "" {
+			ask(change.blob)
+			for _, id := range change.held {
+				ask(id)
+			}
+		}
+	}
+	blobs, err := g.blobs(ctx, dir, ids)
+	if err != nil {
+		return nil, nil, err
+	}
+	var paths []string
+	var records []Record
+	for _, change := range changes {
+		if change.added {
+			paths = append(paths, change.path)
+		}
+		file := blobs[change.blob]
+		if change.blob == "" || binary(file) {
+			continue
+		}
+		held := map[string]bool{}
+		for _, id := range change.held {
+			if of := blobs[id]; !binary(of) {
+				for line := range strings.SplitSeq(of, "\n") {
+					held[strings.TrimSuffix(line, "\r")] = true
+				}
+			}
+		}
+		number := 0
+		for line := range strings.SplitSeq(file, "\n") {
+			number++
+			if text := strings.TrimSuffix(line, "\r"); strings.TrimSpace(text) != "" && !held[text] {
+				records = append(records, Record{Label: change.path, Text: text, File: change.path, Line: number})
+			}
+		}
+	}
+	return paths, records, nil
+}
+
+// mergeChange is one path at which a merge's tree differs from every parent's.
+type mergeChange struct {
+	path string
+	// blob is the merge's file there, and "" where the merge has no file there or a submodule,
+	// neither of which has a line to read.
+	blob string
+	// held are the parents' files there, one per parent that has a file there that is no
+	// submodule.
+	held []string
+	// added is whether no parent has anything at the path: the diff against each is an A.
+	added bool
+}
+
+// mergeChanges are the paths at which a merge's tree differs from every parent's, in the order
+// the diff against its first parent lists them.
+//
+// One diff-tree reads every parent, from a line "<merge> <parent>" each on its standard input,
+// which it reads as the merge with that parent alone: one git per parent would be 52 for one of
+// cybermonklabs/oh-my-pi's release merges. --always writes the merge's id ahead of every parent's
+// diff, an empty one too, so the answer splits into one diff per parent in the order they were
+// asked for; without it a parent the merge matches would leave no mark, and the next parent's
+// diff would be counted as its. Renames are off: a file renamed from a parent's path is a path
+// that parent has no file at, and so a path whose every line is read.
+func (g *Guard) mergeChanges(ctx context.Context, dir, merge string, parents []string) ([]mergeChange, error) {
+	var asked strings.Builder
+	for _, parent := range parents {
+		asked.WriteString(merge + " " + parent + "\n")
+	}
+	out, err := g.gitFed(ctx, dir, asked.String(), "diff-tree", "--stdin", "--always", "-r", "--no-renames", "-z")
+	if err != nil {
+		return nil, err
+	}
+	// listed is how many of the diffs read so far list a path, counted only while each one has:
+	// a path one diff leaves out is one the merge has as that parent has it.
+	listed := map[string]int{}
+	index := map[string]int{}
+	var changes []mergeChange
+	diffs := 0
+	fields := strings.Split(out, "\x00")
+	for i := 0; i < len(fields); i++ {
+		switch field := fields[i]; {
+		case field == "":
+		case !strings.HasPrefix(field, ":"):
+			// The raw format's every entry begins with a colon, so this is the id that heads the
+			// next parent's diff.
+			if field != merge {
+				return nil, fmt.Errorf("git diff-tree of merge %s headed a diff with another commit", short(merge))
+			}
+			diffs++
+		default:
+			// ":<parent's mode> <merge's mode> <parent's blob> <merge's blob> <status>", then the path.
+			raw := strings.Fields(field[1:])
+			if diffs == 0 || len(raw) != 5 || i+1 >= len(fields) {
+				return nil, fmt.Errorf("git diff-tree of merge %s wrote an entry of a shape it does not write", short(merge))
+			}
+			i++
+			path := fields[i]
+			if listed[path] != diffs-1 {
+				continue
+			}
+			listed[path] = diffs
+			theirs, err := isBlob(raw[0])
+			if err != nil {
+				return nil, err
+			}
+			if diffs == 1 {
+				ours, err := isBlob(raw[1])
+				if err != nil {
+					return nil, err
+				}
+				change := mergeChange{path: path, added: true}
+				if ours {
+					change.blob = raw[3]
+				}
+				index[path] = len(changes)
+				changes = append(changes, change)
+			}
+			change := &changes[index[path]]
+			if theirs {
+				change.held = append(change.held, raw[2])
+			}
+			change.added = change.added && raw[4] == "A"
+		}
+	}
+	if diffs != len(parents) {
+		return nil, fmt.Errorf("git diff-tree of merge %s answered %d diffs for its %d parents", short(merge), diffs, len(parents))
+	}
+	return slices.DeleteFunc(changes, func(change mergeChange) bool { return listed[change.path] != diffs }), nil
+}
+
+// isBlob is whether a mode of diff-tree's raw format is a file git holds as a blob: a regular
+// file, or a symbolic link, whose target is its content. 000000 is no file and 160000 a
+// submodule's commit, of which this repository holds no lines.
+func isBlob(mode string) (bool, error) {
+	bits, err := strconv.ParseUint(mode, 8, 32)
+	if err != nil {
+		return false, errors.New("git diff-tree wrote a mode of a shape it does not write")
+	}
+	kind := bits & 0o170000
+	return kind == 0o100000 || kind == 0o120000, nil
+}
+
+// binary is whether a file is binary as git's diff tells one with no attribute to say: a zero
+// byte in its first 8000 bytes.
+func binary(content string) bool {
+	return strings.IndexByte(content[:min(len(content), 8000)], 0) >= 0
+}
+
+// blobs are the contents of the blobs ids name, read with one cat-file --batch for all of them:
+// a merge of 52 parents can ask for hundreds, and a git apiece would be hundreds of processes. A
+// blob cat-file does not answer whole is an error, never a file read as empty.
+func (g *Guard) blobs(ctx context.Context, dir string, ids []string) (map[string]string, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	out, err := g.gitFed(ctx, dir, strings.Join(ids, "\n")+"\n", "cat-file", "--batch")
+	if err != nil {
+		return nil, err
+	}
+	contents := make(map[string]string, len(ids))
+	for _, id := range ids {
+		// "<id> blob <size>", the content, and a newline; "<id> missing" for no such object.
+		header, rest, ok := strings.Cut(out, "\n")
+		fields := strings.Fields(header)
+		if !ok || len(fields) != 3 || fields[0] != id || fields[1] != "blob" {
+			return nil, fmt.Errorf("git cat-file read no blob %s", id)
+		}
+		size, err := strconv.Atoi(fields[2])
+		if err != nil || size < 0 || size >= len(rest) || rest[size] != '\n' {
+			return nil, fmt.Errorf("git cat-file answered blob %s cut short", id)
+		}
+		contents[id] = rest[:size]
+		out = rest[size+1:]
+	}
+	return contents, nil
 }
 
 // short is a commit as a report names it.
@@ -396,4 +622,19 @@ func (g *Guard) git(ctx context.Context, dir string, args ...string) (string, er
 		return "", fmt.Errorf("git %s exited %d: %s", args[0], status, strings.TrimSpace(printed))
 	}
 	return printed, nil
+}
+
+// gitFed is git with input on its standard input, answering its standard output alone. What it
+// answers is read byte for byte, a blob's content or a diff split on zero bytes, so a warning
+// git writes to its standard error must not land in it; that error is what a failure carries.
+func (g *Guard) gitFed(ctx context.Context, dir, input string, args ...string) (string, error) {
+	var stderr strings.Builder
+	status, out, err := g.run(ctx, child{argv: gitArgv(args...), dir: dir, stdin: strings.NewReader(input), stderr: &stderr})
+	if err != nil {
+		return "", err
+	}
+	if status != 0 {
+		return "", fmt.Errorf("git %s exited %d: %s", args[0], status, strings.TrimSpace(stderr.String()))
+	}
+	return out, nil
 }
