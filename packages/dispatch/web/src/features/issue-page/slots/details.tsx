@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { type ReactNode, type RefCallback, useCallback, useMemo, useState } from "react";
+import { type ReactNode, type RefCallback, useCallback, useState } from "react";
 import { createPortal } from "react-dom";
 
 import { primarySpec } from "../../../api/issue-cache";
@@ -13,7 +13,7 @@ import type { IssueField } from "../IssueFieldForms";
 import { IssueMarginCards, IssueMarginPanel } from "../IssueMargin";
 import { DETAILS_ATTRIBUTE, useFillMarginSlot } from "../margin-slot";
 import { NoTooltips } from "../NoTooltips";
-import { CONTROL_LABELS } from "../page-words";
+import { ANSWER_LINES, CONTROL_LABELS } from "../page-words";
 import type { SlotProps } from "../slot-props";
 import { useIssueHeaderWrites } from "../useIssueHeaderWrites";
 
@@ -43,12 +43,15 @@ export function DetailsSlot({ issue }: SlotProps): ReactNode {
   // The one editor open in a row of Details - the parent's or the route's - which the rows'
   // own controls and the add menu open.
   const [editingField, setEditingField] = useState<IssueField | null>(null);
-  const stage = useMemo(() => {
+  // The panel's stage, one for the life of the page (above): state and not a memo, since React
+  // may throw a memo's value away, and a second stage would draw the panel again and close an
+  // open editor.
+  const [stage] = useState(() => {
     const element = document.createElement("div");
     // No box of its own: the panel is a child of the host that holds it.
     element.className = "contents";
     return element;
-  }, []);
+  });
   // The drawer's `aside` the stage sits in, where a control elsewhere on the page asks for a row
   // of the panel (`IssueMarginPanel`): read as the host takes the stage, since the panel is drawn
   // before any host holds it.
@@ -78,8 +81,16 @@ export function DetailsSlot({ issue }: SlotProps): ReactNode {
       run: () => openDetailsAt("labels", true),
       when: () => {
         // The control, by the name it has for the issue as it is now (`labelsControlName`):
-        // "Add a label to CORE-1" while it has no label, "Edit labels" once it has one.
-        const name = labelsControlName(issue.labels ?? [], issue.key, CONTROL_LABELS);
+        // "Add a label to CORE-1" while it has no label, "Edit labels" once it has one, and
+        // "Saving labels of CORE-1" while a save of them is out, which the panel's labels read
+        // from these same writes (decision 145 of the parts). Without the save's words the key
+        // found no control for the length of the save.
+        const name = labelsControlName(
+          issue.labels ?? [],
+          issue.key,
+          CONTROL_LABELS,
+          writes.labels.isPending ? ANSWER_LINES : undefined
+        );
         const control = document.querySelector(
           `[${DETAILS_ROW_ATTRIBUTE}="labels"] button[aria-label="${CSS.escape(name)}"]`
         );
