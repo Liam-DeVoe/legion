@@ -63,7 +63,8 @@ type stepRecordInput struct {
 // putIssueStep writes one run of one step of an issue and answers its record as it stands after
 // the write, with the attempt the read gives it. A write sets each field the record does not hold
 // yet and leaves every field it holds, so a start and an end land in either order and a write
-// sent again changes nothing; no write is refused for its order.
+// sent again changes nothing; no write is refused for its order. returned_to is set only with the
+// result, by the end that reports both (workflowstore.PutStep).
 func (s *server) putIssueStep(w http.ResponseWriter, r *http.Request) {
 	var input stepRecordInput
 	if err := decodeJSON(r, &input); err != nil {

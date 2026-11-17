@@ -395,6 +395,7 @@ func TestAStepWriteRefusesItsBadValues(t *testing.T) {
 		{"a step returned to by a run that passed", "", withStepFields(start, map[string]any{"result": "passed", "ended_at": stepEnd, "returned_to": 2}), "returned_to"},
 		{"a retro returned to by a run that passed", "", withStepFields(start, map[string]any{"result": "passed", "ended_at": stepEnd, "returned_to": 0}), "returned_to"},
 		{"a returned_to below 0", "", withStepFields(start, map[string]any{"result": "failed", "ended_at": stepEnd, "returned_to": -1}), "returned_to -1"},
+		{"a step returned to by a write that names no result", "", withStepFields(start, map[string]any{"returned_to": 2}), `this write's result is ""`},
 		{"a first write with no task", "", without("task"), "does not name its task:"},
 		{"a first write with no kind", "", without("kind"), "does not name its kind:"},
 		{"a first write with no step", "", without("step"), "does not name its step:"},

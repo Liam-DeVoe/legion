@@ -200,6 +200,84 @@ func TestAnEndAfterAnEndKeepsTheFirst(t *testing.T) {
 	}
 }
 
+// The result of a run and the step it returned to are one fact, the outcome one end reported, so
+// only the write that sets the result sets its destination: a node that holds a result keeps the
+// destination its own end named, none included, in the write's answer, in the issue's read and in
+// the log. Which of the start and the end came first does not matter.
+func TestARunKeepsTheDestinationOfTheEndThatSetItsResult(t *testing.T) {
+	pool := storetest.Open(t).Pool
+	ended := func(id, result string, at time.Time, returned *int) StepWrite {
+		end := endOf(implementer(id), result, at)
+		end.ReturnedTo = returned
+		return end
+	}
+	for name, row := range map[string]struct {
+		writes   func(id string) []StepWrite
+		result   string
+		returned *int
+	}{
+		"a later end does not add a destination": {
+			writes: func(id string) []StepWrite {
+				return []StepWrite{
+					startOf(implementer(id), minute(0)),
+					ended(id, ResultStopped, minute(1), nil),
+					ended(id, ResultFailed, minute(2), new(2)),
+				}
+			},
+			result: ResultStopped,
+		},
+		"an end before its start": {
+			writes: func(id string) []StepWrite {
+				return []StepWrite{
+					ended(id, ResultFailed, minute(1), new(2)),
+					startOf(implementer(id), minute(0)),
+				}
+			},
+			result: ResultFailed, returned: new(2),
+		},
+		"an end repeated, then another destination": {
+			writes: func(id string) []StepWrite {
+				return []StepWrite{
+					startOf(implementer(id), minute(0)),
+					ended(id, ResultFailed, minute(1), new(2)),
+					ended(id, ResultFailed, minute(1), new(2)),
+					ended(id, ResultFailed, minute(2), new(3)),
+					ended(id, ResultStopped, minute(3), new(0)),
+				}
+			},
+			result: ResultFailed, returned: new(2),
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			id := uuid.NewString()
+			var answered Step
+			for index, write := range row.writes(id) {
+				answered = put(t, pool, write, minute(index))
+			}
+			steps := issueSteps(t, pool, "LEG-1")
+			index := slices.IndexFunc(steps, func(step StepRead) bool { return step.ID == id })
+			if index < 0 {
+				t.Fatalf("LEG-1 does not list the run %s", id)
+			}
+			for what, step := range map[string]Step{"the last write's answer": answered, "the read": steps[index].Step} {
+				if step.Result != row.result || !reflect.DeepEqual(step.ReturnedTo, row.returned) {
+					t.Errorf("%s reads result %q returned_to %s, want %q returned_to %s",
+						what, step.Result, destination(step.ReturnedTo), row.result, destination(row.returned))
+				}
+			}
+			want := 0
+			if row.returned != nil {
+				want = 1
+			}
+			for field, count := range map[string]int{AttributeResult: 1, AttributeReturnedTo: want} {
+				if got := valueTuples(t, pool, id, field); got != count {
+					t.Errorf("the log holds %d %s tuples of the run, want %d", got, field, count)
+				}
+			}
+		})
+	}
+}
+
 // A write that names another value for a field the node holds leaves the held value, whichever of
 // the start and the end came first, and appends no tuple for it: the first value of each field
 // stands, in the write's answer and in the issue's read.
@@ -686,6 +764,9 @@ func TestAStepWriteRefusesAValueOutsideItsForm(t *testing.T) {
 		"returned_to below 0": func(write *StepWrite) {
 			write.ReturnedTo, write.Result, write.EndedAt = new(-1), new(ResultFailed), new(minute(1))
 		},
+		"returned_to with no result": func(write *StepWrite) {
+			write.ReturnedTo = new(2)
+		},
 		"report":     func(write *StepWrite) { write.Report = new("not-a-uuid") },
 		"id":         func(write *StepWrite) { write.ID = "not-a-uuid" },
 		"task":       func(write *StepWrite) { write.Task = new("Default") },
@@ -874,4 +955,12 @@ func valueTuples(t *testing.T, pool *store.Pool, id, attribute string) int {
 		t.Fatalf("count the %s tuples of step %s: %v", attribute, id, err)
 	}
 	return count
+}
+
+// destination is a run's returned_to as a failure message prints it.
+func destination(returned *int) string {
+	if returned == nil {
+		return "none"
+	}
+	return strconv.Itoa(*returned)
 }
