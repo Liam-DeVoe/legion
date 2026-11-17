@@ -444,13 +444,19 @@ func (r *stepRecordsRig) merge() {
 // waitPhase waits for the issue to stand in want.
 func (r *stepRecordsRig) waitPhase(want phase.Phase) {
 	r.t.Helper()
+	r.waitPhaseOf(r.key, want)
+}
+
+// waitPhaseOf waits for issue to stand in want.
+func (r *stepRecordsRig) waitPhaseOf(issue string, want phase.Phase) {
+	r.t.Helper()
 	var last string
 	if !testwait.Holds(stepRecordsWait, 100*time.Millisecond, func() bool {
-		issue, ok := r.d.state().Issues[r.key]
-		last = string(issue.Phase)
+		got, ok := r.d.state().Issues[issue]
+		last = string(got.Phase)
 		return ok && last == string(want)
 	}) {
-		r.t.Fatalf("%s stands in %q, want %s", r.key, last, want)
+		r.t.Fatalf("%s stands in %q, want %s", issue, last, want)
 	}
 }
 
@@ -547,10 +553,14 @@ func (r *stepRecordsRig) send(request *http.Request) (int, []byte) {
 	return response.StatusCode, answer
 }
 
-// readSteps is GET /api/v1/issues/{key}/steps as a person of the project reads it, or the error
-// that the read met.
-func (r *stepRecordsRig) readSteps() (stepRecordsRead, error) {
-	request, err := http.NewRequest(http.MethodGet, r.dispatch.base+"/api/v1/issues/"+r.key+"/steps", nil)
+// readSteps is GET /api/v1/issues/{key}/steps of the walk's issue as a person of the project reads
+// it, or the error that the read met.
+func (r *stepRecordsRig) readSteps() (stepRecordsRead, error) { return r.readStepsOf(r.key) }
+
+// readStepsOf is GET /api/v1/issues/{issue}/steps as a person of the project reads it, or the
+// error that the read met.
+func (r *stepRecordsRig) readStepsOf(issue string) (stepRecordsRead, error) {
+	request, err := http.NewRequest(http.MethodGet, r.dispatch.base+"/api/v1/issues/"+issue+"/steps", nil)
 	if err != nil {
 		return stepRecordsRead{}, err
 	}
@@ -562,7 +572,7 @@ func (r *stepRecordsRig) readSteps() (stepRecordsRead, error) {
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
 		answer, _ := io.ReadAll(response.Body)
-		return stepRecordsRead{}, fmt.Errorf("GET steps = %d %s", response.StatusCode, answer)
+		return stepRecordsRead{}, fmt.Errorf("GET steps of %s = %d %s", issue, response.StatusCode, answer)
 	}
 	var read stepRecordsRead
 	if err := json.NewDecoder(response.Body).Decode(&read); err != nil {
@@ -1050,43 +1060,6 @@ func (r *stepRecordsRig) seedChildInReviewing() (string, int) {
 		t.Fatalf("seed %s: %v", created.Key, err)
 	}
 	return created.Key, number
-}
-
-// waitPhaseOf waits for issue to stand in want.
-func (r *stepRecordsRig) waitPhaseOf(issue string, want phase.Phase) {
-	r.t.Helper()
-	var last string
-	if !testwait.Holds(stepRecordsWait, 100*time.Millisecond, func() bool {
-		got, ok := r.d.state().Issues[issue]
-		last = string(got.Phase)
-		return ok && last == string(want)
-	}) {
-		r.t.Fatalf("%s stands in %q, want %s", issue, last, want)
-	}
-}
-
-// readStepsOf is GET /api/v1/issues/{issue}/steps as a person of the project reads it, or the
-// error that the read met.
-func (r *stepRecordsRig) readStepsOf(issue string) (stepRecordsRead, error) {
-	request, err := http.NewRequest(http.MethodGet, r.dispatch.base+"/api/v1/issues/"+issue+"/steps", nil)
-	if err != nil {
-		return stepRecordsRead{}, err
-	}
-	request.Header.Set("X-Dispatch-User", "step-records")
-	response, err := (&http.Client{Timeout: 10 * time.Second}).Do(request)
-	if err != nil {
-		return stepRecordsRead{}, err
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		answer, _ := io.ReadAll(response.Body)
-		return stepRecordsRead{}, fmt.Errorf("GET steps of %s = %d %s", issue, response.StatusCode, answer)
-	}
-	var read stepRecordsRead
-	if err := json.NewDecoder(response.Body).Decode(&read); err != nil {
-		return stepRecordsRead{}, err
-	}
-	return read, nil
 }
 
 // A model whose name holds U+0000 is a name no store can hold: PostgreSQL's text and jsonb, the
