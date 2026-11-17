@@ -1000,6 +1000,8 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 		return intake.Result{}, nil
 	}
 	from := issue.Phase
+	// The hold keeps the task's place (moveTask): the task does not move, and held overlays the
+	// phase its place derives, which Hold.From names.
 	issue.Phase, issue.Hold = phase.Held, &record.Hold{From: from}
 	if err := e.store.PutIssue(ctx, tx, *issue); err != nil {
 		return intake.Result{}, err
@@ -1289,6 +1291,8 @@ func (e *Engine) restartPhase(ctx context.Context, tx pgx.Tx, fact intake.Restar
 // issue to, read back from the record because the move's own row chose that target
 // (transition).
 func (e *Engine) retryPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, from phase.Phase, reason string, freshSession bool) (phase.Phase, error) {
+	// The retry keeps the task's place (moveTask): it puts back Hold.From, the phase that place
+	// derives, so the task never moved.
 	issue.Phase, issue.Hold = from, nil
 	if err := e.store.PutIssue(ctx, tx, issue); err != nil {
 		return "", err
@@ -1373,7 +1377,14 @@ func (e *Engine) backward(ctx context.Context, tx pgx.Tx, fact intake.BackwardMo
 	// sentence naming only the last had two readers of this file guess wrong on one day: a target
 	// the table does not serve is the caller's own phase misread, while a requester mismatch is a
 	// role acting on a phase that is not its own.
-	_, served := e.row(issue.Phase, TriggerBackward, fact.To, Snapshot{Phase: issue.Phase})
+	//
+	// The table is the one of the issue's walk, so a move back to a phase its task's line does not
+	// hold is served by no row.
+	w, err := e.walk(ctx, tx, *issue)
+	if err != nil {
+		return intake.Result{}, err
+	}
+	_, served := w.row(issue.Phase, TriggerBackward, fact.To, Snapshot{Phase: issue.Phase})
 	if why := backwardRefusal(*issue, fact, served); why != "" {
 		return refused("BACKWARD_REFUSED", why), nil
 	}
@@ -1442,7 +1453,13 @@ func (e *Engine) signOff(ctx context.Context, tx pgx.Tx, fact intake.SignOff) (i
 }
 
 func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, trigger TriggerKind, target phase.Phase, handoff record.PhaseRow, pr *record.PullRequest, reason string) error {
-	row, ok := e.row(issue.Phase, trigger, target, Snapshot{Phase: issue.Phase, HasOpenOrMergedPR: record.LetsImplementationMove(pr)})
+	// The row comes from the table of the issue's walk: the line of its plan's task, or today's
+	// line for a run with no plan rows (Walk).
+	w, err := e.walk(ctx, tx, issue)
+	if err != nil {
+		return err
+	}
+	row, ok := w.row(issue.Phase, trigger, target, Snapshot{Phase: issue.Phase, HasOpenOrMergedPR: record.LetsImplementationMove(pr)})
 	if !ok {
 		return nil
 	}
@@ -1491,7 +1508,16 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 		return err
 	}
 	from := issue.Phase
-	issue.Phase, issue.Hold = row.To, nil
+	// The task moves with the issue, in the write that moves it (moveTask): its place and state,
+	// and the phase they derive, which is row.To.
+	state := record.TaskRunning
+	if row.To == phase.Done {
+		state = record.TaskDone
+	}
+	if err := e.moveTask(ctx, tx, &issue, &w, row.To, state); err != nil {
+		return err
+	}
+	issue.Hold = nil
 	// This is the one write that moves an issue into a phase of its own, so it is where the issue's
 	// run earns record.Issue.TakenBack: it has stood in a phase. The mark is a fact about that run,
 	// not about the issue's history. It lasts as long as the run's record does — through the phase's
@@ -1639,15 +1665,6 @@ func (e *Engine) phaseEnded(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 		return nil
 	}
 	return e.enqueue(ctx, tx, issue.Key, record.PhaseEnded{Role: ended, From: from, To: to, Reason: reason, TaskFollows: ended == starting})
-}
-
-func (e *Engine) row(from phase.Phase, trigger TriggerKind, target phase.Phase, snapshot Snapshot) (Row, bool) {
-	for _, row := range Table {
-		if row.From == from && row.Trigger == trigger && (target == "" || row.To == target) && (row.Guard == nil || row.Guard(snapshot)) {
-			return row, true
-		}
-	}
-	return Row{}, false
 }
 
 // StartFirstPhase starts the first phase of one issue the waiting line has just given a slot to,
