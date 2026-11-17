@@ -198,7 +198,7 @@ EXCEPTIONS = (
         package="github.com/sjawhar/envoy/internal/broker/natscallout",
         functions=("TestACalloutStormAfterAServerRestartAdmitsEveryConnection",),
         requirement=(
-            "c-callout-available (dispatch://INFRA-840/artifact/verification-md): five hundred "
+            "c-callout-available (the NATS auth service's verification): five hundred "
             "connections reconnect at once after a server restart and every one is admitted. The "
             "restart storm opens two hundred under the race detector (raceEnabled), whose cost per "
             "in-process connect fails the setup at five hundred on a loaded runner, so envoy-go's "

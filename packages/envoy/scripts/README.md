@@ -315,7 +315,7 @@ wait that ran out, Ctrl-C — ends that build with the stack.
 ## callout-check.sh
 
 Proves, on the whole local stack behind the NATS auth service, what the hub lets a
-connection reach: `check c-callout-live` of dispatch://INFRA-840's verification.
+connection reach: `check c-callout-live` of the NATS auth service's verification.
 `dev-stack.sh --callout` is that stack: natsd behind the auth callout, the service in two
 brokers on one database, and the listener and Dispatch connecting as services with the
 NATS-audience tokens the issuer writes them. All of what `--callout` adds is in
