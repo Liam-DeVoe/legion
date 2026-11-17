@@ -82,7 +82,11 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	blockers := normalizeIssueBlockers(input.BlockedBy)
+	blockers, err := normalizeIssueBlockers(input.BlockedBy)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	advances, err := normalizeIssueAdvances(input.Advances)
 	if err != nil {
 		s.writeHandlerError(w, err)

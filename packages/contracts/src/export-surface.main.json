@@ -492,6 +492,8 @@
     "LiveView": "type",
     "LiveWritePauseState": "type",
     "MAX_BLOCK_ID_BYTES": "constant",
+    "MAX_BROADCAST_RECIPIENTS": "constant",
+    "MAX_ISSUE_BLOCKERS": "constant",
     "MAX_ISSUE_PAGE_LIMIT": "constant",
     "MAX_REFERENCE_TARGET_BYTES": "constant",
     "MINTED_DEDUPE_KEY_PATTERN": "constant",

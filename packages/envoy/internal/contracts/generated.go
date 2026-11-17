@@ -196,6 +196,11 @@ const MintedDedupeKeyPattern = "^(?:envoy\\.role\\.forward\\.)?(?:publish|agent\
 // and the string the dashboard keys its retry wording on cannot drift apart.
 const ReceiptTimeoutCause = "The listener didn't answer within the send window; the message may already have been delivered."
 
+// MaxBroadcastRecipients is the most sessions one broadcast sends to. Generated from
+// MAX_BROADCAST_RECIPIENTS in packages/contracts so the server's limit and the dashboard's
+// cannot drift apart.
+const MaxBroadcastRecipients = 100
+
 // KnownSessionsMax is the most session ids one GET /api/v1/agents/known names. Generated from
 // KNOWN_SESSIONS_MAX in packages/contracts so the server's refusal and the dashboard's batches
 // cannot drift apart.
@@ -310,6 +315,10 @@ const GoingWordsMax = 2000
 // server's windows and the page's account of them cannot drift apart.
 const GoingRunWindow = 30000 * time.Millisecond
 const GoingRequestTTL = 3600000 * time.Millisecond
+
+// MaxIssueBlockers bounds blocked_by input before deduplication. Generated from
+// MAX_ISSUE_BLOCKERS in packages/contracts so the server and tool schemas share the limit.
+const MaxIssueBlockers = 20
 
 // MaxIssueAdvances bounds the `advances` input of an issue write before deduplication: the most
 // priorities one issue states it advances, its own relations alone. Generated from

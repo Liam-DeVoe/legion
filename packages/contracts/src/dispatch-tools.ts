@@ -4,6 +4,7 @@ import {
   DEFAULT_ISSUE_READ_EVENTS,
   ISSUE_TITLE_MAX,
   MAX_ISSUE_ADVANCES,
+  MAX_ISSUE_BLOCKERS,
   MAX_ISSUE_PAGE_LIMIT,
   PROJECT_NAME_MAX,
 } from "./dispatch-api-limits";
@@ -715,7 +716,7 @@ export const dispatchToolSpecs = [
         .describe("Concise issue title, at most 1,000 characters."),
       parent: z.string().describe("Optional parent issue.").optional(),
       blocked_by: z
-        .array(z.string({ min: 1 }))
+        .array(z.string({ min: 1 }), { max: MAX_ISSUE_BLOCKERS })
         .describe(
           "Issue keys this issue waits on; a key of any project, so work tracked elsewhere can be named. Dispatch refuses a dependency cycle."
         )
@@ -854,7 +855,7 @@ export const dispatchToolSpecs = [
         .describe("Parent issue key in the same project; an empty string clears the parent.")
         .optional(),
       blocked_by: z
-        .array(z.string({ min: 1 }))
+        .array(z.string({ min: 1 }), { max: MAX_ISSUE_BLOCKERS })
         .describe(
           "Replacement list of issue keys this issue waits on, of any project; [] clears it. Dispatch refuses a dependency cycle."
         )

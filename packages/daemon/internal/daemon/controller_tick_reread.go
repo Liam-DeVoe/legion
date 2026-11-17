@@ -30,8 +30,8 @@ func (w *workflowRuntime) applyControllerTick(ctx context.Context, at time.Time)
 
 // blockerReadFanout is how many blocker keys one turn reads one at a time: up to this many are
 // read singly, and above it the whole project is listed once instead. The listing is a single
-// unpaged request (dispatch.HTTPClient.ListIssues), so the fan-out a waiting set can ask for is
-// bounded on both sides of the choice.
+// unpaged request (dispatch.HTTPClient.ListIssues) and Dispatch caps an issue at 20 blockers, so
+// the fan-out a waiting set can ask for is bounded on both sides of the choice.
 const blockerReadFanout = 25
 
 // observeWaitedOn is what Dispatch says now about the issues this daemon is holding something

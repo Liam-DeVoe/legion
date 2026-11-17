@@ -197,6 +197,7 @@ that takes any mode takes Aside and one of them does not take BTW.
 The box then says "Sending as Aside" and names that agent.
 An agent that does not take the mode the broadcast goes in is left out, and its chip says why;
 once you pick a mode, Dispatch never switches it to another.
+One broadcast reaches at most 100 agents.
 
 Your selection is what you ticked, not what the filters show. Narrowing the filters after you tick
 does not drop anyone; the count beside the checkbox says how many selected agents are outside the

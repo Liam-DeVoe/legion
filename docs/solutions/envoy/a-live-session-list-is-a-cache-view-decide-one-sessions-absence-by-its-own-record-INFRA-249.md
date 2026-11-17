@@ -51,10 +51,10 @@ further out, where it has no way to see it.
 - **A list cannot be made authoritative key by key, so do not try.** Leave `GET /v1/sessions`,
   the agents page, the issue subscribers and `route_status` as the cache views they are; they
   display a fleet and act on nobody. Change the *caller that acts*, not the list.
-- **Ask per id even when the caller holds many ids.** A broadcast names many sessions and used
-  one list read for all of them, which looks thriftier and is wrong: the thing each recipient
-  needs is its own record. Bound the fan-out instead (`resolveBroadcastSessions`: eight reads in
-  flight under one budget).
+- **Ask per id even when the caller holds many ids.** A broadcast names up to
+  `contracts.MaxBroadcastRecipients` sessions and used one list read for all of them, which looks
+  thriftier and is wrong: the thing each recipient needs is its own record. Bound the fan-out
+  instead (`resolveBroadcastSessions`: eight reads in flight under one budget).
 - **Split "gone" from "could not read" at the route, and keep the words.** Only the bucket's own
   key-not-found is `404 {"error":"no live session <id>"}`; an id NATS refuses as a KV key is
   `400`/`413`; a read that did not answer is `503` with `Retry-After: 1`. The 404 wording is

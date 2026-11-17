@@ -63,7 +63,12 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	}
 	var blockers []string
 	if input.BlockedBy != nil {
-		blockers = normalizeIssueBlockers(*input.BlockedBy)
+		var err error
+		blockers, err = normalizeIssueBlockers(*input.BlockedBy)
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
 	}
 	var advances []string
 	if input.Advances != nil {

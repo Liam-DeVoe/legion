@@ -1,4 +1,4 @@
-import { DELIVERY_CAPABILITIES } from "@legion/contracts";
+import { DELIVERY_CAPABILITIES, MAX_BROADCAST_RECIPIENTS } from "@legion/contracts";
 
 import { AGENT_LIST_REFILLING } from "../../api/client";
 import type { Agent, MessageDeliveryMode } from "../../api/types";
@@ -57,8 +57,8 @@ export interface BroadcastRoster {
  *  identity until the composer draws it through `AgentName`. */
 export interface BroadcastSendState {
   readonly label: string;
-  /** The composer's one notice line: nobody reached, or the Excluded line; null when neither
-   *  applies. */
+  /** The composer's one notice line, highest first: the limit, nobody reached, or the Excluded
+   *  line; null when none applies. */
   readonly notice: readonly AgentPart[] | null;
   /** Why Send refuses, or null while it can be pressed. */
   readonly refusal: readonly AgentPart[] | null;
@@ -266,14 +266,17 @@ function exclusionLine(
 }
 
 /**
- * What the composer says about the send, and where. The notice slot holds one line, the
- * Excluded line. With nobody to reach, that line is why Send refuses; otherwise an Excluded line
- * is context beside Send, and an empty message is Send's own reason, with no line of its own. A
- * button that only counts - `Send to 0` - reads as a number, not a refusal, so a selection none of
- * whom this mode reaches reads `No recipient`. When the mode is what leaves everyone out, the
- * Excluded line ends by naming the mode that reaches the most of them - by what it would do, not
- * by the control that picks it, so it holds however the mode is chosen. An empty selection has no
- * composer, so it is no case here.
+ * What the composer says about the send, and where. The notice slot holds one line, highest
+ * first: the recipient limit, then the Excluded line. Over the limit, or with nobody to reach,
+ * that line is why Send refuses; otherwise an Excluded line is context beside Send, and an empty
+ * message is Send's own reason, with no line of its own. A button that only counts - `Send to 0`
+ * - reads as a number, not a refusal, so a selection none of whom this mode reaches reads
+ * `No recipient`. When the mode is what leaves everyone out, the Excluded line ends by naming the
+ * mode that reaches the most of them - by what it would do, not by the control that picks it, so
+ * it holds however the mode is chosen. The limit outranks an empty message, and the cause it
+ * hides is the empty box, which the reader can see; the limit hiding the Excluded line hides no
+ * name, since every excluded chip carries its reason. An empty selection has no composer, so it
+ * is no case here.
  */
 export function broadcastSendState(
   { excluded, recipients }: BroadcastPlan,
@@ -281,6 +284,10 @@ export function broadcastSendState(
   body: string
 ): BroadcastSendState {
   const label = `Send to ${recipients.length}`;
+  if (recipients.length > MAX_BROADCAST_RECIPIENTS) {
+    const limit = `At most ${MAX_BROADCAST_RECIPIENTS} recipients per broadcast; this one would reach ${recipients.length}.`;
+    return { label, notice: [limit], refusal: [limit], refusalOnNotice: true };
+  }
   if (recipients.length > 0) {
     return {
       label,
