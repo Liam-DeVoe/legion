@@ -92,6 +92,59 @@ func TestLegionHeadReadsTheHeadTheReviewSaysItRead(t *testing.T) {
 	}
 }
 
+// The reviewer's footer names the entry of the round its review is of, the number its task names
+// (workflow's ReviewEntryLabel), and only a review that names the entry that stands moves the
+// commit the reviewer read (workflow's review). LegionEntry reads it as a positive whole number
+// written as a JSON integer and answers 0 for anything else. An entry it cannot read costs the
+// entry alone: the session and the head of the same footer still read, since they decide the
+// round.
+func TestLegionEntryReadsTheEntryTheReviewSaysItIsOf(t *testing.T) {
+	const head = "8848896da05779c592221b1199ee55ddb11cc3f3"
+	footer := func(entry string) string {
+		return "Round 2: APPROVE.\n\n<!-- legion: {\"session\":\"ses-reviewer\",\"phase\":\"review\",\"head\":\"" + head + "\",\"entry\":" + entry + "} -->"
+	}
+	for _, tc := range []struct {
+		name string
+		body string
+		want int64
+	}{
+		{name: "the entry the review is of", body: footer("7"), want: 7},
+		{name: "the entry with space around it", body: "<!-- legion: {\"session\":\"ses-reviewer\",\"head\":\"" + head + "\", \"entry\" :  12 } -->", want: 12},
+		{name: "the largest entry int64 holds", body: footer("9223372036854775807"), want: 9223372036854775807},
+		{name: "a footer with no entry", body: "<!-- legion: {\"session\":\"ses-reviewer\",\"phase\":\"review\",\"head\":\"" + head + "\"} -->", want: 0},
+		{name: "no footer", body: "Ship it.", want: 0},
+		{name: "zero", body: footer("0"), want: 0},
+		{name: "a negative entry", body: footer("-3"), want: 0},
+		{name: "a fraction", body: footer("3.5"), want: 0},
+		{name: "a whole number written as a fraction", body: footer("3.0"), want: 0},
+		{name: "an exponent", body: footer("3e0"), want: 0},
+		{name: "one past int64", body: footer("9223372036854775808"), want: 0},
+		{name: "a string", body: footer("\"3\""), want: 0},
+		{name: "null", body: footer("null"), want: 0},
+		{name: "an object", body: footer("{\"n\":3}"), want: 0},
+		{
+			name: "two footers; the last one wins",
+			body: footer("2") + "\n\nedit: re-read in the next round.\n\n" + footer("3"),
+			want: 3,
+		},
+		{name: "broken JSON", body: "<!-- legion: {\"session\":\"ses-reviewer\",\"entry\":3 -->", want: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			review := PullRequestReview{Body: tc.body}
+			if got := review.LegionEntry(); got != tc.want {
+				t.Fatalf("LegionEntry() of %q = %d, want %d", tc.body, got, tc.want)
+			}
+			if tc.name == "broken JSON" || tc.name == "no footer" {
+				return
+			}
+			if review.LegionSession() != "ses-reviewer" || review.LegionHead() != head {
+				t.Fatalf("the footer %q reads the session %q and the head %q, want ses-reviewer and %s: an entry costs no more than itself",
+					tc.body, review.LegionSession(), review.LegionHead(), head)
+			}
+		})
+	}
+}
+
 // A carried approval is the review Dispatch writes in a person's name when their answer to a
 // decision block was the whole change since the version they approved; its reason opens with
 // CarriedApprovalReasonPrefix, mirrored from Dispatch's carryReason
