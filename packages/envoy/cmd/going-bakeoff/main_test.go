@@ -153,6 +153,71 @@ func TestATopModelWithNoActionFitIsWrittenWithNoneChosen(t *testing.T) {
 	}
 }
 
+// The choice line says what R7's rule came to on the run (going.Choice.Outcome), from the choice
+// alone: the model it names, with the right choices of the candidates in the order they rank, or
+// none, offering the tie-break only on a full tie. It ranks nothing again: beside records whose
+// right choices rank otherwise, it prints the same.
+func TestTheChoiceLineSaysWhatTheRuleCameTo(t *testing.T) {
+	tied := func() []going.Record {
+		return []going.Record{floored("model-a", false, 101), floored("model-b", false, 101)}
+	}
+	unfloored := floored("model-a", true, 117)
+	unfloored.P95MS = going.P95CeilingMS
+	for _, tc := range []struct {
+		name     string
+		records  []going.Record
+		tieBreak string
+		outcome  going.ChoiceOutcome
+		named    string
+		// facts is what the line holds, in this order.
+		facts []string
+	}{
+		{"a decided run", []going.Record{floored("model-c", false, 101), floored("model-a", true, 103), floored("model-b", false, 104)}, "",
+			going.Named, "model-b", []string{"104 of 117", "model-a", "103", "model-c", "101"}},
+		// The model it names, then the models level at the count in the order they rank, then
+		// the count.
+		{"a run the display fit decides", []going.Record{floored("model-a", false, 104), floored("model-c", true, 100), floored("model-b", true, 104)}, "",
+			going.Named, "model-b", []string{"model-b", "model-b", "model-a", "104 of 117"}},
+		{"a full tie with no display fit", tied(), "", going.FullTie, "", []string{"model-a", "model-b", "101 of 117"}},
+		{"a full tie the architect broke", tied(), "model-b", going.Named, "model-b", []string{"model-a", "model-b", "101 of 117", "the cheaper of two level models"}},
+		{"a top model with no action fit", unfitFirst(), "", going.OwedRepair, "", []string{"model-strong", "117 of 117", "R5"}},
+		{"no model meeting the floors", []going.Record{unfloored}, "", going.NoCandidate, "", []string{"floors"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			choice := going.Choose(tc.records)
+			if tc.tieBreak != "" {
+				var err error
+				if choice, err = choice.Break(tc.tieBreak, "the cheaper of two level models"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if choice.Outcome != tc.outcome || choice.Model != tc.named {
+				t.Errorf("Choose comes to %q, naming %q; want %q, naming %q", choice.Outcome, choice.Model, tc.outcome, tc.named)
+			}
+			printed := says(tc.records, choice)
+			line, _, _ := strings.Cut(printed, "\n")
+			if named := namedIn(line); named != choice.Model || (named != "") != (choice.Outcome == going.Named) {
+				t.Errorf("the line %q names %q, where Choose comes to %q, naming %q", line, named, choice.Outcome, choice.Model)
+			}
+			if offered := strings.Contains(line, "--tie-break"); offered != (choice.Outcome == going.FullTie) {
+				t.Errorf("the line %q offers a tie-break: %t, where Choose comes to %q", line, offered, choice.Outcome)
+			}
+			rest := line
+			for n, fact := range tc.facts {
+				_, after, held := strings.Cut(rest, fact)
+				if !held {
+					t.Errorf("the line %q does not hold %q after %v", line, fact, tc.facts[:n])
+					break
+				}
+				rest = after
+			}
+			if again := says(reranked(tc.records), choice); again != printed {
+				t.Errorf("beside records that rank otherwise, says prints\n%s\nwant\n%s", again, printed)
+			}
+		})
+	}
+}
+
 // The entries of a record were measured on one case set, so a record whose entries hold other
 // case counts is refused, naming the entry, as one with other repeats is.
 func TestARecordOfOtherCasesIsRefused(t *testing.T) {
@@ -287,6 +352,30 @@ func unfitFirst() []going.Record {
 	first := floored("model-strong", true, 117)
 	first.ActionThreshold = nil
 	return []going.Record{first, floored("model-weak", true, 100)}
+}
+
+// reranked is records with more right choices in every repeat the earlier a model stands, so
+// their counts and their order are not the ones the rule ranked.
+func reranked(records []going.Record) []going.Record {
+	moved := slices.Clone(records)
+	for i := range moved {
+		moved[i].RepeatRights = slices.Clone(moved[i].RepeatRights)
+		for j := range moved[i].RepeatRights {
+			moved[i].RepeatRights[j].Other += 10 * (len(moved) - i)
+			moved[i].RepeatRights[j].Total += 10 * (len(moved) - i)
+		}
+	}
+	return moved
+}
+
+// namedIn is the model a choice line names, "" for a line that names none.
+func namedIn(line string) string {
+	rest, named := strings.CutPrefix(line, "**Choice:** `")
+	if !named {
+		return ""
+	}
+	model, _, _ := strings.Cut(rest, "`")
+	return model
 }
 
 // chosenIn is the entries the written record marks chosen.

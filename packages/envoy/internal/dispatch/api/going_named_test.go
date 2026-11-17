@@ -399,14 +399,16 @@ func TestGoingUploadRefusalsSayWhatThePersonCanDoInTheBar(t *testing.T) {
 	if err != nil || !unnamed.ownerUnnamed {
 		t.Fatalf("read what an upload to an owner it cannot name writes over: %+v, %v", unnamed, err)
 	}
-	// answered is a refusal as the writes route answers it (goingWriteClaim.refuse).
+	// answered is a refusal as the writes route answers it (goingWriteClaim.refuse): a
+	// GoingArgumentError as 400 GOING_ARGUMENTS with its reason alone, which is the one way a
+	// refusal answers that code, and any other route refusal as it stands.
 	answered := func(err error) (int, string, string) {
 		var argument GoingArgumentError
 		if errors.As(err, &argument) {
 			return http.StatusBadRequest, codeGoingArguments, argument.Reason
 		}
 		var refused *apiError
-		if errors.As(err, &refused) {
+		if errors.As(err, &refused) && refused.code != codeGoingArguments {
 			return refused.status, refused.code, refused.message
 		}
 		return 0, "", fmt.Sprint(err)

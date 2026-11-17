@@ -326,7 +326,7 @@ func conclude(w io.Writer, records []going.Record, source, tieBreak, tieReason, 
 	switch {
 	case refused != nil:
 		return fmt.Errorf("%w; no record is written", refused)
-	case len(choice.Level) == 0:
+	case choice.Outcome == going.NoCandidate:
 		return fmt.Errorf("%s, so no record is written", choice.Why)
 	}
 	for i := range records {
@@ -344,10 +344,10 @@ func conclude(w io.Writer, records []going.Record, source, tieBreak, tieReason, 
 	if err := os.WriteFile(out, raw, 0o644); err != nil {
 		return err
 	}
-	switch {
-	case choice.Model != "":
+	switch choice.Outcome {
+	case going.Named:
 		return nil
-	case len(choice.Unfit) > 0:
+	case going.OwedRepair:
 		return fmt.Errorf("wrote %s with no model chosen: %s", out, choice.Why)
 	default:
 		return fmt.Errorf("wrote %s with no model chosen: %s: going-bakeoff --from-record %s --tie-break <model> --tie-reason <why>", out, choice.Why, out)
@@ -711,34 +711,28 @@ func render(records []going.Record, choice going.Choice, source string) string {
 	return b.String()
 }
 
-// says is what R7's rule names on the run, or the architect where the rule names none, with the
-// numbers that decided it, or why no model is named; and beside a named model its paired tests
-// against the other models that meet the floors.
+// says is what R7's rule came to on the run (choice.Outcome): the model it names, or the
+// architect where the rule names none, with the right choices the rule ranked the candidates by
+// (choice.Ranked), or why no model is named; and beside a named model its paired tests against
+// the other models that meet the floors. It ranks nothing again: of records it reads only how
+// many models were measured and the named model's paired tests.
 func says(records []going.Record, choice going.Choice) string {
-	if choice.Model == "" {
+	if choice.Outcome != going.Named {
 		s := fmt.Sprintf("**Choice:** none: %s.", choice.Why)
-		if len(choice.Level) > 1 && len(choice.Unfit) == 0 {
+		if choice.Outcome == going.FullTie {
 			s += " Name it with `--tie-break <model> --tie-reason <why>`."
 		}
 		return s + "\n"
 	}
-	var candidates []*going.Record
-	most := 0
-	for i := range records {
-		if records[i].MeetsFloors() {
-			candidates = append(candidates, &records[i])
-			most = max(most, records[i].Right())
-		}
-	}
-	answers := candidates[0].Cases * candidates[0].Repeats
+	most := choice.Ranked[0].Right
 	var b strings.Builder
 	switch choice.By {
 	case going.ChosenByRightChoices:
-		fmt.Fprintf(&b, "**Choice:** `%s`, by the most right choices pooled over every repeat: %d of %d", choice.Model, most, answers)
+		fmt.Fprintf(&b, "**Choice:** `%s`, by the most right choices pooled over every repeat: %d of %d", choice.Model, most, choice.Of)
 		var others []string
-		for _, c := range candidates {
+		for _, c := range choice.Ranked {
 			if c.Model != choice.Model {
-				others = append(others, fmt.Sprintf("`%s`'s %d", c.Model, c.Right()))
+				others = append(others, fmt.Sprintf("`%s`'s %d", c.Model, c.Right))
 			}
 		}
 		switch {
@@ -751,29 +745,29 @@ func says(records []going.Record, choice going.Choice) string {
 		}
 	case going.ChosenByDisplayFit:
 		var level []string
-		for _, c := range candidates {
-			if c.Right() == most {
+		for _, c := range choice.Ranked {
+			if c.Right == most {
 				level = append(level, c.Model)
 			}
 		}
 		fmt.Fprintf(&b, "**Choice:** `%s`, by R7's tiebreak: %s are level at %d of %d right choices pooled over every repeat, and `%s` alone of them has a display fit.",
-			choice.Model, modelList(level), most, answers, choice.Model)
+			choice.Model, modelList(level), most, choice.Of, choice.Model)
 	default:
 		fmt.Fprintf(&b, "**Choice:** `%s`, named by the architect: %s. The reason recorded: %s", choice.Model, choice.Why, choice.Reason)
 	}
 	b.WriteString("\n")
 	var chosen *going.Record
-	for _, c := range candidates {
-		if c.Model == choice.Model {
-			chosen = c
+	for i := range records {
+		if records[i].Model == choice.Model {
+			chosen = &records[i]
 		}
 	}
-	if chosen == nil || len(candidates) == 1 {
+	if chosen == nil || len(choice.Ranked) == 1 {
 		return b.String()
 	}
 	fmt.Fprintf(&b, "\nBeside the choice, the paired test of `%s` against each other model that meets the floors. It says how far a lead in right choices can be trusted, and it names no model.\n\n", chosen.Model)
-	for _, c := range candidates {
-		if c == chosen {
+	for _, c := range choice.Ranked {
+		if c.Model == chosen.Model {
 			continue
 		}
 		if test, held := chosen.PairedAgainst(c.Model); held {

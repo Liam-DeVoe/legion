@@ -708,10 +708,12 @@ func (e GoingUnknownActionError) Error() string {
 }
 
 // GoingArgumentError is the refusal of a call the action's own schema does not accept, that no row
-// of the action takes, or that the bar can never send as written (goingUnsendable, a translation's
-// goingUntranslatable), raised before any request for the same reason. Reason is the refusal
-// alone, which the writes route answers as it stands, in the bar's panel; Error names the action
-// before it, for a caller that holds no line naming the action.
+// of the action takes, that the bar can never send as written (goingUnsendable, a translation's
+// goingUntranslatable), or that uploads content with no force under a name its owner holds a
+// document of (goingUploadForceRefusal), raised before any request for the same reason; every 400
+// GOING_ARGUMENTS the writes route answers is one. Reason is the refusal alone, which the writes
+// route answers as it stands, in the bar's panel; Error names the action before it, for a caller
+// that holds no line naming the action.
 type GoingArgumentError struct {
 	Action string
 	Reason string

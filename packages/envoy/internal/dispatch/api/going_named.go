@@ -445,10 +445,11 @@ func goingUploadsOver(prepared goingPrepared, before goingObservation, words str
 // found one, under the owner its route writes to (uploadedOver), or may hold where it could name
 // no owner to read - with content to store and no `force`: force is what asks for that document's
 // next version, and without it the dispatch command refuses the upload, as the bar does, 400
-// GOING_ARGUMENTS, naming the document and saying what the person at the bar can do instead
-// (goingUploadReplaceAdvice), since that person holds neither the force nor the command. An upload
-// that stores nothing, its content blank, is the route's to refuse under a held name whatever force
-// says, as the command leaves it. nil where the upload may be sent.
+// GOING_ARGUMENTS - a GoingArgumentError, answered with its reason alone - naming the document
+// and saying what the person at the bar can do instead (goingUploadReplaceAdvice), since that
+// person holds neither the force nor the command. An upload that stores nothing, its content
+// blank, is the route's to refuse under a held name whatever force says, as the command leaves
+// it. nil where the upload may be sent.
 func goingUploadForceRefusal(prepared goingPrepared, before goingObservation) error {
 	argument, uploads := goingUploadNames[prepared.action]
 	if !uploads || prepared.arguments["force"] == true || strings.TrimSpace(goingText(prepared.arguments, "content")) == "" {
@@ -483,8 +484,8 @@ func goingUploadForceRefusal(prepared goingPrepared, before goingObservation) er
 	default:
 		return nil
 	}
-	return errorf(http.StatusBadRequest, codeGoingArguments, "%s An upload under that name would replace the text the document holds, and this upload does not ask to replace it. %s",
-		reason, goingUploadReplaceAdvice(stored))
+	return GoingArgumentError{Action: prepared.action, Reason: fmt.Sprintf("%s An upload under that name would replace the text the document holds, and this upload does not ask to replace it. %s",
+		reason, goingUploadReplaceAdvice(stored))}
 }
 
 // goingUploadOverRefusal is the refusal of an upload with force the write is about to send,

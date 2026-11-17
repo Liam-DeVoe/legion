@@ -133,7 +133,7 @@ func TestTheRecordHoldsItsRepeatsAndTheRuleThatChose(t *testing.T) {
 		t.Error(err)
 	}
 	rule := going.Choose(records)
-	t.Logf("R7's rule on the committed record names %q by %q; level: %v", rule.Model, rule.By, rule.Level)
+	t.Logf("R7's rule on the committed record comes to %q, naming %q by %q; level: %v", rule.Outcome, rule.Model, rule.By, rule.Level)
 	for i := range records {
 		t.Logf("%s: %d right choices of %d, display fit %t, meets the floors %t", records[i].Model, records[i].Right(), records[i].Cases*records[i].Repeats, records[i].DisplayFit(), records[i].MeetsFloors())
 	}
@@ -168,66 +168,78 @@ func TestTheRecordIsWhatTheBakeOffWrites(t *testing.T) {
 
 // The rule ranks the candidates by their right choices pooled over every repeat. A display fit
 // separates candidates level on that count and nothing else does: not a lower p95, and not the
-// order the models were measured in, so a tie on both keys names no model.
+// order the models were measured in, so a tie on both keys names no model. The choice keeps the
+// candidates in that order with the count each ranked by, and what the rule came to.
 func TestTheRuleRanksByRightChoicesThenADisplayFit(t *testing.T) {
 	lowP95 := func(r going.Record) going.Record { r.P95MS = 90; return r }
 	for _, tc := range []struct {
 		name      string
 		records   []going.Record
+		outcome   going.ChoiceOutcome
 		model, by string
 		level     []string
+		ranked    []going.Candidate
 	}{
 		{
 			name:    "the most right choices over every repeat, though another led one repeat with a display fit and a lower p95",
 			records: []going.Record{lowP95(candidate("model-b", true, 102, 100)), candidate("model-a", false, 100, 103)},
-			model:   "model-a", by: going.ChosenByRightChoices, level: []string{"model-a"},
+			outcome: going.Named, model: "model-a", by: going.ChosenByRightChoices, level: []string{"model-a"},
+			ranked: []going.Candidate{{Model: "model-a", Right: 203}, {Model: "model-b", Right: 202}},
 		},
 		{
 			name:    "a display fit never outranks one more right choice",
 			records: []going.Record{candidate("model-a", true, 200), candidate("model-b", false, 201)},
-			model:   "model-b", by: going.ChosenByRightChoices, level: []string{"model-b"},
+			outcome: going.Named, model: "model-b", by: going.ChosenByRightChoices, level: []string{"model-b"},
+			ranked: []going.Candidate{{Model: "model-b", Right: 201}, {Model: "model-a", Right: 200}},
 		},
 		{
 			name:    "a display fit separates a level count",
 			records: []going.Record{lowP95(candidate("model-a", false, 101, 101)), candidate("model-b", true, 100, 102)},
-			model:   "model-b", by: going.ChosenByDisplayFit, level: []string{"model-b"},
+			outcome: going.Named, model: "model-b", by: going.ChosenByDisplayFit, level: []string{"model-b"},
+			ranked: []going.Candidate{{Model: "model-b", Right: 202}, {Model: "model-a", Right: 202}},
 		},
 		{
 			name:    "level with a display fit each: a lower p95 names none",
 			records: []going.Record{lowP95(candidate("model-a", true, 202)), candidate("model-b", true, 202)},
-			level:   []string{"model-a", "model-b"},
+			outcome: going.FullTie, level: []string{"model-a", "model-b"},
+			ranked: []going.Candidate{{Model: "model-a", Right: 202}, {Model: "model-b", Right: 202}},
 		},
 		{
 			name:    "level with no display fit either: none",
 			records: []going.Record{candidate("model-a", false, 202), lowP95(candidate("model-b", false, 202))},
-			level:   []string{"model-a", "model-b"},
+			outcome: going.FullTie, level: []string{"model-a", "model-b"},
+			ranked: []going.Candidate{{Model: "model-a", Right: 202}, {Model: "model-b", Right: 202}},
 		},
 		{
 			name:    "three level, two with a display fit: the fit drops the third and names none of the two",
 			records: []going.Record{candidate("model-a", true, 202), lowP95(candidate("model-b", false, 202)), candidate("model-c", true, 202)},
-			level:   []string{"model-a", "model-c"},
+			outcome: going.FullTie, level: []string{"model-a", "model-c"},
+			ranked: []going.Candidate{{Model: "model-a", Right: 202}, {Model: "model-c", Right: 202}, {Model: "model-b", Right: 202}},
 		},
 		{
 			name:    "the one candidate",
 			records: []going.Record{candidate("model-a", false, 90)},
-			model:   "model-a", by: going.ChosenByRightChoices, level: []string{"model-a"},
+			outcome: going.Named, model: "model-a", by: going.ChosenByRightChoices, level: []string{"model-a"},
+			ranked: []going.Candidate{{Model: "model-a", Right: 90}},
 		},
 		{
 			name:    "no record",
 			records: nil,
+			outcome: going.NoCandidate,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := going.Choose(tc.records)
-			if got.Model != tc.model || got.By != tc.by || got.Reason != "" || !slices.Equal(got.Level, tc.level) {
-				t.Errorf("Choose names %q by %q, level %v; want %q by %q, level %v", got.Model, got.By, got.Level, tc.model, tc.by, tc.level)
+			if got.Outcome != tc.outcome || got.Model != tc.model || got.By != tc.by || got.Reason != "" || !slices.Equal(got.Level, tc.level) || !slices.Equal(got.Ranked, tc.ranked) {
+				t.Errorf("Choose comes to %q naming %q by %q, level %v, ranked %v; want %q naming %q by %q, level %v, ranked %v",
+					got.Outcome, got.Model, got.By, got.Level, got.Ranked, tc.outcome, tc.model, tc.by, tc.level, tc.ranked)
 			}
 		})
 	}
 }
 
 // Only a model that meets R7's three floors is a candidate: one that misses any of them is never
-// named, however many right choices it made.
+// ranked or named, however many right choices it made.
 func TestOnlyAModelThatMeetsTheFloorsIsACandidate(t *testing.T) {
 	for name, miss := range map[string]func(*going.Record){
 		"named under 90%":    func(r *going.Record) { r.NamedAccuracy = 0.899 },
@@ -237,11 +249,12 @@ func TestOnlyAModelThatMeetsTheFloorsIsACandidate(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			strong := candidate("model-strong", true, 117)
 			miss(&strong)
-			if got := going.Choose([]going.Record{strong, candidate("model-weak", false, 100)}); got.Model != "model-weak" || got.By != going.ChosenByRightChoices {
-				t.Errorf("Choose names %q by %q, want model-weak, the one model meeting the floors", got.Model, got.By)
+			got := going.Choose([]going.Record{strong, candidate("model-weak", false, 100)})
+			if got.Outcome != going.Named || got.Model != "model-weak" || got.By != going.ChosenByRightChoices || !slices.Equal(got.Ranked, []going.Candidate{{Model: "model-weak", Right: 100}}) {
+				t.Errorf("Choose comes to %q naming %q by %q, ranked %v; want model-weak, the one model meeting the floors and the one ranked", got.Outcome, got.Model, got.By, got.Ranked)
 			}
-			if got := going.Choose([]going.Record{strong}); got.Model != "" || len(got.Level) != 0 {
-				t.Errorf("with no model meeting the floors, Choose names %q, level %v", got.Model, got.Level)
+			if got := going.Choose([]going.Record{strong}); got.Outcome != going.NoCandidate || got.Model != "" || len(got.Level) != 0 || len(got.Ranked) != 0 {
+				t.Errorf("with no model meeting the floors, Choose comes to %q naming %q, level %v, ranked %v", got.Outcome, got.Model, got.Level, got.Ranked)
 			}
 		})
 	}
@@ -276,8 +289,8 @@ func TestATopModelWithNoActionFitNamesNone(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := going.Choose(tc.records)
-			if got.Model != "" || got.By != "" || !slices.Equal(got.Level, tc.level) || !slices.Equal(got.Unfit, tc.unfit) {
-				t.Errorf("Choose names %q by %q, level %v, unfit %v; want none, level %v, unfit %v", got.Model, got.By, got.Level, got.Unfit, tc.level, tc.unfit)
+			if got.Outcome != going.OwedRepair || got.Model != "" || got.By != "" || !slices.Equal(got.Level, tc.level) || !slices.Equal(got.Unfit, tc.unfit) {
+				t.Errorf("Choose comes to %q naming %q by %q, level %v, unfit %v; want R5's repair owed, none named, level %v, unfit %v", got.Outcome, got.Model, got.By, got.Level, got.Unfit, tc.level, tc.unfit)
 			}
 			if !strings.Contains(got.Why, tc.unfit[0]) || !strings.Contains(got.Why, "action fit") || !strings.Contains(got.Why, "R5") {
 				t.Errorf("Choose says %q, which does not name %s, its missing action fit and R5's repair", got.Why, tc.unfit[0])
@@ -290,8 +303,8 @@ func TestATopModelWithNoActionFitNamesNone(t *testing.T) {
 		})
 	}
 	below := going.Choose([]going.Record{candidate("model-a", true, 102), noFit(candidate("model-b", true, 101))})
-	if below.Model != "model-a" || below.By != going.ChosenByRightChoices || len(below.Unfit) != 0 {
-		t.Errorf("with a model without a fit ranked second, Choose names %q by %q, unfit %v; want model-a by right choices", below.Model, below.By, below.Unfit)
+	if below.Outcome != going.Named || below.Model != "model-a" || below.By != going.ChosenByRightChoices || len(below.Unfit) != 0 {
+		t.Errorf("with a model without a fit ranked second, Choose comes to %q naming %q by %q, unfit %v; want model-a by right choices", below.Outcome, below.Model, below.By, below.Unfit)
 	}
 }
 
@@ -299,8 +312,11 @@ func TestATopModelWithNoActionFitNamesNone(t *testing.T) {
 // choices and on the display fit, with a reason.
 func TestATieBreakIsTakenOnlyOnAFullTie(t *testing.T) {
 	tie := going.Choose([]going.Record{candidate("model-a", true, 101), candidate("model-b", true, 101)})
+	if tie.Outcome != going.FullTie {
+		t.Fatalf("a run level on both keys comes to %q, want a full tie", tie.Outcome)
+	}
 	broken, err := tie.Break("model-b", "the cheaper of two level models")
-	if err != nil || broken.Model != "model-b" || broken.By != going.ChosenByPerson || broken.Reason != "the cheaper of two level models" {
+	if err != nil || broken.Outcome != going.Named || broken.Model != "model-b" || broken.By != going.ChosenByPerson || broken.Reason != "the cheaper of two level models" {
 		t.Fatalf("a full tie broken for model-b reads %+v, %v", broken, err)
 	}
 	for name, refused := range map[string]func() (going.Choice, error){

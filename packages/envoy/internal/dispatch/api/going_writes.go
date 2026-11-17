@@ -932,10 +932,11 @@ func (c goingWriteClaim) record(issue string) bool {
 // refuse answers a claimed write that was refused or failed before all of it landed: by the route
 // a request of it ran through or by a read it needed, each answered as that route answered it -
 // naming each request of the write that landed before it (goingRefusal.after) - and recorded as
-// the write's outcome, with how each request went; by its own schema or translation, or as a call
-// the bar can never send (goingUnsendable), 400 GOING_ARGUMENTS, its reason alone - the line the
-// bar prints it on names the action already - which no route saw and the run does not record; or
-// by the server's own failure.
+// the write's outcome, with how each request went; by its own schema or translation, as a call
+// the bar can never send (goingUnsendable), or as an upload with no force under a name its owner
+// holds (goingUploadForceRefusal), each a GoingArgumentError, 400 GOING_ARGUMENTS, its reason
+// alone - the line the bar prints it on names the action already - which no route saw and the run
+// does not record; or by the server's own failure.
 // The claim is the write's own: a fresh one, or one taken over that the call compared itself with
 // and found its own (createGoingWrite; a refusal before that comparison is giveBack's). A failure
 // of either of the last two kinds after a request of the write landed - an adopted write, or a
