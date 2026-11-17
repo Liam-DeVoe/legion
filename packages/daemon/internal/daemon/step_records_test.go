@@ -865,12 +865,37 @@ type stepWant struct {
 	// noAgentRead is a record whose end the roll forward of a rollback wrote: the daemon read no
 	// agent for it, and its start names none, so it holds no session and no model.
 	noAgentRead bool
+	// owner, when set, is whose the record is exactly: its agent, its session and its model, an
+	// empty session and model meaning none (the merger the merge launches never registers). Unset,
+	// the record is any agent's, and one of kind step names a session and stepRecordsModel.
+	owner *stepOwner
+}
+
+// stepOwner is whose a record is: the claim token of its agent, that claim's session and the
+// model that answered it.
+type stepOwner struct {
+	agent, session, model string
+}
+
+// withOwners is want with owners[i] the owner of want[i], want itself left as it is; it fails the
+// test, naming both counts, when owners is not one owner for each record of want.
+func withOwners(t *testing.T, want []stepWant, owners ...*stepOwner) []stepWant {
+	t.Helper()
+	if len(owners) != len(want) {
+		t.Fatalf("%d owners for %d records, want one for each, owners[i] want[i]'s", len(owners), len(want))
+	}
+	owned := slices.Clone(want)
+	for i := range owned {
+		owned[i].owner = owners[i]
+	}
+	return owned
 }
 
 // stepsHold says whether read holds exactly the records of want, each of the task default, ended,
-// with its role, type, agent, start, end, result and return, and each of kind step with its session
-// and the model that answered it, or with neither where the roll forward wrote its end
-// (noAgentRead); the error names the first record that is missing or wrong.
+// with its role, type, agent, start, end, result and return; each of an owner named for that owner
+// exactly (owner), and each other of kind step with its session and the model that answered it,
+// or with neither where the roll forward wrote its end (noAgentRead). The error names the first
+// record that is missing or wrong.
 func stepsHold(read stepRecordsRead, want []stepWant) error {
 	for _, w := range want {
 		got := read.find(w.kind, w.step, w.attempt)
@@ -886,7 +911,9 @@ func stepsHold(read stepRecordsRead, want []stepWant) error {
 			return fmt.Errorf("%s returned to %v, want %v", name, got.ReturnedTo, w.returnedTo)
 		case w.noAgentRead && (got.Session != "" || got.Model != ""):
 			return fmt.Errorf("%s names session %q and model %q, want neither: no agent was read for its end", name, got.Session, got.Model)
-		case w.kind == "step" && !w.noAgentRead && (got.Session == "" || got.Model != stepRecordsModel):
+		case w.owner != nil && (got.Agent != w.owner.agent || got.Session != w.owner.session || got.Model != w.owner.model):
+			return fmt.Errorf("%s names agent %q, session %q and model %q; want %q, %q and %q", name, got.Agent, got.Session, got.Model, w.owner.agent, w.owner.session, w.owner.model)
+		case w.kind == "step" && w.owner == nil && !w.noAgentRead && (got.Session == "" || got.Model != stepRecordsModel):
 			return fmt.Errorf("%s names session %q and model %q, want its agent's session and %s", name, got.Session, got.Model, stepRecordsModel)
 		}
 	}
@@ -1332,12 +1359,11 @@ func TestEachRecordNamesItsOwnAgentsSessionAndModel(t *testing.T) {
 	r.retro()
 	r.merge()
 
-	own := func(role claim.Role, model string) stepOwner {
+	own := func(role claim.Role, model string) *stepOwner {
 		c := r.claims[r.token(role)]
-		return stepOwner{agent: string(c.token), session: c.session, model: model}
+		return &stepOwner{agent: string(c.token), session: c.session, model: model}
 	}
-	// Index for index with stepRecordsTen.
-	owners := []stepOwner{
+	want := withOwners(t, stepRecordsTen,
 		own(claim.RolePlanner, "stand-in/planner"),
 		own(claim.RoleImplementer, "stand-in/implementer"),
 		own(claim.RoleImplementer, "stand-in/implementer-2"),
@@ -1347,43 +1373,7 @@ func TestEachRecordNamesItsOwnAgentsSessionAndModel(t *testing.T) {
 		own(claim.RoleReviewer, "stand-in/reviewer-2"),
 		own(claim.RoleArchitect, "stand-in/architect"),
 		own(claim.RoleImplementer, "stand-in/implementer-3"),
-		{agent: string(r.token(claim.RoleMerger))},
-	}
-	r.waitSteps("the ten records of the walk, each its own agent's", func(got stepRecordsRead) error {
-		return stepsOwnedBy(got, stepRecordsTen, owners)
-	})
-}
-
-// stepOwner is whose a record is: the claim token of its agent, that claim's session and the
-// model that answered it.
-type stepOwner struct {
-	agent, session, model string
-}
-
-// stepsOwnedBy says whether read holds exactly the records of want, each of the task default,
-// ended with its result and its return, and named for its owner, owners[i] for want[i]: its
-// agent, session and model exactly; the error names the first record that is missing or wrong, or
-// an owner list that is not one owner for each record of want.
-func stepsOwnedBy(read stepRecordsRead, want []stepWant, owners []stepOwner) error {
-	if len(owners) != len(want) {
-		return fmt.Errorf("%d owners for %d records, want one for each, owners[i] want[i]'s", len(owners), len(want))
-	}
-	for i, w := range want {
-		got, owner := read.find(w.kind, w.step, w.attempt), owners[i]
-		name := fmt.Sprintf("%s %d attempt %d", w.kind, w.step, w.attempt)
-		switch {
-		case got.ID == "":
-			return fmt.Errorf("the read holds no record of %s", name)
-		case got.Task != "default" || got.Role != w.role || got.EndedAt == nil || got.Result != w.result:
-			return fmt.Errorf("%s is task %q, role %q, ended %v with %q; want task default, role %q, ended with %q", name, got.Task, got.Role, got.EndedAt, got.Result, w.role, w.result)
-		case (got.ReturnedTo == nil) != (w.returnedTo == nil) || got.ReturnedTo != nil && *got.ReturnedTo != *w.returnedTo:
-			return fmt.Errorf("%s returned to %v, want %v", name, got.ReturnedTo, w.returnedTo)
-		case got.Agent != owner.agent || got.Session != owner.session || got.Model != owner.model:
-			return fmt.Errorf("%s names agent %q, session %q and model %q; want %q, %q and %q", name, got.Agent, got.Session, got.Model, owner.agent, owner.session, owner.model)
-		}
-	}
-	if got := len(read.records()); got != len(want) {
-		return fmt.Errorf("the read holds %d records, want %d", got, len(want))
-	}
-	return nil
+		&stepOwner{agent: string(r.token(claim.RoleMerger))},
+	)
+	r.waitSteps("the ten records of the walk, each its own agent's", func(got stepRecordsRead) error { return stepsHold(got, want) })
 }
