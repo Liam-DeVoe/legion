@@ -1,4 +1,4 @@
-import { beforeEach, expect, spyOn, test } from "bun:test";
+import { beforeEach, expect, setSystemTime, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -23,9 +23,10 @@ import type {
   Project,
   UserIssueState,
 } from "../../api/types";
-import { parseIssuePath } from "../refs/routes";
+import { buildDispatchReference, DECISIONS_DOCUMENT_SLUG, parseIssuePath } from "../refs/routes";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { appKeymap, useKeymapScope } from "../shell/keymap";
+import { CONTROL_LABELS } from "./page-words";
 import { HeaderSlot } from "./slots/header";
 
 /**
@@ -207,9 +208,9 @@ function IssueScope(): null {
   return null;
 }
 
-function renderHeader(path = "/issues/CORE-1", queryClient = headerClient()) {
-  queryClient.setQueryData(["whoami"], { kind: "user", login: "alice" });
-  return render(
+/** The header's slot at `path`, under the router, the client and the keys the page gives it. */
+function headerTree(path: string, queryClient: QueryClient): ReactNode {
+  return (
     <MemoryRouter initialEntries={[path]}>
       <QueryClientProvider client={queryClient}>
         <KeymapProvider>
@@ -221,6 +222,11 @@ function renderHeader(path = "/issues/CORE-1", queryClient = headerClient()) {
       </QueryClientProvider>
     </MemoryRouter>
   );
+}
+
+function renderHeader(path = "/issues/CORE-1", queryClient = headerClient()) {
+  queryClient.setQueryData(["whoami"], { kind: "user", login: "alice" });
+  return render(headerTree(path, queryClient));
 }
 
 /** Opens the header's one actions control, which is where the pin, close, reopen and the control
@@ -282,6 +288,71 @@ test("the header hides whose turn when the server sent open asks without waiting
     expect(screen.queryByText(/^Waiting on (you|agents)/)).not.toBeInTheDocument();
   } finally {
     view.unmount();
+    restore();
+  }
+});
+
+// The count reads the reader's login, the decisions, the coverage, the comments and the decisions
+// document's blocks, under the keys the outline reads them by. The header mounts again each time
+// the reader comes back to the issue's page, and under the app's `staleTime` a read is stale 30 s
+// after it answered (`main.tsx`), each observer judging it by its own options: read with the
+// app's defaults, the header mounted again past that would send all five again, although the
+// feed's events keep them fresh (decision 180).
+test("the header mounted again past 30 s sends none of the count's reads again", async () => {
+  const decisionsDocument = {
+    ...issue.artifacts[0],
+    id: "artifact-decisions",
+    name: "decisions.md",
+    primary: false,
+    ref_key: `CORE-1/${DECISIONS_DOCUMENT_SLUG}`,
+    slug: DECISIONS_DOCUMENT_SLUG,
+  };
+  const restore = stubHeader({ ...issue, artifacts: [...issue.artifacts, decisionsDocument] });
+  // The issue's own read keeps the app's 30 s, so the header mounted again reads it again: that is
+  // what says the mount came past the age the five would go stale at.
+  const getIssue = spyOn(api, "getIssue");
+  // The login, the decisions and the blocks answered here, and the coverage and the comments by
+  // what the file already answers them with; the decisions name the issue's decisions document,
+  // so its blocks are read too.
+  const reads = [
+    spyOn(api, "whoAmI").mockResolvedValue({ event_head: "0", kind: "user", login: "alice" }),
+    spyOn(api, "getIssueDecisions").mockResolvedValue({
+      decisions: [],
+      document: buildDispatchReference({ key: "CORE-1", kind: "decisions" }),
+      open_questions: [],
+    }),
+    spyOn(api, "getIssueCoverage"),
+    spyOn(api, "listComments"),
+    spyOn(api, "getArtifactBlocks").mockResolvedValue([]),
+  ];
+  const sent = () => reads.map((read) => read.mock.calls.length);
+  // The app's client's defaults (`main.tsx`), which a read that sets none of its own takes.
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { refetchOnWindowFocus: true, retry: false, staleTime: 30_000 } },
+  });
+  let view = renderHeader("/issues/CORE-1", queryClient);
+
+  try {
+    // The login is the one the shell already holds, and each other read is sent once.
+    await waitFor(() => expect(sent()).toEqual([0, 1, 1, 1, 1]));
+    await waitFor(() => expect(queryClient.isFetching()).toBe(0));
+    const issueReads = getIssue.mock.calls.length;
+    view.unmount();
+
+    // The reader comes back to the issue more than 30 s after the reads answered.
+    setSystemTime(Date.now() + 31_000);
+    view = render(headerTree("/issues/CORE-1", queryClient));
+    await screen.findByRole("heading", { level: 1, name: issue.title });
+    await waitFor(() => expect(getIssue.mock.calls.length).toBeGreaterThan(issueReads));
+    await waitFor(() => expect(queryClient.isFetching()).toBe(0));
+    expect(sent(), "the header mounted again sent a read of its count's again").toEqual([
+      0, 1, 1, 1, 1,
+    ]);
+  } finally {
+    view.unmount();
+    setSystemTime();
+    for (const read of reads) read.mockRestore();
+    getIssue.mockRestore();
     restore();
   }
 });
@@ -483,6 +554,11 @@ test("the header keeps an unrequested draft approval passive", async () => {
 
   try {
     await screen.findByRole("heading", { level: 1, name: issue.title });
+    // The shared chip draws nothing for a draft, so these words are the header's own: its
+    // approval control says nobody has asked for one.
+    expect(
+      within(screen.getByTestId("issue-state-actions")).getByText(CONTROL_LABELS.not_requested)
+    ).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Draft" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^Approve$/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Request changes" })).not.toBeInTheDocument();

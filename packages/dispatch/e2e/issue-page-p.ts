@@ -833,6 +833,62 @@ export function headerFamilies(page: Page): Promise<string[]> {
   );
 }
 
+/** The header's labels against their count, read off the drawn page: how many chips are drawn
+ *  wholly inside the labels' box, each chip the box's edge cuts (`<label>: <its box> in <the
+ *  labels' box>`), and the number the count names, 0 where no count is drawn. A chip wholly
+ *  outside the box is not drawn. The count is a count of the rest where the chips drawn whole and
+ *  its number make every label, and no chip is cut. */
+export interface LabelsAgainstTheCount {
+  readonly cut: readonly string[];
+  readonly left: number;
+  readonly whole: number;
+}
+
+/** Reads `LabelsAgainstTheCount` on the header's properties line. */
+export function labelsAgainstTheCount(page: Page): Promise<LabelsAgainstTheCount> {
+  return propertiesLine(page).evaluate((line) => {
+    const box = line.querySelector('[data-testid="issue-header-labels"]');
+    if (box === null) throw new Error("the header draws no labels' box");
+    const outer = box.getBoundingClientRect();
+    const edges = (rect: DOMRect) =>
+      `${rect.left.toFixed(1)}-${rect.right.toFixed(1)} x ${rect.top.toFixed(1)}-${rect.bottom.toFixed(1)}`;
+    const cut: string[] = [];
+    let whole = 0;
+    for (const chip of box.querySelectorAll("[data-header-label]")) {
+      const rect = chip.getBoundingClientRect();
+      const inside =
+        rect.left >= outer.left - 0.5 &&
+        rect.right <= outer.right + 0.5 &&
+        rect.top >= outer.top - 0.5 &&
+        rect.bottom <= outer.bottom + 0.5;
+      const outside =
+        rect.right <= outer.left + 0.5 ||
+        rect.left >= outer.right - 0.5 ||
+        rect.bottom <= outer.top + 0.5 ||
+        rect.top >= outer.bottom - 0.5;
+      if (inside) whole += 1;
+      else if (!outside)
+        cut.push(`${(chip.textContent ?? "").trim()}: ${edges(rect)} in ${edges(outer)}`);
+    }
+    const count = line.querySelector('[data-testid="issue-labels-left"]');
+    return { cut, left: Number(/\d+/.exec(count?.textContent ?? "")?.[0] ?? "0"), whole };
+  });
+}
+
+/** Holds the header's labels' box at the width the chips it draws now fill, rounded up to a
+ *  whole pixel, whatever the rest of the line does after: an inline `flex` of that basis that
+ *  neither grows nor shrinks. Returns that width. */
+export function holdLabelsAtTheirChips(page: Page): Promise<number> {
+  return propertiesLine(page).evaluate((line) => {
+    const box = line.querySelector<HTMLElement>('[data-testid="issue-header-labels"]');
+    const last = [...(box?.querySelectorAll("[data-header-label]") ?? [])].at(-1);
+    if (box === null || last === undefined) throw new Error("the header draws no label");
+    const width = Math.ceil(last.getBoundingClientRect().right - box.getBoundingClientRect().left);
+    box.style.flex = `0 0 ${width}px`;
+    return width;
+  });
+}
+
 /** What the count's press left in the history entry: its `waitingPress` number, or null. */
 export function waitingPressInHistory(page: Page): Promise<number | null> {
   return page.evaluate(() => {

@@ -33,6 +33,7 @@ import {
   headerLabels,
   headerParts,
   holdClipboard,
+  holdLabelsAtTheirChips,
   holdReviewReads,
   IPHONE_13,
   identityBand,
@@ -40,6 +41,7 @@ import {
   issueHeader,
   LONGEST_LABEL,
   labelFillingTheRoom,
+  labelsAgainstTheCount,
   labelsCutAsTheLineNarrows,
   labelsLeft,
   lineOrder,
@@ -1779,6 +1781,80 @@ test("the labels' count names every label the line leaves out, at every width of
       expect
         .soft(wrong, `the labels' count does not name the labels left out at ${width} px`)
         .toEqual([]);
+    }
+  });
+});
+
+// The labels are read in script, and the typeface (`font-display: swap`, `web/src/styles.css`)
+// can arrive after that reading and draw the chips wider while the labels' box keeps its width,
+// which the box's resize observer never sees: a chip then wraps onto the line the box clips away,
+// and the count, which is a count of the rest, does not name it. At this seed the swap widens the
+// line's other items as well - on a 1440 px line the status, the approval control and the labels'
+// count each by 5 to 7 px - so the box narrows, and that resize alone has the labels read again.
+// The row therefore holds the box at one width across the swap, as a line whose other items keep
+// their whole-pixel widths holds it, so the chips are all the swap changes; and that width is the
+// one the chips drawn in the fallback fill, so a chip any wider no longer fits.
+test("the labels' count names every label the line does not draw whole after the typeface loads", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await phase(browser, seedHeader, async (page, seeded) => {
+    await patchIssue(seeded.key, { labels: [...TWENTY_LABELS], title: MEASURED_TITLE });
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectHeaderDrawn(page);
+    const address = await typefaceAddress(page);
+    if (address === null) {
+      throw new Error(`the page's stylesheet declares no @font-face for ${TYPEFACE}`);
+    }
+
+    // A context of its own, with nothing of the file in hand, whose requests for it wait until
+    // the row lets them go.
+    const held = await asUser(browser, "alice");
+    try {
+      await withIssuePage(held, "alice");
+      const file = Promise.withResolvers<void>();
+      await held.route(address, async (route) => {
+        await file.promise;
+        await route.fallback();
+      });
+      const swapping = await held.newPage();
+      await swapping.setViewportSize(DESKTOP);
+      await gotoIssue(swapping, `/issues/${seeded.key}`);
+      await expectHeaderDrawn(swapping);
+      await expect(labelsLeft(swapping)).toBeVisible();
+      await expect
+        .poll(() => typefaceStatuses(swapping), {
+          message: `the ${TYPEFACE} face is not waiting for its file`,
+        })
+        .toEqual(["loading"]);
+
+      // In the fallback, the box held at the width its chips fill, and the line read again there.
+      await holdLabelsAtTheirChips(swapping);
+      await framesDrawn(swapping, 4);
+      const inTheFallback = await labelsAgainstTheCount(swapping);
+      expect(inTheFallback.whole, "the line draws no label in the fallback").toBeGreaterThan(0);
+      expect(inTheFallback.cut, "a label is cut in the fallback").toEqual([]);
+      expect(
+        inTheFallback.whole + inTheFallback.left,
+        `in the fallback ${inTheFallback.whole} labels are drawn whole and the count names ${inTheFallback.left}`
+      ).toBe(TWENTY_LABELS.length);
+
+      // The file arrives, and the face draws the chips.
+      file.resolve();
+      await expect
+        .poll(() => typefaceStatuses(swapping), {
+          message: `the ${TYPEFACE} face did not load once its file was let go`,
+        })
+        .toEqual(["loaded"]);
+      await framesDrawn(swapping, 4);
+      const inTheFace = await labelsAgainstTheCount(swapping);
+      expect(inTheFace.cut, `a label is cut once ${TYPEFACE} has loaded`).toEqual([]);
+      expect(
+        inTheFace.whole + inTheFace.left,
+        `once ${TYPEFACE} has loaded ${inTheFace.whole} labels are drawn whole and the count names ${inTheFace.left}`
+      ).toBe(TWENTY_LABELS.length);
+    } finally {
+      await held.close();
     }
   });
 });
