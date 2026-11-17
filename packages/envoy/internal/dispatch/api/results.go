@@ -17,7 +17,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
-	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
@@ -55,8 +54,8 @@ const checkResultReadingRunes = 80
 
 // resolvedCheck is one `check` block a result names: where it lives, the version its words last
 // changed in and their digest as document_blocks holds them, and the attributes the write judges
-// as the live document holds them (its `when`, run, negative control and ci_check, and the
-// surface a CI job's row takes).
+// as the text of that version and digest holds them (its `when`, run, negative control and
+// ci_check, and the surface a CI job's row takes; results_settled_check.go).
 type resolvedCheck struct {
 	IssueKey   string
 	ArtifactID string
@@ -138,13 +137,12 @@ func (s *server) recordCheckResult(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The check is resolved before the transaction opens. Resolving it folds the live
-	// Verification document, which for a document no room holds is a cold read bounded by a
-	// minute (docs/read_cache.go), and no issue row lock is held across a read that long: four
-	// writers parked on one issue's row lock already cost a read of an unrelated issue the whole
+	// The check is resolved before the transaction opens, from the block index alone
+	// (results_settled_check.go), and no issue row lock is held across that read: four writers
+	// parked on one issue's row lock already cost a read of an unrelated issue the whole
 	// seventeen seconds the lock was held (store/pool.go). Nothing the lock protects is settled
-	// here — the check's words and its `when` are the document's, not the issue's — and what it
-	// does protect, the block's indexed version and digest, is read again under it below.
+	// here — the check's words and its `when` are the document's, not the issue's — and the
+	// block's indexed version and digest are read again under it below.
 	check, err := s.resolveCheck(r.Context(), pool, issueKey, input.Check)
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -260,7 +258,7 @@ func (s *server) recordCheckResult(w http.ResponseWriter, r *http.Request) {
 	// `when` it carried before the lock. The digest is read under the locks either way, and the
 	// attributes only when that digest moved, which is the only way the block's words can have
 	// changed.
-	if err := s.refreshResolvedCheck(r.Context(), tx, &check, input.Check); err != nil {
+	if err := refreshResolvedCheck(r.Context(), tx, &check, input.Check); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -345,7 +343,7 @@ type issueCheckResults struct {
 
 // GET /api/v1/issues/{key}/results  (any authenticated caller)
 //
-// The checks of the issue's Verification document in document order, each with what its
+// The checks of the issue's Verification document as the block index holds each, each with what its
 // results are compared with and whether a pass of it stands, and every result recorded
 // against it from any issue, newest first, each with where its commit stands and whether the
 // check's words moved since. An issue with no Verification document has no checks and no
@@ -549,156 +547,18 @@ func (s *server) verificationDocument(ctx context.Context, q queryer, issueKey, 
 	return artifact, true, nil
 }
 
-// resolveCheck finds the check a result names among the Verification documents of the recording
-// issue and of every issue above it. The value is a block id, or the canonical block reference
-// (`dispatch://KEY/artifact/verification-md#b-<id>`) that names one document when a block id is
-// not unique in that set: an id two documents share is 409 CHECK_AMBIGUOUS, and an id no
-// Verification document of the set holds — or one that is not a `check` block — is 400
-// UNKNOWN_CHECK.
-func (s *server) resolveCheck(ctx context.Context, q queryer, issueKey, value string) (resolvedCheck, error) {
-	ancestors, err := refs.IssueAncestors(ctx, q, issueKey)
-	if err != nil {
-		return resolvedCheck{}, err
-	}
-	scope := append([]string{issueKey}, ancestors...)
-
-	blockID, artifactFilter := value, ""
-	if ref, ok := text.CanonicalBlockRef(value); ok {
-		// A block of a document carries its document's fields and no Item; a block of a comment
-		// or a message names that item in Item and is no check.
-		if ref.Item != "" || ref.IssueKey == "" || ref.ID == "" || ref.Block == "" {
-			return resolvedCheck{}, unknownCheck(value)
-		}
-		blockID = ref.Block
-		document, held, err := s.verificationDocument(ctx, q, ref.IssueKey, ref.ID)
-		if err != nil {
-			return resolvedCheck{}, err
-		}
-		if !held {
-			return resolvedCheck{}, unknownCheck(value)
-		}
-		artifactFilter = document.ID
-	}
-
-	rows, err := q.Query(ctx, `
-		select a.issue_key, a.slug, d.artifact_id::text, d.changed_version, d.text_sha256
-		from document_blocks d
-		join artifacts a on a.id = d.artifact_id
-		where `+aliasedVerificationRole+`
-		  and a.issue_key = any($1) and d.type = 'check' and d.block_id = $2
-		  and ($3 = '' or d.artifact_id = $3::uuid)
-		order by a.issue_key
-	`, scope, blockID, artifactFilter)
-	if err != nil {
-		return resolvedCheck{}, fmt.Errorf("resolve check %q of %s: %w", value, issueKey, err)
-	}
-	defer rows.Close()
-	var found []resolvedCheck
-	var references []string
-	for rows.Next() {
-		check := resolvedCheck{BlockID: blockID}
-		var slug string
-		if err := rows.Scan(&check.IssueKey, &slug, &check.ArtifactID, &check.Version, &check.SHA256); err != nil {
-			return resolvedCheck{}, fmt.Errorf("resolve check %q of %s: %w", value, issueKey, err)
-		}
-		if reference, ok := text.FormatBlockRef(text.Ref{
-			Kind: "block", IssueKey: check.IssueKey, ID: slug, Block: blockID,
-		}); ok {
-			check.Ref = reference
-			references = append(references, reference)
-		}
-		found = append(found, check)
-	}
-	if err := rows.Err(); err != nil {
-		return resolvedCheck{}, fmt.Errorf("resolve check %q of %s: %w", value, issueKey, err)
-	}
-	if len(found) == 0 {
-		return resolvedCheck{}, unknownCheck(value)
-	}
-	if len(found) > 1 {
-		issues := make([]string, len(found))
-		for index, check := range found {
-			issues[index] = check.IssueKey
-		}
-		return resolvedCheck{}, errorf(http.StatusConflict, "CHECK_AMBIGUOUS",
-			"check %s is a check of the Verification document of %s: name one with its reference, %s",
-			blockID, strings.Join(issues, " and "), strings.Join(references, " or "))
-	}
-	check := found[0]
-	if err := s.readCheckAttributes(ctx, &check); err != nil {
-		return resolvedCheck{}, err
-	}
-	return check, nil
-}
-
 func unknownCheck(value string) error {
 	return errorf(http.StatusBadRequest, "UNKNOWN_CHECK",
 		"%s is no check of this issue's Verification document or of one above it", value)
 }
 
-// refreshResolvedCheck re-reads, under the locks the transaction holds, the indexed version and
-// digest of a check resolved before it opened (recordCheckResult), so the row records the block
-// as it stands at the commit, and its attributes with them when that block moved: the refusal a
-// closed issue earns turns on `when`, the refusal of a result by another recorder on ci_check,
-// run, `when` and negative control, and a CI job's row takes the check's surface and negative
-// control, all read before the lock, and a version landing in between can have changed them. A
-// block the index no longer holds is no check any more.
-//
-// The digest is document_blocks.text_sha256, the sha256 of the block's whole markdown as the
-// index writes it (refs.BlockTextSum over markdown[From:To]), its opening line and that line's
-// attributes included, so a check reworded from before_merge to after_merge, or given a
-// ci_check, carries a digest of its own. A digest the resolve already read is therefore the same
-// words under the same attributes, and the live document is not read a second time for them.
-// That read is the slow one to hold two issue row locks across: a document version landing
-// between the resolve and the lock is exactly what leaves the read cache cold
-// (docs/read_cache.go), so the one case the second read would answer differently is the one it
-// would answer slowest in. Only a digest that moved pays for it.
-func (s *server) refreshResolvedCheck(ctx context.Context, q queryer, check *resolvedCheck, named string) error {
-	resolved := check.SHA256
-	err := q.QueryRow(ctx, `
-		select changed_version, text_sha256 from document_blocks
-		where artifact_id = $1::uuid and block_id = $2 and type = 'check'
-	`, check.ArtifactID, check.BlockID).Scan(&check.Version, &check.SHA256)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return unknownCheck(named)
-	}
-	if err != nil {
-		return fmt.Errorf("read the check %s of document %s: %w", check.BlockID, check.ArtifactID, err)
-	}
-	if check.SHA256 == resolved {
-		return nil
-	}
-	return s.readCheckAttributes(ctx, check)
-}
-
-// readCheckAttributes reads the attributes of check's block out of the live document, as the
-// rules read them (docs.CheckAttributesOfBlock), and its surface as written. The index holds a
-// block's type and digest but not its attributes, so the document itself is the one place they
-// are written.
-func (s *server) readCheckAttributes(ctx context.Context, check *resolvedCheck) error {
-	// The index holds the block, so the live document has it too unless a write landed between
-	// the two reads; such a block carries the schema's defaults alone, `when` before_merge.
-	attributes, surface := docs.CheckAttributes{When: docs.CheckWhenBeforeMerge}, ""
-	err := s.typedBlocksIn(ctx, check.ArtifactID, "check", func(node *pmdoc.Node, id string) {
-		if id == check.BlockID {
-			block := docs.CheckBlockOf(node)
-			attributes, surface = docs.CheckAttributesOfBlock(block), block.Surface
-		}
-	})
-	if err != nil {
-		return err
-	}
-	check.Attributes, check.Surface = attributes, surface
-	return nil
-}
-
 // validCICheck reports whether check is one CI proves: it carries ci_check and keeps the three
-// rules of such a block (docs.CICheckRule). The kind of a check is its block's, read again at each
-// read, so a role's result of such a check counts for nothing (notCountedOnCICheck). A write is held
-// to a fourth rule too, that no result a role recorded stands against the block
-// (docs.CICheckRuleIn), so such a result stands against a block carrying ci_check only until the
-// settlement that repairs the block. Any other check is an ordinary check, whatever its ci_check
-// says.
+// rules of such a block (docs.CICheckRule). The kind of a check is its block's as the block index
+// holds it, read again at each read (results_settled_check.go), so a role's result of such a check
+// counts for nothing (notCountedOnCICheck). A write is held to a fourth rule too, that no result a
+// role recorded stands against the block (docs.CICheckRuleIn), so such a result stands against a
+// block carrying ci_check only until the settlement that repairs the block. Any other check is an
+// ordinary check, whatever its ci_check says.
 func validCICheck(check model.CheckBlock) bool {
 	attributes := docs.CheckAttributesOfBlock(check)
 	return docs.CarriesCICheck(attributes) && docs.CICheckRule(attributes) == ""
@@ -707,9 +567,9 @@ func validCICheck(check model.CheckBlock) bool {
 // typedBlocksIn walks the live markdown of one document and hands visit each block of blockType
 // in document order, with its block id. The markdown is read live and parsed; nothing is
 // written. A rendering can repeat an id; the block index keys one row per id, and so does this,
-// so only the first holder of an id is visited. Both readers of a live document's typed blocks
-// come through here: the checks of a Verification document (checkBlocksIn) and the requirements
-// of a spec (requirementBlocksIn).
+// so only the first holder of an id is visited. Its reader is the requirements of a spec
+// (requirementBlocksIn); the results routes read a check from the block index alone
+// (results_settled_check.go).
 func (s *server) typedBlocksIn(ctx context.Context, artifactID, blockType string, visit func(node *pmdoc.Node, id string)) error {
 	markdown, err := s.deps.Docs.Text(ctx, artifactID)
 	if err != nil {
@@ -736,68 +596,6 @@ func (s *server) typedBlocksIn(ctx context.Context, artifactID, blockType string
 		return true
 	})
 	return nil
-}
-
-// checkBlocksIn is every `check` block of one document, in document order, with its attributes
-// and its words (typedBlocksIn).
-func (s *server) checkBlocksIn(ctx context.Context, artifactID string) ([]model.CheckBlock, error) {
-	var checks []model.CheckBlock
-	err := s.typedBlocksIn(ctx, artifactID, "check", func(node *pmdoc.Node, _ string) {
-		check := docs.CheckBlockOf(node)
-		check.ArtifactID, check.Text, check.Results = artifactID, blockWords(node), []model.CheckResult{}
-		checks = append(checks, check)
-	})
-	if err != nil {
-		return nil, err
-	}
-	return checks, nil
-}
-
-// checkBlocksOf is checkBlocksIn with each block's reference, issue and indexed version and
-// digest filled in. The reference is built from the document's own slug, which is a property of
-// the artifacts row and not of a block row, so a Verification document whose blocks the index
-// does not hold yet still answers a reference every check can be addressed by.
-func (s *server) checkBlocksOf(ctx context.Context, q queryer, artifact model.Artifact) ([]model.CheckBlock, error) {
-	checks, err := s.checkBlocksIn(ctx, artifact.ID)
-	if err != nil {
-		return nil, err
-	}
-	if len(checks) == 0 {
-		return []model.CheckBlock{}, nil
-	}
-	issueKey := ""
-	if artifact.IssueKey != nil {
-		issueKey = *artifact.IssueKey
-	}
-	indexed := make(map[string]model.CheckBlock, len(checks))
-	rows, err := q.Query(ctx, `
-		select block_id, changed_version, text_sha256
-		from document_blocks where artifact_id = $1 and type = 'check'
-	`, artifact.ID)
-	if err != nil {
-		return nil, fmt.Errorf("read the indexed checks of %s: %w", artifact.ID, err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var block model.CheckBlock
-		if err := rows.Scan(&block.BlockID, &block.Version, &block.SHA256); err != nil {
-			return nil, fmt.Errorf("read the indexed checks of %s: %w", artifact.ID, err)
-		}
-		indexed[block.BlockID] = block
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("read the indexed checks of %s: %w", artifact.ID, err)
-	}
-	for index := range checks {
-		checks[index].IssueKey = issueKey
-		checks[index].Ref, _ = text.FormatBlockRef(text.Ref{
-			Kind: "block", IssueKey: issueKey, ID: artifact.Slug, Block: checks[index].BlockID,
-		})
-		if block, ok := indexed[checks[index].BlockID]; ok {
-			checks[index].Version, checks[index].SHA256 = block.Version, block.SHA256
-		}
-	}
-	return checks, nil
 }
 
 // blockWords is a block's text as a reader sees it: every text node under it, joined by single

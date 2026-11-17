@@ -4286,8 +4286,9 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/api/v1/issues/{key}/results` (GET, POST; cookie, trusted header, or bearer; POST also a CI job's results token)
 
-  GET lists the `check` blocks of the issue's Verification document in document order:
+  GET lists the `check` blocks of the issue's Verification document in the order of its newest stored version:
   `{issue, verification_artifact_id, checks}`, each check with its attributes (`when`, `surface`, `run`, `negative_control`, `ci_check`), the version its words last changed in, their digest, and every result recorded against it from any issue, newest first.
+  While a browser's edit has not settled, for up to the settle delay (2 s after its last change), the read, the Verification tab and the POST's judgment of a result take each check as the block index holds it, its attributes and words read out of the text the index recorded at the version and digest the check carries, and a check the index does not hold yet is no check of either (`api/results_settled_check.go`).
 
   - A check's results come newest first by `created_at`, the time the recording transaction began, with `id` descending breaking a tie, and a client that reads one result per check reads the first of them;
     `dispatch results` prints every one of them, each with the reading its role recorded.

@@ -92,19 +92,20 @@ type ciRun struct {
 
 // deriveCIResults answers every check CI proves among checks (validCICheck, its block): its
 // `ci` member, and, where the run that decides it passed or failed, the result derived from that
-// run, merged into the results the read loaded for it, newest first (newestResultsFirst). A role's
-// result the read loaded for such a check counts for nothing and says why (notCountedOnCICheck). An
-// issue holding no check CI proves asks nothing of the database or of GitHub. issueKey is the
-// route's issue, whose Verification document holds the checks and whose pull request heads they are
-// read at. Only a failed read of Dispatch's own database is an error; whatever GitHub answers is a
-// case of the answer.
+// run, merged into the results the read loaded for it, newest first (newestResultsFirst). A result
+// the read loaded for such a check that no run of the job its ci_check names recorded, a role's or
+// another job's, counts for nothing and says why (notCountedOnCICheck). An issue holding no check
+// CI proves asks nothing of the database or of GitHub. issueKey is the route's issue, whose
+// Verification document holds the checks and whose pull request heads they are read at. Only a
+// failed read of Dispatch's own database is an error; whatever GitHub answers is a case of the
+// answer.
 func (s *server) deriveCIResults(ctx context.Context, issueKey string, checks []model.CheckBlock) error {
 	var proved []provedCI
 	names := map[string]struct{}{}
 	for index := range checks {
 		if validCICheck(checks[index]) {
-			notCountedOnCICheck(&checks[index])
 			name := docs.CheckAttributesOfBlock(checks[index]).CICheck
+			notCountedOnCICheck(&checks[index], name)
 			proved = append(proved, provedCI{check: &checks[index], name: name})
 			names[name] = struct{}{}
 		}
@@ -141,18 +142,28 @@ func (s *server) deriveCIResults(ctx context.Context, issueKey string, checks []
 	return nil
 }
 
-// notCountedOnCICheck marks each result the read loaded for check, a check CI proves, that no CI
-// job recorded: a role's, a row of check_results, which names no branch, where every row of
-// ci_check_results names one. Such a row is older than the check's ci_check, a browser's write or
-// a write that raced the result gave the block, and stands against it only until the settlement
-// that holds the block to the fourth rule (docs.CICheckRuleIn) takes that ci_check off. It counts
-// for nothing (standingCommit) and says why
-// (model.ResultNotCountedRoleOnCICheck). It runs before the derived result is merged in, so
-// that one is never marked.
-func notCountedOnCICheck(check *model.CheckBlock) {
+// notCountedOnCICheck marks each result the read loaded for check, a check CI proves whose
+// ci_check names the job name, that no run of that job recorded, and it counts for nothing
+// (standingCommit) and says why:
+//
+//   - a role's, a row of check_results, which names no branch, where every row of
+//     ci_check_results names one (model.ResultNotCountedRoleOnCICheck). Such a row is older than
+//     the check's ci_check, which a document write that raced the result gave the block, and
+//     stands against it only until the settlement that holds the block to the fourth rule
+//     (docs.CICheckRuleIn) takes that ci_check off;
+//   - a CI job's whose run, its check run's name, is not name (model.ResultNotCountedAnotherJob).
+//     The check's digest covers its ci_check, and the record route reads the job and the digest
+//     from one state of the check (resolveCheck), so no route of this build writes such a row;
+//     this is the second line of that binding.
+//
+// It runs before the derived result is merged in, so that one is never marked.
+func notCountedOnCICheck(check *model.CheckBlock, name string) {
 	for index := range check.Results {
-		if check.Results[index].Branch == "" {
-			check.Results[index].NotCounted = model.ResultNotCountedRoleOnCICheck
+		switch result := &check.Results[index]; {
+		case result.Branch == "":
+			result.NotCounted = model.ResultNotCountedRoleOnCICheck
+		case result.Run != name:
+			result.NotCounted = model.ResultNotCountedAnotherJob
 		}
 	}
 }

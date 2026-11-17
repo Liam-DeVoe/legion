@@ -1406,10 +1406,18 @@ const (
 
 // ResultNotCountedRoleOnCICheck is why a role's result of a check CI proves counts for nothing
 // (CheckResult.NotCounted): only that check's CI job records its result. The kind of a check is its
-// block's at each read, and such a row stands against a block carrying ci_check only until the
-// settlement that holds the block to the fourth rule takes that ci_check off (a browser's write, or
-// a write that raced the result). A reader prints it after "It counts for nothing: ".
+// block's as the block index holds it at each read, and such a row stands against a block carrying
+// ci_check only when a document write raced the result, until the settlement that holds the block
+// to the fourth rule takes that ci_check off; a browser's write reaches the index only through that
+// settlement. A reader prints it after "It counts for nothing: ".
 const ResultNotCountedRoleOnCICheck = "a role recorded it, and only a run of the CI job its ci_check names records the result of a check CI proves"
+
+// ResultNotCountedAnotherJob is why a CI job's result of a check CI proves counts for nothing when
+// the job that recorded it (CheckResult.Run, its check run's name) is not the job the check's
+// ci_check names in the state the read serves. The check's digest covers its ci_check, so a result
+// recorded against that state names the job already; this is the second line of that binding. A
+// reader prints it after "It counts for nothing: ".
+const ResultNotCountedAnotherJob = "a run of another CI job recorded it, and only a run of the CI job its ci_check names records the result of a check CI proves"
 
 // ResultCommitStands is where one result's commit stands against what its check compared with:
 // CommitAtBasis with the basis it matched, CommitOtherCommit, or CommitUnknown with the reason
