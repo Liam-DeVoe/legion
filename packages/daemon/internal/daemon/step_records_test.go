@@ -204,9 +204,11 @@ type stepRecordsRig struct {
 	reviews int
 }
 
-// walkIssue is one issue of the run and the number of its pull request.
+// walkIssue is one issue of the run, the title Dispatch was given for it, and the number of its
+// pull request.
 type walkIssue struct {
 	key    string
+	title  string
 	number int
 }
 
@@ -260,7 +262,7 @@ func newStepRecordsRigWith(t *testing.T, proof liveProof, dispatch *scratchDispa
 		}
 		r.person(http.MethodPost, "/api/v1/issues", map[string]string{"project": r.cfg.Project, "title": walkTitles[place]}, http.StatusCreated, &created)
 		r.person(http.MethodPatch, "/api/v1/issues/"+created.Key, map[string]any{"status": "in_progress", "labels": []string{"legion"}}, http.StatusOK, &created)
-		r.issues = append(r.issues, walkIssue{key: created.Key, number: int(number) + 1 + place})
+		r.issues = append(r.issues, walkIssue{key: created.Key, title: walkTitles[place], number: int(number) + 1 + place})
 		r.on(created.Key)
 		r.github.open("legion/"+r.key, r.number)
 		r.seed(created.Rank, created.LastSeq)

@@ -100,14 +100,15 @@ func TestAnOldPluginsRetroCompletesWithNoRatingAcrossTheDeploy(t *testing.T) {
 	r.merge()
 	var steps stepRecordsRead
 	r.waitSteps("the seven records of the walk whose retro gave no rating", func(got stepRecordsRead) error { steps = got; return stepsHold(got, stepRecordsSeven) })
-	r.waitPlans("the finished issue whose retro gave no rating", []ratedWant{{issue: r.key, steps: steps}})
+	r.waitPlans("the finished issue whose retro gave no rating", []ratedWant{{issue: r.key, title: r.issues[0].title, steps: steps}})
 }
 
-// ratedWant is what the read by project must list of one issue: its rating and reason (none for
-// a rating of 0), its count of failed steps, and its records as GET steps read them once its walk
-// was done, from which its time and the id of its retro come.
+// ratedWant is what the read by project must list of one issue: its title, its rating and reason
+// (none for a rating of 0), its count of failed steps, and its records as GET steps read them once
+// its walk was done, from which its time, its run's plan and the id of its retro come.
 type ratedWant struct {
 	issue  string
+	title  string
 	rating int
 	reason string
 	failed int
@@ -121,9 +122,9 @@ type ratedWant struct {
 func (r *stepRecordsRig) walkThreeRated() []ratedWant {
 	r.t.Helper()
 	want := []ratedWant{
-		{issue: r.issues[0].key, rating: 3, reason: "The plan fit the work; the review sent it back once.", failed: 1},
-		{issue: r.issues[1].key, rating: 4, reason: "The plan fit the work.", failed: 0},
-		{issue: r.issues[2].key, rating: 5, reason: "The plan was the work, step for step.", failed: 0},
+		{issue: r.issues[0].key, title: r.issues[0].title, rating: 3, reason: "The plan fit the work; the review sent it back once.", failed: 1},
+		{issue: r.issues[1].key, title: r.issues[1].title, rating: 4, reason: "The plan fit the work.", failed: 0},
+		{issue: r.issues[2].key, title: r.issues[2].title, rating: 5, reason: "The plan was the work, step for step.", failed: 0},
 	}
 	each := func(step func()) {
 		for _, w := range want {
@@ -200,11 +201,11 @@ func failedStepsSay(issue string, got, want int) string {
 }
 
 // plansHold says whether read lists exactly the issues of want, newest close first, each closed,
-// with the default plan of its own run (the plan node the daemon wrote for that issue and the
-// generation of its records, workflow.PlanID, so no two issues list one plan), its rating with its
-// reason on its retro's record (or none), its count of failed steps, and its time: the earliest
-// start and the latest end of the records of its steps, and their difference in whole seconds. The
-// error names the first issue that is missing or wrong.
+// with the title Dispatch was given for it, the default plan of its own run (the plan node the
+// daemon wrote for that issue and the generation of its records, workflow.PlanID, so no two
+// issues list one plan), its rating with its reason on its retro's record (or none), its count of
+// failed steps, and its time: the earliest start and the latest end of the records of its steps,
+// and their difference in whole seconds. The error names the first issue that is missing or wrong.
 func plansHold(read projectPlansRead, want []ratedWant) error {
 	if len(read.Issues) != len(want) {
 		return fmt.Errorf("the read lists %d finished issues, want %d", len(read.Issues), len(want))
@@ -225,6 +226,8 @@ func plansHold(read projectPlansRead, want []ratedWant) error {
 		switch plan := got.Plan; {
 		case got.ClosedAt.IsZero():
 			return fmt.Errorf("%s is listed with no close", w.issue)
+		case got.Title != w.title:
+			return fmt.Errorf("%s is listed with the title %q, want %q", w.issue, got.Title, w.title)
 		case plan == nil:
 			return fmt.Errorf("%s lists no plan, want the default plan", w.issue)
 		case plan.Issue != w.issue || plan.Generation != retro.Generation || plan.ID != workflow.PlanID(w.issue, retro.Generation):
