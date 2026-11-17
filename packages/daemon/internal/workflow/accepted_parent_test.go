@@ -195,3 +195,47 @@ func TestAPersonsTodoUnderAnAcceptedAncestorIsHeldAtAdmitted(t *testing.T) {
 		}
 	}
 }
+
+// The notice of a person's todo beneath an accepted ancestor names the head the daemon accepted
+// as the head the last step of the ancestor's task passed, which is true of each plan: a plan with
+// no reviewer step has no reviewed head, and an issue stands in merging once its task's last step
+// passed whatever that step is (record.Accepted). The ancestor walks today's line in one case and
+// the plan `implementer tester`, which has no reviewer step, in the other; the text is one.
+func TestTheNoticeOfATodoUnderAnAcceptedAncestorNamesTheHeadItsLastStepPassed(t *testing.T) {
+	const want = "LEGION-300 is beneath LEGION-208, whose head the last step of its task passed and the daemon has already accepted, " +
+		"so LEGION-300 is recorded at admitted and nothing starts it until LEGION-208 closes. " +
+		"Take LEGION-208 back with a backward move to run LEGION-300 under it now, or leave LEGION-300 where it is and it starts once LEGION-208 has closed."
+	for _, tc := range []struct {
+		name  string
+		steps []string
+	}{
+		{"an ancestor with no plan rows, which walks today's steps", nil},
+		{"an ancestor whose plan has no reviewer step", []string{"implementer", "tester"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
+				Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Merging, Generation: 1, Status: "retro", Rank: "U"})
+			seedTreeLifecycle(t, pool, "LEGION-208")
+			if tc.steps != nil {
+				seedStepsPlan(t, pool, "LEGION-208", 1, tc.steps...)
+				seedRecord(t, pool, func(tx pgx.Tx) error {
+					return record.NewStore().MoveTask(t.Context(), tx, "LEGION-208", 1, "a", record.TaskPlace{Kind: record.PlaceMerge}, record.TaskRunning)
+				})
+			}
+
+			applyRefusingNothing(t, pool, testEngine(config.DesignGateRootIssues, nil),
+				intake.DispatchIssue{Key: "LEGION-300", ResolvedRepo: "sjawhar/legion", Seq: 3, Type: "issue.updated",
+					Status: "todo", Title: "child", Parent: "LEGION-208", Rank: "Z"})
+
+			var reason string
+			if err := pool.QueryRow(context.Background(),
+				"select payload->>'reason' from outbox where kind = 'notice' and issue = 'LEGION-300' and payload->>'kind' = 'child-status'").Scan(&reason); err != nil {
+				t.Fatalf("read the child-status notice: %v", err)
+			}
+			if reason != want {
+				t.Fatalf("the child-status notice = %q, want %q", reason, want)
+			}
+		})
+	}
+}

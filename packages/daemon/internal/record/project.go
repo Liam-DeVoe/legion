@@ -860,10 +860,11 @@ func KeepsSlot(issue Issue) bool {
 // repair behind, and the worker of that phase would be repaired by nothing. Read from here, the
 // two move together.
 //
-// It is not Accepted, and the two must not be merged: Accepted names the two phases whose
-// reviewed head the daemon has accepted, which is the rule the acceptance order is written over
-// (its doc names them there and nowhere else), while this one is the slot rule's complement and
-// counts accepting with them.
+// It is not Accepted, and the two must not be merged: Accepted names the two phases whose head,
+// the one the last step of the task passed, the daemon has accepted, which is the rule the
+// acceptance order is written over (its doc names them there and nowhere else), and leaves out a
+// parent held before its retro for its children; this one is the slot rule's complement and
+// counts accepting, and that parent, with them.
 func PastReview(issue Issue) bool {
 	return StandsIn(issue, phase.Accepting, phase.Retro, phase.Merging)
 }
