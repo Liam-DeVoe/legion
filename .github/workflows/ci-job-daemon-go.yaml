@@ -5,8 +5,8 @@ name: CI job daemon-go
 # whole `if:` that decides whether these steps run, so this file carries no `if:` of its own.
 #
 # What runs here is the Go daemon's own tests — the plain step over every package of
-# packages/daemon but the three concurrent ones and the text checks, less the two pure table
-# pins of internal/supervise, which the text-check job runs by name and this step skips by name,
+# packages/daemon but the three concurrent ones and the text checks, less the four pure pins of
+# internal/supervise, which the text-check job runs by name and this step skips by name,
 # the race step over those three packages, and the Stage 1 live proof, which builds ./cmd/legion
 # and boots it against this job's Postgres. They left ci.yaml's `test` job, which runs
 # thirty-two shell-script harnesses and a handful of Bun suites behind one filter: that filter
@@ -186,7 +186,7 @@ jobs:
       # pattern is built in .github/scripts/ci_job_reads.py from the race step's own package
       # list and that one package name, so the two steps cannot name different sets.
       #
-      # The -skip is the text-check job's three tests of internal/supervise, the pure pins
+      # The -skip is the text-check job's four tests of internal/supervise, the pure pins
       # ci_job_reads.py's SUPERVISE_TABLE_TESTS names: they read that package's own source and
       # no database, so they run in .github/workflows/ci-job-text-checks.yaml beside the other
       # tests whose subject is text, where they wait behind no fixture, and a test run twice is
@@ -198,7 +198,7 @@ jobs:
       - name: Test the Go daemon
         run: |
           set -o pipefail
-          go list ./... | grep -Ev '/(internal/daemon|internal/sessionproxy|internal/launcher|internal/textcheck)$' | xargs go test -count=1 -timeout 15m -skip '^(TestNoTwoEventTypesShareAKind|TestSuspendSourcesNameEveryConstant|TestTheTableHasARowOrANamedIgnoreForEveryEventInEveryState)$'
+          go list ./... | grep -Ev '/(internal/daemon|internal/sessionproxy|internal/launcher|internal/textcheck)$' | xargs go test -count=1 -timeout 15m -skip '^(TestNoTwoEventTypesShareAKind|TestStatesIsEveryDeclaredStateOnce|TestSuspendSourcesNameEveryConstant|TestTheTableHasARowOrANamedIgnoreForEveryEventInEveryState)$'
         working-directory: packages/daemon
 
       # The outbox's lane registry, lease renewal and held clock are the daemon's first goroutines

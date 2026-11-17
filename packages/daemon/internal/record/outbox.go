@@ -137,14 +137,13 @@ func LaneKinds(lane OutboxLane) []OutboxKind {
 //     record committed, which holds every ask).
 //
 // Every other row runs: the Dispatch writes and publishes (dispatch_status, dispatch_message,
-// gated_steps_publish, design_gates_publish, role_holders_publish, which tells Dispatch that the
-// claims the release stops hold their roles no longer), the release of a Dispatch claim
-// (claim_release), a
-// supervise row that stops a role (op `suspend`, `issue_close`, `tree_close`), an issue's pod
-// deleted after its close (issue_suspend), a linger's close and its workspace's removal
-// (linger_close, workspace_remove), a gate's seed (gate_seed) and an issue's branch
-// (issue_branch). None of them makes a pod or prompts a role, and a start one of them queues is a
-// row this holds.
+// gated_steps_publish, design_gates_publish and role_holders_publish, the last of which tells
+// Dispatch that the claims the release stops hold their roles no longer), the release of a
+// Dispatch claim (claim_release), a supervise row that stops a role (op `suspend`, `issue_close`,
+// `tree_close`), an issue's pod deleted after its close (issue_suspend), a linger's close and its
+// workspace's removal (linger_close, workspace_remove), a gate's seed (gate_seed) and an issue's
+// branch (issue_branch). None of them makes a pod or prompts a role, and a start one of them
+// queues is a row this holds.
 func HeldByProjectRelease(payload OutboxPayload, releaseRound string) bool {
 	switch value := payload.(type) {
 	case SuperviseRequest:
