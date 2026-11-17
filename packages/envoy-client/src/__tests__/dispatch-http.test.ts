@@ -2139,6 +2139,43 @@ describe("a redirect to another origin", () => {
     }
   });
 
+  // No request reads the body of a redirect: a body that never ends delays no refusal, since
+  // nothing waits on it, and the client cancels it.
+  test("a refused redirect's body is not read", async () => {
+    let cancelled = 0;
+    const fetchImpl = (async (_input: RequestInfo | URL, _init?: RequestInit) =>
+      new Response(
+        new ReadableStream<Uint8Array>({
+          pull: () => new Promise<void>(() => {}),
+          cancel() {
+            cancelled += 1;
+          },
+        }),
+        { status: 302, headers: { Location: "https://sso.example.com/login" } }
+      )) as typeof fetch;
+    const client = new DispatchClient(
+      "http://dispatch.test",
+      bearerCredential("secret"),
+      fetchImpl,
+      { sleep: async () => undefined }
+    );
+    const started = performance.now();
+    for (const call of [
+      () => client.getIssue("DSP-1"),
+      () => client.comment("DSP-1", { body: "Review", actor }),
+    ]) {
+      const refusal = await call().then(
+        () => undefined,
+        (error: unknown) => error
+      );
+      expect(refusal).toBeInstanceOf(DispatchGatewayError);
+    }
+    expect({ cancelled, atOnce: performance.now() - started < 10_000 }).toEqual({
+      cancelled: 2,
+      atOnce: true,
+    });
+  });
+
   // The /healthz probe carries the credential's proof too, and its answer decides whether a write
   // is sent again under its key: a probe that followed the redirect would hand the proof to the
   // other origin, and take that origin's `idempotency_keys` as Dispatch's word.

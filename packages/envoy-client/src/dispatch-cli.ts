@@ -31,7 +31,6 @@ import {
   DISPATCH_TOOL_DEADLINE_MS,
   DISPATCH_WRITE_RETRY,
   DispatchClient,
-  DispatchEmptyPathError,
   DispatchWriteLandedError,
   DispatchWriteUnsettledError,
   tokenNotChecked,
@@ -808,16 +807,15 @@ export async function runDispatchCli(
     } else {
       entry = { tool, error: text };
       // An argument the executor refuses (a ref naming another owner, a picture that is not
-      // there, an id that matches no ask, a value the client's path would hold empty) is the same
-      // usage error as one the parse refuses, and exits 2 alike. `--dry-run` runs the call's own
-      // check (checkDispatchCall): the owner, schema, cross-field and picture checks. Those exit 2
-      // from the dry run and from its call, so the two stay one answer. A refusal the executor
-      // makes during the call, such as an id of the wrong shape or an ask id prefix matching no
-      // ask, only the call reaches. Everything else here is Dispatch's own refusal or failure.
-      code =
-        error instanceof ToolInputError || error instanceof DispatchEmptyPathError
-          ? USAGE
-          : REFUSED;
+      // there, an id that matches no ask) is the same usage error as one the parse refuses, and
+      // exits 2 alike. `--dry-run` runs the call's own check (checkDispatchCall): the owner,
+      // schema, cross-field and picture checks. Those exit 2 from the dry run and from its call,
+      // so the two stay one answer. A refusal the executor makes during the call, such as an id of
+      // the wrong shape or an ask id prefix matching no ask, only the call reaches. Everything else
+      // here is Dispatch's own refusal or failure. No argument of the command reaches the client's
+      // refusal of a path value that names nothing (`DispatchEmptyPathError`): the parse refuses
+      // each such value of a flag first, naming the flag.
+      code = error instanceof ToolInputError ? USAGE : REFUSED;
     }
   }
   try {

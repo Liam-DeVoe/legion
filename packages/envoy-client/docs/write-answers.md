@@ -58,11 +58,14 @@ The GitHub Actions identity, of `@legion/broker-client` and of the Go broker cli
 
 ## A path value that names nothing
 
-The client refuses a call whose URL path would hold an empty value, before any request, for every caller (`DispatchEmptyPathError`, thrown by `#url`).
+The client refuses a call whose URL path would hold a value that names nothing, before any request, for every caller (`DispatchEmptyPathError`, thrown by `#url`).
+Such a value is empty, only white space, or `.` or `..` (`namesNothing`).
 Sent, `POST /api/v1/comments//resolve` names no comment, and Dispatch's router answers it with a redirect to another path.
-The message names the route with `{empty}` in place of the empty value, and says that nothing was sent.
+The URL drops `.` and `..` as steps of the path, so `GET /api/v1/issues/..` asks `GET /api/v1/`, another route.
+The message names the route with `{empty}`, or the value in double quotes, in place of that value, and says that nothing was sent.
 It adds that a variable that gives the value may be empty or unset.
-The `dispatch` command exits 2 on it, as on any refusal of its arguments.
+A model's tool call reaches this refusal, since a tool's schema takes such a value.
+The `dispatch` command refuses each such value of a flag before it calls the client, naming the flag, so no argument of the command reaches it.
 
 ## A write whose outcome is unknown
 
@@ -171,4 +174,4 @@ A session's `dispatch` command prints what the model reads, and the README ("The
 
 - A missing answer or an unknown outcome: the command prints the error's message, and exits 1.
 
-- A path value that is empty: the command prints the refusal, and exits 2.
+- A flag whose value names nothing: the command prints the refusal, and exits 2.

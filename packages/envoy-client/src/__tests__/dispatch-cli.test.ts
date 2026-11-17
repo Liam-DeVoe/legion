@@ -838,22 +838,6 @@ describe("the dispatch CLI", () => {
     expect(requests).toEqual([]);
   });
 
-  // A session id comes from the environment, past every flag's check, and goes into the path of
-  // `dispatch answers`. `..` is a step of a path, which the URL parser drops: sent, it asked
-  // `GET /api/v1/answers`, another route. The client refuses that path before any request
-  // (`DispatchEmptyPathError`), and the command exits 2 on it, as on a refusal of its arguments.
-  test("a session id that is a step of a path is refused by the client before any request, exit 2", async () => {
-    const { code, stdout } = await run(["answers"], {
-      DISPATCH_HOST: "omp",
-      DISPATCH_SESSION_ID: "..",
-    });
-    expect({ code, line: stdout.split("\n")[0] }).toEqual({
-      code: 2,
-      line: expect.stringContaining('/api/v1/agents/{".."}/answers holds a value that names nothing'),
-    });
-    expect(requests).toEqual([]);
-  });
-
   // The CLI asks a route no build answered three more times, 1, 2 and 4 s apart (jittered), before
   // it says so: the test waits those seconds.
   test("answers against a Dispatch without the route says its build is older than the answers route, exit 1", async () => {

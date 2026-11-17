@@ -850,7 +850,13 @@ const NULL_BODY_STATUSES: ReadonlySet<number> = new Set([101, 204, 205, 304]);
  */
 async function writeAnswer(response: Response, key: string): Promise<WriteAnswer> {
   const echoed = keyEchoed(response, key);
-  if (response.ok || NULL_BODY_STATUSES.has(response.status)) {
+  // A redirect is a definitive answer whose body is never read (`#response`), so it is handed on
+  // as it came.
+  if (
+    response.ok ||
+    NULL_BODY_STATUSES.has(response.status) ||
+    (response.status >= 300 && response.status < 400)
+  ) {
     return {
       response,
       again: false,
@@ -2718,6 +2724,11 @@ export class DispatchClient {
         headers: { Accept: "application/json", ...headers },
         signal: bound,
       });
+      // A redirect's body is not read, whatever its type says: it is no word of Dispatch's.
+      if (response.status >= 300 && response.status < 400) {
+        response.body?.cancel().catch(() => undefined);
+        return false;
+      }
       if (!isJson(response)) return false;
       const health: unknown = await response.json();
       return (
@@ -2809,6 +2820,22 @@ export class DispatchClient {
     if (response.ok && written !== undefined) {
       return this.#writtenRow<T>(method, url, response, written);
     }
+    // A redirect no request follows names the origin it points at, and nothing else of the answer:
+    // its body is neither read nor kept, since a redirector writes its target, path and query with
+    // it, into the body too, and Dispatch answers no route with a redirect. It is cancelled, and
+    // nothing waits on it.
+    if (response.status >= 300 && response.status < 400) {
+      response.body?.cancel().catch(() => undefined);
+      const target = redirectOrigin(response, url);
+      throw this.#gateway(
+        method,
+        url,
+        response,
+        undefined,
+        gatewayAdvice(method, response.status),
+        target === undefined ? "" : `redirecting to ${target}, `
+      );
+    }
     const text = await response.text();
     let payload: unknown = text;
     if (text && isJson(response)) {
@@ -2819,20 +2846,6 @@ export class DispatchClient {
       }
     }
     if (!response.ok) {
-      // A redirect no request follows names the origin it points at, and nothing else of the
-      // answer, whatever its body is: a redirector writes its target, path and query with it, into
-      // the body too, and Dispatch answers no route with a redirect.
-      if (response.status >= 300 && response.status < 400) {
-        const target = redirectOrigin(response, url);
-        throw this.#gateway(
-          method,
-          url,
-          response,
-          undefined,
-          gatewayAdvice(method, response.status),
-          target === undefined ? "" : `redirecting to ${target}, `
-        );
-      }
       const error = asErrorShape(payload);
       if (typeof error.error === "string") {
         if (

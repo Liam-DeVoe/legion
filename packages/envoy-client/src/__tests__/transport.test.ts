@@ -2034,6 +2034,42 @@ describe("a listener answer that redirects to another origin", () => {
       }).toEqual({ origin: true, path: false, query: false });
     }
   });
+
+  // The client reads no body of a redirect and keeps none: the error of a 3xx holds no text of it,
+  // and a body that never ends delays nothing, since nothing waits on it.
+  test("is refused with no body read or kept in its error", async () => {
+    const target = `https://sso.example.com/login-${crypto.randomUUID()}`;
+    let pulls = 0;
+    let cancelled = false;
+    const client = createEnvoyClient({
+      baseUrl: "http://listener.test/",
+      fetch: (async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        new Response(
+          new ReadableStream<Uint8Array>({
+            pull(controller) {
+              pulls += 1;
+              if (pulls === 1) controller.enqueue(new TextEncoder().encode(`Redirecting to ${target}`));
+              // Then nothing more: the body never ends.
+              return new Promise<void>(() => {});
+            },
+            cancel() {
+              cancelled = true;
+            },
+          }),
+          { status: 302, headers: { Location: target, "Content-Type": "text/plain" } }
+        )) as typeof fetch,
+      retry: false,
+      timeoutMs: 30_000,
+    });
+    const started = performance.now();
+    const failure = await client.getRole("reviewer").catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(EnvoyApiError);
+    expect({
+      responseBody: (failure as EnvoyApiError).details.responseBody,
+      cancelled,
+      atOnce: performance.now() - started < 10_000,
+    }).toEqual({ responseBody: "", cancelled: true, atOnce: true });
+  });
 });
 
 describe("newClientInstanceID", () => {

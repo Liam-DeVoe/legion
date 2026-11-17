@@ -953,6 +953,13 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
         ),
       };
     }
+    // A redirect's body is neither read nor kept: a redirector writes its target, path and query,
+    // into it, and the line names the redirect's origin alone (`EnvoyApiError`). It is cancelled,
+    // and nothing waits on it.
+    if (response.status >= 300 && response.status < 400) {
+      response.body?.cancel().catch(() => undefined);
+      return { response, body: "" };
+    }
     // The body is read under the same deadline. A refusal whose body does not arrive is still the
     // listener's refusal; any other answer whose body does not arrive is no answer.
     try {

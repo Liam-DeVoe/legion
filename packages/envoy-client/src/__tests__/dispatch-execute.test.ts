@@ -43,6 +43,7 @@ import {
   DISPATCH_ANSWER_LOST,
   DISPATCH_WRITE_RETRY,
   DispatchClient,
+  DispatchEmptyPathError,
   DispatchWriteLandedError,
   type DispatchWriteRetry,
   forgetKeyedLayerMemory,
@@ -15782,6 +15783,42 @@ test("refuses to resolve a comment named by an ask reference", async () => {
       fetchImpl,
     })
   ).rejects.toThrow("comment must be a bare comment id or a dispatch://.../comment/<id> reference");
+  expect(requests).toBe(0);
+});
+
+// A model's tool call reaches the executor with no parse of flags, and the tools' schemas take an
+// empty value, white space, `.` or `..` for an id that goes into a URL path. The client refuses each
+// before any request (`DispatchEmptyPathError`), naming its place in the route: sent, `..` is a step
+// of the path, which the URL drops, and `POST /api/v1/comments/../resolve` asks another route.
+test("a path value that names nothing, as a tool call gives it, is refused before any request", async () => {
+  let requests = 0;
+  const fetchImpl = (() => {
+    requests += 1;
+    throw new Error("network must not be called");
+  }) as unknown as typeof fetch;
+  for (const [tool, args, place] of [
+    ["dispatch_resolve_comment", { comment: ".." }, '/api/v1/comments/{".."}/resolve'],
+    ["dispatch_claim", { issue: "" }, "/api/v1/issues/{empty}/claim"],
+    ["dispatch_read", { issue: "." }, '/api/v1/issues/{"."}'],
+    ["dispatch_result", { retract: " ", reason: "Wrong commit." }, '/api/v1/results/{" "}/retract'],
+  ] as const) {
+    const refusal = await executeDispatchTool({
+      tool,
+      args,
+      cwd: "/workspace",
+      host: "omp",
+      sessionId: "session-42",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl,
+    }).then(
+      () => undefined,
+      (error: unknown) => error
+    );
+    expect(refusal, tool).toBeInstanceOf(DispatchEmptyPathError);
+    expect((refusal as Error).message, tool).toContain(place);
+  }
   expect(requests).toBe(0);
 });
 
