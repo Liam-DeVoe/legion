@@ -80,7 +80,9 @@ const (
 
 // The attributes of a step, each the name of its value tuples and of its key in the node row's
 // `attributes`. A retro's run alone also holds AttributeRating and AttributeRatingReason: the
-// rating, 1 to 5, the agent that did the retro gave the plan the issue ran, and its reason.
+// rating, 1 to 5, the agent that did the retro gave the plan the issue ran, and its reason. A run of
+// an issue that a draw put in an experiment also holds AttributeExperiment and AttributeVariant:
+// the experiment and the variant drawn.
 const (
 	AttributeIssue        = "issue"
 	AttributeProject      = "project"
@@ -100,6 +102,8 @@ const (
 	AttributeReport       = "report"
 	AttributeRating       = "rating"
 	AttributeRatingReason = "rating_reason"
+	AttributeExperiment   = "experiment"
+	AttributeVariant      = "variant"
 )
 
 // The attributes of a plan beside its issue, its project and its generation: its source, the
@@ -144,13 +148,14 @@ var (
 // Step is one run of one step, as its node holds it. Place is the step's place in its task, the
 // attribute `step`: from 1 for kind step, 0 for a retro and a merge; it is not named Step, which
 // StepRead's embedded Step would shadow. A text field the node does not hold reads "", Place 0,
-// and a time, ReturnedTo or Rating nil; a ReturnedTo of 0 is place 0 (StepWrite).
+// and a time, ReturnedTo, Rating or Experiment nil; a ReturnedTo of 0 is place 0 (StepWrite).
 type Step struct {
 	ID, Issue, Project, Task, Kind, Role, Type, Agent, Session, Model, Result, Report string
 	Generation                                                                        int64
 	Place                                                                             int
 	ReturnedTo                                                                        *int
 	Rating                                                                            *StepRating
+	Experiment                                                                        *StepExperiment
 	StartedAt, EndedAt                                                                *time.Time
 }
 
@@ -162,18 +167,27 @@ type StepRating struct {
 	Reason string
 }
 
+// StepExperiment is the experiment a draw put a run's issue in and the variant it drew there: one
+// value, so a run never holds or is written one without the other. Each is a name of 1 to 32
+// characters of a-z, 0-9 and `-`, the daemon's rule for the names its settings declare.
+type StepExperiment struct {
+	Experiment string
+	Variant    string
+}
+
 // StepWrite is one write of a run: the id and the issue it writes, and each field it states, nil
 // where it states nothing. An empty text states nothing either, so a write that knows no model
 // leaves the model to a later write that knows it. ReturnedTo is the place a run returned its task
 // to, and 0 is a place: the retro's and the merge's, which a place alone does not tell apart.
 // Nothing moves back to the merge, the last phase, so a ReturnedTo of 0 is a return to the retro.
-// Only a retro takes a Rating.
+// Only a retro takes a Rating. Any run takes an Experiment.
 type StepWrite struct {
 	ID, Issue                                                              string
 	Project, Task, Kind, Role, Type, Agent, Session, Model, Result, Report *string
 	Generation                                                             *int64
 	Place, ReturnedTo                                                      *int
 	Rating                                                                 *StepRating
+	Experiment                                                             *StepExperiment
 	StartedAt, EndedAt                                                     *time.Time
 }
 
