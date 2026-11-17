@@ -15309,12 +15309,9 @@ console.log(JSON.stringify(args));
           expect(accepts.map((accept) => sessionSignedAs(minted, accept.authorization))).toEqual([
             "ses_delivery",
           ]);
-          // The broker was asked for no other session. How often it was asked for this one is the
-          // race's and not this row's: the move's pass forgets ses_delivery's client once its role
-          // move has run (`leftSessions`), and a reply that lands after that trades again under
-          // ses_delivery's own name, as the design says a later call for a forgotten session does.
-          expect(traded.length).toBeGreaterThan(0);
-          expect(new Set(traded)).toEqual(new Set(["ses_delivery"]));
+          // One trade, for this session: a reply under way when the move's pass runs keeps the
+          // client the accept traded for (`underWay`), so the pass forgets it only after.
+          expect(traded).toEqual(["ses_delivery"]);
         } finally {
           restore();
           // A token this process traded is held under its session for the life of the process.
@@ -15395,10 +15392,10 @@ console.log(JSON.stringify(args));
               path: `/api/v1/messages/${DIRECT_MESSAGE_ID}/reply`,
             },
           ]);
-          // Two trades, both under the session the person wrote to: the first attempt's, and
-          // the retry's, since leaving a session drops the key pair and token this process held
-          // for it (`forgetBrokerSession`); the refusal goes out on what the retry traded.
-          expect(broker.traded).toEqual(["ses_delivery", "ses_delivery"]);
+          // One trade, under the session the person wrote to: the accept is under way while the
+          // move's pass runs, so the pass keeps the client its first attempt traded for
+          // (`underWay`), and the retry and the refusal go out on that one token.
+          expect(broker.traded).toEqual(["ses_delivery"]);
         } finally {
           broker.stop();
         }
@@ -15950,10 +15947,10 @@ console.log(JSON.stringify(args));
           expect(broker.presented.filter((one) => one.path === replyPath)).toEqual([
             { signedAs: "ses_delivery", path: replyPath },
           ]);
-          // Two trades, both under the session the person wrote to: the accept's, and the
-          // refusal's own, since leaving a session drops the key pair and token this process
-          // held for it (`forgetBrokerSession`) and a reply signed as it trades afresh.
-          expect(broker.traded).toEqual(["ses_delivery", "ses_delivery"]);
+          // One trade, under the session the person wrote to: the accept is under way while the
+          // move's pass runs, so the pass keeps the client the accept traded for (`underWay`),
+          // and the refusal goes out on that one token.
+          expect(broker.traded).toEqual(["ses_delivery"]);
         } finally {
           stopSink();
           broker.stop();

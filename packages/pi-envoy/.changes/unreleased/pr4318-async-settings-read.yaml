@@ -8,6 +8,9 @@ body: |-
   exits, so a helper the script left running neither outlives it nor holds its answer open until
   the limit. The process groups of a dry run and of a person's `!command` end with the session's
   process however it ends, a signal or a crash included, where only its own exit took them before.
+  A Dispatch reply or accept under way for a session the host has left keeps that session's broker
+  client until it ends, rather than trading again after the move's pass forgets it, and the
+  session's client is then forgotten by the next pass rather than kept for the life of the process.
 time: 2026-11-17T12:31:04Z
 custom:
   Issue: pr4318

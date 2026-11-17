@@ -1258,6 +1258,28 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
     }
   };
 
+  // The sessions a Dispatch call is under way for, each with how many: such a call resolves its
+  // session's broker client and then presents that client's token, so a pass that forgot the
+  // client in between (`leftSessions`) would make the call trade again under a session this
+  // process has left. While a call holds a session the pass leaves it in `leftSessions` for the
+  // next pass; and once the last call for a session the host is no longer on ends, the session
+  // goes back into `leftSessions`, so a client a later call made for it is forgotten too, rather
+  // than kept for the life of the process.
+  const callsUnderWay = new Map<string, number>();
+  const underWay = async <T>(session: string, call: () => Promise<T>): Promise<T> => {
+    callsUnderWay.set(session, (callsUnderWay.get(session) ?? 0) + 1);
+    try {
+      return await call();
+    } finally {
+      const remaining = (callsUnderWay.get(session) ?? 1) - 1;
+      if (remaining > 0) callsUnderWay.set(session, remaining);
+      else {
+        callsUnderWay.delete(session);
+        if (!sessionOpen(session)) leftSessions.add(session);
+      }
+    }
+  };
+
   // Posts one reply to a person's message, as the session `replySessionID` names and under the
   // Dispatch resolved here for that same session: the two halves of a reply - the actor it
   // names and the configuration it goes out under - are read from the one argument, so they
@@ -1271,24 +1293,25 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
   // first text Dispatch refuses (`postTypedInputReply`) - since the broker may refuse a token
   // for a session this machine no longer runs and the refusal would otherwise read as a plain
   // reply failure.
-  const postDispatchReply = async (
+  const postDispatchReply = (
     delivery: DispatchDelivery,
     result: { readonly body?: string; readonly error?: string },
     replySessionID: string
-  ): Promise<void> => {
-    if (!sessionOpen(replySessionID)) {
-      logger.warn("envoy: a reply is signed as the session its message reached, which is closed", {
-        addressed: replySessionID,
-        open: sessionID,
-      });
-    }
-    await postDeliveryReply(
-      await dispatchConfigFor(replySessionID),
-      replySessionID,
-      delivery,
-      result
-    );
-  };
+  ): Promise<void> =>
+    underWay(replySessionID, async () => {
+      if (!sessionOpen(replySessionID)) {
+        logger.warn(
+          "envoy: a reply is signed as the session its message reached, which is closed",
+          { addressed: replySessionID, open: sessionID }
+        );
+      }
+      await postDeliveryReply(
+        await dispatchConfigFor(replySessionID),
+        replySessionID,
+        delivery,
+        result
+      );
+    });
 
   // A typed input's pictures, until the host's message carrying its Dispatch id starts
   // (`src/typed-pictures.ts`).
@@ -1792,51 +1815,53 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
     rendered: RenderInboundResult,
     acceptedSessionID: string
   ): Promise<AcceptedUserTurnDelivery | undefined> =>
-    acceptUserTurn({
-      actorId: acceptedSessionID,
-      // Asked as the session the accept names as its actor, never as the session open here: the
-      // two halves of one accept must not name two sessions.
-      dispatch: () => timedDispatchClient(USER_TURN_ACCEPT_TIMEOUT_MS, () => acceptedSessionID),
-      handle: (key, delivery) => {
-        handledDispatchAttempts.add(key);
-        pi.appendEntry(HANDLED_ATTEMPT_ENTRY, {
-          attempt: delivery.attempt,
-          message_id: delivery.id,
-        });
-        const open = hostSessionID();
-        if (open !== acceptedSessionID) {
-          logger.warn("envoy: a handled attempt was written to another session's transcript", {
-            addressed: acceptedSessionID,
+    underWay(acceptedSessionID, () =>
+      acceptUserTurn({
+        actorId: acceptedSessionID,
+        // Asked as the session the accept names as its actor, never as the session open here: the
+        // two halves of one accept must not name two sessions.
+        dispatch: () => timedDispatchClient(USER_TURN_ACCEPT_TIMEOUT_MS, () => acceptedSessionID),
+        handle: (key, delivery) => {
+          handledDispatchAttempts.add(key);
+          pi.appendEntry(HANDLED_ATTEMPT_ENTRY, {
             attempt: delivery.attempt,
-            messageID: delivery.id,
-            open,
+            message_id: delivery.id,
           });
-        }
-      },
-      handled: (key) => handledDispatchAttempts.has(key),
-      rendered,
-      warn: (refusal) => {
-        const fields = { attempt: refusal.delivery.attempt, messageID: refusal.delivery.id };
-        if (refusal.reason === "handled") {
+          const open = hostSessionID();
+          if (open !== acceptedSessionID) {
+            logger.warn("envoy: a handled attempt was written to another session's transcript", {
+              addressed: acceptedSessionID,
+              attempt: delivery.attempt,
+              messageID: delivery.id,
+              open,
+            });
+          }
+        },
+        handled: (key) => handledDispatchAttempts.has(key),
+        rendered,
+        warn: (refusal) => {
+          const fields = { attempt: refusal.delivery.attempt, messageID: refusal.delivery.id };
+          if (refusal.reason === "handled") {
+            logger.warn(
+              "envoy: a frame names a Dispatch attempt this session already delivered; it arrives as a card",
+              fields
+            );
+            return;
+          }
+          if (refusal.reason === "no-body") {
+            logger.warn(
+              "envoy: Dispatch accepted a direct message without the stored body and mode to inject; it arrives as a card",
+              fields
+            );
+            return;
+          }
           logger.warn(
-            "envoy: a frame names a Dispatch attempt this session already delivered; it arrives as a card",
-            fields
+            "envoy: Dispatch did not accept a direct message as this session's turn; it arrives as a card",
+            { ...fields, error: messageFor(refusal.error) }
           );
-          return;
-        }
-        if (refusal.reason === "no-body") {
-          logger.warn(
-            "envoy: Dispatch accepted a direct message without the stored body and mode to inject; it arrives as a card",
-            fields
-          );
-          return;
-        }
-        logger.warn(
-          "envoy: Dispatch did not accept a direct message as this session's turn; it arrives as a card",
-          { ...fields, error: messageFor(refusal.error) }
-        );
-      },
-    });
+        },
+      })
+    );
 
   // `session` is the session the frame is addressed to, which every answer to it names and is
   // signed as: the relay reads it off its owner, before anything here awaits, since every frame
@@ -3664,12 +3689,13 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
 
   // The sessions this process has left and still holds a broker client for: a key pair and the
   // token last traded for it (`CLIENTS`, @legion/envoy-client/broker-credential). A session goes
-  // in when the host leaves it (`noteMove`, and the pass that closes its agent subject) and out
-  // once the pass has run its role move (`settleRole`), the last call that presents that
-  // session's own credential — whether or not that move decided anything — so a process that
-  // moves between sessions all day holds one client rather than one per session it ever bound.
-  // Only a pass fenced before that point leaves its entries here for the next; a later hand-back
-  // for a session already forgotten trades again under that session's name.
+  // in when the host leaves it (`noteMove`, and the pass that closes its agent subject), and when
+  // the last Dispatch call for a session the host is no longer on ends (`underWay`); it goes out
+  // once a pass has run its role move (`settleRole`), whether or not that move decided anything,
+  // and no Dispatch call holds it — so a process that moves between sessions all day holds one
+  // client rather than one per session it ever bound. A pass fenced before that point, or a
+  // session a call still holds, leaves its entry here for the next; a call that starts for a
+  // session already forgotten trades again under that session's name.
   const leftSessions = new Set<string>();
 
   interface PassCause {
@@ -3806,9 +3832,13 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
     // one's key pair and token go now (`leftSessions`), whether or not the move decided. The
     // session running now is never one of them: a rollback to a session this pass left behind
     // keeps trading under it.
+    // A session a Dispatch call still holds (`underWay`) stays for the next pass.
     leftSessions.delete(host);
-    for (const other of leftSessions) forgetBrokerSession(other);
-    leftSessions.clear();
+    for (const other of leftSessions) {
+      if (callsUnderWay.has(other)) continue;
+      forgetBrokerSession(other);
+      leftSessions.delete(other);
+    }
     // nats.js's own error can carry what the servers were set to (a resolver's error names the
     // host it looked up, a socket's the port, a password's digits included), so a notice carries
     // its code, the server's own text, or this plugin's own message (`natsFailureReason`).
