@@ -154,7 +154,7 @@ export class DispatchGatewayError extends DispatchServiceError {
     status: number,
     /**
      * `<METHOD> <url> answered <status>[ <reason>] with <body>, which looks like a proxy or
-     * gateway page rather than Dispatch's own answer`, the URL without its user and password.
+     * gateway page rather than Dispatch's own answer`, the URL as `requestForText` names it.
      */
     readonly answer: string,
     /** What asking again can do, as a clause that follows "so", without a final stop. */
@@ -188,7 +188,7 @@ export class DispatchWriteUnsettledError extends Error {
     readonly attempts: number,
     /**
      * What the write got, as the message's first clause, where `last` is no refusal that says it:
-     * `<METHOD> <url>` (the URL without its user and password) and how it ended. `last`'s own
+     * `<METHOD> <url>` (the URL as `requestForText` names it) and how it ended. `last`'s own
      * message otherwise.
      */
     unanswered?: string,

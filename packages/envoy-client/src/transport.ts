@@ -736,7 +736,8 @@ export class EnvoyApiError extends Error {
   constructor(
     readonly details: {
       readonly method: string;
-      /** The request's URL as text names it: without the user and password it may carry. */
+      /** The request's URL as text names it (`requestForText`): as built on a plain base, and the
+       *  base's fixed phrase otherwise. */
       readonly url: string;
       readonly status: number;
       readonly responseBody: string;

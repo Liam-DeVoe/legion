@@ -659,8 +659,9 @@ A non-2xx answer is thrown as `DispatchServiceError`. Dispatch's own refusal, JS
 `error`, is the error's message under its `code` (`HTTP_<status>` when the server set none), with
 `fromDispatch` true. Any other body — a gateway's HTML page, an empty body, JSON of another shape —
 did not come from Dispatch, so it is a `DispatchGatewayError` (`fromDispatch` false) whose message
-names the method, the URL with its query and without the user and password it may carry (never
-the bearer, which is a header), the status and reason phrase, a one-line plain-text excerpt of the
+names the method, the request's URL as built where the configured URL is a plain http(s) URL and
+that URL's fixed phrase otherwise (`requestForText`, `@legion/contracts/log-text`; never the
+bearer, which is a header), the status and reason phrase, a one-line plain-text excerpt of the
 body, and what asking again can do. The excerpt
 drops scripts, styles and tags, reads at most the body's first 64 KiB in linear time, and, like the
 reason phrase, has the value after `Authorization:` or `Bearer` redacted, and every run of 8 or more
@@ -720,7 +721,8 @@ address; an empty `DISPATCH_*` variable counts as unset. The token resolves from
 the bearer to a pane without putting it on argv), then `DISPATCH_TOKEN`, then the chosen file's
 `dispatch.token`; while `DISPATCH_URL` is unset, a checkout that names its own `dispatch.serverUrl`
 gives that server and its own token instead. A set `DISPATCH_TOKEN_FILE` that is unreadable or blank
-disables Dispatch and names the path in `error`; it never falls back. The chosen file's token goes
+disables Dispatch and names the variable and the read error's code in `error`, never the path; it
+never falls back. The chosen file's token goes
 with `DISPATCH_URL` only when it names the origin of the server written beside it: any other server
 needs `DISPATCH_TOKEN` or `DISPATCH_TOKEN_FILE`, and is refused with
 `DISPATCH_URL names <origin>, but <file>'s dispatch.token is for <origin>; set DISPATCH_TOKEN or
