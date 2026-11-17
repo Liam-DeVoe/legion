@@ -16,9 +16,9 @@ type sessionAnswer struct {
 }
 
 // answered keeps the model that just answered, under the session the claim records now: the fence
-// has dropped an answer of a launch the claim has left (Machine.fence), so this one is of the launch
-// that registered that session. It writes nothing to the store and leaves the claim exactly where
-// it found it.
+// has dropped an answer of a launch before that session's spawn (Machine.fence, sessionFrom), so
+// this one is of a launch of that session, the one that spawned it or a resume of it. It writes
+// nothing to the store and leaves the claim exactly where it found it.
 func answered(m *Machine, _ context.Context, ev Event) error {
 	a := ev.(StreamAnswered)
 	m.answer.Store(&sessionAnswer{Answer: Answer{Model: a.Model}, session: m.claim.Session})
