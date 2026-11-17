@@ -711,9 +711,10 @@ func TestAMergeEventEndsAHeldMergeStep(t *testing.T) {
 // A parked tree hands over only an unheld member with an open pull request. The close of its
 // linger retires the other merge workers too, and ends the merge of one whose pull request can no
 // longer land: its record ends rather than staying running. A held merger's open pull request
-// can still land, so its merge stays open until it does, and ends passed (C1's one exception), or
-// until the pull request closes unmerged, which ends it stopped, once. A member handed over keeps
-// its merge open for its readmit to end, whatever its pull request does.
+// can still land, so its merge stays open until it does, and ends passed (the one end no move of
+// the table writes that is not stopped), or until the pull request closes unmerged, which ends it
+// stopped, once. A member handed over keeps its merge open for its readmit to end, whatever its
+// pull request does.
 func TestALingerCloseEndsAMergeThatItDoesNotHandOver(t *testing.T) {
 	merged := intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 43, HeadSHA: "head-43", MergeSHA: "merge-43"}
 	closed := intake.PullRequestClosed{Repo: "sjawhar/legion", Number: 43, HeadSHA: "head-43"}

@@ -288,9 +288,9 @@ func (e *Engine) upgradedStart(ctx context.Context, tx pgx.Tx, issue record.Issu
 }
 
 // startAgent is the agent a start of the step issue stands in at names: the tree architect for
-// accepting (open point 4 of the plan: a sub-architect's own claim is runtime state the record does
-// not hold), nobody for a merge GitHub has already made, where no merger starts, and the claim of
-// the phase's worker otherwise.
+// accepting (a sub-architect's own claim is runtime state the record does not hold), nobody for a
+// merge GitHub has already made, where no merger starts, and the claim of the phase's worker
+// otherwise.
 func (e *Engine) startAgent(ctx context.Context, tx pgx.Tx, issue record.Issue, at phase.Phase) (claim.Token, error) {
 	switch at {
 	case phase.Accepting:

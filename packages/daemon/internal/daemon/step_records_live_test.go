@@ -155,7 +155,7 @@ func (l *stepRecordsLive) outage() {
 	}
 }
 
-// readByIssue is v-records, the read by issue: `dispatch steps` run as a person of the project
+// readByIssue is the read of an issue's steps: `dispatch steps` run as a person of the project
 // prints the header `<KEY>: 10 steps in 1 tasks` and one line for each of the walk's ten runs,
 // each ended with its result, each with an agent, and each of kind step with the model that
 // answered it. The control deletes the failed review's record from Dispatch's own store, its node

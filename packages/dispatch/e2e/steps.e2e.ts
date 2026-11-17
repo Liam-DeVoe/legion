@@ -1,11 +1,10 @@
 import { createIssue, createProject, putStep } from "./api";
 import { expect, test } from "./test";
 
-// An issue's Steps tab reads the step records Legion's daemon wrote of it (dispatch://INFRA-3570,
-// R18): each run of each step of each task, with the attempt the server counts, and a run that has
-// not ended read as running. The records go through the route the daemon writes with, as the
-// session `legion-daemon:LEG`, and a review's end arrives before its start, as an outbox row
-// that retried can deliver it.
+// An issue's Steps tab reads the step records Legion's daemon wrote of it: each run of each step
+// of each task, with the attempt the server counts, and a run that has not ended read as running.
+// The records go through the route the daemon writes with, as the session `legion-daemon:LEG`, and
+// a review's end arrives before its start, as an outbox row that retried can deliver it.
 
 const at = (time: string) => `2026-11-16T${time}:00Z`;
 

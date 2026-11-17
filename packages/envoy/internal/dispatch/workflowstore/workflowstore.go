@@ -11,9 +11,9 @@
 // only the write that sets the result sets, and makes the node when none exists (PutStep). The
 // read of an issue (IssueSteps) answers each run with its attempt, which no write stores.
 //
-// The vocabulary is the node and tuple store's, which legion/INFRA-1149 is to add and this tree
-// does not hold yet, as internal/dispatch/prioritystore's is: the rows copy into that store's
-// tables column for column the day it lands.
+// The vocabulary is the graph's node and tuple store's, which this tree does not hold yet, as
+// internal/dispatch/prioritystore's is: the rows copy into that store's tables column for column
+// the day it lands.
 package workflowstore
 
 import (

@@ -215,7 +215,7 @@ func TestALingeringMemberThatNeverMergesEndsItsMergeStepOnce(t *testing.T) {
 }
 
 // The linger leaves a member's merge step open, and only one of three writes ends it before any
-// new start of it (B3-1): the promotion of the tree admitted again, which starts the member's merger
+// new start of it: the promotion of the tree admitted again, which starts the member's merger
 // again; the merge, landing between the root's readmit and that promotion; or the hand-over at the
 // linger's close, where readmit ends it and the promotion of the new root ends nothing more.
 func TestAReadmittedTreeEndsTheOpenMergeStepBeforeItStartsTheMemberAgain(t *testing.T) {

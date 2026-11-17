@@ -36,9 +36,10 @@ function bodyRows(table: HTMLElement): string[][] {
     );
 }
 
-// One table per task, in the server's order, each run one row with the nine columns the plan
-// names. A review that failed says where it sent the task back to, a run that has not ended says
-// it runs, and a field the record does not hold reads as a dash rather than as an empty cell.
+// One table per task, in the server's order, each run one row with nine columns: step, role,
+// type, agent, model, attempt, start, end and result. A review that failed says where it sent the
+// task back to, a run that has not ended says it runs, and a field the record does not hold reads
+// as a dash rather than as an empty cell.
 test("the Steps tab draws each task's runs as a table, a running run as running", async () => {
   const tab = renderTab(async () => ({
     issue: "CORE-1",
