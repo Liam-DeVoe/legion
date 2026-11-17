@@ -1084,7 +1084,7 @@ type mpTarget struct {
 }
 
 func mpInbox(sessionID string) mpTarget {
-	return mpTarget{topic: contracts.AgentSubject(sessionID), session: sessionID}
+	return mpTarget{topic: contracts.LegacyAgentSubject(sessionID), session: sessionID}
 }
 
 // publish publishes one message to sessionID's inbox and returns it once the stream stored it.

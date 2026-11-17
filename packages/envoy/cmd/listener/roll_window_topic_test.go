@@ -12,6 +12,7 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
@@ -229,7 +230,7 @@ func pullOnce(t *testing.T, js natsgo.JetStreamContext, sessionID string) []stri
 // A session follows a topic no stream subject captures when it registers; the newer build's start
 // then adds the subject, a message is stored on the topic, the session's relay sends one pull,
 // and only after it does the session register again. The message is delivered: the registration
-// kept the topic in the row and in the consumer's filter (bus.SessionConsumerFilters), which
+// kept the topic in the row and in the consumer's filter (bus.CanFilterOn), which
 // nats-server takes for a subject no stream subject captures, so the pull hands it over.
 //
 // Before the filter kept such a topic, the first registration left it out of the row and the
@@ -266,7 +267,7 @@ func TestATopicAddedAfterItsRegistrationIsDeliveredAcrossAMessageDeliveredBefore
 	const sessionID = "ses_roll_delivered_between"
 	url := testnats.URL(t)
 	rig, js := rollWindowRig(t, url, url)
-	own := contracts.AgentSubject(sessionID)
+	own := contracts.LegacyAgentSubject(sessionID)
 
 	rig.subscribe(t, consumerRegistration(sessionID, "e", rollTopic))
 	addStreamSubject(t, js, rollNewerSubject)
@@ -299,7 +300,7 @@ func TestATopicNoStreamCapturesIsKeptInTheRowAndTheFilterAndDeliversNothing(t *t
 	}
 	url := testnats.URL(t)
 	rig, js := rollWindowRig(t, url, url)
-	own := contracts.AgentSubject(sessionID)
+	own := contracts.LegacyAgentSubject(sessionID)
 
 	for registration := range 2 {
 		answer := rig.subscribe(t, consumerRegistration(sessionID, "e", topic))
@@ -310,7 +311,9 @@ func TestATopicNoStreamCapturesIsKeptInTheRowAndTheFilterAndDeliversNothing(t *t
 		if want := []string{own, topic}; !slices.Equal(stored.Topics, want) {
 			t.Fatalf("registration %d stored %v, want %v: the topic no stream subject captures is kept", registration+1, stored.Topics, want)
 		}
-		if want := []string{own, topic}; !slices.Equal(rig.filters(t, sessionID), want) {
+		// The filter carries every form of each subject (bus.SessionConsumerFilters, 2200c28e #4134
+		// added the agent subject's new form, notifications.agent.*.<session>), the kept topic among them.
+		if want := bus.SessionConsumerFilters([]string{own, topic}); !slices.Equal(rig.filters(t, sessionID), want) {
 			t.Fatalf("registration %d left the consumer of %s filtering on %v, want %v", registration+1, sessionID, rig.filters(t, sessionID), want)
 		}
 		if want := []string{contracts.UncapturedTopicWarning(topic, sessionID)}; !slices.Equal(answer.Warnings, want) {
@@ -326,5 +329,82 @@ func TestATopicNoStreamCapturesIsKeptInTheRowAndTheFilterAndDeliversNothing(t *t
 	}
 	if delivered := pullOnce(t, js, sessionID); len(delivered) != 0 {
 		t.Fatalf("the consumer of %s delivered %v, want nothing: no stream stores %s", sessionID, delivered, topic)
+	}
+}
+
+// A followed topic whose second form only a newer build's subject captures is in the session's
+// consumer filter in both forms from its registration on, and a message stored on that second form
+// once the newer build has added the subject is delivered. The filter is the join of two steps: the
+// keep predicate (bus.CanFilterOn) is asked of the topic the session followed
+// (sessionConsumerFilter), and the session consumers then filter on every form of each kept topic
+// (bus.SessionConsumerFilters, contracts.TopicForms), judging no form. The deployed stream here is
+// an older build's whose one issue subject captures the issue's old form,
+// notifications.dispatch.issue.INFRA-12.>, and the newer build's start adds
+// notifications.dispatch.issue.INFRA.>, which captures the form with the project first that a
+// producer moving to the new names (dispatch://INFRA-3884) publishes on.
+//
+// A filter that judged each form on the deployed stream's subjects as this listener last read them
+// would leave the new form out at the registration, and the consumer, which moves past a message
+// its filter does not match, would skip what the stream stores on that form after the newer
+// build's start until a later write of the filter took the form in.
+func TestAFollowedTopicWhoseSecondFormOnlyANewerSubjectCapturesKeepsBothFormsInTheFilter(t *testing.T) {
+	const (
+		sessionID   = "ses_roll_second_form"
+		olderIssues = "notifications.dispatch.issue.INFRA-12.>"
+		newerIssues = "notifications.dispatch.issue.INFRA.>"
+	)
+	followed := contracts.LegacyDispatchIssueSubject("INFRA-12", ">")
+	second := contracts.DispatchIssueSubject("INFRA", "INFRA-12", ">")
+	if forms := contracts.TopicForms(followed); !slices.Contains(forms, second) {
+		t.Fatalf("the forms of %s are %v, want %s among them", followed, forms, second)
+	}
+	url := testnats.URL(t)
+	conn := testnats.Connect(t, url)
+	t.Cleanup(conn.Close)
+	js, err := conn.JetStream()
+	if err != nil {
+		t.Fatalf("open the row's JetStream: %v", err)
+	}
+	// The older build's stream: this build's subjects but its issue subject, and the older one
+	// that captures the followed topic's first form alone, under a generation this build leaves as
+	// it is (deployNewerBuildsStream).
+	subjects := slices.DeleteFunc(bus.StreamCarriedSubjects(), func(subject string) bool {
+		return strings.HasPrefix(subject, "notifications.dispatch.")
+	})
+	if _, err := js.AddStream(&natsgo.StreamConfig{
+		Name:      bus.Stream,
+		Subjects:  append(subjects, olderIssues),
+		Retention: natsgo.LimitsPolicy,
+		Discard:   natsgo.DiscardNew,
+		Storage:   natsgo.FileStorage,
+		Metadata:  map[string]string{bus.StreamIDMetadataKey: id.New(), "dispatch.stream-generation": "1000000"},
+	}); err != nil {
+		t.Fatalf("the older build creates %s: %v", bus.Stream, err)
+	}
+	client, err := bus.ConnectOwningStream([]string{url}, bus.WithReplicas(1))
+	if err != nil {
+		t.Fatalf("connect the listener: %v", err)
+	}
+	t.Cleanup(client.Close)
+	if !client.DeployedStreamCaptures(followed) || client.DeployedStreamCaptures(second) {
+		t.Fatalf("the listener judges %s captured %t and %s captured %t; the row needs the first form captured and the second not",
+			followed, client.DeployedStreamCaptures(followed), second, client.DeployedStreamCaptures(second))
+	}
+	rig := newSessionConsumerRigOn(t, client, url)
+
+	rig.subscribe(t, consumerRegistration(sessionID, "e", followed))
+	filters := rig.filters(t, sessionID)
+	for _, form := range []string{followed, second} {
+		if !slices.Contains(filters, form) {
+			t.Fatalf("the consumer of %s filters on %v after its registration, want %s among them: each form of %s, the one no stream subject captures yet included",
+				sessionID, filters, form, followed)
+		}
+	}
+	addStreamSubject(t, js, newerIssues)
+	stored := contracts.DispatchIssueSubject("INFRA", "INFRA-12", "comment.created")
+	sequence := rig.store(t, stored)
+	if delivered := pullOnce(t, js, sessionID); !slices.Contains(delivered, stored) {
+		t.Fatalf("the message stored on %s at stream sequence %d, after the newer build added %s, was not delivered to %s: the consumer delivered %v, and filters on %v",
+			stored, sequence, newerIssues, sessionID, delivered, rig.filters(t, sessionID))
 	}
 }

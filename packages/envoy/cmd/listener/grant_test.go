@@ -45,7 +45,7 @@ func TestAListenerUnderItsMachinesGrantHoldsTheLeaseAndRecordsLastSeen(t *testin
 		t.Fatalf("connect as the admin: %v", err)
 	}
 	t.Cleanup(admin.Close)
-	state, err := bus.OpenKeyValue(admin.Conn, admin.JS(), bus.ListenerStateBucket)
+	state, err := bus.OpenKeyValue(t.Context(), admin.Conn, admin.JS(), bus.ListenerStateBucket)
 	if err != nil {
 		t.Fatalf("open the listener state bucket: %v", err)
 	}

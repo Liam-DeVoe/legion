@@ -63,7 +63,7 @@ func TestTheInterestsListAnswersWithinItsBudgetWhileTheLastSeenBucketHangs(t *te
 	// The session never registered, so the session cache misses it and the row's last heartbeat
 	// is read from the bucket, as a lapsed session's is.
 	if _, err := registry.Upsert(store.Interest{SessionID: lapsed, MachineID: "test-machine", Dir: "/test"},
-		[]string{contracts.AgentSubject(lapsed), "notifications.test.>"}); err != nil {
+		[]string{contracts.LegacyAgentSubject(lapsed), "notifications.test.>"}); err != nil {
 		t.Fatalf("write %s's interest record: %v", lapsed, err)
 	}
 	waitFor(t, 5*time.Second, "the interest cache to hold the lapsed row", func() bool {

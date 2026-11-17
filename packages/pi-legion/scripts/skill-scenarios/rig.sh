@@ -774,9 +774,11 @@ services_up() {
     -c max_connections=$((30 * ${SKILL_SCENARIOS_PARALLEL:-5} + 20)) >/dev/null
   pg_port=$(docker port "$tag-pg" 5432/tcp | sed -n '1s/.*://p')
   [ -n "$pg_port" ] || fail "docker assigned Postgres no host port"
-  # ghcr.io/cybermonklabs/legion/ci, the copy of nats:2.15.1 (.github/ci-images.yaml): the
-  # version cmd/listener/README.md requires, since a listener runs against this one.
-  docker run -d --name "$tag-nats" --cpus 1 --memory 512m -p 127.0.0.1::4222 ghcr.io/cybermonklabs/legion/ci@sha256:023a08c46caa5aff878fb86841187bebfdad9a6e3c552ba5c1a1e18938bbf88a -js >/dev/null
+  # The hub's nats-server (lib/nats-image.sh reads testnats.HubImage): the listener and the daemon
+  # refuse a nats-server below the floor packages/envoy/natsversion holds, every 2.10 among them.
+  # shellcheck source-path=SCRIPTDIR/../../../.. source=scripts/e2e/lib/nats-image.sh
+  . "$root/scripts/e2e/lib/nats-image.sh"
+  docker run -d --name "$tag-nats" --cpus 1 --memory 512m -p 127.0.0.1::4222 "$nats_image" -js >/dev/null
   nats_port=$(docker port "$tag-nats" 4222/tcp | sed -n '1s/.*://p')
   [ -n "$nats_port" ] || fail "docker assigned NATS no host port"
   until_true 60 "Postgres to accept TCP connections" docker exec "$tag-pg" pg_isready -h 127.0.0.1 -p 5432 -U postgres

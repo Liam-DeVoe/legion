@@ -129,7 +129,7 @@ func TestAnUnansweredBucketCreateIsSentAgainAndTheStartGoesOn(t *testing.T) {
 	if _, err := js.KeyValue(bucket); err != nil {
 		t.Fatalf("the bucket the start created is not on the server: %v", err)
 	}
-	if _, err := handle.ReadStreamState(); err != nil {
+	if _, err := handle.ReadStreamState(context.Background()); err != nil {
 		t.Fatalf("read the bucket's stream through the handle the start was given: %v", err)
 	}
 	// Two creates ride this subject: the one whose send was lost and the one that made the bucket.
@@ -164,7 +164,7 @@ func TestAnUnansweredAccountInfoIsSentAgainAndTheStartGoesOn(t *testing.T) {
 	if _, err := js.KeyValue(bucket); err != nil {
 		t.Fatalf("the bucket the start created is not on the server: %v", err)
 	}
-	if _, err := handle.ReadStreamState(); err != nil {
+	if _, err := handle.ReadStreamState(context.Background()); err != nil {
 		t.Fatalf("read the bucket's stream through the handle the start was given: %v", err)
 	}
 	// Two account infos ride this subject: the one whose send was lost and the one of the send
@@ -203,7 +203,7 @@ func TestAnUnansweredHandleOpenIsSentAgainAndTheStartGoesOn(t *testing.T) {
 	conn, _, kv := unansweredKeyValue(t, relay)
 
 	relay.Arm(1)
-	handle, err := wrapKeyValue(conn, kv, true, startSendsAgain)
+	handle, err := wrapKeyValue(context.Background(), conn, kv, true, startSendsAgain)
 	if err != nil {
 		t.Fatalf("a start whose first handle open drew no answer = %v, want it to go on", err)
 	}
@@ -214,7 +214,7 @@ func TestAnUnansweredHandleOpenIsSentAgainAndTheStartGoesOn(t *testing.T) {
 	if handle.Bucket() != unansweredBucket {
 		t.Fatalf("the handle is on bucket %q, want %q", handle.Bucket(), unansweredBucket)
 	}
-	if _, err := handle.ReadStreamState(); err != nil {
+	if _, err := handle.ReadStreamState(context.Background()); err != nil {
 		t.Fatalf("read the bucket's stream through the handle the start was given: %v", err)
 	}
 }
@@ -228,7 +228,7 @@ func TestAnUnansweredHandleOpenOfAFoundBucketIsSentAgainAndTheStartGoesOn(t *tes
 	conn, _, kv := unansweredKeyValue(t, relay)
 
 	relay.Arm(1)
-	handle, err := wrapKeyValue(conn, kv, false, startSendsAgain)
+	handle, err := wrapKeyValue(context.Background(), conn, kv, false, startSendsAgain)
 	if err != nil {
 		t.Fatalf("a start that found its bucket and lost its first handle open = %v, want it to go on", err)
 	}
@@ -236,7 +236,7 @@ func TestAnUnansweredHandleOpenOfAFoundBucketIsSentAgainAndTheStartGoesOn(t *tes
 	if sends := relay.Sent(); sends != 2 {
 		t.Fatalf("handle opens sent = %d, want 2: the lost one and the one that answered", sends)
 	}
-	if _, err := handle.ReadStreamState(); err != nil {
+	if _, err := handle.ReadStreamState(context.Background()); err != nil {
 		t.Fatalf("read the bucket's stream through the handle the start was given: %v", err)
 	}
 }
@@ -248,7 +248,7 @@ func TestAnAnsweredHandleOpenIsSentOnce(t *testing.T) {
 	conn, _, kv := unansweredKeyValue(t, relay)
 
 	relay.Arm(0)
-	if _, err := wrapKeyValue(conn, kv, true, startSendsAgain); err != nil {
+	if _, err := wrapKeyValue(context.Background(), conn, kv, true, startSendsAgain); err != nil {
 		t.Fatalf("a start whose handle open the server answered = %v, want it to go on", err)
 	}
 

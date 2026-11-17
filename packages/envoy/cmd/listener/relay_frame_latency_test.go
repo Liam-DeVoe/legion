@@ -47,7 +47,7 @@ func TestAFramesRoundTripIsFarInsideTheRelaysSettleGrace(t *testing.T) {
 	const sessionID = "ses_frame_latency"
 	standIn := startSessionStandIn(t, rig.url, sessionID, answerDone)
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-latency"))
-	subject := contracts.AgentSubject(sessionID)
+	subject := contracts.LegacyAgentSubject(sessionID)
 	consumer, ok := bus.SessionConsumerName(sessionID)
 	if !ok {
 		t.Fatalf("no session consumer name for %s", sessionID)

@@ -73,7 +73,7 @@ func TestALatePlannedInterestWriteIsRefusedOverADeleteMadeAfterItsPlan(t *testin
 	t.Cleanup(cleanup)
 	reg, kv := coldRegistry(t, conn)
 	const sessionID = "ses_late_interest"
-	topics := []string{contracts.AgentSubject(sessionID), "notifications.team.late"}
+	topics := []string{contracts.LegacyAgentSubject(sessionID), "notifications.team.late"}
 
 	plan, err := reg.PlanInterest(context.Background(), sessionID, topics)
 	if err != nil {

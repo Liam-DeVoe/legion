@@ -67,7 +67,7 @@ const (
 // TestTwoBuildsAnOlderPodRelaysATopicOnlyTheNewerBuildsSubjectCaptures measures one. A pod of the
 // plain build serves it: a registration stores every followed topic, a session consumer's filter
 // carries each one a consumer can filter on whatever the deployed stream's subjects capture
-// (sessionConsumerFilter, bus.SessionConsumerFilters), and no build's ensure drops a subject it
+// (sessionConsumerFilter, bus.CanFilterOn), and no build's ensure drops a subject it
 // does not compile in. So once a pod of the other build has added the subject, a session
 // following a topic on it is served by a pod of either build, whichever build holds the term. A
 // pod of this build names such a topic in a warning only while a read of the subjects that
@@ -217,7 +217,7 @@ func TestTwoBuildsSkipOrDoubleNoMessage(t *testing.T) {
 // Before #2461 the plain build filtered a session's consumer on the subjects it compiles
 // (bus.StreamCaptures), so the topic was out of the session consumer's filter and the message
 // never reached the session. The filter now carries every followed topic a consumer can filter
-// on, whatever any stream's subjects capture (sessionConsumerFilter, bus.SessionConsumerFilters).
+// on, whatever any stream's subjects capture (sessionConsumerFilter, bus.CanFilterOn).
 func TestTwoBuildsAnOlderPodRelaysATopicOnlyTheNewerBuildsSubjectCaptures(t *testing.T) {
 	const (
 		sessionID = "ses_tb_newer_subject"
@@ -369,7 +369,7 @@ func tbPublishThrough(t *testing.T, pod *mpPod, sessionID, topic, event string) 
 // all inside A's refresh window (tbRoll.requireInsideRefresh), A active and B standby throughout.
 //
 // Before A's filter carried every followed topic a consumer can filter on (sessionConsumerFilter,
-// bus.SessionConsumerFilters), A built it on the subjects it held, and a build before this release
+// bus.CanFilterOn), A built it on the subjects it held, and a build before this release
 // on the subjects it read at its connect, without B's, and left the topic out of it. A filter write
 // keeps the consumer's position, and the server moves a pulling consumer past a message its filter
 // does not match, so the message on the topic was skipped and never reached the session.

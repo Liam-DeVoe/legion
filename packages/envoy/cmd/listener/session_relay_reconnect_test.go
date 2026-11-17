@@ -26,7 +26,7 @@ import (
 // fragment pr2404-session-pull-reconnect.yaml and AGENTS.md say it does not.
 func TestASessionRelayRestartsAtOnceWhenItsPullsConnectionReconnects(t *testing.T) {
 	rig, sessionID, standIn, held, floor := sessionWithAHeldFrame(t, "ses_relay_reconnect_")
-	agent := contracts.AgentSubject(sessionID)
+	agent := contracts.LegacyAgentSubject(sessionID)
 
 	// Three failed restarts raise this run's retry wait: it waits relayRetryFirst, then 2 s, then
 	// 4 s, so the wait standing when the reconnect comes is 8 s.
@@ -78,7 +78,7 @@ func TestASessionRelayRestartWaitsForTheMainConnectionRatherThanFailingOnIt(t *t
 	rig := newRelayRigUnownedOn(t, client, url, relayPauseFirst, relayPauseMax)
 	rig.relays.setOwned(endlessTerm())
 	sessionID := "ses_relay_main_reconnect_" + id.New()
-	agent := contracts.AgentSubject(sessionID)
+	agent := contracts.LegacyAgentSubject(sessionID)
 	standIn := startSessionStandIn(t, url, sessionID, answerDone)
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
 	first, _ := rig.storeEvent(t, agent)

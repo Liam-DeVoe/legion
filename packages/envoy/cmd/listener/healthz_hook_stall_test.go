@@ -46,7 +46,7 @@ var errHookStallRewatch = errors.New("rewatch interest cache: watch role claims 
 // pod to receive again and leaves the stall as the only thing wrong with it.
 func failReconnectHooks(t *testing.T, rig *receiverRig) {
 	t.Helper()
-	rig.client.AddReconnectHook(func(*natsgo.Conn) error { return errHookStallRewatch })
+	rig.client.AddReconnectHook(func(context.Context, *natsgo.Conn) error { return errHookStallRewatch })
 	if err := rig.client.Conn.ForceReconnect(); err != nil {
 		t.Fatalf("reconnect in place: %v", err)
 	}

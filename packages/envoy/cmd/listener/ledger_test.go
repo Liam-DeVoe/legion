@@ -211,7 +211,7 @@ func TestAnUnavailableLedgerLetsTheRoleLaneForwardToTheHolder(t *testing.T) {
 
 	coreNATSDeliveryHandler(cfg)(&natsgo.Msg{Subject: item.Topic, Data: marshalListenerEnvelope(t, item)})
 	cfg.roleForwards.settled(t)
-	subject := contracts.AgentSubject(holder)
+	subject := contracts.LegacyAgentSubject(holder)
 	stored, err := harness.client.JS().GetLastMsg(bus.Stream, subject)
 	if err != nil {
 		t.Fatalf("role message %s on %s was dropped while the ledger was down: nothing stored for its holder on %s: %v\n%s", item.EventID, item.Topic, subject, err, harness.logs.String())
@@ -262,7 +262,7 @@ func TestARoleMessageAnotherPodIsAttemptingIsSkippedOnTheRoleLane(t *testing.T) 
 	// settled returns once the stream has answered every forward handed to it, so any forward this
 	// lane made is stored by now.
 	harness.config.roleForwards.settled(t)
-	subject := contracts.AgentSubject(holder)
+	subject := contracts.LegacyAgentSubject(holder)
 	stored, err := harness.client.JS().GetLastMsg(bus.Stream, subject)
 	if err == nil {
 		t.Fatalf("this pod forwarded role message %s to %s while pod A's attempt at it may still land: the stream holds %s on %s", item.EventID, holder, stored.Data, subject)
@@ -366,7 +366,7 @@ func TestAnAgentMessageThisListenerHandsToNobodyIsAckedWithoutAskingTheLedger(t 
 	}
 	deliver := listenerDeliveryHandler(cfg)
 	for _, recipient := range recipients {
-		item := listenerTestEnvelope(contracts.AgentSubject(recipient.sessionID), "unasked-"+recipient.sessionID)
+		item := listenerTestEnvelope(contracts.LegacyAgentSubject(recipient.sessionID), "unasked-"+recipient.sessionID)
 		msg, settlement := settledMessage(t, harness.client.Conn, marshalListenerEnvelope(t, item))
 		warned := strings.Count(harness.logs.String(), ledgerUnavailableLine)
 		deliver(deliveryMessage{data: msg.Data, mode: durableDelivery, msg: msg, ctx: context.Background()})
@@ -412,7 +412,7 @@ func TestADeliveryExceptionsIDIsItsEventRecipientAndReason(t *testing.T) {
 // the two, which is what dedupe.AttemptedAge does on its own.
 func TestARepeatedDeliveryExceptionCarriesOneIDAndIsStoredOnce(t *testing.T) {
 	harness := newListenerDeliveryHarness(t)
-	item := listenerTestEnvelope(contracts.AgentSubject("ses_nowhere"), "agent.ses_nowhere.0123456789abcdef0123456789abcdef")
+	item := listenerTestEnvelope(contracts.LegacyAgentSubject("ses_nowhere"), "agent.ses_nowhere.0123456789abcdef0123456789abcdef")
 	exceptionTopic := bus.ExceptionTopicPrefix + item.Topic
 	probe, err := harness.client.Conn.SubscribeSync(exceptionTopic)
 	if err != nil {

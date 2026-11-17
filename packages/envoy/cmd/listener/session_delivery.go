@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/session"
+	"github.com/sjawhar/envoy/internal/store"
 )
 
 // deliveryModeConsumer is the one mode a registration is answered (deliveryAnswer.Mode): the
@@ -550,7 +551,7 @@ func (m *sessionDelivery) registeredTarget(ctx context.Context, d *listenerDeps,
 	if ackFloor > 0 {
 		start = max(start, ackFloor+1)
 	}
-	return registeredConsumer{filter: sessionConsumerFilter(sessionID, topics), start: start, revision: revision}, registeredTargetBuilt
+	return registeredConsumer{filter: storedRowFilter(d.registry, sessionID, topics), start: start, revision: revision}, registeredTargetBuilt
 }
 
 // mark returns the next of the marks that order registrations against the relay's restarts: a
@@ -991,23 +992,24 @@ func (l *sessionLocks) lock(sessionID string) (unlock func()) {
 
 // sessionConsumerFilter is the subjects sessionID's consumer filters on: its agent subject and
 // every one of topics, the topics its interest row stores, that a session consumer can filter on
-// (bus.SessionConsumerFilters): a notification topic NATS accepts as a filter subject that is no
-// role lane. It asks nothing of the deployed stream's subjects, so a topic only a newer build's
-// subjects capture is in the filter, and so is one no stream subject captures yet, which
+// (bus.CanFilterOn): a notification topic NATS accepts as a filter subject that is no role lane.
+// It asks nothing of the deployed stream's subjects, so a topic only a newer build's subjects
+// capture is in the filter, and so is one no stream subject captures yet, which
 // /v1/interests/subscribe stores with a warning (uncapturedTopics): nats-server takes a filter
-// subject no stream subject captures (bus.SessionConsumerFilters states where), and once a later
-// build's subject captures the topic the consumer delivers what the stream stores on it. A topic
-// left out until then would be lost: the consumer keeps its position through a filter write and
-// moves past a message its filter does not match as soon as it looks for its next one, at a pull
-// request or a message on its agent subject (fenceFilterWrite's doc states that cost), so a
-// message stored before the next registration widened the filter would never be delivered. A
-// Legion controller's notice lane (notifications.legion.<project>.controller) is one of those
-// topics while the session holds that project's controller role, and this filter is the whole of
-// how it now reaches the controller: the lane's live core subscription, which handed the session
-// only what was published while it was subscribed, went with the rest of the core receive path
-// (INFRA-771), so a notice published while the controller was away is delivered from the stream
-// when it returns. A role lane reaches its holder as a forward on the holder's agent subject, and
-// is no filter subject. SessionConsumers reduces the list to filters that do not overlap.
+// subject no stream subject captures (bus.CanFilterOn states where), and once a later build's
+// subject captures the topic the consumer delivers what the stream stores on it. A topic left out
+// until then would be lost: the consumer keeps its position through a filter write and moves past
+// a message its filter does not match as soon as it looks for its next one, at a pull request or
+// a message on its agent subject (fenceFilterWrite's doc states that cost), so a message stored
+// before the next registration widened the filter would never be delivered. A Legion controller's
+// notice lane (notifications.legion.<project>.controller) is one of those topics while the session
+// holds that project's controller role, and this filter is the whole of how it now reaches the
+// controller: the lane's live core subscription, which handed the session only what was published
+// while it was subscribed, went with the rest of the core receive path (INFRA-771), so a notice
+// published while the controller was away is delivered from the stream when it returns. A role
+// lane reaches its holder as a forward on the holder's agent subject, and is no filter subject.
+// SessionConsumers filters on every form of each subject the list names, reduced to filters that
+// do not overlap (bus.SessionConsumerFilters).
 //
 // A topic the server would refuse as a filter subject (bus.CheckFilterSubject: an empty token, as
 // in a GitHub topic that spells a repository name with a dot, or a `>` before the last token) is
@@ -1015,11 +1017,23 @@ func (l *sessionLocks) lock(sessionID string) (unlock func()) {
 // the session gets no consumer at all, and no message can reach such a subject anyway.
 func sessionConsumerFilter(sessionID string, topics []string) []string {
 	filter := make([]string, 0, len(topics)+1)
-	filter = append(filter, contracts.AgentSubject(sessionID))
+	filter = append(filter, contracts.LegacyAgentSubject(sessionID))
 	for _, topic := range topics {
-		if bus.SessionConsumerFilters(topic) {
+		if bus.CanFilterOn(topic) {
 			filter = append(filter, topic)
 		}
 	}
+	return filter
+}
+
+// storedRowFilter is sessionConsumerFilter of topics, sessionID's interest row as read from
+// registry, and counts each topic of the filter that is in the old form of its name
+// (store.Registry.CountStoredLegacyTopics): a stored row read into a filter is a reader of the old
+// form for as long as the row holds one. Every read of a stored row into a filter comes through
+// here (registeredTarget, storedFilterStep, sessionRelays.storedFilter); a registration's own plan
+// does not, since the subscribe route counted its old forms as it took them.
+func storedRowFilter(registry *store.Registry, sessionID string, topics []string) []string {
+	filter := sessionConsumerFilter(sessionID, topics)
+	registry.CountStoredLegacyTopics(sessionID, filter)
 	return filter
 }

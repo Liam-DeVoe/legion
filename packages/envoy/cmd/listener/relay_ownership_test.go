@@ -436,7 +436,7 @@ func TestARelayUnsubscribesItsPullWhenItsTermEndsSoTheNextHolderTakesEachMessage
 		waiting, _ := consumerCounts(t, next, sessionID)
 		return waiting == 1
 	})
-	item, seq := old.storeEvent(t, contracts.AgentSubject(sessionID))
+	item, seq := old.storeEvent(t, contracts.LegacyAgentSubject(sessionID))
 	frame := standIn.collect(t, 1, 5*time.Second)[0]
 	if frame.seq != seq || frame.item.EventID != item.EventID {
 		t.Fatalf("the session took seq %d (event %s), want seq %d (event %s)", frame.seq, frame.item.EventID, seq, item.EventID)
@@ -477,7 +477,7 @@ func TestARelayLeavesAMessageArrivingAfterItsTermEndedForTheNextHolder(t *testin
 	if left := held.UntilLoss(term); left != 0 {
 		t.Fatalf("pod-a's lease has %s left before its loss deadline, want none", left)
 	}
-	item, seq := old.storeEvent(t, contracts.AgentSubject(sessionID))
+	item, seq := old.storeEvent(t, contracts.LegacyAgentSubject(sessionID))
 	select {
 	case frame := <-standIn.frames:
 		t.Fatalf("the old pod forwarded seq %d (event %s), which reached its pull after its term ended: the session takes it from this pod and again from the next holder, which the server delivers it to unacked", frame.seq, frame.item.EventID)

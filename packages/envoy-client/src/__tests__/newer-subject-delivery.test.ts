@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { agentSubject, EnvelopeSchema } from "@legion/contracts";
+import { EnvelopeSchema, legacyAgentSubject } from "@legion/contracts";
 import { connect, StringCodec } from "nats";
 import {
   type EnvoyStack,
@@ -68,7 +68,7 @@ describe.skipIf(!envoyStackEnabled)("a topic only a newer build's stream subject
       expect(config.subjects).not.toContain(NEWER_SUBJECT);
       await jsm.streams.update(STREAM, { subjects: [...(config.subjects ?? []), NEWER_SUBJECT] });
 
-      const own = agentSubject(SESSION);
+      const own = legacyAgentSubject(SESSION);
       const delivered: string[] = [];
       const arrived = Promise.withResolvers<void>();
       const failures: string[] = [];

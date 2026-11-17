@@ -143,7 +143,7 @@ type mpException struct {
 // stream does not store again included.
 func (p *mpPublisher) watchExceptions(t *testing.T, sessionID string) *natsgo.Subscription {
 	t.Helper()
-	subject := bus.ExceptionTopicPrefix + contracts.AgentSubject(sessionID)
+	subject := bus.ExceptionTopicPrefix + contracts.LegacyAgentSubject(sessionID)
 	subscription, err := p.client.Conn.SubscribeSync(subject)
 	if err != nil {
 		t.Fatalf("subscribe to %s: %v", subject, err)
@@ -281,7 +281,7 @@ func TestTwoPodsReportARedeliveredNoHolderOnceUnderOneID(t *testing.T) {
 	if first.id != second.id {
 		t.Fatalf("the two reports of %s's no_holder carry the ids %s and %s, want one", m.event, first.id, second.id)
 	}
-	subject := bus.ExceptionTopicPrefix + contracts.AgentSubject(nobody)
+	subject := bus.ExceptionTopicPrefix + contracts.LegacyAgentSubject(nobody)
 	info, err := publisher.client.JS().StreamInfo(bus.Stream, &natsgo.StreamInfoRequest{SubjectsFilter: subject})
 	if err != nil {
 		t.Fatalf("read the stream's messages on %s: %v", subject, err)

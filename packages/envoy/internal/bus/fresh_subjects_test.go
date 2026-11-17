@@ -239,7 +239,7 @@ func TestASubjectsReadThatEndsAfterALaterOneKeepsTheLaterOnesSubjects(t *testing
 	r1 := make(chan struct{})
 	go func() {
 		defer close(r1)
-		client.readDeployedSubjects(conn, streamSubjectsRead)
+		client.readDeployedSubjects(context.Background(), conn, streamSubjectsRead)
 	}()
 	select {
 	case <-held:
@@ -283,7 +283,7 @@ func TestASubjectsReadThatStartsAfterTheKeptOneReplacesIt(t *testing.T) {
 	if conn == nil {
 		t.Fatal("the client is not connected")
 	}
-	if !client.readDeployedSubjects(conn, streamSubjectsRead) {
+	if !client.readDeployedSubjects(context.Background(), conn, streamSubjectsRead) {
 		t.Fatal("the first read of the stream's subjects was refused")
 	}
 	r1 := client.deployedSubjects.Load()
@@ -292,7 +292,7 @@ func TestASubjectsReadThatStartsAfterTheKeptOneReplacesIt(t *testing.T) {
 	}
 
 	addNewerSubject(t, js)
-	if !client.readDeployedSubjects(conn, streamSubjectsRead) {
+	if !client.readDeployedSubjects(context.Background(), conn, streamSubjectsRead) {
 		t.Fatal("the second read of the stream's subjects was refused")
 	}
 	r2 := client.deployedSubjects.Load()
@@ -466,7 +466,7 @@ func TestAnEnsureKeepsItsSubjectsOverAReadAnsweredBeforeItsUpdate(t *testing.T) 
 	client.streamConfig = &cfg
 	var r *subjectsRead
 	interleaved := &interleavedJetStream{JetStreamContext: client.JS(), beforeUpdate: func() {
-		if !client.readDeployedSubjects(conn, streamSubjectsRead) {
+		if !client.readDeployedSubjects(context.Background(), conn, streamSubjectsRead) {
 			t.Fatal("the read inside the ensure was refused")
 		}
 		r = client.deployedSubjects.Load()

@@ -49,7 +49,7 @@ func TestARegistrationBehindAnotherSessionsLostStreamReadIsAnswered(t *testing.T
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	agent := []string{contracts.AgentSubject(restarting)}
+	agent := []string{contracts.LegacyAgentSubject(restarting)}
 	if _, err := delivery.consumers.Ensure(ctx, restarting, agent, 0); err != nil {
 		t.Fatalf("create the restarting session's consumer: %v", err)
 	}
@@ -65,7 +65,7 @@ func TestARegistrationBehindAnotherSessionsLostStreamReadIsAnswered(t *testing.T
 	}()
 	waitFor(t, 5*time.Second, "the restart's stream read to be dropped", func() bool { return relay.droppedRequests() == 1 })
 
-	body, err := json.Marshal(subscribeBody{SessionID: registering, Topics: []string{contracts.AgentSubject(registering)}, SelfSubscribed: true,
+	body, err := json.Marshal(subscribeBody{SessionID: registering, Topics: []string{contracts.LegacyAgentSubject(registering)}, SelfSubscribed: true,
 		Delivery: &subscribeDelivery{Consumer: true, Epoch: "e"}})
 	if err != nil {
 		t.Fatalf("marshal the registration: %v", err)

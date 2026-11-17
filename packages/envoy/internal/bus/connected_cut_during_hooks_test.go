@@ -1,6 +1,7 @@
 package bus_test
 
 import (
+	"context"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -41,7 +42,7 @@ func TestConnectedReadsDownAtACutWhileTheReconnectHooksRun(t *testing.T) {
 		}
 	})
 	var runs atomic.Int32
-	client.AddReconnectHook(func(*natsgo.Conn) error {
+	client.AddReconnectHook(func(context.Context, *natsgo.Conn) error {
 		// Only the first run holds: the hooks run again for the cut below, and a second hook
 		// stuck here would outlive the test.
 		if runs.Add(1) == 1 {

@@ -2022,7 +2022,7 @@ func TestSubscribeHandlerWritesAnUnchangedInterestOnce(t *testing.T) {
 		}
 		sessionRevision = revision(sessionRows)
 	}
-	if want := []string{contracts.AgentSubject("ses_steady"), "notifications.team.steady"}; !reflect.DeepEqual(first.Topics, want) || first.MachineID != "test-machine" || first.Dir != "/work/steady" {
+	if want := []string{contracts.LegacyAgentSubject("ses_steady"), "notifications.team.steady"}; !reflect.DeepEqual(first.Topics, want) || first.MachineID != "test-machine" || first.Dir != "/work/steady" {
 		t.Fatalf("stored interest = %+v, want topics %v on test-machine in /work/steady", first, want)
 	}
 }
@@ -2596,7 +2596,7 @@ func TestTheSenderStampReadsAnInterestTheCacheMissedThroughToTheBucket(t *testin
 			}
 			if _, err := writer.Upsert(store.Interest{
 				SessionID: sender, MachineID: "test-machine", Dir: "/test/" + sender,
-			}, []string{contracts.AgentSubject(sender)}); err != nil {
+			}, []string{contracts.LegacyAgentSubject(sender)}); err != nil {
 				t.Fatalf("write %s's interest record: %v", sender, err)
 			}
 			listed, err := registry.List()
@@ -2799,7 +2799,7 @@ func TestTheMessageRoutesAnswerExpectsReplyInTheRequestsOwnDialect(t *testing.T)
 			name:       "a send writing the literal false",
 			path:       "/v1/messages/send",
 			body:       `{"target_session":"ses_target","message":"hello","expects_reply":false,"idempotency_key":"dialect-send-false"}`,
-			subject:    contracts.AgentSubject("ses_target"),
+			subject:    contracts.LegacyAgentSubject("ses_target"),
 			wantAnswer: `false`,
 			wantBus:    `false`,
 		},
@@ -2807,7 +2807,7 @@ func TestTheMessageRoutesAnswerExpectsReplyInTheRequestsOwnDialect(t *testing.T)
 			name:       "a send writing the old none",
 			path:       "/v1/messages/send",
 			body:       `{"target_session":"ses_target","message":"hello","expects_reply":"none","idempotency_key":"dialect-send-none"}`,
-			subject:    contracts.AgentSubject("ses_target"),
+			subject:    contracts.LegacyAgentSubject("ses_target"),
 			wantAnswer: `"none"`,
 			wantBus:    `false`,
 		},
@@ -2815,7 +2815,7 @@ func TestTheMessageRoutesAnswerExpectsReplyInTheRequestsOwnDialect(t *testing.T)
 			name:       "a send writing required",
 			path:       "/v1/messages/send",
 			body:       `{"target_session":"ses_target","message":"hello","expects_reply":"required","idempotency_key":"dialect-send-required"}`,
-			subject:    contracts.AgentSubject("ses_target"),
+			subject:    contracts.LegacyAgentSubject("ses_target"),
 			wantAnswer: `"required"`,
 			wantBus:    `"required"`,
 		},
@@ -3620,7 +3620,7 @@ func TestSubscribeHandlerKeepsAnUncapturedNotificationTopicAndWarns(t *testing.T
 			if err := json.NewDecoder(recorder.Body).Decode(&answer); err != nil {
 				t.Fatalf("decode the answer: %v", err)
 			}
-			want := slices.Sorted(slices.Values([]string{contracts.AgentSubject(sessionID), "notifications.team.kept", topic}))
+			want := slices.Sorted(slices.Values([]string{contracts.LegacyAgentSubject(sessionID), "notifications.team.kept", topic}))
 			if !slices.Equal(answer.Topics, want) {
 				t.Fatalf("answered topics = %v, want %v: the topic no stream subject captures is kept", answer.Topics, want)
 			}
@@ -3648,7 +3648,7 @@ func TestSubscribeHandlerKeepsAnUncapturedNotificationTopicAndWarns(t *testing.T
 	if err != nil {
 		t.Fatalf("read the stored interest: %v", err)
 	}
-	want := []string{contracts.AgentSubject("ses_captured"), contracts.RoleTopicPrefix + "reviewer", "notifications.team.kept", "team.bridge.>"}
+	want := []string{contracts.LegacyAgentSubject("ses_captured"), contracts.RoleTopicPrefix + "reviewer", "notifications.team.kept", "team.bridge.>"}
 	if !slices.Equal(stored.Topics, want) {
 		t.Fatalf("stored topics = %v, want %v", stored.Topics, want)
 	}
@@ -3664,7 +3664,7 @@ func TestSubscribeHandlerNamesThePrivateRuleBeforeTheUncapturedOne(t *testing.T)
 	handler := subscribeHandler(&listenerDeps{registry: registry, sessions: sessions, consumers: setupSessionConsumers(t, nil)}, "test-machine", logging.New("test"))
 	private := func(topic, sessionID string) string {
 		return fmt.Sprintf("%s was not registered: it reaches a private stream subject (another session's inbox, a failed-delivery lane, or a Legion controller notice lane), and of those a session registers only its own agent subject, %s, and the notice lane of a project whose controller role it holds",
-			topic, contracts.AgentSubject(sessionID))
+			topic, contracts.LegacyAgentSubject(sessionID))
 	}
 	for index, tc := range []struct {
 		topic string
@@ -3763,19 +3763,25 @@ func subscribeInterest(t *testing.T, mux *http.ServeMux, topics []string) intere
 // subject with the rest of what it follows.
 func TestInterestSubscribeStoresOnlyTopicsThatCannotReachAnotherSessionsInbox(t *testing.T) {
 	rig := newInterestRig(t)
-	own, other := contracts.AgentSubject(interestSession), contracts.AgentSubject("ses_other")
+	own, other := contracts.LegacyAgentSubject(interestSession), contracts.LegacyAgentSubject("ses_other")
 	refused := []string{"notifications.agent.>", "notifications.agent.*", other, "notifications.>"}
 	answer := subscribeInterest(t, rig.mux, append([]string{own, interestIssueTopic}, refused...))
 	if want := []string{own, interestIssueTopic}; !slices.Equal(answer.Topics, want) {
 		t.Fatalf("answered topics = %v, want %v", answer.Topics, want)
 	}
-	if len(answer.Warnings) != len(refused) {
-		t.Fatalf("warnings = %q, want one naming each of %v", answer.Warnings, refused)
+	// One warning names each refused topic, in order; the last names the issue topic the caller
+	// gave in the old form with its new form (store.Registry.LegacyTopicWarnings), which this
+	// registration stored as written.
+	if len(answer.Warnings) != len(refused)+1 {
+		t.Fatalf("warnings = %q, want one naming each of %v and one naming %s's new form", answer.Warnings, refused, interestIssueTopic)
 	}
 	for index, topic := range refused {
 		if !strings.HasPrefix(answer.Warnings[index], topic+" was not registered") {
 			t.Fatalf("warning %d = %q, want it to name %s as not registered", index, answer.Warnings[index], topic)
 		}
+	}
+	if last := answer.Warnings[len(refused)]; !strings.HasPrefix(last, interestIssueTopic+" is the old form of notifications.dispatch.issue.KEY.KEY-1.>") {
+		t.Fatalf("warning %d = %q, want it to name %s's new form", len(refused), last, interestIssueTopic)
 	}
 	stored, err := rig.deps.registry.Get(context.Background(), interestSession)
 	if err != nil {
@@ -3794,7 +3800,7 @@ func TestInterestSubscribeStoresOnlyTopicsThatCannotReachAnotherSessionsInbox(t 
 // own agent subject are stored, and the answer stays 200.
 func TestInterestSubscribeLeavesOutEveryPrivateStreamSubject(t *testing.T) {
 	rig := newInterestRig(t)
-	own := contracts.AgentSubject(interestSession)
+	own := contracts.LegacyAgentSubject(interestSession)
 	githubTopic, teamTopic := "notifications.github.acme.widgets.pr.7.>", "notifications.team.x.>"
 	refused := []string{
 		bus.ExceptionTopicPrefix + contracts.AgentTopicPrefix + ">",
@@ -3837,7 +3843,7 @@ func TestInterestSubscribeLeavesOutEveryPrivateStreamSubject(t *testing.T) {
 // notifications.team.>. A refusal would leave that session with no consumer at every heartbeat.
 func TestInterestSubscribeWarnsAboutAnUncapturedTopicAndAPrivateOneTogether(t *testing.T) {
 	rig := newInterestRig(t)
-	own, other := contracts.AgentSubject(interestSession), contracts.AgentSubject("ses_other")
+	own, other := contracts.LegacyAgentSubject(interestSession), contracts.LegacyAgentSubject("ses_other")
 	const stale, team = "notifications.team", "notifications.team.deploy-squad"
 
 	answer := subscribeInterest(t, rig.mux, []string{stale, other, team})
@@ -3874,7 +3880,7 @@ func TestInterestSubscribeWarnsAboutAnUncapturedTopicAndAPrivateOneTogether(t *t
 // fan-out (Registry.Match), with the issue topic the session also follows.
 func TestInterestSubscribeStoresTheControllerLaneOfTheRoleTheSessionHolds(t *testing.T) {
 	rig := newInterestRig(t)
-	own := contracts.AgentSubject(interestSession)
+	own := contracts.LegacyAgentSubject(interestSession)
 	const (
 		role = "legion-ACME-controller"
 		lane = "notifications.legion.ACME.controller"
@@ -3911,7 +3917,7 @@ func TestInterestSubscribeStoresTheControllerLaneOfTheRoleTheSessionHolds(t *tes
 // notices or another session's messages.
 func TestInterestSubscribeLeavesAControllerEveryPrivateSubjectButItsOwnLane(t *testing.T) {
 	rig := newInterestRig(t)
-	own, other := contracts.AgentSubject(interestSession), contracts.AgentSubject("ses_other")
+	own, other := contracts.LegacyAgentSubject(interestSession), contracts.LegacyAgentSubject("ses_other")
 	const (
 		role = "legion-ACME-controller"
 		lane = "notifications.legion.ACME.controller"
@@ -3963,7 +3969,7 @@ func TestInterestSubscribeLeavesAControllerEveryPrivateSubjectButItsOwnLane(t *t
 // failed-delivery lane and the Legion controller's notices.
 func TestInterestSubscribeCleansAStoredRowOfTopicsReachingPrivateStreamSubjects(t *testing.T) {
 	const githubTopic = "notifications.github.acme.widgets.pr.7.>"
-	own, other := contracts.AgentSubject(interestSession), contracts.AgentSubject("ses_other")
+	own, other := contracts.LegacyAgentSubject(interestSession), contracts.LegacyAgentSubject("ses_other")
 	lane := bus.ExceptionTopicPrefix + other
 	controller := "notifications.legion.ACME.controller"
 	rig := newInterestRig(t, bus.ExceptionTopicPrefix+">", controller, other, interestIssueTopic)

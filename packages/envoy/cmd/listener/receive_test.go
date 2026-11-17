@@ -148,13 +148,13 @@ func newReceiverRigAs(t *testing.T, busURI, stateURI, seed, machineID, instance 
 		logger:   logger,
 		timing:   timing,
 	})
-	client.AddReconnectHook(func(conn *natsgo.Conn) error {
+	client.AddReconnectHook(func(ctx context.Context, conn *natsgo.Conn) error {
 		if earlier := rig.earlierHook.Load(); earlier != nil {
 			if err := (*earlier)(conn); err != nil {
 				return err
 			}
 		}
-		return rig.receiver.reconnected(conn)
+		return rig.receiver.reconnected(ctx, conn)
 	})
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

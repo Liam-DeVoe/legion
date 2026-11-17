@@ -376,7 +376,7 @@ During a roll two builds run for one machine id, and each must deliver what the 
   A holder that finds the durable push-bound writes the policy only once that binding has ended, unless its term must settle: such a term writes it beside the binding, which it counts as an earlier holder's ("Take-over" above).
 
 - **A session's consumer takes what its filter captures.**
-  A relay's restart writes the filter from the session's followed topics: each one a consumer can filter on, whatever either build's stream subjects capture (`sessionConsumerFilter`, `bus.SessionConsumerFilters`).
+  A relay's restart writes the filter from the session's followed topics: each one a consumer can filter on, whatever either build's stream subjects capture (`sessionConsumerFilter`, `bus.CanFilterOn`), in every form a reader takes it in (`bus.SessionConsumerFilters`).
   A consumer keeps its position when its filter changes, so a topic either build knows is delivered from the sequence the session had reached.
   A topic no stream subject captures yet is in the filter too, and a registration stores it with a warning (`contracts.UncapturedTopicWarning`).
   Once the newer build's start adds a subject that captures it, the consumer delivers what the stream stores on it.

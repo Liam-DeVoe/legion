@@ -50,7 +50,7 @@ func ensureFresh(consumers *SessionConsumers, sessionID string) (time.Duration, 
 	started := time.Now()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*sessionStreamReadWait)
 	defer cancel()
-	start, err := consumers.Ensure(ctx, sessionID, []string{contracts.AgentSubject(sessionID)}, 0)
+	start, err := consumers.Ensure(ctx, sessionID, []string{contracts.LegacyAgentSubject(sessionID)}, 0)
 	if err == nil && !start.Created {
 		err = fmt.Errorf("Ensure of a session with no consumer = %+v, want it created", start)
 	}

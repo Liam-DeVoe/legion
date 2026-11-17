@@ -50,17 +50,21 @@ const Image = "ghcr.io/cybermonklabs/legion/ci@sha256:023a08c46caa5aff878fb86841
 // declaration and pull the image before their tests run; keep it a single-line string constant.
 const HubImage = "ghcr.io/cybermonklabs/legion/ci@sha256:2ae57dfba3063d5e25fecb75256118c0882a1a2d2cf7d0fba17a7c701df956f6"
 
-// LegacyImage is the copy of nats:2.10 (.github/ci-images.yaml), the one server older than the
-// v2.15.0 the listener requires that a test can still start: internal/bus's natslive rows read
-// the consumer-cap behaviour of a server that caps no stream which sets none, and that refuses a
-// change of MaxConsumers on a stream it already holds. No test of this repository runs it as a
-// server under test for anything else. The envoy-go CI job reads this declaration and pulls the
-// image before its first test step; keep it a single-line string constant.
+// LegacyImage is the copy of nats:2.10 (.github/ci-images.yaml), whose server, v2.10.29, Envoy
+// refuses to run its session consumers on (natsversion.Refusal), and the one server older than the
+// v2.15.0 the listener requires that a test can still start. A test names it only for a behaviour
+// of that server itself: the listener's refusal of it and that refusal's control
+// (session_consumer_scan_live_test.go), and internal/bus's natslive rows that read the
+// consumer-cap behaviour of a server that caps no stream which sets none, and that refuses a
+// change of MaxConsumers on a stream it already holds. The envoy-go CI job reads this declaration
+// and pulls the image before its first test step; keep it a single-line string constant.
 const LegacyImage = "ghcr.io/cybermonklabs/legion/ci@sha256:5498ba57b9471840be3d15b033a4eec554d1c02fa6c2cc0ca2d888637f6c6e2f"
 
-// Images are the two NATS server images the real-server tests run on, Image and HubImage, each
-// with the short name its subtest takes: the two official variants of the version the deployment
-// runs, which take their configuration by different default commands and paths.
+// Images are the two NATS server images the real-server tests run Envoy on, Image and HubImage,
+// each with the short name its subtest takes: the two official variants of the version the
+// deployment runs, which take their configuration by different default commands and paths. No
+// nats:2.10 is among them: Envoy requires a server whose scan of a consumer's stored messages reads
+// every filter (natsversion), which nats:2.10 is not.
 var Images = []struct{ Name, Ref string }{{"2.15.1", Image}, {"hub", HubImage}}
 
 var (

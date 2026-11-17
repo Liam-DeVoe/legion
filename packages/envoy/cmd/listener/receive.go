@@ -391,8 +391,8 @@ func (r *durableReceiver) Stop(ctx context.Context) {
 // in place or a replacement, which the receive loop moves the subscription onto when it is no
 // longer valid there. It never fails, so it never holds up the client's recovery, and it takes
 // no lock of the receive loop's, so a hook that lands while a subscribe is in flight waits for
-// nothing (clientConn).
-func (r *durableReceiver) reconnected(conn *nats.Conn) error {
+// nothing (clientConn). It makes no request, so the run's context it is handed bounds nothing.
+func (r *durableReceiver) reconnected(_ context.Context, conn *nats.Conn) error {
 	r.clientConn.Store(conn)
 	select {
 	case r.reconnects <- struct{}{}:

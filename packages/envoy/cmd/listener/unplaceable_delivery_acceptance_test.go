@@ -152,7 +152,7 @@ func TestAgentDeliveryReadsTheSessionStoreWhileTheCacheIsCold(t *testing.T) {
 		t.Fatalf("the delivering listener's cache answers %v for %s, want %v", err, target, natsgo.ErrKeyNotFound)
 	}
 
-	item := listenerTestEnvelope(contracts.AgentSubject(target), "cold-cache-agent-delivery")
+	item := listenerTestEnvelope(contracts.LegacyAgentSubject(target), "cold-cache-agent-delivery")
 	harness.handler(&natsgo.Msg{Data: marshalListenerEnvelope(t, item)})
 
 	// The record only the bucket holds puts the session on consumer delivery, so the message is
@@ -233,7 +233,7 @@ func startUnplaceableDelivery(t *testing.T, harness listenerDeliveryHarness, cfg
 // message under context.Background(), as a durable message nothing cancels.
 func startDeliveryThrough(t *testing.T, harness listenerDeliveryHarness, handler durableHandler, target string, soak time.Duration) unplaceableDeliveryRun {
 	t.Helper()
-	return startEnvelopeDeliveryThrough(t, harness, handler, target, listenerTestEnvelope(contracts.AgentSubject(target), "unplaceable-"+target), soak)
+	return startEnvelopeDeliveryThrough(t, harness, handler, target, listenerTestEnvelope(contracts.LegacyAgentSubject(target), "unplaceable-"+target), soak)
 }
 
 // startEnvelopeDeliveryThrough is startDeliveryThrough with the envelope given whole, for a run
@@ -863,7 +863,7 @@ func TestAWindowPastTheDurablesMaxDeliverStillGivesUpBeforeIt(t *testing.T) {
 func TestAGiveUpWhoseNoticeCanNeverBePublishedIsStillTerminal(t *testing.T) {
 	const target = "ses_notice_too_large"
 	harness := newListenerDeliveryHarness(t)
-	item := listenerTestEnvelope(contracts.AgentSubject(target), "unplaceable-"+target)
+	item := listenerTestEnvelope(contracts.LegacyAgentSubject(target), "unplaceable-"+target)
 	// The payload fills the envelope to 256 bytes under the server's max payload, so the envelope
 	// itself is published and delivered, and the notice - the same payload plus the notice's own
 	// fields and a second level of JSON quoting - is past it.
@@ -937,8 +937,8 @@ func TestOneExceptionIsStoredForAMessageToAnAbsentSessionWhicheverListenersRaise
 	}
 	publisher := connectPublisher(t, uri)
 
-	withMsgID := newEnvelope("agent", contracts.AgentSubject("ses_absent_"+id.New()), "a message with a Nats-Msg-Id")
-	withoutMsgID := newEnvelope("agent", contracts.AgentSubject("ses_absent_"+id.New()), "a message without one")
+	withMsgID := newEnvelope("agent", contracts.LegacyAgentSubject("ses_absent_"+id.New()), "a message with a Nats-Msg-Id")
+	withoutMsgID := newEnvelope("agent", contracts.LegacyAgentSubject("ses_absent_"+id.New()), "a message without one")
 	msgID := "one-exception-" + id.New()
 	wantMsgIDs := map[string]string{}
 	var lastSeq uint64

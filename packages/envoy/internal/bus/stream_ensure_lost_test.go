@@ -1,6 +1,7 @@
 package bus
 
 import (
+	"context"
 	"sync"
 	"testing"
 	"time"
@@ -36,7 +37,7 @@ func TestAStreamEnsureWhoseReadIsLostWithItsConnectionFinishesAtTheReconnect(t *
 	t.Cleanup(client.Close)
 	var hookMu sync.Mutex
 	var hookRuns []time.Time
-	client.AddReconnectHook(func(*nats.Conn) error {
+	client.AddReconnectHook(func(context.Context, *nats.Conn) error {
 		hookMu.Lock()
 		defer hookMu.Unlock()
 		hookRuns = append(hookRuns, time.Now())
