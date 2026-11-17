@@ -15,7 +15,6 @@ import {
   reviewArtifact,
   setGatedSteps,
 } from "./api";
-import { holdClipboard } from "./clipboard";
 import { closeDetails, gotoIssue, phase } from "./issue-page";
 import { withIssuePage } from "./issue-page-option";
 import {
@@ -33,6 +32,7 @@ import {
   headerFamilies,
   headerLabels,
   headerParts,
+  holdClipboard,
   holdReviewReads,
   IPHONE_13,
   identityBand,

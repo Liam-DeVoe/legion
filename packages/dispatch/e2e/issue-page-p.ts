@@ -14,6 +14,14 @@ import {
 import { filterRow } from "./issue-page";
 import { assertWhole } from "./unclipped";
 
+declare global {
+  interface Window {
+    /** `holdClipboard`'s clipboard: how many writes were made, and the resolve of each write
+     *  still held. */
+    __dispatchHeldClipboard?: { held: (() => void)[]; writes: number };
+  }
+}
+
 /**
  * What the header's rows read: the header, its properties line, its readings against the
  * header's height limits and the typeface, and the one issue they read it on. The rows open the
@@ -856,4 +864,44 @@ export async function titleOfLines(page: Page, lines: number): Promise<string> {
     if (drawn === lines) return title;
   }
   throw new Error(`no title takes ${lines} lines`);
+}
+
+/** The page's clipboard, as `holdClipboard` replaces it. */
+export interface HeldClipboard {
+  /** Lets every held write land: each `writeText` promise still out resolves. */
+  land(): Promise<void>;
+  /** How many writes the page has made to the clipboard. */
+  writes(): Promise<number>;
+}
+
+/**
+ * Replaces the page's clipboard, before the page loads, with one that counts each
+ * `navigator.clipboard.writeText` and holds the promise it returns until the row calls `land`,
+ * so a row can press a copy control while its write is out. Called before the row's first
+ * navigation, as `recordClipboard` (`clipboard.ts`) is. It lives in this file, not beside
+ * `recordClipboard`, because this part changes no browser file of the suite but its own.
+ */
+export async function holdClipboard(page: Page): Promise<HeldClipboard> {
+  await page.addInitScript(() => {
+    const state = { held: [] as (() => void)[], writes: 0 };
+    window.__dispatchHeldClipboard = state;
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText: () => {
+          state.writes += 1;
+          const { promise, resolve } = Promise.withResolvers<void>();
+          state.held.push(resolve);
+          return promise;
+        },
+      },
+    });
+  });
+  return {
+    land: () =>
+      page.evaluate(() => {
+        for (const resolve of window.__dispatchHeldClipboard?.held.splice(0) ?? []) resolve();
+      }),
+    writes: () => page.evaluate(() => window.__dispatchHeldClipboard?.writes ?? 0),
+  };
 }
