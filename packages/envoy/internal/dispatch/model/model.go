@@ -3138,7 +3138,7 @@ type StepRecord struct {
 	Attempt    int        `json:"attempt"`
 	StartedAt  *time.Time `json:"started_at"`
 	EndedAt    *time.Time `json:"ended_at"`
-	Result     string     `json:"result"`
+	Result     string     `json:"result" enum:",passed,failed,stopped"`
 	ReturnedTo *int       `json:"returned_to"`
 	Report     *string    `json:"report"`
 }

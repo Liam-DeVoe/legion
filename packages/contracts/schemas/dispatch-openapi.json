@@ -25680,6 +25680,12 @@
             ]
           },
           "result": {
+            "enum": [
+              "",
+              "passed",
+              "failed",
+              "stopped"
+            ],
             "type": "string"
           },
           "returned_to": {

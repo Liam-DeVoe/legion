@@ -6114,7 +6114,8 @@ export interface components {
       kind: "step" | "retro" | "merge";
       model: string;
       report: null | string;
-      result: string;
+      /** @enum {string} */
+      result: "" | "passed" | "failed" | "stopped";
       returned_to: null | number;
       role: string;
       session: string;
