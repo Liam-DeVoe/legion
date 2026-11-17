@@ -23,12 +23,14 @@ import { issuePage } from "./issue-page";
  *   task's first line `[data-node-words]` and its facts `[data-plan-facts]`: the mark that it
  *   holds no size `[data-plan-no-size]` and each task it needs `[data-plan-need]`, by that
  *   task's node id), the track that holds its bar `[data-plan-bar]`, and the statements it
- *   serves `[data-plan-serves]`, one `[data-plan-serve]` each. At 760 px and below the row is
- *   one card, and its first and third children and its facts lay nothing out of their own
- *   (`display: contents`), so a reader measures what they hold. A cycle's row is
- *   `[data-plan-cycle-row]`, a `treeitem` whose `data-node-id` is the task it stands for and
- *   whose attribute holds every task of it, around its one line `[data-plan-cycle]`. The curves
- *   between two bars are `svg[data-plan-links] path[data-plan-link="<needed id> <id>"]`.
+ *   serves `[data-plan-serves]`, one chip each: the chip's bordered box is a child of
+ *   `[data-plan-serves]`, and its `[data-plan-serve]` is the link inside that box, or the box
+ *   itself where the chip links nowhere. At 760 px and below the row is one card, and its first
+ *   and third children and its facts lay nothing out of their own (`display: contents`), so a
+ *   reader measures what they hold. A cycle's row is `[data-plan-cycle-row]`, a `treeitem`
+ *   whose `data-node-id` is the task it stands for and whose attribute holds every task of it,
+ *   around its one line `[data-plan-cycle]`. The curves between two bars are
+ *   `svg[data-plan-links] path[data-plan-link="<needed id> <id>"]`.
  * - **The seed** `seedPlanMarks`: a plan whose first task's words are bold and numbered, as the
  *   real plan's are (the tester's finding F18), written through `e2e/api.ts` alone.
  */
@@ -106,6 +108,8 @@ export interface StepLayout {
     readonly borderColor: string;
     readonly borderStyle: string;
   };
+  /** The bordered box of each statement chip it serves (`[data-plan-serves]`'s children). */
+  readonly chips: readonly Box[];
   /** The row's own box, and how it is drawn: its left edge, its mark and its fill. */
   readonly row: Box & {
     readonly backgroundColor: string;
@@ -155,6 +159,7 @@ export function stepLayouts(page: Page): Promise<StepLayout[]> {
           borderColor: barStyle?.borderTopColor ?? "",
           borderStyle: barStyle?.borderTopStyle ?? "",
         },
+        chips: third === null ? [] : [...third.children].map(box),
         columns: {
           first: first === null ? 0 : first.getBoundingClientRect().width,
           third: third === null ? 0 : third.getBoundingClientRect().width,
