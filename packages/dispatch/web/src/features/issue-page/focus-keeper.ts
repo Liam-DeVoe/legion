@@ -1,5 +1,7 @@
 import { type RefObject, useEffect, useLayoutEffect, useRef } from "react";
 
+import { focusOnDocument } from "../shell/roving";
+
 /** What a region lost the focus to, as each fallback of `useFocusKeeper` reads it. */
 export interface FocusLoss {
   /** The region's root. */
@@ -20,6 +22,9 @@ export interface FocusLoss {
 /** One place the focus may go once it is lost, or nothing when this fallback has none to give. */
 export type FocusFallback = (loss: FocusLoss) => HTMLElement | null | undefined;
 
+/** What takes an element, and everything inside it, out of the focus's reach. */
+const OUT_OF_REACH = "[hidden], [inert]";
+
 /**
  * Whether the element can take the focus as it stands: it is on the page, not disabled, and
  * neither it nor an ancestor is hidden or inert. It reads no layout, so a test's DOM, which has
@@ -30,7 +35,7 @@ export function canHoldFocus(element: Element | null | undefined): element is HT
     element instanceof HTMLElement &&
     element.isConnected &&
     !element.matches(":disabled") &&
-    element.closest("[hidden], [inert]") === null
+    element.closest(OUT_OF_REACH) === null
   );
 }
 
@@ -123,8 +128,11 @@ export function useFocusKeeper(
      *  element out. */
     let heard: MutationRecord[] = [];
     /** Whether the reader has pressed the pointer somewhere other than `held` since it took the
-     *  focus. Such a press is the reader moving the focus: a press on the page blurs the control
-     *  to the body, and the handler that blur runs may remove it before the check below runs. */
+     *  focus, and pressed no key since. Such a press is the reader moving the focus: a press on
+     *  the page blurs the control to the body, and the handler that blur runs may remove it before
+     *  the check below runs. A press that moves no focus on purpose (a control that prevents its
+     *  mousedown) leaves the focus on `held` with no focusin to clear the mark, so a key clears
+     *  it: a key acts from where the focus is. */
     let pointerMoved = false;
     /** The timer of the keeper's move, which waits one task after the check that found the loss,
      *  or undefined while no move waits. */
@@ -140,6 +148,9 @@ export function useFocusKeeper(
       // control away, which is a loss the keeper owes the reader.
       if (held !== null && event.target instanceof Node && held.contains(event.target)) return;
       pointerMoved = true;
+    };
+    const noteKey = () => {
+      pointerMoved = false;
     };
     const hear = (records: readonly MutationRecord[]) => {
       for (const record of records) heard.push(record);
@@ -162,6 +173,7 @@ export function useFocusKeeper(
       if (held === null) {
         observer.observe(region, LOSSES);
         page.addEventListener("pointerdown", notePress, true);
+        page.addEventListener("keydown", noteKey, true);
       }
       held = element;
       pointerMoved = false;
@@ -175,13 +187,14 @@ export function useFocusKeeper(
       dropGiven();
       observer.disconnect();
       page.removeEventListener("pointerdown", notePress, true);
+      page.removeEventListener("keydown", noteKey, true);
     };
     /** Whether the focus `lost` held is lost: it is on the body or still on `lost`, no press of
      *  the reader's put it there, and `lost` can no longer hold it. Every other answer is final,
      *  and where the focus has left the region the keeper stops watching it. */
     const isLost = (lost: HTMLElement): boolean => {
       const active = page.activeElement;
-      const onBody = active === null || active === page.body;
+      const onBody = focusOnDocument();
       if (!onBody && active !== lost) {
         // The focus moved to another element. Inside the region the focusin has already made it
         // the one held, and a handler that handed the focus on is obeyed; outside it, the reader
@@ -248,7 +261,7 @@ export function useFocusKeeper(
       // Only a control that is merely disabled gets the focus back: enabled again it is the same
       // control in the same place, where a removed, hidden or inert one is out of the reader's way.
       const disabled =
-        lost.isConnected && lost.matches(":disabled") && lost.closest("[hidden], [inert]") === null;
+        lost.isConnected && lost.matches(":disabled") && lost.closest(OUT_OF_REACH) === null;
       for (const fallback of latestFallbacks.current) {
         const next = fallback(loss);
         if (canHoldFocus(next)) {

@@ -15,6 +15,7 @@ import {
   reviewArtifact,
   setGatedSteps,
 } from "./api";
+import { holdClipboard } from "./clipboard";
 import { closeDetails, gotoIssue, phase } from "./issue-page";
 import { withIssuePage } from "./issue-page-option";
 import {
@@ -32,7 +33,6 @@ import {
   headerFamilies,
   headerLabels,
   headerParts,
-  holdClipboard,
   holdReviewReads,
   IPHONE_13,
   identityBand,
@@ -60,7 +60,7 @@ import {
   waitingPressInHistory,
 } from "./issue-page-p";
 import { leaveFocus, onBody } from "./keyboard-issue";
-import { navigateInApp } from "./sends";
+import { answeredPost, holdPosts, navigateInApp } from "./sends";
 import { expect, type Locator, type Page, type Request, test } from "./test";
 import { assertPageFits, assertWhole } from "./unclipped";
 import { asUser } from "./users";
@@ -2540,23 +2540,12 @@ test("Approve by Enter on the header's chip leaves the focus on the approved chi
     await expect(approve, "the chip carries no Approve while its request waits").toBeVisible();
     const chip = approvalChip(page, seeded.specArtifactId);
 
-    const reviews = `**/api/v1/artifacts/${seeded.specArtifactId}/reviews`;
-    const held: (() => void)[] = [];
-    await page.route(reviews, async (route) => {
-      if (route.request().method() !== "POST") {
-        await route.continue();
-        return;
-      }
-      const { promise, resolve } = Promise.withResolvers<void>();
-      held.push(resolve);
-      await promise;
-      await route.continue();
-    });
+    const review = await holdPosts(page, `**/api/v1/artifacts/${seeded.specArtifactId}/reviews`);
 
     await approve.focus();
     await expect(approve).toBeFocused();
     await page.keyboard.press("Enter");
-    await expect.poll(() => held.length, { message: "Approve by Enter sent no review" }).toBe(1);
+    await expect.poll(() => review.posts(), { message: "Approve by Enter sent no review" }).toBe(1);
     await expect(approve, "Approve is not disabled while its review is written").toBeDisabled();
     await framesDrawn(page, 2);
     const written = await focusNow(page);
@@ -2565,16 +2554,12 @@ test("Approve by Enter on the header's chip leaves the focus on the approved chi
       `while the review was written the focus was on ${written.what}, not on the spec's chip`
     ).toBeFocused();
 
-    for (const release of held) release();
+    review.release();
     await expect
       .poll(async () => (await getArtifact(seeded.specArtifactId)).approval?.state, {
         message: "Approve by Enter recorded no approval",
       })
       .toBe("approved");
-    // The route goes once the server holds the approval, so after its handler let the write on:
-    // a route removed while its handler still holds a write is handed on without it, and the
-    // handler's own `continue` then throws.
-    await page.unroute(reviews);
     await expect(reviewActions(header), "the header still draws an action").toHaveCount(0);
     await framesDrawn(page, 2);
     const focus = await focusNow(page);
@@ -2657,11 +2642,7 @@ test("Approve pressed again by Enter before its approval is drawn sends no secon
     await approve.focus();
     await expect(approve).toBeFocused();
     reads.hold();
-    const answered = page.waitForResponse(
-      (response) =>
-        response.request().method() === "POST" &&
-        new URL(response.url()).pathname === `/api/v1/artifacts/${seeded.specArtifactId}/reviews`
-    );
+    const answered = answeredPost(page, `/api/v1/artifacts/${seeded.specArtifactId}/reviews`, 201);
     await page.keyboard.press("Enter");
     await (await answered).finished();
     expect(
@@ -2743,11 +2724,7 @@ test("Request changes in its dialog pressed again by Enter before the change req
     await expect(submit).toBeFocused();
 
     reads.hold();
-    const answered = page.waitForResponse(
-      (response) =>
-        response.request().method() === "POST" &&
-        new URL(response.url()).pathname === `/api/v1/artifacts/${seeded.specArtifactId}/reviews`
-    );
+    const answered = answeredPost(page, `/api/v1/artifacts/${seeded.specArtifactId}/reviews`, 201);
     await page.keyboard.press("Enter");
     await (await answered).finished();
     expect(

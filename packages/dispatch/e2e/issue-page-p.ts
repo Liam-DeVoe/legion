@@ -445,52 +445,6 @@ export async function holdReviewReads(
   };
 }
 
-/** The page's `window` as `holdClipboard`'s clipboard leaves it: how many writes were made, and
- *  the resolve of each write still held. */
-type HeldClipboardWindow = Window & {
-  heldClipboard?: { held: (() => void)[]; writes: number };
-};
-
-/** The page's clipboard, as `holdClipboard` replaces it. */
-export interface HeldClipboard {
-  /** Lets every held write land: each `writeText` promise still out resolves. */
-  land(): Promise<void>;
-  /** How many writes the page has made to the clipboard. */
-  writes(): Promise<number>;
-}
-
-/**
- * Replaces the page's clipboard, before the page loads, with one that counts each
- * `navigator.clipboard.writeText` and holds the promise it returns until the row calls `land`,
- * so a row can press a copy control while its write is out. Called before the row's first
- * navigation, as `e2e/clipboard.ts`'s recorder is.
- */
-export async function holdClipboard(page: Page): Promise<HeldClipboard> {
-  await page.addInitScript(() => {
-    const state = { held: [] as (() => void)[], writes: 0 };
-    (window as HeldClipboardWindow).heldClipboard = state;
-    Object.defineProperty(navigator, "clipboard", {
-      configurable: true,
-      value: {
-        writeText: () => {
-          state.writes += 1;
-          const { promise, resolve } = Promise.withResolvers<void>();
-          state.held.push(resolve);
-          return promise;
-        },
-      },
-    });
-  });
-  return {
-    land: () =>
-      page.evaluate(() => {
-        const state = (window as HeldClipboardWindow).heldClipboard;
-        for (const resolve of state?.held.splice(0) ?? []) resolve();
-      }),
-    writes: () => page.evaluate(() => (window as HeldClipboardWindow).heldClipboard?.writes ?? 0),
-  };
-}
-
 /**
  * Every element the header draws that a reader reads or presses, by what it is: its test id, or
  * its tag with the name a reader hears; and every run of words drawn outside those, as

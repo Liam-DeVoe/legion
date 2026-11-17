@@ -33,10 +33,9 @@ import { useIssuePalette } from "./useIssuePalette";
  * disabled while its review is written, and both actions go once the request is answered, so
  * the reader stays on the document they just reviewed rather than being sent to the top of the
  * header. "Issue actions" comes next: the header draws it in every state and no write disables
- * it, so it can always take the focus, and it opens the actions a reader goes on with. The
- * title's heading comes last: it is the field the issue's refusal line stands for, and it takes
- * the focus should the menu's control not.
- * One array at module level, so every render hands the keeper the same one.
+ * it, and it opens the actions a reader goes on with. The title's heading comes last, as the
+ * field the issue's refusal line stands for, which is the place the decision names; it stands in
+ * the same block as "Issue actions", so it is reached only should that control ever be missing.
  */
 const HEADER_FOCUS_FALLBACKS: readonly FocusFallback[] = [
   chipOfLostAction,
@@ -234,9 +233,13 @@ export function IssueHeader({
  * since a pending write is no longer a failed one, and its `retrying` disables the Retry while
  * the write runs: either way the focus of a keyboard reader who pressed Retry falls to the page's
  * body. Here the line and its Retry stay, and the Retry stays enabled, which the write's own
- * guard makes safe: it ignores a second press while one is out. When the write lands the line
- * goes, and the header's keeper then moves the focus. The header draws it at all times, so it
- * remembers across renders that it was drawn when the write started again.
+ * guard makes safe: it ignores a second press while one is out. While the write runs again the
+ * line says "Saving…" (`ANSWER_LINES.saving_field`) in place of its message, and says the
+ * message again once the write is refused once more: the alert's words change, so a second
+ * refusal is shown and announced as the first was, where the same words kept from one refusal to
+ * the next would change nothing a reader sees or a screen reader hears. When the write lands the
+ * line goes, and the header's keeper then moves the focus. The header draws it at all times, so
+ * it remembers across renders that it was drawn when the write started again.
  */
 function RefusalLine({
   failed,
@@ -254,5 +257,7 @@ function RefusalLine({
   const [drawn, setDrawn] = useState(failed);
   const draw = failed || (drawn && pending);
   if (draw !== drawn) setDrawn(draw);
-  return draw ? <QueryError message={message} onRetry={onRetry} /> : null;
+  return draw ? (
+    <QueryError message={failed ? message : ANSWER_LINES.saving_field} onRetry={onRetry} />
+  ) : null;
 }

@@ -1,10 +1,10 @@
-import { expect, jest, test } from "bun:test";
+import { expect, test } from "bun:test";
 // biome-ignore lint/style/noRestrictedImports: the press case needs a press, a blur and a removal inside one task, and user-event's press awaits between its events.
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useEffect, useRef, useState } from "react";
 
-import { realClock } from "../../__tests__/fake-clock";
+import { jump, onFakeClock } from "../../__tests__/fake-clock";
 import { emulateChromiumFocusFixup } from "./chromium-focus-fixup";
 import { useFocusKeeper } from "./focus-keeper";
 
@@ -14,8 +14,9 @@ type SaveControl = "drawn" | "disabled" | "removed" | "replaced";
 
 /**
  * A region whose focus the keeper keeps: a Save control the props disable, remove or replace, a
- * sibling the props remove, and two fallback buttons. The first fallback finds Save's replacement
- * among what the change added; the other two are the fallback buttons, in order.
+ * sibling the props remove, a Details button whose press keeps the focus where it is, as the
+ * header's Details control does, and two fallback buttons. The first fallback finds Save's
+ * replacement among what the change added; the other two are the fallback buttons, in order.
  */
 function Region({
   firstFallbackDisabled = false,
@@ -45,6 +46,9 @@ function Region({
         </button>
       )}
       {sibling ? <button type="button">Sibling</button> : null}
+      <button onMouseDown={(event) => event.preventDefault()} type="button">
+        Details
+      </button>
       <button data-fallback="first" disabled={firstFallbackDisabled} type="button">
         First fallback
       </button>
@@ -113,13 +117,16 @@ test("a focus the reader put on the body stays there when the control is then di
   const stopFixup = emulateChromiumFocusFixup();
   const view = render(<Region />);
   try {
-    act(() => button("Save").focus());
-    act(() => button("Save").blur());
-    // The keeper's check of the blur runs here.
-    await act(async () => {});
-    view.rerender(<Region save="disabled" />);
-    await act(async () => {});
-    expect(document.body).toHaveFocus();
+    await onFakeClock(async () => {
+      act(() => button("Save").focus());
+      act(() => button("Save").blur());
+      // The keeper's check of the blur runs here.
+      await act(async () => {});
+      view.rerender(<Region save="disabled" />);
+      // A move the keeper made of a loss it read would run one task after its check.
+      await jump(1);
+      expect(document.body).toHaveFocus();
+    });
   } finally {
     view.unmount();
     stopFixup();
@@ -129,10 +136,12 @@ test("a focus the reader put on the body stays there when the control is then di
 test("a focus on a control stays there when a sibling is removed", async () => {
   const view = render(<Region />);
   try {
-    act(() => button("Save").focus());
-    view.rerender(<Region sibling={false} />);
-    await act(async () => {});
-    expect(button("Save")).toHaveFocus();
+    await onFakeClock(async () => {
+      act(() => button("Save").focus());
+      view.rerender(<Region sibling={false} />);
+      await jump(1);
+      expect(button("Save")).toHaveFocus();
+    });
   } finally {
     view.unmount();
   }
@@ -141,15 +150,17 @@ test("a focus on a control stays there when a sibling is removed", async () => {
 test("a press on the page is the reader's move, even when the control then goes", async () => {
   const view = render(<Region />);
   try {
-    act(() => button("Save").focus());
-    // A press on a blank part of the page blurs the control, and the blur's own handler may
-    // remove it before the keeper's check runs. user-event cannot hold all three in one task: its
-    // press awaits between its events, and the keeper's check would run in that gap.
-    fireEvent.pointerDown(document.body);
-    act(() => button("Save").blur());
-    view.rerender(<Region save="removed" />);
-    await act(async () => {});
-    expect(document.body).toHaveFocus();
+    await onFakeClock(async () => {
+      act(() => button("Save").focus());
+      // A press on a blank part of the page blurs the control, and the blur's own handler may
+      // remove it before the keeper's check runs. user-event cannot hold all three in one task:
+      // its press awaits between its events, and the keeper's check would run in that gap.
+      fireEvent.pointerDown(document.body);
+      act(() => button("Save").blur());
+      view.rerender(<Region save="removed" />);
+      await jump(1);
+      expect(document.body).toHaveFocus();
+    });
   } finally {
     view.unmount();
   }
@@ -163,6 +174,26 @@ test("a press on the focused control is no move of the reader's when its write d
     act(() => button("Save").focus());
     // The press focuses nothing anew, as the control already holds the focus.
     await user.click(button("Save"));
+    view.rerender(<Region save="disabled" />);
+    await waitFor(() => expect(button("First fallback")).toHaveFocus());
+  } finally {
+    view.unmount();
+    stopFixup();
+  }
+});
+
+test("a press that moves no focus is no move of the reader's once they press a key", async () => {
+  const user = userEvent.setup();
+  const stopFixup = emulateChromiumFocusFixup();
+  const view = render(<Region />);
+  try {
+    act(() => button("Save").focus());
+    // Details prevents its mousedown, so the press leaves the focus on Save and no focusin
+    // follows it.
+    await user.click(button("Details"));
+    expect(button("Save")).toHaveFocus();
+    // Enter on Save then starts its write, which disables it.
+    await user.keyboard("{Enter}");
     view.rerender(<Region save="disabled" />);
     await waitFor(() => expect(button("First fallback")).toHaveFocus());
   } finally {
@@ -276,21 +307,20 @@ test("a site that hands the focus on from a passive effect keeps its own choice"
   // effect has run. React runs that effect from its own scheduler, which the clock does not hold;
   // on a real clock, which of the two tasks ran first would depend on how busy the machine is. A
   // keeper that moved at once would move in its observer's microtask, before either.
-  jest.useFakeTimers();
   try {
-    act(() => button("Save").focus());
-    // The answer lands outside `act`, so React draws its change and runs the effect in tasks of
-    // its scheduler as a browser does, rather than all at once as `act` ends.
-    reactGlobals.IS_REACT_ACT_ENVIRONMENT = false;
-    answer.resolve();
-    await handedOn.promise;
-    reactGlobals.IS_REACT_ACT_ENVIRONMENT = actEnvironment;
-    // The keeper's move runs now, and finds the focus already handed on.
-    realClock();
+    await onFakeClock(async () => {
+      act(() => button("Save").focus());
+      // The answer lands outside `act`, so React draws its change and runs the effect in tasks of
+      // its scheduler as a browser does, rather than all at once as `act` ends.
+      reactGlobals.IS_REACT_ACT_ENVIRONMENT = false;
+      answer.resolve();
+      await handedOn.promise;
+      reactGlobals.IS_REACT_ACT_ENVIRONMENT = actEnvironment;
+    });
+    // The keeper's move ran as the real clock came back, and found the focus already handed on.
     expect(button("Second fallback")).toHaveFocus();
   } finally {
     reactGlobals.IS_REACT_ACT_ENVIRONMENT = actEnvironment;
-    jest.useRealTimers();
     view.unmount();
   }
 });
