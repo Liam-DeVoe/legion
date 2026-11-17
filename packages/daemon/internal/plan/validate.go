@@ -97,8 +97,9 @@ func taskReasons(t Task) []string {
 // readsPullRequest is each role whose step reads the pull request the implementer's step opens:
 // the tester and the reviewer judge its head, and the owner's acceptance reads the evidence of it.
 // The implementer's move on waits for that pull request (the workflow's guard hasOpenOrMergedPR),
-// so such a step with no implementer step before it has no pull request to read until slice 6.
-// The role decides, never the step's type.
+// so such a step with no implementer step before it has no pull request to read, and this release
+// refuses it; a later release that gives such a step another pull request to read takes it. The
+// role decides, never the step's type.
 var readsPullRequest = map[string]bool{"tester": true, "reviewer": true, "acceptance": true}
 
 // stepReasons is Supported's causes in the steps of t, in this order: each step's key, in step

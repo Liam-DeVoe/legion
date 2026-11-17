@@ -147,10 +147,10 @@ func TestSupportedRefusesWhatThisReleaseDoesNotCarryOut(t *testing.T) {
 	}
 }
 
-// R2 in this release: a task names its steps in any order. The planner stands at any place, and
-// the tester, the reviewer and the owner's acceptance each come after the implementer, in any
-// order among them. A role named two times stays refused (slice 4's cause) until slice 6. The
-// twin: today's line, the steps an issue with no plan rows runs, is taken as before (R20).
+// A task names its steps in any order. The planner stands at any place, and the tester, the
+// reviewer and the owner's acceptance each come after the implementer, in any order among them. A
+// role named at two steps stays refused in this release. The twin: today's line, the steps an
+// issue with no plan rows runs, is taken as before.
 func TestSupportedTakesStepsInAnyOrder(t *testing.T) {
 	for _, steps := range []string{"implementer reviewer tester", "implementer tester reviewer", "implementer acceptance:owner reviewer",
 		"implementer reviewer acceptance:owner tester", "implementer planner", "planner implementer reviewer", "implementer reviewer planner tester",
@@ -166,10 +166,10 @@ func TestSupportedTakesStepsInAnyOrder(t *testing.T) {
 	}
 }
 
-// C6: the tester, the reviewer and the owner's acceptance read the pull request the implementer
-// opens (hasOpenOrMergedPR, the one guard of a move on), so a step of one of those roles with no
-// implementer step before it is refused until slice 6, by its role and with its word as the plan
-// writes it. The planner reads no pull request, so it stands anywhere.
+// The tester, the reviewer and the owner's acceptance read the pull request the implementer opens
+// (hasOpenOrMergedPR, the one guard of a move on), so this release refuses a step of one of those
+// roles with no implementer step before it, by its role and with its word as the plan writes it.
+// The planner reads no pull request, so it stands anywhere.
 func TestAStepThatReadsAPullRequestNeedsAnImplementerBeforeIt(t *testing.T) {
 	for _, tc := range []struct{ steps, reason string }{
 		{"tester implementer", "step 1 of task a names tester, and no step before it names the role implementer, whose pull request tester reads."},
@@ -185,7 +185,7 @@ func TestAStepThatReadsAPullRequestNeedsAnImplementerBeforeIt(t *testing.T) {
 	if r := Supported(oneTask("a", "implementer planner")); len(r) != 0 {
 		t.Fatalf("Supported(implementer planner) = %+v, want none", r)
 	}
-	// The plan `tester` alone has two causes, in the order Supported builds them (ruling 13).
+	// The plan `tester` alone has two causes, in the order Supported builds them, and both stand.
 	want := []Refusal{
 		{Task: "a", Reason: "task a has no step implementer." + yet},
 		{Task: "a", Reason: "step 1 of task a names tester, and no step before it names the role implementer, whose pull request tester reads." + yet},

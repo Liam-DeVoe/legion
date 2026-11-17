@@ -18,7 +18,7 @@ var allWorkflowTriggers = []TriggerKind{
 // testLines are the lines the table tests hold TableOf to: today's, which an issue with no plan
 // rows walks, and six that a plan of this release walks (plan.Line): a task of an implementer and
 // a reviewer, one of a planner, an implementer and the owner's acceptance, one of an implementer
-// alone, and three in another order than today's (R2): a review before the test, the owner's
+// alone, and three in another order than today's: a review before the test, the owner's
 // acceptance before the review, and a planner after the implementer.
 var testLines = [][]phase.Phase{
 	phase.Order,

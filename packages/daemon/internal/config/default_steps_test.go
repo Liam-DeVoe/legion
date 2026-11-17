@@ -70,7 +70,7 @@ func TestDefaultStepsAreReadAndRefused(t *testing.T) {
 		t.Fatalf("DEMO, which names none, runs %+v, want today's line", got)
 	}
 
-	// The steps in another order than today's load as the list writes them (R2).
+	// The steps in another order than today's load as the list writes them.
 	cfg, err = Load(writeConfigFile(t, defaultStepsFile("{default_steps: [implementer, reviewer, tester]}")), noEnv)
 	if err != nil {
 		t.Fatalf("Load([implementer, reviewer, tester]): %v", err)
