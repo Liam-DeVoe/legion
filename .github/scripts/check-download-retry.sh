@@ -5217,14 +5217,16 @@ VARIABLE_PATTERNS_READ: dict[int, list[tuple[Command, str]]] = {}
 # `"$p"`, and `echo <path> | xargs bash` each passed a 1650 s call under a one-minute key. So the
 # run itself is refused, whatever printed, wrote or assembled the path (unnamed_runs). HANDED_ON
 # is the arguments a wrapper function hands on to its command, `"$@"`, `"${@}"` and an array's
-# `"${cmd[@]}"`: the reading of calls through a variable decides what such a call runs
-# (variable_calls), so this refusal takes none of them for a run's target. A function whose body
-# runs one of its own positional parameters, `run() { "$@" >> "$log"; }`, runs a word its caller
-# hands it, so a call of it is a run too, of the word in that place: `run "$p"` and `run
-# "$(cmd)"` are refused as `"$p"` is. A function handing it its own parameter, `wrap() { run
-# "$@"; }`, is read as one too, so `wrap "$p"` is refused, and a script handing on its own
+# `"${cmd[@]}"`: inside a function's body, and wherever the text can see a function that
+# fetches, the reading of calls through a variable decides what such a call runs
+# (variable_calls), so this refusal takes none of them for a run's target there. A function
+# whose body runs one of its own positional parameters, `run() { "$@" >> "$log"; }`, runs a
+# word its caller hands it, so a call of it is a run too, of the word in that place: `run "$p"`
+# and `run "$(cmd)"` are refused as `"$p"` is. A function handing it its own parameter, `wrap()
+# { run "$@"; }`, is read as one too, so `wrap "$p"` is refused, and a script handing on its own
 # arguments, `run "$@"` at its top level, is refused, since its callers are not followed
-# (runners_of; dispatch://INFRA-1545, round 37).
+# (runners_of). So is a text running those words itself outside any function, `"$@"` at a
+# script's top level or after a step's `set --` (HANDED_ON_RUN; dispatch://INFRA-1545, round 37).
 HANDED_ON = re.compile(r"\$(?:@|\{@\}|\{[A-Za-z_]\w*\[@\]\})")
 # A positional parameter as a command word: `$1` to `$9`, `${n}`, `$@`, `$*`, `${@}` and `${*}`.
 POSITIONAL = re.compile(r"\$(?:([1-9])|\{([1-9][0-9]*)\}|[@*]|\{[@*]\})")
@@ -5246,11 +5248,19 @@ UNNAMED_CURE = ("Where a script of this repository runs there, write its literal
 UNNAMED_CALL_CURE = ("Hand `{name}` the script or the command it runs by its literal name, "
                      "`{name} .github/scripts/<name>.sh …` or `{name} grep …`, and what varies as "
                      "the arguments after it")
-# The three reasons unseen() gives name a file this check could see but cannot follow, and
-# the literal-path advice above does not cure them: a written file is refused by any name, a
-# name a `cd` may move is refused by its bare name, and a bare script name is the refused form
-# itself. Each gets the rewrite that passes (dispatch://INFRA-1545, round 37's class search).
-UNSEEN_CURES = {
+# The reasons whose cure the literal-path advice above is not. The three unseen() gives name a
+# file this check could see but cannot follow: a written file is refused by any name, a name a
+# `cd` may move is refused by its bare name, and a bare script name is the refused form itself.
+# The fourth is a run, outside any function, of the words a text is handed, `"$@"`, `"$1"` or an
+# array's `"${cmd[@]}"`: a script's callers hand it those words and a step's own `set` or
+# assignment does, and this check follows neither, so a script path built from data reaches
+# bash there charged nothing (round 37's last probe: `.github/scripts/$n.sh` handed to a script
+# whose top level runs `"$@"` passed a 1050 s call under a one-minute key). Only a function
+# this text calls with literal words, `run grep …`, is read at its callers (runners_of). Each
+# gets the rewrite that passes (dispatch://INFRA-1545, round 37).
+HANDED_ON_RUN = ("which runs words its callers hand it or that it sets itself, and this check "
+                 "follows neither to the program they name")
+REASON_CURES = {
     "a file this text writes before it runs it": (
         "Run no file this text writes: write its commands in the step itself, or move them "
         "into a script under .github/scripts/ and run that by its literal path"),
@@ -5263,6 +5273,10 @@ UNSEEN_CURES = {
     "or `PATH`, neither of which this check follows": (
         "Write the script's path from the repository root, `.github/scripts/<name>.sh …`, with "
         "no `cd` and no `PATH` entry standing in for it"),
+    HANDED_ON_RUN: (
+        "Name the command this text runs literally, `.github/scripts/<name>.sh …` or `grep …`, "
+        "with what varies as its arguments; a wrapper that runs the words it is handed is read "
+        "only as a function this text defines and calls with literal words, `run grep …`"),
 }
 
 
@@ -5672,11 +5686,13 @@ def unnamed_runs(path: str, loops: Loops, sees_fetching: bool,
                   and (sees_fetching or handed_in(command, reduced[0]))):
             target = reduced[0]
             does = f"runs `{target}` as a command"
-            why = unnamed_target(target, action) or unseen(target, False)
+            why = (HANDED_ON_RUN if (HANDED_ON.fullmatch(target) or POSITIONAL.fullmatch(target))
+                   and loops.function_of(command.line) is None
+                   else unnamed_target(target, action) or unseen(target, False))
         ends = [span[1] for span in command.spans if span]
         last = loops.first_line + text.count("\n", 0, max(ends)) if ends else command.line
         if why:
-            found.append((command.line, last, does, why, UNSEEN_CURES.get(why, UNNAMED_CURE)))
+            found.append((command.line, last, does, why, REASON_CURES.get(why, UNNAMED_CURE)))
         callee = reduced[0]
         holder = loops.function_of(command.line)
         if callee in runners and holder != callee:

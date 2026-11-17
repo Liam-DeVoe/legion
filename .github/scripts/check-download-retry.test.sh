@@ -6095,8 +6095,13 @@ for refusal in \
 done
 check "does not tell a run inside a substitution to write its path as the command word" \
   "$(is "$(contains "$out" "step 'Run it in a process substitution' of job 'build' .*$command_word")" false)"
+# The array's run is refused too, at its own line: outside any function `"${a[@]}"` runs words
+# the text sets itself, which this check follows to no program (E5's refusal), and writing the
+# path as the command word cures both (dispatch://INFRA-1545, round 37).
+check "refuses the array's run at its own line" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=15::step 'List it in an array' of job 'build' runs \`\${a\[@\]}\` as a command, which runs words its callers hand it or that it sets itself")"
 check "refuses nothing else" \
-  "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 11)"
+  "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 12)"
 check "charges none of them" "$(is "$(contains "$out" 'its own retries take')" false)"
 
 # The same places naming a script that fetches nothing are neither charged nor refused
@@ -13361,6 +13366,79 @@ for step in "Hand a function a literal name it copies and runs" \
   check "passes '$step'" "$(is "$(contains "$out" "step '$step'")" false)"
 done
 check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 3)"
+
+# E5. A text that runs, outside any function, the words it is handed or sets itself, `"$@"`,
+# `"$1"` or an array's `"${cmd[@]}"`, runs a program its callers or its own data name, which this
+# check follows to no script (dispatch://INFRA-1545, round 37's last probe). Before the refusal,
+# a path built from data, `.github/scripts/$n.sh`, handed to a script whose top level runs `"$@"`
+# or `"$1"`, set as a step's parameters or put in an array the step then runs, each passed r37-c.sh,
+# 1050 s, under a key of one minute. A function this text defines and calls with literal words is
+# read at its callers, and passes.
+echo "case: r37 E5 a run of the words a text is handed or sets itself, outside any function, is refused by name"
+root=$(fixture r37-handed-on)
+cat > "$root/.github/scripts/r37-c.sh" <<'SH'
+#!/usr/bin/env bash
+. .github/scripts/ci-retry.sh
+retry_fetch "a large asset" 180 -- curl -fsSL --max-time 180 -o b https://example.com/b
+SH
+printf '#!/usr/bin/env bash\n"$@"\n' > "$root/.github/scripts/r37-wrap.sh"
+printf '#!/usr/bin/env bash\n"$1"\n' > "$root/.github/scripts/r37-first.sh"
+cat > "$root/.github/scripts/r37-run.sh" <<'SH'
+#!/usr/bin/env bash
+run() { "$@" > out.txt; }
+run grep -c x in.txt
+SH
+chmod +x "$root"/.github/scripts/r37-*.sh
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Hand a built name to a script that runs its arguments
+        timeout-minutes: 1
+        run: |
+          n=r37-c
+          bash .github/scripts/r37-wrap.sh ".github/scripts/$n.sh"
+      - name: Hand a built name to a script that runs its first argument
+        timeout-minutes: 1
+        run: |
+          n=r37-c
+          bash .github/scripts/r37-first.sh ".github/scripts/$n.sh"
+      - name: Set a built name as the parameters and run them
+        timeout-minutes: 1
+        run: |
+          n=r37-c
+          set -- ".github/scripts/$n.sh"
+          "$@"
+      - name: Put a built name in an array and run it
+        timeout-minutes: 1
+        run: |
+          n=r37-c
+          cmd=(".github/scripts/$n.sh")
+          "${cmd[@]}"
+      - name: Run a function wrapper with literal words
+        timeout-minutes: 1
+        run: |
+          bash .github/scripts/r37-run.sh
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+check "refuses the script that runs its arguments, at its run" \
+  "$(contains "$out" '::error file=.github/scripts/r37-wrap.sh,line=2::.github/scripts/r37-wrap.sh runs `$@` as a command, which runs words its callers hand it or that it sets itself')"
+check "refuses the script that runs its first argument, at its run" \
+  "$(contains "$out" '::error file=.github/scripts/r37-first.sh,line=2::.github/scripts/r37-first.sh runs `$1` as a command, which runs words its callers hand it or that it sets itself')"
+check "refuses the step that runs its own parameters, at the run" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=22::step 'Set a built name as the parameters and run them' of job 'build' runs \`\$@\` as a command")"
+check "refuses the step that runs its array, at the run" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=28::step 'Put a built name in an array and run it' of job 'build' runs \`\${cmd\[@\]}\` as a command")"
+check "tells each to name the command it runs literally" \
+  "$(is "$(printf '%s\n' "$out" | grep -c 'follows neither to the program they name, so this check cannot name the script that runs there.*Name the command this text runs literally')" 4)"
+check "passes the function wrapper called with literal words" \
+  "$(is "$(contains "$out" "r37-run.sh")" false)"
+check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 4)"
 
 # The promise rule 8 exists to keep: no retried job whose key is below its own sum reaches main.
 # Every case above proves one shape on a fixture written for it, which leaves open whether a shape
