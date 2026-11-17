@@ -396,7 +396,8 @@ type WaitingPullRequest struct {
 // shipping run is read here rather than from the window's own runs, which start at the window and
 // so can miss a run created before it. viewer is the visibility argument (refs.VisibilityArg) the
 // deploy repository is held to (access.RepositoryClause), as ListPullRequestsInWindow holds every
-// pull request's.
+// pull request's. Every row is of that one repository (pr.repo = $1), so the clause is asked of
+// the parameter, once, rather than of each row.
 func ListPullRequestsWaitingAt(ctx context.Context, pool *store.Pool, viewer any, deployRepo string, production Production, at time.Time) ([]WaitingPullRequest, error) {
 	rows, err := pool.Query(ctx, `
 		select `+PullRequestColumns+`, ship.run_id, ship.completed_at
@@ -411,7 +412,7 @@ func ListPullRequestsWaitingAt(ctx context.Context, pool *store.Pool, viewer any
 				and j.completed_at < $3
 			order by `+runCreatedAt+` desc
 			limit 1
-		), '-infinity') and `+access.RepositoryClause("pr.repo", "$6")+`
+		), '-infinity') and `+access.RepositoryClause("$1", "$6")+`
 		order by pr.merged_at, (pr.repo || '#' || pr.number) collate "C"
 		limit $4
 	`, deployRepo, production.JobNames, at, maxPullRequestsPerWindow, production.ApplyStep, viewer)
