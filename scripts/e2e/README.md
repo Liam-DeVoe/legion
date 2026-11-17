@@ -632,7 +632,7 @@ What it stands up, all of it the run's own:
   — tmpfs rather than the image's anonymous volume, which a box whose docker volume subsystem stalls would hang on.
 
 - **NATS and the Envoy listener** on the host:
-  a `nats:2.10 -js` container (`legion-e2e2-nats-<pid>`), and `packages/envoy`'s `cmd/listener` built into the work directory and started with a fresh API bearer, which reaches every pane as the 0600 file `envoy_token_file` names, on a socket [`lib/held-port.py`](#libheld-portpy) opened on a port the kernel chose (`ENVOY_LISTEN_FD`).
+  a JetStream container of the hub's nats-server (`legion-e2e2-nats-<pid>`; [`lib/nats-image.sh`](#libnats-imagesh) names the image), and `packages/envoy`'s `cmd/listener` built into the work directory and started with a fresh API bearer, which reaches every pane as the 0600 file `envoy_token_file` names, on a socket [`lib/held-port.py`](#libheld-portpy) opened on a port the kernel chose (`ENVOY_LISTEN_FD`).
 
 - **The plugins**: this checkout's `@sjawhar/pi-envoy` and `@sjawhar/pi-legion`, each packed as the release packs it, installed into the OMP profile `legion-e2e2-<pid>-<epoch>` by `lib/install-plugin-profile.sh` (`--package pi-envoy`, then `--package pi-legion`), under the run's own Oh My Pi home `<work>/omp-home` ([`lib/omp-home.sh`](#libomp-homesh)).
   The daemons run with that `HOME` and with `OMP_PROFILE` naming the profile, so the gate and every pane load both, and the operator's `~/.omp/profiles` holds none of the run;
@@ -2784,6 +2784,7 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
   The ticks are kept as `controller-ticks.json`, and `boot`'s set is in the note for context;
   the daemon that reported the gap keeps running, which every later checkpoint shows.
   Tree 3 stays held, its planner live, for `full-agent-negative`; `controller-walk` takes it out.
+  The operator-launched controller starts without the operator session's own Oh My Pi and Envoy variables ([`omp_session_unsets`](#libomp-homesh)), as `controller-start-tmux.sh` starts its own, so no settings overlay of that session reaches the run's profile.
   The operator-launched controller, started with `LEGION_GH_PATH` at mise's `gh` (the devbox's `gh` wrapper replaces `GH_CONFIG_DIR` in an agent session), holds its gh bundle under `$work/controller-state/gh`;
   read from the repository owner's directory there with mise's `gh`, it answers tree 1's pull request's state (`OPEN`, `MERGED` or `CLOSED`) and the review App's bot as viewer, with `GH_CONFIG_DIR=/nonexistent` failing, and its stderr names the review App and the bundle's owners, and `github-credential.log` exists
 
@@ -2962,6 +2963,7 @@ The Go daemon runs on a real Postgres with this checkout's two plugins in an iso
 The pinned Oh My Pi is launched through mise.
 The run needs no model route: the controller's one model turn, the start message (LEGION_CONTROLLER_START_MESSAGE) that pi-legion's `/legion-controller-start`, the word the command puts on Oh My Pi's command line, sends once Oh My Pi's startup is over, fails against the profile's default, a static-key provider that listens nowhere, and no check reads its answer.
 The profile names the roles the task agents use and that default, which is all the boot gate's agent-model check resolves.
+Its `config.yml` also shuts Oh My Pi's first-run setup wizard ([`omp_setup_wizard_off`](#libomp-homesh)), which would otherwise hold both controller panes, so `controller-claims-the-role` would time out with the wizard's `Sign in to your providers` step on the screen.
 
 ```bash
 bash scripts/e2e/controller-start-tmux.sh
@@ -3025,7 +3027,7 @@ Each item below names a check, then what it holds, with 4b.5's acceptance item i
 
 - `liveness-probe-against-the-listener`
 
-  `controller.Prober` on the live listener calls the second session alive and the first gone
+  `controller.Prober` on the live listener calls the second session `live` and the first `gone`
 
 - `exit-code-is-oh-my-pis`
 
@@ -3213,7 +3215,8 @@ jq -r '.[].jsonPayload | tojson' <log export>.json | jq -R -s -f scripts/e2e/lib
 ## dispatch-user-turns.sh
 
 LEGION-394's acceptance: a person's direct Send or Aside from Dispatch's conversation page is the session's own user turn, and everything else keeps its Envoy card.
-One real session — the pinned Oh My Pi (`.omp-pin`, run as a mise tool spec) with this checkout's Envoy plugin in an isolated profile, launched with `controller-start-tmux.sh`'s `operator_env` line and `OMP_SKIP_SETUP=1` (a fresh profile's first launch otherwise sits in the first-run setup wizard), its cwd under `/tmp` — registers with a real Envoy listener and NATS.
+One real session — the pinned Oh My Pi (`.omp-pin`, run as a mise tool spec) with this checkout's Envoy plugin in an isolated profile, launched with `controller-start-tmux.sh`'s `operator_env` line, its cwd under `/tmp` — registers with a real Envoy listener and NATS.
+The profile's model route shuts Oh My Pi's first-run setup wizard ([`omp_setup_wizard_off`](#libomp-homesh)), which a fresh profile's first launch otherwise sits in.
 Dispatch, built from the checkout with NATS on and its trusted identity header, serves the SPA this checkout builds, and Playwright drives the conversation page as the person the header names.
 The session's model turns go through the route `LEGION_E2E_MODEL_ROUTE` names:
 the model gateway on the operator's own hawk login ([`lib/install-model-gateway.sh`](#libinstall-model-gatewaysh)), or a local key file ([`lib/install-key-file-model-route.sh`](#libinstall-key-file-model-routesh)).
@@ -3323,7 +3326,7 @@ It differs from [`dispatch-user-turns.sh`](#dispatch-user-turnssh) in these ways
   psql is libpq, and Dispatch reads that rebuilt string with pgx (`pgxpool.ParseConfig`), which reads the keyword/value form as libpq does: the pinned `github.com/jackc/pgx/v5 v5.11.0` carries a port of libpq's parser, and `lib/loopback-dsn.sh` says what a raise of that pin moves.
   In a pod, start one without root as `docs/solutions/testing/the-real-dispatch-stack-runs-inside-a-legion-pod-with-no-postgres-no-docker-and-no-root-INFRA-42.md` says.
 
-- **NATS is a pinned `nats-server`**: `LEGION_E2E_NATS_BIN`, or v2.10.22, which the rig installs once with `go install`.
+- **NATS is a pinned `nats-server`**: `LEGION_E2E_NATS_BIN`, or v2.15.1, which the rig installs once with `go install`.
   In an issue pod it installs into `/legion/scratch/bin`, on the issue's volume, and otherwise into the run's own directory.
   The server starts with JetStream on a port the kernel picks, as `child-adoption.sh` starts it.
 
@@ -3356,7 +3359,7 @@ Each item below names an input and its default, then what it means.
 
   a loopback PostgreSQL with pgvector; the run makes and drops its own database there, and takes the DSN only when [`lib/loopback-dsn.py`](#libloopback-dsnpy) takes it
 
-- `LEGION_E2E_NATS_BIN` — the pinned `nats-server` v2.10.22, installed as above
+- `LEGION_E2E_NATS_BIN` — the pinned `nats-server` v2.15.1, installed as above
 
   another `nats-server`
 
@@ -3565,7 +3568,7 @@ What the run touches, and nothing else:
 - `/tmp/verifiers-e2e` — the two built binaries, the boot logs, the refusal logs, the last response body, and the scratch `HOME` the binaries run under, so Dispatch's signing key never lands in the box's `~/.local/share/dispatch`.
   Recreated from empty each run.
 
-- the containers `verifiers-e2e-pg` (pgvector on PostgreSQL 18, the image CI's Dispatch service runs, pinned by digest) and `verifiers-e2e-nats` (`nats:2.10 -js`), both on ephemeral loopback ports.
+- the containers `verifiers-e2e-pg` (pgvector on PostgreSQL 18, the image CI's Dispatch service runs, pinned by digest) and `verifiers-e2e-nats` (the hub's nats-server with `-js`, [`lib/nats-image.sh`](#libnats-imagesh)), both on ephemeral loopback ports.
 
 - two ports the kernel chose, one for `dispatch` and one for the listener, each held by [`lib/held-port.py`](#libheld-portpy) from that choice until its binary serves on it (`DISPATCH_LISTEN_FD`, `ENVOY_LISTEN_FD`).
   The boot refusals exit before any bind and get none.
@@ -4211,7 +4214,7 @@ Runs on any Linux host with `go`, `awk` and `python3` (for [`lib/loopback-dsn.py
 `LEGION_TEST_PG_DSN` is required and names the PostgreSQL the daemon migrates and runs on;
 the script starts none, so CI's service, a devbox container and a pod's own embedded PostgreSQL all satisfy it on a loopback address.
 The DSN's host must be loopback: `prerequisites` refuses one that is not with exit 2, before the driver is built and before the broker starts.
-The broker is the run's own: the `nats-server` `LEGION_E2E_NATS_BIN` names, or the pinned `v2.10.22` the script installs with `go install` into a GOBIN of its own, started with JetStream on a port the kernel picks for it (`-p -1`, read back from its log) and stopped on any exit.
+The broker is the run's own: the `nats-server` `LEGION_E2E_NATS_BIN` names, or the pinned `v2.15.1` the script installs with `go install` into a GOBIN of its own, started with JetStream on a port the kernel picks for it (`-p -1`, read back from its log) and stopped on any exit.
 The four checks below are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s.
 
 | check | what it holds |
@@ -4264,7 +4267,7 @@ Runs on any Linux host with `go`, `awk` and `python3` (for [`lib/loopback-dsn.py
 `LEGION_TEST_PG_DSN` is required and names the PostgreSQL the daemon migrates and runs on;
 the script starts none.
 The DSN's host must be loopback: `prerequisites` refuses one that is not with exit 2, before the driver is built and before the broker starts.
-The broker is the run's own: the `nats-server` `LEGION_E2E_NATS_BIN` names, or the pinned `v2.10.22` the script installs with `go install` into a GOBIN of its own, started with JetStream on a port the kernel picks for it (`-p -1`, read back from its log) and stopped on any exit.
+The broker is the run's own: the `nats-server` `LEGION_E2E_NATS_BIN` names, or the pinned `v2.15.1` the script installs with `go install` into a GOBIN of its own, started with JetStream on a port the kernel picks for it (`-p -1`, read back from its log) and stopped on any exit.
 A run takes about a minute.
 The four checks below are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s, the run `child-adoption.sh` makes too.
 
@@ -4317,7 +4320,7 @@ Runs on any Linux host with `go`, `awk` and `python3` (for [`lib/loopback-dsn.py
 `LEGION_TEST_PG_DSN` is required and names the PostgreSQL the daemon migrates and runs on;
 the script starts none.
 The DSN's host must be loopback: `prerequisites` refuses one that is not with exit 2, before the driver is built and before the broker starts.
-The broker is the run's own: the `nats-server` `LEGION_E2E_NATS_BIN` names, or the pinned `v2.10.22` the script installs with `go install` into a GOBIN of its own, started with JetStream on a port the kernel picks for it (`-p -1`, read back from its log) and stopped on any exit.
+The broker is the run's own: the `nats-server` `LEGION_E2E_NATS_BIN` names, or the pinned `v2.15.1` the script installs with `go install` into a GOBIN of its own, started with JetStream on a port the kernel picks for it (`-p -1`, read back from its log) and stopped on any exit.
 A measured run of the eight steps took 73 s, 2 s of it the proof itself and the rest building the driver.
 The four checks below are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s, the run `conflict-no-takeover.sh` and `child-adoption.sh` make too.
 
@@ -4423,7 +4426,7 @@ Runs on any Linux host with `go`, `awk` and `python3` (for [`lib/loopback-dsn.py
 `LEGION_TEST_PG_DSN` is required and names the PostgreSQL the daemon migrates and runs on;
 the script starts none.
 The DSN's host must be loopback: `prerequisites` refuses one that is not with exit 2, before the driver is built and before the broker starts.
-The broker is the run's own: the `nats-server` `LEGION_E2E_NATS_BIN` names, or the pinned `v2.10.22` the script installs with `go install` into a GOBIN of its own, started with JetStream on a port the kernel picks for it (`-p -1`, read back from its log) and stopped on any exit.
+The broker is the run's own: the `nats-server` `LEGION_E2E_NATS_BIN` names, or the pinned `v2.15.1` the script installs with `go install` into a GOBIN of its own, started with JetStream on a port the kernel picks for it (`-p -1`, read back from its log) and stopped on any exit.
 A measured run took 88 s, 47 s of it building the driver: the proof itself waits out one paced launch, one outbox retry backoff and one entry sweep.
 The four checks below are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s, the run `conflict-no-takeover.sh` and `child-adoption.sh` make too.
 
@@ -5984,14 +5987,27 @@ Each item below names a function, then what it does.
 Running the two proofs at once takes a database each: both reset their own `DATABASE_URL`'s `public` schema, so one database given to both leaves each build migrating a schema the other emptied.
 Their ports differ, so nothing else collides.
 
+## lib/nats-image.sh
+
+Sets `nats_image` to the NATS server image every live proof that starts its own server runs: `testnats.HubImage`, the constant `packages/envoy/internal/testnats/nats.go` declares, which is the hub's `nats:2.15.1-alpine` (`.github/ci-images.yaml`).
+The listener and the Legion daemon refuse a nats-server below the floor `packages/envoy/natsversion` holds, every 2.10 among them, so a proof on any older image never brings its stack up; reading the Go tests' own constant keeps the two from drifting.
+Needs `$root`; ends the script when it cannot read the constant, and says so on stderr under `set -e` too.
+Stage 2, Stage 3, both Claude backend proofs, the controller-start, user-turns, parked-decision and verifiers proofs, the operator walkthrough's `record-casts.sh` and pi-legion's skill-scenario rig source it.
+`lib/nats-image.test.ts` scans every tracked shell script, and holds each one with a `docker run` line that passes `-js` to starting `"$nats_image"` and sourcing this helper; the drivers above are a floor under that scan.
+It also scans every tracked text file but dated plans and changelogs for the nats-server module's path followed by `@` and a version, in any command (`go install`, `go run`, `go get`), a literal version or `@$name` with a literal `name=<version>` in the same file, and fails on any version the floor refuses.
+It holds no copy of the floor: it builds `packages/envoy/natsversion/cmd/natsfloor` once and asks it, so the verdict is `natsversion.Refusal`'s, the rule the listener and the daemon refuse a server by, and so it needs `go` on `PATH`.
+It does not see a `docker run` continued over lines, `podman` or a launcher that is not a shell script, an `export name=` or `${name:-<version>}` assignment, or a version set in another file the script sources; none is used in the tree.
+
 ## lib/omp-home.sh
 
 The run's own `HOME` for Oh My Pi, so a stage proof's isolated profile lives in its work directory and the operator's `~/.omp/profiles` is never written or deleted.
-Stage 2, Stage 3, the 4b.13b acceptance, Stage 4b's controller and the controller proof source it.
+Stage 2, Stage 3, the 4b.13b acceptance, Stage 4b's controller and the controller proof source it, and so do the three model-route libraries ([`lib/install-model-gateway.sh`](#libinstall-model-gatewaysh), [`lib/install-key-file-model-route.sh`](#libinstall-key-file-model-routesh) and [`lib/install-box-login-route.sh`](#libinstall-box-login-routesh)) for `omp_setup_wizard_off`.
 
 ```sh
 . "$root/scripts/e2e/lib/omp-home.sh"     # sourced, never run
 make_omp_home "$work/omp-home"
+omp_setup_wizard_off "$work/omp-home/.omp/profiles/$profile/agent/config.yml"
+env "${omp_session_unsets[@]}" HOME="$work/omp-home" OMP_PROFILE="$profile" "$work/legion" controller start --config "$work/controller.yaml"
 ```
 
 Oh My Pi places a profile from the home directory alone: `os.homedir()/.omp/profiles/<name>` (`getProfileConfigRoot`, `@oh-my-pi/pi-utils` `dirs.ts`).
@@ -6018,6 +6034,17 @@ Panes commit as their App's identity (`JJ_USER` and `JJ_EMAIL`), which `"own"` n
 
 A proof's panes and controller therefore see none of the operator's `~/.gitconfig`, `~/.claude`, `~/.codex` or `~/.aws`, which is what a Sandbox pod sees.
 The gateway key command alone runs under the operator's `HOME` ([`lib/install-model-gateway.sh`](#libinstall-model-gatewaysh)).
+
+`omp_setup_wizard_off FILE` appends `startup.setupWizard: false` to `FILE`, the `agent/config.yml` of a profile the run writes, and every writer of a profile that an interactive Oh My Pi opens calls it: the three model-route libraries and the controller proof.
+An interactive Oh My Pi in a terminal, such as the one `legion controller start` runs in a tmux pane, opens its first-run setup wizard (`Setup step 1 of 5`, `Sign in to your providers`) while the profile's `setupVersion` is below the build's `CURRENT_SETUP_VERSION`, and on a fresh profile the wizard blocks the session's first command and normal editor interaction (`runInteractiveMode` in `packages/coding-agent/src/main.ts` and `selectSetupScenes` in `packages/tui/src/setup/wizard.ts`, at the pin).
+`startup.setupWizard: false` shuts the wizard whatever setup version the build counts to; an Oh My Pi in `--mode rpc`, as every daemon pane runs, never opens it.
+A named profile's own settings file is its `agent/config.yml`, and it inherits no other `config.yml` of the home (`getProfileConfigRoot`, `@oh-my-pi/pi-utils` `dirs.ts`).
+Only the working directory's project settings and `PI_CONFIG_FILES` overlays merge over it, so each profile the run writes carries the line itself.
+
+`omp_session_unsets` is the one list of the operator's own Oh My Pi session variables that no Oh My Pi a rig starts from that session may inherit, as `env` options:
+`-u OMP_SESSION_ID -u OMPCODE -u PI_CONFIG_FILES -u ENVOY_NATS_URL -u LEGION_OMP_PATH`.
+They are that session's id, the mark Oh My Pi puts on the shells its bash tool spawns, its settings overlays (laid over every profile Oh My Pi opens), the NATS its Envoy plugin dials, and the Oh My Pi binary that `legion controller start` and the daemon would run in place of `omp_invocation`.
+`legion controller start` hands Oh My Pi its caller's environment, so the four rigs that run it or an interactive `omp` from the operator's shell (`controller-start-tmux.sh`, `parked-decision-devbox.sh`, `stage4b-sandbox-tree.sh`, `dispatch-user-turns.sh`) put the list in front of each launch: `env "${omp_session_unsets[@]}" …` in an argv, and `env ${omp_session_unsets[*]} …` in a pane's shell command.
 
 ## lib/leftovers.sh
 
