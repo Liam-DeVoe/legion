@@ -1,6 +1,6 @@
 import { type RefObject, useRef } from "react";
 
-import { useKeymap } from "../shell/keymap";
+import { type KeyBinding, useKeymap } from "../shell/keymap";
 import { focusOnDocument } from "../shell/roving";
 import { type RowAction, rowActionSelector } from "./DecisionActions";
 import { bringOnScreen } from "./identity-block";
@@ -118,6 +118,36 @@ function pressedByAKey(control: HTMLElement): boolean {
   return words === CONTROL_LABELS.keep_open || words === CONTROL_LABELS.let_close;
 }
 
+/**
+ * The key that enters a tree drawn as one tab stop (R9): Tab or Shift+Tab pressed on the page
+ * itself enters it at the row that holds the stop, the one the reader last stood on, or at its
+ * first row where none holds it yet. Tab from inside the tree is the browser's own, which leaves
+ * the tree because every row but that one takes no focus. `rows` answers the tree's rows as the
+ * browser holds them, in order, and `moveTo` moves the reader to the row at an index of them.
+ *
+ * It is exported because part K imports it, so its chart is entered as the outline is (the
+ * architect's decision 94).
+ */
+export function treeEnterKey({
+  moveTo,
+  rows,
+}: {
+  readonly rows: () => readonly HTMLElement[];
+  readonly moveTo: (index: number) => void;
+}): KeyBinding {
+  return {
+    id: "tree-enter",
+    keys: ["Tab", "Shift+Tab"],
+    label: "Move into the tree",
+    palette: false,
+    run: () => {
+      const stop = rows().findIndex((row) => row.tabIndex === 0);
+      moveTo(stop === -1 ? 0 : stop);
+    },
+    when: () => focusOnDocument() && rows().length > 0,
+  };
+}
+
 export function useTreeKeymap(tree: TreeKeyboard): void {
   // The row the caret was taken from, so Escape puts the reader back on it rather than on
   // whichever row the tree would otherwise offer.
@@ -198,21 +228,8 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
   };
 
   useKeymap("issue", [
-    {
-      // The tree is one tab stop (R9): Tab from the page itself enters it at the row the reader
-      // last stood on, and Tab from inside it is the browser's own, which leaves the tree
-      // because every row but that one takes no focus.
-      id: "tree-enter",
-      keys: ["Tab", "Shift+Tab"],
-      label: "Move into the tree",
-      palette: false,
-      run: () => {
-        const { elements } = drawn();
-        const stop = elements.findIndex((row) => row.tabIndex === 0);
-        moveTo(stop === -1 ? 0 : stop);
-      },
-      when: () => focusOnDocument() && drawn().elements.length > 0,
-    },
+    // The tree is one tab stop (R9), which Tab from the page itself enters (`treeEnterKey`).
+    treeEnterKey({ moveTo, rows: () => drawn().elements }),
     {
       id: "tree-next",
       keys: ["j", "ArrowDown"],

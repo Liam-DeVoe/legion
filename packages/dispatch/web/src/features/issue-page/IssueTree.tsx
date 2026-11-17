@@ -1,5 +1,13 @@
 import { useQuery } from "@tanstack/react-query";
-import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  type ReactNode,
+  type RefObject,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useNavigate } from "react-router-dom";
 
 import { whoAmIQuery } from "../../api/queries";
@@ -265,10 +273,6 @@ export function IssueTree({
   // one row at a time.
   const onScreenHold = useRef<AbortController | undefined>(undefined);
   useEffect(() => () => onScreenHold.current?.abort(), []);
-  const holdRow = useCallback((row: HTMLElement) => {
-    onScreenHold.current?.abort();
-    onScreenHold.current = holdOnScreen(row);
-  }, []);
   // The open question the page opens on, whose row is held once it has the focus: `reach`
   // focuses it where it is drawn already, and otherwise once the render that unfolds the path to
   // it has drawn it (`goToNode`). The reader acting before then lets it go.
@@ -297,10 +301,10 @@ export function IssueTree({
         const element = body.current?.querySelector<HTMLElement>(
           `[data-node-row][data-row-key="${CSS.escape(row)}"]`
         );
-        if (element !== null && element !== undefined) holdRow(element);
+        if (element !== null && element !== undefined) holdInPlaceOf(element, onScreenHold);
       }
     },
-    [holdRow, setFocusedNode]
+    [setFocusedNode]
   );
   // R7 under a press: the focus a press gives a row is taken once the press is over, and only
   // while that row still holds the focus; a key's move takes it at once (`usePressFocus`).
@@ -498,13 +502,8 @@ export function IssueTree({
       }
       taken.current = { acts, id: targetId };
     }
-    // A row already inside the viewport is focused where it stands, so nothing jumps twice: the
-    // row's own focus places it by the page's one rule (`bringOnScreen`) when it is not, and the
-    // hold keeps it there while the rest of the page arrives.
-    const box = row.getBoundingClientRect();
-    row.focus({ preventScroll: box.top >= 0 && box.bottom <= window.innerHeight });
-    holdRow(row);
-  }, [focusReveal, holdRow, rows, targetId]);
+    landOnRow(row, onScreenHold);
+  }, [focusReveal, rows, targetId]);
 
   // The page opens with the keyboard focus on the first open question that waits on the reader,
   // in the outline's own order, its path unfolded and its row in the viewport; where none waits
@@ -782,6 +781,28 @@ export function holdOnScreen(row: HTMLElement): AbortController {
   grown.observe(document.body);
   hold.signal.addEventListener("abort", () => grown.disconnect());
   return hold;
+}
+
+/**
+ * Lands the reader on `row`, a row the page takes them to of its own accord: focuses it, where it
+ * stands when it is already inside the viewport, so nothing jumps twice - the row's own focus
+ * places it by the page's one rule (`bringOnScreen`) when it is not - and holds it there while
+ * the rest of the page arrives (`holdOnScreen`), in place of the row `held` held.
+ *
+ * It is exported because part K imports it, so its chart lands on the row an address names as
+ * the outline does (the architect's decision 94).
+ */
+export function landOnRow(row: HTMLElement, held: RefObject<AbortController | undefined>): void {
+  const box = row.getBoundingClientRect();
+  row.focus({ preventScroll: box.top >= 0 && box.bottom <= window.innerHeight });
+  holdInPlaceOf(row, held);
+}
+
+/** Holds `row` on screen (`holdOnScreen`) and ends the hold of the row `held` held before, so
+ *  one row is held at a time. */
+function holdInPlaceOf(row: HTMLElement, held: RefObject<AbortController | undefined>): void {
+  held.current?.abort();
+  held.current = holdOnScreen(row);
 }
 
 /** Whether nothing holds the focus that the tree is to keep from it: it is on nothing, on the
