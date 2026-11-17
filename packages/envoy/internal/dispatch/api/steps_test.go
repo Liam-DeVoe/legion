@@ -202,6 +202,36 @@ func TestARunsSessionReportAndGenerationComeBackAsWritten(t *testing.T) {
 	}
 }
 
+// A second run of one step answers attempt 2, on its start and on its end, and the end's answer is
+// the record as the read lists it; the first run still reads attempt 1.
+func TestASecondRunOfAStepAnswersAttemptTwo(t *testing.T) {
+	handler := newTestHandler(t)
+	issue := createTestIssue(t, handler, "LEG", "A run of steps")
+	daemon := daemonSession("LEG")
+	first, second := uuid.NewString(), uuid.NewString()
+	putStepOK(t, handler, issue, first, implementerStart(daemon))
+	putStepOK(t, handler, issue, first, implementerEnd(daemon, "stopped", stepEnd))
+
+	againStart, againEnd := stepEnd.Add(time.Minute), stepEnd.Add(time.Hour)
+	started := putStepOK(t, handler, issue, second, with(implementerStart(daemon), map[string]any{"started_at": againStart}))
+	if started.Attempt != 2 || started.Generation != 1 {
+		t.Fatalf("the second run's start answers %s, want attempt 2 of generation 1", stepJSON(t, started))
+	}
+	ended := putStepOK(t, handler, issue, second, implementerEnd(daemon, "passed", againEnd))
+	want := model.StepRecord{
+		ID: second, Issue: issue, Task: "default", Step: 2, Kind: "step", Role: "implementer",
+		Type: "implementation", Agent: "legion-leg-leg-1-implementer", Model: "anthropic/claude-opus-5",
+		Generation: 1, Attempt: 2, StartedAt: &againStart, EndedAt: &againEnd, Result: "passed",
+	}
+	if got := stepJSON(t, ended); got != stepJSON(t, want) {
+		t.Fatalf("the second run's end answers\n%s\nwant\n%s", got, stepJSON(t, want))
+	}
+	steps := stepsOf(t, handler, issue)
+	if len(steps) != 2 || steps[0].ID != first || steps[0].Attempt != 1 || stepJSON(t, steps[1]) != stepJSON(t, want) {
+		t.Fatalf("the read lists %+v, want the first run at attempt 1 and then\n%s", steps, stepJSON(t, want))
+	}
+}
+
 // The read answers each task once, in the order of its first step, with its steps in the order
 // they ran.
 func TestTheReadListsTasksInTheOrderOfTheirFirstStep(t *testing.T) {
