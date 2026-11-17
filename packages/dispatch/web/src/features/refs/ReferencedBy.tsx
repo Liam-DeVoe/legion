@@ -280,16 +280,39 @@ export function ReferencedByToggle({
   );
 }
 
+/** A row a host adds after the list's own, with its words already made: the list draws it as it
+ *  draws its own rows and says nothing of what it is. */
+export interface ExtraReferenceRow {
+  /** The time the row reads, as `Timestamp` draws it. */
+  readonly at: string;
+  /** The relation the row's item stands in to the node, in the host's words. */
+  readonly edge: string;
+  /** The item's own words, drawn as the list draws an edge's excerpt. */
+  readonly excerpt?: string;
+  /** Where the row's link goes. */
+  readonly href: string;
+  readonly key: string;
+  /** What kind of item the row is, in the host's words: the row's link. */
+  readonly kind: string;
+  /** Marks the host draws beside the kind. */
+  readonly marks?: ReactNode;
+}
+
 /** The panel: one list of what references a node, read the first time a host renders it. Its
  *  host owns disclosure — `ReferencedByToggle` beside it, or nothing at all where the page shows
  *  the list outright — so this component has one behaviour. */
 export function ReferencedBy({
   className,
+  extraRows = [],
   page = false,
   reference,
   toggle,
 }: {
   className?: string;
+  /** Rows the host adds after the list's own. The list counts none of them as its own and draws
+   *  them only while it holds one; while one stands, it does not say that nothing references the
+   *  node. */
+  extraRows?: readonly ExtraReferenceRow[];
   /** Whether the list is drawn in the new page's Details: in the page's colours, and without the
    *  issue's own asks, comments and messages, which that page's outline holds (`listedEdges`). */
   page?: boolean;
@@ -326,8 +349,13 @@ export function ReferencedBy({
           </button>
         </p>
       ) : null}
-      {edges?.length === 0 ? (
-        <p className={`text-sm ${tokens.line}`}>Nothing references this yet.</p>
+      {extraRows.length === 0 ? (
+        // biome-ignore lint/complexity/noUselessFragments: it holds the empty list's line as its own conditional, under the extra rows' guard
+        <>
+          {edges?.length === 0 ? (
+            <p className={`text-sm ${tokens.line}`}>Nothing references this yet.</p>
+          ) : null}
+        </>
       ) : null}
       {groups.length === 0 ? null : (
         <ul className="space-y-2">
@@ -395,6 +423,29 @@ export function ReferencedBy({
                   );
                 })}
               </ul>
+            </li>
+          ))}
+        </ul>
+      )}
+      {extraRows.length === 0 ? null : (
+        <ul className="space-y-2" data-extra-references="">
+          {extraRows.map((row) => (
+            <li className={`rounded-lg border p-3 ${tokens.row}`} key={row.key}>
+              <div className={`text-xs font-medium ${tokens.line}`}>
+                <Link
+                  className={`dispatch-inline-link underline ${linkText} ${linkHoverText}`}
+                  to={row.href}
+                >
+                  {row.kind}
+                </Link>
+                {row.marks}
+              </div>
+              <div className={`flex flex-wrap items-center gap-x-1 text-xs ${tokens.line}`}>
+                <span>{row.edge}</span>
+                <span aria-hidden="true">·</span>
+                <Timestamp at={row.at} />
+              </div>
+              {row.excerpt === undefined ? null : <Excerpt text={row.excerpt} />}
             </li>
           ))}
         </ul>
