@@ -66,7 +66,9 @@ import {
  *   (`packages/envoy/internal/dispatch/pmdoc/schema/blocks.json:70-75`, read 2026-11-05), so
  *   every requirement of the issue's spec sits under the issue, which is what c-home and c-spine
  *   read. A `requirement` block of any other document sits there too: the model holds no
- *   `from` for it and no coverage row either, so it is a block and nothing more.
+ *   `from` for it and no coverage row either, so it is a block and nothing more, and no
+ *   statement (`isStatement`); so is a `check` block of any document but the Verification
+ *   document, which is no check (`isCheck`; dispatch://INFRA-1196 decision 152).
  * - **No `shaped` on a decision.** The decisions read answers `kind` and a boolean `unsure`
  *   (`packages/contracts/src/dispatch-api.ts:2519-2534`) and no `shaped` edge, so today a
  *   decision's links to spec blocks stand for it: they are its chips, and they are what the
@@ -240,8 +242,14 @@ export interface TreeNode {
    *  every other surface drawing the same text does (`MarkdownBody`'s `source`). */
   readonly source?: TextSource;
   /** How it stands, for a type the model gives a state: one of the states the page has a word
-   *  for, so a row draws that word and never the token (`NodeState`, R21). */
+   *  for, so a row draws that word and never the token (`NodeState`, R21). A check reads it as
+   *  the server reads its results (`tree-drafts.ts`'s `checkStanding`); a `check` block of any
+   *  document but the issue's Verification document carries none, since it is no check and the
+   *  results read never answers for it (`isCheck`). */
   readonly state?: NodeState;
+  /** Whether this requirement is a statement of the issue's spec (`isStatement`). Absent on
+   *  every other node, a `requirement` block of any other document among them. */
+  readonly statement?: true;
   /** The node's words as the read that carried them holds them, which is not the same for every
    *  kind: the issue's key and title; a child issue's title; an ask's question, a comment's and a
    *  message's body, and a decision's section of `decisions.md` (`Decision.text`), each as stored;
@@ -277,6 +285,32 @@ export interface TreeNode {
    *  not resolved. The header's count of what waits puts the focus on the first of them (R13,
    *  `waiting.ts`). */
   readonly waiting: boolean;
+}
+
+/**
+ * Whether `node` is a statement: a `requirement` block of the issue's own spec, the document the
+ * issue read names by `primary_artifact_id`, drawn before the coverage read answers as after it,
+ * or a requirement that read holds (dispatch://INFRA-1196 decision 152). A `requirement` block
+ * of the plan, Verification or decisions document keeps its type and is a block and nothing
+ * more: no row of the Spec filter and none of its count, no context row of the Verification
+ * filter and none of its statements, and nothing placed under it (`tree-drafts.ts`'s
+ * `servePlacements`, which reads the same field on its drafts). The review list is no reader of
+ * this rule: it reads a requirement the coverage read holds (`inReviewList`'s callers).
+ */
+export function isStatement(node: Pick<TreeNode, "statement">): boolean {
+  return node.statement === true;
+}
+
+/**
+ * Whether `node` is a check: a `check` block of the issue's Verification document, the one the
+ * issue read names by `verification_artifact_id`, or a check the results read answers for. Each
+ * draws a state - `no-result` until the results read answers (`tree-drafts.ts`'s
+ * `addDocumentBlocks`) - and a `check` block of any other document draws none and is a block and
+ * nothing more (dispatch://INFRA-1196 decision 152): no row and no count of the Verification
+ * filter, no check of a statement, and no open check of the fold's frontier (`tree-fold.ts`).
+ */
+export function isCheck(node: Pick<TreeNode, "state" | "type">): boolean {
+  return node.type === "check" && node.state !== undefined;
 }
 
 /** One document's blocks, as `GET /api/v1/artifacts/{id}/blocks` answers them. */
@@ -643,6 +677,7 @@ function assemble(
       replaced: draft.replaced,
       ...(draft.source === undefined ? {} : { source: draft.source }),
       ...(draft.state === undefined ? {} : { state: draft.state }),
+      ...(draft.statement === undefined ? {} : { statement: draft.statement }),
       text: draft.text,
       transcluded: parents.indexOf(parent) > 0,
       ...(draft.tree === undefined ? {} : { tree: draft.tree }),

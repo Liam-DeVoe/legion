@@ -1,10 +1,9 @@
 import { parseBlockPointerValue } from "@legion/contracts";
 
-import { primarySpec } from "../../api/issue-cache";
+import { primarySpec, roleDocument } from "../../api/issue-cache";
 import type {
   Actor,
   Artifact,
-  ArtifactWithTrees,
   Ask,
   CheckBlock,
   CheckResult,
@@ -97,8 +96,9 @@ export interface Draft {
   answer?: NodeAnswer;
   chips: NodeChip[];
   /** What the coverage read counts for a requirement it holds (`addRequirements`); absent on
-   *  every other draft, a `requirement` block no coverage row holds among them, which is how the
-   *  review list tells a statement from a block (`treeDrafts`). */
+   *  every other draft, a statement of the spec drawn before that read answers among them, which
+   *  is how the review list tells a requirement the coverage read holds from every other
+   *  (`treeDrafts`). */
   counts?: NodeCounts;
   /** What the node's body draws under its text (`check-facts.ts`). */
   facts: NodeFact[];
@@ -124,7 +124,13 @@ export interface Draft {
   replaced: boolean;
   /** The record `text` is, where the draft's read names one (`TreeNode.source`). */
   source?: TextSource;
+  /** How it stands, for a type the model gives a state (`TreeNode.state`); absent on a check
+   *  block of any document but the issue's Verification document (`addDocumentBlocks`). */
   state?: NodeState;
+  /** Whether this requirement is a statement (`TreeNode.statement`): a `requirement` block of the
+   *  issue's spec (`addDocumentBlocks`) or a requirement the coverage read holds
+   *  (`addRequirements`). Absent on every other draft. */
+  statement?: true;
   text: string;
   /** The server's reading of `text`, where the draft's read sends one (`TreeNode.tree`). */
   tree?: DisplayTree;
@@ -175,7 +181,7 @@ export interface TreeContext {
   readonly key: string;
   /** The node `reference` names, as this issue addresses it; undefined for anything else. */
   readonly nodeIdOf: (reference: string) => string | undefined;
-  /** The slug of the issue's spec, `""` for an issue with none. */
+  /** The slug of the issue's spec (`primarySpec`), `""` for an issue with none. */
   readonly specSlug: string;
   /** The slug of one document of the issue, by its artifact id. */
   readonly slugOf: (artifactId: string) => string | undefined;
@@ -225,7 +231,7 @@ export function treeContext(
   const artifacts = reads.issue.artifacts ?? [];
   const slugs = new Map(artifacts.map((artifact) => [artifact.id, artifact.slug]));
   const documents = artifactsBySlug(reads.issue);
-  const spec = specOf(reads.issue);
+  const spec = primarySpec(reads.issue);
   const specSlug = spec?.slug ?? "";
   const names = new Map((reads.targets ?? []).map((target) => [target.ref, target]));
   // The kind of each typed block of the documents the tree read, by its node id, which is all a
@@ -313,45 +319,26 @@ export function treeContext(
 }
 
 /**
- * The issue's spec: the document the issue read names by its id (`primarySpec`), the one the
- * tree reads the blocks of (`useIssueTree.ts`), so a reference to the spec resolves against the
- * document whose blocks are drawn. The document's own flag answers only where the issue names
- * no spec (`""`), as `documentWord` reads it.
- */
-function specOf(issue: IssueDetails): Artifact | undefined {
-  return issue.primary_artifact_id === ""
-    ? issue.artifacts?.find((artifact) => artifact.primary)
-    : primarySpec(issue);
-}
-
-/**
  * The page's word for one document of the issue, which a chip naming the whole document draws:
  * the name of the filter that draws what it holds (`PRESET_NAMES`) for the spec and for the
  * plan, Verification and decisions documents, and the page's word for a document
  * (`NODE_TYPE_NAMES.document`) for any other, another issue's included (`undefined`). A
  * document's own name is its file name, `spec.md`, which is no word a reader reads it by (R21).
  *
- * Which document plays which part is the issue read's answer, the id it names for each
- * (`primary_artifact_id`, `plan_artifact_id`, `verification_artifact_id`,
- * `decisions_artifact_id`), the same ids the tree reads the documents' blocks by
- * (`useIssueTree.ts`): the artifact's own `role` is absent on a document a rolling deploy left
- * with none, which the server still finds by its slug. The document's own flag and role answer
- * only where the issue names no id for that part: no spec (`""`), and a Dispatch older than
- * document roles (absent).
+ * Which document plays which part is the issue read's answer and nothing else: the id it names
+ * for each (`primary_artifact_id`, `plan_artifact_id`, `verification_artifact_id`,
+ * `decisions_artifact_id`), read by `primarySpec` and `roleDocument`, the rule the tree reads the
+ * documents' blocks by (`useIssueTree.ts`). Where the issue names no id for a part - none
+ * (`""`), or a Dispatch older than that part (absent) - no document plays it, and a document
+ * flagged `primary` or carrying that part's `role` is named by the page's word for a document:
+ * a chip naming "Spec" or "Decisions" opens a document whose blocks the tree reads as that part
+ * (dispatch://INFRA-1196 decision 152).
  */
-function documentWord(
-  issue: IssueDetails,
-  document: Pick<ArtifactWithTrees, "id" | "primary" | "role"> | undefined
-): string {
+function documentWord(issue: IssueDetails, document: Pick<Artifact, "id"> | undefined): string {
   if (document === undefined) return NODE_TYPE_NAMES.document;
-  const spec = issue.primary_artifact_id;
-  if (spec === "" ? document.primary : document.id === spec) return PRESET_NAMES.spec;
-  for (const [role, id] of [
-    ["plan", issue.plan_artifact_id],
-    ["verification", issue.verification_artifact_id],
-    ["decisions", issue.decisions_artifact_id],
-  ] as const) {
-    if (id === undefined ? document.role === role : document.id === id) return PRESET_NAMES[role];
+  if (document.id === primarySpec(issue)?.id) return PRESET_NAMES.spec;
+  for (const role of ["plan", "verification", "decisions"] as const) {
+    if (document.id === roleDocument(issue, role)?.id) return PRESET_NAMES[role];
   }
   return NODE_TYPE_NAMES.document;
 }
@@ -656,13 +643,14 @@ export function treeDrafts(reads: IssueTreeReads, context: TreeContext): Map<str
   addChecks(drafts, reads, context);
   // What waits for the reader's review is the review list's one rule (R35): the tie to a
   // statement decides it, and a decision the reader asked to change waits on its agent, not on
-  // the reader (`decision-review.ts`). A statement is a requirement the coverage read holds - a
-  // draft `addRequirements` gave that read's counts - as the header's count is handed the
-  // coverage read's statements (`waitingOnReader`'s `isStatement`): a spec's `requirement` block
-  // drawn before that read answers, and one of another document, which no coverage row holds, is
-  // a block and nothing more, and a tie to it puts no decision on the list. It is read once every
-  // statement has its draft. Nothing waits on a reader whose login has not resolved, as
-  // `waiting.ts` counts it.
+  // the reader (`decision-review.ts`). The list reads a statement as a requirement the coverage
+  // read holds - a draft `addRequirements` gave that read's counts - as the header's count is
+  // handed the coverage read's statements (`waitingOnReader`'s `isStatement`), and not as the
+  // rows read one (`Draft.statement`): a spec's `requirement` block drawn before that read
+  // answers is a statement on its row, and a tie to it still puts no decision on the list until
+  // the read holds it; one of another document is a block and nothing more either way. It is
+  // read once every statement has its draft. Nothing waits on a reader whose login has not
+  // resolved, as `waiting.ts` counts it.
   for (const decision of reads.decisions?.decisions ?? []) {
     const draft = drafts.get(context.nodeIdOf(decision.ref) ?? "");
     if (draft === undefined) continue;
@@ -745,10 +733,10 @@ function addDocumentChips(
 }
 
 /** Where each document of the issue stands among its own, by its artifact id: the spec
- *  (`specOf`) first and the rest in the order the issue carries them, which is the order their
- *  blocks are drawn in under the issue (`ROOT_ORDER.block`). */
+ *  (`primarySpec`) first and the rest in the order the issue carries them, which is the order
+ *  their blocks are drawn in under the issue (`ROOT_ORDER.block`). */
 function documentRanks(reads: IssueTreeReads): ReadonlyMap<string, number> {
-  const specId = specOf(reads.issue)?.id;
+  const specId = primarySpec(reads.issue)?.id;
   const ranks = new Map<string, number>();
   (reads.issue.artifacts ?? []).forEach((artifact, index) => {
     ranks.set(artifact.id, artifact.id === specId ? 0 : index + 1);
@@ -790,6 +778,15 @@ function blank(id: string, type: NodeType, order: number): Draft {
  * (R3, R4): a builder after this one places a block the model gives a parent of its own - a
  * requirement by its `from`, a check and a plan task by their `serves`. Among the issue's own
  * children a document's blocks keep the order they have in it, one document after another.
+ *
+ * A block plays the part its type names only in the document that plays that part, which the
+ * issue read names by its id (`primarySpec`, `roleDocument`; dispatch://INFRA-1196 decision
+ * 152): a `requirement` block of the spec is a statement (`Draft.statement`) before the
+ * coverage read answers as after, and a `check` block of the Verification document is a check,
+ * which draws a state. The same block of any other document - a `requirement` in the plan, a
+ * `check` in the decisions document - keeps its type and is a block and nothing more: no
+ * filter draws or counts it as its kind, nothing is placed under it, and a check of it draws no
+ * state word, since the results read never answers for it.
  */
 function addDocumentBlocks(
   drafts: Map<string, Draft>,
@@ -798,6 +795,8 @@ function addDocumentBlocks(
 ): void {
   const types: readonly string[] = NODE_TYPES;
   const ranks = documentRanks(reads);
+  const specId = primarySpec(reads.issue)?.id;
+  const verificationId = roleDocument(reads.issue, "verification")?.id;
   for (const document of reads.documents ?? []) {
     const slug = context.slugOf(document.artifactId);
     if (slug === undefined) continue;
@@ -830,10 +829,13 @@ function addDocumentBlocks(
         draft.tree = tree;
         draft.source = textSourceOf("artifact", document.artifactId);
       }
+      if (block.type === "requirement" && document.artifactId === specId) draft.statement = true;
       // A check with no result recorded against it is in no state the results read would name,
       // and `no-result` is that state (`NODE_STATE_WORDS.check`), so a check drawn before the
       // results read answers says so rather than drawing a state nothing recorded.
-      if (block.type === "check") draft.state = "no-result";
+      if (block.type === "check" && document.artifactId === verificationId) {
+        draft.state = "no-result";
+      }
       if (block.type === "ask") draft.state = "open";
     });
   }
@@ -1146,6 +1148,9 @@ function decisionState(decision: Decision, changed: boolean): DecisionState | un
  * requirement has an origin and a decision that is not that origin links to it, the two edges
  * disagree: the requirement is placed by its `from` and the disagreement is drawn as a gap. The
  * decision its `from` names linking to it is the two edges agreeing, which draws none.
+ *
+ * Every requirement the coverage read holds is a statement of the spec (`Draft.statement`), as
+ * the spec's own `requirement` block was before the read answered (`addDocumentBlocks`).
  */
 function addRequirements(
   drafts: Map<string, Draft>,
@@ -1167,7 +1172,7 @@ function addRequirements(
     }
   }
   // The spec, which a statement's words are a block of and its references resolve against.
-  const specId = specOf(reads.issue)?.id;
+  const specId = primarySpec(reads.issue)?.id;
   (reads.coverage?.requirements ?? []).forEach((requirement, index) => {
     const id = blockNodeId(context.specSlug, requirement.block_id);
     const held = drafts.get(id);
@@ -1181,6 +1186,7 @@ function addRequirements(
     draft.parents = origin === undefined || drafts.get(origin)?.type === "decision" ? [] : [origin];
     draft.pointers = held?.pointers ?? {};
     draft.reference = requirement.ref;
+    draft.statement = true;
     draft.text = requirement.text;
     // The server's reading of the statement's own words, with the references the coverage
     // read's plain words leave out: the read's own, else the one its block carried.
@@ -1215,15 +1221,13 @@ function requirementGaps(
  * check's own words, how it stands and the four attributes its body draws, and one node per
  * result under the check it was recorded against (R4, "a result under its check"), each with
  * what that result recorded (`check-facts.ts`). How it stands is the page's one reading of it,
- * at the one commit the page names for the issue's results (`checkStanding`), so the row, the
- * fold's frontier, the Verification filter's failing count and its body read one state. The
- * check's `serves` is no part of this read (`CheckBlock` carries none), so its placement is the
- * block's own pointer, below.
+ * as the server reads the commit each of its results ran at (`checkStanding`), so the row, the
+ * fold's frontier, the Verification filter's failing count and its body read one state, and the
+ * row reads what its result's own fact reads. The check's `serves` is no part of this read
+ * (`CheckBlock` carries none), so its placement is the block's own pointer, below.
  */
 function addChecks(drafts: Map<string, Draft>, reads: IssueTreeReads, context: TreeContext): void {
-  const checks = reads.results?.checks ?? [];
-  const commit = namedCommit(checks);
-  for (const check of checks) {
+  for (const check of reads.results?.checks ?? []) {
     const slug = context.slugOf(check.artifact_id);
     if (slug === undefined) continue;
     const id = blockNodeId(slug, check.block_id);
@@ -1233,7 +1237,7 @@ function addChecks(drafts: Map<string, Draft>, reads: IssueTreeReads, context: T
     draft.parents = held?.parents ?? [];
     draft.pointers = held?.pointers ?? {};
     draft.reference = check.ref;
-    draft.state = checkStanding(check, commit).state;
+    draft.state = checkStanding(check).state;
     draft.text = check.text;
     const tree = check.text_tree ?? held?.tree;
     if (tree !== undefined) {
@@ -1252,11 +1256,14 @@ function addChecks(drafts: Map<string, Draft>, reads: IssueTreeReads, context: T
 }
 
 /**
- * How a check stands, in the states `NODE_STATE_WORDS.check` names. Whether it passed is the
- * server's own answer over every result of the check (`pass_stands`, main's e98fc56ef8): a pass
- * recorded before a later fail still stands, while a retracted pass, a pass recorded against an
- * older wording of the check and a pass at a commit the check no longer compares with stand for
- * nothing. The other states read what no pass standing is:
+ * How a check stands where no result of it stands at its basis, in the states
+ * `NODE_STATE_WORDS.check` names: `checkStanding`'s answer for such a check, and for a check with
+ * no result or no `pass_stands` at all, and read by nothing else, so no place of the page reads
+ * a check other than `checkStanding` does. Whether it passed is the server's own answer over
+ * every result of the check (`pass_stands`, main's e98fc56ef8): a pass recorded before a later
+ * fail still stands, while a retracted pass, a pass recorded against an older wording of the
+ * check and a pass at a commit the check no longer compares with stand for nothing. The other
+ * states read what no pass standing is:
  *
  * - **`no-result`,** no result recorded at all, which the results say by themselves.
  * - **`unreadable`,** a payload carrying no `pass_stands` at all, which is a server that does
@@ -1271,7 +1278,8 @@ function addChecks(drafts: Map<string, Draft>, reads: IssueTreeReads, context: T
  * - **`older`,** a newest result that stands and no longer speaks for the work as it stands,
  *   whatever it found, because its commit is not one the check compared with or the check's
  *   own words have moved under it.
- * - **`failed`,** a newest result that stands, at the work the check compares with.
+ * - **`failed`,** a newest result that stands and failed at a commit Dispatch could not place:
+ *   a fail at the work the check compares with is `checkStanding`'s own answer, before this.
  * - **`unmarked`,** where nothing could be judged: a repository Dispatch cannot read, or a
  *   commit it cannot place.
  *
@@ -1283,13 +1291,12 @@ function addChecks(drafts: Map<string, Draft>, reads: IssueTreeReads, context: T
  * recorded (`newestFirst`) and never by the order the read sent them in, as `checkStanding` and
  * the Verification filter's body read it, so the three name one result whatever that order is.
  *
- * It is how a check stands against the basis the check itself carries, and the page draws it as
- * `checkStanding` turns it over at the one commit the page names for the issue's results, so
- * one check reads one state wherever it is drawn, each told apart by a word and a shape (R15,
- * R21). `e2e/issue-layout-seed-support.ts` waits on seeded checks by this function, so a seed
- * waits for the states the page draws rather than for a copy of this rule.
+ * It is how a check stands against the basis the check itself carries, which is the server's
+ * own reading (`pass_stands`, `commit_stands`), where no result over the check's words now is at
+ * that basis, so one check reads one state wherever it is drawn, each told apart by a word and a
+ * shape (R15, R21).
  */
-export function checkState(check: CheckStateReads): CheckState {
+function checkState(check: CheckStateReads): CheckState {
   if ((check.results ?? []).length === 0) return "no-result";
   if (check.pass_stands === undefined) return "unreadable";
   if (check.pass_stands.answer === "yes") return "passed";
@@ -1308,94 +1315,74 @@ export type CheckStateReads = Pick<CheckBlock, "results"> & {
   readonly pass_stands?: CheckBlock["pass_stands"];
 };
 
-/**
- * The one commit the page names for the issue's results: the commit of the newest result
- * recorded against any check of the issue that still stands, against the words its check has
- * now, and names one. A result nobody withdrew is the evidence the page reads, so a withdrawn
- * result names no commit here; nor does one recorded against words its check no longer has
- * (`check_words_moved`), which the server's `standingCommit` (`results_comparison.go`) gives no
- * standing; and a result recorded with no commit at all names none either.
- *
- * It is the Verification filter's commit (R17, `verification-filter/statement-state.ts`, which
- * exports it), read here because the tree reads every check's state at it (`checkStanding`),
- * and this module cannot import that one, which imports this.
- */
-export function namedCommit(checks: readonly CheckBlock[]): string | undefined {
-  const named = checks.flatMap((check) =>
-    standingResults(check).filter(
-      (result) => result.commit_sha !== "" && result.check_words_moved !== true
-    )
-  );
-  return newestFirst(named)[0]?.commit_sha;
-}
-
-/** How one check stands at the commit the page names for the issue's results. */
+/** How one check stands, as the server reads the commit each of its results ran at. */
 export interface CheckStanding {
   /** How it stands, in the states `NODE_STATE_WORDS.check` names. */
   readonly state: CheckState;
-  /** The result that state stands on: the fail at the named commit; else, for a check that
-   *  passed, the newest pass that still stands against the check's words now, since a pass
-   *  recorded before a later fail is what the server's `pass_stands` answered over; and for every
-   *  other check the newest result that stands at all. Absent where none stands. */
+  /** The result that state stands on: the newest result over the check's words now at its
+   *  basis, a pass or a fail, where one is there; else the newest result that stands at all,
+   *  and none for a check the server says passed with no pass at its basis in the read. Absent
+   *  where none stands. */
   readonly stands?: CheckResult;
 }
 
 /**
- * How a check stands at `commit`, the one commit the page names for the issue's results
- * (`namedCommit`): the page's one reading of a check's state (R10, R17). The tree's check node
- * holds it (`addChecks`), so the outline's row, the fold's frontier (`tree-fold.ts`) and the
- * Verification filter's failing count (`presets.ts`'s `filterSignals`) read it, and so does
- * the Verification filter's body (`statement-state.ts`'s `checkReading`): one check never reads
- * Passed on its row and Failed in the filter.
+ * How a check stands: the page's one reading of a check's state (R10, R17), and the only one -
+ * `checkState` is its own fallback and nothing else reads it. The tree's check node holds it
+ * (`addChecks`), so the outline's row, the fold's frontier (`tree-fold.ts`) and the Verification
+ * filter's failing count (`presets.ts`'s `filterSignals`) read it, and so does the Verification
+ * filter's body (`statement-state.ts`'s `checkReading`): one check never reads Passed on its row
+ * and Failed in the filter.
  *
- * It is `checkState`'s answer with two turns, because R17 reads every result of the issue
- * against the one commit the page names and `checkState` compares a result with the basis its
- * own check carries:
+ * Each result is read against the commit the server names for its own check - the basis the
+ * check compares with, which the result's `commit_stands` answers (`at_basis`, `other_commit`,
+ * `unknown`) - as the server's `standingCommit` and `passStandsOf` read it
+ * (`results_comparison.go`), and never against one commit the page names for every check: two
+ * checks of one issue compare with different commits, a `before_merge` check with the pull
+ * request's head and an `after_merge` one with the branch it merged into, so a pass at its own
+ * check's basis reads Passed whatever newer result another check holds at another commit, as its
+ * own fact reads "Up to date" (`check-facts.ts`'s `resultFacts`; dispatch://INFRA-1196
+ * decision 152). A result stands for something at the basis only where nobody withdrew it and
+ * its check's words have not moved since it was recorded.
  *
- * - **A fail at the named commit is a fail.** Where the newest result that stands, ran at that
- *   commit and was recorded against the check's words now failed, the check reads Failed there,
- *   whatever older pass the server still counts as standing (`pass_stands` says yes for any pass
- *   at a basis, later fails or not), so its statement is Not met and not Unknown behind an "Out
- *   of date". A result recorded against words the check no longer has is no result at that
- *   commit: it stands for nothing, as `checkState` and the server's `standingCommit`
- *   (`results_comparison.go`) read it, since it is evidence about a check that no longer reads
- *   that way. So a fail of it turns nothing over, a newer one of it hides no fail beneath it, and
- *   no pass of it is what a passed check stands on.
- * - **A pass or a fail at another commit is out of date.** Otherwise a pass or a fail whose
- *   result was recorded against another commit reads "Out of date", because that result no
- *   longer speaks for the work the rest of the page is read against, and R17 says such a result
- *   makes its statement Unknown. A result that names no commit at all turns nothing over: the
- *   page has no ground to call it older, and it is no evidence at the named commit either.
- *
- * Where no commit is named - no result that stands against the check's words now names one -
- * it is `checkState`'s answer.
+ * **The latest evidence at the basis decides.** A check with no result reads No result, and one
+ * whose payload carries no `pass_stands` reads Could not read, as `checkState` reads them. Else,
+ * where a result stands for something at the basis, the newest of them is the check's state: a
+ * fail there is Failed, whatever older pass the server still counts as standing (`pass_stands`
+ * says yes for any pass at a basis, later fails or not), and a pass there is Passed. A newer
+ * result at another commit, or at one Dispatch could not place, says nothing about the basis,
+ * so it neither hides a fail there nor turns a pass there over; and a result recorded against
+ * words the check no longer has stands for nothing, since it is evidence about a check that no
+ * longer reads that way. The results read sends no verdict but `pass` and `fail`
+ * (`api/results.go` refuses any other). Where nothing stands at the basis, it is `checkState`'s
+ * answer: Out of date for a newest result at another commit or over moved words, Retracted,
+ * Cannot tell, or Failed for a newest fail at a commit Dispatch could not place.
  */
-export function checkStanding(check: CheckStateReads, commit: string | undefined): CheckStanding {
+export function checkStanding(check: CheckStateReads): CheckStanding {
   const standing = newestFirst(standingResults(check));
-  // The results recorded against the check's words now, which alone speak at the named commit.
-  const current = standing.filter((result) => result.check_words_moved !== true);
+  // The newest result that stands for something at the commit the server names for the check:
+  // over the check's words now and at its basis (`standingCommit`). A check with no result has
+  // none, and one with no `pass_stands` is read before it.
   const here =
-    commit === undefined ? undefined : current.find((result) => result.commit_sha === commit);
-  const failedHere = here?.verdict === "fail";
-  const state = failedHere ? "failed" : checkState(check);
-  const stands = failedHere
-    ? here
-    : state === "passed"
-      ? current.find(({ verdict }) => verdict === "pass")
-      : standing[0];
-  const elsewhere =
-    commit !== undefined &&
-    stands !== undefined &&
-    stands.commit_sha !== "" &&
-    stands.commit_sha !== commit;
-  return {
-    state: elsewhere && (state === "passed" || state === "failed") ? "older" : state,
-    ...(stands === undefined ? {} : { stands }),
-  };
+    check.pass_stands === undefined
+      ? undefined
+      : standing.find(
+          (result) =>
+            result.check_words_moved !== true && result.commit_stands?.answer === "at_basis"
+        );
+  if (here !== undefined) {
+    return { stands: here, state: here.verdict === "pass" ? "passed" : "failed" };
+  }
+  const state = checkState(check);
+  // No pass is at the basis in the read, so a check the server says passed stands on none of
+  // its results here.
+  const stands = state === "passed" ? undefined : standing[0];
+  return { state, ...(stands === undefined ? {} : { stands }) };
 }
 
-/** Every result of `check` nobody withdrew, which is every result that stands as evidence. */
-function standingResults(check: CheckStateReads): readonly CheckResult[] {
+/** Every result of `check` nobody withdrew, which is every result that stands as evidence: the
+ *  server's `passStandsOf` skips a withdrawn one, and so does every reading of the page. */
+export function standingResults(check: CheckStateReads): readonly CheckResult[] {
   return (check.results ?? []).filter((result) => result.retracted === undefined);
 }
 
@@ -1418,20 +1405,25 @@ function newerFirst(first: CheckResult, second: CheckResult): number {
 }
 
 /**
- * A check and a plan task sit under each requirement their `serves` names, edited under the
+ * A check and a plan task sit under each statement their `serves` names, edited under the
  * first and transcluded under the rest (R4); what their `needs` names is a chip, one per target
- * (`needsChips`), as every edge that is not the spine is. A `serves` naming no requirement of
- * this issue places nothing, so the block keeps its place under the issue.
+ * (`needsChips`), as every edge that is not the spine is. A `serves` naming no statement of
+ * this issue places nothing, so the block keeps its place under the issue. A statement is a
+ * requirement of the issue's spec (`Draft.statement`), and the `requirement` block of any other
+ * document is a block and nothing more, which nothing is placed under (dispatch://INFRA-1196
+ * decision 152).
  *
  * Two of the chain's gaps are read here, from the pointers this pass already resolves (R10):
  *
- * - **A citation whose target is no longer a requirement.** `serves` points only at a
- *   requirement (`packages/envoy/internal/dispatch/pmdoc/schema/blocks.json:81-84`), and the
- *   write that introduces one is refused where it does not (`pmdoc.CheckBlockPointers`); a
- *   target retyped after that write leaves the citation naming a node of another kind, which
- *   the drafts hold the type of. A reference this issue does not address, or one no draft
- *   answers, is no such citation: the page cannot say what it is not holding, and a target
- *   nothing answers to at all is already drawn as a chip that says so.
+ * - **A citation whose target is no statement.** `serves` points only at a requirement
+ *   (`packages/envoy/internal/dispatch/pmdoc/schema/blocks.json:81-84`), and the write that
+ *   introduces one is refused where it does not (`pmdoc.CheckBlockPointers`); a target retyped
+ *   after that write leaves the citation naming a node of another kind, which the drafts hold
+ *   the type of, and a `requirement` block of a document other than the spec is a requirement
+ *   and no statement. The gap's words say what both are: not a statement. A reference this
+ *   issue does not address, or one no draft answers, is no such citation: the page cannot say
+ *   what it is not holding, and a target nothing answers to at all is already drawn as a chip
+ *   that says so.
  * - **A plan task nobody asked for.** A task naming no requirement it serves and no
  *   declaration it attempts is work no reason stands behind. `attempts` is the declarations
  *   route of dispatch://INFRA-1278, read from the same `block[]` attributes as every other
@@ -1444,12 +1436,12 @@ function servePlacements(drafts: Map<string, Draft>, context: TreeContext): void
     if (draft.type !== "check" && draft.type !== "plan_task") continue;
     const named = (draft.pointers.serves ?? []).map(context.nodeIdOf);
     const serves = named.filter(
-      (id): id is string => id !== undefined && drafts.get(id)?.type === "requirement"
+      (id): id is string => id !== undefined && drafts.get(id)?.statement === true
     );
     if (serves.length > 0) draft.parents = serves;
     const elsewhere = named.some((id) => {
       const target = id === undefined ? undefined : drafts.get(id);
-      return target !== undefined && target.type !== "requirement";
+      return target !== undefined && target.statement !== true;
     });
     if (elsewhere) draft.gaps = [...draft.gaps, "serves_not_requirement"];
     if (
