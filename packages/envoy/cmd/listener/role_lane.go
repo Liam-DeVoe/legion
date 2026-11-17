@@ -372,22 +372,43 @@ func roleHoldDelay(attempts int) time.Duration {
 	return min(delay, roleHoldMax)
 }
 
+// roleKeepRefusedLine is the WARN line of a role message the lane stopped holding, or took after
+// the listener stopped, whose keep a rule refused (keepFailureHolds): it is given up as
+// delivery_failed, with the exception that tells its sender.
+const roleKeepRefusedLine = "listener role message refused by its keep"
+
 // keepHeld is a held message's end when the lane stops holding it - the listener stops
 // (roleKeptAtShutdown), or its next attempt would start past roleHoldBound (roleKeptPastHoldBound,
-// with cause, the failure that would have held it once more): one keep on its role's kept lane
-// (keepRoleLaneMessage), which the role's next live holder is handed by a handover of any listener,
-// and the message's slot freed. A keep that fails leaves no copy anywhere, which roleHeldUnkeptLine
-// reports at ERROR with the event id and the reason.
+// with cause, the failure that would have held it once more) - and the end of a message the lane
+// takes once the listener stopped: one keep on its role's kept lane (keepRoleLaneMessage), which
+// the role's next live holder is handed by a handover of any listener, and the message's slot
+// freed when it holds one. A keep a rule refuses (keepFailureHolds: a role token no claim can name,
+// a refused envelope, a denied subject, a stream that refuses the message itself) gives the message
+// up as delivery_failed, with its exception, as the lane gives up a message a rule refuses
+// anywhere. A keep that fails on NATS leaves no copy anywhere and no rule to tell the sender by,
+// which roleHeldUnkeptLine reports at ERROR with the event id and the reason.
 func (f *roleForwarder) keepHeld(item contracts.Envelope, held roleHeld, reason roleKeepReason, cause error) {
 	defer f.releaseHeld(held)
 	_, role, _ := contracts.CanonicalRole(strings.TrimPrefix(item.Topic, contracts.RoleTopicPrefix))
-	if err := keepRoleLaneMessage(f.cfg, role, item, reason, ""); err != nil {
-		attrs := []slog.Attr{slog.String("reason", string(reason)), slog.Int("attempts", held.attempts), slog.String("error", err.Error())}
-		if cause != nil {
-			attrs = append(attrs, slog.String("last_attempt_error", cause.Error()))
-		}
-		f.cfg.logger.DeliveryLog(slog.LevelError, roleHeldUnkeptLine, "", item.Topic, item.EventID, "failed", attrs...)
+	err := keepRoleLaneMessage(f.cfg, role, item, reason, "")
+	if err == nil {
+		return
 	}
+	attrs := []slog.Attr{slog.String("reason", string(reason)), slog.Int("attempts", held.attempts), slog.String("error", err.Error())}
+	if cause != nil {
+		attrs = append(attrs, slog.String("last_attempt_error", cause.Error()))
+	}
+	if !keepFailureHolds(err) {
+		applyDeliveryOutcome(f.cfg, item, deliveryOutcome{
+			metricStatus: "failed",
+			log: func(logger *logging.Logger) {
+				logger.DeliveryLog(slog.LevelWarn, roleKeepRefusedLine, "", item.Topic, item.EventID, "failed", attrs...)
+			},
+			exceptionReason: "delivery_failed",
+		})
+		return
+	}
+	f.cfg.logger.DeliveryLog(slog.LevelError, roleHeldUnkeptLine, "", item.Topic, item.EventID, "failed", attrs...)
 }
 
 // stopHolding ends the forwarder's further delivery attempts: a message waiting for its next

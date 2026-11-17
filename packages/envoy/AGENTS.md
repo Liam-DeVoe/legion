@@ -3627,7 +3627,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   404 is today's refusal body (`reason` `unclaimed` or `holder_lapsed`), and it means nothing was kept and the sender's own fallback must run.
   A sender asks for the 404 with `keep: false` in the publish body, which is for a sender that keeps a queue of its own;
   the Legion daemon does.
-  A keep a rule refused (a role token no claim can name, a refused envelope, a denied subject) gives the same 404, beside the `listener kept role message publish failed` line.
+  A keep a rule refused (a role token no claim can name, a refused envelope, a denied subject, a stream that refuses the message itself, such as a sealed one) gives the same 404, beside the `listener kept role message publish failed` line.
   A keep that failed on NATS (a full stream, a publish not answered in its window, a connection down) kept nothing although nothing says the message cannot be kept, so it is answered the bus-unavailable 503 its error maps to, `Retry-After` and no refusal exception included, and the sender sends again (`roleSend.noHolder`, `keepFailureHolds`).
 
 - The role's next claim hands the kept lane over off the claim's own request (`runKeptRoleDrain`, `drainKeptRole`), after the claim is answered.
@@ -3712,14 +3712,15 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   Held messages count against the forwarder's 4,096 slots: at that bound the handler waits for a slot, and the role messages NATS delivers meanwhile wait in the lane's subscription under its pending limits above.
   At shutdown the role lane's drain stops the forwarder's attempts (`roleForwarder.stopHolding`) before it drains the lane's client: each held message gets one keep on its role's kept lane under the reason `held_at_shutdown`, and so does each message the handler is waiting for a slot for and each it takes from then on, at once, with no slot to wait for and no holder to resolve, so the drain takes every message the subscription holds while its window lasts.
   A drain that runs out logs `role lane drain ended before its handler finished the role messages it holds; those not taken are lost` at ERROR with how many (`bus.UndrainedError`): the close drops them.
-  A message the lane stops holding, at shutdown or at its bound, that the keep cannot store either is logged `listener role message the lane stopped holding was not kept` at ERROR with its event id and the reason.
+  A message the lane stops holding, at shutdown or at its bound, or takes after the stop, whose keep a rule refuses (`keepFailureHolds`) is given up as `delivery_failed` with its exception, under `listener role message refused by its keep`.
+  One whose keep fails on NATS leaves no copy and no rule to tell its sender by, and is logged `listener role message the lane stopped holding was not kept` at ERROR with its event id and the reason.
   There is no `receipt_timeout` reason here any more.
   `bus.confirmPublished` holds how an accepted forward is told from one that is not.
 
 - Both of the lane's own give-up branches keep the message for the role's next live holder first (`keepRoleLaneMessage`, `resolveCoreRoleHolder`, `roleKeptReason`).
   An unclaimed role keeps it under the reason `unclaimed`, and a holder that is not live keeps it under `holder_lapsed`, with that holder named on the kept line, and its claim stands.
   A message that was kept publishes no delivery exception, because it is not lost, and it counts and logs as `kept`.
-  A keep that failed on NATS holds the message for another attempt; a keep a rule refuses (a role token no claim can name, a refused envelope, a denied subject; `keepFailureHolds`) leaves each branch as it was: `no_holder` for an unclaimed role, and `delivery_failed` for a holder that is not live.
+  A keep that failed on NATS holds the message for another attempt; a keep a rule refuses (a role token no claim can name, a refused envelope, a denied subject, a stream that refuses the message itself; `keepFailureHolds`, which holds to the rules that end a forward) leaves each branch as it was: `no_holder` for an unclaimed role, and `delivery_failed` for a holder that is not live.
   A claim read that did not answer keeps the message too, under the reason `claim_unread` (`roleClaimUnread`), and forwards nothing:
   a failed read is no evidence that the role has no holder, nor that it has the holder a copy of the bucket names, and the lane has no redelivery, so a kept copy is how the message waits for a read that answers.
   The handover that keep starts resolves the holder again once a read answers and forwards the copy only to a live holder, and the kept-role sweep starts a handover when that one could not.

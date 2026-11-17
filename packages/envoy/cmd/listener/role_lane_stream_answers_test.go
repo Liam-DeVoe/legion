@@ -295,3 +295,85 @@ func TestARoleMessageHeldAtShutdownThatCannotBeKeptIsLoggedAtError(t *testing.T)
 	}
 	assertNothingKept(t, harness.client, role)
 }
+
+// A keep that a stream refuses for the message itself - a sealed stream, which no attempt gets
+// past - ends the message as the same answer ends a forward (bus.StreamRefusesMessage), not as a
+// keep that failed on NATS: the role lane gives a message to a role nobody claims up as no_holder,
+// with its exception and no hold, and the publish route answers its 404 that keeps nothing, not
+// the 503 that has its sender send again.
+func TestAKeepASealedStreamRefusesEndsTheMessage(t *testing.T) {
+	harness := newListenerDeliveryHarness(t)
+	const role = "kept-on-a-sealed-stream"
+	info, err := harness.client.JS().StreamInfo(bus.Stream)
+	if err != nil {
+		t.Fatalf("read the stream: %v", err)
+	}
+	config := info.Config
+	config.Sealed = true
+	if _, err := harness.client.JS().UpdateStream(&config); err != nil {
+		t.Fatalf("seal the stream: %v", err)
+	}
+	cfg := wireTestRoleForwarder(t, harness.config)
+	handler := coreNATSDeliveryHandler(cfg)
+	item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, "kept-on-a-sealed-stream")
+	item.Payload = `{"type":"worker-queued"}`
+	probe := exceptionProbe(t, harness.client)
+
+	handler(&natsgo.Msg{Data: marshalListenerEnvelope(t, item)})
+	assertDeliveryException(t, probe, item, "no_holder")
+	cfg.roleForwards.settled(t)
+	if held := countLogged(harness.logs.String(), roleHeldLine, item.EventID); held != 0 {
+		t.Fatalf("a message whose keep a sealed stream refused was held %d times:\n%s", held, harness.logs.String())
+	}
+
+	recorder, _ := publishThrough(harness.publishDeps(t),
+		`{"topic":"`+contracts.RoleTopicPrefix+role+`","source":"agent","message":"a sealed stream keeps nothing"}`)
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("publish to an unheld role on a sealed stream: status %d, body %s; want the 404 that keeps nothing", recorder.Code, recorder.Body.String())
+	}
+}
+
+// A role message the lane takes once the listener stopped is kept at once, with no holder resolved
+// (deliverRoleMessage): a message to a role nobody claims is kept under held_at_shutdown, not under
+// the unclaimed a resolution would name.
+func TestARoleMessageTakenAfterTheStopIsKeptWithoutAResolution(t *testing.T) {
+	harness := newListenerDeliveryHarness(t)
+	const role = "taken-after-the-stop"
+	cfg := wireTestRoleForwarder(t, harness.config)
+	handler := coreNATSDeliveryHandler(cfg)
+	cfg.roleForwards.stopHolding()
+	item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, "taken-after-the-stop")
+	item.Payload = `{"type":"worker-queued"}`
+
+	handler(&natsgo.Msg{Data: marshalListenerEnvelope(t, item)})
+	cfg.roleForwards.settled(t)
+
+	kept := linesIn(harness.logs.String(), "listener kept role message for the role's next holder", map[string]any{"role": role})
+	if len(kept) != 1 || kept[0]["reason"] != string(roleKeptAtShutdown) {
+		t.Fatalf("the kept lines for role %s are %v, want one naming %s:\n%s", role, kept, roleKeptAtShutdown, harness.logs.String())
+	}
+}
+
+// A role message the lane takes once the listener stopped, to a role token no claim can name, is
+// refused by its keep under a rule (errRoleUnkeepable): it was never held, so it is given up as
+// delivery_failed with its exception, not reported as a held message no keep could store.
+func TestARoleMessageTakenAfterTheStopThatNoKeepTakesIsDeliveryFailed(t *testing.T) {
+	harness := newListenerDeliveryHarness(t)
+	const role = "legion-infra-INFRA-839-architect"
+	cfg := wireTestRoleForwarder(t, harness.config)
+	handler := coreNATSDeliveryHandler(cfg)
+	cfg.roleForwards.stopHolding()
+	item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, "unkeepable-after-the-stop")
+	item.Payload = `{"type":"worker-queued"}`
+	probe := exceptionProbe(t, harness.client)
+
+	handler(&natsgo.Msg{Data: marshalListenerEnvelope(t, item)})
+	assertDeliveryException(t, probe, item, "delivery_failed")
+	cfg.roleForwards.settled(t)
+
+	logs := harness.logs.String()
+	if strings.Contains(logs, roleHeldUnkeptLine) || countLogged(logs, roleKeepRefusedLine, item.EventID) != 1 {
+		t.Fatalf("want one %q line and no %q line:\n%s", roleKeepRefusedLine, roleHeldUnkeptLine, logs)
+	}
+	assertNothingKept(t, harness.client, role)
+}

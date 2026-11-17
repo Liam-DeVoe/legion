@@ -458,9 +458,11 @@ keeps it on the kept lane; at shutdown it keeps every message it holds. The lane
 of two exception reasons only under a rule: `no_holder` when no session claims the role and a
 rule refused its keep, and `delivery_failed` when the holder is not live and a rule refused its
 keep (an `unresponsive` holder among them, whose claim the lane leaves alone), when a claim read
-failed and a rule refused its keep, when NATS refused or denied the forward, when the stream
-refused the message itself (too large, or a sealed stream), or when a read of the deployed stream
-says it does not capture the holder's subject. A role claimant does not subscribe directly to its
+failed and a rule refused its keep, when a rule refused the keep of a message the lane stopped
+holding or took after the stop, when NATS refused or denied the forward, when the stream refused
+the message itself (too large, or a sealed stream), or when a read of the deployed stream says it
+does not capture the holder's subject. A keep's rules are the forward's: the stream's refusal of
+the message ends a keep as it ends a forward. A role claimant does not subscribe directly to its
 role subject.
 The forward is stored on the holder's agent subject (one copy per message and holder, by its
 `Nats-Msg-Id`), so a holder on consumer delivery that was away gets it from its session consumer
