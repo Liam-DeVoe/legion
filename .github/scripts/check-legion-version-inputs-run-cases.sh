@@ -109,8 +109,8 @@ check "exits 1 on a tags: filter added to release.yaml's push" "$(is "$status" 1
 check "names the keys" "$(contains "$out" "release.yaml's on.push sets \`\[\"branches\", \"paths\", \"tags\"\]\`, $trigger_rule PUSH_KEYS names")"
 
 # Each path a version step reads is covered whole by a push path - `**`, the file itself, or
-# `X/**` above it - with no later `!` pattern reaching in, but one inside an exclude of the
-# arguments (the round-9 review's P).
+# `X/**` for a directory X it lies in - with no later `!` pattern reaching in, but one inside an
+# exclude of the arguments (the round-9 review's P).
 paths_rule="runs the workflow for no change to"
 echo "case: a path the version step reads left out of on.push.paths (P1, P2, P4, P6)"
 root=$(written paths-release)
@@ -142,6 +142,33 @@ replace "$root/.github/workflows/release.yaml" $'    paths: ["**"]\n' $'    path
 run_check "$root"
 check "exits 1 on a package of the generated block left out" "$(is "$status" 1)"
 check "names it" "$(contains "$out" "$paths_rule packages/envoy/alpha/, which its version step reads through LEGION_VERSION_ARGS and LEGION_GO_INPUTS")"
+
+# GitHub's `**` keeps the `/` before it: `F/**` covers what lies inside a directory F and never the
+# file F (the round-10 review's R1 to R3, the P cases in another spelling).
+echo "case: a file the version step reads written as X/** in on.push.paths (R1, R2, R3)"
+root=$(written paths-file-as-dir-listener)
+replace "$root/.github/workflows/release-envoy-listener.yaml" $'    paths: ["**"]\n' \
+  $'    paths: ["packages/**", ".github/**", "go.work/**", "go.work.sum"]\n'
+run_check "$root"
+check "exits 1 on the listener's go.work as go.work/** (R1)" "$(is "$status" 1)"
+check "names it" \
+  "$(contains "$out" "release-envoy-listener.yaml's on.push.paths $paths_rule go.work, which its version step reads through LEGION_ENVOY_VERSION_ARGS")"
+check "and nothing else, so packages/** still covers the directories" "$(is "$(grep -c '::error' <<< "$out")" 1)"
+root=$(written paths-file-as-dir-release)
+replace "$root/.github/workflows/release.yaml" $'    paths: ["**"]\n' \
+  $'    paths: ["packages/**", "go.work", "go.work.sum", ".github/go-release-targets.json/**"]\n'
+run_check "$root"
+check "exits 1 on release.yaml's target list as a directory glob (R2)" "$(is "$status" 1)"
+check "names it" \
+  "$(contains "$out" "release.yaml's on.push.paths $paths_rule .github/go-release-targets.json, which its version step reads through LEGION_VERSION_ARGS and LEGION_GO_INPUTS")"
+root=$(written paths-file-as-dir-modules)
+replace "$root/.github/workflows/release-envoy-listener.yaml" $'    paths: ["**"]\n' \
+  $'    paths: ["packages/envoy/**", ".github/**", "go.work/**", "go.work.sum/**", "packages/daemon/go.mod/**", "packages/daemon/go.sum/**"]\n'
+run_check "$root"
+check "exits 1 on the listener's four module files as directory globs (R3)" "$(is "$status" 1)"
+for path in go.work go.work.sum packages/daemon/go.mod packages/daemon/go.sum; do
+  check "names $path" "$(contains "$out" "release-envoy-listener.yaml's on.push.paths $paths_rule $path, which its version step reads through LEGION_ENVOY_VERSION_ARGS")"
+done
 
 echo "case: a later ! pattern reaching into a path the version step reads"
 root=$(written paths-negated)

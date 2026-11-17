@@ -74,13 +74,15 @@
 #      mappings is refused, since no one can read what it sets. Each workflow's on: holds the
 #      events TRIGGERS names, a push trigger of PUSH_KEYS' keys and the branches PUSH_BRANCHES
 #      names, and paths that cover whole each path its version step reads - the plain paths after
-#      `--`, and for legion LEGION_GO_INPUTS' - through `**`, the file itself or `X/**` above it,
-#      with no later `!` pattern that can drop a change to it but one inside an exclude of those
-#      paths; a push pattern GitHub reads another way than the check's glob (`?`, `+`, `\`, `{`,
-#      `}`) is refused. A commit that touches only an uncovered path runs no release. Free are the
-#      if: of a job in neither chain, where it reads no decision; the values of concurrency:,
-#      cache-mode: and timeout-minutes:; and the runner image behind the label; and so is the
-#      decision passed on through the env context or another step's output, env: or run:;
+#      `--`, and for legion LEGION_GO_INPUTS' - through `**`, the file itself or `X/**` for X a
+#      directory it lies in or the directory itself (never a file X, since `**` keeps the `/`
+#      before it), with no later `!` pattern that can drop a change to it but one inside an
+#      exclude of those paths; a push pattern GitHub reads another way than the check's glob
+#      (`?`, `+`, `\`, `{`, `}`) is refused. A commit that touches only an uncovered path runs
+#      no release. Free are the if: of a job in neither chain, where it reads no decision; the
+#      values of concurrency:, cache-mode: and timeout-minutes:; and the runner image behind the
+#      label; and so is the decision passed on through the env context or another step's output,
+#      env: or run:;
 #   4. a path go names for the legion-envoy archives that no path of $LEGION_ENVOY_VERSION_ARGS
 #      covers, naming it and the listing that names it;
 #   5. an exclude of either line's paths that drops a path go names for it, or that drops anything
@@ -765,12 +767,13 @@ def triggers(path, doc):
 
 def whole_cover(pattern, path):
     """Whether the push pattern `pattern`, not `!`-negated, covers every change to `path`, a file or
-    a directory written with its /: `**`, the file itself, or `X/**` with X the path or a directory
-    above it. Any other glob is not read as covering anything."""
+    a directory written with its /: `**`, the file itself, or `X/**` with X the directory itself or
+    one above the path. GitHub's `**` keeps the `/` before it, so `X/**` covers what lies inside a
+    directory X and never a file X. Any other glob is not read as covering anything."""
     if pattern == "**":
         return True
     if pattern.endswith("/**") and not WILDCARD.search(pattern[:-3]):
-        return covers(pattern[:-3], path)
+        return path.startswith(pattern[:-2])
     return not path.endswith("/") and pattern == path
 
 
