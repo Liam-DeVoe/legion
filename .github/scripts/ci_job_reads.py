@@ -528,6 +528,12 @@ RULES = {
     f"{DAEMON}/internal/textcheck/phase_entry_migrations_doc_test.go": reads(
         ("docs/kubernetes.md", "internal/textcheck/waiting_line_texts_test.go:390 reads it under ../../../.. "
                                "for phase_entry_migrations_doc_test.go:121 (shippedText)")),
+    # This test reads the plan record's migration through migrations.All, as the one above does,
+    # and internal/store's plan_ratings_way_back_test.go, which runs that migration's way back,
+    # reads no text outside its package, so the guide is this one's one row.
+    f"{DAEMON}/internal/textcheck/plan_ratings_way_back_doc_test.go": reads(
+        ("docs/kubernetes.md", "internal/textcheck/waiting_line_texts_test.go:390 reads it under ../../../.. "
+                               "for plan_ratings_way_back_doc_test.go:38 (wayBackBlockOfTheGuide, way_back_doc_test.go:94)")),
     f"{DAEMON}/internal/textcheck/waiting_line_texts_test.go": reads(
         # The four copies of the shipped texts, each committed beside the package whose own
         # test is held to it and read here through readExtract.

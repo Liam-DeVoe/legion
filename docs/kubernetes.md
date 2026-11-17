@@ -2012,6 +2012,8 @@ delete from outbox where kind = 'plan_record';
 delete from outbox where kind = 'step_record' and payload->>'rating' is not null;
 ```
 
+The header of `20261117023932_outbox_kinds_with_the_plan_record.up.sql` carries this same block.
+
 Each deleted `plan_record` row costs the plan of one run: Dispatch holds no plan for that run, and the read of the project's finished issues lists the issue with no plan.
 Each deleted rating row costs the rating of one retro: the retro's record holds no rating, and nothing else of the issue changes.
 An earlier release puts `plan_record` in no outbox lane (`laneKinds` in `record/outbox.go`), so a `plan_record` row left in place is never decoded or run, and it writes its plan at the roll forward.
