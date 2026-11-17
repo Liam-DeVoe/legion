@@ -440,7 +440,13 @@ export function ProofDocument({
     inline: true,
     label: () => `Rebuild of ${artifact.name}`,
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["artifact", artifact.id] });
+      const reread = queryClient.invalidateQueries({ queryKey: ["artifact", artifact.id] });
+      // Outside `NoTooltips` the rebuild stops pending as it lands and the document's reads go on
+      // after it, as on `main`. Inside, `onSuccess` returns them, which TanStack Query awaits
+      // before the rebuild stops pending: Rebuild stays refused, and keeps the focus, until the
+      // rebuilt document is read, and a text read that succeeds then takes the offer off the page.
+      if (tooltips) return;
+      return reread;
     },
     write: (_variables, bounds) => api.rebuildArtifact(artifact.id, undefined, bounds),
   });
