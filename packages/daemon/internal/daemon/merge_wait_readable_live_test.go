@@ -35,11 +35,12 @@
 // (liveDispatch, in live_proof_test.go), and Envoy's listener the package's noticeListener. The
 // two Apps' tokens are workflowTokenRecorder's placeholders, which is also where the review App's
 // login comes from: appLoginsAtBoot asks the lease for it and gets `legion-review[bot]`, the
-// reviewAppLogin this package already spells (pull_request_reads_test.go), so the reviews this
-// proof publishes are the reviewer's own (workflow's byReviewer, with no reviewer session
-// recorded). No agent runs: the fake runtime launches whatever claim a move starts, and the proof
-// acts as no role. The three issues, their pull requests and their slots are seeded through the
-// store, as every daemon test seeds its fixture; what is driven is the change.
+// reviewAppLogin this package already spells (pull_request_reads_test.go). No agent runs: the fake
+// runtime launches whatever claim a move starts, and the proof acts as no role. The three issues,
+// their pull requests and their slots are seeded through the store, as every daemon test seeds its
+// fixture, and so is the reviewer's claim of the two whose reviews the proof publishes, recording
+// the session those reviews' footers name, so each review is the reviewer's own (workflow's
+// byReviewer); what is driven is the change.
 package daemon
 
 import (
@@ -63,6 +64,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
@@ -80,6 +82,10 @@ const (
 	mergeWaitFirstHead  = "4c1d0b9a7e52f38610d4c2b7a9e5f0318d6b2c47"
 	mergeWaitSecondHead = "8b3e5f1c9d04a7268f1b3c5d7e9a0b2c4d6e8f13"
 )
+
+// mergeWaitReviewerSession is the session the seeded reviewer claims record and every review the
+// proof publishes names in its Legion footer (publishReview).
+const mergeWaitReviewerSession = "ses-reviewer"
 
 // The head of each issue the negative control reads: the issue whose round waits on nothing, and
 // the issue whose pull request the record does not hold open. Both are full SHAs for the same
@@ -174,7 +180,11 @@ func newMergeWaitReadableLive(t *testing.T) *mergeWaitReadableLive {
 // closed issue's is seeded with the approval that stands at its head, because no review of it is
 // published and that approval is what would make the rule say its round waits, were its pull
 // request open: the rule's own test of the open pull request is what leaves its round waiting on
-// nothing.
+// nothing. The reviewer's claim of each of the two whose reviews the proof publishes records
+// mergeWaitReviewerSession, as the registration of its agent records it, and stands as the release
+// of an idle pod leaves it (supervise.SuspendedByReleased), with the session kept: the boot's
+// resume by rule resumes no such claim, and with no session recorded each review would wait and
+// decide nothing (workflow's RoundRefusal.Waits).
 func (r *mergeWaitReadableLive) seed() {
 	t := r.t
 	t.Helper()
@@ -224,10 +234,23 @@ func (r *mergeWaitReadableLive) seed() {
 		for _, role := range claim.Roles {
 			writePrompt(t, r.cfg, r.token(key, role))
 		}
+		if key == r.closed {
+			continue
+		}
+		token := r.token(key, claim.RoleReviewer)
+		if _, err := r.st.AdmitClaim(ctx, supervise.Claim{
+			Token: token, Project: r.project, Tree: key, Issue: key, Role: claim.RoleReviewer,
+			Generation: 1, State: supervise.StateSuspended, SuspendedBy: supervise.SuspendedByReleased,
+			Session: mergeWaitReviewerSession, SessionFile: t.TempDir() + "/" + mergeWaitReviewerSession + ".jsonl",
+			BootTokenHash: supervise.HashBootToken("seeded-" + randomSuffix(t)), ServingGeneration: 1,
+		}); err != nil {
+			t.Fatalf("record the reviewer's claim %s: %v", token, err)
+		}
 	}
-	r.note("seeded: %s in reviewing on open pull request #%d at %s, %s in reviewing on open #%d at %s, and %s in reviewing with #%d recorded closed at %s, its reviewer's approval standing there; base %s, GitHub's clock %s",
+	r.note("seeded: %s in reviewing on open pull request #%d at %s, %s in reviewing on open #%d at %s, and %s in reviewing with #%d recorded closed at %s, its reviewer's approval standing there; the reviewer's claim of %s and of %s released with session %s kept; base %s, GitHub's clock %s",
 		r.stuck, r.stuckNumber, mergeWaitShort(mergeWaitFirstHead), r.moving, r.movingNumber, mergeWaitShort(mergeWaitMovingHead),
-		r.closed, r.closedNumber, mergeWaitShort(mergeWaitClosedHead), mergeWaitBase, r.openedAt.Format(time.RFC3339))
+		r.closed, r.closedNumber, mergeWaitShort(mergeWaitClosedHead), r.stuck, r.moving, mergeWaitReviewerSession,
+		mergeWaitBase, r.openedAt.Format(time.RFC3339))
 }
 
 // write runs body in one transaction against the daemon's own database, failing the test with what
@@ -623,14 +646,14 @@ func (r *mergeWaitReadableLive) publishChecks(number int, head string, names ...
 	r.waitProcessed(r.publish(subject, "github", fmt.Sprintf("checks-%d-%d", number, r.seq), string(payload)))
 }
 
-// publishReview publishes the reviewer's review of the pull request at head (publishReviewAs). No
-// reviewer session is recorded on these issues, so the review App's login decides by itself
-// (workflow's byReviewer), whatever session the footer names.
+// publishReview publishes the reviewer's review of the pull request at head (publishReviewAs), its
+// footer naming mergeWaitReviewerSession, the session the seeded reviewer claim records, so the
+// review is the reviewer's own (workflow's byReviewer).
 func (r *mergeWaitReadableLive) publishReview(number int, state, head string) {
 	r.t.Helper()
 	r.seq++
 	r.reviewID++
-	r.publishReviewAs("ses-reviewer", number, state, head, r.seq, r.reviewID)
+	r.publishReviewAs(mergeWaitReviewerSession, number, state, head, r.seq, r.reviewID)
 }
 
 // publishPush publishes the implementer's push of to onto from on issue's branch (publishPushOf).
