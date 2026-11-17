@@ -345,11 +345,11 @@ const (
 // asked for, its Service's.
 const maxNameLength = 63
 
-// SandboxName is the Sandbox and pod name for an issue, or for the project controller. The six role
-// claims of an issue share it, and its one container; their generations live in each process
-// locator instead. A role claim's token always ends in one fixed role word, so cutting it
-// (claim.Token.Cut) preserves the project and issue token even where an issue name has hyphens.
-// The controller's token (claim.ControllerToken) ends in no workflow role and names its Sandbox
+// SandboxName is the Sandbox and pod name for an issue, or for the project controller. Every claim
+// of an issue shares it, and its one container; their generations live in each process locator
+// instead. Every claim token of an issue starts with the issue's part, and cutting it
+// (claim.Token.Cut) gives that part whole, whatever the agent's name and even where an issue name
+// has hyphens. The controller's token (claim.ControllerToken) names no issue and names its Sandbox
 // whole, `legion-<project>-controller`, which no issue's can be: an issue's part always ends in
 // `-<digits>`, and one past dnsName's length in a dash and eight hex digits.
 func SandboxName(t claim.Token) string {
