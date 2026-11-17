@@ -30,6 +30,7 @@ import { buildReferencePath, parseNodeReference } from "../../refs/routes";
 import { useKeymap } from "../../shell/keymap";
 import { conversationPath } from "../decisions-filter/decisions-parts";
 import { useSetFocusedNode } from "../focused-node";
+import { bringOnScreen } from "../identity-block";
 import { focusedNodeOf, IssueTree, landOnRow, useReleaseFocus } from "../IssueTree";
 import { drawnLine, firstLineOf, heldBy, lineWords, type TreeNode } from "../issue-tree";
 import { useRowOnScreen } from "../NodeRow";
@@ -681,9 +682,14 @@ function PlanChart({
     return -1;
   };
   /** Moves the focus to the `index`th of `held`, where the row's own hook then places it on
-   *  screen, clear of the band that stays at the top (`useRowOnScreen`, R7). */
+   *  screen, clear of the band that stays at the top (`useRowOnScreen`). A key that lands on the
+   *  row already holding the focus - Home on the first, End on the last - changes no focus, so
+   *  that hook does not run and a row scrolled away would stay off screen; the row is brought on
+   *  screen here instead, as the outline's move keys do. */
   const moveTo = (held: readonly HTMLElement[], index: number): void => {
-    held[index]?.focus({ preventScroll: true });
+    const target = held[index];
+    if (target !== undefined && target === document.activeElement) bringOnScreen(target);
+    target?.focus({ preventScroll: true });
   };
   useKeymap("issue", [
     // The chart is one tab stop (R7): Tab from the page itself enters it at that stop, the row
