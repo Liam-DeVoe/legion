@@ -12,7 +12,11 @@ import { eventRefreshTargets } from "../../api/event-refresh";
 import { liveSocketFor } from "../../api/live-socket";
 import { issueCoverageQuery, issueQuery } from "../../api/queries";
 import { DispatchQueryClient, queryRetry, queryRetryDelay } from "../../api/query-client";
-import { MIN_REFETCH_INTERVAL_MS, refreshQueries } from "../../api/query-refresh";
+import {
+  MIN_REFETCH_INTERVAL_MS,
+  refreshQueries,
+  trackQueryFetches,
+} from "../../api/query-refresh";
 import type {
   Artifact,
   Comment,
@@ -2864,6 +2868,74 @@ test("a Retry whose tree read answers an issue that holds nothing keeps the focu
     view.unmount();
   } finally {
     again.resolve(nothing);
+    for (const stub of stubs) stub.mockRestore();
+    client.clear();
+  }
+});
+
+// A refresh asks for the decisions read, and the app's scheduler holds that read back, since it
+// begins one read of a query at most once a second. While it is held back the reader's Keep
+// lands with no answer of its own: it invalidates the decisions read, which is invalid already,
+// so the cache reports nothing, and the decisions read that then begins is the Keep's sign. That
+// read is the Keep's, not the refresh's own, so its answer reads the tree again and the tree
+// draws what the server holds after the Keep.
+test("a Keep while the refresh's decisions read is held back reads the tree again", async () => {
+  const stubs = stubTreeReads(async (refs) => namedTargets(refs));
+  let written: Comment[] = [];
+  (api.getIssueTree as Mock<typeof api.getIssueTree>).mockImplementation(async () =>
+    treeAnswer(written)
+  );
+  let kept = false;
+  (api.getIssueDecisions as Mock<typeof api.getIssueDecisions>).mockImplementation(async () => ({
+    decisions: [],
+    document: kept ? "kept" : null,
+    open_questions: [],
+  }));
+  const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  // The app's event feed starts the scheduler's record of each read's start at once, so its
+  // one-a-second rule holds from the load on.
+  trackQueryFetches(client);
+  try {
+    const view = renderHook(() => useIssueTree(issue).root, { wrapper: stageWrapper(client) });
+    await waitFor(() => expect(client.isFetching()).toBe(0));
+    await act(async () => {
+      await Bun.sleep(1_100);
+    });
+    // A read of the decisions alone, as a surface drawn past the app's 30 s age makes one: it
+    // answers what the decisions held, so it reads the tree no more.
+    await act(async () => {
+      await client.refetchQueries({ exact: true, queryKey: ["decisions", KEY] });
+    });
+    const decisionReads = (api.getIssueDecisions as Mock<typeof api.getIssueDecisions>).mock.calls
+      .length;
+    // A comment event 200 ms on: the refresh reads the tree and asks for the decisions, which
+    // the scheduler holds back to a second after their last read began.
+    await act(async () => {
+      await Bun.sleep(200);
+      refreshQueries(client, [{ queryKey: ["comments", KEY] }]);
+      await Bun.sleep(150);
+    });
+    expect(
+      client.getQueryState(["decisions", KEY])?.isInvalidated,
+      "the refresh's decisions read is owed"
+    ).toBe(true);
+    expect(
+      (api.getIssueDecisions as Mock<typeof api.getIssueDecisions>).mock.calls.length,
+      "and held back"
+    ).toBe(decisionReads);
+
+    // The reader's Keep lands with no answer: Dispatch holds it, and its tree answers the reply.
+    kept = true;
+    written = [comment];
+    await act(async () => {
+      await client.invalidateQueries({ exact: true, queryKey: ["decisions", KEY] });
+    });
+    await act(async () => {
+      await Bun.sleep(2_500);
+    });
+    expect(holdsComment(view.result.current), "the tree read after the Keep is drawn").toBe(true);
+    view.unmount();
+  } finally {
     for (const stub of stubs) stub.mockRestore();
     client.clear();
   }
