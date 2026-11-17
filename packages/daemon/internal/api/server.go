@@ -459,14 +459,14 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 		s.decisions = NewRouteDecisions()
 	}
 
-	mux := http.NewServeMux()
+	mux := &routeMux{mux: http.NewServeMux()}
 	for _, route := range s.routes() {
-		mux.HandleFunc(route.pattern, route.handler)
+		mux.handle(route.pattern, route.handler)
 	}
 	// The catch-all answers every unrouted request, including a known path asked for with the
 	// wrong method: "no route" is the whole story the plugin, the operator's CLI, or a proof
 	// script needs.
-	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
+	mux.handle("/", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "no route"})
 	})
 
@@ -483,9 +483,30 @@ type route struct {
 	handler http.HandlerFunc
 }
 
-// routes is every route the daemon's API serves, in the one table NewServer mounts, so a test of
-// a rule every route keeps walks the routes themselves (TestNoRouteTakesABodyStringHoldingANul)
-// rather than a list of its own that a new route never joins.
+// routeMux is the mux the daemon's API is served from, with the pattern of every route mounted on
+// it in the order NewServer mounted them. handle is the one way to mount a route on it, so its
+// patterns are what the server serves, a route mounted beside the table included, and a test of a
+// rule every route keeps walks them (TestNoRouteTakesABodyStringHoldingANul).
+type routeMux struct {
+	mux      *http.ServeMux
+	patterns []string
+}
+
+// handle mounts handler at pattern and records the pattern.
+func (m *routeMux) handle(pattern string, handler http.HandlerFunc) {
+	m.mux.HandleFunc(pattern, handler)
+	m.patterns = append(m.patterns, pattern)
+}
+
+func (m *routeMux) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	m.mux.ServeHTTP(w, r)
+}
+
+// routes is every route the daemon's API serves but the catch-all, in the one table NewServer
+// mounts. A route is mounted through routeMux.handle and nowhere else, and a test of a rule every
+// route keeps walks what the server's mux recorded (TestNoRouteTakesABodyStringHoldingANul) rather
+// than a list of its own that a new route never joins, so a route mounted beside the table is
+// walked too.
 func (s *server) routes() []route {
 	return []route{
 		{"GET /legion/v1/state", s.stateRoute},
@@ -537,9 +558,15 @@ func (s *server) routes() []route {
 // transaction can give back. A request handled on a goroutine of its own, outliving the request
 // or running beside it, takes a mark of its own (store.ForConcurrentWorker) rather than this one.
 func trackTransactions(handler http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		handler.ServeHTTP(w, r.WithContext(store.WithTransactionTracking(r.Context())))
-	})
+	return transactionTracking{next: handler}
+}
+
+// transactionTracking is the handler trackTransactions returns: next serves each request, its
+// context marked. It is a type of its own so a test can reach the mux it serves (routeMux).
+type transactionTracking struct{ next http.Handler }
+
+func (t transactionTracking) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	t.next.ServeHTTP(w, r.WithContext(store.WithTransactionTracking(r.Context())))
 }
 
 // readyz answers the kubelet's readiness probe, which carries no token, from the daemon's
