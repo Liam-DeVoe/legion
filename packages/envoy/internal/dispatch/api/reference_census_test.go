@@ -512,7 +512,9 @@ func TestNoAnswerNamesAnObjectItsReaderCannotSee(t *testing.T) {
 		if read == 0 {
 			t.Errorf("%s: no GET row answered it a 2xx JSON body, so the census read nothing of what it sees", walker.caller)
 		}
-		// The event log and the issue's events, read whole: every event the walker may read.
+		// The event log and the issue's events, read whole: every event the walker may read, once
+		// the horizon is proven above every seeded event, so no event goes unread (readEventLogPage).
+		safeHorizon(t, fixture.server)
 		for _, target := range []string{"/api/v1/events/log?" + url.Values{"limit": {"1000"}}.Encode(),
 			"/api/v1/issues/" + walker.objects.issue + "/events"} {
 			answer := fixture.request(t, walker.caller, http.MethodGet, target, nil)
@@ -597,6 +599,9 @@ func TestWithNoPrivateProjectAReferenceReadsAsToday(t *testing.T) {
 		"/api/v1/settings/project-default-assignees",
 		"/api/v1/delivery/timeline",
 	}
+	// Both callers read the event log at a horizon proven above every seeded event, so a held
+	// horizon can neither shorten both reads alike nor make the two differ (readEventLogPage).
+	safeHorizon(t, fixture.server)
 	namesPrivate := false
 	for _, read := range reads {
 		// Two answers stamp the moment they were read (as_of, a window ending now): each time is

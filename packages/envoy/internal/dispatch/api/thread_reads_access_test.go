@@ -245,9 +245,13 @@ type privateLogRow struct {
 	Payload json.RawMessage `json:"payload"`
 }
 
-// eventLogOf is the whole event log as caller pages it.
+// eventLogOf is the whole event log as caller pages it, once the seed's horizon is proven above
+// every event committed before the call (safeHorizon): a read the horizon held back would answer
+// short, and a check that the log holds nothing of a project would then pass over events it never
+// read (readEventLogPage).
 func eventLogOf(t *testing.T, seed privateSeed, caller privateCaller) []privateLogRow {
 	t.Helper()
+	safeHorizon(t, seed.server)
 	response := seed.request(t, caller, http.MethodGet, "/api/v1/events/log", nil)
 	if response.Code != http.StatusOK {
 		t.Fatalf("%s reads the event log as %d %s", caller, response.Code, response.Body.String())

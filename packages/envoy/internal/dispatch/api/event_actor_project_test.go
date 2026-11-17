@@ -15,7 +15,7 @@ import (
 // only a reader talking to an older server (version skew) can be handed an actor `project`, and
 // the contract's ActorSchema keeps the field optional for that case alone.
 func TestAStoredActorsProjectIsNotAnswered(t *testing.T) {
-	handler, database := newTestHandlerWithStore(t)
+	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	issue := createInteractionIssue(t, handler, "CORE", "An older server's write", "A spec")
 	var id int64
 	if err := database.Pool.QueryRow(context.Background(), `
@@ -28,6 +28,9 @@ func TestAStoredActorsProjectIsNotAnswered(t *testing.T) {
 	`, issue.Key).Scan(&id); err != nil {
 		t.Fatalf("store an event whose actor carries project: %v", err)
 	}
+	// The event log answers only the events at or below the safe horizon, which a transaction
+	// elsewhere on the test cluster can hold below the stored event (readEventLogPage).
+	safeHorizon(t, served)
 
 	actorOf := func(t *testing.T, route string, events []json.RawMessage) map[string]any {
 		t.Helper()

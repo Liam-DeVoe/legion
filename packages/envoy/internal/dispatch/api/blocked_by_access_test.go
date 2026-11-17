@@ -12,7 +12,7 @@ import (
 // answers as it would were the blocker an issue nobody holds. A deployment may instead refuse the
 // link itself; then nothing joins the two projects and the reads have nothing to hide.
 func TestAVisibleIssueNamesNoHiddenIssueThatBlocksIt(t *testing.T) {
-	handler, database, _ := newTestServer(t, testServerOptions{})
+	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	seedCredentialProjects(t, handler, database)
 	makePrivate(t, database, privateProject)
 	hidden := issueIn(t, handler, accessCarol, privateProject)
@@ -26,6 +26,9 @@ func TestAVisibleIssueNamesNoHiddenIssueThatBlocksIt(t *testing.T) {
 	if read := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+visible, nil, accessCarol); !strings.Contains(read.Body.String(), hidden) {
 		t.Fatalf("carol, who sees PRIV, reads no %s on %s, so the test reads nothing: %s", hidden, visible, read.Body.String())
 	}
+	// The event log answers only the events at or below the safe horizon, and a read held below
+	// the link's event would pass over it unread (readEventLogPage).
+	safeHorizon(t, served)
 
 	shared := "agent-token"
 	for _, read := range []struct{ who, path string }{

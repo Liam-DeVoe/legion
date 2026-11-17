@@ -15,8 +15,16 @@ type eventLogRow struct {
 	Project    string  `json:"project"`
 }
 
-func readEventLogPage(t *testing.T, handler http.Handler, query string) ([]eventLogRow, map[int64]json.RawMessage) {
+// readEventLogPage reads one page of GET /api/v1/events/log as alice, once served's horizon is
+// proven above every event committed before the call (safeHorizon). The log answers only the
+// events at or below the safe horizon, and a read that any transaction holding an id on the test
+// cluster holds back past referencesSinceWait answers at the horizon it was left with, short of
+// what the test has just written: storetest's own "create database … template …" and "drop
+// database … with (force)" of the package's other tests do so. Proven first, the horizon the read
+// answers at is at least that high, whatever the read then waits on.
+func readEventLogPage(t *testing.T, served *server, handler http.Handler, query string) ([]eventLogRow, map[int64]json.RawMessage) {
 	t.Helper()
+	safeHorizon(t, served)
 	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/events/log"+query, nil, "alice")
 	if response.Code != http.StatusOK {
 		t.Fatalf("GET /api/v1/events/log%s: status=%d body=%s", query, response.Code, response.Body.String())
@@ -36,7 +44,7 @@ func readEventLogPage(t *testing.T, handler http.Handler, query string) ([]event
 // The event log is every event whatever owns it: a project's own event, an issue's and a project
 // document's all appear, in id order, each exactly as its owner's event list serves it.
 func TestEventLogPagesEveryEventAcrossOwnersInIDOrder(t *testing.T) {
-	handler, _ := newTestHandlerWithStore(t)
+	handler, _, _, served := newRegisteredTestServer(t, testServerOptions{})
 	issue := createInteractionIssue(t, handler, "CORE", "Logged issue", "A spec")
 	if response := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/asks", map[string]any{
 		"question": "Which path?",
@@ -46,7 +54,7 @@ func TestEventLogPagesEveryEventAcrossOwnersInIDOrder(t *testing.T) {
 	}
 	document := createProjectDocument(t, handler, "CORE", "Design notes", "# Design notes\n")
 
-	rows, logged := readEventLogPage(t, handler, "")
+	rows, logged := readEventLogPage(t, served, handler, "")
 	var sawProject, sawIssue, sawDocument bool
 	for index, row := range rows {
 		if index > 0 && row.ID <= rows[index-1].ID {
@@ -89,7 +97,7 @@ func TestEventLogPagesEveryEventAcrossOwnersInIDOrder(t *testing.T) {
 // Paging by the last id read with a small limit yields the same events as one page: no gap and
 // no repeat, ending on a short page.
 func TestEventLogPagesByAfterWithoutGapOrRepeat(t *testing.T) {
-	handler, _ := newTestHandlerWithStore(t)
+	handler, _, _, served := newRegisteredTestServer(t, testServerOptions{})
 	issue := createInteractionIssue(t, handler, "CORE", "Paged issue", "A spec")
 	for index := range 3 {
 		if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/comments", map[string]any{
@@ -100,14 +108,14 @@ func TestEventLogPagesByAfterWithoutGapOrRepeat(t *testing.T) {
 	}
 	createProjectDocument(t, handler, "CORE", "Paged notes", "# Paged notes\n")
 
-	whole, _ := readEventLogPage(t, handler, "")
+	whole, _ := readEventLogPage(t, served, handler, "")
 	if len(whole) < 5 {
 		t.Fatalf("event log holds %d events; want at least 5 to page", len(whole))
 	}
 	var paged []eventLogRow
 	after := int64(0)
 	for {
-		page, _ := readEventLogPage(t, handler, fmt.Sprintf("?after=%d&limit=2", after))
+		page, _ := readEventLogPage(t, served, handler, fmt.Sprintf("?after=%d&limit=2", after))
 		paged = append(paged, page...)
 		if len(page) < 2 {
 			break
@@ -124,7 +132,7 @@ func TestEventLogPagesByAfterWithoutGapOrRepeat(t *testing.T) {
 	}
 
 	from := whole[1].ID
-	rest, _ := readEventLogPage(t, handler, fmt.Sprintf("?after=%d", from))
+	rest, _ := readEventLogPage(t, served, handler, fmt.Sprintf("?after=%d", from))
 	if len(rest) != len(whole)-2 || rest[0].ID != whole[2].ID {
 		t.Fatalf("after=%d answered %+v; want the events after it, starting at id %d", from, rest, whole[2].ID)
 	}
