@@ -98,49 +98,45 @@ func TestTheGuidesListAboveThePhaseEntryNamesOnlyThoseMigrations(t *testing.T) {
 // it alone, or one never closed, which hides the line that ends the list, leaves no list a reader
 // sees, so the list is refused as hidden rather than read. A comment closed before the sentence,
 // and a "<!--" inside a fenced block, hide nothing of it. Each case is a list as the guide writes
-// one, between its opening sentence and the line that ends it, after the text before it.
+// one (phaseEntryListText), after the text before it.
 func TestTheListCountsNoMigrationNamedOnlyInAnHTMLComment(t *testing.T) {
-	const (
-		opening = phaseEntryListOpening + "\n"
-		end     = phaseEntryListEnd + "`20261111225552_phase_entry.up.sql`.\n"
-	)
 	for _, list := range []struct {
 		shape, before, entries string
 		want                   []string
 		err                    error
 	}{
 		{"a comment on a line of its own", "",
-			"20990101000001_seen adds a column.\n<!-- 20990101000002_hidden adds a table. -->\n",
+			"20990101000001_seen adds a column.\n<!-- 20990101000002_hidden adds a table. -->",
 			[]string{"20990101000001_seen"}, nil},
 		{"a comment after an entry", "",
-			"20990101000001_seen adds a column. <!-- 20990101000002_hidden adds a table. -->\n",
+			"20990101000001_seen adds a column. <!-- 20990101000002_hidden adds a table. -->",
 			[]string{"20990101000001_seen"}, nil},
 		{"a comment across lines", "",
-			"20990101000001_seen adds a column.\n<!--\n20990101000002_hidden adds a table.\n-->\n",
+			"20990101000001_seen adds a column.\n<!--\n20990101000002_hidden adds a table.\n-->",
 			[]string{"20990101000001_seen"}, nil},
 		{"a comment never closed", "",
-			"20990101000001_seen adds a column.\n<!-- 20990101000002_hidden adds a table.\n",
+			"20990101000001_seen adds a column.\n<!-- 20990101000002_hidden adds a table.",
 			nil, errHidden},
 		{"one visible entry for two migrations", "",
-			"20990101000001_seen and 20990101000003_seen_with_it touch none of the six.\n",
+			"20990101000001_seen and 20990101000003_seen_with_it touch none of the six.",
 			[]string{"20990101000001_seen", "20990101000003_seen_with_it"}, nil},
 		{"a comment opened before the opening sentence and closed inside the list", "<!--\n",
-			"20990101000002_hidden adds a table.\n-->\n20990101000001_seen adds a column.\n",
+			"20990101000002_hidden adds a table.\n-->\n20990101000001_seen adds a column.",
 			nil, errHidden},
 		{"the whole list inside a comment", "<!--\n",
-			"20990101000001_seen adds a column.\n-->\n",
+			"20990101000001_seen adds a column.\n-->",
 			nil, errHidden},
 		{"the opening sentence alone inside a comment", "<!--\n",
-			"-->\n20990101000001_seen adds a column.\n",
+			"-->\n20990101000001_seen adds a column.",
 			nil, errHidden},
 		{"a comment closed before the opening sentence", "<!--\n20990101000002_hidden adds a table.\n-->\n",
-			"20990101000001_seen adds a column.\n",
+			"20990101000001_seen adds a column.",
 			[]string{"20990101000001_seen"}, nil},
 		{"a comment opened inside a fenced block before the list", "```\n<!--\n```\n",
-			"20990101000001_seen adds a column.\n",
+			"20990101000001_seen adds a column.",
 			[]string{"20990101000001_seen"}, nil},
 	} {
-		listing, err := readPhaseEntryList(list.shape, list.before+opening+list.entries+end)
+		listing, err := readPhaseEntryList(list.shape, phaseEntryListText(list.before, list.entries))
 		if !errors.Is(err, list.err) {
 			t.Errorf("%s: reading the list answers the error %v, want %v: %q", list.shape, err, list.err,
 				list.before+list.entries)
@@ -165,10 +161,6 @@ func TestTheListCountsNoMigrationNamedOnlyInAnHTMLComment(t *testing.T) {
 // that migration undescribed among every name the list carries, and the reverse check finds it
 // outside the described ones, so a check that read the other's names fails here.
 func TestTheListDescribesOnlyTheMigrationsThatOpenAnEntry(t *testing.T) {
-	const (
-		opening = phaseEntryListOpening + "\n"
-		end     = phaseEntryListEnd + "`20261111225552_phase_entry.up.sql`.\n"
-	)
 	for _, list := range []struct {
 		shape, entry        string
 		described, mentions []string
@@ -201,7 +193,7 @@ func TestTheListDescribesOnlyTheMigrationsThatOpenAnEntry(t *testing.T) {
 			"20990101000001_alone, of 20990101000002_passing, adds a column.",
 			[]string{"20990101000001_alone"}, []string{"20990101000002_passing"}},
 	} {
-		listing, err := readPhaseEntryList(list.shape, opening+list.entry+"\n"+end)
+		listing, err := readPhaseEntryList(list.shape, phaseEntryListText("", list.entry))
 		if err != nil {
 			t.Errorf("%s: %v", list.shape, err)
 			continue
@@ -220,6 +212,14 @@ func TestTheListDescribesOnlyTheMigrationsThatOpenAnEntry(t *testing.T) {
 				list.described, list.mentions, list.entry)
 		}
 	}
+}
+
+// phaseEntryListText is a text that holds a list as the guide writes one: before, then the
+// sentence that opens the list, its entries (one or several lines, no newline after the last),
+// and the line that ends it.
+func phaseEntryListText(before, entries string) string {
+	return before + phaseEntryListOpening + "\n" + entries + "\n" + phaseEntryListEnd +
+		"`20261111225552_phase_entry.up.sql`.\n"
 }
 
 // embeddedMigrationsAboveThePhaseEntry is every migration the daemon embeds above the phase entry,
