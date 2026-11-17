@@ -39,10 +39,12 @@ import (
 	"github.com/nats-io/nkeys"
 )
 
-// Image is the NATS server image every Envoy test container runs: ghcr.io/cybermonklabs/legion/ci, the
-// copy of nats:2.10 (.github/ci-images.yaml). The envoy-go CI job reads this declaration and pulls
-// the image before its first test step, so no test reaches the registry mid-run; keep it a
-// single-line string constant.
+// Image is ghcr.io/cybermonklabs/legion/ci, the copy of nats:2.10 (.github/ci-images.yaml), whose
+// server, v2.10.29, Envoy refuses to run its session consumers on (natsversion.Refusal): a test
+// names it only for a behaviour of that server itself, the listener's refusal of it among them,
+// and the consumer cap's on a server older than 2.15. The envoy-go CI job reads this declaration
+// and pulls the image before its first test step, so no test reaches the registry mid-run; keep it
+// a single-line string constant.
 const Image = "ghcr.io/cybermonklabs/legion/ci@sha256:5498ba57b9471840be3d15b033a4eec554d1c02fa6c2cc0ca2d888637f6c6e2f"
 
 // HubImage is the NATS server image the GCP hub runs: ghcr.io/cybermonklabs/legion/ci, the copy of
@@ -50,9 +52,10 @@ const Image = "ghcr.io/cybermonklabs/legion/ci@sha256:5498ba57b9471840be3d15b033
 // declaration and pull the image before their tests run; keep it a single-line string constant.
 const HubImage = "ghcr.io/cybermonklabs/legion/ci@sha256:2ae57dfba3063d5e25fecb75256118c0882a1a2d2cf7d0fba17a7c701df956f6"
 
-// Images are the two NATS server images the real-server tests run on, Image and HubImage, each
-// with the short name its subtest takes.
-var Images = []struct{ Name, Ref string }{{"2.10", Image}, {"hub", HubImage}}
+// Images are the NATS server images the real-server tests run Envoy on, each with the short name
+// its subtest takes: the hub's alone, since Envoy requires a server whose scan of a consumer's
+// stored messages reads every filter (natsversion), which nats:2.10 is not.
+var Images = []struct{ Name, Ref string }{{"hub", HubImage}}
 
 var (
 	mainRuns      bool
@@ -614,6 +617,17 @@ func serverOptions(path string, serverArgs []string, store string) (*natsserver.
 	if opts.LameDuckDuration == 0 && opts.LameDuckGracePeriod == 0 {
 		opts.LameDuckDuration = rigLameDuck
 		opts.LameDuckGracePeriod = rigLameDuckGrace
+	}
+	// A server with an auth callout holds a client it sends to the service until the service
+	// answers or its authorization timeout passes (nats-server v2.15.1 server/auth_callout.go:457-464),
+	// and it starts that client's first PING timer before it asks (client.go:2352-2353): two seconds
+	// plus up to a fifth of that (client.go:7136-7142), against the callout's two. So a client the
+	// service never answers is now and then sent a PING before its refusal, and nats.go fails the
+	// connect with "expected 'PONG', got 'PING'" rather than nats.ErrAuthorization, which a test
+	// that waits out the hub's timeout for the refusal reads as a failure. The rig turns the short
+	// first PING off on such a server, so its first PING waits for the ping interval, two minutes.
+	if opts.AuthCallout != nil {
+		opts.DisableShortFirstPing = true
 	}
 	return opts, nil
 }

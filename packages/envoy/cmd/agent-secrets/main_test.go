@@ -56,13 +56,15 @@ func shortTempDir(t *testing.T) string {
 	return testtmp.Dir(t, filepath.Join("agent-secrets", "helper.sock"))
 }
 
-// brokerCounters records how many times fakeBroker served each route, so a test can assert on
-// call counts (e.g. "no second ask", "never entered the polling loop") instead of only on the
-// final observable outcome, plus (guarded by mu) the last session_id POST /v1/requests recorded
-// and the gate a test may hold the pending request's status polls behind.
+// brokerCounters records how many times fakeBroker served each route, and every call it answered
+// on any route (calls), so a test can assert on call counts (e.g. "no second ask", "never entered
+// the polling loop", "asked the broker nothing") instead of only on the final observable outcome,
+// plus (guarded by mu) the last session_id POST /v1/requests recorded and the gate a test may hold
+// the pending request's status polls behind.
 type brokerCounters struct {
 	createRequest int32
 	getRequest    int32
+	calls         int32
 
 	mu            sync.Mutex
 	lastSessionID string
@@ -205,7 +207,7 @@ var cannedStatus = map[string]string{"req-approved": approvedStatusJSON, "req-de
 func fakeBroker(t *testing.T) (*httptest.Server, *brokerCounters) {
 	t.Helper()
 	counters := &brokerCounters{}
-	var audience string
+	var srv *httptest.Server
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/requests", func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&counters.createRequest, 1)
@@ -222,7 +224,7 @@ func fakeBroker(t *testing.T) (*httptest.Server, *brokerCounters) {
 			counters.lastSessionID = *body.SessionID
 			counters.mu.Unlock()
 		}
-		obj, err := record.VerifyRequestObject(body.Request, audience, time.Minute, time.Now())
+		obj, err := record.VerifyRequestObject(body.Request, srv.URL, time.Minute, time.Now())
 		if err != nil || len(obj.Details) == 0 {
 			w.WriteHeader(http.StatusBadRequest)
 			return
@@ -235,7 +237,7 @@ func fakeBroker(t *testing.T) (*httptest.Server, *brokerCounters) {
 				"grant_id": "grant-granted", "record_id": nil, "approver": nil,
 			})
 		case "PENDING_ME", "PENDING_ANYONE", "PENDING_UNNAMED", "PENDING_ME_NO_PAGE":
-			writeJSON(w, pendingAnswer(name, audience, true))
+			writeJSON(w, pendingAnswer(name, srv.URL, true))
 		case "APPROVED_ME":
 			writeJSON(w, map[string]any{
 				"request_id": "req-approved", "state": "granted",
@@ -272,6 +274,11 @@ func fakeBroker(t *testing.T) (*httptest.Server, *brokerCounters) {
 			// terminated) — this is the fixture for the writeVerbatim byte-exact test.
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"request_id":"req-nonewline","state":"granted","secrets":[{"name":"NONEWLINE_ME","decision":"automatic"}],"grant_id":"grant-nonewline","record_id":null,"approver":null}`))
+		case "WAITING_ME":
+			// The broker's refusal of a secret `secret create` made and has not yet filled.
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"code":"PENDING_VALUE","error":"WAITING_ME exists and awaits its first value; ask again after its owner stores it"}`))
 		default:
 			w.WriteHeader(http.StatusBadRequest)
 		}
@@ -306,7 +313,7 @@ func fakeBroker(t *testing.T) (*httptest.Server, *brokerCounters) {
 				return
 			}
 		}
-		writeJSON(w, pendingAnswer(name, audience, false))
+		writeJSON(w, pendingAnswer(name, srv.URL, false))
 	})
 	mux.HandleFunc("POST /v1/grants/grant-granted/values", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{
@@ -361,8 +368,13 @@ func fakeBroker(t *testing.T) (*httptest.Server, *brokerCounters) {
 		}
 		writeJSON(w, settings)
 	})
-	srv := httptest.NewServer(mux)
-	audience = srv.URL
+	// The handlers read srv.URL, so srv is assigned before the server serves: Start, which sets
+	// the URL, runs after the assignment and before the goroutine that serves.
+	srv = httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&counters.calls, 1)
+		mux.ServeHTTP(w, r)
+	}))
+	srv.Start()
 	return srv, counters
 }
 
@@ -771,6 +783,49 @@ func TestExecFormRefusesWhenNoNameIsGiven(t *testing.T) {
 	}
 }
 
+// TestExecFormRefusesAMissingCommandBeforeAskingTheBroker: a command that is not on PATH is
+// refused with the exit status and the line it always had (1, and `agent-secrets: ` before
+// exec.LookPath's own error), and the broker is asked nothing at all: no request is made, so none
+// waits on an approver for a command that could never run. PENDING_ME is a secret a person must
+// approve; before the command was looked up first, its request reached that person and the run
+// exited 75, still waiting.
+func TestExecFormRefusesAMissingCommandBeforeAskingTheBroker(t *testing.T) {
+	binary := buildAgentSecrets(t)
+	broker, counters := fakeBroker(t)
+	defer broker.Close()
+	keyDir := newKeyDir(t)
+	const missing = "agent-secrets-test-command-on-no-path"
+	_, lookErr := exec.LookPath(missing)
+	if lookErr == nil {
+		t.Fatalf("%s is on PATH; this test needs a command that is not", missing)
+	}
+	for _, name := range []string{"GRANT_ME", "PENDING_ME"} {
+		stdout, stderr, exit := runAgentSecrets(t, binary, broker.URL, keyDir, nil, name, "--wait", "0s", "--", missing, "an-argument")
+		if exit != 1 {
+			t.Fatalf("%s: exit = %d, want 1: stdout=%q stderr=%q", name, exit, stdout, stderr)
+		}
+		if lines := strings.Split(strings.TrimSuffix(stderr, "\n"), "\n"); len(lines) != 1 || !strings.HasPrefix(lines[0], "agent-secrets: ") || !strings.Contains(lines[0], missing) || stdout != "" {
+			t.Fatalf("%s: stdout=%q stderr=%q; want nothing on stdout and one agent-secrets line naming %s", name, stdout, stderr, missing)
+		}
+	}
+	if calls := atomic.LoadInt32(&counters.calls); calls != 0 {
+		t.Fatalf("the broker answered %d calls for a command that is not on PATH, want none", calls)
+	}
+}
+
+// TestExecFormASecretWaitingForItsValueExitsOneAndRunsNothing: the broker's PENDING_VALUE refusal,
+// for a secret `secret create` made and has not yet filled, ends the exec form with exit 1, its line
+// naming the code and saying to ask again, and the command never runs.
+func TestExecFormASecretWaitingForItsValueExitsOneAndRunsNothing(t *testing.T) {
+	binary := buildAgentSecrets(t)
+	broker, _ := fakeBroker(t)
+	defer broker.Close()
+	stdout, stderr, exit := runAgentSecrets(t, binary, broker.URL, newKeyDir(t), nil, "WAITING_ME", "--", "sh", "-c", "echo ran-the-child")
+	if exit != 1 || !strings.Contains(stderr, "(PENDING_VALUE)") || !strings.Contains(stderr, "ask again") || strings.Contains(stdout+stderr, "ran-the-child") {
+		t.Fatalf("exit = %d, stdout=%q stderr=%q; want 1, the PENDING_VALUE refusal saying to ask again, and no command run", exit, stdout, stderr)
+	}
+}
+
 // TestTopLevelHelpExitsZero pins that a bare top-level "--help" or "-h" — no subcommand — exits
 // 0 and prints usage(), the conventional exit code for an explicit help request; only the
 // zero-argument form (no NAME, no --help) remains a usage error exiting 2.
@@ -966,6 +1021,7 @@ func TestBuildChildEnvKeepsOnlyTheSessionIdentity(t *testing.T) {
 			name: "one airlock name",
 			environ: append(append([]string{}, identity...),
 				"SSL_CERT_FILE=/inherited/roots.pem",
+				"GRPC_DEFAULT_SSL_ROOTS_FILE_PATH=/inherited/grpc-roots.pem",
 				"HTTPS_PROXY=http://stale.example:3128",
 				"NO_PROXY=keep.example.com"),
 			release: &AirlockRelease{
@@ -981,6 +1037,7 @@ func TestBuildChildEnvKeepsOnlyTheSessionIdentity(t *testing.T) {
 				"CURL_CA_BUNDLE="+testAirlockFiles.bundle,
 				"GIT_SSL_CAINFO="+testAirlockFiles.bundle,
 				"GRANT_ME=released",
+				"GRPC_DEFAULT_SSL_ROOTS_FILE_PATH="+testAirlockFiles.bundle,
 				"HTTPS_PROXY=http://agent-secrets:"+placeholder+"@proxy.broker.example:3128",
 				"NODE_EXTRA_CA_CERTS="+testAirlockFiles.bundle,
 				"NODE_USE_ENV_PROXY=1",

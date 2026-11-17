@@ -78,9 +78,11 @@ A Google caller presents its machine's own Google identity token for `BROKER_GOO
 — the audience every machine of the deployment already holds a token for, so the Envoy listener on
 a machine presents what its metadata server already hands it and mints no second token — verified
 against `BROKER_GOOGLE_OIDC_ISSUER`, and is looked up by the token's `email`, so such an entry
-needs that audience and no cluster at all. A project's default Google accounts and Google-managed
-service agents are refused here as they are in `BROKER_VM_SERVICES`. No secret is shared between
-the broker and its callers. A token that lives longer than an hour from its issue is refused, and
+needs that audience and no cluster or VM service. Leave `BROKER_VM_SERVICES` unset when only API
+callers use the Google audience: listing an API caller does not give it a machine login, but listing
+its account as a VM service does. A project's default Google accounts and Google-managed service
+agents are refused here as they are in `BROKER_VM_SERVICES`. No secret is shared between the
+broker and its callers. A token that lives longer than an hour from its issue is refused, and
 an account the list does not name is answered `403 ACCOUNT_NOT_LISTED`. Through those routes
 Dispatch lists what waits on a person and relays a person's machine-login decisions, their
 machine-login revokes and their sign-in revokes; it decides no secret request
@@ -88,7 +90,9 @@ machine-login revokes and their sign-in revokes; it decides no secret request
 
 The four `BROKER_SIGNIN_*` settings are required, and a broker started without one of them exits
 naming the missing ones. They are the page where a person approves a secret request, signed in to
-the broker itself ([Approval sign-in](#approval-sign-in)).
+the broker itself ([Approval sign-in](#approval-sign-in)). A deployment that has not settled how
+its people sign in sets `BROKER_SIGNIN=off` instead, and that broker approves nothing
+([A broker that signs nobody in](#a-broker-that-signs-nobody-in)).
 
 A caller's **name** decides which of those routes its account reaches, so listing an account is
 not one authority but a choice between them. The broker knows three names: `dispatch`, which
@@ -108,8 +112,10 @@ otherwise wait for a person ([Concepts](/legion/broker/concepts/#the-model-judge
 and the id of the model it asks, the audience of the Google identity token the broker presents to
 that endpoint, and the Dispatch it reads an issue from with the file holding the broker's own
 projected ServiceAccount token for it. They are all-or-none: with none of them set there is no
-judge, and every human-tier request waits for the person who decides it today. A sixth setting
-names the protocol that endpoint speaks and has a default. The
+judge, and every human-tier request waits for the person who decides it today, except on a broker
+with `BROKER_SIGNIN=off`, which denies every such request at once and takes no judge
+([A broker that signs nobody in](#a-broker-that-signs-nobody-in)); its `model judge state=off`
+boot line says so. A sixth setting names the protocol that endpoint speaks and has a default. The
 [configuration reference](/legion/broker/reference/config/) names each and gives its accepted
 values. `BROKER_JUDGE_TEST_SKIP_CHECKS` turns the judge's checks before the model off, as the
 local stack's negative control of them, and a production start — one with
@@ -247,10 +253,41 @@ mint or read a pod's token — the same kind of access over that pod's account a
 below names over a listed one — and it stops short of them: the caller needs a
 `BROKER_SERVICE_LOGINS` token of its own, and the pod's
 account must be one `BROKER_EXCHANGE_ACCOUNTS` lists, `403 POD_ACCOUNT_NOT_LISTED`. A
-deployment that does not want that lists no such account.
+deployment that does not want that lists no such account. An account `BROKER_EXCHANGE_READ_ACCOUNTS`
+lists (below) is refused `409 SESSION_FIXED`, as is an account whose `BROKER_EXCHANGE_ACCOUNTS`
+entry fixes a session: such an entry fixes the session its tokens name, so its pods need no
+registration.
 A daemon that stops registering costs its pods their writes within the registration's own retention
 (24 hours past the last write). Do not list such an account in `BROKER_API_ACCOUNTS` as well: that
 is the separate list of the callers that relay a person's decisions and read tokens back.
+
+A registration may also name the thumbprint of the key that session's own role proves
+(`thumbprint`, 43 base64url characters, else `400 THUMBPRINT_INVALID`). The broker then admits a
+trade for that session only with a DPoP proof of that key, and refuses one proved with another
+`invalid_grant`, naming the session. The roles of one Legion issue pod read one exchange token and
+are registered for one pod, so this is what keeps one role from trading for another role's
+session; the Legion daemon names each role's key. A later write that names no key keeps the one
+the registration names, and a registration that names none, as a session pod's is, admits any key
+of that pod. Until t-e-54 holds each session id to the claim that first recorded it, and t-e-53
+makes a role trade with its own key (dispatch://INFRA-840), the daemon registers whatever session
+id a role's agent reports, so a role can still have its own claim registered under another
+claim's session, and a role's own trade is refused; set no `exchange_audience` before both are in
+your daemon and its pods.
+
+A registration may also name its `generation` (0 or more, 0 when absent; a negative one is
+`400 GENERATION_INVALID`), the registrar's own order of its writes for that pod and session. The
+broker applies a write only when its generation is at least the registration's, and answers the
+registration as it stands after the write, its generation included when it is not 0. The Legion
+daemon sends a role's launch generation, so a write its old incarnation sent, which the broker
+commits only after the new incarnation's, changes nothing and cannot put the old key back. A
+registrar that sends none, as a session watch does, writes 0 as before and is answered no
+generation, exactly as before.
+
+Rolling the broker back past the release that brought migration 0032 drops the binding without a
+word: an older broker reads no key or generation, so it admits a trade for a bound session proved
+with any key of that pod, and its route refuses a body naming `thumbprint` or `generation` with
+`400`, so the daemon's registrations fail. Unset `exchange_audience` in every Legion daemon before
+you roll the broker back past this release.
 
 Whoever can get a token for a listed account logs in as its service. Kubernetes access control on
 the daemon's namespace is that boundary: anyone who may create pods there naming the account,
@@ -272,20 +309,46 @@ A service login a person approved through a device code before this broker keeps
 it expires, at most `BROKER_LAUNCHER_CREDENTIAL_SECONDS` (30 days by default) after its approval:
 nothing refreshes it.
 
+A pod trades its own projected ServiceAccount token, minted for `BROKER_EXCHANGE_K8S_AUDIENCE`, at
+the token exchange for a Dispatch access token. `BROKER_EXCHANGE_ACCOUNTS` lists the accounts whose
+tokens write as one person: in the one Dispatch project the entry names, or, for an entry that names
+no project (`<service account>==<person>`), wherever Dispatch's own rules let that person write.
+`BROKER_EXCHANGE_READ_ACCOUNTS` lists the accounts whose tokens only read, as whitespace-separated
+`<service account>=<service>=<session>` entries, for example
+`BROKER_EXCHANGE_READ_ACCOUNTS=system:serviceaccount:example-ns:example-reader=example-reader=example-reader-session`.
+The token of such an entry holds the OAuth scope `read` alone and the project scope `none`, names
+that service and that session, and names no person and no project. Dispatch serves it on the routes
+its read list names, today `GET /api/v1/projects/{key}/architecture` alone, and answers it
+`403 READ_ONLY_TOKEN` on every other route. That token reads the whole answer of
+`GET /api/v1/projects/{key}/architecture` for every project that has an architecture source: each
+source, each component, and every issue of the project, closed and iceboxed ones included. No
+setting holds a read entry to some projects. The Envoy listener answers it `401`. Both settings need
+`BROKER_K8S_OIDC_ISSUER` and `BROKER_EXCHANGE_K8S_AUDIENCE`, and the broker refuses to start on a
+read entry without the audience. It also refuses an entry with a missing field, a namespace's
+`default` account, a service that is not lowercase letters, digits and hyphens of at most 64 or is
+`shared`, and an account that one setting lists twice or that both settings list. A broker of a
+build older than this setting does not read it, so it mints those accounts no token. The boot line
+`token exchange state=on` counts the read entries as `read_accounts`.
+
 A machine holding a Google identity token — a Compute Engine VM, a pod on Google Kubernetes
 Engine, or anything a workload identity pool mints one for — trades that token at the broker's
 token exchange for a Dispatch access token and the machine login that trade mints. It holds no
-stored credential and no person approves it. Five settings describe its fleet, and the broker
-refuses to start with only some of them:
+stored credential and no person approves it. Set the Google audience and list each exchanging
+account as a VM service. The remaining fleet settings are optional, subject to these checks:
 
 - `BROKER_GOOGLE_OIDC_AUDIENCE`: the audience the machines ask their metadata server for. The
   issuer is Google's, `https://accounts.google.com`, unless `BROKER_GOOGLE_OIDC_ISSUER` names a
   stand-in for a dev stack; the broker reads its keys at startup only when the audience is set,
   and then logs one `google machine identity` line naming the issuer, the audience and the machine
-  services. Unset, the broker reads and logs nothing about Google and takes no such token.
+  services. Unset, the broker reads and logs nothing about Google and takes no such token. Set, it
+  needs a Google caller, or the broker refuses to start: a `google:` entry in
+  `BROKER_API_ACCOUNTS` or a VM service in `BROKER_VM_SERVICES`.
 - `BROKER_VM_SERVICES`: whitespace-separated `<service>=<service account email>` entries. Use a
   dedicated user-managed account for each fleet: the broker refuses a project's default Compute
-  Engine or App Engine account, which every workload in the project runs as by default.
+  Engine or App Engine account, which every workload in the project runs as by default. Without a
+  listed VM service, no Google identity token can be exchanged for a machine login. An API caller
+  alone needs no VM service, but `BROKER_SIGNIN_DEVICE_AUDIENCE` does: the person's device sign-in
+  presents a machine's identity token as its actor.
 - `BROKER_VM_PROJECTS` and `BROKER_VM_INSTANCES`: `<service account email>=<project id>` and
   `<service account email>=<instance-name glob>`, in Go's `path.Match` syntax. They pin a fleet to
   one Compute Engine project and the instance names its machines have. The two go together: set
@@ -345,8 +408,9 @@ the `aud` of the ID tokens it mints for it; set it to the same client id the mac
 needs, is the Workspace domain the person's `hd` claim must name, so a person outside it signs in
 nowhere. The issuer of both the person's token and the machine's is `BROKER_GOOGLE_OIDC_ISSUER`,
 `https://accounts.google.com` unless a dev stack names a stand-in, and the audience setting needs
-`BROKER_GOOGLE_OIDC_AUDIENCE`, whose machines are the boxes a person may sign in on. Unset, the
-broker accepts no person's sign-in and refuses either token type by name.
+`BROKER_GOOGLE_OIDC_AUDIENCE` and a VM service in `BROKER_VM_SERVICES`, whose machines are the
+boxes a person may sign in on. Unset, the broker accepts no person's sign-in and refuses either
+token type by name.
 
 Each machine holds a launcher credential of its own, keyed by the machine and the key its proof
 presented: `<account>@<project>/<zone>/<instance id>#<key thumbprint>` for a token minted on a
@@ -442,8 +506,8 @@ reads that variable for nothing: an agent session's id is minted when the sessio
 token must name it, since the Envoy listener refuses a subscribe, an unsubscribe, a role claim or a
 send from a session whose token names another. So a fleet whose entry fixes a session, or whose
 pods write under registered names, is a fleet no agent session can trade at: the broker refuses
-the trade, naming what the entry writes as. For a person to sign in there, give the machine the
-device-flow client as `AGENT_SECRETS_SIGNIN_CLIENT_ID` and
+the trade, naming the session the entry's tokens carry. For a person to sign in there, give the
+machine the device-flow client as `AGENT_SECRETS_SIGNIN_CLIENT_ID` and
 `AGENT_SECRETS_SIGNIN_CLIENT_SECRET_FILE`, the client whose
 id is `BROKER_SIGNIN_DEVICE_AUDIENCE`. With `AGENT_SECRETS_MACHINE_IDENTITY` unset nothing trades
 and every machine works as it did, through a machine login a person approves.
@@ -454,7 +518,7 @@ A person approves or denies a secret request on the broker's own page,
 `<BROKER_PUBLIC_URL>/approve/<record>`, signed in to the broker with OpenID Connect through an
 OAuth client of the broker's own; Dispatch's Inbox only links there, and no route a service calls
 decides a secret request ([Concepts](/legion/broker/concepts/#approvals)). Four settings are the
-sign-in, and every one of them is required:
+sign-in, and every one of them is required unless `BROKER_SIGNIN=off`:
 
 | Setting | What it is |
 | --- | --- |
@@ -466,9 +530,10 @@ sign-in, and every one of them is required:
 
 A broker missing any of the four refuses to start, naming the ones it is missing: `broker: fatal
 error="the broker's approval page needs BROKER_SIGNIN_ISSUER, BROKER_SIGNIN_CLIENT_ID,
-BROKER_SIGNIN_CLIENT_SECRET_FILE, BROKER_SIGNIN_DOMAIN; missing BROKER_SIGNIN_DOMAIN"`. There is
-no broker that serves machines but approves nothing: a deployment either signs people in or does
-not run.
+BROKER_SIGNIN_CLIENT_SECRET_FILE, BROKER_SIGNIN_DOMAIN; missing BROKER_SIGNIN_DOMAIN"`. The one
+broker that starts without them is one told outright to sign nobody in, `BROKER_SIGNIN=off`
+([A broker that signs nobody in](#a-broker-that-signs-nobody-in)): a deployment either signs
+people in, says it signs nobody in, or does not run.
 
 On Google, create the client once, in the Google Cloud project whose OAuth consent screen is the
 Workspace's **Internal** one (APIs & Services → Credentials → Create credentials → OAuth client ID,
@@ -544,6 +609,74 @@ them out of the Workspace or out of `BROKER_SIGNIN_DOMAIN` first. It is the only
 broker takes: anything else is refused with a usage line, and `envoy-broker` with no argument
 serves.
 
+### A broker that signs nobody in
+
+A deployment whose way of signing people in is not settled yet runs the broker with
+`BROKER_SIGNIN=off` and none of the `BROKER_SIGNIN_*` settings. It serves machines and pods as any
+broker does and approves nothing.
+
+In a Kubernetes manifest, quote the value. YAML 1.1 reads a bare `off` as the boolean `false`, so
+the API server refuses the manifest, or a template renders it as `"false"`, which the broker
+refuses (`BROKER_SIGNIN must be off or unset, got "false"`):
+
+```yaml
+env:
+  - name: BROKER_SIGNIN
+    value: "off"
+```
+
+Such a broker:
+
+- It serves no approval page: every route under `/approve` and `/signin/`, `GET /signin/status`
+  among them, answers 404, and no sign-in client check runs.
+- A request naming a secret whose answer would be a person's approval — a human-tier secret,
+  another person's `tier=agent` secret, a secret the session's operator withheld from it — is
+  denied at once, whatever its reason says, and nothing waits in anyone's Inbox. The session reads
+  `<NAME>: a person must approve it, and this broker signs nobody in (BROKER_SIGNIN=off)` after
+  `was denied: `, and the command exits 77.
+- What the policy grants at once is granted as on any broker: a person's own and a shared
+  `tier=agent` secret for their sessions, and a service's own secret for its pods. A machine
+  login, which a person decides on Dispatch's machine-login page, is unchanged.
+- A request still pending from a broker with sign-in on — one an earlier run left, or one a pod
+  still on sign-in queues during a roll — is denied by the next sweep, within
+  `BROKER_SWEEP_SECONDS`, and leaves the approver's Inbox: the session reads `was denied: a person
+  must approve it, and this broker signs nobody in (BROKER_SIGNIN=off)`, and the request records
+  `broker:signin-off` as having decided it. The sweep expires overdue requests first, as on any
+  broker, so one whose deadline has passed is normally expired instead; if that expiry fails,
+  the same sweep denies it. No clock bounds the selection, so the database's `created_at` cannot
+  hide a request from it. A grant approved before stays until it ends as any grant does, and a
+  request signed for another broker sharing the database, at another `BROKER_PUBLIC_URL`, is
+  left to that broker.
+- `BROKER_PUBLIC_URL` is held to an `http` or `https` URL whether sign-in is on or off, by the
+  broker's last configuration check: `BROKER_PUBLIC_URL must be an http or https URL, got the
+  scheme "ftp"`.
+
+`off` is the one value it takes: any other, `OFF` or `disabled` among them, refuses to start
+naming it, `broker: fatal error="BROKER_SIGNIN must be off or unset, got \"disabled\""`. `off`
+beside any `BROKER_SIGNIN_*` setting refuses to start naming the ones set, since the deployment
+has asked for both: `BROKER_SIGNIN=off turns the broker's person sign-in off, and
+BROKER_SIGNIN_DOMAIN is set: set BROKER_SIGNIN=off or the sign-in settings, not both`. `off`
+beside the [model judge](/legion/broker/concepts/#the-model-judge)'s settings refuses too, since
+the judge decides only a request that waits for a person. With `BROKER_SIGNIN` unset, a broker
+missing a sign-in setting refuses exactly as above, so a deployment that lost its sign-in settings
+never starts without its approval page.
+
+Moving between the two settings is a roll of the broker's pods, and while pods of both kinds
+share the database, a request a person would decide is refused unless it is approved on a pod
+with sign-in on, by a person or by that pod's model judge, before the sweep reaches it. A grant
+approved that way stays when the switch is made, as any grant does. An `off` pod denies at once
+each such request it serves, and its sweep, within `BROKER_SWEEP_SECONDS`, denies each one a pod
+with sign-in on queued that is still pending. A pod cannot tell a request queued in the overlap
+from one an earlier run left, so a cutover that denies nothing queued during it has no overlap:
+stop every pod of the old setting before the first pod of the new one starts.
+
+- **Turning sign-in on.** Set the four `BROKER_SIGNIN_*` settings, unset `BROKER_SIGNIN`, and
+  roll the pods. A session denied during the roll reads `BROKER_SIGNIN=off` in its denial and asks
+  again once the last `off` pod has stopped.
+- **Turning sign-in off.** Set `BROKER_SIGNIN=off`, unset every `BROKER_SIGNIN_*` setting and
+  the model judge's, and roll the pods. Every request still pending when the first `off` pod's
+  sweep reaches it, whether an earlier run or a pod still on sign-in queued it, is denied.
+
 ## Signing in to RDS by IAM token
 
 On Amazon RDS or Aurora the broker can sign in to its database with an
@@ -606,7 +739,7 @@ to start while the removed `BROKER_DATABASE_PASSWORD` is set or the URL names it
 | Envoy (optional) | With `BROKER_ENVOY_URL`, the broker tells a waiting agent session, best effort, when its pending request expires. It calls the listener with its own projected ServiceAccount token, which `BROKER_ENVOY_ACCOUNT_TOKEN_FILE` names and which it reads for each notice, so the listener must admit that account. The shared bearer `BROKER_ENVOY_TOKEN` is removed, and a broker started with it refuses to start. |
 | The Envoy hub's NATS auth service (optional) | With `BROKER_NATS_URLS`, the broker answers the authorization of each connection the Envoy hub sends it: a session presenting its broker access token and a proof of its key gets its own delivery channel, and a service presenting a platform token for `BROKER_NATS_K8S_AUDIENCE` or `BROKER_NATS_GOOGLE_AUDIENCE`, from an account `BROKER_NATS_SERVICES` lists, gets its kind's grant. It connects to the hub as the user `BROKER_NATS_SEED_FILE` holds, signs with the account seed in `BROKER_NATS_ISSUER_SEED_FILE` and opens each request with the curve seed in `BROKER_NATS_XKEY_SEED_FILE`; each file is refused at startup unless it holds a seed of its kind. Every replica answers in one queue group, so a stopped replica delays no connection. With none of these set the broker runs no auth service. |
 | The model judge (optional) | Outbound HTTPS access to the model endpoint `BROKER_JUDGE_MODEL_URL` names, which the broker reaches with its machine's own Google identity token for `BROKER_JUDGE_MODEL_AUDIENCE`, and to the Dispatch `BROKER_JUDGE_DISPATCH_URL` names, which it reads with the projected ServiceAccount token in the file `BROKER_JUDGE_DISPATCH_TOKEN_FILE` names, read at call time and never at boot, so a rotation needs no restart. It reads one issue and that issue's spec document there and writes nothing. With those settings unset the broker makes neither call and runs no judge ([Concepts](/legion/broker/concepts/#the-model-judge)). |
-| Dispatch's project access (optional) | To let a token name the projects its person may see, `BROKER_PROJECT_ACCESS_URL` names the Dispatch the token exchange asks whether a person may see a project and what kind of member a person is, and `BROKER_PROJECT_ACCESS_TOKEN_FILE` names the broker's own projected ServiceAccount token for Dispatch's audience, read at call time and never at boot. Dispatch must list that account as one that may ask: until it does, Dispatch answers 403 and every trade that asks it is refused `server_error`, saying Dispatch refused the broker's account. The two are set together or not at all. Answers are kept 30 seconds, and the questions are asked before the exchange's database transaction begins. While Dispatch cannot be reached, a token naming no project and an operator entry's token are minted as before, and each such mint logs a warning naming the account or person and the session. With neither set the broker asks Dispatch nothing: a token naming no project and an operator entry's token are minted as before, and a person's trade naming a project is refused. The boot log's `project access check state=on` or `state=off` line says which. |
+| Dispatch's project access (optional) | To let a token name the projects its person may see, `BROKER_PROJECT_ACCESS_URL` names the Dispatch the token exchange asks whether a person may see a project and what kind of member a person is, through Dispatch's `GET /api/v1/access/projects/{key}` and `GET /api/v1/access/person` routes, and `BROKER_PROJECT_ACCESS_TOKEN_FILE` names the broker's own projected ServiceAccount token for Dispatch's audience, read at call time and never at boot. No Dispatch release serves those routes yet: leave both unset until the broker can reach one that does, since against one that does not, every trade naming a project is refused `temporarily_unavailable`. Dispatch must list that account as one that may ask: until it does, Dispatch answers 403 and every trade that asks it is refused `server_error`, saying Dispatch refused the broker's account; so is every such trade while the broker cannot read the token file, and while Dispatch answers a member kind the broker does not know. The two are set together or not at all. Answers are kept 30 seconds, and the questions are asked before the exchange's database transaction begins. While Dispatch cannot be asked, a token naming no project is minted as before, and each such mint logs a warning naming the account or person and the session; every trade naming a project, an operator entry's included, is refused `temporarily_unavailable`. With neither set the broker asks Dispatch nothing: a token naming no project and an operator entry's token are minted as before, and a person's trade naming a project is refused. The boot log's `project access check state=on` or `state=off` line says which. |
 
 ## Network and trust
 
@@ -722,10 +855,15 @@ to start while the removed `BROKER_DATABASE_PASSWORD` is set or the URL names it
 
 The broker writes no secret. A person or an agent creates, changes and deletes agent secrets with
 `agent-secrets secret` ([manage a secret](/legion/broker/guides/manage-a-secret/)), which calls
-the store itself under whatever cloud credential its environment gives it - AWS, the sign-in
-`--profile`, `AWS_PROFILE` or the SDK's default chain names; GCP, an access token in
-`CLOUDSDK_AUTH_ACCESS_TOKEN`, else the Application Default Credentials, of any type, else the
-gcloud login - so that cloud's own IAM is what decides who may change which secret, and with the
+the store itself under the credential of the first source its environment gives it - AWS, the
+AWS SDK's own order: access keys in the environment, then `AWS_WEB_IDENTITY_TOKEN_FILE`, then
+the profile `AWS_PROFILE` or `AWS_DEFAULT_PROFILE` names, then the rest of the SDK's default
+chain; GCP, an access token in `CLOUDSDK_AUTH_ACCESS_TOKEN`, else the credentials file
+`GOOGLE_APPLICATION_CREDENTIALS` names, else the gcloud configuration or login
+`CLOUDSDK_ACTIVE_CONFIG_NAME` or `CLOUDSDK_CORE_ACCOUNT` names, else the well-known credentials
+file, else the active gcloud account, else the metadata server; a source present but broken stops
+the command, and every form names the source it used - so that cloud's own IAM is what decides who
+may change which secret, and with the
 tags (AWS) or annotations (GCP), who gets it. The CLI asks the broker only for its settings
 (`GET /v1/settings`) and, after each write, for a reread. Before anything else it refuses, on AWS,
 a sign-in in another account than the agent-secrets key's (GCP needs no equivalent: every GCP call
@@ -791,7 +929,7 @@ other form on their own secret but not these refuses those two with `AccessDenie
 | --- | --- |
 | `list` | `secretmanager.secrets.list` on the project and `secretmanager.versions.get` on each secret (to tell whether its `versions/latest` is `ENABLED`) |
 | `show` | `secretmanager.secrets.get` and `secretmanager.versions.list`, `secretmanager.versions.get` (for its versions and whether `versions/latest` is `ENABLED`) |
-| `create` | `secretmanager.secrets.create` and `secretmanager.versions.add`. Automatic replication encrypts with the CMEK key through Secret Manager's own service agent, not the person's identity: that service agent (`service-<project number>@gcp-sa-secretmanager.iam.gserviceaccount.com`) needs `roles/cloudkms.cryptoKeyEncrypterDecrypter` on the key, granted once at setup, not per person |
+| `create` | `secretmanager.secrets.create` and `secretmanager.versions.add`. Automatic replication encrypts with the CMEK key through Secret Manager's own service agent, not the person's identity: that service agent (`service-<project number>@gcp-sa-secretmanager.iam.gserviceaccount.com`) needs `roles/cloudkms.cryptoKeyEncrypterDecrypter` on the key, granted once at setup, not per person. The create labels the secret `agent-secrets-create` with a random value of its own, which stays on the secret, so a create needs no `secretmanager.secrets.update`; the broker reads only whether a secret carries that label, never its value. Before it asks for the value, the create asks IAM, through `TestIamPermissions` on the new secret, which needs no permission of its own, whether the sign-in holds `secretmanager.versions.add`, and deletes the empty secret and stops where it does not. A create also uses, without needing them to store a value: `secretmanager.secrets.get`, to read the secret back before any delete, or after a create whose answer was lost, touching it only where that label holds its value; and `secretmanager.versions.list` and `secretmanager.secrets.delete`, to delete again the empty secret a create that stores no value made. Without them a create that succeeds is unchanged, and one that fails leaves the empty secret and names the `gcloud secrets delete` command that clears it |
 | `set` | `secretmanager.secrets.get`, since a set reads the secret's annotations for the kind it checks the value as and the shape it stores the value under before it writes, and `secretmanager.versions.add` |
 | `retag` | `secretmanager.secrets.get` and `secretmanager.secrets.update`: owner and tier annotations in one call, plus `kind` and `mint-service-account` (the rollback guard) when the command sets a kind, `github-owners` when it names owners, `requesters` when it names who may ask, `scopes` when it names scopes, `admin` when it marks the secret an administrator's, `shape` when it sets a shape, `max-grant` when it sets one, and `default-grant` when it sets that; or, for `none`, the annotations it removes (`--kind none` removes `kind` and `mint-service-account` together), and nothing else. A retag that changes the secret's kind, or the shape of a secret that keeps a kind, also reads the value of `versions/latest` to check it as that kind's minter reads it, before it writes: `secretmanager.versions.access` on the secret. The check needs that read and the retag does not, and people who add versions and change annotations often hold no accessor role: where Secret Manager refuses the read with `PermissionDenied`, the retag writes its annotations and prints one line on standard error that says the value was not checked, and the broker then reads the value itself and refuses the secret `value-malformed` when its minter could not mint from it. Any other failure of the read refuses the retag, which then writes nothing. A retag never prints the value |
 | `delete` | `secretmanager.secrets.update` (sets `expire_time` to 30 days out) |
@@ -842,6 +980,7 @@ severity it is written at (WARN is written `WARNING`). The lines worth alerting 
 | `database sign-in method=<method>` | At startup, before the broker reaches for AWS or its database: `rds-iam` when each connection signs in with an RDS IAM token the broker mints, `password` when it signs in as `BROKER_DATABASE_URL` and libpq's defaults say (a password in the URL, `PGPASSWORD`, a passfile, or none for a server that trusts it). |
 | `secret store store=<store> credentials=<source>` | At startup, once the store is built: `aws-secrets-manager` under the AWS SDK's credential chain (`aws-sdk`), `gcp-secret-manager` under Application Default Credentials (`application-default`), or either name over `BROKER_FAKE_SECRETS_FILE` (`fake secrets file`). |
 | `approval sign-in on issuer=<issuer> client_id=<client id> domain=<domain>` | At startup: the approval page signs people in through that client, holding each person to that Workspace domain ([Approval sign-in](#approval-sign-in)). The client's secret is never logged. |
+| `approval sign-in off detail=…` | At startup, in place of the line above: `BROKER_SIGNIN=off`, so the broker serves no approval page and denies at once a request a person would approve ([A broker that signs nobody in](#a-broker-that-signs-nobody-in)). No sign-in client check runs. |
 | `broker: the sign-in client check state=<state> issuer=<issuer> error=…` | At WARN, from the check each pod takes at startup and every hour after, when it finds a state other than `ready` that the pod did not log last: the provider refused the broker's client (`state=client_rejected`, so nobody can sign in) or could not be asked (`state=issuer_unreachable`). A check that finds the state the pod logged last, or finds the client ready with no such line before it, logs nothing, so a provider that stays away for a day is one line. Every check writes its answer to `GET /signin/status`. |
 | `broker: the sign-in client check finds the client ready again issuer=<issuer> was=<state>` | At INFO: the first check that finds the client ready after the line above. `was` is the state that line named. |
 | `broker: the sign-in client check was not written state=<state> error=…` | At WARN: a check could not write its answer to Postgres after the check before it wrote, so `GET /signin/status` answers the last answer written. The checks after it log nothing more until one writes. |
@@ -854,7 +993,8 @@ severity it is written at (WARN is written `WARNING`). The lines worth alerting 
 | `broker metrics listening addr=<host:port>` | After `broker listening`, and after `airlock proxy listening` where the deployment has an airlock: the metrics port is bound at this address ([Metrics](#metrics)). A pod that cannot bind it does not start, and logs `broker: fatal` naming the address. |
 | `broker: fatal error=…` | Startup refused; the error names the variable or dependency. The process exits 1. |
 | `agent secret policy refused name=<secret's name in the store> reason=<reason> owner=<owner tag> first_load=<true or false>` | At ERROR, when a secret becomes one the broker refuses to serve, and when it is refused for another reason than before, with `was=<the reason before>`: one line at the change, not one for each read of the store. A pod's first load writes one for each secret it refuses, each with `first_load=true`. A load or a reread that finds a secret refused for the reason it had writes nothing, and `broker_unservable_secrets` ([Metrics](#metrics)) holds every secret refused now. `name` is the secret's whole name in the store, such as `production/agent-secrets/deel-api-key`. `owner` is its owner tag, and empty for `owner-tag-missing` and `owner-tag-malformed`. Reasons include `owner-tag-missing`, `owner-tag-malformed`, `tier-tag-missing`, `tier-tag-malformed`, `name-malformed`, `service-owner-human-tier`, `not-on-agent-secrets-key`, `no-current-value`, `kind-unknown`, `github-owners-missing`, `github-owners-malformed`, `requesters-malformed` (a `requesters` list holding a comma, naming nobody, carrying an email with a capital letter, or naming a service the deployment does not register), `max-grant-required` (an `admin` secret, or a `google-service-account` one, with no `max-grant` or one longer than an hour), `requesters-not-owner` (a `google-service-account` secret whose `requesters` are not its one person owner, or that lists a service it may not: any service at agent tier, and any service at all on a secret `BROKER_SERVICE_ACCOUNT_SECRETS` binds to a `dev-<name>` account), `admin-malformed` (an `admin` tag set to anything but `true`), `admin-tier` (an `admin` secret that is not human tier), `admin-requesters` (an `admin` secret with no `requesters` list), `scopes-malformed` (a `scopes` list holding a comma, naming no scope, naming one twice, or holding an entry that is no scope name, a whole `https://www.googleapis.com/auth/…` URL among them), `scopes-kind` (a `scopes` tag on a secret that is not a `google-service-account` one), `shape-malformed` (a `shape` tag set to anything but `token` or `document`), `max-grant-malformed`, `default-grant-malformed` and `value-malformed` (a `github-app`, `google-login`, `google-service-account` or `azure-login` secret whose stored value that kind's minter could not mint from: [the value read](#the-value-read)). |
-| `agent secret policy no longer refused name=<secret's name in the store> reason=<the reason it had> owner=<owner tag> now=<servable or absent>` | At INFO, when a secret the broker refused is refused no longer: `now=servable` when the broker serves it, and `now=absent` when the store no longer holds it (deleted, or scheduled for deletion). |
+| `agent secret policy no longer refused name=<secret's name in the store> reason=<the reason it had> owner=<owner tag> now=<servable, pending or absent>` | At INFO, when a secret the broker refused is refused no longer: `now=servable` when the broker serves it, `now=pending` when it is a new secret of that name waiting for its value (the line below), and `now=absent` when the store no longer holds it (deleted, or scheduled for deletion). |
+| `agent secret policy waiting for a value name=<secret's name in the store> reason=pending-value owner=<owner tag> first_load=<true or false>` | At INFO, once, when the broker first finds a secret that `agent-secrets secret create` made and has not yet filled: it carries the `agent-secrets-create` label the create gives a Google Secret Manager secret it makes before the value, holds no version at all, and the store created it less than ten minutes ago, while the person types or pipes the value. On AWS Secrets Manager the create makes the secret with its value and writes no such tag, so a secret there waits only where another writer gave it a tag of that name and no value. The broker serves it to nobody, a request for it is refused `PENDING_VALUE`, with no request recorded and no approver asked, and a reread answers `reason=pending-value`, but it is no refusal: `broker_unservable_secrets` holds no series for it, and the loads that find it still waiting write nothing. Its value landing serves it and writes no line, as does its leaving the store. Ten minutes after its creation the create that made it gives up and deletes it, or, where the person was still typing or pasting then, deletes it when that entry ends: at Enter, or at a signal that ends the process, such as a hang-up, or Ctrl-C typed outside a paste where it still sends SIGINT. One still there without a value past the ten minutes is refused `no-current-value` (the `agent secret policy refused` line, and a `broker_unservable_secrets` series until the create deletes it). The broker itself deletes nothing: a create that was killed leaves its secret in the store with no version, refused from then on, until its owner frees the name with `gcloud secrets delete <id> --project <project number>` or stores its value; `agent-secrets secret delete NAME` only schedules the deletion 30 days out, and the name stays taken until then. A secret without that label, one holding any version, and one whose listing names no creation time are never waiting: one without a value is refused `no-current-value` at once. |
 | `agent secret policy load failed; previous policy kept error=…` | At ERROR, in two cases. The five-minute reload of the namespace failed (the secret store out of reach, or refusing the broker; a Secret Manager failure names its gRPC status code alone, never the status message), and the broker keeps serving the policy from its last good read: the first failed reload of a run writes the line, and the reloads after it write nothing until one succeeds, which writes `agent secret policy load succeeded again`. Or, with `name=<NAME>` (the name a request asked for), the request named a secret the broker did not serve and the broker's reread of that one secret failed, so the request is refused `UNKNOWN_SECRET`: one line for each such request. A read in flight when the broker shuts down, and a request's reread its own caller abandoned, are not one of these and log nothing. |
 | `agent secret policy load succeeded again` | At INFO: the first reload that succeeds after the line above began a run of failed ones. |
 | `agent secret value read failed; its state kept name=<secret's name in the store> version=<version> error=…` | At WARN: the broker could not read a kind secret's stored value to check it ([the value read](#the-value-read)), for a permission, a timeout or the store's own failure, which `error` names by its call and its class and never by a byte of the value. A stored value that is not text is no failed read: it is refused `value-malformed`. The secret keeps the state it had, but for a `value-malformed` refusal of an older version: a failed read of a version the store listed since ends that refusal, which writes `agent secret policy no longer refused`. Each load after it reads the value again and writes nothing more until a read succeeds. |
@@ -870,7 +1010,7 @@ severity it is written at (WARN is written `WARNING`). The lines worth alerting 
 | `broker: grant log …` | At INFO, once for each request decision, each `request.judged` row and each grant end. Every line carries the event's `kind`, its `actor`, whichever of the enrollment, request and grant ids the row names, and `raw`, the audit row's own detail; it carries no audit id and no timestamp, since the line is written once the row has committed and the log keeps its own time. The rest is what the writer of that line had in hand, which differs by line: a `request.created` line adds the session and its person, the service the broker verified, the service the session's credential claims (`claimed_service`), the secrets and how each was decided, the state, the approver, the lifetime, the reason and the detail; a `request.granted` or `request.denied` line adds the session and its person, the claimed service, the state, the approver, who decided, the lifetime, the reason and the detail, and neither the verified service nor the secrets; a `request.cancelled` or `request.expired` line adds the state, the detail and, for a cancel, who decided; a `request.judged` line, written for every judge run that reached a verdict, its referrals and its failed checks included, adds the session and its person, the claimed service, and the grant where the verdict granted one; a `grant.revoked` or `grant.withheld` line adds nothing more, except the session's person when a person's revoke ended it. A reader joins a line to its request's own `request.created` line by `request_id` for the rest, or reads that row from `GET /v1/grant-log`, which joins the tables and holds every field. The line is the copy a deployment's log pipeline keeps of the rows that route answers from the `audit` table, so a closed period's decisions can be read without the database ([the audit record](/legion/broker/concepts/#the-audit-record)). A release (`grant.used`) writes the line below instead, and an enrollment row writes none. |
 | `broker: released a grant grant=… request=… enrollment=… names=[<NAME> …] reason=<reason> call_reason=<reason> command=[<argument> …] github_app=…` | At INFO, once for each release of a grant, after its `grant.used` audit row is written: what each grant was spent on, and why. `reason` is the reason the grant's request gave. A session's release adds `call_reason`, the `--reason` its own call gave, where that differs from the grant's: a session that asks again for secrets it holds a live grant of gets that grant back, and its new reason is in no request. The broker drops the characters a request's reason may not hold and cuts it to 400 characters. A session's release also adds `command`, the argument vector the `agent-secrets NAME -- <command>` form said the release starts: its first 32 arguments, each cut to 256 bytes, and `github_app`, the narrowing of its GitHub App tokens the release applied, where it applied one. In the cut command the broker replaces with `[redacted]` each secret it can name: each value of eight bytes or more that the release handed out, each string of eight bytes or more inside a stored JSON value, each token inside a document a minter made, each placeholder of a name the airlock holds back, and every GitHub token, AWS access key id, Google OAuth access token, Slack token of any `xox` prefix and PEM private key, wherever it came from; an argument the cut ended loses any end that starts one of them. **A secret of no such kind — a value from another store, a password typed in, a value shorter than eight bytes — is logged as the session typed it, so pass secrets in the command's environment, as the exec form does, and never on its command line.** `call_reason` and `command` are the session's own word, which the broker records and does not check, and a client from before the fields names neither, which logs an empty `command`. The airlock proxy's release of a grant writes `airlock=true` in their place, since it starts no command. The `grant.used` row's `detail` holds the same fields, and `GET /v1/grant-log` answers that detail to every account with the power to read the grant log. While a client of this version meets a broker from before these fields, that broker refuses each release once with `400 INVALID_NARROWING` naming the unknown field, and the client sends it again without them: the older broker writes a `broker: answer refused … code=INVALID_NARROWING` line and counts `broker_answers_total{outcome="refused",code="INVALID_NARROWING"}` for each, which is expected until the broker is rolled. |
 | `broker sweeper: ended an enrollment whose lease lapsed enrollment_id=… kind=… runtime_id=… slot=… lease_expired_at=… grants_revoked=… requests_cancelled=… left_dormant=…` | A session stopped renewing (a pod that is gone, a box whose `agent-secrets renew` stopped) while a broker was serving; the sweep ended it, revoking its grants and cancelling its pending requests. A lease that ran out while no broker was serving is not ended ([when no broker is serving](/legion/broker/concepts/#when-no-broker-is-serving)). |
-| `broker sweeper: end lapsed enrollments sweep=lapsed-enrollments error=…`, and the failure lines of the six other sweeps | At WARN, when one of the seven sweeps the sweeper runs every `BROKER_SWEEP_SECONDS` fails after its run before did not. That sweep logs nothing more until it succeeds, which writes `broker sweeper: a sweep that failed succeeded again`, so a database that stays away for an hour is two lines for each sweep and not one for each run. Each sweep's line has its own message and `sweep`: `broker sweeper: end lapsed enrollments` (`lapsed-enrollments`), `broker sweeper: end dormant enrollments` (`dormant-enrollments`), `broker sweeper: expire pending requests` (`pending-requests`), `broker sweeper: expire pending machine logins` (`pending-machine-logins`), `broker sweeper: delete spent OAuth state` (`spent-oauth-state`), `broker sweeper: delete expired browser sessions` (`expired-browser-sessions`) and `broker sweeper: delete the placeholders of grants that have ended` (`ended-grant-placeholders`). A sweep the broker's shutdown cuts short logs nothing. |
+| `broker sweeper: end lapsed enrollments sweep=lapsed-enrollments error=…`, and the failure lines of the six other sweeps | At WARN, when one of the seven sweeps the sweeper runs every `BROKER_SWEEP_SECONDS` fails after its run before did not. That sweep logs nothing more until it succeeds, which writes `broker sweeper: a sweep that failed succeeded again`, so a database that stays away for an hour is two lines for each sweep and not one for each run. Each sweep's line has its own message and `sweep`: `broker sweeper: end lapsed enrollments` (`lapsed-enrollments`), `broker sweeper: end dormant enrollments` (`dormant-enrollments`), `broker sweeper: expire or deny pending requests` (`pending-requests`: the expiry of overdue requests and, with `BROKER_SIGNIN=off`, the denial of the rest), `broker sweeper: expire pending machine logins` (`pending-machine-logins`), `broker sweeper: delete spent OAuth state` (`spent-oauth-state`), `broker sweeper: delete expired browser sessions` (`expired-browser-sessions`) and `broker sweeper: delete the placeholders of grants that have ended` (`ended-grant-placeholders`). A sweep the broker's shutdown cuts short logs nothing. |
 | `broker sweeper: a sweep that failed succeeded again sweep=<sweep>` | At INFO: the first run of that sweep that succeeds after its failure line. `sweep` names it as that line did. |
 | `broker: gave back the time no broker was serving to every lease still running when the last broker served gap=… last_serving_at=… enrollments=…` | At INFO, on the first beat after more than three sweeps in which no broker beat: every broker process was down, or none could reach the database. Each enrollment not revoked whose lease was still running at `last_serving_at` had its lease moved on by `gap`, but no further than `BROKER_LEASE_SECONDS` from now; `enrollments` counts them. Their sessions renew as before. |
 | `broker: the serving clock could not beat; it retries every interval and logs again once it beats error=… timed_out=…` | At WARN: this process could not record its beat, usually because the database is out of reach. A beat may take at most one `BROKER_SWEEP_SECONDS`; `timed_out=true` says it ran out of that (its deadline, or a lock or statement past it), as when another transaction holds this process's row, while the other brokers go on beating. It retries every `BROKER_SWEEP_SECONDS` and logs `broker: the serving clock beats again` once it does. |
@@ -1081,8 +1221,11 @@ own listing.
 | --- | --- | --- | --- |
 | `broker_answers_total` | counter | `outcome`, `code`, `caller_class` | Each answer the broker's code writes on the API port and on the airlock's proxy port; the answers Go's HTTP server writes itself before that code runs are not counted ([Refusals and the answer id](#refusals-and-the-answer-id)). `outcome` is `served` (below 400), `refused` (a refusal the `broker: answer refused` line records), `rate_limited` (a `429`, and the device grant's `slow_down`), `pending` (the device grant's `authorization_pending`, a machine's poll while its person has not decided) or `failed` (500 and above). `code` is a refusal's code, as its line names it, or the code the airlock's proxy port names for a failure of its own, such as `UPSTREAM_UNREACHABLE`. Every other answer's `code` is `HTTP_<status>`. `caller_class` is as the refusal line names it. A call the proxy carried to a service counts as `served`, with the service's own status as its `HTTP_<status>`. |
 | `broker_mint_attempts_total` | counter | `kind`, `outcome`, `attempt` | Each attempt of each call a minter makes to GitHub or Google ([the mint retry](#the-mint-retry)). `kind` is the secret's kind. `outcome` is `ok`, `upstream` (an answer of 500 or above, no answer, or an answer it could not use), `rate_limited`, `refused` (a `4xx` that is no rate limit) or `cancelled` (the caller's request ended). `attempt` is `1`, `2` or `3`. |
-| `broker_unservable_secrets` | gauge | `secret`, `reason`, `owner` | One series of value 1 for each secret the broker refuses to serve now. `secret` is the secret's whole name in the store, as the `agent secret policy refused` line names it, `reason` is that line's reason, and `owner` its owner tag, empty for `owner-tag-missing` and `owner-tag-malformed`. A secret that becomes servable, or leaves the store, is gone from the next scrape, and a reread of a name nobody created adds no series. |
+| `broker_unservable_secrets` | gauge | `secret`, `reason`, `owner` | One series of value 1 for each secret the broker refuses to serve now. `secret` is the secret's whole name in the store, as the `agent secret policy refused` line names it, `reason` is that line's reason, and `owner` its owner tag, empty for `owner-tag-missing` and `owner-tag-malformed`. A secret that becomes servable, or leaves the store, is gone from the next scrape, and a reread of a name nobody created adds no series. Nor does a secret waiting for its value in the ten minutes after its creation (`agent secret policy waiting for a value`), which is no refusal. |
 | `broker_policy_store_reads_total` | counter | `read` | Each call the policy makes to the secret store, a failed one too: `list` for a load of the whole namespace, `describe` for one secret's reread, and `value` for one kind secret's value ([the value read](#the-value-read)). It is how to see that this pod read the store: the broker logs no line for a read whose secrets it serves. On Secret Manager each of them spends the project's read quota. A `list` is one `ListSecrets` for each page and one `GetSecretVersion` for each secret, and a `describe` is one `GetSecret` and one `GetSecretVersion`. A `value` is one `GetSecret`, or none when this pod read that secret in the 30 seconds before, and then the `AccessSecretVersion` that reads the value, which counts against Secret Manager's separate access quota. |
+| `broker_nats_callout_decisions_total` | counter | `kind`, `outcome`, `reason` | Each NATS connection the auth service answered, where the broker runs it. `kind` is the credential the connection presented: `session`, `service` or `none`. `outcome` is `admitted` or `refused`, and `reason` is a refusal's one fixed word (empty when admitted), such as `waiting_bound` for one refused at once because the replica already held 1024 requests waiting for a decision. |
+| `broker_nats_callout_seconds` | histogram | | How long the auth service took to answer one connection, from the request reaching the replica. Its buckets straddle the decision's 1.5-second budget and the two seconds the hub waits for an answer. |
+| `broker_nats_callout_dropped_total` | counter | `reason` | Each authorization request the auth service answered not at all; the hub refuses that client at its own timeout. `reason` is `past_bounds` (the replica already held 1024 requests waiting and 1024 being refused), `hub_gave_up` (the hub had stopped waiting for the answer, read from the hub's own clock, so no skew between the broker's clock and the hub's counts here), `unopened` (not sealed to the service's curve key), `not_a_request`, or `pending_limit` (dropped by the NATS client on arrival, past the subscription's pending limits). The count moves every second whether or not the log takes writes. The broker logs the first drop in a minute, at WARN, `natscallout: dropped authorization requests unanswered` with each reason's count since the last such line and each reason's first drop (`<reason>_first`); a replica that stops logs what it counted since its last line. |
 
 Each pod counts its own answers, attempts and reads, from zero at its start.
 [Run the broker locally](/legion/broker/guides/run-locally/#read-the-log-and-the-metrics) shows a
