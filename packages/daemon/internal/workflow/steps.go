@@ -114,10 +114,11 @@ var stepStopped = StepEnd{Result: ResultStopped}
 
 // startStep writes the start of the step issue stands in (record.StandsAt), run by agent: one more
 // start counted at its place (record.Store.RaiseStepStarts), and a step record row, committed with
-// the start, carrying every identity field, the moment it started and the session the daemon
-// reads of agent. The record never makes the start wait: the row reaches Dispatch on a lane of its
-// own (record.LaneRecord). A phase that runs no step writes nothing, and neither does a record key
-// that is no issue key (recordsSteps).
+// the start, carrying every identity field and the moment it started, and no session: Dispatch
+// keeps the first value it is given of each field and only the end names the model, so the end
+// writes the session and the model as one read's pair (endStep). The record never makes the start
+// wait: the row reaches Dispatch on a lane of its own (record.LaneRecord). A phase that runs no
+// step writes nothing, and neither does a record key that is no issue key (recordsSteps).
 func (e *Engine) startStep(ctx context.Context, tx pgx.Tx, issue record.Issue, agent claim.Token) error {
 	place, role, typ, ok := stepOf(record.StandsAt(issue))
 	if !ok || !recordsSteps(issue) {
@@ -130,9 +131,6 @@ func (e *Engine) startStep(ctx context.Context, tx pgx.Tx, issue record.Issue, a
 	}
 	write := stepWrite(issue, place, role, typ, string(agent), starts)
 	write.StartedAt = new(now)
-	if read := e.readAgent(agent); read.Session != "" {
-		write.Session = new(read.Session)
-	}
 	return e.enqueue(ctx, tx, issue.Key, write)
 }
 
@@ -147,9 +145,9 @@ func (e *Engine) startStep(ctx context.Context, tx pgx.Tx, issue record.Issue, a
 // deployed has no count, and its end writes the record with the count 0, the agent its start would
 // have named and, for a phase worker, the moment its role's entry was raised, and marks that run
 // ended too (record.Store.EndUncountedStep): the route makes the node from the end alone. The end
-// carries the moment now, end's fields, and the session and the model the daemon reads of the
-// agent now. A phase that runs no step writes nothing, and neither does a record key that is no
-// issue key (recordsSteps).
+// carries the moment now, end's fields, and the session and the model of one read of the agent
+// now, the only write that names either (startStep). A phase that runs no step writes nothing, and
+// neither does a record key that is no issue key (recordsSteps).
 func (e *Engine) endStep(ctx context.Context, tx pgx.Tx, before record.Issue, end StepEnd) error {
 	at := record.StandsAt(before)
 	place, role, typ, ok := stepOf(at)

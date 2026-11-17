@@ -126,7 +126,7 @@ type Config struct {
 	Experiments      []config.Experiment
 	ExperimentSource func(uint64) (uint64, error)
 	// StepAgent is the daemon's read of the agent of a step at the moment the engine writes the
-	// step's start or end (startStep, endStep): the session its claim records and the model that
+	// step's end (endStep): the session its claim records and the model that
 	// answered it last in that session (supervise.Machine.LastAnswer), read from the claim's
 	// machine without waiting on a decision in flight. Nil reads nothing, so a record names no
 	// session and no model, which is the API-only daemon and every test that reads no agent.

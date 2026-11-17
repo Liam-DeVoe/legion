@@ -254,8 +254,10 @@ func TestTwoEndsOfOneRunQueueOneRow(t *testing.T) {
 }
 
 // The end of a step carries the session and the model the daemon reads of its agent at that end,
-// and the handoff record the ending role's completion named; the start carries the session alone.
-// A daemon that reads no agent writes neither, which leaves them for a later write to fill.
+// one read's pair, and the handoff record the ending role's completion named; the start carries
+// neither, since Dispatch keeps the first value it is given of each field and only the end names
+// the model. A daemon that reads no agent writes neither, which leaves them for a later write to
+// fill.
 func TestTheEndNamesTheModelThatAnswered(t *testing.T) {
 	pool := migratedPool(t)
 	stepRoot(t, pool, phase.Testing)
@@ -280,11 +282,11 @@ func TestTheEndNamesTheModelThatAnswered(t *testing.T) {
 	if end.Report == nil || *end.Report != report || end.StartedAt == nil || !end.StartedAt.Equal(raisedAt) || !end.EndedAt.Equal(stepClock) {
 		t.Fatalf("the end = %+v, want report %s, started at the tester's entry %s and ended at %s", end, report, raisedAt, stepClock)
 	}
-	if start.Session == nil || *start.Session != "s1" || start.Model != nil || !start.StartedAt.Equal(stepClock) {
-		t.Fatalf("the start = %+v, want session s1, no model, started at %s", start, stepClock)
+	if start.Session != nil || start.Model != nil || !start.StartedAt.Equal(stepClock) {
+		t.Fatalf("the start = %+v, want no session, no model, started at %s", start, stepClock)
 	}
-	if len(asked) != 2 || string(asked[0]) != treeRoleToken(t, "LEGION-208", claim.RoleTester) || string(asked[1]) != treeRoleToken(t, "LEGION-208", claim.RoleReviewer) {
-		t.Fatalf("the agents asked = %v, want the tester's at the end, then the reviewer's at the start", asked)
+	if len(asked) != 1 || string(asked[0]) != treeRoleToken(t, "LEGION-208", claim.RoleTester) {
+		t.Fatalf("the agents asked = %v, want the tester's at the end alone", asked)
 	}
 
 	t.Run("no agent read", func(t *testing.T) {
