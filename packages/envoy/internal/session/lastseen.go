@@ -39,11 +39,12 @@ func WithLastSeenBucket(kv bus.KeyValue) SessionRegistryOption {
 // session lapsed included: every pod of the fleet answers one time for one session through the
 // whole window, and a record the bucket has not got (it was never written, its MaxAge removed it,
 // or it could not be read) is no answer on any of them. The bucket keeps a record for
-// listenerStateMaxAge after its last write, which is sized past this window, so the record
-// outlives the answer rather than ending it. Without the bucket the time is this process's own
-// record (seenLocal), the UpdatedAt of every registration this process wrote or its watcher saw,
-// which a restart forgets. The window is measured on this process's clock against the server's
-// timestamp; a skew of seconds against a TTL of minutes moves its end by that skew.
+// listenerStateMaxAge (20 minutes) after its last write, which is shorter than this window at the
+// registry's default retention (LastSeenMemory, 2 hours), so the bucket's age ends the answer
+// there, and no pod answers once the record is gone. Without the bucket the time is this
+// process's own record (seenLocal), the UpdatedAt of every registration this process wrote or its
+// watcher saw, which a restart forgets. The window is measured on this process's clock against
+// the server's timestamp; a skew of seconds against a TTL of minutes moves its end by that skew.
 //
 // Its read of the bucket waits no longer than ctx (bus.BoundedOn), so a caller answering a request
 // keeps its own budget: a bucket that does not answer costs that budget once, and every further
@@ -113,10 +114,12 @@ func lastSeenKey(sessionID string) string {
 // recordSeen records the registration write at revision written as sessionID's last-seen time in
 // the listener state bucket, when the registry has it: it reads the write back from the session
 // bucket for the server's timestamp, the clock the registration's expiry runs on, and puts it under
-// lastSeenKey, each bucket call waiting no longer than ctx (bus.BoundedOn). A failure of either logs a
-// WARN and leaves the registration, which is written, as it is: the record keeps the previous
-// write's time. The read is by key, a direct get on the key's own subject, which the listener's
-// grant allows; a get by revision is a direct get on the stream's bare subject, which it does not.
+// lastSeenKey, each bucket call waiting no longer than ctx (bus.BoundedOn). A failure of either
+// logs a WARN and leaves the registration, which is written, as it is: the record keeps the
+// previous write's time, except after a put that ctx's end or the loss of its connection
+// abandoned, which may still land and record this write's time. The read is by key, a direct get
+// on the key's own subject, which the listener's grant allows; a get by revision is a direct get
+// on the stream's bare subject, which it does not.
 // A read that finds another revision, or no record, means a newer write replaced this one, and
 // that write records its own.
 func (r *SessionRegistry) recordSeen(ctx context.Context, kv bus.KeyValue, sessionID string, written uint64) {

@@ -866,15 +866,19 @@ func (r *SessionRegistry) Amend(ctx context.Context, sessionID string, base Sess
 // to write from the stored registration (found false when there is none) and the time.
 // The first attempt merges onto the cache. A cache miss, or a write the bucket refuses because the
 // revision moved (another listener wrote, or MaxAge removed the key under a cached revision), reads
-// the bucket entry and merges onto that: Update at its revision, or Create when there is none. After
-// writeAttempts refused writes it returns ErrWriteConflict, having written nothing.
+// the bucket entry and merges onto that (readStored): Update at the revision of the key's newest
+// entry, the stored value's, a delete marker's when a deregistration or a reap ended the
+// registration, or 0 when the key holds no entry at all. After writeAttempts refused writes it
+// returns ErrWriteConflict, having written nothing.
 //
 // Each bucket call waits no longer than ctx (bus.BoundedOn). A write ctx abandoned may still land after
-// this answer. That is safe: it is a compare-and-set at the revision it read, so it replaces only that
-// revision and never a write that landed since, and it writes the entry the caller's retry merges
-// again. The write reaches the cache through the handle's epoch (kvwatch.Copy.Put), so a write made
-// through a handle on a bucket since recreated is dropped rather than fencing out the new bucket's
-// rows.
+// this answer. That is safe: it is a compare-and-set on the very entry it read, a marker or no entry
+// included, so it replaces only that entry and never a write or a delete that landed since, and it
+// writes the entry the caller's retry merges again. A create would not be: refused over a marker,
+// nats.go's Create updates at the marker's revision (nats.go@v1.53.1 kv.go:729-739), so a write that
+// read no registration and landed after a deregistration's delete would bring the entry back. The
+// write reaches the cache through the handle's epoch (kvwatch.Copy.Put), so a write made through a
+// handle on a bucket since recreated is dropped rather than fencing out the new bucket's rows.
 func (r *SessionRegistry) write(ctx context.Context, sessionID string, merge func(cur SessionEntry, found bool, now int64) SessionEntry) error {
 	kv, epoch := r.watcher.Handle()
 	cur, revision, found := r.cachedEntry(epoch, sessionID)
@@ -894,9 +898,6 @@ func (r *SessionRegistry) write(ctx context.Context, sessionID string, merge fun
 		}
 		at := revision
 		written, answered, err := bus.BoundedOn(ctx, kv, func() (uint64, error) {
-			if at == 0 {
-				return kv.Create(sessionID, buf)
-			}
 			return kv.Update(sessionID, buf, at)
 		})
 		if !answered {
@@ -937,24 +938,27 @@ func (r *SessionRegistry) cachedEntry(epoch uint64, sessionID string) (SessionEn
 }
 
 // readStored reads sessionID's registration from the bucket, within ctx (bus.BoundedOn), and
-// applies it to the cache as a delivered record is applied (kvwatch.Copy.Apply: Get answers only a
-// stored value, never a delete marker). revision is the stored value's, 0 when the bucket holds no
-// value. write reads for a write and writes at that revision. Amend reads after write lost every
+// applies it to the cache as a delivered record is applied (kvwatch.Copy.Apply: the read answers
+// only a stored value, never a delete marker). revision is the revision of the key's newest entry
+// (bus.KeyValue.GetLatest): the stored value's, a delete or purge marker's when that is the newest
+// entry, and 0 when the key holds no entry at all. write reads for a write and writes at that
+// revision, so it lands only over what this read found. Amend reads after write lost every
 // attempt: it drops the revision, only checks whether its change would leave the stored entry as
 // it is, and writes nothing. A value that does not decode is found false, as the cache, which
 // evicts it, sees no registration either: write replaces it at its revision, and Amend reports its
 // conflict.
 func (r *SessionRegistry) readStored(ctx context.Context, kv bus.KeyValue, epoch uint64, sessionID string) (SessionEntry, uint64, bool, error) {
-	stored, answered, err := bus.BoundedOn(ctx, kv, func() (nats.KeyValueEntry, error) { return kv.Get(sessionID) })
+	read, answered, err := bus.BoundedOn(ctx, kv, func() (bus.LatestEntry, error) { return kv.GetLatest(sessionID) })
 	if !answered {
 		return SessionEntry{}, 0, false, fmt.Errorf("read session %s from the bucket: %w", sessionID, err)
 	}
 	if errors.Is(err, nats.ErrKeyNotFound) {
-		return SessionEntry{}, 0, false, nil
+		return SessionEntry{}, read.Revision, false, nil
 	}
 	if err != nil {
 		return SessionEntry{}, 0, false, err
 	}
+	stored := read.Entry
 	revision := stored.Revision()
 	r.mu.Lock()
 	_, malformed := r.cache.Apply(r.watcher, epoch, kvwatch.LegacyEntry(stored))

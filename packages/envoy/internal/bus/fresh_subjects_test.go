@@ -81,16 +81,18 @@ func streamInfoReads(t *testing.T, uri string) func() int {
 	}
 }
 
-// judgeAtOnce has n goroutines judge topic at the same moment and returns each answer and how long
-// the burst took, from its release to its last answer.
+// judgeAtOnce has n goroutines judge topic at the same moment, each under an ask of its own taken
+// before any of them is released (AskDeployedSubjects), and returns each answer of Uncaptured and
+// how long the burst took, from its release to its last answer.
 func judgeAtOnce(client *Client, topic string, n int) ([]bool, time.Duration) {
 	release := make(chan struct{})
 	answers := make([]bool, n)
 	var wg sync.WaitGroup
 	for i := range n {
+		ask := client.AskDeployedSubjects()
 		wg.Go(func() {
 			<-release
-			answers[i] = client.DeployedStreamCapturesFresh(context.Background(), topic)
+			answers[i] = ask.Uncaptured(context.Background(), topic)
 		})
 	}
 	began := time.Now()
@@ -99,11 +101,20 @@ func judgeAtOnce(client *Client, topic string, n int) ([]bool, time.Duration) {
 	return answers, time.Since(began)
 }
 
-// A burst of judgements of a topic no stream captures, all within streamSubjectsRereadGap, costs
-// the server one read of the deployed stream's subjects, which every judgement of the burst shares,
-// and a judgement after them within the gap costs none; the first past the gap reads again. A
-// topic the stream captures is answered with no read at all.
-func TestABurstOfUncapturedJudgementsReadsTheDeployedSubjectsOnce(t *testing.T) {
+// lastReread is when the client's last read of the subjects again started
+// (subjectsRereadStarted) and when the last one ended (subjectsRereadAt).
+func lastReread(client *Client) (started, ended time.Time) {
+	client.subjectsRereadMu.Lock()
+	defer client.subjectsRereadMu.Unlock()
+	return client.subjectsRereadStarted, client.subjectsRereadAt
+}
+
+// A burst of judgements of a topic no stream captures, asked before any read of the deployed
+// stream's subjects started, costs the server one read, which every judgement of the burst shares.
+// A burst asked right after that read ended waits out streamSubjectsRereadGap from its end and
+// shares one read again: no judgement answers on a read that started before it asked. A topic the
+// stream captures is answered with no read at all.
+func TestABurstOfUncapturedJudgementsReadsTheDeployedSubjectsOncePerGap(t *testing.T) {
 	const (
 		uncaptured = "notifications.nostream.burst"
 		captured   = "notifications.team.burst"
@@ -116,43 +127,35 @@ func TestABurstOfUncapturedJudgementsReadsTheDeployedSubjectsOnce(t *testing.T) 
 	reads := streamInfoReads(t, uri)
 
 	answers, _ := judgeAtOnce(client, captured, burst)
-	if slices.Contains(answers, false) {
-		t.Fatalf("judgements of %s answered %v, want all captured", captured, answers)
+	if slices.Contains(answers, true) {
+		t.Fatalf("judgements of %s answered %v, want none uncaptured", captured, answers)
 	}
 	if n := reads(); n != 0 {
 		t.Fatalf("%d judgements of %s, which the stream captures, sent %d reads of the stream's subjects, want none", burst, captured, n)
 	}
 
 	answers, took := judgeAtOnce(client, uncaptured, burst)
-	ended := time.Now()
-	if slices.Contains(answers, true) {
-		t.Fatalf("judgements of %s answered %v, want none captured", uncaptured, answers)
-	}
-	if took >= streamSubjectsRereadGap {
-		t.Fatalf("the burst of %d judgements took %s, not inside %s; the row measures a burst inside the gap", burst, took, streamSubjectsRereadGap)
+	if slices.Contains(answers, false) {
+		t.Fatalf("judgements of %s answered %v, want all uncaptured", uncaptured, answers)
 	}
 	if n := reads(); n != 1 {
 		t.Fatalf("%d judgements of %s at once, in %s, sent %d reads of the stream's subjects, want 1", burst, uncaptured, took.Round(time.Microsecond), n)
 	}
+	_, ended := lastReread(client)
 	t.Logf("%d judgements of %s at once took %s and sent one read of the stream's subjects", burst, uncaptured, took.Round(time.Microsecond))
 
-	for range burst {
-		if client.DeployedStreamCapturesFresh(context.Background(), uncaptured) {
-			t.Fatalf("a judgement of %s answered captured", uncaptured)
-		}
+	answers, took = judgeAtOnce(client, uncaptured, burst)
+	if slices.Contains(answers, false) {
+		t.Fatalf("judgements of %s asked inside the gap answered %v, want all uncaptured", uncaptured, answers)
 	}
-	if since := time.Since(ended); since >= streamSubjectsRereadGap {
-		t.Fatalf("the judgements after the burst ended %s after it, not inside %s", since, streamSubjectsRereadGap)
-	}
-	if n := reads(); n != 0 {
-		t.Fatalf("%d judgements of %s within %s of the last read sent %d reads, want none", burst, uncaptured, streamSubjectsRereadGap, n)
-	}
-
-	time.Sleep(time.Until(ended.Add(streamSubjectsRereadGap)))
-	client.DeployedStreamCapturesFresh(context.Background(), uncaptured)
 	if n := reads(); n != 1 {
-		t.Fatalf("a judgement of %s past %s after the last read sent %d reads, want 1", uncaptured, streamSubjectsRereadGap, n)
+		t.Fatalf("%d judgements of %s asked inside %s of the last read sent %d reads, want 1, which they share", burst, uncaptured, streamSubjectsRereadGap, n)
 	}
+	started, _ := lastReread(client)
+	if gap := started.Sub(ended); gap < streamSubjectsRereadGap {
+		t.Fatalf("the read the judgements asked inside the gap waited for started %s after the last one ended, under %s", gap, streamSubjectsRereadGap)
+	}
+	t.Logf("%d judgements asked inside the gap took %s and shared one read, started %s after the last one ended", burst, took.Round(time.Microsecond), started.Sub(ended).Round(time.Microsecond))
 }
 
 // A judgement of a topic only a subject added since the client last read the stream's subjects
@@ -166,8 +169,8 @@ func TestAnUncapturedJudgementReadsASubjectAddedSinceTheLastRead(t *testing.T) {
 	if client.DeployedStreamCaptures(topic) {
 		t.Fatalf("the client judged %s captured before reading the stream's subjects again; the row needs a stale read", topic)
 	}
-	if !client.DeployedStreamCapturesFresh(context.Background(), topic) {
-		t.Fatalf("DeployedStreamCapturesFresh(%s) = false after the stream added notifications.x.>", topic)
+	if client.AskDeployedSubjects().Uncaptured(context.Background(), topic) {
+		t.Fatalf("Uncaptured(%s) = true after the stream added notifications.x.>", topic)
 	}
 	if !client.DeployedStreamCaptures(topic) {
 		t.Fatalf("DeployedStreamCaptures(%s) = false after the fresh read: the read was not kept", topic)
@@ -208,7 +211,7 @@ func addNewerSubject(t *testing.T, js nats.JetStreamContext) {
 // nothing over it. R1, the periodic read (followDeployedSubjects' readDeployedSubjects), reads the
 // subjects and is held once it has them and before it keeps them (beforeSubjectsKept); a newer
 // build adds its subject; R2, a judgement of a topic only that subject captures
-// (DeployedStreamCapturesFresh), reads the subjects again and keeps them; R1 then ends. The client
+// (SubjectsAsk.Uncaptured), reads the subjects again and keeps them; R1 then ends. The client
 // keeps R2's read, with the newer build's subject, and judges the topic captured.
 //
 // Before a read kept its answer only over one that started before it (keepSubjects), each read
@@ -245,8 +248,8 @@ func TestASubjectsReadThatEndsAfterALaterOneKeepsTheLaterOnesSubjects(t *testing
 	}
 
 	addNewerSubject(t, js)
-	if !client.DeployedStreamCapturesFresh(context.Background(), topic) {
-		t.Fatalf("DeployedStreamCapturesFresh(%s) = false after the newer build added notifications.x.>", topic)
+	if client.AskDeployedSubjects().Uncaptured(context.Background(), topic) {
+		t.Fatalf("Uncaptured(%s) = true after the newer build added notifications.x.>", topic)
 	}
 	r2 := client.deployedSubjects.Load()
 	if !slices.Contains(r2.subjects, newerSubject) {
@@ -304,16 +307,18 @@ func TestASubjectsReadThatStartsAfterTheKeptOneReplacesIt(t *testing.T) {
 
 // A publish on a topic only a subject added since the client last read the stream's subjects
 // captures - a newer build's start adding its own during a roll - goes through JetStream: with no
-// read of the subjects in flight, the publish judges its transport on a fresh read of them
-// (PublishReportingDuplicateWithin, PublishTakesJetStream), not on the subjects the client holds,
-// which the row proves stale right before the publish, with no read of them since the newer build
-// added its subject. The stream stores the envelope under its Nats-Msg-Id, and keeps one copy of a
-// repeat of the publish, which it reports a duplicate.
+// read of the subjects in flight and none ended within streamSubjectsRereadGap, the publish reads
+// them again before it judges its transport (PublishReportingDuplicateWithin,
+// PublishTakesJetStream), not on the subjects the client holds, which the row proves stale right
+// before the publish, with no read of them since the newer build added its subject. Inside that
+// gap, or while a read younger than firstStreamSubjectsRead is in flight, the transport reads
+// nothing and answers on the subjects held. The stream stores the envelope under its Nats-Msg-Id,
+// and keeps one copy of a repeat of the publish, which it reports a duplicate.
 //
-// Before a publish judged a topic core only on a fresh read, it sent this one over core NATS on the
-// stale subjects (UsesCoreTransport): the stream stored that copy too, as it stores any publish on
-// a subject it captures, but under no Nats-Msg-Id and with no acknowledgement, so the repeat was
-// stored again and neither store was confirmed to the publisher.
+// Before a publish read the subjects again before judging a topic core, it sent this one over core
+// NATS on the stale subjects (UsesCoreTransport): the stream stored that copy too, as it stores
+// any publish on a subject it captures, but under no Nats-Msg-Id and with no acknowledgement, so
+// the repeat was stored again and neither store was confirmed to the publisher.
 func TestAPublishJudgesItsTransportOnAFreshReadOfTheSubjects(t *testing.T) {
 	const topic = newerTopic
 	requireOnlyNewerCaptures(t)
@@ -376,10 +381,11 @@ func TestAPublishJudgesItsTransportOnAFreshReadOfTheSubjects(t *testing.T) {
 }
 
 // A publish's transport answers on the subjects the client holds while a read of them is in flight
-// and unanswered, and does not wait for that read (PublishTakesJetStream): a judgement that loses a
-// message for good (DeployedStreamCapturesFresh) of a topic no stream captures starts a read, which
-// the relay leaves unanswered for its whole firstStreamSubjectsRead (2 s); a publish of that topic
-// then returns within 100 ms, sending no read of its own, while that judgement still waits.
+// and unanswered, and does not wait for that read (PublishTakesJetStream): a fresh judgement
+// (SubjectsAsk.Uncaptured) of a topic no stream captures starts a read, which the relay leaves
+// unanswered for its whole firstStreamSubjectsRead (2 s); a publish of that topic then returns
+// within 100 ms, sending no read of its own, while that judgement still waits. The judgement whose
+// read went unanswered answers the topic captured: no read made after it asked said otherwise.
 //
 // Before the transport answered on the subjects held during a read in flight, it joined that read
 // as every other fresh judgement does, so a core publish of a topic no stream captures - a delivery
@@ -397,7 +403,7 @@ func TestAPublishsTransportDoesNotWaitOnAnUnansweredSubjectsRead(t *testing.T) {
 	client, _ := freshSubjectsClientVia(t, uri, relay.URL())
 	relay.Arm(1)
 	waiting := make(chan bool, 1)
-	go func() { waiting <- client.DeployedStreamCapturesFresh(context.Background(), uncaptured) }()
+	go func() { waiting <- client.AskDeployedSubjects().Uncaptured(context.Background(), uncaptured) }()
 	awaitRelaySent(t, relay, 1)
 
 	envelope := contracts.Envelope{
@@ -429,7 +435,7 @@ func TestAPublishsTransportDoesNotWaitOnAnUnansweredSubjectsRead(t *testing.T) {
 	select {
 	case answer := <-waiting:
 		if answer {
-			t.Fatalf("the judgement of %s whose read went unanswered answered captured", uncaptured)
+			t.Fatalf("the judgement of %s whose read went unanswered answered uncaptured, on no read made after it asked", uncaptured)
 		}
 	case <-time.After(2 * firstStreamSubjectsRead):
 		t.Fatalf("the judgement of %s did not end within twice the read's own bound of %s", uncaptured, firstStreamSubjectsRead)

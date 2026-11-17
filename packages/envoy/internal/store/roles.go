@@ -71,6 +71,14 @@ type RoleClaim struct {
 	// (releaseReadExpiredRoleClaim).
 	Created time.Time `json:"-"`
 
+	// deletedAt is the revision of the delete or purge marker that is the role key's newest entry
+	// when RoleClaim read no claim record there, and 0 when the key held no entry at all or held
+	// the claim, whose Revision a conditional write names. Revision stays 0 for such a role, as
+	// for one never claimed, since a caller reading the role compares that; deletedAt is what a
+	// conditional claim over no record is written at (SetRoleWithPrevious), so it lands only over
+	// the release it read and never over a claim, or a claim and its release, that landed since.
+	deletedAt uint64
+
 	// unknown holds the JSON of every key a stored claim carries that RoleClaim does not name: a
 	// field a newer build writes, which a role claim through this build writes back. It is never
 	// modified once decoded, so copies of a claim may share it.
@@ -654,11 +662,14 @@ func (r *Registry) SetRole(sessionID, machineID, role string, soft bool, superse
 // own context. A call ctx abandoned may still land after this answer. A hard claim that names no
 // IfClaimRevision is last-claim-wins, so its write names no revision: it lands whatever the bucket
 // holds, and two honest concurrent claimants both land, the later write holding the role. A soft
-// claim's create or update is conditional on the revision its claim was read at, so it lands only
-// if no other claim did since; the loser of that race is answered *ErrRoleHeld for the holder it
-// then reads, never a storage failure. A claim that names an IfClaimRevision is conditional too,
-// hard or soft, since that revision is the precondition described below. Either way the claim that
-// lands makes req.SessionID the holder it asked to be; the interest write is UpsertWithin's.
+// claim's write is conditional on the entry its claim was read at (roleClaimToWrite): the claim's
+// own revision, the marker of the release that ended the last claim, or no entry at all. So it
+// lands only if no other claim did since, a claim released again since among them, and an
+// abandoned one landing late lands over nothing that came after its read; the loser of that race
+// is answered *ErrRoleHeld for the holder it then reads, never a storage failure. A claim that
+// names an IfClaimRevision is conditional too, hard or soft, since that revision is the
+// precondition described below. Either way the claim that lands makes req.SessionID the holder it
+// asked to be; the interest write is UpsertWithin's.
 //
 // The claim alone says who holds the role (RolesHeldBy, and role delivery), so the two cleanups
 // that follow are best-effort tidying of interest topics, within ctx like the rest: the rollback of
@@ -681,7 +692,7 @@ func (r *Registry) SetRole(sessionID, machineID, role string, soft bool, superse
 // refuses this one rather than being overwritten by it. A nil IfClaimRevision claims as before.
 func (r *Registry) SetRoleWithPrevious(ctx context.Context, req RoleClaimRequest) (Interest, error) {
 	roleTopic := contracts.RoleTopicPrefix + req.Role
-	oldClaim, err := r.RoleClaim(ctx, req.Role)
+	oldClaim, err := r.roleClaimToWrite(ctx, req.Role)
 	if err != nil {
 		return Interest{}, err
 	}
@@ -743,13 +754,17 @@ func (r *Registry) SetRoleWithPrevious(ctx context.Context, req RoleClaimRequest
 	// silently. A claim carrying IfClaimRevision keeps it for the same reason, hard or soft: the
 	// revision it requires is weighed a second time by the write itself, so a claim that landed
 	// between this call's read and its write refuses this one rather than being overwritten by it.
+	// A role the read found no claim for is written at the revision of the release marker it read
+	// there, or at 0 where the key held no entry (RoleClaim's deletedAt), never through Create: a
+	// create refused over a marker updates at that marker's revision (nats.go@v1.53.1
+	// kv.go:729-739), so it would land over a claim and release made after this read.
 	// Both losers are answered below.
 	revision, answered, err := bus.BoundedOn(ctx, roles, func() (uint64, error) {
 		switch {
 		case !req.Soft && req.IfClaimRevision == nil:
 			return roles.Put(req.Role, data)
 		case oldClaim.Revision == 0:
-			return roles.Create(req.Role, data)
+			return roles.Update(req.Role, data, oldClaim.deletedAt)
 		default:
 			return roles.Update(req.Role, data, oldClaim.Revision)
 		}
@@ -849,10 +864,12 @@ func (r *Registry) SetRoleWithPrevious(ctx context.Context, req RoleClaimRequest
 
 // RoleClaim reads role's claim from the bucket, waiting no longer than ctx (bus.BoundedOn). The
 // claim it returns carries the entry's revision (RoleClaim.Revision), which is what a conditional
-// claim and GET /v1/roles/<role> compare against, and the time the entry was stored
-// (RoleClaim.Created), which is what a claim's grace is weighed by; a role with no claim record
-// returns a zero claim without an error, so a zero revision names a role no record claims, and a
-// record that is not a claim returns ErrMalformedRoleClaim.
+// claim compares against and what GET /v1/roles/<role> reports as claim_revision, and the time
+// the entry was stored (RoleClaim.Created), which is what a claim's grace is weighed by; a role
+// with no claim record returns a zero claim without an error, so a zero revision names a role no
+// record claims, and a JSON record that is not a claim returns ErrMalformedRoleClaim. A value
+// that is not JSON is read as an earlier build's bare holder id (DecodeRoleClaim), not as
+// malformed.
 //
 // Those two are the whole of what the entry the read answered says beyond the claim itself,
 // which is why this hands back no entry: a caller testing whether the bucket holds a record for
@@ -870,6 +887,33 @@ func (r *Registry) RoleClaim(ctx context.Context, role string) (RoleClaim, error
 	if err != nil {
 		return RoleClaim{}, err
 	}
+	return decodeReadRoleClaim(entry)
+}
+
+// roleClaimToWrite is RoleClaim for the claim SetRoleWithPrevious is about to write over the
+// record it reads: the key is read with bus.KeyValue.GetLatest, so a role no claim record holds
+// carries the revision of the delete or purge marker that ended its last claim (RoleClaim's
+// deletedAt), 0 where the key holds no entry at all, and the conditional write lands only over
+// that very entry. RoleClaim hides the marker, as Get does, and its zero Revision is what a
+// caller reading the role compares.
+func (r *Registry) roleClaimToWrite(ctx context.Context, role string) (RoleClaim, error) {
+	roles := r.roles()
+	read, answered, err := bus.BoundedOn(ctx, roles, func() (bus.LatestEntry, error) { return roles.GetLatest(role) })
+	if !answered {
+		return RoleClaim{}, fmt.Errorf("read role %s's claim: %w", role, err)
+	}
+	if errors.Is(err, nats.ErrKeyNotFound) {
+		return RoleClaim{deletedAt: read.Revision}, nil
+	}
+	if err != nil {
+		return RoleClaim{}, err
+	}
+	return decodeReadRoleClaim(read.Entry)
+}
+
+// decodeReadRoleClaim is the claim entry holds, stamped with the entry's revision and the time it
+// was stored (RoleClaim.Revision, RoleClaim.Created).
+func decodeReadRoleClaim(entry nats.KeyValueEntry) (RoleClaim, error) {
 	claim, err := DecodeRoleClaim(entry.Value())
 	if err != nil {
 		return RoleClaim{}, err

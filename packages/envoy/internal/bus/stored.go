@@ -39,8 +39,10 @@ type StoredMessage struct {
 // stream); nats.ErrNoResponders when no JetStream answers; ErrPublishDenied, wrapping the server's
 // permissions violation, when the connection's user may not make the read, reported as soon as the
 // server refuses it rather than once the wait runs out; ErrRequestLostWithConnection when the
-// connection the read went out on is lost before the answer comes (requestConfirmed); and ctx's
-// error when ctx ends first.
+// connection the read went out on is lost before the answer comes (requestConfirmed), though a
+// close, and so the replacement that follows one, can answer nats.ErrConnectionClosed instead;
+// and ctx's error when ctx ends first, unless the read's publish could not be confirmed, which
+// then answers the error wrapping ErrPublishUnconfirmed.
 func (c *Client) NextStoredMessage(ctx context.Context, subject string, seq uint64) (StoredMessage, error) {
 	return c.storedMessage(ctx, struct {
 		Seq     uint64 `json:"seq"`
@@ -59,7 +61,9 @@ func (c *Client) NextStoredMessage(ctx context.Context, subject string, seq uint
 // matches nats.ErrMsgNotFound (the stream holds nothing on subject) and nats.ErrStreamNotFound (no
 // such stream); nats.ErrNoResponders when no JetStream answers; ErrPublishDenied when the
 // connection's user may not make the read; ErrRequestLostWithConnection when its connection is
-// lost before the answer comes; and ctx's error when ctx ends first.
+// lost before the answer comes, though a close, and so the replacement that follows one, can
+// answer nats.ErrConnectionClosed instead; and ctx's error when ctx ends first, unless the read's
+// publish could not be confirmed, which then answers the error wrapping ErrPublishUnconfirmed.
 func (c *Client) LastStoredMessage(ctx context.Context, subject string) (StoredMessage, error) {
 	return c.storedMessage(ctx, struct {
 		LastFor string `json:"last_by_subj"`
@@ -273,7 +277,10 @@ func (c *Client) storedMessage(ctx context.Context, request any) (StoredMessage,
 // event rather than waiting out ctx: the server dropped the request or its reply with the
 // connection, and nats.go wakes no sync subscription when its connection drops, so the reply
 // would never come. That covers the request whose publish and flush passed before the
-// connection dropped, which nothing else fails.
+// connection dropped, which nothing else fails. A close, and so the replacement that follows one,
+// is the exception: nats.go's close wakes the sync subscription itself, and NextMsgWithContext
+// returns nats.ErrConnectionClosed before nats.go runs the close callback the watch hears, so
+// this returns that error when the watch has not seen the close yet.
 func (c *Client) requestConfirmed(ctx context.Context, subject string, data []byte) (*nats.Msg, error) {
 	if _, ok := ctx.Deadline(); !ok {
 		var cancel context.CancelFunc
@@ -391,6 +398,23 @@ func CheckFilterSubject(subject string) error {
 		}
 	}
 	return nil
+}
+
+// SessionConsumerFilters reports whether a session's consumer filters on topic, a topic its
+// interest row holds: a notification topic (NotificationTopicPrefix) a stored-message read can
+// filter on (CheckFilterSubject) that is no role lane or exception lane of one. It asks nothing of
+// the stream's subjects. nats-server (v2.15.1) takes a consumer filter subject no stream subject
+// captures, on create and on update alike, since its consumer check (checkConsumerCfg) asks only
+// that each filter be a valid subject that overlaps no other, and such a filter matches what the
+// stream stores on it once a subject captures it. A topic out of the filter when that happens
+// would lose every message stored on it before the filter took it in, because the consumer moves
+// past a message its filter does not match as soon as it looks for its next one, at a pull request
+// or a message on a subject it does filter on, and a filter update keeps that position. A role
+// lane reaches its holder as a forward on the holder's agent subject, which the filter carries, and
+// the stream never stores a role lane itself.
+func SessionConsumerFilters(topic string) bool {
+	return strings.HasPrefix(topic, NotificationTopicPrefix) && CheckFilterSubject(topic) == nil &&
+		!subjectsCapture(roleLaneSubjects, topic)
 }
 
 // SubjectContains reports whether every subject that subject matches is also matched by pattern,

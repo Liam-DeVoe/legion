@@ -35,9 +35,12 @@ type UnansweredRelay struct {
 	links []net.Conn
 	// pings counts the PINGs the client sent and the relay passed on, pongs the PONGs the server
 	// answered and the relay handed the client, both under mu; pingsAtDrop is pings when the last
-	// drop was made. The server answers PINGs in order, so the PONG that takes pongs past
-	// pingsAtDrop answers the first PING sent after the dropped request: the flush behind it
-	// (FlushedSinceDrop).
+	// drop was made. The server answers PINGs in order, so on a link where every PING passed on got
+	// its PONG, the PONG that takes pongs past pingsAtDrop answers the first PING sent after the
+	// dropped request: the flush behind it (FlushedSinceDrop). Both counts run across every link
+	// and nothing resets them, so a PING a Drop cut off before its PONG came back leaves pongs one
+	// behind on every later link: after a later drop, the PONG that takes pongs past pingsAtDrop
+	// answers a later PING. The answer comes late then, never early.
 	pings, pongs, pingsAtDrop int
 }
 
@@ -97,8 +100,9 @@ func (r *UnansweredRelay) Sent() int {
 	return r.sends
 }
 
-// send records one send of subject and reports whether it is dropped: it is while drops are left,
-// and each such send spends one.
+// send records one send of subject and reports whether it is dropped. A send of another subject
+// is not recorded and never dropped. A send of subject is passed while passes are left, spending
+// one, and otherwise dropped while drops are left, spending one.
 func (r *UnansweredRelay) send(subject string) bool {
 	if subject != r.subject {
 		return false
@@ -118,9 +122,12 @@ func (r *UnansweredRelay) send(subject string) bool {
 	return false
 }
 
-// FlushedSinceDrop reports whether the server has answered, and the relay handed the client, the
-// first PING the client sent after the request the relay last dropped: a flush behind that
-// request has its answer in the client's socket, ahead of anything the relay does after.
+// FlushedSinceDrop reports whether pongs has passed pingsAtDrop: whether the server has answered,
+// and the relay handed the client, the first PING the client sent after the request the relay
+// last dropped, on a link where every PING passed on got its PONG. A flush behind that request
+// then has its answer in the client's socket, ahead of anything the relay does after. After a
+// Drop that cut a PING off before its PONG, it answers true only at a later PING, never sooner;
+// before any drop, pingsAtDrop is 0 and it answers true at the first PONG.
 func (r *UnansweredRelay) FlushedSinceDrop() bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()

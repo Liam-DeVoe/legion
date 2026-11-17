@@ -181,8 +181,9 @@ const ledgerFormerSettle = roleForwardTimeout + 250*time.Millisecond
 // alive and its role lane has roleForwardTimeout to finish the forward it had in flight and
 // record it, give its attempt up, or report it failed, so what is left of ledgerFormerSettle
 // since this term's acquisition is reported and the ledger defers that attempt until then. A pod
-// holding no term reports no time: it delivers nothing, so nothing of its own waits on the
-// answer.
+// that never held a term reports no time. A pod whose term ended still counts from that term's
+// start, since nothing clears termStarted when a term ends: until ledgerFormerSettle after that
+// start it reports what is left of it, and no time after that.
 func (l *lease) FormerHolder(boot string) (bool, time.Duration) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -201,10 +202,11 @@ func (l *lease) FormerHolder(boot string) (bool, time.Duration) {
 // FormerSettleWait is how long any former holder that released the lease may still be settling
 // what it had in hand, counted from this term's acquisition: what is left of relayFormerSettle,
 // and zero when every former boot was taken over by force, which settles nothing, and zero for a
-// pod holding no term. A relay waits it out before it restarts a session's consumer at its ack
-// floor, so the acks the stopping pod is still writing have moved that floor as far as it will
-// go before the restart reads it; a restart sends again every frame left above it (the README's
-// "When a session can see a message twice", sessionRelays.relay).
+// pod that never held a term. A pod whose term ended still counts from that term's start
+// (termStarted), as FormerHolder does. A relay waits it out before it restarts a session's
+// consumer at its ack floor, so the acks the stopping pod is still writing have moved that floor
+// as far as it will go before the restart reads it; a restart sends again every frame left above
+// it (the README's "When a session can see a message twice", sessionRelays.relay).
 func (l *lease) FormerSettleWait() time.Duration {
 	l.mu.Lock()
 	defer l.mu.Unlock()

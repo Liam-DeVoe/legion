@@ -79,10 +79,11 @@ const (
 
 // KnownSession is one record of the envoy_known_sessions bucket, keyed by session id: a session
 // that registered within KnownSessionRetention, whether it is registered now or not. Its Topics
-// are the topics the session's interest row stores (store.Interest.Topics), which are the topics
-// its session consumer's filter holds: a registration drops every topic that reaches no session,
-// one no stream subject captures and no role lane (splitUncapturedTopics, cmd/listener/api.go),
-// so a record counts exactly the sessions a stored publish reaches.
+// are the topics the session's interest row stores (store.Interest.Topics), and its session
+// consumer's filter holds each of them a consumer can filter on (bus.SessionConsumerFilters,
+// cmd/listener's sessionConsumerFilter), a topic no stream subject captures yet among them, so a
+// record counts exactly the sessions a stored publish reaches: such a topic matches no stored
+// publish until a subject captures it, and the consumer delivers each one from then on.
 //
 // The record holds nothing else, and not the client instance id in particular, which only a role
 // claim's arbitration reads (cmd/listener/role_holder.go), and that reads the live session entry.

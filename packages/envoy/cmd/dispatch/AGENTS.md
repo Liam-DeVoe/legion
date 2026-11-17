@@ -893,12 +893,19 @@ go vet ./...
 600 s), so it runs first and on its own, with 20 minutes, as CI's `envoy-go` job runs it
 (`docs/testing.md`, "Go's package deadline").
 
-Every Dispatch process a test starts is checked against the Postgres it meets
-(`connection_ceiling_test.go`). A server that allows `testlimits.FullSizeServerConnections` beyond
-its superuser reserve (four processes at `store.ConnectionsPerTestProcess`, production's pools and
-the test hooks' listener every test process holds, beside `testlimits.SuiteHeadroom`), as every CI
-lane's does (`.github/scripts/pg-connection-ceiling.sh`), runs every process at production's pool
-sizes. A smaller one, such as `legion-testpg`'s (`testlimits.ServerConnections` beyond the reserve,
+Every Dispatch server process a test starts is checked against the Postgres it meets
+(`connection_ceiling_test.go`). Two runs of the binary are not:
+`TestDispatchRefusesAListenFDThatIsNotASocketAndBindsNothing`, which exits before it reads its
+database, and `startRedeliverWebhooks` (`multiprocess_test.go`), whose `redeliver-webhooks` run
+opens `store.Open` at production's sizes and is counted by nothing. A server that allows
+`testlimits.FullSizeServerConnections` beyond its superuser reserve (four processes at
+`store.ConnectionsPerTestProcess`, production's pools and the test hooks' listener, which a
+process the memory harness starts does not hold, beside
+`testlimits.SuiteHeadroom`), as the server of every CI lane that runs these tests does
+(`.github/scripts/pg-connection-ceiling.sh`), runs every process at production's pool sizes. The
+one exception is `TestEveryProcessAHundredConnectionServerRunsStaysWithinItsBudget`, which sets
+`DISPATCH_TEST_POOL_BUDGET=19` for its four processes itself, so they run scaled pools there too.
+A smaller server, such as `legion-testpg`'s (`testlimits.ServerConnections` beyond the reserve,
 one connection per process short of that) or a Postgres at its default `max_connections` of 100,
 gives each of `testlimits.MaxProcessesAtOnce` processes its share of the server beside
 `testlimits.SuiteHeadroom` (`testlimits.PoolBudget`: one connection under production's sizes on

@@ -206,8 +206,8 @@ func TestSmoke(t *testing.T) {
 		// No port: this listener delivers nothing to a session's port and refuses a registration
 		// that names one (subscribeHandler). A session is registered only with a consumer of its
 		// own, which the delivery field asks for, and a notifications.team.<name> topic is one
-		// the stream stores: the route leaves a notifications. topic no stream subject captures
-		// out of the row, with a warning naming it, since nothing would be delivered on it.
+		// the stream stores: the route stores a notifications. topic no stream subject captures
+		// too, with a warning that nothing is delivered on it until a stream subject captures it.
 		subBody := `{"session_id":"ses_smoke_test","topics":["notifications.team.smoke"],"port":0,"self_subscribed":true,"delivery":{"consumer":true,"epoch":"smoke"}}`
 		resp, err := apiRequest(http.MethodPost, baseURL+"/v1/interests/subscribe", subBody)
 		if err != nil {

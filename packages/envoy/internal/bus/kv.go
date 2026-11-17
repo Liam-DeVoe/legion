@@ -697,6 +697,79 @@ func (kv KeyValue) Get(key string) (nats.KeyValueEntry, error) {
 	return entry, invalidKey(key, err)
 }
 
+// LatestEntry is what GetLatest answers for a key: Entry, the value Get answered, nil where Get
+// answered nats.ErrKeyNotFound, and Revision, the revision a write over what the read found is
+// conditioned on - the value's, a delete or purge marker's where that is the key's newest entry,
+// and 0 where the bucket holds no entry for the key at all.
+type LatestEntry struct {
+	Entry    nats.KeyValueEntry
+	Revision uint64
+}
+
+// GetLatest reads key as Get reads it and also answers the revision a write over what it found is
+// conditioned on (LatestEntry). Get reports a key whose newest entry is a delete or purge marker
+// as nats.ErrKeyNotFound and hides the marker's revision (nats.go@v1.53.1 kv.go:617-627, whose get
+// answers nats.ErrKeyDeleted at kv.go:684-693), and so does this, with the marker's revision
+// beside the error.
+//
+// That revision is what a write that must land only over the very entry its plan read names:
+// Update at it, which nats.go sends with Nats-Expected-Last-Subject-Sequence for every revision, 0
+// included (kv.go:784-804), so the stream refuses it over any entry stored since, and Update at 0
+// over any entry at all, a marker included. Create cannot be that write: refused over a marker,
+// nats.go's Create reads the key again and updates at that marker's revision (kv.go:729-739), so a
+// create planned before a delete, or abandoned and landing after one, lands over that delete.
+//
+// A key Get finds is answered by that one read. A key it reports not found is read once more, for
+// the marker, as the stream's newest message on the key's subject (newestMarker): the same direct
+// get, `$JS.API.DIRECT.GET.KV_<bucket>.$KV.<bucket>.<key>`, that nats.go's kvs.get sends through
+// GetLastMsg with nats.DirectGet on the AllowDirect stream behind every bucket this package opens
+// (Get states why each carries it), read here with its KV-Operation header (kvOperationHeader).
+// So the grant that lets a process Get a key lets it read this (infra/core's bucketPermissions
+// holds $JS.API.DIRECT.GET.KV_<bucket>.> beside the bucket's writes), and it goes out on the
+// connection the handle's jetstream context holds, the one BoundedOn watches; it waits
+// RequestTimeout, the MaxWait the listener and Dispatch open their legacy handles with. A value
+// that read finds was stored after Get answered none, and answers revision 0, so the write is
+// refused over it and its caller reads again; a marker stored between the two reads names a key
+// that holds no value either way, so the write lands over that marker. With ENVOY_NATS_REPLICAS
+// above 1 a copy one write behind can answer either read, as it can answer Get: a write at the
+// older revision it answers is refused, and its caller reads again.
+func (kv KeyValue) GetLatest(key string) (LatestEntry, error) {
+	entry, err := kv.Get(key)
+	if err == nil {
+		return LatestEntry{Entry: entry, Revision: entry.Revision()}, nil
+	}
+	if !errors.Is(err, nats.ErrKeyNotFound) {
+		return LatestEntry{}, err
+	}
+	revision, err := kv.newestMarker(key)
+	if err != nil {
+		return LatestEntry{}, err
+	}
+	return LatestEntry{Revision: revision}, nats.ErrKeyNotFound
+}
+
+// newestMarker is the revision of key's newest entry where that is a delete or purge marker, and 0
+// where it is a value or the bucket holds no entry for key (GetLatest).
+func (kv KeyValue) newestMarker(key string) (uint64, error) {
+	js, err := kv.streams.Conn().JetStream(nats.MaxWait(RequestTimeout))
+	if err != nil {
+		return 0, err
+	}
+	bucket := kv.Bucket()
+	message, err := js.GetLastMsg("KV_"+bucket, "$KV."+bucket+"."+key, nats.DirectGet())
+	if errors.Is(err, nats.ErrMsgNotFound) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("read the newest entry of key %s of KV bucket %s: %w", key, bucket, err)
+	}
+	switch message.Header.Get(kvOperationHeader) {
+	case kvDeleteMarker, kvPurgeMarker:
+		return message.Sequence, nil
+	}
+	return 0, nil
+}
+
 // BoundedOn is Bounded for call, a call on kv - a read, a write or a delete of its bucket, or any
 // run of them - that also ends when the connection kv's calls go out on is lost before call
 // answers: replaced by another its client dialled, closed, or reconnected in place
@@ -705,14 +778,18 @@ func (kv KeyValue) Get(key string) (nats.KeyValueEntry, error) {
 // shared response subscription until its own MaxWait and fail no request its connection drops
 // (it fails only the pending flushes, and only ForceReconnect and a close clear the requests),
 // while the server dropped the request or its answer with that connection, so no answer will
-// come; the caller sends it again on the connection that came back.
+// come; the caller sends it again on the connection that came back. A close, and so the
+// replacement that follows one, and a ForceReconnect are the exception: they clear the requests,
+// and nats.go fails the waiting call itself with nats.ErrConnectionClosed before it runs the
+// callback the watch hears, so BoundedOn may answer true with that error instead.
 //
 // Everything else is Bounded's: answered is false when ctx ended first, with ctx's error, and the
 // abandoned call runs on to its own end, so a write or a delete it sent may still land after the
 // caller has answered, exactly as one whose ctx ended may. A call lost with its connection is not
-// answered either: the server may have taken it before its answer was lost. The one difference is
-// a ctx that can never end: Bounded runs call in the caller's goroutine then, and BoundedOn waits
-// for it from another, since the connection can still end the wait.
+// answered either: the server may have taken it before its answer was lost. A call nats.go failed
+// with nats.ErrConnectionClosed is answered, and the server may have taken it too. The one
+// difference is a ctx that can never end: Bounded runs call in the caller's goroutine then, and
+// BoundedOn waits for it from another, since the connection can still end the wait.
 //
 // The watch is the one of the client that owns the connection kv was opened on (watchConnection);
 // a handle whose connection no client serves with - one a test opened on its own, or one its
@@ -782,11 +859,14 @@ func boundedWatching[T any](ctx context.Context, watch connWatch, call func() (T
 // goroutine: it answers request's own answer, ctx's error when ctx ends first, and an error
 // wrapping ErrRequestLostWithConnection as soon as the connection is lost (replaced, closed, or
 // reconnected in place) before the answer comes, so a caller that retries sends it again on the
-// connection that came back at once rather than at the request's deadline. The context request is
-// handed ends at that loss, and request returns when its context ends, so nothing it sent waits on
-// past this call. It takes no deadline of its own: a deadline ctx carries is request's bound, and a
-// request on a context without one waits the JetStream context's MaxWait, as it does without this.
-// A client with no connection hands request ctx itself.
+// connection that came back at once rather than at the request's deadline. A close, and so the
+// replacement that follows one, and a ForceReconnect are the exception: nats.go fails the waiting
+// request itself with nats.ErrConnectionClosed before it runs the callback the watch hears, and
+// this answers that error when it comes before the watch sees the event. The context request is
+// handed ends at that loss, and request returns when its context ends, so nothing it sent waits
+// on past this call. It takes no deadline of its own: a deadline ctx carries is request's bound,
+// and a request on a context without one waits the JetStream context's MaxWait, as it does
+// without this. A client with no connection hands request ctx itself.
 func RequestOnConnection[T any](ctx context.Context, client *Client, request func(context.Context) (T, error)) (T, error) {
 	watch := client.watchConnection()
 	if watch.conn == nil {
@@ -881,6 +961,13 @@ func (kv KeyValue) PutString(key string, value string) (uint64, error) {
 	return revision, invalidKey(key, err)
 }
 
+// Create writes value under key when the bucket holds no value for it. A key whose newest entry is
+// a delete or purge marker holds none: nats.go's Create, refused over the marker, reads the key
+// again and updates at the marker's revision (nats.go@v1.53.1 kv.go:729-739). So it is the write
+// of a caller to which a deleted key is a key never written - a delivery attempt on a pair no
+// attempt holds (dedupe.KV.Attempt), a lease record no pod holds, a spent DPoP proof - and not of
+// one whose write must land only over the entry a read of its own found: such a caller reads with
+// GetLatest and writes with Update at the revision that read answered, 0 for no entry at all.
 func (kv KeyValue) Create(key string, value []byte) (uint64, error) {
 	if err := kv.write(key); err != nil {
 		return 0, err
@@ -889,18 +976,29 @@ func (kv KeyValue) Create(key string, value []byte) (uint64, error) {
 	return revision, invalidKey(key, err)
 }
 
+// Update writes value under key only while the key's newest entry is the one at revision last, a
+// delete or purge marker's included, and at last 0 only while the key has no entry at all
+// (nats.go's update sends Nats-Expected-Last-Subject-Sequence for every revision, 0 included,
+// kv.go:784-804). A refusal matches nats.ErrKeyExists whichever wrong-last-sequence answer the
+// stream sent: nats.go wraps both in nats.ErrKeyRevisionMismatch (kv.go:766-773), and a single
+// server's (10071) matches nats.ErrKeyExists by its code, while a clustered stream's answer for a
+// key a write to which is still in process (10164) does not, so it is wrapped here as nats.go's
+// Create wraps it (kv.go:741-750).
 func (kv KeyValue) Update(key string, value []byte, last uint64) (uint64, error) {
 	if err := kv.write(key); err != nil {
 		return 0, err
 	}
 	revision, err := kv.legacy.Update(key, value, last)
+	if errors.Is(err, nats.ErrKeyRevisionMismatch) && !errors.Is(err, nats.ErrKeyExists) {
+		err = fmt.Errorf("%w: %w", err, nats.ErrKeyExists)
+	}
 	return revision, invalidKey(key, err)
 }
 
 // IsCASConflict reports whether err is a compare-and-swap revision conflict
-// (as opposed to a real transport/storage error). Create returns ErrKeyExists
-// when the key already exists; Update returns a "wrong last sequence" API error
-// when the revision moved.
+// (as opposed to a real transport/storage error): Create and Update both return an error
+// matching ErrKeyExists when the key holds an entry the write may not land over; a
+// "wrong last sequence" API error from any other conditional write counts too.
 func IsCASConflict(err error) bool {
 	return errors.Is(err, nats.ErrKeyExists) || strings.Contains(err.Error(), "wrong last sequence")
 }

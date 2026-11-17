@@ -1162,8 +1162,8 @@ const publishDedupePrefix = "publish."
 // confirmed.go); a topic the stream captures is answered once the stream
 // stored it, with the counts of the sessions it is for (recipientCounts), and any other
 // notifications. topic is refused by name, since nothing would store it for a session to read,
-// once a read of the deployed stream's subjects again agrees
-// (bus.Client.DeployedStreamCapturesFresh). An
+// only once a read of the deployed stream's subjects that started after the request asked agrees
+// (bus.SubjectsAsk.Uncaptured), and never where no such read can be made. An
 // explicit dedupe_key is used verbatim (a re-send a receiver's own dedupe
 // recognises); it is mutually exclusive with idempotency_key, may not begin
 // with roleForwardDedupePrefix, the mark the role arbiter drops on sight, and
@@ -1301,17 +1301,22 @@ func publishHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 		// 504. Team topics are the namespace an agent names itself and the stream stores them
 		// (bus.StreamSubjects). The role lanes bus.Client.ReachesNoSession excepts are forwarded
 		// above. A topic the subjects this listener last read of the deployed stream leave
-		// uncaptured is refused only once a read of them again agrees
-		// (bus.Client.DeployedStreamCapturesFresh), as a registration leaves one out
-		// (splitUncapturedTopics): during a roll the newer build's start adds its subjects to the
-		// stream, and a publish through an older pod on a topic only they capture is stored, the
-		// transport the publish takes judged on that same read (bus.Client.PublishWithin).
+		// uncaptured is refused only once a read of them that started after this request asked
+		// agrees (bus.SubjectsAsk.Uncaptured): inside the 250 ms gap after the listener's last
+		// read it waits out the rest of the gap and reads, since during a roll the newer build's
+		// start adds its subjects to the stream, and a publish through an older pod on a topic
+		// only they capture is stored. Where no such read can be made - no connection, ctx ending
+		// first, a read that fails - the publish is not refused, since a refusal of a topic the
+		// stream does capture loses the message, and a publish of one it does not reaches nobody
+		// either way; only a NATS user that may not read the stream refuses on the subjects it
+		// holds, which are all it will ever have. The transport the publish takes is judged on the
+		// subjects that read kept (bus.Client.PublishWithin).
 		// That judgement, the sender stamp's read and the publish take this one deadline, derived
 		// from the caller's own context, so this route too answers a bus it cannot reach rather
 		// than spending the caller's attempt.
 		ctx, cancel := context.WithDeadline(r.Context(), arrived.Add(sendRequestBudget))
 		defer cancel()
-		if d.client.ReachesNoSession(request.Topic) && !d.client.DeployedStreamCapturesFresh(ctx, request.Topic) {
+		if d.client.ReachesNoSession(request.Topic) && d.client.AskDeployedSubjects().Uncaptured(ctx, request.Topic) {
 			record.refuse(w, http.StatusBadRequest, outcomeInvalidRequest,
 				"no stream subject captures "+request.Topic+", so no session would receive it; publish to a notifications.team.<name> topic instead", "topic")
 			return
@@ -2643,46 +2648,46 @@ func unwiredRepositoryWarning(ctx context.Context, d *listenerDeps, topic string
 	return ""
 }
 
-// splitUncapturedTopics splits a registration's requested topics into the ones it plans and
-// stores and the set it leaves out: a notification topic no stream subject captures that is no
-// role lane (bus.Client.ReachesNoSession). A session receives what its own consumer delivers,
-// which is what the stream stored, so an interest in such a topic would be stored and deliver
-// nothing.
-// It is asked once per topic, here, and the answer carries to the plan as well as to the warning
-// each dropped topic earns (contracts.UncapturedTopicRefusal) — the warning a topic in this set
-// earns only when the private rule has nothing to say about it, since a wildcard such as
-// notifications.> is both, and what it earns is the private warning (subscribeHandler).
+// uncapturedTopics is the set of a registration's requested topics it warns about: each
+// notification topic no stream subject captures that is no role lane (bus.Client.ReachesNoSession).
+// The registration stores every requested topic, these among them, and the session's consumer
+// filters on each it can (sessionConsumerFilter, bus.SessionConsumerFilters): a stored interest
+// costs one record, a subject a later build adds captures such a topic from then on, and a topic
+// out of the filter when it does would lose what the stream stores on it before the next
+// registration took it in, since the consumer moves past a message its filter does not match as
+// soon as it looks for its next one. Neither the row nor the filter turns on this answer, so a
+// judgement that is wrong costs a warning and loses nothing.
+// It is asked once per topic, here, and the answer carries to the warning each such topic earns
+// (contracts.UncapturedTopicWarning) — the warning a topic in this set earns only when the private
+// rule has nothing to say about it, since a wildcard such as notifications.> is both, and what it
+// earns is the private warning (subscribeHandler).
 //
-// It judges the topics on m.stream, the client the consumer's filter is judged on
-// (sessionConsumerFilter), and in the same way: a topic m.stream's last read of the deployed
-// subjects does not capture is left out only once a read of them again within ctx agrees
-// (bus.Client.DeployedStreamCapturesFresh), so a registration during a roll keeps a topic on a
-// subject the newer build's start added after this listener last read them, and a topic a
-// registration stores is one its consumer filters on. A caller whose ctx ends before that read is
-// answered on the subjects m.stream held. A nil m judges the subjects this build compiles; such a
-// listener refuses every registration anyway.
+// It judges the topics on m.stream, under one ask taken here (bus.Client.AskDeployedSubjects): a
+// topic m.stream's last read of the deployed subjects does not capture is named only once a read
+// of them that started after the ask agrees (bus.SubjectsAsk.Uncaptured), so a registration
+// during a roll is not told that a topic on a subject the newer build's start added a moment ago
+// reaches nothing, and every topic of the registration shares that one read. Where no such read
+// can be made - no connection, ctx ending first, a read that fails - no topic is named; a NATS
+// user that may not read the stream is judged on the subjects m.stream holds, which are all it
+// will ever have. A nil m judges the subjects this build compiles; such a listener refuses every
+// registration anyway.
 //
-// Both plugins refuse an explicit subscribe to one in those same words (envoy_subscribe in
-// pi-envoy's extensions/envoy.ts and follow in claude-envoy's src/envoy-channel-server.ts, both
-// through refuseUncapturedTopics in @legion/envoy-client's stream-topics.ts), so a caller that
-// named one reads the same sentence wherever it is told: the sentence itself is written once, as
-// uncapturedTopicRefusal in packages/contracts, which scripts/gen-go.ts emits as
-// contracts.UncapturedTopicRefusal.
-func (m *sessionDelivery) splitUncapturedTopics(ctx context.Context, requested []string) ([]string, map[string]struct{}) {
+// The sentence is written once, as uncapturedTopicWarning in packages/contracts, which
+// scripts/gen-go.ts emits as contracts.UncapturedTopicWarning, and the plugins show the
+// listener's warning as they receive it.
+func (m *sessionDelivery) uncapturedTopics(ctx context.Context, requested []string) map[string]struct{} {
 	var stream *bus.Client
 	if m != nil {
 		stream = m.stream
 	}
-	planned := make([]string, 0, len(requested))
+	ask := stream.AskDeployedSubjects()
 	uncaptured := make(map[string]struct{})
 	for _, topic := range requested {
-		if stream.ReachesNoSession(topic) && !stream.DeployedStreamCapturesFresh(ctx, topic) {
+		if stream.ReachesNoSession(topic) && ask.Uncaptured(ctx, topic) {
 			uncaptured[topic] = struct{}{}
-			continue
 		}
-		planned = append(planned, topic)
 	}
-	return planned, uncaptured
+	return uncaptured
 }
 
 // registrationPlanAttempts bounds the plans one registration makes. Each conflict or no-op write
@@ -3097,12 +3102,11 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 		// controller on no later path. The row's own read is the registry cache's on every
 		// heartbeat, and one that fails refuses the registration as the write it precedes would.
 		requested := append(slices.Clone(body.Topics), contracts.AgentSubject(body.SessionID))
-		// The topics that would deliver to no session are split off once, here
-		// (splitUncapturedTopics): they are neither planned, stored nor filtered on, and the
-		// loop below names each in its warning, after the private rule has had its say. The
-		// merge itself drops a private-subject topic from the plan (store.MergedTopics).
-		planned, uncaptured := d.consumers.splitUncapturedTopics(ctx, requested)
-		registered, refusal, err := d.registerSession(ctx, r.Context(), machineID, body, planned, logger)
+		// Every requested topic is planned: the merge drops a private-subject topic from the plan
+		// (store.MergedTopics), and nothing else is left out, a topic no stream subject captures
+		// included (uncapturedTopics, below, which names such a topic in a warning once the
+		// registration is stored).
+		registered, refusal, err := d.registerSession(ctx, r.Context(), machineID, body, requested, logger)
 		if refusal != nil {
 			logger.Warn("listener refused a registration it can give no session consumer",
 				slog.String("session_id", body.SessionID), slog.String("reason", refusal.Reason), slog.Int("status", refusal.status))
@@ -3138,14 +3142,12 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 			return
 		}
 		item, plan, delivery := registered.row, registered.plan, registered.delivery
-		// A topic this registration did not store is named in a warning, with the rest of the
-		// registration stored, rather than refusing the registration whole: a session reads only
-		// what its own consumer holds and a refusal leaves it no consumer at all, while neither
-		// kind of topic need have been typed by anyone. A released pi-envoy registers every
-		// subject it has open, a fork parent's agent subject and any topic its envoy_subscribe
-		// took included, and a session registers the topics of the row an earlier build stored
-		// for it, the bare notifications.team such a build expanded notifications.team.> to
-		// included.
+		// A topic this registration did not store, and one it stored that no stream subject
+		// captures yet, is named in a warning, with the rest of the registration stored, rather
+		// than refusing the registration whole: a session reads only what its own consumer holds
+		// and a refusal leaves it no consumer at all, while such a topic need not have been typed
+		// by anyone. A released pi-envoy registers every subject it has open, a fork parent's
+		// agent subject and any topic its envoy_subscribe took included.
 		//
 		// A topic reaching a private stream subject that is not this session's (another session's
 		// inbox, a failed-delivery lane, another project's controller notice lane;
@@ -3157,19 +3159,23 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 		// build stored with one, and the lane of a session that has since lost the controller
 		// role, are cleaned by this registration.
 		//
-		// A topic that would deliver to no session was split off above: such an interest would be
-		// stored and deliver nothing. What a caller names by hand is still refused by name, where
-		// the caller is there to read it: /v1/messages/publish refuses such a publish, and either
-		// plugin's explicit subscribe refuses such a topic in this warning's own words.
+		// A topic no stream subject captures is stored and filtered on, and named in a warning
+		// that says so (uncapturedTopics): a subject a later build adds captures it from then on,
+		// and the session's consumer, which already filters on it, delivers what the stream
+		// stores on it. It is judged here, after the registration is stored, because only the
+		// answer turns on it: a read of the stream's subjects that does not answer within ctx
+		// costs the warning and not the registration. What a caller names by hand is still
+		// refused by name where nothing would be stored: /v1/messages/publish refuses such a
+		// publish.
 		//
-		// The private rule is asked first, as the plugins' own refusal asks it
-		// (subscribeRefusesTopic in @legion/envoy-client's stream-topics.ts): a wildcard such as
-		// notifications.> or notifications.*.x reaches a private stream subject and is captured
-		// by no stream subject at all, and what it earns is the private warning. The uncaptured
-		// sentence tells such a caller to follow a notifications.team.<name> topic instead,
-		// which is no answer to a wildcard over every session's inbox.
+		// The private rule is asked first: a wildcard such as notifications.> or
+		// notifications.*.x reaches a private stream subject and is captured by no stream subject
+		// at all, and what it earns is the private warning. The uncaptured sentence tells such a
+		// caller to follow a notifications.team.<name> topic, which is no answer to a wildcard
+		// over every session's inbox.
 		//
 		// The roles are the last plan's, which decided the row that was stored.
+		uncaptured := d.consumers.uncapturedTopics(ctx, requested)
 		warnings := make([]string, 0)
 		for _, topic := range requested {
 			if bus.ReachesPrivateStreamSubject(body.SessionID, topic, plan.Roles) {
@@ -3177,13 +3183,13 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 					topic, contracts.AgentSubject(body.SessionID)))
 				continue
 			}
-			if _, dropped := uncaptured[topic]; dropped {
-				warnings = append(warnings, contracts.UncapturedTopicRefusal(topic, body.SessionID))
+			if _, named := uncaptured[topic]; named {
+				warnings = append(warnings, contracts.UncapturedTopicWarning(topic, body.SessionID))
 			}
 		}
 		if len(warnings) > 0 {
-			logger.Warn("listener subscribe left topics out of the registration",
-				slog.String("session_id", body.SessionID), slog.Any("dropped", warnings))
+			logger.Warn("listener subscribe warned about topics of the registration",
+				slog.String("session_id", body.SessionID), slog.Any("warnings", warnings))
 		}
 		if delivery.relayed() {
 			// The mark tells it which of its runs restarted after this registration: those

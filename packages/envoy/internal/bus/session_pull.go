@@ -135,10 +135,14 @@ func (s *SessionConsumers) Pull(ctx context.Context, sessionID string) (*Session
 		return nil, err
 	}
 	// The connection is read through a watch (watchConnection), whose channel is taken before the
-	// connection and its reconnect count are read, so an event between the two ends the pull
-	// rather than leaving it waiting on a request the server dropped. An event before the request,
-	// which nats.go then sends on the new connection, ends it too: the cost is one restart at the
-	// ack floor, where the cost of missing the event is a stalled relay.
+	// connection and its reconnect count are read, so the watch misses no event after that take.
+	// An event after the reads ends the pull rather than leaving it waiting on a request the
+	// server dropped, a disconnect at the reconnect that follows it. A reconnect or a replacement
+	// between the take and the reads ends nothing: the reads already found the connection and
+	// count it left, and the request goes out on that connection (connWatch.lost). A close before
+	// the subscribe or the pull's request fails Pull itself. An event after the reads and before
+	// the request, which nats.go then sends on the new connection, ends the pull too: the cost is
+	// one restart at the ack floor, where the cost of missing the event is a stalled relay.
 	watch := s.client.watchConnection()
 	conn := watch.conn
 	p := &SessionPull{watch: watch, name: name, next: consumerAPI("MSG.NEXT", name), inbox: conn.NewInbox(), request: request, heartbeat: s.pullHeartbeat, wake: make(chan struct{}, 1)}

@@ -20,7 +20,9 @@ import (
 // durableBindInterval is how often an intake that does not deliver tries for its durable's hold,
 // and for the durable under it. It was the listener's own bind interval until
 // cybermonklabs/legion#2404's delivery lease replaced that bind: a standby polls every two seconds,
-// so it takes the durable over within one interval of the holder releasing its hold. When the
+// so it starts to take the durable over within one interval of the holder releasing its hold. A
+// release wakes no standby here (the intake listens on no duty.HoldReleasedChannel), and the
+// take-over's own statements and JetStream calls come after that start. When the
 // holder dies it takes the durable over at the hold's lapse (intakeHoldTTL) rather than at the
 // poll after it, which comes up to one interval later: a poll that finds the hold live arms a
 // timer to the lapse it read (heldDurable.run).
@@ -42,9 +44,12 @@ const standbyLogEvery = 30 * time.Second
 // The hold a process delivers from a durable under (intakeHoldName, duty.Hold): it lasts
 // intakeHoldTTL on the database's clock after each renewal, is renewed every intakeHoldRenew, and
 // reports itself lost intakeHoldMargin before it lapses, so the holder stops delivering before any
-// standby can take it. A holder that dies is replaced within intakeHoldTTL plus one
-// durableBindInterval, a JetStream reply lost with the standby's connection during the take-over
-// included. Its hold lapses intakeHoldTTL after the last renewal that landed -- the whole of
+// standby can take it. A holder that dies was replaced within intakeHoldTTL plus one
+// durableBindInterval in the runs below, a JetStream reply lost with the standby's connection
+// during the take-over included. That bound is measured, and no code holds it: the take-over's
+// read of the durable may take up to intakeHoldRenew (lookupDurable), each of its finishing steps
+// up to takeOverCallTimeout, and the whole finish up to takeOverFinishWithin (finishTakeOver). Its
+// hold lapses intakeHoldTTL after the last renewal that landed -- the whole of
 // intakeHoldTTL after the death when the death comes the instant after one -- and a standby tries
 // for it again at the lapse its last poll read (heldDurable.run), so the take-over starts at the
 // lapse and has durableBindInterval to finish in. At that worst phase, with the standby's poll

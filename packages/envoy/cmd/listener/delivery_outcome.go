@@ -109,12 +109,15 @@ func deliveryExceptionEnvelope(item contracts.Envelope, reason, recipientSession
 // an exception on a lane a publish takes JetStream for then carries Nats-Msg-Id
 // exception.<reason>.<origin>, so the stream keeps one copy however many listeners raise it for
 // that message, each from its own durable, a lane only a newer build's subjects capture among
-// them. The lane is judged as the publish's transport judges it (bus.Client.PublishTakesJetStream:
-// on a fresh read of the deployed stream's subjects when the client's own leave the lane
-// uncaptured), within exceptionLaneJudgement, so a lane only a read since the client's last
-// captures is stored under that one id too, rather than published through Publish under the
-// exception's own dedupe key, a second copy beside the one another listener stored under the
-// one-copy id.
+// them. The lane is judged as the publish's transport judges it (bus.Client.PublishTakesJetStream),
+// within exceptionLaneJudgement: a lane the client's own subjects leave uncaptured takes JetStream
+// once a read of the deployed stream's subjects again captures it, so a lane only a read since the
+// client's last captures is stored under that one id too, rather than published through Publish
+// under the exception's own dedupe key, a second copy beside the one another listener stored under
+// the one-copy id. That judgement makes no read within the bus's 250 ms gap after the last one or
+// while another read younger than 2 s is in flight, and a read can fail: in each case the lane is
+// judged on the subjects the client holds, and an exception on a lane only a newer build's subjects
+// capture can still be that second copy.
 //
 // It runs inside a delivery handler, which has no request deadline of its own, so it keeps the
 // publish's own bound and carries the original payload whatever its size.
@@ -139,8 +142,9 @@ func publishDeliveryException(client *bus.Client, item contracts.Envelope, reaso
 
 // exceptionLaneJudgement bounds publishDeliveryException's judgement of its lane: its wait for a
 // read of the deployed stream's subjects, which the bus bounds at 2 s itself
-// (bus.Client.DeployedStreamCapturesFresh). It is that same 2 s, so the handler waits no longer
-// than the read does, and a read the server leaves unanswered costs the exception at most 2 s.
+// (bus.Client.PublishTakesJetStream, firstStreamSubjectsRead). It is that same 2 s, so the handler
+// waits no longer than the read does, and a read the server leaves unanswered costs the exception
+// at most 2 s.
 const exceptionLaneJudgement = 2 * time.Second
 
 // exceptionTakesJetStream reports whether a publish of an exception on lane takes JetStream

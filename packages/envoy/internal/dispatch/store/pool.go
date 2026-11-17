@@ -174,7 +174,8 @@ type Pool struct {
 	horizon      *pgxpool.Pool
 	// sizes is how many connections the shared pool and each separate pool may hold:
 	// productionPoolSizes in every deployment, smaller only in a test process given a connection
-	// budget (OpenWithin).
+	// budget (OpenWithin). A Pool NewPool wraps, Outbox's and TextTrees' among them, carries
+	// productionPoolSizes whatever the pool it wraps holds, so its Shared is not that pool's size.
 	sizes PoolSizes
 	// closed refuses every separate pool but the health probe's from the moment Close begins
 	// (separate); healthClosed refuses that one too, once Close has closed every other pool
@@ -189,7 +190,9 @@ func NewPool(pool *pgxpool.Pool) *Pool {
 }
 
 // Sizes is how many connections the shared pool and each separate pool may hold: production's,
-// unless a test process's connection budget scaled them (OpenWithin).
+// unless a test process's connection budget scaled them (OpenWithin). On a Pool NewPool wraps,
+// Outbox's and TextTrees' among them, it is productionPoolSizes whatever the wrapped pool holds,
+// even in a process whose budget scaled that pool, so it states no wrapper's own limit.
 func (p *Pool) Sizes() PoolSizes { return p.sizes }
 
 // sharedPoolSize bounds the shared pool, deliberately and in code. pgx's default,
@@ -524,10 +527,11 @@ func (c *LeaseCallers) Reserved() []string {
 // and names them when they are not. The server calls it once every reservation is taken and
 // before it starts any loop, and refuses to serve on its error: a caller short of a connection
 // waits for one for as long as the longest pass, which is minutes for the compaction, and a
-// connection short of a caller is one the process opens and nothing uses. It holds the callers to
-// LeasePoolSize, production's size, in a test process whose connection budget opened the pool
-// smaller (ScaledPoolSizes) too: what it checks is the wiring a deployment runs, and that
-// process's callers take turns at the connections its budget left them.
+// connection short of a caller is one the process counts (ConnectionsPerProcess) and nothing
+// uses: the pool sets no minimum and dials only on an acquire, so that connection is never
+// opened. It holds the callers to LeasePoolSize, production's size, in a test process whose
+// connection budget opened the pool smaller (ScaledPoolSizes) too: what it checks is the wiring a
+// deployment runs, and that process's callers take turns at the connections its budget left them.
 func (c *LeaseCallers) Complete() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -627,9 +631,10 @@ const testHooksListenerConnections = 1
 
 // ConnectionsPerTestProcess is the most connections one Dispatch process a test starts opens at
 // production's pool sizes: ConnectionsPerProcess and the test hooks' listener
-// (testHooksListenerConnections), which every such process holds. It is the smallest connection
-// budget that keeps production's sizes (ScaledPoolSizes), and what internal/dispatch/testlimits
-// sizes a test server by.
+// (testHooksListenerConnections), which a process started with DISPATCH_TEST_HOOKS=1 holds. The
+// memory harness starts its processes without the hooks, so for them it is one more than they
+// open, an upper bound. It is the smallest connection budget that keeps production's sizes
+// (ScaledPoolSizes), and what internal/dispatch/testlimits sizes a test server by.
 const ConnectionsPerTestProcess = ConnectionsPerProcess + testHooksListenerConnections
 
 // unscaledConnections is what a process given a connection budget opens outside PoolSizes,

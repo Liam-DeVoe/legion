@@ -405,12 +405,15 @@ type Client struct {
 	// subjectsRefused is set once the server refused a read of the deployed stream's subjects under
 	// the NATS user's permissions (readDeployedSubjects): the client then reads them no more.
 	subjectsRefused atomic.Bool
-	// subjectsRereading is the read of the deployed subjects a fresh judgement has in flight
-	// (rereadDeployedSubjects), closed when it ends, and nil while none is; subjectsRereadStarted is
-	// when that read started, and subjectsRereadAt is when the last such read ended, zero before
-	// the first. All three are under subjectsRereadMu.
+	// subjectsRereading is the read of the deployed subjects a judgement has in flight
+	// (startRereadLocked: a fresh judgement's, subjectsReadSince, or a publish transport's,
+	// rereadForTransport), closed when it ends, and nil while none is; subjectsRereadSeq is that
+	// read's number among the client's reads (subjectsReadSeq), subjectsRereadStarted is when it
+	// started, and subjectsRereadAt is when the last such read ended, zero before the first. All
+	// four are under subjectsRereadMu.
 	subjectsRereadMu      sync.Mutex
 	subjectsRereading     chan struct{}
+	subjectsRereadSeq     uint64
 	subjectsRereadStarted time.Time
 	subjectsRereadAt      time.Time
 	// slowConsumers counts the slow-consumer errors the client's connections reported
@@ -650,12 +653,17 @@ const streamSubjectsRefresh = 60 * time.Second
 
 // firstStreamSubjectsRead bounds the read of the deployed stream's subjects that a client that owns
 // no stream makes at connect. A server answers it at once, unless the NATS user may not read the
-// stream: the server then drops the request, and the read waits out this bound. The connect waits
-// for it, so the server's report of that refusal reaches the connection before the client's first
-// publish, which would otherwise read it as a refusal of its own (confirmPublished). It bounds the
-// read DeployedStreamCapturesFresh makes too, which its callers wait for, and how long such a read
-// counts as in flight for a publish's transport, which answers on the subjects the client holds
-// meanwhile rather than wait (PublishTakesJetStream).
+// stream: the server then drops the request, and the read waits out this bound. A client that
+// connects in the foreground waits for it at connect, so the server's report of that refusal
+// reaches the connection before the client's first publish. A core publish whose flush the report
+// reached would otherwise fail as unconfirmed, since the report names another subject
+// (confirmPublished, publishDenial); a JetStream publish reads only its own subject's refusal and
+// is not affected. A client that connects in the background (WithConnectInBackground) makes this
+// read in a hook of its first connection, and its publishes do not wait for it. It bounds each
+// read a judgement makes again (startRereadLocked) too, which a fresh judgement waits for
+// (SubjectsAsk.Uncaptured), and how long such a read counts as in flight for a publish's
+// transport, which answers on the subjects the client holds meanwhile rather than wait
+// (PublishTakesJetStream).
 const firstStreamSubjectsRead = 2 * time.Second
 
 // streamSubjectsRead bounds each read of the deployed stream's subjects followDeployedSubjects
@@ -663,24 +671,27 @@ const firstStreamSubjectsRead = 2 * time.Second
 const streamSubjectsRead = 10 * time.Second
 
 // streamSubjectsRereadGap is the least time from the end of one read of the deployed stream's
-// subjects DeployedStreamCapturesFresh makes to the start of the next. It trades the server's load
-// against how stale a "not captured" may be: however many judgements of topics the stream does not
-// capture come at once - a registration naming several, every session following an ad-hoc topic
-// at its heartbeat, a relay restart of each - the client sends at most one STREAM.INFO per gap,
-// and in exchange a subject a newer build adds within the gap after a read is judged uncaptured
-// until the first judgement past the gap reads again, or the next streamSubjectsRefresh.
+// subjects a judgement makes again (startRereadLocked) to the start of the next. It bounds the
+// server's load: however many judgements of topics the stream does not capture come at once - a
+// registration naming several, every session following an ad-hoc topic at its heartbeat, a
+// publish of each - the client sends at most one STREAM.INFO per gap. A fresh judgement inside the
+// gap waits out the rest of it and reads (SubjectsAsk.Uncaptured), so it costs the caller up to
+// this much more and never answers on a read made before it asked. A publish's transport answers
+// on the subjects the client holds inside the gap (PublishTakesJetStream).
 const streamSubjectsRereadGap = 250 * time.Millisecond
 
 // ensureStream ensures the stream through js and keeps the subjects it carries afterwards as a read
 // of them like any other: numbered as it starts, and kept unless the client already keeps a read
 // that started after it (keepSubjects). The ensure's own list is what it wrote, after a read of its
-// own, and a read the client began between the two can be answered before the write lands, so when
-// a read began while the ensure ran, the subjects are read back once the ensure ends, numbered as
-// that read-back starts: a read answered before the write started before it and keeps nothing over
-// it. An ensure no read began during keeps its own list, numbered as the ensure started, as does
-// one whose read-back fails. defaultsAnUnsetCap is what the connected server is, read from the
-// version it answers (serverDefaultsAnUnsetCap): whether a deployed stream with no consumer cap is
-// one the server caps at a default of its own.
+// own, or what that read answered when it wrote nothing (the stream needed no change, or a newer
+// build's generation owns its settings). A read the client began between the ensure's read and its
+// write can be answered before the write lands, so when a read began while the ensure ran, the
+// subjects are read back once the ensure ends, numbered as that read-back starts: a read answered
+// before the write started before it and keeps nothing over it. An ensure no read began during
+// keeps its own list, numbered as the ensure started, as does one whose read-back fails.
+// defaultsAnUnsetCap is what the connected server is, read from the version it answers
+// (serverDefaultsAnUnsetCap): whether a deployed stream with no consumer cap is one the server
+// caps at a default of its own.
 func (c *Client) ensureStream(js nats.JetStreamContext, defaultsAnUnsetCap bool) error {
 	started := c.subjectsReadSeq.Add(1)
 	subjects, err := ensureStreamWithConfig(js, c.streamConfig, defaultsAnUnsetCap)
@@ -702,10 +713,11 @@ func (c *Client) ensureStream(js nats.JetStreamContext, defaultsAnUnsetCap bool)
 // version off the connection nats.go hands it, so the ensure asks the server it writes to
 // whether a stream with no consumer cap is one that server caps (serverDefaultsAnUnsetCap).
 //
-// Each request of the ensure ends as soon as conn is lost under it (connectionBoundJetStream).
-// The hooks run one at a time and this one runs first, so a request whose answer died with a
-// connection that dropped again mid-ensure would otherwise hold every hook after it - the KV
-// rewatch, the listener's receive - for the JetStream context's whole 10 s wait.
+// Each request of the ensure ends as soon as conn is lost under it (connectionBoundJetStream),
+// except the role-lane migration's consumer listing (js.ConsumerNames), which waits the JetStream
+// context's own MaxWait. The hooks run one at a time and this one runs first, so a request whose
+// answer died with a connection that dropped again mid-ensure would otherwise hold every hook
+// after it - the KV rewatch, the listener's receive - for the JetStream context's whole 10 s wait.
 func (c *Client) ensureStreamOn(conn *nats.Conn) error {
 	js, err := conn.JetStream(nats.MaxWait(10 * time.Second))
 	if err == nil {
@@ -777,13 +789,21 @@ func (js connectionBoundJetStream) UpdateConsumer(stream string, cfg *nats.Consu
 	})
 }
 
-// readDeployedSubjects reads the deployed stream's subjects on conn within timeout and keeps them
-// for DeployedStreamCaptures, unless the client already keeps a read of them that started after
-// this one did (keepSubjects). A read that fails keeps what the client held. It reports false only
-// when the server refused the read under the NATS user's permissions: such a user cannot read them
-// later either, so the client keeps deciding by what it holds, and reads no more (subjectsRefused).
+// readDeployedSubjects reads the deployed stream's subjects on conn within timeout, numbered as it
+// starts (readDeployedSubjectsAs).
 func (c *Client) readDeployedSubjects(conn *nats.Conn, timeout time.Duration) bool {
-	started := c.subjectsReadSeq.Add(1)
+	return c.readDeployedSubjectsAs(conn, timeout, c.subjectsReadSeq.Add(1))
+}
+
+// readDeployedSubjectsAs reads the deployed stream's subjects on conn within timeout and keeps
+// them for DeployedStreamCaptures as the read numbered started (subjectsReadSeq), unless the
+// client already keeps a read of them that started after this one did (keepSubjects). started is
+// taken before the read's request is sent, so a request that asked before it was taken asked
+// before this read did (SubjectsAsk). A read that fails keeps what the client held. It reports
+// false only when the server refused the read under the NATS user's permissions: such a user
+// cannot read them later either, so the client keeps deciding by what it holds, and reads no more
+// (subjectsRefused).
+func (c *Client) readDeployedSubjectsAs(conn *nats.Conn, timeout time.Duration, started uint64) bool {
 	js, err := conn.JetStream(nats.MaxWait(timeout))
 	if err == nil {
 		var subjects []string
@@ -812,7 +832,7 @@ type subjectsRead struct {
 
 // keepSubjects keeps subjects, the answer of the read numbered started (subjectsReadSeq), for
 // DeployedStreamCaptures, unless the client already keeps the answer of a read that started after
-// it. The client's reads overlap - a fresh read (rereadDeployedSubjects), the periodic one
+// it. The client's reads overlap - a judgement's read again (startRereadLocked), the periodic one
 // (followDeployedSubjects) and an ensure's (ensureStream) - and end in any order, so a read that
 // started before another and ended after it would otherwise put back the older list over the
 // newer one: the subjects as they stood before a newer build's start added its own, judged
@@ -1846,18 +1866,21 @@ func (c *Client) ensureConnWithContext(ctx context.Context) error {
 // not capture (DeployedStreamCaptures), every role lane and its exception lane among them, which
 // the stream must never retain (TestStreamConfigExcludesRoleLanes) and which take core NATS even
 // from a stream that still captures them. The rest of the core topics are ad-hoc topics such as
-// notifications.lxspec.probe.all, or the exception lane of one. JetStream answers a publish to a
+// notifications.lxspec.probe.all and the exception lane of one, and the exception lanes of the
+// github, dispatch, slack, legion, ghostwispr and whatsapp topics: the stream captures the
+// exception lanes of agent and team topics alone (streamSubjects). JetStream answers a publish to a
 // subject no stream captures only with "no responders", and not at all while a core subscriber
 // holds the subject, since that subscriber is handed the acknowledgement request: the publish
 // would wait out its whole deadline for an acknowledgement that never comes, after the subscribers
 // had already received the message. A subject outside NotificationTopicPrefix keeps JetStream.
-// A publish sends a topic this answers core for, a role lane excepted, over core NATS only once a
-// read of the subjects again agrees, or while a read of them is in flight (PublishTakesJetStream),
-// so a topic only a newer build's subject captures, added since the client last read them, takes
-// JetStream: the stream stores a core publish of a topic it captures too, but under no Nats-Msg-Id,
-// so a repeat is stored again, and with no acknowledgement, so a store the stream refuses goes
-// unreported. The listener's publish route answers 400 to a core topic other than a role lane on
-// a fresh read of its own (ReachesNoSession), since no session's consumer would hold it.
+// A publish judges a topic this answers core for again before it sends it over core NATS, a role
+// lane excepted (PublishTakesJetStream), so a topic only a newer build's subject captures, added
+// since the client last read them, takes JetStream once that read captures it: the stream stores
+// a core publish of a topic it captures too, but under no Nats-Msg-Id, so a repeat is stored
+// again, and with no acknowledgement, so a store the stream refuses goes unreported. The
+// listener's publish route answers 400 to a core topic other than a role lane (ReachesNoSession)
+// only once a read of the subjects that started after the request asked leaves it uncaptured
+// (SubjectsAsk.Uncaptured), since no session's consumer would hold it.
 func (c *Client) UsesCoreTransport(topic string) bool {
 	return strings.HasPrefix(topic, NotificationTopicPrefix) && !c.DeployedStreamCaptures(topic)
 }
@@ -1868,16 +1891,18 @@ func (c *Client) UsesCoreTransport(topic string) bool {
 //
 // The capture is judged on the subjects of the deployed stream as the client last read them - read
 // at each ensure of an owning client, at connect for any other, every streamSubjectsRefresh, and at
-// each read DeployedStreamCapturesFresh makes, of which the client keeps, among those that ended,
-// the one that started last (keepSubjects) - and on the subjects this build compiles
+// each read a judgement makes again (startRereadLocked), of which the client keeps, among those
+// that ended, the one that started last (keepSubjects) - and on the subjects this build compiles
 // (StreamCaptures) only while the client has never read them.
 // A nil client has read no deployed stream - a caller that holds none, and the deps a test builds
 // without one - so it answers on the compiled subjects too. Two builds can run at once, and the
 // deployed stream holds the subjects of both: a topic under a subject only the newer build adds is
-// published through JetStream, with its MsgId, by the older build too (PublishTakesJetStream), and
-// the older build's listener puts it in a session's consumer filter (cmd/listener's
-// sessionConsumerFilter, DeployedStreamCapturesFresh): both read the subjects again before they
-// take a no from subjects read before the newer build added its own.
+// published through JetStream, with its MsgId, by the older build too once its transport has read
+// the subjects again (PublishTakesJetStream), and the older build's listener refuses a publish of
+// it only on a read made after the publish asked (SubjectsAsk.Uncaptured). That listener's
+// registration and session consumer filter keep every followed notification topic whatever this
+// answers (cmd/listener's subscribeHandler and sessionConsumerFilter), so neither takes a no
+// from subjects read before the newer build added its own.
 func (c *Client) DeployedStreamCaptures(topic string) bool {
 	if subjectsCapture(roleLaneSubjects, topic) {
 		return false
@@ -1890,80 +1915,188 @@ func (c *Client) DeployedStreamCaptures(topic string) bool {
 	return StreamCaptures(topic)
 }
 
-// DeployedStreamCapturesFresh answers what DeployedStreamCaptures answers, except that it judges a
-// notification topic uncaptured only on a fresh read of the deployed stream's subjects. A topic the
-// subjects the client holds capture is answered from them, with no read. A role lane, or the
-// exception lane of one, is answered no, and so is a topic outside NotificationTopicPrefix, with no
-// read either: no subject a build adds makes either a topic a consumer filters on. Any other topic
-// they do not capture is judged again once the client has read the subjects once more
-// (readDeployedSubjects, within firstStreamSubjectsRead), and that read is kept unless one that
-// started after it was kept first (keepSubjects), so every judgement of the client's after it -
-// its publishes' transport, the listener's fan-out - takes the subjects it read too.
+// SubjectsAsk is the moment a request asked its client to judge topics on the deployed stream's
+// subjects, as a point among the client's reads of them (Client.AskDeployedSubjects): a read
+// numbered after it (subjectsReadSeq) took its number, and so sent its request, after the request
+// asked. A request takes one ask and judges each of its topics under it (Uncaptured), so the
+// topics of one registration share the read the first of them waits for.
+type SubjectsAsk struct {
+	client *Client
+	seq    uint64
+}
+
+// AskDeployedSubjects is the ask of a request that judges topics on the deployed stream's subjects
+// from now on (SubjectsAsk.Uncaptured). A nil client's ask judges the subjects this build
+// compiles.
+func (c *Client) AskDeployedSubjects() SubjectsAsk {
+	if c == nil {
+		return SubjectsAsk{}
+	}
+	return SubjectsAsk{client: c, seq: c.subjectsReadSeq.Load()}
+}
+
+// Uncaptured reports whether the deployed stream leaves topic uncaptured, judged on a read of its
+// subjects that started after the ask (AskDeployedSubjects) and never on one made before it: a
+// subject a newer build added a moment before the request asked, inside streamSubjectsRereadGap of
+// the client's last read, captures the topic too. It is for a caller that refuses or warns on that
+// no: the listener's publish route refuses the publish (ReachesNoSession, cmd/listener's
+// publishHandler), and its registration warns that no stream subject captures the topic yet
+// (uncapturedTopics), keeping the topic either way. During a roll the newer build's start
+// adds its subjects to the stream, and an older pod that read the subjects before then would
+// otherwise judge a topic on one of them uncaptured until its next read.
 //
-// It is for a judgement whose "not captured" loses a message for good: the listener's consumer
-// filter (cmd/listener's sessionConsumerFilter), where a topic left out moves the consumer past
-// every message stored on it while the filter stands; its registration (splitUncapturedTopics),
-// where it leaves the topic out of the row; and its publish route (publishHandler), where it
-// refuses the publish (ReachesNoSession). During a roll the newer build's start adds its subjects
-// to the stream, and an older pod that read the subjects before then would otherwise judge a topic
-// on one of them uncaptured until its next streamSubjectsRefresh, up to a minute. A publish's
-// transport reads them again too, but waits for no read in flight (PublishTakesJetStream).
+// A topic the subjects the client holds capture is captured, with no read. A role lane, or the
+// exception lane of one, is uncaptured, and so is a topic outside NotificationTopicPrefix, with no
+// read either: no subject a build adds makes either a topic the stream stores for a session. Any
+// other topic waits for the client's next read that starts after the ask (subjectsReadSince):
+// inside streamSubjectsRereadGap of the last read's end it waits out the rest of the gap, and a
+// read in flight that started before the ask is waited for and then read again. Every judgement
+// under asks taken before a read started shares that read, so a burst costs the server one
+// STREAM.INFO per gap.
 //
-// Callers share one read in flight, and the client starts the next no sooner than
-// streamSubjectsRereadGap after the last ended, answering on the subjects it holds in between, so a
-// burst of such judgements costs the server one STREAM.INFO. A client that holds no connection, or
-// whose NATS user may not read the stream (subjectsRefused), reads nothing. A read that fails keeps
-// what the client held, and the answer is the one those give, as DeployedStreamCaptures answers:
-// what a failed read costs the caller is the wait for it, at most firstStreamSubjectsRead, or less
-// when ctx ends first. ctx bounds the caller's wait and not the read, which other callers may share
-// and which runs on to its own bound when ctx ends first. A nil client answers as
-// DeployedStreamCaptures does.
-func (c *Client) DeployedStreamCapturesFresh(ctx context.Context, topic string) bool {
-	return c.DeployedStreamCaptures(topic) || c.capturedOnReread(ctx, topic, true)
+// Where no such read can be had - the client holds no connection, ctx ends first, or the read
+// fails - the answer is captured, so the caller refuses nothing and warns of nothing: a refused
+// publish of a topic the stream does capture is a message lost, and an accepted one of a topic it
+// does not is a message stored nowhere, which loses nothing a refusal would have kept. ctx bounds
+// the caller's wait and not the read, which other callers may share and which runs on to its own
+// bound, firstStreamSubjectsRead. The one exception is a client whose NATS user may not read the
+// stream (subjectsRefused): no read will ever come, the subjects it holds are all there is, and
+// the answer is theirs. A nil client answers on the subjects this build compiles, for the same
+// reason.
+func (a SubjectsAsk) Uncaptured(ctx context.Context, topic string) bool {
+	c := a.client
+	if c.DeployedStreamCaptures(topic) {
+		return false
+	}
+	if c == nil || !strings.HasPrefix(topic, NotificationTopicPrefix) || subjectsCapture(roleLaneSubjects, topic) {
+		return true
+	}
+	if read := c.subjectsReadSince(ctx, a.seq); read != nil {
+		return !subjectsCapture(read.subjects, topic)
+	}
+	return c.subjectsRefused.Load() && !c.DeployedStreamCaptures(topic)
+}
+
+// subjectsReadSince returns the read of the deployed stream's subjects the client keeps once that
+// is a read numbered after asked (subjectsReadSeq), starting one on the connection the client is
+// connected over when it must: inside streamSubjectsRereadGap of the last such read's end it waits
+// out the rest of the gap first, and a read in flight numbered at or before asked is waited for
+// and then read again. It returns nil when no such read can be had: the client holds no
+// connection, ctx ends, the read that started after asked failed, or the NATS user may not read
+// the stream (subjectsRefused). A read that another started after asked - a periodic read, an
+// ensure's, another judgement's - serves too.
+func (c *Client) subjectsReadSince(ctx context.Context, asked uint64) *subjectsRead {
+	for {
+		if kept := c.deployedSubjects.Load(); kept != nil && kept.seq > asked {
+			return kept
+		}
+		if c.subjectsRefused.Load() || ctx.Err() != nil {
+			return nil
+		}
+		c.subjectsRereadMu.Lock()
+		reading, seq := c.subjectsRereading, c.subjectsRereadSeq
+		var gap time.Duration
+		if reading == nil {
+			conn := c.ConnectedConn()
+			if conn == nil {
+				c.subjectsRereadMu.Unlock()
+				return nil
+			}
+			if gap = streamSubjectsRereadGap - time.Since(c.subjectsRereadAt); gap <= 0 {
+				reading, seq = c.startRereadLocked(conn)
+			}
+		}
+		c.subjectsRereadMu.Unlock()
+		if reading == nil {
+			wait := time.NewTimer(gap)
+			select {
+			case <-wait.C:
+			case <-ctx.Done():
+				wait.Stop()
+				return nil
+			}
+			continue
+		}
+		select {
+		case <-reading:
+		case <-ctx.Done():
+			return nil
+		}
+		if seq > asked {
+			// That read started after the ask and has ended: what the client keeps now is its
+			// answer or a later read's, and anything older means it failed.
+			if kept := c.deployedSubjects.Load(); kept != nil && kept.seq > asked {
+				return kept
+			}
+			return nil
+		}
+	}
+}
+
+// startRereadLocked starts a judgement's read of the deployed subjects on conn, within
+// firstStreamSubjectsRead, and returns the channel its end closes and its number, taken here,
+// before its request is sent. The caller holds subjectsRereadMu and has found no such read in
+// flight.
+func (c *Client) startRereadLocked(conn *nats.Conn) (chan struct{}, uint64) {
+	reading := make(chan struct{})
+	seq := c.subjectsReadSeq.Add(1)
+	c.subjectsRereading, c.subjectsRereadSeq, c.subjectsRereadStarted = reading, seq, time.Now()
+	go func() {
+		c.readDeployedSubjectsAs(conn, firstStreamSubjectsRead, seq)
+		c.subjectsRereadMu.Lock()
+		c.subjectsRereading = nil
+		c.subjectsRereadAt = time.Now()
+		c.subjectsRereadMu.Unlock()
+		close(reading)
+	}()
+	return reading, seq
 }
 
 // PublishTakesJetStream reports whether a publish of topic takes JetStream rather than core NATS:
 // the judgement PublishReportingDuplicateWithin makes of its transport, for a caller that decides
 // something else of the publish by it too. A topic the subjects the client holds leave core
-// (UsesCoreTransport) takes JetStream once a read of the subjects again captures it, as
-// DeployedStreamCapturesFresh reads them, with one difference: while a read of them is in flight -
-// started within firstStreamSubjectsRead and not yet ended - it answers on the subjects the client
-// holds, with no wait. A core publish of a topic no stream captures - a delivery exception on a
-// github, dispatch, slack or legion lane, an ad-hoc topic - would otherwise wait out a read the
-// server leaves unanswered, as during a JetStream leader change, for up to
-// firstStreamSubjectsRead. A read in flight past that bound, as long as the read itself may last,
-// is joined as DeployedStreamCapturesFresh joins it, and once it has ended the next judgement past
-// streamSubjectsRereadGap starts a read of its own. So a direct publish in the roll window during
-// an unanswered read goes over core NATS, stored, with no MsgId and no acknowledgement.
+// (UsesCoreTransport) takes JetStream once a read of the subjects again captures it
+// (rereadForTransport), and keeps core NATS on the subjects the client holds wherever that read
+// is not made: inside streamSubjectsRereadGap of the last such read's end, while a read of them
+// is in flight and started within firstStreamSubjectsRead, on a client with no connection or
+// whose NATS user may not read the stream, and when the read fails or ctx ends first. A role lane
+// and its exception lane read nothing and keep core NATS.
+//
+// It is not a refusal: a core publish of a topic the stream captures is stored too, under no
+// MsgId and with no acknowledgement, so it waits for no read in flight and none past the gap, as
+// a fresh judgement does (SubjectsAsk.Uncaptured). A core publish of a topic no stream captures - a
+// delivery exception on a github, dispatch, slack or legion lane, an ad-hoc topic - would
+// otherwise wait out a read the server leaves unanswered, as during a JetStream leader change, for
+// up to firstStreamSubjectsRead, and taking JetStream for such a topic on no read would wait out
+// the publish's whole deadline for an acknowledgement no stream sends. A read in flight past
+// firstStreamSubjectsRead, as long as the read itself may last, is joined, and once it has ended
+// the next judgement past streamSubjectsRereadGap starts a read of its own. So a direct publish
+// in the roll window inside the gap or during an unanswered read goes over core NATS, stored, with
+// no MsgId and no acknowledgement.
 func (c *Client) PublishTakesJetStream(ctx context.Context, topic string) bool {
-	return !c.UsesCoreTransport(topic) || c.capturedOnReread(ctx, topic, false)
-}
-
-// capturedOnReread reports whether a read of the deployed stream's subjects again captures topic,
-// one the subjects the client holds leave uncaptured (rereadDeployedSubjects, which joins a read
-// in flight only when joinInFlight is set or that read has outlasted firstStreamSubjectsRead). A
-// role lane or its exception lane, and a topic outside NotificationTopicPrefix, are answered no
-// with no read, and so is any topic on a nil client.
-func (c *Client) capturedOnReread(ctx context.Context, topic string, joinInFlight bool) bool {
-	if c == nil || !strings.HasPrefix(topic, NotificationTopicPrefix) || subjectsCapture(roleLaneSubjects, topic) {
+	if !c.UsesCoreTransport(topic) {
+		return true
+	}
+	if c == nil || subjectsCapture(roleLaneSubjects, topic) {
 		return false
 	}
-	c.rereadDeployedSubjects(ctx, joinInFlight)
+	c.rereadForTransport(ctx)
 	return c.DeployedStreamCaptures(topic)
 }
 
-// rereadDeployedSubjects is a fresh judgement's read of the deployed subjects: it joins the read in
-// flight, or starts one on the connection the client is connected over unless the last ended
-// within streamSubjectsRereadGap, and waits for it to end or for ctx to. Without joinInFlight it
-// returns at once while the read in flight started within firstStreamSubjectsRead.
-func (c *Client) rereadDeployedSubjects(ctx context.Context, joinInFlight bool) {
+// rereadForTransport is a publish transport's read of the deployed subjects again
+// (PublishTakesJetStream): it starts one on the connection the client is connected over unless
+// the last ended within streamSubjectsRereadGap, joins a read in flight only once that read has
+// outlasted firstStreamSubjectsRead, and waits for the read it starts or joins to end or for ctx
+// to. It reads nothing on a client whose NATS user may not read the stream (subjectsRefused).
+func (c *Client) rereadForTransport(ctx context.Context) {
 	if c.subjectsRefused.Load() {
 		return
 	}
 	c.subjectsRereadMu.Lock()
 	reading := c.subjectsRereading
 	switch {
-	case reading != nil && !joinInFlight && time.Since(c.subjectsRereadStarted) < firstStreamSubjectsRead:
+	case reading != nil && time.Since(c.subjectsRereadStarted) < firstStreamSubjectsRead:
 		c.subjectsRereadMu.Unlock()
 		return
 	case reading == nil:
@@ -1972,17 +2105,7 @@ func (c *Client) rereadDeployedSubjects(ctx context.Context, joinInFlight bool) 
 			c.subjectsRereadMu.Unlock()
 			return
 		}
-		reading = make(chan struct{})
-		c.subjectsRereading = reading
-		c.subjectsRereadStarted = time.Now()
-		go func() {
-			c.readDeployedSubjects(conn, firstStreamSubjectsRead)
-			c.subjectsRereadMu.Lock()
-			c.subjectsRereading = nil
-			c.subjectsRereadAt = time.Now()
-			c.subjectsRereadMu.Unlock()
-			close(reading)
-		}()
+		reading, _ = c.startRereadLocked(conn)
 	}
 	c.subjectsRereadMu.Unlock()
 	select {
@@ -1994,23 +2117,22 @@ func (c *Client) rereadDeployedSubjects(ctx context.Context, joinInFlight bool) 
 // ReachesNoSession reports whether a topic a caller names would deliver to no session at all: a
 // notification topic the deployed stream does not capture (UsesCoreTransport) that is not a role
 // lane. A session receives what its own consumer delivers, which is what the stream stored, so a
-// publish to such a topic reaches nobody, now or later, and an interest in it would be stored and
-// deliver nothing. POST /v1/messages/publish refuses such a publish by name, since its sender is
-// there to read the answer, and POST /v1/interests/subscribe leaves such a topic out of the
-// registration and names it in a warning, the rest of the registration stored, since refusing a
-// registration whole leaves its session no consumer at all (cmd/listener/api.go); each refuses a
-// publish or leaves a topic out only once a fresh read of the subjects agrees
-// (DeployedStreamCapturesFresh). A role lane is the exception the name's "no session" turns on: it
-// travels over core NATS to the listener, which forwards the message to its holder's agent
-// subject, where the stream stores it for the holder's own consumer.
+// publish to such a topic reaches nobody, now or later. POST /v1/messages/publish refuses such a
+// publish by name, since its sender is there to read the answer, and POST /v1/interests/subscribe
+// keeps such a topic in the registration and in the session consumer's filter and names it in a
+// warning (cmd/listener/api.go): a subject a later build adds captures it from then on, and a
+// topic out of the filter when it does would have the consumer move past what is stored on it.
+// Each takes that no only once a read of the subjects that started after the request asked agrees
+// (SubjectsAsk.Uncaptured), and takes none where no such read can be made, the one exception being
+// a client whose NATS user may not read the stream. A role lane is the exception the name's "no
+// session" turns on: it travels over core NATS to the listener, which forwards the message to its
+// holder's agent subject, where the stream stores it for the holder's own consumer.
 //
 // It is a method for the same reason UsesCoreTransport is: the question is what the DEPLOYED
 // stream captures, not what this binary compiles. While two builds serve one NATS, the stream
 // holds the subjects of both, so a topic only the newer build adds reaches a session's consumer
-// and the older build must not refuse a publish or an interest of it (the subjects this client
-// last read, deployedSubjects, read again before either is refused). The listener's consumer filter
-// judges the same deployed subjects, read again as the registration's are
-// (DeployedStreamCapturesFresh), so a topic a registration stores is one its consumer filters on.
+// and the older build must not refuse a publish of it on the subjects this client last read
+// (deployedSubjects).
 func (c *Client) ReachesNoSession(topic string) bool {
 	return c.UsesCoreTransport(topic) && !strings.HasPrefix(topic, contracts.RoleTopicPrefix)
 }
@@ -2159,8 +2281,8 @@ const publishBound = 5 * time.Second
 
 // Publish routes role lanes, their delivery-exception lanes and every topic the stream does not
 // capture through core NATS (UsesCoreTransport, a topic other than a role lane judged again on a
-// fresh read of the deployed stream's subjects first unless one is in flight,
-// PublishTakesJetStream); every notification the stream captures retains JetStream durability. Its
+// read of the deployed stream's subjects first where PublishTakesJetStream makes one); every
+// notification the stream captures, as the client judges it, retains JetStream durability. Its
 // signature is an interface method in cistore, outbox and webhook, so a caller that wants
 // JetStream's duplicate verdict calls PublishReportingDuplicate instead, and one that has a
 // deadline of its own calls PublishWithin.
@@ -2198,15 +2320,17 @@ func (c *Client) PublishReportingDuplicate(item contracts.Envelope) (bool, error
 // PublishReportingDuplicateWithin publishes as PublishReportingDuplicate does, reporting the same
 // duplicate verdict over the same two transports, with ctx as the whole publish's bound instead of
 // publishBound. A topic the subjects the client holds leave uncaptured (UsesCoreTransport) is sent
-// over core NATS only once a read of them again within ctx agrees, or on those subjects while a
-// read of them is in flight (PublishTakesJetStream), which reads nothing for a role lane. During a
-// roll a topic only the newer build's subject captures, added since this client last read them,
-// would otherwise go over core NATS from an older build's publish: the stream stores that copy
-// too, but under no Nats-Msg-Id, so a repeat of an envelope that earns one is stored again, and
-// with no acknowledgement, so a store the stream refuses (ErrStreamFull) goes unreported. A read
-// that fails, or one ctx ends before, leaves the topic on core NATS as the subjects the client held
-// judge it, and so does a read in flight: a direct publish in the roll window during an unanswered
-// read goes over core NATS, stored, with no MsgId and no acknowledgement.
+// over core NATS once a read of them again within ctx agrees, and on those subjects wherever that
+// read is not made (PublishTakesJetStream): inside streamSubjectsRereadGap of the last such read,
+// while one is in flight and younger than firstStreamSubjectsRead, with no connection or no grant
+// to read the stream, and for a role lane, which reads nothing. During a roll a topic only the
+// newer build's subject captures, added since this client last read them, would otherwise go over
+// core NATS from an older build's publish: the stream stores that copy too, but under no
+// Nats-Msg-Id, so a repeat of an envelope that earns one is stored again, and with no
+// acknowledgement, so a store the stream refuses (ErrStreamFull) goes unreported. A read that
+// fails, or one ctx ends before, leaves the topic on core NATS as the subjects the client held
+// judge it too: a direct publish in the roll window inside the gap or during an unanswered read
+// goes over core NATS, stored, with no MsgId and no acknowledgement.
 func (c *Client) PublishReportingDuplicateWithin(ctx context.Context, item contracts.Envelope) (bool, error) {
 	if !c.PublishTakesJetStream(ctx, item.Topic) {
 		return false, c.PublishCoreContext(ctx, item.Topic, item)

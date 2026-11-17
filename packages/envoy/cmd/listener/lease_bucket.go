@@ -21,9 +21,13 @@ import (
 // session. At the default 5-minute TTL the age equals the session TTL and the interest reaper's
 // allowance (store.InterestReapAllowance), so /v1/interests/ can give the last heartbeat of every
 // row that reaper still holds (TestTheListenerStateBucketOutlivesTheLastSeenWindow holds the age
-// to no less). A record nobody renews living twice as long changes
-// nothing else: a lease record is taken over once it has stood unchanged for the lease's ttl,
-// whatever its age, and the delivery ledger judges every record by its own ages (dedupe.KV).
+// to no less). A record nobody renews living twice as long changes one other thing. A pod that
+// starts between an earlier build's 10 minutes and 20 minutes after a killed holder's last renewal
+// now finds that holder's record rather than none: it waits the lease's ttl and takes the lease
+// as expired, with a settle hold and the ack wait that term owes its successor, where it took an
+// absent record at once and settled nothing. Nothing else changes: a lease record is taken over
+// once it has stood unchanged for the lease's ttl, whatever its age, and the delivery ledger
+// judges every record by its own ages (dedupe.KV).
 // listenerStateRequestWait is the JetStream wait of every request on the bucket's handle: a
 // renewal that hangs must give up well inside the holder's validity (leaseTTL - leaseMargin) so
 // its retry still lands in it. A bucket create the wait cuts short is a connection error the

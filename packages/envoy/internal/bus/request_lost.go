@@ -26,6 +26,13 @@ import (
 // a KV call BoundedOn waits for, a call BoundedOnConnection waits for (roles.Buckets' reads) and a
 // JetStream request RequestOnConnection makes (the stream's ensure on each connection event, and
 // Dispatch's delivery intake taking its durable over).
+//
+// A close, and so the replacement that follows one, is the exception. nats.go then fails each
+// request in its request map and wakes each sync subscription itself, with
+// nats.ErrConnectionClosed, before it runs the close callback the watch hears. A ForceReconnect
+// fails each request in the request map the same way. So each of those callers but RequestCore,
+// whose channel subscription a close leaves open, can return nats.ErrConnectionClosed for such a
+// loss in place of this error.
 var ErrRequestLostWithConnection = errors.New("bus: the request was lost with its NATS connection")
 
 // connWatch follows the connection one request, or one pull's requests (SessionPull), went out on,

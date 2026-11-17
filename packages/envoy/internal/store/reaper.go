@@ -193,10 +193,12 @@ type RoleClaimSweep struct {
 //
 // Every bucket call the pass makes after its scan - each release, and the delete of a key this
 // build cannot read - waits no longer than ctx (bus.BoundedOn), which is the reaper loop's own
-// context (StartRoleClaimReaper): the listener's shutdown ends that context and then waits for
-// this loop to return, up to its shared 10 s shutdown bound, before it drains the bus, so a pass
-// that returns inside that bound fails each call it has left on the ended context alone, against
-// a bus that is still answering. The scan itself (roleClaimsUntil) is not under bus.BoundedOn: it
+// context (StartRoleClaimReaper): the end of the listener's receive term, which its shutdown
+// makes, ends that context and then waits for this loop to return up to five seconds from that
+// end (cmd/listener's holderLoopsStopWait), inside the shared 10 s shutdown bound. A pass that
+// returns inside those five seconds fails each call it has left on the ended context alone,
+// against a bus that is still answering; past them the shutdown goes on to drain the bus with the
+// pass still running. The scan itself (roleClaimsUntil) is not under bus.BoundedOn: it
 // reads ctx at each record delivered to it and ends at the first one after ctx has ended, so a
 // scan the bucket delivers nothing to ends at its own idle bound (kvwatch.ScanIdleTimeout) instead.
 //
@@ -241,9 +243,9 @@ type RoleClaimSweep struct {
 // its connection (bus.ErrRequestLostWithConnection) is not answered either, but ctx still holds:
 // it is that ordinary failed delete, Skipped and logged, and the next pass sends it again. A
 // record this build cannot decode is no call at all - the scan carried it, and the decode of bytes
-// already in hand reads the same whatever ctx says - so its WARN is one per malformed record in
-// the bucket however the pass ends, never one per role left, and the pass stops at the first
-// bucket call behind it anyway.
+// already in hand reads the same whatever ctx says - so its WARN is at most one per malformed
+// record in the bucket, never one per role left: a pass that ends early on an ended ctx warns for
+// none of the malformed records past the point where it ended.
 //
 // An expired claim costs one bucket call of its own, the conditional delete, on top of the
 // pass's one scan: the release is handed the claim that scan carried

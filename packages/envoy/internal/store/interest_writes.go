@@ -342,21 +342,23 @@ func (r *Registry) recordInterest(merged Interest, revision, epoch uint64, getEr
 	}
 }
 
-// putInterestAt writes sessionID's interest record only while its latest revision is revision,
-// creating it when revision is 0, which names the session that had no row when its plan read the
-// bucket. It reports the revision written, the epoch of the handle it was written through, and
-// whether the bucket took the write: a bucket that refused it holds another writer's row since,
-// which is no error here (nats.ErrKeyExists, the wrong-last-sequence answer a Create and an
-// Update share), and the caller plans again over that row. Each call waits no longer than ctx
-// (bus.BoundedOn); a write ctx abandoned may still land, and is safe for the same reason a
-// conditional delete is: it stores only over the very revision it read, so it cannot undo a write
-// that landed after it.
+// putInterestAt writes sessionID's interest record only while the key's newest entry is the one at
+// revision, the revision its plan read (getWithRevision): the plan's own row, the delete or purge
+// marker that ended the row it found gone, or, at revision 0, no entry at all. It is an Update at
+// that revision every time, which nats.go conditions on the key's newest entry, 0 included, so the
+// write is refused over any entry stored since the plan read, a marker among them. It reports the
+// revision written, the epoch of the handle it was written through, and whether the bucket took
+// the write: a bucket that refused it holds another writer's entry since, which is no error here
+// (nats.ErrKeyExists, bus.KeyValue.Update), and the caller plans again over what it holds. Each
+// call waits no longer than ctx (bus.BoundedOn); a write ctx abandoned may still land, and is safe
+// for the same reason a conditional delete is: it stores only over the very entry its plan read,
+// so it cannot undo a write or a delete that landed after that read. A Create would not be: at
+// revision 0, refused over a marker, nats.go's Create updates at the marker's revision (nats.go
+// v1.53.1 kv.go:729-739), so a create planned before an unsubscribe or a reap, or one landing
+// after it, would bring the record back over it.
 func (r *Registry) putInterestAt(ctx context.Context, sessionID string, value []byte, revision uint64) (uint64, uint64, bool, error) {
 	kv, epoch := r.watcher.Handle()
 	written, answered, err := bus.BoundedOn(ctx, kv, func() (uint64, error) {
-		if revision == 0 {
-			return kv.Create(sessionID, value)
-		}
 		return kv.Update(sessionID, value, revision)
 	})
 	if !answered {

@@ -23,7 +23,9 @@ import (
 //     restarts, or a release that rolls one process after another, keeps it;
 //   - when none does, the identity of the earliest-started live process that carries one becomes
 //     active, and when no live process carries one (every live process of a build before the
-//     column, or none live at all), the identity of the process that looks, own;
+//     column or one that runs with no embedder - search off, DISPATCH_TEST_EMBEDDER_OFF, or an
+//     embedder that could not be built - or none live at all), the identity of the process that
+//     looks, own;
 //   - with no row yet, the first process to look records own.
 //
 // The insert and the change are each a compare-and-set, so two processes that look at once over

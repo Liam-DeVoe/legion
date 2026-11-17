@@ -43,19 +43,32 @@ func (r *Registry) Get(ctx context.Context, sessionID string) (Interest, error) 
 // The revision is what a write of the filter built from this row is fenced on (cmd/listener's
 // fenceFilterWrite): a row the bucket answers at a higher revision afterwards moved under that
 // write, so the filter it carries may be an older row's, over a newer registration's. A session
-// the bucket holds no row for answers revision 0 with nats.ErrKeyNotFound, and a row this build
-// cannot decode answers the revision a write of it is fenced on with ErrMalformedInterest.
+// the bucket holds no row for answers revision 0 with nats.ErrKeyNotFound, a session whose row a
+// delete or purge marker ended included, since that fence reads a row gone as a row that never
+// was; a row this build cannot decode answers the revision a write of it is fenced on with
+// ErrMalformedInterest.
 func (r *Registry) RefreshAt(ctx context.Context, sessionID string) (Interest, uint64, error) {
-	return r.getWithRevision(ctx, sessionID, true)
+	item, revision, err := r.getWithRevision(ctx, sessionID, true)
+	if errors.Is(err, nats.ErrKeyNotFound) {
+		revision = 0
+	}
+	return item, revision, err
 }
 
-// getWithRevision is Get with the bucket revision the record it answers was read at: the revision
-// the copy's fence holds on a cache hit, the entry's own on a bucket read, and 0 for a session the
-// bucket holds no record for. A record this build cannot decode carries its revision too, since
-// the write that replaces it is conditional on it (putInterestAt). A cache hit whose fence belongs
-// to another epoch answers 0 as well (kvwatch.Copy.FenceFor): the write that names it then creates
-// the record, the bucket refuses it for a record it holds (ErrInterestPlanConflict), and the plan
-// made again over the bucket's own row carries the revision that write needs.
+// getWithRevision is Get with the bucket revision the record it answers was read at, the revision
+// a write of the record is fenced on (putInterestAt): the revision the copy's fence holds on a
+// cache hit, and the key's newest entry's on a bucket read (bus.KeyValue.GetLatest). That is the
+// record's own revision for a record the bucket holds, a delete or purge marker's for a record
+// one ended, which answers nats.ErrKeyNotFound at that marker's revision, and 0 only for a session
+// whose key holds no entry at all. A write planned on a deleted record therefore lands only over
+// that very delete, and one planned on no entry only where none was stored since: Get reports a
+// marker as no record and hides its revision, and a create at revision 0 lands over a marker, so
+// a write planned before an unsubscribe or a reap, or abandoned and landing after one, would
+// bring the record back over it. A record this build cannot decode carries its revision too,
+// since the write that replaces it is conditional on it. A cache hit whose fence belongs to
+// another epoch answers 0 as well (kvwatch.Copy.FenceFor): the write that names it is refused
+// over any record the bucket holds (ErrInterestPlanConflict), and the plan made again over the
+// bucket's own row carries the revision that write needs.
 //
 // fromBucket reads the bucket even when the cache holds the record, for a caller whose cache may
 // be behind a write its answer must hold: one whose compare-and-swap the bucket refused, since
@@ -74,13 +87,14 @@ func (r *Registry) getWithRevision(ctx context.Context, sessionID string, fromBu
 		}
 	}
 	kv, epoch := r.watcher.Handle()
-	entry, answered, err := bus.BoundedOn(ctx, kv, func() (nats.KeyValueEntry, error) { return kv.Get(sessionID) })
+	read, answered, err := bus.BoundedOn(ctx, kv, func() (bus.LatestEntry, error) { return kv.GetLatest(sessionID) })
 	if !answered {
 		return Interest{}, 0, fmt.Errorf("read %s's interest record: %w", sessionID, err)
 	}
 	if err != nil {
-		return Interest{}, 0, err
+		return Interest{}, read.Revision, err
 	}
+	entry := read.Entry
 	fresh, err := decodeInterestValue(entry.Value())
 	if err != nil {
 		r.logger().Warn("registry read an interest record it cannot decode",

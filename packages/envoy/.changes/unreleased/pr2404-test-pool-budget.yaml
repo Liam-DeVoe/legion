@@ -7,7 +7,9 @@ body: |-
     of 100. It is a test-only setting: it needs `DISPATCH_TEST_HOOKS=1`, takes a whole number of at
     least 18, and a deployment never sets it, so every deployment's pool sizes are unchanged. The
     Dispatch test harness sets it itself on a server that allows fewer connections than production's
-    sizes need, and refuses, by name, only a server too small for even the smallest pools.
+    sizes need. It refuses, by name, a server too small for even the smallest pools. On a server
+    that scales the pools, it also refuses, by name, each row that runs there and needs production's
+    pool sizes.
 time: 2026-11-15T17:15:23.000000000Z
 custom:
     Issue: pr2404

@@ -8,10 +8,11 @@ import (
 )
 
 // DiscoveryTimeout bounds one discovery read of an issuer. The broker takes its
-// read before it binds its port, so an issuer that accepts the connection and
-// never answers has to refuse the broker's boot rather than hang it: a hung boot
-// serves no health endpoint and reports nothing. The listener reads in the
-// background instead and reads again until a read succeeds
+// reads of the K8s and Google issuers before it binds its port, and its read of
+// the GitHub exchange issuer after the bind but before it serves, so an issuer
+// that accepts the connection and never answers has to refuse the broker's boot
+// rather than hang it: a hung boot serves no health endpoint and reports nothing.
+// The listener reads in the background instead and reads again until a read succeeds
 // (apiVerifier.discover in cmd/listener), so this bounds each of its reads and
 // nothing bounds its wait. Dispatch discovers in the background too
 // (LazyVerifier, discovery.go).

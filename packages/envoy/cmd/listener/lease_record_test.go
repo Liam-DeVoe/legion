@@ -208,3 +208,53 @@ func TestLeaseFormerBootsAreNotChangedByAResumeAfterALapse(t *testing.T) {
 		t.Fatal("a resumed holder names its own boot a former holder")
 	}
 }
+
+// A pod whose term ended, by a step-down or by a release, still counts a released former boot's
+// settle from that term's start: nothing clears termStarted when a term ends, so FormerHolder
+// goes on reporting what is left of ledgerFormerSettle since the start, as it did while the term
+// held. A term end that cleared it would report no time, and the ledger would take over at once
+// an attempt the released boot may still be forwarding, which delivers it twice.
+func TestLeaseFormerHolderCountsFromTheStartOfATermThatEnded(t *testing.T) {
+	const releasedBoot = "00000000000000cc"
+	for _, ending := range []struct {
+		name string
+		end  func(t *testing.T, kv bus.KeyValue, b *lease)
+	}{
+		// Another pod's record over pod-b's: pod-b's next renewal finds it and steps down.
+		{"step-down", func(t *testing.T, kv bus.KeyValue, b *lease) {
+			putLease(t, kv, `{"holder":"pod-d","boot":"00000000000000dd"}`)
+			b.step()
+		}},
+		{"release", func(t *testing.T, kv bus.KeyValue, b *lease) {
+			if err := b.Release(context.Background()); err != nil {
+				t.Fatalf("release: %v", err)
+			}
+		}},
+	} {
+		t.Run(ending.name, func(t *testing.T) {
+			kv := leaseBucket(t)
+			clock := newFakeLeaseClock()
+			putLease(t, kv, `{"holder":"pod-c","boot":"`+releasedBoot+`","released":true}`)
+			b := testLease(kv, "pod-b", productionLeaseConfig(), clock.now)
+			termStart := clock.now()
+			b.step()
+			if !b.Holding() {
+				t.Fatal("pod-b did not take pod-c's released record")
+			}
+			if record, _ := readLease(t, kv); len(record.FormerBoots) != 1 || record.FormerBoots[0].Boot != releasedBoot || !record.FormerBoots[0].Released {
+				t.Fatalf("former_boots after the take = %+v, want pod-c's boot %s alone, released", record.FormerBoots, releasedBoot)
+			}
+			clock.advance(ledgerFormerSettle / 3)
+			ending.end(t, kv, b)
+			if b.Holding() {
+				t.Fatalf("pod-b still holds the lease after its %s", ending.name)
+			}
+			clock.advance(ledgerFormerSettle / 3)
+			want := ledgerFormerSettle - clock.now().Sub(termStart)
+			if gone, settling := b.FormerHolder(releasedBoot); !gone || settling != want {
+				t.Fatalf("pod-b's FormerHolder(pod-c's boot) after its %s = (%v, %s), want (true, %s): what is left of ledgerFormerSettle since its term began",
+					ending.name, gone, settling, want)
+			}
+		})
+	}
+}

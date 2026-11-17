@@ -112,8 +112,8 @@ func (r *Registry) releaseRoleClaims(ctx context.Context, sessionID string, topi
 
 // releaseRoleClaim reads role's claim and, when release authorises freeing it from sessionID
 // (RoleReleaseAuthority.frees), deletes it (releaseReadRoleClaim), the read and the delete each
-// waiting no longer than ctx (bus.BoundedOn). A claim the release does not authorise is left
-// exactly as it stands and is not an error: the session is removing its interests either way,
+// waiting no longer than ctx (bus.BoundedOn). A claim the release does not authorise is not
+// freed and is not an error: the session is removing its interests either way,
 // and a release from another process of that session id, or one that names no process at all,
 // says nothing about the claim the holder's own process still holds. Such a claim is marked
 // handed back where the release is its caller's hand-back of this very role

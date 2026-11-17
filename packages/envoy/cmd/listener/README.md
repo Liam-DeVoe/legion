@@ -36,6 +36,8 @@ Every pod of a machine id, active or standby:
 
 Only the pod holding the machine's **delivery lease** receives the durable consumer, writes its policy, and runs the loops one deliverer runs (`holderLoops`, `main.go`):
 the interest reaper, the role-claim reaper, the session reaper, the interest marker collector, the sweep of the kept role lanes (`startKeptRoleSweep`), the session consumer sweep (`startSessionConsumerSweep`) and, on a listener with the GitHub webhook route, the CI summary loop.
+The one exception is a listener without a lease, whose NATS user lacks the grant for `envoy_listener` (`openDeliveryLease`, `main.go`):
+it does all three with no lease, and receives while no other subscriber holds the durable.
 A standby runs none of them, never creates or updates the durable, and registers no JetStream subscription, so a NATS restart leaves it nothing to re-subscribe.
 
 ### The delivery lease
@@ -47,8 +49,13 @@ At the default 5 minute TTL those 20 minutes are the session TTL and the interes
 Its value is JSON: `holder` (the holding pod's instance), `boot` (random per process start), `deliver_subject`, `service_since`, `acquired_at`, `released`, `former_boots` (below), and `stale_binding`, `unsettled`, `ack_wait_owed` and `receiving` ("Take-over" below);
 a field this build does not know is kept across every rewrite.
 `former_boots` names the boots that held the lease before `holder` (`formerBoots`, `lease_record.go`):
-each entry holds `boot`, `stopped`, the server time that boot stopped holding the lease, and `released`, which is `true` when that boot released the record and is left out when a standby took the record after it expired.
+each entry holds `boot`, `stopped` and `released`.
+`stopped` is not the time that boot stopped holding the lease.
+It is the server time of the write that took the lease from that boot, the `acquired_at` of the record that write made (`acquire`, `lease.go`).
+`released` is `true` when that boot released the record, and is left out when a standby took the record after it expired.
 Each acquisition adds the boot of the record it replaces, and keeps only the boots that stopped less than 70 s before it (`leaseFormerBootAge`), at most the newest 16 (`leaseFormerBootsMax`).
+So the 70 s counts from that take, not from the release.
+A boot that released the record long before a pod took it is still named, and each successor whose record names it waits for its settle (`FormerHolder`, `FormerSettleWait`), as for a recent release.
 A renewal and a release leave the list as it stands.
 
 Beside the lease, a pod that stopped gracefully writes one key per hand-over it saw through:
@@ -369,7 +376,15 @@ During a roll two builds run for one machine id, and each must deliver what the 
   A holder that finds the durable push-bound writes the policy only once that binding has ended, unless its term must settle: such a term writes it beside the binding, which it counts as an earlier holder's ("Take-over" above).
 
 - **A session's consumer takes what its filter captures.**
-  A relay's restart writes the filter this build compiles for the session's followed topics, and a consumer keeps its position when its filter changes, so a topic either build knows is delivered from the sequence the session had reached.
+  A relay's restart writes the filter from the session's followed topics: each one a consumer can filter on, whatever either build's stream subjects capture (`sessionConsumerFilter`, `bus.SessionConsumerFilters`).
+  A consumer keeps its position when its filter changes, so a topic either build knows is delivered from the sequence the session had reached.
+  A topic no stream subject captures yet is in the filter too, and a registration stores it with a warning (`contracts.UncapturedTopicWarning`).
+  Once the newer build's start adds a subject that captures it, the consumer delivers what the stream stores on it.
+  A topic left out until the next registration would lose every message the stream stored on it in between, because the consumer moves past a message its filter does not match.
+
+- **A publish on a topic only the newer build captures is stored.**
+  The publish route refuses a topic as reaching no session only on a read of the stream's subjects that started after the request asked (`bus.SubjectsAsk.Uncaptured`), and refuses nothing when no such read can be made, so the older pod stores such a publish too.
+  The one exception is a pod whose NATS user may not read the stream: it refuses on the subjects it holds.
 
 - **Fields a build does not know are kept.**
   Session registrations, interests, role claims and the lease record keep every JSON field they carry across every read-modify-write, and a known-session record (`session.KnownSession`) across every rewrite this listener makes of its copy of it.

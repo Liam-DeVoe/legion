@@ -7,9 +7,12 @@ body: |-
     lease every second by compare-and-set and subscribes to the durable's deliver subject with a core
     subscription of its own, never `nats.Bind`, handling a message only while it holds the lease; a
     standby polls every 500 ms and takes an unreleased lease once it has not changed for 5 s, a
-    released one at once. Every pod serves `/v1`, the webhooks and the role lane; the interest,
+    released one at once. Every pod serves `/v1`, the webhooks and the role lane. The interest,
     role-claim and session reapers, the interest marker collector, the sweep of the kept role
-    lanes, the session consumer sweep and the CI summary loop run on the holder alone. A standby
+    lanes, the session consumer sweep and, on a listener with the GitHub webhook route, the CI
+    summary loop run only on the pod that receives the durable. That pod is the lease holder, or a
+    listener without a lease, which is a listener whose NATS user lacks the grant for
+    `envoy_listener`. A standby
     waits for as long as the active pod runs and never exits for it. A graceful
     stop now ends receiving first and then stops HTTP: the holder-only loops stop, the handler
     takes no more messages, the message in hand gets 3 s before its handling is cancelled, every

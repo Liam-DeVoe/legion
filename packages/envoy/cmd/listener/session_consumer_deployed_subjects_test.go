@@ -16,10 +16,10 @@ import (
 // A topic under a subject only a newer build's stream carries (notifications.x.>, which this build
 // does not compile) is registered through this build's listener with no warning, and the session's
 // consumer filters on it, so a message stored on it while the two builds run is the consumer's to
-// deliver. The registration route and the consumer filter judge the one deployed stream: a route
-// that stored the topic and a filter that left it out would answer the session 200 for a topic it
-// is never delivered. A topic no stream captures is still left out of the registration with the
-// warning, and out of the filter.
+// deliver. A topic no stream captures is registered and filtered on too, with the warning that
+// nothing is delivered on it until a stream subject captures it: the registration route and the
+// consumer filter keep every followed notification topic, so a route that stored the topic and a
+// filter that left it out can never answer the session 200 for a topic it is not delivered.
 func TestSessionConsumerFiltersOnATopicOnlyTheDeployedStreamCaptures(t *testing.T) {
 	const (
 		sessionID  = "ses_deployed_subject"
@@ -50,15 +50,15 @@ func TestSessionConsumerFiltersOnATopicOnlyTheDeployedStreamCaptures(t *testing.
 	if err := json.Unmarshal([]byte(raw), &answer); err != nil {
 		t.Fatalf("decode the registration's answer %s: %v", raw, err)
 	}
-	if want := []string{contracts.UncapturedTopicRefusal(uncaptured, sessionID)}; !slices.Equal(answer.Warnings, want) {
+	if want := []string{contracts.UncapturedTopicWarning(uncaptured, sessionID)}; !slices.Equal(answer.Warnings, want) {
 		t.Fatalf("warnings = %q, want only %q: %s is captured by the deployed stream and %s by no stream", answer.Warnings, want, captured, uncaptured)
 	}
-	if !slices.Contains(answer.Topics, captured) || slices.Contains(answer.Topics, uncaptured) {
-		t.Fatalf("answered topics = %v, want %s among them and %s not", answer.Topics, captured, uncaptured)
+	if !slices.Contains(answer.Topics, captured) || !slices.Contains(answer.Topics, uncaptured) {
+		t.Fatalf("answered topics = %v, want %s and %s among them", answer.Topics, captured, uncaptured)
 	}
-	want := []string{contracts.AgentSubject(sessionID), captured}
+	want := []string{contracts.AgentSubject(sessionID), uncaptured, captured}
 	if got := rig.filters(t, sessionID); !slices.Equal(got, want) {
-		t.Fatalf("consumer filters %v, want %v: the filter must carry the topic the registration stored, and leave out the one it did not", got, want)
+		t.Fatalf("consumer filters %v, want %v: the filter must carry every topic the registration stored", got, want)
 	}
 
 	rig.store(t, captured)
@@ -153,10 +153,13 @@ func TestADeliveryExceptionOnALaneOnlyTheDeployedStreamCapturesIsStoredOnce(t *t
 // A delivery exception on a lane only a subject added since the listener last read the deployed
 // stream's subjects captures - a newer build's start adding its own during a roll - is stored under
 // its one-copy message id too: publishDeliveryException judges the lane as its publish's transport
-// does, on a fresh read of the subjects (bus.Client.PublishTakesJetStream), not on the subjects its
-// client holds, which the row proves stale before the exception. The same exception handed twice,
-// as two listeners each raise it for one stored message from their own durables, is stored once,
-// under exception.<reason>.<origin>.
+// does (bus.Client.PublishTakesJetStream): on a read of the subjects again where the client's own
+// leave the lane uncaptured, made here because no read of them has ended in the last 250 ms and
+// none is in flight, and not on the subjects its client holds, which the row proves stale before
+// the exception. Inside that gap, or while a read younger than 2 s is in flight, the transport
+// reads nothing and answers on the subjects held. The same exception handed twice, as two
+// listeners each raise it for one stored message from their own durables, is stored once, under
+// exception.<reason>.<origin>.
 //
 // Judged on the subjects the client held, the first exception went to Publish, whose transport read
 // the subjects again and stored it under the exception's own dedupe key; that read was kept, so the

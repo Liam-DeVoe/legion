@@ -14,9 +14,9 @@ import (
 
 // kvOperationHeader is the header nats.go marks a KV delete or a KV purge marker with, and
 // kvDeleteMarker and kvPurgeMarker are the two values it writes (nats.go@v1.53.1 kv.go:304-306).
-// A read that takes a key's newest message from the bucket's stream itself (GetFromLeader) reads
-// them for itself, where nats.go's Get reads them on its caller's behalf and reports either
-// marker as a key that is not there.
+// A read that takes a key's newest message from the bucket's stream itself (GetFromLeader, and
+// the marker read of KeyValue.GetLatest) reads them for itself, where nats.go's Get reads them on
+// its caller's behalf and reports either marker as a key that is not there.
 const (
 	kvOperationHeader = "KV-Operation"
 	kvDeleteMarker    = "DEL"

@@ -9,11 +9,14 @@
 // ServerConnections plus the reserve, as a literal that testlimits_test.go holds to
 // ServerConnections: one connection per process short of FullSizeServerConnections, so each
 // process there runs its pools scaled to a budget one connection under production's. And every
-// start of a Dispatch process in cmd/dispatch's tests is checked against MaxProcessesAtOnce and
-// against the server it meets (cmd/dispatch/connection_ceiling_test.go): a server smaller than
+// start of a Dispatch server process in cmd/dispatch's tests is checked against MaxProcessesAtOnce
+// and against the server it meets (cmd/dispatch/connection_ceiling_test.go): a server smaller than
 // FullSizeServerConnections gives each process a connection budget its pools scale to
 // (PoolBudget), and a server too small for even the smallest pools refuses the start by name,
-// rather than as a 53300 refusal inside a room, a lease or a socket.
+// rather than as a 53300 refusal inside a room, a lease or a socket. Two runs of the binary are
+// not checked: TestDispatchRefusesAListenFDThatIsNotASocketAndBindsNothing, which exits before it
+// reads its database, and startRedeliverWebhooks (cmd/dispatch/multiprocess_test.go), whose
+// redeliver-webhooks run opens store.Open at production's sizes and is counted by nothing.
 package testlimits
 
 import (
@@ -41,7 +44,8 @@ const MaxProcessesAtOnce = 4
 
 // RequiredConnections is what MaxProcessesAtOnce Dispatch processes would open together at
 // production's pool sizes as a deployment runs them, store.ConnectionsPerProcess each: without the
-// test hooks' listener every process a test starts holds besides (store.ConnectionsPerTestProcess).
+// test hooks' listener a process started with DISPATCH_TEST_HOOKS=1 holds besides
+// (store.ConnectionsPerTestProcess), which the memory harness's processes do not hold.
 const RequiredConnections = MaxProcessesAtOnce * store.ConnectionsPerProcess
 
 // SuiteHeadroom is the connections a test suite opens outside any Dispatch process: each
@@ -72,14 +76,16 @@ func MinServerConnections() int { return MaxProcessesAtOnce*store.MinBudget() + 
 
 // PoolBudget is how many connections each Dispatch process a test starts may open on a server that
 // allows maxConnections with reserved of them kept for superusers. It is zero on a server that
-// allows FullSizeServerConnections beyond its reserve, as every CI lane's does: there every process
-// runs production's pool sizes, the test hooks' listener beside them. On a smaller server, such as a
-// pod's test server (ServerConnections) or a Postgres at its default of 100, it is
-// that server's share for one of MaxProcessesAtOnce processes beside SuiteHeadroom,
+// allows FullSizeServerConnections beyond its reserve, as every CI lane's does that runs these
+// tests: there every process runs production's pool sizes, beside the test hooks' listener of
+// each process started with DISPATCH_TEST_HOOKS=1 (the memory harness's processes hold none). On
+// a smaller server, such as a pod's test server (ServerConnections) or a Postgres at its default
+// of 100, it is that server's share for one of MaxProcessesAtOnce processes beside SuiteHeadroom,
 // (maxConnections - reserved - SuiteHeadroom) / MaxProcessesAtOnce rounded down, which the test
-// harness hands each process it starts (DISPATCH_TEST_POOL_BUDGET) and the process scales its pools
-// to (store.OpenWithin). A share below store.MinBudget is refused, and the error names the
-// max_connections the server needs.
+// harness hands each process it starts through startDispatchProcessWith
+// (DISPATCH_TEST_POOL_BUDGET) and the process scales its pools to (store.OpenWithin). The memory
+// harness hands no budget: it refuses a scaled server instead (requireProductionPools). A share
+// below store.MinBudget is refused, and the error names the max_connections the server needs.
 func PoolBudget(maxConnections, reserved int) (int, error) {
 	if maxConnections-reserved >= FullSizeServerConnections {
 		return 0, nil
