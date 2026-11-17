@@ -115,12 +115,8 @@ func (s *server) putIssueStepRating(w http.ResponseWriter, r *http.Request) {
 // written, and the record is answered as the read lists it. rates is the rating route, which
 // refuses a write that names no rating.
 func (s *server) writeIssueStep(w http.ResponseWriter, r *http.Request, write workflowstore.StepWrite, supplied *model.Actor, rates bool) {
-	actor, ok := s.requireActor(w, r, supplied)
+	actor, key, ok := s.requireIssueDaemon(w, r, supplied, "a step record")
 	if !ok {
-		return
-	}
-	key := r.PathValue("key")
-	if !requireIssueDaemon(w, actor, key, "a step record") {
 		return
 	}
 
@@ -172,19 +168,25 @@ func (s *server) writeIssueStep(w http.ResponseWriter, r *http.Request, write wo
 	WriteJSON(w, http.StatusOK, record)
 }
 
-// requireIssueDaemon answers whether actor is the writer of the records of the issue key: the
-// session of its project's Legion daemon, by the rule of the daemon's own DaemonSession
+// requireIssueDaemon is the prelude of every record write: the caller's actor (requireActor) and
+// the issue key of the path, where the actor is the writer of the records of that issue, the
+// session of its project's Legion daemon by the rule of the daemon's own DaemonSession
 // (packages/daemon/internal/dispatch/client.go), legion-daemon: and the part of the key before
 // its first hyphen. It refuses any other writer 403 STEP_WRITER, naming what record and whose.
-func requireIssueDaemon(w http.ResponseWriter, actor model.Actor, key, record string) bool {
+func (s *server) requireIssueDaemon(w http.ResponseWriter, r *http.Request, supplied *model.Actor, record string) (model.Actor, string, bool) {
+	actor, ok := s.requireActor(w, r, supplied)
+	if !ok {
+		return model.Actor{}, "", false
+	}
+	key := r.PathValue("key")
 	project, _, _ := strings.Cut(key, "-")
 	writer := legionDaemonSessionPrefix + project
 	if actor.Kind != "session" || actor.ID != writer {
 		writeError(w, codeStepWriter, http.StatusForbidden,
 			fmt.Sprintf("only the session %s writes %s of %s", writer, record, key))
-		return false
+		return model.Actor{}, "", false
 	}
-	return true
+	return actor, key, true
 }
 
 // lockRecordedIssue reads the issue a record is written to, under the key-share lock and with no
