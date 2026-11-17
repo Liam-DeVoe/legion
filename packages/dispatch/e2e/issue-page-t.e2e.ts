@@ -676,9 +676,9 @@ test("the first load reads the tree once and a filter its view once", async ({ b
   });
 });
 
-// c-tree-requests' Decisions clause, owed on G2: the decisions read moves onto the tree read's
-// `view=decisions`, which the load does not send and the first press of Decisions in a load sends
-// once; the decisions document's blocks are read at most once in a load.
+// c-tree-requests' Decisions clause, owed until the server serves the tree read's Decisions view:
+// the load sends no Decisions view read, the first press of Decisions in a load sends it once, and
+// no press reads any document's blocks.
 // SLOW(>=2s): the whole seeded issue, its load waited out to a 1.5 s quiet window, and Decisions
 // pressed on and off twice with each press waited out.
 test("the first load reads the tree once and a filter its view once, and Decisions reads its view once when pressed @owed", async ({
@@ -694,7 +694,7 @@ test("the first load reads the tree once and a filter its view once, and Decisio
       await pressFilter(page, traffic, "decisions");
       const pressed = traffic.requests.slice(from);
       if (press === 1) {
-        owedUnless(decisionsViewGate(pressed, seeded.key));
+        owedUnless(decisionsViewGate([...load, ...pressed], seeded.key));
         expect(
           treeReads(load, seeded.key, "decisions"),
           "the load sends no Decisions view read"
@@ -704,15 +704,7 @@ test("the first load reads the tree once and a filter its view once, and Decisio
         treeReads(pressed, seeded.key, "decisions"),
         "Decisions sends its view read once, on its first press in the load"
       ).toBe(press === 1 ? 1 : 0);
-      const blocks = blocksReads(pressed);
-      expect(
-        blocks.filter((path) => !path.includes(seeded.decisionsArtifactId)),
-        "Decisions reads no blocks but the decisions document's"
-      ).toEqual([]);
-      expect(
-        blocks.length,
-        "Decisions reads the decisions document once in a load, as part Q does until part U"
-      ).toBeLessThanOrEqual(press === 1 ? 1 : 0);
+      expect(blocksReads(pressed), "Decisions reads no document's blocks").toEqual([]);
       await releaseFilter(page, "decisions");
     }
   });

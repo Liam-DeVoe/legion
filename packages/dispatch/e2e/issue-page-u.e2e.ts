@@ -329,18 +329,19 @@ async function readRowOne(
   expect(answer.converted, "the tree read answers converted: true").toBe(true);
 
   // (1) The decisions are the tree read's: the load sends no read of the decisions route, no
-  // document's blocks and no Decisions view, and Decisions pressed sends its view read once.
+  // document's blocks and no Decisions view, and Decisions pressed sends its view read once and no
+  // read of the decisions route or of any document's blocks.
   const loadSent = decisionsSent(load, key);
   const pressSent = decisionsSent(pressed, key);
   expect(
     {
       load: loadSent,
-      pressed: { decisions: pressSent.decisions, views: pressSent.views },
+      pressed: { blocks: pressSent.blocks, decisions: pressSent.decisions, views: pressSent.views },
     },
     "the page sends no decisions read"
   ).toEqual({
     load: { blocks: [], decisions: [], views: 0 },
-    pressed: { decisions: [], views: 1 },
+    pressed: { blocks: [], decisions: [], views: 1 },
   });
 
   // (2) The four parts hold the seed's decisions in the view's order, each reading its state from

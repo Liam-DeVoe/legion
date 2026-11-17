@@ -463,7 +463,7 @@ function isReading(row: Decision, answered: ReadonlySet<string>): boolean {
 }
 
 /** How a decision stands (`NODE_STATE_WORDS.decision`), read as the tree reads it
- *  (`tree-drafts.ts`'s `decisionState`): replaced first, then a change a person asked for, then
+ *  (`tree-nodes.ts`'s `reviewState`): replaced first, then a change a person asked for, then
  *  waiting for review, then kept as it reads now. A decision in none of them draws no state. */
 function standingOf(row: Decision, changed: boolean): DecisionState | undefined {
   if (row.replaced) return "replaced";

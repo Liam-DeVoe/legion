@@ -466,11 +466,26 @@ test("Keep leaves a tree read in flight to finish and reads the tree again after
   );
   try {
     void client.refetchQueries({ exact: true, queryKey: issueTreeKey(KEY) });
-    await waitFor(() => expect(tree).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(tree, "no tree read was in flight before the Keep").toHaveBeenCalledTimes(1)
+    );
     await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.keep_decision }));
-    await waitFor(() => expect(keep).toHaveBeenCalledTimes(1));
-    await waitFor(() => expect(client.getQueryState(issueTreeKey(KEY))?.isInvalidated).toBe(true));
+    await waitFor(() => expect(keep, "the Keep was never sent").toHaveBeenCalledTimes(1));
+    // The Keep's mutation lands only once its `onSettled` has run, however that reads the tree.
+    await waitFor(() =>
+      expect(
+        client
+          .getMutationCache()
+          .getAll()
+          .map((mutation) => mutation.state.status),
+        "the Keep never landed"
+      ).toEqual(["success"])
+    );
     expect(signals[0]?.aborted, "the Keep cut off the tree read in flight").toBe(false);
+    expect(
+      client.getQueryState(issueTreeKey(KEY))?.isInvalidated,
+      "the Keep did not mark the tree to be read again"
+    ).toBe(true);
     expect(tree, "the Keep started a tree read beside the one in flight").toHaveBeenCalledTimes(1);
 
     await act(async () => {
