@@ -79,7 +79,11 @@ import (
 // step (20261117004117) creates a table of its own and touches no outbox_kind_check, and so does
 // the plan of an issue (20261117034837), which creates the three tables of the plan and adds
 // `phases.step_task`, `phases.step_place` and `pull_requests.task`, each at a default that every
-// row it finds reads as no plan (migration_20261117034837_test.go).
+// row it finds reads as no plan (migration_20261117034837_test.go). The copies of a plan's tasks
+// (20261117194044) stand above it and need its table: they add `plan_tasks.branch` and
+// `plan_tasks.join_conflicts` at defaults every row reads as the issue's own branch and no
+// conflicted join, create `plan_branches`, and restate the plan record's kinds with task_branch,
+// so that list is the last word of outbox_kind_check now (migration_20261117194044_test.go).
 var thisBranchsMigrations = []int{
 	20261029120000, 20261029120100, 20261029120200, 20261029120300, 20261029120400,
 	20261029120600, 20261029120700, 20261029120800, 20261029120900, 20261029121000,
@@ -88,6 +92,7 @@ var thisBranchsMigrations = []int{
 	20261111214351, 20261111225552, 20261112070503, 20261112180548, 20261113082214, 20261113082415,
 	20261113090512, 20261113110610, 20261113181500, 20261113182000, 20261114020537, 20261114031356,
 	20261114061900, 20261116234034, 20261117000528, 20261117004117, 20261117023932, 20261117034837,
+	20261117194044,
 }
 
 // mainsNewestMigration is the newest version main carries, the cause a claim records for its
