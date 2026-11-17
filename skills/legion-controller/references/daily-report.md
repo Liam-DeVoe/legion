@@ -91,6 +91,12 @@ every issue by its `dispatch://` link and what it does for the reader, every pul
   An entry with `backgroundSince` is a worker whose own background work has stood past `worker_background_hours`,
   which the daemon does not prompt.
   Name it with how long that work has stood, counted from `backgroundSince`.
+- **Architects that do not take their work, and runs of provider errors.** Each root an
+  `architect-stalled` wake named since the previous report, with the arm its `reason` begins with,
+  what you did on it, and, for a root that waits on a person, what it waits on
+  (`issues.<KEY>.waitingOn`). Then each claim a `provider-errors` wake named, with its role, the
+  run and its model. `skill://legion-controller/references/wakes.md` says, for each of the two
+  wakes, when you name it here. With none, say nothing of them.
 - **Waiting on a person.** Each tree whose next step waits on a person's answer, with that ask's
   `dispatch://` reference, while the ask is open. Each row of the weekly plan that moved nothing,
   because no person's request stands behind it, with its deferral ask's `dispatch://` reference,

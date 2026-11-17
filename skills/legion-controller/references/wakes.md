@@ -526,7 +526,7 @@ answers; a claim that moved is otherwise answered as that second read finds it. 
 
 Read the mention and its artifact. Answer a mention that asks you for triage or for information
 that `read_state` or Dispatch holds.
-Any other is for the architect of the tree that owns its issue, and you forward no message.
+Any other is for the architect of the tree that owns its issue, and you forward no agent's message.
 Write the person's words, the mention's URL and the issue key you checked as a Dispatch comment
 on the owning issue, with `--mention 'role:<token>'`: the token
 `issues.<ROOT>.architect.locator.claim` names for the tree's root in `read_state`, or, when it
