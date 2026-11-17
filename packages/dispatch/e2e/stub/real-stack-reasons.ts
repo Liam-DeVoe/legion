@@ -183,6 +183,8 @@ export const realStackReasons: Record<string, string> = {
     "the seed's approvals, claim, blockers and pins are the server's own, and one row writes each control's value through Dispatch and reads it back after a reload",
   "issue-page-m.e2e.ts":
     "the history reads the issue's event log and its live stream, the people rows read the fake listener's subscriptions and Legion's record, and every row signs in for real with the new page turned on by that login's stored preference",
+  "issue-page-p.e2e.ts":
+    "each row writes the header's issue, its questions and its approval requests through the server and reads back what the header's controls write: the title, the status, the priority, the pin and an approval",
   "issue.e2e.ts":
     "asserts the fake Envoy's state across resets; status writes re-read; writes persisted and re-read",
   "judged-grant.e2e.ts":

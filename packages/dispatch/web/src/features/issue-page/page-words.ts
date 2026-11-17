@@ -665,6 +665,9 @@ export const ANSWER_LINES = freeze({
    *  (`details-more.tsx`, dispatch://INFRA-3948 R5): today's issue header's words, with Retry
    *  beside them. */
   unsubscribe_failed: "Could not unsubscribe this agent.",
+  /** What a decision's Change form says when Dispatch refused its send, whatever the server
+   *  answered: the reader's words stay in the field, to send again (`DecisionActions.tsx`). */
+  change_not_sent: "Could not send the change.",
   /** What a control says while its own write is out: Dispatch has not answered, so none of
    *  these says the thing is done. */
   saving_close: "Closing…",

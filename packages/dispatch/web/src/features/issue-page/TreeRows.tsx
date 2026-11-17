@@ -50,8 +50,8 @@ export function TreeRows({
   /** The row the reader is editing in and the document its editor belongs to. */
   editing: { readonly artifactId: string; readonly row: string } | undefined;
   /** The key of the row whose body and acts the focus opened: the row that holds the focus, or
-   *  the one it left for another control of the page, which keeps them drawn until another row
-   *  takes the focus or Escape is pressed (`IssueTree.tsx`'s `useReleaseFocus`). */
+   *  the one a press on another control of the page took it from, which keeps them drawn until
+   *  that press has ended (`IssueTree.tsx`'s `useReleaseFocus`). */
   focused: string | undefined;
   isClosed: boolean;
   onFocus: (row: string, node: TreeNode) => void;
@@ -71,7 +71,8 @@ export function TreeRows({
   /** Each thread's newest write by the node that draws it (`threadMarks`). */
   threads: ReadonlyMap<string, ThreadMark>;
   /** The key of the row that, focused, does not place itself on screen (`NodeRow`'s
-   *  `placesItself`): the outline's first row the page opens on, until the reader acts. */
+   *  `placesItself`): the outline's first row the page opens on, until the reader acts, and the
+   *  row the reader is editing in, which the editor's caret places (decision 123). */
   unplaced: string | undefined;
 }): ReactNode {
   // Each row's author by the page's one rule for naming one (`AgentText.author`), read once for
