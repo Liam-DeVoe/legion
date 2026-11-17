@@ -385,8 +385,8 @@ func TestTwoPutsOfOneStepAtOneTimeKeepBoth(t *testing.T) {
 	handler := newTestHandler(t)
 	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	daemon := daemonSession("LEG")
-	start := with(stepIdentity(daemon), map[string]any{"agent": "legion-leg-leg-1-implementer", "started_at": stepStart})
-	end := with(stepIdentity(daemon), map[string]any{"result": "passed", "ended_at": stepEnd, "model": "anthropic/claude-opus-5"})
+	start := implementerStart(daemon)
+	end := implementerEnd(daemon, "passed", stepEnd)
 
 	const rounds = 20
 	ids := make([]string, rounds)
