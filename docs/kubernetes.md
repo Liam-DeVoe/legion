@@ -93,18 +93,25 @@ It carries:
 
   The loader refuses one value without the other, naming both, a repository that is no `owner/name`, and a checker that is not 64 lowercase hex digits.
   A daemon before the setting refuses the `leak_check` key and ignores the two variables, so a deployment sets the variables first and the release that reads them follows.
-  The pod's launcher names that pin in its hello, and the daemon reads the check at that tag from the named repository with a read-only token of its own, which its implement App mints for that repository's owner alone (`leakCheckToken`, `internal/daemon/kubernetes.go`).
+
+- the shared check's way into a pod, which takes the setting above:
+  the pod's launcher names its pin in its hello, and the daemon reads the check at that tag from the named repository with a read-only token of its own, which its implement App mints for that repository's owner alone (`leakCheckToken`, `internal/daemon/kubernetes.go`).
   The daemon reads each tag once and keeps that copy in its memory (`leakguard.Source`).
   It pushes the check's directory to the launcher before it sends a saved workspace bundle or any start (`serveLeakCheck`, `internal/runtime/sandbox/launcher.go`).
   The launcher installs it once per launcher process, before any role starts:
   it unpacks the check into a staging directory, records the tag there, runs the check once with `--help` to see that it names its own shapes, and renames the result over `/legion/scratch/leak-check/` (`checkInstall`, `internal/launcher/leakcheck.go`).
-  Every role is told that copy as `PUBLIC_LEAK_CHECK`, and the checker as `LEGION_LEAK_CHECK_SHA256` (`mainEnvironment`, `internal/runtime/sandbox/manifest.go`, which names the install's own constant).
-  A `legion gh` call that writes nothing is read by the check alone only under a check whose `public_leak_check.py` hashes to that checker; under any other it gets the whole guard.
+  Every role is told that copy as `PUBLIC_LEAK_CHECK`, and the checker as `LEGION_LEAK_CHECKER_SHA256` (`mainEnvironment`, `internal/runtime/sandbox/manifest.go`, which names the install's own constant).
+  The role's name for the checker is not the daemon's, so a configuration a role loads, `legion start --check-config` among them, never reads one half of the daemon's setting without the other.
+  A `legion gh` call that writes nothing is read by the check alone only where that checker is the sha256 this release's read rule was proven against (`ghReadsProvenCheck`, `cmd/legion/gh_reads.go`) and the check's `public_leak_check.py` hashes to it; under any other check, and under another checker or none, it gets the whole guard.
   Each role's `legion worker-shim` only reads the install, and starts no agent when the install is absent or records another tag (`spawnOnce`, `internal/shim/shim.go`).
   Where the environment names no check, the shim names the install for everything it starts.
   The pod holds no credential for that repository and reads no repository mapping.
-  A deployment that names no check runs none: the daemon logs once at boot that the deployment leak check is not configured, naming the two variables; it pushes no check to any launcher, whatever pin its hello names; its roles are told neither `PUBLIC_LEAK_CHECK` nor the checker, so each shim reads no install and starts its agent; and a write with no check named anywhere is not refused for the check's absence, the guard's visibility read and this repository's own private-name rules still running over it.
-  A launcher whose process installed its pin says so in its hello and is pushed nothing, and a launcher of an older image names no tag and is pushed nothing.
+
+- a deployment that names no check, which runs none:
+  the daemon logs once at boot that the deployment leak check is not configured, naming the two variables; it pushes no check to any launcher, whatever pin its hello names; its roles are told neither `PUBLIC_LEAK_CHECK` nor the checker, so each shim reads no install and starts its agent; and a write with no check named anywhere is not refused for the check's absence, the guard's visibility read and this repository's own private-name rules still running over it.
+
+- the check's launches, rollbacks and tmux panes:
+  a launcher whose process installed its pin says so in its hello and is pushed nothing, and a launcher of an older image names no tag and is pushed nothing.
   A new launcher process installs over what the directory held, so the controller's persistent volume never keeps an old check.
   A start whose check could not be installed is never sent, and is charged as a launch failure.
   The claim then carries the refusal's sentence as `leakCheckCause`, which begins `the shared public leak check could not be installed:` and says what failed.
@@ -112,9 +119,11 @@ It carries:
   an older daemon pushes nothing and tells no checker, so a new image's shim starts the role, and every write it makes is refused for the check its environment names and its pod does not hold.
   A tag of that repository is not protected, so a tag that is force-moved is served from the daemon's earlier copy until the daemon restarts.
   A tmux pane installs nothing, because no pin is set there and such a machine carries the check through the check's own installer.
-  The daemon resolves that machine's check once per launch and tells the pane where it is, and the checker as `LEGION_LEAK_CHECK_SHA256` where the deployment names one (`docs/deployment.md`, "What a pane's `gh`, `git` and `jj` are").
+  The daemon resolves that machine's check once per launch and tells the pane where it is, and the checker as `LEGION_LEAK_CHECKER_SHA256` where the deployment names one (`docs/deployment.md`, "What a pane's `gh`, `git` and `jj` are").
   A pane told a checker and no check refuses its public writes; a pane of a deployment that names no check refuses none for the check's absence.
-  What a role sees when a write is refused is a command that wrote nothing and one of two lines on standard error:
+
+- what a role sees when a write is refused:
+  a command that wrote nothing and one of two lines on standard error:
   `LEAK CHECK: refusing <the write>`, with a line under it naming the record and the class and never the text that matched, which is a name in the write; or `LEAK CHECK SETUP ERROR: <the write>: <what could not be made to run>`, which is a broken pod and not a name in the write at all.
   `legion leak-check` exits 0 for a write the guard cleared, 3 for one it refused and 2 for a check it could not make run — the shared check's own statuses — and git stops the push on any of them but the first.
   `scripts/e2e/leak-guard-image-job.sh` drives all of this on a published digest, as one Job of this section's own shape ([Running a workload in the cluster from a role](#running-a-workload-in-the-cluster-from-a-role));
