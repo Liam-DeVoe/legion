@@ -373,11 +373,13 @@ func (p *HTTPPublisher) ReadSessionRegistration(ctx context.Context, session str
 // `holder_state`, `unresponsive` or `gone`, since the claim stands until the role claim reaper
 // takes it, or `lapsed` where an older listener names no state; on the 404 of a role no claim
 // names, reason roleholder.Unclaimed, no holder at all. A 200 is read within answerBodyLimit, an
-// error body within refusalBodyLimit. Every other answer — another status, a body it cannot
-// read, a 404 that names no holder under any other reason, and a listener it cannot reach — is an
-// error, which the caller reads as an answer it does not have: the daemon's forget of a session
-// its claim does not hold refuses on one, and on every holder it names that is that session
-// (supervise.Deps.RoleHolder).
+// error body within refusalBodyLimit. Every other answer is an error, which the caller reads as
+// an answer it does not have: the daemon's forget of a session its claim does not hold refuses on
+// one, and on every holder it names that is that session (supervise.Deps.RoleHolder). An answer
+// the listener gives the same way however often it is asked — a body it cannot read, a 404 naming
+// no holder under any reason but unclaimed, and any status but 200, 404 and the transient ones —
+// is a *RoleLookupRefused, a fault an operator fixes; a listener it cannot reach, and a 429, 502,
+// 503 or 504 (writeBusUnavailable's 503 among them), is a plain error that asking again can clear.
 func (p *HTTPPublisher) RoleHolder(ctx context.Context, role string) (holder, state string, err error) {
 	target := fmt.Sprintf("%s/v1/roles/%s", p.baseURL, url.PathEscape(role))
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
@@ -392,6 +394,9 @@ func (p *HTTPPublisher) RoleHolder(ctx context.Context, role string) (holder, st
 		return "", "", fmt.Errorf("look up the holder of role %s: %w", role, err)
 	}
 	defer response.Body.Close()
+	refused := func(reason string) error {
+		return fmt.Errorf("look up the holder of role %s: %w", role, &RoleLookupRefused{Status: response.StatusCode, Reason: reason})
+	}
 	if response.StatusCode == http.StatusOK {
 		body, readErr := io.ReadAll(io.LimitReader(response.Body, answerBodyLimit))
 		var answer struct {
@@ -399,15 +404,16 @@ func (p *HTTPPublisher) RoleHolder(ctx context.Context, role string) (holder, st
 			HolderState string `json:"holder_state"`
 		}
 		if readErr != nil || json.Unmarshal(body, &answer) != nil || answer.Holder == "" {
-			return "", "", fmt.Errorf("look up the holder of role %s: the listener's answer names no holder: %s", role, excerpt(body))
+			return "", "", refused("the listener's answer names no holder: " + excerpt(body))
 		}
 		return answer.Holder, cmp.Or(answer.HolderState, "live"), nil
 	}
 	body, readErr := io.ReadAll(io.LimitReader(response.Body, refusalBodyLimit))
-	if response.StatusCode == http.StatusNotFound {
+	switch response.StatusCode {
+	case http.StatusNotFound:
 		var refusal RoleRefusal
 		if readErr != nil || json.Unmarshal(body, &refusal) != nil {
-			return "", "", fmt.Errorf("look up the holder of role %s: the listener's 404 is unreadable: %s", role, excerpt(body))
+			return "", "", refused("the listener's 404 is unreadable: " + excerpt(body))
 		}
 		switch {
 		case refusal.Holder != "":
@@ -415,10 +421,26 @@ func (p *HTTPPublisher) RoleHolder(ctx context.Context, role string) (holder, st
 		case refusal.Reason == roleholder.Unclaimed:
 			return "", "", nil
 		}
-		return "", "", fmt.Errorf("look up the holder of role %s: the listener's 404 names no holder and gives reason %q, not %q: %s",
-			role, refusal.Reason, roleholder.Unclaimed, excerpt(body))
+		return "", "", refused(fmt.Sprintf("the listener's 404 names no holder and gives reason %q, not %q: %s", refusal.Reason, roleholder.Unclaimed, excerpt(body)))
+	case http.StatusTooManyRequests, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		return "", "", fmt.Errorf("look up the holder of role %s: listener returned %s: %s", role, response.Status, excerpt(body))
 	}
-	return "", "", fmt.Errorf("look up the holder of role %s: listener returned %s: %s", role, response.Status, excerpt(body))
+	return "", "", refused(fmt.Sprintf("listener returned %s: %s", response.Status, excerpt(body)))
+}
+
+// RoleLookupRefused is a role lookup the listener answered the same way however often it is
+// asked (RoleHolder): a wrong bearer (401, 403), a claim record it cannot decode (500), a body
+// this client cannot read, or a 404 naming no holder under a reason it does not know. Status is
+// the answer's HTTP status and Reason what was wrong with it. Asking again changes nothing until
+// an operator fixes the listener or the daemon's bearer, so a caller that retries on a backoff
+// logs it as the fault it is rather than as a wait.
+type RoleLookupRefused struct {
+	Status int
+	Reason string
+}
+
+func (e *RoleLookupRefused) Error() string {
+	return fmt.Sprintf("the Envoy listener refuses the role lookup (status %d): %s", e.Status, e.Reason)
 }
 
 // excerpt is body as an error names it: trimmed, and no longer than refusalBodyLimit.

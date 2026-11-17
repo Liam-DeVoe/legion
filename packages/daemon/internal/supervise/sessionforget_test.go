@@ -3,10 +3,13 @@ package supervise
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/notify"
+	"github.com/sjawhar/legion/daemon/internal/wait"
 )
 
 // A session a claim records but does not hold is cleared only once the Envoy listener no longer
@@ -18,7 +21,9 @@ import (
 // refused while the listener names the cleared session as the role's holder in any state (live,
 // unresponsive, gone, or lapsed with no state from an older listener), and while the listener
 // gives no answer, and the refusal names the claim to suspend, and how long the wait after it
-// takes. It names that claim only when the refused name is the session id the listener names: a
+// takes. Each such refusal is a wait (ErrForgetWaitsForRole, wait.ErrWaiting), but one of a lookup
+// the listener refuses the same way every time, which is a fault an operator fixes and no wait.
+// It names that claim only when the refused name is the session id the listener names: a
 // file name another claim holds says nothing of the process under the id. The clear goes on once
 // no claim names the role, or another session holds it. A claim holding its own session forgets
 // as before and asks nothing (R9).
@@ -82,6 +87,7 @@ func TestAForgetOfASessionTheClaimDoesNotHoldWaitsForItsRole(t *testing.T) {
 			{"refused while that holder is gone but its claim stands", every, answer{session, "gone", nil}, []string{suspendHolder, theBound}, false},
 			{"refused while an older listener names that holder lapsed", every, answer{session, "lapsed", nil}, []string{suspendHolder}, false},
 			{"refused while the listener does not answer", every, answer{"", "", errors.New("the listener is unreachable")}, []string{"did not say which session holds its role"}, false},
+			{"refused while the listener refuses the lookup, a fault and not a wait", every, answer{"", "", fmt.Errorf("look up: %w", &notify.RoleLookupRefused{Status: 401, Reason: "unauthorized"})}, []string{"refuses the lookup", "until an operator fixes"}, false},
 			{"refused naming no claim when the refused name is a file name another claim holds", fileNameOnly, answer{session, "live", nil}, []string{"the process registered under it", theBound}, true},
 			{"admitted once no claim names the role", every, answer{}, nil, false},
 			{"admitted while another session holds the role", every, answer{"ses_another", "live", nil}, nil, false},
@@ -105,8 +111,9 @@ func TestAForgetOfASessionTheClaimDoesNotHoldWaitsForItsRole(t *testing.T) {
 				if !errors.As(err, &refused) {
 					t.Fatalf("the clear = %v, want it refused", err)
 				}
-				if !errors.Is(err, ErrForgetWaitsForRole) {
-					t.Errorf("the refusal = %v, want it read as ErrForgetWaitsForRole, the wait a retrying caller logs as one", err)
+				fault := strings.Contains(tc.name, "a fault and not a wait")
+				if waits := errors.Is(err, ErrForgetWaitsForRole) && errors.Is(err, wait.ErrWaiting); waits == fault {
+					t.Errorf("the refusal = %v, a wait %t; want a wait %t (ErrForgetWaitsForRole and wait.ErrWaiting)", err, waits, !fault)
 				}
 				for _, want := range tc.refused {
 					if !strings.Contains(err.Error(), want) {

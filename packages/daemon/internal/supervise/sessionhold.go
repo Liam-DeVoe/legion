@@ -10,6 +10,8 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/claudelaunch"
+	"github.com/sjawhar/legion/daemon/internal/notify"
+	"github.com/sjawhar/legion/daemon/internal/wait"
 )
 
 // errHoldUnanswered is a hold the store did not answer (holdRecorded): it says nothing about the
@@ -419,6 +421,13 @@ func (m *Machine) mayForget(ctx context.Context, request string) error {
 	holder, state, lookupErr := m.deps.RoleHolder(asking, string(m.claim.Token))
 	cancel()
 	if lookupErr != nil {
+		// A lookup the listener refuses the same way however often it is asked is a fault an
+		// operator fixes, not a wait: no stop of any process clears it (notify.RoleLookupRefused).
+		if refusedLookup := (*notify.RoleLookupRefused)(nil); errors.As(lookupErr, &refusedLookup) {
+			return &RefusedError{State: m.claim.State, Request: request, Err: fmt.Errorf(
+				"%s records session %s, which it does not hold (%v), and the Envoy listener refuses the lookup of which session holds its role, as it will each time it is asked, so the session is not cleared until an operator fixes what the listener refuses: %w",
+				m.claim.Token, session, err, lookupErr)}
+		}
 		return &RefusedError{State: m.claim.State, Request: request, Err: forgetWait{fmt.Errorf(
 			"%s records session %s, which it does not hold (%v), and the Envoy listener did not say which session holds its role, so clearing the session could let the role's messages reach another claim's process; try again once the listener answers: %w",
 			m.claim.Token, session, err, lookupErr)}}
@@ -439,19 +448,24 @@ func (m *Machine) mayForget(ctx context.Context, request string) error {
 		m.claim.Token, session, err, session, state, session, whose, m.claim.Token)}}
 }
 
-// ErrForgetWaitsForRole is mayForget's refusal of a clear of a session the claim does not hold:
-// the Envoy listener names that session as the claim's role holder, or did not answer who does.
-// It is a wait, not a fault: the role is freed once no process registers the session, so a
-// caller that retries on a backoff of its own (the workflow's start row, the controller keeper)
-// reads it as a wait rather than an error (errors.Is through RefusedError).
+// ErrForgetWaitsForRole is mayForget's refusal of a clear of a session the claim does not hold
+// while the Envoy listener names that session as the claim's role holder, or could not be asked
+// who does. It is a wait (it matches wait.ErrWaiting too), which ends when the process under that
+// session stops and the listener frees the role: in the case it exists for, another claim's live
+// process runs under the session, and only an operator's suspend of that claim stops it, so a
+// caller that retries on a backoff of its own logs it where an operator sees it (the controller
+// keeper at Warn; settle raises a waiting row to Warn from waitWarnAttempts). A lookup the listener
+// refuses for good is no wait but a fault (notify.RoleLookupRefused).
 var ErrForgetWaitsForRole = errors.New("the clear of the session waits for the Envoy listener to free the claim's role")
 
 // forgetWait is a mayForget refusal's sentence, which errors.Is reads as ErrForgetWaitsForRole
-// while the refusal's text stays the sentence alone.
+// and as wait.ErrWaiting, while the refusal's text stays the sentence alone.
 type forgetWait struct{ error }
 
-func (forgetWait) Is(target error) bool { return target == ErrForgetWaitsForRole }
-func (w forgetWait) Unwrap() error      { return w.error }
+func (forgetWait) Is(target error) bool {
+	return target == ErrForgetWaitsForRole || target == wait.ErrWaiting
+}
+func (w forgetWait) Unwrap() error { return w.error }
 
 // admittedSession is a session and file every name of which the store last answered as this
 // claim's (holdRecorded, HoldsItsSession), kept for HoldsItsSession to read without the lock.

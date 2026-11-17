@@ -3,6 +3,7 @@ package notify
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -36,24 +37,27 @@ func TestRoleHolderNamesEveryHolderTheListenerNames(t *testing.T) {
 	if len(long) <= refusalBodyLimit {
 		t.Fatalf("the long answer is %d bytes, want it past refusalBodyLimit, %d", len(long), refusalBodyLimit)
 	}
+	const refused, transient = "refused", "transient"
 	for _, tc := range []struct {
 		name          string
 		status        int
 		body          string
 		holder, state string
-		fails         bool
+		fails         string
 	}{
-		{"a live holder", http.StatusOK, `{"role":"legion-x","holder":"ses_s","holder_state":"live","last_seen":1}`, "ses_s", "live", false},
-		{"a live holder with many capabilities", http.StatusOK, string(long), "ses_s", "live", false},
-		{"an unresponsive holder", http.StatusNotFound, `{"error":"…","reason":"holder_lapsed","holder":"ses_s","holder_state":"unresponsive"}`, "ses_s", "unresponsive", false},
-		{"a gone holder whose claim stands", http.StatusNotFound, `{"error":"…","reason":"holder_lapsed","holder":"ses_s","holder_state":"gone"}`, "ses_s", "gone", false},
-		{"an older listener's lapsed holder with no state", http.StatusNotFound, `{"error":"…","reason":"holder_lapsed","holder":"ses_s"}`, "ses_s", "lapsed", false},
-		{"a role no claim names", http.StatusNotFound, `{"error":"…","reason":"unclaimed"}`, "", "", false},
-		{"a 404 naming no holder under another reason", http.StatusNotFound, `{"error":"…","reason":"holder_lapsed"}`, "", "", true},
-		{"a 404 naming no holder and no reason", http.StatusNotFound, `{"error":"no such route"}`, "", "", true},
-		{"a 200 naming no holder", http.StatusOK, `{"role":"legion-x"}`, "", "", true},
-		{"an unreadable 404", http.StatusNotFound, `not json`, "", "", true},
-		{"a refused lookup", http.StatusUnauthorized, `{"error":"unauthorized"}`, "", "", true},
+		{"a live holder", http.StatusOK, `{"role":"legion-x","holder":"ses_s","holder_state":"live","last_seen":1}`, "ses_s", "live", ""},
+		{"a live holder with many capabilities", http.StatusOK, string(long), "ses_s", "live", ""},
+		{"an unresponsive holder", http.StatusNotFound, `{"error":"…","reason":"holder_lapsed","holder":"ses_s","holder_state":"unresponsive"}`, "ses_s", "unresponsive", ""},
+		{"a gone holder whose claim stands", http.StatusNotFound, `{"error":"…","reason":"holder_lapsed","holder":"ses_s","holder_state":"gone"}`, "ses_s", "gone", ""},
+		{"an older listener's lapsed holder with no state", http.StatusNotFound, `{"error":"…","reason":"holder_lapsed","holder":"ses_s"}`, "ses_s", "lapsed", ""},
+		{"a role no claim names", http.StatusNotFound, `{"error":"…","reason":"unclaimed"}`, "", "", ""},
+		{"a 404 naming no holder under another reason", http.StatusNotFound, `{"error":"…","reason":"holder_lapsed"}`, "", "", refused},
+		{"a 404 naming no holder and no reason", http.StatusNotFound, `{"error":"no such route"}`, "", "", refused},
+		{"a 200 naming no holder", http.StatusOK, `{"role":"legion-x"}`, "", "", refused},
+		{"an unreadable 404", http.StatusNotFound, `not json`, "", "", refused},
+		{"a wrong bearer", http.StatusUnauthorized, `{"error":"unauthorized"}`, "", "", refused},
+		{"a claim record the listener cannot decode", http.StatusInternalServerError, `{"error":"envoy: the claim record of role legion-x is unreadable: …"}`, "", "", refused},
+		{"a listener whose bus does not answer", http.StatusServiceUnavailable, `{"error":"…"}`, "", "", transient},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var path, bearer string
@@ -67,9 +71,15 @@ func TestRoleHolderNamesEveryHolderTheListenerNames(t *testing.T) {
 			if path != "/v1/roles/legion-legion-legion-942-implementer" || bearer != "Bearer envoy-bearer" {
 				t.Errorf("the lookup asked %q with %q, want the role's path with the listener's bearer", path, bearer)
 			}
-			if tc.fails {
-				if err == nil {
+			if tc.fails != "" {
+				var lookup *RoleLookupRefused
+				switch {
+				case err == nil:
 					t.Fatalf("RoleHolder = %q (%q), want an error for that answer", holder, state)
+				case errors.As(err, &lookup) != (tc.fails == refused):
+					t.Fatalf("RoleHolder = %v; want it a RoleLookupRefused %t", err, tc.fails == refused)
+				case lookup != nil && lookup.Status != tc.status:
+					t.Fatalf("RoleHolder = %v; want the refusal to carry status %d", err, tc.status)
 				}
 				return
 			}
@@ -78,4 +88,14 @@ func TestRoleHolderNamesEveryHolderTheListenerNames(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("a listener it cannot reach", func(t *testing.T) {
+		server := httptest.NewServer(http.NotFoundHandler())
+		server.Close()
+		_, _, err := New(server.URL, "").RoleHolder(context.Background(), "legion-x")
+		var lookup *RoleLookupRefused
+		if err == nil || errors.As(err, &lookup) {
+			t.Fatalf("RoleHolder of a closed listener = %v, want a plain error that asking again can clear", err)
+		}
+	})
 }
