@@ -73,7 +73,6 @@ test("stepTasks keeps the server's order and names each run's step, state and ti
     id: "review-1",
     label: "4",
     model: "openai/gpt-6.1-sol",
-    result: "failed",
     returnedTo: "step 2",
     role: "reviewer",
     started: "2026-11-16T10:00:00Z",
@@ -117,7 +116,7 @@ test("stepTasks reads a null list as empty", () => {
 
 // A move back names where it sent the task. Place 0 is the retro's, which a merger's move back
 // reaches and no plan names, so it reads as the retro and never as `step 0`; and a return to place
-// 0 is a return, not the nothing a run that returned nowhere names.
+// 0 is a return, not the nothing a failed run that returned nowhere names.
 test("stepTasks names where a run returned its task, the retro for place 0", () => {
   const [task] = stepTasks({
     issue: "CORE-1",
@@ -141,17 +140,17 @@ test("stepTasks names where a run returned its task, the retro for place 0", () 
             step: 0,
             type: "",
           }),
-          record({ id: "implement-1" }),
+          record({ id: "implement-1", result: "failed" }),
         ],
         task: "default",
       },
     ],
   });
 
-  expect(task?.rows.map((row) => [row.id, row.returnedTo])).toEqual([
-    ["review-1", "step 2"],
-    ["merge-1", "the retro"],
-    ["implement-1", null],
+  expect(task?.rows).toMatchObject([
+    { id: "review-1", returnedTo: "step 2", state: "stopped" },
+    { id: "merge-1", returnedTo: "the retro", state: "failed" },
+    { id: "implement-1", returnedTo: null, state: "failed" },
   ]);
 });
 
@@ -171,8 +170,10 @@ test("stepTasks keeps a run whose result or kind it does not know, in the server
     ],
   });
 
-  expect(task?.rows.map((row) => [row.id, row.label, row.state, row.result])).toEqual([
+  expect(
+    task?.rows.map((row) => [row.id, row.label, row.state, row.state === "other" && row.result])
+  ).toEqual([
     ["skipped", "2", "other", "skipped"],
-    ["pause", "pause", "passed", "passed"],
+    ["pause", "pause", "passed", false],
   ]);
 });

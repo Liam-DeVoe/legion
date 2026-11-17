@@ -113,9 +113,9 @@ function Identifier({ value }: { value: string }): ReactNode {
 }
 
 /** How the run ended, or that it runs: a failed or stopped run that sent its task back names
- *  where it sent it (`StepRow.returnedTo`), and a result this build has no word for shows the
+ *  where it sent it (`StepEnd.returnedTo`), and a result this build has no word for shows the
  *  server's own. `step 2` stays whole, as the times do, so a narrow column never leaves the
- *  number on a line alone. A state `StepState` adds fails to compile until it is drawn here. */
+ *  number on a line alone. A state `StepEnd` adds fails to compile until it is drawn here. */
 function Result({ row }: { row: StepRow }): ReactNode {
   switch (row.state) {
     case "running":
@@ -145,7 +145,7 @@ function Result({ row }: { row: StepRow }): ReactNode {
         </>
       );
   }
-  return row.state satisfies never;
+  return row satisfies never;
 }
 
 /** One task's runs, one row each, in the order the server read them. */
