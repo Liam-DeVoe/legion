@@ -386,7 +386,7 @@ test.describe("agents page pins", () => {
       await expect(uploading).toBeDisabled();
       upload.release();
       await expect(field).toHaveValue(
-        /^\[Silent\]\(dispatch:\/\/agent\/silent-session\)\s+dispatch:\/\/\S*notes/
+        /^\[@Silent\]\(dispatch:\/\/agent\/silent-session\)\s+dispatch:\/\/\S*notes/
       );
       await expect(silentRow.getByRole("button", { name: "Send" })).toBeEnabled();
       expect(upload.posts()).toBe(1);

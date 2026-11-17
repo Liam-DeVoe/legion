@@ -358,4 +358,39 @@ export const CODE_CONTEXT: readonly DispatchTextReferenceRow[] = [
     body: "Run `grep \\` here` then ask dispatch://role/reviewer.",
     refs: ["dispatch://role/reviewer"],
   },
+  // The renderer opens no quote and no list past a hundred blocks one inside another, and reads
+  // the opener past them as the text it is (`maxBlockNesting` in proof-editor's
+  // block-nesting.ts): a list opener counts two blocks, the list and its item, and a quote one.
+  // So the four columns after a marker past the bound are paragraph text, which links the
+  // party, where a reader that opened the marker's item or quote would read them as indented
+  // code inside it; the same four columns after the last marker within the bound are code.
+  {
+    body: `${"- ".repeat(51)}    dispatch://role/reviewer\n`,
+    refs: ["dispatch://role/reviewer"],
+    links: ["dispatch://role/reviewer"],
+    inCode: [],
+  },
+  {
+    body: `${"- ".repeat(50)}    dispatch://role/reviewer\n`,
+    refs: ["dispatch://role/reviewer"],
+    links: [],
+    inCode: ["dispatch://role/reviewer"],
+  },
+  {
+    body: `${"> ".repeat(100)}>     dispatch://role/reviewer\n`,
+    refs: ["dispatch://role/reviewer"],
+    links: ["dispatch://role/reviewer"],
+    inCode: [],
+  },
+  {
+    body: `${"> ".repeat(99)}>     dispatch://role/reviewer\n`,
+    refs: ["dispatch://role/reviewer"],
+    links: [],
+    inCode: ["dispatch://role/reviewer"],
+  },
+  // No row sits within one footnote definition of the bound: the browser's renderer counts no
+  // block for a definition, whose extension its bound does not reach, while the server's pmdoc
+  // counts one and draws a stored comment from its own tree, so the two draw such a line
+  // differently and no row's `links` can hold for both (`packages/envoy/AGENTS.md`, "The browser
+  // counts no footnote definition"). The readers follow the browser's count.
 ];
