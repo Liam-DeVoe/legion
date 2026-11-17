@@ -163,13 +163,13 @@ const (
 // nil when it lists none: which projects it would see were its person to see them, which tells a
 // read whether the credential read a project before a change took it away (api: eventGapSQL).
 type Viewer struct {
-	Person, Session    string
-	Restricted, Listed bool
-	Open               bool
-	All                bool
-	Sees               []string
-	AnyPrivate         bool
-	Lists              []string
+	Person, Session string
+	Restricted      bool
+	Open            bool
+	All             bool
+	Sees            []string
+	AnyPrivate      bool
+	Lists           []string
 }
 
 // ServerViewer is the server's own read of content that belongs to one owner, which each of its

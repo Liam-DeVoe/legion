@@ -234,8 +234,8 @@ func Resolve(ctx context.Context, q Querier, actor model.Actor) (model.Viewer, e
 	listed := actor.Credential.Projects
 	broker := actor.Credential.Session != ""
 	agent := actor.Kind != "user" || actor.Act != nil
-	viewer := model.Viewer{Person: login, Listed: len(listed) > 0}
-	if viewer.Listed {
+	viewer := model.Viewer{Person: login}
+	if len(listed) > 0 {
 		viewer.Lists = listed
 	}
 	if actor.Kind == "session" {
@@ -245,6 +245,6 @@ func Resolve(ctx context.Context, q Querier, actor model.Actor) (model.Viewer, e
 		Scan(&viewer.Sees, &viewer.Restricted, &viewer.AnyPrivate); err != nil {
 		return model.Viewer{}, fmt.Errorf("resolve what the caller sees: %w", err)
 	}
-	viewer.Open = !viewer.Restricted && !viewer.Listed
+	viewer.Open = !viewer.Restricted && len(viewer.Lists) == 0
 	return viewer, nil
 }
