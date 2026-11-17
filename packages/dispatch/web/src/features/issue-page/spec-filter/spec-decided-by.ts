@@ -1,6 +1,7 @@
-import type { Actor, CheckBlock, Decision, DisplayTree, IssueDecisions } from "../../../api/types";
+import type { Actor, CheckBlock, DisplayTree } from "../../../api/types";
 import { parseNodeReference } from "../../refs/routes";
 import type { TextSource } from "../../refs/text-references";
+import type { DecisionNode } from "../decision-nodes/decision-nodes";
 import { drawnLine, firstLineOf, lineWordsRaw, type TreeNode } from "../issue-tree";
 import { referenceStandIns } from "../one-line";
 import {
@@ -30,10 +31,11 @@ import { statementStandings } from "../verification-filter/statement-state";
  *    line is drawn whether or not" other decisions apply, so it heads the statement's run and
  *    its parent line and its decision line stay one line.
  * 2. **Each `shaped` tie.** A decision whose link names the statement shaped it
- *    (`Decision.links[].to`, dispatch://INFRA-1150 R1). The first decision of the statement
- *    heads its run; every other one is named at the end of the statement's own line, since R5
- *    draws "the decisions that informed it" and a statement may rest on several. A replaced
- *    decision draws no line at all (R5).
+ *    (`Decision.links[].to`, dispatch://INFRA-1150 R1): a decision node, or a question a person
+ *    answered that carries `shaped` ties, which is that person's decision (`decisionNodes`). The
+ *    first decision of the statement heads its run; every other one is named at the end of the
+ *    statement's own line, since R5 draws "the decisions that informed it" and a statement may
+ *    rest on several. A replaced decision draws no line at all (R5).
  * 3. **Nothing.** A statement no decision shaped is drawn as such, which is what makes a
  *    missing tie visible (R35).
  *
@@ -62,7 +64,7 @@ import { statementStandings } from "../verification-filter/statement-state";
  * dispatch://INFRA-1150's branch: the view draws nothing of it.
  *
  * One part of R5 today's reads do not hold, which the body draws nothing in the place of: an
- * agent's level of uncertainty and its reason. The decisions read answers one boolean, `unsure`
+ * agent's level of uncertainty and its reason. A decision node answers one boolean, `unsure`
  * (dispatch://INFRA-1150); the level and the reason arrive with it.
  */
 
@@ -87,7 +89,8 @@ export interface SpecDecision {
   readonly id: string;
   /** The decision node the tie came from, where the tree holds it: the node the cell is drawn
    *  as, which Details draws while the cell holds the focus. A person's decision is drawn by
-   *  their answer (`id`), and this is the section of `decisions.md` that names it. */
+   *  their answer (`id`), and this is the section of `decisions.md` that names it, or the
+   *  question itself where its `shaped` ties are the tie (`decisionNodes`). */
   readonly node?: string;
   /** The question the words answer, its first line as R1 cuts a row's with each reference
    *  named after the cut; absent where the words answer no question. */
@@ -171,11 +174,13 @@ export interface SpecReading {
  * `view` is the Spec filter's own view of the tree (`presetView`), whose rows are the
  * statements in the order the page draws them; `root` is the whole tree, which holds the asks,
  * the decisions and each statement's checks, none of which the Spec filter draws as rows (R2).
- * `nodeIdOf` is how this issue addresses a node, which is the one rule the tree is built with
- * (`tree-drafts.ts`'s `treeContext`), so a tie resolves to the node it names however its
- * address is written. `nameOf` is how the page names a reference a plain line cites
- * (`one-line.ts`'s `useReferenceNames`). `checks` is the issue's results read, which each
- * statement's mark is read from as the Verification filter reads it (`statement-state.ts`).
+ * `decisions` are the decisions of the Spec view read (`?view=spec`) as every reader of a
+ * decision reads them (`decisionNodes`), in that answer's order. `nodeIdOf` is how this issue
+ * addresses a node, which is the one rule the tree is built with (`tree-drafts.ts`'s
+ * `treeContext`), so a tie resolves to the node it names however its address is written.
+ * `nameOf` is how the page names a reference a plain line cites (`one-line.ts`'s
+ * `useReferenceNames`). `checks` is the issue's results read, which each statement's mark is
+ * read from as the Verification filter reads it (`statement-state.ts`).
  */
 export function specDecidedBy({
   checks,
@@ -187,7 +192,7 @@ export function specDecidedBy({
   view,
 }: {
   readonly checks: readonly CheckBlock[];
-  readonly decisions: IssueDecisions | undefined;
+  readonly decisions: readonly DecisionNode[];
   readonly nameOf: (reference: string) => string | undefined;
   readonly nodeIdOf: (reference: string) => string | undefined;
   /** Who is reading, so a decision of theirs reads as their own words (R34). */
@@ -293,8 +298,8 @@ function asksById(nodes: ReadonlyMap<string, TreeNode>): ReadonlyMap<string, Tre
   return asks;
 }
 
-/** The decisions that shaped each statement, by the statement's node id, in the order the
- *  decisions read answers them. */
+/** The decisions that shaped each statement, by the statement's node id, in the order the Spec
+ *  view read answers them. */
 function shapedBy({
   asks,
   decisions,
@@ -304,14 +309,14 @@ function shapedBy({
   reader,
 }: {
   asks: ReadonlyMap<string, TreeNode>;
-  decisions: IssueDecisions | undefined;
+  decisions: readonly DecisionNode[];
   nameOf: (reference: string) => string | undefined;
   nodeIdOf: (reference: string) => string | undefined;
   nodes: ReadonlyMap<string, TreeNode>;
   reader: string | undefined;
 }): ReadonlyMap<string, readonly SpecDecision[]> {
   const shaped = new Map<string, SpecDecision[]>();
-  for (const decision of decisions?.decisions ?? []) {
+  for (const decision of decisions) {
     // A replaced decision draws no line (R5): it is drawn where it sits in the outline, and a
     // statement it shaped is no longer standing on it.
     if (decision.replaced) continue;
@@ -333,7 +338,7 @@ function shapedBy({
 /** One decision as the column draws it: a person's by the answer they gave, an agent's by its
  *  own words. */
 function decisionOf(
-  decision: Decision,
+  decision: DecisionNode,
   {
     asks,
     nameOf,

@@ -62,7 +62,7 @@ import { planOrder } from "../plan-filter/plan-order";
 import { presetView } from "../presets";
 import { ReferenceNamesProvider } from "../reference-names";
 import { SpecFilterBody } from "../spec-filter/SpecFilterBody";
-import { coverageRead, decisionsRead, issueDetails, statement } from "../spec-filter/spec-fixtures";
+import { coverageRead, issueDetails, statement } from "../spec-filter/spec-fixtures";
 import { NOTHING_OPENED, type OpenedBranches, type OvertakenRow, pathTo } from "../tree-fold";
 import { statesOfRead } from "../tree-read/tree-nodes";
 import {
@@ -1117,14 +1117,12 @@ function drawSpec(
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
-  client.setQueryData(["decisions", KEY], decisionsRead([]));
   client.setQueryData(issueResultsQuery(KEY).queryKey, results);
   client.setQueryData(issueCoverageQuery(KEY).queryKey, coverageRead([]));
   client.setQueryData(artifactBlocksQuery(issue.primary_artifact_id).queryKey, []);
   const spies = [
     spyOn(api, "getArtifactBlocks").mockResolvedValue([]),
     spyOn(api, "getIssueCoverage").mockResolvedValue(coverageRead([])),
-    spyOn(api, "getIssueDecisions").mockResolvedValue(decisionsRead([])),
     spyOn(api, "getIssueResults").mockResolvedValue(results),
   ];
   const view = render(
