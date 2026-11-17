@@ -1,6 +1,7 @@
 import { rmSync, writeFileSync } from "node:fs";
 import * as path from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import sessionGrantFixture from "../../contracts/fixtures/session-grant.json";
 
 /**
  * The NATS server image the tests run; CI pulls it before the tests.
@@ -19,12 +20,13 @@ export interface NatsServer {
 
 /**
  * The authorization of a server whose one requester may do anything, as the listener and Dispatch
- * may, and whose session user holds the grant the NATS auth service gives one session
- * (`natsgrant.Session` in packages/envoy/natsgrant): publish its replies under its own id alone,
- * `_INBOX.*.<session id>.>` (`bus.SessionReplies`), and its agent stream frames; subscribe its
- * relay subject and its agent stream control subject. Each user is the nkey whose public key is
- * named. A row's requester asks the session on a reply subject {@link sessionReplySubject} makes,
- * and the session answers on whatever reply subject it is handed.
+ * may, and whose session user holds the grant the NATS auth service gives one session. That grant
+ * is `natsgrant.Session` itself: packages/envoy/natsgrant's TestTheSessionGrantFixtureIsNatsgrantSession
+ * writes it to packages/contracts/fixtures/session-grant.json for a placeholder id and fails when
+ * the two drift, and this reads the fixture with the placeholder swapped, token by token, for
+ * `sessionID`. Each user is the nkey whose public key is named. A row's requester asks the
+ * session on a reply subject {@link sessionReplySubject} makes, and the session answers on
+ * whatever reply subject it is handed.
  */
 export function sessionGrantConfig(options: {
   readonly sessionID: string;
@@ -32,12 +34,20 @@ export function sessionGrantConfig(options: {
   readonly requesterKey: string;
 }): string {
   const { sessionID, sessionKey, requesterKey } = options;
-  const list = (subjects: readonly string[]) => subjects.map((s) => JSON.stringify(s)).join(", ");
-  const publish = list([`_INBOX.*.${sessionID}.>`, `agentstream.${sessionID}.frames`]);
-  const subscribe = list([
-    `notifications.envoy.deliver.${sessionID}`,
-    `agentstream.${sessionID}.control`,
-  ]);
+  const placeholder = sessionGrantFixture.session_id;
+  const list = (subjects: readonly string[]) =>
+    subjects
+      .map((subject) =>
+        JSON.stringify(
+          subject
+            .split(".")
+            .map((token) => (token === placeholder ? sessionID : token))
+            .join(".")
+        )
+      )
+      .join(", ");
+  const publish = list(sessionGrantFixture.publish);
+  const subscribe = list(sessionGrantFixture.subscribe);
   return `jetstream {}
 authorization {
   users = [

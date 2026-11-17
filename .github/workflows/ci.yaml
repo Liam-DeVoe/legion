@@ -1194,6 +1194,9 @@ jobs:
               # tests/envoy-channel-stall.test.ts:5-12 imports three modules of envoy-client's
               # test directory, and tsc puts four of its files in this job's program.
               - 'packages/envoy-client/test/**'
+              # tests/agent-stream-reply-grant.test.ts starts its server with the session grant
+              # natsgrant writes to this fixture (envoy-client's test/nats-server.ts reads it).
+              - 'packages/contracts/fixtures/session-grant.json'
               # tests/ import @legion/test-fixtures.
               - 'packages/test-fixtures/src/**'
               # tests/envoy-channel-server.test.ts holds the marketplace entry to this package's
@@ -2229,6 +2232,9 @@ jobs:
               - 'packages/test-fixtures/src/**'
               # extensions/envoy.test.ts:172-173.
               - 'packages/contracts/fixtures/dispatch-targeted-delivery.json'
+              # The reply-grant row of extensions/envoy.test.ts starts its server with the session
+              # grant natsgrant writes to this fixture (envoy-client's test/nats-server.ts reads it).
+              - 'packages/contracts/fixtures/session-grant.json'
               - 'skills/**'
               - 'packages/daemon/internal/prompts/**'
               # Its pack runs the shared prepack, which writes dist/THIRD_PARTY_NOTICES, and
@@ -2710,6 +2716,10 @@ jobs:
               # list, which packages/envoy-client holds goBlankPattern to: an edit of the list
               # alone must start both jobs, or the side it disagrees with stays green.
               - 'packages/contracts/fixtures/go-unicode-isspace.json'
+              # natsgrant/session_fixture_test.go holds this fixture to natsgrant.Session, and the
+              # Bun rows of envoy-client, pi-envoy and claude-envoy start their servers from it: an
+              # edit of the fixture alone must start both sides.
+              - 'packages/contracts/fixtures/session-grant.json'
               - '.github/actions/pull-test-images/**'
               # Its natslive step takes that tag's test list from this script at run time.
               - '.github/scripts/go-tagged-tests.sh'
@@ -3439,6 +3449,9 @@ jobs:
               # an edit of the list alone must start both jobs, or the side it disagrees with
               # stays green.
               - 'packages/contracts/fixtures/go-unicode-isspace.json'
+              # test/nats-server.ts reads the session grant natsgrant writes to this fixture, which
+              # natsgrant/session_fixture_test.go holds to natsgrant.Session.
+              - 'packages/contracts/fixtures/session-grant.json'
               # The Go copy its test holds the TypeScript to: src/__tests__/askgate-new-asks.test.ts
               # reads the Dispatch server's decision-block table, which the Go API test reads too.
               - 'packages/envoy/internal/dispatch/api/testdata/**'
