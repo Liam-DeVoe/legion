@@ -2028,6 +2028,18 @@ A rating row left in place is not harmless in the same way: the release that rec
 
 The kind check keeps the name after the rollback, and the rollback needs no statement for it: an earlier release never writes the kind, so the check refuses nothing that release writes.
 
+#### Rolling back the release whose owner's plan picks the steps
+
+This release's migration `20261117034837_issue_plans.up.sql` adds three tables, `issue_plans`, `plan_tasks` and `plan_steps`, and three columns, `phases.step_task`, `phases.step_place` and `pull_requests.task`.
+The tables hold the plan of each issue that has one: each version of it given at a generation, which is the owner's version of its plan document or the project's default steps, each task of that plan with where the task stands and its counts of returns, and each step of a task by its place.
+The columns hold the step a role's phases row runs for an issue with plan rows, and the task a pull request carries.
+An earlier release boots with all six in place: its phases and pull request reads and writes name each column they touch, and it names none of the three tables, so it reads none of them, and every row it inserts takes the columns' defaults, which read as no step and no task.
+At the rollback, with the daemon stopped and before the earlier image is pinned, run the way back that the migration's header gives: it drops the three tables and the three columns and deletes the migration's version row, so the roll-forward's `Migrate` runs the migration again (`versionRecorded` in `internal/store/store.go` decides each migration on its own row).
+That way back is owed to the roll-forward, not to the earlier release.
+Left in place, the place a task stands at goes stale while the earlier release moves its issue along today's fixed line, and after the roll-forward the walk would start that issue from the stale place.
+With the tables and the columns dropped, each issue the earlier release moved has no plan rows after the roll-forward and goes on as it did.
+What the way back costs is every plan given before the rollback, which its owner gives again.
+
 #### Rolling back the release whose update round ends at its bound
 
 This release's migration `20261113110610_drop_claim_update_answer_marks` takes two columns off `claims`: `update_answered_by_turn_end` and `update_reasked_for_push_check`, which the two `alter` statements below add back.
@@ -2482,7 +2494,7 @@ Neither has cybermonklabs/legion#3983, which landed after it at the same contrac
 Contract 132, cybermonklabs/legion#3715, has no section of its own here either: its one migration, `20261111214351_issue_released_for_wait.up.sql`, adds the nullable column `issues.released_for_wait_at`, and its header gives no step, since migrations here are forward-only.
 Contract 123, cybermonklabs/legion#3793, has no section of its own here either: the header of its migration, `20261113090512_phase_entry_moved_back.up.sql`, gives its steps, which are none at the rollback and one statement, `update phases set entry_moved_back = true;`, before a roll-forward across it.
 To roll a release at contract 146 back to contract 144 instead, the release just before it, run the block below alone: that release keeps the six columns, and its sweep passes over every architect, since it chooses a role through `workflow.OpenPhaseRole`, which names none for an architect.
-A rollback of the release that rates each plan to any release before it, either of these two included, also takes the steps of that release's own section above, [Rolling back the release that rates each plan](#rolling-back-the-release-that-rates-each-plan), and a rollback of the release that records each step to any release before it also takes the steps of its own section, [Rolling back the release that records each step](#rolling-back-the-release-that-records-each-step).
+A rollback of the release whose owner's plan picks the steps to any release before it, either of these two included, also takes the steps of that release's own section above, [Rolling back the release whose owner's plan picks the steps](#rolling-back-the-release-whose-owners-plan-picks-the-steps), a rollback of the release that rates each plan to any release before it also takes the steps of its own section, [Rolling back the release that rates each plan](#rolling-back-the-release-that-rates-each-plan), and a rollback of the release that records each step to any release before it also takes the steps of its own section, [Rolling back the release that records each step](#rolling-back-the-release-that-records-each-step).
 The block below is the way back of those four migrations, and the header of each carries it:
 
 ```sh
@@ -2602,6 +2614,7 @@ The migrations recorded above this one at contract 146 are these.
 20261114020537_claim_entry_handshake adds four columns of `claims` and touches none of the six, and the contract 146 block above reverses it too, because the earlier release writes no handshake into them.
 20261114061900_phase_entry_verbatim adds `phases.entry_verbatim` and touches none of the six, and the contract 146 block above reverses it too, so that the roll-forward can add it again.
 20261116234034_phase_reviewed_head adds `phases.reviewed_head` and touches none of the six, so the block holds over it; a rollback past it runs that migration's own way back too ([Rolling back the release that keeps the commit a reviewer last read](#rolling-back-the-release-that-keeps-the-commit-a-reviewer-last-read)), so that the roll-forward adds the column again at its default.
+20261117034837_issue_plans adds the tables `issue_plans`, `plan_tasks` and `plan_steps` and the columns `phases.step_task`, `phases.step_place` and `pull_requests.task`, and touches none of the six, so the block holds over it; a rollback past it runs that migration's own way back too ([Rolling back the release whose owner's plan picks the steps](#rolling-back-the-release-whose-owners-plan-picks-the-steps)), so that the roll-forward creates the tables again empty and adds the columns again at their defaults.
 The `20261111225552` is the identifier of `20261111225552_phase_entry.up.sql`, whose header carries this same block;
 where that file carries another identifier in the release you roll back from, use that one.
 The SQL was run on 2026-11-13 at 04:00Z against PostgreSQL 18.6, on a scratch database that `internal/store`'s own `Migrate` took to the head of the branch the run was made on, as that head stood at that time, applying 133 migrations and leaving 133 versions recorded, the highest 20261112180548, and that held four outbox rows:
