@@ -231,9 +231,12 @@ import {
 import { CALLS, Opened } from "./run-records";
 import {
   ABSOLUTE_PATH,
+  expandedWord,
+  literalWord,
   outputs,
   SHELL_COMMAND,
   SHELL_WORD,
+  type ShellToken,
   shellTokens,
   shellWord,
   shellWords,
@@ -2277,6 +2280,324 @@ function commandHosts(
   return hosts.filter((one) => one.gh !== undefined || !/[$`{}*?]/.test(one.host));
 }
 
+/** A gap between two tokens of shell text (`shellTokens`) that holds blanks alone, so the two are
+ * words of one command. */
+const BLANK_GAP = /^[ \t]*$/;
+/** A gap of blanks and line breaks with no more than one `;` in it. */
+const SEQUENCE_GAP = /^[ \t\n]*;?[ \t\n]*$/;
+/** Whether a gap ends one command and starts the next whatever the first did: a `;` or a line
+ * break (never `;;`, `&`, `&&`, `|`, `||`, a bracket or a backquote), or the start or the end of
+ * the text (`edge`). */
+function sequenced(gap: string, edge: boolean): boolean {
+  return SEQUENCE_GAP.test(gap) && (edge || /[;\n]/.test(gap));
+}
+/** The reserved words a command follows (bash(1), SHELL GRAMMAR). */
+const TAKES_COMMAND = new Set([
+  "then",
+  "do",
+  "else",
+  "elif",
+  "if",
+  "while",
+  "until",
+  "!",
+  "{",
+  "time",
+]);
+/** The reserved words that open a compound command where a command starts, and those that close
+ * one; a `{` opens one wherever it stands as a word, so a function's body (`function f {`) does. */
+const OPENS = new Set(["if", "case", "for", "select", "while", "until"]);
+const CLOSES = new Set(["fi", "esac", "done", "}"]);
+/** The loops, each closed by a `done`. */
+const LOOPS = new Set(["for", "select", "while", "until"]);
+
+/** Shell text as its tokens (`shellTokens`): each as written (`raw`), the gap before each and the
+ * one after the last (`gaps`), and whether each starts a command (`starts`): the first, one after
+ * a gap that holds more than blanks (an operator, a bracket, a line break), and one after a
+ * reserved word a command follows (TAKES_COMMAND). */
+interface Scanned {
+  readonly tokens: readonly ShellToken[];
+  readonly raw: readonly string[];
+  readonly gaps: readonly string[];
+  readonly starts: readonly boolean[];
+}
+function scanned(text: string): Scanned {
+  const tokens = shellTokens(text);
+  const raw = tokens.map((token) => text.slice(token.at, token.end));
+  const gaps = [...tokens.map((token) => token.at), text.length].map((end, i) =>
+    text.slice(tokens[i - 1]?.end ?? 0, end)
+  );
+  const starts: boolean[] = [];
+  for (const [i, gap] of gaps.slice(0, tokens.length).entries())
+    starts.push(
+      i === 0 ||
+        !BLANK_GAP.test(gap) ||
+        (starts[i - 1] === true && TAKES_COMMAND.has(raw[i - 1] ?? ""))
+    );
+  return { tokens, raw, gaps, starts };
+}
+
+/** The last token of the command token `at` of `scan` starts: the last before a gap that holds
+ * more than blanks. */
+function commandEnd(scan: Scanned, at: number): number {
+  let last = at;
+  while (last + 1 < scan.raw.length && BLANK_GAP.test(scan.gaps[last + 1] ?? "")) last++;
+  return last;
+}
+
+/** The words of a `for` loop's list, tokens `from` up to `to` (its `do`) of `scan`: each a literal
+ * (`literalWord`: no expansion, command substitution, glob, brace or blank), blanks alone between
+ * them, and a `;` or a line break after the last; undefined for any other list. */
+function listWords(scan: Scanned, from: number, to: number): string[] | undefined {
+  const words: string[] = [];
+  for (let i = from; i < to; i++) {
+    const word =
+      scan.tokens[i]?.redirect === undefined ? literalWord(scan.raw[i] ?? "") : undefined;
+    if (word === undefined || !BLANK_GAP.test(scan.gaps[i] ?? "")) return undefined;
+    words.push(word);
+  }
+  return sequenced(scan.gaps[to] ?? "", false) ? words : undefined;
+}
+
+/** A `for` loop over literal words: its variable, its words, and its `do` and its `done` tokens. */
+interface LiteralLoop {
+  readonly name: string;
+  readonly words: readonly string[];
+  readonly opens: number;
+  readonly closes: number;
+}
+/** The loop `for NAME in WORDS; do BODY done` that token `at` of `scan` starts, its list read by
+ * `listWords` and its `done` the one that closes it; undefined for any other command. */
+function literalLoop(scan: Scanned, at: number): LiteralLoop | undefined {
+  const { raw, gaps, starts } = scan;
+  const name = raw[at + 1] ?? "";
+  if (!/^[A-Za-z_]\w*$/.test(name) || raw[at + 2] !== "in") return undefined;
+  if (!BLANK_GAP.test(gaps[at + 1] ?? "") || !BLANK_GAP.test(gaps[at + 2] ?? "")) return undefined;
+  const opens = raw.findIndex((word, i) => i > at + 2 && starts[i] === true && word === "do");
+  if (opens < 0) return undefined;
+  let closes = -1;
+  for (let i = opens + 1, nested = 0; i < raw.length && closes < 0; i++) {
+    if (starts[i] !== true) continue;
+    if (LOOPS.has(raw[i] ?? "")) nested++;
+    else if (raw[i] === "done") {
+      if (nested === 0) closes = i;
+      nested--;
+    }
+  }
+  if (closes < 0) return undefined;
+  const words = listWords(scan, at + 3, opens);
+  if (words === undefined) return undefined;
+  return { name, words, opens, closes };
+}
+
+/** The last token of the command of assignments alone (each word `NAME=value`, ASSIGNMENT) that
+ * token `at` of `scan` starts, where the shell runs it in the text's own shell whatever ran before
+ * it: after a `;`, a line break or the text's start and before the next or the text's end
+ * (`sequenced`), and inside no bracket, backquote or compound command (`open`). -1 for any other
+ * command: a prefix assignment (`repo=x curl …$repo`, whose `$repo` the shell expands before it
+ * assigns), one after `&&`, `||` or `|`, one in `( … )` or an `if`. */
+function assignmentsAlone(scan: Scanned, at: number, open: boolean): number {
+  const last = commandEnd(scan, at);
+  if (open) return -1;
+  if (!sequenced(scan.gaps[at] ?? "", at === 0)) return -1;
+  if (!sequenced(scan.gaps[last + 1] ?? "", last + 1 === scan.raw.length)) return -1;
+  for (let i = at; i <= last; i++)
+    if (scan.tokens[i]?.redirect !== undefined || !ASSIGNMENT.test(scan.raw[i] ?? "")) return -1;
+  return last;
+}
+
+/** What `flowed` finds in a call's text, at places in the call's text: where a command sets a
+ * variable as it reads it (`sites`: the variable, and where its name stands), and the spans that
+ * are literal text it reads as a value (`literal`: the words of a loop's list, the value of an
+ * assignment that is a literal), which name no variable to any command. */
+interface Places {
+  readonly sites: { readonly name: string; readonly at: number }[];
+  readonly literal: (readonly [from: number, to: number])[];
+}
+
+/** Shell text (`text`, lying at `offset` in the call's), with the variables `bound` holds written
+ * where the shell expands them (`expandedWord`), in order: each loop `literalLoop` reads written
+ * out once per word of its list, its body read with its variable bound to that word where
+ * `eligible` holds the variable (and read once, the variable unbound, where it does not); and
+ * each command of assignments alone (`assignmentsAlone`) binding each variable `eligible` holds to
+ * the literal its value reads to (`literalWord`), or unbinding it where its value reads to none.
+ * After a loop its variable and each one its body sets are unbound: the reader does not say which
+ * word the loop ended on. `places` collects where each of those sets a variable, and the literal
+ * text each reads. Returns the text and the variables it set. */
+function flowed(
+  text: string,
+  offset: number,
+  bound: Map<string, string>,
+  eligible: ReadonlySet<string> | undefined,
+  places: Places
+): { text: string; set: ReadonlySet<string> } {
+  const scan = scanned(text);
+  const { tokens, raw, gaps, starts } = scan;
+  const set = new Set<string>();
+  let out = "";
+  let from = 0;
+  // The brackets and compound commands open at the token, the backquotes before it, and the last
+  // token of the command of assignments alone it is in.
+  let depth = 0;
+  let ticks = 0;
+  let binds = -1;
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i];
+    if (token === undefined) break;
+    const word = raw[i] ?? "";
+    const gap = gaps[i] ?? "";
+    depth += gap.split("(").length - gap.split(")").length;
+    ticks += gap.split("`").length - 1;
+    const loop = starts[i] && word === "for" ? literalLoop(scan, i) : undefined;
+    const opens = tokens[loop?.opens ?? -1];
+    const closes = tokens[loop?.closes ?? -1];
+    if (loop !== undefined && opens !== undefined && closes !== undefined) {
+      places.sites.push({ name: loop.name, at: offset + (tokens[i + 1]?.at ?? 0) });
+      for (const word of tokens.slice(i + 3, loop.opens))
+        places.literal.push([offset + word.at, offset + word.end]);
+      const body = text.slice(opens.end, closes.at);
+      // One copy of the body per word; one, the variable unbound, for a variable the reader does
+      // not read (`eligible`), and for the first reading, which only finds where variables are set.
+      const values: readonly (string | undefined)[] = eligible?.has(loop.name)
+        ? loop.words
+        : [undefined];
+      const copies = values.map((value) => {
+        const within = new Map(bound);
+        if (value === undefined) within.delete(loop.name);
+        else within.set(loop.name, value);
+        return flowed(body, offset + opens.end, within, eligible, places);
+      });
+      out += text.slice(from, opens.end) + copies.map((copy) => copy.text).join("\n");
+      for (const name of [loop.name, ...copies.flatMap((copy) => [...copy.set])]) {
+        bound.delete(name);
+        set.add(name);
+      }
+      from = closes.at;
+      i = loop.closes;
+      continue;
+    }
+    if (starts[i]) binds = assignmentsAlone(scan, i, depth !== 0 || ticks % 2 !== 0);
+    out += text.slice(from, token.at) + expandedWord(word, bound);
+    from = token.end;
+    const found = i <= binds ? ASSIGNMENT.exec(word) : null;
+    if (found !== null) {
+      const name = found[1] ?? "";
+      const written = found[2] ?? "";
+      const value = eligible?.has(name) ? literalWord(expandedWord(written, bound)) : undefined;
+      places.sites.push({ name, at: offset + token.at });
+      if (literalWord(written) !== undefined)
+        places.literal.push([offset + token.end - written.length, offset + token.end]);
+      if (value === undefined) bound.delete(name);
+      else bound.set(name, value);
+      set.add(name);
+    }
+    if (word === "{" || (starts[i] && OPENS.has(word))) depth++;
+    else if (starts[i] && CLOSES.has(word)) depth--;
+  }
+  return { text: out + text.slice(from), set };
+}
+
+/** The commands that run text this reader does not read as the call's own commands: the string
+ * `eval` runs, the file `source` and `.` read, the action a `trap` sets. */
+const RUNS_TEXT = new Set(["eval", "source", ".", "trap"]);
+/** The builtins that set or unset a variable by a name they are given (bash(1), SHELL BUILTIN
+ * COMMANDS), `printf` by its `-v`: an expansion among their words may name any variable. */
+const SETS_NAMED = new Set([
+  "declare",
+  "typeset",
+  "local",
+  "readonly",
+  "export",
+  "read",
+  "readarray",
+  "mapfile",
+  "getopts",
+  "unset",
+  "let",
+  "printf",
+  "wait",
+]);
+/** The builtins that give a variable an attribute; with `-i` (an integer, whose assignments are
+ * arithmetic) or `-n` (a name for another variable, whose assignments set that one), a literal
+ * value set to a variable sets another. */
+const GIVES_ATTRIBUTES = new Set(["declare", "typeset", "local", "readonly", "export"]);
+/** The variables the shell sets itself (bash(1), Shell Variables), as `read` sets REPLY and `cd`
+ * sets PWD, with no word of the call's naming them. */
+const SHELL_SETS =
+  /^(?:_|BASH\w*|COMP_\w+|READLINE_\w+|COPROC|DIRSTACK|EPOCHREALTIME|EPOCHSECONDS|EUID|FUNCNAME|GROUPS|HISTCMD|HOSTNAME|HOSTTYPE|LINENO|MACHTYPE|MAPFILE|OLDPWD|OPTARG|OPTIND|OSTYPE|PIPESTATUS|PPID|PWD|RANDOM|REPLY|SECONDS|SHELLOPTS|SHLVL|SRANDOM|UID)$/;
+
+/** Whether every place `code` names the variable `name` is a read of it (`$name`, or `${name…}`
+ * but its assigning `${name=…}` and `${name:=…}`), one of the sites `flowed` reads it set, or
+ * inside literal text `flowed` reads as a value (`places`). The places are read in the text as
+ * written, quotes and all, so that none is missed for being quoted (`export "name=…"`, `eval
+ * 'name=…'`): a word of quoted text that names it is one more. */
+function namedOnlyAt(code: string, name: string, places: Places): boolean {
+  const sites = new Set(places.sites.map((site) => site.at));
+  for (const hit of code.matchAll(new RegExp(`(?<!\\w)${name}(?!\\w)`, "g"))) {
+    const at = hit.index ?? 0;
+    const read =
+      code[at - 1] === "$" ||
+      (code.slice(at - 2, at) === "${" && !/^:?=/.test(code.slice(at + name.length)));
+    const literal = places.literal.some(([from, to]) => from <= at && at < to);
+    if (!read && !literal && !sites.has(at)) return false;
+  }
+  return true;
+}
+
+/** A `bash` command's text with each variable it sets to a literal written where the shell
+ * expands it (`flowed`, in two readings: the first finds where the text sets each variable, the
+ * second writes those it reads): a `for` loop's, over a list of literal words, written out once
+ * per word; and a command of assignments alone's, its value a literal or the value of a variable
+ * the reader holds, as is or trimmed by `%`, `%%`, `#` or `##` (`expandedWord`). No command runs:
+ * nothing set any other way is read, a command's output, a file's text, arithmetic, a loop over
+ * anything but literal words, an assignment inside a bracket, a compound command or after `&&`,
+ * and its expansion stays as written. A variable is read only where every place the text names it
+ * is a read of it, a place `flowed` reads it set or literal text it reads as a value
+ * (`namedOnlyAt`), where no word of a command of SETS_NAMED ends with its name (`read -arepo`
+ * sets `repo`), and never one the shell sets itself (SHELL_SETS). The text is returned whole
+ * where it holds what may set any variable unread: a comment (`#`, whose end the reader does not
+ * read), a command of RUNS_TEXT, one of SETS_NAMED given an expansion among its words, one of
+ * GIVES_ATTRIBUTES given `-i` or `-n` (each named bare or after `command` or `builtin`), or IFS,
+ * which would split a value the reader writes as one word. What an earlier call left in a
+ * persistent shell is not read, as no reader of a call's text reads it. */
+function literalFlow(code: string): string {
+  const scan = scanned(code);
+  const { tokens, raw, gaps, starts } = scan;
+  if (/(?<!\w)IFS(?!\w)/.test(code)) return code;
+  // The words of each command of SETS_NAMED, any of which may name a variable with an option's
+  // letters before it.
+  const naming: string[] = [];
+  for (const [i, word] of raw.entries()) {
+    if (tokens[i]?.redirect === undefined && word.startsWith("#")) return code;
+    if (!starts[i]) continue;
+    const wrapped = (word === "command" || word === "builtin") && BLANK_GAP.test(gaps[i + 1] ?? "");
+    const named = wrapped ? (raw[i + 1] ?? "") : word;
+    if (RUNS_TEXT.has(named)) return code;
+    const last = commandEnd(scan, i);
+    const words = raw.slice(i + 1, last + 1);
+    if (GIVES_ATTRIBUTES.has(named) && words.some((one) => /^-\w*[in]/.test(one))) return code;
+    if (!SETS_NAMED.has(named)) continue;
+    if (named === "printf" && !words.some((one) => one.startsWith("-v"))) continue;
+    if (words.some((one) => /[$`]/.test(one)) || /[(`]/.test(gaps[last + 1] ?? "")) return code;
+    naming.push(...words);
+  }
+  const places: Places = { sites: [], literal: [] };
+  flowed(code, 0, new Map(), undefined, places);
+  const eligible = new Set(
+    places.sites
+      .map((site) => site.name)
+      .filter(
+        (name) =>
+          !SHELL_SETS.test(name) &&
+          namedOnlyAt(code, name, places) &&
+          !naming.some((word) => new RegExp(`${name}(?!\\w)`).test(word))
+      )
+  );
+  return eligible.size === 0
+    ? code
+    : flowed(code, 0, new Map(), eligible, { sites: [], literal: [] }).text;
+}
+
 /** Every host a `bash` command reaches, with the text that names it: the host of every network
  * URL in it but those in text it writes (the values of TEXT_FLAG and of a `body`, `title` or
  * `message` FIELD_FLAG, and here-document bodies but those an interpreter runs, `bodyRunner`) and
@@ -2287,9 +2608,15 @@ function commandHosts(
  * (`shellWords`), so `curl … > report.json` names no host `report.json`. The variables a command
  * runs with are those its prefix and its wrappers set, over those `env` holds and those a command
  * of assignments alone or an `export` set before it: every pane exports GH_HOST (empty,
- * daemon-pane.ts), so a `GH_HOST=…` alone reaches every gh after it. */
+ * daemon-pane.ts), so a `GH_HOST=…` alone reaches every gh after it. Each of the text's variables
+ * that a `for` loop over literal words or an assignment of a literal sets is read where it is
+ * expanded (`literalFlow`), so a loop's body is read once per word of its list and every reach of
+ * each of them is judged. */
 function bashHosts(command: string, env: ReadonlyMap<string, string> = new Map()): Reach[] {
-  const { code, bodies } = withoutBodies(command);
+  const { code: written, bodies } = withoutBodies(command);
+  // A here-document's body is read at the place of its `<<` in the text (`bodyRunner`), which a
+  // variable's value written in would move: a call with one has none written in.
+  const code = bodies.length === 0 ? literalFlow(written) : written;
   const inline = [...code.matchAll(SHELL_INLINE)];
   // A quoted string that holds a `;`, `&`, `|`, a bracket, a backquote or a line break is text a
   // command is given (a commit message, a review body) or a program given whole (`sh -c '…'`):

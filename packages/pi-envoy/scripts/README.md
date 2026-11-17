@@ -565,7 +565,11 @@ with no body, or a `git ls-remote` (which reads refs alone; a fetch, a clone and
 world),
 of a public repository the world's own workflow names in a `uses:` line (read from the run's
 remote at `world.json`'s seeded head) on `api.github.com`, `github.com`,
-`raw.githubusercontent.com` or `codeload.github.com`, as production reaches it; and no agent says a
+`raw.githubusercontent.com` or `codeload.github.com`, as production reaches it (a repository a
+`bash` command names through a variable is read with each value a `for` loop over literal words or
+an assignment of a literal gives that variable, trimmed where the command trims it by `%`, `%%`,
+`#` or `##`, and the call is such a read only where every one of those values makes it one); and
+no agent says a
 word of the measurement an input gave it: a scenario or case word with a character that is no
 letter or digit (`text-only`, `threads-closed`), a removed name (`skill-scenarios`, `LWEVAL`,
 `rig-reviewer`), a run's name in the old shape, or a case word beside a label word (`defect
@@ -795,6 +799,13 @@ Stated limits, each known and kept so:
   `uses:` line pins) reaches the live GitHub, as it does in production, so its answer is GitHub's
   and not the world's. A run in which that read fails for a network reason is not unhealthy for
   it, since a production reviewer can meet the same failure.
+- The readers resolve literal text flow and nothing else: the words of a `for` loop's literal list,
+  a literal assignment, and the four operators that only take text off, `%`, `%%`, `#` and `##`,
+  over a variable that holds a literal. A variable whose value needs a command's output, a file's
+  contents or arithmetic stays unresolved, and a call that reaches GitHub through it is off the
+  world. A recorded run that needs a shape outside that gets no special case: its count is
+  reported, and that count is the evidence that buys running the label's own `legion gh` wrapper
+  in front of the world's `gh` (measured at about 5.6 minutes of build a label).
 - A behaviour of the Legion gh wrapper that its selector table does not describe is not modelled:
   a gh alias or an extension, a set `GH_TOKEN`, `GITHUB_TOKEN` or `GH_HOST`, an option or an
   argument the wrapper cannot place, the working directory's git remotes (a world's workspace,

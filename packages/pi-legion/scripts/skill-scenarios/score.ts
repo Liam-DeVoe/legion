@@ -2254,9 +2254,10 @@ const DISPATCH_COMMAND = new RegExp(
  * `shellWord` reads what it names) and the rest. health.ts reads a `bash` call's commands with it. */
 export const SHELL_COMMAND = new RegExp(`${AT_COMMAND}(${SHELL_WORD})(${COMMAND_REST})`, "gm");
 /** Each piece of a shell word by its kind: single-quoted, ANSI-C quoted, double-quoted, a
- * backslash escape, a `${…}` or `$((…))` expansion, or other text. */
+ * backslash escape, an expansion (a `${…}` or `$((…))` one, or a variable's `$NAME`), or other
+ * text. */
 const WORD_PIECE =
-  /'([^']*)'|\$'((?:[^'\\]|\\[\s\S])*)'|"((?:[^"\\]|\\[\s\S])*)"|\\([\s\S])|(\$\{[^}]*\}|\$\(\([^()]*\)\))|([^'"\\$]+|[\s\S])/g;
+  /'([^']*)'|\$'((?:[^'\\]|\\[\s\S])*)'|"((?:[^"\\]|\\[\s\S])*)"|\\([\s\S])|(\$\{[^}]*\}|\$\(\([^()]*\)\)|\$[A-Za-z_]\w*)|([^'"\\$]+|[\s\S])/g;
 /** The characters ANSI-C quoting's one-letter escapes stand for (bash(1), QUOTING). */
 const ANSI_C: Readonly<Record<string, string>> = {
   a: "\x07",
@@ -2327,24 +2328,103 @@ const SHELL_TOKEN = new RegExp(
   String.raw`((?:\d+|&)?[<>]{1,2}\|?)[ \t]*(${SHELL_WORD})?|(${SHELL_WORD})`,
   "g"
 );
-/** A word of shell text as `shellWord` reads it; for a redirection's target, the operator. */
+/** A word of shell text as `shellWord` reads it; for a redirection's target, the operator; and
+ * where the token lies in the text, from `at` up to `end`, so its text as written is that slice. */
 export interface ShellToken {
   readonly word: string;
   readonly redirect?: string;
+  readonly at: number;
+  readonly end: number;
 }
 /** Every word and redirection of shell text, in order (SHELL_TOKEN): a `>` inside a quoted word
  * redirects nothing, and a quoted or escaped blank ends no word. A redirection that takes no word
  * (`2>&1`, whose `&1` is no word) has the target "". */
 export function shellTokens(text: string): ShellToken[] {
-  return [...text.matchAll(SHELL_TOKEN)].map((hit) =>
-    hit[1] === undefined
-      ? { word: shellWord(hit[3] ?? "") }
-      : { word: shellWord(hit[2] ?? ""), redirect: hit[1] }
-  );
+  return [...text.matchAll(SHELL_TOKEN)].map((hit) => {
+    const at = hit.index ?? 0;
+    const end = at + hit[0].length;
+    return hit[1] === undefined
+      ? { word: shellWord(hit[3] ?? ""), at, end }
+      : { word: shellWord(hit[2] ?? ""), redirect: hit[1], at, end };
+  });
 }
 /** The words of shell text (`shellTokens`), its redirections and their targets left out. */
 export function shellWords(text: string): string[] {
   return shellTokens(text).flatMap((token) => (token.redirect === undefined ? [token.word] : []));
+}
+/** The characters a variable's value may hold for a reader to write it into a command's text in
+ * place of its expansion: none the shell reads as more than itself, bare, quoted or in a pattern
+ * (a blank, a quote, a backslash, `$`, a backquote, a glob, a brace, `~`, `#`, an operator). */
+const PLAIN = String.raw`[\w@%+=:,./-]`;
+/** A shell word of PLAIN characters alone, each run of them bare, single- or double-quoted. */
+const LITERAL_WORD = new RegExp(`^(?:${PLAIN}|'${PLAIN}*'|"${PLAIN}*")*$`);
+/** What a shell word (SHELL_WORD, as written) names where it is a literal of PLAIN characters
+ * alone (LITERAL_WORD), its quotes read (`shellWord`); undefined for any other word: one with an
+ * expansion, a command substitution, a glob, a brace or a blank. */
+export function literalWord(raw: string): string | undefined {
+  return LITERAL_WORD.test(raw) ? shellWord(raw) : undefined;
+}
+/** The expansions of a variable `expandedWord` reads: `$NAME`, `${NAME}`, and `${NAME%PATTERN}`,
+ * `${NAME%%PATTERN}`, `${NAME#PATTERN}` and `${NAME##PATTERN}` (bash(1), Parameter Expansion). */
+const VARIABLE = /^\$(?:([A-Za-z_]\w*)|\{([A-Za-z_]\w*)(?:(%%?|##?)([^}]*))?\})$/;
+/** A pattern `trimmed` reads: PLAIN characters and `*` alone, no `?`, bracket, `$`, quote or
+ * backslash. */
+const PATTERN = new RegExp(String.raw`^(?:${PLAIN}|\*)*$`);
+/** `value` with the shortest (`%`, `#`) or the longest (`%%`, `##`) suffix (`%`) or prefix (`#`)
+ * that `pattern` matches taken off, its `*` matching any text and each other character itself, or
+ * `value` whole where none does (bash(1), Remove matching prefix pattern, suffix pattern). */
+function trimmed(value: string, operator: string, pattern: string): string {
+  const glob = new RegExp(
+    `^${pattern
+      .split("*")
+      .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+      .join("[\\s\\S]*")}$`
+  );
+  const longest = operator.length === 2;
+  for (let i = 0; i <= value.length; i++) {
+    const length = longest ? value.length - i : i;
+    const [cut, kept] = operator.startsWith("#")
+      ? [value.slice(0, length), value.slice(length)]
+      : [value.slice(value.length - length), value.slice(0, value.length - length)];
+    if (glob.test(cut)) return kept;
+  }
+  return value;
+}
+/** What an expansion (VARIABLE) reads to where `bound` holds its variable: the variable's value,
+ * or that value `trimmed` by its operator and a PATTERN; undefined for any other expansion, and
+ * for one of a variable `bound` does not hold. */
+function boundValue(piece: string, bound: ReadonlyMap<string, string>): string | undefined {
+  const found = VARIABLE.exec(piece);
+  const value = found === null ? undefined : bound.get(found[1] ?? found[2] ?? "");
+  const [, , , operator, pattern = ""] = found ?? [];
+  if (value === undefined || operator === undefined) return value;
+  return PATTERN.test(pattern) ? trimmed(value, operator, pattern) : undefined;
+}
+/** An expansion inside double quotes (WORD_PIECE's), or a backslash escape there, which keeps
+ * the `$` after it from expanding. */
+const DOUBLE_PIECE = /\\[\s\S]|\$\{[^}]*\}|\$\(\([^()]*\)\)|\$[A-Za-z_]\w*/g;
+/** A shell word (SHELL_WORD, as written) with each expansion of a variable `bound` holds written
+ * as what it reads to (`boundValue`), where the shell expands one: bare or in double quotes, not
+ * in single or ANSI-C quotes nor after a backslash. Every other expansion is kept as written. Each
+ * value `bound` holds is of PLAIN characters, which the shell reads alike quoted or bare, so the
+ * word reads as the shell's expansion of it does. */
+export function expandedWord(raw: string, bound: ReadonlyMap<string, string>): string {
+  if (bound.size === 0) return raw;
+  return raw.replace(
+    WORD_PIECE,
+    (
+      all: string,
+      _single?: string,
+      _ansi?: string,
+      double?: string,
+      _escaped?: string,
+      expansion?: string
+    ) => {
+      if (expansion !== undefined) return boundValue(expansion, bound) ?? all;
+      if (double === undefined) return all;
+      return `"${double.replace(DOUBLE_PIECE, (piece) => boundValue(piece, bound) ?? piece)}"`;
+    }
+  );
 }
 /** A here-document: the rest of the line that opens it, then its body up to the line that ends it. */
 const HEREDOC = /(<<-?[ \t]*(['"]?)(\w+)\2[^\n]*\n)[\s\S]*?^[ \t]*\3[ \t]*$/gm;

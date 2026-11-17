@@ -568,6 +568,57 @@ describe("health: rule 13, off-world network, words read as the shell reads them
   });
 });
 
+// The four operators that trim a variable's value, `${word%p}`, `${word%%p}`, `${word#p}` and
+// `${word##p}`, as rule 13 reads them where a call sets the variable to a literal (score.ts's
+// `expandedWord`), each row held to bash's own answer for it, which bash prints here, so the
+// reader's shortest and longest matches cannot drift from the shell's. Catches: `%%` read as `%`
+// or `##` as `#` (the shortest match taken for the longest), a prefix taken off for a suffix, a
+// `*` matched as itself, an empty pattern or one with no match read as taking something off, and
+// a character of the pattern a regular expression reads as more than itself (`.`, `+`).
+describe("health: rule 13, off-world network, a variable's value trimmed as bash trims it", () => {
+  const rows: [value: string, operator: string, pattern: string][] = [
+    ["a:b:c", "%", ":*"],
+    ["a:b:c", "%%", ":*"],
+    ["a:b:c", "#", "*:"],
+    ["a:b:c", "##", "*:"],
+    ["a/b/c/d", "%", "/*/*"],
+    ["a/b/c/d", "%%", "/*/*"],
+    ["a/b/c/d", "#", "*/*/"],
+    ["a/b/c/d", "##", "*/*/"],
+    ["aXbYb", "#", "a*b"],
+    ["aXbYb", "##", "a*b"],
+    ["aXbYb", "%", "b*b"],
+    ["aXbYb", "%%", "X*"],
+    ["abc", "%", "*"],
+    ["abc", "%%", "*"],
+    ["abc", "#", "*"],
+    ["abc", "##", "*"],
+    ["abc", "%", ""],
+    ["abc", "#", "z*"],
+    ["v7.0.1", "%", ".1"],
+    ["v7.0.1", "#", "v"],
+    ["a.b+c", "%", "+c"],
+    ["a.b+c", "#", "a.b"],
+    ["axb", "#", "a.b"],
+    ["actions/checkout:v7.0.1:3d3c42e5", "%%", ":*"],
+    ["v7.0.1:3d3c42e5", "#", "*:"],
+  ];
+  test("each row reads to what bash prints for it", () => {
+    const expansion = ([, operator, pattern]: (typeof rows)[number]) =>
+      `\${word${operator}${pattern}}`;
+    const read = rows.map((row) => [
+      ...row,
+      reach(bash(`word=${row[0]}; curl -s https://example.com/${expansion(row)}`)),
+    ]);
+    const printed = rows.map((row) => {
+      const shell = Bun.spawnSync(["bash", "-c", `word=${row[0]}; printf %s "${expansion(row)}"`]);
+      expect(shell.exitCode).toBe(0);
+      return [...row, offWorld("example.com", `https://example.com/${shell.stdout.toString()}`)];
+    });
+    expect(read).toEqual(printed);
+  });
+});
+
 // The paths a `bash` command writes, read through the same shell-word reader. Catches: a write
 // after an assignment whose value holds a space read as no command's (AT_COMMAND's `\S*`); a
 // writer's operand with an escaped blank read as two words; a quoted redirection target read as
