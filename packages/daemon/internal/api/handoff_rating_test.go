@@ -1,6 +1,7 @@
 package api
 
 import (
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -299,4 +300,98 @@ func TestPlanRatingGolden(t *testing.T) {
 		Most       int `json:"most"`
 		ReasonMost int `json:"reasonMost"`
 	}{Least: planRatingLeast, Most: planRatingMost, ReasonMost: planReasonMax})
+}
+
+// planRatingCase is one row of plan-rating-cases.json: the rating and the reason a retro's
+// completion carries, a member left out of the body where its pointer is nil, and the verdict the
+// completion route answers it with, `accepted` or the code of its refusal.
+type planRatingCase struct {
+	Name       string  `json:"name"`
+	PlanRating *int    `json:"planRating,omitempty"`
+	PlanReason *string `json:"planReason,omitempty"`
+	Verdict    string  `json:"verdict"`
+}
+
+// The daemon is the rule of a rating, and the contract's schema and the plugin's tool state it
+// again in TypeScript, where a reason is blank by JavaScript's trim: that keeps U+0085, which Go's
+// strings.TrimSpace strips, and strips U+FEFF, which Go keeps. So the cases a rule of the scale,
+// of the pair, of blank or of length can part on are a golden. Each is posted as its raw body to
+// the completion that ends a retro, from a plugin at PlanRatingContract, and the route's answer is
+// the verdict Go writes (`-update`), never one typed here; `packages/contracts` and the plugin hold
+// their own verdicts to the file. An answer that is neither a 200 nor a 400 of the rating fails
+// the test, so no trouble of the harness is written down as a verdict, and an accepted case's fact
+// carries the rating and the reason as they were sent.
+func TestPlanRatingCasesGolden(t *testing.T) {
+	h, facts := newHandoffHarness(t, newHandoffGitHub(t), nil, nil)
+	seedIssueAt(t, h, "LEGION-208", phase.Retro)
+	implementer := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
+	if got := pluginContractOf(t, h, implementer.token); got < PlanRatingContract {
+		t.Fatalf("the implementer's plugin declared contract %d, below PlanRatingContract %d: this case proves nothing", got, PlanRatingContract)
+	}
+
+	rated := func(name string, rating int, reason string) planRatingCase {
+		return planRatingCase{Name: name, PlanRating: new(rating), PlanReason: new(reason)}
+	}
+	cases := []planRatingCase{
+		rated("a rating of 4 with a reason", 4, "fit"),
+		rated("a rating of 0", 0, "fit"),
+		rated("a rating of 1", 1, "fit"),
+		rated("a rating of 5", 5, "fit"),
+		rated("a rating of 6", 6, "fit"),
+		{Name: "a rating with no reason", PlanRating: new(4)},
+		{Name: "a reason with no rating", PlanReason: new("fit")},
+		rated("an empty reason", 4, ""),
+	}
+	for _, blank := range []struct{ name, text string }{
+		{"three spaces", "   "}, {"U+0085", "\u0085"}, {"U+00A0", "\u00a0"}, {"U+FEFF", "\ufeff"},
+	} {
+		cases = append(cases,
+			rated("a reason of "+blank.name+" alone", 4, blank.text),
+			rated("a reason of "+blank.name+" before a word", 4, blank.text+"fit"))
+	}
+	for _, long := range []struct{ name, char string }{
+		{"U+0061 (a), one UTF-16 unit each", "a"}, {"U+1F600, two UTF-16 units each", "\U0001F600"},
+	} {
+		for _, count := range []int{planReasonMax, planReasonMax + 1} {
+			cases = append(cases, rated(fmt.Sprintf("a reason of %d characters %s", count, long.name), 4, strings.Repeat(long.char, count)))
+		}
+	}
+
+	for i := range cases {
+		c := &cases[i]
+		// Each case at a commit of its own, since the commit is in the completion's key and the
+		// rating is not: an accepted case is a completion of its own, never a retry of the last.
+		body := map[string]any{"grantId": implementer.grant(t), "summary": "retro done", "verdict": "", "commit": fmt.Sprintf("c0ffee%02d", i)}
+		if c.PlanRating != nil {
+			body["planRating"] = *c.PlanRating
+		}
+		if c.PlanReason != nil {
+			body["planReason"] = *c.PlanReason
+		}
+		before := len(facts.recorded())
+		recorder := h.request(http.MethodPost, "/legion/v1/handoff/complete", body, nil)
+		switch recorder.Code {
+		case http.StatusOK:
+			fact := lastCompletion(t, facts)
+			if len(facts.recorded()) != before+1 || c.PlanRating == nil || c.PlanReason == nil || fact.PlanRating != *c.PlanRating || fact.PlanReason != *c.PlanReason {
+				t.Fatalf("%s was taken with the fact %+v, want one new fact carrying the rating and the reason as sent", c.Name, fact)
+			}
+			c.Verdict = "accepted"
+		case http.StatusBadRequest:
+			var failure Failure
+			decodeInto(t, recorder, &failure)
+			if !strings.HasPrefix(failure.Code, "PLAN_RATING_") {
+				t.Fatalf("%s was refused %s (%s), want a refusal of the rating", c.Name, failure.Code, failure.Error)
+			}
+			if got := len(facts.recorded()); got != before {
+				t.Fatalf("%s was refused %s with %d facts applied, want none", c.Name, failure.Code, got-before)
+			}
+			c.Verdict = failure.Code
+		default:
+			t.Fatalf("%s was answered %d: %s, want 200 or a 400 of the rating", c.Name, recorder.Code, recorder.Body)
+		}
+	}
+	golden(t, "plan-rating-cases.json", struct {
+		Cases []planRatingCase `json:"cases"`
+	}{Cases: cases})
 }
