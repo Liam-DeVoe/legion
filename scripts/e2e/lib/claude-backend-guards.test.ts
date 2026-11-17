@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, test } from "bun:test";
 import { copyFileSync, mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { timeLeft } from "@legion/test-fixtures/wait";
@@ -28,6 +28,8 @@ const dir = temporaryDirectory("claude-backend-guards-test");
 // nothing to run them in and every row here is skipped.
 // The gate is given both names: it walks each one and names the missing ones in its warning.
 const skip = skipWithout("bash", "sleep");
+// Only the unreadable-environment case needs an interpreter.
+const withoutPython = skipWithout("python3");
 // Every process a guard or await_child judges by its executable (/proc/<pid>/exe) or its first
 // argument is a copy of the Bun running this file (process.execPath), or that Bun itself ($BUN in
 // run), and never a copy of a program found on the host's PATH. A copy of what PATH finds runs as
@@ -75,7 +77,7 @@ beforeAll(() => {
 // @legion/test-fixtures/wait), so each wait of BODY asks again until then and no longer, and its
 // own failure prints before the row's guard. Every process spawn or await_child names is killed
 // when BODY ends.
-function run(body: string) {
+function run(body: string, vars: Record<string, string> = {}) {
   const prelude = `set -Eeuo pipefail
 ${guards}
 work=$WORK claude_bin=$CLAUDE port_dispatch=1 port_listener=2 port_nats=3 state=/rig
@@ -119,6 +121,7 @@ await_child() {
       SCRATCH: dir,
       BUN: process.execPath,
       LEGION_PROOF_DEADLINE_MS: String(Math.floor(Date.now() + timeLeft())),
+      ...vars,
     },
   });
   return { code: result.exitCode, out: result.stdout.toString(), err: result.stderr.toString() };
@@ -223,14 +226,27 @@ printf 'status %s: %s\\n' "$status" "$found"`;
     );
   });
 
-  test("reports an environment it cannot read as not checked, never clean, while the agent still runs with a credential variable in it", () => {
-    // A process that makes itself non-dumpable (prctl PR_SET_DUMPABLE 0) has its /proc entries
-    // owned by root, so its own user can no longer read its environment. The stand-in writes its
-    // ready file only once prctl succeeded and PR_GET_DUMPABLE reads 0, and keeps its stderr; the
-    // run asserts it is still running, not a zombie, on both sides of the check.
-    const r = run(`
+  test.skipIf(withoutPython)(
+    "reports an environment it cannot read as not checked, never clean, while the agent still runs with a credential variable in it",
+    () => {
+      // A process that makes itself non-dumpable (prctl PR_SET_DUMPABLE 0) has its /proc entries
+      // owned by root, so its own user can no longer read its environment. The stand-in writes its
+      // ready file only once prctl succeeded and PR_GET_DUMPABLE reads 0, and keeps its stderr; the
+      // run asserts it is still running, not a zombie, on both sides of the check.
+      // It runs the interpreter python3 reports as sys.executable, resolved here with the caller's
+      // environment and passed as data, not the first python3 on PATH: under `env -i` a version
+      // manager's shim there (mise's, with no python selected) has no version and starts nothing.
+      const resolved = Bun.spawnSync(["python3", "-I", "-c", "import sys; print(sys.executable)"]);
+      const python = resolved.stdout.toString().trim();
+      if (resolved.exitCode !== 0 || !isAbsolute(python)) {
+        throw new Error(
+          `could not resolve the python3 interpreter (exit ${resolved.exitCode}): ${resolved.stderr.toString() || "no absolute executable path"}`
+        );
+      }
+      const r = run(
+        `
 ready=$scratch/ready err=$scratch/stderr
-env -i ${rig.join(" ")} CLAUDE_CODE_OAUTH_TOKEN=dummy "$(command -v python3)" -c '
+env -i ${rig.join(" ")} CLAUDE_CODE_OAUTH_TOKEN=dummy "$PYTHON" -c '
 import ctypes, os, sys, time
 libc = ctypes.CDLL(None, use_errno=True)
 if libc.prctl(4, 0, 0, 0, 0) != 0:
@@ -257,18 +273,21 @@ echo "before: $(state "$pid")"
 if { : <"/proc/$pid/environ"; } 2>/dev/null; then echo "environ: readable"; else echo "environ: unreadable"; fi
 ${check}
 echo "after: $(state "$pid")"
-printf 'stderr: [%s]\\n' "$(cat "$err")"`);
-    expect(r.err).toBe("");
-    const lines = r.out.trim().split("\n");
-    expect(lines[0]).toBe("fixture: not dumpable");
-    expect(lines[1]).toMatch(/^before: [RSD]$/);
-    expect(lines[2]).toBe("environ: unreadable");
-    expect(lines[3]).toMatch(
-      /^status 2: its environment could not be read \(\/proc\/\d+\/environ\)$/
-    );
-    expect(lines[4]).toMatch(/^after: [RSD]$/);
-    expect(lines[5]).toBe("stderr: []");
-  });
+printf 'stderr: [%s]\\n' "$(cat "$err")"`,
+        { PYTHON: python }
+      );
+      expect(r.err).toBe("");
+      const lines = r.out.trim().split("\n");
+      expect(lines[0]).toBe("fixture: not dumpable");
+      expect(lines[1]).toMatch(/^before: [RSD]$/);
+      expect(lines[2]).toBe("environ: unreadable");
+      expect(lines[3]).toMatch(
+        /^status 2: its environment could not be read \(\/proc\/\d+\/environ\)$/
+      );
+      expect(lines[4]).toMatch(/^after: [RSD]$/);
+      expect(lines[5]).toBe("stderr: []");
+    }
+  );
 
   test("reports an agent that has exited as not checked", () => {
     const r = run(`true &\npid=$!\nwait "$pid"\n${check}`);
