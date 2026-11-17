@@ -225,13 +225,15 @@ const CATCH_UP_READS_MS = [2_000, 5_000, 15_000, 45_000, 120_000, 300_000] as co
 
 /**
  * Reads the issue's records at once and at each of `CATCH_UP_READS_MS` after every start: the tab
- * shown, the page shown again, and each refresh the event feed asks of this read - an event of
- * the issue that comes with a phase moving (`changesSteps` in `api/event-refresh.ts`), or a
- * refresh of the whole cache. A start replaces the catch-up running, so a tab holds one list of
- * timers at most; a tab not shown, or a hidden page, reads nothing and holds no timer. Each read
- * is asked of the event refresh's scheduler, which holds the read while the tab is shown
- * (`ownQuery` in `api/query-refresh.ts`): a read never cancels one already out, and the tab reads
- * at most once a second, however its starts and the feed's batches fall.
+ * shown, the page shown again, and each refresh that reaches this read - an event of the issue
+ * that comes with a phase moving (`changesSteps` in `api/event-refresh.ts`), a refresh of every
+ * `["issue"]` read, which the feed asks where an event may have moved any issue (a parent,
+ * components or repository move, an event it cannot read), or a refresh of the whole cache. A
+ * start replaces the catch-up running, so a tab holds one list of timers at most; a tab not
+ * shown, or a hidden page, reads nothing and holds no timer. Each read is asked of the event
+ * refresh's scheduler, which holds the read while the tab is shown (`ownQuery` in
+ * `api/query-refresh.ts`): a read never cancels one already out, and the tab reads at most once a
+ * second, however its starts and the feed's batches fall.
  */
 function useCatchUp(issueKey: string, shown: boolean): void {
   const queryClient = useQueryClient();

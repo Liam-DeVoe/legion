@@ -160,9 +160,9 @@ export interface QueryOwner {
 
 /**
  * Hands the query `queryKey` names exactly to an owner that reads it on its own terms, until
- * `stop`. `onRefresh` runs each time a refresh reaches the query - an event the feed refreshes it
- * on, or a refresh of the whole cache - which the query's state cannot tell the owner: a query
- * already marked stale takes the mark again with no change to announce. The refresh itself
+ * `stop`. `onRefresh` runs each time a refresh reaches the query - a target naming it exactly or
+ * by a prefix, or a refresh of the whole cache - which the query's state cannot tell the owner: a
+ * query already marked stale takes the mark again with no change to announce. The refresh itself
  * fetches nothing for a query no enabled observer renders; the owner's `read` does, through the
  * same rules as every other fetch this scheduler starts, so its reads too never cancel a request
  * and come at most once a second. The Steps tab's catch-up is that owner
