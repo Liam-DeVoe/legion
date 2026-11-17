@@ -86,6 +86,13 @@ export function caretOutOfBlock(host: HTMLElement, blockId: string | undefined):
   return anchor === null || anchor === undefined || !block.contains(anchor);
 }
 
+/** Whether the editor in `host` draws `blockId`'s block, the block `caretInBlock` puts the caret
+ *  in: an editor that draws none takes it at its start, outside the node's text. */
+export function drawsBlock(host: HTMLElement, blockId: string | undefined): boolean {
+  const editable = host.querySelector<HTMLElement>('[contenteditable="true"]');
+  return editable !== null && blockIn(editable, blockId) !== null;
+}
+
 /**
  * Opens the editor in `host` at `blockId`'s block, in a box no taller than the window. The
  * editor holds the whole document, and drawn whole in the row it made the row as tall as the

@@ -590,6 +590,28 @@ test("a focus the reader moves onto the view's tree, a frame after the stage gav
   }
 });
 
+// The frame after the stage placed the focus places it again where nothing holds it then. A view
+// turned off before that frame takes the frame with it, and nothing of a view no longer drawn is
+// focused in it.
+test("a view turned off before the frame after it placed the focus focuses nothing in that frame", async () => {
+  (document.activeElement as HTMLElement | null)?.blur();
+  const page = render(<RefusedViewPage drawn late={false} />);
+  const retry = page.getByRole("button", { name: "Retry" });
+  const focused = spyOn(retry, "focus");
+  try {
+    expect(document.activeElement, "the view gave its Retry no focus").toBe(retry);
+    page.rerender(<RefusedViewPage drawn={false} late={false} />);
+    await frames(1);
+    expect(
+      focused,
+      "the frame after the stage placed the focus focused the Retry of a view no longer drawn"
+    ).not.toHaveBeenCalled();
+  } finally {
+    focused.mockRestore();
+    page.unmount();
+  }
+});
+
 // Where the tree draws rows a focus on the tree itself is the reader's wherever it comes from: a
 // press on what the tree draws outside its rows focuses the tree, and moves no row's focus.
 test("a focus on a view's tree that draws rows stays on the tree, from outside the view too", async () => {

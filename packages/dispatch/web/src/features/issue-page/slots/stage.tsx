@@ -114,6 +114,9 @@ export function ViewStage({ children, view }: { children: ReactNode; view: Prese
     // reader moves that fast, so after that frame a focus moved off the Retry onto the tree is
     // the reader's.
     let placed: Element | null = null;
+    // The frames that end `placed`, which go with the stage: one left to run after the view is
+    // gone would focus what the take placed the focus on, off the page.
+    const ending = new Set<number>();
     // Puts the focus on `to`, and brings it on screen too once `bring`.
     const place = (to: HTMLElement): void => {
       if (bring) focusOn(to);
@@ -139,10 +142,12 @@ export function ViewStage({ children, view }: { children: ReactNode; view: Prese
       if (to === null) return false;
       place(to);
       placed = to;
-      requestAnimationFrame(() => {
+      const frame = requestAnimationFrame(() => {
+        ending.delete(frame);
         placed = null;
         if (focusIsLoose(stage)) place(to);
       });
+      ending.add(frame);
       return true;
     };
     // A view draws its tree once its reads have answered, a frame or several after it mounts.
@@ -171,6 +176,7 @@ export function ViewStage({ children, view }: { children: ReactNode; view: Prese
     return () => {
       drawn.disconnect();
       stage.removeEventListener("focusin", treeFocused);
+      for (const frame of ending) cancelAnimationFrame(frame);
     };
   }, [view]);
   return (
