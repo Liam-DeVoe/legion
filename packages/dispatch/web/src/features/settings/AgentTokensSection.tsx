@@ -1,4 +1,4 @@
-import { DISPATCH_SCOPES } from "@legion/contracts";
+import { DISPATCH_SCOPES, MAX_TOKEN_PROJECTS } from "@legion/contracts";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, type ReactNode, useState } from "react";
 
@@ -156,10 +156,6 @@ function TokenScopeChoices({
     </div>
   );
 }
-
-/** The most projects Dispatch lets one token name (`agent_tokens.projects`, and 400
- *  TOKEN_PROJECTS_INPUT at the mint and the edit). */
-const MAX_TOKEN_PROJECTS = 16;
 
 /** The projects a token may use, for a token's row and for the mint form. A token that names no
  *  project uses the public projects only, and one that names projects uses those alone, private
