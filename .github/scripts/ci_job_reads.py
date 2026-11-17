@@ -55,6 +55,7 @@ from typing import NamedTuple
 
 from ci_filter_coverage import CACHE_WORKFLOW, TEST_SUFFIX, Read, TagRun, exact, go_skips_dir, run
 from ci_filter_coverage import at as at_in, gate as gate_in
+from workflow_paths import glob_regex
 
 ENVOY = "packages/envoy"
 DAEMON = "packages/daemon"
@@ -107,7 +108,12 @@ def with_fixtures_manifest(reads):
     function says why), so which gates read it is derived here from which gates read the
     fixtures, never kept by hand."""
     reads = list(reads)
-    if any(r.glob.startswith(f"{TEST_FIXTURES}/") for r in reads):
+    globs = {r.glob for r in reads}
+    # A gate that already reads the manifest needs no second read with this reason: envoy_smoke,
+    # whose one fixtures read is the manifest its image build copies, and test_fixtures, whose
+    # packages/test-fixtures/** takes it in.
+    covered = any(glob_regex(g).fullmatch(TEST_FIXTURES_MANIFEST) for g in globs)
+    if not covered and any(g.startswith(f"{TEST_FIXTURES}/") for g in globs):
         reads.append(Read(TEST_FIXTURES_MANIFEST, f"a module importing @legion/test-fixtures/* (this gate reads "
                                                   f"{TEST_FIXTURES}) resolves it through this manifest's exports"))
     return reads
