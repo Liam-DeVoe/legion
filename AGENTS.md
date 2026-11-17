@@ -241,9 +241,11 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
   CI runs this command in each of these, in a job of ci.yaml that runs when a change touches a file it reads:
   packages/contracts, envoy-client, claude-envoy, pi-shared, pi-envoy, pi-legion, proof-editor and dispatch, and docs/site
 
-- `bunx tsc --noEmit -p scripts/dispatch && bunx tsc --noEmit -p scripts/github-apps && bunx tsc --noEmit -p scripts/sessions`
+- `bunx tsc --noEmit -p scripts/dispatch && bunx tsc --noEmit -p scripts/github-apps && bunx tsc --noEmit -p scripts/sessions && bunx tsc --noEmit -p scripts/approval-eval && bunx tsc --noEmit -p scripts/conflicts`
 
-  Type check the three script directories that are no workspace, as ci.yaml's `test` job does
+  Type check the five script directories that are no workspace, each against its own tsconfig.json.
+  ci.yaml's `test` job runs the first four, one step each and in that order (`.github/workflows/ci-job-test.yaml`), and none of those steps carries an `if:` of its own, so every run of that job checks all four.
+  `bunx tsc --noEmit -p scripts/conflicts` runs in the `conflicts-script` job instead (`.github/workflows/ci-job-conflicts-script.yaml`), after that job's biome step over the same directory
 
 - `(cd packages/daemon && go vet -tags e2e ./...)`
 
@@ -258,11 +260,15 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
   packages/dispatch's recipe builds `@legion/contracts` before it runs a test, as its `e2e` recipe does:
   rows of `e2e/__tests__` list a Playwright configuration, and Playwright evaluates it under Node, which reads that package's build output rather than its sources.
 
-- `bun test scripts/third-party-notices.test.ts && bun test scripts/semantic-line-breaks.test.ts && bun test scripts/dispatch && bun test scripts/e2e/lib && bun test scripts/conflicts`
+- `bun test scripts/third-party-notices.test.ts && bun test scripts/semantic-line-breaks.test.ts && bun test scripts/priorities-seed.test.ts && bun test scripts/semantic-line-breaks.guides.test.ts && bun test scripts/dispatch && bun test scripts/approval-eval && bun test scripts/e2e/lib && bun test scripts/sessions && bun test scripts/conflicts`
 
   The Bun tests under `scripts/`, which is no workspace.
-  ci.yaml's `test` job runs the first four, one step each and in that order, and runs no other Bun test under `scripts/`: `scripts/semantic-line-breaks.guides.test.ts` checks the guides' own layout on demand and gates nothing.
-  `bun test scripts/conflicts` runs in the `conflicts-script` job instead, after that job's biome and tsc steps over the same directory.
+  ci.yaml's `test` job runs the first seven, one step each and in that order (`.github/workflows/ci-job-test.yaml`), and runs no other Bun test under `scripts/`.
+  Six of those seven steps carry no `if:` of their own and run on every run of the job.
+  The fourth, `bun test scripts/semantic-line-breaks.guides.test.ts`, checks the guides' own layout and is gated: it runs when the change touches a file of the `guide_layout` filter, or when the `changes` job did not succeed.
+  `bun test scripts/sessions` runs in the `sessions-script` job instead (`.github/workflows/ci-job-sessions-script.yaml`), which starts the PostgreSQL server that suite refuses to run without (`LEGION_TEST_PG_DSN`); the `test` job keeps that directory's biome and tsc steps.
+  `bun test scripts/conflicts` runs in the `conflicts-script` job instead (`.github/workflows/ci-job-conflicts-script.yaml`), after that job's biome and tsc steps over the same directory.
+  The `lint` job also runs one file of the `scripts/e2e/lib` suite, `bun test scripts/e2e/lib/nats-image.test.ts`, on every change.
   Beyond `bun install`, a suite needs only what it names in the line it prints when it skips, and that line, not this entry, is the whole of it:
   the two Claude backend rigs (`scripts/e2e/lib/claude-backend-app-secrets.test.ts` and `scripts/e2e/lib/claude-backend-bun-pin.test.ts`) name 44 POSIX programs each, from `bash` and `jq` to `flock` and `sha256sum`.
   Examples of the rest: `gofmt` (contracts' Go generator), `go` (the daemon-pane scenario and the held-port proof), `docker` (the rigs that start a container), `openssl` (the h2 settings proof), `tmux` (claude-envoy's session-title rows and the parked-decision teardown proof), `bash` and `sleep` (the Claude backend guard rows, where pi-shared's shell-command row needs `bash` alone), `node` (claude-envoy's channel rows, and packages/dispatch's pull-request lane row, which also needs the Playwright `bun install` wrote into this checkout), `jj` (pi-shared's handoff record and pi-legion's pane fixtures), and `psql` with `LEGION_TEST_PG_DSN` naming a PostgreSQL server the run may create a database on (packages/dispatch's psql and stack suites, whose one skip line names whichever of the two the host does not have).
