@@ -145,7 +145,8 @@ func TestAnEarlierOwnersPlanIsToldWithTheGroup(t *testing.T) {
 
 // planNotTakenOfB is the answer to a plan given for key, in the variant b of planning.
 func planNotTakenOfB(key string) *intake.Refusal {
-	return &intake.Refusal{Status: 409, Code: "PLAN_NOT_TAKEN", Message: inPlanningB(key) + " Legion takes no plan from its owner for this issue."}
+	return &intake.Refusal{Status: 409, Code: "PLAN_NOT_TAKEN", Message: inPlanningB(key) +
+		" Legion takes no plan from its owner for this issue. This plan changed nothing."}
 }
 
 // drawnForMemory records key's tree as drawn into the arm memory of the `memory` experiment,
@@ -201,10 +202,44 @@ func TestTheGroupDefaultRunsTheDefaultSteps(t *testing.T) {
 	})
 }
 
+// An issue whose group runs the project's default steps takes no plan from its owner:
+// register_plan is answered 409 PLAN_NOT_TAKEN with the group's clause, the registration stays
+// unspent, and nothing is recorded. The control is the same issue drawn into the arm whose owner
+// gives the plan: the plan is taken.
+func TestTheGroupDefaultTakesNoPlan(t *testing.T) {
+	t.Run("the group default takes no plan", func(t *testing.T) {
+		pool := migratedPool(t)
+		engine := returnEngine()
+		root := stepRoot(t, pool, phase.Admitted)
+		drawnInto(t, pool, root.Key, "planning", "b", "default")
+		before := planStandingOf(t, pool, engine, root.Key, root.Generation)
+		id := planID(root.Key, root.Generation, 1)
+		given := ownersPlan(t, root.Key, root.Generation, 1, givenTask(t, "Build the widget.", "implementer", "reviewer"))
+
+		assertPlanRefusal(t, pool, engine, root.Key, root.Generation, id, applyFacts(t, pool, engine)(id, given), planNotTakenOfB(root.Key), before)
+		if got := planRowsOf(t, pool, root.Key); got != [3]int{} {
+			t.Fatalf("the plan rows of %s = %v, want none: Legion records nothing when it takes no plan", root.Key, got)
+		}
+	})
+
+	t.Run("the control: the group owner takes the plan", func(t *testing.T) {
+		pool := migratedPool(t)
+		engine := returnEngine()
+		root := stepRoot(t, pool, phase.Admitted)
+		drawnInto(t, pool, root.Key, "planning", "a", "owner")
+		mustTake(t, "version 1", applyFacts(t, pool, engine)(planID(root.Key, root.Generation, 1),
+			ownersPlan(t, root.Key, root.Generation, 1, givenTask(t, "Build the widget.", "implementer", "reviewer"))))
+		if got := planStandingOf(t, pool, engine, root.Key, root.Generation).versions; !reflect.DeepEqual(got, []string{"1 owner"}) {
+			t.Fatalf("the versions of %s = %v, want the owner's alone", root.Key, got)
+		}
+	})
+}
+
 // The answer PLAN_NOT_TAKEN leaves the registration unspent, as every refusal of a plan does: the
-// same registration sent again is answered PLAN_NOT_TAKEN again, never as a registration already
-// applied, which the route would answer as the plan taken. Nothing is stored either time.
-func TestAPlanNotTakenIsAnsweredTheSameWhenGivenAgain(t *testing.T) {
+// same fact under one event id, applied twice, is answered PLAN_NOT_TAKEN both times, never as a
+// duplicate, which the route would answer as the plan taken. Nothing is stored either time. The
+// control is the refusal returned spent: the second answer is then a duplicate with no refusal.
+func TestPlanNotTakenStaysUnspent(t *testing.T) {
 	pool := migratedPool(t)
 	engine := returnEngine()
 	root := stepRoot(t, pool, phase.Admitted)
@@ -280,7 +315,7 @@ func TestTheGroupDefaultStopsNoTask(t *testing.T) {
 
 		result := applyFacts(t, pool, engine)("stop", ownersStop(t, root.Key, plan.DefaultTask))
 		want := &intake.Refusal{Status: 409, Code: "PLAN_NOT_TAKEN", Message: inPlanningB(root.Key) +
-			" Legion takes no plan from its owner for this issue, so it stops none of its tasks."}
+			" Its owner wrote no task of this issue, and an owner stops only a task that it wrote. This stop changed nothing."}
 		if !reflect.DeepEqual(result.Refusal, want) {
 			t.Fatalf("the owner's stop of default = %+v, want the refusal %+v", result.Refusal, want)
 		}

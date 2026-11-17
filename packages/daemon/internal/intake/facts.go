@@ -1478,7 +1478,7 @@ func GroupClause(issue, experiment, variant, group string) string {
 // each refusal of a plan, so the same registration sent again gets this same answer.
 func PlanNotTaken(issue, experiment, variant, group string) *Refusal {
 	return &Refusal{Status: 409, Code: "PLAN_NOT_TAKEN", Message: GroupClause(issue, experiment, variant, group) +
-		" Legion takes no plan from its owner for this issue."}
+		" Legion takes no plan from its owner for this issue. This plan changed nothing."}
 }
 
 // TaskNotStopped is the 409 PLAN_NOT_TAKEN refusal of stop_task for a task of issue, which was
@@ -1487,7 +1487,7 @@ func PlanNotTaken(issue, experiment, variant, group string) *Refusal {
 // owner wrote none of its tasks; the code is the one register_plan answers for the same issue.
 func TaskNotStopped(issue, experiment, variant, group string) *Refusal {
 	return &Refusal{Status: 409, Code: "PLAN_NOT_TAKEN", Message: GroupClause(issue, experiment, variant, group) +
-		" Legion takes no plan from its owner for this issue, so it stops none of its tasks."}
+		" Its owner wrote no task of this issue, and an owner stops only a task that it wrote. This stop changed nothing."}
 }
 
 // PlanOfDoneTask is the 409 TASK_DONE refusal of a version that changes task of issue, which is

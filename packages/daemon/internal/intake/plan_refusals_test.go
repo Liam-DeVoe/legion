@@ -53,13 +53,13 @@ func TestThePlanRefusalsSayWhy(t *testing.T) {
 			Message: "the plan was given for generation 1 of LEGION-208, and LEGION-208 is on generation 2 now. Give the plan again. This plan changed nothing."}},
 		{"a plan of an issue whose group runs the default steps", PlanNotTaken("LEGION-208", "planning", "b", "default"), Refusal{Status: http.StatusConflict,
 			Code: "PLAN_NOT_TAKEN", Message: "LEGION-208 is in the variant b of the experiment planning, whose issues run the project's default steps. " +
-				"Legion takes no plan from its owner for this issue."}},
+				"Legion takes no plan from its owner for this issue. This plan changed nothing."}},
 		{"a plan of an issue whose owner does it alone", PlanNotTaken("LEGION-208", "planning", "c", "owner-alone"), Refusal{Status: http.StatusConflict,
 			Code: "PLAN_NOT_TAKEN", Message: "LEGION-208 is in the variant c of the experiment planning, whose owner does the whole issue itself in one step. " +
-				"Legion takes no plan from its owner for this issue."}},
+				"Legion takes no plan from its owner for this issue. This plan changed nothing."}},
 		{"a stop of a task of an issue whose group runs the default steps", TaskNotStopped("LEGION-208", "planning", "b", "default"), Refusal{Status: http.StatusConflict,
 			Code: "PLAN_NOT_TAKEN", Message: "LEGION-208 is in the variant b of the experiment planning, whose issues run the project's default steps. " +
-				"Legion takes no plan from its owner for this issue, so it stops none of its tasks."}},
+				"Its owner wrote no task of this issue, and an owner stops only a task that it wrote. This stop changed nothing."}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if tc.got == nil || !reflect.DeepEqual(*tc.got, tc.want) {
