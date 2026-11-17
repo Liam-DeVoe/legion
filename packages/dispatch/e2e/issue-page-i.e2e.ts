@@ -842,8 +842,8 @@ function branchMoreIndent(width: number): { readonly inset: number; readonly ste
  * reaching past that column on both sides (`NODE_ROW_LAYOUT.foldControl`): it ends before its
  * words, so it covers none of them, and it stays inside the page.
  */
-async function expectPhoneBulletGaps(page: Page, where: string): Promise<void> {
-  const layouts = await rowLayouts(page);
+async function expectPhoneBulletGaps(page: Page, spec: string, where: string): Promise<void> {
+  const layouts = await rowLayouts(page, spec);
   const bullets = await bulletBoxes(page);
   expect(
     bullets.map((bullet) => bullet.id),
@@ -942,7 +942,9 @@ test("a folded branch's line is its first line, cut at a word @phone @phone-only
       );
       // No row makes the page scroll sideways at any of these widths.
       await assertPageFits(page);
-      if (width === PHONE.width) await expectPhoneBulletGaps(page, `the page at ${width} px`);
+      if (width === PHONE.width) {
+        await expectPhoneBulletGaps(page, specSlug, `the page at ${width} px`);
+      }
 
       // The phone's form ends at 760 px itself and the desktop's starts at 761.
       // Below 1024 px one level is drawn, so a branch the reader opens off the frontier folds
