@@ -131,7 +131,8 @@ func (in CitationInput) cite(c Check) (rule, detail string) {
 	return citeTestNotRun, fmt.Sprintf("%s, and %s did not run %s (%s)", cause, job, test.Selector, why)
 }
 
-// changeCause is why the code that check c runs counts as changed, or "" when it did not change.
+// changeCause is why the code that check c runs counts as changed, or "" when it did not change:
+// the carry rule of checkJudge.carries (R8), with the cause named and the first covered path.
 func (in CitationInput) changeCause(c Check) string {
 	tie := Tie{Why: "no tie at this commit was given"}
 	if in.Tie != nil {
@@ -175,14 +176,14 @@ func (in CitationInput) firstCovered(tie Tie) string {
 // reports hold no leg of the job.
 func (in CitationInput) notRun(test Test) (job, why string) {
 	reported := false
-	var first JobReport
+	firstLeg := ""
 	for _, r := range in.Reports {
 		if r.Job != test.Job {
 			continue
 		}
 		reported = true
-		if legWhy := notRunInLeg(test, r); legWhy != "" && (why == "" || r.Leg < first.Leg) {
-			first, why = r, legWhy
+		if legWhy := notRunInLeg(test, r); legWhy != "" && (why == "" || r.Leg < firstLeg) {
+			firstLeg, why = r.Leg, legWhy
 		}
 	}
 	switch {
@@ -190,15 +191,17 @@ func (in CitationInput) notRun(test Test) (job, why string) {
 		return test.Job, "the job did not run"
 	case why == "":
 		return "", ""
-	case first.Leg != "":
-		return fmt.Sprintf("%s (leg %s)", test.Job, first.Leg), why
+	case firstLeg != "":
+		return fmt.Sprintf("%s (leg %s)", test.Job, firstLeg), why
 	}
 	return test.Job, why
 }
 
 // notRunInLeg is why the report of one leg does not show test run, or "" when it ran: a pass or a
 // failure. A runner that MatchTests cannot read (code found the test, so the selector is sound)
-// leaves the test in no report that Citations can read.
+// leaves the test in no report that Citations can read. Any run of the test that did not run
+// decides, so a report that holds a real run and a cached replay of one test reads as not run: the
+// job runs one go test -json -count=1 for each package, so its report holds one run.
 func notRunInLeg(test Test, leg JobReport) string {
 	switch {
 	case !leg.Ran:

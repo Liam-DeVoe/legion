@@ -118,10 +118,10 @@ func TestScriptTestReadsReadsTheScript(t *testing.T) {
 		{name: "its arguments", script: `args=; for a in "$@"; do args="$args${args:+,}\"$a\""; done; printf '{"reads":[%s],"problems":[]}\n' "$args"`,
 			want: []string{"--env", "GOWORK=off", ".", "example.com/citations/a"}},
 		{name: "a problem", script: `printf '{"reads":[],"problems":["go list failed for ./gone"]}\n'; exit 1`, err: "go list failed for ./gone"},
-		{name: "no JSON", script: `printf 'x\n'`, err: "go-test-reads.sh"},
+		{name: "no JSON", script: `printf 'x\n'`, err: "printed no reads object"},
 		{name: "another exit", script: `echo 'usage: go-test-reads.sh' >&2; exit 2`, err: "usage: go-test-reads.sh"},
 		{name: "a problem and exit 0", script: `printf '{"reads":["a/*"],"problems":["p"]}\n'`, err: "p"},
-		{name: "no reads", script: `printf '{"problems":[]}\n'`, err: "reads"},
+		{name: "no reads", script: `printf '{"problems":[]}\n'`, err: "printed no reads for"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			root := t.TempDir()

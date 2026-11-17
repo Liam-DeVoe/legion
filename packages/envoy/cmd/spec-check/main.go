@@ -8,7 +8,8 @@
 // spec files, of a scenario, of a citation and of the files that changed is specgraph's (Parse,
 // Validate, Compare, ReadScenario, Derive, WaitCycle, GoTies, Citations and GitHistory); the
 // command states none of its own. The rule of guard is the command's (cifiles.go), since it reads
-// CI files and no spec file.
+// CI files and no spec file, and so is the form of the files that citations alone reads: --needs,
+// --changed and --ties (citations.go, basetie.go).
 //
 // Usage:
 //

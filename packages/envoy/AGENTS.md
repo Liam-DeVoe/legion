@@ -3163,7 +3163,8 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
 - `specgraph.ReadGoTestJSON` reads a `go test -json` report, or the report that `go tool test2json` writes for a test binary run with `-test.v=test2json`, and `specgraph.MatchTests` matches a check's selector to its one test.
   The reader reads exactly those two forms, because only in them does the marker separate go test's own lines from what a test prints;
   a report of another form, as of a test binary run with `-test.v=true` or the text of `go test -v` through `go tool test2json`, lets a test write an end line with no marker, and the reader cannot see which form made a report.
-  In CI, the job's own `go test -json` command makes the report that the reporter reads.
+  A report of `go test -json -v` is a form that the reader cannot read: go then writes no end event for a test that prints with no line feed, and the test reads as not run (`TestStatedLimitsOfTheReader`).
+  In CI, the job's own `go test -json` command, with no `-v`, makes the report that the reporter reads.
   The outcome of a run of a test is its one end event of its own (`pass`, `fail` or `skip`), which counts only after go test's own end line of its kind for the test, a frame of the run (`OutputType` `frame`) such as `--- PASS: <name> (0.00s)`;
   in the two forms, what a test prints with no marker decides no outcome, go test's kill line and its end lines included.
   A run reads `could_not_run`, and never a pass or a failure, when it has no end event (go test killed it at its `-timeout`, or its process ended inside it, by `os.Exit` with a status that is not 0 or by a fatal error of the runtime), when its end has no end line before it (the end event that `go tool test2json` writes at its exit for the test it named last), when it has two or more end events (a result line that a test printed with the testing package's marker byte), and when it overlaps another run of its name in its package (two parallel tests of one name in `p` and `p_test`, or a test that prints a marked run line of its own name, whose two entries both read `could_not_run`).
@@ -3178,7 +3179,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
 
 - What `specgraph.ReadGoTestJSON` gives as no run at the commit of its report, though the test's events are there:
   each run of a package whose result go test replayed from its test cache reads `cached`, whatever its end event, since the test did not run at the commit of the report: go test prints the package's summary line as `ok`, the import path and `(cached)`, tab-separated, and replays the run's events as they were (`TestARunThatGoTestReplaysFromItsCacheIsCached`).
-  A test that prints that line, which has no marker, for its own package makes the package's runs `cached` too, which reads as not run.
+  A test that prints its own package's cached summary line reads as replayed from the cache (`TestAPrintedCachedLineMarksOnlyItsOwnPackage`): the line has no marker, and the event of a test's name does not tell the two apart, since go's own summary line can come in such an event too, after a `TestMain` that prints a run line.
   The reader reads the summary line, and each end line, whole: it joins the output events of a package in their order, and a line ends at its line feed, never at the end of an event, since the converter writes a line of more than 1,024 bytes, as the summary line of a long import path, in two or more events;
   the converter also ends a line with no line feed where a frame starts after a test's output, and so does the reader (`TestALineThatGoTestWritesInTwoEventsIsReadWhole`).
   A run reads `could_not_run` when the report holds no end of its package after the run's start, the package's own `pass`, `fail` or `skip` event with no `Test`, which the converter writes last for the package:
@@ -3324,6 +3325,9 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   `job-not-in-workflow` and `job-not-awaited` (the check's job is not a job of `--workflow`, or the job `spec-citations` there does not need it, so it cannot read its report),
   and `test-not-run`: code that the test reads changed and a leg of its job did not run the test as a pass or a failure.
   A result that go test replayed from its test cache (the outcome `cached` of `specgraph.ReadGoTestJSON`) is no run at the commit.
+  Stated limits, each a refusal of an honest run: a report of `go test -json -v` is a form that the reader cannot read, so a test that prints with no line feed reads as not run;
+  a test that prints its own package's cached summary line reads as replayed from the cache;
+  and a report that holds a real run and a cached replay of one test reads as not run, while the job runs one `go test -json -count=1` for each package, so its report holds one run (`TestCitations`).
   `--reports` holds one directory per report artifact of the run, `spec-report--<job>` or `spec-report--<job>--<leg>`, each with the go test -json `report.jsonl`;
   a directory that does not exist holds no report, and an artifact of a job that `spec-citations` does not need is a warning and passed over.
   `--needs` holds `toJSON(needs)` of `spec-citations`, exactly the jobs it needs, each with its result; a job ran when its result is `success` or `failure`.

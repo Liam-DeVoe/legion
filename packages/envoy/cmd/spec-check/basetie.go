@@ -77,8 +77,9 @@ func fileTie(files specgraph.CommitTies, commit, check string) specgraph.Tie {
 
 // derivedTies is the tie of each check that the .github/scripts/go-test-reads.sh of a repository
 // derives (specgraph.GoTies), one check at a time on the first ask, each set of the script's
-// arguments asked once. specgraph.Citations asks for a check's tie only when its test did not run,
-// so a run where each test ran runs no script.
+// arguments asked once. It memoizes across the per-check asks of specgraph.Citations, which GoTies
+// cannot, since each ask is a new call of GoTies. specgraph.Citations asks for a check's tie only
+// when its test did not run, so a run where each test ran runs no script.
 type derivedTies struct {
 	reads   specgraph.TestReads
 	answers map[string]readsAnswer

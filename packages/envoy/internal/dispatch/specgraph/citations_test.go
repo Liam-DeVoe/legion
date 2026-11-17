@@ -58,15 +58,15 @@ type citationCase struct {
 func newCitationCase(t *testing.T) *citationCase {
 	t.Helper()
 	tie := known("a/*", "fixtures/a.json")
-	return &citationCase{
-		tree: Tree{Checks: []Check{citationCheck}},
-		code: citationCode,
-		jobs: citationJobs,
-		reports: []JobReport{{Job: "go-checks", Ran: true, HasReport: true,
-			Tests: []TestOutcome{{Package: "example.com/citations/a", Test: "TestA", Outcome: "pass"}}}},
+	c := &citationCase{
+		tree:     Tree{Checks: []Check{citationCheck}},
+		code:     citationCode,
+		jobs:     citationJobs,
 		ties:     map[string]Tie{citationCheck.ID: tie},
 		baseTies: map[string]Tie{citationCheck.ID: tie},
 	}
+	c.outcome("pass")
+	return c
 }
 
 // citations runs Citations over the case, with a Tie that answers ties and a BaseTie that answers
@@ -105,9 +105,9 @@ func (c *citationCase) outcome(outcome string) {
 		Tests: []TestOutcome{{Package: "example.com/citations/a", Test: "TestA", Outcome: outcome}}}}
 }
 
-// fault is the one fault of check-a with rule and detail.
+// fault is the one fault of check-a with rule, and the detail that Citations writes after the rule.
 func fault(rule, detail string) CitationFaults {
-	return CitationFaults{{Check: citationCheck.ID, Pos: citationCheck.Pos, Rule: rule, Detail: detail}}
+	return CitationFaults{{Check: citationCheck.ID, Pos: citationCheck.Pos, Rule: rule, Detail: rule + ": " + detail}}
 }
 
 // R48: CI fails on a check whose test is not in the code at the commit, and on a check whose test
@@ -123,69 +123,69 @@ func TestCitations(t *testing.T) {
 	}{
 		{name: "v-citations 1: the check names a test that someone renamed", change: func(c *citationCase) {
 			c.test("example.com/citations/a TestRenamed", "go-checks")
-		}, want: fault("test-not-in-code", "test-not-in-code: example.com/citations/a TestRenamed is not in the code at this commit")},
+		}, want: fault("test-not-in-code", "example.com/citations/a TestRenamed is not in the code at this commit")},
 		{name: "v-citations 2: code of the tie changed and the job skipped the test", change: func(c *citationCase) {
 			c.changed = []string{"a/a.go"}
 			c.outcome("skip")
-		}, want: fault(notRun, "test-not-run: a/a.go changed, and go-checks did not run example.com/citations/a TestA (its report shows it skipped)")},
+		}, want: fault(notRun, "a/a.go changed, and go-checks did not run example.com/citations/a TestA (its report shows it skipped)")},
 		{name: "v-citations 3: a program check names no test", change: func(c *citationCase) {
 			check := citationCheck
 			check.Test = nil
 			c.tree.Checks = []Check{check}
-		}, want: fault("no-test", "no-test: the check names no test")},
+		}, want: fault("no-test", "the check names no test")},
 		{name: "a program check whose runner is only spaces names no test", change: func(c *citationCase) {
 			check := citationCheck
 			check.Test = &Test{Runner: "   ", Selector: "example.com/citations/a TestA", Job: "go-checks"}
 			c.tree.Checks = []Check{check}
-		}, want: fault("no-test", "no-test: the check names no test")},
+		}, want: fault("no-test", "the check names no test")},
 		{name: "a program check whose selector is only punctuation names no test", change: func(c *citationCase) {
 			c.test("-", "go-checks")
-		}, want: fault("no-test", "no-test: the check names no test")},
+		}, want: fault("no-test", "the check names no test")},
 		{name: "v-citations 5: no code of the tie changed and the job skipped the test", change: func(c *citationCase) {
 			c.changed = []string{"docs/x.md"}
 			c.outcome("skip")
 		}},
 		{name: "v-citations 6: the selector picks two tests", change: func(c *citationCase) {
 			c.test("example.com/citations/b TestB", "go-checks")
-		}, want: fault("two-tests", "two-tests: example.com/citations/b TestB picks 2 tests")},
+		}, want: fault("two-tests", "example.com/citations/b TestB picks 2 tests")},
 		{name: "code of the tie changed and the job did not run", change: func(c *citationCase) {
 			c.changed = []string{"a/a.go"}
 			c.reports = []JobReport{{Job: "go-checks"}}
-		}, want: fault(notRun, "test-not-run: a/a.go changed, and go-checks did not run example.com/citations/a TestA (the job did not run)")},
+		}, want: fault(notRun, "a/a.go changed, and go-checks did not run example.com/citations/a TestA (the job did not run)")},
 		{name: "code of the tie changed and nothing says the job ran", change: func(c *citationCase) {
 			c.changed = []string{"a/a.go"}
 			c.reports = nil
-		}, want: fault(notRun, "test-not-run: a/a.go changed, and go-checks did not run example.com/citations/a TestA (the job did not run)")},
+		}, want: fault(notRun, "a/a.go changed, and go-checks did not run example.com/citations/a TestA (the job did not run)")},
 		{name: "code of the tie changed and the job ran and uploaded no report", change: func(c *citationCase) {
 			c.changed = []string{"a/a.go"}
 			c.reports = []JobReport{{Job: "go-checks", Ran: true}}
-		}, want: fault(notRun, "test-not-run: a/a.go changed, and go-checks did not run example.com/citations/a TestA (the job left no report)")},
+		}, want: fault(notRun, "a/a.go changed, and go-checks did not run example.com/citations/a TestA (the job left no report)")},
 		{name: "B5: a read that the repository records for the test changed", change: func(c *citationCase) {
 			c.changed = []string{"fixtures/a.json"}
 			c.outcome("skip")
-		}, want: fault(notRun, "test-not-run: fixtures/a.json changed, and go-checks did not run example.com/citations/a TestA (its report shows it skipped)")},
+		}, want: fault(notRun, "fixtures/a.json changed, and go-checks did not run example.com/citations/a TestA (its report shows it skipped)")},
 		{name: "a file moves out of the tie", change: func(c *citationCase) {
 			c.changed = []string{"docs/data.json", "a/data.json"}
 			c.outcome("skip")
-		}, want: fault(notRun, "test-not-run: a/data.json changed, and go-checks did not run example.com/citations/a TestA (its report shows it skipped)")},
+		}, want: fault(notRun, "a/data.json changed, and go-checks did not run example.com/citations/a TestA (its report shows it skipped)")},
 		{name: "the first changed path that the tie covers, sorted", change: func(c *citationCase) {
 			c.changed = []string{"fixtures/a.json", "docs/x.md", "a/b.go"}
 			c.outcome("skip")
-		}, want: fault(notRun, "test-not-run: a/b.go changed, and go-checks did not run example.com/citations/a TestA (its report shows it skipped)")},
+		}, want: fault(notRun, "a/b.go changed, and go-checks did not run example.com/citations/a TestA (its report shows it skipped)")},
 		{name: "the check names a job that the citations job does not wait for", change: func(c *citationCase) {
 			c.test("example.com/citations/a TestA", "envoy-go")
-		}, want: fault("job-not-awaited", `job-not-awaited: the citations job does not wait for "envoy-go", so it cannot read its report`)},
+		}, want: fault("job-not-awaited", `the citations job does not wait for "envoy-go", so it cannot read its report`)},
 		{name: "the check names a job that the workflow does not have", change: func(c *citationCase) {
 			c.test("example.com/citations/a TestA", "gone-job")
-		}, want: fault("job-not-in-workflow", `job-not-in-workflow: no job "gone-job"`)},
+		}, want: fault("job-not-in-workflow", `no job "gone-job"`)},
 		{name: "the tie is unknown, nothing changed and the test did not run", change: func(c *citationCase) {
 			c.ties = map[string]Tie{citationCheck.ID: {Why: "go list failed"}}
 			c.reports = []JobReport{{Job: "go-checks", Ran: true, HasReport: true}}
-		}, want: fault(notRun, "test-not-run: its tie is unknown (go list failed), and go-checks did not run example.com/citations/a TestA (its report does not hold it)")},
+		}, want: fault(notRun, "its tie is unknown (go list failed), and go-checks did not run example.com/citations/a TestA (its report does not hold it)")},
 		{name: "no tie was given for the check", change: func(c *citationCase) {
 			c.ties = nil
 			c.outcome("skip")
-		}, want: fault(notRun, "test-not-run: its tie is unknown (no tie was derived for the check), and go-checks did not run example.com/citations/a TestA (its report shows it skipped)")},
+		}, want: fault(notRun, "its tie is unknown (no tie was derived for the check), and go-checks did not run example.com/citations/a TestA (its report shows it skipped)")},
 		{name: "the tie is unknown and the test ran", change: func(c *citationCase) {
 			c.ties = map[string]Tie{citationCheck.ID: {Why: "go list failed"}}
 		}},
@@ -199,11 +199,11 @@ func TestCitations(t *testing.T) {
 		{name: "no base commit and the report does not hold the test", change: func(c *citationCase) {
 			c.allChanged = true
 			c.reports[0].Tests = []TestOutcome{{Package: "example.com/citations/b", Test: "TestA", Outcome: "pass"}}
-		}, want: fault(notRun, "test-not-run: no base commit, and go-checks did not run example.com/citations/a TestA (its report does not hold it)")},
+		}, want: fault(notRun, "no base commit, and go-checks did not run example.com/citations/a TestA (its report does not hold it)")},
 		{name: "code of the tie changed and the test could not run", change: func(c *citationCase) {
 			c.changed = []string{"a/a.go"}
 			c.outcome("could_not_run")
-		}, want: fault(notRun, "test-not-run: a/a.go changed, and go-checks did not run example.com/citations/a TestA (it could not run)")},
+		}, want: fault(notRun, "a/a.go changed, and go-checks did not run example.com/citations/a TestA (it could not run)")},
 		{name: "code of the tie changed and one leg of the job skipped the test", change: func(c *citationCase) {
 			c.changed = []string{"a/a.go"}
 			c.reports = []JobReport{
@@ -213,7 +213,7 @@ func TestCitations(t *testing.T) {
 					Tests: []TestOutcome{{Package: "example.com/citations/a", Test: "TestA", Outcome: "skip"}}},
 				{Job: "envoy-go", Ran: false},
 			}
-		}, want: fault(notRun, "test-not-run: a/a.go changed, and go-checks (leg arm64) did not run example.com/citations/a TestA (its report shows it skipped)")},
+		}, want: fault(notRun, "a/a.go changed, and go-checks (leg arm64) did not run example.com/citations/a TestA (its report shows it skipped)")},
 		{name: "code of the tie changed and two legs did not run the test: the first leg in sorted order", change: func(c *citationCase) {
 			c.changed = []string{"a/a.go"}
 			c.reports = []JobReport{
@@ -221,13 +221,13 @@ func TestCitations(t *testing.T) {
 				{Job: "go-checks", Leg: "darwin", Ran: true, HasReport: true,
 					Tests: []TestOutcome{{Package: "example.com/citations/a", Test: "TestA", Outcome: "skip"}}},
 			}
-		}, want: fault(notRun, "test-not-run: a/a.go changed, and go-checks (leg darwin) did not run example.com/citations/a TestA (its report shows it skipped)")},
+		}, want: fault(notRun, "a/a.go changed, and go-checks (leg darwin) did not run example.com/citations/a TestA (its report shows it skipped)")},
 		{name: "code of the tie changed and the test ran", change: func(c *citationCase) {
 			c.changed = []string{"a/a.go"}
 		}},
 		{name: "the code cannot be searched for the test", change: func(c *citationCase) {
 			c.test("example.com/citations/gone TestA", "go-checks")
-		}, want: fault("test-lookup-failed", "test-lookup-failed: example.com/citations/gone TestA could not be looked up in the code at this commit (no required module provides package)")},
+		}, want: fault("test-lookup-failed", "example.com/citations/gone TestA could not be looked up in the code at this commit (no required module provides package)")},
 		{name: "no program check", change: func(c *citationCase) {
 			c.tree.Checks = []Check{checkStateProduction}
 			c.changed = []string{"a/a.go"}
@@ -237,59 +237,68 @@ func TestCitations(t *testing.T) {
 		{name: "code of the tie changed and go test replayed the test from its cache", change: func(c *citationCase) {
 			c.changed = []string{"a/a.go"}
 			c.outcome(outcomeCached)
-		}, want: fault(notRun, "test-not-run: a/a.go changed, and go-checks did not run example.com/citations/a TestA (its report holds a result that go test replayed from its cache, which did not run at this commit)")},
+		}, want: fault(notRun, "a/a.go changed, and go-checks did not run example.com/citations/a TestA (its report holds a result that go test replayed from its cache, which did not run at this commit)")},
 		{name: "no code of the tie changed and go test replayed the test from its cache", change: func(c *citationCase) {
 			c.changed = []string{"docs/x.md"}
 			c.outcome(outcomeCached)
 		}},
+		// A stated limit, in the safe direction: the job runs one go test -json -count=1 for each
+		// package, so its report holds one run of a test.
+		{name: "a report that holds a real run and a cached replay of one test reads as not run", change: func(c *citationCase) {
+			c.changed = []string{"a/a.go"}
+			c.reports[0].Tests = []TestOutcome{
+				{Package: "example.com/citations/a", Test: "TestA", Outcome: "pass"},
+				{Package: "example.com/citations/a", Test: "TestA", Outcome: outcomeCached},
+			}
+		}, want: fault(notRun, "a/a.go changed, and go-checks did not run example.com/citations/a TestA (its report holds a result that go test replayed from its cache, which did not run at this commit)")},
 		// A changed path counts when the tie holds it at either end, the base commit or this one.
 		{name: "the change deleted the test's testdata directory, which only the tie at the base holds", change: func(c *citationCase) {
 			c.baseTies[citationCheck.ID] = known("a/*", "a/testdata/**", "fixtures/a.json")
 			c.changed = []string{"a/testdata/answer.json"}
 			c.outcome("skip")
-		}, want: fault(notRun, "test-not-run: a/testdata/answer.json changed (the tie at the base commit holds it), and go-checks did not run example.com/citations/a TestA (its report shows it skipped)")},
+		}, want: fault(notRun, "a/testdata/answer.json changed (the tie at the base commit holds it), and go-checks did not run example.com/citations/a TestA (its report shows it skipped)")},
 		{name: "the change renamed a package directory of the tie: the tie at this commit holds the new path", change: func(c *citationCase) {
 			c.baseTies[citationCheck.ID] = known("a/*", "dep/*")
 			c.ties[citationCheck.ID] = known("a/*", "lib/*")
 			c.changed = []string{"dep/x.go", "lib/x.go"}
 			c.outcome("skip")
-		}, want: fault(notRun, "test-not-run: lib/x.go changed, and go-checks did not run example.com/citations/a TestA (its report shows it skipped)")},
+		}, want: fault(notRun, "lib/x.go changed, and go-checks did not run example.com/citations/a TestA (its report shows it skipped)")},
 		{name: "the change deleted a package directory that only the tie at the base holds", change: func(c *citationCase) {
 			c.baseTies[citationCheck.ID] = known("a/*", "dep/*")
 			c.ties[citationCheck.ID] = known("a/*")
 			c.changed = []string{"dep/x.go"}
 			c.outcome("skip")
-		}, want: fault(notRun, "test-not-run: dep/x.go changed (the tie at the base commit holds it), and go-checks did not run example.com/citations/a TestA (its report shows it skipped)")},
+		}, want: fault(notRun, "dep/x.go changed (the tie at the base commit holds it), and go-checks did not run example.com/citations/a TestA (its report shows it skipped)")},
 		{name: "the change deleted a test file of the test's package", change: func(c *citationCase) {
 			c.changed = []string{"a/b_test.go"}
 			c.outcome("skip")
-		}, want: fault(notRun, "test-not-run: a/b_test.go changed, and go-checks did not run example.com/citations/a TestA (its report shows it skipped)")},
+		}, want: fault(notRun, "a/b_test.go changed, and go-checks did not run example.com/citations/a TestA (its report shows it skipped)")},
 		{name: "a read moves out of the tie: only the tie at the base holds it", change: func(c *citationCase) {
 			c.ties[citationCheck.ID] = known("a/*")
 			c.changed = []string{"fixtures/a.json"}
 			c.outcome("skip")
-		}, want: fault(notRun, "test-not-run: fixtures/a.json changed (the tie at the base commit holds it), and go-checks did not run example.com/citations/a TestA (its report shows it skipped)")},
+		}, want: fault(notRun, "fixtures/a.json changed (the tie at the base commit holds it), and go-checks did not run example.com/citations/a TestA (its report shows it skipped)")},
 		{name: "the tie at the base is unknown", change: func(c *citationCase) {
 			c.baseTies[citationCheck.ID] = Tie{Why: "go list failed at the base"}
 			c.changed = []string{"docs/x.md"}
 			c.outcome("skip")
-		}, want: fault(notRun, "test-not-run: its tie at the base commit is unknown (go list failed at the base), and go-checks did not run example.com/citations/a TestA (its report shows it skipped)")},
+		}, want: fault(notRun, "its tie at the base commit is unknown (go list failed at the base), and go-checks did not run example.com/citations/a TestA (its report shows it skipped)")},
 		{name: "no tie at the base is given", change: func(c *citationCase) {
 			c.baseTies = nil
 			c.changed = []string{"docs/x.md"}
 			c.outcome("skip")
-		}, want: fault(notRun, "test-not-run: its tie at the base commit is unknown (no tie at the base commit was given), and go-checks did not run example.com/citations/a TestA (its report shows it skipped)")},
+		}, want: fault(notRun, "its tie at the base commit is unknown (no tie at the base commit was given), and go-checks did not run example.com/citations/a TestA (its report shows it skipped)")},
 		// A result carries from the base only when the tie is known at both ends (R8), so a tie at the
 		// base that is not known counts as changed also when no path changed. The control: both ties
 		// known and nothing changed, and the skipped test is cited.
 		{name: "nothing changed, the job skipped the test, and the tie at the base is unknown", change: func(c *citationCase) {
 			c.baseTies[citationCheck.ID] = Tie{Why: "go list failed at the base"}
 			c.outcome("skip")
-		}, want: fault(notRun, "test-not-run: its tie at the base commit is unknown (go list failed at the base), and go-checks did not run example.com/citations/a TestA (its report shows it skipped)")},
+		}, want: fault(notRun, "its tie at the base commit is unknown (go list failed at the base), and go-checks did not run example.com/citations/a TestA (its report shows it skipped)")},
 		{name: "nothing changed, the job skipped the test, and no tie at the base is given", change: func(c *citationCase) {
 			c.baseTies = nil
 			c.outcome("skip")
-		}, want: fault(notRun, "test-not-run: its tie at the base commit is unknown (no tie at the base commit was given), and go-checks did not run example.com/citations/a TestA (its report shows it skipped)")},
+		}, want: fault(notRun, "its tie at the base commit is unknown (no tie at the base commit was given), and go-checks did not run example.com/citations/a TestA (its report shows it skipped)")},
 		{name: "control: nothing changed, the job skipped the test, and both ties are known", change: func(c *citationCase) {
 			c.outcome("skip")
 		}},

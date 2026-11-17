@@ -53,8 +53,10 @@ const outcomeCached = "cached"
 // events as they were. The cache does not see a file that a test reads through a child process,
 // so such a test can fail when it runs. The reader reads that line whole, though go test's
 // converter writes a line of more than 1,024 bytes, as the summary line of a long import path, in
-// two or more output events (ReadGoTestJSON). The line has no marker, so a test that prints it for
-// its own package makes its package's runs cached too, which reads as not run.
+// two or more output events (ReadGoTestJSON). The line has no marker, so a test that prints its
+// own package's cached summary line reads as replayed from the cache, which reads as not run: the
+// event of a test's name does not tell the two apart, since go's own summary line can come in such
+// an event too, after a TestMain that prints a run line.
 //
 // In the two forms of report that ReadGoTestJSON reads, what a test prints with no marker decides
 // no outcome, go test's kill line and its end lines included. A test's pass stays when a goroutine
@@ -258,8 +260,10 @@ func (r *run) output() string {
 // The reader reads exactly those two forms of report: only in them does the marker separate go
 // test's own lines from what a test prints. A report of another form, as of a test binary run with
 // -test.v=true or the text of go test -v through go tool test2json, lets a test write an end line
-// with no marker, and the reader cannot see which form made a report. In CI, the job's own go test
-// -json command makes the report that the reporter reads.
+// with no marker, and the reader cannot see which form made a report. A report of go test -json -v
+// is a form that the reader cannot read: go then runs the binary with -test.v=true and writes no
+// end event for a test that prints with no line feed, and the test reads as not run. In CI, the
+// job's own go test -json command, with no -v, makes the report that the reporter reads.
 //
 // The report is the test binary's own account, and the reader trusts its order: a report that
 // someone changed or put in another order can give a run the wrong outcome. In those two forms, a

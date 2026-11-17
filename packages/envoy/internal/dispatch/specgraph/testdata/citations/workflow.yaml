@@ -1,5 +1,5 @@
-# A workflow of four jobs for TestReadWorkflowJobs: spec-citations waits for changes and go-checks,
-# and not for envoy-go.
+# A workflow of four jobs for TestReadWorkflowJobs and the citations tests of cmd/spec-check:
+# spec-citations waits for changes and go-checks, and not for envoy-go.
 name: Results from CI
 on: push
 jobs:

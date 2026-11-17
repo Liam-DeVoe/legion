@@ -1,6 +1,7 @@
 package specgraph
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"reflect"
@@ -199,12 +200,19 @@ func TestAPassStaysWhenThePackageFailsAfterIt(t *testing.T) {
 //   - "a report of another form ... lets a test write an end line with no marker": in the text of
 //     go test -v through go tool test2json, a test prints its own pass line with no marker and is
 //     then killed, and it reads pass (piped-killprinted). Under go test -json the same test could
-//     not run (killprinted, in TestWhatATestPrintsDecidesNoOutcome).
+//     not run (killprinted, in TestWhatATestPrintsDecidesNoOutcome);
+//   - "A report of go test -json -v is a form that the reader cannot read: go then writes no end
+//     event for a test that prints with no line feed, and the test reads as not run":
+//     TestPrintsNoLineFeedThenPasses passes and reads could_not_run (verbose-splitlines). Under go
+//     test -json the same test reads pass (splitlines, in
+//     TestALineThatGoTestWritesInTwoEventsIsReadWhole).
 func TestStatedLimitsOfTheReader(t *testing.T) {
 	t.Parallel()
 	readReports(t, []reportRow{
 		{"killsiblingpass.jsonl", []string{acme + "killsiblingpass TestSleeps pass", acme + "killsiblingpass TestPrinter pass"}},
 		{"piped-killprinted.jsonl", []string{acme + "killprinted TestPrintsAPassLineOfItselfThenSleeps pass"}},
+		{"verbose-splitlines.jsonl", []string{acme + "splitlines TestPrintsNoLineFeedThenPasses could_not_run",
+			acme + "splitlines TestLong" + strings.Repeat("X", 1178) + " pass"}},
 	})
 }
 
@@ -250,7 +258,7 @@ func TestAReportWithNoEndOfItsPackageHoldsNoRun(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if whole, err := ReadGoTestJSON(strings.NewReader(string(content))); err != nil || !reflect.DeepEqual(outcomes(whole), row.want) {
+			if whole, err := ReadGoTestJSON(bytes.NewReader(content)); err != nil || !reflect.DeepEqual(outcomes(whole), row.want) {
 				t.Fatalf("the control: the whole report reads %q, %v; want %q", outcomes(whole), err, row.want)
 			}
 			events := strings.SplitAfter(string(content), "\n")

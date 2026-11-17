@@ -35,6 +35,18 @@ func testPart(selector, job string) string {
 	return "runner=\"go\" selector=\"" + selector + "\" job=\"" + job + "\""
 }
 
+// cited is the result of a run over the spec directory dir where the one program check is cited.
+func cited(dir string) result {
+	return result{stdout: "spec-check: " + dir + ": 1 program check; each is cited\n"}
+}
+
+// refused is the result of a run over the spec directory dir where the one program check is
+// refused with detail, which begins with its rule.
+func refused(dir, detail string) result {
+	return result{code: 1, stdout: "spec-check: " + dir + ": 1 program check; 1 refused\n",
+		stderr: "spec-check: " + filepath.Join(dir, "spec.md") + ":5: " + citedCheck + ": " + detail + "\n"}
+}
+
 // goReport is a go test -json report of TestA of package a with outcome, pass, fail or skip, or a
 // run with no end for "", as go test of Go 1.27 writes it: the run and its end each with go test's
 // own line, a frame, before the end event (testdata/gotest/pass.jsonl of specgraph is one such
@@ -113,17 +125,8 @@ func (r citationRun) write(t *testing.T) citationFiles {
 	f := citationFiles{root: root, repo: filepath.Join(root, "repo"), changed: filepath.Join(root, "changed.txt"),
 		reports: filepath.Join(root, "reports"), needs: filepath.Join(root, "needs.json"), ties: filepath.Join(root, "ties.json"),
 		json: filepath.Join(root, "out", "faults.json")}
-	if err := os.CopyFS(f.repo, os.DirFS(fixture(t, "citations", "repo"))); err != nil {
-		t.Fatal(err)
-	}
 	f.dir = filepath.Join(f.repo, ".dispatch", "spec")
-	if err := os.MkdirAll(f.dir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if r.spec != "" {
-		writeFile(t, filepath.Join(f.dir, "spec.md"), []byte(r.spec))
-	}
-	gitIn(t, f.repo, "init", "-q")
+	copyCitationsRepo(t, f.repo, r.spec)
 	f.base = commitAll(t, f.repo, "", "base")
 	f.head = commitAll(t, f.repo, f.base, "head")
 	writeFile(t, f.changed, []byte("base "+f.base+"\n"+r.changed))
@@ -168,12 +171,33 @@ func (r citationRun) args(f citationFiles, workflow string) []string {
 	return append(args, r.extra...)
 }
 
+// copyCitationsRepo copies testdata/citations/repo to repo, with spec in its
+// .dispatch/spec/spec.md ("" for no spec file), and makes it a git repository with no commit.
+func copyCitationsRepo(t *testing.T, repo, spec string) {
+	t.Helper()
+	if err := os.CopyFS(repo, os.DirFS(fixture(t, "citations", "repo"))); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(repo, ".dispatch", "spec")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if spec != "" {
+		writeFile(t, filepath.Join(dir, "spec.md"), []byte(spec))
+	}
+	gitIn(t, repo, "init", "-q")
+}
+
+// gitEnv makes each git command, the test's own and the command under test's, read no
+// configuration of this machine and commit as ACME.
+var gitEnv = []string{"GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1",
+	"GIT_AUTHOR_NAME=ACME", "GIT_AUTHOR_EMAIL=ci@example.com", "GIT_COMMITTER_NAME=ACME", "GIT_COMMITTER_EMAIL=ci@example.com"}
+
 // gitIn runs git in dir, reading no configuration of this machine, and answers its output.
 func gitIn(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
-	cmd.Env = append(cmd.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1",
-		"GIT_AUTHOR_NAME=ACME", "GIT_AUTHOR_EMAIL=ci@example.com", "GIT_COMMITTER_NAME=ACME", "GIT_COMMITTER_EMAIL=ci@example.com")
+	cmd.Env = append(cmd.Environ(), gitEnv...)
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
@@ -207,76 +231,76 @@ func TestCitationsCommand(t *testing.T) {
 	t.Parallel()
 	binary := cmdtest.Build(t, "spec-check")
 	workflow := fixture(t, "citations", "workflow.yaml")
-	const notRun = "test-not-run: "
+	const notRun = "test-not-run"
 	for _, row := range []struct {
 		name   string
 		change func(r *citationRun)
 		rule   string // "" when no fault is wanted
-		detail string
+		detail string // what follows the rule
 	}{
 		{name: "v-citations 1: the check names a test that someone renamed", change: func(r *citationRun) {
 			r.spec = citedSpec(testPart("example.com/citations/a TestRenamed", "go-checks"))
-		}, rule: "test-not-in-code", detail: "test-not-in-code: example.com/citations/a TestRenamed is not in the code at this commit"},
+		}, rule: "test-not-in-code", detail: "example.com/citations/a TestRenamed is not in the code at this commit"},
 		{name: "v-citations 2: code of the tie changed and the job skipped the test", change: func(r *citationRun) {
 			r.changed = "a/a.go\n"
 			r.reports["spec-report--go-checks"] = goReport("skip")
-		}, rule: "test-not-run", detail: notRun + "a/a.go changed, and go-checks did not run example.com/citations/a TestA (its report shows it skipped)"},
+		}, rule: notRun, detail: "a/a.go changed, and go-checks did not run example.com/citations/a TestA (its report shows it skipped)"},
 		{name: "v-citations 3: a program check names no test", change: func(r *citationRun) {
 			r.spec = citedSpec("")
-		}, rule: "no-test", detail: "no-test: the check names no test"},
+		}, rule: "no-test", detail: "the check names no test"},
 		{name: "v-citations 5: no code of the tie changed and the job skipped the test", change: func(r *citationRun) {
 			r.changed = "docs/x.md\n"
 			r.reports["spec-report--go-checks"] = goReport("skip")
 		}},
 		{name: "v-citations 6: the selector picks two tests", change: func(r *citationRun) {
 			r.spec = citedSpec(testPart("example.com/citations/b TestB", "go-checks"))
-		}, rule: "two-tests", detail: "two-tests: example.com/citations/b TestB picks 2 tests"},
+		}, rule: "two-tests", detail: "example.com/citations/b TestB picks 2 tests"},
 		{name: "code of the tie changed and the job did not run", change: func(r *citationRun) {
 			r.changed = "a/a.go\n"
 			r.needs = needsOf("skipped")
 			r.reports = map[string]string{}
-		}, rule: "test-not-run", detail: notRun + "a/a.go changed, and go-checks did not run example.com/citations/a TestA (the job did not run)"},
+		}, rule: notRun, detail: "a/a.go changed, and go-checks did not run example.com/citations/a TestA (the job did not run)"},
 		{name: "code of the tie changed and the job ran and uploaded no report", change: func(r *citationRun) {
 			r.changed = "a/a.go\n"
 			r.reports = map[string]string{}
-		}, rule: "test-not-run", detail: notRun + "a/a.go changed, and go-checks did not run example.com/citations/a TestA (the job left no report)"},
+		}, rule: notRun, detail: "a/a.go changed, and go-checks did not run example.com/citations/a TestA (the job left no report)"},
 		{name: "a missing reports directory is no report", change: func(r *citationRun) {
 			r.changed = "a/a.go\n"
 			r.reports = nil
-		}, rule: "test-not-run", detail: notRun + "a/a.go changed, and go-checks did not run example.com/citations/a TestA (the job left no report)"},
+		}, rule: notRun, detail: "a/a.go changed, and go-checks did not run example.com/citations/a TestA (the job left no report)"},
 		{name: "B5: a read that the repository records for the test changed", change: func(r *citationRun) {
 			r.changed = "fixtures/a.json\n"
 			r.reports["spec-report--go-checks"] = goReport("skip")
-		}, rule: "test-not-run", detail: notRun + "fixtures/a.json changed, and go-checks did not run example.com/citations/a TestA (its report shows it skipped)"},
+		}, rule: notRun, detail: "fixtures/a.json changed, and go-checks did not run example.com/citations/a TestA (its report shows it skipped)"},
 		{name: "a file moves out of the tie", change: func(r *citationRun) {
 			r.changed = "a/data.json\ndocs/data.json\n"
 			r.reports["spec-report--go-checks"] = goReport("skip")
-		}, rule: "test-not-run", detail: notRun + "a/data.json changed, and go-checks did not run example.com/citations/a TestA (its report shows it skipped)"},
+		}, rule: notRun, detail: "a/data.json changed, and go-checks did not run example.com/citations/a TestA (its report shows it skipped)"},
 		{name: "the check names a job that the citations job does not wait for", change: func(r *citationRun) {
 			r.spec = citedSpec(testPart("example.com/citations/a TestA", "envoy-go"))
-		}, rule: "job-not-awaited", detail: `job-not-awaited: the citations job does not wait for "envoy-go", so it cannot read its report`},
+		}, rule: "job-not-awaited", detail: `the citations job does not wait for "envoy-go", so it cannot read its report`},
 		{name: "the check names a job that the workflow does not have", change: func(r *citationRun) {
 			r.spec = citedSpec(testPart("example.com/citations/a TestA", "gone-job"))
-		}, rule: "job-not-in-workflow", detail: `job-not-in-workflow: no job "gone-job"`},
+		}, rule: "job-not-in-workflow", detail: `no job "gone-job"`},
 		{name: "the tie unknown, nothing changed, the test did not run", change: func(r *citationRun) {
 			r.ties = "{}"
 			r.reports["spec-report--go-checks"] = ""
-		}, rule: "test-not-run", detail: notRun + "its tie is unknown (--ties holds no tie of the check at commit {head}), and go-checks did not run example.com/citations/a TestA (its report does not hold it)"},
+		}, rule: notRun, detail: "its tie is unknown (--ties holds no tie of the check at commit {head}), and go-checks did not run example.com/citations/a TestA (its report does not hold it)"},
 		{name: "no base commit, the test ran and passed", change: func(r *citationRun) {
 			r.allChanged = true
 		}},
 		{name: "no base commit, the test skipped", change: func(r *citationRun) {
 			r.allChanged = true
 			r.reports["spec-report--go-checks"] = goReport("skip")
-		}, rule: "test-not-run", detail: notRun + "no base commit, and go-checks did not run example.com/citations/a TestA (its report shows it skipped)"},
+		}, rule: notRun, detail: "no base commit, and go-checks did not run example.com/citations/a TestA (its report shows it skipped)"},
 		{name: "code of the tie changed and the test could not run", change: func(r *citationRun) {
 			r.changed = "a/a.go\n"
 			r.reports["spec-report--go-checks"] = goReport("")
-		}, rule: "test-not-run", detail: notRun + "a/a.go changed, and go-checks did not run example.com/citations/a TestA (it could not run)"},
+		}, rule: notRun, detail: "a/a.go changed, and go-checks did not run example.com/citations/a TestA (it could not run)"},
 		{name: "code of the tie changed and one leg of the job skipped the test", change: func(r *citationRun) {
 			r.changed = "a/a.go\n"
 			r.reports = map[string]string{"spec-report--go-checks--amd64": goReport("pass"), "spec-report--go-checks--arm64": goReport("skip")}
-		}, rule: "test-not-run", detail: notRun + "a/a.go changed, and go-checks (leg arm64) did not run example.com/citations/a TestA (its report shows it skipped)"},
+		}, rule: notRun, detail: "a/a.go changed, and go-checks (leg arm64) did not run example.com/citations/a TestA (its report shows it skipped)"},
 		{name: "code of the tie changed and the test ran", change: func(r *citationRun) {
 			r.changed = "a/a.go\n"
 		}},
@@ -284,7 +308,7 @@ func TestCitationsCommand(t *testing.T) {
 		{name: "code of the tie changed and go test replayed the test from its cache", change: func(r *citationRun) {
 			r.changed = "a/a.go\n"
 			r.reports["spec-report--go-checks"] = goReport("cached")
-		}, rule: "test-not-run", detail: notRun + "a/a.go changed, and go-checks did not run example.com/citations/a TestA (its report holds a result that go test replayed from its cache, which did not run at this commit)"},
+		}, rule: notRun, detail: "a/a.go changed, and go-checks did not run example.com/citations/a TestA (its report holds a result that go test replayed from its cache, which did not run at this commit)"},
 		{name: "no code of the tie changed and go test replayed the test from its cache", change: func(r *citationRun) {
 			r.changed = "docs/x.md\n"
 			r.reports["spec-report--go-checks"] = goReport("cached")
@@ -295,24 +319,24 @@ func TestCitationsCommand(t *testing.T) {
 		{name: "code of the tie changed and the report ends before its package's end", change: func(r *citationRun) {
 			r.changed = "a/a.go\n"
 			r.reports["spec-report--go-checks"] = strings.TrimSuffix(goReport("pass"), packageEnd("pass"))
-		}, rule: "test-not-run", detail: notRun + "a/a.go changed, and go-checks did not run example.com/citations/a TestA (it could not run)"},
+		}, rule: notRun, detail: "a/a.go changed, and go-checks did not run example.com/citations/a TestA (it could not run)"},
 		// A changed path counts when the tie at either end holds it.
 		{name: "the change deleted the test's testdata directory, which only the tie at the base holds", change: func(r *citationRun) {
 			r.baseTies = `{"` + citedCheck + `":["a/*","a/testdata/**","fixtures/a.json"]}`
 			r.changed = "a/testdata/answer.json\n"
 			r.reports["spec-report--go-checks"] = goReport("skip")
-		}, rule: "test-not-run", detail: notRun + "a/testdata/answer.json changed (the tie at the base commit holds it), and go-checks did not run example.com/citations/a TestA (its report shows it skipped)"},
+		}, rule: notRun, detail: "a/testdata/answer.json changed (the tie at the base commit holds it), and go-checks did not run example.com/citations/a TestA (its report shows it skipped)"},
 		{name: "--ties holds no ties of the base commit", change: func(r *citationRun) {
 			r.baseTies = "-"
 			r.changed = "docs/x.md\n"
 			r.reports["spec-report--go-checks"] = goReport("skip")
-		}, rule: "test-not-run", detail: notRun + "its tie at the base commit is unknown (--ties holds no ties of commit {base}), and go-checks did not run example.com/citations/a TestA (its report shows it skipped)"},
+		}, rule: notRun, detail: "its tie at the base commit is unknown (--ties holds no ties of commit {base}), and go-checks did not run example.com/citations/a TestA (its report shows it skipped)"},
 		// A result carries from the base only while the tie is known at both ends, also when no path
 		// changed. The control: both ties known, nothing changed, and the skipped test is cited.
 		{name: "--ties holds no ties of the base commit, and nothing changed", change: func(r *citationRun) {
 			r.baseTies = "-"
 			r.reports["spec-report--go-checks"] = goReport("skip")
-		}, rule: "test-not-run", detail: notRun + "its tie at the base commit is unknown (--ties holds no ties of commit {base}), and go-checks did not run example.com/citations/a TestA (its report shows it skipped)"},
+		}, rule: notRun, detail: "its tie at the base commit is unknown (--ties holds no ties of commit {base}), and go-checks did not run example.com/citations/a TestA (its report shows it skipped)"},
 		{name: "control: --ties holds both ties, and nothing changed", change: func(r *citationRun) {
 			r.reports["spec-report--go-checks"] = goReport("skip")
 		}},
@@ -323,13 +347,11 @@ func TestCitationsCommand(t *testing.T) {
 			row.change(&r)
 			f := r.write(t)
 			got := runBinary(t, binary, "", r.args(f, workflow)...)
-			want := result{stdout: "spec-check: " + f.dir + ": 1 program check; each is cited\n"}
+			want := cited(f.dir)
 			wantJSON := "[]\n"
 			if row.rule != "" {
-				detail := strings.NewReplacer("{head}", f.head, "{base}", f.base).Replace(row.detail)
-				want = result{code: 1,
-					stdout: "spec-check: " + f.dir + ": 1 program check; 1 refused\n",
-					stderr: "spec-check: " + filepath.Join(f.dir, "spec.md") + ":5: " + citedCheck + ": " + detail + "\n"}
+				detail := row.rule + ": " + strings.NewReplacer("{head}", f.head, "{base}", f.base).Replace(row.detail)
+				want = refused(f.dir, detail)
 				wantJSON = `[{"check":"` + citedCheck + `","rule":"` + row.rule + `","detail":"` + strings.ReplaceAll(detail, `"`, `\"`) + `"}]` + "\n"
 			}
 			expect(t, got, want)
@@ -362,7 +384,7 @@ func TestCitationsCommand(t *testing.T) {
 		f := r.write(t)
 		script := filepath.Join(f.repo, ".github", "scripts", "go-test-reads.sh")
 		// The words after the script's path are os/exec's and the system's, so the row reads ours.
-		prefix := "spec-check: " + filepath.Join(f.dir, "spec.md") + ":5: " + citedCheck + ": " + notRun + "its tie is unknown (specgraph: " + script + ": "
+		prefix := "spec-check: " + filepath.Join(f.dir, "spec.md") + ":5: " + citedCheck + ": " + notRun + ": its tie is unknown (specgraph: " + script + ": "
 		suffix := "), and go-checks did not run example.com/citations/a TestA (its report shows it skipped)\n"
 		got := runBinary(t, binary, "", r.args(f, workflow)...)
 		if got.code != 1 || got.stdout != "spec-check: "+f.dir+": 1 program check; 1 refused\n" ||
@@ -380,7 +402,7 @@ func TestCitationsCommand(t *testing.T) {
 		prefix := "spec-check: " + filepath.Join(f.dir, "spec.md") + ":5: " + citedCheck +
 			": test-lookup-failed: example.com/citations/gone TestA could not be looked up in the code at this commit (specgraph: go list example.com/citations/gone in " + f.repo + ": "
 		if got.code != 1 || got.stdout != "spec-check: "+f.dir+": 1 program check; 1 refused\n" || !strings.HasPrefix(got.stderr, prefix) ||
-			strings.Count(got.stderr, "\n") != 1 || !strings.Contains(got.stderr, "example.com/citations/gone") {
+			strings.Count(got.stderr, "\n") != 1 {
 			t.Errorf("exit %d, stdout %q, stderr %q; want exit 1, the count line, and one line starting %q", got.code, got.stdout, got.stderr, prefix)
 		}
 		if content, err := os.ReadFile(f.json); err != nil || !strings.HasPrefix(string(content), `[{"check":"`+citedCheck+`","rule":"test-lookup-failed","detail":"test-lookup-failed: `) {
@@ -393,9 +415,9 @@ func TestCitationsCommand(t *testing.T) {
 		r := newCitationRun()
 		r.reports["spec-report--envoy-go"] = goReport("skip")
 		f := r.write(t)
-		expect(t, runBinary(t, binary, "", r.args(f, workflow)...), result{
-			stdout: "spec-check: " + f.dir + ": 1 program check; each is cited\n",
-			stderr: "spec-check: warning: " + filepath.Join(f.reports, "spec-report--envoy-go") + ": names no job that spec-citations waits for; passed over\n"})
+		want := cited(f.dir)
+		want.stderr = "spec-check: warning: " + filepath.Join(f.reports, "spec-report--envoy-go") + ": names no job that spec-citations waits for; passed over\n"
+		expect(t, runBinary(t, binary, "", r.args(f, workflow)...), want)
 	})
 
 	// The --json file is written by printJSON, the writer of the JSON of checks and state: the "[" of
@@ -581,10 +603,8 @@ func TestCitationsCommand(t *testing.T) {
 		second := filepath.Join(f.root, "base.json")
 		writeFile(t, second, []byte(`{"`+f.base+`":{"`+citedCheck+`":["a/*","a/testdata/**"]}}`))
 		r.extra = []string{"--ties", second}
-		expect(t, runBinary(t, binary, "", r.args(f, workflow)...), result{code: 1,
-			stdout: "spec-check: " + f.dir + ": 1 program check; 1 refused\n",
-			stderr: "spec-check: " + filepath.Join(f.dir, "spec.md") + ":5: " + citedCheck + ": " + notRun +
-				"a/testdata/answer.json changed (the tie at the base commit holds it), and go-checks did not run example.com/citations/a TestA (its report shows it skipped)\n"})
+		expect(t, runBinary(t, binary, "", r.args(f, workflow)...), refused(f.dir, notRun+
+			": a/testdata/answer.json changed (the tie at the base commit holds it), and go-checks did not run example.com/citations/a TestA (its report shows it skipped)"))
 	})
 	t.Run("a workflow with no spec-citations job", func(t *testing.T) {
 		t.Parallel()
@@ -617,35 +637,30 @@ func TestCitationsCommand(t *testing.T) {
 	})
 }
 
-// stubReads is a .github/scripts/go-test-reads.sh that answers reads for every package, as the
+// stubScript is a .github/scripts/go-test-reads.sh that answers reads for every package, as the
 // repository's own script answers at one commit.
-func stubReads(reads string) []byte {
+func stubScript(reads string) []byte {
 	return []byte("#!/bin/sh\necho '{\"reads\":" + reads + ",\"problems\":[]}'\n")
 }
 
 // gitCase is a git repository that holds a copy of testdata/citations/repo, the spec file of the
 // check on TestA and a go-test-reads.sh, and the files of a citations run over it but its list.
-type gitCase struct{ repo, reports, needs, json, tmp string }
+type gitCase struct{ root, repo, reports, needs, json, tmp string }
 
 func newGitCase(t *testing.T, reads string) gitCase {
 	t.Helper()
 	root := t.TempDir()
-	g := gitCase{repo: filepath.Join(root, "repo"), reports: filepath.Join(root, "reports"), needs: filepath.Join(root, "needs.json"),
+	g := gitCase{root: root, repo: filepath.Join(root, "repo"), reports: filepath.Join(root, "reports"), needs: filepath.Join(root, "needs.json"),
 		json: filepath.Join(root, "out", "faults.json"), tmp: filepath.Join(root, "tmp")}
-	if err := os.CopyFS(g.repo, os.DirFS(fixture(t, "citations", "repo"))); err != nil {
-		t.Fatal(err)
-	}
-	for _, dir := range []string{filepath.Join(g.repo, ".dispatch", "spec"), filepath.Join(g.repo, ".github", "scripts"),
-		filepath.Join(g.reports, "spec-report--go-checks"), g.tmp} {
+	copyCitationsRepo(t, g.repo, citedSpec(testPart("example.com/citations/a TestA", "go-checks")))
+	for _, dir := range []string{filepath.Join(g.repo, ".github", "scripts"), filepath.Join(g.reports, "spec-report--go-checks"), g.tmp} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
-	writeFile(t, filepath.Join(g.repo, ".dispatch", "spec", "spec.md"), []byte(citedSpec(testPart("example.com/citations/a TestA", "go-checks"))))
 	g.script(t, reads)
 	writeFile(t, filepath.Join(g.reports, "spec-report--go-checks", "report.jsonl"), []byte(goReport("skip")))
 	writeFile(t, g.needs, []byte(needsOf("success")))
-	gitIn(t, g.repo, "init", "-q")
 	return g
 }
 
@@ -653,7 +668,7 @@ func newGitCase(t *testing.T, reads string) gitCase {
 func (g gitCase) script(t *testing.T, reads string) {
 	t.Helper()
 	path := filepath.Join(g.repo, ".github", "scripts", "go-test-reads.sh")
-	writeFile(t, path, stubReads(reads))
+	writeFile(t, path, stubScript(reads))
 	if err := os.Chmod(path, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -668,7 +683,7 @@ func (g gitCase) cite(t *testing.T, binary, workflow, base string) result {
 	if list.code != 0 {
 		t.Fatalf("changed: exit %d, stderr %q", list.code, list.stderr)
 	}
-	changed := filepath.Join(filepath.Dir(g.reports), "changed.txt")
+	changed := filepath.Join(g.root, "changed.txt")
 	writeFile(t, changed, []byte(list.stdout))
 	got := runBinaryIn(t, binary, "", []string{"TMPDIR=" + g.tmp}, "citations", "--dir", filepath.Join(g.repo, ".dispatch", "spec"), "--repo", g.repo,
 		"--workflow", workflow, "--changed", changed, "--reports", g.reports, "--needs", g.needs, "--json", g.json)
@@ -692,13 +707,9 @@ func TestCitationsReadsTheTieAtTheBaseCommit(t *testing.T) {
 		want            func(dir string) result
 	}{
 		{"the base's tie holds the deleted testdata", `["a/*","a/testdata/**"]`, func(dir string) result {
-			return result{code: 1, stdout: "spec-check: " + dir + ": 1 program check; 1 refused\n",
-				stderr: "spec-check: " + filepath.Join(dir, "spec.md") + ":5: " + citedCheck + ": test-not-run: a/testdata/answer.json changed " +
-					"(the tie at the base commit holds it), and go-checks did not run example.com/citations/a TestA (its report shows it skipped)\n"}
+			return refused(dir, "test-not-run: a/testdata/answer.json changed (the tie at the base commit holds it), and go-checks did not run example.com/citations/a TestA (its report shows it skipped)")
 		}},
-		{"control: the base's tie does not hold it", `["a/*"]`, func(dir string) result {
-			return result{stdout: "spec-check: " + dir + ": 1 program check; each is cited\n"}
-		}},
+		{"control: the base's tie does not hold it", `["a/*"]`, cited},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
@@ -745,9 +756,8 @@ func TestCitationsFromTheMergeBase(t *testing.T) {
 		t.Fatalf("merge base %s, want main %s", mergeBase, main)
 	}
 	dir := filepath.Join(g.repo, ".dispatch", "spec")
-	expect(t, g.cite(t, binary, workflow, main), result{code: 1, stdout: "spec-check: " + dir + ": 1 program check; 1 refused\n",
-		stderr: "spec-check: " + filepath.Join(dir, "spec.md") + ":5: " + citedCheck + ": test-not-run: a/a_test.go changed, and go-checks did not run example.com/citations/a TestA (its report shows it skipped)\n"})
-	expect(t, g.cite(t, binary, workflow, push1), result{stdout: "spec-check: " + dir + ": 1 program check; each is cited\n"})
+	expect(t, g.cite(t, binary, workflow, main), refused(dir, "test-not-run: a/a_test.go changed, and go-checks did not run example.com/citations/a TestA (its report shows it skipped)"))
+	expect(t, g.cite(t, binary, workflow, push1), cited(dir))
 }
 
 // Without --ties, citations derives a tie only for a check whose test did not run: a run where
@@ -783,7 +793,7 @@ func TestCitationsDerivesATieOnlyForATestThatDidNotRun(t *testing.T) {
 				base = head
 			}
 			dir := filepath.Join(g.repo, ".dispatch", "spec")
-			expect(t, g.cite(t, binary, workflow, base), result{stdout: "spec-check: " + dir + ": 1 program check; each is cited\n"})
+			expect(t, g.cite(t, binary, workflow, base), cited(dir))
 			content, err := os.ReadFile(runs)
 			if err != nil && !errors.Is(err, fs.ErrNotExist) {
 				t.Fatal(err)
@@ -802,11 +812,8 @@ func TestCitationsDerivesATieOnlyForATestThatDidNotRun(t *testing.T) {
 // commit's text can refuse such a name, and the test is about what changed prints.
 func TestChanged(t *testing.T) {
 	binary := cmdtest.Build(t, "spec-check")
-	for name, value := range map[string]string{
-		"GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1",
-		"GIT_AUTHOR_NAME": "ACME", "GIT_AUTHOR_EMAIL": "ci@example.com",
-		"GIT_COMMITTER_NAME": "ACME", "GIT_COMMITTER_EMAIL": "ci@example.com",
-	} {
+	for _, entry := range gitEnv {
+		name, value, _ := strings.Cut(entry, "=")
 		t.Setenv(name, value)
 	}
 	repo := t.TempDir()

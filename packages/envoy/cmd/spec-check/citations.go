@@ -163,7 +163,7 @@ func runCitations(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 
-	faults := specgraph.Citations(j.tree, specgraph.CitationInput{Code: specgraph.GoCode{Dir: *repo}, Jobs: jobs, Reports: reports,
+	faults := specgraph.Citations(j.tree, specgraph.CitationInput{Code: &specgraph.GoCode{Dir: *repo}, Jobs: jobs, Reports: reports,
 		Changed: changed, AllChanged: *allChanged, Tie: tie, BaseTie: baseTie})
 	if !writeFaults(stderr, *jsonFile, faults) {
 		return 2

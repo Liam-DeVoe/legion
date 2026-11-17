@@ -34,9 +34,11 @@ func TestARunThatGoTestReplaysFromItsCacheIsCached(t *testing.T) {
 	}
 }
 
-// The summary line has no marker, so a test can print it. For its own package that reads as not
-// run, the safe direction; for another package it marks nothing. Each report ends with the
-// package's own end event, as go test writes it.
+// The summary line has no marker, so a test can print it. A stated limit, in the safe direction: a
+// test that prints its own package's cached summary line reads as replayed from the cache. The
+// event of a test's name does not tell the two apart, since go's own summary line can come in such
+// an event too, after a TestMain that prints a run line. For another package the line marks
+// nothing. Each report ends with the package's own end event, as go test writes it.
 func TestAPrintedCachedLineMarksOnlyItsOwnPackage(t *testing.T) {
 	t.Parallel()
 	run := func(pkg, line string) string {
@@ -52,7 +54,7 @@ func TestAPrintedCachedLineMarksOnlyItsOwnPackage(t *testing.T) {
 		name, report string
 		want         []string
 	}{
-		{"its own package's line", run("p", `ok  \tp\t(cached)`), []string{"p TestA cached"}},
+		{"a test that prints its own package's cached summary line reads as replayed from the cache", run("p", `ok  \tp\t(cached)`), []string{"p TestA cached"}},
 		{"another package's line", run("p", `ok  \tq\t(cached)`), []string{"p TestA pass"}},
 		{"a line of its own package that ran", run("p", `ok  \tp\t0.01s`), []string{"p TestA pass"}},
 	} {
