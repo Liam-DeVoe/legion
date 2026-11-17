@@ -1297,7 +1297,7 @@ func (e *Engine) retryPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	if err != nil {
 		return "", err
 	}
-	reviewed := ""
+	var reviewed reviewedCommit
 	if from == phase.Reviewing {
 		reviewer, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleReviewer)
 		if err != nil {

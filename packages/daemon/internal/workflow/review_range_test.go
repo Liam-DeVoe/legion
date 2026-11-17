@@ -43,6 +43,9 @@ func roleRow(t *testing.T, pool *pgxpool.Pool, issue string, role claim.Role) re
 	return row
 }
 
+// reviewTestedAt is when each review of these tests is submitted.
+var reviewTestedAt = time.Date(2026, 9, 22, 23, 59, 0, 0, time.UTC)
+
 // reviewAt is the review App's review of state as the reviewer posts it, its Legion footer naming
 // head: the shared fixtures record no session on the reviewer's claim, so the login decides
 // (byReviewer).
@@ -69,7 +72,7 @@ func TestADecidingReviewRecordsTheCommitItRead(t *testing.T) {
 	pool := migratedPool(t)
 	seedReviewOf(t, pool, headOne, "green")
 	apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
-	apply("request-changes", reviewAt(1, "changes_requested", headOne, time.Date(2026, 9, 22, 23, 59, 0, 0, time.UTC)))
+	apply("request-changes", reviewAt(1, "changes_requested", headOne, reviewTestedAt))
 	if got := issuePhase(t, pool); got != phase.Implementing {
 		t.Fatalf("after the request for changes the issue is in %s, want implementing", got)
 	}
@@ -94,20 +97,19 @@ func TestADecidingReviewRecordsTheCommitItRead(t *testing.T) {
 // review refused for the head its footer names decides nothing, and a review of an issue outside
 // reviewing decides no round.
 func TestAReviewThatDecidesNothingRecordsNoCommit(t *testing.T) {
-	at := time.Date(2026, 9, 22, 23, 59, 0, 0, time.UTC)
 	for _, tc := range []struct {
 		name   string
 		review intake.PullRequestReview
 		// seed puts the issue where the review finds it, after seedReviewOf.
 		seed func(t *testing.T, pool *pgxpool.Pool)
 	}{
-		{name: "a comment", review: reviewAt(1, "commented", headOne, at)},
+		{name: "a comment", review: reviewAt(1, "commented", headOne, reviewTestedAt)},
 		{name: "a review its footer's head refuses", review: func() intake.PullRequestReview {
-			r := reviewAt(1, "changes_requested", headOne, at)
+			r := reviewAt(1, "changes_requested", headOne, reviewTestedAt)
 			r.Body = reviewBody("the review", headEarlier)
 			return r
 		}()},
-		{name: "a review outside reviewing", review: reviewAt(1, "approved", headOne, at), seed: func(t *testing.T, pool *pgxpool.Pool) {
+		{name: "a review outside reviewing", review: reviewAt(1, "approved", headOne, reviewTestedAt), seed: func(t *testing.T, pool *pgxpool.Pool) {
 			seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root",
 				Phase: phase.Testing, Generation: 1, Status: "testing", Rank: "U"})
 		}},
@@ -131,6 +133,60 @@ func TestAReviewThatDecidesNothingRecordsNoCommit(t *testing.T) {
 	}
 }
 
+// A review that decides nothing leaves the commit an earlier deciding review recorded where it
+// stands, as it leaves an empty one empty (TestAReviewThatDecidesNothingRecordsNoCommit): each case
+// starts in round 2, after the reviewer's request for changes of round 1 recorded headOne and the
+// implementer's push moved the pull request to headTwo, and the review it applies names a head
+// other than headOne. A path that cleared the commit would read none, and one that moved it would
+// read the head that review names.
+func TestAReviewThatDecidesNothingKeepsTheCommitAnEarlierReviewRecorded(t *testing.T) {
+	later := reviewTestedAt.Add(2 * time.Hour)
+	for _, tc := range []struct {
+		name   string
+		review intake.PullRequestReview
+		// leave puts the issue where the review finds it, after round 2 began.
+		leave func(t *testing.T, pool *pgxpool.Pool)
+	}{
+		{name: "a comment", review: reviewAt(2, "commented", headTwo, later)},
+		{name: "a review its footer's head refuses", review: func() intake.PullRequestReview {
+			r := reviewAt(2, "changes_requested", headTwo, later)
+			r.Body = reviewBody("the review", headEarlier)
+			return r
+		}()},
+		{name: "a review outside reviewing", review: reviewAt(2, "approved", headTwo, later), leave: func(t *testing.T, pool *pgxpool.Pool) {
+			standsIn(t, pool, phase.Testing, "testing")
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			seedReviewOf(t, pool, headOne, "green")
+			engine := testEngine(config.DesignGateRootIssues, nil)
+			apply := applyFacts(t, pool, engine)
+			apply("request-changes", reviewAt(1, "changes_requested", headOne, reviewTestedAt))
+			mergesForward(t, pool, engine, headOne, headTwo, reviewTestedAt.Add(time.Hour))
+			backToReviewing(t, apply, 2)
+			if got := issuePhase(t, pool); got != phase.Reviewing {
+				t.Fatalf("after the tester passed round 2 the issue is in %s, want reviewing", got)
+			}
+			if got := reviewerRow(t, pool).ReviewedHead; got != headOne {
+				t.Fatalf("round 2's reviewer row reads the reviewed commit %q, want %s, the head round 1's review read", got, headOne)
+			}
+			if tc.leave != nil {
+				tc.leave(t, pool)
+			}
+			apply("review", tc.review)
+			row := reviewerRow(t, pool)
+			if row.Decision != nil && row.Decision.State != "" {
+				t.Fatalf("the reviewer's row holds the decision %+v, want none: the review decides nothing", row.Decision)
+			}
+			if row.ReviewedHead != headOne {
+				t.Fatalf("the reviewer's row reads the reviewed commit %q, want %s, the one round 1's review recorded: the review decided nothing",
+					row.ReviewedHead, headOne)
+			}
+		})
+	}
+}
+
 // A person's review decides a round as it always has, on the commit_id its webhook carried, and
 // the round's decision is the person's. The commit the reviewer's next round is told is still the
 // one the reviewer's own last deciding review read: the reviewer never read the person's.
@@ -138,7 +194,7 @@ func TestAPersonsReviewDoesNotMoveTheReviewersCommit(t *testing.T) {
 	pool := migratedPool(t)
 	seedReviewOf(t, pool, headOne, "green")
 	apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
-	apply("reviewer-requests-changes", reviewAt(1, "changes_requested", headOne, time.Date(2026, 9, 22, 23, 59, 0, 0, time.UTC)))
+	apply("reviewer-requests-changes", reviewAt(1, "changes_requested", headOne, reviewTestedAt))
 	backToReviewing(t, apply, 2)
 	if got := issuePhase(t, pool); got != phase.Reviewing {
 		t.Fatalf("after the tester passed round 2 the issue is in %s, want reviewing", got)
@@ -224,18 +280,6 @@ func readsReviewingTask(t *testing.T, round, task string, version int) {
 		t.Fatalf("%s's task = %q, want the reviewing task the tester's handoff version %d started", round, task, version)
 	}
 }
-
-// readsResumeTask fails the test unless task is the resume task of LEGION-208's reviewing phase
-// (ResumePhaseTask), whatever else it names.
-func readsResumeTask(t *testing.T, start, task string) {
-	t.Helper()
-	if !strings.Contains(task, " Phase: reviewing.") || !strings.HasSuffix(task, " Resume the existing phase work.") {
-		t.Fatalf("%s's task = %q, want the reviewing phase's resume task", start, task)
-	}
-}
-
-// reviewTestedAt is when each review of these tests is submitted.
-var reviewTestedAt = time.Date(2026, 9, 22, 23, 59, 0, 0, time.UTC)
 
 // reviewRoundOne seeds LEGION-208 as a root in testing, its pull request at headOne, and walks
 // it into reviewing on the tester's pass, so the reviewer's first entry of the generation is a
@@ -382,6 +426,27 @@ func TestALaterRoundNamesTheCommitOfTheReviewersNewestDecidingReview(t *testing.
 	}
 }
 
+// The commit a later round names is the head the reviewer's own review names in its Legion footer,
+// never GitHub's commit_id for that review (reviewHead): GitHub moves a review's commit_id onto each
+// later head of the pull request, so round 1's request for changes here reads headOne by its footer
+// while its commit_id already names headTwo. A commit taken from the commit_id would hand round 2 a
+// range from a head the reviewer never read.
+func TestALaterRoundNamesTheHeadTheReviewsFooterNamesAndNotItsCommitID(t *testing.T) {
+	pool, _, apply := reviewRoundOne(t)
+	review := reviewAt(1, "changes_requested", headOne, reviewTestedAt)
+	review.CommitID = headTwo
+	apply("request-changes", review)
+	if got := issuePhase(t, pool); got != phase.Implementing {
+		t.Fatalf("after round 1's request for changes the issue is in %s, want implementing", got)
+	}
+	backToReviewing(t, apply, 2)
+	second := reviewerRow(t, pool).EntryTask
+	readsReviewingTask(t, "round 2", second, 2)
+	if !strings.Contains(second, reviewedPartOf(headOne)) || strings.Contains(second, headTwo) {
+		t.Fatalf("round 2's task = %q, want it to name %s, the head round 1's footer names, and not %s, its commit_id", second, headOne, headTwo)
+	}
+}
+
 // Every way back into reviewing that keeps the generation tells the reviewer the commit its last
 // deciding review read: a transition's start whichever move came before it (enter stores that
 // task, so a claim behind its entry is sent the same text), the retry of a held phase, each start
@@ -502,6 +567,9 @@ func TestTheReviewedCommitSurvivesEachWayBackIntoReviewing(t *testing.T) {
 		reviewedTwice(t, apply, pool)
 		before := reviewerRow(t, pool)
 		// The carried orphan's re-admission raises its generation and keeps its phase and its rows.
+		// This stands in for admission's re-admission, which this package cannot drive; admit's
+		// TestAHandedOverChildCarriesItsPhaseGateAndPullRequest drives the real hand-over, its
+		// reviewing case holding a reviewed commit.
 		carried := issueRecord(t, pool, "LEGION-208")
 		carried.Generation++
 		seedIssue(t, pool, *carried)

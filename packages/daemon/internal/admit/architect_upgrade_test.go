@@ -433,9 +433,10 @@ func embeddedMigration(t *testing.T, version int) string {
 
 // wayBackHeredoc and wayBackTerminator open and close a way back in a migration's header: a psql
 // heredoc whose lines are the one transaction an operator runs, begin and commit included. They
-// are the headers' own lines — the phase entry's (20261111225552_phase_entry.up.sql), and the one
-// this migration's header and 20261113181500_architect_stalled_notices.up.sql's both carry — and
-// internal/daemon's upgrade_phase_entry_way_back_test.go reads the phase entry's the same way.
+// are the headers' own lines — the phase entry's (20261111225552_phase_entry.up.sql), the one
+// this migration's header and 20261113181500_architect_stalled_notices.up.sql's both carry, and
+// the reviewed commit's (20261116234034_phase_reviewed_head.up.sql) — and internal/daemon's
+// upgrade_phase_entry_way_back_test.go reads the phase entry's the same way.
 const (
 	wayBackHeredoc    = "psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'"
 	wayBackTerminator = "SQL"
@@ -697,5 +698,83 @@ func TestTheArchitectUpgradeRunsAgainAfterTheWayBackAndARollForward(t *testing.T
 				}
 			}
 		})
+	}
+}
+
+// phaseReviewedHeadVersion is the version of the migration that keeps the commit the reviewer's
+// own newest deciding review read (20261116234034_phase_reviewed_head.up.sql,
+// record.PhaseRow.ReviewedHead).
+const phaseReviewedHeadVersion = 20261116234034
+
+// The reviewed commit's way back, the one transaction its migration's header carries
+// (headerWayBack), drops phases.reviewed_head and deletes the migration's version row, and the
+// roll-forward after it adds the column again at its default: a reviewer's row that held a commit
+// comes through both with the rest of its record and reads no commit, so the next round of its
+// issue reads the whole change. Without the drop, the roll-forward's add of a column that stands
+// fails; without the delete, Migrate finds the version recorded and never adds the column again,
+// and every phases read, which names the column, fails. The test is in this package because
+// headerWayBack, the reader of a header's way back, is a test helper here, which internal/store's
+// own tests cannot import.
+func TestTheReviewedCommitsWayBackDropsItAndTheRollForwardAddsItAgainEmpty(t *testing.T) {
+	ctx := context.Background()
+	pool := migratedPool(t)
+	const key, reviewed = "LEGION-860", "2222222222222222222222222222222222222222"
+	held := record.PhaseRow{Issue: key, Role: claim.RoleReviewer, Claim: "reviewer-claim", Entry: 2,
+		EntryTask: "Continue " + key + ". Issue: " + key + ". Phase: reviewing.", ReviewedHead: reviewed}
+	putIssue(t, pool, record.Issue{Key: key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: testProject,
+		Title: key, Tree: key, Phase: phase.Reviewing, Generation: 1, Status: "needs_review", Rank: "A", HandedOver: true})
+	inTx(t, pool, func(tx pgx.Tx) {
+		if err := record.NewStore().PutPhase(ctx, tx, held); err != nil {
+			t.Fatalf("record the reviewer's row of %s holding the commit its review read: %v", key, err)
+		}
+	})
+	reviewerOf := func() record.PhaseRow {
+		t.Helper()
+		var rows []record.PhaseRow
+		inTx(t, pool, func(tx pgx.Tx) {
+			var err error
+			if rows, err = record.NewStore().Phases(ctx, tx, key); err != nil {
+				t.Fatalf("read the phases rows of %s: %v", key, err)
+			}
+		})
+		return record.PhaseRowOf(rows, claim.RoleReviewer)
+	}
+	if got := reviewerOf().ReviewedHead; got != reviewed {
+		t.Fatalf("the reviewer's row before the way back reads the reviewed commit %q, want %s", got, reviewed)
+	}
+
+	if _, err := pool.Exec(ctx, headerWayBack(t, phaseReviewedHeadVersion), pgx.QueryExecModeSimpleProtocol); err != nil {
+		t.Fatalf("run the reviewed commit's way back as its one transaction: %v", err)
+	}
+	var column bool
+	if err := pool.QueryRow(ctx, `select exists (select 1 from information_schema.columns
+		where table_schema = current_schema() and table_name = 'phases' and column_name = 'reviewed_head')`).Scan(&column); err != nil {
+		t.Fatalf("look for phases.reviewed_head after the way back: %v", err)
+	}
+	var recorded int
+	if err := pool.QueryRow(ctx, `select count(*) from schema_version where version = $1`, phaseReviewedHeadVersion).Scan(&recorded); err != nil {
+		t.Fatalf("count the version rows of migration %d after the way back: %v", phaseReviewedHeadVersion, err)
+	}
+	if column || recorded != 0 {
+		t.Fatalf("after the way back phases.reviewed_head stands: %v, and migration %d's version rows number %d; want neither: "+
+			"the roll-forward adds the column again only when both are gone", column, phaseReviewedHeadVersion, recorded)
+	}
+
+	st, err := store.Open(ctx, pool.Config().ConnString())
+	if err != nil {
+		t.Fatalf("open the record store: %v", err)
+	}
+	defer st.Close()
+	applied, err := st.Migrate(ctx)
+	if err != nil {
+		t.Fatalf("roll forward after the way back: %v", err)
+	}
+	if applied != 1 {
+		t.Fatalf("the roll-forward applied %d migrations, want 1: the way back re-arms its own migration and no other", applied)
+	}
+	got := reviewerOf()
+	if got.Claim != held.Claim || got.Entry != held.Entry || got.EntryTask != held.EntryTask || got.ReviewedHead != "" {
+		t.Fatalf("the reviewer's row after the roll-forward = claim %q, entry %d, task %q, reviewed commit %q; want the row as it was "+
+			"with no reviewed commit, the column's default", got.Claim, got.Entry, got.EntryTask, got.ReviewedHead)
 	}
 }
