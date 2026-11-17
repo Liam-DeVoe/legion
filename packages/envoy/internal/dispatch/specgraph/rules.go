@@ -64,7 +64,7 @@ func Validate(t Tree, o Options) []Problem {
 	for _, cycle := range findLoops(v.edges) {
 		v.problem(v.first[cycle[0]], cycle[0], "loop: "+loopDetail(cycle))
 	}
-	slices.SortFunc(v.problems, compareProblems)
+	SortProblems(v.problems)
 	return v.problems
 }
 
@@ -76,14 +76,8 @@ func Validate(t Tree, o Options) []Problem {
 func Judge(files map[string][]byte, o Options) (Tree, []Problem) {
 	tree, problems := Parse(files)
 	problems = append(problems, Validate(tree, o)...)
-	slices.SortFunc(problems, compareProblems)
+	SortProblems(problems)
 	return tree, problems
-}
-
-// compareProblems orders problems by file, line, node, rule and detail.
-func compareProblems(a, b Problem) int {
-	return cmp.Or(cmp.Compare(a.Pos.File, b.Pos.File), cmp.Compare(a.Pos.Line, b.Pos.Line), cmp.Compare(a.Node, b.Node),
-		cmp.Compare(a.Rule, b.Rule), cmp.Compare(a.Detail, b.Detail))
 }
 
 // validator is the state of one Validate: the kind and the first position of each id, the
