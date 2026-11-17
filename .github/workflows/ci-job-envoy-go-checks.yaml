@@ -52,8 +52,8 @@ jobs:
     # (job 133746719840, at 8eb39c23) read 455 s. The largest -timeout is 1m, the limit of both of
     # its go test calls, the architecture-note tests and the display-tree fixture check:
     # 13.03 + 1 + 6 = 20.03, so 21,
-    # where the merge base had 30 from no measurement. Its other go commands are builds and a
-    # `go run`, which run no test binary and carry no -timeout.
+    # where the merge base had 30 from no measurement. Its other go commands are builds and two
+    # `go run`s, which run no test binary and carry no -timeout.
     timeout-minutes: 21
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

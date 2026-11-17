@@ -64,8 +64,8 @@ func cmdRegister(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "agent-secrets register: unexpected argument %q\n", command[0])
 		return exitUsageError
 	}
-	// A zero or negative patience would make the retry loop give up before it dialled once,
-	// which is not what "wait less" means.
+	// A zero or negative patience would give a still-starting helper no retry at all: the loop
+	// would give up on its first refused dial, which is not what "wait less" means.
 	if *patience <= 0 {
 		fmt.Fprintln(stderr, "agent-secrets register: --connect-patience must be positive")
 		return exitUsageError

@@ -143,8 +143,11 @@ func startIdleSweep(t *testing.T, project string, settle time.Duration) idleSwee
 	case <-time.After(concurrentWait):
 		t.Fatalf("the hub did not connect within %s", concurrentWait)
 	}
-	// The boot pass awaits the event horizon before it sets the cursor (suggestionOutcomePass), and
-	// a transaction open anywhere on the instance holds that back, so the wait is the horizon's.
+	// The boot pass sets the cursor at the writer floor it reads (suggestionOutcomeFloor.read),
+	// which waits on no transaction: every event write of this database has committed by now, so
+	// the floor is the log's newest id. Only a floor of 0 over a log that holds events would have
+	// the pass await the safe horizon, which a transaction open anywhere on the instance holds
+	// back; PollInProcess, the package's wait behind the horizon, covers that case too.
 	horizontest.PollInProcess(t, "the boot pass to set the cursor", database, func() bool { return outcomeCursor(t, database) != nil })
 	// The hub's signal after its LISTEN earns one more pass, no sooner than the gap after the boot
 	// pass began; after it the loop is idle. That pass is waited for, not assumed: a sweep whose
@@ -178,8 +181,9 @@ func TestTheSuggestionSweepMakesNoStatementWithNoEvents(t *testing.T) {
 
 // An event the suggestion's actor writes on the suggested issue wakes the idle sweep through its
 // notification on a real pglisten.Hub, and the suggestion is marked acted_on by the first pass
-// whose safe horizon has passed that event: the sweep reads the log only up to it, so the wait is
-// the horizon's.
+// whose writer floor has passed that event: the sweep reads the log only up to its floor
+// (suggestionOutcomeFloor.read), which waits on no transaction and stays below an event only while
+// an event write of this database is still open under it.
 func TestAnEventByTheActorOnTheSuggestedIssueWakesTheSweepAndMarksActedOn(t *testing.T) {
 	// No t.Parallel: startIdleSweep measures a quiet window of the sweep it runs
 	// (storetest.AwaitQuiet) before the test's own write, which a parallel test's CPU would
@@ -189,8 +193,8 @@ func TestAnEventByTheActorOnTheSuggestedIssueWakesTheSweepAndMarksActedOn(t *tes
 
 	postOutcomeMessage(t, sweep.handler, sweep.target, "alice", "Adding the new detail here instead.")
 	// A pass judges by the message once it is settle old by the database's clock, which the pass
-	// reads every age by, and once the pass's safe horizon has passed it. The first is waited out
-	// here, so what the wait below waits on is the horizon alone.
+	// reads every age by, and once the writer floor the pass reads has passed it. The first is
+	// waited out here, so what the wait below waits on is the pass and its floor alone.
 	awaitEventSettled(t, sweep.database, lastEventID(t, sweep.database), idleSweepGap)
 	horizontest.PollInProcess(t, "the suggestion to be marked acted_on", sweep.database, func() bool {
 		return readSuggestionOutcome(t, sweep.server, sweep.source, sweep.target).Outcome == "acted_on"
@@ -218,7 +222,7 @@ func TestWritesMomentsApartAreJudgedTogetherAsActedOn(t *testing.T) {
 	time.Sleep(300 * time.Millisecond)
 	postOutcomeMessage(t, sweep.handler, sweep.target, "alice", "Adding the new detail here instead.")
 	// The settle waited out on the database's clock, which the pass reads every age by; then the
-	// horizon alone, which the pass reads up to.
+	// pass and the writer floor it reads up to alone.
 	awaitEventSettled(t, sweep.database, lastEventID(t, sweep.database), settle)
 	horizontest.PollInProcess(t, "the suggestion to be judged", sweep.database, func() bool {
 		return readSuggestionOutcome(t, sweep.server, sweep.source, sweep.target).Outcome != "ignored"

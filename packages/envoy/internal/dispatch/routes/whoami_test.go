@@ -149,11 +149,12 @@ func TestAnEventsSubscriptionFromTheWhoamiHeadReplaysWhatCommittedSince(t *testi
 	// No t.Parallel: this test waits for the relay's first start, which waits for a horizon
 	// proven after it (api.server.firstRelayCursor, events.Horizon.Await), and that horizon is
 	// proven from pg_snapshot_xmin, the oldest transaction id running anywhere on the instance
-	// (internal/dispatch/events, horizon.go). Its own parallel neighbours hold such ids open on
-	// purpose: TestWhoamiDoesNotSendAPageToReplayTheWholeLogWhileAWriteFromBeforeBootIsOpen holds
-	// one for three seconds, TestWhoamiEventHeadStaysBelowAnEventStillOpen holds an event insert,
-	// and every storetest.Open holds one for its `create database ... strategy file_copy`.
-	// Beside the first two this test took 9.44 s of its socket's ten-second
+	// (internal/dispatch/events, horizon.go). Its parallel neighbours hold such ids open on
+	// purpose: TestWhoamiEventHeadStaysBelowAnEventStillOpen holds an event insert, and every
+	// storetest.Open holds one for its `create database ... strategy file_copy`.
+	// TestWhoamiDoesNotSendAPageToReplayTheWholeLogWhileAWriteFromBeforeBootIsOpen, which holds
+	// one for three seconds, is serial for that hold. Beside those two holders this test took
+	// 9.44 s of its socket's ten-second
 	// read deadline on a two-core pod, against 0.48 s with the package to itself, and on CI run
 	// 41868325451 it failed that deadline waiting for its events_start. The api package took the
 	// same family of tests out of its parallel set for this (dispatch://INFRA-1075).
@@ -575,7 +576,6 @@ func TestWhoamiAnswersAtOnceWhileAWriteOfThisDatabaseIsOpen(t *testing.T) {
 // first 120 s and had not reached the newest. Every event that committed before that write took its
 // id is final, so event_head may stand below the open write but not below those.
 func TestWhoamiDoesNotSendAPageToReplayTheWholeLogWhileAWriteFromBeforeBootIsOpen(t *testing.T) {
-	t.Parallel()
 	const committed = 1000
 	database := storetest.Open(t)
 	ctx := t.Context()

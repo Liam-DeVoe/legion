@@ -27,11 +27,12 @@ import (
 const webhookRedeliveryLease = "webhook-redelivery"
 
 // redeliverTestLeases opens the lease pool a running sweep takes webhook-redelivery on, on a
-// database of the test's own: storetest.Open's clone of the template this test process migrated
-// once, which skips the test (not fails it) when DISPATCH_TEST_DATABASE_URL is unset. A lease is
-// an advisory lock and reads no table, but the period a sweep is due by is a row of duty_passes
-// (duty.Exclusive, migration 0115), which a pass reads and writes under its lease, so this pool's
-// database carries the migrations; a clone carries no pass an earlier run recorded.
+// database of the test's own: a clone storetest.Open makes of the one migrated template that every
+// test process on the server shares and none drops (pgtemplate). storetest.Open skips the test
+// (not fails it) when DISPATCH_TEST_DATABASE_URL is unset. A lease is an advisory lock and reads
+// no table, but the period a sweep is due by is a row of duty_passes (duty.Exclusive, migration
+// 0115), which a pass reads and writes under its lease, so this pool's database carries the
+// migrations; a clone carries no pass an earlier run recorded.
 //
 // The database is never the one DISPATCH_TEST_DATABASE_URL names. Migrating that one runs each
 // CREATE INDEX CONCURRENTLY there, and a concurrent build waits for every session of its own

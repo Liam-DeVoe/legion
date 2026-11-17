@@ -40,7 +40,6 @@ func runInSession(t *testing.T, binary, sock string, args ...string) (code int, 
 // logged in is not an agent session. identity exits 1 with the notice, where a helper still
 // enrolling with a credential gets exit 0 (TestIdentityWhileAHelperWithACredentialEnrolls).
 func TestIdentityOnAHelperWithoutALauncherCredential(t *testing.T) {
-	t.Parallel()
 	binary := buildAgentSecrets(t)
 	sock := realHelper(t)
 	code, stdout, stderr := runInSession(t, binary, sock, "identity")
@@ -84,7 +83,6 @@ func TestRegisterWaitReturnsAtOnceWithoutALauncherCredential(t *testing.T) {
 // exits 0 silently. The broker here issues the machine login and refuses every enrollment, so the
 // session stays unenrolled for the whole test.
 func TestIdentityWhileAHelperWithACredentialEnrolls(t *testing.T) {
-	t.Parallel()
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/oauth/device_authorization", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{"device_code": "device-1", "user_code": "ABCD-EFGH", "verification_uri": "https://s", "expires_in": 900, "interval": 1})
@@ -123,7 +121,6 @@ func TestIdentityWhileAHelperWithACredentialEnrolls(t *testing.T) {
 // to sign, for a proof or for a request object, fails with identity's line rather than the
 // helper's raw code.
 func TestCommandsOnAHelperWithoutALauncherCredentialPrintTheNotice(t *testing.T) {
-	t.Parallel()
 	binary := buildAgentSecrets(t)
 	sock := realHelper(t)
 	for _, args := range [][]string{

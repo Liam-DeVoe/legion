@@ -34,10 +34,11 @@ import (
 // (deliveryTestNATS).
 func TestMain(m *testing.M) { os.Exit(storetest.Run(func() int { return testnats.Main(m) })) }
 
-// deliveryTestPool returns the pool of a database of the test's own, with the test's context:
-// storetest.Open's clone of the template this test process migrated once, dropped after the test,
-// which skips the test (not fails it) when DISPATCH_TEST_DATABASE_URL is unset. A clone holds no
-// row another test or an earlier run wrote, so nothing is truncated or repaired first.
+// deliveryTestPool returns the pool of a database of the test's own, with the test's context: a
+// clone storetest.Open makes, and drops after the test, of the one migrated template that every
+// test process on the server shares and none drops (pgtemplate). storetest.Open skips the test
+// (not fails it) when DISPATCH_TEST_DATABASE_URL is unset. A clone holds no row another test or
+// an earlier run wrote, so nothing is truncated or repaired first.
 //
 // The database is never the one DISPATCH_TEST_DATABASE_URL names. Migrating that one runs each
 // CREATE INDEX CONCURRENTLY there, and a concurrent build waits for every session of its own
