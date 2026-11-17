@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"os/exec"
 	"strconv"
@@ -9,9 +10,11 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/testlimits"
 )
 
@@ -36,6 +39,12 @@ import (
 // scales its pools to (store.OpenWithin). A server too small for even the smallest pools refuses
 // the start, naming the max_connections it needs. A row that needs production's sizes says so
 // (requireProductionPools) and is refused, by name, on a server that would scale them.
+//
+// The check reads max_connections, not the slots in use: a server whose slots other clients hold
+// (this binary's own pools, another test binary, any other program) passes it and refuses the
+// process later. A process that exits before it is healthy on such a refusal fails its test
+// naming the server's max_connections and the client backends open on it
+// (connectionRefusalCause).
 //
 // dispatchProcessesRunning is the count of Dispatch processes running in this test binary. It is
 // one count for the whole binary because one `go test` binary is what one lane's server serves,
@@ -162,6 +171,48 @@ func readsPoolBudget(t *testing.T, binary string) bool {
 // budgetReaders is readsPoolBudget's answer for each binary whose settings it listed, by path: the
 // settings a build lists do not change while its file stands.
 var budgetReaders sync.Map
+
+// tooManyConnections is how a Dispatch process's output carries a connection Postgres refused
+// because the server had no slot left for it: pgx ends the error with its SQLSTATE,
+// too_many_connections.
+const tooManyConnections = "(SQLSTATE 53300)"
+
+// connectionRefusalCause is the reason a Dispatch process that exited before it was healthy gives
+// when refused, a line of its output, says Postgres turned it away for too many clients. It quotes
+// the line and reads, through databaseURL, the server's max_connections and the client backends
+// open on it now, which say whether the server is too small or other clients hold its slots. The
+// process has exited, so the count holds none of its connections once Postgres has ended their
+// backends. budget is the connection budget the process's start gave it (requireConnectionCeiling),
+// zero at production's pool sizes; every Dispatch process this binary starts on that server is
+// given the same one.
+func connectionRefusalCause(refused, databaseURL string, budget int) string {
+	reason := "Postgres refused it a connection for too many clients (SQLSTATE 53300):\n" + refused + "\n"
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var allowed, open int
+	conn, err := pgx.Connect(ctx, databaseURL)
+	if err == nil {
+		defer conn.Close(ctx)
+		err = conn.QueryRow(ctx, `
+			select current_setting('max_connections')::int, count(*)
+			from pg_stat_activity
+			where backend_type = 'client backend' and pid <> pg_backend_pid()`).Scan(&allowed, &open)
+	}
+	if err != nil {
+		return reason + fmt.Sprintf("Reading the server's max_connections and its open client backends failed too: %v", err)
+	}
+	opens := fmt.Sprintf("%d (store.ConnectionsPerTestProcess, production's pool sizes and the test hooks' listener)",
+		store.ConnectionsPerTestProcess)
+	if budget > 0 {
+		opens = fmt.Sprintf("%d (the DISPATCH_TEST_POOL_BUDGET its start was given on this server)", budget)
+	}
+	return reason + fmt.Sprintf("The server allows max_connections=%d and has %d client backends open now "+
+		"(pg_stat_activity), while %d other Dispatch process(es) of this test binary run, each of which may "+
+		"open %s. The connection ceiling check counts only those processes; "+
+		"the rest are this binary's own pools and the server's other clients. Free the server's "+
+		"connections, or raise max_connections.",
+		allowed, open, dispatchProcessesRunning.Load(), opens)
+}
 
 // serverInt is one integer setting of the server this test's database is on.
 func serverInt(t *testing.T, conn *pgx.Conn, name string) int {
