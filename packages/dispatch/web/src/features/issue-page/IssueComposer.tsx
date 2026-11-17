@@ -805,7 +805,8 @@ function CriterionLine({
  *
  * It is a form of its own beside the answer's, with the line that writes on the issue kept
  * mounted and hidden, so the page keeps one box (part L's R7). Its words go into the issue's own
- * text, which tells nobody they name (`document-text`).
+ * text, which tells nobody they name, and its hint says so in words of its own (`criterion`,
+ * decision 158).
  */
 function CriterionForm({
   issueKey,
@@ -885,7 +886,7 @@ function CriterionForm({
                 ? CONTROL_LABELS.criterion_placeholder_phone
                 : CONTROL_LABELS.criterion_placeholder
             }
-            writing={dispatchWritingBox("issue-page-composer", "document-text")}
+            writing={dispatchWritingBox("issue-page-composer", "criterion")}
           />
           <div className={pageComposer.controls}>
             <RefusableButton

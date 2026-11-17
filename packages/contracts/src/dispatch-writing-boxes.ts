@@ -64,6 +64,8 @@ export type DispatchWritingBox =
  * - `broadcast`: one message to each selected agent.
  * - `document-text`: the document's own text, which every reader of that document reads and
  *   which is sent to nobody.
+ * - `criterion`: a criterion, written into the issue's own text under the comment, question or
+ *   message it answers, which every reader of the issue reads and which is sent to nobody.
  * - `issue-spec`: the spec document a new issue is created with.
  * - `approval-reason`: why a reviewer asked for changes on a document.
  * - `architecture-reason`: why an issue touches no component.
@@ -83,6 +85,7 @@ export type DispatchWriting =
   | "agent-message"
   | "broadcast"
   | "document-text"
+  | "criterion"
   | "issue-spec"
   | "approval-reason"
   | "architecture-reason"
@@ -173,6 +176,9 @@ const PICKED_QUIET =
  * - a reason for asking changes answers the open approval request, which reaches whoever asked
  *   (`createArtifactReview`); with none open, it rides the review's own event alone, on the
  *   document's issue (`docs.WriteReview`);
+ * - a criterion is written into the issue's own text (an edit of the issue's tree artifact),
+ *   which opens no delivery: a reply under the comment, question or message it stands under
+ *   tells a picked agent or role;
  * - a priority's write is published to nobody (`priorityEvent`), and a priority takes no
  *   comment.
  */
@@ -185,6 +191,7 @@ export const DISPATCH_WRITING_HINT_QUIET = {
   "ask-decline": `${DOORS} ${PICKED_QUIET} The note goes to whoever asked.`,
   broadcast: `${DOORS} ${PICKED_QUIET} The message goes to each agent you selected.`,
   "comment-edit": `${DOORS} ${PICKED_QUIET} A new comment, not an edit, tells a picked agent or role.`,
+  criterion: `${DOORS} ${PICKED_QUIET} The criterion goes under the comment, question or message it answers. A reply there tells a picked agent or role.`,
   "document-text": `${DOORS} ${PICKED_QUIET} A comment on the document tells a picked agent or role.`,
   "issue-spec": `${DOORS} ${PICKED_QUIET} A comment on the new issue tells a picked agent or role.`,
   "message-reply": `${DOORS} ${PICKED_QUIET} Your reply goes to whoever the thread is with.`,
@@ -324,7 +331,8 @@ const WRITING_BOXES: readonly Omit<DispatchWritingBoxRow, "hint">[] = [
     reach: "Answer",
     write: "ask-answer",
   },
-  // Its criterion line writes into the issue's own text, which tells nobody (INFRA-4066 R2, R8).
+  // Its criterion line writes a criterion into the issue's own text, which tells nobody, and says
+  // so in words of its own rather than the document editor's (INFRA-4066 R2, R8, decision 158).
   {
     box: "issue-page-composer",
     covered: true,
@@ -332,7 +340,7 @@ const WRITING_BOXES: readonly Omit<DispatchWritingBoxRow, "hint">[] = [
     files: ["packages/dispatch/web/src/features/issue-page/IssueComposer.tsx"],
     issueRows: true,
     reach: "[data-issue-composer]",
-    write: "document-text",
+    write: "criterion",
   },
   // The Inbox's reading column: one reply box, under a comment thread or a message thread.
   {

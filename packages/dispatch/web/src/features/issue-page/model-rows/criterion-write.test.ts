@@ -1,4 +1,5 @@
 import { expect, mock, test } from "bun:test";
+import { dispatchWritingBox } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { http } from "msw";
@@ -346,6 +347,17 @@ test("a criterion out holds the box's other targets", () => {
   } finally {
     box.unmount();
   }
+});
+
+// Decision 158: the criterion line's hint says where its words go, in words of its own, written
+// out here rather than read from the list the line reads them from, and never the document
+// editor's "A comment on the document", since the page draws no document there.
+test("the criterion line's hint says it writes under what it answers", () => {
+  const hint = dispatchWritingBox("issue-page-composer", "criterion").hint;
+  expect(hint).toBe(
+    "Type @ for an agent, a role or a person, # for an issue, [[ for anything else. A picked agent or role gets a link, and a picked person shows as a name without one. Nobody you pick is told. The criterion goes under the comment, question or message it answers. A reply there tells a picked agent or role."
+  );
+  expect(hint).not.toBe(dispatchWritingBox("document-body", "document-text").hint);
 });
 
 test("the act needs view_of null and a tree", () => {
