@@ -60,6 +60,7 @@ import {
   startEnvoyStack,
   useEnvoyStackDirectory,
 } from "@legion/envoy-client/test/envoy-stack";
+import { keyedLayer } from "@legion/envoy-client/test/keyed-layer";
 import { leastAnswerFor, routeAnswer } from "@legion/envoy-client/test/route-answers";
 import { startStallProxy } from "@legion/envoy-client/test/stall-proxy";
 import { runFreezeScenario } from "@legion/envoy-client/test/stall-scenario";
@@ -153,13 +154,18 @@ function relayCarries(subject: string): boolean {
 
 /**
  * Records every registration whatever `fetch` a row installs, so the followed topics are known
- * centrally. A row's own fetch is kept behind this one; reading `globalThis.fetch` answers this
- * wrapper, so a row that wraps the fetch it found takes it from `rowFetch()`, never from
- * `globalThis.fetch`, which would call the row's own wrapper forever.
+ * centrally, and puts the row's fetch behind Dispatch's keyed layer (`keyedLayer`): each 2xx it
+ * gives a Dispatch write names the write's key back, as Dispatch's own answers do. A row's own
+ * fetch is kept behind this one; reading `globalThis.fetch` answers this wrapper, so a row that
+ * wraps the fetch it found takes it from `rowFetch()`, never from `globalThis.fetch`, which would
+ * call the row's own wrapper forever.
  */
 let installedFetch: typeof globalThis.fetch = globalThis.fetch;
 /** The real fetch, as this file found it: what a row restores and what the live stack uses. */
 const nativeFetch: typeof globalThis.fetch = installedFetch;
+const keyedFetch = keyedLayer((input: string | URL | Request, init?: RequestInit) =>
+  installedFetch(input, init)
+);
 const recordingFetch: typeof globalThis.fetch = async (input, init) => {
   try {
     if (new URL(input.toString()).pathname === "/v1/interests/subscribe") {
@@ -172,7 +178,7 @@ const recordingFetch: typeof globalThis.fetch = async (input, init) => {
   } catch {
     // A request that is not a registration, or a body that is not JSON, teaches nothing.
   }
-  return installedFetch(input, init);
+  return keyedFetch(input, init);
 };
 /** The fetch a row installed, for a row that answers some requests itself and hands on the rest. */
 const rowFetch = (): typeof globalThis.fetch => installedFetch;
@@ -1063,17 +1069,14 @@ const acceptOnce =
       ? { accepted: true, ...(body !== undefined && { body }) }
       : { code: "ACCEPT_ALREADY_ACCEPTED", status: 409 };
 
-/** The accept route's response for `answer` to an accept of `attempt`, carrying back the request's
- *  key as Dispatch's keyed layer does (`key`), which is what lets the client ask again under it. */
+/** The accept route's response for `answer` to an accept of `attempt`. */
 function acceptResponse(
   attempt: number,
   answer: AcceptAnswer,
-  messageID = DIRECT_MESSAGE_ID,
-  key: string | null = null
+  messageID = DIRECT_MESSAGE_ID
 ): Response {
   if ("reject" in answer) throw new TypeError(answer.reject);
   const headers: Record<string, string> = { "content-type": "application/json" };
-  if (key !== null) headers["Idempotency-Key"] = key;
   if (!("accepted" in answer)) {
     return new Response(JSON.stringify({ code: answer.code, error: "refused" }), {
       headers,
@@ -1176,12 +1179,18 @@ async function bootDirectSession(
           body: JSON.parse(init?.body?.toString() ?? "null"),
           path: url.pathname,
         });
-        return acceptResponse(
-          Number(url.pathname.split("/").at(-2)),
-          await (options.accept ?? acceptOnce())(accepts.length),
-          url.pathname.split("/").at(-4),
-          new Headers(init?.headers).get("Idempotency-Key")
-        );
+        const answer = await (options.accept ?? acceptOnce())(accepts.length);
+        // The keyed layer judged each accept, its refusals too, so each names the request's key
+        // back, which is what lets the client ask again under it.
+        return keyedLayer(
+          (_input: string | URL | Request, _init?: RequestInit) =>
+            acceptResponse(
+              Number(url.pathname.split("/").at(-2)),
+              answer,
+              url.pathname.split("/").at(-4)
+            ),
+          { judged: () => true }
+        )(input, init);
       }
       // The session asks Dispatch nothing else about a direct message but its reply and, where
       // the event carried the body in part, the read of the message whole: a row that expects
@@ -1686,8 +1695,9 @@ function sessionRoleLines(): { readonly lines: string[]; readonly stop: () => vo
 /**
  * The listener's answer to a registration, a keyed write's answer to a Dispatch write, and
  * `fallback` to anything else. A Dispatch write (a POST or PATCH under `/api/v1/`) these tests do
- * not answer themselves gets its route's least answer, with the request's `Idempotency-Key` named
- * back as Dispatch's keyed layer names it, so the session's client reads it as Dispatch's answer.
+ * not answer themselves gets its route's least answer, which the keyed layer every row's fetch
+ * passes (`recordingFetch`) names the request's key back on, so the session's client reads it as
+ * Dispatch's answer.
  */
 function responseWithRegistration(
   input: string | URL | Request,
@@ -1702,10 +1712,7 @@ function responseWithRegistration(
       : undefined;
   if (written !== undefined) {
     return new Response(JSON.stringify(written.body), {
-      headers: {
-        "Content-Type": "application/json",
-        "Idempotency-Key": request.headers.get("Idempotency-Key") ?? "",
-      },
+      headers: { "Content-Type": "application/json" },
       status: written.status,
     });
   }
@@ -5949,8 +5956,9 @@ console.log(JSON.stringify(args));
           readText: (path) => readFileSync(path, "utf8"),
           cwd: configDirectory,
           // The write's own answer, its route's row with its key named back, as Dispatch's.
-          fetchImpl: (async (input: string | URL | Request, init?: RequestInit) =>
-            responseWithRegistration(input, init, {})) as typeof fetch,
+          fetchImpl: keyedLayer((input: string | URL | Request, init?: RequestInit) =>
+            responseWithRegistration(input, init, {})
+          ) as typeof fetch,
         }
       );
       await fixture.handlers.get("tool_result")?.(
@@ -6122,8 +6130,9 @@ console.log(JSON.stringify(args));
           readText: (path) => readFileSync(path, "utf8"),
           cwd: configDirectory,
           // The write's own answer, its route's row with its key named back, as Dispatch's.
-          fetchImpl: (async (input: string | URL | Request, init?: RequestInit) =>
-            responseWithRegistration(input, init, {})) as typeof fetch,
+          fetchImpl: keyedLayer((input: string | URL | Request, init?: RequestInit) =>
+            responseWithRegistration(input, init, {})
+          ) as typeof fetch,
         }
       );
       const readLedger = () =>

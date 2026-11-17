@@ -20,6 +20,7 @@ import {
 } from "@legion/contracts";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import type { Socket } from "bun";
+import { keyedLayer } from "../../test/keyed-layer";
 import { routeAnswer } from "../../test/route-answers";
 import { forgetBrokerClients } from "../broker-credential";
 import {
@@ -371,9 +372,10 @@ const handoffs: {
   body: string;
 }[] = [];
 
+// Behind Dispatch's keyed layer: each 2xx to a write names the write's key back.
 const server = Bun.serve({
   port: 0,
-  async fetch(request) {
+  fetch: keyedLayer(async (request: Request) => {
     const { pathname, search, searchParams } = new URL(request.url);
     // An upload is multipart where it carries a file and JSON where it carries inline content,
     // as the route takes both: a file's part is recorded as the text it carried, since the
@@ -618,7 +620,7 @@ const server = Bun.serve({
       return Response.json(routeAnswer("GET /api/v1/search", {}, 200));
     }
     return Response.json({ error: `unexpected ${request.method} ${pathname}` }, { status: 500 });
-  },
+  }),
 });
 
 afterAll(() => server.stop(true));
@@ -681,9 +683,10 @@ function nextProcess(sessionId: string): void {
 }
 
 /**
- * The test server behind Dispatch's keyed layer: every answer to a write carries its
- * `Idempotency-Key` back, the first `failing` message posts fail in transport before they reach it,
- * and `/healthz` never answers within its bound, as under the load that stalls a write.
+ * The test server behind Dispatch's keyed layer, which judged every answer to a write and names
+ * its `Idempotency-Key` back on each: the first `failing` message posts fail in transport before
+ * they reach it, and `/healthz` never answers within its bound, as under the load that stalls a
+ * write.
  */
 function keyedDispatch(failing: number): {
   readonly fetchImpl: typeof fetch;
@@ -693,24 +696,22 @@ function keyedDispatch(failing: number): {
   const keys: string[] = [];
   const probes: string[] = [];
   let left = failing;
-  const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
-    const request = new Request(input, init);
-    const { pathname } = new URL(request.url);
-    if (pathname === "/healthz") {
-      probes.push(pathname);
-      throw new DOMException("The operation timed out.", "TimeoutError");
-    }
-    const key = request.headers.get(IDEMPOTENCY_KEY_HEADER);
-    if (request.method === "POST" && pathname === "/api/v1/issues/DSP-1/messages") {
-      keys.push(key ?? "");
-      if (left-- > 0) throw new TypeError("fetch failed");
-    }
-    const answer = await fetch(request);
-    if (key === null) return answer;
-    const headers = new Headers(answer.headers);
-    headers.set(IDEMPOTENCY_KEY_HEADER, key);
-    return new Response(answer.body, { status: answer.status, headers });
-  }) as typeof fetch;
+  const fetchImpl = keyedLayer(
+    async (input: string | URL | Request, init?: RequestInit) => {
+      const request = new Request(input, init);
+      const { pathname } = new URL(request.url);
+      if (pathname === "/healthz") {
+        probes.push(pathname);
+        throw new DOMException("The operation timed out.", "TimeoutError");
+      }
+      if (request.method === "POST" && pathname === "/api/v1/issues/DSP-1/messages") {
+        keys.push(request.headers.get(IDEMPOTENCY_KEY_HEADER) ?? "");
+        if (left-- > 0) throw new TypeError("fetch failed");
+      }
+      return fetch(request);
+    },
+    { judged: () => true }
+  ) as typeof fetch;
   return { fetchImpl, keys, probes };
 }
 
@@ -1912,18 +1913,14 @@ describe("dispatch result --project, as a CI job writes it", () => {
    *  request with a 503. */
   let runnerHold: Promise<boolean> = Promise.resolve(true);
   let dispatchAnswer: () => Response | Promise<Response>;
-  /** The `Idempotency-Key` of the request the stand-in Dispatch answers now, "" for none. */
-  let answeringKey = "";
+  /** Whether the stand-in Dispatch answers the write now as no keyed layer does: naming no key. */
+  let unkeyed = false;
   /** The result Dispatch stores for the job's write, as the route answers it. */
   const result = storedSpecResult(43, "pass", "", 1);
   const stored = routeAnswer<typeof result>("POST /api/v1/projects/{key}/results", result, 201);
-  /** The answer of `answeringKey`'s write in Dispatch's own form: the keyed layer names that key
-   *  back on every answer it gives a keyed write, as on `body`, the stored result by default. */
-  const storedAnswer = (body: unknown = stored) =>
-    Response.json(body, {
-      status: 201,
-      headers: answeringKey === "" ? {} : { [IDEMPOTENCY_KEY_HEADER]: answeringKey },
-    });
+  /** The answer of the write in Dispatch's own form, `body`, the stored result by default: the
+   *  keyed layer the stand-in Dispatch answers behind names the write's key back on it. */
+  const storedAnswer = (body: unknown = stored) => Response.json(body, { status: 201 });
 
   const runner = Bun.serve({
     port: 0,
@@ -1950,22 +1947,26 @@ describe("dispatch result --project, as a CI job writes it", () => {
       return brokerAnswer();
     },
   });
+  // Behind Dispatch's keyed layer, which names the write's key back on each 2xx and each 409 (its
+  // KEY_COMMITTED, and a handler's refusal), unless the row says it answers as none does.
   const dispatch = Bun.serve({
     port: 0,
     hostname: "127.0.0.1",
-    fetch: async (request) => {
-      const text = await request.text();
-      answeringKey = request.headers.get("Idempotency-Key") ?? "";
-      written.push({
-        method: request.method,
-        path: new URL(request.url).pathname,
-        authorization: request.headers.get("Authorization"),
-        dpop: request.headers.get("DPoP"),
-        body: text === "" ? undefined : JSON.parse(text),
-      });
-      asked();
-      return dispatchAnswer();
-    },
+    fetch: keyedLayer(
+      async (request: Request) => {
+        const text = await request.text();
+        written.push({
+          method: request.method,
+          path: new URL(request.url).pathname,
+          authorization: request.headers.get("Authorization"),
+          dpop: request.headers.get("DPoP"),
+          body: text === "" ? undefined : JSON.parse(text),
+        });
+        asked();
+        return dispatchAnswer();
+      },
+      { judged: (response) => response.ok || response.status === 409, noKeyedLayer: () => unkeyed }
+    ),
   });
   afterAll(() => {
     for (const stub of [runner, broker, dispatch]) stub.stop(true);
@@ -1990,6 +1991,7 @@ describe("dispatch result --project, as a CI job writes it", () => {
         ])
       );
     dispatchAnswer = () => storedAnswer();
+    unkeyed = false;
   });
 
   const dispatchUrl = `http://127.0.0.1:${dispatch.port}`;
@@ -2281,12 +2283,12 @@ describe("dispatch result --project, as a CI job writes it", () => {
     sentNothing();
   });
 
-  /** Dispatch's `409 KEY_COMMITTED` to the write it answers now, naming its key back as the keyed
-   *  layer does on every answer it gives a keyed write, unless `named` says otherwise. */
-  const keyCommitted = (named = answeringKey) =>
+  /** Dispatch's `409 KEY_COMMITTED` to the write it answers now, which its keyed layer names the
+   *  write's key back on, or the key `other` names where a test gives another request's. */
+  const keyCommitted = (other?: string) =>
     Response.json(
       { code: "KEY_COMMITTED", error: "the write landed and its answer was lost" },
-      { status: 409, headers: named === "" ? {} : { "Idempotency-Key": named } }
+      { status: 409, headers: other === undefined ? {} : { "Idempotency-Key": other } }
     );
 
   // A write whose answer was lost after Dispatch stored it (409 KEY_COMMITTED) is done, and the
@@ -2311,7 +2313,9 @@ describe("dispatch result --project, as a CI job writes it", () => {
   test("a 409 KEY_COMMITTED that does not name the write's key back prints write_outcome_unknown and exits 1", async () => {
     for (const named of ["", "another-request-key"]) {
       written.length = 0;
-      dispatchAnswer = () => keyCommitted(named);
+      // One names no key back, as no keyed layer answers; the other names another request's.
+      unkeyed = named === "";
+      dispatchAnswer = () => keyCommitted(named === "" ? undefined : named);
       const { code, stdout, stderr } = await runJob(record, jobEnvironment());
       expect({ code, stdout, stderr }, named).toEqual({
         code: 1,
@@ -4092,16 +4096,16 @@ describe("the dispatch CLI's subscription note", () => {
   // keyed layer does) is done: the call succeeds, and its one line says the write was made and to
   // read it back, since there is nothing to print.
   test("a write answered KEY_COMMITTED exits 0 with one line saying to read it back", async () => {
-    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
-      if (String(input).endsWith("/api/v1/issues/DSP-1/messages")) {
-        const key = new Headers(init?.headers).get("Idempotency-Key") ?? "";
-        return Response.json(
-          { code: "KEY_COMMITTED", error: "the write landed and its answer was lost" },
-          { status: 409, headers: { "Idempotency-Key": key } }
-        );
-      }
-      return fetch(input, init);
-    }) as typeof fetch;
+    const fetchImpl = keyedLayer(
+      async (input: RequestInfo | URL, init?: RequestInit) =>
+        String(input).endsWith("/api/v1/issues/DSP-1/messages")
+          ? Response.json(
+              { code: "KEY_COMMITTED", error: "the write landed and its answer was lost" },
+              { status: 409 }
+            )
+          : fetch(input, init),
+      { judged: (response) => response.ok || response.status === 409 }
+    ) as typeof fetch;
     let stdout = "";
     const code = await runDispatchCli(
       ["message", "--issue", "DSP-1", "--body", "hello"],
@@ -4138,8 +4142,9 @@ describe("the dispatch CLI's subscription note", () => {
         href: "/issues/DSP-9",
       },
     ];
+    // Behind Dispatch's keyed layer: the create's 201 names the write's key back.
     const creating = (refuse: boolean) =>
-      (async (input: RequestInfo | URL, init?: RequestInit) => {
+      keyedLayer(async (input: RequestInfo | URL, init?: RequestInit) => {
         const { pathname } = new URL(String(input));
         if (pathname === "/api/v1/projects/DSP/architecture-sources") {
           return Response.json({ sources: [] });

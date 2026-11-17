@@ -2,6 +2,7 @@ import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import type { IssueAdvance, Priorities } from "@legion/contracts";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
+import { keyedLayer } from "../../test/keyed-layer";
 import { runDispatchCli } from "../dispatch-cli";
 import { commandFlags, fieldFlag } from "../dispatch-command";
 import { resetAdviceMemory } from "../dispatch-execute";
@@ -163,9 +164,10 @@ function issueBody() {
   };
 }
 
+// Behind Dispatch's keyed layer: each 2xx to a write names the write's key back.
 const server = Bun.serve({
   port: 0,
-  async fetch(request) {
+  fetch: keyedLayer(async (request: Request) => {
     const { pathname, search, searchParams } = new URL(request.url);
     const text = await request.text();
     const body = text === "" ? undefined : JSON.parse(text);
@@ -201,7 +203,7 @@ const server = Bun.serve({
       return Response.json({ node: { kind: "issue", id: "DSP-1" }, edges: [], members: [] });
     }
     return Response.json({ error: `unexpected ${request.method} ${pathname}` }, { status: 500 });
-  },
+  }),
 });
 
 afterAll(() => server.stop(true));

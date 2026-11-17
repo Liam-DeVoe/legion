@@ -1,7 +1,8 @@
-import { expect, test } from "bun:test"
+import { expect, spyOn, test } from "bun:test"
 import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { dirname, join, resolve } from "node:path"
 import { sessionConfigFile } from "@legion/envoy-client/session-settings"
+import { keyedLayer } from "@legion/envoy-client/test/keyed-layer"
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer"
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories"
 import type { Server, Subprocess } from "bun"
@@ -551,24 +552,28 @@ const rejectedCommentFrameRaw = JSON.stringify({
   trace_id: "dispatch-malformed-comment",
 })
 
+// The reply is Dispatch's own answer, which names the call's key back, so the channel reports it
+// as made: it writes no line saying it could not report the rejected delivery.
 test("answers a rejected targeted frame on Dispatch instead of notifying the model", async () => {
   let server: Server<undefined> | undefined
+  const stderr = spyOn(process.stderr, "write")
   try {
     const replies: Array<{
       readonly path: string
       readonly auth: string | null
       readonly body: unknown
     }> = []
+    // Behind Dispatch's keyed layer: each 2xx to a write names the write's key back.
     server = Bun.serve({
       port: 0,
-      fetch: async (request) => {
+      fetch: keyedLayer(async (request: Request) => {
         replies.push({
           path: new URL(request.url).pathname,
           auth: request.headers.get("authorization"),
           body: await request.json(),
         })
         return Response.json({})
-      },
+      }),
     })
     process.env["DISPATCH_URL"] = `http://127.0.0.1:${server.port}`
     process.env["DISPATCH_TOKEN"] = "reply-token"
@@ -582,6 +587,8 @@ test("answers a rejected targeted frame on Dispatch instead of notifying the mod
     // Not handed to Claude Code, so the forwarder releases its claim: Dispatch records the attempt
     // failed, and a same-mode Retry is answered again rather than dropped as a repeat.
     expect(await delivery.enqueue({ subject: directSubject, raw: rejectedFrameRaw })).toBe(false)
+    const lines = stderr.mock.calls.map(([chunk]) => String(chunk))
+    expect(lines.filter((line) => line.includes("could not report"))).toEqual([])
 
     expect(notifier.notifications).toEqual([])
     expect(replies).toEqual([
@@ -596,6 +603,7 @@ test("answers a rejected targeted frame on Dispatch instead of notifying the mod
       },
     ])
   } finally {
+    stderr.mockRestore()
     server?.stop(true)
   }
 })
@@ -617,12 +625,12 @@ test("a Dispatch frame the channel answered with an error is answered again when
     const controlAnswered = Promise.withResolvers<void>()
     server = Bun.serve({
       port: 0,
-      fetch: (request) => {
+      fetch: keyedLayer((request: Request) => {
         const path = new URL(request.url).pathname
         replied.push(path)
         if (path.includes("55555555")) controlAnswered.resolve()
         return Response.json({})
-      },
+      }),
     })
     process.env["DISPATCH_URL"] = `http://127.0.0.1:${server.port}`
     process.env["DISPATCH_TOKEN"] = "reply-token"
@@ -671,14 +679,14 @@ test("answers a malformed targeted comment through its supplied comment reply ad
     }> = []
     server = Bun.serve({
       port: 0,
-      fetch: async (request) => {
+      fetch: keyedLayer(async (request: Request) => {
         replies.push({
           path: new URL(request.url).pathname,
           auth: request.headers.get("authorization"),
           body: await request.json(),
         })
         return Response.json({})
-      },
+      }),
     })
     process.env["DISPATCH_URL"] = `http://127.0.0.1:${server.port}`
     process.env["DISPATCH_TOKEN"] = "reply-token"

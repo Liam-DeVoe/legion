@@ -7,7 +7,8 @@ import {
   type Sleep,
   sleep,
 } from "@legion/contracts";
-import { keyedLayer, routeAnswer } from "../../test/route-answers";
+import { type KeyedLayerOptions, keyedLayer } from "../../test/keyed-layer";
+import { routeAnswer } from "../../test/route-answers";
 import { bearerCredential, type RequestCredential } from "../bearer";
 import {
   DISPATCH_WRITE_RETRY,
@@ -32,8 +33,9 @@ function jsonResponse(body: unknown, status = 200): Response {
 }
 
 /** A stand-in of Dispatch that gives `responses` in order, behind Dispatch's keyed layer: each 2xx
- *  it gives a write names the write's key back (`keyedLayer`), as Dispatch's own answers do. */
-function fakeFetch(responses: readonly Response[]) {
+ *  it gives a write, and each answer `layer` says the layer judged, names the write's key back
+ *  (`keyedLayer`), as Dispatch's own answers do. */
+function fakeFetch(responses: readonly Response[], layer: KeyedLayerOptions = {}) {
   const requests: RecordedRequest[] = [];
   const fetchImpl = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     requests.push({ url: String(input), init: init ?? {} });
@@ -41,7 +43,7 @@ function fakeFetch(responses: readonly Response[]) {
     if (!response) throw new Error("unexpected request");
     return response;
   };
-  return { fetchImpl: keyedLayer(fetchImpl) as typeof fetch, requests };
+  return { fetchImpl: keyedLayer(fetchImpl, layer) as typeof fetch, requests };
 }
 
 function requestBody(request: RecordedRequest): unknown {
@@ -930,30 +932,28 @@ describe("DispatchClient", () => {
     const user = "user-7f2a";
     const secret = "pw-4c7e19";
     const configured = `https://${user}:${secret}@host.example`;
-    const { fetchImpl: answers, requests } = fakeFetch([
-      new Response("<html><body><h1>502 Bad Gateway</h1></body></html>", {
-        status: 502,
-        statusText: "Bad Gateway",
-        headers: { "Content-Type": "text/html" },
-      }),
-      jsonResponse([]),
-      jsonResponse({ issues: [], total: 0, limit: 2, offset: 0 }),
-      jsonResponse({ code: "KEY_COMMITTED", error: "the write was made" }, 409),
-      jsonResponse(
-        { code: "NOT_FOUND", error: "no route for POST /api/v1/artifacts/a-1/versions/2/reviews" },
-        404
-      ),
-    ]);
     // Dispatch's keyed layer names the write's key back on its KEY_COMMITTED, as on every answer
     // it gives a keyed write, and a landing needs it.
-    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
-      const answer = await answers(input, init);
-      const key = new Headers(init?.headers).get("Idempotency-Key");
-      if (answer.status !== 409 || key === null) return answer;
-      const echoed = new Response(answer.body, answer);
-      echoed.headers.set("Idempotency-Key", key);
-      return echoed;
-    }) as typeof fetch;
+    const { fetchImpl, requests } = fakeFetch(
+      [
+        new Response("<html><body><h1>502 Bad Gateway</h1></body></html>", {
+          status: 502,
+          statusText: "Bad Gateway",
+          headers: { "Content-Type": "text/html" },
+        }),
+        jsonResponse([]),
+        jsonResponse({ issues: [], total: 0, limit: 2, offset: 0 }),
+        jsonResponse({ code: "KEY_COMMITTED", error: "the write was made" }, 409),
+        jsonResponse(
+          {
+            code: "NOT_FOUND",
+            error: "no route for POST /api/v1/artifacts/a-1/versions/2/reviews",
+          },
+          404
+        ),
+      ],
+      { judged: (response) => response.ok || response.status === 409 }
+    );
     const client = new DispatchClient(configured, bearerCredential("bearer-1"), fetchImpl, {
       writeRetry: { ...DISPATCH_WRITE_RETRY, pausesMs: [], withinMs: 0 },
       retryNoRoute: false,

@@ -11,6 +11,7 @@ import {
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
+import { keyedLayer } from "../../test/keyed-layer";
 import { keepStore, MARKER_MAX_AGE_MS, mintMarker, setRecordMode } from "../askgate-marker";
 import { cliRefusals, runDispatchCli } from "../dispatch-cli";
 import { resetAdviceMemory } from "../dispatch-execute";
@@ -33,9 +34,10 @@ interface Recorded {
 }
 
 const posts: Recorded[] = [];
+// Behind Dispatch's keyed layer: each 2xx to a write names the write's key back.
 const server = Bun.serve({
   port: 0,
-  async fetch(request) {
+  fetch: keyedLayer(async (request: Request) => {
     const { pathname } = new URL(request.url);
     const ledgerFile = join(stateDir, "sessions", "ses-1", "results.jsonl");
     const ledgerText = existsSync(ledgerFile) ? readFileSync(ledgerFile, "utf-8") : "";
@@ -70,7 +72,7 @@ const server = Bun.serve({
     }
     record();
     return Response.json({ error: `unexpected ${request.method} ${pathname}` }, { status: 500 });
-  },
+  }),
 });
 afterAll(() => server.stop(true));
 
@@ -540,10 +542,13 @@ describe("AskGate at the dispatch CLI", () => {
     expect(messagePosts()).toHaveLength(0);
   });
 
+  // The post is Dispatch's own answer, which names the call's key back: the command prints the
+  // message Dispatch stored.
   test("with no record the write posts and nothing is required", async () => {
-    const { code } = await run(MESSAGE);
+    const { code, stdout } = await run(MESSAGE);
     expect(code).toBe(0);
     expect(messagePosts()).toHaveLength(1);
+    expect(stdout).toContain("message-1");
   });
 
   test("a record of a dead process, of a reused pid, of another session or of another host is inert", async () => {

@@ -4,6 +4,7 @@ import { truncateSync, writeFileSync } from "node:fs";
 import * as path from "node:path";
 import { DISPATCH_BLOCK_UNITS, DISPATCH_EVENT_BODY_MAX } from "@legion/contracts/dispatch-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { keyedLayer } from "../../test/keyed-layer";
 import { routeAnswer } from "../../test/route-answers";
 import { bearerCredential } from "../bearer";
 import { type DispatchToolResult, executeDispatchTool } from "../dispatch-execute";
@@ -74,8 +75,9 @@ interface Upload {
 }
 
 /**
- * A Dispatch that records every request. An upload answers the slug the server gives `name` and the
- * next version of it; a write answers its own body back; anything `routes` does not answer fails.
+ * A Dispatch that records every request, behind its keyed layer (each 2xx to a write names the
+ * write's key back). An upload answers the slug the server gives `name` and the next version of
+ * it; a write answers its own body back; anything `routes` does not answer fails.
  */
 function dispatch(
   routes: (pathname: string, init: RequestInit) => Response | undefined = () => undefined
@@ -118,7 +120,7 @@ function dispatch(
     }
     throw new Error(`unexpected request: ${method} ${target.pathname}`);
   };
-  return { requests, uploads, posted, fetchImpl: fetchImpl as typeof fetch };
+  return { requests, uploads, posted, fetchImpl: keyedLayer(fetchImpl) as typeof fetch };
 }
 
 /** The call as the host session `sessionId` makes it: the session reads and posts as itself. */

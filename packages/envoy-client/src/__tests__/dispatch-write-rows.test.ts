@@ -21,6 +21,7 @@ import {
   IDEMPOTENCY_KEY_HEADER,
 } from "@legion/contracts";
 import { z } from "zod";
+import { keyedLayer } from "../../test/keyed-layer";
 import {
   answerErrors,
   answersOf,
@@ -322,9 +323,11 @@ async function sentBy(request: Request): Promise<SentWrite> {
 }
 
 /** A Dispatch that answers the case's route with `status` and `body` under `type` (or the body
- *  `body` makes of what the request sent), naming back the key `echo` says (and its fallback's
- *  first route with no route for it), with the headers `extra` adds, recording each request it
- *  was sent. */
+ *  `body` makes of what the request sent), behind a keyed layer that names back the key `echo`
+ *  says (`keyedLayer`: the call's own on every answer it gives the route, none, or another
+ *  request's, which the stand-in names itself), with the headers `extra` adds, recording each
+ *  request it was sent. Its fallback's first route has no route for it: the router answers that,
+ *  before the layer. */
 function dispatchAnswering(
   row: WriteRowCase,
   status: number,
@@ -334,6 +337,18 @@ function dispatchAnswering(
   extra: Readonly<Record<string, string>> = {}
 ) {
   const sent: string[] = [];
+  const routed = keyedLayer(
+    async (request: Request) => {
+      const headers: Record<string, string> = { "Content-Type": type, ...extra };
+      if (echo === "other") {
+        headers[IDEMPOTENCY_KEY_HEADER] =
+          `${request.headers.get(IDEMPOTENCY_KEY_HEADER) ?? ""}-another`;
+      }
+      const text = typeof body === "string" ? body : body(await sentBy(request));
+      return new Response(text, { status, headers });
+    },
+    echo === "none" ? { noKeyedLayer: true } : { judged: () => true }
+  );
   const fetchImpl = (async (input: Request | string | URL, init?: RequestInit) => {
     const request = new Request(input, init);
     const path = new URL(request.url).pathname;
@@ -345,12 +360,7 @@ function dispatchAnswering(
         { status: 404 }
       );
     }
-    const headers: Record<string, string> = { "Content-Type": type, ...extra };
-    const key = request.headers.get(IDEMPOTENCY_KEY_HEADER) ?? "";
-    if (echo === "this") headers[IDEMPOTENCY_KEY_HEADER] = key;
-    if (echo === "other") headers[IDEMPOTENCY_KEY_HEADER] = `${key}-another`;
-    const text = typeof body === "string" ? body : body(await sentBy(request));
-    return new Response(text, { status, headers });
+    return routed(request);
   }) as typeof fetch;
   const client = new DispatchClient("http://dispatch.test", bearerCredential("secret"), fetchImpl, {
     sleep: async () => undefined,

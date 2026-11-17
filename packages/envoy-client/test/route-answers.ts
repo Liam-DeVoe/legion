@@ -5,11 +5,8 @@
 // `routeAnswer` is the answer a test's fake Dispatch serves for a keyed write: its route's least
 // answer with the members the test names, held to the route's schema, so a stub answers what
 // Dispatch can answer and fails the test that serves it on the commit that changes the route's
-// answer. `keyedLayer` puts a stub behind Dispatch's keyed layer, so each 2xx it gives a keyed
-// write names that write's key back. The other packages' tests take both as
-// `@legion/envoy-client/test/route-answers`.
+// answer. The other packages' tests take it as `@legion/envoy-client/test/route-answers`.
 import { readFileSync } from "node:fs";
-import { IDEMPOTENCY_KEY_HEADER } from "@legion/contracts";
 import { Ajv2020 } from "ajv/dist/2020";
 
 export type Schema = { readonly [member: string]: unknown };
@@ -211,8 +208,8 @@ export function routeOf(method: string, path: string): string | undefined {
 /**
  * The status and the body a stand-in of Dispatch answers a keyed write of `method` to `path` with,
  * where it has no answer of its own for that write: the route's first declared 2xx and its least
- * answer (`routeAnswer`), so the write reads its row as it reads Dispatch's. Undefined where the
- * document holds no such route.
+ * answer (`instance`, an object or a list as the route declares), so the write reads its row as it
+ * reads Dispatch's. Undefined where the document holds no such route.
  */
 export function leastAnswerFor(
   method: string,
@@ -222,7 +219,7 @@ export function leastAnswerFor(
   if (route === undefined) return undefined;
   const first = answersOf(route)[0];
   if (first === undefined) return undefined;
-  return { status: first.status, body: routeAnswer(route, {}, first.status) };
+  return { status: first.status, body: instance(first.schema, "least") };
 }
 
 /** Each way `body` is not an answer `route` declares for `status`, as Ajv words it; none for an
@@ -391,39 +388,4 @@ export function routeAnswer<T = Record<string, unknown>>(
     );
   }
   return answer as T;
-}
-
-/**
- * `answer`, a stand-in of Dispatch (a client's `fetch`, or a server's request handler), behind
- * Dispatch's keyed layer (`keyedWrites`, `packages/envoy/internal/dispatch/api/request_keys.go`):
- * each 2xx it gives a request that carries an `Idempotency-Key` names that key back, as
- * `TestEveryKeyedAnswerNamesItsKey` holds every Dispatch answer to a keyed write to, unless the
- * stand-in named a key itself. A stand-in that names no key back is the build before the keyed
- * layer, whose answer the client takes only where it holds what the call sent
- * (`DispatchClient.#writtenRow`), so a test of the client's reading of Dispatch's own answer
- * serves through this. Every other answer is as the stand-in gave it: the router's no-route
- * answer and the check of the token come before the keyed layer and name no key.
- */
-export function keyedLayer<Args extends [RequestInfo | URL, ...unknown[]]>(
-  answer: (...args: Args) => Response | Promise<Response>
-): (...args: Args) => Promise<Response> {
-  return async (...args) => {
-    const [input, init] = args;
-    const sent =
-      input instanceof Request
-        ? input.headers
-        : new Headers((init as RequestInit | undefined)?.headers);
-    const key = sent.get(IDEMPOTENCY_KEY_HEADER) ?? "";
-    const response = await answer(...args);
-    if (key === "" || !response.ok || response.headers.has(IDEMPOTENCY_KEY_HEADER)) {
-      return response;
-    }
-    const headers = new Headers(response.headers);
-    headers.set(IDEMPOTENCY_KEY_HEADER, key);
-    return new Response(response.body, {
-      status: response.status,
-      statusText: response.statusText,
-      headers,
-    });
-  };
 }

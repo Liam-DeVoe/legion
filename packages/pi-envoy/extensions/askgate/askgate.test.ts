@@ -21,6 +21,7 @@ import { bearerCredential } from "@legion/envoy-client/bearer";
 import { runDispatchCli } from "@legion/envoy-client/dispatch-cli";
 import { DispatchClient, DispatchServiceError } from "@legion/envoy-client/dispatch-http";
 import { sessionDirectory } from "@legion/envoy-client/dispatch-session-directory";
+import { keyedLayer } from "@legion/envoy-client/test/keyed-layer";
 import {
   temporaryDirectories,
   temporaryDirectory,
@@ -5950,7 +5951,8 @@ describe("a marker the gate mints, checked by the real dispatch CLI", () => {
       "block"
     );
     const sent: Array<{ path: string; body: unknown }> = [];
-    const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+    // Behind Dispatch's keyed layer: each 2xx to a write names the write's key back.
+    const fetchImpl = keyedLayer(async (url: string | URL | Request, init?: RequestInit) => {
       const request =
         url instanceof Request ? new Request(url, init) : new Request(url.toString(), init);
       const route = new URL(request.url).pathname;
@@ -6016,6 +6018,8 @@ describe("a marker the gate mints, checked by the real dispatch CLI", () => {
     expect(g.dryRuns[0]?.script).toBe(`${command} --dry-run`);
   }, 30_000);
 
+  // The comment is Dispatch's own answer, which names the call's key back: the command prints the
+  // comment Dispatch stored.
   test("a reviewed --body-file posts the text the model reviewed, once", async () => {
     fs.writeFileSync(path.join(work, "note.md"), NOTE);
     const command = "dispatch comment --issue DSP-1 --body-file note.md";
@@ -6026,6 +6030,7 @@ describe("a marker the gate mints, checked by the real dispatch CLI", () => {
     expect(posted.sent).toMatchObject([
       { path: "/api/v1/issues/DSP-1/comments", body: { body: NOTE } },
     ]);
+    expect(posted.stdout).toContain("comment-1");
   }, 30_000);
 
   for (const [form, file, command] of [
