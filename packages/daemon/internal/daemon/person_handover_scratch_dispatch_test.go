@@ -664,10 +664,24 @@ func (r *personHandoverRig) messages(key string) []string {
 }
 
 // notices is every notice of kind the daemon has queued on key, oldest first, still in its
-// outbox: nothing answers the Envoy address the notice runner publishes to, so none is finished.
+// outbox: nothing answers the Envoy address the notice runner publishes to, so none is finished
+// but a notice whose architect has ended, such as one keyed by a root that closed, which the
+// outbox finishes without delivery (internal/daemon's TestANoticeForAnEndedArchitectFinishesWithoutDelivery).
 func (r *personHandoverRig) notices(key, kind string) []record.Notice {
 	r.t.Helper()
 	return noticesOfKind(r.t, r.pool, key, record.NoticeKind(kind))
+}
+
+// processed says whether the store holds the processed mark of source's event id
+// (record.Store.MarkProcessed), which outlasts the row it was written beside.
+func (r *personHandoverRig) processed(source, id string) bool {
+	r.t.Helper()
+	var marked bool
+	if err := r.pool.QueryRow(r.t.Context(), `select exists (select 1 from processed_events where source = $1 and event_id = $2)`,
+		source, id).Scan(&marked); err != nil {
+		r.t.Fatalf("read the processed mark %s %s: %v", source, id, err)
+	}
+	return marked
 }
 
 // roleMessages is the body of every message the daemon has queued to a role of key, oldest

@@ -832,11 +832,19 @@ func (r *personHandoverRig) pendingEnded(run basisRun, ask, act string, told boo
 	if opened := r.notices(run.root.Key, "design-approved"); len(opened) != 0 {
 		t.Fatalf("%s holds design-approved notices %+v, want none: nothing opened its step", run.root.Key, opened)
 	}
+	// The told mark (queueRestingRoot's processed event) says whether the daemon queued the end for
+	// P's architect, whatever became of the row since. The row says what it told: it is read while it
+	// stands, and an act that takes P out of a live tree (P set done, its label taken off) lets the
+	// outbox finish every notice keyed by P without delivery, as it does for an architect that has
+	// ended, so the row of such an act may be gone by the time this reads it.
+	marked := r.processed("resting-root-told", fmt.Sprintf("%s:%d:%s:ended:%s", run.root.Key, r.record(run.root.Key).Generation, run.parent.Key, ask))
 	resting := r.notices(run.parent.Key, "resting-root")
-	if got := slices.ContainsFunc(resting, func(n record.Notice) bool {
+	named := slices.ContainsFunc(resting, func(n record.Notice) bool {
 		return strings.Contains(n.Reason, act) && strings.Contains(n.Reason, run.root.Key) && strings.Contains(n.Reason, waited)
-	}); got != told {
-		t.Fatalf("the resting-root notices keyed by %s = %+v; one naming the end %q is queued = %t, want %t", run.parent.Key, resting, act, got, told)
+	})
+	if marked != told || (told && !named && len(resting) != 0) {
+		t.Fatalf("the resting-root notices keyed by %s = %+v, told mark %t; one naming the end %q is queued = %t, want %t", run.parent.Key, resting, marked,
+			act, named, told)
 	}
 	if caught := r.catchUpNow(run.root.Key); caught.Pending || caught.Open || caught.Basis != nil || caught.Artifact != run.root.PrimaryArtifactID {
 		t.Fatalf("the catch-up of %s's architect states its spec step %+v (basis %+v), want it closed on its own document with no basis", run.root.Key, caught, caught.Basis)
