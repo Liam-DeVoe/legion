@@ -15,9 +15,11 @@ import (
 
 // TestTheLegionDayRowsOfTheStoredRowsAreTheComputationsOnBothSidesOfAMidnight is condition (c) of
 // R21's property: the Legion day rows built from the stored rows (ReadLegionDay, which closes each
-// row at its day's end) equal the day rows built from metrics.ProjectFacts computed at a clock
-// time a minute before and a minute after the first UTC midnight past the history's end, with no
-// input in between, for the day before that midnight and the day after it.
+// row at its day's end) equal the day rows built from the computation's facts read at a clock
+// time a minute before and a minute after the first UTC midnight past the history's end
+// (metrics.ProjectFactsClosed, grown to that clock time), with no input in between, for the day
+// before that midnight and the day after it. That the facts so grown are the computation run at
+// that clock time is metrics' own test (TestFactsClosedAtAnyMomentAreTheComputationAtThatMoment).
 //
 // A Legion day row counts an issue on the day it closes alone, so an open issue reaches no day
 // row: the open issues' facts grow across the midnight, and neither day's rows move with them.
@@ -54,7 +56,10 @@ func TestTheLegionDayRowsOfTheStoredRowsAreTheComputationsOnBothSidesOfAMidnight
 		if err != nil {
 			t.Fatalf("read the population at %s: %v", moment, err)
 		}
-		facts := metrics.ProjectFacts(population, nil)
+		facts := map[string]metrics.IssueFacts{}
+		for key, closed := range metrics.ProjectFactsClosed(population, nil) {
+			facts[key] = closed.Grown(closed.Growth, population.To.Sub(closed.AsOf))
+		}
 		open := 0
 		for _, fact := range facts {
 			if fact.ClosedAt == nil {
@@ -103,10 +108,8 @@ func TestTheLegionDayRowsOfTheStoredRowsAreTheComputationsOnBothSidesOfAMidnight
 	t.Logf("%d days compared on both sides of %s, %d counted issues among them", compared, midnight.UTC(), counted)
 }
 
-// factsRow is the computation's facts of one issue as the stored row holds them, column for column
-// (legionfacts.Row.SetFacts, which Row.Facts reads the other way).
+// factsRow is the computation's facts of one issue as the stored row holds them, which embeds
+// them (legionfacts.Row).
 func factsRow(project, key string, fact metrics.IssueFacts) legionfacts.Row {
-	row := legionfacts.Row{Project: project, Issue: key}
-	row.SetFacts(fact)
-	return row
+	return legionfacts.Row{Project: project, Issue: key, ClosedFacts: metrics.ClosedFacts{IssueFacts: fact}}
 }

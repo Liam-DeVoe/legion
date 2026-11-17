@@ -13,13 +13,14 @@ import (
 // growth is keyed by and the arithmetic that applies it.
 
 // Growth is how fast each of an issue's facts grows after the moment its facts are closed at, in
-// hours an hour, by the fact's name: its JSON name in IssueFacts, and for an entry of a map the
-// entry's key after a dot (`work_hours`, `phase_hours.implementing`, `bars.implementer.hours`,
-// `bars.implementer.segments.idle`, `idle_by_role.reviewer`). The two moments of measured work
-// are named `work_first_at` and `work_last_at`, and an entry of 1 for the last is a bar still
-// open, whose end runs with the clock. A fact that stands still has no entry, so the growth of a
-// closed issue is empty but for a slot it never gave up (SlotHours runs to the population's end,
-// not the issue's).
+// hours an hour, by the fact's name: its IssueFacts field's name in snake case, and for an entry
+// of a map the entry's key after a dot (`work_hours`, `phase_hours.implementing`,
+// `bars.implementer.hours`, `bars.implementer.segments.idle`, `idle_by_role.reviewer`), the
+// constants below, which the stored rows' growth column holds as its keys. The two moments of
+// measured work are named `work_first_at` and `work_last_at`, and an entry of 1 for the last is a
+// bar still open, whose end runs with the clock. A fact that stands still has no entry, so the
+// growth of a closed issue is empty but for a slot it never gave up (SlotHours runs to the
+// population's end, not the issue's).
 //
 // A rate is a whole number wherever the computation measured it: each hours fact is the measure
 // of a set of spans or a sum of such measures, and a span still open grows one hour an hour.

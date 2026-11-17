@@ -249,6 +249,71 @@ func ChangeAt(ctx context.Context, q Querier, seq int64) (*time.Time, error) {
 	return &at, nil
 }
 
+// ChangeCursor is where one reader of the change log stands: the seq of the last change it read
+// (0 before it read any), when the log recorded that change (its at, nil where the reader holds
+// none: a position no change held), and when the reader last read the log, by the reader's own
+// clock (ReadAt: the moment its last committed pass ran as of, or its last read of the log).
+type ChangeCursor struct {
+	Seq    int64
+	At     *time.Time
+	ReadAt time.Time
+}
+
+// CursorLost reports whether cursor may have passed over changes its reader never read, as of
+// now on the reader's own clock. It is the one rule every reader of the log judges its cursor by
+// (the eval day-row refresher, the delivery live hub and the Legion facts consumer): a reader
+// whose cursor is lost reads again everything the changes could have named, and any other reads
+// on after its cursor.
+//
+// The cursor is lost where the log holds rows and its newest seq is below the cursor's: the
+// sequence went backwards (a TRUNCATE ... RESTART IDENTITY, a restore), so a reader that read on
+// after its cursor would read nothing until the new seqs passed it, whatever the age of the
+// change it rested on. An empty log is not that: a quiet day's prune can take every row, and the
+// next row continues the sequence above the cursor; once a row lands below the cursor after a
+// restart, this rule sees it.
+//
+// The cursor is lost too where the change at its seq has left the log, or the log holds another
+// change there (one recorded at another time than the cursor's At: a log reset and refilled past
+// the cursor), and either of two holds:
+//
+//   - the change was recorded less than ChangeRetention ago by the database's clock, the clock
+//     its at was written by and PruneChanges cuts by, so no prune took it: a log reset, or rows
+//     deleted by hand;
+//   - the reader has read nothing for longer than ChangeRetention before now, by its own clock,
+//     the one ReadAt is stamped by: while it stood still a prune may have taken changes after
+//     its cursor that it never read.
+//
+// A change gone after its retention while its reader read the log within it was pruned in its
+// time, as the prune takes the change a cursor rests on whenever a day brings no newer one, and
+// is no loss: the reader's last read found nothing after it, and every change recorded since is
+// younger than the retention and still in the log. A cursor with no At is judged by ReadAt alone.
+// A cursor at 0 has read nothing and lost nothing.
+//
+// The change at the cursor, the log's newest seq and the database's clock are one statement's,
+// so they describe one log.
+func CursorLost(ctx context.Context, q Querier, cursor ChangeCursor, now time.Time) (bool, error) {
+	if cursor.Seq == 0 {
+		return false, nil
+	}
+	var held *time.Time
+	var latest int64
+	var clock time.Time
+	if err := q.QueryRow(ctx, `
+		select (select at from delivery_changes where seq = $1),
+		       (select coalesce(max(seq), 0) from delivery_changes),
+		       now()
+	`, cursor.Seq).Scan(&held, &latest, &clock); err != nil {
+		return false, err
+	}
+	if latest > 0 && latest < cursor.Seq {
+		return true, nil
+	}
+	moved := held == nil || (cursor.At != nil && !held.Equal(*cursor.At))
+	young := cursor.At != nil && clock.Sub(*cursor.At) < ChangeRetention
+	stalled := now.Sub(cursor.ReadAt) > ChangeRetention
+	return moved && (young || stalled), nil
+}
+
 // PruneChanges deletes every change recorded more than ChangeRetention before the database's now(),
 // and answers how many it deleted. Each row's at is the database's clock too, so the cutoff and the
 // rows it compares share one clock whichever process prunes.

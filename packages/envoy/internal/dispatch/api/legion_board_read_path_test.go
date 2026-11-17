@@ -508,9 +508,10 @@ var (
 	// elapsedTime matches a line that turns the clock into a length: what an open issue's hours
 	// are made of.
 	elapsedTime = regexp.MustCompile(`time\.Since\(|\.Sub\(|\.Hours\(\)|\.Minutes\(\)|\.Seconds\(\)`)
-	// storedValue matches a line that names one of the stored facts. A line that matches both
+	// storedValue matches a line that names one of the stored facts, by the wire's name or the
+	// computation's (PhaseHours, which the board's HoursByPhase carries). A line that matches both
 	// this and elapsedTime adds elapsed time to a stored value.
-	storedValue = regexp.MustCompile(`WorkHours|HoursByPhase|SlotHours|ReviewRounds|TreeDepth|RootKey|work_hours|hours_by_phase|slot_hours`)
+	storedValue = regexp.MustCompile(`WorkHours|HoursByPhase|PhaseHours|SlotHours|ReviewRounds|TreeDepth|RootKey|work_hours|hours_by_phase|slot_hours`)
 	// cachedFacts matches a struct field whose type holds the stored facts or the population
 	// they are computed from.
 	cachedFacts = regexp.MustCompile(`legionfacts\.Row|metrics\.Population|\[\]Row\b|map\[string\]Row\b`)

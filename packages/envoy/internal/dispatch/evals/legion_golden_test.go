@@ -526,7 +526,7 @@ func compareTables(check *legionCheck, closed []legionfacts.Row, filed []legionf
 	rows := map[string]legionfacts.Row{}
 	timed := 0
 	for _, row := range closed {
-		if inCutOf(cut, row.RootKey == row.Issue) {
+		if inCutOf(cut, row.Root) {
 			rows[row.Issue] = row
 			if row.StartedAt != nil {
 				timed++
@@ -541,7 +541,7 @@ func compareTables(check *legionCheck, closed []legionfacts.Row, filed []legionf
 			check.exact(issue.Key+"'s stored row", "none", "one")
 			continue
 		}
-		check.exact(issue.Key+"'s root", row.RootKey == row.Issue, issue.Root)
+		check.exact(issue.Key+"'s root", row.Root, issue.Root)
 		check.moment(issue.Key+"'s start", row.StartedAt, &issue.StartedAt)
 		check.moment(issue.Key+"'s close", row.ClosedAt, &issue.ClosedAt)
 		check.moment(issue.Key+"'s merge", row.MergedAt, issue.MergedAt)
@@ -558,13 +558,13 @@ func compareTables(check *legionCheck, closed []legionfacts.Row, filed []legionf
 		}
 		check.exact(issue.Key+"'s review rounds", row.ReviewRounds, issue.ReviewRounds)
 		check.exact(issue.Key+"'s send-back", row.SentBack, issue.SentBack)
-		check.hours(issue.Key+"'s implementing hours after the first review", &row.ImplementingAfterFirstReview, issue.ImplementingHoursAfterFirst)
-		check.hours(issue.Key+"'s testing hours after the first review", &row.TestingAfterFirstReview, issue.TestingHoursAfterFirst)
+		check.hours(issue.Key+"'s implementing hours after the first review", &row.ImplementingHoursAfterFirstReview, issue.ImplementingHoursAfterFirst)
+		check.hours(issue.Key+"'s testing hours after the first review", &row.TestingHoursAfterFirstReview, issue.TestingHoursAfterFirst)
 	}
 	filings := map[string]legionfacts.Filing{}
 	for _, filing := range filed {
-		if inCutOf(cut, filing.RootKey == filing.Issue) {
-			filings[filing.Issue] = filing
+		if inCutOf(cut, filing.Root == filing.Key) {
+			filings[filing.Key] = filing
 		}
 	}
 	check.exact("filings in the window", len(filings), len(report.Splitting.Filed))
@@ -574,9 +574,9 @@ func compareTables(check *legionCheck, closed []legionfacts.Row, filed []legionf
 			check.exact(row.Key+"'s stored filing", "none", "one")
 			continue
 		}
-		check.moment(row.Key+"'s filing time", &filing.FiledAt, &row.At)
+		check.moment(row.Key+"'s filing time", &filing.At, &row.At)
 		check.exact(row.Key+"'s class", filing.Class, row.Class)
-		check.exact(row.Key+"'s filer", filing.FilerRole, row.Filer)
+		check.exact(row.Key+"'s filer", filing.Filer, row.Filer)
 		check.exact(row.Key+"'s filer issue", filing.FilerIssue, row.FilerIssue)
 		check.exact(row.Key+"'s filer phase", filing.FilerPhase, row.FilerPhase)
 	}

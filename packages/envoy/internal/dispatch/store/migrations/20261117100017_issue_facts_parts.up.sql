@@ -2,7 +2,7 @@
 --
 -- Widens the stored per-issue Legion facts (20261117100000, dispatch://INFRA-2915) with the
 -- per-issue values the six Legion evals fold (dispatch://INFRA-2916, R17): each is the part the
--- metrics' window aggregation takes from one issue, computed once by legion/metrics.ProjectFacts
+-- metrics' window aggregation takes from one issue, computed once by legion/metrics.ProjectFactsClosed
 -- and stored, so an eval's day rows fold stored values and recompute no rule. hours_by_phase
 -- stays as it is, because the Legion board reads it.
 --   parked_hours     the hours the work time took out of the issue's life for backlog or

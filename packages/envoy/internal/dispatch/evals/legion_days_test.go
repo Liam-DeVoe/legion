@@ -103,11 +103,11 @@ func TestALegionDayWritesEachEvalInEveryCutAndRepositoryAndRecordsItsIssues(t *t
 	}
 	closed := func(key, root, repo string, closedAt time.Time, hours float64) legionfacts.Row {
 		started := closedAt.Add(-time.Duration(hours) * time.Hour)
-		return legionfacts.Row{
-			Project: "EVAL", Issue: key, OpenedAt: at(1, 0, 0), ClosedAt: &closedAt, RootKey: root, Repo: repo,
-			StartedAt: &started, WorkHours: hours, HoursByPhase: map[string]float64{}, Bars: map[string]metrics.BarPart{},
+		return legionfacts.Row{Project: "EVAL", Issue: key, Repo: repo, ClosedFacts: metrics.ClosedFacts{IssueFacts: metrics.IssueFacts{
+			OpenedAt: at(1, 0, 0), ClosedAt: &closedAt, Root: root == key, Tree: root,
+			StartedAt: &started, WorkHours: hours, PhaseHours: map[string]float64{}, Bars: map[string]metrics.BarPart{},
 			IdleByRole: map[string]float64{},
-		}
+		}}}
 	}
 	root := closed("EVAL-1", "EVAL-1", "acme/web", at(3, 10, 0), 10)
 	root.Bars["implementer"] = bar(6, metrics.Segments{InATurn: 4, Idle: 2})
@@ -116,17 +116,22 @@ func TestALegionDayWritesEachEvalInEveryCutAndRepositoryAndRecordsItsIssues(t *t
 	child := closed("EVAL-2", "EVAL-1", "acme/api", at(3, 12, 0), 4)
 	child.Bars["implementer"] = bar(4, metrics.Segments{InATurn: 4})
 	child.IdleByRole["tester"], child.SlotWaitHours, child.ReviewRounds, child.SentBack = 0.5, 1, 2, true
-	child.ImplementingAfterFirstReview, child.TestingAfterFirstReview = 1, 0.5
+	child.ImplementingHoursAfterFirstReview, child.TestingHoursAfterFirstReview = 1, 0.5
 	lone := closed("EVAL-3", "EVAL-3", "", at(3, 14, 0), 2)
 	later := closed("EVAL-4", "EVAL-4", "acme/web", at(4, 9, 0), 3)
 	rows := []legionfacts.Row{root, child, lone, later}
 	if _, err := legionfacts.WriteProject(ctx, pool, legionfacts.ProjectWrite{Project: "EVAL", Rows: rows, Whole: true}); err != nil {
 		t.Fatalf("write the facts: %v", err)
 	}
+	filing := func(key string, filedAt time.Time, filer, filerIssue, phase, class, root string) legionfacts.Filing {
+		return legionfacts.Filing{Project: "EVAL", IssueFiling: metrics.IssueFiling{FiledIssue: metrics.FiledIssue{
+			Key: key, At: filedAt, Filer: filer, FilerIssue: filerIssue, FilerPhase: phase, Class: class,
+		}, Root: root}}
+	}
 	filings := []legionfacts.Filing{
-		{Project: "EVAL", Issue: "EVAL-10", FiledAt: at(3, 8, 0), FilerRole: "architect", FilerIssue: "EVAL-1", FilerPhase: "design", Class: metrics.ClassInTreeAtDesign, RootKey: "EVAL-1"},
-		{Project: "EVAL", Issue: "EVAL-11", FiledAt: at(3, 9, 0), FilerRole: "implementer", FilerIssue: "EVAL-2", FilerPhase: "implementing", Class: metrics.ClassOutOfTree, RootKey: "EVAL-11"},
-		{Project: "EVAL", Issue: "EVAL-12", FiledAt: at(4, 1, 0), FilerRole: "controller", Class: metrics.ClassByTheController, RootKey: "EVAL-12"},
+		filing("EVAL-10", at(3, 8, 0), "architect", "EVAL-1", "design", metrics.ClassInTreeAtDesign, "EVAL-1"),
+		filing("EVAL-11", at(3, 9, 0), "implementer", "EVAL-2", "implementing", metrics.ClassOutOfTree, "EVAL-11"),
+		filing("EVAL-12", at(4, 1, 0), "controller", "", "", metrics.ClassByTheController, "EVAL-12"),
 	}
 	if err := legionfacts.WriteFilings(ctx, pool, legionfacts.FilingsWrite{Project: "EVAL", Filings: filings, Whole: true}); err != nil {
 		t.Fatalf("write the filings: %v", err)

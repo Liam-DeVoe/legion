@@ -88,7 +88,8 @@ const PassGap = 10 * time.Second
 const feedPage = 1000
 
 // The cursors, one row of issue_facts_cursor each, named for the feed it is read by. A cursor
-// holds the position of the last row of its feed a committed pass read.
+// holds the position of the last row of its feed a committed pass read (feedCursor), and the
+// change cursor when the change at that position was recorded.
 const (
 	eventsCursor       = "events"
 	observationsCursor = "legion_observations"
@@ -314,7 +315,7 @@ func passPage(ctx context.Context, deps Deps, sched schedule, safe int64, now ti
 	if err != nil {
 		return nil, nextPage{}, err
 	}
-	read, err := readPages(ctx, deps.Pool, cursors, safe, sched.page, unfed)
+	read, err := readPages(ctx, deps.Pool, cursors, safe, now, sched.page, unfed)
 	if err != nil {
 		return nil, nextPage{}, err
 	}
@@ -423,10 +424,10 @@ func passPage(ctx context.Context, deps Deps, sched schedule, safe int64, now ti
 		computed = append(computed, one)
 	}
 
-	positions := map[string]int64{
-		eventsCursor:       read.events.position,
-		observationsCursor: read.observations.position,
-		changesCursor:      read.changes.position,
+	positions := map[string]feedCursor{
+		eventsCursor:       {position: read.events.position},
+		observationsCursor: {position: read.observations.position},
+		changesCursor:      {position: read.changes.position, at: read.changes.at},
 	}
 	changed, err := writePass(ctx, deps.Pool, computed, positions, now, self, read.changes.remapped)
 	if err != nil {
@@ -516,7 +517,7 @@ func computeProjectWork(ctx context.Context, pool *store.Pool, project string, w
 // their notification wakes every live hub, which drains before it reads, as the refresher does at
 // each pass. The drain's notification is also the wake of the other process of a roll, whose
 // build the project's record may name (Deps.Deliveries).
-func writePass(ctx context.Context, pool *store.Pool, computed []projectPass, positions map[string]int64, now time.Time, self process, remapped bool) ([]string, error) {
+func writePass(ctx context.Context, pool *store.Pool, computed []projectPass, positions map[string]feedCursor, now time.Time, self process, remapped bool) ([]string, error) {
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("open the Legion facts' write: %w", err)

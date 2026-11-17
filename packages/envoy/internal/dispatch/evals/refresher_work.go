@@ -260,9 +260,10 @@ func (w *pageWork) restarts(projects []string) []walkKey {
 //
 // A database holding no cursor row has committed no pass: the cursors start at the feeds' heads,
 // and every walk begins, which builds every day the feeds' history could name. A change cursor
-// whose own row the log no longer holds, though that row had not yet passed its retention, may
-// have passed over changes it never read (changesLost): the cursor moves to the log's head and
-// every walk begins again, which covers every change the log ever held.
+// that may have passed over changes it never read (delivery.CursorLost, judged on the database's
+// clock for the change and on the pass's moment, which every pass stamps its cursors with, for
+// the pass) moves to the log's head, and every walk begins again, which covers every change the
+// log ever held.
 func (r *refresh) page(ctx context.Context, safe int64, limit int) (bool, error) {
 	r.beginPage()
 	cursors, err := r.store.readRefresherCursors(ctx)
@@ -281,9 +282,10 @@ func (r *refresh) page(ctx context.Context, safe int64, limit int) (bool, error)
 		work.restartAll()
 	} else {
 		after := cursors[changesCursor]
-		lost, err := changesLost(ctx, r.store, after, r.now)
+		cursor := delivery.ChangeCursor{Seq: after.position, At: after.at, ReadAt: after.updatedAt}
+		lost, err := delivery.CursorLost(ctx, r.store.database.Pool, cursor, r.now)
 		if err != nil {
-			return false, err
+			return false, fmt.Errorf("read the delivery change at %d: %w", after.position, err)
 		}
 		if lost {
 			if positions[changesCursor], err = r.store.changesHead(ctx); err != nil {
@@ -334,32 +336,6 @@ func (r *refresh) page(ctx context.Context, safe int64, limit int) (bool, error)
 // its read of repo_projects begin empty (refresh's rule on why they hold for one page).
 func (r *refresh) beginPage() {
 	r.reads, r.done, r.unowned, r.repos = map[time.Time]DeliveryDay{}, map[builtDay]bool{}, map[string]bool{}, nil
-}
-
-// changesLost reports whether the change cursor may have passed over changes it never read: the
-// change at its position is gone from the log, and either it was recorded less than
-// ChangeRetention ago by the database's clock, the clock PruneChanges cuts by, so no prune took it
-// (a log reset, or rows deleted by hand), or no pass has committed for longer than ChangeRetention
-// before now, the moment this pass runs as of, which is the clock every pass stamps its cursors
-// with (commitPage): while the refresher stood still the reconcile's prune, every five minutes,
-// may have taken changes after the cursor that no pass read. A change gone after its retention,
-// with a pass committed within it, was pruned in its time, as the refresher's own prune takes the
-// change its cursor rests on whenever a day brings no newer one, and is no loss: api's delivery hub
-// reads its cursor by the same rule. A cursor with no time recorded (a position no change held) is
-// judged by its pass's time alone. A cursor of 0 has read nothing and lost nothing.
-func changesLost(ctx context.Context, s *Store, cursor feedCursor, now time.Time) (bool, error) {
-	if cursor.position == 0 {
-		return false, nil
-	}
-	var gone, young bool
-	if err := s.database.Pool.QueryRow(ctx, `
-		select not exists (select 1 from delivery_changes where seq = $1),
-		       coalesce($2::timestamptz > now() - make_interval(secs => $3), false)
-	`, cursor.position, cursor.at, delivery.ChangeRetention.Seconds()).Scan(&gone, &young); err != nil {
-		return false, fmt.Errorf("read the delivery change at %d: %w", cursor.position, err)
-	}
-	stalled := now.Sub(cursor.updatedAt) > delivery.ChangeRetention
-	return gone && (young || stalled), nil
 }
 
 // apply writes every day w names, each with the zero rows of the days behind a first day it moves

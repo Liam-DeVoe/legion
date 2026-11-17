@@ -338,9 +338,9 @@ func (r *refresh) nextPass(ctx context.Context, pending bool) (time.Time, error)
 
 // feedCursor is where one feed stands: the position the last committed pass read through; for
 // the change cursor, when the change at that position was recorded (delivery_changes.at), which
-// tells a change pruned in its time from one lost (changesLost), nil for the event cursor and for
-// a position no change holds; and when the last committed pass ran as of (updatedAt), which tells
-// a log pruned past changes no pass read while the refresher stood still.
+// tells a change pruned in its time from one lost (delivery.CursorLost), nil for the event cursor
+// and for a position no change holds; and when the last committed pass ran as of (updatedAt),
+// which tells a log pruned past changes no pass read while the refresher stood still.
 type feedCursor struct {
 	position  int64
 	at        *time.Time

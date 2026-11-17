@@ -128,10 +128,10 @@ func storedRowsBeneathAgree(t *testing.T, run *consumer, parent, what string) {
 				key, parent, what, show(row))
 		case !holds && answered:
 			t.Errorf("%s stands beneath %s %s and holds no stored row, and its computation places it under %q at depth %d",
-				key, parent, what, want.RootKey, want.TreeDepth)
-		case holds && (row.RootKey != want.RootKey || row.TreeDepth != want.TreeDepth):
+				key, parent, what, want.Tree, want.TreeDepth)
+		case holds && (row.Tree != want.Tree || row.TreeDepth != want.TreeDepth):
 			t.Errorf("%s stands beneath %s %s: its stored row places it under %q at depth %d, and its computation places it under %q at depth %d",
-				key, parent, what, row.RootKey, row.TreeDepth, want.RootKey, want.TreeDepth)
+				key, parent, what, row.Tree, row.TreeDepth, want.Tree, want.TreeDepth)
 		}
 	}
 }
@@ -166,9 +166,9 @@ func TestAParentGainingLegionStandingMovesEveryIssueBeneathIt(t *testing.T) {
 
 	run.pass(t)
 	before := run.rows(t)[child]
-	if before.RootKey != child {
+	if before.Tree != child {
 		t.Fatalf("the stored row of %s places it under %q while no Legion role worked %s, want itself, so this test examined nothing",
-			child, before.RootKey, parent)
+			child, before.Tree, parent)
 	}
 
 	writeSessionEvent(t, run, session, parent, run.at.Add(-time.Hour))
@@ -176,9 +176,9 @@ func TestAParentGainingLegionStandingMovesEveryIssueBeneathIt(t *testing.T) {
 	run.pass(t)
 
 	placed := computedPlacement(t, run, child)
-	if placed.RootKey != parent {
+	if placed.Tree != parent {
 		t.Fatalf("the computation places %s under %q and not under %s, so the parent's standing did not move and this test examined nothing",
-			child, placed.RootKey, parent)
+			child, placed.Tree, parent)
 	}
 	storedRowsBeneathAgree(t, run, parent, "after it gained Legion phase work")
 }
@@ -208,9 +208,9 @@ func TestAParentLosingLegionStandingMovesEveryIssueBeneathItBack(t *testing.T) {
 	writeSessionEvent(t, run, session, parent, run.at.Add(-2*time.Hour))
 	run.pass(t)
 	before := run.rows(t)[child]
-	if before.RootKey != parent {
+	if before.Tree != parent {
 		t.Fatalf("the stored row of %s places it under %q while %s carries Legion phase work, want that parent, so this test examined nothing",
-			child, before.RootKey, parent)
+			child, before.Tree, parent)
 	}
 
 	writeProjectTitledEvent(t, run, session, other, run.at)
@@ -218,9 +218,9 @@ func TestAParentLosingLegionStandingMovesEveryIssueBeneathItBack(t *testing.T) {
 	run.pass(t)
 
 	placed := computedPlacement(t, run, child)
-	if placed.RootKey != child {
+	if placed.Tree != child {
 		t.Fatalf("the computation places %s under %q and not under itself, so %s is a Legion issue still and this test examined nothing",
-			child, placed.RootKey, parent)
+			child, placed.Tree, parent)
 	}
 	storedRowsBeneathAgree(t, run, parent, "after it stopped being a Legion issue")
 }
@@ -244,9 +244,9 @@ func TestTheDaemonsFirstReportOfAParentMovesEveryIssueBeneathIt(t *testing.T) {
 
 	run.pass(t)
 	before := run.rows(t)[child]
-	if before.RootKey != child {
+	if before.Tree != child {
 		t.Fatalf("the stored row of %s places it under %q while the daemon reports %s not at all, want itself, so this test examined nothing",
-			child, before.RootKey, parent)
+			child, before.Tree, parent)
 	}
 	var reported int
 	if err := run.database.Pool.QueryRow(t.Context(),
@@ -267,9 +267,9 @@ func TestTheDaemonsFirstReportOfAParentMovesEveryIssueBeneathIt(t *testing.T) {
 	run.pass(t)
 
 	placed := computedPlacement(t, run, child)
-	if placed.RootKey != parent {
+	if placed.Tree != parent {
 		t.Fatalf("the computation places %s under %q and not under %s, so the report did not move the parent's standing and this test examined nothing",
-			child, placed.RootKey, parent)
+			child, placed.Tree, parent)
 	}
 	storedRowsBeneathAgree(t, run, parent, "after the daemon first reported it")
 }

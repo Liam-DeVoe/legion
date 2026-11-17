@@ -63,7 +63,7 @@ func TestTheItemsRowsCarryTheStoredFactsOfEachIssue(t *testing.T) {
 		if want := "/issues/" + row.Issue; item.Href != want {
 			t.Errorf("%s links to %q, want the issue's own address %q", row.Issue, item.Href, want)
 		}
-		if len(row.HoursByPhase) == 0 {
+		if len(row.PhaseHours) == 0 {
 			withoutHours++
 		} else {
 			withHours++
@@ -93,7 +93,7 @@ func compareItemColumns(t *testing.T, row Row, repo string, columns map[string]a
 		ColumnClosedAt:                     row.ClosedAt,
 		ColumnWorkHours:                    row.WorkHours,
 		ColumnReviewRounds:                 row.ReviewRounds,
-		ColumnRootKey:                      row.RootKey,
+		ColumnRootKey:                      row.Tree,
 		ColumnTreeDepth:                    row.TreeDepth,
 		ColumnSlotHours:                    row.SlotHours,
 		ColumnWaitingReason:                row.WaitingReason,
@@ -105,12 +105,12 @@ func compareItemColumns(t *testing.T, row Row, repo string, columns map[string]a
 		ColumnMergedAt:                     row.MergedAt,
 		ColumnSlotWaitHours:                row.SlotWaitHours,
 		ColumnSentBack:                     row.SentBack,
-		ColumnImplementingAfterFirstReview: row.ImplementingAfterFirstReview,
-		ColumnTestingAfterFirstReview:      row.TestingAfterFirstReview,
+		ColumnImplementingAfterFirstReview: row.ImplementingHoursAfterFirstReview,
+		ColumnTestingAfterFirstReview:      row.TestingHoursAfterFirstReview,
 		ColumnChildren:                     row.Children,
 		ColumnRepo:                         repo,
 	}
-	for phase, hours := range row.HoursByPhase {
+	for phase, hours := range row.PhaseHours {
 		want[ColumnHoursPrefix+phase] = hours
 	}
 	if len(row.Bars) != 7 || len(row.IdleByRole) != 6 {

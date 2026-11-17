@@ -52,8 +52,8 @@ func TestARetitledFilingSessionMovesItsFilingToTheProjectItsNewTitleNamesInOnePa
 	switch {
 	case !has:
 		t.Errorf("%s's session is titled for %s now and %s stores no filing of it", filed, otherRoot, other.Project)
-	case got.FilerRole != "implementer" || got.FilerIssue != otherRoot || got.FilerPhase != "accepting" ||
-		got.Class != metrics.ClassOutOfTree || got.RootKey != filed:
+	case got.Filer != "implementer" || got.FilerIssue != otherRoot || got.FilerPhase != "accepting" ||
+		got.Class != metrics.ClassOutOfTree || got.Root != filed:
 		t.Errorf("%s is stored in %s as %s, want the implementer of %s in accepting, out_of_tree, under its own root",
 			filed, other.Project, showFiling(got), otherRoot)
 	}

@@ -3,6 +3,8 @@ package legionfacts
 import (
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 )
 
 // A change cursor that a later page (not a pass's first page) finds pruned must still be answered
@@ -38,7 +40,13 @@ func TestALossMetOnALaterPageIsAnswered(t *testing.T) {
 		t.Fatal(err)
 	}
 	run.exec(t, "prune the oldest changes", `delete from delivery_changes where seq <= $1`, first)
-	lost, err := changesLost(t.Context(), run.database.Pool, cursorAt)
+	cursors, err := readCursors(t.Context(), run.database.Pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	held := cursors[changesCursor]
+	lost, err := delivery.CursorLost(t.Context(), run.database.Pool,
+		delivery.ChangeCursor{Seq: held.position, At: held.at, ReadAt: held.updatedAt}, run.at)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -11,7 +11,7 @@ import "time"
 // At is the row as of now: each fact that grows after the moment the row is closed at (AsOf)
 // grown by its rate over the time between (metrics.IssueFacts.Grown), a bar still open ending at
 // now, and AsOf moved to now. That is what the computation answers run at now over the same
-// inputs (metrics.ProjectFacts), since no input of the issue is newer than AsOf. Every other
+// inputs (metrics.ClosedFacts), since no input of the issue is newer than AsOf. Every other
 // field is the row's own, and a row with no growth reads as stored: a closed issue's, but for a
 // slot it never gave up, whose hours run to the computation's end (metrics.Growth).
 //
@@ -24,7 +24,7 @@ func (row Row) At(now time.Time) Row {
 	if len(row.Growth) == 0 || !now.After(row.AsOf) {
 		return row
 	}
-	row.SetFacts(row.Facts().Grown(row.Growth, now.Sub(row.AsOf)))
+	row.IssueFacts = row.IssueFacts.Grown(row.Growth, now.Sub(row.AsOf))
 	row.AsOf = now
 	return row
 }

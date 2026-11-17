@@ -141,8 +141,8 @@ type Fixture struct {
 	Keys []string
 	// Roots is each tree's root, in the same order.
 	Roots []string
-	// PhaseWork is the keys that carry Legion phase work, which is the set metrics.ProjectFacts
-	// answers an entry for.
+	// PhaseWork is the keys that carry Legion phase work, which is the set
+	// metrics.ProjectFactsClosed answers an entry for.
 	PhaseWork []string
 	// Open is the keys of the issues that never closed, whose hours run to the moment of the
 	// computation.
@@ -618,7 +618,7 @@ func (s *seeding) handoff(issue, phase, role string, at time.Time) {
 	s.carriesPhaseWork(issue)
 }
 
-// carriesPhaseWork records the issue as one metrics.ProjectFacts answers an entry for, once
+// carriesPhaseWork records the issue as one metrics.ProjectFactsClosed answers an entry for, once
 // however many role events and handoffs it carries.
 func (s *seeding) carriesPhaseWork(issue string) {
 	if s.phaseWork[issue] {

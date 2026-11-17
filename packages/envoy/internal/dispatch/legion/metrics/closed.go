@@ -20,7 +20,8 @@ import (
 // of a bar still open is the clock itself, and every count and every moment else stands still.
 // The stored row is therefore two numbers a fact, its value at that moment and its rate, and
 // ProjectFactsClosed measures both from the one computation (factsOf) run at two moments after
-// it. ProjectFacts stays the computation at one moment, which every other reader calls.
+// it. It is the one caller of that computation: a reader of the facts takes them closed and
+// grows them to its own clock (Grown).
 
 // growthSpan is how far apart the two moments are that each fact's growth is measured between.
 // An hour makes each whole-number rate an exact number of the four decimals every hours value is
@@ -29,8 +30,8 @@ const growthSpan = time.Hour
 
 // ClosedFacts is one issue's facts closed at AsOf, the newest input its facts read (newestInput),
 // and how fast each grows after it (Growth). The facts at any moment after AsOf are the facts
-// grown by the time between (IssueFacts.Grown), which is the value ProjectFacts answers of the
-// same inputs at that moment.
+// grown by the time between (IssueFacts.Grown), which is the value the computation (factsOf)
+// answers of the same inputs at that moment.
 //
 // The facts are the ones the computation answers just after AsOf: a span an input opened at AsOf
 // itself holds no time at AsOf and does after it, so a count that span starts - a review round, a
@@ -42,11 +43,11 @@ type ClosedFacts struct {
 	Growth Growth
 }
 
-// ProjectFactsClosed is ProjectFacts as a stored row holds it: every issue of the population with
-// Legion phase work that wanted names (every one where wanted is nil), its facts closed at the
-// newest input they read and their growth after it. It answers the same set of issues as
-// ProjectFacts, by the same selection (factsIssues), and their facts by the same rule (factsOf),
-// so no second rule computes a fact (R20).
+// ProjectFactsClosed is the per-issue facts as a stored row holds them: every issue of the
+// population with Legion phase work that wanted names (every one where wanted is nil, by the one
+// selection of them, factsIssues), its facts closed at the newest input they read and their
+// growth after it. Its facts are the one computation's (factsOf), so no second rule computes a
+// fact (R20).
 //
 // Each issue is computed at two moments past its newest input, an hour apart, and its facts are
 // closed back at that input from the first of them with the rate the two measured (Grown with a

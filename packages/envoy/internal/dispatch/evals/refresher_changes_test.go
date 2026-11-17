@@ -408,10 +408,10 @@ func (r *refresherRig) seedLegionEval(t *testing.T) *legionEval {
 	`, legionHistoryDay(1).Add(-time.Hour))
 	fact := func(key string, closed *time.Time, hours float64) legionfacts.Row {
 		started := legionHistoryDay(1)
-		return legionfacts.Row{
-			Project: "EVAL", Issue: key, OpenedAt: legionHistoryDay(0), ClosedAt: closed, RootKey: key, WorkHours: hours,
-			StartedAt: &started, HoursByPhase: map[string]float64{}, Bars: map[string]metrics.BarPart{}, IdleByRole: map[string]float64{},
-		}
+		return legionfacts.Row{Project: "EVAL", Issue: key, ClosedFacts: metrics.ClosedFacts{IssueFacts: metrics.IssueFacts{
+			OpenedAt: legionHistoryDay(0), ClosedAt: closed, Root: true, Tree: key, WorkHours: hours,
+			StartedAt: &started, PhaseHours: map[string]float64{}, Bars: map[string]metrics.BarPart{}, IdleByRole: map[string]float64{},
+		}}}
 	}
 	for _, row := range []legionfacts.Row{
 		fact("EVAL-1", new(history.d1.Add(10*time.Hour)), 6), fact("EVAL-2", new(history.d1.Add(12*time.Hour)), 4),
@@ -420,8 +420,10 @@ func (r *refresherRig) seedLegionEval(t *testing.T) *legionEval {
 		history.rows[row.Issue] = row
 	}
 	r.writeFacts(t, history, "EVAL-1", "EVAL-2", "EVAL-3", "EVAL-4")
-	history.filing = legionfacts.Filing{Project: "EVAL", Issue: "EVAL-10", FiledAt: history.d1.Add(8 * time.Hour), FilerRole: "architect",
-		FilerIssue: "EVAL-1", FilerPhase: "design", Class: metrics.ClassInTreeAtDesign, RootKey: "EVAL-1"}
+	history.filing = legionfacts.Filing{Project: "EVAL", IssueFiling: metrics.IssueFiling{FiledIssue: metrics.FiledIssue{
+		Key: "EVAL-10", At: history.d1.Add(8 * time.Hour), Filer: "architect",
+		FilerIssue: "EVAL-1", FilerPhase: "design", Class: metrics.ClassInTreeAtDesign,
+	}, Root: "EVAL-1"}}
 	if err := legionfacts.WriteFilings(t.Context(), r.database.Pool, legionfacts.FilingsWrite{Project: "EVAL", Filings: []legionfacts.Filing{history.filing}, Stated: []string{"EVAL-10"}}); err != nil {
 		t.Fatalf("write the filing: %v", err)
 	}

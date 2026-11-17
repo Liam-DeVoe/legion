@@ -130,7 +130,7 @@ func itemColumns(row Row, repo string) map[string]any {
 		ColumnClosedAt:                     row.ClosedAt,
 		ColumnWorkHours:                    row.WorkHours,
 		ColumnReviewRounds:                 row.ReviewRounds,
-		ColumnRootKey:                      row.RootKey,
+		ColumnRootKey:                      row.Tree,
 		ColumnTreeDepth:                    row.TreeDepth,
 		ColumnSlotHours:                    row.SlotHours,
 		ColumnWaitingReason:                row.WaitingReason,
@@ -142,12 +142,12 @@ func itemColumns(row Row, repo string) map[string]any {
 		ColumnMergedAt:                     row.MergedAt,
 		ColumnSlotWaitHours:                row.SlotWaitHours,
 		ColumnSentBack:                     row.SentBack,
-		ColumnImplementingAfterFirstReview: row.ImplementingAfterFirstReview,
-		ColumnTestingAfterFirstReview:      row.TestingAfterFirstReview,
+		ColumnImplementingAfterFirstReview: row.ImplementingHoursAfterFirstReview,
+		ColumnTestingAfterFirstReview:      row.TestingHoursAfterFirstReview,
 		ColumnChildren:                     row.Children,
 		ColumnRepo:                         repo,
 	}
-	for phase, hours := range row.HoursByPhase {
+	for phase, hours := range row.PhaseHours {
 		columns[ColumnHoursPrefix+phase] = hours
 	}
 	// A bar's columns: its hours under the bar's own, and each of its five segments under
@@ -233,19 +233,19 @@ func FilingItemRows(filings []Filing) []ItemRow {
 	for _, filing := range filings {
 		items = append(items, ItemRow{
 			Project: filing.Project,
-			RowKey:  filing.Issue,
+			RowKey:  filing.Key,
 			RowKind: ItemRowKind,
 			Columns: map[string]any{
-				ColumnFiledAt:    filing.FiledAt,
-				ColumnFilerRole:  filing.FilerRole,
+				ColumnFiledAt:    filing.At,
+				ColumnFilerRole:  filing.Filer,
 				ColumnFilerIssue: filing.FilerIssue,
 				ColumnFilerPhase: filing.FilerPhase,
 				ColumnClass:      filing.Class,
-				ColumnRootKey:    filing.RootKey,
+				ColumnRootKey:    filing.Root,
 			},
-			MeasuredAt: filing.FiledAt,
+			MeasuredAt: filing.At,
 			Source:     ItemSource,
-			Href:       "/issues/" + filing.Issue,
+			Href:       "/issues/" + filing.Key,
 		})
 	}
 	return items

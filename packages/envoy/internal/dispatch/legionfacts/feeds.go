@@ -47,10 +47,11 @@ type pages struct {
 // whole read has not already answered. Reading them would recompute every project once per page
 // - about 813 pages of a log the size of INFRA's - while the rows they named waited behind it.
 //
-// A change cursor whose own row the log no longer holds is answered by computing every project
-// whole, which covers every change the log ever held. The page that carries the work no feed
-// names (unfed, passPage) is the page that carries that whole read, so it is the only page that
-// may move this cursor.
+// A change cursor that may have passed over changes it never read (delivery.CursorLost, judged
+// on the database's clock for the change at the cursor and on the pass's moment, now, for when
+// the pass before it committed) is answered by computing every project whole, which covers every
+// change the log ever held. The page that carries the work no feed names (unfed, passPage) is the
+// page that carries that whole read, so it is the only page that may move this cursor.
 //
 // On such a page the cursor moves to the head of the change log rather than to the end of the
 // page it read. The whole read leaves nothing below the head to read, and a cursor left where it
@@ -65,19 +66,19 @@ type pages struct {
 // stale for ever, since a pull request merged inside the gap is read by no page and no pass
 // computes a row its feeds did not name. The issues that page's own changes named are kept and
 // computed, which is work the next page makes again from the held cursor.
-func readPages(ctx context.Context, q Querier, cursors map[string]int64, safe int64, limit int, unfed bool) (pages, error) {
+func readPages(ctx context.Context, q Querier, cursors map[string]feedCursor, safe int64, now time.Time, limit int, unfed bool) (pages, error) {
 	if len(cursors) == 0 {
 		return readFeedHeads(ctx, q, safe)
 	}
 	read := pages{}
 	var err error
-	if read.events, err = readEventPage(ctx, q, cursors[eventsCursor], safe, limit); err != nil {
+	if read.events, err = readEventPage(ctx, q, cursors[eventsCursor].position, safe, limit); err != nil {
 		return pages{}, err
 	}
-	if read.observations, err = readObservationPage(ctx, q, cursors[observationsCursor], limit); err != nil {
+	if read.observations, err = readObservationPage(ctx, q, cursors[observationsCursor].position, limit); err != nil {
 		return pages{}, err
 	}
-	if read.changes, read.lost, err = readChangePage(ctx, q, cursors[changesCursor], limit); err != nil {
+	if read.changes, read.lost, err = readChangePage(ctx, q, cursors[changesCursor], now, limit); err != nil {
 		return pages{}, err
 	}
 	read.more = read.events.full || read.observations.full
@@ -86,15 +87,14 @@ func readPages(ctx context.Context, q Querier, cursors map[string]int64, safe in
 		return read, nil
 	}
 	if !unfed {
-		read.changes.position, read.lost = cursors[changesCursor], false
+		held := cursors[changesCursor]
+		read.changes.position, read.changes.at, read.lost = held.position, held.at, false
 		read.more, read.unfed = true, true
 		return read, nil
 	}
-	head, err := delivery.LatestChangeSeq(ctx, q)
-	if err != nil {
-		return pages{}, fmt.Errorf("read the head of the delivery changes: %w", err)
+	if read.changes.position, read.changes.at, err = changesHead(ctx, q); err != nil {
+		return pages{}, err
 	}
-	read.changes.position = head
 	return read, nil
 }
 
@@ -107,22 +107,42 @@ func readFeedHeads(ctx context.Context, q Querier, safe int64) (pages, error) {
 	if err := q.QueryRow(ctx, `select coalesce(max(id), 0) from legion_observations`).Scan(&observations); err != nil {
 		return pages{}, fmt.Errorf("read the head of the Legion observations: %w", err)
 	}
-	changes, err := delivery.LatestChangeSeq(ctx, q)
+	changes, at, err := changesHead(ctx, q)
 	if err != nil {
-		return pages{}, fmt.Errorf("read the head of the delivery changes: %w", err)
+		return pages{}, err
 	}
 	return pages{
 		events:       feed{position: safe},
 		observations: feed{position: observations},
-		changes:      feed{position: changes},
+		changes:      feed{position: changes, at: at},
 	}, nil
+}
+
+// changesHead is the newest change the log holds and when it was recorded, which a cursor moved
+// to the log's head rests on; 0 and nil where the log is empty.
+func changesHead(ctx context.Context, q Querier) (int64, *time.Time, error) {
+	head, err := delivery.LatestChangeSeq(ctx, q)
+	if err != nil {
+		return 0, nil, fmt.Errorf("read the head of the delivery changes: %w", err)
+	}
+	if head == 0 {
+		return 0, nil, nil
+	}
+	at, err := delivery.ChangeAt(ctx, q, head)
+	if err != nil {
+		return 0, nil, fmt.Errorf("read the delivery change at %d: %w", head, err)
+	}
+	return head, at, nil
 }
 
 // feed is what one page of one feed read: where that feed now stands, the issues it named, the
 // filings it read (the events feed alone reads any), whether the page was full, and whether it
-// read a change of a repository's mapping (the changes feed alone reads any, readChangePage).
+// read a change of a repository's mapping (the changes feed alone reads any, readChangePage). at
+// is, for the changes feed, when the change at position was recorded, which the cursor keeps for
+// the lost-cursor rule (delivery.CursorLost), and nil where no change holds position.
 type feed struct {
 	position int64
+	at       *time.Time
 	touches  []touch
 	filings  []filing
 	full     bool
@@ -482,20 +502,25 @@ func readObservationPage(ctx context.Context, q Querier, after int64, limit int)
 // (refs.IssueRepoTerms), so a mapping change moves the repo of rows no feed names: the pass then
 // resolves every stored row's repository again (reresolveRepos).
 //
-// It also answers whether the cursor had fallen below the oldest change the log still holds.
-// delivery_changes is pruned at delivery.ChangeRetention and oldest first, so a cursor whose own
-// row is gone may have passed over rows it never read. That is a backfill (legionProjects): the
-// rows those changes would have named cannot be known, so every project is computed whole.
-func readChangePage(ctx context.Context, q Querier, after int64, limit int) (feed, bool, error) {
-	changes, err := delivery.ChangesSince(ctx, q, after, limit)
+// It also answers whether the cursor may have passed over changes it never read, by the change
+// log's one rule (delivery.CursorLost): a log holding rows whose newest seq stands below the
+// cursor, its sequence restarted; or the change at the cursor gone from the log, or another change
+// at its seq, where that change was younger than its retention (a log reset, a delete by hand) or
+// no pass committed for longer than the retention before now, so a prune may have taken changes
+// after the cursor that no pass read. That is a backfill (legionProjects): the rows those changes
+// would have named cannot be known, so every project is computed whole. A change pruned after its
+// retention while passes committed within it is no loss: the routine prune of a quiet day takes
+// the change the cursor rests on, or every row, and the pass after it reads on.
+func readChangePage(ctx context.Context, q Querier, after feedCursor, now time.Time, limit int) (feed, bool, error) {
+	changes, err := delivery.ChangesSince(ctx, q, after.position, limit)
 	if err != nil {
-		return feed{}, false, fmt.Errorf("read the delivery changes after %d: %w", after, err)
+		return feed{}, false, fmt.Errorf("read the delivery changes after %d: %w", after.position, err)
 	}
-	page := feed{position: after, full: len(changes) == limit}
+	page := feed{position: after.position, at: after.at, full: len(changes) == limit}
 	repos, refs := make([]string, 0, len(changes)), make([]string, 0, len(changes))
 	merges := []time.Time{}
 	for _, change := range changes {
-		page.position = change.Seq
+		page.position, page.at = change.Seq, &change.At
 		if change.Kind == delivery.ChangeKindSettings && change.Repo != "" {
 			page.remapped = true
 		}
@@ -509,9 +534,10 @@ func readChangePage(ctx context.Context, q Querier, after int64, limit int) (fee
 			merges = append(merges, *change.TOld)
 		}
 	}
-	lost, err := changesLost(ctx, q, after)
+	cursor := delivery.ChangeCursor{Seq: after.position, At: after.at, ReadAt: after.updatedAt}
+	lost, err := delivery.CursorLost(ctx, q, cursor, now)
 	if err != nil {
-		return feed{}, false, err
+		return feed{}, false, fmt.Errorf("read the delivery change at %d: %w", after.position, err)
 	}
 	if len(repos) == 0 {
 		return page, lost, nil
@@ -594,36 +620,33 @@ const lostMergesQuery = `
 		where request.issue_key = fact.issue_key and request.merged_at = fact.merged_at
 		  and request.unfetchable_at is null)`
 
-// changesLost reports whether the change at the cursor is gone from the log, which is a cursor
-// that may have lost rows it never read. A cursor of 0 has read nothing and has lost nothing.
-func changesLost(ctx context.Context, q Querier, cursor int64) (bool, error) {
-	if cursor == 0 {
-		return false, nil
-	}
-	at, err := delivery.ChangeAt(ctx, q, cursor)
-	if err != nil {
-		return false, fmt.Errorf("read the delivery change at %d: %w", cursor, err)
-	}
-	return at == nil, nil
+// feedCursor is where one feed stands: the position the last committed pass read through, when
+// that pass ran (updatedAt), and for the change cursor when the change at the position was
+// recorded (at, nil for the other two and for a position no change holds), which the lost-cursor
+// rule reads (delivery.CursorLost).
+type feedCursor struct {
+	position  int64
+	at        *time.Time
+	updatedAt time.Time
 }
 
 // readCursors is where each feed stands, by cursor name. A name with no row stands at 0, which is
 // a feed this database has read nothing of, and no row at all is a database no pass has committed
 // on, which is what readPages reads its feeds' heads for.
-func readCursors(ctx context.Context, q Querier) (map[string]int64, error) {
-	rows, err := q.Query(ctx, `select name, position from issue_facts_cursor where name = any($1::text[])`, cursorNames)
+func readCursors(ctx context.Context, q Querier) (map[string]feedCursor, error) {
+	rows, err := q.Query(ctx, `select name, position, at, updated_at from issue_facts_cursor where name = any($1::text[])`, cursorNames)
 	if err != nil {
 		return nil, fmt.Errorf("read the Legion facts' cursors: %w", err)
 	}
 	defer rows.Close()
-	cursors := make(map[string]int64, len(cursorNames))
+	cursors := make(map[string]feedCursor, len(cursorNames))
 	for rows.Next() {
 		var name string
-		var position int64
-		if err := rows.Scan(&name, &position); err != nil {
+		var cursor feedCursor
+		if err := rows.Scan(&name, &cursor.position, &cursor.at, &cursor.updatedAt); err != nil {
 			return nil, fmt.Errorf("read the Legion facts' cursors: %w", err)
 		}
-		cursors[name] = position
+		cursors[name] = cursor
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("read the Legion facts' cursors: %w", err)
@@ -631,22 +654,26 @@ func readCursors(ctx context.Context, q Querier) (map[string]int64, error) {
 	return cursors, nil
 }
 
-// advanceCursors moves the three cursors to the positions this page read, stamped with the
-// moment its pass ran at, which is the moment CursorAge measures from. A cursor whose feed held
-// nothing new keeps its position and takes the new stamp: the pass covered the feed up to there,
-// and the stamp is what says how recently a pass read the feeds.
+// advanceCursors moves the three cursors to the positions this page read, the change cursor with
+// when the change at its position was recorded (feedCursor.at), and stamps each with the moment
+// its pass ran at, which is the moment CursorAge measures from and the one the lost-cursor rule
+// reads as the pass's last read; the positions' own updatedAt is not read. A cursor whose feed
+// held nothing new keeps its position and takes the new stamp: the pass covered the feed up to
+// there, and the stamp is what says how recently a pass read the feeds.
 //
 // It runs in the transaction that wrote the rows the positions cover (writePass).
-func advanceCursors(ctx context.Context, tx pgx.Tx, positions map[string]int64, now time.Time) error {
-	at := make([]int64, len(cursorNames))
+func advanceCursors(ctx context.Context, tx pgx.Tx, positions map[string]feedCursor, now time.Time) error {
+	through, recorded := make([]int64, len(cursorNames)), make([]*time.Time, len(cursorNames))
 	for index, name := range cursorNames {
-		at[index] = positions[name]
+		through[index], recorded[index] = positions[name].position, positions[name].at
 	}
 	_, err := tx.Exec(ctx, `
-		insert into issue_facts_cursor (name, position, updated_at)
-		select name, position, $3 from unnest($1::text[], $2::bigint[]) as given(name, position)
-		on conflict (name) do update set position = excluded.position, updated_at = excluded.updated_at
-	`, cursorNames, at, now)
+		insert into issue_facts_cursor (name, position, at, updated_at)
+		select name, position, at, $4
+		from unnest($1::text[], $2::bigint[], $3::timestamptz[]) as given(name, position, at)
+		on conflict (name) do update
+		set position = excluded.position, at = excluded.at, updated_at = excluded.updated_at
+	`, cursorNames, through, recorded, now)
 	if err != nil {
 		return fmt.Errorf("move the Legion facts' cursors: %w", err)
 	}

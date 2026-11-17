@@ -189,7 +189,7 @@ func upsert(ctx context.Context, q Querier, project, build string, rows []Row) (
 		if row.Project != project {
 			return nil, fmt.Errorf("write the Legion facts: %s and %s are two projects in one write", project, row.Project)
 		}
-		hours, err := json.Marshal(storedMap(row.HoursByPhase))
+		hours, err := json.Marshal(storedMap(row.PhaseHours))
 		if err != nil {
 			return nil, fmt.Errorf("write the Legion facts of %s: %w", row.Issue, err)
 		}
@@ -210,7 +210,7 @@ func upsert(ctx context.Context, q Querier, project, build string, rows []Row) (
 		hoursByPhase[index] = string(hours)
 		workHours[index] = row.WorkHours
 		reviewRounds[index] = int32(row.ReviewRounds)
-		rootKeys[index] = row.RootKey
+		rootKeys[index] = row.Tree
 		treeDepth[index] = int32(row.TreeDepth)
 		slotHours[index] = row.SlotHours
 		waitingReason[index] = row.WaitingReason
@@ -231,8 +231,8 @@ func upsert(ctx context.Context, q Querier, project, build string, rows []Row) (
 		idleByRole[index] = string(idle)
 		slotWaitHours[index] = row.SlotWaitHours
 		sentBack[index] = row.SentBack
-		implementingAfter[index] = row.ImplementingAfterFirstReview
-		testingAfter[index] = row.TestingAfterFirstReview
+		implementingAfter[index] = row.ImplementingHoursAfterFirstReview
+		testingAfter[index] = row.TestingHoursAfterFirstReview
 		children[index] = int32(row.Children)
 		repos[index] = row.Repo
 		growth[index] = string(rates)
@@ -582,19 +582,21 @@ func readRows(ctx context.Context, q Querier, project string, wide bool, where s
 	return rows, nil
 }
 
-// scanRow reads one row of readRows' columns: the board's, and the rest where wide.
+// scanRow reads one row of readRows' columns: the board's, and the rest where wide. Root is no
+// column: it is whether the issue is its own tree's root (root_key), which is how the computation
+// answers it (metrics.IssueFacts.Root).
 func scanRow(result pgx.Rows, project string, wide bool) (Row, error) {
 	row := Row{Project: project}
 	// opened_at is a nullable column, which a row this package wrote always fills.
 	var opened *time.Time
 	var hours, growth, bars, idle []byte
 	into := []any{&row.Issue, &opened, &row.ClosedAt, &hours, &row.WorkHours,
-		&row.ReviewRounds, &row.RootKey, &row.TreeDepth, &row.SlotHours, &row.WaitingReason,
+		&row.ReviewRounds, &row.Tree, &row.TreeDepth, &row.SlotHours, &row.WaitingReason,
 		&row.WorkFirstAt, &row.WorkLastAt, &row.UpdatedAt, &row.AsOf, &growth}
 	if wide {
 		into = append(into, &row.ParkedHours, &row.QueuedHours, &row.StartedAt, &row.MergedAt, &bars, &idle,
-			&row.SlotWaitHours, &row.SentBack, &row.ImplementingAfterFirstReview,
-			&row.TestingAfterFirstReview, &row.Children, &row.Repo)
+			&row.SlotWaitHours, &row.SentBack, &row.ImplementingHoursAfterFirstReview,
+			&row.TestingHoursAfterFirstReview, &row.Children, &row.Repo)
 	}
 	if err := result.Scan(into...); err != nil {
 		return Row{}, fmt.Errorf("read the Legion facts of %s: %w", project, err)
@@ -602,10 +604,11 @@ func scanRow(result pgx.Rows, project string, wide bool) (Row, error) {
 	if opened != nil {
 		row.OpenedAt = *opened
 	}
+	row.Root = row.Tree == row.Issue
 	decoded := []struct {
 		stored []byte
 		into   any
-	}{{hours, &row.HoursByPhase}, {growth, &row.Growth}, {bars, &row.Bars}, {idle, &row.IdleByRole}}
+	}{{hours, &row.PhaseHours}, {growth, &row.Growth}, {bars, &row.Bars}, {idle, &row.IdleByRole}}
 	if !wide {
 		decoded = decoded[:2]
 	}
@@ -625,7 +628,7 @@ func scanRow(result pgx.Rows, project string, wide bool) (Row, error) {
 func (row Row) narrow() Row {
 	row.ParkedHours, row.QueuedHours, row.StartedAt, row.MergedAt = 0, 0, nil, nil
 	row.Bars, row.IdleByRole, row.SlotWaitHours, row.SentBack = nil, nil, 0, false
-	row.ImplementingAfterFirstReview, row.TestingAfterFirstReview = 0, 0
+	row.ImplementingHoursAfterFirstReview, row.TestingHoursAfterFirstReview = 0, 0
 	row.Children, row.Repo = 0, ""
 	return row
 }
@@ -652,13 +655,13 @@ func upsertFilings(ctx context.Context, q Querier, project, build string, filing
 		if filing.Project != project {
 			return fmt.Errorf("write the Legion filings: %s and %s are two projects in one write", project, filing.Project)
 		}
-		keys[index] = filing.Issue
-		filedAt[index] = filing.FiledAt
-		roles[index] = filing.FilerRole
+		keys[index] = filing.Key
+		filedAt[index] = filing.At
+		roles[index] = filing.Filer
 		filers[index] = filing.FilerIssue
 		phases[index] = filing.FilerPhase
 		classes[index] = filing.Class
-		roots[index] = filing.RootKey
+		roots[index] = filing.Root
 	}
 	if err := exec(ctx, q, `
 		insert into issue_filings (issue_key, project_key, filed_at, filer_role, filer_issue,
@@ -711,7 +714,7 @@ func exec(ctx context.Context, q Querier, statement string, args ...any) error {
 func deleteStaleFilings(ctx context.Context, q Querier, write FilingsWrite) error {
 	kept := make([]string, len(write.Filings))
 	for index, filing := range write.Filings {
-		kept[index] = filing.Issue
+		kept[index] = filing.Key
 	}
 	var where string
 	args := []any{write.Project, kept}
@@ -759,8 +762,8 @@ func readFilings(ctx context.Context, q Querier, project, where string, args ...
 	var filings []Filing
 	for result.Next() {
 		filing := Filing{Project: project}
-		if err := result.Scan(&filing.Issue, &filing.FiledAt, &filing.FilerRole, &filing.FilerIssue,
-			&filing.FilerPhase, &filing.Class, &filing.RootKey); err != nil {
+		if err := result.Scan(&filing.Key, &filing.At, &filing.Filer, &filing.FilerIssue,
+			&filing.FilerPhase, &filing.Class, &filing.Root); err != nil {
 			return nil, fmt.Errorf("read the Legion filings of %s: %w", project, err)
 		}
 		filings = append(filings, filing)

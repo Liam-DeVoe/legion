@@ -791,7 +791,10 @@ func TestEachProjectsDaemonAnswersItsOwnLegionBoardAndMetrics(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read %s's metrics population: %v", one.project, err)
 		}
-		facts := metrics.ProjectFacts(population, nil)
+		facts := map[string]metrics.IssueFacts{}
+		for key, closed := range metrics.ProjectFactsClosed(population, nil) {
+			facts[key] = closed.Grown(closed.Growth, population.To.Sub(closed.AsOf))
+		}
 		var finished []string
 		for _, key := range slices.Sorted(maps.Keys(facts)) {
 			if facts[key].ClosedAt != nil {

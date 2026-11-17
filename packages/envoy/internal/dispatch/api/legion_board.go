@@ -794,7 +794,7 @@ func legionBoardCompute(p *legionBoardPopulation, now time.Time) legionBoardResp
 	// none; and the age the read measured of the consumer's oldest cursor.
 	issues := make(map[string]legionBoardFacts, len(p.facts))
 	for key, row := range p.facts {
-		hours := row.HoursByPhase
+		hours := row.PhaseHours
 		if hours == nil {
 			// A row whose work took no measured time carries {} rather than null, as the
 			// settings block does, so a page reads one shape.
@@ -802,7 +802,7 @@ func legionBoardCompute(p *legionBoardPopulation, now time.Time) legionBoardResp
 		}
 		issues[key] = legionBoardFacts{
 			OpenedAt: row.OpenedAt.UTC(), ClosedAt: legionFactTime(row.ClosedAt), HoursByPhase: hours,
-			WorkHours: row.WorkHours, ReviewRounds: row.ReviewRounds, RootKey: row.RootKey,
+			WorkHours: row.WorkHours, ReviewRounds: row.ReviewRounds, RootKey: row.Tree,
 			TreeDepth: row.TreeDepth, SlotHours: row.SlotHours, WaitingReason: row.WaitingReason,
 			WorkFirstAt: legionFactTime(row.WorkFirstAt), WorkLastAt: legionFactTime(row.WorkLastAt),
 			UpdatedAt: row.UpdatedAt.UTC(),

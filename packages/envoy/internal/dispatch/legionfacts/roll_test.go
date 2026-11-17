@@ -5,6 +5,8 @@ import (
 	"slices"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/dispatch/legion/metrics"
 )
 
 // writers is the build each stored row of the history's project records as its writer, by key.
@@ -144,13 +146,16 @@ func TestARollEndsWithEveryRowTheNewerBuildsAndNoBuildWritesWithNoInput(t *testi
 		t.Fatalf("%s holds a filing a Legion session made, so the older build computes one for it and this case examines nothing", kept)
 	}
 	if _, err := WriteProject(t.Context(), older.database.Pool, ProjectWrite{Project: project, Build: otherBuild, Rows: []Row{{
-		Project: project, Issue: kept, OpenedAt: newer.at.Add(-48 * time.Hour), RootKey: kept, AsOf: newer.at, UpdatedAt: newer.at,
+		Project: project, Issue: kept, UpdatedAt: newer.at, ClosedFacts: metrics.ClosedFacts{
+			IssueFacts: metrics.IssueFacts{OpenedAt: newer.at.Add(-48 * time.Hour), Root: true, Tree: kept}, AsOf: newer.at,
+		},
 	}}}); err != nil {
 		t.Fatalf("write the newer build's row of %s: %v", kept, err)
 	}
 	if err := WriteFilings(t.Context(), older.database.Pool, FilingsWrite{Project: project, Build: otherBuild, Filings: []Filing{{
-		Project: project, Issue: kept, FiledAt: newer.at.Add(-time.Hour), FilerRole: "implementer",
-		FilerIssue: older.fixture.Open[0], Class: "out_of_tree", RootKey: kept,
+		Project: project, IssueFiling: metrics.IssueFiling{FiledIssue: metrics.FiledIssue{
+			Key: kept, At: newer.at.Add(-time.Hour), Filer: "implementer", FilerIssue: older.fixture.Open[0], Class: "out_of_tree",
+		}, Root: kept},
 	}}}); err != nil {
 		t.Fatalf("write the newer build's filing of %s: %v", kept, err)
 	}
@@ -169,7 +174,9 @@ func TestARollEndsWithEveryRowTheNewerBuildsAndNoBuildWritesWithNoInput(t *testi
 		t.Fatalf("the last tree %v holds no issue no Legion role worked or filed apart from %s and %s, so the lone filing case examines nothing", lastTree, kept, issue)
 	}
 	if err := WriteFilings(t.Context(), older.database.Pool, FilingsWrite{Project: project, Build: testBuild, Filings: []Filing{{
-		Project: project, Issue: lone, FiledAt: newer.at.Add(-time.Hour), FilerRole: "controller", Class: "by_the_controller", RootKey: lone,
+		Project: project, IssueFiling: metrics.IssueFiling{FiledIssue: metrics.FiledIssue{
+			Key: lone, At: newer.at.Add(-time.Hour), Filer: "controller", Class: "by_the_controller",
+		}, Root: lone},
 	}}}); err != nil {
 		t.Fatalf("write the older build's filing of %s: %v", lone, err)
 	}

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/legion/metrics"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -32,7 +33,9 @@ func workedAt(day, hour int) time.Time {
 // workedRow is one issue's row carrying the span of its measured work and its close, nil while it
 // is open. A nil first and last is an issue with no measured work, which still has a row.
 func workedRow(issue string, first, last, closed *time.Time) Row {
-	return Row{Project: factsProject, Issue: issue, OpenedAt: factsOpened, WorkFirstAt: first, WorkLastAt: last, ClosedAt: closed}
+	return Row{Project: factsProject, Issue: issue, ClosedFacts: metrics.ClosedFacts{IssueFacts: metrics.IssueFacts{
+		OpenedAt: factsOpened, WorkFirstAt: first, WorkLastAt: last, ClosedAt: closed,
+	}}}
 }
 
 // changeLogHead is the newest change the log holds once the outbox is drained, which a check reads

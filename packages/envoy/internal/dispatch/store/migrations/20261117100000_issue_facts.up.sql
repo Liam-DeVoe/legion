@@ -9,19 +9,19 @@
 --                   are the primary key, which is also the board's read of one project.
 --   opened_at       when the issue was created, and closed_at when it closed, or null while it
 --                   is open. Both come from the issue's own row in the issues table.
---   hours_by_phase  the issue's work hours by board column, as legion/metrics.ProjectFacts
+--   hours_by_phase  the issue's work hours by board column, as legion/metrics.ProjectFactsClosed
 --                   shares them out, each hour counted once. A column with no hours is absent,
 --                   so an issue whose work took no measured time holds an empty object and
 --                   still has a row: a row means Legion worked the issue.
 --   work_hours      the work time those hours come out of, which is metric 1's own number
 --                   (legion/metrics.IssueFacts.WorkHours).
 --   review_rounds   how many times the issue entered reviewing, the same count metric 3 reports.
---   root_key        the root of the issue's tree (legion.TreeRoot, as ProjectFacts answers it).
---                   An issue that is its own tree's root holds its own key.
+--   root_key        the root of the issue's tree (legion.TreeRoot, as the facts computation
+--                   answers it). An issue that is its own tree's root holds its own key.
 --   tree_depth      how many child_of links lie between the issue and that root, zero for the
---                   root itself, walked over the population's parent links (ProjectFacts).
+--                   root itself, walked over the population's parent links.
 --   slot_hours      how long the issue has held an admission slot of its own, measured from the
---                   history of its `slot` observations (ProjectFacts, over legion_observations).
+--                   history of its `slot` observations (over legion_observations).
 --   waiting_reason  why the issue waits — ready, slot, blocked or person — or null where it
 --                   waits on nothing, by the card rule the board draws.
 --   work_first_at   the first and last moment of the issue's measured work. They name the days
@@ -42,7 +42,13 @@
 --
 -- issue_facts_cursor holds one row per named cursor: where the consumer of several feeds stopped
 -- in each, so a restart takes up where the last pass left off rather than reading a feed again
--- from its start.
+-- from its start. updated_at is the moment the pass that last wrote the row ran at, which every
+-- pass stamps whether or not its feed held anything new. at is, on the `delivery_changes` row,
+-- when the change at that position was recorded (its delivery_changes.at), and null on the other
+-- rows and for a position no change holds: a pass that finds the change at its cursor gone from
+-- the log, or another change at its seq, reads the two to tell a change pruned after its 24 hours
+-- (delivery.PruneChanges), which loses nothing, from a log that lost changes the cursor never
+-- read (delivery.CursorLost).
 --
 -- Two new tables: nothing existing is read, locked or rewritten, and the release before this one
 -- neither reads nor writes either of them, so the two builds roll together (cmd/dispatch/README.md,
@@ -69,5 +75,6 @@ create index issue_facts_open on issue_facts (project_key, issue_key) where clos
 create table issue_facts_cursor (
     name text primary key,
     position bigint not null default 0,
+    at timestamptz,
     updated_at timestamptz not null default now()
 );

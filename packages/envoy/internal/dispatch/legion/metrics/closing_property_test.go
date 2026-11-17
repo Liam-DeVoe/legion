@@ -1,4 +1,4 @@
-package legionfacts
+package metrics
 
 import (
 	"fmt"
@@ -10,7 +10,6 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/legion/legiontest"
-	"github.com/sjawhar/envoy/internal/dispatch/legion/metrics"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -33,10 +32,11 @@ const closingTolerance = 0.1
 //     `null` mark a read that drops a field leaves) before its close, so the child's wait on a
 //     person runs on through that read to the root's close.
 //
-// Each is written before the stored rows are computed, at or before the history's end, and the
-// history writes nothing after them.
+// Each is written at or before the history's end, and the history writes nothing after them.
 type closingHistory struct {
-	history
+	database *store.Store
+	fixture  legiontest.Fixture
+	now      time.Time
 	// cases names the open issue of each running part, by what runs.
 	cases map[string]string
 }
@@ -48,7 +48,7 @@ func seedClosingHistory(t *testing.T) closingHistory {
 	fixture := legiontest.Seed(t, database.Pool, legiontest.Spec{
 		Project: "LEGION", Trees: 6, Now: now, Queued: true, Parked: true, Merged: true,
 	})
-	seeded := closingHistory{history: history{database: database, fixture: fixture, now: now}, cases: map[string]string{}}
+	seeded := closingHistory{database: database, fixture: fixture, now: now, cases: map[string]string{}}
 	exec := func(what, statement string, args ...any) {
 		t.Helper()
 		if _, err := database.Pool.Exec(t.Context(), statement, args...); err != nil {
@@ -111,9 +111,9 @@ func seedClosingHistory(t *testing.T) closingHistory {
 	// The last tree's root is recorded in `awaiting_person` five hours before its close, after its
 	// open child's own newest input, and read with no phase an hour later. A `null` mark ends no
 	// wait (the timeline's phaseStretches), so the child waits on a person until the root's `done`
-	// at its close, which falls more than an hour past the first UTC midnight after that read: a
-	// row closed at the read would grow the wait over the hour its rate is measured in and on past
-	// the close.
+	// at its close, which falls more than an hour past the first UTC midnight after that read:
+	// facts closed at the read would grow the wait over the hour their rate is measured in and on
+	// past the close.
 	waitedOn, beneath := fixture.Roots[len(fixture.Roots)-1], fixture.Open[len(fixture.Open)-1]
 	var closedAt time.Time
 	if err := database.Pool.QueryRow(t.Context(), `select closed_at from issues where key = $1`, waitedOn).Scan(&closedAt); err != nil {
@@ -141,96 +141,86 @@ func closingMoments(asOf time.Time) []time.Time {
 	}
 }
 
-// computedAt is metrics.ProjectFacts of the project over the history's unchanged inputs, as a
-// read made at each moment answers them, each moment read once.
+// computedAt is the computation of the project's facts at a moment (factsAt) over the history's
+// unchanged inputs, as a read made at each moment answers them, each moment read once.
 type computedAt struct {
 	t       *testing.T
 	pool    *store.Pool
 	project string
-	held    map[time.Time]map[string]metrics.IssueFacts
+	held    map[time.Time]map[string]IssueFacts
 }
 
-func (c *computedAt) at(moment time.Time) map[string]metrics.IssueFacts {
+func (c *computedAt) at(moment time.Time) map[string]IssueFacts {
 	c.t.Helper()
 	if facts, held := c.held[moment]; held {
 		return facts
 	}
-	population, err := metrics.ReadProject(c.t.Context(), c.pool, c.project, moment)
+	population, err := ReadProject(c.t.Context(), c.pool, c.project, moment)
 	if err != nil {
 		c.t.Fatalf("read the population at %s: %v", moment.UTC(), err)
 	}
-	facts := metrics.ProjectFacts(population, nil)
+	facts := factsAt(population, nil)
 	c.held[moment] = facts
 	return facts
 }
 
-// TestAStoredRowClosedAtAnyMomentIsTheComputationAtThatMoment is the property R21 rests on, over
+// TestFactsClosedAtAnyMomentAreTheComputationAtThatMoment is the property R21 rests on, over
 // every open issue of the facts fixtures with each running part an open issue can be left in
-// (closingHistory), and at clock times a minute, two hours and three days after each row's closing
-// moment and a minute on either side of a UTC midnight, with no input in between:
+// (closingHistory), and at clock times a minute, two hours and three days after each issue's
+// closing moment and a minute on either side of a UTC midnight, with no input in between:
 //
-//	(a) the stored row closed at the moment (Row.At) is metrics.ProjectFacts computed at that
-//	    moment over the same inputs, field for field, to a tenth of an hour and exactly for
-//	    counts;
+//	(a) the facts ProjectFactsClosed answers, grown to the moment by the one computation a
+//	    reader of a stored row makes (IssueFacts.Grown, which legionfacts' Row.At calls), are
+//	    the computation run at that moment over the same inputs (factsOf), field for field, to a
+//	    tenth of an hour and exactly for counts;
 //	(b) each fact the computation answers at the moment is its value at the closing moment plus
-//	    its rate times the time elapsed (metrics.ProjectFactsClosed), read with this test's own
-//	    arithmetic rather than with Row.At. It fails the day a rule of the computation comes to
-//	    depend on elapsed time, and the day a closing moment misses an input of the issue's tree.
-func TestAStoredRowClosedAtAnyMomentIsTheComputationAtThatMoment(t *testing.T) {
+//	    its rate times the time elapsed, read with this test's own arithmetic rather than with
+//	    Grown. It fails the day a rule of the computation comes to depend on elapsed time, and
+//	    the day a closing moment misses an input of the issue's tree.
+func TestFactsClosedAtAnyMomentAreTheComputationAtThatMoment(t *testing.T) {
 	seeded := seedClosingHistory(t)
 	pool, project := seeded.database.Pool, seeded.fixture.Project
-	rows, _, err := ComputeProject(t.Context(), pool, project, seeded.now)
-	if err != nil {
-		t.Fatalf("compute the project's facts: %v", err)
-	}
-	if _, err := WriteProject(t.Context(), pool, ProjectWrite{Project: project, Rows: rows, Whole: true, Build: testBuild}); err != nil {
-		t.Fatalf("write the facts: %v", err)
-	}
-	stored, err := readWhole(t.Context(), pool, project)
-	if err != nil {
-		t.Fatalf("read the stored facts: %v", err)
-	}
-	population, err := metrics.ReadProject(t.Context(), pool, project, seeded.now)
+	population, err := ReadProject(t.Context(), pool, project, seeded.now)
 	if err != nil {
 		t.Fatalf("read the population: %v", err)
 	}
-	closed := metrics.ProjectFactsClosed(population, nil)
-	computed := &computedAt{t: t, pool: pool, project: project, held: map[time.Time]map[string]metrics.IssueFacts{}}
+	closed := ProjectFactsClosed(population, nil)
+	computed := &computedAt{t: t, pool: pool, project: project, held: map[time.Time]map[string]IssueFacts{}}
 
 	open := []string{}
-	for _, key := range slices.Sorted(maps.Keys(stored)) {
-		if stored[key].ClosedAt == nil {
+	for _, key := range slices.Sorted(maps.Keys(closed)) {
+		if closed[key].ClosedAt == nil {
 			open = append(open, key)
 		}
 	}
 	for what, key := range seeded.cases {
 		if !slices.Contains(open, key) {
-			t.Fatalf("%s is %s and holds no open stored row: this test examined nothing of it", key, what)
+			t.Fatalf("%s is %s and has no open facts: this test examined nothing of it", key, what)
 		}
-		if len(stored[key].Growth) == 0 {
-			t.Errorf("%s is %s and its row stores no growth", key, what)
+		if len(closed[key].Growth) == 0 {
+			t.Errorf("%s is %s and its facts carry no growth", key, what)
 		}
 	}
 
 	compared, differedA, differedB := 0, 0, 0
 	for _, key := range open {
-		row := stored[key]
-		for _, moment := range closingMoments(row.AsOf) {
+		facts := closed[key]
+		for _, moment := range closingMoments(facts.AsOf) {
 			want, has := computed.at(moment)[key]
 			if !has {
-				t.Errorf("%s holds an open stored row and the computation at %s answers no facts of it", key, moment.UTC())
+				t.Errorf("%s has open facts and the computation at %s answers no facts of it", key, moment.UTC())
 				continue
 			}
 			compared++
-			for _, difference := range factsDifferences(row.At(moment).Facts(), want) {
+			for _, difference := range factsDifferences(facts.Grown(facts.Growth, moment.Sub(facts.AsOf)), want) {
 				differedA++
 				t.Errorf("(a) %s closed at %s (%s after its closing moment %s): %s",
-					key, moment.UTC(), moment.Sub(row.AsOf), row.AsOf.UTC(), difference)
+					key, moment.UTC(), moment.Sub(facts.AsOf), facts.AsOf.UTC(), difference)
 			}
-			for _, difference := range growthDifferences(closed[key], want, moment) {
+			for _, difference := range growthDifferences(facts, want, moment) {
 				differedB++
 				t.Errorf("(b) %s at %s (%s after its closing moment %s): %s",
-					key, moment.UTC(), moment.Sub(closed[key].AsOf), closed[key].AsOf.UTC(), difference)
+					key, moment.UTC(), moment.Sub(facts.AsOf), facts.AsOf.UTC(), difference)
 			}
 		}
 	}
@@ -238,7 +228,7 @@ func TestAStoredRowClosedAtAnyMomentIsTheComputationAtThatMoment(t *testing.T) {
 		t.Fatal("no open issue was compared at any moment: this test examined nothing")
 	}
 	for what, key := range seeded.cases {
-		t.Logf("%s: %s, closed at %s, growth %v", what, key, stored[key].AsOf.UTC(), stored[key].Growth)
+		t.Logf("%s: %s, closed at %s, growth %v", what, key, closed[key].AsOf.UTC(), closed[key].Growth)
 	}
 	t.Logf("%d open issues read at 5 moments each, %d comparisons: %d differences of (a), %d of (b)",
 		len(open), compared, differedA, differedB)
@@ -246,10 +236,10 @@ func TestAStoredRowClosedAtAnyMomentIsTheComputationAtThatMoment(t *testing.T) {
 
 // factsDifferences names each fact got and want hold differently: the hours to a tenth of an
 // hour, and the rest as otherDifferences reads them.
-func factsDifferences(got, want metrics.IssueFacts) []string {
+func factsDifferences(got, want IssueFacts) []string {
 	differences := []string{}
 	hours, wanted := flatHours(got), flatHours(want)
-	for _, name := range slices.Sorted(maps.Keys(eitherSide(hours, wanted))) {
+	for _, name := range slices.Sorted(maps.Keys(bothKeys(hours, wanted))) {
 		if math.Abs(hours[name]-wanted[name]) > closingTolerance {
 			differences = append(differences, fmt.Sprintf("%s is %g and the computation's %g", name, hours[name], wanted[name]))
 		}
@@ -259,7 +249,7 @@ func factsDifferences(got, want metrics.IssueFacts) []string {
 
 // otherDifferences names each fact but the hours that got and want hold differently: the moments
 // to a tenth of an hour, and the counts, the tree and the flags exactly.
-func otherDifferences(got, want metrics.IssueFacts) []string {
+func otherDifferences(got, want IssueFacts) []string {
 	differences := []string{}
 	for _, moment := range []struct {
 		name      string
@@ -271,7 +261,7 @@ func otherDifferences(got, want metrics.IssueFacts) []string {
 	} {
 		switch {
 		case (moment.got == nil) != (moment.want == nil):
-			differences = append(differences, fmt.Sprintf("%s is %v and the computation's %v", moment.name, utc(moment.got), utc(moment.want)))
+			differences = append(differences, fmt.Sprintf("%s is %v and the computation's %v", moment.name, utcOf(moment.got), utcOf(moment.want)))
 		case moment.got != nil && math.Abs(moment.got.Sub(*moment.want).Hours()) > closingTolerance:
 			differences = append(differences, fmt.Sprintf("%s is %s and the computation's %s", moment.name, moment.got.UTC(), moment.want.UTC()))
 		}
@@ -284,7 +274,7 @@ func otherDifferences(got, want metrics.IssueFacts) []string {
 		{"tree", got.Tree, want.Tree}, {"tree_depth", got.TreeDepth, want.TreeDepth},
 		{"sent_back", got.SentBack, want.SentBack}, {"children", got.Children, want.Children},
 	}
-	for _, role := range slices.Sorted(maps.Keys(eitherSide(got.Bars, want.Bars))) {
+	for _, role := range slices.Sorted(maps.Keys(bothKeys(got.Bars, want.Bars))) {
 		exact = append(exact, struct {
 			name      string
 			got, want any
@@ -302,11 +292,11 @@ func otherDifferences(got, want metrics.IssueFacts) []string {
 // closed's value at its closing moment grown by its rate over the time elapsed, by this test's
 // own arithmetic: each hours fact and the last moment of work to a tenth of an hour, and every
 // count, flag and other moment as closed holds it.
-func growthDifferences(closed metrics.ClosedFacts, want metrics.IssueFacts, moment time.Time) []string {
+func growthDifferences(closed ClosedFacts, want IssueFacts, moment time.Time) []string {
 	elapsed := moment.Sub(closed.AsOf).Hours()
 	differences := []string{}
 	at, wanted := flatHours(closed.IssueFacts), flatHours(want)
-	for _, name := range slices.Sorted(maps.Keys(eitherSide(at, wanted))) {
+	for _, name := range slices.Sorted(maps.Keys(bothKeys(at, wanted))) {
 		grown := at[name] + closed.Growth[name]*elapsed
 		if math.Abs(grown-wanted[name]) > closingTolerance {
 			differences = append(differences, fmt.Sprintf("%s is %g at the closing moment and grows %g an hour, so %g, and the computation answers %g",
@@ -321,10 +311,11 @@ func growthDifferences(closed metrics.ClosedFacts, want metrics.IssueFacts, mome
 	return append(differences, otherDifferences(unmoved, want)...)
 }
 
-// flatHours is every hours fact of facts by the name metrics.Growth keys it by: its JSON name,
-// and for an entry of a map the entry's key after a dot. It is this test's own list, so a fact
-// the computation comes to grow without this list naming it reads as a difference of (a).
-func flatHours(facts metrics.IssueFacts) map[string]float64 {
+// flatHours is every hours fact of facts by the name Growth keys it by: the field's name in snake
+// case, and for an entry of a map the entry's key after a dot. It is this test's own list rather
+// than hoursFacts, so a fact the computation comes to grow without this list naming it reads as a
+// difference of (a).
+func flatHours(facts IssueFacts) map[string]float64 {
 	flat := map[string]float64{
 		"work_hours": facts.WorkHours, "slot_hours": facts.SlotHours, "parked_hours": facts.ParkedHours,
 		"queued_hours": facts.QueuedHours, "slot_wait_hours": facts.SlotWaitHours,
@@ -344,4 +335,24 @@ func flatHours(facts metrics.IssueFacts) map[string]float64 {
 		flat["idle_by_role."+role] = hours
 	}
 	return flat
+}
+
+// bothKeys is every key either map holds.
+func bothKeys[Left, Right any](left map[string]Left, right map[string]Right) map[string]struct{} {
+	keys := map[string]struct{}{}
+	for key := range left {
+		keys[key] = struct{}{}
+	}
+	for key := range right {
+		keys[key] = struct{}{}
+	}
+	return keys
+}
+
+// utcOf is a moment as a failure prints it: UTC, or nil.
+func utcOf(at *time.Time) any {
+	if at == nil {
+		return nil
+	}
+	return at.UTC()
 }

@@ -283,17 +283,17 @@ func factsAgree(t *testing.T, key string, mine independent.Facts, row Row) int {
 			key, mine.ReviewRounds, row.ReviewRounds)
 		differences++
 	}
-	if mine.Tree != row.RootKey {
+	if mine.Tree != row.Tree {
 		t.Errorf("%s is in tree %s by the independent reading and under root %s by its stored row",
-			key, mine.Tree, row.RootKey)
+			key, mine.Tree, row.Tree)
 		differences++
 	}
 	// A phase one side left out holds no hours of that phase, so the two are compared over every
 	// phase either side names.
-	for _, phase := range slices.Sorted(maps.Keys(eitherSide(mine.PhaseHours, row.HoursByPhase))) {
-		if math.Abs(mine.PhaseHours[phase]-row.HoursByPhase[phase]) > readingHourTolerance {
+	for _, phase := range slices.Sorted(maps.Keys(eitherSide(mine.PhaseHours, row.PhaseHours))) {
+		if math.Abs(mine.PhaseHours[phase]-row.PhaseHours[phase]) > readingHourTolerance {
 			t.Errorf("%s spent %g h in %s by the independent reading and %g h by its stored row",
-				key, mine.PhaseHours[phase], phase, row.HoursByPhase[phase])
+				key, mine.PhaseHours[phase], phase, row.PhaseHours[phase])
 			differences++
 		}
 	}

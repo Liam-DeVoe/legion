@@ -47,9 +47,9 @@ func TestEveryIssueComputedAloneHoldsTheFactsTheProjectComputedWholeWhenADaemonN
 	}
 	// The observation has to have moved the child's root, or the history states nothing and the
 	// comparison below asks the parent chain over again.
-	if wholeRows[child].RootKey != tree {
+	if wholeRows[child].Tree != tree {
 		t.Fatalf("the project computed whole puts %s in the tree of %q and not of %s, so this test never made a rule read a reported tree",
-			child, wholeRows[child].RootKey, tree)
+			child, wholeRows[child].Tree, tree)
 	}
 
 	differed, first := 0, ""

@@ -56,7 +56,7 @@ func TestTheConsumerStoresEachLegionFilingAsMetricsClassesItAndMovesItsRootWithI
 		switch {
 		case !has:
 			t.Errorf("%s was filed by a Legion session of %s and has no stored filing", want.key, project)
-		case got.Class != want.class || got.FilerRole != want.filer || got.FilerPhase != want.phase || got.RootKey != want.root:
+		case got.Class != want.class || got.Filer != want.filer || got.FilerPhase != want.phase || got.Root != want.root:
 			t.Errorf("%s is stored as %s, want class %s by %s in %q under %s",
 				want.key, showFiling(got), want.class, want.filer, want.phase, want.root)
 		}
@@ -69,7 +69,7 @@ func TestTheConsumerStoresEachLegionFilingAsMetricsClassesItAndMovesItsRootWithI
 	run.pass(t)
 	moved := run.filings(t)
 	compareFilings(t, run, project, "the pass after the move", moved)
-	if got := moved[outside]; got.RootKey != otherRoot || got.Class != metrics.ClassOutOfTree {
+	if got := moved[outside]; got.Root != otherRoot || got.Class != metrics.ClassOutOfTree {
 		t.Errorf("%s moved under %s and is stored as %s, want root %s and the class out_of_tree",
 			outside, otherRoot, showFiling(got), otherRoot)
 	}
@@ -80,7 +80,7 @@ func TestTheConsumerStoresEachLegionFilingAsMetricsClassesItAndMovesItsRootWithI
 	}
 	t.Logf("%s: %d filings after the whole read, %d after the events feed's four (%s %s, %s %s, %s %s, %s %s), and %s's root went %s to %s after its parent link moved",
 		project, len(whole), len(added), byController, added[byController].Class, later, added[later].Class,
-		outside, added[outside].Class, across, added[across].Class, outside, added[outside].RootKey, moved[outside].RootKey)
+		outside, added[outside].Class, across, added[across].Class, outside, added[outside].Root, moved[outside].Root)
 }
 
 // compareFilings holds the stored filings of project to the ones metric 4 classes over a whole
@@ -95,11 +95,9 @@ func compareFilings(t *testing.T, run *consumer, project, when string, stored ma
 	}
 	want := map[string]Filing{}
 	for _, filed := range metrics.ProjectFilings(population) {
-		want[filed.Key] = Filing{
-			Project: project, Issue: filed.Key, FiledAt: filed.At, FilerRole: filed.Filer,
-			FilerIssue: filed.FilerIssue, FilerPhase: filed.FilerPhase, Class: filed.Class,
-			RootKey: population.TreeRoot(filed.Key),
-		}
+		want[filed.Key] = Filing{Project: project, IssueFiling: metrics.IssueFiling{
+			FiledIssue: filed.FiledIssue, Root: population.TreeRoot(filed.Key),
+		}}
 	}
 	if got, wanted := slices.Sorted(maps.Keys(stored)), slices.Sorted(maps.Keys(want)); !slices.Equal(got, wanted) {
 		t.Errorf("%s: the stored filings are %v, want the %v metric 4 classes", when, got, wanted)
@@ -116,9 +114,9 @@ func compareFilings(t *testing.T, run *consumer, project, when string, stored ma
 
 // sameFiling is whether two filings hold the same values, the moment compared as an instant.
 func sameFiling(got, want Filing) bool {
-	return got.Project == want.Project && got.Issue == want.Issue && got.FiledAt.Equal(want.FiledAt) &&
-		got.FilerRole == want.FilerRole && got.FilerIssue == want.FilerIssue &&
-		got.FilerPhase == want.FilerPhase && got.Class == want.Class && got.RootKey == want.RootKey
+	return got.Project == want.Project && got.Key == want.Key && got.At.Equal(want.At) &&
+		got.Filer == want.Filer && got.FilerIssue == want.FilerIssue &&
+		got.FilerPhase == want.FilerPhase && got.Class == want.Class && got.Root == want.Root
 }
 
 // filings is every stored filing of the history's project, by filed issue.
@@ -138,7 +136,7 @@ func (c *consumer) filingsOf(t *testing.T, project string) map[string]Filing {
 	}
 	stored := make(map[string]Filing, len(read))
 	for _, filing := range read {
-		stored[filing.Issue] = filing
+		stored[filing.Key] = filing
 	}
 	return stored
 }
@@ -178,6 +176,6 @@ func roleSession(role, issue string) string {
 // showFiling is one filing written for a failure message.
 func showFiling(filing Filing) string {
 	return fmt.Sprintf("%s filed %s by %s of %q in %q, class %s, root %q",
-		filing.Issue, filing.FiledAt.UTC().Format(time.RFC3339), filing.FilerRole, filing.FilerIssue,
-		filing.FilerPhase, filing.Class, filing.RootKey)
+		filing.Key, filing.At.UTC().Format(time.RFC3339), filing.Filer, filing.FilerIssue,
+		filing.FilerPhase, filing.Class, filing.Root)
 }

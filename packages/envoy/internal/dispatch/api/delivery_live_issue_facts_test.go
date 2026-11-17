@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/legion/metrics"
 	"github.com/sjawhar/envoy/internal/dispatch/legionfacts"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -103,8 +104,10 @@ func TestAnIssueFactsChangeTouchesTheLegionBoardOfItsProject(t *testing.T) {
 func writeIssueFacts(t *testing.T, database *store.Store, project, issue, root string, first, last time.Time, closed *time.Time) {
 	t.Helper()
 	row := legionfacts.Row{
-		Project: project, Issue: issue, OpenedAt: first, ClosedAt: closed, RootKey: root,
-		WorkFirstAt: &first, WorkLastAt: &last, UpdatedAt: time.Now().UTC(),
+		Project: project, Issue: issue, UpdatedAt: time.Now().UTC(),
+		ClosedFacts: metrics.ClosedFacts{IssueFacts: metrics.IssueFacts{
+			OpenedAt: first, ClosedAt: closed, Root: root == issue, Tree: root, WorkFirstAt: &first, WorkLastAt: &last,
+		}},
 	}
 	if _, err := legionfacts.WriteProject(t.Context(), database.Pool,
 		legionfacts.ProjectWrite{Project: project, Rows: []legionfacts.Row{row}, Stated: []string{issue}}); err != nil {
@@ -224,10 +227,11 @@ func writeFactsBatch(t *testing.T, database *store.Store, project string, count 
 		first := at.Add(-time.Duration(number) * time.Minute)
 		last := first.Add(time.Duration(hours * float64(time.Hour)))
 		rows = append(rows, legionfacts.Row{
-			Project: project, Issue: fmt.Sprintf("%s-%d", project, number),
-			OpenedAt: at.Add(-48 * time.Hour), HoursByPhase: map[string]float64{"implementing": hours},
-			WorkHours: hours, RootKey: project + "-1", WorkFirstAt: &first, WorkLastAt: &last,
-			UpdatedAt: at,
+			Project: project, Issue: fmt.Sprintf("%s-%d", project, number), UpdatedAt: at,
+			ClosedFacts: metrics.ClosedFacts{IssueFacts: metrics.IssueFacts{
+				OpenedAt: at.Add(-48 * time.Hour), PhaseHours: map[string]float64{"implementing": hours},
+				WorkHours: hours, Tree: project + "-1", WorkFirstAt: &first, WorkLastAt: &last,
+			}},
 		})
 	}
 	changed, err := legionfacts.WriteProject(t.Context(), database.Pool,

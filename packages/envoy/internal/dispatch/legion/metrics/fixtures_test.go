@@ -103,9 +103,21 @@ func fixture(from, to time.Time, issues ...*Issue) *Population {
 	return population
 }
 
+// factsAt is the facts of every issue factsIssues selects, each computed at the population's end
+// by the one computation (factsOf): the facts at one moment, which ProjectFactsClosed answers
+// closed at each issue's newest input instead, and which these tests compare a rule against.
+func factsAt(population *Population, wanted map[string]bool) map[string]IssueFacts {
+	c := newComputation(population)
+	facts := map[string]IssueFacts{}
+	for issue := range population.factsIssues(wanted) {
+		facts[issue.Key] = c.factsOf(issue)
+	}
+	return facts
+}
+
 // window is what the Legion evals answer of a population's window in one cut, built the way the
 // refresher builds the day rows and the eval routes fold them (evals/legion_days.go): the facts of
-// every issue that finished in the window (ProjectFacts' entries that closed in [From, To)) and
+// every issue that finished in the window (factsAt's entries that closed in [From, To)) and
 // every filing the population read (ProjectFilings), turned into each eval's day parts by the
 // issue's close day and the filing's day, and folded in the cut. finished and filed are the
 // issues and the filings the cut keeps, in the population's order, which the eval items route
@@ -125,7 +137,7 @@ func windowOf(population *Population, cut Scope) window {
 	dayOf := func(at time.Time) time.Time { return at.UTC().Truncate(24 * time.Hour) }
 	closedOn := map[time.Time][]IssueFacts{}
 	filedOn := map[time.Time][]IssueFiling{}
-	facts := ProjectFacts(population, nil)
+	facts := factsAt(population, nil)
 	for _, key := range population.Keys {
 		issue, held := facts[key]
 		if !held || issue.ClosedAt == nil || issue.ClosedAt.Before(population.From) || !issue.ClosedAt.Before(population.To) {

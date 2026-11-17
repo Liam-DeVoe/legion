@@ -176,12 +176,14 @@ func (h *deliveryHub) catchUp(g *hubGeneration) {
 // It first moves the change log's pending rows into the log (delivery.DrainPending): an eval or
 // Legion write's change rows wait there until a drain moves them, their notification wakes this
 // hub at the write's commit, and the write's own drain may not have run, its process killed
-// between the two. Before each read it checks for a lost cursor: a reset log, one holding no row as
-// far as the cursor, or one whose row at the cursor was recorded at another time than the hub read
-// (a TRUNCATE ... RESTART IDENTITY refilled past it, e2e/seed.ts:150); or a log pruned past changes
-// the hub never read, its row at the cursor gone while the hub had read nothing for longer than
-// the log's retention (a catch-up failing for a day), since the prune may then have taken changes
-// after the cursor too. A lost cursor moves to the newest row and marks every view dirty.
+// between the two. Before each read it checks for a lost cursor by the log's one rule
+// (delivery.CursorLost), on the hub's own clock for when it last read the log: a reset log, one
+// holding rows whose newest stands below the cursor, or whose row at the cursor is gone or was
+// recorded at another time than the hub read (a TRUNCATE ... RESTART IDENTITY refilled past it,
+// e2e/seed.ts:150); or a log pruned past changes the hub never read, its row at the cursor gone
+// while the hub had read nothing for longer than the log's retention (a catch-up failing for a
+// day), since the prune may then have taken changes after the cursor too. A lost cursor moves to
+// the newest row and marks every view dirty.
 func (h *deliveryHub) catchUpChanges(g *hubGeneration) error {
 	ctx, pool := g.readContext(), h.server.deps.Store.Pool
 	if _, err := delivery.DrainPending(ctx, pool); err != nil {
@@ -189,23 +191,20 @@ func (h *deliveryHub) catchUpChanges(g *hubGeneration) error {
 	}
 	for {
 		h.mu.Lock()
-		seq, at, readAt := g.changeSeq, g.changeAt, g.changeRead
+		cursor := delivery.ChangeCursor{Seq: g.changeSeq, ReadAt: g.changeRead}
+		if at := g.changeAt; !at.IsZero() {
+			cursor.At = &at
+		}
 		h.mu.Unlock()
-		latest, err := delivery.LatestChangeSeq(ctx, pool)
+		lost, err := delivery.CursorLost(ctx, pool, cursor, h.clock.Now())
 		if err != nil {
 			return err
 		}
-		reset := latest < seq
-		now := h.clock.Now()
-		young, stalled := now.Sub(at) < delivery.ChangeRetention, now.Sub(readAt) > delivery.ChangeRetention
-		if !reset && seq > 0 && (young || stalled) {
-			read, err := delivery.ChangeAt(ctx, pool, seq)
+		if lost {
+			latest, err := delivery.LatestChangeSeq(ctx, pool)
 			if err != nil {
 				return err
 			}
-			reset = read == nil || (young && !read.Equal(at))
-		}
-		if reset {
 			var latestAt *time.Time
 			if latest > 0 {
 				if latestAt, err = delivery.ChangeAt(ctx, pool, latest); err != nil {
@@ -220,11 +219,11 @@ func (h *deliveryHub) catchUpChanges(g *hubGeneration) error {
 			h.dirtyAllLocked(g, now)
 			return nil
 		}
-		changes, err := delivery.ChangesSince(ctx, pool, seq, deliveryLivePage)
+		changes, err := delivery.ChangesSince(ctx, pool, cursor.Seq, deliveryLivePage)
 		if err != nil {
 			return err
 		}
-		now = h.clock.Now()
+		now := h.clock.Now()
 		h.mu.Lock()
 		for _, change := range changes {
 			for _, view := range g.views {
