@@ -3245,8 +3245,9 @@ func TestListenerDeliveryHandler_RoleMessageHeldAtShutdownIsKept(t *testing.T) {
 // A message the lane has held up to roleHoldBound is not forwarded again: an attempt after the
 // stream's duplicate window could store a second copy of a forward an earlier attempt stored while
 // its answer was lost. Its next hold keeps it on its role's kept lane instead, under the reason
-// held_past_bound, and frees its slot. The listener's clock moves to the bound between the two
-// forwards, so the second hold is the one that crosses it.
+// held_past_bound, and frees its slot. The lane dates the message by the listener's clock when it
+// takes it; the second forward moves that clock to the bound before it fails, so the hold after it
+// is past the bound and the hold after the first is not, whatever the scheduler does in between.
 func TestListenerDeliveryHandler_RoleMessageHeldToItsBoundIsKept(t *testing.T) {
 	harness := newListenerDeliveryHarness(t)
 	const role = "held-to-bound"
@@ -3259,12 +3260,11 @@ func TestListenerDeliveryHandler_RoleMessageHeldToItsBoundIsKept(t *testing.T) {
 	var clock atomic.Int64
 	clock.Store(time.Now().UnixNano())
 	var forwards atomic.Int32
-	first := make(chan struct{}, 1)
 	cfg := harness.config
 	cfg.now = func() time.Time { return time.Unix(0, clock.Load()) }
 	cfg.forwardRole = inlineForward(func(string, contracts.Envelope, string, time.Duration) error {
-		if forwards.Add(1) == 1 {
-			first <- struct{}{}
+		if forwards.Add(1) == 2 {
+			clock.Add(int64(roleHoldBound))
 		}
 		return errors.New("nats: connection closed")
 	})
@@ -3274,14 +3274,6 @@ func TestListenerDeliveryHandler_RoleMessageHeldToItsBoundIsKept(t *testing.T) {
 	item.Payload = `{"type":"worker-queued"}`
 
 	handler(&natsgo.Msg{Data: marshalListenerEnvelope(t, item)})
-	select {
-	case <-first:
-	case <-time.After(20 * time.Second):
-		t.Fatal("the forward was never made")
-	}
-	// The first hold dated the message by the clock as it stood; the clock now stands at the
-	// bound, so the hold after the next failed forward is past it.
-	clock.Add(int64(roleHoldBound))
 	cfg.roleForwards.settled(t)
 
 	logs := harness.logs.String()
@@ -3305,10 +3297,11 @@ func TestListenerDeliveryHandler_RoleMessageHeldToItsBoundIsKept(t *testing.T) {
 
 // The lane holds at most as many role messages as it has slots. With NATS refusing every forward,
 // three slots fill with three held messages, and the handler that takes a fourth waits for a slot
-// rather than dropping it: in the listener that leaves later role messages in the lane's own
-// subscription. Once forwards are stored again the held ones end, the fourth takes a slot, and the
-// holder gets all four.
-func TestListenerDeliveryHandler_RoleMessagesHeldAtTheLaneBoundWaitAndAreNotDropped(t *testing.T) {
+// instead of queueing it past the bound: in the listener the role messages after it wait in the
+// lane's own subscription. Once forwards are stored again the held ones end, the fourth takes a
+// slot, and the holder gets all four. A listener that stops while the handler waits keeps the
+// messages instead (TestRoleLaneDrainKeepsEveryMessageWhileEverySlotIsHeld).
+func TestListenerDeliveryHandler_TheLaneHandlerWaitsForASlotWhileEveryOneIsHeld(t *testing.T) {
 	harness := newListenerDeliveryHarness(t)
 	const (
 		role  = "held-to-capacity"
@@ -3527,24 +3520,52 @@ func TestListenerDeliveryHandler_RoleForwardDedupeSkipsCapabilityRecheckOnRedeli
 // leaves the stream's copy unknown, and the lane holds the message and forwards it again
 // (roleForwardEnded). Each case fails the first forward with its error and lets a second one be
 // stored: an ending error is delivery_failed with one forward made, and a holding error is
-// delivered by the second forward with no exception. No forward draws a receipt
-// (startRoleForward), so none is reported receipt_timeout.
+// delivered by the second forward with no exception. The stream's answers are wrapped as the bus's
+// PendingForward.Wait wraps them (storedRefusal names a full stream and an id still in process),
+// with nats-server 2.15.1's codes. No responders, and an acknowledgement that did not come, end a
+// forward only when a read of the deployed stream says it does not capture the holder's subject:
+// the rows that take the agent subjects out of the stream are the controls of the rows that keep
+// them, with the same error. No forward draws a receipt (startRoleForward), so none is reported
+// receipt_timeout.
 func TestListenerDeliveryHandler_RoleForwardFailureEndsOnlyUnderARule(t *testing.T) {
+	answered := func(status, code int, description string, names ...error) error {
+		var err error = &natsgo.APIError{Code: status, ErrorCode: natsgo.ErrorCode(code), Description: description}
+		for _, name := range names {
+			err = fmt.Errorf("%w: %w", name, err)
+		}
+		return fmt.Errorf("%w: %w", bus.ErrForwardNotStored, err)
+	}
+	noResponders := fmt.Errorf("%w: %w", bus.ErrForwardNotStored, natsgo.ErrNoResponders)
 	cases := []struct {
 		name       string
 		forwardErr error
+		// uncaptured takes the agent subjects out of the stream before the forward, so a read of
+		// the deployed stream says it does not capture the holder's subject.
+		uncaptured bool
 		ends       bool
 	}{
-		{"raw nats.ErrTimeout from the flush", natsgo.ErrTimeout, false},
-		{"flush timeout wrapped by the client", fmt.Errorf("bus: flush publish to \"agent.x\": %w", natsgo.ErrTimeout), false},
-		{"a connection that closed", errors.New("nats: connection closed"), false},
-		{"an acknowledgement that did not come for a subject the stream captures", bus.ErrForwardNotStored, false},
-		{"an acknowledgement that did not come, wrapped", fmt.Errorf("forward: %w", bus.ErrForwardNotStored), false},
-		{"a publish not known to have been accepted", fmt.Errorf("%w: %w", bus.ErrForwardNotStored, bus.ErrPublishUnconfirmed), false},
-		{"no responders", fmt.Errorf("%w: %w", bus.ErrForwardNotStored, natsgo.ErrNoResponders), true},
-		{"the stream's error answer", fmt.Errorf("%w: %w", bus.ErrForwardNotStored, &natsgo.APIError{Code: 503, ErrorCode: 10077, Description: "maximum messages exceeded"}), true},
-		{"a refused envelope", fmt.Errorf("forward: %w", bus.ErrRefused), true},
-		{"a denied subject", fmt.Errorf("forward: %w", bus.ErrPublishDenied), true},
+		{"raw nats.ErrTimeout from the flush", natsgo.ErrTimeout, false, false},
+		{"flush timeout wrapped by the client", fmt.Errorf("bus: flush publish to \"agent.x\": %w", natsgo.ErrTimeout), false, false},
+		{"a connection that closed", errors.New("nats: connection closed"), false, false},
+		{"an acknowledgement that did not come for a subject the stream captures", bus.ErrForwardNotStored, false, false},
+		{"an acknowledgement that did not come, wrapped", fmt.Errorf("forward: %w", bus.ErrForwardNotStored), false, false},
+		{"an acknowledgement that did not come for a subject the stream does not capture", bus.ErrForwardNotStored, true, true},
+		{"a publish not known to have been accepted", fmt.Errorf("%w: %w", bus.ErrForwardNotStored, bus.ErrPublishUnconfirmed), false, false},
+		{"no responders for a subject the stream captures, as a leader change answers", noResponders, false, false},
+		{"no responders for a subject the stream does not capture", noResponders, true, true},
+		{"a full stream", answered(503, 10077, "maximum bytes exceeded", bus.ErrStreamFull), false, false},
+		{"an id still in process under an earlier publish", answered(409, 10158, "duplicate message id is in process", bus.ErrDuplicateInProcess), false, false},
+		{"a store failure of a message limit", answered(503, 10077, "maximum messages exceeded"), false, false},
+		{"a closed store", answered(503, 10077, "store is closed"), false, false},
+		{"insufficient resources", answered(503, 10023, "insufficient resources"), false, false},
+		{"an account past its limits", answered(400, 10002, "resource limits exceeded for account"), false, false},
+		{"a clustered stream's sequence mismatch", answered(503, 10063, "expected stream sequence does not match"), false, false},
+		{"a message past the stream's maximum size", answered(400, 10054, "message size exceeds maximum allowed"), false, true},
+		{"headers past 64 KiB", answered(400, 10097, "header size exceeds maximum allowed of 64k"), false, true},
+		{"a message too large for the store", answered(503, 10077, "message too large"), false, true},
+		{"a sealed stream", answered(400, 10109, "invalid operation on sealed stream"), false, true},
+		{"a refused envelope", fmt.Errorf("forward: %w", bus.ErrRefused), false, true},
+		{"a denied subject", fmt.Errorf("forward: %w", bus.ErrPublishDenied), false, true},
 	}
 	for i, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -3556,6 +3577,19 @@ func TestListenerDeliveryHandler_RoleForwardFailureEndsOnlyUnderARule(t *testing
 			}
 			if _, err := harness.registry.SetRole(sessionID, "test-machine", role, false); err != nil {
 				t.Fatalf("claim role: %v", err)
+			}
+			if tc.uncaptured {
+				info, err := harness.client.JS().StreamInfo(bus.Stream)
+				if err != nil {
+					t.Fatalf("read the stream: %v", err)
+				}
+				config := info.Config
+				config.Subjects = slices.DeleteFunc(slices.Clone(config.Subjects), func(subject string) bool {
+					return strings.HasPrefix(subject, contracts.AgentTopicPrefix)
+				})
+				if _, err := harness.client.JS().UpdateStream(&config); err != nil {
+					t.Fatalf("take the agent subjects out of the stream: %v", err)
+				}
 			}
 			var forwards atomic.Int32
 			cfg := harness.config

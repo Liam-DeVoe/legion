@@ -626,19 +626,20 @@ func resolveCoreRoleHolder(cfg listenerDeliveryHandlerConfig, item contracts.Env
 // arbiter, or the publish route, already sent to its holder's agent subject
 // (roleForwardDedupePrefix) is not arbitrated again: the holder has it, and a lane that takes the
 // frame once more - an operator re-publishing it - disposes of it here. Every other envelope is
-// delivered (deliverRoleMessage). Every branch ACKs: role lanes have no durable transit to retry
-// against, so the lane holds a message it could not finish itself (roleForwarder.hold), and
-// reports one a rule refused via a delivery exception instead of a NAK.
+// delivered (deliverRoleMessage), dated by the listener's clock as the lane takes it, which is what
+// the bound on holding it counts from (roleHoldBound). Every branch ACKs: role lanes have no
+// durable transit to retry against, so the lane holds a message it could not finish itself
+// (roleForwarder.hold), and reports one a rule refused via a delivery exception instead of a NAK.
 func roleTopicDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMessage, item contracts.Envelope) {
 	if !strings.HasPrefix(item.DedupeKey, roleForwardDedupePrefix) {
-		deliverRoleMessage(cfg, item, roleHeld{})
+		deliverRoleMessage(cfg, item, roleHeld{since: cfg.now()})
 	}
 	message.finalize(false)
 }
 
 // deliverRoleMessage arbitrates a role message to whichever session currently holds the role,
 // forwarding it to the holder's agent subject, where the stream stores it for the holder's session
-// consumer. held is the message's place among the messages the lane holds: the zero value for one
+// consumer. held is the message's place among the messages the lane holds: no attempts for one
 // the lane just took, and the attempts so far for one it held (roleForwarder.hold), whose slot
 // this delivery carries on and frees when the message ends here. Before forwarding it judges the
 // message by beforeForward, the rules the publish route applies too, with the dedupe and attempt
@@ -649,8 +650,15 @@ func roleTopicDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMessag
 // forwarding needs that guard of its own because it never goes through /v1/messages/send. The
 // forward itself is handed to the role forwarder (roleForwarder.enqueue) and its outcome reported
 // when it ends (roleForwarder.finish), so the role lane's handler returns without waiting for the
-// stream. A resolution that failed on NATS holds the message instead (roleForwarder.hold).
+// stream. A resolution that failed on NATS holds the message instead (roleForwarder.hold). Once
+// the listener is stopping (roleForwarder.stopHolding), the message is kept on its role's kept
+// lane at once, with no resolution and no slot to wait for (roleForwarder.keepHeld), so the lane's
+// drain takes every message its subscription holds within its window.
 func deliverRoleMessage(cfg listenerDeliveryHandlerConfig, item contracts.Envelope, held roleHeld) {
+	if cfg.roleForwards.stopped() {
+		cfg.roleForwards.keepHeld(item, held, roleKeptAtShutdown, nil)
+		return
+	}
 	// The lane names its role in either form (contracts.CanonicalRole); the claim it resolves is
 	// keyed by the bare role name either way (store.Registry.ClaimedRole).
 	_, role, _ := contracts.CanonicalRole(strings.TrimPrefix(item.Topic, contracts.RoleTopicPrefix))

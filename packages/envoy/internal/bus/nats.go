@@ -1422,7 +1422,7 @@ func (c *Client) Drain(timeout time.Duration) error {
 	defer c.awaitKeeper()
 	defer conn.Close()
 	if conn.IsReconnecting() {
-		return fmt.Errorf("drain NATS: %w", nats.ErrConnectionReconnecting)
+		return &UndrainedError{Pending: c.pendingDeliveries(), err: fmt.Errorf("drain NATS: %w", nats.ErrConnectionReconnecting)}
 	}
 	if err := c.drainDeliveries(deliveriesDeadline); err != nil {
 		// The deliveries did not drain in their share. The hooks still end the KV watchers within
@@ -1472,12 +1472,13 @@ func (c *Client) Drain(timeout time.Duration) error {
 const drainHookReserve = 3 * time.Second
 
 // drainDeliveries drains the delivery subscriptions, pass after pass while a bind in flight
-// installs one more, and waits until each is no longer valid, at the latest until deadline.
+// installs one more, and waits until each is no longer valid, at the latest until deadline. A
+// deadline that passes first is an UndrainedError naming the messages still pending.
 func (c *Client) drainDeliveries(deadline time.Time) error {
 	waitUntil := func(done func() bool) error {
 		for !done() {
 			if !time.Now().Before(deadline) {
-				return fmt.Errorf("drain NATS: %w", context.DeadlineExceeded)
+				return &UndrainedError{Pending: c.pendingDeliveries(), err: fmt.Errorf("drain NATS: %w", context.DeadlineExceeded)}
 			}
 			time.Sleep(10 * time.Millisecond)
 		}
@@ -1499,6 +1500,40 @@ func (c *Client) drainDeliveries(deadline time.Time) error {
 			}
 		}
 	}
+}
+
+// UndrainedError is Drain's error when its delivery subscriptions did not drain: their share of
+// the timeout ran out, or the connection was reconnecting and is closed at once. Pending is how
+// many messages NATS had delivered to them that their handlers had not finished, nats.go's own
+// count (Subscription.Pending), which takes a message off only once its handler returns: the one
+// a handler is still on counts, and every other one is dropped by the close, so a caller whose
+// subscription holds the only copy of what it carries (the listener's role lane) reports them.
+type UndrainedError struct {
+	Pending int
+	err     error
+}
+
+func (e *UndrainedError) Error() string {
+	return fmt.Sprintf("%v (%d delivered messages not taken)", e.err, e.Pending)
+}
+
+func (e *UndrainedError) Unwrap() error { return e.err }
+
+// pendingDeliveries sums the messages each still valid delivery subscription holds that its
+// handler has not taken.
+func (c *Client) pendingDeliveries() int {
+	c.subscriptionsMu.Lock()
+	defer c.subscriptionsMu.Unlock()
+	total := 0
+	for _, subscription := range c.subscriptions {
+		if subscription.active == nil || !subscription.active.IsValid() {
+			continue
+		}
+		if msgs, _, err := subscription.active.Pending(); err == nil {
+			total += msgs
+		}
+	}
+	return total
 }
 
 // deliveringSubscriptions returns the installed subscriptions that are still valid, those a pass
@@ -1812,6 +1847,41 @@ func duplicateInProcess(err error) error {
 // (duplicate_in_process_test.go) reads the mapping sendStored makes and not a copy of it.
 func storedRefusal(err error) error {
 	return duplicateInProcess(streamFull(err))
+}
+
+// The nats-server 2.15.1 answers to a publish that refuse the message itself, whenever and however
+// often it is sent (processJetStreamMsg, server/stream.go): its size past the stream's maximum
+// (JSStreamMessageExceedsMaximumErr), its headers past 64 KiB (JSStreamHeaderExceedsMaximumErr),
+// a stream sealed for good (JSStreamSealedErr), and the store's refusal of a message too large
+// for a block (JSStreamStoreFailedF with the store's ErrMsgTooLarge text). nats.go names none.
+const (
+	jsStreamMessageExceedsMaximum = 10054
+	jsStreamHeaderExceedsMaximum  = 10097
+	jsStreamSealed                = 10109
+	storeMessageTooLarge          = "message too large"
+)
+
+// StreamRefusesMessage reports whether err carries a stream's answer that refuses the message
+// itself, so the same message is refused however often and whenever it is sent: a message or its
+// headers past the stream's maxima, a store that refuses the message as too large, or a sealed
+// stream. Every other answer of a stream can change with its state and is no such refusal: a full
+// stream (ErrStreamFull) and any other store failure, an id still in process (ErrDuplicateInProcess),
+// insufficient resources, an account past its limits, a clustered stream's sequence mismatch or
+// offline replica, and the answers to expectation, TTL, counter, rollup and batch headers, which no
+// forward carries. A caller that sends a message again until the stream stores it stops only on
+// this (cmd/listener's roleForwardEnded).
+func StreamRefusesMessage(err error) bool {
+	var apiErr *nats.APIError
+	if !errors.As(err, &apiErr) {
+		return false
+	}
+	switch apiErr.ErrorCode {
+	case jsStreamMessageExceedsMaximum, jsStreamHeaderExceedsMaximum, jsStreamSealed:
+		return true
+	case jsStreamStoreFailed:
+		return apiErr.Description == storeMessageTooLarge
+	}
+	return false
 }
 
 // maxSubjectBytes bounds a subject the bus publishes on, or a KV call builds from a key. The server
@@ -2175,9 +2245,10 @@ func KeptMsgID(dedupeKey, role string) string {
 var ErrNoForwardMsgID error = refusal("a forward without a " + nats.MsgIdHdr)
 
 // ErrForwardNotStored is returned by a forward's Wait when the stream's acknowledgement that it
-// stored the forward did not arrive before the deadline, or came back as the stream's error: the
-// forward's one lasting copy, which the holder's session consumer delivers, is missing. The
-// forward does not count as delivered; the listener reports it delivery_failed.
+// stored the forward did not arrive before the deadline, came back as the stream's error, or the
+// server answered no responders: the forward's one lasting copy, which the holder's session
+// consumer delivers, is not known to exist. The forward does not count as delivered; whether to
+// send it again is the caller's (cmd/listener's roleForwardEnded).
 var ErrForwardNotStored = errors.New("bus: the stream did not acknowledge storing the forward")
 
 // StartRequestStoredTo publishes a forward of item to subject and returns once the server has it,
@@ -2244,9 +2315,12 @@ type PendingForward struct {
 
 // Wait reads the forward's replies until the stream has acknowledged storing it or its window
 // ends, and releases its reply subscription. No acknowledgement by the deadline, the stream's
-// error answer, and the server's no-responders answer (nothing captured the subject) are each
+// error answer (named by storedRefusal), and the server's no-responders answer are each
 // ErrForwardNotStored, wrapping the reason and, when publishConfirmed could not confirm the
-// publish, the reason for that.
+// publish, the reason for that. No responders does not mean that no stream captures the subject:
+// a clustered stream changing its leader answers a captured subject so too, which is why nats.go's
+// own JetStream publish retries it. Only a read of the deployed stream tells the two apart
+// (ReadDeployedStreamCaptures).
 func (f *PendingForward) Wait() error {
 	defer f.replies.Unsubscribe()
 	for {
@@ -2259,7 +2333,7 @@ func (f *PendingForward) Wait() error {
 			break
 		}
 		if err != nil {
-			// The server's no-responders answer: nothing, not even a stream, took the forward.
+			// The server's no-responders answer: nothing took the forward just then.
 			if errors.Is(err, nats.ErrNoResponders) {
 				return fmt.Errorf("%w: %w", ErrForwardNotStored, err)
 			}
@@ -2269,9 +2343,10 @@ func (f *PendingForward) Wait() error {
 		if !ok {
 			continue
 		}
-		// The stream's error answer to the forward, which no later reply changes.
+		// The stream's error answer to the forward, named as the ErrStreamFull or the
+		// ErrDuplicateInProcess it may be (storedRefusal), which no later reply changes.
 		if ack.Error != nil {
-			return fmt.Errorf("%w: %w", ErrForwardNotStored, ack.Error)
+			return fmt.Errorf("%w: %w", ErrForwardNotStored, storedRefusal(ack.Error))
 		}
 		return nil
 	}

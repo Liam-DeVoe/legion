@@ -209,13 +209,16 @@ func (s *roleSend) delivered(outcome sendOutcome) {
 // a role nobody claims, and a claim whose holder is not live), and while this send's own keep
 // flag asks for it, it keeps the message for the role's next live holder and hands the lane to
 // whoever holds the role now, both in the one keep both give-up paths take (keepForNextHolder),
-// and answers kept's 202. A keep that kept nothing - one this send's keep flag turned off, one
-// under a role token no claim can name, a keep that failed, logged by keepRoleMessage - is
-// answered as a send that kept nothing is, since the sender's own fallback must run when the
-// message was not kept: writeRoleHolderError's 404 (unclaimed or holder_lapsed), which the Legion
-// daemon reads as notify.ErrNoHolder, recorded role_unclaimed or role_lapsed, with its refusal
-// exception (publishRefusalException). The role lane counts an unclaimed role skipped and a lapsed
-// holder failed when its own keep fails.
+// and answers kept's 202. A keep that failed on NATS (keepFailureHolds: a full stream, a publish
+// not answered in its window, a connection down) kept nothing although nothing says the message
+// cannot be kept, so it is answered the bus-unavailable 503 its error maps to, with no refusal
+// exception, and the sender sends again, as the role lane holds its own message in that case. A
+// keep that kept nothing under a rule - one this send's keep flag turned off, one under a role
+// token no claim can name, a refused envelope or a denied subject, each logged by keepRoleMessage
+// or keepForNextHolder - is answered as a send that kept nothing is, since the sender's own
+// fallback must run when the message was not kept: writeRoleHolderError's 404 (unclaimed or
+// holder_lapsed), which the Legion daemon reads as notify.ErrNoHolder, recorded role_unclaimed or
+// role_lapsed, with its refusal exception (publishRefusalException).
 //
 // It is also the one place a message to a Legion role of a released issue pod is seen at all, so
 // it raises the wake report beside the answer, before either answer and waiting for neither
@@ -228,8 +231,15 @@ func (s *roleSend) delivered(outcome sendOutcome) {
 func (s *roleSend) noHolder(result roles.Resolution) {
 	reportRoleWake(s.d, s.d.delivery.logger, s.role)
 	if s.keep && roleKeepable(result) {
-		if kept, err := keepForNextHolder(*s.d.delivery, s.role, s.item); err == nil {
+		kept, err := keepForNextHolder(*s.d.delivery, s.role, s.item)
+		if err == nil {
 			s.kept(result, kept)
+			return
+		}
+		if keepFailureHolds(err) {
+			s.record.holder = result.Holder
+			s.record.refuseBusUnavailable(s.w, err)
+			s.settle(sendFailed)
 			return
 		}
 	}

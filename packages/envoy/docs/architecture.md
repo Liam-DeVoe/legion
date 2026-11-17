@@ -447,14 +447,21 @@ no redelivery, so a kept copy is how the message waits for a read that answers. 
 the keep starts, or else the sweep's, forwards it only to a live holder: a handover that finds
 no live holder forwards nothing, so no exception is published for the copy, and it waits until
 a handover finds a live holder inside its hour. Once its hour ends, the first walk that reads it
-drops it with a WARN, and sends the dead letter above when the copy names a sender session. A
-keep that failed leaves its branch as it was. The lane's outcome is then one of two exception
-reasons:
-`no_holder` when no session claims the role and its keep failed, and `delivery_failed` when the
-holder is not live and its keep failed (an `unresponsive` holder among them, whose claim the
-lane leaves alone), when the holder's session read failed, when a claim read failed and its
-keep failed too, or when the stream did not acknowledge storing the forward. A role claimant
-does not subscribe directly to its role subject.
+drops it with a WARN, and sends the dead letter above when the copy names a sender session.
+A NATS step that fails without the listener knowing that the stream holds a copy - a claim read
+whose keep failed on NATS, a holder's session read, a keep, a forward whose window ran out, whose
+flush failed, or whose acknowledgement did not come for a subject the stream captures, a no
+responders answer, or a stream answer that can change with the stream's state, such as a full
+stream - ends nothing: the lane holds the message, counted in `envoy_role_forwards_outstanding`,
+and runs its delivery again, under the same `Nats-Msg-Id`, for 71 hours at most, after which it
+keeps it on the kept lane; at shutdown it keeps every message it holds. The lane's outcome is one
+of two exception reasons only under a rule: `no_holder` when no session claims the role and a
+rule refused its keep, and `delivery_failed` when the holder is not live and a rule refused its
+keep (an `unresponsive` holder among them, whose claim the lane leaves alone), when a claim read
+failed and a rule refused its keep, when NATS refused or denied the forward, when the stream
+refused the message itself (too large, or a sealed stream), or when a read of the deployed stream
+says it does not capture the holder's subject. A role claimant does not subscribe directly to its
+role subject.
 The forward is stored on the holder's agent subject (one copy per message and holder, by its
 `Nats-Msg-Id`), so a holder on consumer delivery that was away gets it from its session consumer
 when it is back.
