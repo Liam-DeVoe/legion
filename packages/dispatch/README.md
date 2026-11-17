@@ -141,15 +141,12 @@ One spec by hand is the Playwright command itself, as in
 (`bun run e2e` runs the same after the contracts and SPA builds). Playwright stops the harness
 when the run ends, a Ctrl-C included, and exits with its own status.
 
-A SIGTERM stops the stacks this suite starts and no more. A run that holds a stubbed row also
-starts Playwright's own `webServer` (`e2e/stub/static-server.ts`), which Playwright stops on a
-SIGINT and leaves running on a SIGTERM: measured on playwright 1.64.1, a signalled mixed run
-exited 143 with every stack of this suite gone and that static server still serving its fixed
-port, so the
-next run holding a stubbed row was refused with
-`http://127.0.0.1:4319/index.html is already used`. It is Playwright's own leak, not this
-suite's - a run of the stubbed layer alone, which installs no signal handler here, leaks the
-same server - so `kill` that process, or use a Ctrl-C, which stops everything.
+A SIGTERM stops the stacks this suite starts. A run that holds a stubbed row also starts the
+stubbed layer's static file server (`e2e/stub/server.ts`), which a SIGTERM to Playwright's runner
+does not stop, since Playwright runs no teardown then; the server checks once a second whether
+the runner is still its parent and stops itself when it is not (`e2e/stub/static-server.ts`). It
+serves a port the kernel chose when it bound, so a second checkout's run on the same machine
+never finds that port taken.
 
 Playwright's UI mode starts the stacks itself. The UI server runs `globalSetup`
 when a client connects rather than when it begins listening, so a session
@@ -198,6 +195,15 @@ a container carrying PostgreSQL 18 with `vector`, `DISPATCH_E2E_PG_BIN` is a
 directory holding `initdb` and `pg_ctl`.
 Each stack's data lives in its own `worker-<i>` directory under the run's own
 temporary directory and goes with the run.
+The image provider serves each stack's Postgres on a unix socket in a directory
+that it bind-mounts into the container, so it needs Linux with a local Docker
+daemon. Under Docker Desktop the server runs in the desktop's virtual machine,
+and under a remote `DOCKER_HOST` the mount is a directory of that other
+machine, so the harness would not reach the socket; neither case has been
+measured. Each stack's socket directory is in the run's directory, or is
+`/tmp/pg-<i>-XXXXXX` when the socket's path there would be too long for a unix
+socket or would hold a `,`. A stop removes it, but a harness killed hard
+(SIGKILL) leaves that `/tmp` directory behind.
 
 ```bash
 cd packages/dispatch
@@ -661,15 +667,15 @@ docker rmi "ghcr.io/cybermonklabs/legion/envoy:${acceptance_image_tag}"
 
 The stubbed layer reads three variables of its own, and a run that is not recording needs none
 of them. `DISPATCH_E2E_STUB_RECORD=1` makes the stubbed rows meet the real harness and write
-what they fetched (`bun run e2e:stub:record`). `DISPATCH_E2E_STUB_PORT` moves the static file
-server off 4319, which is what a second checkout on one machine needs, since the server refuses
-to reuse one already listening rather than serve another checkout's build. And
-`DISPATCH_E2E_STUB_RECORDINGS` points a run at a set of recordings other than the committed
-one, which the nightly's re-record job uses so that it can see a committed recording no row
-writes any more. A fourth, `DISPATCH_E2E_STUB_ONLY=1`, is how the config carries "this run is
-the stubbed layer alone" to the rest of the run; set by hand it tells `globalSetup` to start no
-stack at all, for the whole run and real-stack projects included, which then find no server to
-address.
+what they fetched (`bun run e2e:stub:record`). `DISPATCH_E2E_STUB_RECORDINGS` points a run at a
+set of recordings other than the committed one, which the nightly's re-record job uses so that
+it can see a committed recording no row writes any more. And `DISPATCH_E2E_STUB_DIST` makes the
+static file server serve another directory than `web/dist`, which its own test uses
+(`e2e/__tests__/stub-web-server.test.ts`). The server takes no port setting: it binds a port the
+kernel chooses, and `globalSetup` hands its origin to the workers in `DISPATCH_E2E_STUB_ORIGIN`.
+`DISPATCH_E2E_STUB_ONLY=1` is how the config carries "this run is the stubbed layer alone" to the
+rest of the run; set by hand it tells `globalSetup` to start no stack at all, for the whole run
+and real-stack projects included, which then find no server to address.
 The suite has fifteen projects. `chromium` runs every spec except the two plain-HTTP specs, the
 three the `-alone` projects below take and the stubbed layer's own (`packages/dispatch/AGENTS.md`,
 "The stubbed layer", which the last two projects of the list run).

@@ -1973,13 +1973,26 @@ removes. Neither gives its server a TCP port, so no other program can take a
 port between its choice and the server's bind: each server listens on no TCP
 port and serves on a unix socket alone, in a directory of mode 0700 that the
 run's user owns, made in the run's directory or in `/tmp` when the socket's
-path there would pass the 107 bytes a unix socket path may hold. The image
-provider mounts that directory into its container and runs the container as
-the run's user. Only that user and root can reach the socket, so each server
-trusts every connection. A unix socket is what the server's dev sign-in
-requires of its database, beside a loopback address. With one worker and
-`DATABASE_URL` set, the run uses that database as stack 0's and starts no
-Postgres, exactly as it always has.
+path there would pass the 107 bytes a unix socket path may hold or would hold
+a `,`: psql (libpq) and the server (pgx) read the host of a `DATABASE_URL` as a
+list split at each `,`. A stop removes that directory, but a run killed hard
+(SIGKILL) removes nothing, so a `/tmp/pg-<i>-XXXXXX` one is then left outside
+the run's directory. The image provider bind-mounts that directory into its
+container with `--mount` and a quoted `source=`, which takes the `:` that
+`--volume` splits at, and runs the container as the run's user. So it needs
+Linux with a local Docker daemon: under Docker Desktop the server runs in the
+desktop's virtual machine, and under a remote `DOCKER_HOST` the mount is a
+directory of that other machine, so the run would not reach the socket;
+neither case has been measured. Only the run's user and root can reach the
+socket, so each server trusts every connection. A unix socket is what the
+server's dev sign-in requires of its database, beside a loopback address. With
+one worker and `DATABASE_URL` set, the run uses that database as stack 0's and
+starts no Postgres, exactly as it always has.
+
+The provider's own tests, `e2e/__tests__/harness-postgres-image-port.test.ts`
+and `harness-postgres-image-mount.test.ts`, skip without
+`DISPATCH_E2E_PG_IMAGE`; the visual job runs both, with its image digest,
+before its browser step.
 
 A run of more than one worker is one stack per worker, and each stack has a
 Postgres, a file-store bucket and ports of its own, so five variables that name
@@ -2566,18 +2579,16 @@ reads a port at import (`e2e/api.ts`'s `baseUrl`, `e2e/plain-http-origin.ts`'s
 as at the end of a run.
 
 A signal stops the stacks this suite starts, and a SIGTERM stops no more than those. A run that
-holds a stubbed row also starts Playwright's own `webServer` (`e2e/stub/static-server.ts`,
-`e2e/playwright.config.ts`), which Playwright stops on a SIGINT and leaves running on a SIGTERM:
-measured on playwright 1.64.1 (dispatch://INFRA-1410), a mixed run signalled mid-row exited 143
-with every stack of this suite
-gone - no Postgres, no server, no run directory - and the static server still serving on its
-fixed port, so the next run holding a stubbed row was refused by name
-(`http://127.0.0.1:4319/index.html is already used, make sure that nothing is running on the
-port/url or set reuseExistingServer:true`). It is Playwright's own, not this suite's: a run of
-the stubbed layer alone, where this suite installs no signal handler at all, leaks the same
-server. `kill` that process, or use a Ctrl-C, which stops everything.
+holds a stubbed row also starts the stubbed layer's static file server (`e2e/stub/server.ts`),
+from `globalSetup` and before the hook's returns, and `globalTeardown` stops it. A SIGTERM to
+Playwright's runner runs no teardown, so the server checks once a second whether the runner is
+still its parent and stops itself when it is not (`e2e/stub/static-server.ts`). The server binds
+port 0 and the run reads its origin from the server's own listening line, so no port is chosen
+or tested before the server holds it, and a second checkout's run on the same machine never
+finds that port taken. It was Playwright's `webServer` on the fixed port 4319 before: Playwright
+tested the URL and started the server after, so a second program on that port failed the run.
 
-Before any of that, the hook refuses a run when Playwright has not
+Before it starts a stack, the hook refuses a run when Playwright has not
 downloaded a browser the run's projects launch, naming
 `bun run e2e:install` and how large that download is: Playwright's own message comes at the first
 browser launch, with every stack's harness and Postgres already up. A `--project` on the command

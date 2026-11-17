@@ -534,9 +534,9 @@ jobs:
           # any other, and it runs here rather than in a leg of its own so that neither the leg
           # capture of the merge job's readings nor its row accounting has to learn a new name.
           # They start no harness of their own either - this run starts one stack per worker
-          # already, for the real-stack rows beside them - and the config starts their static
-          # file server itself, for a run that names one of them (e2e/playwright.config.ts's
-          # `webServer`).
+          # already, for the real-stack rows beside them - and `globalSetup` starts their static
+          # file server, on a port the kernel chooses, for a run that names one of them
+          # (e2e/stub/server.ts).
           #
           # `--grep '@pr'` on the pull-request lane alone is what holds that lane to the rows a
           # pull request is answered by: every stubbed row carries the tag, and so do the
@@ -1318,10 +1318,17 @@ jobs:
   # before any step budget could fire. That inverts this file's rule, which says the job budget
   # is the backstop that never fires first, so it is re-derived above from the maximum those
   # runs measured. A download this job does not control may not decide a required check.
+  #
+  # The image provider's step came after those runs, so none of them measured it. Its two test
+  # files took 13 s and 11 s in two runs on a Linux machine with a local Docker daemon that held
+  # the image already, and the runner pulls the image in that step, a pull the browser step paid
+  # before and no run has timed apart. So that step takes the rule's floor, two minutes, until
+  # runs of it give a maximum, and the job budget is the browser step's 240 s plus that step's
+  # 120 s plus the same 314 s: 674 s -> 12 min.
   visual:
     if: inputs.lane == 'full'
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 12
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1375,6 +1382,22 @@ jobs:
           [[ "$connections" =~ ^[1-9][0-9]*$ ]] || { echo "::error::go run ./internal/dispatch/store/cmd/connections printed '$connections', not a positive whole number"; exit 1; }
           echo "connections=$connections" >> "$GITHUB_OUTPUT"
         working-directory: packages/envoy
+      # The image provider's own tests: e2e/__tests__/harness-postgres-image-port.test.ts holds it
+      # to a host port it never takes, and harness-postgres-image-mount.test.ts to run directories
+      # whose path holds a `:`, a `"` or a `,`. Both skip wherever DISPATCH_E2E_PG_IMAGE is unset,
+      # as it is in the dispatch-ui job, which runs e2e/__tests__; this job sets it for its own
+      # stack. They run here on the runner, with the browser step's TMPDIR, image digest and
+      # connections, and before that step, so it starts no stack on a provider these tests have
+      # just failed. The variables are exported on the command line for the reason the job's
+      # head gives.
+      - name: Test the stacks' Postgres image provider
+        timeout-minutes: 2
+        run: |
+          export TMPDIR="$RUNNER_TEMP"
+          export DISPATCH_E2E_PG_IMAGE=ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+          export DISPATCH_E2E_PG_CONNECTIONS=${{ steps.connections.outputs.connections }}
+          bun test e2e/__tests__/harness-postgres-image-port.test.ts e2e/__tests__/harness-postgres-image-mount.test.ts
+        working-directory: packages/dispatch
       - name: Browser-test dispatch dashboard against its baselines
         timeout-minutes: 4
         run: |

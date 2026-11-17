@@ -20,9 +20,12 @@
  *  (`listen_addresses` empty) and serves on a unix socket alone, in a directory of mode 0700 that
  *  this process's user owns (`socketDirectory`). The image provider mounts that directory into
  *  its container at the image's socket directory and runs the container as this process's user,
- *  so the socket the server makes there is that user's too. The server's dev sign-in refuses a
- *  `DATABASE_URL` whose host is neither loopback nor a unix socket (`e2e/run-server.sh`), and a
- *  unix socket is one.
+ *  so the socket the server makes there is that user's too. That socket answers on the host only
+ *  where the container runs on the host's own kernel, which is Linux with a local Docker daemon:
+ *  under Docker Desktop the server runs in the desktop's virtual machine, and under a remote
+ *  `DOCKER_HOST` the mount is a directory of that other machine (neither one measured). The
+ *  server's dev sign-in refuses a `DATABASE_URL` whose host is neither loopback nor a unix socket
+ *  (`e2e/run-server.sh`), and a unix socket is one.
  *
  *  The binaries provider runs `initdb` once per run and copies the data directory it made per
  *  stack, because `initdb` is the cost that grows with the stacks: measured in an issue pod, from
@@ -228,14 +231,21 @@ const socketFile = ".s.PGSQL.5432";
 const socketPathLimit = 107;
 /** The directory a long `TMPDIR` falls back to, as each module's `internal/testtmp` does. */
 const shortTemporaryDirectory = "/tmp";
+/** The character no socket directory may hold: psql (libpq) and the Dispatch server (pgx) read
+ *  the `host` of a `DATABASE_URL` as a list split at it, and Postgres reads `-k`
+ *  (`unix_socket_directories`) so too. */
+const hostListSeparator = ",";
 
 /** A fresh directory of mode 0700, which this process's user owns (`mkdtemp`), for one server's
  *  unix socket: in `dir`, the run's own directory, when `longest`, the longest path the caller
- *  puts in it, written relative to it, still fits `socketPathLimit` there, and else in /tmp, as
- *  on a machine whose `TMPDIR` is long. Only this process's user and root can reach a socket
- *  under it, which is why each server trusts every connection. The caller removes it. */
+ *  puts in it, written relative to it, still fits `socketPathLimit` there and `dir` holds no
+ *  `hostListSeparator`, and else in /tmp, as on a machine whose `TMPDIR` is long. Only this
+ *  process's user and root can reach a socket under it, which is why each server trusts every
+ *  connection. The caller removes it. A run killed hard (SIGKILL) removes nothing, so one made
+ *  in /tmp is then left outside the run's own directory (`e2e/harness-pool.ts`). */
 function socketDirectory(dir: string, name: string, longest: string): string {
   for (const base of [dir, shortTemporaryDirectory]) {
+    if (base.includes(hostListSeparator)) continue;
     // mkdtemp appends six characters to the prefix it is given.
     if (Buffer.byteLength(join(base, `${name}-XXXXXX`, longest)) <= socketPathLimit) {
       return mkdtempSync(join(base, `${name}-`));
@@ -243,7 +253,8 @@ function socketDirectory(dir: string, name: string, longest: string): string {
   }
   throw new Error(
     `The Dispatch e2e harness cannot start: no directory holds a unix socket path of ` +
-      `${socketPathLimit} bytes or less for ${name}, neither ${dir} nor ${shortTemporaryDirectory}.`
+      `${socketPathLimit} bytes or less, with no "${hostListSeparator}" in it, for ${name}, ` +
+      `neither ${dir} nor ${shortTemporaryDirectory}.`
   );
 }
 
@@ -396,6 +407,15 @@ async function containerLog(container: string): Promise<string> {
   }
 }
 
+/** The `--mount` value that binds the host directory `source` at `target` in a container.
+ *  Docker reads that value as one CSV record, so `source=` is a quoted field with each `"`
+ *  doubled: a `,` would end an unquoted field, and a `"` in one is refused. `--volume
+ *  <source>:<target>` is no route, since it splits at each `:`, and a run directory that holds
+ *  one failed with `invalid mode: /var/run/postgresql`. */
+function bindMount(source: string, target: string): string {
+  return `type=bind,"source=${source.replaceAll('"', '""')}",target=${target}`;
+}
+
 function imageProvider(
   image: string,
   dir: string,
@@ -445,8 +465,8 @@ function imageProvider(
             // (its nss_wrapper), and the data directory under the image's 1777 volume.
             "--user",
             `${uid}:${gid}`,
-            "--volume",
-            `${sockets}:/var/run/postgresql`,
+            "--mount",
+            bindMount(sockets, "/var/run/postgresql"),
             // Trust, as the binaries provider's initdb: only this process's user and root can
             // reach the socket (`socketDirectory`), and the cluster is the stack's own and dies
             // with its container.
