@@ -151,15 +151,21 @@ function unanswered(node: TreeNode): boolean {
     // check carries the verdict; and the issue itself is the root, which is drawn whatever this
     // says. A document, an image and a handoff are nodes of the issue and not of its
     // conversation, so the tree holds none of them (R1, R3).
+    // A lens, a finding, a risk and a constraint are what somebody examined or set on another
+    // row, and none holds a path of the fold open (dispatch://INFRA-4065 R1).
     case "callout":
     case "child_issue":
     case "comment":
+    case "constraint":
     case "document":
+    case "finding":
     case "handoff":
     case "image":
     case "issue":
+    case "lens":
     case "message":
     case "result":
+    case "risk":
       return false;
   }
 }

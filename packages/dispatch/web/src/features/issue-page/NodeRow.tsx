@@ -547,8 +547,13 @@ function toneOf(type: NodeType, author: AuthorKind): Tone {
       return author === "person" ? "person" : "agent";
     case "decision":
       return "decision";
+    case "finding":
+    case "lens":
+    case "risk":
+      return "lens";
     case "plan_task":
       return "step";
+    case "constraint":
     case "requirement":
       return "statement";
     case "callout":
