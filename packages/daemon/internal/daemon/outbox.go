@@ -1208,8 +1208,8 @@ func (r *outbox) publishPlanRecord(ctx context.Context, row record.OutboxRow, pa
 	for i, task := range payload.Tasks {
 		tasks[i] = dispatch.PlanTask(task)
 	}
-	plan := dispatch.PlanWrite{Generation: payload.Generation, Source: payload.Source, ArtifactID: payload.ArtifactID,
-		Version: payload.Version, Tasks: tasks}
+	plan := dispatch.PlanWrite{Generation: payload.Generation, Source: payload.Source,
+		PlanDocument: (*dispatch.PlanDocument)(payload.PlanDocument), Tasks: tasks}
 	if err := r.dispatch.PutPlan(ctx, row.Issue, payload.ID, plan); err != nil {
 		return fmt.Errorf("write the plan record %s of %s: %w", payload.ID, row.Issue, err)
 	}

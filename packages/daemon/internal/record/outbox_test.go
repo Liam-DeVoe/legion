@@ -526,7 +526,7 @@ func TestAPlanRecordKeepsItsTasksInOrderThroughTheOutbox(t *testing.T) {
 		{
 			name: "an owner's plan of two tasks",
 			plan: func() PlanRecord {
-				return PlanRecord{ID: planRecordID, Generation: 1, Source: "owner", ArtifactID: "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b", Version: 3,
+				return PlanRecord{ID: planRecordID, Generation: 1, Source: "owner", PlanDocument: &PlanDocument{ArtifactID: "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b", Version: 3},
 					Tasks: []PlanRecordTask{{ID: "ui", Steps: []string{"tester", "implementer:ui"}}, {ID: "api", Steps: []string{"reviewer", "implementer"}}}}
 			},
 			present: map[string]string{"artifact_id": `"6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b"`, "version": "3",

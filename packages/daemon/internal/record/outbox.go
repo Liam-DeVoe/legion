@@ -1122,16 +1122,26 @@ func (StepRecord) OutboxKind() OutboxKind { return OutboxKindStepRecord }
 // /api/v1/issues/{key}/plans/{id}) when the run's work starts. ID is the plan's id, a uuid of the
 // issue and its run, and the row's issue column is the issue. Each other field is a field of the
 // route's body under the same name: the run (record.Issue.Generation), where the plan came from
-// (default, the steps Legion runs when the owner gave none, or owner), the owner's document and its
-// version, which a plan of the source default leaves out, and each task with its steps in order.
-// Dispatch sets each field once, so a plan sent again changes nothing.
+// (default, the steps Legion runs when the owner gave none, or owner), the owner's document with
+// its version, which a plan of the source default leaves out, and each task with its steps in
+// order. Dispatch sets each field once, so a plan sent again changes nothing.
 type PlanRecord struct {
-	ID         string           `json:"id"`
-	Generation uint64           `json:"generation"`
-	Source     string           `json:"source"`
-	ArtifactID string           `json:"artifact_id,omitempty"`
-	Version    int              `json:"version,omitempty"`
-	Tasks      []PlanRecordTask `json:"tasks"`
+	ID         string `json:"id"`
+	Generation uint64 `json:"generation"`
+	Source     string `json:"source"`
+	// PlanDocument is embedded, so its two members are members of the payload itself, written
+	// together and left out together when it is nil.
+	*PlanDocument
+	Tasks []PlanRecordTask `json:"tasks"`
+}
+
+// PlanDocument is the owner's document a plan of the source owner was taken from: the artifact and
+// the version of it Legion took. The two are one value, so a plan names its document with its
+// version or no document. It mirrors dispatch.PlanDocument, which the publication converts it to
+// (publishPlanRecord), because the dispatch package imports no record of the daemon's.
+type PlanDocument struct {
+	ArtifactID string `json:"artifact_id"`
+	Version    int    `json:"version"`
 }
 
 // PlanRecordTask is one task of a plan: its id and its steps in order, each a role or `role:key`.

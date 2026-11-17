@@ -115,16 +115,24 @@ type PlanRating struct {
 }
 
 // PlanWrite is the body of a plan's write, as Dispatch's route takes it, the actor aside: the run
-// the plan is of, its source (default or owner), the owner's document and its version, which a
+// the plan is of, its source (default or owner), the owner's document with its version, which a
 // plan of the source default leaves out because Dispatch refuses either on one, and each task with
 // its steps in order. It mirrors the record's own PlanRecord, because this package imports no
 // record of the daemon's.
 type PlanWrite struct {
-	Generation uint64     `json:"generation"`
-	Source     string     `json:"source"`
-	ArtifactID string     `json:"artifact_id,omitempty"`
-	Version    int        `json:"version,omitempty"`
-	Tasks      []PlanTask `json:"tasks"`
+	Generation uint64 `json:"generation"`
+	Source     string `json:"source"`
+	*PlanDocument
+	Tasks []PlanTask `json:"tasks"`
+}
+
+// PlanDocument is the owner's document a plan of the source owner was taken from, as the plan
+// route takes it: embedded in PlanWrite, its artifact_id and version are members of the body, both
+// written or neither. It mirrors the record's own PlanDocument, which publishPlanRecord converts
+// to it, because this package imports no record of the daemon's.
+type PlanDocument struct {
+	ArtifactID string `json:"artifact_id"`
+	Version    int    `json:"version"`
 }
 
 // PlanTask is one task of a plan's write: its id and its steps in order, each a role or

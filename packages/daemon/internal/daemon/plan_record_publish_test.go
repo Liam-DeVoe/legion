@@ -130,9 +130,9 @@ func TestAPlanRecordIsWrittenUnderItsIssueAndItsID(t *testing.T) {
 			Tasks: []dispatch.PlanTask{{ID: "default", Steps: []string{"planner", "implementer", "tester", "reviewer", "acceptance:owner"}}}}},
 		{
 			name: "an owner's plan of two tasks",
-			plan: record.PlanRecord{ID: planRecordID, Generation: 3, Source: "owner", ArtifactID: "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b", Version: 4,
+			plan: record.PlanRecord{ID: planRecordID, Generation: 3, Source: "owner", PlanDocument: &record.PlanDocument{ArtifactID: "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b", Version: 4},
 				Tasks: []record.PlanRecordTask{{ID: "ui", Steps: []string{"tester", "implementer:ui"}}, {ID: "api", Steps: []string{"reviewer", "implementer"}}}},
-			want: dispatch.PlanWrite{Generation: 3, Source: "owner", ArtifactID: "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b", Version: 4,
+			want: dispatch.PlanWrite{Generation: 3, Source: "owner", PlanDocument: &dispatch.PlanDocument{ArtifactID: "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b", Version: 4},
 				Tasks: []dispatch.PlanTask{{ID: "ui", Steps: []string{"tester", "implementer:ui"}}, {ID: "api", Steps: []string{"reviewer", "implementer"}}}},
 		},
 	} {
