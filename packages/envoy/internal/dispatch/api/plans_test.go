@@ -133,20 +133,35 @@ func rateRetro(t *testing.T, handler http.Handler, project, issue, id string, ge
 
 // The read of a project lists each of its issues that is done, newest close first, each with the
 // plan its run wrote, the rating of its retro with the reason, the time from its first start to its
-// last end, and its count of failed steps; the issue still in progress is not listed. The two plans
-// differ in id and in steps, so a plan read onto another issue's row is seen, and the first issue's
-// last end is 30.7 seconds past a whole minute, so its time is whole seconds, cut, not minutes.
+// last end, and its count of failed steps; the issue still in progress is not listed. The three
+// finished issues close in an order that is neither their key order nor their title order, either
+// way round, so a read sorted by key or by title is seen. The plans differ in id and in steps, so a
+// plan read onto another issue's row is seen, and the first issue's last end is 30.7 seconds past
+// a whole minute, so its time is whole seconds, cut, not minutes.
 func TestTheReadOfAProjectListsEachFinishedIssue(t *testing.T) {
-	handler := newTestHandler(t)
-	issues := createListedIssues(t, handler, "LEG", 3)
-	reviewed, fitted, running := issues[0], issues[1], issues[2]
+	handler, database := newTestHandlerWithStore(t)
+	issues := createListedIssues(t, handler, "LEG", 4)
+	reviewed, fitted, hurried, running := issues[0], issues[1], issues[2], issues[3]
 	daemon := daemonSession("LEG")
 	fittedSteps := []string{"planner", "implementer", "acceptance:owner"}
+	hurriedSteps := []string{"implementer", "acceptance:owner"}
 	reviewedPlan := model.PlanRecord{ID: uuid.NewString(), Issue: reviewed, Generation: 1, Source: "default",
 		Tasks: []model.PlanTask{{ID: "default", Steps: defaultStepLine}}}
 	fittedPlan := model.PlanRecord{ID: uuid.NewString(), Issue: fitted, Generation: 1, Source: "default",
 		Tasks: []model.PlanTask{{ID: "default", Steps: fittedSteps}}}
+	hurriedPlan := model.PlanRecord{ID: uuid.NewString(), Issue: hurried, Generation: 1, Source: "default",
+		Tasks: []model.PlanTask{{ID: "default", Steps: hurriedSteps}}}
 	merged := at(50).Add(30*time.Second + 700*time.Millisecond)
+	// The closes, oldest first: fitted, hurried, reviewed. So the read lists reviewed, hurried,
+	// fitted: issues 0, 2, 1, which is neither ascending nor descending by key or by title.
+	fittedClosed, hurriedClosed, reviewedClosed := at(1000), at(2000), at(3000)
+	closeAt := func(key string, closed time.Time) {
+		t.Helper()
+		closeIssue(t, handler, key)
+		if _, err := database.Pool.Exec(context.Background(), "update issues set closed_at = $2 where key = $1", key, closed); err != nil {
+			t.Fatalf("close %s at %s: %v", key, closed, err)
+		}
+	}
 
 	putPlanRecordOK(t, handler, reviewed, reviewedPlan.ID, defaultPlanBody(daemon, 1))
 	runs := recordRuns(t, handler, "LEG", reviewed,
@@ -160,7 +175,6 @@ func TestTheReadOfAProjectListsEachFinishedIssue(t *testing.T) {
 	)
 	reviewedRetro := runs[5]
 	rateRetro(t, handler, "LEG", reviewed, reviewedRetro, 1, 4, "The tester found the bug.")
-	closeIssue(t, handler, reviewed)
 
 	putPlanRecordOK(t, handler, fitted, fittedPlan.ID, withStepFields(defaultPlanBody(daemon, 1), map[string]any{
 		"tasks": []map[string]any{{"id": "default", "steps": fittedSteps}},
@@ -173,18 +187,38 @@ func TestTheReadOfAProjectListsEachFinishedIssue(t *testing.T) {
 	)
 	fittedRetro := runs[2]
 	rateRetro(t, handler, "LEG", fitted, fittedRetro, 1, 5, "The plan fit the work.")
-	closeIssue(t, handler, fitted)
+
+	putPlanRecordOK(t, handler, hurried, hurriedPlan.ID, withStepFields(defaultPlanBody(daemon, 1), map[string]any{
+		"tasks": []map[string]any{{"id": "default", "steps": hurriedSteps}},
+	}))
+	runs = recordRuns(t, handler, "LEG", hurried,
+		run{"step", "implementer", 1, new(at(300)), new(at(310)), "failed"},
+		run{"step", "implementer", 1, new(at(311)), new(at(318)), "failed"},
+		run{"retro", "implementer", 0, new(at(320)), new(at(321)), "passed"},
+		run{"merge", "merger", 0, nil, new(at(330)), "passed"},
+	)
+	hurriedRetro := runs[2]
+	rateRetro(t, handler, "LEG", hurried, hurriedRetro, 1, 2, "No tester read the work.")
+
+	closeAt(fitted, fittedClosed)
+	closeAt(hurried, hurriedClosed)
+	closeAt(reviewed, reviewedClosed)
 
 	putPlanRecordOK(t, handler, running, uuid.NewString(), defaultPlanBody(daemon, 1))
 	recordRuns(t, handler, "LEG", running, run{"step", "reviewer", 4, new(at(200)), new(at(205)), "failed"})
 
 	read := readPlans(t, handler, "LEG", "")
-	if read.Project != "LEG" || len(read.Issues) != 2 || read.Issues[0].Issue != fitted || read.Issues[1].Issue != reviewed {
-		t.Fatalf("the read lists %+v, want %s then %s, the newest close first", read, fitted, reviewed)
+	listed := make([]string, len(read.Issues))
+	for index, issue := range read.Issues {
+		listed[index] = issue.Issue
+	}
+	if want := []string{reviewed, hurried, fitted}; read.Project != "LEG" || !slices.Equal(listed, want) {
+		t.Fatalf("the read of %s lists %v, want %v, the newest close first", read.Project, listed, want)
 	}
 	for _, want := range []struct {
 		issue          model.FinishedIssue
 		title          string
+		closed         time.Time
 		plan           model.PlanRecord
 		rating         int
 		reason         string
@@ -194,8 +228,9 @@ func TestTheReadOfAProjectListsEachFinishedIssue(t *testing.T) {
 		failed         int
 		started, ended time.Time
 	}{
-		{read.Issues[0], "LEG listed issue 1", fittedPlan, 5, "The plan fit the work.", fittedRetro, at(141), 3600, 0, at(100), at(160)},
-		{read.Issues[1], "LEG listed issue 0", reviewedPlan, 4, "The tester found the bug.", reviewedRetro, at(42), 3030, 1, at(0), merged},
+		{read.Issues[0], "LEG listed issue 0", reviewedClosed, reviewedPlan, 4, "The tester found the bug.", reviewedRetro, at(42), 3030, 1, at(0), merged},
+		{read.Issues[1], "LEG listed issue 2", hurriedClosed, hurriedPlan, 2, "No tester read the work.", hurriedRetro, at(321), 1800, 2, at(300), at(330)},
+		{read.Issues[2], "LEG listed issue 1", fittedClosed, fittedPlan, 5, "The plan fit the work.", fittedRetro, at(141), 3600, 0, at(100), at(160)},
 	} {
 		issue := want.issue
 		if issue.Plan == nil || !reflect.DeepEqual(*issue.Plan, want.plan) {
@@ -210,8 +245,8 @@ func TestTheReadOfAProjectListsEachFinishedIssue(t *testing.T) {
 			t.Errorf("%s's rating is of record %s ended %v, want the retro %s ended %s", issue.Issue, rated.StepID, rated.EndedAt,
 				want.retro, want.retroEnded)
 		}
-		if closed := issueClosedAt(t, handler, issue.Issue); issue.Title != want.title || !issue.ClosedAt.Equal(closed) {
-			t.Errorf("%s is listed with title %q closed %s, want %q closed %s", issue.Issue, issue.Title, issue.ClosedAt, want.title, closed)
+		if issue.Title != want.title || !issue.ClosedAt.Equal(want.closed) {
+			t.Errorf("%s is listed with title %q closed %s, want %q closed %s", issue.Issue, issue.Title, issue.ClosedAt, want.title, want.closed)
 		}
 		if issue.DurationSeconds == nil || *issue.DurationSeconds != want.duration ||
 			issue.StartedAt == nil || !issue.StartedAt.Equal(want.started) || issue.EndedAt == nil || !issue.EndedAt.Equal(want.ended) {
@@ -226,19 +261,6 @@ func TestTheReadOfAProjectListsEachFinishedIssue(t *testing.T) {
 			t.Fatalf("%s counts %d failed steps, want %d", issue.Issue, issue.FailedSteps, want.failed)
 		}
 	}
-}
-
-// issueClosedAt is the close of issue key as the issue's own read answers it.
-func issueClosedAt(t *testing.T, handler http.Handler, key string) time.Time {
-	t.Helper()
-	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+key, nil, "alice")
-	read := decodeBody[struct {
-		ClosedAt *time.Time `json:"closed_at"`
-	}](t, response)
-	if response.Code != http.StatusOK || read.ClosedAt == nil {
-		t.Fatalf("read %s: status=%d body=%s, want its close", key, response.Code, response.Body.String())
-	}
-	return *read.ClosedAt
 }
 
 // A rating is a retro's: the rating route refuses a record of kind step or merge, and a record the
