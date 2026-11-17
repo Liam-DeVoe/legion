@@ -4,8 +4,11 @@ import path from "node:path";
 import { LEGION_PHASE_BACKWARD_TARGETS } from "@legion/contracts/legion-api";
 import { z } from "zod";
 import { createLegionDaemonClient } from "./daemon-client";
+import type { HandoffReport } from "./handoff-record";
 import {
   type ClaimCapability,
+  type DeclaredNumber,
+  declaredNumber,
   executePhaseOp,
   legionToolDescription,
   PHASE_OP_SENTENCES,
@@ -44,12 +47,15 @@ const REPORT = {
 type DaemonRefusal = { readonly status: number; readonly code: string; readonly error: string };
 
 /** A runtime over a stub daemon answering the golden fixtures, recording each route it is sent
- * and each body it is posted. `state` is what `GET /legion/v1/state` answers, and `ratingRefusal`,
- * when given, what the daemon answers a completion that carries `planRating`. */
+ * and each body it is posted. `state` is what `GET /legion/v1/state` answers, `ratingRefusal`,
+ * when given, what the daemon answers a completion that carries `planRating`, and `report` what
+ * the pane reports for the phase it finds: `REPORT`, or the commit alone that a phase with no
+ * handoff record reports (handoff-record's standingReport). */
 function runtime(
   claim: ClaimCapability = implementer,
   state: Record<string, unknown> = daemonFixture("state.json"),
-  ratingRefusal?: DaemonRefusal
+  ratingRefusal?: DaemonRefusal,
+  report: HandoffReport = REPORT
 ) {
   const routes: string[] = [];
   const posted: Record<string, unknown>[] = [];
@@ -83,7 +89,7 @@ function runtime(
     claim,
     handoffReport: async (phase, role) => {
       lookups.push(`${phase} ${role}`);
-      return REPORT;
+      return report;
     },
     branchHead: async () => {
       throw new Error("no branch-head lookup expected");
@@ -116,6 +122,35 @@ test("the phase ops' fields, as a host declares them, are every field of every o
       .filter((f) => f !== "op")
   );
   expect(Object.keys(phaseOpParameters(z)).sort()).toEqual([...fields].sort());
+});
+
+// A number field is declared to the host with the bounds its own checks give, in whatever order
+// they were written, and with none on a side it bounds nowhere; the test above holds plan_rating's
+// declaration to 1 and 5. zod's `int()` writes the safe integer range into a schema's `_zod.bag`
+// as it attaches, over a bound written before it, so a reading of the bag declares that range for
+// a side with no bound, and in place of a `min()` written before `int()`. An exclusive bound,
+// which the host's number takes no form of, throws, and so does a check this does not map.
+test("a phase op's number field declares the bounds its checks give, in any order, and none on a side with none", () => {
+  const cases: readonly (readonly [z.ZodNumber, DeclaredNumber])[] = [
+    [z.number(), { int: false }],
+    [z.number().int(), { int: true }],
+    [z.number().min(1).int(), { int: true, min: 1 }],
+    [z.number().max(5).int(), { int: true, max: 5 }],
+    [z.number().int().min(1).max(5), { int: true, min: 1, max: 5 }],
+    [z.number().max(5).int().min(1), { int: true, min: 1, max: 5 }],
+    [z.number().min(1).min(3).max(9).max(5), { int: false, min: 3, max: 5 }],
+  ];
+  for (const [field, declared] of cases) {
+    expect(declaredNumber("n", field)).toStrictEqual(declared);
+  }
+  for (const field of [z.number().gt(0), z.number().int().lt(5), z.number().positive().int()]) {
+    expect(() => declaredNumber("n", field)).toThrow(
+      "phase op field n has an exclusive bound, which phaseOpParameters does not map"
+    );
+  }
+  expect(() => declaredNumber("n", z.number().int().multipleOf(2))).toThrow(
+    "phase op field n has a multiple_of check, which phaseOpParameters does not map"
+  );
 });
 
 test("the description sets the host's sentences before and after handoff_complete's contract, and ends on the host's Envoy publish tool", () => {
@@ -339,7 +374,9 @@ test("the retro's completion sends plan_rating and plan_reason as planRating and
 // daemon's to refuse (PLAN_RATING_UNEXPECTED). So the tool sends a rating on a completion at any
 // phase, since a filter on the record's phase would drop a rating the agent believes it gave.
 test("a rating is sent on a completion at any phase: the late retro's at merging, and one at implementing that the daemon refuses PLAN_RATING_UNEXPECTED", async () => {
-  const late = runtime(implementer, stateAtPhase("merging"));
+  // A retro writes no handoff record, so the pane reports the commit alone for it.
+  const lateHead = "b".repeat(40);
+  const late = runtime(implementer, stateAtPhase("merging"), undefined, { commit: lateHead });
   const lateReason = "The reviewer's two rounds were the test step the plan had left out.";
   await expect(
     executePhaseOp(late.ops, {
@@ -354,7 +391,7 @@ test("a rating is sent on a completion at any phase: the late retro's at merging
     grantId: "grant-for-one-command",
     summary: "Retro done.",
     verdict: "",
-    ...REPORT,
+    commit: lateHead,
     planRating: 2,
     planReason: lateReason,
   });
