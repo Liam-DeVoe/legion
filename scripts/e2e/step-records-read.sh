@@ -42,7 +42,7 @@ printf '%s\n' "$out"
 # Each line after the header is one run, as `dispatch steps` prints it:
 #   <task> <step> <kind> <role> <type|-> attempt <a> <agent|-> <model|-> <started_at|-> <ended_at|running> <result|running>
 awk -v issue="$issue" '
-  function unknown(why) { print "UNKNOWN: " why; status = 2; exit }
+  function unknown(why) { print "UNKNOWN: " why; status = 2; exit status }
   NR == 1 {
     if ($0 !~ ("^" issue ": [0-9]+ steps in [0-9]+ tasks$")) unknown("the first line of the answer is no header of " issue ": " $0)
     listed = $2 + 0
@@ -62,7 +62,7 @@ awk -v issue="$issue" '
   }
   END {
     if (status) exit status
-    if (runs != listed) { print "UNKNOWN: the header says " listed " records and " runs " lines of runs follow it"; exit 2 }
+    if (runs != listed) unknown("the header says " listed " records and " runs " lines of runs follow it")
     split("step 1,step 2,step 3,step 4,step 5,the retro,the merge", places, ",")
     for (i = 1; i <= 7; i++) if (!(places[i] in seen)) faults[++count] = issue ": no record of " places[i]
     for (i = 1; i <= noted; i++) print notes[i]
