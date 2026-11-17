@@ -92,7 +92,7 @@ func PutStep(ctx context.Context, tx pgx.Tx, write StepWrite, actor model.Actor,
 		},
 		relations: func(setting map[string]string) []tuple {
 			if report, sets := setting[AttributeReport]; sets {
-				return []tuple{{fromID: id, kind: RelationReports, toKind: KindHandoff, toID: report}}
+				return []tuple{{kind: RelationReports, toKind: KindHandoff, toID: report}}
 			}
 			return nil
 		},
@@ -214,10 +214,10 @@ func putNode(ctx context.Context, tx pgx.Tx, write nodeWrite) ([]byte, error) {
 		}
 		setting[attribute.name] = attribute.value
 		texts[attribute.name] = attribute.text
-		tuples = append(tuples, tuple{fromID: write.id, kind: attribute.name, toKind: KindValue, toID: attribute.text})
+		tuples = append(tuples, tuple{kind: attribute.name, toKind: KindValue, toID: attribute.text})
 	}
 	if made {
-		tuples = append(tuples, tuple{fromID: write.id, kind: RelationPartOf, toKind: KindIssue, toID: write.issue})
+		tuples = append(tuples, tuple{kind: RelationPartOf, toKind: KindIssue, toID: write.issue})
 	}
 	if write.relations != nil {
 		tuples = append(tuples, write.relations(texts)...)
@@ -238,7 +238,7 @@ func putNode(ctx context.Context, tx pgx.Tx, write nodeWrite) ([]byte, error) {
 	`, write.kind, write.id, moved).Scan(&written); err != nil {
 		return nil, fmt.Errorf("write %s %s: %w", write.kind, write.id, err)
 	}
-	if err := appendTuples(ctx, tx, write.kind, tuples, writer, write.at); err != nil {
+	if err := appendTuples(ctx, tx, write.kind, write.id, tuples, writer, write.at); err != nil {
 		return nil, fmt.Errorf("write %s %s: %w", write.kind, write.id, err)
 	}
 	return written, nil
@@ -453,29 +453,28 @@ func heldString(held map[string]json.RawMessage, name string) (string, error) {
 	return text, nil
 }
 
-// tuple is one fact a write states about one node: an attribute, whose toKind is KindValue and
+// tuple is one fact a write states about its node: an attribute, whose toKind is KindValue and
 // whose toID is the value, or a relation to the node toKind and toID address.
 type tuple struct {
-	fromID, kind, toKind, toID string
+	kind, toKind, toID string
 }
 
-// appendTuples appends every tuple of one write of a node of fromKind in one statement, in the
-// order the write states them, which is the order their seq is drawn in. Every tuple of the write
-// has one writer, one moment and no event, and asserts its fact.
-func appendTuples(ctx context.Context, tx pgx.Tx, fromKind string, tuples []tuple, writer []byte, at time.Time) error {
-	fromIDs := make([]string, len(tuples))
+// appendTuples appends every tuple of one write of the node fromKind fromID in one statement, in
+// the order the write states them, which is the order their seq is drawn in. Every tuple of the
+// write has one writer, one moment and no event, and asserts its fact.
+func appendTuples(ctx context.Context, tx pgx.Tx, fromKind, fromID string, tuples []tuple, writer []byte, at time.Time) error {
 	kinds := make([]string, len(tuples))
 	toKinds := make([]string, len(tuples))
 	toIDs := make([]string, len(tuples))
 	for index, stated := range tuples {
-		fromIDs[index], kinds[index], toKinds[index], toIDs[index] = stated.fromID, stated.kind, stated.toKind, stated.toID
+		kinds[index], toKinds[index], toIDs[index] = stated.kind, stated.toKind, stated.toID
 	}
 	if _, err := tx.Exec(ctx, `
 		insert into workflow_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event, asserted)
-		select $8, stated.from_id, stated.kind, stated.to_kind, stated.to_id, $5, $6::jsonb, $7, true
-		from unnest($1::text[], $2::text[], $3::text[], $4::text[]) with ordinality as stated(from_id, kind, to_kind, to_id, place)
+		select $7, $8, stated.kind, stated.to_kind, stated.to_id, $4, $5::jsonb, $6, true
+		from unnest($1::text[], $2::text[], $3::text[]) with ordinality as stated(kind, to_kind, to_id, place)
 		order by stated.place
-	`, fromIDs, kinds, toKinds, toIDs, at, writer, NoEvent, fromKind); err != nil {
+	`, kinds, toKinds, toIDs, at, writer, NoEvent, fromKind, fromID); err != nil {
 		return fmt.Errorf("append %s tuples: %w", fromKind, err)
 	}
 	return nil

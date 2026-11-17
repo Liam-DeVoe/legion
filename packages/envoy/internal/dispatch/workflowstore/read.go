@@ -106,13 +106,13 @@ func ProjectPlans(ctx context.Context, q Queryer, project string, window Window)
 	}
 	defer rows.Close()
 
-	// gathering is one finished issue as its rows build it: its answer, its runs, folded into the
-	// answer once every row is read, and the moment the plan it holds was made, which picks between
-	// two plans of one generation.
+	// gathering is one finished issue as its rows build it: its answer, its runs and its newest
+	// plan with the moment that plan's node was made, the two folded into the answer once every row
+	// is read.
 	type gathering struct {
-		issue    IssuePlan
-		runs     []Step
-		planMade time.Time
+		issue IssuePlan
+		runs  []Step
+		plan  *madePlan
 	}
 	var issues []gathering
 	for rows.Next() {
@@ -141,8 +141,8 @@ func ProjectPlans(ctx context.Context, q Queryer, project string, window Window)
 			if err != nil {
 				return nil, err
 			}
-			if newerPlan(plan, *made, last.issue.Plan, last.planMade) {
-				last.issue.Plan, last.planMade = &plan, *made
+			if candidate := (madePlan{plan: plan, made: *made}); candidate.newerThan(last.plan) {
+				last.plan = &candidate
 			}
 		}
 	}
@@ -153,6 +153,9 @@ func ProjectPlans(ctx context.Context, q Queryer, project string, window Window)
 	finished := make([]IssuePlan, 0, len(issues))
 	for _, gathered := range issues {
 		issue := gathered.issue
+		if gathered.plan != nil {
+			issue.Plan = &gathered.plan.plan
+		}
 		slices.SortFunc(gathered.runs, compareRuns)
 		for _, step := range gathered.runs {
 			if step.StartedAt != nil && (issue.StartedAt == nil || step.StartedAt.Before(*issue.StartedAt)) {
@@ -190,18 +193,25 @@ func microsecondCeiling(bound *time.Time) *time.Time {
 	return &ceiling
 }
 
-// newerPlan answers whether plan, its node made at made, is newer than held, made at heldMade: of
-// a higher generation, or of the same generation and made later, or made at the same moment with
-// the greater id, so the read picks one plan whatever order the rows came in.
-func newerPlan(plan Plan, made time.Time, held *Plan, heldMade time.Time) bool {
+// madePlan is a plan with the moment its node was made, which picks between two plans of one
+// generation.
+type madePlan struct {
+	plan Plan
+	made time.Time
+}
+
+// newerThan answers whether candidate is newer than held (nil for none): of a higher generation,
+// or of the same generation and made later, or made at the same moment with the greater id, so the
+// read picks one plan whatever order the rows came in.
+func (candidate madePlan) newerThan(held *madePlan) bool {
 	if held == nil {
 		return true
 	}
-	if order := cmp.Compare(plan.Generation, held.Generation); order != 0 {
+	if order := cmp.Compare(candidate.plan.Generation, held.plan.Generation); order != 0 {
 		return order > 0
 	}
-	if order := made.Compare(heldMade); order != 0 {
+	if order := candidate.made.Compare(held.made); order != 0 {
 		return order > 0
 	}
-	return plan.ID > held.ID
+	return candidate.plan.ID > held.plan.ID
 }
