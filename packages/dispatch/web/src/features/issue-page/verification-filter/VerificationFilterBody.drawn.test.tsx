@@ -76,9 +76,10 @@ beforeAll(async () => {
 });
 
 /** What a case gives the body beside its statements and its checks: the words the reader typed
- *  (`query`), which the view is filtered by (`presetView`), the nodes an address named, `whole`
- *  where a case gives it, and how the three reads stand (`reads`), which is all of them
- *  answered where a case gives nothing else. */
+ *  (`query`), which the view is filtered by (`presetView`), the nodes an address named, how the
+ *  three reads stand (`reads`), which is all of them answered where a case gives nothing else,
+ *  and the view with no query where a case builds it itself (`whole`), which is otherwise built
+ *  as the slot builds it. */
 interface DrawOptions {
   readonly named?: readonly string[];
   readonly query?: string;
@@ -94,19 +95,22 @@ function testClient(): QueryClient {
 }
 
 /** The body over the statements given, with `checks` as the issue's results read, drawn from
- *  the Verification filter's own view: the tree it leaves and the rows it marks as context. It
- *  is drawn inside `NoTooltips`, as the slot draws it, so an author is named as the page names
- *  one, and it says what the slot says where it has nothing to draw: the page's line for no
- *  checks with no query typed, and its line for no match under one. A case that draws the body
- *  again with other reads passes it to `rerender` with the same `client`. */
+ *  the Verification filter's own view: the tree it leaves and the rows it marks as context, and
+ *  the view with no query as the slot builds it, which is that view itself where no query is
+ *  typed. It is drawn inside `NoTooltips`, as the slot draws it, so an author is named as the
+ *  page names one. A case that draws the body again with other reads passes it to `rerender`
+ *  with the same `client`. */
 function bodyOf(
   statements: readonly TreeNode[],
   checks: readonly CheckBlock[],
-  { named = [], query = "", reads = { state: "answered" }, whole }: DrawOptions = {},
+  { named = [], query = "", reads = { state: "answered" }, whole: given }: DrawOptions = {},
   client: QueryClient = testClient()
 ): ReactElement {
   const issue = node({ children: statements, id: ISSUE_KEY, text: "An issue", type: "issue" });
   const view = presetView(issue, "verification", query, new Set(named));
+  const whole =
+    given ??
+    (query === "" ? view.root : presetView(issue, "verification", "", new Set(named)).root);
   return (
     <QueryClientProvider client={client}>
       <MemoryRouter>
@@ -114,10 +118,9 @@ function bodyOf(
           <VerificationFilterBody
             checks={checks}
             context={view.context}
-            emptyLine={query === "" ? EMPTY_STATE_LINES.verification : EMPTY_STATE_LINES.no_match}
             reads={reads}
             view={view.root}
-            {...(whole === undefined ? {} : { whole })}
+            whole={whole}
           />
         </NoTooltips>
       </MemoryRouter>
@@ -182,6 +185,18 @@ function holdKeys(): { held: string[]; stop: () => void } {
   };
   document.addEventListener("keydown", hold);
   return { held, stop: () => document.removeEventListener("keydown", hold) };
+}
+
+/** The reads named refused before they first answered, in the order given, as the slot gives
+ *  them: each with its own Retry, which notes that read in `retried`. */
+function refusedReads(
+  retried: VerificationRead[],
+  ...reads: VerificationRead[]
+): VerificationReads {
+  return {
+    failed: reads.map((read) => ({ read, retry: () => retried.push(read) })),
+    state: "failed",
+  };
 }
 
 /** A check's words with a link and a reference in them. */
@@ -487,10 +502,7 @@ test("a statement that a child's check covers draws one line of the checks drawn
 
     // The query's words are the first statement's and no check's, so it leaves that statement
     // with no check drawn under it, and the second statement out.
-    const filtered = drawBody([partly, childOnly], [own], {
-      query: "this issue serves",
-      whole: verificationView([partly, childOnly]),
-    });
+    const filtered = drawBody([partly, childOnly], [own], { query: "this issue serves" });
     try {
       expect(filtered.container.querySelectorAll("[data-verification-check]")).toHaveLength(0);
       expect(
@@ -1038,9 +1050,10 @@ test("an issue with no checks and no statements draws the page's own empty line"
 
 // A query that matches nothing keeps the issue's row, which says how the whole issue stands as it
 // does with no query - the covered count, the bar, the legend of the seven states and the chips -
-// and the table says under its headings, in the slot's line for no match, that the query left
-// nothing, as it says a chip's state holds no statement. An issue with nothing at all draws that
-// one line alone, in the tree, with no row.
+// and the table says under its headings, in the page's line for no match, that the query left
+// nothing, as it says a chip's state holds no statement. An issue with nothing at all draws the
+// page's line that it has no checks under a query too, alone in the tree with no row: the line for
+// no match would say the issue holds something the query left out.
 test("a query that matches nothing keeps the summary of the whole issue and says so under it", () => {
   const met = passing("c-one");
   const failed = failing("c-two");
@@ -1053,10 +1066,7 @@ test("a query that matches nothing keeps the summary of the whole issue and says
   ];
   const checks = [met, failed, loose];
   const unfiltered = drawBody(under, checks);
-  const filtered = drawBody(under, checks, {
-    query: "zebra quartz",
-    whole: verificationView(under),
-  });
+  const filtered = drawBody(under, checks, { query: "zebra quartz" });
   try {
     // Nothing of the issue holds the query's words, so no card and no row of a check is drawn.
     expect(
@@ -1115,7 +1125,7 @@ test("a query that matches nothing keeps the summary of the whole issue and says
     expect(empty.container.querySelectorAll("[data-node-row]")).toHaveLength(0);
     expect(empty.container.querySelectorAll("[data-verification-table]")).toHaveLength(0);
     expect(textsOf(empty, '[data-verification-body] > [role="tree"]')).toEqual([
-      EMPTY_STATE_LINES.no_match,
+      EMPTY_STATE_LINES.verification,
     ]);
   } finally {
     empty.unmount();
@@ -1159,10 +1169,7 @@ test("a query that keeps only a result draws it with its check under its stateme
   });
   const statement = statementNode("r1", "The page draws it.", [checkNode(latest)]);
   const latestRow = `${statement.id} ${checkNode(latest).id}`;
-  const kept = drawBody([statement], [latest], {
-    query: "zebra",
-    whole: verificationView([statement]),
-  });
+  const kept = drawBody([statement], [latest], { query: "zebra" });
   try {
     expect(cardsOf(kept)).toEqual([[statement.id, [[checkNode(latest).id, latestRow, [failure]]]]]);
     expect(rowsOf(kept)).toEqual([ISSUE_KEY, statement.id, latestRow]);
@@ -1199,10 +1206,7 @@ test("a query that keeps only a result draws it with its check under its stateme
     [served.id, [[checkNode(thrice).id, thriceRow, results]]],
   ];
   const drawnEarlier = servedCard(["41 passed", failure]);
-  const earlier = drawBody([served], [thrice], {
-    query: "zebra",
-    whole: verificationView([served]),
-  });
+  const earlier = drawBody([served], [thrice], { query: "zebra" });
   try {
     const line = earlier.container.querySelector("[data-verification-earlier]");
     expect(cardsOf(earlier)).toEqual(drawnEarlier);
@@ -1229,9 +1233,7 @@ test("a query that keeps only a result draws it with its check under its stateme
       row?.querySelector("[data-verification-earlier]")?.getAttribute("aria-expanded");
     expect(earlierOf()).toBe("false");
     expect(cardsOf(typing)).toEqual(servedCard(["41 passed"]));
-    typing.rerender(
-      bodyOf([served], [thrice], { query: "zebra", whole: verificationView([served]) }, client)
-    );
+    typing.rerender(bodyOf([served], [thrice], { query: "zebra" }, client));
     expect(typing.container.querySelector("[data-verification-check]")).toBe(row);
     expect(earlierOf()).toBe("false");
     expect(cardsOf(typing)).toEqual(drawnEarlier);
@@ -1419,9 +1421,7 @@ test("a read that fails before it first answers says so with a Retry, for each o
 
   for (const read of ["coverage", "results", "blocks"] as const) {
     const retried: VerificationRead[] = [];
-    const view = drawBody(statements, [met], {
-      reads: { failed: [read], onRetry: (again) => retried.push(again), state: "failed" },
-    });
+    const view = drawBody(statements, [met], { reads: refusedReads(retried, read) });
     try {
       expect(linesOf(view)).toEqual([[read, words[read], ["Retry"]]]);
       expect(treeOf(view)).toEqual(emptyTree);
@@ -1432,15 +1432,11 @@ test("a read that fails before it first answers says so with a Retry, for each o
     }
   }
 
-  // All three failed: three lines in the order coverage, results, blocks, whatever order the
-  // reads are given in, and each Retry asks its own read and no other.
+  // All three failed: three lines in the order the slot gives them, coverage, results, blocks,
+  // and each Retry asks its own read and no other.
   const retried: VerificationRead[] = [];
   const all = drawBody(statements, [met], {
-    reads: {
-      failed: ["blocks", "coverage", "results"],
-      onRetry: (again) => retried.push(again),
-      state: "failed",
-    },
+    reads: refusedReads(retried, "coverage", "results", "blocks"),
   });
   try {
     expect(linesOf(all)).toEqual([
@@ -1472,11 +1468,7 @@ test("Enter on a Retry keeps the focus in the view: on the next refused read's R
   const met = passing("c-one");
   const statements = [statementNode("r1", "The page draws it.", [checkNode(met)])];
   const retried: VerificationRead[] = [];
-  const failed = (...reads: VerificationRead[]): VerificationReads => ({
-    failed: reads,
-    onRetry: (read) => retried.push(read),
-    state: "failed",
-  });
+  const failed = (...reads: VerificationRead[]) => refusedReads(retried, ...reads);
   // One client for every drawing, as the page keeps one while its reads answer again.
   const client = testClient();
   const view = render(bodyOf(statements, [met], { reads: failed("coverage", "blocks") }, client));
@@ -1524,6 +1516,50 @@ test("Enter on a Retry keeps the focus in the view: on the next refused read's R
   }
 });
 
+// The page asks a refused read again with no press too: on the window's focus, and on an event
+// that names its key. That takes the read's line, and the Retry the reader's focus is on, off the
+// page as a press does, and the focus stays in the view all the same: on the view's tree while
+// the read is out, on the read's Retry when it is refused again, and on the tree's tab stop, the
+// issue's row, once it answers.
+test("a refused read asked again with no press keeps the focus in the view: on the empty tree while the read is out, on its Retry when refused again, and on the issue's row once it answers", () => {
+  const met = passing("c-one");
+  const statements = [statementNode("r1", "The page draws it.", [checkNode(met)])];
+  const refused = refusedReads([], "results");
+  // One client for every drawing, as the page keeps one while its reads answer again.
+  const client = testClient();
+  const view = render(bodyOf(statements, [met], { reads: refused }, client));
+  const redraw = (reads: VerificationReads) =>
+    view.rerender(bodyOf(statements, [met], { reads }, client));
+  /** The Retry on the results read's line. */
+  const retry = () =>
+    within(
+      view.container.querySelector<HTMLElement>(
+        '[data-verification-unreadable="results"]'
+      ) as HTMLElement
+    ).getByRole("button", { name: "Retry" });
+  try {
+    act(() => retry().focus());
+    expect(document.activeElement).toBe(retry());
+    // Asked again with nothing pressed: the read is out, and its line is gone.
+    redraw({ state: "waiting" });
+    expect(document.activeElement, "the focus left the view while the read is out").toBe(
+      view.container.querySelector('[role="tree"]')
+    );
+    // Refused again: its line comes back, and its Retry takes the focus from the tree.
+    redraw(refused);
+    expect(document.activeElement, "the read refused again left the focus on the tree").toBe(
+      retry()
+    );
+    // Asked again once more, it answers: the tree's tab stop, the issue's row, takes the focus.
+    redraw({ state: "answered" });
+    expect(document.activeElement, "the read that answered left the focus off the view").toBe(
+      view.container.querySelector("[data-verification-issue]")
+    );
+  } finally {
+    view.unmount();
+  }
+});
+
 // `t k` with a refused read puts the focus on that read's Retry, not on the empty tree, which has
 // nothing to act on and from which Tab never reaches the Retry. The page's chord focuses the tree,
 // which holds no row to take its tab stop, so the tree hands its focus to the Retry. A tree with
@@ -1532,9 +1568,7 @@ test("Enter on a Retry keeps the focus in the view: on the next refused read's R
 test("with a read refused, the view's tree gives its focus to that read's Retry", () => {
   const met = passing("c-one");
   const statements = [statementNode("r1", "The page draws it.", [checkNode(met)])];
-  const refused = drawBody(statements, [met], {
-    reads: { failed: ["results"], onRetry: () => undefined, state: "failed" },
-  });
+  const refused = drawBody(statements, [met], { reads: refusedReads([], "results") });
   try {
     const tree = refused.container.querySelector<HTMLElement>('[role="tree"]');
     act(() => tree?.focus());
@@ -1605,6 +1639,83 @@ test("the view's own reads of the coverage and the results send no request when 
     resultsRead.mockRestore();
     client.clear();
   }
+});
+
+/**
+ * What the reads stand at, and how often each of the view's reads was asked, once the read
+ * `refused` was refused before it first answered and the Retry `useVerificationReads` gives its
+ * line was called: over an issue with no check, which needs no blocks read, so nothing asks the
+ * blocks read but a Retry that asked the wrong read.
+ */
+async function retried(
+  refused: "coverage" | "results"
+): Promise<{ asked: Record<VerificationRead, number>; reads: VerificationReads }> {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const coverage: IssueCoverage = {
+    gaps: [],
+    has_plan: false,
+    issue: ISSUE_KEY,
+    requirements: [],
+    spec_artifact_id: "",
+  };
+  const results: IssueCheckResults = { checks: [], issue: ISSUE_KEY, verification_artifact_id: "" };
+  const blocksRead = spyOn(api, "getArtifactBlocks").mockRejectedValue(
+    new Error("The blocks read was asked.")
+  );
+  const coverageRead = spyOn(api, "getIssueCoverage").mockResolvedValue(coverage);
+  const resultsRead = spyOn(api, "getIssueResults").mockResolvedValue(results);
+  if (refused === "coverage") coverageRead.mockRejectedValueOnce(new Error("Refused."));
+  else resultsRead.mockRejectedValueOnce(new Error("Refused."));
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={client}>{children}</QueryClientProvider>
+  );
+  const hook = renderHook(() => useVerificationReads(ISSUE_KEY), { wrapper });
+  try {
+    await waitFor(() => expect(hook.result.current.reads.state).toBe("failed"));
+    const before = hook.result.current.reads;
+    const failed = before.state === "failed" ? before.failed : [];
+    expect(failed.map(({ read }) => read)).toEqual([refused]);
+    act(() => failed[0]?.retry());
+    await act(() => Bun.sleep(20));
+    return {
+      asked: {
+        blocks: blocksRead.mock.calls.length,
+        coverage: coverageRead.mock.calls.length,
+        results: resultsRead.mock.calls.length,
+      },
+      reads: hook.result.current.reads,
+    };
+  } finally {
+    hook.unmount();
+    blocksRead.mockRestore();
+    coverageRead.mockRestore();
+    resultsRead.mockRestore();
+    client.clear();
+  }
+}
+
+// Each read refused before it first answered comes with its own Retry (`useVerificationReads`),
+// which the body draws on that read's line, so no read's name is decoded on the way to it: the
+// Retry of a refused coverage read asks the coverage read again, and no other read.
+test("the Retry of a refused coverage read asks the coverage read again and no other", async () => {
+  const { asked, reads } = await retried("coverage");
+  expect(asked, "the Retry asked another read than the coverage").toEqual({
+    blocks: 0,
+    coverage: 2,
+    results: 1,
+  });
+  expect(reads).toEqual({ state: "answered" });
+});
+
+// The same of a refused results read: its Retry asks the results read again, and no other read.
+test("the Retry of a refused results read asks the results read again and no other", async () => {
+  const { asked, reads } = await retried("results");
+  expect(asked, "the Retry asked another read than the results").toEqual({
+    blocks: 0,
+    coverage: 1,
+    results: 2,
+  });
+  expect(reads).toEqual({ state: "answered" });
 });
 
 // An agent that recorded a result is named by its role's word, as the outline's rows name one
@@ -2284,6 +2395,174 @@ test("a query that keeps one earlier result draws that result and leaves the oth
       drawn.filter((words) => words === "40 passed" || words === "41 passed"),
       "an earlier result the query did not keep is drawn"
     ).toEqual([]);
+  } finally {
+    view.unmount();
+  }
+});
+
+/** The words of the earlier result of `MANY_RESULTS` that "okapi" is in, as it is in the
+ *  check's own words. */
+const OKAPI_RESULT = "The page drew the okapi column twice.";
+
+/** A check of four results whose newest reads "42 passed", and whose own words hold "zebra",
+ *  which none of its results' do, and "okapi", which its oldest result's do too. */
+const MANY_RESULTS = check({
+  block_id: "c-many",
+  results: [
+    result({
+      check_block_id: "c-many",
+      created_at: "2026-11-11T09:00:00Z",
+      id: "result-kept",
+      observed: OKAPI_RESULT,
+    }),
+    result({
+      check_block_id: "c-many",
+      created_at: "2026-11-12T09:00:00Z",
+      id: "result-second",
+      observed: "40 passed",
+    }),
+    result({
+      check_block_id: "c-many",
+      created_at: "2026-11-13T09:00:00Z",
+      id: "result-third",
+      observed: "41 passed",
+    }),
+    result({
+      check_block_id: "c-many",
+      created_at: "2026-11-14T09:00:00Z",
+      id: "result-newest",
+      observed: "42 passed",
+    }),
+  ],
+  text: "The zebra page draws the okapi column.",
+});
+
+/** `MANY_RESULTS`'s row under its one statement, under `query`, as the reader reads it: its
+ *  state, the words of each result it draws, in order, and its line of earlier results with
+ *  whether that line is open. */
+function manyResultsRow(query: string) {
+  const statement = statementNode("r1", "The page draws it.", [checkNode(MANY_RESULTS)]);
+  const drawn = drawBody([statement], [MANY_RESULTS], { query });
+  try {
+    return {
+      line: textsOf(drawn, "[data-verification-earlier]"),
+      open: drawn.container
+        .querySelector("[data-verification-earlier]")
+        ?.getAttribute("aria-expanded"),
+      results: textsOf(drawn, "[data-verification-result] [data-node-words]"),
+      state: textsOf(drawn, "[data-verification-check] span[data-node-state]"),
+    };
+  } finally {
+    drawn.unmount();
+  }
+}
+
+/** What `manyResultsRow` reads with no query: its newest result alone, and its line of three
+ *  earlier results, shut. */
+const MANY_RESULTS_ROW = {
+  line: [`3 ${VERIFICATION_WORDS.earlier_many}`],
+  open: "false",
+  results: ["42 passed"],
+  state: [NODE_STATE_WORDS.check.passed],
+};
+
+// A query that matches a check's own words keeps of its results only those whose words it
+// matches too, and the check is still drawn as the issue's reading of it, as a check a query keeps
+// only a result of is: its state, its newest result and its line of earlier results with their
+// whole count, shut, and under the newest each earlier result the query kept. So matching more of
+// a check never draws less of it: a query on the check's words and one earlier result's draws
+// what a query on that result's words alone draws.
+test("a query on a check's words and one earlier result's draws the check's newest result, the whole count of its earlier results, and that result", () => {
+  const kept = { ...MANY_RESULTS_ROW, results: ["42 passed", OKAPI_RESULT] };
+  expect(manyResultsRow("")).toEqual(MANY_RESULTS_ROW);
+  // "twice" is in that result's words alone, and "okapi" in the check's words too.
+  expect(manyResultsRow("twice")).toEqual(kept);
+  expect(manyResultsRow("okapi"), "a query on the check's and a result's words drew less").toEqual(
+    kept
+  );
+});
+
+// A query on a check's own words alone keeps none of its results, and draws the check as no
+// query draws it: its newest result, and its line of earlier results with their whole count, shut.
+test("a query on a check's words alone draws the check's newest result and the whole count of its earlier results", () => {
+  expect(manyResultsRow("zebra"), "a query on the check's words drew less").toEqual(
+    MANY_RESULTS_ROW
+  );
+});
+
+// A check that serves no statement is a row of the table of its own, and a query keeps it as it
+// keeps a statement's check: a query that matches only an earlier result of it lifts that result
+// to the top with the check as its parent line (`presets.ts`), and the body draws the check, read
+// from the issue's reading, with that result under its newest and its line of earlier results
+// shut, rather than the result as a bare row. A loose check the query matches by its own words is
+// the issue's reading of it too, and the loose checks stand in the issue's order, each a row of
+// the tree that a key moves onto and gives the tab stop to.
+test("a query that keeps only a result of a check that serves no statement draws that check with the result", async () => {
+  const user = userEvent.setup();
+  const kept = "The page drew the okapi column twice.";
+  const first = check({
+    block_id: "c-first",
+    results: [
+      result({
+        check_block_id: "c-first",
+        created_at: "2026-11-12T09:00:00Z",
+        id: "result-first-kept",
+        observed: kept,
+      }),
+      result({
+        check_block_id: "c-first",
+        created_at: "2026-11-13T09:00:00Z",
+        id: "result-first-middle",
+        observed: "41 passed",
+      }),
+      result({
+        check_block_id: "c-first",
+        created_at: "2026-11-14T09:00:00Z",
+        id: "result-first-newest",
+        observed: "42 passed",
+      }),
+    ],
+  });
+  const second = check({
+    block_id: "c-second",
+    results: [result({ check_block_id: "c-second", id: "result-second" })],
+    text: "The okapi page draws c-second.",
+  });
+  const view = drawBody([checkNode(first), checkNode(second)], [first, second], {
+    query: "okapi",
+  });
+  try {
+    /** Each check of the table's own: its row's id, the words of each result it draws, in
+     *  order, and its line of earlier results with whether that line is open. */
+    const looseOf = () =>
+      [...view.container.querySelectorAll("[data-verification-loose]")].map((row) => {
+        const line = row.querySelector("[data-verification-earlier]");
+        return [
+          row.getAttribute("data-verification-row"),
+          [...row.querySelectorAll("[data-verification-result] [data-node-words]")].map(
+            (words) => words.textContent
+          ),
+          (line?.textContent ?? "").replace(/\s+/gu, " ").trim(),
+          line?.getAttribute("aria-expanded"),
+        ];
+      });
+    expect(looseOf()).toEqual([
+      [checkNode(first).id, ["42 passed", kept], `2 ${VERIFICATION_WORDS.earlier_many}`, "false"],
+      [checkNode(second).id, ["41 passed"], "", undefined],
+    ]);
+    // The kept result is drawn with its check, and as no row of its own.
+    expect(view.container.querySelectorAll("[data-verification-other]")).toHaveLength(0);
+    // The tree's rows: the issue's, then each loose check, and a key gives the first its stop.
+    const rows = [...view.container.querySelectorAll<HTMLElement>("[data-node-row]")];
+    expect(rows.map((row) => row.getAttribute("data-verification-row"))).toEqual([
+      ISSUE_KEY,
+      checkNode(first).id,
+      checkNode(second).id,
+    ]);
+    act(() => rows[0]?.focus());
+    await user.keyboard("j");
+    expect(document.activeElement).toBe(rows[1]);
+    expect(rows.map((row) => row.getAttribute("tabindex"))).toEqual(["-1", "0", "-1"]);
   } finally {
     view.unmount();
   }

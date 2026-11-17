@@ -8,7 +8,6 @@ import type { CheckBlock } from "../../../api/types";
 import { useAddressTarget } from "../address-target";
 import { issueAddress } from "../issue-address";
 import { NoTooltips } from "../NoTooltips";
-import { EMPTY_STATE_LINES } from "../page-words";
 import { presetView } from "../presets";
 import type { SlotProps } from "../slot-props";
 import { useIssueTree } from "../useIssueTree";
@@ -47,9 +46,6 @@ export function ViewVerificationSlot({ issue, route }: SlotProps): ReactNode {
         <VerificationFilterBody
           checks={checks}
           context={view.context}
-          emptyLine={
-            address.filter === "" ? EMPTY_STATE_LINES.verification : EMPTY_STATE_LINES.no_match
-          }
           reads={reads}
           view={view.root}
           whole={whole}
@@ -77,7 +73,10 @@ export function useVerificationReads(issueKey: string): {
   // app's 30 s (`main.tsx`), pressing the view more than 30 s after the page read them read both
   // again. Each holds what it read until an event refreshes its key (`staleTime: Infinity`), and
   // the window's focus asks again only a read in error (`refetchFailedOnFocus`), as the page's
-  // reference reads do.
+  // reference reads do. These are this slot's observers alone: `useIssueTree`'s own observers of
+  // the same keys still ask again after the app's 30 s until they are given the same options, so
+  // in the page a view pressed more than 30 s after the page read them can still read them
+  // again, through those observers.
   const coverage = useQuery({
     ...issueCoverageQuery(issueKey),
     staleTime: Number.POSITIVE_INFINITY,
@@ -95,16 +94,17 @@ export function useVerificationReads(issueKey: string): {
   // statement, every statement would read Unknown, and the line that counts a statement's checks
   // elsewhere would call the issue's own checks "elsewhere". The results read answers the checks
   // of one document, the issue's Verification document (`api/results.go`'s
-  // `verificationDocument`), which each check names (`CheckBlock.artifact_id`) and whose blocks
-  // `useIssueTree` reads; no other document's blocks place a check. The slot watches that read
-  // under the same key with an observer that is never enabled, so it sends no request of its own
-  // and sees whatever `useIssueTree`'s observer fetches; its `refetch` still fetches, which is
-  // what Retry asks. Where the results read holds no check no blocks read is needed, and the
-  // observer of no document never fetches. It is this one read and not `useIssueTree`'s
-  // `blocksHeld`, which counts all four of the tree's documents: a refused plan or decisions read
-  // must not hold this view empty, and the failed line needs this read's own error and Retry.
-  // This observer reads the key `useIssueTree` fills and fetches nothing of its own.
-  const documentId = checks[0]?.artifact_id;
+  // `verificationDocument`), and names it in a field of its own (`verification_artifact_id`),
+  // which is read where the read holds a check. It must agree with the document whose blocks
+  // `useIssueTree` reads, which that hook finds from the issue read (`roleDocument`); no other
+  // document's blocks place a check. The slot watches that read under the same key with an
+  // observer that is never enabled, so it sends no request of its own and sees whatever
+  // `useIssueTree`'s observer fetches; its `refetch` still fetches, which is what Retry asks.
+  // Where the results read holds no check no blocks read is needed, and the observer of no
+  // document never fetches. It is this one read and not `useIssueTree`'s `blocksHeld`, which
+  // counts all four of the tree's documents: a refused plan or decisions read must not hold this
+  // view empty, and the failed line needs this read's own error and Retry.
+  const documentId = checks.length === 0 ? undefined : results.data?.verification_artifact_id;
   const blocks = useQuery({ ...artifactBlocksQuery(documentId ?? ""), enabled: false });
   // Each read has answered where it holds data, and not by its status: a background refetch
   // that fails sets TanStack Query's status to error and keeps the data it last answered, and
@@ -120,21 +120,19 @@ export function useVerificationReads(issueKey: string): {
     coverage.data !== undefined &&
     results.data !== undefined &&
     (documentId === undefined || blocks.data !== undefined);
-  const failed: VerificationRead[] = [];
-  if (failedWithNothing(coverage)) failed.push("coverage");
-  if (failedWithNothing(results)) failed.push("results");
-  if (documentId !== undefined && failedWithNothing(blocks)) failed.push("blocks");
+  const failed: { readonly read: VerificationRead; readonly retry: () => void }[] = [];
+  if (failedWithNothing(coverage)) {
+    failed.push({ read: "coverage", retry: () => void coverage.refetch() });
+  }
+  if (failedWithNothing(results)) {
+    failed.push({ read: "results", retry: () => void results.refetch() });
+  }
+  if (documentId !== undefined && failedWithNothing(blocks)) {
+    failed.push({ read: "blocks", retry: () => void blocks.refetch() });
+  }
   const reads: VerificationReads =
     failed.length > 0
-      ? {
-          failed,
-          onRetry: (read) => {
-            if (read === "coverage") void coverage.refetch();
-            else if (read === "results") void results.refetch();
-            else void blocks.refetch();
-          },
-          state: "failed",
-        }
+      ? { failed, state: "failed" }
       : answered
         ? { state: "answered" }
         : { state: "waiting" };
