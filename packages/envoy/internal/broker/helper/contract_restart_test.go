@@ -81,7 +81,7 @@ func TestContractALostRefreshAnswerIsRetriedInsideTheGrace(t *testing.T) {
 	if err := b.Start(ctx); err != nil {
 		t.Fatal(err)
 	}
-	fake.Set(fake.AwaitArmed(t, "the refresh loop's retry after the lost answer", 1)[0])
+	fireArmedAt(t, fake, fake.Now().Add(b.refreshRetryOrDefault()), "the refresh loop's retry after the lost answer")
 	waitFor(t, func() bool {
 		now, err := LoadMachineFile(first.machineFile)
 		return err == nil && now.RefreshToken != kept.RefreshToken

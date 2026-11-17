@@ -17,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -27,6 +28,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/oauthwire"
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/broker/record"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -152,6 +154,13 @@ type fakeBroker struct {
 	// it, so every later one gets lease. A test gives one enrollment a lease short enough that it
 	// renews soon, and nothing it re-enrolls can lapse under the test however the steps interleave.
 	nextLease time.Duration
+	// clock, when set, is the clock the fake's leases and credential lifetimes run on: the end it
+	// gives an enrollment or a renew, the moment it reads a renew's lease at, and the expiry it
+	// names for an issued or refreshed credential. Nil is the wall clock. A test that fires the
+	// helper's renews or refreshes on a fake clock sets the same clock here, so no lease or
+	// credential can end while the test holds that clock still, however slow the host is, and a
+	// refresh the test fires names a later expiry than the one it replaces.
+	clock func() time.Time
 	// refuseKinds answers an enroll naming one of these kinds 400 INVALID_KIND, as a broker before
 	// the session kind refuses "session".
 	refuseKinds map[string]bool
@@ -249,7 +258,7 @@ func newFakeBroker(t *testing.T) *fakeBroker {
 		if f.nextLease > 0 {
 			d, f.nextLease = f.nextLease, 0
 		}
-		lease := time.Now().Add(d)
+		lease := f.now().Add(d)
 		f.enrolled[id], f.byTP[tp] = tp, id
 		f.leaseExpiry[id] = lease
 		f.runtimeIDToID[rid] = id
@@ -361,12 +370,12 @@ func newFakeBroker(t *testing.T) *fakeBroker {
 		}
 		// The enrollment row itself survives its own lease — a renew past that stored expiry is
 		// refused, but nothing about the enrollment is deleted; only Revoke deletes it.
-		if exp, ok := f.leaseExpiry[id]; ok && !time.Now().Before(exp) {
+		if exp, ok := f.leaseExpiry[id]; ok && !f.now().Before(exp) {
 			writeJSON(w, 401, map[string]string{"code": "ENROLLMENT_NOT_LIVE", "error": "enrollment is not live"})
 			return
 		}
 		f.renews++
-		lease := time.Now().Add(f.lease)
+		lease := f.now().Add(f.lease)
 		f.leaseExpiry[id] = lease
 		writeJSON(w, 200, map[string]string{"lease_expires_at": lease.UTC().Format(time.RFC3339Nano)})
 	})
@@ -474,7 +483,7 @@ func newFakeBroker(t *testing.T) *fakeBroker {
 				return
 			case "no_refresh_token":
 				answer := map[string]any{"access_token": "access-bare", "token_type": "DPoP", "expires_in": 900,
-					"credential_id": id, "credential_expires_at": time.Now().Add(f.loginLifetime).UTC().Format(time.RFC3339)}
+					"credential_id": id, "credential_expires_at": f.now().Add(f.loginLifetime).UTC().Format(time.RFC3339)}
 				writeJSON(w, 200, answer)
 				return
 			}
@@ -511,7 +520,7 @@ func (f *fakeBroker) writeTokens(w http.ResponseWriter, credentialID string) {
 		"refresh_token": refresh, "credential_id": credentialID,
 	}
 	if f.loginLifetime != 0 {
-		answer["credential_expires_at"] = time.Now().Add(f.loginLifetime).UTC().Format(time.RFC3339)
+		answer["credential_expires_at"] = f.now().Add(f.loginLifetime).UTC().Format(time.RFC3339)
 	}
 	writeJSON(w, 200, answer)
 }
@@ -597,6 +606,15 @@ func (f *fakeBroker) snapshot() (posts []map[string]any, deletes []string, renew
 	return append([]map[string]any(nil), f.posts...), append([]string(nil), f.deletes...), f.renews
 }
 
+// now is the moment the fake's leases and credential lifetimes are read at: clock's when a test
+// set one, the wall clock's otherwise. The caller holds f.mu.
+func (f *fakeBroker) now() time.Time {
+	if f.clock != nil {
+		return f.clock()
+	}
+	return time.Now()
+}
+
 func operatorFile(t *testing.T, operator string) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -637,6 +655,27 @@ func loggedInBroker(t *testing.T, f *fakeBroker, operator string, tune ...func(*
 func waitFor(t *testing.T, cond func() bool) {
 	t.Helper()
 	testwait.Eventually(t, "the condition the row waits on", cond)
+}
+
+// awaitArmedAt waits until a timer of fake is armed for at, the wait the row means. The code
+// arms it only once what came before it has run, while other timers (a credential's expiry
+// watch, the refresh or renew loop's own) can stand armed beside it, so the earliest armed
+// timer is not the one the row means until this one is armed: a row that moved the fake to the
+// earliest moved it to the expiry watch, a week out, whenever it read the timers first.
+func awaitArmedAt(t *testing.T, fake *clocktest.Fake, at time.Time, what string) {
+	t.Helper()
+	testwait.Until(t, what, func() ([]time.Time, bool) {
+		armed := fake.Armed()
+		return armed, slices.ContainsFunc(armed, at.Equal)
+	})
+}
+
+// fireArmedAt waits for the timer armed for at (awaitArmedAt) and moves fake there, which fires
+// it.
+func fireArmedAt(t *testing.T, fake *clocktest.Fake, at time.Time, what string) {
+	t.Helper()
+	awaitArmedAt(t, fake, at, what)
+	fake.Set(at)
 }
 
 func TestLoginHoldsTheKeyAndEnrollSignsLauncherProofs(t *testing.T) {

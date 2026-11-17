@@ -132,10 +132,7 @@ func TestAnEnrollRefusedSessionHeldBacksOffAndEnrolsWhenThePrincipalChanges(t *t
 	// It asks again: a loop that read the refusal as the name's final answer would send one
 	// POST and return, and this session would sign nothing ever again. The retry's own wait
 	// is armed on this server's clock, so the row fires it rather than waiting it out.
-	if armed := fake.AwaitArmed(t, "the enroll retry's first wait", 1)[0]; !armed.Equal(fake.Now().Add(time.Second)) {
-		t.Fatalf("the first retry is armed for %s; want a second from now (%s)", armed, fake.Now().Add(time.Second))
-	}
-	fake.Advance(time.Second)
+	fireArmedAt(t, fake, fake.Now().Add(time.Second), "the enroll retry's first wait, a second from now")
 	waitUpTo(t, func() bool { return posts() > 1 },
 		"the helper sent one enroll for a name another principal holds and stopped; the refusal is of the principal that attempt enrolled under, which a sign-in changes with no restart")
 	select {
@@ -146,9 +143,7 @@ func TestAnEnrollRefusedSessionHeldBacksOffAndEnrolsWhenThePrincipalChanges(t *t
 
 	// And it backs off rather than spinning: the ladder is 1 s doubling, read from the wait
 	// the second failure arms rather than from a count of attempts in a window of real time.
-	if armed := fake.AwaitArmed(t, "the enroll retry's second wait", 1)[0]; !armed.Equal(fake.Now().Add(2 * time.Second)) {
-		t.Fatalf("the second retry is armed for %s; want two seconds from now (%s): the ladder doubles", armed, fake.Now().Add(2*time.Second))
-	}
+	awaitArmedAt(t, fake, fake.Now().Add(2*time.Second), "the enroll retry's second wait, two seconds from now: the ladder doubles")
 
 	// The session keeps the refusal meanwhile: `sessions`, a register reply and every sign
 	// answer report it, so the launcher learns why this session is not signing yet.

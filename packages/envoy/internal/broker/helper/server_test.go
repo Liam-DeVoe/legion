@@ -487,39 +487,69 @@ func TestEnrollRetriesUntilTheBrokerAnswers(t *testing.T) {
 	// Two 503s, each retried on the ladder's own wait — 1 s, then 2 s — armed on the server's
 	// clock and fired here, and then the 201.
 	for _, wait := range []time.Duration{time.Second, 2 * time.Second} {
-		if armed := r.clock.AwaitArmed(t, "the enroll retry's wait after a 503", 1)[0]; !armed.Equal(r.clock.Now().Add(wait)) {
-			t.Fatalf("the enroll retry is armed for %s; want %s from now", armed, wait)
-		}
-		r.clock.Advance(wait)
+		fireArmedAt(t, r.clock, r.clock.Now().Add(wait), fmt.Sprintf("the enroll retry's wait after a 503, %s from now", wait))
 	}
 	waitFor(t, func() bool { return r.srv.Registry.Get(os.Getpid()).snapshot().State == "enrolled" })
 }
 
+// TestRenewRunsAndARefusedRenewReenrolls: the helper renews a session's enrollment at a third
+// of the lease the broker gave it, and a renew the broker refuses as not live has the helper
+// enroll again, under a new enrollment for the same runtime id. The server's timers and the
+// fake's leases run on the rig's one clock, which only the row moves: each renew comes when the
+// row fires it, and no lease can end under the row, however slow the host is. The only refusal
+// is the one the row makes, by having the fake forget the enrollment.
 func TestRenewRunsAndARefusedRenewReenrolls(t *testing.T) {
-	r := startRig(t, "")
-	// A 150 ms lease: the helper renews at a third of it (floored by MinRenew = 50 ms). Poll
-	// for the first renew instead of guessing how long that takes under load — enrollment
-	// alone has been observed to take longer than a fixed 300 ms wait under a starved
-	// scheduler. Production leases are 900 s → one renew per 300 s.
+	r := newRigOn(t, "")
 	r.fake.mu.Lock()
-	r.fake.lease = 150 * time.Millisecond
+	r.fake.clock = r.clock.Now
+	r.fake.lease = 900 * time.Second // the production lease: one renew per 300 s
 	r.fake.mu.Unlock()
-	reg := r.call(t, Request{Op: "register", WaitSeconds: 5})
-	waitFor(t, func() bool {
+	r.login(t)
+	if reg := r.call(t, Request{Op: "register"}); !reg.OK {
+		t.Fatalf("register: %+v", reg)
+	}
+	sess := r.srv.Registry.Get(os.Getpid())
+	id := testwait.Until(t, "the session to enroll", func() (string, bool) {
+		id := sess.identity().EnrollmentID
+		return id, id != ""
+	})
+	runtimeID := sess.RuntimeID()
+
+	// fireRenew waits for the one timer on the rig's clock, the renew renewLoop arms for the
+	// lease the fake last gave, which ends 900 s on. It requires that timer at a third of it,
+	// 300 s on, and fires it.
+	fireRenew := func(what string) {
+		t.Helper()
+		want := r.clock.Now().Add(300 * time.Second)
+		if armed := r.clock.AwaitArmed(t, what, 1); len(armed) != 1 || !armed[0].Equal(want) {
+			t.Fatalf("%s: armed %v; want one timer, the renew at %s, a third of the 900 s lease", what, armed, want)
+		}
+		r.clock.Set(want)
+	}
+	renews := func() int {
 		r.fake.mu.Lock()
 		defer r.fake.mu.Unlock()
-		return r.fake.renews > 0
-	})
-	// The broker forgets the enrollment (lease lapsed during an outage): renew is 401, the
-	// helper enrolls again and gets a new enrollment for the same runtime_id.
+		return r.fake.renews
+	}
+
+	fireRenew("the session's first renew")
+	waitFor(t, func() bool { return renews() == 1 })
+
+	// The broker forgets the enrollment (its lease lapsed during an outage): the next renew is
+	// refused 401 ENROLLMENT_NOT_LIVE, and the helper enrolls again.
 	r.fake.mu.Lock()
-	delete(r.fake.enrolled, reg.EnrollmentID)
-	delete(r.fake.byTP, r.srv.Registry.Get(os.Getpid()).identity().Thumbprint)
+	delete(r.fake.enrolled, id)
+	delete(r.fake.byTP, sess.identity().Thumbprint)
 	r.fake.mu.Unlock()
-	waitFor(t, func() bool {
-		id := r.srv.Registry.Get(os.Getpid()).identity().EnrollmentID
-		return id != "" && id != reg.EnrollmentID
+	fireRenew("the renew after the fake forgot the enrollment")
+	next := testwait.Until(t, "the session to enroll again after its renew was refused", func() (string, bool) {
+		next := sess.identity().EnrollmentID
+		return next, next != "" && next != id
 	})
+	if renews() != 1 || sess.RuntimeID() != runtimeID {
+		t.Fatalf("after the refused renew: %d renews, runtime id %q, enrollment %q; want the one renew, runtime id %q kept, an enrollment other than %q",
+			renews(), sess.RuntimeID(), next, runtimeID, id)
+	}
 }
 
 func TestRecoverRepinsLiveSessionsWithFreshKeys(t *testing.T) {
