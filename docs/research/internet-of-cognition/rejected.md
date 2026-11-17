@@ -32,7 +32,7 @@ Each line names the evidence that drops it, and each id is a row of `claims.json
 
 - **The ninety-odd v1 API routes** and its trimmed copy of a price table [d-112].
 
-- **`enabledEvidence`**, which records how we know a protocol was enabled and qualifies a regular expression over a markdown bullet, so a change of renderer changes its report while the world is unchanged [d-108].
+- **`enabledEvidence`**, which records how we know a protocol was enabled and qualifies a regular expression over a markdown bullet, so a change of renderer changes its report while the world is unchanged [d-109].
 
 What is kept from SCOPE is on the judgement's execution-record page, and it is OpenTelemetry's vocabulary rather than SCOPE's code.
 

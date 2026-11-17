@@ -116,8 +116,8 @@ The price is stated: "A node kind costs four declarations, and they land in one 
 
 ### (c) An execution record of our own under the OpenTelemetry `gen_ai.*` names
 
-It still makes sense, and it does not collide with the model, because the model's own run record is a node inside Dispatch and neither specification names OpenTelemetry, a trace or a metric [n-cand-exec-verdict].
-INFRA-1098 R18 is the model's execution record: "An `interaction` node and a `changed_by_run` tuple hold the rows of dispatch://INFRA-1042's `going_requests` and `going_events` tables, which are on main." [n-cand-exec-interaction].
+By my reading it still makes sense, and it does not collide with the model, because the model's own run record is a node inside Dispatch and neither specification names OpenTelemetry, a trace or a metric [n-cand-exec-verdict].
+INFRA-1098 R18 gives the model a record of runs: "An `interaction` node and a `changed_by_run` tuple hold the rows of dispatch://INFRA-1042's `going_requests` and `going_events` tables, which are on main." [n-cand-exec-interaction], and those tables hold one answer run of Dispatch's command bar for each question asked, with the frames of its stream [n-cand-exec-going-runs].
 A result already names the run that produced it, as one of its values, and points at that run's session through a tuple: "Its check, its recorder, its run's session and each of its screenshots are tuples out of that node." [n-cand-exec-result-tuples].
 Neither specification mentions OpenTelemetry, `otel`, `gen_ai`, a trace or a metric [n-cand-exec-no-otel].
 So the two records answer different readers, and a span emitted under the `gen_ai.*` names is the outside name for the same run the `interaction` node holds inside.

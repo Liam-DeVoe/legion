@@ -34,7 +34,7 @@ A graph reaches Neo4j only through a push of a document that was built first [m-
 
 ## The write primitive
 
-The write primitive is "build the whole document, then write the whole document" [m-kg-build].
+The write primitive is "build the whole document, then write the whole document" [m-kg-build] [m-kg-save-overwrite].
 
 `normalize_events` and `extract_graph` read the events of a run and return the node and edge lists for it [m-kg-build].
 
@@ -89,7 +89,7 @@ Our graph is specified in dispatch://INFRA-1098, spec version 97, requirement R2
 Our tuple is therefore an event with an author and a cause, and the current value of a node is a projection of those appended tuples, so the history of any value reads back [m-kg-our-append]; our current code already names the relation kinds that model uses [m-kg-our-edgekinds].
 Their write is the opposite: the document is rebuilt from the trace and the file is replaced [m-kg-save-overwrite], the Neo4j row takes `SET n += props` in place [m-kg-neo4j-merge], and no row holds a writer or a cause [m-kg-no-writer].
 That is right for their problem, because their graph is derived from a log that is itself the history, and an identical rebuild is cheap; it is wrong for ours, because our graph is the record people write into and argue over, where who wrote a fact and what caused it are the fact.
-So their store answers "what did this run do", while ours must answer "who said this, when, and why" [m-kg-write-compare].
+So their store answers "what did this run do" [m-kg-write-compare], while ours must answer "who said this, when, and why" [m-kg-write-compare-ours].
 
 ## What could cross
 

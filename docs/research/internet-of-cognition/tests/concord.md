@@ -42,8 +42,8 @@ The threshold is the only parameter that differs between them, and our record ho
 ## What the library's model cannot hold
 
 The raw 0-100 ratings driven into the library are not in our record.
-Our record holds a verdict word and a finding count for each grader and no satisfaction rating and no anchor pair anywhere in the 155 review bodies of the corpus that carry a thermonuclear-pair line [tc-derive-1].
-The ratings of `evidence/concord-input.json` are derived by the rule that file declares under `derivation`, which is this evidence's author's and not our record's, so every number of the two runs rests on it.
+Our record holds a verdict word and a finding count for each grader [tc-input-1] and no satisfaction rating and no anchor pair anywhere in the 155 review bodies of the corpus that carry a thermonuclear-pair line [tc-derive-1].
+The ratings of `evidence/concord-input.json` are derived by the rule that file declares under `derivation`, which is this evidence's author's and not our record's, so every number of the two runs rests on it [tc-derive-2].
 
 The library has no place for a finding's severity: the word Medium, High, Critical, Minor or severity appears nowhere in the library [tc-gap-sev], and our deep review grader's verdict turns on whether a finding is Medium or High [tc-our-2].
 

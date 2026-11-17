@@ -26,7 +26,7 @@ Maturity is read over the GitHub REST API instead.
 
 The repository holds nine tags, and every version in them is below 1.0.0 [t-cp-tags-api].
 
-It has eight published releases, and each is for one skill or one package [t-cp-releases].
+It has eight published releases: seven are each for one skill, and the eighth, `demos-2026-10`, holds demo recordings [t-cp-releases].
 
 The first release is of 2026-10-22, which is 20 days before the pinned commit [t-cp-releases].
 

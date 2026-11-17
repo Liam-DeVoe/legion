@@ -86,7 +86,7 @@ Two files are in the schema class: `schemas/otel_sdk_spans.schema.json`, a JSON 
 
 Nothing in the directory is a prompt-shaped skill [m-tel-no-skill].
 
-Everything else is Python code against MAS Lab's own event stream, so for us it is a rebuild in Go or TypeScript, not a part that crosses [m-tel-crossing-code].
+Beside the two schema files above, `schemas/genai-observe-sdk.spanspec.yaml` is a third data file, and everything else is 46 Python files, two of which import MAS Lab's runtime boundary [m-tel-crossing-code], with the conversion code written against MAS Lab's native event kinds [m-tel-kinds], so by the four class rule none of it crosses unchanged, and for us it is a rebuild in Go or TypeScript or a service beside Legion [m-tel-crossing-class].
 
 The collector and the ClickHouse read-back are services beside Legion [m-tel-services].
 

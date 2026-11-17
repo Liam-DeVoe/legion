@@ -1467,12 +1467,12 @@ prepare_env() {
 # refused, or when a line here differs from what it measured; --self-test runs it.
 #
 #   form                            rows  what it is
-#   &&                               165  runs the next pipeline when this one exits 0
+#   &&                               173  runs the next pipeline when this one exits 0
 #   ||                                 6  runs the next pipeline when this one fails
-#   |                                403  joins the commands of a pipeline
+#   |                                409  joins the commands of a pipeline
 #   ;                                 53  ends a pipeline
 #   newline                            3  an unquoted newline, ending a pipeline as ; does
-#   >                                  7  writes the output to a file
+#   >                                  8  writes the output to a file
 #   2>                                12  writes the error output to a file
 #   2>&1                               6  sends the error output where the output goes
 #   {                                 25  opens a group
@@ -1483,18 +1483,18 @@ prepare_env() {
 #   in                                17  comes before a for loop's words
 #   do                                17  comes before a for loop's body
 #   done                              17  closes a for loop
-#   simple command                   586  a command word and its arguments
-#   pipeline                         403  two or more commands joined by |
-#   list                             190  two or more pipelines joined by ;, &&, || or newline
+#   simple command                   593  a command word and its arguments
+#   pipeline                         409  two or more commands joined by |
+#   list                             198  two or more pipelines joined by ;, &&, || or newline
 #   group                             25  { list; }, whose status is its last command's
 #   subshell                           2  ( list ), whose status is its last command's
 #   for loop                          17  for NAME in words; do list; done
-#   assignment before a command       25  NAME=value, set in that command's environment
+#   assignment before a command       26  NAME=value, set in that command's environment
 #   assignment alone                   6  NAME=value with no command word
 #   command substitution in a word    12  $( ) in a word, its code admitted by this table
 #   assigns ACCORD_MODEL_DIR          13  a name the rows assign
 #   assigns GOFLAGS                    1  a name the rows assign
-#   assigns IOC_EXPECT_STATUS          8  the declared status, the last prefix of one command
+#   assigns IOC_EXPECT_STATUS          9  the declared status, the last prefix of one command
 #   assigns UV_REQUIRE_HASHES          4  0, before a uv pip install of local sources alone
 #   assigns VIRTUAL_ENV                3  a name the rows assign
 #   assigns W                          1  a name the rows assign
@@ -1507,36 +1507,36 @@ prepare_env() {
 #   assigns p                          5  a name the rows assign
 #   assigns r                          5  a name the rows assign
 #   program awk                       18  wrapped in a function that records its status
-#   program cat                       26  wrapped in a function that records its status
+#   program cat                       25  wrapped in a function that records its status
 #   program cd                        73  wrapped in a function that records its status
 #   program cmp                        2  wrapped in a function that records its status
 #   program cp                         1  wrapped in a function that records its status
 #   program curl                      27  wrapped in a function that records its status
 #   program cut                        5  wrapped in a function that records its status
-#   program dispatch                  71  wrapped in a function that records its status
+#   program dispatch                  74  wrapped in a function that records its status
 #   program echo                      10  wrapped in a function that records its status
 #   program gh                         2  wrapped in a function that records its status
-#   program git                      324  wrapped in a function that records its status
+#   program git                      330  wrapped in a function that records its status
 #   program go                         2  wrapped in a function that records its status
-#   program grep                     199  wrapped in a function that records its status
-#   program jq                        57  wrapped in a function that records its status
+#   program grep                     203  wrapped in a function that records its status
+#   program jq                        59  wrapped in a function that records its status
 #   program mkdir                      1  wrapped in a function that records its status
 #   program mktemp                     1  wrapped in a function that records its status
 #   program printf                    12  wrapped in a function that records its status
-#   program python3                   36  wrapped in a function that records its status
+#   program python3                   35  wrapped in a function that records its status
 #   program rm                         2  wrapped in a function that records its status
-#   program sed                      263  wrapped in a function that records its status
+#   program sed                      271  wrapped in a function that records its status
 #   program sh                         1  wrapped in a function that records its status
 #   program sha256sum                  7  wrapped in a function that records its status
-#   program sort                      26  wrapped in a function that records its status
+#   program sort                      29  wrapped in a function that records its status
 #   program stat                       2  wrapped in a function that records its status
 #   program tail                       1  wrapped in a function that records its status
 #   program tr                        10  wrapped in a function that records its status
-#   program uniq                      14  wrapped in a function that records its status
+#   program uniq                      15  wrapped in a function that records its status
 #   program uv                         8  wrapped in a function that records its status
 #   program wc                        64  wrapped in a function that records its status
 #   program xargs                      5  wrapped in a function that records its status
-#   variable $IOC_PY                  34  a program variable, whose shim records its status
+#   variable $IOC_PY                  35  a program variable, whose shim records its status
 #   variable $IOC_MASLAB_PY            4  a program variable, whose shim records its status
 #   variable $IOC_MASLAB_CTL           5  a program variable, whose shim records its status
 #   variable $IOC_MASLAB_WHEEL_CTL     2  a program variable, whose shim records its status
@@ -1550,7 +1550,7 @@ prepare_env() {
 #   uv run python                      4  uv run's python, whose status uv run exits with
 #   sh running a script file           1  the script's status reaches the row as sh's
 #   true                               6  a command whose status is no read
-#   $NAME or ${NAME}                 403  a parameter, its name in braces or not
+#   $NAME or ${NAME}                 408  a parameter, its name in braces or not
 #   $?                                 7  the status of the last command
 #   $( )                              12  a command substitution
 #   a literal $                        2  a $ that starts no expansion, left as it stands

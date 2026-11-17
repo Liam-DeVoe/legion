@@ -49,7 +49,7 @@ So everything below the model call is checked here, and nothing about how a run 
 Each line names the part of our workflow, what of theirs I looked for, and the search that found nothing.
 
 The trigger has no field.
-`TRANSITION_KEYS` is `{when, set, goto}`, and `grep -rnE "trigger"` over their `state_machine.py` is empty.
+`TRANSITION_KEYS` is `{when, set, goto}`, and `grep -rniE "trigger"` over their `state_machine.py` is empty.
 The nearest thing of theirs is `signals`, transitions matched against a steer message's `signal.text`, `signal.sender`, `signal.source` and `signal.intent` [m-ctl-sm-signal-fields].
 I had to write each of our 13 triggers as a field of the agent's reply, which moves the authorship of the trigger from the daemon's own observation to the worker's answer [tm-gap-trigger].
 
