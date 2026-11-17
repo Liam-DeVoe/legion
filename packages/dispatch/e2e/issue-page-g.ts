@@ -8,7 +8,9 @@ import {
 
 import type { Actor, ArtifactUploadResponse } from "../web/src/api/types";
 import {
+  BLOCK_TYPE_NAMES,
   CONTROL_LABELS,
+  GLYPH_TOKENS,
   NODE_TYPE_NAMES,
   type NodeType,
 } from "../web/src/features/issue-page/page-words";
@@ -453,7 +455,8 @@ export interface RowLayout {
   readonly bylineColor: string | null;
   /** The left of the bullet's dot, its computed fill, and the fill its kind's token resolves to.
    *  The dot, not its box: on a phone a fold control's box reaches past the bullet's column on
-   *  both sides (`NODE_ROW_LAYOUT.foldControl`), and its dot stands where every bullet's does. */
+   *  both sides (`NODE_ROW_LAYOUT.foldControl`), and its dot stands where every bullet's does.
+   *  A requirement's kind is a statement's in the spec alone, and a block's anywhere else. */
   readonly bullet: { readonly fill: string; readonly kindFill: string; readonly left: number };
   /** The row's own box: its height, which a one-line row holds to 29 px at 1440 px. */
   readonly height: number;
@@ -471,7 +474,12 @@ export interface RowLayout {
   readonly quiet: string;
   /** Whether the ink rule is drawn at the content's leading edge. */
   readonly rule: boolean;
+  /** Whether the row is a statement: a `requirement` block of the spec. A requirement of any
+   *  other document is a block and nothing more (decision 246). */
+  readonly statement: boolean;
+  /** The kind's tag: its box, its words, and the shape it draws, by its glyph token. */
   readonly tag: {
+    readonly glyph: string | null;
     readonly left: number;
     readonly right: number;
     readonly text: string;
@@ -487,9 +495,11 @@ export interface RowLayout {
   readonly wordsLeft: number;
 }
 
-/** Every visible row's layout, in document order. */
-export function rowLayouts(page: Page): Promise<RowLayout[]> {
-  return page.evaluate((selectors) => {
+/** Every visible row's layout, in document order. `spec` is the slug of the issue's spec, the one
+ *  document whose requirements are statements. */
+export function rowLayouts(page: Page, spec: string): Promise<RowLayout[]> {
+  const given = { selectors: SELECTORS, spec };
+  return page.evaluate(({ selectors, spec }) => {
     const computed = (property: "backgroundColor" | "color", token: string): string => {
       const probe = document.createElement("i");
       probe.style[property] = `var(--color-${token})`;
@@ -515,10 +525,18 @@ export function rowLayouts(page: Page): Promise<RowLayout[]> {
       .filter((row) => row.getClientRects().length > 0)
       .map((row) => {
         const type = row.getAttribute("data-node-type") ?? "";
+        const id = row.getAttribute("data-node-id") ?? "";
+        const statement = type === "requirement" && id.startsWith(`${spec}#`);
         const author = row.querySelector(selectors.nodeAuthor);
+        // A requirement outside the spec is drawn as a block, in a block's colour: a callout's
+        // (decision 246).
         const kindToken =
-          KIND[type] ??
-          (author?.getAttribute("data-author-kind") === "person" ? "page-person" : "page-bullet");
+          type === "requirement" && !statement
+            ? "page-issue"
+            : (KIND[type] ??
+              (author?.getAttribute("data-author-kind") === "person"
+                ? "page-person"
+                : "page-bullet"));
         const content = row.querySelector("[data-node-content]");
         const words =
           row.querySelector(selectors.nodeWords) ??
@@ -569,7 +587,7 @@ export function rowLayouts(page: Page): Promise<RowLayout[]> {
                     "",
                 },
           height: card.getBoundingClientRect().height,
-          id: row.getAttribute("data-node-id") ?? "",
+          id,
           line: {
             bottom: Math.max(...first.map((rect) => rect.bottom), top),
             right: Math.max(...first.map((rect) => rect.right), 0),
@@ -580,10 +598,12 @@ export function rowLayouts(page: Page): Promise<RowLayout[]> {
           own: content?.hasAttribute("data-node-own") === true,
           quiet,
           rule: content !== null && getComputedStyle(content).boxShadow.includes("inset"),
+          statement,
           tag:
             tag === null || tagBox === undefined
               ? null
               : {
+                  glyph: tag.querySelector("svg[data-glyph]")?.getAttribute("data-glyph") ?? null,
                   left: tagBox.left,
                   right: tagBox.right,
                   text: (tag.textContent ?? "").trim(),
@@ -596,7 +616,7 @@ export function rowLayouts(page: Page): Promise<RowLayout[]> {
           wordsLeft: words?.getBoundingClientRect().left ?? -1,
         };
       });
-  }, SELECTORS);
+  }, given);
 }
 
 /** The kinds of node that draw no tag: what somebody said. */
@@ -608,7 +628,10 @@ const UNTYPED_KINDS: readonly string[] = ["comment", "message"];
  * behind their ink rule; nothing stands between a bullet and its words; a node that holds others
  * has its bullet as its fold control; the bullet is its kind's colour; a typed kind draws one tag
  * naming it - a child issue's is its key - with its author and its time after it, in grey, and a
- * turn draws none. At 761 px and above the tag stands at the right end of the words' first line.
+ * turn draws none. A requirement is a statement in the spec alone, with the statement's colour,
+ * word and shape; one of any other document is a block, in a block's colour, whose tag says
+ * "requirement" and draws no shape (decision 246). At 761 px and above the tag stands at the
+ * right end of the words' first line.
  */
 export function expectRowLayouts(
   layouts: readonly RowLayout[],
@@ -656,8 +679,20 @@ export function expectRowLayouts(
       expect(row.tag, `${at} draws a tag, which a turn of the conversation has none of`).toBeNull();
     } else {
       expect(row.tag?.text, `${at} does not name its kind on one tag`).toBe(
-        row.type === "child_issue" ? row.id : NODE_TYPE_NAMES[row.type as NodeType]
+        row.type === "child_issue"
+          ? row.id
+          : row.type === "requirement" && !row.statement
+            ? BLOCK_TYPE_NAMES.requirement
+            : NODE_TYPE_NAMES[row.type as NodeType]
       );
+      if (row.type === "requirement") {
+        expect(
+          row.tag?.glyph ?? null,
+          row.statement
+            ? `${at} draws no statement's shape on its tag`
+            : `${at} draws a statement's shape on its tag, and it is no statement`
+        ).toBe(row.statement ? GLYPH_TOKENS.types.requirement : null);
+      }
       if (row.line.right > 0 && width > 760) {
         expect(
           row.tag?.left ?? -1,

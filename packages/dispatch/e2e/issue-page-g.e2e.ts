@@ -123,7 +123,22 @@ test("a node draws its kind at the right of its row and every node starts at one
       await expect
         .poll(() => nodeRows(page).count(), { message: `${where} draws no row` })
         .toBeGreaterThan(0);
-      expectRowLayouts(await rowLayouts(page), where, true, size.width);
+      const layouts = await rowLayouts(page, seeded.slugs.spec);
+      expectRowLayouts(layouts, where, true, size.width);
+      // Decision 246: the spec's requirement is a statement and the decisions document's is a
+      // block, so the view draws a bullet of each colour, each on its own row, for the check
+      // above to read.
+      expect(
+        layouts
+          .filter((row) => row.type === "requirement" && !row.context)
+          .map((row) => [row.id, row.statement]),
+        `${where} draws no statement beside a requirement of another document`
+      ).toEqual(
+        expect.arrayContaining([
+          [`${seeded.slugs.spec}#b-r-one`, true],
+          [`${seeded.slugs.decisions}#b-r1`, false],
+        ])
+      );
       expectRowGroups(await rowGroups(page), where, size.width, addressesOf(seeded));
       // R17 of the root, F17: the rows name what their words cite from the one batched read.
       expect(
@@ -147,7 +162,7 @@ test("a node draws its kind at the right of its row and every node starts at one
       "the body draws the issue's own row"
     ).toEqual([]);
     // A one-line statement with no state is 29 px tall at 1440 px (R1).
-    const oneLine = (await rowLayouts(page)).find(
+    const oneLine = (await rowLayouts(page, seeded.slugs.spec)).find(
       (row) => row.id === `${seeded.slugs.spec}#b-r-one`
     );
     expect(
@@ -363,11 +378,13 @@ test("an agent message and an answered question are cut at six lines, and the wo
     const cutOf = async (id: string) => {
       await nodeRow(page, id).first().scrollIntoViewIfNeeded();
       await expect
-        .poll(async () => (await rowLayouts(page)).find((row) => row.id === id)?.more ?? "", {
-          message: `${id} draws no more`,
-        })
+        .poll(
+          async () =>
+            (await rowLayouts(page, seeded.slugs.spec)).find((row) => row.id === id)?.more ?? "",
+          { message: `${id} draws no more` }
+        )
         .toMatch(/^more · [\d,]+ words$/u);
-      return (await rowLayouts(page)).find((row) => row.id === id);
+      return (await rowLayouts(page, seeded.slugs.spec)).find((row) => row.id === id);
     };
     const cut = await cutOf(seeded.longMessage);
     expect(
@@ -380,10 +397,12 @@ test("an agent message and an answered question are cut at six lines, and the wo
     await focusRow(page, seeded.longMessage);
     await focusRow(page, seeded.comment);
     await expect
-      .poll(async () => (await rowLayouts(page)).find((row) => row.id === seeded.longMessage))
+      .poll(async () =>
+        (await rowLayouts(page, seeded.slugs.spec)).find((row) => row.id === seeded.longMessage)
+      )
       .toMatchObject({ more: CONTROL_LABELS.read_less, wordsHidden: 0 });
 
-    const layouts = await rowLayouts(page);
+    const layouts = await rowLayouts(page, seeded.slugs.spec);
     expect(
       layouts.find((row) => row.id === seeded.longComment),
       "the reader's own long comment is cut"
