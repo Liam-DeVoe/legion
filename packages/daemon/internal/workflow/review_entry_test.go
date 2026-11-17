@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 	"strings"
 	"testing"
@@ -13,6 +14,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
@@ -56,18 +58,15 @@ func deliveredTask(t *testing.T, pool *pgxpool.Pool, path string) string {
 // in each round, the first one too, while the row holds the task of an entry. The reviewer writes
 // it into the footer of each review it submits for that task, and only a review that names the
 // entry that stands moves the commit the reviewer read (review). One function writes the sentence
-// (reviewEntry.part), and the seven paths that give the reviewer a task in reviewing reach it:
+// (reviewEntry.part), and the one place every task for a worker is queued through (queuedRow)
+// appends it, so each way the daemon gives the reviewer a task reaches it, whichever composed the
+// task: the cases here are each way there is today, a wake of each kind among them. A start that
+// raises the entry stores the text it sends (enter), so the row's stored task and the delivered
+// one are one text, and the delivery of an owed entry sends that text again with the sentence once.
 //
-//   - the two that raise the entry store the text they send (enter): a transition's start and the
-//     promotion's start;
-//   - the delivery of an owed entry sends that stored text again, so it names the same entry;
-//   - the four that give the reviewer a task at the entry its row already holds name that entry:
-//     the retry of a held phase (restart), and the resume task of a ready worker's catch-up, the
-//     silence repair and the boot's resume (phaseResumeTask).
-//
-// The eighth case is the resume task made because the stored text is empty (a clear emptied it,
-// and no entry was raised since): it names no entry, since no review of that entry moves the
-// commit. A task of any other role names no entry either.
+// The resume task made because the stored text is empty (a clear emptied it, and no entry was
+// raised since) names no entry, since no review of that entry moves the commit. A task of any
+// other role names no entry either.
 func TestEachTaskOfTheReviewerInReviewingEndsNamingItsEntry(t *testing.T) {
 	resume := "Continue root. Issue: LEGION-208. Phase: reviewing." + reviewedPartOf(headOne) + " Resume the existing phase work."
 	for _, tc := range []struct {
@@ -177,6 +176,11 @@ func TestEachTaskOfTheReviewerInReviewingEndsNamingItsEntry(t *testing.T) {
 				return pool, resume
 			},
 		},
+		{name: "a wake on a CI settlement", walk: wakesTheReviewerInRoundTwo(pods.WakeChecks)},
+		{name: "a wake on a role message", walk: wakesTheReviewerInRoundTwo(pods.WakeRoleMessage)},
+		{name: "a wake on an agent message", walk: wakesTheReviewerInRoundTwo(pods.WakeAgentMessage)},
+		{name: "a wake on the backstop", walk: wakesTheReviewerInRoundTwo(pods.WakeBackstop)},
+		{name: "a wake of any other kind", walk: wakesTheReviewerInRoundTwo(aKindStillToCome)},
 		{
 			name: "the resume of an entry whose stored task is empty", none: true,
 			walk: func(t *testing.T) (*pgxpool.Pool, string) {
@@ -256,5 +260,210 @@ func TestAReviewOfTheEntryTheBootsResumeNamesRecordsItsHead(t *testing.T) {
 	}
 	if got := reviewerRow(t, pool).ReviewedHead; got != headTwo {
 		t.Fatalf("after the resumed reviewer's review of entry %d the reviewer's row reads the reviewed commit %q, want %s, the head that review read", entry, got, headTwo)
+	}
+}
+
+// aKindStillToCome is a wake no fact reports today: WakeTask's default, which the one act of every
+// wake (wakeReleased) gives any kind it is handed.
+const aKindStillToCome = "a wake of a kind still to come"
+
+// wakeKinds is each kind of wake that brings a released role back (wake.go): the CI settlement,
+// the role message, the agent message, the backstop, and any other.
+var wakeKinds = []string{pods.WakeChecks, pods.WakeRoleMessage, pods.WakeAgentMessage, pods.WakeBackstop, aKindStillToCome}
+
+// releasesTheReviewer leaves LEGION-208's reviewer claim as an idle release leaves a pod's claims
+// (seedReleasedClaim): suspended with the source `released`, serving the issue's generation, under
+// the project as a claim token spells it, and it hands engine the project's pod records, so a wake
+// of the reviewer is a wake of the claim the fixtures record the reviewer's session on.
+func releasesTheReviewer(t *testing.T, pool *pgxpool.Pool, engine *Engine) {
+	t.Helper()
+	engine.cfg.Pods = wakePods(t, pool)
+	tag, err := pool.Exec(context.Background(), `update claims set project = $2, state = 'suspended', suspended_by = 'released',
+		serving_generation = $3 where token = $1`, string(reviewClaim), wakeProjectToken(t), int64(issueRecord(t, pool, "LEGION-208").Generation))
+	if err != nil || tag.RowsAffected() != 1 {
+		t.Fatalf("release the reviewer's claim: %d rows, %v", tag.RowsAffected(), err)
+	}
+}
+
+// wakes brings LEGION-208's released role back by a wake of kind and answers the task that wake
+// gives it (WakeTask): a CI settlement of the pull request at head, a message published to the
+// role's topic, a message sent to session, the backstop running out, and any other kind through
+// the one act every wake performs (wakeReleased).
+func wakes(t *testing.T, pool *pgxpool.Pool, engine *Engine, role claim.Role, session, head, kind string) string {
+	t.Helper()
+	apply, token := applyFacts(t, pool, engine), string(wakeToken(t, role))
+	switch kind {
+	case pods.WakeChecks:
+		fact := settlement(head)
+		apply("wake-checks", fact)
+		return WakeTask(kind, settlementDetail(fact))
+	case pods.WakeRoleMessage:
+		apply("wake-role-message", intake.ListenerWake{Kind: intake.ListenerWakeRole, Role: token, At: reviewTestedAt, Report: "report-role"})
+		return WakeTask(kind, token)
+	case pods.WakeAgentMessage:
+		apply("wake-agent-message", intake.ListenerWake{Kind: intake.ListenerWakeAgent, Session: session, At: reviewTestedAt, Report: "report-agent"})
+		return WakeTask(kind, session)
+	case pods.WakeBackstop:
+		id := armBackstop(t, pool, role, reviewTestedAt)
+		apply("wake-backstop", intake.PodBackstopDue{ID: id, Issue: "LEGION-208", Role: role})
+		return WakeTask(kind, fmt.Sprintf("the backstop armed for LEGION-208's %s came due", role))
+	}
+	applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+		released, found, err := engine.cfg.Pods.ReleasedClaimOfRole(ctx, tx, "LEGION-208", role)
+		if err != nil || !found {
+			return fmt.Errorf("read the released %s claim: found %t, %v", role, found, err)
+		}
+		woken, err := engine.wakeReleased(ctx, tx, released, kind, "its detail", engine.now())
+		if err == nil && !woken {
+			err = fmt.Errorf("the %s wake of the %s took no wake", kind, role)
+		}
+		return err
+	})
+	return WakeTask(kind, "its detail")
+}
+
+// wakesTheReviewerInRoundTwo is the walk of a wake of kind: LEGION-208's reviewer in its second
+// round, released while it waits and brought back by that wake, with only the wake's start in the
+// outbox.
+func wakesTheReviewerInRoundTwo(kind string) func(t *testing.T) (*pgxpool.Pool, string) {
+	return func(t *testing.T) (*pgxpool.Pool, string) {
+		pool, engine, _ := reviewRoundTwo(t)
+		outboxRan(t, pool)
+		releasesTheReviewer(t, pool, engine)
+		return pool, wakes(t, pool, engine, claim.RoleReviewer, "ses-reviewer", headOne, kind)
+	}
+}
+
+// Each wake of the reviewer of an issue in reviewing, while the reviewer's row holds the task of
+// an entry, gives it a task that ends naming that entry (ReviewEntryLabel): a reviewer that waits
+// for CI is released after the idle period, and the wake is then its newest task. The wake's task
+// is never the phase's work, and it still names the round's entry, because the reviewer writes the
+// number of the newest such sentence its session was given into its review's footer, and the
+// commit moves only for a review that names the entry that stands. The sentence is the one the
+// queue of every worker's task appends (queuedRow), on each kind of wake, once.
+//
+// reviewEntryOf names an entry for the reviewer, in reviewing, while its row holds the task of
+// that entry, and for nothing else. The controls are its three other cases, each given the wake's
+// task alone: a woken role that is not the reviewer, a woken reviewer whose row the generation's
+// clear left with no task and no commit (record.Store.ClearGeneration), and a woken reviewer
+// whose issue has left reviewing.
+func TestEachWakeOfTheReviewerInReviewingEndsNamingItsEntry(t *testing.T) {
+	for _, kind := range wakeKinds {
+		t.Run(kind, func(t *testing.T) {
+			pool, wake := wakesTheReviewerInRoundTwo(kind)(t)
+			row := reviewerRow(t, pool)
+			if row.EntryTask == "" || row.Entry < 2 {
+				t.Fatalf("the reviewer's row holds entry %d with the task %q, want round 2's entry and its task", row.Entry, row.EntryTask)
+			}
+			task := onlyReviewerStart(t, pool).Task
+			if want := wake + reviewEntryPartOf(row.Entry); task != want {
+				t.Fatalf("the woken reviewer is delivered the task %q, want %q: it ends naming entry %d, the row's", task, want, row.Entry)
+			}
+			if named := strings.Count(task, ReviewEntryLabel); named != 1 {
+				t.Fatalf("the woken reviewer's task %q names %q %d times, want once", task, ReviewEntryLabel, named)
+			}
+		})
+	}
+	for _, tc := range []struct {
+		name string
+		// role is the role the wake brings back.
+		role claim.Role
+		// walk takes LEGION-208 to the state the wake finds, with no supervise row in the outbox.
+		walk func(t *testing.T) (*pgxpool.Pool, *Engine)
+	}{
+		{
+			name: "a woken role that is not the reviewer", role: claim.RoleImplementer,
+			walk: func(t *testing.T) (*pgxpool.Pool, *Engine) {
+				pool, engine, _ := reviewRoundTwo(t)
+				if task := roleRow(t, pool, claim.RoleImplementer).EntryTask; task == "" {
+					t.Fatalf("the implementer's row holds no entry's task: the control would prove nothing")
+				}
+				outboxRan(t, pool)
+				seedReleasedClaim(t, pool, claim.RoleImplementer, "session-implementer")
+				engine.cfg.Pods = wakePods(t, pool)
+				return pool, engine
+			},
+		},
+		{
+			name: "a woken reviewer whose row the clear left with no task", role: claim.RoleReviewer,
+			walk: func(t *testing.T) (*pgxpool.Pool, *Engine) {
+				pool, engine, _ := reviewRoundTwo(t)
+				applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+					return record.NewStore().ClearGeneration(ctx, tx, "LEGION-208", engine.now())
+				})
+				if row := reviewerRow(t, pool); row.EntryTask != "" || row.ReviewedHead != "" || row.Entry < 2 {
+					t.Fatalf("after the clear the reviewer's row holds entry %d, the task %q and the commit %q, want an entry and neither", row.Entry, row.EntryTask, row.ReviewedHead)
+				}
+				outboxRan(t, pool)
+				releasesTheReviewer(t, pool, engine)
+				return pool, engine
+			},
+		},
+		{
+			name: "a woken reviewer whose issue has left reviewing", role: claim.RoleReviewer,
+			walk: func(t *testing.T) (*pgxpool.Pool, *Engine) {
+				pool, engine, apply := reviewRoundOne(t)
+				apply("request-changes", reviewAt(t, pool, 1, "changes_requested", headOne, reviewTestedAt))
+				if got := issuePhase(t, pool); got != phase.Implementing || reviewerRow(t, pool).EntryTask == "" {
+					t.Fatalf("after the request for changes the issue is in %s and the reviewer's row holds the task %q, want implementing and round 1's task", got, reviewerRow(t, pool).EntryTask)
+				}
+				outboxRan(t, pool)
+				releasesTheReviewer(t, pool, engine)
+				return pool, engine
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool, engine := tc.walk(t)
+			session := map[claim.Role]string{claim.RoleReviewer: "ses-reviewer", claim.RoleImplementer: "session-implementer"}[tc.role]
+			wake := wakes(t, pool, engine, tc.role, session, headOne, pods.WakeRoleMessage)
+			starts := wakeStarts(t, pool)
+			if len(starts) != 1 || starts[0].Role != tc.role {
+				t.Fatalf("supervise start rows = %+v, want the one wake of the %s", starts, tc.role)
+			}
+			if starts[0].Task != wake {
+				t.Fatalf("the woken %s is delivered the task %q, want the wake's task %q alone: reviewEntryOf names no entry here", tc.role, starts[0].Task, wake)
+			}
+		})
+	}
+}
+
+// A reviewer that a CI settlement brings back submits its review of the round that stands with the
+// entry the wake's task names, read from that task as the agent reads it, and the review moves the
+// commit to the head it read. The same review with no entry decides the round and moves nothing,
+// which is what a woken reviewer that followed a task naming no entry got. Round 2 here stands at
+// headTwo, and round 1's review read headOne.
+func TestAWokenReviewersReviewOfTheEntryItsWakeNamesMovesTheCommit(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// namesEntry is whether the review's footer names the entry the wake's task names.
+		namesEntry bool
+		want       string
+	}{
+		{name: "the entry the wake names", namesEntry: true, want: headTwo},
+		{name: "no entry", want: headOne},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool, engine, apply := reviewRoundOne(t)
+			apply("request-changes-1", reviewAt(t, pool, 1, "changes_requested", headOne, reviewTestedAt))
+			mergesForward(t, pool, engine, headOne, headTwo, reviewTestedAt.Add(time.Hour))
+			backToReviewing(t, apply, 2)
+			outboxRan(t, pool)
+			releasesTheReviewer(t, pool, engine)
+			wakes(t, pool, engine, claim.RoleReviewer, "ses-reviewer", headTwo, pods.WakeChecks)
+			entry := entryNamedIn(t, deliveredTask(t, pool, "the wake on a CI settlement"))
+			review := reviewAt(t, pool, 2, "changes_requested", headTwo, reviewTestedAt.Add(2*time.Hour))
+			review.Body = reviewBody("the review", headTwo)
+			if tc.namesEntry {
+				review.Body = reviewBodyOfEntry("the review", "ses-reviewer", headTwo, entry)
+			}
+			apply("request-changes-2", review)
+			if got := issuePhase(t, pool); got != phase.Implementing {
+				t.Fatalf("after the woken reviewer's request for changes the issue is in %s, want implementing: the review decides the round", got)
+			}
+			if got := reviewerRow(t, pool).ReviewedHead; got != tc.want {
+				t.Fatalf("after the woken reviewer's review the reviewer's row reads the reviewed commit %q, want %q", got, tc.want)
+			}
+		})
 	}
 }

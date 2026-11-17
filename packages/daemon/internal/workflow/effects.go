@@ -172,11 +172,43 @@ func (e *Engine) enqueue(ctx context.Context, tx pgx.Tx, issue string, payload r
 // enqueueAt enqueues payload for issue due at at: a deadline row (a linger's close, a production
 // check's bounds), where enqueue's rows are due now.
 func (e *Engine) enqueueAt(ctx context.Context, tx pgx.Tx, issue string, payload record.OutboxPayload, at time.Time) error {
-	row, err := record.NewOutboxRow(issue, payload, at)
+	row, err := queuedRow(ctx, tx, e.store, issue, payload, at)
 	if err != nil {
 		return err
 	}
 	return e.store.Enqueue(ctx, tx, row)
+}
+
+// queuedRow is the one place this package builds an outbox row (record.NewOutboxRow), so it is the
+// one place every task the daemon queues for a worker passes, whichever path composed it: the rows
+// enqueue and enqueueAt write (a wake's start among them, wakeRow, and a ready worker's catch-up,
+// readyWorkerTask), the start of a phase worker (startOrOwe, which every start Engine.started
+// builds comes through) and a root architect's start that claims the decisions it names
+// (EnqueueNaming). It is where a task takes what every task of its worker must name: the entry
+// of the reviewer's round (namingTheReviewEntry), which the reviewer copies from its newest task
+// into the footer of its review, so a kind of task added later cannot be queued without it.
+//
+// Only a start of the reviewer can name an entry (reviewEntryOf), so no other row reads the
+// record for it. A reviewer's start reads the phase its issue stands in and the reviewer's row as
+// tx holds them, which is the row's entry at the moment the task is queued: a start that raised
+// the entry wrote the row first in this same transaction (enter).
+func queuedRow(ctx context.Context, tx pgx.Tx, store record.Store, issue string, payload record.OutboxPayload, at time.Time) (record.OutboxRow, error) {
+	start, ok := payload.(record.SuperviseRequest)
+	if !ok || start.Op != "start" || start.Task == "" || start.Role != claim.RoleReviewer {
+		return record.NewOutboxRow(issue, payload, at)
+	}
+	standing, err := store.Issue(ctx, tx, issue)
+	if err != nil {
+		return record.OutboxRow{}, err
+	}
+	if standing != nil {
+		rows, err := store.Phases(ctx, tx, issue)
+		if err != nil {
+			return record.OutboxRow{}, err
+		}
+		start.Task = namingTheReviewEntry(start.Task, start.Role, standing.Phase, record.PhaseRowOf(rows, start.Role))
+	}
+	return record.NewOutboxRow(issue, start, at)
 }
 
 // status queues the Dispatch write for a status the workflow has just given issue. A status that
@@ -368,7 +400,6 @@ func (e *Engine) restart(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 	if err != nil {
 		return err
 	}
-	task += reviewEntryOf(role, issue.Phase, row).part()
 	return e.started(ctx, tx, issue, role, task, row.Entry, startMarks{resend: true, freshSession: freshSession})
 }
 
@@ -656,7 +687,7 @@ func startOrOwe(ctx context.Context, tx pgx.Tx, store record.Store, issue string
 		return fmt.Errorf("the start of a phase worker on %s requires a task and a phase", issue)
 	}
 	payload.NeedsSlot = record.PhaseKeepsSlot(payload.Phase)
-	row, err := record.NewOutboxRow(issue, payload, at)
+	row, err := queuedRow(ctx, tx, store, issue, payload, at)
 	if err != nil {
 		return err
 	}
@@ -724,10 +755,11 @@ func startOrOwe(ctx context.Context, tx pgx.Tx, store record.Store, issue string
 //
 // The task it writes is the text the worker is sent, word for word, so the record holds exactly
 // what the worker is told and a claim left behind the entry can be sent that work again from the
-// record alone (SendOwedEntry). For the reviewer entering a review round that text is task with
-// the sentence that names the entry just raised appended (reviewEntry.part), which is why enter
-// answers the text and its two phase-worker callers send what it answers, never their own task:
-// the number is known only once it is raised, here.
+// record alone (SendOwedEntry). For the reviewer entering a review round that text is task ending
+// with the sentence that names the entry just raised, as the queue of every task writes it
+// (namingTheReviewEntry, queuedRow), so the queue finds the sentence there and writes it no second
+// time. That is why enter answers the text and its two phase-worker callers send what it answers,
+// never their own task: the number is known only once it is raised, here.
 //
 // movedBack is written with them: whether the start raising this entry was a move back to an
 // earlier phase. Its one reader is the completion route's entry fence, which takes a completion
@@ -745,14 +777,12 @@ func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, role 
 		return 0, "", err
 	}
 	row.Entry++
-	if startsReviewRound(role, issue.Phase) {
-		task += reviewEntry(row.Entry).part()
-	}
 	row.EntryTask, row.EntryVerbatim, row.EntryRaisedAt, row.EntryMovedBack = task, verbatim, e.now(), movedBack
+	row.EntryTask = namingTheReviewEntry(task, role, issue.Phase, row)
 	if err := e.store.PutPhase(ctx, tx, row); err != nil {
 		return 0, "", err
 	}
-	return row.Entry, task, nil
+	return row.Entry, row.EntryTask, nil
 }
 
 // EnterArchitect raises the phase entry a root's architect is handed on root, writes task as the
@@ -874,15 +904,8 @@ func (e *Engine) reviewedPartFor(ctx context.Context, tx pgx.Tx, issue record.Is
 type reviewEntry int64
 
 // part is the sentence a task names n with, " Review entry: <n>." (ReviewEntryLabel), and "" for
-// no entry: the one place the sentence is written. It is the task's LAST sentence on every path
-// that gives the reviewer a task in reviewing, which is the shape the reviewer reads it in:
-//   - enter appends it to the task of the two starts that raise the reviewer's entry, a
-//     transition's (start) and the promotion's (StartPromotedWorker), and stores that text, which
-//     the delivery of an owed entry sends again (sendOwedEntry);
-//   - restart appends it to the held phase's retry, whose reason is otherwise last;
-//   - phaseResumeTask appends it to the resume task of a reviewer level with its entry, which a
-//     ready worker's catch-up (readyWorkerTask), the silence repair (repairSilence) and the boot's
-//     resume (startSuspendedOwner) send, after the closing "Resume the existing phase work.".
+// no entry: the one place the sentence is written. namingTheReviewEntry is its one caller, so the
+// sentence is the task's LAST one, which is the shape the reviewer reads it in.
 func (n reviewEntry) part() string {
 	if n <= 0 {
 		return ""
@@ -890,12 +913,12 @@ func (n reviewEntry) part() string {
 	return " " + ReviewEntryLabel + ": " + strconv.FormatInt(int64(n), 10) + "."
 }
 
-// reviewEntryOf is the entry a task that hands role the entry its phases row already holds names
-// (reviewEntry.part): row's entry for the reviewer started in reviewing while row holds the task
-// of that entry (record.PhaseRow.EntryTask), and 0 in every other case — any other role or
-// phase, and a row a clear emptied (record.Store.ClearGeneration), whose entry no review moves the
-// commit for until the next entry is raised (review). A reviewer resumed in a fresh session reads
-// its entry from that task alone.
+// reviewEntryOf is the entry a task that hands role work names (reviewEntry.part): row's entry for
+// the reviewer of an issue in reviewing while row holds the task of that entry
+// (record.PhaseRow.EntryTask), and 0 in every other case — any other role or phase, and a row a
+// clear emptied (record.Store.ClearGeneration), whose entry no review moves the commit for until
+// the next entry is raised (review). A reviewer resumed in a fresh session reads its entry from
+// that task alone.
 func reviewEntryOf(role claim.Role, at phase.Phase, row record.PhaseRow) reviewEntry {
 	if !startsReviewRound(role, at) || row.EntryTask == "" {
 		return 0
@@ -903,13 +926,30 @@ func reviewEntryOf(role claim.Role, at phase.Phase, row record.PhaseRow) reviewE
 	return reviewEntry(row.Entry)
 }
 
+// namingTheReviewEntry is task as role is given it, standing in phase at with row its phases row:
+// task ending with the sentence that names the entry of the reviewer's round (reviewEntryOf), and
+// task as it is where that names none. A task that already ends with that sentence is returned as
+// it is, so the sentence is in a task once: the stored task of an entry (enter) holds it, and the
+// queue (queuedRow) reads every task, that one too, when it is sent again (sendOwedEntry).
+//
+// Every task the reviewer is given in reviewing ends with it, the wake's task too (WakeTask): the
+// reviewer writes the number of the newest sentence a task of its session named into the footer of
+// its review, and only a review that names the entry that stands moves the commit it read.
+func namingTheReviewEntry(task string, role claim.Role, at phase.Phase, row record.PhaseRow) string {
+	sentence := reviewEntryOf(role, at, row).part()
+	if strings.HasSuffix(task, sentence) {
+		return task
+	}
+	return task + sentence
+}
+
 // phaseResumeTask is the phase's resume task (ResumePhaseTask) for role level with the entry row,
 // its phases row, holds, as every start that hands that role its phase's work again builds it:
-// the commit the reviewer's own review read (reviewedPart) and the entry its round stands at
-// (reviewEntryOf), both "" for any other start. The send of an owed entry builds it too, only for
-// a row that stores no task, which therefore names no entry.
+// it names the commit the reviewer's own review read (reviewedPart), "" for any other start. The
+// send of an owed entry builds it too, only for a row that stores no task. The queue appends the
+// entry its round stands at (queuedRow).
 func phaseResumeTask(issue record.Issue, role claim.Role, row record.PhaseRow) string {
-	return ResumePhaseTask(issue, reviewedPart(role, issue.Phase, row)) + reviewEntryOf(role, issue.Phase, row).part()
+	return ResumePhaseTask(issue, reviewedPart(role, issue.Phase, row))
 }
 
 func continueLine(issue record.Issue) string {
