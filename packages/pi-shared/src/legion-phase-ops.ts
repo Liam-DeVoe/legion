@@ -744,11 +744,17 @@ async function completeHandoff(
 }
 
 /** The rating of the plan a completion carries, under the daemon's names (`planRating`,
- * `planReason`), or nothing; `PhaseOpArguments` has refused one without the other. */
+ * `planReason`): the two, or `undefined` for a completion that carries neither. `PhaseOpArguments`
+ * refuses one without the other, so a lone one reaching here throws rather than go unsent. */
 function planRatingOf(
   args: Extract<z.infer<typeof PhaseOpArguments>, { op: "handoff_complete" }>
-): { readonly planRating?: number; readonly planReason?: string } {
-  return args.plan_rating === undefined || args.plan_reason === undefined
-    ? {}
-    : { planRating: args.plan_rating, planReason: args.plan_reason };
+): { readonly planRating: number; readonly planReason: string } | undefined {
+  const { plan_rating: planRating, plan_reason: planReason } = args;
+  if (planRating === undefined && planReason === undefined) return undefined;
+  if (planRating === undefined || planReason === undefined) {
+    throw new Error(
+      "handoff_complete's plan_rating and plan_reason come together, and one reached the request alone"
+    );
+  }
+  return { planRating, planReason };
 }
