@@ -489,7 +489,10 @@ export function useGoingOperations({
   // and the setting, each as it arrives. One made before its run's id was known (`askNow` set a
   // fresh answer in the same event) is bound to that run as the id arrives, and goes on from
   // there; where the request it waited for was dropped first - a chip change, or the bar turning
-  // off - it closes instead, so it can never bind to the run the next ask starts.
+  // off - it closes instead, so it can never bind to the run the next ask starts. That close reads
+  // the drop as `current` going undefined: `useGoingAnswer` lets the answer go on every change of
+  // the words, the chip or `enabled`, before it asks again after the pause, so no render shows
+  // the next ask's answer to a press still waiting for the dropped one.
   const preparing = stage?.kind === "preparing" ? stage : undefined;
   // biome-ignore lint/correctness/useExhaustiveDependencies: `apply` reads this render's run, and the step changes only with what it is computed from
   useEffect(() => {

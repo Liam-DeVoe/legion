@@ -425,7 +425,10 @@ export function useGoingAnswer({
   useEffect(() => {
     // The run before answers words the person has typed past, so it is cancelled and its answer
     // let go; the replay stays only while the box is still empty. What the panel keeps of it the
-    // render the words changed in worked out already (`keeping`).
+    // render the words changed in worked out already (`keeping`). Letting the answer go here,
+    // before the pause asks again, is also how the bar's operation tells that the request a press
+    // waited on was dropped (`useGoingOperations`' preparing effect), so the press never binds to
+    // the next ask's run.
     if (out.current?.replayed !== true || words !== "") {
       stop();
     }
