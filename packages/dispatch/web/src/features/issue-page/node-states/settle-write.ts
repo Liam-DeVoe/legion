@@ -96,11 +96,15 @@ export function useSettleIssue(): string | undefined {
  * the reads begun here did. The coverage's read begins first, so its answer, changed or not, is
  * no newer than the tree read begun here (`answeredNewer`), for which the subscription would read
  * the tree and the open view again: the coverage, the tree and the open view are read once each,
- * where no tree read is out or held by the refresh interval. Where one is, `refreshQueries`
- * begins none here, so the coverage's read is newer than the tree's last read whatever it
- * answers - a read begun while its query is marked invalid, as the invalidation here begins it,
- * counts as newer (`readWhileInvalid`) - and the subscription reads the tree and the open view
- * again, which costs a read and leaves none out.
+ * where the live feed is up and no tree read is out or held by the refresh interval. Where one
+ * is, `refreshQueries` begins none here, so the coverage's read is newer than the tree's last
+ * read whatever it answers - a read begun while its query is marked invalid, as the invalidation
+ * here begins it, counts as newer (`readWhileInvalid`) - and the subscription reads the tree and
+ * the open view again, which costs a read and leaves none out. Where the live feed is down, a
+ * change the subscription hears while a write is out - this one stays out until the coverage's
+ * read is answered - is refreshed only once the last write settles, and so reads the tree and the
+ * open view once more, since their reads began here before then; Keep's reads
+ * (`DecisionActions.tsx`) go the same way.
  * A refusal reads nothing again.
  */
 export function useSettle(key: string, reference: string, landed: () => void) {
