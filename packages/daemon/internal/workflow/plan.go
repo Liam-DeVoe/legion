@@ -245,3 +245,83 @@ func (e *Engine) taskStopped(ctx context.Context, tx pgx.Tx, fact intake.TaskSto
 	return intake.Result{}, e.notice(ctx, tx, issue.Key, record.Notice{Kind: "task-stopped", Role: phase.RoleFor(from), Phase: from,
 		StoppedBy: fact.By, Reason: why + ", the architect " + string(fact.By)})
 }
+
+// restartTask starts w's task of issue again at its first step (R16; C2-1, C2-2), in the
+// caller's transaction, for reason, which that step's worker is told. It runs on a person's todo
+// on a root held for the stopped task (releaseHeldRoot), and for a later version of the plan that
+// changes the stopped task or replaces it with a task of another id. issue is the record the
+// caller writes, with any observation it keeps, and w is the walk of the task to start, which the
+// caller read: the stopped task, or the new task of a later version, waiting at no act.
+//
+// The hold is cleared, the task runs at step 1 with its stop's reason gone (moveTask), and the
+// issue stands in the phase of step 1. The Dispatch status of that phase is queued over the
+// status Dispatch shows, not through Engine.status: a hold changes no status, so the record still
+// reads the status of the phase the hold is from (releaseHeldRoot says the same of a release).
+// Step 1's role is started at a raised entry (start), which writes the start of its step, and its
+// entry counts as a move back, since it asks for the work again from the first step. The step the
+// issue stood in ended when the task stopped (stopTask), so none is ended here. A task that ran
+// raises its pass, so that a completion of this run takes a key of its own (the completion key
+// names the task and its pass), and no pair, round or hook is counted, since no step failed; a
+// new task keeps its counts of zero. The act is task_restarted, which the log line names: no row
+// of the table moves a held issue.
+//
+// A task that is done, or left the workflow with its issue, has nothing left to start, and the
+// store's move refuses neither state: each is refused here, before anything is written
+// (RestartOfDoneTask, RestartOfLeftTask).
+func (e *Engine) restartTask(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, reason string) (*intake.Refusal, error) {
+	switch w.State {
+	case record.TaskDone:
+		return intake.RestartOfDoneTask(issue.Key, w.Task), nil
+	case record.TaskLeft:
+		return intake.RestartOfLeftTask(issue.Key, w.Task), nil
+	}
+	steps := w.steps()
+	if !w.Stored || len(steps) == 0 {
+		return nil, fmt.Errorf("restart task %s of %s: its line %v holds no first step", w.Task, issue.Key, w.Line)
+	}
+	if w.State != record.TaskWaiting {
+		counts, err := e.store.ReturnCounts(ctx, tx, issue.Key, issue.Generation, w.Task)
+		if err != nil {
+			return nil, err
+		}
+		counts.Pass++
+		if err := e.store.PutReturnCounts(ctx, tx, issue.Key, issue.Generation, w.Task, counts); err != nil {
+			return nil, err
+		}
+	}
+	from, first := record.StandsAt(issue), steps[0]
+	status := PhaseStatus(first)
+	if status != "" && status != issue.DispatchStatus {
+		if err := e.enqueue(ctx, tx, issue.Key, record.OrdinaryStatusWrite(status, issue.DispatchStatus, "")); err != nil {
+			return nil, err
+		}
+	}
+	if err := e.moveTask(ctx, tx, &issue, &w, first, record.TaskRunning); err != nil {
+		return nil, err
+	}
+	issue.Hold = nil
+	if status != "" {
+		issue.Status = status
+	}
+	if err := e.store.PutIssue(ctx, tx, issue); err != nil {
+		return nil, err
+	}
+	// The restart takes the issue out of held into a phase, which is a movement (the rule in
+	// dispatchIssue).
+	if err := e.store.MarkIssueMoved(ctx, tx, issue.Key, e.now()); err != nil {
+		return nil, err
+	}
+	e.logOnCommit(ctx, "workflow: a stopped task starts again at its first step", "issue", issue.Key, "tree", issue.Tree, "task", w.Task,
+		"act", "task_restarted", "from", from, "to", first, "reason", reason)
+	role := phase.RoleFor(first)
+	if err := e.clearHandoff(ctx, tx, issue.Key, role); err != nil {
+		return nil, err
+	}
+	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
+	if err != nil {
+		return nil, err
+	}
+	return nil, e.start(ctx, tx, issue, role, func(at Standing) string {
+		return task(issue, at, record.PhaseRow{}, pr, "", reason)
+	}, true)
+}

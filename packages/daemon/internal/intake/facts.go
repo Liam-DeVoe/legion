@@ -1476,6 +1476,22 @@ func TaskLeft(issue, task string) *Refusal {
 		"task %s of %s left the workflow with its issue before it was done, so nothing of it is left to stop. This stop changed nothing.", task, issue)}
 }
 
+// RestartOfDoneTask is the 409 TASK_DONE refusal of a restart of task of issue at its first step —
+// a person's todo on a root held for the stopped task, a later version of the plan — where the
+// task is done: nothing of it is left to start, and the code is that of a stop of a done task.
+func RestartOfDoneTask(issue, task string) *Refusal {
+	return &Refusal{Status: 409, Code: "TASK_DONE", Message: fmt.Sprintf(
+		"task %s of %s is done, so nothing of it is left to start again. This restart changed nothing.", task, issue)}
+}
+
+// RestartOfLeftTask is the 409 TASK_DONE refusal of a restart of task of issue at its first step
+// where the task left the workflow with its issue before it was done (record.TaskLeft): nothing
+// moves it again, as for a task that is done, and the code is that one's.
+func RestartOfLeftTask(issue, task string) *Refusal {
+	return &Refusal{Status: 409, Code: "TASK_DONE", Message: fmt.Sprintf(
+		"task %s of %s left the workflow with its issue before it was done, so nothing of it is left to start again. This restart changed nothing.", task, issue)}
+}
+
 // RetryOfStoppedTask is the 409 TASK_STOPPED refusal of a release of issue's hold — the
 // architect's retry or escalation, the operator's restart — where the issue is held because its
 // owner stopped task (record.HoldTaskStopped): a later version of the plan starts the task again,

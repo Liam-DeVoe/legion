@@ -46,7 +46,9 @@ type roleForReader struct {
 // notice of a task its owner stopped in the architect's phase, where the stop ends no process
 // (Engine.taskStopped, at admitted as at accepting), or answers the issue's own phase for the
 // architect's completion there, as its reader took the issue's phase while RoleFor named no role
-// (phase.Of), or reads only the phases of a plan's steps, which admitted never is (reportsBefore),
+// (phase.Of), or reads only the phases of a plan's steps, which admitted never is (reportsBefore,
+// and Engine.restartTask, which reads its task's first step: a planner's or an implementer's, as
+// plan.Supported holds every task's steps to today's order with an implementer among them),
 // or never reads admitted at all because a check before it refuses that phase, which is what each
 // named test holds it to.
 //
@@ -75,6 +77,7 @@ var roleForReaders = map[roleForSite]roleForReader{
 	{file: "internal/workflow/engine.go", fn: "Engine.phaseEnded"}:           {calls: 1, test: "TestAConflictTellsTheRoleWhosePhaseEndedOnItsOwnTopic"},
 	{file: "internal/workflow/plan.go", fn: "Engine.stopTask"}:               {calls: 1, test: "TestAReturnWithNoImplementationStepStopsTheTask"},
 	{file: "internal/workflow/plan.go", fn: "Engine.taskStopped"}:            {calls: 1, test: "TestStopTaskHoldsTheIssueAndStopsTheStep"},
+	{file: "internal/workflow/plan.go", fn: "Engine.restartTask"}:            {calls: 1, test: "TestATodoOnAStoppedRootStartsItsTaskAtStepOne"},
 	{file: "internal/workflow/gate.go", fn: "Engine.tellGateMoved"}:          {calls: 1, test: "TestEveryPhaseHolderAndTheRootArchitectAreToldTheGateClosedAndOpened"},
 	{file: "internal/workflow/review.go", fn: "Engine.tellChecks"}:           {calls: 1, test: "TestASettlementMovesNothingAndTellsTheThreeRoles"},
 	{file: "internal/workflow/resume.go", fn: "Engine.suspendedPhaseOwners"}: {calls: 1, test: "TestTheBootsResumeReadsRoleForAndStartsNoArchitectAtAdmittedOrAccepting"},

@@ -448,7 +448,8 @@ func (e *Engine) dispatchIssue(ctx context.Context, tx pgx.Tx, fact intake.Dispa
 	// from a phase stands at neither, which keeps the park and un-park of a lingering root on
 	// its new generation. A held child is untouched, and comes back through ReenterChild below.
 	if fact.Status == "todo" && claim.IsTreeRoot(issue.Key, issue.Tree) && issue.Phase == phase.Held && issue.Hold != nil && !issue.Readmittable() {
-		return intake.Result{}, e.releaseHeldRoot(ctx, tx, *issue, fact)
+		refusal, err := e.releaseHeldRoot(ctx, tx, *issue, fact)
+		return intake.Result{Refusal: refusal}, err
 	}
 	if fact.Status == "todo" && !claim.IsTreeRoot(issue.Key, issue.Tree) {
 		return intake.Result{}, e.ReenterChild(ctx, tx, *issue, fact)
@@ -484,22 +485,52 @@ func (e *Engine) dispatchIssue(ctx context.Context, tx pgx.Tx, fact intake.Dispa
 // executor finishes it without a write (the daemon's outbox status), and where the status it
 // would have written is the one the record already held it was dropped at the queue and there is
 // no row at all. The row this line queues names the todo, so it is the one that writes.
-func (e *Engine) releaseHeldRoot(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.DispatchIssue) error {
+//
+// A hold of the root's plan (planHold) is not a failure a retry answers. A todo on a root held for
+// its stopped task starts the task again at its first step (restartTask), and its refusal of a
+// task done or left is this todo's answer, with the observation kept so admission records no todo
+// over the hold. A todo on a root held for the issues beneath it leaves the hold, since the last of
+// them to leave starts the retro, keeps the observation, and logs why.
+func (e *Engine) releaseHeldRoot(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.DispatchIssue) (*intake.Refusal, error) {
 	released, err := e.observedIssue(ctx, tx, issue, fact)
 	if err != nil {
-		return err
+		return nil, err
+	}
+	switch issue.Hold.Reason {
+	case record.HoldForChildren:
+		beneath, err := e.openBeneath(ctx, tx, issue)
+		if err != nil {
+			return nil, err
+		}
+		e.logOnCommit(ctx, "workflow: a todo leaves the hold of a root that waits for the issues beneath it; the last of them to leave starts its retro",
+			"issue", issue.Key, "beneath", beneath)
+		return nil, e.store.PutIssue(ctx, tx, released)
+	case record.HoldTaskStopped:
+		w, err := e.walk(ctx, tx, released)
+		if err != nil {
+			return nil, err
+		}
+		refusal, err := e.restartTask(ctx, tx, released, w, restartReason)
+		if err != nil || refusal == nil {
+			return nil, err
+		}
+		return refusal, e.store.PutIssue(ctx, tx, released)
 	}
 	ended, err := e.retryPhase(ctx, tx, released, issue.Hold.From, releaseReason, false)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	return e.enqueue(ctx, tx, issue.Key, record.OrdinaryStatusWrite(PhaseStatus(ended), fact.Status, ""))
+	return nil, e.enqueue(ctx, tx, issue.Key, record.OrdinaryStatusWrite(PhaseStatus(ended), fact.Status, ""))
 }
 
 // releaseReason is the daemon's own reason for that release, which the restarted role's task and
 // the log line of the release both carry: it names the status write that made it, since no caller
 // of the status route names a reason of its own (R7).
 const releaseReason = "the issue was set to todo while its phase was held"
+
+// restartReason is the daemon's own reason for a todo's restart of a stopped task, which the task
+// of its first step's worker and the log line of the restart carry, for the same reason.
+const restartReason = "the issue was set to todo while its task was stopped"
 
 // sessionStatusWrite takes a lifecycle status change written by a session whose write the workflow
 // does not act on. A session holding a claim in the issue's tree is an agent, never a human move,
