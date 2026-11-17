@@ -1,13 +1,15 @@
-import { afterEach, beforeAll, beforeEach, expect, type Mock, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, beforeEach, expect, jest, type Mock, spyOn, test } from "bun:test";
 import { dispatchWritingBox } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
+// biome-ignore lint/style/noRestrictedImports: a paste of a file into the box, which user-event's paste cannot carry
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { displayTree } from "../../__tests__/display-trees";
+import { jump, realClock } from "../../__tests__/fake-clock";
 import { graphNode } from "../../__tests__/graph-fixture";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import {
@@ -16,14 +18,19 @@ import {
   plannerAgent,
   searchResponse,
 } from "../../__tests__/search-fixture";
+import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
 import type { Actor, CommentWithTrees, IssueAskRow, SearchResult } from "../../api/types";
+import { pageFailedText, pageMutedText } from "../../theme/classes";
+import type { UploadResult } from "../artifacts/ArtifactUpload";
 import { heldSends } from "../conversation/held-sends";
+import { KEYED_SEND_LATE_TEXT } from "../conversation/send-request";
 import { MarginProvider } from "../margin/margin-context";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { nodeRouteFromHref, shortForm } from "../refs/routes";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { useKeymapScope } from "../shell/keymap";
+import { SEND_DEADLINE_MS } from "../writes/keyed-write";
 import { IssueComposer } from "./IssueComposer";
 import { IssueTree } from "./IssueTree";
 import { FOOT_HEIGHT_PROPERTY } from "./identity-block";
@@ -1378,4 +1385,92 @@ test("the target line reads the entry, the question and its options as their pla
       `${CONTROL_LABELS.answering} Ship which path for @Planner? · ${CONTROL_LABELS.answer_chose} “Fast for @Planner”`
     )
   );
+});
+
+/** The classes of `element` and of everything inside it that are a colour of the dashboard's
+ *  palette (`theme/classes.ts`'s slate greys and rose and red refusals), which nothing inside the
+ *  issue page is drawn in (decision 56 of dispatch://INFRA-1196). */
+function dashboardColours(element: Element): string[] {
+  return [element, ...element.querySelectorAll("*")]
+    .flatMap((one) => [...one.classList])
+    .filter((name) => /(?:slate|rose|red)-\d/u.test(name));
+}
+
+// The reviewer's finding PRRT_kwDORFy7ds64NIrQ: what the box says of a file pasted into its
+// draft - the upload still out, an upload Dispatch refused with its Retry, one Dispatch stored
+// and lost its answer for - and of a send past its deadline, with Stop trying, is drawn in the
+// page's colours and words, as the box's refusal is, and never in the dashboard's.
+test("the box draws an upload's lines and a late send's in the page's colours", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  // The first upload stays out until the case refuses it, from inside the request it made, so
+  // the refusal reaches a write that is waiting for it.
+  let refuseUpload: ((refusal: ApiError) => void) | undefined;
+  stub(
+    spyOn(api, "uploadArtifact")
+      .mockImplementationOnce(() => {
+        const { promise, reject } = Promise.withResolvers<UploadResult>();
+        refuseUpload = reject;
+        return promise;
+      })
+      .mockRejectedValueOnce(new ApiError(409, { code: "KEY_COMMITTED", error: "already made" }))
+  );
+  const answer = Promise.withResolvers<CommentWithTrees>();
+  const createComment = stub(spyOn(api, "createComment").mockReturnValueOnce(answer.promise));
+  try {
+    renderPage();
+    await user.click(writeField());
+    const file = new File(["# Notes"], "notes.md", { type: "text/markdown" });
+    // user-event's paste carries text, never files.
+    fireEvent.paste(writeField(), { clipboardData: { files: [file] } });
+
+    // The upload out: the page's busy word, in its muted grey.
+    const uploading = await within(composerBox()).findByText(ANSWER_LINES.uploading, {
+      selector: '[role="status"]',
+    });
+    expect(dashboardColours(uploading)).toEqual([]);
+    expect(uploading).toHaveClass(pageMutedText);
+
+    // Refused: the server's reason in the page's red, with a Retry whose press leaves the caret
+    // in the field.
+    await waitFor(() => expect(refuseUpload).toBeDefined());
+    await act(async () =>
+      refuseUpload?.(
+        new ApiError(400, { code: "INVALID_INPUT", error: "The file is not allowed." })
+      )
+    );
+    const refused = (await within(composerBox()).findByText("The file is not allowed.")).closest(
+      '[role="alert"]'
+    );
+    if (refused === null) throw new Error("the box drew the upload's refusal as no alert");
+    expect(dashboardColours(refused)).toEqual([]);
+    expect(refused).toHaveClass(pageFailedText);
+    await user.click(within(refused as HTMLElement).getByRole("button", { name: "Retry" }));
+    expect(writeField()).toHaveFocus();
+
+    // Stored with no answer: the page's own sentence, in its muted grey.
+    const unanswered = await within(composerBox()).findByTestId("landed-without-answer");
+    expect(unanswered.textContent).toBe(ANSWER_LINES.uploaded_unanswered);
+    expect(dashboardColours(unanswered)).toEqual([]);
+    expect(unanswered).toHaveClass(pageMutedText);
+
+    // A send past its deadline: still being tried, in the page's muted grey, beside a Stop
+    // trying drawn in the page's look.
+    await user.keyboard("Agreed{Enter}");
+    await waitFor(() => expect(createComment).toHaveBeenCalledTimes(1));
+    await jump(SEND_DEADLINE_MS);
+    const late = within(composerBox()).getByText(KEYED_SEND_LATE_TEXT);
+    expect(late).toHaveClass(pageMutedText);
+    const lateLine = late.parentElement;
+    if (lateLine === null) throw new Error("the box drew the late line alone");
+    expect(dashboardColours(lateLine)).toEqual([]);
+    expect(within(lateLine).getByRole("button", { name: "Stop trying" })).toHaveClass(
+      pageMutedText
+    );
+
+    await act(async () => answer.resolve(commentRecord("comment-9", ALICE, "Agreed")));
+    await waitFor(() => expect(writeField().value).toBe(""));
+  } finally {
+    realClock();
+  }
 });

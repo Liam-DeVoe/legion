@@ -653,8 +653,13 @@ export const ANSWER_LINES = freeze({
   /** What Send says while the send is out, on the answer line and on the write line of the box
    *  at the foot of the outline (dispatch://INFRA-3949 R5), beside the busy words above. */
   sending: "Sending…",
-  /** What the write line's Send says while a file pasted or dropped into its draft uploads. */
+  /** What the write line says while a file pasted or dropped into its draft uploads: on its Send,
+   *  and on the status line under the field. */
   uploading: "Uploading file…",
+  /** What the write line says when Dispatch stored a file pasted or dropped into its draft and
+   *  lost its answer, so the file's reference could not be written into the draft. */
+  uploaded_unanswered:
+    "The file was uploaded, but Dispatch lost its answer, so its reference is not in the draft.",
   /** What the box says when Dispatch refused a comment on a statement whose words its document
    *  holds twice (`TARGET_AMBIGUOUS`): the box places a statement's comment by the statement's
    *  whole words alone, so the same words are refused again whatever is sent, and the draft
