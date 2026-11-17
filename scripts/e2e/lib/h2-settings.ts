@@ -15,6 +15,7 @@
 import http2 from "node:http2";
 import { isIP } from "node:net";
 import tls from "node:tls";
+import { shownSettingUrl } from "../../../packages/contracts/src/setting-url";
 
 const USAGE = "usage: bun scripts/e2e/lib/h2-settings.ts <https-url>";
 /** How long the TLS handshake and the server's first SETTINGS may take together. */
@@ -34,21 +35,24 @@ function fail(message: string, code: number): never {
   process.exit(code);
 }
 
-/** The https URL the one argument names, or a usage error. */
+/** The https URL the one argument names, or a usage error. The URL may carry a user and a
+ *  password, which a TLS probe never sends: every line names it with neither, and a value that is
+ *  no http or https URL with a host by its length alone (`shownSettingUrl`). */
 function target(argv: readonly string[]): URL {
   const [raw, ...extra] = argv;
   if (raw === undefined || extra.length > 0) fail(USAGE, 2);
-  let parsed: URL;
-  try {
-    parsed = new URL(raw);
-  } catch {
-    fail(`not a URL: ${raw}\n${USAGE}`, 2);
+  const shown = shownSettingUrl(raw);
+  if (shown === undefined) {
+    fail(`not an https URL: its value is ${raw.length} characters long\n${USAGE}`, 2);
   }
-  if (parsed.protocol !== "https:") fail(`not an https URL: ${raw}\n${USAGE}`, 2);
+  const parsed = new URL(raw);
+  if (parsed.protocol !== "https:") fail(`not an https URL: ${shown}\n${USAGE}`, 2);
   return parsed;
 }
 
 const url = target(process.argv.slice(2));
+// The answer's URL as the URL parser writes it, with no user and no password.
+const shownUrl = shownSettingUrl(url.href) ?? url.origin;
 const host = url.hostname.replace(/^\[(.*)\]$/u, "$1");
 
 const deadline = setTimeout(
@@ -68,7 +72,7 @@ socket.once("secureConnect", () => {
   const alpn = socket.alpnProtocol ?? false;
   if (alpn !== "h2") {
     socket.destroy();
-    answer.resolve({ alpn, settings: null, url: url.href });
+    answer.resolve({ alpn, settings: null, url: shownUrl });
     return;
   }
   // The session takes over the socket the handshake chose h2 on.
@@ -76,7 +80,7 @@ socket.once("secureConnect", () => {
   session.once("error", (error) => fail(`${url.origin}: ${error.message}`, 2));
   session.once("remoteSettings", (settings) => {
     session.close();
-    answer.resolve({ alpn, settings, url: url.href });
+    answer.resolve({ alpn, settings, url: shownUrl });
   });
 });
 

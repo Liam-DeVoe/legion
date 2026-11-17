@@ -51,7 +51,7 @@
 import { writeFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { LIVE_SOCKET_MAX_AGE_CLOSE } from "@legion/contracts";
-import { shownSettingUrl, withoutUserinfo } from "@legion/contracts/setting-url";
+import { shownSettingUrl } from "@legion/contracts/setting-url";
 
 import { REQUEST_DEADLINE_MS } from "../web/src/api/client";
 import {
@@ -529,7 +529,15 @@ function frameLine(frame: DeliveryServerFrame, bytes: number): ProbeFrameLine {
  *  Dispatch refuses the view, or a frame breaks the contract. */
 async function watch(options: Options, token: string): Promise<ProbeHeld | null> {
   const liveUrl = new URL("/ws/live", options.url);
-  liveUrl.protocol = options.url.protocol === "https:" ? "wss:" : "ws:";
+  const socketScheme = options.url.protocol === "https:" ? "wss:" : "ws:";
+  // What a line names the socket by: its http or https URL as `shownSettingUrl` shows it, with no
+  // user and no password, under the socket's scheme.
+  const shownHttp = shownSettingUrl(liveUrl.href);
+  liveUrl.protocol = socketScheme;
+  const shownLive =
+    shownHttp === undefined
+      ? `a URL ${liveUrl.href.length} characters long`
+      : `${socketScheme}${shownHttp.slice(shownHttp.indexOf(":") + 1)}`;
   let held: ProbeHeld | null = null;
   let socket: WebSocket | null = null;
   let attempt = 0;
@@ -653,9 +661,7 @@ async function watch(options: Options, token: string): Promise<ProbeHeld | null>
       write({ at: now(), code, reason, type: "close", wait_ms: waitMs });
     if (!opened) {
       closed(null);
-      fail(
-        `Dispatch refused the connection to ${withoutUserinfo(liveUrl.href)}: ${reason || `close ${code}`}`
-      );
+      fail(`Dispatch refused the connection to ${shownLive}: ${reason || `close ${code}`}`);
       return;
     }
     if (code === LIVE_SOCKET_MAX_AGE_CLOSE) {
@@ -702,7 +708,7 @@ async function watch(options: Options, token: string): Promise<ProbeHeld | null>
   timer = setTimeout(
     () =>
       fail(
-        `the socket to ${withoutUserinfo(liveUrl.href)} did not open within ${options.openWithinMs / 1000} s (--open-within)`
+        `the socket to ${shownLive} did not open within ${options.openWithinMs / 1000} s (--open-within)`
       ),
     options.openWithinMs
   );

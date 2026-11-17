@@ -5,6 +5,7 @@
 // honours it.
 
 import { afterEach, expect, test } from "bun:test";
+import { inspect } from "node:util";
 import { type IssuerAnswer, signedIn, stubIssuer } from "../../test/sign-ins";
 import { personIdentity } from "../person-identity";
 import { SIGNIN_COMMAND, type SignInFlow } from "../signins";
@@ -144,4 +145,52 @@ test("a record made with another sign-in client is refused before any request", 
   // A record that names no client is renewed with the one this machine has, as Go's is.
   const unnamed = personIdentity(await signedIn(PERSON, { client_id: "" }), flowAt(issuer.url));
   expect((await unnamed.read()).tokenType).toBe(SUBJECT_TOKEN_TYPE_PERSON);
+});
+
+// AGENT_SECRETS_SIGNIN_ISSUER may carry a user and a password: an error names the issuer with
+// neither, and an issuer that is no http or https URL with a host is refused naming its length
+// alone, before anything is asked. No member of the error, nor of a cause under it, holds the
+// password. The password is made for this run.
+test("an issuer with a user part is named without it, and one that is no http or https URL with a host by its length alone", async () => {
+  const password = crypto.randomUUID();
+  const issuer = await issuerFor();
+  const withUser = issuer.url.replace("http://", `http://made-up-user:${password}@`);
+  let calls = 0;
+  const refused = (async () => {
+    calls += 1;
+    throw new Error("connection refused");
+  }) as unknown as typeof fetch;
+  const record = await signedIn(PERSON);
+  const said: { readonly message: string; readonly holds: boolean }[] = [];
+  const unreadable = [
+    `made-up-user:${password}@issuer.example`,
+    `http://made-up-user:${password}@[bad`,
+  ];
+  for (const named of [withUser, ...unreadable]) {
+    const error = await refusalOf(() =>
+      personIdentity(record, flowAt(named), { fetch: refused }).read()
+    );
+    said.push({
+      message: error instanceof Error ? error.message : String(error),
+      holds: inspect(error, { depth: Number.POSITIVE_INFINITY, showHidden: true }).includes(
+        password
+      ),
+    });
+  }
+  expect(said).toEqual([
+    {
+      message: expect.stringMatching(
+        new RegExp(
+          `^read the sign-in issuer ${issuer.url.replaceAll(".", "\\.")}: .*connection refused`
+        )
+      ),
+      holds: false,
+    },
+    ...unreadable.map((value) => ({
+      message: `AGENT_SECRETS_SIGNIN_ISSUER must name an http or https URL: its value is ${value.length} characters long`,
+      holds: false,
+    })),
+  ]);
+  // The first issuer was asked once; the two refused were asked nothing.
+  expect(calls).toBe(1);
 });

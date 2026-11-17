@@ -88,7 +88,7 @@
 
 import { appendFileSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
-import { withoutUserinfo } from "@legion/contracts/setting-url"
+import { shownSettingUrl } from "@legion/contracts/setting-url"
 import { formatOpenAsksSummary } from "@legion/envoy-client/dispatch-execute"
 import {
   dispatchFirstSkillFile,
@@ -453,9 +453,12 @@ async function refreshedAnswers(
         return { text: outcome.text ?? undefined, notice: outcome.notice ?? undefined }
       }
       // Compared whole above; the reason reaches the session's context, so it names the URL
-      // without the user and password it may carry.
+      // without the user and password it may carry (`shownSettingUrl`).
       const read =
-        outcome.dispatch_url === null ? "no Dispatch" : withoutUserinfo(outcome.dispatch_url)
+        outcome.dispatch_url === null
+          ? "no Dispatch"
+          : (shownSettingUrl(outcome.dispatch_url) ??
+            `a Dispatch URL ${outcome.dispatch_url.length} characters long`)
       return {
         reason: `the refresher read ${read}, not the Dispatch envoy.json names now`,
       }

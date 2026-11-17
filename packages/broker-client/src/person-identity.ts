@@ -5,6 +5,7 @@
 // and `DeviceFlow.Refresh` (`packages/envoy/internal/brokerclient/device.go`), with
 // `openid-client` in the place of x/oauth2.
 
+import { shownSettingUrl } from "@legion/contracts/setting-url";
 import {
   allowInsecureRequests,
   ClientSecretPost,
@@ -18,7 +19,7 @@ import {
   type TokenEndpointResponse,
 } from "openid-client";
 import { messageOf } from "./error-text";
-import { SIGNIN_COMMAND, type SignInFlow, type SignInRecord } from "./signins";
+import { SIGNIN_COMMAND, SIGNIN_ISSUER_VAR, type SignInFlow, type SignInRecord } from "./signins";
 import type { SubjectToken, TokenSource } from "./source";
 import { requestInit, SignInEndedError, statusOf } from "./token-client";
 import { SUBJECT_TOKEN_TYPE_PERSON } from "./wire";
@@ -96,8 +97,16 @@ export function personIdentity(
     (url, init) =>
       send(url, requestInit(init, signal, init.headers));
 
+  // The issuer may carry a user and a password: each line names it with neither, and one that is
+  // no http or https URL with a host fails the read naming its length alone, before anything is
+  // asked (`shownSettingUrl`).
+  const shownIssuer = shownSettingUrl(flow.issuer);
+
   /** The issuer's metadata, as one discovery request reads it. */
-  const discover = async (signal: AbortSignal | undefined): Promise<ServerMetadata> => {
+  const discover = async (
+    signal: AbortSignal | undefined,
+    shown: string
+  ): Promise<ServerMetadata> => {
     try {
       const config = await discovery(new URL(flow.issuer), flow.clientId, undefined, undefined, {
         [customFetch]: through(signal),
@@ -106,7 +115,7 @@ export function personIdentity(
       });
       return config.serverMetadata();
     } catch (error) {
-      throw new Error(`read the sign-in issuer ${flow.issuer}: ${issuerSaid(error)}`, {
+      throw new Error(`read the sign-in issuer ${shown}: ${issuerSaid(error)}`, {
         cause: error,
       });
     }
@@ -114,7 +123,12 @@ export function personIdentity(
 
   return {
     async read(signal?: AbortSignal): Promise<SubjectToken> {
-      discovered ??= discover(signal);
+      if (shownIssuer === undefined) {
+        throw new Error(
+          `${SIGNIN_ISSUER_VAR} must name an http or https URL: its value is ${flow.issuer.length} characters long`
+        );
+      }
+      discovered ??= discover(signal, shownIssuer);
       const discovering = discovered;
       let metadata: ServerMetadata;
       try {
@@ -138,16 +152,16 @@ export function personIdentity(
         answered = await refreshTokenGrant(config, refreshToken);
       } catch (error) {
         if (error instanceof ResponseBodyError && error.error === INVALID_GRANT) {
-          throw new SignInEndedError(flow.issuer, person, { cause: error });
+          throw new SignInEndedError(shownIssuer, person, { cause: error });
         }
         // No `cause`: an answer the library refused hangs off its error, and that answer can hold
         // the person's fresh ID token, which no log of this error may carry.
-        throw new Error(`renew ${person}'s sign-in at ${flow.issuer}: ${issuerSaid(error)}`);
+        throw new Error(`renew ${person}'s sign-in at ${shownIssuer}: ${issuerSaid(error)}`);
       }
       const idToken = answered.id_token ?? "";
       if (idToken === "") {
         throw new Error(
-          `${flow.issuer} answered no id_token: the sign-in asked for the "openid" scope and must be answered one`
+          `${shownIssuer} answered no id_token: the sign-in asked for the "openid" scope and must be answered one`
         );
       }
       return { token: idToken, tokenType: SUBJECT_TOKEN_TYPE_PERSON };

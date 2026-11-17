@@ -7,6 +7,7 @@
  *  reads it: the first authentication frame, its subtype Authenticated, then its scope. A refusal,
  *  a close or no answer within ten seconds exits 1 and says which. e2e/acceptance/ci-check.sh runs
  *  it. */
+import { shownSettingUrl } from "@legion/contracts/setting-url";
 import { createDecoder, readVarString, readVarUint } from "lib0/decoding";
 import { createEncoder, toUint8Array, writeVarString, writeVarUint } from "lib0/encoding";
 
@@ -32,6 +33,15 @@ if (
   cookieFile === undefined
 ) {
   console.error("usage: bun socket-scope.ts <server> <document id> <schema version> <cookie file>");
+  process.exit(2);
+}
+// ci-check.sh hands this its DISPATCH_URL, which may carry a user and a password: a value that is
+// no http or https URL with a host is refused naming its length alone (`shownSettingUrl`), before
+// the URL parser's error, which would hold it whole, can be printed.
+if (shownSettingUrl(server) === undefined) {
+  console.error(
+    `<server> must be an http or https URL: its value is ${server.length} characters long`
+  );
   process.exit(2);
 }
 

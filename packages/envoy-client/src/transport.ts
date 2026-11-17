@@ -9,7 +9,7 @@ import {
   LISTENER_CALL_TIMEOUT_MS,
   MINTED_DEDUPE_KEY_PATTERN,
 } from "@legion/contracts";
-import { withoutUserinfo } from "@legion/contracts/setting-url";
+import { shownSettingUrl } from "@legion/contracts/setting-url";
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import { z } from "zod";
 import type { RequestCredential } from "./bearer";
@@ -936,7 +936,7 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
       // come back — and the error names both halves.
       return {
         unanswered: new Error(
-          `${init.method ?? "GET"} ${withoutUserinfo(url)} answered ${response.status}, and this machine's Envoy credential could not be minted: ${messageFor(unminted)}`,
+          `${init.method ?? "GET"} ${shownSettingUrl(url) ?? `a URL ${url.length} characters long`} answered ${response.status}, and this machine's Envoy credential could not be minted: ${messageFor(unminted)}`,
           { cause: unminted }
         ),
       };
@@ -980,7 +980,7 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
 
       const error = new EnvoyApiError({
         method: init.method ?? "GET",
-        url: withoutUserinfo(url),
+        url: shownSettingUrl(url) ?? `a URL ${url.length} characters long`,
         status: response.status,
         responseBody: body,
       });

@@ -197,3 +197,41 @@ test("anything but one https URL is a usage error, exit 2", async () => {
     expect(result.stderr).toContain("usage: bun scripts/e2e/lib/h2-settings.ts <https-url>");
   }
 });
+
+// The URL may carry a user and a password: no line names them, and a value that is no http or
+// https URL with a host is named by its length alone. The password is made for this run.
+test("a URL with a user part is named without it, and one that is no http or https URL by its length alone", async () => {
+  const password = crypto.randomUUID();
+  const unreadable = [
+    `made-up-user:${password}@dispatch.example`,
+    `https://made-up-user:${password}@[bad`,
+  ];
+  const said: { readonly code: number; readonly stderr: string }[] = [];
+  for (const value of [`http://made-up-user:${password}@localhost:1`, ...unreadable]) {
+    const result = await run([value]);
+    said.push({ code: result.code, stderr: result.stderr + result.stdout });
+  }
+  expect(said).toEqual([
+    {
+      code: 2,
+      stderr: `h2-settings: not an https URL: http://localhost:1\nusage: bun scripts/e2e/lib/h2-settings.ts <https-url>\n`,
+    },
+    ...unreadable.map((value) => ({
+      code: 2,
+      stderr: `h2-settings: not an https URL: its value is ${value.length} characters long\nusage: bun scripts/e2e/lib/h2-settings.ts <https-url>\n`,
+    })),
+  ]);
+});
+
+test.skipIf(skip)("the answer names a URL with a user part without it", async () => {
+  const password = crypto.randomUUID();
+  const port = await listen(http2.createSecureServer({ ...tlsFiles, settings: {} }));
+  const result = await run([`https://made-up-user:${password}@127.0.0.1:${port}`]);
+  expect(result.code).toBe(0);
+  expect(result.stderr).toBe("");
+  expect(JSON.parse(result.stdout)).toMatchObject({
+    alpn: "h2",
+    url: `https://127.0.0.1:${port}/`,
+  });
+  expect(result.stdout).not.toContain(password);
+});

@@ -11,7 +11,7 @@ import type {
   OpenAsksResponse,
 } from "@legion/contracts";
 import { actorActText, encodeBlockId } from "@legion/contracts";
-import { withoutUserinfo } from "@legion/contracts/setting-url";
+import { shownSettingUrl } from "@legion/contracts/setting-url";
 import { actorText } from "../actor-text";
 import { askAnswerText, dispatchWordsText, textHead } from "../ask-answer";
 import type { DispatchClient } from "../dispatch-http";
@@ -181,9 +181,15 @@ function openAskLine(ask: OpenAsk, baseUrl: string): string {
 
 /** `dispatch open-asks` as text, each ask linked against `baseUrl`, which a caller outside the
  *  command (the Claude Code session hook) may give as the configured Dispatch URL: the links
- *  name it without the user and password that URL may carry. */
+ *  name it without the user and password that URL may carry, and a `baseUrl` that is no http or
+ *  https URL with a host is refused naming its length alone (`shownSettingUrl`). */
 export function formatOpenAsksSummary(response: OpenAsksResponse, baseUrl: string): string {
-  const linkBase = withoutUserinfo(baseUrl);
+  const linkBase = shownSettingUrl(baseUrl);
+  if (linkBase === undefined) {
+    throw new Error(
+      `the Dispatch URL the asks are linked against must be an http or https URL: its value is ${baseUrl.length} characters long`
+    );
+  }
   const scope = "active open asks you authored on open issues and project documents";
   if (response.count === 0) {
     return ["There are no unanswered asks for this session.", `Scope: ${scope}.`].join("\n");

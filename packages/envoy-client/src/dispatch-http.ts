@@ -90,7 +90,7 @@ import {
   type Sleep,
   sleep,
 } from "@legion/contracts";
-import { withoutUserinfo } from "@legion/contracts/setting-url";
+import { shownSettingUrl } from "@legion/contracts/setting-url";
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import { textHead } from "./ask-answer";
 import type { RequestCredential } from "./bearer";
@@ -238,7 +238,7 @@ export class DispatchWriteLandedError extends Error {
       code === IDEMPOTENCY_ANSWER_NOT_KEPT
         ? "Dispatch kept no copy of its answer, which was too large"
         : "its answer was lost on the way back";
-    const request = `${method} ${withoutUserinfo(url)}`;
+    const request = `${method} ${shownSettingUrl(url) ?? `a URL ${url.length} characters long`}`;
     super(
       `${request} was made, but ${lost} (${code}), so this command cannot print what it ` +
         "made: read it back with `dispatch read`, or with the matching list for something it created."
@@ -296,7 +296,7 @@ function reviewNoRouteRefusal(
   route: string,
   version: number
 ): DispatchServiceError {
-  const shown = withoutUserinfo(baseUrl);
+  const shown = shownSettingUrl(baseUrl) ?? `a URL ${baseUrl.length} characters long`;
   return new DispatchServiceError(
     "NOT_FOUND",
     404,
@@ -928,7 +928,8 @@ export class DispatchClient {
     const answer: unknown = await this.#json("GET", path, undefined, query);
     const refusal = whyNotAPage(answer);
     if (refusal === undefined) return answer as IssueSummaryPage;
-    const url = withoutUserinfo(this.#url(path, query));
+    const asked = this.#url(path, query);
+    const url = shownSettingUrl(asked) ?? `a URL ${asked.length} characters long`;
     throw new Error(
       `GET ${url} asked for a page ({issues, total, limit, offset}) and got ${refusal}`
     );
@@ -948,7 +949,8 @@ export class DispatchClient {
     const query = { ...options };
     const answer: unknown = await this.#json("GET", path, undefined, query);
     if (Array.isArray(answer)) return answer as IssueSummary[];
-    const url = withoutUserinfo(this.#url(path, query));
+    const asked = this.#url(path, query);
+    const url = shownSettingUrl(asked) ?? `a URL ${asked.length} characters long`;
     throw new Error(`GET ${url} asked for the unpaged listing and got ${whyNotAnArray(answer)}.`);
   }
 
@@ -2024,7 +2026,7 @@ export class DispatchClient {
     headers[IDEMPOTENCY_KEY_HEADER] = key;
     const { pausesMs, withinMs, silenceMs, inFlightPauseMs, inFlightWithinMs } = this.writeRetry;
     const pause = this.writeRetry.pause ?? pauseFor;
-    const request = `${method} ${withoutUserinfo(url)}`;
+    const request = `${method} ${shownSettingUrl(url) ?? `a URL ${url.length} characters long`}`;
     const started = this.#now();
     // An upload, a body of `STREAMED_BODY_MIN` or more that goes out as a stream (`attemptBody`),
     // sends that whole body again on every repeat, so it keeps the schedule alone and never enters
@@ -2351,7 +2353,7 @@ export class DispatchClient {
       }
       const reasonPhrase = excerpt(response.statusText, this.token);
       const reason = reasonPhrase === "" ? "" : ` ${reasonPhrase}`;
-      const request = `${method} ${withoutUserinfo(url)}`;
+      const request = `${method} ${shownSettingUrl(url) ?? `a URL ${url.length} characters long`}`;
       throw new DispatchGatewayError(
         response.status,
         `${request} answered ${response.status}${reason} with ${body}, ${GATEWAY_PAGE}`,

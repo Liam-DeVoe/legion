@@ -1,7 +1,7 @@
 import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { actorActText, type SessionAnswer, type SessionAnswerRelation } from "@legion/contracts";
-import { withoutUserinfo } from "@legion/contracts/setting-url";
+import { shownSettingUrl } from "@legion/contracts/setting-url";
 import { dispatchWordsText, QUESTION_HEAD, textHead } from "./ask-answer";
 import type { DispatchConfigResolution } from "./dispatch-config";
 import { DispatchClient, DispatchNoRouteError, isNoRoute } from "./dispatch-http";
@@ -574,7 +574,7 @@ export async function readSessionAnswers(
     current.noRouteReported = true;
     return {
       ...read,
-      notice: `Dispatch at ${withoutUserinfo(url)} has no answers route (its build is older than the route), so people's answers cannot be read from it`,
+      notice: `Dispatch at ${shownSettingUrl(url) ?? `a URL ${url.length} characters long`} has no answers route (its build is older than the route), so people's answers cannot be read from it`,
     };
   };
   if ((state.noRouteUntil.get(url) ?? 0) > now()) return noRoute();

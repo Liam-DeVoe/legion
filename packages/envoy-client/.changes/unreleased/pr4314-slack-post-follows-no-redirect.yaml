@@ -6,10 +6,12 @@ body: |-
   target. The reply is not sent on. The refusal of a `SLACK_POST_API_URL` that is no https or
   loopback URL names it with no user and no password, and one that is no http or https URL with a
   host by its length alone. The secrets broker client names the broker (`AGENT_SECRETS_URL`), the
-  metadata server (`GCE_METADATA_HOST`) and the workload identity pool's two services with no user
-  and no password, and one that is no http or https URL with a host by its length alone, before it
-  is asked anything. `@legion/envoy-client/errors` no longer exports `withoutUserinfo`, which is
-  now in `@legion/contracts/setting-url`.
+  metadata server (`GCE_METADATA_HOST`), the sign-in issuer (`AGENT_SECRETS_SIGNIN_ISSUER`) and the
+  workload identity pool's two services with no user and no password, and one that is no http or
+  https URL with a host by its length alone, before it is asked anything.
+  `@legion/envoy-client/errors` no longer exports `withoutUserinfo`: each line that names a
+  Dispatch or Envoy URL asks `shownSettingUrl`, of `@legion/contracts/setting-url`, after the
+  config's own check has admitted the URL as http or https.
   `@legion/envoy-client/redirect` exports `redirectTarget`, which reads where a 3xx points and
   cancels its body, `redirectedTo`, the words a refusal says it with, which name no origin longer
   than a host name can make, and `OWN_PATH_CHECK`, what to check when a client that builds its own
