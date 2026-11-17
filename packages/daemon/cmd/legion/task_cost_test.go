@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	configpkg "github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -40,7 +41,7 @@ func TestTaskCostPrintsTheDaemonsOwnReading(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		want, err := supervise.ReadTaskCost(strings.NewReader(taskCostLog), parsed.From, parsed.To, parsed.Claim)
+		want, err := supervise.ReadTaskCost(strings.NewReader(taskCostLog), parsed)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -66,6 +67,7 @@ func TestTaskCostRefusesArgumentsItCannotRead(t *testing.T) {
 		{[]string{"--from", "an hour ago", "--to", "2026-11-14T10:00:00Z"}, `--from "an hour ago" is not an RFC 3339 time`},
 		{[]string{"--from", "2026-11-14T10:00:00Z", "--to", "2026-11-14T09:00:00Z"}, "is not after --from"},
 		{[]string{"--from", "2026-11-14T09:00:00Z", "--to", "2026-11-14T10:00:00Z", "daemon.log"}, `unexpected argument "daemon.log"`},
+		{[]string{"--from", "2026-11-14T09:00:00Z", "--to", "2026-11-14T10:00:00Z", "--take-timeout", "0"}, "--take-timeout 0 is not a positive number of seconds"},
 	} {
 		code, stdout, stderr := taskCost(t, taskCostLog, tc.args...)
 		if code != 2 || stdout != "" || !strings.HasPrefix(stderr, "legion task-cost: ") || !strings.Contains(stderr, tc.want) ||
@@ -77,5 +79,20 @@ func TestTaskCostRefusesArgumentsItCannotRead(t *testing.T) {
 	if code != 0 || stdout != "" || !usageOf(stderr, "task-cost") ||
 		!strings.Contains(stderr, "kubectl -n legion logs deploy/legion-<project>-daemon -c legion --since-time <from> | legion task-cost") {
 		t.Errorf("legion task-cost --help = %d, stdout %q, stderr %q; want 0 and the usage with the documented pipe", code, stdout, stderr)
+	}
+}
+
+// The first bound the reading judges takes by when --take-timeout is not given is the setting's
+// own default: the bound a daemon runs with whose legion.yaml names no
+// worker_take_timeout_seconds, as the shipped example names none.
+func TestTaskCostTakeTimeoutDefaultsToTheSetting(t *testing.T) {
+	defaults, err := configpkg.LoadForValidation(stageShippedExample(t, func(example string) string { return example }), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := supervise.ParseTaskCostArgs([]string{"--from", "2026-11-14T09:00:00Z", "--to", "2026-11-14T10:00:00Z"})
+	if err != nil || parsed.Take != defaults.WorkerTakeTimeout {
+		t.Fatalf("legion task-cost with no --take-timeout judges by %s (%v), want worker_take_timeout_seconds's default %s",
+			parsed.Take, err, defaults.WorkerTakeTimeout)
 	}
 }

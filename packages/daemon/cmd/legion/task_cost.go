@@ -11,13 +11,16 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-const taskCostUsage = `usage: legion task-cost --from <RFC 3339> --to <RFC 3339> [--claim <token>]
+const taskCostUsage = `usage: legion task-cost --from <RFC 3339> --to <RFC 3339> [--claim <token>] [--take-timeout <seconds>]
 
 Reads the daemon's JSON log on standard input and prints what the window from --from (included)
 to --to (not included) says task delivery cost: the turns by cause, the turns each number took,
-the numbers written by origin, written to a claim whose phase waited, taken and finished, the
-charges by wait, the retirements, and three verdicts. --claim reads one claim alone. Every figure
-is a lower bound: the log reaches back only as far as the node kept it.
+the numbers written by origin, written to a claim whose phase waited, taken, owed and reached by
+no take within the first bound, and finished, the charges by wait, the retirements, and three
+verdicts. --claim reads one claim alone. --take-timeout is the deployment's first bound,
+worker_take_timeout_seconds (300 when not given), which the log does not always name. Every
+figure is a lower bound, apart from what the owed numbers cannot see: the log reaches back only
+as far as the node kept it.
 
   kubectl -n legion logs deploy/legion-<project>-daemon -c legion --since-time <from> | legion task-cost --from <from> --to <to>`
 
@@ -39,7 +42,7 @@ func runTaskCost(_ context.Context, args []string, stdout, stderr io.Writer) int
 		fmt.Fprintf(stderr, "legion task-cost: %v\n%s\n", err, taskCostUsage)
 		return 2
 	}
-	cost, err := supervise.ReadTaskCost(taskCostStdin, parsed.From, parsed.To, parsed.Claim)
+	cost, err := supervise.ReadTaskCost(taskCostStdin, parsed)
 	if err != nil {
 		fmt.Fprintf(stderr, "legion task-cost: %v\n", err)
 		return 1

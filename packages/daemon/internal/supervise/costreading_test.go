@@ -32,7 +32,7 @@ const (
 	taskCostSample         = "testdata/task-cost.jsonl"
 	taskCostSampleFromRoot = "packages/daemon/internal/supervise/" + taskCostSample
 	// taskCostCommand is the command the page gives in one fenced block.
-	taskCostCommand = "kubectl -n legion logs deploy/legion-<project>-daemon -c legion --since-time <from> | legion task-cost --from <from> --to <to> [--claim <token>]"
+	taskCostCommand = "kubectl -n legion logs deploy/legion-<project>-daemon -c legion --since-time <from> | legion task-cost --from <from> --to <to> [--claim <token>] [--take-timeout <seconds>]"
 )
 
 // docExample is one example of the page: the arguments its fenced `legion task-cost` command
@@ -130,7 +130,7 @@ func readExample(t *testing.T, example docExample, log []byte) TaskCost {
 	if err != nil {
 		t.Fatalf("the page's example %q: %v", example.command, err)
 	}
-	cost, err := ReadTaskCost(strings.NewReader(string(log)), args.From, args.To, args.Claim)
+	cost, err := ReadTaskCost(strings.NewReader(string(log)), args)
 	if err != nil {
 		t.Fatalf("read the sample for %q: %v", example.command, err)
 	}
@@ -258,13 +258,14 @@ func TestDocExampleTaskCost(t *testing.T) {
 				t.Fatal(err)
 			}
 			day := 24 * time.Hour
-			cost, err := ReadTaskCost(strings.NewReader(string(sample)), args.From.Add(-day), args.To.Add(-day), args.Claim)
+			args.From, args.To = args.From.Add(-day), args.To.Add(-day)
+			cost, err := ReadTaskCost(strings.NewReader(string(sample)), args)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if cost.Lines != 0 || cost.TurnsStarted != (TurnCauses{}) || cost.TurnsEnded != (TurnCauses{}) || cost.Taken != 0 {
-				t.Fatalf("a day before the sample reads %d lines, turns %+v and %+v, %d taken; want nothing", cost.Lines,
-					cost.TurnsStarted, cost.TurnsEnded, cost.Taken)
+			if cost.Lines != 0 || cost.TurnsStarted != (TurnCauses{}) || cost.TurnsEnded != (TurnCauses{}) || cost.Taken != 0 || len(cost.Unreached) != 0 {
+				t.Fatalf("a day before the sample reads %d lines, turns %+v and %+v, %d taken, %q owed past the first bound; want nothing", cost.Lines,
+					cost.TurnsStarted, cost.TurnsEnded, cost.Taken, cost.Unreached)
 			}
 		}
 	})
@@ -349,7 +350,7 @@ func TestTaskCostReadsTheMachinesOwnLog(t *testing.T) {
 		t.Fatalf("pending %+v, want both tasks finished", p)
 	}
 
-	cost, err := ReadTaskCost(strings.NewReader(log.String()), epoch.Add(-time.Hour), h.clock.Now().Add(time.Second), "")
+	cost, err := ReadTaskCost(strings.NewReader(log.String()), TaskCostArgs{From: epoch.Add(-time.Hour), To: h.clock.Now().Add(time.Second), Take: takeBound})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -371,8 +372,9 @@ func TestTaskCostReadsTheMachinesOwnLog(t *testing.T) {
 	if !maps.Equal(cost.ChargesByWait, map[string]int{WaitTurnStart: 1}) || cost.Retirements != 0 {
 		t.Errorf("charges by wait %v and %d retirements, want the one charge of the second wait", cost.ChargesByWait, cost.Retirements)
 	}
-	if len(cost.ChargedWithinBound) != 0 || len(cost.TakenPastOwed) != 0 {
-		t.Errorf("the first verdict fails on %q and the third on %q, want both to pass", cost.ChargedWithinBound, cost.TakenPastOwed)
+	if len(cost.ChargedWithinBound) != 0 || len(cost.TakenPastOwed) != 0 || len(cost.Unreached) != 0 {
+		t.Errorf("the first verdict fails on %q, the third on %q, and %q were owed past the first bound; want neither verdict to fail and no number owed so",
+			cost.ChargedWithinBound, cost.TakenPastOwed, cost.Unreached)
 	}
 	if len(cost.ResumeToFinished) != 1 || !strings.HasPrefix(cost.ResumeToFinished[0], string(testToken)+" task 2:") {
 		t.Errorf("the resume verdict fails on %q, want task 2 alone", cost.ResumeToFinished)
@@ -452,7 +454,7 @@ func TestTaskCostLogVerdictsListWhatFailsThem(t *testing.T) {
 		costLogLine(t, at.Add(3*time.Minute+2*time.Second), takenBackLine, claim, "task", 3, "cause", "compaction"),
 		accepted(3*time.Minute+3*time.Second, 3, false),
 	}
-	cost, err := ReadTaskCost(strings.NewReader(strings.Join(lines, "\n")+"\n"), at, at.Add(time.Hour), "")
+	cost, err := ReadTaskCost(strings.NewReader(strings.Join(lines, "\n")+"\n"), TaskCostArgs{From: at, To: at.Add(time.Hour), Take: takeBound})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -495,7 +497,7 @@ func TestTaskCostLogEndsATakeWhenANewerNumberIsWritten(t *testing.T) {
 		costLogLine(t, at.Add(5*time.Minute), valueWrittenLine, claim, "task", 2, "origin", OriginPhaseStart, "finished", false, "cause", TaskValueQueued),
 		costLogLine(t, at.Add(6*time.Minute), promptFailureLine, claim, "wait", WaitTake, "bound", int64(time.Minute)),
 	}
-	cost, err := ReadTaskCost(strings.NewReader(strings.Join(lines, "\n")+"\n"), at, at.Add(time.Hour), "")
+	cost, err := ReadTaskCost(strings.NewReader(strings.Join(lines, "\n")+"\n"), TaskCostArgs{From: at, To: at.Add(time.Hour), Take: takeBound})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -507,21 +509,115 @@ func TestTaskCostLogEndsATakeWhenANewerNumberIsWritten(t *testing.T) {
 	}
 }
 
+// Each time a number is owed and no take reaches it within the first bound is listed, with its
+// claim, and nothing else is (the rule is costreading.go's doc comment), each case on a claim of
+// its own. Not listed: a number taken at its bound; one owed less than a bound before the window's
+// end; one a newer number replaced, or whose value was deleted, within its bound; one written in
+// a turn that outlasted the bound and taken within the bound after that turn's end; and one whose
+// count a turn stopped before its bound passed. Listed: a number never taken, whose value written
+// again at each bound starts no count of its own; one taken only after its bound; one whose bound
+// passed before a turn began, which a later take does not undo; one a hold refused within its
+// bound, owed again from the hold's end and never taken; and one taken back and never taken again.
+func TestTaskCostLogListsEachNumberNoTakeReachedWithinTheFirstBound(t *testing.T) {
+	at := time.Date(2026, 11, 14, 9, 0, 0, 0, time.UTC)
+	line := func(offset time.Duration, msg, claim string, attrs ...any) string {
+		return costLogLine(t, at.Add(offset), msg, claim, attrs...)
+	}
+	written := func(offset time.Duration, claim string, task uint64, cause string) string {
+		return line(offset, valueWrittenLine, claim, "task", task, "origin", OriginPhaseStart, "finished", false, "cause", cause)
+	}
+	answered := func(offset time.Duration, claim string, task uint64, outcome TakeOutcome, hold string) string {
+		return line(offset, takeAnsweredLine, claim, "task", task, "outcome", outcome, "hold", hold, "repeat", false)
+	}
+	turn := func(offset time.Duration, msg, claim string) string { return line(offset, msg, claim, "generation", 1) }
+	lines := []string{
+		written(0, "taken-at-its-bound", 1, TaskValueQueued),
+		answered(takeBound, "taken-at-its-bound", 1, TakeOutcomeAccepted, ""),
+
+		written(time.Hour-takeBound, "owed-at-the-end", 1, TaskValueQueued),
+
+		written(0, "replaced", 1, TaskValueQueued),
+		written(time.Minute, "replaced", 2, TaskValueQueued),
+		answered(2*time.Minute, "replaced", 2, TakeOutcomeAccepted, ""),
+
+		written(0, "deleted", 1, TaskValueQueued),
+		line(time.Minute, valueDeletedLine, "deleted", "task", 1, "cause", valueDeletedDropped),
+
+		turn(0, turnStartedLine, "written-in-a-turn"),
+		written(time.Minute, "written-in-a-turn", 1, TaskValueQueued),
+		turn(20*time.Minute, turnEndedLine, "written-in-a-turn"),
+		answered(20*time.Minute+takeBound, "written-in-a-turn", 1, TakeOutcomeAccepted, ""),
+
+		written(0, "stopped-by-a-turn", 1, TaskValueQueued),
+		turn(takeBound-time.Second, turnStartedLine, "stopped-by-a-turn"),
+		turn(20*time.Minute, turnEndedLine, "stopped-by-a-turn"),
+		answered(23*time.Minute, "stopped-by-a-turn", 1, TakeOutcomeAccepted, ""),
+
+		written(0, "never-taken", 1, TaskValueQueued),
+		written(takeBound, "never-taken", 1, TaskValueUnseen),
+		written(2*takeBound, "never-taken", 1, TaskValueUnseen),
+
+		written(0, "taken-late", 1, TaskValueQueued),
+		answered(takeBound+time.Second, "taken-late", 1, TakeOutcomeAccepted, ""),
+
+		written(0, "passed-before-a-turn", 1, TaskValueQueued),
+		turn(takeBound+time.Minute, turnStartedLine, "passed-before-a-turn"),
+		turn(takeBound+2*time.Minute, turnEndedLine, "passed-before-a-turn"),
+		answered(takeBound+3*time.Minute, "passed-before-a-turn", 1, TakeOutcomeAccepted, ""),
+
+		written(0, "refused", 1, TaskValueQueued),
+		answered(time.Second, "refused", 1, TakeOutcomeRefused, HoldIssueInTurn),
+		written(30*time.Minute, "refused", 1, TaskValueHoldEnded),
+
+		written(0, "taken-back", 1, TaskValueQueued),
+		answered(time.Second, "taken-back", 1, TakeOutcomeAccepted, ""),
+		line(2*time.Minute, takenBackLine, "taken-back", "task", 1, "cause", WaitTurnStart),
+		written(2*time.Minute, "taken-back", 1, TaskValueRetake),
+	}
+	cost, err := ReadTaskCost(strings.NewReader(strings.Join(lines, "\n")+"\n"), TaskCostArgs{From: at, To: at.Add(time.Hour), Take: takeBound})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"never-taken task 1: owed 2026-11-14T09:00:00.000Z, the bound passed 2026-11-14T09:05:00.000Z, still owed at the window's end",
+		"passed-before-a-turn task 1: owed 2026-11-14T09:00:00.000Z, the bound passed 2026-11-14T09:05:00.000Z, taken 2026-11-14T09:08:00.000Z",
+		"refused task 1: owed 2026-11-14T09:30:00.000Z, the bound passed 2026-11-14T09:35:00.000Z, still owed at the window's end",
+		"taken-back task 1: owed 2026-11-14T09:02:00.000Z, the bound passed 2026-11-14T09:07:00.000Z, still owed at the window's end",
+		"taken-late task 1: owed 2026-11-14T09:00:00.000Z, the bound passed 2026-11-14T09:05:00.000Z, taken 2026-11-14T09:05:01.000Z",
+	}
+	if !slices.Equal(cost.Unreached, want) {
+		t.Fatalf("the numbers owed that no take reached within the first bound are\n%s\nwant\n%s",
+			strings.Join(cost.Unreached, "\n"), strings.Join(want, "\n"))
+	}
+	text := cost.Text()
+	for _, printed := range []string{
+		"first bound 5m0s\n",
+		"numbers taken: 7\nnumbers owed that no take reached within the first bound: 5\n  " + strings.Join(want, "\n  ") + "\nnumbers finished",
+	} {
+		if !strings.Contains(text, printed) {
+			t.Errorf("the reading prints\n%s\nwhich does not hold %q", text, printed)
+		}
+	}
+}
+
 // The reading's arguments are the window, both ends RFC 3339 times with the second after the
-// first, and optionally one claim; nothing else is taken, and a help flag is the command's usage.
+// first, optionally one claim, and optionally the first bound, a positive number of seconds that
+// is the setting's default when not given; nothing else is taken, and a help flag is the command's
+// usage.
 func TestParseTaskCostArgsReadsTheLogWindow(t *testing.T) {
 	from, to := time.Date(2026, 11, 14, 9, 0, 0, 0, time.UTC), time.Date(2026, 11, 14, 9, 30, 0, 0, time.UTC)
 	for _, tc := range []struct {
 		args []string
 		want TaskCostArgs
 	}{
-		{[]string{"--from", "2026-11-14T09:00:00Z", "--to", "2026-11-14T09:30:00Z"}, TaskCostArgs{From: from, To: to}},
+		{[]string{"--from", "2026-11-14T09:00:00Z", "--to", "2026-11-14T09:30:00Z"}, TaskCostArgs{From: from, To: to, Take: takeBound}},
 		{[]string{"--from", "2026-11-14T09:00:00Z", "--to", "2026-11-14T09:30:00Z", "--claim", "legion-infra-infra-2811-tester"},
-			TaskCostArgs{From: from, To: to, Claim: "legion-infra-infra-2811-tester"}},
-		{[]string{"--to=2026-11-14T10:30:00+01:00", "--from=2026-11-14T09:00:00.000Z"}, TaskCostArgs{From: from, To: to}},
+			TaskCostArgs{From: from, To: to, Claim: "legion-infra-infra-2811-tester", Take: takeBound}},
+		{[]string{"--to=2026-11-14T10:30:00+01:00", "--from=2026-11-14T09:00:00.000Z", "--take-timeout=240"},
+			TaskCostArgs{From: from, To: to, Take: 4 * time.Minute}},
 	} {
 		got, err := ParseTaskCostArgs(tc.args)
-		if err != nil || !got.From.Equal(tc.want.From) || !got.To.Equal(tc.want.To) || got.Claim != tc.want.Claim {
+		if err != nil || !got.From.Equal(tc.want.From) || !got.To.Equal(tc.want.To) || got.Claim != tc.want.Claim || got.Take != tc.want.Take {
 			t.Errorf("ParseTaskCostArgs(%q) = %+v, %v; want %+v", tc.args, got, err, tc.want)
 		}
 	}
@@ -531,6 +627,9 @@ func TestParseTaskCostArgsReadsTheLogWindow(t *testing.T) {
 		{"--from", "yesterday", "--to", "2026-11-14T09:30:00Z"},
 		{"--from", "2026-11-14T09:30:00Z", "--to", "2026-11-14T09:30:00Z"},
 		{"--from", "2026-11-14T09:00:00Z", "--to", "2026-11-14T09:30:00Z", "daemon.log"},
+		{"--from", "2026-11-14T09:00:00Z", "--to", "2026-11-14T09:30:00Z", "--take-timeout", "0"},
+		{"--from", "2026-11-14T09:00:00Z", "--to", "2026-11-14T09:30:00Z", "--take-timeout", "-300"},
+		{"--from", "2026-11-14T09:00:00Z", "--to", "2026-11-14T09:30:00Z", "--take-timeout", "5m"},
 		{"--since", "30m"},
 	} {
 		if got, err := ParseTaskCostArgs(args); err == nil || errors.Is(err, flag.ErrHelp) {

@@ -238,7 +238,7 @@ func TestTurnLogPinnedMessagesAreUnchanged(t *testing.T) {
 		if constant != words {
 			t.Errorf("the pinned message %q reads %q", words, constant)
 		}
-		if words != valueDeletedLine && !costedLines[words] {
+		if !costedLines[words] {
 			t.Errorf("the cost reading does not read %q", words)
 		}
 	}

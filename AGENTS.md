@@ -327,10 +327,11 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
   Its summary also names every claim whose task value nobody reported seeing for a whole `worker_take_timeout_seconds` (`unseenTaskValues`), which is a relay that failed to carry the value and charges no worker: the daemon writes such a value again once per that bound.
   Agents never run it: a role reads its issue record with the `legion` tool's `read_record`, the controller the whole state with `read_state`
 
-- `legion task-cost --from <RFC 3339> --to <RFC 3339> [--claim <token>]`
+- `legion task-cost --from <RFC 3339> --to <RFC 3339> [--claim <token>] [--take-timeout <seconds>]`
 
   An operator's reading of the daemon's JSON log on standard input (`kubectl -n legion logs deploy/legion-<project>-daemon -c legion --since-time <from> | legion task-cost …`):
-  for the window from `--from` to `--to`, and for one claim with `--claim`, it prints the turns by cause, the turns each task number took, the numbers written by origin and to a claim whose phase waited, taken and finished, the charges by wait, the retirements and three verdicts, each figure a lower bound, since the log reaches back only as far as the node keeps it.
+  for the window from `--from` to `--to`, and for one claim with `--claim`, it prints the turns by cause, the turns each task number took, the numbers written by origin and to a claim whose phase waited, taken, owed and reached by no take within the first bound, and finished, the charges by wait, the retirements and three verdicts, each figure a lower bound, since the log reaches back only as far as the node keeps it.
+  `--take-timeout` is the deployment's first bound, `worker_take_timeout_seconds` (300 when not given), which no line of the log always carries, and the page says what can make the owed numbers count too many.
   It is the daemon's own reader (`supervise.ReadTaskCost`, `supervise.ParseTaskCostArgs`) and adds nothing of its own;
   the documentation site's "Task delivery cost" page (`docs/site/src/content/docs/legion/task-delivery-cost.md`) says what each figure means, and a test runs that page's commands over the log sample beside the reader
 
