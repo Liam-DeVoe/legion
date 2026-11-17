@@ -68,31 +68,11 @@ type stepRecordsLive struct {
 // and the merge then walk it to done with Dispatch stopped.
 func TestStepRecordsLive(t *testing.T) {
 	fixtureenv.Live(t)
-	// testbuild.RootEnv names the checkout the script runs from, whose packages/envoy the driver
-	// builds Dispatch from and whose packages/envoy-client holds the CLI. The script exports it:
-	// the driver binary runs from the caller's directory, not the package's. Unset (a plain `go
-	// test -tags e2e`, which runs in the package directory), the checkout is four directories up.
-	root := os.Getenv(testbuild.RootEnv)
-	if root == "" {
-		root = filepath.Join("..", "..", "..", "..")
-	}
-	root, err := filepath.Abs(root)
-	if err != nil {
-		t.Fatal(err)
-	}
+	root := liveCheckout(t)
 	proof := newLiveProof(t, "scripts/e2e/step-records.sh")
-	if _, err := exec.LookPath("bun"); err != nil {
-		t.Fatalf("bun is not on PATH, and the dispatch CLI runs under it: %v", err)
-	}
+	requireBun(t)
 	l := &stepRecordsLive{stepRecordsRig: newStepRecordsRigOn(t, proof, startHandoffDispatch(t, root).scratchDispatch), root: root, cliHome: t.TempDir()}
-	var minted struct {
-		Token string `json:"token"`
-	}
-	l.person(http.MethodPost, "/api/v1/me/agent-tokens", map[string]string{"name": "steps-reader"}, http.StatusCreated, &minted)
-	if minted.Token == "" {
-		t.Fatal("Dispatch minted the person a personal token with no plaintext")
-	}
-	l.reader = minted.Token
+	l.mintReader("steps-reader")
 	l.note("Dispatch %s (database of its own, NATS off), project %s mapped to %s, issue %s on pull request %d; daemon at dispatch_url %s; the reader is the person's personal token",
 		l.dispatch.base, l.cfg.Project, liveRepo, l.key, l.number, l.cfg.DispatchURL)
 	l.step("walk-to-the-second-review-with-dispatch-up", l.walkToTheSecondReview)
@@ -101,18 +81,43 @@ func TestStepRecordsLive(t *testing.T) {
 	l.step("a-write-that-names-another-session-is-refused", l.writerRefused)
 }
 
-// stepRecordsTen is the walk's ten records, as TestTheReadOfAnIssueListsEachStepThatRan holds them.
-var stepRecordsTen = []stepWant{
-	{kind: "step", step: 1, attempt: 1, role: "planner", typ: "planning", result: "passed"},
-	{kind: "step", step: 2, attempt: 1, role: "implementer", typ: "implementation", result: "passed"},
-	{kind: "step", step: 2, attempt: 2, role: "implementer", typ: "implementation", result: "passed"},
-	{kind: "step", step: 3, attempt: 1, role: "tester", typ: "testing", result: "passed"},
-	{kind: "step", step: 3, attempt: 2, role: "tester", typ: "testing", result: "passed"},
-	{kind: "step", step: 4, attempt: 1, role: "reviewer", typ: "review", result: "failed"},
-	{kind: "step", step: 4, attempt: 2, role: "reviewer", typ: "review", result: "passed"},
-	{kind: "step", step: 5, attempt: 1, role: "acceptance", typ: "review", result: "passed"},
-	{kind: "retro", step: 0, attempt: 1, role: "implementer", result: "passed"},
-	{kind: "merge", step: 0, attempt: 1, role: "merger", result: "passed"},
+// liveCheckout is the checkout the proof's script runs from, whose packages/envoy the driver builds
+// Dispatch from and whose packages/envoy-client holds the CLI: testbuild.RootEnv, which the script
+// exports, since the driver binary runs from the caller's directory, not the package's. Unset (a
+// plain `go test -tags e2e`, which runs in the package directory), it is four directories up.
+func liveCheckout(t *testing.T) string {
+	t.Helper()
+	root := os.Getenv(testbuild.RootEnv)
+	if root == "" {
+		root = filepath.Join("..", "..", "..", "..")
+	}
+	root, err := filepath.Abs(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return root
+}
+
+// requireBun fails the run when bun, which the dispatch CLI runs under, is not on PATH.
+func requireBun(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("bun"); err != nil {
+		t.Fatalf("bun is not on PATH, and the dispatch CLI runs under it: %v", err)
+	}
+}
+
+// mintReader has Dispatch mint a personal token, named name, for the person who set the run's
+// project up (POST /api/v1/me/agent-tokens), which every read of the CLI then carries.
+func (l *stepRecordsLive) mintReader(name string) {
+	l.t.Helper()
+	var minted struct {
+		Token string `json:"token"`
+	}
+	l.person(http.MethodPost, "/api/v1/me/agent-tokens", map[string]string{"name": name}, http.StatusCreated, &minted)
+	if minted.Token == "" {
+		l.t.Fatal("Dispatch minted the person a personal token with no plaintext")
+	}
+	l.reader = minted.Token
 }
 
 // walkToTheSecondReview walks the issue with Dispatch up through the rounds whose completions read
@@ -283,7 +288,13 @@ func (l *stepRecordsLive) writerRefused() {
 // code.
 func (l *stepRecordsLive) steps() (string, int) {
 	l.t.Helper()
-	command := exec.Command("bun", filepath.Join(l.root, "packages", "envoy-client", "bin", "dispatch.ts"), "steps", "--issue", l.key)
+	return l.cli("steps", "--issue", l.key)
+}
+
+// cli runs the dispatch CLI with args as the person and returns both streams and its exit code.
+func (l *stepRecordsLive) cli(args ...string) (string, int) {
+	l.t.Helper()
+	command := exec.Command("bun", append([]string{filepath.Join(l.root, "packages", "envoy-client", "bin", "dispatch.ts")}, args...)...)
 	command.Dir = l.cliHome
 	// A person's own shell running dispatch by hand: the host and a session of their own, the
 	// server and their personal token. Nothing else of the caller's environment reaches it but
@@ -311,7 +322,7 @@ func (l *stepRecordsLive) steps() (string, int) {
 	if err := command.Run(); err != nil {
 		exit, ok := err.(*exec.ExitError)
 		if !ok {
-			l.t.Fatalf("run `dispatch steps` under bun: %v", err)
+			l.t.Fatalf("run `dispatch %s` under bun: %v", strings.Join(args, " "), err)
 		}
 		code = exit.ExitCode()
 	}

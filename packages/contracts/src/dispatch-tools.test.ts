@@ -201,6 +201,7 @@ const validCalls = {
   dispatch_handoff_write: specFor("dispatch_handoff_write").example,
   dispatch_handoff_read: { issue: "DSP-1", phase: "implement", version: 2 },
   dispatch_steps: { issue: "DSP-1" },
+  dispatch_plans: { project: "INFRA" },
   dispatch_inbox: {},
 } as const;
 
@@ -305,6 +306,7 @@ describe("dispatchToolSpecs", () => {
       "dispatch_handoff_write",
       "dispatch_handoff_read",
       "dispatch_steps",
+      "dispatch_plans",
       "dispatch_inbox",
     ]);
 
@@ -357,6 +359,27 @@ describe("dispatchToolSpecs", () => {
     expect(schema.safeParse({ project: "CORE", text: "a draft spec" }).success).toBe(true);
     expect(schema.safeParse({ title: "no project" }).success).toBe(false);
     const lower = schema.safeParse({ project: "core", title: "Retry deliveries" });
+    expect(lower.success).toBe(false);
+    expect(lower.error?.issues.map((issue) => issue.message)).toEqual([
+      `project is not a project key: ${PROJECT_KEY_RULE}`,
+    ]);
+  });
+
+  test("dispatch_plans takes a project key, an optional since and until, and nothing else", () => {
+    const schema = schemaFor("dispatch_plans");
+
+    expect(schema.safeParse({ project: "INFRA" }).success).toBe(true);
+    expect(
+      schema.safeParse({
+        project: "INFRA",
+        since: "2026-11-01T00:00:00Z",
+        until: "2026-11-17T00:00:00Z",
+      }).success
+    ).toBe(true);
+    expect(schema.safeParse({}).success).toBe(false);
+    expect(schema.safeParse({ project: "INFRA", issue: "INFRA-1" }).success).toBe(false);
+    expect(schema.safeParse({ project: "INFRA", since: 1 }).success).toBe(false);
+    const lower = schema.safeParse({ project: "infra" });
     expect(lower.success).toBe(false);
     expect(lower.error?.issues.map((issue) => issue.message)).toEqual([
       `project is not a project key: ${PROJECT_KEY_RULE}`,

@@ -292,6 +292,9 @@ func (d *blockingDispatch) PutGatedSteps(context.Context, string, []string) erro
 func (d *blockingDispatch) PutStep(context.Context, string, string, dispatch.StepWrite) error {
 	return nil
 }
+func (d *blockingDispatch) PutPlan(context.Context, string, string, dispatch.PlanWrite) error {
+	return nil
+}
 func (d *blockingDispatch) PutDesignGates(context.Context, string, []dispatch.DesignGateDocument) error {
 	return nil
 }
@@ -482,6 +485,9 @@ func (d *refusingDispatch) PutGatedSteps(context.Context, string, []string) erro
 func (d *refusingDispatch) PutStep(context.Context, string, string, dispatch.StepWrite) error {
 	return nil
 }
+func (d *refusingDispatch) PutPlan(context.Context, string, string, dispatch.PlanWrite) error {
+	return nil
+}
 func (d *refusingDispatch) PutDesignGates(context.Context, string, []dispatch.DesignGateDocument) error {
 	return nil
 }
@@ -535,6 +541,9 @@ func (d *boardDispatch) ListRepoProjects(context.Context) ([]dispatch.RepoProjec
 func (d *boardDispatch) WebhookAppInstalled(context.Context, string) (bool, error) { return true, nil }
 func (d *boardDispatch) PutGatedSteps(context.Context, string, []string) error     { return nil }
 func (d *boardDispatch) PutStep(context.Context, string, string, dispatch.StepWrite) error {
+	return nil
+}
+func (d *boardDispatch) PutPlan(context.Context, string, string, dispatch.PlanWrite) error {
 	return nil
 }
 func (d *boardDispatch) PutDesignGates(context.Context, string, []dispatch.DesignGateDocument) error {

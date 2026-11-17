@@ -71,20 +71,8 @@ func TestTheReadOfAnIssueListsEachStepThatRan(t *testing.T) {
 	r.accept()
 	r.retro()
 	r.merge()
-	want := []stepWant{
-		{kind: "step", step: 1, attempt: 1, role: "planner", typ: "planning", result: "passed"},
-		{kind: "step", step: 2, attempt: 1, role: "implementer", typ: "implementation", result: "passed"},
-		{kind: "step", step: 2, attempt: 2, role: "implementer", typ: "implementation", result: "passed"},
-		{kind: "step", step: 3, attempt: 1, role: "tester", typ: "testing", result: "passed"},
-		{kind: "step", step: 3, attempt: 2, role: "tester", typ: "testing", result: "passed"},
-		{kind: "step", step: 4, attempt: 1, role: "reviewer", typ: "review", result: "failed", returnedTo: new(2)},
-		{kind: "step", step: 4, attempt: 2, role: "reviewer", typ: "review", result: "passed"},
-		{kind: "step", step: 5, attempt: 1, role: "acceptance", typ: "review", result: "passed"},
-		{kind: "retro", step: 0, attempt: 1, role: "implementer", result: "passed"},
-		{kind: "merge", step: 0, attempt: 1, role: "merger", result: "passed"},
-	}
 	var read stepRecordsRead
-	r.waitSteps("the ten records of the walk", func(got stepRecordsRead) error { read = got; return stepsHold(got, want) })
+	r.waitSteps("the ten records of the walk", func(got stepRecordsRead) error { read = got; return stepsHold(got, stepRecordsTen) })
 	failed := read.find("step", 4, 1)
 
 	t.Run("control", func(t *testing.T) {
@@ -93,7 +81,7 @@ func TestTheReadOfAnIssueListsEachStepThatRan(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read the issue's steps after the delete: %v", err)
 		}
-		err = stepsHold(read, want)
+		err = stepsHold(read, stepRecordsTen)
 		if err == nil || !strings.Contains(err.Error(), "step 4 attempt 1") {
 			t.Fatalf("the assertion over a read without the failed review's record = %v, want an error naming step 4 attempt 1", err)
 		}
@@ -128,15 +116,7 @@ func TestAPhaseNeverWaitsForDispatch(t *testing.T) {
 	})
 
 	r.dispatch.start()
-	want := []stepWant{
-		{kind: "step", step: 1, attempt: 1, role: "planner", typ: "planning", result: "passed"},
-		{kind: "step", step: 2, attempt: 1, role: "implementer", typ: "implementation", result: "passed"},
-		{kind: "step", step: 3, attempt: 1, role: "tester", typ: "testing", result: "passed"},
-		{kind: "step", step: 4, attempt: 1, role: "reviewer", typ: "review", result: "passed"},
-		{kind: "step", step: 5, attempt: 1, role: "acceptance", typ: "review", result: "passed"},
-		{kind: "retro", step: 0, attempt: 1, role: "implementer", result: "passed"},
-		{kind: "merge", step: 0, attempt: 1, role: "merger", result: "passed"},
-	}
+	want := stepRecordsSeven
 	// A row Dispatch refused while it was stopped waits out its backoff, at most retryBackoff's
 	// cap, before it runs again, and the sweep finds a lease that lapsed within one more lease.
 	within := retryBackoff(6) + outboxLease
@@ -175,35 +155,59 @@ func TestTheDaemonRestartsInTheMiddleOfAStep(t *testing.T) {
 	r.accept()
 	r.retro()
 	r.merge()
-	want := []stepWant{
-		{kind: "step", step: 1, attempt: 1, role: "planner", typ: "planning", result: "passed"},
-		{kind: "step", step: 2, attempt: 1, role: "implementer", typ: "implementation", result: "passed"},
-		{kind: "step", step: 3, attempt: 1, role: "tester", typ: "testing", result: "passed"},
-		{kind: "step", step: 4, attempt: 1, role: "reviewer", typ: "review", result: "passed"},
-		{kind: "step", step: 5, attempt: 1, role: "acceptance", typ: "review", result: "passed"},
-		{kind: "retro", step: 0, attempt: 1, role: "implementer", result: "passed"},
-		{kind: "merge", step: 0, attempt: 1, role: "merger", result: "passed"},
-	}
 	var read stepRecordsRead
-	r.waitSteps("the seven records of the walk across the restart", func(got stepRecordsRead) error { read = got; return stepsHold(got, want) })
+	r.waitSteps("the seven records of the walk across the restart", func(got stepRecordsRead) error { read = got; return stepsHold(got, stepRecordsSeven) })
 	if before, after := started.find("step", 3, 1), read.find("step", 3, 1); before.ID != after.ID {
 		t.Fatalf("the testing record read after the restart is %s, want the one its start wrote before it, %s", after.ID, before.ID)
 	}
 }
 
+// stepRecordsTen is the ten records of a walk whose first review requests changes.
+var stepRecordsTen = []stepWant{
+	{kind: "step", step: 1, attempt: 1, role: "planner", typ: "planning", result: "passed"},
+	{kind: "step", step: 2, attempt: 1, role: "implementer", typ: "implementation", result: "passed"},
+	{kind: "step", step: 2, attempt: 2, role: "implementer", typ: "implementation", result: "passed"},
+	{kind: "step", step: 3, attempt: 1, role: "tester", typ: "testing", result: "passed"},
+	{kind: "step", step: 3, attempt: 2, role: "tester", typ: "testing", result: "passed"},
+	{kind: "step", step: 4, attempt: 1, role: "reviewer", typ: "review", result: "failed", returnedTo: new(2)},
+	{kind: "step", step: 4, attempt: 2, role: "reviewer", typ: "review", result: "passed"},
+	{kind: "step", step: 5, attempt: 1, role: "acceptance", typ: "review", result: "passed"},
+	{kind: "retro", step: 0, attempt: 1, role: "implementer", result: "passed"},
+	{kind: "merge", step: 0, attempt: 1, role: "merger", result: "passed"},
+}
+
+// stepRecordsSeven is the seven records of a walk whose first review approves.
+var stepRecordsSeven = []stepWant{
+	{kind: "step", step: 1, attempt: 1, role: "planner", typ: "planning", result: "passed"},
+	{kind: "step", step: 2, attempt: 1, role: "implementer", typ: "implementation", result: "passed"},
+	{kind: "step", step: 3, attempt: 1, role: "tester", typ: "testing", result: "passed"},
+	{kind: "step", step: 4, attempt: 1, role: "reviewer", typ: "review", result: "passed"},
+	{kind: "step", step: 5, attempt: 1, role: "acceptance", typ: "review", result: "passed"},
+	{kind: "retro", step: 0, attempt: 1, role: "implementer", result: "passed"},
+	{kind: "merge", step: 0, attempt: 1, role: "merger", result: "passed"},
+}
+
 // stepRecordsRig is one walk: the booted daemon over the real Dispatch, the stand-ins it reads,
-// the issue and its pull request, and each role's agent as the test plays it.
+// the issues of the run and their pull requests, and each role's agent as the test plays it. The
+// walk's steps act on one issue at a time, key and number, which on moves to another of issues.
 type stepRecordsRig struct {
 	liveProof
 	rt       *fake.Runtime
 	built    *built
 	dispatch *scratchDispatch
 	github   *stepRecordsGitHub
+	issues   []walkIssue
 	key      string
 	number   int
 	claims   map[claim.Token]*stepClaimant
 	// reviews counts the reviews published, which numbers each.
 	reviews int
+}
+
+// walkIssue is one issue of the run and the number of its pull request.
+type walkIssue struct {
+	key    string
+	number int
 }
 
 // newStepRecordsRig is newStepRecordsRigOn over the package's broker and a Dispatch of this
@@ -213,13 +217,20 @@ func newStepRecordsRig(t *testing.T) *stepRecordsRig {
 	return newStepRecordsRigOn(t, newLiveProofOn(t, workflowNATS(t)), startScratchDispatchOn(t, scratchDispatchOptions{}))
 }
 
-// newStepRecordsRigOn sets up dispatch, a running Dispatch, with the run's project, its repository
-// mapping and the issue, seeds the daemon's store of proof with the issue at admitted, its gate
-// approved, on an open pull request GitHub reports clean, boots the daemon at Dispatch and
-// registers the tree's architect. The admission pass then starts planning, the first step of the
-// walk. The package's tests give it the package's broker; the live driver
-// (step_records_live_test.go) gives it the broker and the Dispatch its script names.
+// newStepRecordsRigOn is newStepRecordsRigWith for a run of one issue. The package's tests give it
+// the package's broker; the live driver (step_records_live_test.go) gives it the broker and the
+// Dispatch its script names.
 func newStepRecordsRigOn(t *testing.T, proof liveProof, dispatch *scratchDispatch) *stepRecordsRig {
+	t.Helper()
+	return newStepRecordsRigWith(t, proof, dispatch, 1)
+}
+
+// newStepRecordsRigWith sets up dispatch, a running Dispatch, with the run's project, its
+// repository mapping and issues issues, seeds the daemon's store of proof with each issue at
+// admitted, its gate approved, on an open pull request of its own GitHub reports clean, boots the
+// daemon at Dispatch and registers each tree's architect. The admission pass then starts planning,
+// the first step of each walk. The walk's steps act on the first issue until on moves them.
+func newStepRecordsRigWith(t *testing.T, proof liveProof, dispatch *scratchDispatch, issues int) *stepRecordsRig {
 	t.Helper()
 	// A Dispatch project key is at most ten characters, and the daemon's project is its Dispatch
 	// project, so the run's project is a short one of its own.
@@ -234,28 +245,51 @@ func newStepRecordsRigOn(t *testing.T, proof liveProof, dispatch *scratchDispatc
 	if err != nil {
 		t.Fatal(err)
 	}
-	r := &stepRecordsRig{liveProof: proof, dispatch: dispatch, number: int(number) + 1, claims: map[claim.Token]*stepClaimant{}}
+	r := &stepRecordsRig{liveProof: proof, dispatch: dispatch, github: newStepRecordsGitHub(t), claims: map[claim.Token]*stepClaimant{}}
 	if err := os.WriteFile(r.cfg.DispatchTokenFile, []byte(r.dispatch.token+"\n"), 0o600); err != nil {
 		t.Fatalf("write the Dispatch token file: %v", err)
 	}
 	r.cfg.DispatchURL = r.dispatch.base
 	r.person(http.MethodPost, "/api/v1/projects", map[string]string{"key": r.cfg.Project, "name": "Step records"}, http.StatusCreated, nil)
 	r.person(http.MethodPut, "/api/v1/settings/repo-projects/"+liveRepo, map[string]any{"project": r.cfg.Project, "default": true}, http.StatusOK, nil)
-	var created struct {
-		Key     string `json:"key"`
-		Rank    string `json:"rank"`
-		LastSeq int64  `json:"last_seq"`
+	for place := range issues {
+		var created struct {
+			Key     string `json:"key"`
+			Rank    string `json:"rank"`
+			LastSeq int64  `json:"last_seq"`
+		}
+		r.person(http.MethodPost, "/api/v1/issues", map[string]string{"project": r.cfg.Project, "title": walkTitles[place]}, http.StatusCreated, &created)
+		r.person(http.MethodPatch, "/api/v1/issues/"+created.Key, map[string]any{"status": "in_progress", "labels": []string{"legion"}}, http.StatusOK, &created)
+		r.issues = append(r.issues, walkIssue{key: created.Key, number: int(number) + 1 + place})
+		r.on(created.Key)
+		r.github.open("legion/"+r.key, r.number)
+		r.seed(created.Rank, created.LastSeq)
 	}
-	r.person(http.MethodPost, "/api/v1/issues", map[string]string{"project": r.cfg.Project, "title": "One issue walks to done"}, http.StatusCreated, &created)
-	r.key = created.Key
-	r.person(http.MethodPatch, "/api/v1/issues/"+r.key, map[string]any{"status": "in_progress", "labels": []string{"legion"}}, http.StatusOK, &created)
-	r.github = newStepRecordsGitHub(t, "legion/"+r.key, r.number)
-	r.seed(created.Rank, created.LastSeq)
 	r.boot()
 	// The architect's pane is met at the boot's relaunch, so it is a live session before any
 	// restart: a restarted daemon re-observes a claim it finds live and does not launch it again.
-	r.worker(claim.RoleArchitect)
+	for _, issue := range r.issues {
+		r.on(issue.key)
+		r.worker(claim.RoleArchitect)
+	}
+	r.on(r.issues[0].key)
 	return r
+}
+
+// walkTitles is the title of each issue of a run, in order. Dispatch refuses a new issue whose
+// title is a near copy of an open one's (POSSIBLE_DUPLICATE), so no two share a word that counts.
+var walkTitles = []string{"One issue walks to done", "A second change rates its plan", "Third piece merges after its retro", "Fourth job refused unrated"}
+
+// on moves the walk's steps to issue key of the run.
+func (r *stepRecordsRig) on(key string) {
+	r.t.Helper()
+	for _, issue := range r.issues {
+		if issue.key == key {
+			r.key, r.number = issue.key, issue.number
+			return
+		}
+	}
+	r.t.Fatalf("%s is no issue of the run %v", key, r.issues)
 }
 
 // seed records the issue as the daemon holds it the moment its architect's spec is approved: a
@@ -349,11 +383,29 @@ func (r *stepRecordsRig) test() {
 	r.work(claim.RoleTester, "test", testCompletion, phase.Reviewing)
 }
 
-// retro is the implementer's retro, whose completion names no record and, as each completion of
-// the implementer's does, the head it leaves.
+// retro is the implementer's retro rating the plan 4 (rate).
 func (r *stepRecordsRig) retro() {
 	r.t.Helper()
-	r.work(claim.RoleImplementer, "", api.HandoffCompleteRequest{Summary: "retro written", Commit: stepRecordsHead}, phase.Merging)
+	r.rate(4, "The plan fit the work.")
+}
+
+// rate is the implementer's retro, whose completion names no record, the head it leaves, as each
+// completion of the implementer's does, and the rating of the plan with its reason, which a pane
+// at api.PlanRatingContract or later must give (PLAN_RATING_REQUIRED). A rating of 0 is a retro
+// with none, a pane's of the plugin before that contract.
+func (r *stepRecordsRig) rate(rating int, reason string) {
+	r.t.Helper()
+	r.work(claim.RoleImplementer, "", r.retroCompletion(rating, reason), phase.Merging)
+}
+
+// retroCompletion is the implementer's completion of its retro with rating and reason, and with
+// neither for a rating of 0.
+func (r *stepRecordsRig) retroCompletion(rating int, reason string) api.HandoffCompleteRequest {
+	req := api.HandoffCompleteRequest{Summary: "retro written", Commit: stepRecordsHead}
+	if rating != 0 {
+		req.PlanRating, req.PlanReason = &rating, reason
+	}
+	return req
 }
 
 // work is one role's turn of the walk: it takes the task, answering with stepRecordsModel, and
@@ -373,13 +425,20 @@ func (r *stepRecordsRig) finish(c *stepClaimant, word string, req api.HandoffCom
 	if word != "" {
 		req.HandoffID, req.HandoffVersion = r.writeHandoff(c.session, word)
 	}
-	req.GrantID = c.grant()
-	status, body := r.d.request(http.MethodPost, "/legion/v1/handoff/complete", req, false)
-	if status != http.StatusOK {
+	if status, body := r.complete(c, req); status != http.StatusOK {
 		t.Fatalf("the %s's completion = %d %s, want 200", c.role, status, body)
 	}
 	c.endTurn()
 	r.waitPhase(next)
+}
+
+// complete posts c's completion req with a grant minted for it now, and answers the daemon's
+// status and body.
+func (r *stepRecordsRig) complete(c *stepClaimant, req api.HandoffCompleteRequest) (int, string) {
+	r.t.Helper()
+	req.GrantID = c.grant()
+	status, body := r.d.request(http.MethodPost, "/legion/v1/handoff/complete", req, false)
+	return status, string(body)
 }
 
 // review is the reviewer taking its task and answering, and then a person with write access
@@ -424,7 +483,7 @@ func (r *stepRecordsRig) merge() {
 	t := r.t
 	t.Helper()
 	r.awaitLaunch(r.token(claim.RoleMerger))
-	r.github.merged()
+	r.github.merged(r.number)
 	payload, err := json.Marshal(map[string]string{
 		"action": "closed", "kind": "pr", "repo": liveRepo, "number": strconv.Itoa(r.number), "merged": "true",
 		"merge_commit_sha": "merge-" + stepRecordsHead, "head_sha": stepRecordsHead, "base_ref": "main", "head_ref": "legion/" + r.key,
@@ -549,25 +608,31 @@ func (r *stepRecordsRig) send(request *http.Request) (int, []byte) {
 // readSteps is GET /api/v1/issues/{key}/steps as a person of the project reads it, or the error
 // that the read met.
 func (r *stepRecordsRig) readSteps() (stepRecordsRead, error) {
-	request, err := http.NewRequest(http.MethodGet, r.dispatch.base+"/api/v1/issues/"+r.key+"/steps", nil)
-	if err != nil {
+	var read stepRecordsRead
+	if err := r.personRead("/api/v1/issues/"+r.key+"/steps", &read); err != nil {
 		return stepRecordsRead{}, err
+	}
+	return read, nil
+}
+
+// personRead is GET path on Dispatch as a person of the project reads it, decoded into into, or
+// the error that the read met.
+func (r *stepRecordsRig) personRead(path string, into any) error {
+	request, err := http.NewRequest(http.MethodGet, r.dispatch.base+path, nil)
+	if err != nil {
+		return err
 	}
 	request.Header.Set("X-Dispatch-User", "step-records")
 	response, err := (&http.Client{Timeout: 10 * time.Second}).Do(request)
 	if err != nil {
-		return stepRecordsRead{}, err
+		return err
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
 		answer, _ := io.ReadAll(response.Body)
-		return stepRecordsRead{}, fmt.Errorf("GET steps = %d %s", response.StatusCode, answer)
+		return fmt.Errorf("GET %s = %d %s", path, response.StatusCode, answer)
 	}
-	var read stepRecordsRead
-	if err := json.NewDecoder(response.Body).Decode(&read); err != nil {
-		return stepRecordsRead{}, err
-	}
-	return read, nil
+	return json.NewDecoder(response.Body).Decode(into)
 }
 
 // waitSteps waits for the issue's read to satisfy hold, and fails with hold's last answer.
@@ -705,6 +770,7 @@ func stepsHold(read stepRecordsRead, want []stepWant) error {
 type stepClaimant struct {
 	r         *stepRecordsRig
 	token     claim.Token
+	issue     string
 	role      claim.Role
 	session   string
 	secret    string
@@ -731,7 +797,7 @@ func (r *stepRecordsRig) worker(role claim.Role) *stepClaimant {
 	r.built.mu.Lock()
 	address := r.built.address
 	r.built.mu.Unlock()
-	c := &stepClaimant{r: r, token: token, role: role, session: "ses_" + string(role) + "_" + randomSuffix(t)[:6],
+	c := &stepClaimant{r: r, token: token, issue: r.key, role: role, session: "ses_" + string(role) + "_" + randomSuffix(t)[:6],
 		bootToken: launch.BootToken, sh: dialShim(t, address, launch.BootToken), prompts: make(chan shimwire.Prompt, 8)}
 	status, body := r.d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
 		BootToken: launch.BootToken, SessionID: c.session, OmpSessionFile: "/sessions/" + c.session + ".jsonl",
@@ -889,7 +955,7 @@ func (c *stepClaimant) grant() string {
 	t := c.r.t
 	t.Helper()
 	status, body := c.r.d.request(http.MethodPost, "/legion/v1/grants",
-		api.GrantRequest{SessionID: c.session, Secret: c.secret, Tree: c.r.key, Issue: c.r.key}, false)
+		api.GrantRequest{SessionID: c.session, Secret: c.secret, Tree: c.issue, Issue: c.issue}, false)
 	if status != http.StatusOK {
 		t.Fatalf("the grant of %s = %d %s, want 200", c.token, status, body)
 	}
@@ -901,21 +967,27 @@ func (c *stepClaimant) grant() string {
 }
 
 // stepRecordsGitHub is GitHub's REST API as the walk's daemon reads it: every repository with
-// default branch main, the one pull request of the issue's branch at stepRecordsHead, clean until
-// it merges, the person of the reviews with write access, and a GraphQL root that knows no pull
+// default branch main, the pull request of each issue's branch at stepRecordsHead, clean until it
+// merges, the person of the reviews with write access, and a GraphQL root that knows no pull
 // request. Every other route is a 404, so nothing reaches github.com.
 type stepRecordsGitHub struct {
-	url    string
-	mu     sync.Mutex
-	isDone bool
+	url string
+	mu  sync.Mutex
+	// numbers is each pull request opened, in order; branches and done are its branch and
+	// whether it merged, by number.
+	numbers  []int
+	branches map[int]string
+	done     map[int]bool
 }
 
-func newStepRecordsGitHub(t *testing.T, branch string, number int) *stepRecordsGitHub {
+func newStepRecordsGitHub(t *testing.T) *stepRecordsGitHub {
 	t.Helper()
-	g := &stepRecordsGitHub{}
+	g := &stepRecordsGitHub{branches: map[int]string{}, done: map[int]bool{}}
 	g.url = githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
 		rest, isRepository := strings.CutPrefix(r.URL.Path, "/repos/"+liveRepo)
-		pull := fmt.Sprintf("/pulls/%d", number)
+		pull, reviews := strings.CutSuffix(strings.TrimPrefix(rest, "/pulls/"), "/reviews")
+		number, err := strconv.Atoi(pull)
+		known := err == nil && strings.HasPrefix(rest, "/pulls/") && g.opened(number)
 		switch {
 		case r.Method == http.MethodPost && r.URL.Path == "/graphql":
 			_, _ = io.WriteString(w, `{"data":{"repository":{"pullRequest":null}}}`)
@@ -928,10 +1000,10 @@ func newStepRecordsGitHub(t *testing.T, branch string, number int) *stepRecordsG
 			w.WriteHeader(http.StatusCreated)
 			_, _ = io.WriteString(w, `{}`)
 		case r.Method == http.MethodGet && isRepository && rest == "/pulls":
-			_, _ = fmt.Fprintf(w, "[%s]", g.pullRequest(branch, number))
-		case r.Method == http.MethodGet && isRepository && rest == pull:
-			_, _ = io.WriteString(w, g.pullRequest(branch, number))
-		case r.Method == http.MethodGet && isRepository && rest == pull+"/reviews":
+			_, _ = fmt.Fprintf(w, "[%s]", strings.Join(g.pullRequests(), ","))
+		case r.Method == http.MethodGet && isRepository && known && !reviews:
+			_, _ = io.WriteString(w, g.pullRequest(number))
+		case r.Method == http.MethodGet && isRepository && known && reviews:
 			_, _ = io.WriteString(w, `[]`)
 		case r.Method == http.MethodGet && isRepository && rest == "/collaborators/"+stepRecordsPerson+"/permission":
 			_, _ = io.WriteString(w, `{"permission":"write","user":{"login":"`+stepRecordsPerson+`"}}`)
@@ -943,21 +1015,49 @@ func newStepRecordsGitHub(t *testing.T, branch string, number int) *stepRecordsG
 	return g
 }
 
-// merged is GitHub's merge of the pull request: every read from now on answers it merged.
-func (g *stepRecordsGitHub) merged() {
+// open is the pull request number of branch, open at stepRecordsHead.
+func (g *stepRecordsGitHub) open(branch string, number int) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	g.isDone = true
+	g.numbers = append(g.numbers, number)
+	g.branches[number] = branch
 }
 
-// pullRequest is the pull request as GitHub answers it now.
-func (g *stepRecordsGitHub) pullRequest(branch string, number int) string {
+// opened is whether pull request number was opened.
+func (g *stepRecordsGitHub) opened(number int) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	_, ok := g.branches[number]
+	return ok
+}
+
+// merged is GitHub's merge of pull request number: every read from now on answers it merged.
+func (g *stepRecordsGitHub) merged(number int) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.done[number] = true
+}
+
+// pullRequests is each pull request as GitHub answers it now, in the order they were opened.
+func (g *stepRecordsGitHub) pullRequests() []string {
+	g.mu.Lock()
+	numbers := append([]int(nil), g.numbers...)
+	g.mu.Unlock()
+	pulls := make([]string, len(numbers))
+	for place, number := range numbers {
+		pulls[place] = g.pullRequest(number)
+	}
+	return pulls
+}
+
+// pullRequest is pull request number as GitHub answers it now.
+func (g *stepRecordsGitHub) pullRequest(number int) string {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	state, merged, mergeable := "open", false, "clean"
-	if g.isDone {
+	if g.done[number] {
 		state, merged, mergeable = "closed", true, "unknown"
 	}
 	return fmt.Sprintf(`{"number":%d,"state":%q,"merged":%t,"merge_commit_sha":%q,"mergeable":true,"mergeable_state":%q,"head":{"ref":%q,"sha":%q},"base":{"ref":"main"},"updated_at":"2026-11-17T00:00:00Z"}`,
-		number, state, merged, "merge-"+stepRecordsHead, mergeable, branch, stepRecordsHead)
+		number, state, merged, "merge-"+stepRecordsHead, mergeable, g.branches[number], stepRecordsHead)
 }
