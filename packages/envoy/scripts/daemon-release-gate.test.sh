@@ -21,23 +21,31 @@ mkdir -p "${temporary_dir}/bin"
 
 readonly commit="52b3cf5c1b6c7f42f6b8d2a1e3c4d5e6f7a8b9c0"
 readonly legion="https://github.com/cybermonklabs/legion"
-readonly agent_infra="https://github.com/theorem-labs/agent-infra"
+readonly other_source="https://github.com/example-org/deployment"
 readonly old_name="https://github.com/sjawhar/legion"
 readonly ahead_rev="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 readonly identical_rev="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 readonly behind_rev="cccccccccccccccccccccccccccccccccccccccc"
 readonly other_rev="dddddddddddddddddddddddddddddddddddddddd"
 
-# The fake gh. `api repos/theorem-labs/agent-infra/contents/<path> --jq .content` answers the base64
+# The deployment's two settings, in neutral forms. Every case runs the gate with both, unless it
+# leaves one out (run_gate --unset) or sets it empty.
+readonly deployment="example-org/deployment"
+readonly project_prefix="deployment"
+export DAEMON_RELEASE_GATE_REPOSITORY="$deployment"
+export DAEMON_RELEASE_GATE_PULUMI_PROJECT_PREFIX="$project_prefix"
+
+# The fake gh. `api repos/example-org/deployment/contents/<path> --jq .content` answers the base64
 # of FAKE_ROOT/files/<path>; `api repos/cybermonklabs/legion/compare/<base>...<head> --jq ...`
-# answers FAKE_ROOT/compare/<head>, and fails as an unreachable API when FAKE_API_DOWN=1.
+# answers FAKE_ROOT/compare/<head>, and fails as an unreachable API when FAKE_API_DOWN=1. Any other
+# call, another repository's contents among them, is refused.
 cat >"${temporary_dir}/bin/gh" <<'EOF'
 #!/usr/bin/env bash
 printf 'gh %s\n' "$*" >>"${FAKE_CALLS:?}"
 [ "$1" = api ] || { echo "fake gh: unexpected command: $*" >&2; exit 2; }
 case "$2" in
-  repos/theorem-labs/agent-infra/contents/*)
-    file="${FAKE_ROOT:?}/files/${2#repos/theorem-labs/agent-infra/contents/}"
+  repos/example-org/deployment/contents/*)
+    file="${FAKE_ROOT:?}/files/${2#repos/example-org/deployment/contents/}"
     [ -f "$file" ] || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }
     base64 -w 76 <"$file"
     ;;
@@ -134,29 +142,38 @@ labels() {
 }
 # legion_stack <yaml body>: legion/Pulumi.prod.yaml, its projects list being the body.
 legion_stack() {
-  printf 'config:\n  agent-infra-legion:roleModels: {}\n  agent-infra-legion:projects:\n%s\n' "$1" >"${case_root}/files/legion/Pulumi.prod.yaml"
+  printf 'config:\n  %s-legion:roleModels: {}\n  %s-legion:projects:\n%s\n' "$project_prefix" "$project_prefix" "$1" \
+    >"${case_root}/files/legion/Pulumi.prod.yaml"
 }
 # listener_stacks <envoy> <envoy-cluster> <dispatch envoyImage> [<dispatch listenerImage>]
 listener_stacks() {
-  printf 'config:\n  agent-infra-envoy:listenerImage: %s\n' "$1" >"${case_root}/files/envoy/Pulumi.prod.yaml"
-  printf 'config:\n  agent-infra-envoy-cluster:envoyImage: %s\n' "$2" >"${case_root}/files/envoy-cluster/Pulumi.prod.yaml"
+  printf 'config:\n  %s-envoy:listenerImage: %s\n' "$project_prefix" "$1" >"${case_root}/files/envoy/Pulumi.prod.yaml"
+  printf 'config:\n  %s-envoy-cluster:envoyImage: %s\n' "$project_prefix" "$2" >"${case_root}/files/envoy-cluster/Pulumi.prod.yaml"
   {
-    printf 'config:\n  agent-infra-dispatch:envoyImage: %s\n' "$3"
-    [ -z "${4:-}" ] || printf '  agent-infra-dispatch:listenerImage: %s\n' "$4"
+    printf 'config:\n  %s-dispatch:envoyImage: %s\n' "$project_prefix" "$3"
+    [ -z "${4:-}" ] || printf '  %s-dispatch:listenerImage: %s\n' "$project_prefix" "$4"
   } >"${case_root}/files/dispatch/Pulumi.prod.yaml"
 }
 
-# run_gate [env assignments...] -- [gate arguments...]: runs the gate in the current case; sets
-# $status.
+# run_gate [--unset <variable>]... [env assignments...] -- [gate arguments...]: runs the gate in the
+# current case, each --unset variable taken out of its environment; sets $status.
 run_gate() {
-  local assignments=()
-  while [ "$#" -gt 0 ] && [ "$1" != -- ]; do assignments+=("$1"); shift; done
+  local unsets=() assignments=()
+  while [ "$#" -gt 0 ] && [ "$1" != -- ]; do
+    if [ "$1" = --unset ]; then
+      unsets+=(-u "$2")
+      shift 2
+    else
+      assignments+=("$1")
+      shift
+    fi
+  done
   [ "$#" -eq 0 ] || shift
   : >"$out"
   : >"$err"
   : >"$calls"
   status=0
-  env PATH="${temporary_dir}/bin:${PATH}" FAKE_CALLS="$calls" FAKE_ROOT="$case_root" "${assignments[@]}" \
+  env "${unsets[@]}" PATH="${temporary_dir}/bin:${PATH}" FAKE_CALLS="$calls" FAKE_ROOT="$case_root" "${assignments[@]}" \
     bash "$script" "$@" >"$out" 2>"$err" || status=$?
 }
 
@@ -180,13 +197,13 @@ is() { [ "$1" = "$2" ] && echo true || echo false; }
 readonly worker_a="ghcr.io/cybermonklabs/legion-worker@sha256:aaaa"
 readonly worker_b="ghcr.io/cybermonklabs/legion-worker@sha256:bbbb"
 readonly worker_smoke="ghcr.io/cybermonklabs/legion-worker@sha256:5555"
-readonly infra_image="us-west1-docker.pkg.dev/theorem-agent-infra/legion/worker-infra@sha256:1111"
+readonly infra_image="us-west1-docker.pkg.dev/example-project/legion/worker-infra@sha256:1111"
 readonly fleet="    - key: SMOKE
       replicas: 0
       image: ${worker_smoke}
     - key: LINUX
       replicas: 1
-      image: us-west1-docker.pkg.dev/theorem-agent-infra/legion/worker-lean@sha256:2222
+      image: us-west1-docker.pkg.dev/example-project/legion/worker-lean@sha256:2222
       daemonImage: ${worker_a}
     - key: INFRA
       replicas: 1
@@ -267,15 +284,15 @@ check "refuses UNKNOWN naming the pin and GitHub's answer" "$(has_line "UNKNOWN:
 check "the verdict is UNKNOWN" "$(last_line_is "UNKNOWN")"
 
 echo "case: a daemon image built from another repository"
-new_case agent-infra
+new_case other-repository
 legion_stack "$fleet"
-single "$worker_a" "$agent_infra" "$other_rev"
+single "$worker_a" "$other_source" "$other_rev"
 single "$worker_b" "$legion" "$identical_rev"
 compare "$identical_rev" identical 0
 compare "$other_rev" ahead 0
 run_gate -- "$commit"
 check "exits 1" "$(is "$status" 1)"
-check "refuses naming the source" "$(has_line "GATE SHUT: LINUX runs an image built from ${agent_infra}")"
+check "refuses naming the source" "$(has_line "GATE SHUT: LINUX runs an image built from ${other_source}")"
 check "makes no compare call for that revision" "$(lacks "...${other_rev}" "$calls")"
 
 echo "case: an image the registry does not answer for"
@@ -295,10 +312,11 @@ run_gate -- "$commit"
 check "exits 3" "$(is "$status" 3)"
 check "refuses UNKNOWN naming the entry" "$(has_line "UNKNOWN: LINUX runs a daemon and names neither daemonImage nor image")"
 
-# agent-infra legion/host.go: an entry at `runtime: tmux` runs its daemon on the project's host VM
-# from host.legionWorker's legion (checkHost refuses daemonImage, replicas and daemon on it), so its
-# `image` says nothing about the daemon. The gate reads no image for it: it is UNKNOWN by name. So is
-# a runtime the gate does not know; an entry that names `runtime: kubernetes` is read as before.
+# The deployment's legion/host.go: an entry at `runtime: tmux` runs its daemon on the project's
+# host VM from host.legionWorker's legion (checkHost refuses daemonImage, replicas and daemon on
+# it), so its `image` says nothing about the daemon. The gate reads no image for it: it is UNKNOWN
+# by name. So is a runtime the gate does not know; an entry that names `runtime: kubernetes` is
+# read as before.
 #
 # Negative control, run when this was written: drop the runtime branch from daemon_pins; the rows
 # below that expect the runtime's UNKNOWN line print `PASS` for the entry's image instead.
@@ -357,13 +375,45 @@ echo "case: the stack file cannot be read"
 new_case no-stack
 run_gate -- "$commit"
 check "exits 3" "$(is "$status" 3)"
-check "refuses UNKNOWN naming the file" "$(has_line "UNKNOWN: cannot read theorem-labs/agent-infra legion/Pulumi.prod.yaml: gh: Not Found (HTTP 404)")"
+check "refuses UNKNOWN naming the file" "$(has_line "UNKNOWN: cannot read ${deployment} legion/Pulumi.prod.yaml: gh: Not Found (HTTP 404)")"
 
 echo "case: a commit that is no commit id"
 new_case usage
 run_gate -- "main"
 check "exits 2" "$(is "$status" 2)"
 check "says what it takes" "$(grep -qF "usage: daemon-release-gate.sh [--listeners] <commit>" "$err" && echo true || echo false)"
+
+# The deployment's two settings have no default in this repository, so a run without one, or with
+# one empty, is a usage error naming it, before any stack file is read or any image inspected. Each
+# case holds a fleet the gate would open on, so a gate that went on without the setting would say
+# something other than the refusal.
+#
+# Negative control, run when this was written: drop the two require_setting calls from the gate;
+# an unset setting then ends the run on bash's own `unbound variable` (exit 1), failing each unset
+# case's exit and refusal rows, and an empty repository makes a `repos//contents/...` call the fake
+# gh refuses and an empty prefix reads no `-legion:projects` list, both `UNKNOWN` (exit 3), failing
+# every row of each empty case. No other row of this file fails.
+for setting in DAEMON_RELEASE_GATE_REPOSITORY DAEMON_RELEASE_GATE_PULUMI_PROJECT_PREFIX; do
+  for shape in unset empty; do
+    echo "case: ${setting} ${shape}"
+    new_case "${shape}-${setting}"
+    legion_stack "$fleet"
+    single "$worker_a" "$legion" "$ahead_rev"
+    single "$worker_b" "$legion" "$identical_rev"
+    compare "$ahead_rev" ahead 0
+    compare "$identical_rev" identical 0
+    if [ "$shape" = unset ]; then
+      run_gate --unset "$setting" -- "$commit"
+    else
+      run_gate "${setting}=" -- "$commit"
+    fi
+    check "exits 2" "$(is "$status" 2)"
+    check "refuses naming ${setting}" \
+      "$(grep -qF "daemon-release-gate.sh: ${setting} is unset or empty" "$err" && echo true || echo false)"
+    check "reads no stack file and inspects no image" "$([ -s "$calls" ] && echo false || echo true)"
+    check "prints no verdict" "$([ -s "$out" ] && echo false || echo true)"
+  done
+done
 
 readonly envoy_pin="ghcr.io/cybermonklabs/legion/envoy@sha256:e001"
 readonly cluster_pin="ghcr.io/cybermonklabs/legion/envoy@sha256:e002"
@@ -388,7 +438,7 @@ check "dispatch's server image is never read" "$(lacks "$server_pin" "$calls")"
 check "each real platform is read, and no attestation entry" \
   "$(grep -qF '(index .Image "linux/arm64")' "$calls" && grep -qF '(index .Image "linux/amd64")' "$calls" && lacks '(index .Image "unknown/unknown")' "$calls")"
 
-# The deployment requires dispatch's listenerImage (agent-infra dispatch/main.go loadSettings; its
+# The deployment requires dispatch's listenerImage (its dispatch/main.go loadSettings; its
 # pinListenerImage reads that key and no other), so a stack that sets none runs no listener this
 # gate can read. Reading the server's envoyImage in its place would open the gate on an image the
 # listener does not run, and for a configuration the deployment itself refuses.
@@ -402,7 +452,7 @@ compare "$ahead_rev" ahead 0
 run_gate -- --listeners "$commit"
 check "exits 3" "$(is "$status" 3)"
 check "refuses UNKNOWN naming the key it needs" \
-  "$(has_line "UNKNOWN: dispatch: dispatch/Pulumi.prod.yaml sets no agent-infra-dispatch:listenerImage")"
+  "$(has_line "UNKNOWN: dispatch: dispatch/Pulumi.prod.yaml sets no ${project_prefix}-dispatch:listenerImage")"
 check "never reads dispatch's server image" "$(lacks "$server_pin" "$calls")"
 check "the verdict is UNKNOWN, never GATE OPEN" "$(last_line_is "UNKNOWN")"
 
@@ -504,7 +554,7 @@ compare "$other_rev" ahead 0
 run_gate -- --listeners "$commit"
 check "exits 3" "$(is "$status" 3)"
 check "refuses UNKNOWN naming the record it could not read" \
-  "$(has_line "UNKNOWN: envoy: built from ${old_name}, and the repository renames of theorem-labs/agent-infra legion/Pulumi.prod.yaml could not be read: gh: Not Found (HTTP 404)")"
+  "$(has_line "UNKNOWN: envoy: built from ${old_name}, and the repository renames of ${deployment} legion/Pulumi.prod.yaml could not be read: gh: Not Found (HTTP 404)")"
 check "makes no compare call for its revision" "$(lacks "...${other_rev}" "$calls")"
 
 echo "case: --listeners, a recorded rename holds whatever the case of the source's name"
@@ -524,14 +574,14 @@ echo "case: --listeners, a recorded rename makes no other repository one with th
 new_case listeners-renamed-other-source
 legion_stack "$renamed_fleet"
 listener_stacks "$envoy_pin" "$cluster_pin" "$server_pin" "$dispatch_listener_pin"
-index "$envoy_pin" "$agent_infra" "$other_rev"
+index "$envoy_pin" "$other_source" "$other_rev"
 index "$cluster_pin" "$legion" "$ahead_rev"
 index "$dispatch_listener_pin" "$legion" "$ahead_rev"
 compare "$ahead_rev" ahead 0
 compare "$other_rev" ahead 0
 run_gate -- --listeners "$commit"
 check "exits 1" "$(is "$status" 1)"
-check "refuses naming the source" "$(has_line "GATE SHUT: envoy runs an image built from ${agent_infra}")"
+check "refuses naming the source" "$(has_line "GATE SHUT: envoy runs an image built from ${other_source}")"
 check "makes no compare call for its revision" "$(lacks "...${other_rev}" "$calls")"
 
 echo "case: a daemon built under the old name, the rename recorded on another project's entry"

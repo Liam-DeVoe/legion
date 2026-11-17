@@ -50,6 +50,14 @@
 # toolchain this environment names. DEV_BROKER_POSTGRES_URL is passed to dev-airlock.sh as it
 # is, so a pod with no container runtime names its test server there.
 #
+# k7 also needs two names of the deployment whose consumers it drives, which this repository does
+# not hold, each from an environment variable with no default:
+#   AIRLOCK_CHECK_GCLOUD_SECRET     the name of the agent secret the deployment's gcloud consumer
+#                                   (scripts/gcloud-broker) reads its login from, such as GCLOUD_DEMO
+#   AIRLOCK_CHECK_WORKSPACE_DOMAIN  the deployment's Google Workspace domain, whose users the admin
+#                                   directory call lists, such as example.com
+# A k7 run with either unset or empty is a usage error that names it and starts nothing.
+#
 # k9 is a long run: ten minutes of connections and two stacks, about twenty-five minutes in all.
 set -euo pipefail
 
@@ -67,6 +75,11 @@ each property the check's outcome sentence names, what it expected beside what i
   <id>           k1, k2, k3, k4, k5, k6, k7, k8a, k9 or k15
   --keep-stack   leave the stack and this run's work directory up, to look at a failure with
   --help         print this
+
+k7 also needs AIRLOCK_CHECK_GCLOUD_SECRET, the name of the agent secret the deployment's gcloud
+consumer reads its login from, and AIRLOCK_CHECK_WORKSPACE_DOMAIN, the deployment's Google
+Workspace domain, whose users the admin directory call lists. Neither has a default, and a k7 run
+without either is a usage error.
 
 It exits 0 only when every property passed, 1 when one did not and 2 on a usage error. k9 takes
 about twenty-five minutes; every other check takes a few.
@@ -113,6 +126,23 @@ k1 | k2 | k3 | k4 | k5 | k6 | k7 | k8a | k9 | k15) ;;
 	exit 2
 	;;
 esac
+
+# k7 drives the deployment's own consumers, and two names it gives them are the deployment's, which
+# this repository does not hold: the agent secret the gcloud consumer reads its login from, and the
+# Workspace domain the admin directory call names. Each comes from the caller with no default, and
+# a k7 run without one is a usage error that starts nothing.
+if [ "$CHECK_ID" = k7 ]; then
+	if [ -z "${AIRLOCK_CHECK_GCLOUD_SECRET:-}" ]; then
+		echo "airlock-check: k7 needs AIRLOCK_CHECK_GCLOUD_SECRET, which is unset or empty: the name of the agent secret the deployment's gcloud consumer reads its login from" >&2
+		usage >&2
+		exit 2
+	fi
+	if [ -z "${AIRLOCK_CHECK_WORKSPACE_DOMAIN:-}" ]; then
+		echo "airlock-check: k7 needs AIRLOCK_CHECK_WORKSPACE_DOMAIN, which is unset or empty: the deployment's Google Workspace domain, whose users the admin directory call lists" >&2
+		usage >&2
+		exit 2
+	fi
+fi
 
 WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/airlock-check-$CHECK_ID.XXXXXX")"
 STACK_LOG="$WORK_DIR/stack.log"
@@ -800,8 +830,7 @@ check_k4() {
 	(cd "$WORK_DIR/svc" && exec python3 -m http.server "$svc_port" --bind 127.0.0.1 >"$WORK_DIR/svc.log" 2>&1) &
 	HELPER_PIDS+=($!)
 
-	local s_before t_before
-	s_before="$(records_count s)"
+	local t_before
 	t_before="$(records_count t)"
 
 	cat >"$WORK_DIR/k4-steps.sh" <<EOF
@@ -844,8 +873,7 @@ EOF
 	s_own="$(openssl x509 -in "$AIRLOCK_DIR/stands/s.crt" -noout -fingerprint -sha256 | sed 's/.*=//')"
 	t_own="$(openssl x509 -in "$AIRLOCK_DIR/stands/t.crt" -noout -fingerprint -sha256 | sed 's/.*=//')"
 	s_issuer="$(openssl x509 -in "$WORK_DIR/s-leaf.pem" -noout -issuer)"
-	local s_recs t_recs
-	s_recs="$(records s | jq --argjson n "$s_before" '.[$n:]')"
+	local t_recs
 	t_recs="$(records t | jq --argjson n "$t_before" '.[$n:]')"
 
 	observe "the command's NO_PROXY is ${K4[no_proxy]}"
@@ -1060,7 +1088,6 @@ approve_record() { # <record id>
 	session="$(sed -n 's/^Set-Cookie: \(__Host-broker-session=[^;]*\).*/\1/p' "$d/callback" | tr -d '\r')"
 	[ -n "$session" ] || return 1
 	curl -sS -H "Cookie: $session" -o "$d/page.html" "$AGENT_SECRETS_URL/approve/$rec"
-	local field
 	field() { sed -n "s/.*name=\"$1\" value=\"\([^\"]*\)\".*/\1/p" "$d/page.html" | head -n 1; }
 	curl -sS -o "$d/decided.html" -w '%{http_code}' -H "Cookie: $session" -H "Origin: $AGENT_SECRETS_URL" \
 		--data-urlencode "decision=approve" --data-urlencode "record=$(field record)" \
@@ -1076,11 +1103,11 @@ approve_record() { # <record id>
 approve_watch() { # <the file the CLI's stderr goes to>
 	local log="$1" seen=" " rec
 	while :; do
-		for rec in $(grep -o '/approve/[0-9a-f]\{64\}' "$log" 2>/dev/null | sed 's|/approve/||' | sort -u); do
+		while read -r rec; do
 			case "$seen" in *" $rec "*) continue ;; esac
 			seen="$seen$rec "
-			approve_record "$rec" >/dev/null 2>&1 || true
-		done
+			approve_record "$rec" </dev/null >/dev/null 2>&1 || true
+		done < <(grep -o '/approve/[0-9a-f]\{64\}' "$log" 2>/dev/null | sed 's|/approve/||' | sort -u)
 		sleep 1
 	done
 }
@@ -1156,12 +1183,17 @@ EOF
 	local run
 	: >"$d/runs.log"
 	for run in 1 2 3 4 5; do
-		echo "=== run $run ===" >>"$d/runs.log"
-		PATH="$d/bin:$PATH" agent-secrets AIRLOCK_AZURE_LOGIN --ttl 1h --wait 5m \
-			--reason "airlock check k6 run $run: az-broker logs az in and calls the Resource Manager" -- sh -c '
-			export AZURE_ADMIN="$AIRLOCK_AZURE_LOGIN" AZ_BROKER_INNER=1
-			exec bash '"$d"'/az-broker -- bash '"$d"'/az-steps.sh' >>"$d/runs.log" 2>>"$d/cli.err"
-		echo "exit $?" >>"$d/runs.log"
+		{
+			echo "=== run $run ==="
+			# The single quotes are the point: sh -c expands $AIRLOCK_AZURE_LOGIN itself, and $d is
+			# spliced in between them.
+			# shellcheck disable=SC2016
+			PATH="$d/bin:$PATH" agent-secrets AIRLOCK_AZURE_LOGIN --ttl 1h --wait 5m \
+				--reason "airlock check k6 run $run: az-broker logs az in and calls the Resource Manager" -- sh -c '
+				export AZURE_ADMIN="$AIRLOCK_AZURE_LOGIN" AZ_BROKER_INNER=1
+				exec bash '"$d"'/az-broker -- bash '"$d"'/az-steps.sh' 2>>"$d/cli.err"
+			echo "exit $?"
+		} >>"$d/runs.log"
 	done
 	kill "$watcher" 2>/dev/null || true
 	K6_AZ_RUNS="$(grep -c '^exit ' "$d/runs.log")"
@@ -1211,7 +1243,6 @@ EOF
 	while IFS='=' read -r key value; do K6AWS["$key"]="$value"; done <"$d/aws-out"
 	K6_AWS_RECS="$(records aws | jq --argjson n "$aws_before" '.[$n:]')"
 	K6_AWS_CALLS="$(printf '%s' "$K6_AWS_RECS" | jq 'length')"
-	K6_AWS_TOKENS="$(printf '%s' "$K6_AWS_RECS" | jq -r '[.[] | .header["X-Amz-Security-Token"] // [] | .[]] | unique | length')"
 	K6_AWS_KEYIDS="$(printf '%s' "$K6_AWS_RECS" | jq -r '[.[] | .header.Authorization // [] | .[] | capture("Credential=(?<k>[^/]*)/") | .k] | unique | join(",")')"
 	K6_AWS_PLACEHOLDERS="$(printf '%s' "$K6_AWS_RECS" | jq '[.[] | select(((.header | tostring) + .query) | contains("agent-secrets-placeholder"))] | length')"
 	K6_AWS_REFUSED="$(printf '%s' "$K6_AWS_RECS" | jq -r '[.[] | .path] | join(" ")')"
@@ -1321,14 +1352,15 @@ check_k6() {
 # One consumer speaks gRPC, which offers h2 alone in its TLS handshake: Pulumi's gcpkms secrets
 # manager, whose Cloud KMS call the proxy carries in HTTP/2.
 #
-# The names are the consumers' own - GITHUB_ADMIN_PAT, GCLOUD_SAMI, GWS_THEOREM_READ_OAUTH and
-# the rest - and the hosts are the real ones, so this check needs a rules file the stack's does
-# not hold. That is one broker process of this check's own, on the stack's own database, store,
-# certificate authority and stand-ins, with its rules file, its own two ports and its own public
-# URL changed - the same device k4's control uses for one setting, with the public URL changed
-# too because this broker must serve the release as well as the proxy, and a session's proof is
-# verified against the public URL it was signed for. Its whole environment is the first stack
-# broker's own, read out of /proc/<pid>/environ, so nothing of the stack's settings is left out.
+# The names are the consumers' own - GITHUB_ADMIN_PAT, GWS_THEOREM_READ_OAUTH, the gcloud login
+# AIRLOCK_CHECK_GCLOUD_SECRET names and the rest - and the hosts are the real ones, so this check
+# needs a rules file the stack's does not hold. That is one broker process of this check's own, on
+# the stack's own database, store, certificate authority and stand-ins, with its rules file, its
+# own two ports and its own public URL changed - the same device k4's control uses for one setting,
+# with the public URL changed too because this broker must serve the release as well as the proxy,
+# and a session's proof is verified against the public URL it was signed for. Its whole environment
+# is the first stack broker's own, read out of /proc/<pid>/environ, so nothing of the stack's
+# settings is left out.
 #
 # The pod sets NO_PROXY=* and GIT_CONFIG_COUNT=5 with a GitHub credential helper. NO_PROXY=* is
 # left exactly as it is: the CLI must drop it, and that it does is part of what this check
@@ -1382,11 +1414,11 @@ k7_broker() {
 k7_names() {
 	local d="$WORK_DIR/k7"
 	mkdir -p "$d"
-	jq '.secrets += [
+	jq --arg gcloud "$AIRLOCK_CHECK_GCLOUD_SECRET" '.secrets += [
 	     {"name": "SLACK_BOT_TOKEN", "hosts": ["slack.com"]},
 	     {"name": "GITHUB_ADMIN_PAT", "hosts": ["api.github.com", "github.com"]},
 	     {"name": "TAILSCALE_API_KEY", "hosts": ["api.tailscale.com"]},
-	     {"name": "GCLOUD_SAMI", "hosts": ["cloudresourcemanager.googleapis.com", "oauth2.googleapis.com", "www.googleapis.com", "cloudkms.googleapis.com"]},
+	     {"name": $gcloud, "hosts": ["cloudresourcemanager.googleapis.com", "oauth2.googleapis.com", "www.googleapis.com", "cloudkms.googleapis.com"]},
 	     {"name": "GWS_THEOREM_READ_OAUTH", "hosts": ["www.googleapis.com", "oauth2.googleapis.com"]},
 	     {"name": "GWS_THEOREM_ADMIN_OAUTH", "hosts": ["admin.googleapis.com"]}
 	   ]' "$AIRLOCK_RULES_FILE" >"$d/rules.json"
@@ -1397,11 +1429,13 @@ k7_names() {
 	add_fake_secret "${STACK_SECRETS_PREFIX}github-admin-pat" '{"owner":"legion-daemon","tier":"agent"}' "$K7_GITHUB"
 	add_fake_secret "${STACK_SECRETS_PREFIX}tailscale-api-key" '{"owner":"legion-daemon","tier":"agent"}' "$K7_TAILSCALE"
 	# The three Google logins are minted kinds: the broker mints each at the stack's stand-in
-	# Google token endpoint, so what the consumer holds a placeholder for is a minted value.
-	local google login
+	# Google token endpoint, so what the consumer holds a placeholder for is a minted value. A
+	# secret's store name is its name lowercased, each underscore a hyphen (policy.NameToSlug).
+	local google login gcloud_slug
 	google='{"owner":"legion-daemon","tier":"agent","kind":"google-login"}'
 	login='{"type":"authorized_user","client_id":"the-stand-in-client","client_secret":"the-stand-in-client-secret","refresh_token":"the-stand-in-refresh-token"}'
-	add_fake_secret "${STACK_SECRETS_PREFIX}gcloud-sami" "$google" "$login"
+	gcloud_slug="$(printf '%s' "$AIRLOCK_CHECK_GCLOUD_SECRET" | tr 'A-Z_' 'a-z-')"
+	add_fake_secret "${STACK_SECRETS_PREFIX}${gcloud_slug}" "$google" "$login"
 	add_fake_secret "${STACK_SECRETS_PREFIX}gws-theorem-read-oauth" "$google" "$login"
 	add_fake_secret "${STACK_SECRETS_PREFIX}gws-theorem-admin-oauth" "$google" "$login"
 }
@@ -1462,10 +1496,10 @@ say "pulumi=\$(cd $d/pulumi && export PULUMI_CONFIG_PASSPHRASE= PULUMI_BACKEND_U
 # placeholder as its access token. The airlock carries it in HTTP/2 and Cloud KMS refuses the fake
 # value with gRPC's own UNAUTHENTICATED; a proxy that does not speak HTTP/2 fails the handshake
 # ("tls: no application protocol") and Pulumi says only "context deadline exceeded".
-say "kms=\$(cd $d/pulumi && export PULUMI_BACKEND_URL=file://$d/pulumi/state GOOGLE_OAUTH_ACCESS_TOKEN="\$GCLOUD_SAMI" && timeout 120 pulumi stack init k7kms --non-interactive --secrets-provider gcpkms://projects/airlock-k7/locations/global/keyRings/airlock-k7/cryptoKeys/airlock-k7 2>&1 | grep -iE 'error|unauthenticated|deadline|application protocol' | head -n 1 | tr -d '\r')"
+say "kms=\$(cd $d/pulumi && export PULUMI_BACKEND_URL=file://$d/pulumi/state GOOGLE_OAUTH_ACCESS_TOKEN="\$$AIRLOCK_CHECK_GCLOUD_SECRET" && timeout 120 pulumi stack init k7kms --non-interactive --secrets-provider gcpkms://projects/airlock-k7/locations/global/keyRings/airlock-k7/cryptoKeys/airlock-k7 2>&1 | grep -iE 'error|unauthenticated|deadline|application protocol' | head -n 1 | tr -d '\r')"
 
-# gcloud-broker with gcloud projects list.
-say "gcloud=\$(GCLOUD_BROKER_INNER=1 GCLOUD_SAMI="\$GCLOUD_SAMI" bash $K7_DOTFILES/scripts/gcloud-broker -- gcloud projects list --format=json 2>&1 | grep -iE 'ERROR|reason:' | head -n 1 | tr -d '\r')"
+# gcloud-broker with gcloud projects list, its login under the name the consumer reads it from.
+say "gcloud=\$(GCLOUD_BROKER_INNER=1 $AIRLOCK_CHECK_GCLOUD_SECRET="\$$AIRLOCK_CHECK_GCLOUD_SECRET" bash $K7_DOTFILES/scripts/gcloud-broker -- gcloud projects list --format=json 2>&1 | grep -iE 'ERROR|reason:' | head -n 1 | tr -d '\r')"
 
 # One gws call under the theorem read tier: that tier's own command out of gws/accounts.json,
 # running the Drive call gws makes, since gws itself is no file of that repository.
@@ -1473,7 +1507,7 @@ say "gws_tier=\$(jq -r '.theorem.tiers.read.command | @tsv' $K7_DOTFILES/gws/acc
 say "gws=\$(secret-run --reason 'gws theorem read' GWS_THEOREM_READ_OAUTH -- sh -c 'curl -sS -o /dev/null -w %{http_code} -H "Authorization: Bearer \$GWS_THEOREM_READ_OAUTH" "https://www.googleapis.com/drive/v3/about?fields=user"' 2>&1 | tail -n 1 | tr -d '\r')"
 
 # The google-workspace skill's Bearer call to admin.googleapis.com.
-say "admin=\$(curl -sS -o /dev/null -w %{http_code} -H "Authorization: Bearer \$GWS_THEOREM_ADMIN_OAUTH" "https://admin.googleapis.com/admin/directory/v1/users?domain=theorem.dev" 2>&1 | tail -n 1)"
+say "admin=\$(curl -sS -o /dev/null -w %{http_code} -H "Authorization: Bearer \$GWS_THEOREM_ADMIN_OAUTH" "https://admin.googleapis.com/admin/directory/v1/users?domain=$AIRLOCK_CHECK_WORKSPACE_DOMAIN" 2>&1 | tail -n 1)"
 
 # git push --dry-run through scripts/airlock/credential-helper, which answers the placeholder,
 # with the proxy in git's own configuration. The pod's own GIT_CONFIG_* settings are cleared for
@@ -1531,7 +1565,7 @@ check_k7() {
 	s_before="$(records_count s)"
 	# AGENT_SECRETS_URL is this check's own broker, the one whose rules name the real hosts.
 	AGENT_SECRETS_URL="$K7_API_URL" agent-secrets \
-		SLACK_BOT_TOKEN GITHUB_ADMIN_PAT TAILSCALE_API_KEY GCLOUD_SAMI \
+		SLACK_BOT_TOKEN GITHUB_ADMIN_PAT TAILSCALE_API_KEY "$AIRLOCK_CHECK_GCLOUD_SECRET" \
 		GWS_THEOREM_READ_OAUTH GWS_THEOREM_ADMIN_OAUTH AIRLOCK_DEMO_TOKEN \
 		--ttl 30m -- bash "$WORK_DIR/k7/steps.sh" >"$WORK_DIR/k7/cli.out" 2>"$WORK_DIR/k7/cli.err"
 	declare -A K7

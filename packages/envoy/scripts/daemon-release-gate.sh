@@ -9,17 +9,28 @@
 # workflow in silence.
 #
 # Without --listeners it reads the image that runs each Legion daemon: for each entry of the
-# `agent-infra-legion:projects` list of theorem-labs/agent-infra legion/Pulumi.prod.yaml, its
+# `<prefix>-legion:projects` list of the deployment repository's legion/Pulumi.prod.yaml, its
 # `daemonImage` when set, else its `image` (legion/README.md's `daemonImage` row). An entry that runs
 # no daemon (`replicas: 0`, or `daemon: false`) is printed SKIPPED, by name. An entry at `runtime:
 # tmux` runs its daemon on the project's host VM from `host.legionWorker`'s legion, not from its
-# `image` (agent-infra legion/host.go, checkHost), and the gate reads no image for it: it is UNKNOWN
-# by name, and so is an entry on any runtime but `kubernetes`, the default. With --listeners it
-# reads the three listener pins instead: envoy/Pulumi.prod.yaml `listenerImage`,
+# `image` (the deployment's legion/host.go, checkHost), and the gate reads no image for it: it is
+# UNKNOWN by name, and so is an entry on any runtime but `kubernetes`, the default. With --listeners
+# it reads the three listener pins instead: envoy/Pulumi.prod.yaml `listenerImage`,
 # envoy-cluster/Pulumi.prod.yaml `envoyImage`, and dispatch/Pulumi.prod.yaml `listenerImage`, which
 # that stack's program sets on its listener in place of `envoyImage`, the Dispatch server's
-# (dispatch/main.go, pinListenerImage). A dispatch stack that sets no `listenerImage` is UNKNOWN:
-# its deployment requires that key, and the listener runs no other image.
+# (the deployment's dispatch/main.go, pinListenerImage). A dispatch stack that sets no
+# `listenerImage` is UNKNOWN: its deployment requires that key, and the listener runs no other image.
+#
+# This repository names no deployment, so two environment variables name it, each with no default:
+#   DAEMON_RELEASE_GATE_REPOSITORY             the deployment repository, owner/name, whose
+#                                              <stack>/Pulumi.prod.yaml files hold the pins
+#   DAEMON_RELEASE_GATE_PULUMI_PROJECT_PREFIX  the prefix of that repository's Pulumi project
+#                                              names, which namespace each stack's config keys:
+#                                              <prefix>-legion:projects,
+#                                              <prefix>-envoy:listenerImage,
+#                                              <prefix>-envoy-cluster:envoyImage and
+#                                              <prefix>-dispatch:listenerImage
+# A run with either unset or empty is a usage error, naming it, before anything is read.
 #
 # Each pin's org.opencontainers.image.source and .revision labels are read with `docker buildx
 # imagetools inspect`. A single image is read whole; an OCI image index, which carries no image
@@ -41,12 +52,13 @@
 # (a label, a stack file or a comparison it could not read, a revision that is no commit id, or a
 # daemon whose image it does not read) or `SKIPPED`; then the verdict, alone on
 # the last line: `GATE OPEN` (exit 0) only when every pin it read passed and it read at least one,
-# `GATE SHUT` (exit 1) when any pin shut it, and `UNKNOWN` (exit 3) otherwise. A usage error exits 2.
+# `GATE SHUT` (exit 1) when any pin shut it, and `UNKNOWN` (exit 3) otherwise. A usage error, a
+# missing deployment setting among them, exits 2.
 #
-# It needs bash, gh (signed in with read access to theorem-labs/agent-infra and cybermonklabs/legion),
-# docker with buildx, jq, base64 and python3 with PyYAML. Docker must be able to read each pin's
-# registry: for ghcr.io, a login with a token holding read:packages, made into a config directory of
-# your own so the shared one is untouched:
+# It needs bash, gh (signed in with read access to the deployment repository and
+# cybermonklabs/legion), docker with buildx, jq, base64 and python3 with PyYAML. Docker must be able
+# to read each pin's registry: for ghcr.io, a login with a token holding read:packages, made into a
+# config directory of your own so the shared one is untouched:
 #   export DOCKER_CONFIG=$(mktemp -d)
 #   gh auth token | docker login ghcr.io -u x --password-stdin
 # A pin docker cannot read prints UNKNOWN with docker's own answer, never GATE OPEN.
@@ -55,6 +67,7 @@ set -euo pipefail
 usage() {
   echo "usage: daemon-release-gate.sh [--listeners] <commit>" >&2
   echo "  <commit> is the cybermonklabs/legion commit, 7 to 40 hex digits, every reader must run at or after" >&2
+  echo "  DAEMON_RELEASE_GATE_REPOSITORY (owner/name) and DAEMON_RELEASE_GATE_PULUMI_PROJECT_PREFIX name the deployment; both are required" >&2
   exit 2
 }
 
@@ -67,6 +80,21 @@ fi
 readonly commit=$1
 readonly legion_source="https://github.com/cybermonklabs/legion"
 
+# require_setting <variable> <what it holds>: a usage error naming <variable> when it is unset or
+# empty. Each names the deployment, and this repository holds no default for either.
+require_setting() {
+  if [ -z "${!1:-}" ]; then
+    echo "daemon-release-gate.sh: $1 is unset or empty: it is $2" >&2
+    usage
+  fi
+}
+require_setting DAEMON_RELEASE_GATE_REPOSITORY \
+  "the deployment repository, owner/name, whose <stack>/Pulumi.prod.yaml files hold the pins"
+require_setting DAEMON_RELEASE_GATE_PULUMI_PROJECT_PREFIX \
+  "the prefix of the deployment's Pulumi project names, as in <prefix>-legion:projects"
+readonly deployment=$DAEMON_RELEASE_GATE_REPOSITORY
+readonly project_prefix=$DAEMON_RELEASE_GATE_PULUMI_PROJECT_PREFIX
+
 work=$(mktemp -d)
 readonly work
 trap 'rm -rf "$work"' EXIT
@@ -77,35 +105,36 @@ compared=0
 
 first_line() { head -n 1 "$1"; }
 
-# stack_file <path>: the text of <path> in theorem-labs/agent-infra on its default branch, into
+# stack_file <path>: the text of <path> in the deployment repository on its default branch, into
 # $work/stack.yaml. An unreadable file is UNKNOWN, named with GitHub's answer.
 stack_file() {
   local encoded
-  if ! encoded=$(gh api "repos/theorem-labs/agent-infra/contents/$1" --jq .content 2>"$work/err"); then
-    printf 'UNKNOWN: cannot read theorem-labs/agent-infra %s: %s\n' "$1" "$(first_line "$work/err")"
+  if ! encoded=$(gh api "repos/$deployment/contents/$1" --jq .content 2>"$work/err"); then
+    printf 'UNKNOWN: cannot read %s %s: %s\n' "$deployment" "$1" "$(first_line "$work/err")"
     return 1
   fi
   if ! printf '%s' "$encoded" | base64 -d >"$work/stack.yaml" 2>"$work/err"; then
-    printf 'UNKNOWN: cannot decode theorem-labs/agent-infra %s: %s\n' "$1" "$(first_line "$work/err")"
+    printf 'UNKNOWN: cannot decode %s %s: %s\n' "$deployment" "$1" "$(first_line "$work/err")"
     return 1
   fi
 }
 
-# daemon_pins: one line per entry of $work/stack.yaml's projects list, tab-separated: the entry's
-# key, then READ and the image that runs its daemon, SKIP and why it runs none, HOST for an entry
-# whose daemon runs on a tmux host, RUNTIME and a runtime the gate does not know, or NOIMAGE. A file
-# with no such list prints ERROR and why.
+# daemon_pins: one line per entry of $work/stack.yaml's <prefix>-legion:projects list,
+# tab-separated: the entry's key, then READ and the image that runs its daemon, SKIP and why it runs
+# none, HOST for an entry whose daemon runs on a tmux host, RUNTIME and a runtime the gate does not
+# know, or NOIMAGE. A file with no such list prints ERROR and why.
 daemon_pins() {
-  python3 - "$work/stack.yaml" <<'PY'
+  python3 - "$work/stack.yaml" "${project_prefix}-legion:projects" <<'PY'
 import sys
 
 import yaml
 
 with open(sys.argv[1]) as handle:
     document = yaml.safe_load(handle) or {}
-projects = (document.get("config") or {}).get("agent-infra-legion:projects")
+projects_key = sys.argv[2]
+projects = (document.get("config") or {}).get(projects_key)
 if not isinstance(projects, list):
-    print("ERROR\tit holds no agent-infra-legion:projects list")
+    print(f"ERROR\tit holds no {projects_key} list")
     sys.exit(0)
 for entry in projects:
     key = entry.get("key") or "<an entry with no key>"
@@ -226,7 +255,7 @@ aliases_error=""
 
 # load_aliases writes into $work/aliases, lowercased and one per line, every name a recorded
 # rename makes one repository with cybermonklabs/legion. The record is the deployment's own:
-# the repositoryRenames pairs of the project entries of theorem-labs/agent-infra
+# the repositoryRenames pairs of the project entries of the deployment repository's
 # legion/Pulumi.prod.yaml, which render as each daemon's `repository_renames` and which the
 # daemon's ghrepo.Renames reads (packages/daemon/internal/ghrepo/renames.go). It is the one place
 # the transfer of sjawhar/legion to cybermonklabs/legion is recorded, so the gate keeps no copy of
@@ -237,21 +266,21 @@ load_aliases() {
   [ "$aliases_state" = unread ] || return 0
   local encoded
   if [ ! -s "$work/legion.yaml" ]; then
-    if ! encoded=$(gh api repos/theorem-labs/agent-infra/contents/legion/Pulumi.prod.yaml --jq .content 2>"$work/err") ||
+    if ! encoded=$(gh api "repos/$deployment/contents/legion/Pulumi.prod.yaml" --jq .content 2>"$work/err") ||
       ! printf '%s' "$encoded" | base64 -d >"$work/legion.yaml" 2>"$work/err"; then
       aliases_state=failed
       aliases_error=$(first_line "$work/err")
       return 0
     fi
   fi
-  if ! python3 - "$work/legion.yaml" >"$work/aliases" 2>"$work/err" <<'PY'; then
+  if ! python3 - "$work/legion.yaml" "${project_prefix}-legion:projects" >"$work/aliases" 2>"$work/err" <<'PY'; then
 import sys
 
 import yaml
 
 with open(sys.argv[1]) as handle:
     document = yaml.safe_load(handle) or {}
-projects = (document.get("config") or {}).get("agent-infra-legion:projects") or []
+projects = (document.get("config") or {}).get(sys.argv[2]) or []
 home = "cybermonklabs/legion"
 for entry in projects:
     for pair in entry.get("repositoryRenames") or []:
@@ -285,7 +314,7 @@ judge() {
   if [ "$repo" != cybermonklabs/legion ]; then
     load_aliases
     if [ "$aliases_state" = failed ]; then
-      printf 'UNKNOWN: %s: built from %s, and the repository renames of theorem-labs/agent-infra legion/Pulumi.prod.yaml could not be read: %s\n' "$key" "$source" "$aliases_error"
+      printf 'UNKNOWN: %s: built from %s, and the repository renames of %s legion/Pulumi.prod.yaml could not be read: %s\n' "$key" "$source" "$deployment" "$aliases_error"
       unknown=$((unknown + 1))
       return
     fi
@@ -352,18 +381,18 @@ listener() {
 }
 
 if [ "$mode" = listeners ]; then
-  listener envoy envoy agent-infra-envoy:listenerImage
-  listener envoy-cluster envoy-cluster agent-infra-envoy-cluster:envoyImage
-  # dispatch's listener runs listenerImage and nothing else: agent-infra dispatch/main.go requires
-  # that key (loadSettings) and pinListenerImage sets the listener's container from it, leaving
-  # envoyImage to the Dispatch server. A stack that sets none runs no listener this gate can read,
-  # so it is UNKNOWN rather than a reading of the server's image.
-  listener dispatch dispatch agent-infra-dispatch:listenerImage
+  listener envoy envoy "${project_prefix}-envoy:listenerImage"
+  listener envoy-cluster envoy-cluster "${project_prefix}-envoy-cluster:envoyImage"
+  # dispatch's listener runs listenerImage and nothing else: the deployment's dispatch/main.go
+  # requires that key (loadSettings) and pinListenerImage sets the listener's container from it,
+  # leaving envoyImage to the Dispatch server. A stack that sets none runs no listener this gate
+  # can read, so it is UNKNOWN rather than a reading of the server's image.
+  listener dispatch dispatch "${project_prefix}-dispatch:listenerImage"
 elif stack_file legion/Pulumi.prod.yaml; then
   # The same file records the repository renames (load_aliases), so it is read once.
   cp "$work/stack.yaml" "$work/legion.yaml"
   if ! daemon_pins >"$work/pins" 2>"$work/err"; then
-    printf 'UNKNOWN: cannot read theorem-labs/agent-infra legion/Pulumi.prod.yaml: %s\n' "$(first_line "$work/err")"
+    printf 'UNKNOWN: cannot read %s legion/Pulumi.prod.yaml: %s\n' "$deployment" "$(first_line "$work/err")"
     unknown=$((unknown + 1))
   fi
   while IFS=$'\t' read -r key what detail; do
@@ -383,7 +412,7 @@ elif stack_file legion/Pulumi.prod.yaml; then
         unknown=$((unknown + 1))
         ;;
       *)
-        printf 'UNKNOWN: theorem-labs/agent-infra legion/Pulumi.prod.yaml: %s\n' "$what"
+        printf 'UNKNOWN: %s legion/Pulumi.prod.yaml: %s\n' "$deployment" "$what"
         unknown=$((unknown + 1))
         ;;
     esac

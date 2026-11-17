@@ -2705,7 +2705,7 @@ jobs:
               - '!packages/envoy/infra/**/*_test.go'
               # END generated
             # envoy-go's fast half (envoy-go-checks): the format, generated-contract and pmdoc
-            # checks, the seven shell-script tests, and the build and pack of the envoy commands,
+            # checks, the shell-script tests, and the build and pack of the envoy commands,
             # with the tests of internal/dispatch/architecture/notes, internal/runnerlog,
             # internal/dispatch/specgraph, cmd/architecture-check and cmd/spec-check, whose one
             # run this is (envoy-go's unit step leaves them out), the architecture-note check over
@@ -5004,7 +5004,7 @@ jobs:
     with:
       ci-ok-changes: ${{ toJSON(needs.changes) }}
 
-  # envoy-go's fast half: the Go format check, the two generated-code checks, the seven
+  # envoy-go's fast half: the Go format check, the two generated-code checks, the
   # shell-script tests and the build and pack of the envoy commands. It also runs the tests of
   # internal/dispatch/architecture/notes, internal/runnerlog, internal/dispatch/specgraph,
   # cmd/architecture-check and cmd/spec-check, whose one run this is (envoy-go's unit step leaves

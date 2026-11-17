@@ -197,6 +197,25 @@ with, `--help` prints the usage, and a usage error exits 2. `k9` is a long run â
 minutes of connections and two stacks, about twenty-five minutes in all; every other
 check takes a few minutes.
 
+`k7` drives the deployment's own consumers, and two names it gives them are the
+deployment's, which this repository does not hold. Each comes from an environment
+variable with no default:
+
+| Variable | What it holds |
+| --- | --- |
+| `AIRLOCK_CHECK_GCLOUD_SECRET` | The name of the agent secret the deployment's gcloud consumer (`scripts/gcloud-broker`) reads its login from, such as `GCLOUD_DEMO`. The check binds it to Google's hosts, and its gcloud and Cloud KMS steps spend it. |
+| `AIRLOCK_CHECK_WORKSPACE_DOMAIN` | The deployment's Google Workspace domain, such as `example.com`, whose users the admin directory call lists. |
+
+```bash
+AIRLOCK_CHECK_GCLOUD_SECRET=GCLOUD_DEMO AIRLOCK_CHECK_WORKSPACE_DOMAIN=example.com \
+  DEV_BROKER_POSTGRES_URL="$LEGION_TEST_PG_DSN" packages/envoy/scripts/airlock-check.sh k7
+```
+
+A `k7` run with either unset or empty is a usage error: it exits 2, naming the
+variable, and starts nothing. No other check reads them. `airlock-check.test.sh`
+proves both, with no stack; CI runs it in the `envoy-go-checks` job of
+`.github/workflows/ci.yaml`.
+
 No line it prints is a credential: a value is compared by its SHA-256 (the first 16
 hex digits) and its length, and every line that compares one says so, which is a rule
 of the verification document itself.
@@ -484,20 +503,34 @@ issue event named in the new form for another project's and acknowledges it with
 producer that moves first stops the fleet's workflow in silence.
 
 ```bash
+export DAEMON_RELEASE_GATE_REPOSITORY=example-org/deployment
+export DAEMON_RELEASE_GATE_PULUMI_PROJECT_PREFIX=deployment
 packages/envoy/scripts/daemon-release-gate.sh <commit>
 packages/envoy/scripts/daemon-release-gate.sh --listeners <commit>
 ```
 
-Without `--listeners` it reads the image each Legion daemon runs: each entry of
-theorem-labs/agent-infra `legion/Pulumi.prod.yaml`'s projects, its `daemonImage` when set, else its
-`image`; an entry at `replicas: 0` or `daemon: false` prints `SKIPPED` by name. An entry at
-`runtime: tmux` runs its daemon on the project's host VM from `host.legionWorker`'s legion, not from
-its `image` (agent-infra `legion/host.go`), and the gate reads no image for it: it prints `UNKNOWN`
-by name, as does an entry on any runtime but `kubernetes`, the default. With `--listeners`
+This repository names no deployment, so two environment variables name it, each with no
+default:
+
+| Variable | What it holds |
+| --- | --- |
+| `DAEMON_RELEASE_GATE_REPOSITORY` | The deployment repository, `owner/name`, whose `<stack>/Pulumi.prod.yaml` files hold the pins. |
+| `DAEMON_RELEASE_GATE_PULUMI_PROJECT_PREFIX` | The prefix of that repository's Pulumi project names, which namespace each stack's config keys: `<prefix>-legion:projects`, `<prefix>-envoy:listenerImage`, `<prefix>-envoy-cluster:envoyImage` and `<prefix>-dispatch:listenerImage`. |
+
+A run with either unset or empty is a usage error: it exits 2, naming the variable, before it
+reads anything.
+
+Without `--listeners` it reads the image each Legion daemon runs: each entry of the
+`<prefix>-legion:projects` list of the deployment repository's `legion/Pulumi.prod.yaml`, its
+`daemonImage` when set, else its `image`; an entry at `replicas: 0` or `daemon: false` prints
+`SKIPPED` by name. An entry at `runtime: tmux` runs its daemon on the project's host VM from
+`host.legionWorker`'s legion, not from its `image` (the deployment's `legion/host.go`), and the
+gate reads no image for it: it prints `UNKNOWN` by name, as does an entry on any runtime but
+`kubernetes`, the default. With `--listeners`
 it reads the three listener pins: envoy's `listenerImage`, envoy-cluster's `envoyImage`, and
 dispatch's `listenerImage`, which that stack sets on its listener in place of `envoyImage`, the
 Dispatch server's; a dispatch stack that sets none reads `UNKNOWN`, since its deployment requires
-that key (agent-infra `dispatch/main.go`) and the listener runs no other image. Each pin's
+that key (the deployment's `dispatch/main.go`) and the listener runs no other image. Each pin's
 `org.opencontainers.image.source` and `.revision`
 labels are read with `docker buildx imagetools inspect`, an OCI image index one platform at a time
 (its `.Image.Config.Labels` is `null`), its `unknown/unknown` attestation entries left out, every
@@ -518,8 +551,8 @@ registry (for ghcr.io, `gh auth token | docker login ghcr.io -u x --password-std
 `DOCKER_CONFIG` of your own), `jq` and python3 with PyYAML.
 
 `daemon-release-gate.test.sh` proves every verdict behind a fake `gh` and a fake `docker` that
-answers a single image and an index the way the real one does; CI runs it in the
-`envoy-go-checks` job of `.github/workflows/ci.yaml`.
+answers a single image and an index the way the real one does, and the usage error of a run
+without either setting; CI runs it in the `envoy-go-checks` job of `.github/workflows/ci.yaml`.
 
 ## Measuring search on a copy of the corpus
 
