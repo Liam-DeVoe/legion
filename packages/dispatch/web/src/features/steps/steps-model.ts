@@ -5,14 +5,13 @@ import type { IssueSteps, StepRecord } from "../../api/types";
  *  keeps it in `result`, in the server's own word. */
 export type StepState = "running" | "passed" | "failed" | "stopped" | "other";
 
-/** One run of one step, as the Steps tab draws it. `label` names the step: its place in the task
- *  for a step of the plan, and `Retro` or `Merge` for the two runs that no plan names (step 0).
- *  An empty `agent`, `model` or `type` is a field the record does not hold, as is a null `started`
- *  or `ended`; `attempt` is the server's count of this step's runs in its task. */
+/** One run of one step, as the Steps tab draws it: the fields of its row, and nothing the row
+ *  does not show (the task is the table's, `StepTaskRows`). `label` names the step: its place in
+ *  the task for a step of the plan, and `Retro` or `Merge` for the two runs that no plan names
+ *  (step 0). An empty `agent`, `model` or `type` is a field the record does not hold, as is a
+ *  null `started` or `ended`; `attempt` is the server's count of this step's runs in its task. */
 export interface StepRow {
   id: string;
-  task: string;
-  step: number;
   label: string;
   role: string;
   type: string;
@@ -62,8 +61,6 @@ function stepRow(record: StepRecord): StepRow {
     role: record.role,
     started: record.started_at,
     state: stepState(record.result),
-    step: record.step,
-    task: record.task,
     type: record.type,
   };
 }

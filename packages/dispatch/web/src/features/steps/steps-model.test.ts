@@ -78,8 +78,6 @@ test("stepTasks keeps the server's order and names each run's step, state and ti
     role: "reviewer",
     started: "2026-11-16T10:00:00Z",
     state: "failed",
-    step: 4,
-    task: "default",
     type: "review",
   });
   expect(first?.rows[2]).toMatchObject({ attempt: 2, ended: null, state: "running" });
