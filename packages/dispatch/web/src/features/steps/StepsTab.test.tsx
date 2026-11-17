@@ -138,6 +138,62 @@ test("the Steps tab draws each task's runs as a table, a running run as running"
   }
 });
 
+// "step 1" is one phrase. A narrow Result column (a phone) wraps "stopped, returned to step 1"
+// between its words, and the last break must not fall inside the phrase: at 390 px it left the
+// number alone on the last line.
+test("the Steps tab keeps the step a run returned to whole, with its number", async () => {
+  const tab = renderTab(async () => ({
+    issue: "CORE-1",
+    tasks: [
+      {
+        steps: [record({ id: "docs-1", result: "stopped", returned_to: 1, step: 1 })],
+        task: "docs",
+      },
+    ],
+  }));
+  try {
+    const table = await screen.findByRole("table", { name: "Steps of task docs" });
+    expect(bodyRows(table)[0]?.[8]).toBe("stopped, returned to step 1");
+    expect(within(table).getByText("step 1").className).toContain("whitespace-nowrap");
+  } finally {
+    tab.restore();
+  }
+});
+
+// An agent token breaks at its hyphens, and a model id after its slash too, but a number or a
+// single letter stays with the part before it: at 1440 px with the margin open, the Agent column
+// put "2-" of `legion-core-core-2-implementer` on a line alone and tore the key `core-2` in two.
+test("the Steps tab never leaves a number or a single letter of an id on a line alone", async () => {
+  const tab = renderTab(async () => ({
+    issue: "CORE-1",
+    tasks: [
+      {
+        steps: [
+          record({
+            agent: "legion-core-core-2-implementer-with-a-long-name",
+            id: "implement-1",
+            model: "openai/gpt-6.1-sol",
+          }),
+        ],
+        task: "default",
+      },
+    ],
+  }));
+  try {
+    const table = await screen.findByRole("table", { name: "Steps of task default" });
+    const cells = bodyRows(table)[0];
+    expect([cells?.[3], cells?.[4]]).toEqual([
+      "legion-core-core-2-implementer-with-a-long-name",
+      "openai/gpt-6.1-sol",
+    ]);
+    for (const whole of ["core-2", "with-a", "gpt-6.1"]) {
+      expect(within(table).getByText(whole).className).toContain("whitespace-nowrap");
+    }
+  } finally {
+    tab.restore();
+  }
+});
+
 // An issue Legion never ran - or ran before the release that records steps - has no task.
 test("the Steps tab says so when no step of the issue has run in Legion", async () => {
   const tab = renderTab(async () => ({ issue: "CORE-1", tasks: [] }));
