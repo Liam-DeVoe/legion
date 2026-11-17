@@ -390,7 +390,10 @@ func (r *outbox) finishRefused(ctx context.Context, row record.OutboxRow, cause 
 		// never take, a writer its route refuses or an id of another issue, and the work the
 		// record is of went on without it. The line is what says the record is not in Dispatch,
 		// since nothing else would. The refusal is read as Dispatch's own error, not through
-		// dispatch.PermanentRefusal, which answers nothing for a 403 such as STEP_WRITER.
+		// dispatch.PermanentRefusal, which answers nothing for a 403 such as STEP_WRITER. settle
+		// comes here only with one (stepRecordRefused finds it first), so the zero error below is
+		// no path of its own: it keeps this line from a nil error should those two rules ever part.
+		// The other arms need no such guard, since one function there both decides and answers.
 		var refusal *dispatch.Error
 		if !errors.As(cause, &refusal) {
 			refusal = &dispatch.Error{}
