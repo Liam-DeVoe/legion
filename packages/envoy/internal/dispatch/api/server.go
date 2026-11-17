@@ -859,11 +859,11 @@ func register(mux *http.ServeMux, lifetime context.Context, deps Deps) *server {
 	}); ok {
 		const pattern = "/ws/doc/{room}"
 		readclass.Handle(mux, []readclass.Class{readclass.Project}, "GET "+pattern,
-			accesslog.Handler(pattern, s.refuseUnlistedServiceAccount(s.whileCallerResolves(trackTransactions(s.refuseUnstorableParameters(pattern, websocket.ServeHTTP))))))
+			accesslog.Handler(pattern, s.refuseUnlistedServiceAccount(s.whileCallerResolves(false, trackTransactions(s.refuseUnstorableParameters(pattern, websocket.ServeHTTP))))))
 	}
 	const livePattern = "/ws/live"
 	readclass.Handle(mux, []readclass.Class{readclass.Project, readclass.People, readclass.Deployment}, "GET "+livePattern,
-		accesslog.Handler(livePattern, s.whileCallerResolves(s.decideBrokerToken(trackTransactions(s.refuseUnstorableParameters(livePattern, s.serveLiveSocket))))))
+		accesslog.Handler(livePattern, s.whileCallerResolves(true, s.decideBrokerToken(trackTransactions(s.refuseUnstorableParameters(livePattern, s.serveLiveSocket))))))
 	return s
 }
 
@@ -893,15 +893,18 @@ func trackTransactions(handler http.HandlerFunc) http.HandlerFunc {
 // whileCallerResolves serves a connection that outlives its request, a websocket, only while its
 // caller resolves as the caller it was admitted as: on every StreamHeartbeat it resolves the
 // caller again, and once the caller no longer resolves (a logout, a membership the sign-in issuer
-// no longer confirms, a revoked token), or its credential now lists other projects or holds other
-// scopes than when the connection opened (sameCredentialGrant), it cancels the connection's
-// context, on which the document server and the live socket close the socket (1008). The page
-// opens a new one under what the credential holds now, so a token narrowed to fewer projects
-// reads nothing more of the ones it lost. The check runs beside the handler, which holds pooled
-// connections of its own while it admits the socket, so it marks a context of its own for the
-// pool (store.ErrNestedAcquire), and it resolves on a context detached from the access-log line,
-// which names the caller the socket was admitted as (accesslog.Detached).
-func (s *server) whileCallerResolves(handler http.HandlerFunc) http.HandlerFunc {
+// no longer confirms, a revoked token), or, with compareGrants, its credential now lists other
+// projects or holds other scopes than when the connection opened (sameCredentialGrant), it
+// cancels the connection's context, on which the document server and the live socket close the
+// socket (1008). The page opens a new one under what the credential holds now, so a token
+// narrowed to fewer projects reads nothing more of the ones it lost. Only the live socket compares
+// grants: the document socket admits a person by the cookie alone, whose grant no list of
+// projects or scopes narrows, so it reads nothing at open beyond its own admission
+// (TestASocketOpenReadsTheIssueAndTheCallerOnce). The check runs beside the handler, which holds
+// pooled connections of its own while it admits the socket, so it marks a context of its own for
+// the pool (store.ErrNestedAcquire), and it resolves on a context detached from the access-log
+// line, which names the caller the socket was admitted as (accesslog.Detached).
+func (s *server) whileCallerResolves(compareGrants bool, handler http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx, closeConnection := context.WithCancel(r.Context())
 		defer closeConnection()
@@ -909,7 +912,10 @@ func (s *server) whileCallerResolves(handler http.HandlerFunc) http.HandlerFunc 
 		// What the credential holds as the connection opens, before the handler admits it, so a
 		// change made while it is admitted is a change the first heartbeat sees. A caller that
 		// does not resolve is the handler's to refuse.
-		admitted, _, _ := s.callerStillResolves(check)
+		var admitted model.Actor
+		if compareGrants {
+			admitted, _, _ = s.callerStillResolves(check)
+		}
 		go func() {
 			heartbeat := time.NewTicker(s.deps.StreamHeartbeat)
 			defer heartbeat.Stop()
@@ -924,7 +930,7 @@ func (s *server) whileCallerResolves(handler http.HandlerFunc) http.HandlerFunc 
 					// (callerStillResolves). Every other credential is resolved exactly as it
 					// is on a request.
 					caller, broker, err := s.callerStillResolves(check)
-					if err != nil || (!broker && !sameCredentialGrant(admitted.Credential, caller.Credential)) {
+					if err != nil || (compareGrants && !broker && !sameCredentialGrant(admitted.Credential, caller.Credential)) {
 						closeConnection()
 						return
 					}
