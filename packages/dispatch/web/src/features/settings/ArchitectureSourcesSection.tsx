@@ -33,7 +33,7 @@ import {
   settingsMonoInput,
   settingsSubmitButton,
 } from "./classes";
-import { ProjectSelect } from "./ProjectSelect";
+import { NoProjectPicked, ProjectSelect } from "./ProjectSelect";
 
 /** A source's address: a project and one of its repositories. */
 interface SourceKey {
@@ -49,6 +49,8 @@ interface SourceKey {
 export function ArchitectureSourcesSection(): ReactNode {
   const queryClient = useQueryClient();
   const [project, setProject] = useState("");
+  // The form was submitted with no project picked, and says so until one is.
+  const [projectMissing, setProjectMissing] = useState(false);
   const [repository, setRepository] = useState("");
   const [branch, setBranch] = useState("main");
   const submitGuard = useSubmitGuard();
@@ -88,6 +90,11 @@ export function ArchitectureSourcesSection(): ReactNode {
   });
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    // The project list is a button, which no `required` holds: an empty one files nothing here.
+    if (project === "") {
+      setProjectMissing(true);
+      return;
+    }
     submitGuard.guard(() => saveSource.mutate({ branch, project, repo: repository }));
   };
 
@@ -214,16 +221,16 @@ export function ArchitectureSourcesSection(): ReactNode {
             className={`mt-6 grid gap-4 rounded-xl border p-4 sm:grid-cols-2 sm:items-end ${borderDefault}`}
             onSubmit={submit}
           >
-            <label className={settingsFieldLabel} htmlFor="architecture-source-project">
-              Source project
-              <ProjectSelect
-                disabled={saveSource.isPending}
-                id="architecture-source-project"
-                onChange={setProject}
-                projects={projects.data}
-                value={project}
-              />
-            </label>
+            <ProjectSelect
+              disabled={saveSource.isPending}
+              label="Source project"
+              onChange={(picked) => {
+                setProject(picked);
+                setProjectMissing(false);
+              }}
+              projects={projects.data}
+              value={project}
+            />
             <label className={settingsFieldLabel} htmlFor="architecture-source-repository">
               Source repository
               <input
@@ -256,6 +263,7 @@ export function ArchitectureSourcesSection(): ReactNode {
               Add source
             </button>
           </form>
+          {projectMissing ? <NoProjectPicked /> : null}
           {saveSource.isError ? (
             <div className="mt-4">
               <QueryError

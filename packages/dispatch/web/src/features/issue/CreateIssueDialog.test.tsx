@@ -8,7 +8,7 @@ import type { ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { realClock, tick } from "../../__tests__/fake-clock";
-import { listOf, panelOf, textBoxes } from "../../__tests__/list-picks";
+import { listOf, panelOf, pickNamed, textBoxes } from "../../__tests__/list-picks";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
 import type { CreateIssueInput, Issue, Project } from "../../api/types";
@@ -109,8 +109,8 @@ test("preselects the route's project, submits title and spec, and opens the crea
     () => (closed += 1)
   );
   try {
-    const trigger = await screen.findByRole("button", { name: "Project" });
-    await waitFor(() => expect(trigger).toHaveAccessibleDescription("OPS · Operations"));
+    const trigger = await screen.findByRole("button", { name: pickNamed("Project") });
+    await waitFor(() => expect(trigger).toHaveAccessibleName("Project OPS · Operations"));
     const create = screen.getByRole("button", { name: "Create" });
     expect(create).toHaveAttribute("disabled");
 
@@ -145,7 +145,7 @@ test("a refused create keeps the dialog and draft, shows the server message, and
     return issue(input, "CORE-3");
   });
   try {
-    await screen.findByRole("button", { name: "Project" });
+    await screen.findByRole("button", { name: pickNamed("Project") });
     await view.user.click(screen.getByRole("textbox", { name: "Title" }));
     await view.user.paste("Flaky create");
     // The form's own submit: user-event has no form for it.
@@ -186,7 +186,7 @@ test("a create answered KEY_COMMITTED drops the draft, says the issue was made, 
     }
   );
   try {
-    await screen.findByRole("button", { name: "Project" });
+    await screen.findByRole("button", { name: pickNamed("Project") });
     const title = screen.getByRole<HTMLInputElement>("textbox", { name: "Title" });
     await view.user.click(title);
     await view.user.paste("Made once");
@@ -225,7 +225,7 @@ test("a possible duplicate names the candidate and Create anyway forces the crea
     return issue(input, "CORE-2");
   });
   try {
-    await screen.findByRole("button", { name: "Project" });
+    await screen.findByRole("button", { name: pickNamed("Project") });
     await view.user.click(screen.getByRole("textbox", { name: "Title" }));
     await view.user.paste("Astrolabe calibration");
     await view.user.click(screen.getByRole("button", { name: "Create" }));
@@ -263,8 +263,8 @@ test("the Create issue dialog's Project list holds a text box that narrows the p
     () => (closed += 1)
   );
   try {
-    const trigger = await screen.findByRole("button", { name: "Project" });
-    await waitFor(() => expect(trigger).toHaveAccessibleDescription("CORE · Core"));
+    const trigger = await screen.findByRole("button", { name: pickNamed("Project") });
+    await waitFor(() => expect(trigger).toHaveAccessibleName("Project CORE · Core"));
     const before = new Set(textBoxes());
     await view.user.click(trigger);
     await waitFor(() =>
@@ -288,13 +288,13 @@ test("the Create issue dialog's Project list holds a text box that narrows the p
     expect(screen.queryByRole("listbox", { name: "Project options" })).toBeNull();
     expect(screen.getByRole("dialog", { name: "Create issue" })).toBeTruthy();
     expect(trigger).toHaveFocus();
-    expect(trigger).toHaveAccessibleDescription("CORE · Core");
+    expect(trigger).toHaveAccessibleName("Project CORE · Core");
     expect(closed).toBe(0);
 
     await view.user.click(trigger);
     await view.user.click(within(panelOf(trigger)).getByRole("option", { name: /^OPS\b/ }));
     expect(trigger).toHaveFocus();
-    expect(trigger).toHaveAccessibleDescription("OPS · Operations");
+    expect(trigger).toHaveAccessibleName("Project OPS · Operations");
 
     await view.user.click(screen.getByRole("textbox", { name: "Title" }));
     await view.user.paste("Crane check");
@@ -318,7 +318,7 @@ test("the Create issue dialog's Project list says its projects are loading, then
     () => read.promise
   );
   try {
-    const trigger = await screen.findByRole("button", { name: "Project" });
+    const trigger = await screen.findByRole("button", { name: pickNamed("Project") });
     await view.user.click(trigger);
     const panel = panelOf(trigger);
     expect(within(panel).getByRole("listbox")).toHaveTextContent("Loading projects…");
@@ -358,11 +358,11 @@ test("with no project picked, Create stays disabled and the dialog files nothing
       readProjects
     );
     try {
-      const trigger = await screen.findByRole("button", { name: "Project" });
+      const trigger = await screen.findByRole("button", { name: pickNamed("Project") });
       if (state !== "still being read") {
         await waitFor(() => expect(trigger).toHaveTextContent("Choose a project"));
       }
-      expect(trigger, `with the projects ${state}`).not.toHaveAccessibleDescription(/·/);
+      expect(trigger, `with the projects ${state}`).not.toHaveAccessibleName(/·/);
       await view.user.click(screen.getByRole("textbox", { name: "Title" }));
       await view.user.paste("Nowhere to file");
       expect(

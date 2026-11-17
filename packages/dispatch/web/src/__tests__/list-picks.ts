@@ -28,10 +28,16 @@ export function panelOf(trigger: Element): HTMLElement {
   return controlledBy(trigger, "the trigger names no open list");
 }
 
-/** Opens the single pick named `label` from its trigger and hands back its listbox, `<label>
+/** The name of the single pick labelled `label`: the label alone where its trigger shows the
+ *  label, else the label and then what the trigger shows (`MultiSelect`). */
+export function pickNamed(label: string): RegExp {
+  return new RegExp(`^${label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?: |$)`);
+}
+
+/** Opens the single pick labelled `label` from its trigger and hands back its listbox, `<label>
  *  options`. The list is portalled to the body, outside the control's own container. */
 export async function openList(user: UserEvent, label: string): Promise<HTMLElement> {
-  await user.click(screen.getByRole("button", { name: label }));
+  await user.click(screen.getByRole("button", { name: pickNamed(label) }));
   return screen.findByRole("listbox", { name: `${label} options` });
 }
 
@@ -42,7 +48,7 @@ export function rows(list: HTMLElement): string[] {
     .map((option) => option.textContent ?? "");
 }
 
-/** Opens the single pick named `label` and picks the row named `name`, once it is in the list. */
+/** Opens the single pick labelled `label` and picks the row named `name` once it is listed. */
 export async function pick(user: UserEvent, label: string, name: string): Promise<void> {
   const list = await openList(user, label);
   await user.click(await within(list).findByRole("option", { name }));

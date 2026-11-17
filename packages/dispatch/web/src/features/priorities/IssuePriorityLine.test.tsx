@@ -5,7 +5,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
-import { listOf, panelOf, textBoxes } from "../../__tests__/list-picks";
+import { listOf, panelOf, pickNamed, textBoxes } from "../../__tests__/list-picks";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { ApiError, api } from "../../api/client";
 import type { Issue, Priorities, PriorityRow } from "../../api/types";
@@ -136,7 +136,7 @@ test("the control adds a priority, writing the issue's own set as advances", asy
   const view = renderLine([{ id: "evals-now", inherited: false }]);
   try {
     await user.click(await view.q.findByRole("button", { name: "Add a priority to CORE-9" }));
-    const picker = await view.q.findByRole("button", { name: "Priority to advance" });
+    const picker = await view.q.findByRole("button", { name: pickNamed("Priority to advance") });
     await waitFor(() => expect(view.listPriorities).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(picker).toHaveTextContent("Choose a priority"));
     await user.click(picker);
@@ -242,7 +242,7 @@ test("the Priority to advance list holds a text box that narrows the priorities,
   try {
     await user.click(view.q.getByRole("button", { name: "Add a priority to CORE-9" }));
     const before = new Set(textBoxes());
-    await user.click(await view.q.findByRole("button", { name: "Priority to advance" }));
+    await user.click(await view.q.findByRole("button", { name: pickNamed("Priority to advance") }));
     await waitFor(() =>
       expect(page.queryAllByRole("option", { name: /^P3 OSS Verify\b/ }).length).toBeGreaterThan(0)
     );
@@ -261,9 +261,9 @@ test("the Priority to advance list holds a text box that narrows the priorities,
       `"oss" leaves P2 in the Priority to advance list`
     ).toHaveLength(0);
     await user.click(within(list).getByRole("option", { name: /^P3 OSS Verify\b/ }));
-    const picker = view.q.getByRole("button", { name: "Priority to advance" });
+    const picker = view.q.getByRole("button", { name: pickNamed("Priority to advance") });
     expect(picker).toHaveFocus();
-    expect(picker).toHaveAccessibleDescription("P3 OSS Verify: curl, TLS and Rustls");
+    expect(picker).toHaveAccessibleName("Priority to advance P3 OSS Verify: curl, TLS and Rustls");
     expect(view.patchIssue).not.toHaveBeenCalled();
 
     await user.click(view.q.getByRole("button", { name: "Add" }));

@@ -726,7 +726,7 @@ test("a hand-on reads the ask's thread again, so a card reading that thread foll
   const card = within(view.container);
   try {
     const control = await card.findByLabelText("Hand this question to");
-    expect(control).toHaveAccessibleDescription("Asked of nobody");
+    expect(control).toHaveAccessibleName("Hand this question to Asked of nobody");
     // The people are read only once the reader reaches for the control (`AskHandOn`).
     await user.click(control);
     // The list is portalled to the body, outside the card's own container.
@@ -737,8 +737,8 @@ test("a hand-on reads the ask's thread again, so a card reading that thread foll
     await waitFor(() => expect(threadReads).toBeGreaterThan(before));
     // What that read is for: the person the write moved the ask to is on the screen.
     await waitFor(() =>
-      expect(card.getByLabelText("Hand this question to")).toHaveAccessibleDescription(
-        "Asked of bob"
+      expect(card.getByLabelText("Hand this question to")).toHaveAccessibleName(
+        "Hand this question to Asked of bob"
       )
     );
   } finally {

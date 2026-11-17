@@ -1039,7 +1039,7 @@ test("issue header reassigns through the Assignee picker; a personal token's iss
     await page.goto(`/issues/${issue.key}`);
     const control = page.getByLabel(`Assignee of ${issue.key}`);
     const people = page.getByRole("listbox", { name: `Assignee of ${issue.key} options` });
-    await expect(control).toHaveAccessibleDescription("bob");
+    await expect(control).toHaveAccessibleName(`Assignee of ${issue.key} bob`);
     // Who has signed in is read only once the reader reaches for the control.
     await control.focus();
     await control.click();
@@ -1074,8 +1074,8 @@ test("issue header reassigns through the Assignee picker; a personal token's iss
     await people.getByRole("option", { exact: true, name: "Unassigned" }).click();
     await expect.poll(() => getIssue(issue.key)).toMatchObject({ assignee: null });
     await page.reload();
-    await expect(page.getByLabel(`Assignee of ${issue.key}`)).toHaveAccessibleDescription(
-      "Unassigned"
+    await expect(page.getByLabel(`Assignee of ${issue.key}`)).toHaveAccessibleName(
+      `Assignee of ${issue.key} Unassigned`
     );
     await expect(
       page.getByTestId("issue-header").getByText("Unassigned", { exact: true })
@@ -1097,7 +1097,9 @@ test("issue header reassigns through the Assignee picker; a personal token's iss
     );
     expect(child.assignee).toBe("alice");
     await page.goto(`/issues/${hers.key}`);
-    await expect(page.getByLabel(`Assignee of ${hers.key}`)).toHaveAccessibleDescription("alice");
+    await expect(page.getByLabel(`Assignee of ${hers.key}`)).toHaveAccessibleName(
+      `Assignee of ${hers.key} alice`
+    );
   } finally {
     await context.close();
   }
@@ -1127,15 +1129,15 @@ test("issue header picks the issue's repository from its project's mappings, and
   try {
     await page.goto(`/issues/${parent.key}`);
     const header = page.getByTestId("issue-header");
-    // The visible badge; the trigger's description repeats its text in a span of its own.
+    // The visible badge; the trigger's name repeats its text from a span of its own.
     const badge = (text: RegExp) => header.locator('span[aria-hidden="true"]', { hasText: text });
     const control = page.getByLabel(`Repository of ${parent.key}`);
     const repositories = page.getByRole("listbox", { name: `Repository of ${parent.key} options` });
     // The badge names the project's default, which the issue inherits, and so does the trigger's
-    // description, which is what a screen reader hears beside Inherit.
+    // name after its label, which is what a screen reader hears beside Inherit.
     await expect(badge(/^acme\/widgets$/)).toBeVisible();
-    await expect(control).toHaveAccessibleDescription(
-      "acme/widgets, inherited or the project's default"
+    await expect(control).toHaveAccessibleName(
+      `Repository of ${parent.key} acme/widgets, inherited or the project's default`
     );
     // The project's mappings are read once the reader reaches for the control; another project's
     // are not offered, and Inherit is the one picked.
@@ -1155,7 +1157,7 @@ test("issue header picks the issue's repository from its project's mappings, and
     await repositories.getByRole("option", { exact: true, name: "acme/gadgets" }).click();
     expect((await patch).postDataJSON()).toEqual({ repo: "acme/gadgets" });
     await expect(badge(/^acme\/gadgets$/)).toBeVisible();
-    await expect(control).toHaveAccessibleDescription("acme/gadgets");
+    await expect(control).toHaveAccessibleName(`Repository of ${parent.key} acme/gadgets`);
     // The child names no repository of its own, so it resolves to its parent's.
     await expect
       .poll(() => getIssue(child.key))
@@ -1179,8 +1181,8 @@ test("issue header picks the issue's repository from its project's mappings, and
       .poll(() => getIssue(parent.key))
       .toMatchObject({ repo: null, resolved_repo: "acme/widgets" });
     await page.reload();
-    await expect(page.getByLabel(`Repository of ${parent.key}`)).toHaveAccessibleDescription(
-      "acme/widgets, inherited or the project's default"
+    await expect(page.getByLabel(`Repository of ${parent.key}`)).toHaveAccessibleName(
+      `Repository of ${parent.key} acme/widgets, inherited or the project's default`
     );
     await expect(badge(/^acme\/widgets$/)).toBeVisible();
 
@@ -1233,8 +1235,8 @@ test("an open issue's header follows its project's default repository as the map
     await deleteRepoProject("acme/gadgets");
     await page.clock.fastForward(MIN_REFETCH_INTERVAL_MS);
     await expect(badge(/^No repository$/)).toBeVisible();
-    await expect(page.getByLabel(`Repository of ${issue.key}`)).toHaveAccessibleDescription(
-      "No repository"
+    await expect(page.getByLabel(`Repository of ${issue.key}`)).toHaveAccessibleName(
+      `Repository of ${issue.key} No repository`
     );
 
     // The default again, then moved to another project: CORE maps nothing left to pick, so the

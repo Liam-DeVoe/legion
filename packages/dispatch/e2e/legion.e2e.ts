@@ -9,10 +9,22 @@
 // specs need no daemon to be reachable.
 import { baseUrl, userHeaders } from "./api";
 import { LEGION_PROJECT, seedLegionDaemon, seedLegionProject } from "./legion-seed";
-import { expect, test } from "./test";
+import { expect, type Page, test } from "./test";
 import { asUser } from "./users";
 
 const DAEMON_URL = "http://legion.acme.internal:9731";
+
+/** Picks LEGION_PROJECT from the Legion project list (`components/MultiSelect.tsx`), as a reader
+ *  does: presses its trigger, whose name begins with the list's label and goes on to what it
+ *  shows, then the project's option in the list it opens, which is portalled out of the section
+ *  and so found by its own name, `Legion project options`. */
+async function pickLegionProject(page: Page): Promise<void> {
+  await page.getByRole("button", { name: /^Legion project\b/ }).click();
+  await page
+    .getByRole("listbox", { exact: true, name: "Legion project options" })
+    .getByRole("option", { name: new RegExp(`^${LEGION_PROJECT} · `) })
+    .click();
+}
 
 // A1/A4: naming a project's daemon on the Settings page, beside the Delivery settings. The row is
 // the naming itself: a project that named no daemon is given one, and the section lists it once
@@ -26,9 +38,7 @@ test("the Settings page names a project's Legion daemon @legion", async ({ brows
     await page.goto("/settings");
     await expect(page.getByRole("heading", { name: "Legion" })).toBeVisible();
     await page.getByLabel("Legion daemon state URL").fill(DAEMON_URL);
-    await page
-      .getByRole("combobox", { exact: true, name: "Legion project" })
-      .selectOption(LEGION_PROJECT);
+    await pickLegionProject(page);
     const saved = page.waitForResponse(
       (response) =>
         response.request().method() === "PUT" &&
@@ -87,9 +97,7 @@ test("the Settings page refuses a state URL that is not a daemon's, and its Remo
       }
     });
     await page.getByLabel("Legion daemon state URL").fill(bad);
-    await page
-      .getByRole("combobox", { exact: true, name: "Legion project" })
-      .selectOption(LEGION_PROJECT);
+    await pickLegionProject(page);
     await page.getByRole("button", { name: "Save Legion daemon" }).click();
     await expect(page.getByRole("alert")).toHaveText(refused.error);
     expect(wrote).toBe(false);

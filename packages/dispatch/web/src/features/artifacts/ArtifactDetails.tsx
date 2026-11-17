@@ -96,7 +96,7 @@ function CompareVersionSelect({
         optionLabel={(number) => labels.get(number) ?? `Version ${number}`}
         options={versions.map((version) => String(version.number))}
         searchLabel="Search versions"
-        triggerClassName={`mt-1 block min-h-11 w-full truncate rounded border px-2 py-2 text-left text-sm ${inputClasses(true)}`}
+        triggerClassName={`mt-1 block min-h-11 w-full rounded border px-2 py-2 text-left text-sm ${inputClasses(true)}`}
         value={value === undefined ? undefined : String(value)}
       />
     </div>

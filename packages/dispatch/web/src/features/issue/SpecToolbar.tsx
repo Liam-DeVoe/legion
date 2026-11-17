@@ -71,7 +71,7 @@ export function SpecToolbar({
         }
         options={["", ...toolbar.versions.map((item) => String(item.number))]}
         searchLabel="Search versions"
-        triggerClassName={`min-h-11 min-w-0 max-w-48 truncate rounded border px-2 py-2 text-left text-sm md:min-h-8 md:py-1 ${inputClasses(false)}`}
+        triggerClassName={`min-h-11 min-w-0 max-w-48 rounded border px-2 py-2 text-left text-sm md:min-h-8 md:py-1 ${inputClasses(false)}`}
         value={shown}
       />
       <button

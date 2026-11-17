@@ -10,6 +10,7 @@ import { MemoryRouter, Route, Routes, useLocation, useNavigate } from "react-rou
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { type FakeEditor, fakeDocumentRuntime } from "../../__tests__/document-runtime";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { pickNamed } from "../../__tests__/list-picks";
 import { answerAskSnoozes, answerIssuePatches } from "../../__tests__/send-answers";
 import { wholeText } from "../../__tests__/whole-text";
 import { ApiError, api } from "../../api/client";
@@ -1470,7 +1471,7 @@ function mockPeople() {
  *  presses `login`'s option, which the list holds once it has read the people as it opened. The
  *  list is portalled onto the body, so its options are reached from the screen. */
 async function handOnTo(user: UserEvent, scope: HTMLElement, login: string): Promise<void> {
-  await user.click(within(scope).getByRole("button", { name: "Hand this question to" }));
+  await user.click(within(scope).getByRole("button", { name: pickNamed("Hand this question to") }));
   await user.click(await screen.findByRole("option", { name: new RegExp(`^${login}\\b`) }));
 }
 
@@ -2119,7 +2120,7 @@ test("a press on a card's Asked of badge closes the open Filter panel, and anoth
   const people = mockPeople();
   const { unmount } = renderInbox("/");
   const badge = (askId: string) =>
-    within(rowOf(askId)).getByRole("button", { name: "Hand this question to" });
+    within(rowOf(askId)).getByRole("button", { name: pickNamed("Hand this question to") });
   const handOnLists = () =>
     screen.queryAllByRole("listbox", { name: "Hand this question to options" });
   try {

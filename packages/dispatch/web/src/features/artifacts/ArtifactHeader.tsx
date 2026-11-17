@@ -230,7 +230,7 @@ export function ArtifactHeader({
                   }
                   options={["", ...versions.map((item) => String(item.number))]}
                   searchLabel="Search versions"
-                  triggerClassName={`min-h-11 min-w-0 max-w-56 truncate rounded border px-2 py-2 text-left font-normal ${inputClasses(true)}`}
+                  triggerClassName={`min-h-11 min-w-0 max-w-56 rounded border px-2 py-2 text-left font-normal ${inputClasses(true)}`}
                   value={shown}
                 />
               </div>

@@ -306,9 +306,9 @@ test("the version history compares two versions of a document with the change vi
   await compare.getByRole("button", { name: "Show comparison" }).click();
   // Each side is a list, portalled out of the region, and the one open list's options are the
   // ones pressed.
-  await compare.getByRole("button", { exact: true, name: "Compare notes.md from" }).click();
+  await compare.getByRole("button", { name: "Compare notes.md from" }).click();
   await page.getByRole("option", { name: /^Version 1(?: — |$)/ }).click();
-  await compare.getByRole("button", { exact: true, name: "Compare notes.md to" }).click();
+  await compare.getByRole("button", { name: "Compare notes.md to" }).click();
   await page.getByRole("option", { name: /^Version 2(?: — |$)/ }).click();
   const changed = compare.getByTestId("change-view").locator('[data-change="changed"]');
   await expect(changed).toHaveCount(1);

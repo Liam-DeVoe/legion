@@ -278,6 +278,7 @@ function AskHandOn({ ask, assignee }: { ask: Ask; assignee: string | null }): Re
         {...badgeReachHandlers(() => setWanted(true))}
       >
         <MultiSelect
+          chevron={false}
           emptyMessage={people.isPending ? "Loading people…" : "Nobody matches that."}
           error={people.isError ? "Could not load the people list." : null}
           label="Hand this question to"
@@ -293,8 +294,8 @@ function AskHandOn({ ask, assignee }: { ask: Ask; assignee: string | null }): Re
           triggerClassName={badgeSelectTrigger}
           // The server's own answer, `""` where it names nobody, which only a Dispatch older
           // than every project naming a default answers: no option is that value, and nobody is
-          // no pick (the route takes a person's email and refuses anything else), but the badge
-          // still describes the trigger.
+          // no pick (the route takes a person's email and refuses anything else), but the
+          // badge's words still name the trigger after the list's name.
           value={waitingOn}
         >
           <span className={`${badgeSelectBadge} ${tone.bg} ${tone.text}`}>

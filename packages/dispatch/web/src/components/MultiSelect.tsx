@@ -16,6 +16,7 @@ import {
 } from "../theme/classes";
 import { AnchoredPanel, type PanelDismissal } from "./AnchoredPanel";
 import { type ControlName, type ControlSize, controlPadding } from "./control-names";
+import { ChevronIcon } from "./DisclosureToggle";
 import { focusLost } from "./focus-place";
 import { TruncatedText } from "./TruncatedText";
 
@@ -42,6 +43,14 @@ interface SharedProps {
   /** Trigger content. A multi-select's defaults to the label with the selection count
    *  (`Labels · 2`), a single pick's to the picked value's row text, else to the label. */
   readonly children?: ReactNode;
+  /** Whether the trigger ends in a chevron, as it does by default: the sign a sighted reader
+   *  reads that the trigger opens a list (`aria-haspopup` tells a screen reader alone), with
+   *  the trigger's text in front of it ending in an ellipsis where the trigger is too narrow for
+   *  it. A trigger whose children are a look of their own passes `false` and draws them as they
+   *  are: the tinted badge an ask card's hand-on and the issue header's Assignee and Repository
+   *  show (`badge-select.ts`), and a table header's funnel, whose text-filter twin is a
+   *  `PanelTrigger` that draws none either. */
+  readonly chevron?: boolean;
   readonly disabled?: boolean;
   /** Which control of the vocabulary this is, written into the trigger's `data-control`: a
    *  column filter is a multi-select under its own name, while a multi-select a page draws for
@@ -59,7 +68,7 @@ interface SharedProps {
    *  once they have. Read as the list opens. */
   readonly focusOnOpen?: boolean;
   /** The concept the control picks from: the default trigger text, `Clear <label>`, the
-   *  listbox's accessible name, and a single pick's trigger's accessible name. */
+   *  listbox's accessible name, and the start of a single pick's trigger's accessible name. */
   readonly label: string;
   /** Marks the host's own code finds the trigger and the text box by. */
   readonly marks?: ListMarks;
@@ -85,8 +94,8 @@ interface SharedProps {
   readonly searchLabel: string;
   /** How much room the default trigger takes; a `triggerClassName` decides for itself. */
   readonly size?: ControlSize;
-  /** The trigger's accessible name in place of its text. A single pick's defaults to `label`,
-   *  so its trigger is named for the list whatever value it shows. */
+  /** A multi-select trigger's accessible name in place of its text; a single pick's trigger's
+   *  name starts with it in place of `label`, before what the trigger shows. */
   readonly triggerAriaLabel?: string;
   readonly triggerClassName?: string;
 }
@@ -126,15 +135,18 @@ export type MultiSelectProps = MultipleProps | SingleProps;
  * value to `onPick`, closes the list and returns the focus to the trigger. It opens with its
  * picked value active, as a `<select>` and the WAI-ARIA select-only combobox do, so Enter there
  * keeps the value and the arrows move on from it; Escape picks nothing, changes no value and
- * returns the focus to the trigger. Its trigger is named for the list (`label`) whatever it
- * shows, and while a value is picked the trigger's text is its description, so a reader hears
- * the list and the value staged in it, as a `<select>` reads. While the list is open the trigger
- * names the panel holding it (`aria-controls`), the text box and the listbox both.
+ * returns the focus to the trigger. Its trigger is named for the list (`label`) and then for what
+ * it shows, so the words a reader sees on it are in its name and a screen reader hears the list
+ * and the value staged in it, as a `<select>` reads. While the list is open the trigger
+ * names the panel holding it (`aria-controls`), the text box and the listbox both. The trigger
+ * ends in a chevron, as a `<select>` ends in its arrow, unless its host draws a look of its own
+ * (`chevron`).
  */
 export function MultiSelect(props: MultiSelectProps): ReactNode {
   const {
     ariaDisabled = false,
     children,
+    chevron = true,
     control,
     disabled = false,
     emptyMessage,
@@ -162,7 +174,8 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
   const id = useId();
   const panelId = `${id}-panel`;
   const listboxId = `${id}-options`;
-  const pickedId = `${id}-picked`;
+  const nameId = `${id}-name`;
+  const shownId = `${id}-shown`;
   const optionId = (value: string) => `${id}-option-${encodeURIComponent(value)}`;
   const [query, setQuery] = useState("");
   const [activeValue, setActiveValue] = useState<string | undefined>(undefined);
@@ -279,16 +292,41 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
     `flex min-h-11 w-full items-center gap-2 border-b px-3 py-2 text-left text-sm last:border-b-0 ${borderDefault} ${textSecondaryOnSurface} ${cardHoverBorder} ${
       active ? `${selectedCardBg} ${selectedCardBorder}` : ""
     }`;
+  // The picked value's row text, which a single pick's trigger shows unless its host passes
+  // words of its own.
+  const pickedLabel = single && selected[0] !== undefined ? labelOf(selected[0]) : undefined;
+  const triggerText = single
+    ? (children ?? pickedLabel ?? label)
+    : (children ?? (selected.length === 0 ? label : `${label} · ${selected.length}`));
+  // A single pick's trigger is named for its list and then for what it shows - "Assignee of
+  // CORE-1 alice", "Source project Choose a project" - so the words on it, the ones a
+  // sighted reader reads and a speech-input reader says to press it, are in its name (WCAG 2.5.3,
+  // Label in Name), and a screen reader hears the list and the value staged in it. The list's
+  // name is a hidden element beside the trigger, outside it so the trigger's text stays the words
+  // it shows, and what it shows is the element that holds that text, so words a host hides from
+  // assistive technology there - a badge beside the `sr-only` words that read it - stay out of the
+  // name. A trigger that shows the list's own name is named by that name once.
+  const triggerName = triggerAriaLabel ?? label;
+  const namedBy = !single
+    ? undefined
+    : triggerText === triggerName
+      ? nameId
+      : `${nameId} ${shownId}`;
 
   return (
     <>
+      {single ? (
+        <span hidden id={nameId}>
+          {triggerName}
+        </span>
+      ) : null}
       <button
         aria-controls={open ? panelId : undefined}
-        aria-describedby={single && selected.length > 0 ? pickedId : undefined}
         aria-disabled={ariaDisabled || undefined}
         aria-expanded={open}
         aria-haspopup="listbox"
-        aria-label={single ? (triggerAriaLabel ?? label) : triggerAriaLabel}
+        aria-label={single ? undefined : triggerAriaLabel}
+        aria-labelledby={namedBy}
         className={triggerClassName}
         data-control={control}
         {...marks?.trigger}
@@ -300,12 +338,23 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
         ref={triggerRef}
         type="button"
       >
-        {single ? (
-          <span id={pickedId}>
-            {children ?? (selected[0] === undefined ? label : labelOf(selected[0]))}
+        {chevron ? (
+          // The text and the chevron in a flex box of their own, whatever display the trigger
+          // gets: a block from its host's classes, or the flex box `styles.css` makes every
+          // button below 1280 px, whose own text ends in no ellipsis (`TruncatedText`). The text
+          // takes the room the chevron leaves and ends in an ellipsis where that is too little
+          // (a single pick's whole value is its `title`), and the chevron stays whole at the
+          // trigger's end, at the right edge of a trigger as wide as its box.
+          <span className="flex min-w-0 grow items-center gap-1" id={single ? shownId : undefined}>
+            <TruncatedText className="min-w-0 grow" title={pickedLabel}>
+              {triggerText}
+            </TruncatedText>
+            <ChevronIcon expanded={open} />
           </span>
+        ) : single ? (
+          <span id={shownId}>{triggerText}</span>
         ) : (
-          (children ?? (selected.length === 0 ? label : `${label} · ${selected.length}`))
+          triggerText
         )}
       </button>
       {open ? (

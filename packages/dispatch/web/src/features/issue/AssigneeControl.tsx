@@ -32,7 +32,7 @@ const UNASSIGNED = "";
  * at once and roll back together; a refused person shows the server's reason. Like
  * `PriorityControl`, the control stays enabled while a save is in flight - a disabled control
  * drops the focus it holds and leaves the tab order - and a pick made meanwhile is queued behind
- * the save. Labelled `Assignee of <KEY>`, with the badge's words as its description.
+ * the save. Named `Assignee of <KEY>` and then the badge's words.
  */
 export function AssigneeControl({
   assignee,
@@ -60,6 +60,7 @@ export function AssigneeControl({
         {...badgeReachHandlers(() => setWanted(true))}
       >
         <MultiSelect
+          chevron={false}
           disabled={disabled}
           emptyMessage={users.isPending ? "Loading people…" : "Nobody matches that."}
           error={users.isError ? "Could not load the people list." : null}

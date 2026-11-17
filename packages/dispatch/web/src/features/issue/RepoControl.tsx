@@ -33,9 +33,9 @@ const INHERIT = "";
  * answers nothing shows, a project that maps none has nothing to pick and gets no item, and a
  * read that fails shows `Repository:` with the failure and a Retry, never a hidden item. A failed
  * read beside a resolved repository shows the same failure next to the picker, and in its list.
- * The badge is hidden from assistive technology; the trigger's description names what it shows:
- * the repository, `, inherited or the project's default` when it is not the issue's own, or
- * `No repository`.
+ * The badge is hidden from assistive technology; the trigger's name goes on from its label to the
+ * words that read what it shows: the repository, `, inherited or the project's default` when it
+ * is not the issue's own, or `No repository`.
  */
 export function RepoControl({
   disabled = false,
@@ -81,7 +81,7 @@ export function RepoControl({
   const options = repo === null || mapped.includes(repo) ? mapped : [repo, ...mapped];
   const value = repo ?? INHERIT;
   const tone = repo === null ? badgeLow : badgePrimary;
-  const description =
+  const spoken =
     resolvedRepo === null
       ? "No repository"
       : repo === null
@@ -98,6 +98,7 @@ export function RepoControl({
         }
       >
         <MultiSelect
+          chevron={false}
           disabled={disabled}
           emptyMessage={
             mappings.isPending ? "Loading repositories…" : "No repository matches that."
@@ -116,16 +117,16 @@ export function RepoControl({
           triggerClassName={badgeSelectRailTrigger}
           value={value}
         >
-          {/* A single pick's trigger reads what it holds as its description, and the badge is
-              hidden from it: a screen reader hears the words beside it, the target as well as
-              Inherit. */}
+          {/* A single pick's trigger is named for its list and then for what it shows, and the
+              badge is hidden from that name: a screen reader hears the words beside it, the
+              target as well as Inherit. */}
           <span
             aria-hidden="true"
             className={`${badgeSelectBadge} font-mono ${tone.bg} ${tone.text}`}
           >
             {resolvedRepo ?? "No repository"}
           </span>
-          <span className="sr-only">{description}</span>
+          <span className="sr-only">{spoken}</span>
         </MultiSelect>
       </span>
     );

@@ -42,7 +42,7 @@ import {
 import { Timestamp } from "../refs/Timestamp";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { settingsFieldLabel, settingsMonoInput, settingsSubmitButton } from "./classes";
-import { ProjectSelect } from "./ProjectSelect";
+import { NoProjectPicked, ProjectSelect } from "./ProjectSelect";
 import { useLegionDaemons } from "./useLegionDaemons";
 
 /** A daemon a person named: the project it serves and the base URL its state is read from. */
@@ -110,6 +110,8 @@ export function LegionDaemonsSection(): ReactNode {
   const queryClient = useQueryClient();
   const human = useIsHuman();
   const [project, setProject] = useState("");
+  // The form was submitted with no project picked, and says so until one is.
+  const [projectMissing, setProjectMissing] = useState(false);
   const [stateUrl, setStateUrl] = useState("");
   const [failedAction, setFailedAction] = useState<FailedAction>();
   const legion = useLegionDaemons();
@@ -191,6 +193,11 @@ export function LegionDaemonsSection(): ReactNode {
   };
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    // The project list is a button, which no `required` holds: an empty one files nothing here.
+    if (project === "") {
+      setProjectMissing(true);
+      return;
+    }
     const { refusal, url } = legionStateUrl(stateUrl);
     if (refusal !== "") {
       setFailedAction({ kind: "input", message: refusal });
@@ -280,16 +287,16 @@ export function LegionDaemonsSection(): ReactNode {
               className={`mt-6 grid gap-4 rounded-xl border p-4 sm:grid-cols-[1fr_1fr_auto] sm:items-end ${borderDefault}`}
               onSubmit={submit}
             >
-              <label className={settingsFieldLabel} htmlFor="legion-project">
-                Legion project
-                <ProjectSelect
-                  disabled={writing}
-                  id="legion-project"
-                  onChange={setProject}
-                  projects={legion.projects}
-                  value={project}
-                />
-              </label>
+              <ProjectSelect
+                disabled={writing}
+                label="Legion project"
+                onChange={(picked) => {
+                  setProject(picked);
+                  setProjectMissing(false);
+                }}
+                projects={legion.projects}
+                value={project}
+              />
               <label className={settingsFieldLabel} htmlFor="legion-state-url">
                 Legion daemon state URL
                 <input
@@ -307,6 +314,7 @@ export function LegionDaemonsSection(): ReactNode {
               </button>
             </form>
           ) : null}
+          {projectMissing ? <NoProjectPicked /> : null}
           {failedAction !== undefined ? (
             <div className="mt-4">
               <QueryError

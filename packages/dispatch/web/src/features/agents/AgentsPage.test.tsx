@@ -12,7 +12,7 @@ import type { UserEvent } from "@testing-library/user-event";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { jump, realClock, tick } from "../../__tests__/fake-clock";
-import { listOf, panelOf, textBoxes } from "../../__tests__/list-picks";
+import { listOf, panelOf, pickNamed, textBoxes } from "../../__tests__/list-picks";
 import { answerAgentStates } from "../../__tests__/send-answers";
 import { userOnFakeClock } from "../../__tests__/user";
 import { wholeText } from "../../__tests__/whole-text";
@@ -1215,7 +1215,9 @@ const coreIssue: IssueSummary = {
 /** The Issue list a card's own trigger opened, portalled out of the card: the panel the trigger
  *  names in `aria-controls`. */
 function issueList(agentCard: HTMLElement): HTMLElement {
-  return panelOf(within(agentCard).getByRole("button", { hidden: true, name: "Choose issue" }));
+  return panelOf(
+    within(agentCard).getByRole("button", { hidden: true, name: pickNamed("Choose issue") })
+  );
 }
 
 test("Agents keeps selected-issue sends on the issue message route", async () => {
@@ -1226,7 +1228,7 @@ test("Agents keeps selected-issue sends on the issue message route", async () =>
     const region = await screen.findByRole("region", { name: "Agents" });
     const planner = card(region, "Planner");
     await expand(user, planner, "Planner");
-    await user.click(within(planner).getByRole("button", { name: "Choose issue" }));
+    await user.click(within(planner).getByRole("button", { name: pickNamed("Choose issue") }));
     await user.click(
       await within(issueList(planner)).findByRole("option", { name: "CORE-1 · Core work" })
     );
@@ -1269,7 +1271,7 @@ test("Agents loads only open issues when an optional picker is opened", async ()
     const planner = card(region, "Planner");
     await expand(user, planner, "Planner");
     expect(page.listIssues).not.toHaveBeenCalled();
-    await user.click(within(planner).getByRole("button", { name: "Choose issue" }));
+    await user.click(within(planner).getByRole("button", { name: pickNamed("Choose issue") }));
     await waitFor(() => expect(page.listIssues).toHaveBeenCalledWith({ open: true }));
   } finally {
     page.view.unmount();
@@ -1293,7 +1295,7 @@ test("the composer's Issue list holds a text box that narrows the issues, and En
     const planner = card(region, "Planner");
     await expand(user, planner, "Planner");
     const before = new Set(textBoxes());
-    const toggle = within(planner).getByRole("button", { name: "Choose issue" });
+    const toggle = within(planner).getByRole("button", { name: pickNamed("Choose issue") });
     await user.click(toggle);
     const named = (box: Element) =>
       [...listOf(box).querySelectorAll('[role="option"]')].map((option) => option.textContent);
@@ -2107,7 +2109,7 @@ test("Agents replies to an issue-less exchange through the agent route, threaded
     const replies = await within(conversation).findByRole("list", { name: "Replies" });
     const answer = within(replies).getByText("Yes, it can.").closest("li");
     if (answer === null) throw new Error("answer turn missing");
-    expect(within(planner).getByRole("button", { name: "Choose issue" })).toBeTruthy();
+    expect(within(planner).getByRole("button", { name: pickNamed("Choose issue") })).toBeTruthy();
 
     await user.click(within(answer).getByRole("button", { name: "Reply" }));
     const composer = within(planner).getByRole("form", { name: "Comment composer" });
@@ -2115,7 +2117,9 @@ test("Agents replies to an issue-less exchange through the agent route, threaded
       within(composer).getByText(wholeText("Replying to Planner — Yes, it can."))
     ).toBeTruthy();
     // A reply lives in its parent's direct-session conversation; it hides the issue picker.
-    expect(within(planner).queryByRole("button", { name: "Choose issue" })).not.toBeInTheDocument();
+    expect(
+      within(planner).queryByRole("button", { name: pickNamed("Choose issue") })
+    ).not.toBeInTheDocument();
     await type(user, within(planner).getByRole("textbox", { name: "Comment" }), "Ship it.");
     // The composer's own form submit, which user-event has no form for.
     fireEvent.submit(composer);
@@ -2135,7 +2139,7 @@ test("Agents replies to an issue-less exchange through the agent route, threaded
         within(planner).queryByText(wholeText("Replying to Planner — Yes, it can."))
       ).toBeNull()
     );
-    expect(within(planner).getByRole("button", { name: "Choose issue" })).toBeTruthy();
+    expect(within(planner).getByRole("button", { name: pickNamed("Choose issue") })).toBeTruthy();
   } finally {
     page.view.unmount();
     page.restore();
@@ -3840,7 +3844,7 @@ test("i on a row whose Issue list is open goes into its text box rather than shu
     const region = await screen.findByRole("region", { name: "Agents" });
     const planner = card(region, "Planner");
     await expand(user, planner, "Planner");
-    const toggle = within(planner).getByRole("button", { name: "Choose issue" });
+    const toggle = within(planner).getByRole("button", { name: pickNamed("Choose issue") });
     await user.click(toggle);
     expect(toggle).toHaveAttribute("aria-expanded", "true");
 
@@ -3967,8 +3971,11 @@ test("a row back after its session left mid-send holds the send it left until it
     fireEvent.submit(within(planner).getByRole("form", { name: "Comment composer" }));
     await waitFor(() =>
       expect(
-        (within(planner).getByRole("button", { name: "Choose issue" }) as HTMLButtonElement)
-          .disabled
+        (
+          within(planner).getByRole("button", {
+            name: pickNamed("Choose issue"),
+          }) as HTMLButtonElement
+        ).disabled
       ).toBe(true)
     );
 
@@ -3988,7 +3995,7 @@ test("a row back after its session left mid-send holds the send it left until it
       "true"
     );
     const choose = () =>
-      within(back).getByRole("button", { name: "Choose issue" }) as HTMLButtonElement;
+      within(back).getByRole("button", { name: pickNamed("Choose issue") }) as HTMLButtonElement;
     const field = () =>
       within(back).getByRole("textbox", { name: "Comment" }) as HTMLTextAreaElement;
     // The composer holds its draft through its control fieldset.

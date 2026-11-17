@@ -40,7 +40,7 @@ import {
   settingsSubmitButton,
 } from "./classes";
 import { LegionDaemonsSection } from "./LegionDaemonsSection";
-import { ProjectSelect } from "./ProjectSelect";
+import { NoProjectPicked, ProjectSelect } from "./ProjectSelect";
 import { ProjectsSection } from "./ProjectsSection";
 
 interface MappingInput {
@@ -75,6 +75,8 @@ export function SettingsPage(): ReactNode {
   const queryClient = useQueryClient();
   const [repository, setRepository] = useState("");
   const [project, setProject] = useState("");
+  // The form was submitted with no project picked, and says so until one is.
+  const [projectMissing, setProjectMissing] = useState(false);
   const [failedAction, setFailedAction] = useState<FailedAction>();
   const mappings = useQuery({ queryKey: ["repo-projects"], queryFn: () => api.listRepoProjects() });
   const projects = useQuery(projectsQuery());
@@ -173,6 +175,11 @@ export function SettingsPage(): ReactNode {
   };
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    // The project list is a button, which no `required` holds: an empty one files nothing here.
+    if (project === "") {
+      setProjectMissing(true);
+      return;
+    }
     const [owner, repo] = repository.split("/", 2);
     putMapping.mutate({ project, repo: canonicalRepo(owner ?? "", repo ?? "") });
   };
@@ -299,15 +306,15 @@ export function SettingsPage(): ReactNode {
                     value={repository}
                   />
                 </label>
-                <label className={settingsFieldLabel} htmlFor="project">
-                  Project
-                  <ProjectSelect
-                    id="project"
-                    onChange={setProject}
-                    projects={projects.data}
-                    value={project}
-                  />
-                </label>
+                <ProjectSelect
+                  label="Project"
+                  onChange={(picked) => {
+                    setProject(picked);
+                    setProjectMissing(false);
+                  }}
+                  projects={projects.data}
+                  value={project}
+                />
                 <button
                   className={settingsSubmitButton}
                   disabled={putMapping.isPending || deleteMapping.isPending}
@@ -316,6 +323,7 @@ export function SettingsPage(): ReactNode {
                   Add mapping
                 </button>
               </form>
+              {projectMissing ? <NoProjectPicked /> : null}
               {failedAction !== undefined ? (
                 <div className="mt-4">
                   <QueryError

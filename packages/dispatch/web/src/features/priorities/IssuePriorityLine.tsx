@@ -7,7 +7,6 @@ import { apiErrorMessage, issuePatchRequest } from "../../api/client";
 import { prioritiesQuery } from "../../api/queries";
 import type { Issue, PriorityRow } from "../../api/types";
 import { MultiSelect } from "../../components/MultiSelect";
-import { TruncatedText } from "../../components/TruncatedText";
 import {
   dangerText,
   dismissButtonText,
@@ -173,16 +172,15 @@ export function IssuePriorityLine({
             optionLabel={(id) => labels.get(id)}
             options={choices.map((row) => row.id)}
             searchLabel="Search priorities"
-            triggerClassName={`min-h-11 max-w-56 min-w-0 shrink-0 truncate rounded-lg px-2 py-1 text-left text-sm md:min-h-8 ${inputClasses(true)}`}
+            // A fixed width, the 224 px the native select this list replaced was capped at: as
+            // wide as that select was once any option reached the cap, so the form beside it
+            // never moves as the reader picks, nor once the priorities have loaded, and a title
+            // longer than that ends in an ellipsis, as it did in the select.
+            triggerClassName={`min-h-11 w-56 shrink-0 rounded-lg px-2 py-1 text-left text-sm md:min-h-8 ${inputClasses(true)}`}
             value={picked === "" ? undefined : picked}
           >
-            {/* Below 1280 px the trigger is a flex box, whose own text ends in no ellipsis
-                (`TruncatedText`); capped at the trigger's width inside its padding, the text
-                ends in one there too. */}
-            <TruncatedText className="block max-w-52" title={pickedLabel}>
-              {pickedLabel ??
-                (priorities.data === undefined ? "Loading priorities…" : "Choose a priority")}
-            </TruncatedText>
+            {pickedLabel ??
+              (priorities.data === undefined ? "Loading priorities…" : "Choose a priority")}
           </MultiSelect>
           <button
             className={`min-h-11 rounded px-2 py-1 text-sm font-medium disabled:cursor-not-allowed md:min-h-8 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonDisabledText}`}
