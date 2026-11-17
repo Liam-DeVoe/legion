@@ -5,7 +5,6 @@ import (
 	"log/slog"
 	"net/url"
 	"strconv"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -95,8 +94,7 @@ func (h *deliveryHub) Subscribe(conn deliveryLiveConn, frame deliverySubscriptio
 		conn.Send(*refusal)
 		return false
 	}
-	spec.reader, spec.viewer = reader, deliveryReaderKey(reader)
-	spec.key += "|" + spec.viewer
+	spec.readFor(reader)
 	var held *DeliveryLiveRevs
 	if frame.Resume != nil {
 		seq, err := strconv.ParseInt(frame.Resume.Seq, 10, 64)
@@ -219,8 +217,7 @@ func (h *deliveryHub) recheckReaders(g *hubGeneration) {
 			sub.conn.Send(*refusal)
 		case sub.view.spec.viewer != viewer:
 			spec := sub.view.spec
-			spec.key = strings.TrimSuffix(spec.key, "|"+spec.viewer) + "|" + viewer
-			spec.reader, spec.viewer = reader, viewer
+			spec.readFor(reader)
 			g.leaveLocked(sub)
 			h.joinLocked(g, sub.conn, sub.id, spec, nil, sub.resolve, sub.holds, h.clock.Now())
 		}
@@ -479,15 +476,17 @@ type deliverySub struct {
 }
 
 // deliveryLiveSpec is a subscribed view, resolved: its kind, its window (a preset's length in days,
-// or a custom range), its query without from and to, a pipeline view's pinned at, the reader it is
-// read for and that reader's part of the key (deliveryReaderKey), and the canonical key identical
-// views share.
+// or a custom range), its query without from and to, a pipeline view's pinned at, and its shape,
+// the key of the view whoever reads it; then the reader it is read for, that reader's part of the
+// key (deliveryReaderKey), and the canonical key identical views share, the shape and that part
+// (readFor).
 type deliveryLiveSpec struct {
 	kind     string
 	preset   int
 	from, to time.Time
 	query    url.Values
 	at       *time.Time
+	shape    string
 	reader   model.Actor
 	viewer   string
 	key      string
