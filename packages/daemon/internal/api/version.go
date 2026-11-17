@@ -2110,7 +2110,7 @@ package api
 // main's own number and every open head again at the next forward merge rather than from this
 // line.)
 //
-// 157: dispatch://INFRA-3583 -- the project release. The shim answers a new frame from the daemon,
+// 159: dispatch://INFRA-3583 -- the project release. The shim answers a new frame from the daemon,
 // `read-unpushed` (shimwire.ReadUnpushed: `id`, `issue`, `timeoutMs`), with
 // `read-unpushed-result` (shimwire.ReadUnpushedResult: `id`, `ok`, `commits`,
 // `workingCopyChanged`, `error`): how many commits of the issue's workspace no remote branch or tag
@@ -2131,7 +2131,7 @@ package api
 // api.ReleasedClaimEnds), each a `z.enum` in `packages/contracts/src/legion-api.ts`, which refuses
 // a word it does not name, so a word added later bumps this number. `GET /legion/v1/state` gains
 // `projectRelease`, that same body for the project's newest release, absent while none was
-// recorded; a caller from a pod whose claims record a contract below 157 is served the state
+// recorded; a caller from a pod whose claims record a contract below 159 is served the state
 // without it (api's stateNarrowings, withoutProjectRelease), as a caller below 133 is served it
 // without `mergeWait`, and the bands compose. A claim's `suspendedBy` on the operator routes takes
 // `project_release`, a claim the release stopped, which the daemon's next boot starts again. The
@@ -2141,14 +2141,15 @@ package api
 // claim's round columns. While a release holds every start, the operator's spawn, retry, resume
 // and deliver, and either door's fresh session and compaction, answer 409 with the code
 // `PROJECT_RELEASED` and the sentence api.ProjectReleaseHeldSentence. The number is the census an
-// implementer of dispatch://INFRA-3583 read on 2026-11-17, at the forward merge of main d9299f7a, of
-// `const DaemonAPIVersion` at the head of every one of the 193 open pull requests of this
-// repository, read between 2026-11-17T11:28:01Z and 11:32:59Z: main declares 151 (INFRA-3729's
+// implementer of dispatch://INFRA-3583 read on 2026-11-17, at the forward merge of main f3dc51da, of
+// `const DaemonAPIVersion` at the head of every one of the 198 open pull requests of this
+// repository, read between 2026-11-17T16:31:44Z and 16:39:24Z: main declares 151 (INFRA-3729's
 // entry above), and no open head declares above it but #3730 at 152, #4115 at 153, #3659 at 154,
-// #4273 at 155 and #4065 at 156, so 157 is the lowest number above the base's that no other open
-// head declares. This change first took 150, the lowest free number at the forward merge of
-// 2026-11-15, and moved here once main reached 151. Read the base's own number and every open
-// head again at the next merge rather than from this entry, as
+// #4273 at 155, #4065 at 156, #2230, #3519 and #3993 at 157, and #4017 and #4173 at 158, so 159
+// is the lowest number above the base's that no other open head declares. This change first took
+// 150, the lowest free number at the forward merge of 2026-11-15, then 157 once main reached 151,
+// and 159 once three other heads had taken 157. Read the base's own number and every open head
+// again at the next merge rather than from this entry, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.
-const DaemonAPIVersion = 157
+const DaemonAPIVersion = 159

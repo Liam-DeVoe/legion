@@ -95,11 +95,11 @@ field from `legion.goDaemonApiVersion` when the plugin dropped its TypeScript-da
 (LEGION-223): a release before it declares the TypeScript daemon's 9 under this name and is
 refused naming that number. The split of the one plugin into this package and `@sjawhar/pi-envoy`
 (LEGION-247) moved no request, response or pane variable, so it bumped nothing of its own: the
-number is the one `DaemonAPIVersion` declares, last bumped by contract 157's project release
+number is the one `DaemonAPIVersion` declares, last bumped by contract 159's project release
 (dispatch://INFRA-3583: the shim answers a new `read-unpushed` frame with a count of the
 workspace's unpushed commits and no content, the operator's routes gain
 `POST`/`GET /legion/v1/operator/project/release`, the state gains an optional `projectRelease`
-that a caller from a pod whose claims record a contract under 157 is not served
+that a caller from a pod whose claims record a contract under 159 is not served
 (`api.stateFor`, `withoutProjectRelease`), a claim's `suspendedBy` gains `project_release`, and a
 `ready_for_update` whose round is `release:<id>` answers the release; no shape this plugin
 parses becomes required), after contract 151 (dispatch://INFRA-3729: issue pods in GKE Sandbox
