@@ -479,6 +479,9 @@ func TestNoAnswerNamesAnObjectItsReaderCannotSee(t *testing.T) {
 	routes := (&server{deps: Deps{TestHooksEnabled: true}}).routes()
 	walked := 0
 	for _, walker := range walkers {
+		// read counts the walker's answers the census looked into: a 2xx JSON body. A walker whose
+		// every read was refused, or answered something else, looked at nothing, and fails below.
+		read := 0
 		for _, route := range routes {
 			name := route.Method + " " + route.Pattern
 			if route.Method != http.MethodGet || !slices.ContainsFunc(route.Reads, readsProjectRows) {
@@ -490,14 +493,24 @@ func TestNoAnswerNamesAnObjectItsReaderCannotSee(t *testing.T) {
 			}
 			walked++
 			answer := fixture.request(t, walker.caller, http.MethodGet, target, nil)
+			jsonBody := strings.HasPrefix(answer.Header().Get("Content-Type"), "application/json")
 			var decoded any
 			if err := json.Unmarshal(answer.Body.Bytes(), &decoded); err != nil {
+				if jsonBody {
+					t.Errorf("%s: GET %s answered %d with a JSON body that does not decode: %v", walker.caller, target, answer.Code, err)
+				}
 				continue
+			}
+			if answer.Code >= http.StatusOK && answer.Code < http.StatusMultipleChoices {
+				read++
 			}
 			for _, found := range walker.hidden.leaksOf(decoded, "$") {
 				t.Errorf("%s: GET %s answers %s at %s %q, naming %s, which it does not see", walker.caller, target,
 					name, found.path, found.value, found.object)
 			}
+		}
+		if read == 0 {
+			t.Errorf("%s: no GET row answered it a 2xx JSON body, so the census read nothing of what it sees", walker.caller)
 		}
 		// The event log and the issue's events, read whole: every event the walker may read.
 		for _, target := range []string{"/api/v1/events/log?" + url.Values{"limit": {"1000"}}.Encode(),
