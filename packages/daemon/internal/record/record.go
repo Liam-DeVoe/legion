@@ -226,7 +226,8 @@ func (i Issue) Repository() (ghrepo.Repository, error) {
 }
 
 // Assignment is what one unit ran one experiment under: the arm drawn for it, the mode in force
-// when it was drawn and the instant, recorded once for that unit and never changed
+// when it was drawn and the instant, and how the issue drawn is done where the arm says so (Plan),
+// recorded once for that unit and never changed
 // (Store.PutAssignments). It is the declared experiments' record, and the only one: the four
 // issues.memory_* columns the single hard-coded experiment was kept in are written by nothing
 // from this release on, are read by nothing this release's daemon runs but the back-fill of
@@ -257,6 +258,12 @@ type Assignment struct {
 	// Carried marks a row a hand-over wrote rather than a draw: the answer this unit took from the
 	// tree it left, whether that answer was an arm or no arm at all (Store.CarryAssignments).
 	Carried bool
+	// Plan is how the issue drawn is done, a config.PlanGroup word taken as a string for the
+	// reason Unit is: `owner`, `default` or `owner-alone`, the `plan` of the arm drawn, and ""
+	// where the arm names none, the draw was made under mode off, a hand-over wrote the row, or
+	// the row was drawn before the column existed. An issue keeps it for its whole life, whatever
+	// the project's file says later (internal/experiment's GroupOf reads it).
+	Plan string
 }
 
 // DeclaredExperiment is one experiment a hand-over settles a child at: the name the project

@@ -67,3 +67,53 @@ func TestARootIsDrawnForTheIssueExperimentsWhenItIsFirstRecorded(t *testing.T) {
 		t.Fatalf("after an observation the root holds %v, want %v: an experiment declared after an issue was recorded never reaches it", after, before)
 	}
 }
+
+// planningExperiment sets how each issue it draws is done: its arm `a` takes the plan the issue's
+// owner gives, and its arm `b` runs the project's default steps. At mode on it gives every issue
+// `b`.
+func planningExperiment(mode config.ExperimentMode) config.Experiment {
+	return config.Experiment{Name: "planning", Mode: mode, Unit: config.ExperimentIssue, OnVariant: "b",
+		Variants: []config.Variant{
+			{Name: "a", Weight: 1, Plan: config.PlanGroupOwner},
+			{Name: "b", Weight: 1, Plan: config.PlanGroupDefault},
+		}}
+}
+
+// The draw of an experiment that sets how an issue is done records, beside the arm, the plan of
+// that arm, so the issue keeps that word for its life: a root recorded at mode on is drawn `b`
+// and holds the plan `default`. At mode off the root is drawn into no arm and holds no plan. The
+// fault caught is a draw that drops the plan of its arm.
+func TestADrawRecordsThePlanOfItsArm(t *testing.T) {
+	for _, tc := range []struct {
+		mode          config.ExperimentMode
+		variant, plan string
+	}{
+		{mode: config.ExperimentOn, variant: "b", plan: "default"},
+		{mode: config.ExperimentOff, variant: "", plan: ""},
+	} {
+		t.Run(string(tc.mode), func(t *testing.T) {
+			pool := migratedPool(t)
+			admission := quiet(t, 1)
+			admission.UseExperiments(append(declaring(""), planningExperiment(tc.mode)))
+			admission.source = refusingSource(t)
+			engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories,
+				Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil)
+			const root = "LEGION-1"
+			apply(t, pool, admission, "root-recorded", intake.DispatchIssue{Key: root, ResolvedRepo: "acme/widgets", Seq: 1,
+				Type: "issue.updated", Status: "todo", Title: root, Rank: "A", HandedOver: handed}, engine)
+
+			var drawn *record.Assignment
+			for _, row := range assignments(t, pool, root) {
+				if row.Experiment == "planning" {
+					drawn = &row
+				}
+			}
+			if drawn == nil {
+				t.Fatalf("the recorded root holds %v, want a row of planning", answers(t, pool, root))
+			}
+			if drawn.Unit != "issue" || drawn.Variant != tc.variant || drawn.Mode != string(tc.mode) || drawn.Plan != tc.plan {
+				t.Fatalf("the root's planning row = %+v, want unit issue, variant %q, mode %s and plan %q", *drawn, tc.variant, tc.mode, tc.plan)
+			}
+		})
+	}
+}
