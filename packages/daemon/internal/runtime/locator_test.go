@@ -51,7 +51,7 @@ func sandboxLocator() Locator {
 }
 
 // controllerLocator is the project controller's process: the one launcher of its own Sandbox,
-// whose container is the controller role its token names (claim.Token.Role).
+// whose container is the controller's, which its token names (claim.Token.IsController).
 func controllerLocator() Locator {
 	return Locator{
 		Runtime:     RuntimeSandbox,
