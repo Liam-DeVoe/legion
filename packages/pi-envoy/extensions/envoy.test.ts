@@ -19,6 +19,7 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  readlinkSync,
   realpathSync,
   rmSync,
   statSync,
@@ -773,7 +774,7 @@ const NATS_DEFAULT_PORT = 4222;
 /**
  * A listener on `127.0.0.1:<port>` that counts the connections made to it and closes each, or
  * null when something already listens there. `Bun.listen` binds synchronously and throws
- * `EADDRINUSE`, so a `describe` body can read the answer and hand it to `test.skipIf`, and the
+ * `EADDRINUSE`, so a `describe` body reads the answer before its rows run, and the
  * listener it returns holds the port from that moment: no second bind, so no race with whatever
  * else on the machine might take the port between the question and the row that asks it.
  */
@@ -798,6 +799,45 @@ function listenCountingDials(
     if (error instanceof Error && "code" in error && error.code === "EADDRINUSE") return null;
     throw error;
   }
+}
+
+/**
+ * Who listens on `port`, as `/proc` shows it to this user: each process holding a listening TCP
+ * socket on it, as `pid (command)`, or why none can be named. The rows that count what dials
+ * nats.js's default port fail with this line where another program holds that port.
+ */
+function holderOf(port: number): string {
+  const hex = `:${port.toString(16).toUpperCase().padStart(4, "0")}`;
+  const inodes = new Set<string>();
+  for (const table of ["/proc/net/tcp", "/proc/net/tcp6"]) {
+    let text: string;
+    try {
+      text = readFileSync(table, "utf8");
+    } catch {
+      continue;
+    }
+    for (const line of text.split("\n").slice(1)) {
+      // proc(5): the local address and port, the state (0A is LISTEN), the socket's inode.
+      const [, local, , state, , , , , , inode] = line.trim().split(/\s+/);
+      if (local?.endsWith(hex) && state === "0A" && inode !== undefined) inodes.add(inode);
+    }
+  }
+  if (inodes.size === 0) return "a program this test cannot name: /proc lists no listener on it";
+  const holders: string[] = [];
+  for (const pid of readdirSync("/proc").filter((entry) => /^\d+$/.test(entry))) {
+    try {
+      const held = readdirSync(`/proc/${pid}/fd`).some((fd) => {
+        const inode = /^socket:\[(\d+)\]$/.exec(readlinkSync(`/proc/${pid}/fd/${fd}`))?.[1];
+        return inode !== undefined && inodes.has(inode);
+      });
+      if (held) holders.push(`${pid} (${readFileSync(`/proc/${pid}/comm`, "utf8").trim()})`);
+    } catch {
+      // A process that ended, or whose descriptors this user may not read.
+    }
+  }
+  return holders.length > 0
+    ? `process ${holders.join(", ")}`
+    : `a process of another user or PID namespace (socket ${[...inodes].join(", ")}), which this user cannot read`;
 }
 
 /** Every callback the default `sessionContext()` timer ran, awaited after each test. */
@@ -19325,14 +19365,11 @@ console.log(JSON.stringify(args));
   // The refusals are checked on every machine. That nothing was dialed is checked against a
   // listener of this file's own on that one port — the kernel cannot pick it, 4222 being the
   // default under proof — bound once here and held for the rows that count its connections. Where
-  // something else already listens there (a local NATS, a CI service), those rows skip, named.
+  // another program already listens there (a local NATS), those rows fail and name it: a row that
+  // skipped there would pass nothing, and the CI job keeps the port free (its NATS service is
+  // published on a port Docker chooses).
   const dialProbe = listenCountingDials(NATS_DEFAULT_PORT);
-  if (dialProbe === null) {
-    console.warn(
-      `127.0.0.1:${NATS_DEFAULT_PORT} is already in use: the rows that count what dials nats.js's ` +
-        "default port are skipped. Every other row of this file still runs."
-    );
-  }
+  const dialProbeHolder = dialProbe === null ? holderOf(NATS_DEFAULT_PORT) : "";
   afterAll(() => dialProbe?.stop());
 
   for (const { slug, name, configure, why } of [
@@ -19390,19 +19427,18 @@ console.log(JSON.stringify(args));
       await bothSubscribesRefuse("refusals");
     });
 
-    test.skipIf(dialProbe === null)(
-      `with ${name}, nothing dials nats.js's default 127.0.0.1:${NATS_DEFAULT_PORT}`,
-      async () => {
-        if (dialProbe === null) {
-          throw new Error(`nothing of this file's own listens on 127.0.0.1:${NATS_DEFAULT_PORT}`);
-        }
-        // nats.js's own connect, so a dial that got through reaches the probe, not the mock.
-        natsState.realConnect = true;
-        const before = dialProbe.dialed();
-        await bothSubscribesRefuse("dials");
-        expect(dialProbe.dialed()).toBe(before);
+    test(`with ${name}, nothing dials nats.js's default 127.0.0.1:${NATS_DEFAULT_PORT}`, async () => {
+      if (dialProbe === null) {
+        throw new Error(
+          `127.0.0.1:${NATS_DEFAULT_PORT} is held by ${dialProbeHolder}, so this row cannot count what dials nats.js's default port: stop it and run the row again`
+        );
       }
-    );
+      // nats.js's own connect, so a dial that got through reaches the probe, not the mock.
+      natsState.realConnect = true;
+      const before = dialProbe.dialed();
+      await bothSubscribesRefuse("dials");
+      expect(dialProbe.dialed()).toBe(before);
+    });
   }
 
   // The daemon sends a role's every task and notice to its role topic, which reaches a session only
