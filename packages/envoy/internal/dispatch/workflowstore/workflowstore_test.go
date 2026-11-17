@@ -262,6 +262,45 @@ func TestAHeldFieldKeepsItsFirstValue(t *testing.T) {
 	}
 }
 
+// A write that does not name a field the node holds leaves it: the report the daemon writes to a
+// run that already ended names its identity and the report alone, and the run keeps the session
+// and the model its end wrote, in the write's answer, in the issue's read and in the log. An empty
+// session states nothing, as an absent one.
+func TestALateReportKeepsTheEndedRunsSession(t *testing.T) {
+	pool := storetest.Open(t).Pool
+	for name, session := range map[string]*string{"no session": nil, "an empty session": new("")} {
+		t.Run(name, func(t *testing.T) {
+			id, report := uuid.NewString(), uuid.NewString()
+			put(t, pool, startOf(implementer(id), minute(0)), minute(0))
+			end := endOf(implementer(id), ResultPassed, minute(1))
+			end.Session, end.Model = new("ses-first"), new("anthropic/claude-opus-5")
+			if ended := put(t, pool, end, minute(1)); ended.Session != "ses-first" || ended.Model != "anthropic/claude-opus-5" {
+				t.Fatalf("the end answers session %q model %q, want the pair it wrote", ended.Session, ended.Model)
+			}
+
+			late := implementer(id)
+			late.Report, late.Session = new(report), session
+			answered := put(t, pool, late, minute(2))
+			steps := issueSteps(t, pool, "LEG-1")
+			index := slices.IndexFunc(steps, func(step StepRead) bool { return step.ID == id })
+			if index < 0 {
+				t.Fatalf("LEG-1 does not list the run %s", id)
+			}
+			for what, step := range map[string]Step{"the report's answer": answered, "the read": steps[index].Step} {
+				if step.Session != "ses-first" || step.Model != "anthropic/claude-opus-5" || step.Report != report {
+					t.Errorf("%s holds session %q model %q report %q, want the end's ses-first and anthropic/claude-opus-5 beside report %s",
+						what, step.Session, step.Model, step.Report, report)
+				}
+			}
+			for _, field := range []string{AttributeSession, AttributeModel, AttributeReport} {
+				if count := valueTuples(t, pool, id, field); count != 1 {
+					t.Errorf("the log holds %d %s tuples of the run, want one", count, field)
+				}
+			}
+		})
+	}
+}
+
 // A write that makes a node names the step's whole identity: its task, kind, place, role and
 // generation. One that leaves any of them out is refused ErrStepInput and writes nothing; the
 // same write with all of them makes the node, which is the control.
