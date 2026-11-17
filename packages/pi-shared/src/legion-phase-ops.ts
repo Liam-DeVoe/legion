@@ -174,7 +174,18 @@ export const PhaseOpArguments = z.discriminatedUnion(
       wake_at: nextLook.optional(),
       plan_rating: planRating.optional(),
       plan_reason: planReason.optional(),
-    }),
+    })
+      // A rating of the plan carries its reason, and the daemon takes neither alone
+      // (PLAN_RATING_INPUT): one without the other is refused with the call's other problems,
+      // naming the one missing.
+      .refine((args) => args.plan_rating === undefined || args.plan_reason !== undefined, {
+        error:
+          "handoff_complete names plan_rating without plan_reason: send the rating of the plan with one sentence of why, the two together",
+      })
+      .refine((args) => args.plan_reason === undefined || args.plan_rating !== undefined, {
+        error:
+          "handoff_complete names plan_reason without plan_rating: send the reason with the rating of the plan, a whole number from 1 to 5, the two together",
+      }),
     operation("request_backward_move", {
       // The issue the move names: the tree architect's move names the issue it returns from
       // accepting (its grant serves its whole tree); a phase worker's leaves it out, or names its
@@ -392,11 +403,11 @@ const ROOT_COMPLETION_REFUSAL =
  * lookup failed. A refusal throws before any write, minting nothing and posting nothing: each
  * problem `PhaseOpArguments` finds, joined by `; `, a field the operation does not take named
  * first, then a root architect's completion,
- * then each problem with the operation's own fields in the order it takes them; then what the
- * record decides (a check report's verdict, its claim's role against the check's own, its
- * `wake_at`, `pending` or `wake_at` on a phase completion, the issue a completion or a move
- * names, a completion's `plan_rating` or `plan_reason` without the other), then a refused handoff
- * report (`findHandoffReport`). A daemon refusal throws its code and sentence.
+ * then each problem with the operation's own fields in the order it takes them, and a completion's
+ * `plan_rating` or `plan_reason` without the other; then what the record decides (a check
+ * report's verdict, its claim's role against the check's own, its `wake_at`, `pending` or
+ * `wake_at` on a phase completion, the issue a completion or a move names), then a refused
+ * handoff report (`findHandoffReport`). A daemon refusal throws its code and sentence.
  *
  * A completion is a phase's or a look's report on the closed issue's production check. The daemon
  * tells them apart by the caller's own live assignment (`api.handoffComplete`,
@@ -451,18 +462,6 @@ export async function executePhaseOp(
       if (named !== "" && named !== claim.issue) {
         throw new Error(
           `handoff_complete reports this session's own issue ${claim.issue}; leave issue out, or name ${claim.issue}, not ${named}`
-        );
-      }
-      // A rating of the plan carries its reason, and the daemon takes neither alone
-      // (PLAN_RATING_INPUT): one without the other is refused here, naming the one missing.
-      if (args.plan_rating !== undefined && args.plan_reason === undefined) {
-        throw new Error(
-          "handoff_complete names plan_rating without plan_reason: send the rating of the plan with one sentence of why, the two together"
-        );
-      }
-      if (args.plan_reason !== undefined && args.plan_rating === undefined) {
-        throw new Error(
-          "handoff_complete names plan_reason without plan_rating: send the reason with the rating of the plan, a whole number from 1 to 5, the two together"
         );
       }
       // Retried whole while the daemon restarts: the record, the handoff report and a fresh grant
@@ -745,7 +744,7 @@ async function completeHandoff(
 }
 
 /** The rating of the plan a completion carries, under the daemon's names (`planRating`,
- * `planReason`), or nothing; `executePhaseOp` has refused one without the other. */
+ * `planReason`), or nothing; `PhaseOpArguments` has refused one without the other. */
 function planRatingOf(
   args: Extract<z.infer<typeof PhaseOpArguments>, { op: "handoff_complete" }>
 ): { readonly planRating?: number; readonly planReason?: string } {

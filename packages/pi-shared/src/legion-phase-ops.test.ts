@@ -222,6 +222,11 @@ test("each op refuses its arguments whole before any daemon request, naming ever
       { op: "handoff_complete", summary: "x", plan_reason: "The plan fit the work." },
       "handoff_complete names plan_reason without plan_rating",
     ],
+    // The pair is the schema's own rule, so it is named with the call's other problems at once.
+    [
+      { op: "handoff_complete", summary: " ", plan_rating: 4 },
+      "handoff_complete requires summary; handoff_complete names plan_rating without plan_reason",
+    ],
     [
       { op: "handoff_complete", summary: "x", phase: "plan", other: 1 },
       'handoff_complete does not accept field "phase"; handoff_complete does not accept field "other"',
