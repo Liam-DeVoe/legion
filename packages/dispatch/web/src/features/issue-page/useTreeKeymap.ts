@@ -125,8 +125,8 @@ function pressedByAKey(control: HTMLElement): boolean {
  * the tree because every row but that one takes no focus. `rows` answers the tree's rows as the
  * browser holds them, in order, and `moveTo` moves the reader to the row at an index of them.
  *
- * It is exported because another drawing of the page, a chart of the plan, enters its rows as
- * the outline is entered.
+ * It is exported for the Plan view's chart, which is to enter its rows as the outline is
+ * entered.
  */
 export function treeEnterKey({
   moveTo,

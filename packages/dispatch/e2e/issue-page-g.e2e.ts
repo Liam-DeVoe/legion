@@ -305,7 +305,8 @@ async function belowWhatStays(row: Locator): Promise<number | undefined> {
 // no band, and `bringOnScreen` alone leaves the row where it is. Then a view chord from the
 // page's foot puts the focus on the outline's tab-stop row, which the chord shows and the row
 // places. With the outline the Spec view draws nothing until its own slot is filled, so `t s`
-// goes on to `t c`, whose outline takes the focus; the Spec view's own rows read `t s` again.
+// goes on to `t c`, whose outline takes the focus; reading `t s` again is left to the Spec view's
+// own rows, which this tree does not hold yet.
 // SLOW(>=2s): a seeded issue of every kind of node, its rows and their names waited for, a
 // focus and a chord each waited out.
 test("at 390 px a focused row stands below the view row that stays at the top, after a focus that does not scroll and after t s", async ({

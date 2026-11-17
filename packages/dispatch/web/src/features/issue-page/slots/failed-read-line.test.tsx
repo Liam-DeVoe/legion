@@ -12,9 +12,9 @@ import { useIssueKeymap } from "../useIssueKeymap";
 import { FailedReadLine } from "./failed-read-line";
 import { ViewStage } from "./stage";
 
-// A failed read's line, as each view drawn in the stage draws it. The views here are stand-ins
-// that draw the lines over a tree the way a view does: each view's own slot is filled by that
-// view's own code.
+// A failed read's line, as each view drawn in the stage is to draw it. The views here are
+// stand-ins that draw the lines over a tree the way a view is to: each view's own slot is to be
+// filled by that view's own code.
 
 /** Stands in for Chromium's focus fixup, which moves the focus of a button it disables to the
  *  page's body where happy-dom keeps it on the button; the returned function ends it. happy-dom

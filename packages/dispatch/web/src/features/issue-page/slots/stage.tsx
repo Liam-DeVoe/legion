@@ -106,7 +106,7 @@ export function ViewStage({ children, view }: { children: ReactNode; view: Prese
     const take = (): boolean => {
       const active = document.activeElement;
       const onTree = active?.matches(VIEW_TREE) === true && stage.contains(active);
-      if (active !== null && active !== document.body && !onTree) return true;
+      if (!focusOnDocument() && !onTree) return true;
       const to =
         stage.querySelector<HTMLElement>(TAB_STOP_ROW) ??
         stage.querySelector<HTMLElement>(FAILED_READ_RETRY);

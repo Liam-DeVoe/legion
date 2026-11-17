@@ -33,7 +33,6 @@ export function TreeRows({
   onOpenDeeper,
   onPin,
   onToggle,
-  openBody,
   pinned,
   report,
   rows,
@@ -58,8 +57,6 @@ export function TreeRows({
   onOpenDeeper: (id: string) => void;
   onPin: (row: string) => void;
   onToggle: (node: TreeNode, expanded: boolean | undefined) => void;
-  /** The node whose body the preset opens without being asked: what waits for the reader. */
-  openBody?: string;
   /** The keys of the rows whose bodies the reader pinned open. */
   pinned: ReadonlySet<string>;
   /** What a key reported when it had nowhere to go, and the key of the row it was pressed on,
@@ -112,7 +109,6 @@ export function TreeRows({
               focused === key ||
               pinned.has(key) ||
               editing?.row === key ||
-              row.node.id === openBody ||
               drawsBody(cycle, row.level)
             }
             context={context.has(row.node.id)}

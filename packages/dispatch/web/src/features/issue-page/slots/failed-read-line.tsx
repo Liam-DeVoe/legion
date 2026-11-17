@@ -24,10 +24,11 @@ export interface FailedReadLineProps {
 }
 
 /**
- * A read that failed before it first answered, as every view drawn in the stage says it: one line
- * in the page's words with a Retry that asks that read alone again (`components/QueryError.tsx`).
- * A view draws one per failed read, in the order it gives its reads, over its tree and never in
- * it: an alert inside a tree would break the tree's own structure of rows.
+ * A read that failed before it first answered, as every view drawn in the stage is to say it: one
+ * line in the page's words with a Retry that asks that read alone again
+ * (`components/QueryError.tsx`). A view is to draw one per failed read, in the order it gives its
+ * reads, over its tree and never in it: an alert inside a tree would break the tree's own
+ * structure of rows.
  *
  * Retry stays enabled while the read runs again, since Chromium moves the focus of a control it
  * disables to the page's body. A press while the read runs asks nothing again: the run under way

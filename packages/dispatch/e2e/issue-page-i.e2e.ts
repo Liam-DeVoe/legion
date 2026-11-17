@@ -1011,8 +1011,10 @@ test("a folded branch's line is its first line, cut at a word @phone @phone-only
 test("each node sits under the parent the model stores", async ({ browser }) => {
   test.setTimeout(180_000);
   await phase(browser, seedSpineCases, async (page, seeded) => {
+    const settling = watchApiRequests(page);
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expectIssuePageDrawn(page);
+    await expectLoadSettled(settling);
     await unfoldEveryBranch(page);
     const specSlug = (await getArtifact(seeded.specArtifactId)).slug;
     const verificationSlug = (await getArtifact(seeded.verificationArtifactId)).slug;
@@ -1995,7 +1997,8 @@ test("a child whose title holds an unbroken run keeps the page inside its viewpo
 // c-tree, the crumb (the architect's ruling on a node's one line): where the tree is read one
 // node at a time, a crumb is the node's first line by that rule, cut at a word, never cut again
 // mid-word by its box, and a line that is a whole sentence carries no ellipsis after its own full
-// stop. The issue's crumb is its key. The Contents entry's half is the Spec view's.
+// stop. The issue's crumb is its key. The Contents entry's half is left to the Contents pane's
+// own entries, which this tree does not hold yet.
 // SLOW(>=2s): the whole issue seeded and loaded at a phone's size on a reply's address, waited on
 // until the reply has the focus, then zoomed into and measured.
 test("a crumb draws its node's first line, cut at a word @phone @phone-only", async ({
@@ -2753,7 +2756,8 @@ test("the chain is reachable and only gaps that tell a node apart are drawn", as
 
     // From the requirement to its checks and their latest results: each is drawn under it, and
     // the arrow keys walk down to them from the requirement's row. The decision's chip that
-    // names the requirement, and following it, are the Spec view's step of the chain.
+    // names the requirement, and following it, are left to the Spec view's own rows, which this
+    // tree does not hold yet.
     expect(await parentOfRow(page, check), "the check that serves r1 is not under it").toBe(
       informed
     );
@@ -2783,7 +2787,7 @@ test("the chain is reachable and only gaps that tell a node apart are drawn", as
 
     // No gap that every node of a kind carries is drawn: no requirement and no decision says
     // anything about a source, a read-back or an author. The head's gap and the Spec view's
-    // readings are the Spec view's own rows' to read.
+    // readings are left to the Spec view's own rows, which this tree does not hold yet.
     expect(
       (await drawnRows(page))
         .filter((row) => row.type === "requirement" || row.type === "decision")
