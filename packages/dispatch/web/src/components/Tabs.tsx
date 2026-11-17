@@ -102,8 +102,19 @@ export function Tabs<Id extends string>({
     revealTab(node);
   };
 
+  // The selected tab is revealed when it is chosen, and again whenever the tablist's box changes
+  // with no change of tab - the issue page's comment margin opening, a narrower window - which
+  // would otherwise leave it cut off at the edge or under the fade.
   useEffect(() => {
-    revealTab(tabRefs.current[activeTab]);
+    const selected = tabRefs.current[activeTab];
+    revealTab(selected);
+    const list = selected?.parentElement;
+    if (list === null || list === undefined) {
+      return;
+    }
+    const sizes = new ResizeObserver(() => revealTab(selected));
+    sizes.observe(list);
+    return () => sizes.disconnect();
   }, [activeTab]);
 
   const tabMinHeight = compact ? "min-h-11 md:min-h-9" : "min-h-11";

@@ -4,7 +4,7 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 
-import { layOutScrollBox } from "../__tests__/scroll-box";
+import { installResizeObserver, layOutScrollBox } from "../__tests__/scroll-box";
 import { scrollFadeTrailing, scrollFadeTrailingPx } from "../theme/classes";
 import { Tabs } from "./Tabs";
 
@@ -183,5 +183,48 @@ test("a tab reached from the keyboard stops clear of the trailing fade while tab
     expect(documents.getBoundingClientRect().right).toBe(300 - scrollFadeTrailingPx);
   } finally {
     view.unmount();
+  }
+});
+
+// The issue page's comment margin opens with no change of tab, and the tablist narrows under the
+// selected tab: it is brought back whole and clear of the fade then too, not only when it is
+// chosen.
+test("a selected tab the tablist narrows over is scrolled back clear of the trailing fade", () => {
+  const sizes = installResizeObserver();
+  const view = render(
+    <Tabs
+      activeTab="documents"
+      ariaLabel="Project"
+      idPrefix="project"
+      onSelect={() => {}}
+      tabs={[
+        { id: "issues", label: "Issues" },
+        { id: "documents", label: "Documents" },
+        { id: "settings", label: "Settings" },
+      ]}
+    />
+  );
+
+  try {
+    const tablist = screen.getByRole("tablist", { name: "Project" });
+    const documents = screen.getByRole("tab", { name: "Documents" });
+    // The tabs fit a 420 px tablist; Documents sits at 180 to 290.
+    const box = { client: 420, scroll: 420 };
+    let right = 420;
+    layOutScrollBox(tablist, box);
+    tablist.getBoundingClientRect = () => rect(0, right);
+    documents.getBoundingClientRect = () =>
+      rect(180 - tablist.scrollLeft, 290 - tablist.scrollLeft);
+    sizes.resize();
+    expect(tablist.scrollLeft).toBe(0);
+
+    // The tablist narrows to 300 px: Documents ends under the fade, and Settings runs past it.
+    box.client = 300;
+    right = 300;
+    sizes.resize();
+    expect(documents.getBoundingClientRect().right).toBe(300 - scrollFadeTrailingPx);
+  } finally {
+    view.unmount();
+    sizes.restore();
   }
 });
