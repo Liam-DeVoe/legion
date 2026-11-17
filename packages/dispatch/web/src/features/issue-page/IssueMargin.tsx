@@ -175,6 +175,8 @@ export function IssueMarginPanel({
   const [referencesOpen, setReferencesOpen] = useState(false);
   const [filesOpen, setFilesOpen] = useState(false);
   const filesList = useRef<HTMLUListElement>(null);
+  // The panel's own element, under which Add watches the controls of Details it reaches.
+  const panel = useRef<HTMLDivElement>(null);
   const referencesPanelId = useId();
   // The blocked-by editor's state is the panel's and not its row's, because a closed section
   // unmounts its rows and the panel stays drawn for the life of the page (`slots/details.tsx`):
@@ -259,7 +261,7 @@ export function IssueMarginPanel({
   );
 
   return (
-    <div className="flex min-w-0 flex-col gap-3">
+    <div className="flex min-w-0 flex-col gap-3" ref={panel}>
       <PropertySection drawerBox={drawerBox} name="development" sections={sections}>
         <Row glyph="◐" label={PROPERTY_LABELS.status}>
           <span
@@ -471,7 +473,12 @@ export function IssueMarginPanel({
             its control; and, while the issue advances no priority, the control that adds one,
             which is INFRA-2947's priority row with nothing in it yet. */}
         <div className="flex min-w-0 flex-wrap items-center gap-2 py-2">
-          <IssueAddMenu isClosed={isClosed} issue={issue} onOpenField={onEditingField} />
+          <IssueAddMenu
+            isClosed={isClosed}
+            issue={issue}
+            onOpenField={onEditingField}
+            panel={panel}
+          />
           {advances.length === 0 ? (
             <div className="contents" data-testid="issue-advances">
               <IssuePriorityLine disabled={isClosed} inRow issue={issue} />

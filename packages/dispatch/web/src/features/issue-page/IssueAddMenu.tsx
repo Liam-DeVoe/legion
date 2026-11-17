@@ -1,4 +1,12 @@
-import { type ReactNode, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import {
+  type ReactNode,
+  type RefObject,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 
 import type { IssueDetails } from "../../api/types";
 import { pageHeaderControl, pageMenu, pageMenuItem } from "../../theme/classes";
@@ -13,6 +21,7 @@ import type { IssueField } from "./IssueFieldForms";
 import { useMarginDrawer } from "./margin-slot";
 import { PROPERTY_LABELS, pageChrome } from "./page-structure";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
+import { usableControl } from "./usable-control";
 
 /**
  * The one control that reaches a property this issue has no value for (dispatch://INFRA-1196
@@ -25,8 +34,13 @@ import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
  * it advances), so the menu presses those rather than holding a second copy of them. It finds
  * each by the name that control exports - `assigneeControlName`, `labelsControlName`,
  * `blockedByControlName`, `repoControlName`, `componentsControlName`, `addPriorityControlName` -
- * so the two sides cannot drift apart, and lists one only while the page draws it: a project
- * that maps no repository offers no repository to set.
+ * so the two sides cannot drift apart, and lists one only while that control takes a press
+ * (`usableControl`). A press on an entry opens that property's control (dispatch://INFRA-3945
+ * R5), and a control that takes no press opens nothing: a project that maps no repository offers
+ * no repository to set, and while the priorities' save was out, Add listed Advances beside the
+ * disabled "Add a priority to CORE-1", and a press on it left the form shut and the focus on the
+ * body (the tester, on 8a8f3f6b). A control of Details still takes a press while Details is
+ * closed, since the reach opens Details first.
  *
  * Which entries can be reached - which decides whether Add is drawn at all, and what its open
  * menu lists - is read from the page, never while the menu renders: during a render the page
@@ -35,25 +49,29 @@ import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
  * Add: in the render where the save landed the labels' control was still "Saving labels of
  * CORE-1", that render's commit renamed it "Add a label to CORE-1", and nothing drew the menu
  * again (dispatch://INFRA-3945 R5). So it is read after each commit of the menu, and again on
- * each change of the page that can draw, rename or remove a control an entry reaches, which a
- * `MutationObserver` on the document's body reports: most such changes are a commit of the
- * control's own component alone, which draws the menu no further time. Read after the menu's own
- * commits only, Add went when it opened the priorities' form, which replaces "Add a priority to
- * CORE-1", and stayed gone once Cancel drew that control again in a commit of
- * `IssuePriorityLine` alone; the repository's select and the components' picker, each drawn
- * once its own read answers, were never seen either (the review of 5906c38b).
+ * each change that can draw, rename or remove a control an entry reaches, or change whether it
+ * takes a press, which a `MutationObserver` over the panel and the header reports: most such
+ * changes are a commit of the control's own component alone, which draws the menu no further
+ * time. Read after the menu's own commits only, Add went when it opened the priorities' form,
+ * which replaces "Add a priority to CORE-1", and stayed gone once Cancel drew that control again
+ * in a commit of `IssuePriorityLine` alone; the repository's select and the components' picker,
+ * each drawn once its own read answers, were never seen either (the review of 5906c38b).
  */
 export function IssueAddMenu({
   isClosed,
   issue,
   onOpenField,
+  panel,
 }: {
   isClosed: boolean;
   issue: IssueDetails;
   onOpenField: (field: IssueField) => void;
+  /** The panel's element (`IssueMarginPanel`), under which every control of Details an entry
+   *  reaches is drawn. */
+  panel: RefObject<HTMLElement | null>;
 }): ReactNode {
   const [open, setOpen] = useState(false);
-  // The labels of the entries whose control is on the page, in `emptyFields`' order, as `read`
+  // The labels of the entries whose control takes a press, in `emptyFields`' order, as `read`
   // last found them: none until the first commit, which the layout effect below reads before the
   // page is painted. A read that finds the list as it was keeps the array held, so it draws the
   // menu no further time, and the observer below, which also sees the menu's own drawing, cannot
@@ -115,24 +133,42 @@ export function IssueAddMenu({
   }, []);
   // A render reads the previous commit, so the page is read once a commit is on it: after every
   // commit of the menu, since the issue's value and a control's name can change in the same one,
-  // and on each change the observer reports, since a control drawn, renamed or removed by another
-  // component's own commit draws the menu no further time. The header's assignee control is
-  // outside Details, so the whole body is watched. An entry is reached by its control's name
-  // alone (`pageControl`), so only the changes that draw, remove or rename an element are read.
+  // and on each change the observer reports, since a control drawn, renamed, removed, disabled or
+  // hidden by another component's own commit draws the menu no further time: a refused save of
+  // the priorities gives their control back in a commit of `IssuePriorityLine` alone. Every
+  // control an entry reaches is under the panel or the header (the assignee's), so those two are
+  // watched, for each attribute `usableControl` reads - `class` and `style` for what
+  // `checkVisibility()` reads.
   useLayoutEffect(() => {
     committed.current = fields;
     read();
   });
   useEffect(() => {
     const watching = new MutationObserver(read);
-    watching.observe(document.body, {
-      attributeFilter: ["aria-label"],
-      attributes: true,
-      childList: true,
-      subtree: true,
+    let header: Element | null = null;
+    const watch = () => {
+      header = document.querySelector(ISSUE_HEADER);
+      watching.disconnect();
+      for (const root of [panel.current, header]) {
+        if (root !== null) watching.observe(root, WATCHED);
+      }
+    };
+    watch();
+    // The header can be drawn after Details, or drawn again as another element, and only an
+    // element drawn can be watched: so the body is watched for drawn and removed elements alone,
+    // and the header is watched again, and the page read, whenever the one found has changed.
+    // That is one query per change, so the rest of the page's drawing reads no entry.
+    const arriving = new MutationObserver(() => {
+      if (document.querySelector(ISSUE_HEADER) === header) return;
+      watch();
+      read();
     });
-    return () => watching.disconnect();
-  }, [read]);
+    arriving.observe(document.body, { childList: true, subtree: true });
+    return () => {
+      watching.disconnect();
+      arriving.disconnect();
+    };
+  }, [panel, read]);
   // The entries of this render's fields the page was last read to reach. A field that got a
   // value in this render is gone from them at once; one that lost it joins once the commit is read.
   const entries = fields.filter((field) => reachable.includes(field.label));
@@ -196,17 +232,20 @@ export function IssueAddMenu({
     // exports: neither side spells it, so renaming one renames both and the entry cannot go
     // missing on a word nobody meant to change. A control of the header - the assignee - is
     // reached with Details closed, since on a phone Details covers it; a control of Details is
-    // reached with Details open, since shut it takes neither a press nor the focus. The control is
-    // scrolled into view first, since its popover is placed from the control's place on the screen.
+    // reached with Details open, since shut it takes neither a press nor the focus. Either is
+    // reached only while it takes a press (`controlNamed`): a press on an entry opens that
+    // property's control (R5), and a control that would not take it opens nothing, so its entry
+    // is not listed and a press finds nothing to reach. The control is scrolled into view first,
+    // since its popover is placed from the control's place on the screen.
     const atControl = (name: string) => ({
       open: () => {
-        const control = pageControl(name);
+        const control = controlNamed(name);
         const reach = () => {
           control?.scrollIntoView({ block: "nearest" });
           if (control instanceof HTMLSelectElement) control.focus();
           else control?.click();
         };
-        const inHeader = control?.closest("[data-issue-header]") != null;
+        const inHeader = control?.closest(ISSUE_HEADER) != null;
         const shut = control?.closest("[hidden]") != null;
         if (drawer !== undefined && (inHeader ? drawer.open : shut && !drawer.open)) {
           drawer.setOpen(!inHeader);
@@ -215,7 +254,7 @@ export function IssueAddMenu({
         }
         reach();
       },
-      reachable: () => pageControl(name) !== null,
+      reachable: () => controlNamed(name) !== null,
     });
     const fields: AddableField[] = [];
     if (details.parent === null) {
@@ -293,16 +332,41 @@ export function IssueAddMenu({
   }
 }
 
-/** One property with no value: what it is called, whether its control is on the page at all, and
- *  how to open it. */
+/** One property with no value: what it is called, whether its control takes a press, and how
+ *  to open it. */
 interface AddableField {
   readonly label: string;
   readonly open: () => void;
   readonly reachable: () => boolean;
 }
 
-/** The control named `name`, anywhere on the page. The fields the panel draws are edited by
+/** The issue page's header, which draws the assignee's control. */
+const ISSUE_HEADER = "[data-issue-header]";
+
+/** What Add watches under the panel and the header: each element drawn or removed, and each
+ *  attribute that names a control or that `usableControl` reads. */
+const WATCHED: MutationObserverInit = {
+  attributeFilter: [
+    "aria-label",
+    "disabled",
+    "aria-disabled",
+    "hidden",
+    "inert",
+    "aria-hidden",
+    "class",
+    "style",
+  ],
+  attributes: true,
+  childList: true,
+  subtree: true,
+};
+
+/** The control named `name`, anywhere on the page, while it takes a press (`usableControl`),
+ *  else `null`: the one lookup both an entry's listing and its press read, so Add lists an entry
+ *  exactly while a press on it opens its control. The press opens Details first wherever the
+ *  control is in the closed drawer (`opensDetails`). The fields the panel draws are edited by
  *  their own controls; this is how the add menu reaches one instead of drawing it twice. */
-function pageControl(name: string): HTMLElement | null {
-  return document.querySelector<HTMLElement>(`[aria-label="${CSS.escape(name)}"]`);
+function controlNamed(name: string): HTMLElement | null {
+  const control = document.querySelector<HTMLElement>(`[aria-label="${CSS.escape(name)}"]`);
+  return usableControl(control, { opensDetails: true }) ? control : null;
 }

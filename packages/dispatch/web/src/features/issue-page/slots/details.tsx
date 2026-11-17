@@ -15,6 +15,7 @@ import { DETAILS_ATTRIBUTE, useFillMarginSlot } from "../margin-slot";
 import { NoTooltips } from "../NoTooltips";
 import { ANSWER_LINES, CONTROL_LABELS } from "../page-words";
 import type { SlotProps } from "../slot-props";
+import { usableControl } from "../usable-control";
 import { useIssueHeaderWrites } from "../useIssueHeaderWrites";
 
 /** The key `l`'s name in the list of keys (dispatch://INFRA-3945 R4). */
@@ -84,20 +85,19 @@ export function DetailsSlot({ issue }: SlotProps): ReactNode {
         // "Add a label to CORE-1" while it has no label, "Edit labels" once it has one, and
         // "Saving labels of CORE-1" while a save of them is out, which the panel's labels read
         // from these same writes (decision 145 of the parts). While that save is out the control
-        // is busy, `aria-disabled` and refusing to open, so the key refuses it as it refuses a
-        // disabled one: `l` acts only while the control is drawn and enabled (R4).
+        // is busy, `aria-disabled` and refusing to open, so `l` acts only while the control takes
+        // a press (`usableControl`, R4). The key opens Details at the row first, so the drawer
+        // being closed is no refusal (`opensDetails`).
         const name = labelsControlName(issue.key, {
           labels: issue.labels ?? [],
           saving: writes.labels.isPending,
           words: { ANSWER_LINES, CONTROL_LABELS },
         });
-        const control = document.querySelector(
-          `[${DETAILS_ROW_ATTRIBUTE}="labels"] button[aria-label="${CSS.escape(name)}"]`
-        );
-        return (
-          control instanceof HTMLButtonElement &&
-          !control.disabled &&
-          control.getAttribute("aria-disabled") !== "true"
+        return usableControl(
+          document.querySelector(
+            `[${DETAILS_ROW_ATTRIBUTE}="labels"] button[aria-label="${CSS.escape(name)}"]`
+          ),
+          { opensDetails: true }
         );
       },
     },
