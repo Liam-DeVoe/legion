@@ -450,15 +450,19 @@ check "  once" "$(is "$(grep -c 'undefined: undefined' <<<"$err")" 1)"
 echo "case: go's standard error reaches the script's as go writes it"
 # The race leg's setup-go keeps no module cache, so the script's build is the step that downloads
 # the modules, and a download that stalls runs until the job's timeout: the log must name the
-# module while it waits, not after. A stand-in go, first on PATH, writes a downloading line, waits
-# for the harness (2 minutes at most), then fails as a build does.
+# module while it waits, not after. A stand-in go, first on PATH, writes a downloading line, then
+# makes $work/written, then waits until the harness releases it (or its scratch directory is gone),
+# and fails as a build does. The harness waits on the stand-in's file, or on the script's end,
+# whichever comes first (await_file): with the line written and the script still running, the
+# line must already be on the script's standard error.
 stand_in=$work/stand-in
 mkdir "$stand_in"
 cat >"$stand_in/go" <<EOF
 #!/usr/bin/env bash
 echo 'go: downloading example.com/stalled v1.0.0' >&2
-for _ in \$(seq 1 1200); do
-  [ -e '$work/released' ] && break
+: >'$work/written'
+until [ -e '$work/released' ]; do
+  [ -d '$work' ] || exit 1
   sleep 0.1
 done
 echo 'go: example.com/stalled@v1.0.0: the download failed' >&2
@@ -467,14 +471,8 @@ EOF
 chmod +x "$stand_in/go"
 (cd "$root" && PATH="$stand_in:$PATH" exec "$shards" pattern 0 1 . >"$work/stalled.out" 2>"$work/stalled.err") &
 building=$!
-seen=false
-for _ in $(seq 1 300); do
-  if grep -q -x 'go: downloading example.com/stalled v1.0.0' "$work/stalled.err"; then
-    seen=true
-    break
-  fi
-  sleep 0.1
-done
+await_file "$work/written" "$building"
+seen=$(grep -q -x 'go: downloading example.com/stalled v1.0.0' "$work/stalled.err" && echo true || echo false)
 running=$(kill -0 "$building" 2>/dev/null && echo true || echo false)
 touch "$work/released"
 set +e
@@ -482,7 +480,7 @@ wait "$building"
 status=$?
 set -e
 err=$(cat "$work/stalled.err")
-check "the downloading line is on standard error while go still runs" "$(is "$seen/$running" true/true)"
+check "the downloading line is on standard error while go still runs" "$(is "$came/$seen/$running" file/true/true)"
 check "the failed build exits 2" "$(is "$status" 2)"
 check "prints nothing on standard output" "$(is "$(cat "$work/stalled.out")" "")"
 check "go's error is on standard error once" \

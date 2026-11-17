@@ -1675,21 +1675,19 @@ for what in toolchain go; do
   (GOPROXY="http://127.0.0.1:$port" GOMODCACHE="$io/modcache" \
     exec "$root/.github/scripts/check-ci-filters.sh" >"$io/out" 2>"$io/err") &
   checking=$!
-  seen=false
-  for _ in $(seq 1 600); do
-    if grep -q '^go: downloading go1\.999\.0 (' "$io/err"; then
-      seen=true
-      break
-    fi
-    sleep 0.1
-  done
+  # The wait ends on one of two facts: go has reached the proxy, which it does only once it has
+  # written its downloading line (cmd/go's modfetch.DownloadZip writes the line, then asks the
+  # proxy), or the check has ended without reaching it, so the line can no longer come while go
+  # waits. Reached, go waits on a proxy that never answers, so the check still runs.
+  await_file "$io/accepted" "$checking"
+  seen=$(grep -q '^go: downloading go1\.999\.0 (' "$io/err" && echo true || echo false)
   running=$(kill -0 "$checking" 2>/dev/null && echo true || echo false)
   kill "$proxy"
   wait "$proxy" || true
   proxy=""
   wait "$checking" || true
-  check "go.work's $what line asks for go1.999.0: go's downloading line is on the check's standard error while go waits" \
-    "$(is "$seen/$running" true/true)"
+  check "go.work's $what line asks for go1.999.0: go reaches the proxy with its downloading line already on the check's standard error, while go waits" \
+    "$(is "$came/$seen/$running" file/true/true)"
 done
 
 echo "case: a claimed command that cds into another module of the workspace before it runs"

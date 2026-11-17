@@ -404,19 +404,17 @@ for what in toolchain go; do
   printf '%s\n\nuse ./mod\n' "$asked" >"$fixture/go.work"
   stalled_proxy "$fixture"
   root_answer "$fixture/mod" "$fixture" "$fixture/modcache"
-  seen=false
-  for _ in $(seq 1 300); do
-    if grep -q '^go: downloading go1\.999\.0 (' "$fixture/err"; then
-      seen=true
-      break
-    fi
-    sleep 0.1
-  done
+  # The wait ends on one of two facts: go has reached the proxy, which it does only once it has
+  # written its downloading line (cmd/go's modfetch.DownloadZip writes the line, then asks the
+  # proxy), or go_root has ended without reaching it, so the line can no longer come while go
+  # waits. Reached, go waits on a proxy that never answers, so go_root still runs.
+  await_file "$fixture/accepted" "$asking"
+  seen=$(grep -q '^go: downloading go1\.999\.0 (' "$fixture/err" && echo true || echo false)
   running=$(kill -0 "$asking" 2>/dev/null && echo true || echo false)
   stop_proxy
   wait "$asking" || true
-  check "go.work's $what line asks for go1.999.0: go's downloading line is on standard error while go waits" \
-    "$(is "$seen/$running" true/true)"
+  check "go.work's $what line asks for go1.999.0: go reaches the proxy with its downloading line already on standard error, while go waits" \
+    "$(is "$came/$seen/$running" file/true/true)"
   check "  then go_root refuses, saying go's standard error is above, and copies none of it" \
     "$(is "$(contains "$(<"$fixture/answer")" '^refused: go env GOROOT in .* exited 1; its standard error is above$')/$(grep -c 'go: ' "$fixture/answer" || true)" true/0)"
 done
@@ -431,16 +429,14 @@ current=$work/current
 mkdir "$current"
 stalled_proxy "$current"
 root_answer "$script_dir/../../packages/envoy" "$current"
-for _ in $(seq 1 300); do
-  kill -0 "$asking" 2>/dev/null || break
-  sleep 0.1
-done
-answered=$(kill -0 "$asking" 2>/dev/null && echo false || echo true)
+# The wait ends when go_root has answered, or at once when go reaches the proxy, which is a
+# download: neither needs a clock.
+await_file "$current/accepted" "$asking"
 stop_proxy
 wait "$asking" || true
 answer=$(<"$current/answer")
-check "it answers under the stalled proxy, with the root of a go" \
-  "$(is "$answered/$([ -x "$answer/bin/go" ] && echo go || echo "$answer")" true/go)"
+check "it answers under the stalled proxy, reaching it not at all, with the root of a go" \
+  "$(is "$came/$([ -x "$answer/bin/go" ] && echo go || echo "$answer")" end/go)"
 check "  and writes nothing to standard error" "$(is "$(<"$current/err")" "")"
 
 summary "go-test-step-expansion.py reads a go command behind the variables and wrapper a step writes"
