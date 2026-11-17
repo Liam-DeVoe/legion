@@ -139,9 +139,10 @@ jobs:
       # go-envoy-test, restored only, as dispatch-browser.yaml's binaries job restores it: this
       # job builds the Dispatch server, and the harness builds the real broker's commands, the
       # dev OIDC issuer and the request seeder, and that family's entry is the one that holds
-      # them. go-envoy holds the listener's and natsd's builds alone (ci-caches.yaml), and the
-      # binaries job measured what restoring it costs such a build: 115 `go: downloading` lines
-      # on a key that hit, against 4 with go-envoy-test.
+      # them. go-envoy holds the listener's and natsd's builds alone (ci-caches.yaml), and an
+      # alone job of dispatch-browser.yaml measured what restoring it costs such a build while it
+      # still built the server itself: 115 `go: downloading` lines on a key that hit (job
+      # 129055096326), against 4 with go-envoy-test (job 129071749416).
       - id: go-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:

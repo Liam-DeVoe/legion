@@ -42,8 +42,9 @@ on:
   pull_request:
     types: [labeled]
   schedule:
-    # Nightly. The one other schedule of this repository is dispatch-browser-nightly.yaml's,
-    # hours away at 02:17, so the two nightlies do not contend for runners.
+    # Nightly. The other nightly of this repository is dispatch-browser-nightly.yaml's, hours
+    # away at 02:17, so the two nightlies do not contend for runners; codeql.yaml's weekly 04:17
+    # on a Tuesday is the repository's third schedule.
     - cron: "41 4 * * *"
 
 # The jobs clone, download pinned tools and modules, and upload an artifact of the run's own.
