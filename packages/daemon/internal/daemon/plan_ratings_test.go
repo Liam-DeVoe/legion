@@ -126,7 +126,9 @@ type ratedWant struct {
 func (r *stepRecordsRig) walkThreeRated() []ratedWant {
 	r.t.Helper()
 	want := []ratedWant{
-		{issue: r.issues[0].key, title: r.issues[0].title, rating: 3, reason: "The plan fit the work; the review sent it back once.", failed: 1},
+		// The first reason holds `<` and `&`, which Go's JSON encoder escapes and the CLI prints as
+		// they are, so the live driver's check of the read script's PASS line meets them.
+		{issue: r.issues[0].key, title: r.issues[0].title, rating: 3, reason: "The plan fit the work; the review sent it back once, in <1 day & with no new task.", failed: 1},
 		{issue: r.issues[2].key, title: r.issues[2].title, rating: 5, reason: "The plan was the work, step for step.", failed: 0},
 		{issue: r.issues[1].key, title: r.issues[1].title, rating: 4, reason: "The plan fit the work.", failed: 0},
 	}

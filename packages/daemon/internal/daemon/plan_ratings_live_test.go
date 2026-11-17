@@ -98,14 +98,14 @@ func (l *planRatingsLive) readByProject() {
 		l.note("  %s", line)
 	}
 
-	reason, err := json.Marshal(want[0].reason)
+	// plansPrintedHold held the lines in want's order, so the first is want[0]'s.
+	lines, err := parsePlans(l.cfg.Project, out)
 	if err != nil {
 		t.Fatal(err)
 	}
 	out, code = l.readScript(want[0].issue)
-	if passed := fmt.Sprintf("PASS: %s: plan default (", want[0].issue); code != 0 || !strings.Contains(out, passed) ||
-		!strings.Contains(out, fmt.Sprintf(", ratings %d/5 %s, time ", want[0].rating, reason)) {
-		t.Fatalf("scripts/e2e/plan-ratings-read.sh %s %s exited %d:\n%s\nwant exit 0 and a PASS line naming the rating %d/5 %s", l.cfg.Project, want[0].issue, code, out, want[0].rating, reason)
+	if code != 0 || !readScriptPassed(out, lines[0]) {
+		t.Fatalf("scripts/e2e/plan-ratings-read.sh %s %s exited %d:\n%s\nwant exit 0 and a PASS line naming the plan and the ratings of %q", l.cfg.Project, want[0].issue, code, out, lines[0].text)
 	}
 	l.note("scripts/e2e/plan-ratings-read.sh %s %s, exit 0: %s", l.cfg.Project, want[0].issue, lastLine(out))
 	unfinished := l.issues[3].key
@@ -204,12 +204,40 @@ func lastLine(out string) string {
 	return lines[len(lines)-1]
 }
 
+// readScriptPassed is whether out, the output of plan-ratings-read.sh for line's issue, holds its
+// PASS line naming the issue's plan and ratings as `dispatch plans` printed them, which is how the
+// script prints them: no encoding of the driver's own stands between the two.
+func readScriptPassed(out string, line planLine) bool {
+	return strings.Contains(out, fmt.Sprintf("PASS: %s: plan %s, ratings %s, time ", line.issue, line.plan, line.printedRatings))
+}
+
+// The read script prints the ratings as the command printed them, and plans.ts prints each reason
+// with JSON.stringify, which leaves `<`, `>` and `&` as they are, where Go's encoder escapes them;
+// so the driver's check of the script's PASS line holds for a reason that holds them. The control
+// is a PASS line naming another reason.
+func TestTheReadScriptsPassIsReadAsTheCommandPrintedTheRatings(t *testing.T) {
+	printed := `SR1: 1 finished issues
+SR1-1 closed 2026-11-17T00:00:00Z plan default (1 tasks: planner) ratings 4/5 "Done in <1 day & no rework." time 0h1m failed steps 0`
+	lines, err := parsePlans("SR1", printed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pass := `PASS: SR1-1: plan default (1 tasks: planner), ratings 4/5 "Done in <1 day & no rework.", time 0h1m, failed steps 0`
+	if !readScriptPassed(printed+"\n"+pass+"\n", lines[0]) {
+		t.Errorf("the script's PASS line %q was not read as naming the ratings of %q", pass, lines[0].text)
+	}
+	if other := strings.Replace(pass, "no rework", "a rework", 1); readScriptPassed(printed+"\n"+other+"\n", lines[0]) {
+		t.Errorf("control: the PASS line %q, naming another reason, was read as naming the ratings of %q", other, lines[0].text)
+	}
+}
+
 // planLine is one finished issue as `dispatch plans` prints it: `<ISSUE> closed <closed_at> plan
-// <plan> ratings <ratings> time <time> failed steps <n>` (envoy-client's plans.ts).
+// <plan> ratings <ratings> time <time> failed steps <n>` (envoy-client's plans.ts). printedRatings
+// is the ratings' text as printed, and ratings is that text read.
 type planLine struct {
-	text, issue, closed, plan, time string
-	ratings                         []printedRating
-	failed                          int
+	text, issue, closed, plan, printedRatings, time string
+	ratings                                         []printedRating
+	failed                                          int
 }
 
 // printedRating is one rating as `dispatch plans` prints it: `<rating>/5 <reason as JSON>`.
@@ -248,7 +276,7 @@ func parsePlans(project, out string) ([]planLine, error) {
 		if err != nil {
 			return nil, fmt.Errorf("the line %q: %v", text, err)
 		}
-		line := planLine{text: text, issue: match[1], closed: match[2], plan: match[3], ratings: ratings, time: match[5]}
+		line := planLine{text: text, issue: match[1], closed: match[2], plan: match[3], printedRatings: match[4], ratings: ratings, time: match[5]}
 		if _, err := fmt.Sscanf(match[6], "%d", &line.failed); err != nil {
 			return nil, fmt.Errorf("the line %q: failed steps %v", text, err)
 		}
