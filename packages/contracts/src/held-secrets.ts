@@ -119,19 +119,64 @@ export function scrub(text: string): string {
   return out + text.slice(from);
 }
 
-/** `error` with its message and stack scrubbed in place, and every cause it holds, for an error
- *  a host prints whole. Anything that is no error is left as it is. */
+/** How deep {@link scrubError} follows an error's causes and fields. */
+const SCRUB_DEPTH = 8;
+
+/**
+ * `error` with its message, stack and every string field of its own scrubbed in place, the
+ * fields of a plain object or array it holds (an `EnvoyApiError`'s `details.responseBody`), and
+ * every error it holds, its cause among them, for an error a host prints whole: Bun's console
+ * prints an error's own fields beside its message. Anything that is no error is left as it is. A
+ * field that cannot be written (a frozen object's) is left as it is.
+ */
 export function scrubError<T>(error: T): T {
-  for (let at: unknown = error, depth = 0; at instanceof Error && depth < 8; depth += 1) {
-    const message = scrub(at.message);
-    if (message !== at.message) at.message = message;
-    if (typeof at.stack === "string") {
-      const stack = scrub(at.stack);
-      if (stack !== at.stack) at.stack = stack;
-    }
-    at = at.cause;
-  }
+  scrubErrorIn(error, new WeakSet(), 0);
   return error;
+}
+
+function scrubErrorIn(error: unknown, seen: WeakSet<object>, depth: number): void {
+  if (!(error instanceof Error) || seen.has(error) || depth >= SCRUB_DEPTH) return;
+  seen.add(error);
+  const message = scrub(error.message);
+  if (message !== error.message) error.message = message;
+  if (typeof error.stack === "string") {
+    const stack = scrub(error.stack);
+    if (stack !== error.stack) error.stack = stack;
+  }
+  scrubFields(error, seen, depth);
+  scrubErrorIn(error.cause, seen, depth + 1);
+}
+
+/** Each string field of `value`'s own scrubbed in place, and each error, plain object or array it
+ *  holds followed; an error's message, stack and cause are its caller's. */
+function scrubFields(value: object, seen: WeakSet<object>, depth: number): void {
+  if (depth >= SCRUB_DEPTH) return;
+  const isError = value instanceof Error;
+  for (const key of Object.getOwnPropertyNames(value)) {
+    if (isError && (key === "message" || key === "stack" || key === "cause")) continue;
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (descriptor === undefined || !("value" in descriptor)) continue;
+    const field: unknown = descriptor.value;
+    if (typeof field === "string") {
+      const scrubbed = scrub(field);
+      if (
+        scrubbed !== field &&
+        (descriptor.writable === true || descriptor.configurable === true)
+      ) {
+        Object.defineProperty(value, key, { ...descriptor, value: scrubbed });
+      }
+    } else if (field instanceof Error) {
+      scrubErrorIn(field, seen, depth + 1);
+    } else if (
+      typeof field === "object" &&
+      field !== null &&
+      !seen.has(field) &&
+      (Array.isArray(field) || Object.getPrototypeOf(field) === Object.prototype)
+    ) {
+      seen.add(field);
+      scrubFields(field, seen, depth + 1);
+    }
+  }
 }
 
 type Write = (chunk: unknown, ...rest: unknown[]) => boolean;

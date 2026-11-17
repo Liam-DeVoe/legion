@@ -6538,6 +6538,26 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
     );
     expect(controller.requests.map((request) => request.path)).not.toContain("/v1/roles/set");
   });
+
+  // The daemon's detail is its own text: one that echoes the capability it was sent prints none of
+  // it, in the log line or the notice, since the capability is held (#4140, P-k).
+  test("a refusal whose detail echoes the capability prints none of it", async () => {
+    const controller = await launchedController({
+      sessionId: "ses_controller_echo",
+      register: () =>
+        Response.json({ error: `Invalid boot token ${CONTROLLER_SECRET}` }, { status: 403 }),
+    });
+
+    const { notices, errors } = await startRefusedController(
+      controller,
+      controller.context("ses_controller_echo")
+    );
+    expect(errors).toContain(
+      "[legion] claims/register for the controller failed (403): Invalid boot token <withheld>"
+    );
+    const lines = [...errors, ...notices.map((notice) => String(notice.message))];
+    for (const line of lines) expect(line).not.toContain(CONTROLLER_SECRET.slice(4, 18));
+  });
 });
 
 /** The Envoy registration a role claim sends: the last `/v1/interests/subscribe` before the

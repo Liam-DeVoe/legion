@@ -29,10 +29,13 @@ describe("tradeFailureReason", () => {
     for (const reason of reasons) expect(reason).not.toContain(echoed);
   });
 
-  test("a code that does not read as one is withheld too", () => {
+  // A code the clients do not handle is a peer's choice of characters, which can be the token
+  // lowercased past the case-sensitive scrub: it prints as its length alone (#4140, AcceptE2-2's
+  // x-code-lowercased-token).
+  test("a code the clients do not handle prints as its length alone", () => {
     const echoed = token();
     expect(tradeFailureReason(new BrokerRefusedError(400, echoed, "", "probe"))).toBe(
-      "the secrets broker refused the identity traded: HTTP 400"
+      `the secrets broker refused the identity traded: HTTP 400 unrecognised error code (${echoed.length} chars)`
     );
   });
 

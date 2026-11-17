@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strings"
 	"testing"
 
@@ -104,6 +106,83 @@ var policyRefusals = []policyRefusal{
 	{"%w: %s's entry names no project, and the request named %s", []any{exchange.ErrProjectsFixed, corpusAccount, oauthwire.JoinProjects([]string{"DSP", "INFRA"})}, policySource},
 	{"%w: %s writes the project %s that its entry names, and the request named %s", []any{exchange.ErrProjectsFixed, corpusRepository + "/" + corpusWorkflow, "DSP", "INFRA"}, policySource},
 	{"the subject token was not minted for %s, which is the audience this broker accepts from %s", []any{"legion-broker", "https://kubernetes.default.svc"}, "exchange.go"},
+}
+
+// The OAuth error codes broker-client shows (token-client.ts, KNOWN_OAUTH_ERROR_CODES), as this
+// broker's library writes them: each is the library's own error value's code, so the client's
+// list and the codes the broker can answer are read from one place. Every library error the
+// broker's token endpoint returns (exchange.go, provider.go, clientauth.go) must be one of these.
+var corpusCodes = map[string]*oauth2.RFC6749Error{
+	"ErrInvalidRequest":         oauth2.ErrInvalidRequest,
+	"ErrInvalidClient":          oauth2.ErrInvalidClient,
+	"ErrInvalidGrant":           oauth2.ErrInvalidGrant,
+	"ErrUnauthorizedClient":     oauth2.ErrUnauthorizedClient,
+	"ErrUnsupportedGrantType":   oauth2.ErrUnsupportedGrantType,
+	"ErrInvalidScope":           oauth2.ErrInvalidScope,
+	"ErrAccessDenied":           oauth2.ErrAccessDenied,
+	"ErrServerError":            oauth2.ErrServerError,
+	"ErrTemporarilyUnavailable": oauth2.ErrTemporarilyUnavailable,
+	"ErrInvalidTarget":          oauth2.ErrInvalidTarget,
+	"ErrInvalidDPoPProof":       oauth2.ErrInvalidDPoPProof,
+	"ErrUseDPoPNonce":           oauth2.ErrUseDPoPNonce,
+}
+
+func TestTheCodeCorpusIsWhatTheLibraryWrites(t *testing.T) {
+	path := filepath.Join("testdata", "refusal-codes.json")
+	var want []string
+	for _, value := range corpusCodes {
+		want = append(want, value.ErrorField)
+	}
+	sort.Strings(want)
+	if os.Getenv("UPDATE_REFUSAL_CORPUS") == "1" {
+		encoded, err := json.MarshalIndent(want, "", "  ")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, append(encoded, '\n'), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	var got []string
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("%s is not a JSON list of strings: %v", path, err)
+	}
+	if strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Fatalf("%s is not the library's codes; run UPDATE_REFUSAL_CORPUS=1 go test -run %s ./internal/broker/oauth and check broker-client's list.\nwant: %v\ngot:  %v", path, t.Name(), want, got)
+	}
+}
+
+func TestEveryLibraryErrorTheTokenEndpointReturnsIsInTheCodeCorpus(t *testing.T) {
+	used := regexp.MustCompile(`oauth2\.(Err[A-Z][A-Za-z]*)`)
+	found := 0
+	for _, source := range []string{"exchange.go", "provider.go", "clientauth.go"} {
+		raw, err := os.ReadFile(source)
+		if err != nil {
+			t.Fatalf("read %s: %v", source, err)
+		}
+		for _, line := range strings.Split(string(raw), "\n") {
+			if strings.HasPrefix(strings.TrimSpace(line), "//") {
+				continue
+			}
+			for _, match := range used.FindAllStringSubmatch(line, -1) {
+				name := match[1]
+				if strings.HasPrefix(name, "ErrorTo") {
+					continue
+				}
+				found++
+				if _, ok := corpusCodes[name]; !ok {
+					t.Errorf("%s returns oauth2.%s, whose code broker-client does not show: add it to corpusCodes and KNOWN_OAUTH_ERROR_CODES", source, name)
+				}
+			}
+		}
+	}
+	if found == 0 {
+		t.Fatal("no oauth2.Err value found in the token endpoint's source: the scan reads nothing")
+	}
 }
 
 // The broker's own refusal, as its token endpoint writes its rate limit.

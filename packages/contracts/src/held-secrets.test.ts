@@ -55,6 +55,23 @@ describe("scrub", () => {
     expect(String(error.stack)).not.toContain(held);
     expect((error.cause as Error).message).toBe(`inner ${WITHHELD}`);
   });
+
+  // Bun's console prints an error's own fields beside its message, so they are scrubbed too: an
+  // `EnvoyApiError`'s `details.responseBody` is the listener's raw body (#4140, R-b).
+  test("an error's own fields, and the plain objects it holds, are scrubbed", () => {
+    const held = holdSecret(secret());
+    const error = Object.assign(new Error("the listener refused"), {
+      details: { status: 401, responseBody: `you sent ${held}`, url: "http://listener" },
+      body: `echo ${held.slice(3, 17)}`,
+      list: [`one ${held}`],
+    });
+    scrubError(error);
+    expect(error.details.responseBody).toBe(`you sent ${WITHHELD}`);
+    expect(error.details.url).toBe("http://listener");
+    expect(error.body).toBe(`echo ${WITHHELD}`);
+    expect(error.list).toEqual([`one ${WITHHELD}`]);
+    expect(Bun.inspect(error)).not.toContain(held.slice(3, 17));
+  });
 });
 
 // A URL's user info is sent by Bun's fetch as `Authorization: Basic <base64 of user:password>`,

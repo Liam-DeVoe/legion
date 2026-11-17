@@ -102,7 +102,7 @@ function tradeUnanswered(source: string, deadlineMs: number): string {
  */
 export function tradeFailureReason(error: unknown): string {
   if (error instanceof BrokerRefusedError) {
-    const code = error.code === "" ? "" : ` ${error.code}`;
+    const code = error.shownCode === "" ? "" : ` ${error.shownCode}`;
     const said = error.said === "" ? "" : `: ${scrub(error.said)}`;
     return `the secrets broker refused the identity traded: HTTP ${error.status}${code}${said}`;
   }

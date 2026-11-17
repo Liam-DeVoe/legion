@@ -382,8 +382,41 @@ export function isKnownBrokerRefusal(text: string, context: RefusalContext = {})
 /** What stands in for a refusal text that is not one of {@link KNOWN_BROKER_REFUSALS}. */
 export const REFUSAL_TEXT_WITHHELD = "(its text is withheld)";
 
-/** An OAuth error code as RFC 6749 writes them (`invalid_grant`), never a peer's free text. */
-const OAUTH_ERROR_CODE = /^[a-z][a-z0-9_]{0,63}$/;
+/**
+ * The OAuth error codes the clients handle, the only ones a text shows: RFC 6749's token-endpoint
+ * codes (Section 5.2: invalid_request, invalid_client, invalid_grant, unauthorized_client,
+ * unsupported_grant_type, invalid_scope) and its two an authorization server answers when it
+ * cannot serve (Section 4.1.2.1: server_error, temporarily_unavailable, and access_denied, which
+ * an issuer answers a refused grant with), RFC 8693's invalid_target (Section 2.2.2), and RFC
+ * 9449's invalid_dpop_proof and use_dpop_nonce (Sections 5 and 8). The broker's library writes
+ * each of these (`packages/envoy/internal/broker/oauth/testdata/refusal-codes.json`, which the Go
+ * refusal corpus writes from the library's own errors); the broker's own codes (`RATE_LIMITED`)
+ * go in its text, not here. A code is a peer's choice of characters, which can be a token the
+ * client sent it, lowercased past the case-sensitive scrub, so no other code is ever shown.
+ */
+export const KNOWN_OAUTH_ERROR_CODES: ReadonlySet<string> = new Set([
+  "invalid_request",
+  "invalid_client",
+  "invalid_grant",
+  "unauthorized_client",
+  "unsupported_grant_type",
+  "invalid_scope",
+  "access_denied",
+  "server_error",
+  "temporarily_unavailable",
+  "invalid_target",
+  "invalid_dpop_proof",
+  "use_dpop_nonce",
+]);
+
+/** `code` as a text shows it: one of {@link KNOWN_OAUTH_ERROR_CODES} as itself, "" for none, and
+ *  any other as `unrecognised error code (<N> chars)`, which names none of its characters. */
+export function shownOAuthCode(code: string): string {
+  if (code === "") return "";
+  return KNOWN_OAUTH_ERROR_CODES.has(code)
+    ? code
+    : `unrecognised error code (${code.length} chars)`;
+}
 
 /**
  * A trade the broker refused: a plain error naming what was traded and what the broker said.
@@ -396,8 +429,11 @@ export class BrokerRefusedError extends Error {
    *  refusal ({@link isKnownBrokerRefusal}), "" where it sent none, and {@link REFUSAL_TEXT_WITHHELD}
    *  otherwise. The description the broker sent is kept nowhere. */
   readonly said: string;
-  /** The OAuth code where it reads as one, else "" (a peer can send anything there too). */
+  /** The OAuth code where it is one the clients handle ({@link KNOWN_OAUTH_ERROR_CODES}), else "";
+   *  what decides a retry ({@link BrokerRefusedError.permanent}). */
   readonly code: string;
+  /** The code as a text shows it ({@link shownOAuthCode}). */
+  readonly shownCode: string;
 
   /** `refused` names the identity traded, as its source describes it: this machine's, or a
    *  person's sign-in on it; `context` is what the trade sent that a known refusal may name. */
@@ -408,7 +444,7 @@ export class BrokerRefusedError extends Error {
     refused: string,
     context: RefusalContext = {}
   ) {
-    const shownCode = OAUTH_ERROR_CODE.test(code) ? code : "";
+    const shownCode = shownOAuthCode(code);
     const said =
       description === ""
         ? ""
@@ -422,7 +458,8 @@ export class BrokerRefusedError extends Error {
       `the secrets broker refused ${refused}: HTTP ${status}${shownCode === "" ? "" : ` ${shownCode}`}${said === "" ? "" : `: ${said}`}`
     );
     this.name = "BrokerRefusedError";
-    this.code = shownCode;
+    this.code = KNOWN_OAUTH_ERROR_CODES.has(code) ? code : "";
+    this.shownCode = shownCode;
     this.said = said;
   }
 

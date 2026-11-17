@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { BrokerRefusedError, isKnownBrokerRefusal } from "../token-client";
+import { BrokerRefusedError, isKnownBrokerRefusal, KNOWN_OAUTH_ERROR_CODES } from "../token-client";
 
 // The broker's refusals as its own OAuth library writes them on the wire: the library's fixed
 // sentence, then the hint, or the broker's `<CODE>: ` ahead of its message. The Go broker's
@@ -22,6 +22,18 @@ const sent = { person: "ada@example.com", session: "ses_corpus" };
 describe("the broker's refusals as it writes them", () => {
   test("the corpus is not empty", () => {
     expect(corpus.length).toBeGreaterThan(10);
+  });
+
+  // The codes shown are the library's own (the Go code corpus writes them from its error values).
+  test("the codes the client shows are the codes the broker's library writes", () => {
+    const codes: string[] = JSON.parse(
+      readFileSync(
+        join(import.meta.dir, "../../../envoy/internal/broker/oauth/testdata/refusal-codes.json"),
+        "utf8"
+      )
+    );
+    expect(codes.length).toBeGreaterThan(5);
+    expect([...KNOWN_OAUTH_ERROR_CODES].sort()).toEqual(codes);
   });
 
   test.each(corpus)("%p prints whole", (description) => {

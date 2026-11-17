@@ -21,7 +21,13 @@ import {
 } from "openid-client";
 import { SIGNIN_COMMAND, SIGNIN_ISSUER_VAR, type SignInFlow, type SignInRecord } from "./signins";
 import type { SubjectToken, TokenSource } from "./source";
-import { REFUSAL_TEXT_WITHHELD, requestInit, SignInEndedError, statusOf } from "./token-client";
+import {
+  REFUSAL_TEXT_WITHHELD,
+  requestInit,
+  SignInEndedError,
+  shownOAuthCode,
+  statusOf,
+} from "./token-client";
 import { SUBJECT_TOKEN_TYPE_PERSON } from "./wire";
 
 /** Bounds each call to the issuer, as the Go client's `HTTPClient` bounds each of its calls
@@ -39,9 +45,6 @@ export interface PersonIdentityOptions {
   readonly fetch?: typeof fetch | undefined;
 }
 
-/** An OAuth error code as RFC 6749 writes them (`invalid_client`), never a peer's free text. */
-const OAUTH_ERROR_CODE = /^[a-z][a-z0-9_]{0,63}$/;
-
 /**
  * What the issuer said in `error`: the status and OAuth code it answered, its description
  * withheld (`REFUSAL_TEXT_WITHHELD`), since an issuer, or anything at
@@ -54,7 +57,8 @@ const OAUTH_ERROR_CODE = /^[a-z][a-z0-9_]{0,63}$/;
  */
 function issuerSaid(error: unknown): string {
   if (error instanceof ResponseBodyError) {
-    const code = OAUTH_ERROR_CODE.test(error.error) ? ` ${error.error}` : "";
+    const shown = shownOAuthCode(error.error);
+    const code = shown === "" ? "" : ` ${shown}`;
     const withheld = (error.error_description ?? "") === "" ? "" : `: ${REFUSAL_TEXT_WITHHELD}`;
     return `HTTP ${error.status}${code}${withheld}`;
   }
