@@ -493,13 +493,22 @@ func (e *Engine) lingerExpired(ctx context.Context, tx pgx.Tx, fact intake.Linge
 	if err != nil {
 		return intake.Result{}, err
 	}
-	// The close retires every member, and one that still awaits its merge and is not handed over
-	// has no later write to end its merge step, which the linger left open for a
-	// merge that did not come: under a parked root, a member held from merging or whose pull
-	// request closed (unfinishedHandOvers). Its step ends here, stopped. A member handed over
-	// keeps the step open for its readmit to end (admit's readmit).
+	// The close retires every member. One that still awaits its merge and is not handed over
+	// (unfinishedHandOvers: under a parked root, a member held from merging, or one whose pull
+	// request is not open) has its merge step open still, which the linger left open for the
+	// merge to end (beginLinger). Its step ends here, stopped, where its pull request is not open:
+	// that merge can no longer land. Where it is open, the merge can still land, and its close in
+	// the lingering tree ends the step passed (closeMerged). A member handed over keeps the step
+	// open for its readmit to end (admit's readmit).
 	for _, member := range members {
 		if member.Key == issue.Key || !awaitsMerge(member) || slices.ContainsFunc(handed, func(h record.Issue) bool { return h.Key == member.Key }) {
+			continue
+		}
+		pr, err := e.store.PullRequest(ctx, tx, member.Key)
+		if err != nil {
+			return intake.Result{}, err
+		}
+		if pr != nil && pr.State == record.PullRequestOpen {
 			continue
 		}
 		if err := e.endStep(ctx, tx, member, stepStopped); err != nil {
