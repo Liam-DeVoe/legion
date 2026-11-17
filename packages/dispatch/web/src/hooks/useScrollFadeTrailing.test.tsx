@@ -67,14 +67,17 @@ test("the fade is off at the end of the scroll, a fractional pixel short of it i
 
   try {
     const strip = screen.getByTestId("strip");
+    // The reader scrolls to the end: the strip's own scroll event, which user-event cannot send.
     strip.scrollLeft = 120;
     fireEvent.scroll(strip);
     expect(strip).not.toHaveClass(scrollFadeTrailing);
 
+    // A fractional layout stops half a pixel short of the end (a scroll event, no user-event form).
     strip.scrollLeft = 119.5;
     fireEvent.scroll(strip);
     expect(strip).not.toHaveClass(scrollFadeTrailing);
 
+    // The reader scrolls back away from the end: a scroll event, which user-event has no form for.
     strip.scrollLeft = 40;
     fireEvent.scroll(strip);
     expect(strip).toHaveClass(scrollFadeTrailing);

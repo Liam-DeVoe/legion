@@ -130,10 +130,12 @@ test("a tablist with tabs past its trailing edge wears the trailing fade, and on
     const tablist = screen.getByRole("tablist", { name: "Project" });
     const box = { client: 300, scroll: 300 };
     layOutScrollBox(tablist, box);
+    // The tablist's own scroll event, which user-event has no form for, has the hook measure it.
     fireEvent.scroll(tablist);
     expect(tablist).not.toHaveClass(scrollFadeTrailing);
 
     box.scroll = 360;
+    // Tabs now lie past the edge; the next scroll event (no user-event form) measures them.
     fireEvent.scroll(tablist);
     expect(tablist).toHaveClass(scrollFadeTrailing);
 
@@ -142,6 +144,7 @@ test("a tablist with tabs past its trailing edge wears the trailing fade, and on
     fireEvent.scroll(tablist);
     expect(tablist).not.toHaveClass(scrollFadeTrailing);
 
+    // The reader scrolls back to the start: a scroll event, which user-event has no form for.
     tablist.scrollLeft = 0;
     fireEvent.scroll(tablist);
     expect(tablist).toHaveClass(scrollFadeTrailing);

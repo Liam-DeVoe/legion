@@ -4,6 +4,7 @@ import { Fragment, type ReactNode } from "react";
 import { issueStepsQuery } from "../../api/queries";
 import { EmptyState } from "../../components/EmptyState";
 import { QueryError } from "../../components/QueryError";
+import { useScrollFadeTrailing } from "../../hooks/useScrollFadeTrailing";
 import {
   badgeMed,
   borderDefault,
@@ -147,59 +148,66 @@ function Result({ row }: { row: StepRow }): ReactNode {
 
 /** One task's runs, one row each, in the order the server read them. */
 function TaskTable({ rows, task }: { rows: readonly StepRow[]; task: string }): ReactNode {
+  const tableFade = useScrollFadeTrailing();
   return (
     <section className="min-w-0 space-y-2">
       <h2 className={`text-sm font-semibold ${textSecondaryOnCanvas}`}>Task {task}</h2>
-      {/* `relative` keeps the scrolled table's cells inside this box, as the Settings tables do
-          (`features/settings/classes.ts`); the table scrolls sideways where the page is narrower
-          than its columns. */}
-      <div className={`relative overflow-x-auto rounded-xl border ${card}`}>
-        <table aria-label={`Steps of task ${task}`} className="w-full text-left text-xs">
-          <thead
-            className={`border-b ${surfaceMutedBg} ${borderDefault} ${textSecondaryOnSurface}`}
-          >
-            <tr>
-              {COLUMNS.map((column) => (
-                <th
-                  className="px-1.5 py-1.5 font-semibold whitespace-nowrap"
-                  key={column}
-                  scope="col"
-                >
-                  {column}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((row) => (
-              <tr className={`border-b last:border-0 ${borderDefault}`} key={row.id}>
-                <Cell className={`font-medium whitespace-nowrap ${textPrimaryOnSurface}`}>
-                  {row.label}
-                </Cell>
-                <Cell className={`whitespace-nowrap ${textPrimaryOnSurface}`}>{row.role}</Cell>
-                <Cell className={`whitespace-nowrap ${textSecondaryOnSurface}`}>
-                  {row.type === "" ? NONE : row.type}
-                </Cell>
-                <Cell className={`font-mono break-words ${textSecondaryOnSurface}`}>
-                  <Identifier value={row.agent} />
-                </Cell>
-                <Cell className={`font-mono break-words ${textSecondaryOnSurface}`}>
-                  <Identifier value={row.model} />
-                </Cell>
-                <Cell className={`tabular-nums ${textSecondaryOnSurface}`}>{row.attempt}</Cell>
-                <Cell className={textMutedOnSurface}>
-                  <Time at={row.started} />
-                </Cell>
-                <Cell className={textMutedOnSurface}>
-                  <Time at={row.ended} />
-                </Cell>
-                <Cell className={textPrimaryOnSurface}>
-                  <Result row={row} />
-                </Cell>
+      {/* The table scrolls sideways inside the card where the page is narrower than its columns
+          (a phone), and while columns lie past the card's edge it wears the trailing fade the
+          tablist and the details rail wear, so the cut column reads as more to scroll rather than
+          as clipped text. The scroll box sits inside the card so the fade masks the table and not
+          the card's border; `overflow-hidden` keeps the scrolled rows inside the card's rounded
+          corners. `relative` keeps the scrolled table's cells inside the scroll box, as the
+          Settings tables do (`features/settings/classes.ts`). */}
+      <div className={`overflow-hidden rounded-xl border ${card}`}>
+        <div className={`relative overflow-x-auto ${tableFade.fade}`} ref={tableFade.ref}>
+          <table aria-label={`Steps of task ${task}`} className="w-full text-left text-xs">
+            <thead
+              className={`border-b ${surfaceMutedBg} ${borderDefault} ${textSecondaryOnSurface}`}
+            >
+              <tr>
+                {COLUMNS.map((column) => (
+                  <th
+                    className="px-1.5 py-1.5 font-semibold whitespace-nowrap"
+                    key={column}
+                    scope="col"
+                  >
+                    {column}
+                  </th>
+                ))}
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {rows.map((row) => (
+                <tr className={`border-b last:border-0 ${borderDefault}`} key={row.id}>
+                  <Cell className={`font-medium whitespace-nowrap ${textPrimaryOnSurface}`}>
+                    {row.label}
+                  </Cell>
+                  <Cell className={`whitespace-nowrap ${textPrimaryOnSurface}`}>{row.role}</Cell>
+                  <Cell className={`whitespace-nowrap ${textSecondaryOnSurface}`}>
+                    {row.type === "" ? NONE : row.type}
+                  </Cell>
+                  <Cell className={`font-mono break-words ${textSecondaryOnSurface}`}>
+                    <Identifier value={row.agent} />
+                  </Cell>
+                  <Cell className={`font-mono break-words ${textSecondaryOnSurface}`}>
+                    <Identifier value={row.model} />
+                  </Cell>
+                  <Cell className={`tabular-nums ${textSecondaryOnSurface}`}>{row.attempt}</Cell>
+                  <Cell className={textMutedOnSurface}>
+                    <Time at={row.started} />
+                  </Cell>
+                  <Cell className={textMutedOnSurface}>
+                    <Time at={row.ended} />
+                  </Cell>
+                  <Cell className={textPrimaryOnSurface}>
+                    <Result row={row} />
+                  </Cell>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </div>
     </section>
   );
