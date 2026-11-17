@@ -438,32 +438,41 @@ func TestTheRollForwardUncountsOnlyThePlacesTheEarlierReleaseMayHaveStarted(t *t
 // forward write no second end.
 func TestTheRollForwardEndsTheMergeALingersCloseRetired(t *testing.T) {
 	s := newRollBackStore(t)
+	// lingerAt is where a tree's linger stands: due, its deadline passed and no close applied;
+	// running, its deadline not passed; closedEarlier, its close applied by the earlier release
+	// after the rollback; closedBefore, its close applied by this release before the rollback.
+	type lingerAt int
+	const (
+		lingerDue lingerAt = iota
+		lingerRunning
+		lingerClosedEarlier
+		lingerClosedBefore
+	)
 	type tree struct {
 		root, member string
 		held         bool
 		pr           record.PullRequestState
-		// running is a linger whose deadline has not passed; expired, the close of the linger
-		// the earlier release applied, and closedBefore, one this release applied before the
-		// rollback; handed, its hand-over of the member; closesAfter, the pull request's
-		// unmerged close under the earlier release.
-		running, expired, closedBefore, handed, closesAfter bool
-		ends                                                bool
+		linger       lingerAt
+		// handed is the earlier release's hand-over of the member, closesAfter the pull request's
+		// unmerged close under it.
+		handed, closesAfter bool
+		ends                bool
 	}
 	trees := []tree{
-		{root: "LEGION-290", member: "LEGION-291", held: true, pr: record.PullRequestClosed, expired: true, ends: true},
-		{root: "LEGION-300", member: "LEGION-301", pr: record.PullRequestClosed, expired: true, ends: true},
-		{root: "LEGION-350", member: "LEGION-351", held: true, pr: record.PullRequestOpen, closedBefore: true, closesAfter: true, ends: true},
-		{root: "LEGION-310", member: "LEGION-311", held: true, pr: record.PullRequestClosed},
-		{root: "LEGION-320", member: "LEGION-321", held: true, pr: record.PullRequestClosed, running: true},
-		{root: "LEGION-330", member: "LEGION-331", pr: record.PullRequestOpen, expired: true, handed: true},
-		{root: "LEGION-340", member: "LEGION-341", held: true, pr: record.PullRequestOpen, expired: true},
+		{root: "LEGION-290", member: "LEGION-291", held: true, pr: record.PullRequestClosed, linger: lingerClosedEarlier, ends: true},
+		{root: "LEGION-300", member: "LEGION-301", pr: record.PullRequestClosed, linger: lingerClosedEarlier, ends: true},
+		{root: "LEGION-350", member: "LEGION-351", held: true, pr: record.PullRequestOpen, linger: lingerClosedBefore, closesAfter: true, ends: true},
+		{root: "LEGION-310", member: "LEGION-311", held: true, pr: record.PullRequestClosed, linger: lingerDue},
+		{root: "LEGION-320", member: "LEGION-321", held: true, pr: record.PullRequestClosed, linger: lingerRunning},
+		{root: "LEGION-330", member: "LEGION-331", pr: record.PullRequestOpen, linger: lingerClosedEarlier, handed: true},
+		{root: "LEGION-340", member: "LEGION-341", held: true, pr: record.PullRequestOpen, linger: lingerClosedEarlier},
 	}
 	expire := func(tr tree) {
 		s.exec(fmt.Sprintf(`insert into processed_events (source, event_id) values ('outbox', 'linger:%s:1')`, tr.root))
 	}
 	for i, tr := range trees {
 		deadline := "now() - interval '1 minute'"
-		if tr.running {
+		if tr.linger == lingerRunning {
 			deadline = "now() + interval '1 hour'"
 		}
 		s.issue(tr.root, tr.root, "done", "", 1)
@@ -476,7 +485,7 @@ func TestTheRollForwardEndsTheMergeALingersCloseRetired(t *testing.T) {
 		s.entry(tr.member, "merger")
 		s.pullRequest(tr.member, 40+i, tr.pr)
 		s.row(tr.member, "merge", 0, "open")
-		if tr.closedBefore {
+		if tr.linger == lingerClosedBefore {
 			expire(tr)
 		}
 	}
@@ -488,7 +497,7 @@ func TestTheRollForwardEndsTheMergeALingersCloseRetired(t *testing.T) {
 	// The earlier release: the close of each linger it applies retires the tree's claims and
 	// workspaces, hands over what it hands over, and marks the fact processed, writing no end.
 	for _, tr := range trees {
-		if tr.expired {
+		if tr.linger == lingerClosedEarlier {
 			expire(tr)
 		}
 		if tr.handed {
