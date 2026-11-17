@@ -152,8 +152,8 @@ test("the injected dispatch-first context holds the blocker and accepted-request
 // above it, as 2,300 was above 2,297. The 23 words over 2,300 are a raise and not a cut because,
 // measured on 2026-11-12 line by line, each cut left in the three skills deletes a rule or a fact
 // an agent needs to apply one: the refusal code of the `blocked_by` bullet and "board rank" in
-// the stop-work bullets are the words of the backlog-moves fix's R4 (the code is
-// `BLOCKED_BY_INPUT` since 2026-11-16, below), and "`todo` for an
+// the stop-work bullets are the words of INFRA-2971's R4 (the code is `PROJECT_SCOPE` since a
+// link may name an issue of any project, which kept the bullet's word count), and "`todo` for an
 // issue from the queue" is its
 // decision on R4; "one agent keeps each project's order" is R3's owner of the board, whom the
 // next sentence tells the agent to tell; the claim sentence's "an outside claim can take the tree
