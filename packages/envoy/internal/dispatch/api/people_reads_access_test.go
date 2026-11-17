@@ -204,6 +204,47 @@ func TestASessionsLastActivityCountsOnlyWhatTheCallerSees(t *testing.T) {
 	}
 }
 
+// TestALastActivityCountsTheConversationItsReaderReads: a session's last_activity counts every
+// event of the session its reader may read in the event log, under the log's one rule
+// (eventReadableSQL), so a restricted member's row for a session it talks to counts the session's
+// answer in their conversation, which bob reads in the log as one of its parties. bob, restricted,
+// sends session-priv a direct message and session-priv answers it after its comment on PRIV: bob's
+// row for session-priv is the answer's time, as carol's is.
+func TestALastActivityCountsTheConversationItsReaderReads(t *testing.T) {
+	listener, _ := newBroadcastListener(t, privateRoster)
+	seed := seedPrivateProjectWith(t, testServerOptions{envoyURL: listener.URL})
+	seedSessionWork(t, seed)
+	sent := postAgentMessage(t, seed.handler, sessionOfPrivate, map[string]any{"body": "Status?", "delivery": "btw"}, seedBob)
+	if sent.Code != http.StatusCreated {
+		t.Fatalf("bob messages session-priv: %d %s", sent.Code, sent.Body.String())
+	}
+	answer := decodeBody[model.Message](t, seed.asSession(t, sessionOfPrivate, seedPrivate, http.MethodPost,
+		"/api/v1/messages/"+decodeBody[model.Message](t, sent).ID+"/reply", map[string]any{"attempt": 1, "body": "Green."}, http.StatusCreated))
+	answered := seed.database.Pool.QueryRow(t.Context(),
+		`select max(created_at) from events where actor->>'kind' = 'session' and actor->>'id' = $1`, sessionOfPrivate)
+	var newest time.Time
+	if err := answered.Scan(&newest); err != nil {
+		t.Fatalf("read session-priv's newest event: %v", err)
+	}
+	if !newest.After(answer.CreatedAt.Add(-time.Second)) {
+		t.Fatalf("session-priv's newest event is at %s, before its answer at %s: the answer appended no event of its own", newest, answer.CreatedAt)
+	}
+	for _, caller := range []privateCaller{callerBob, callerCarol} {
+		var row *time.Time
+		for _, agent := range decodeBody[[]struct {
+			SessionID    string     `json:"session_id"`
+			LastActivity *time.Time `json:"last_activity"`
+		}](t, seed.mustRequest(t, caller, http.MethodGet, "/api/v1/agents", nil, http.StatusOK)) {
+			if agent.SessionID == sessionOfPrivate {
+				row = agent.LastActivity
+			}
+		}
+		if row == nil || !row.Equal(newest) {
+			t.Errorf("%s reads session-priv's last activity as %v, want %s: its answer in the conversation %s reads", caller, row, newest, caller)
+		}
+	}
+}
+
 // TestEachReaderIsToldTheUnfetchableCountOfWhatItSees: the live hub counts, for each reader, the
 // pull requests that can no longer be fetched in the repositories that reader sees, in its
 // snapshot and in the freshness frame a later mark sends it, never another reader's count. The
