@@ -620,7 +620,8 @@ func TestWhoamiAnswersThePersistedHorizonWhileAnEventInsertFromBeforeBootIsOpen(
 	// which is proven from pg_snapshot_xmin, the oldest transaction id running anywhere on the
 	// instance (internal/dispatch/events, horizon.go), so it waits out every transaction id a test
 	// beside it holds. On CI run 41868325451 a sibling package's `create database ... template ...`
-	// held it past this loop's thirty seconds.
+	// held it past the thirty-second loop that waited for it then; the wait is now
+	// horizontest.AwaitPersisted, which goes on while the horizon says what holds it back.
 	database := storetest.Open(t)
 	ctx := t.Context()
 	for _, key := range []string{"ONE", "TWO"} {

@@ -3088,7 +3088,7 @@ GATES = [
                          "Read the shutdown service's settings back", "Read the pgmigrate service's settings back",
                          "Read the events service's settings back")),
 
-    # envoy-go's fast half: its format and generated-code checks, the eleven shell-script tests
+    # envoy-go's fast half: its format and generated-code checks, the twelve shell-script tests
     # and the build and pack of the envoy commands (ci.yaml's comment on envoy-go-checks says why
     # they are split out), with the tests of the architecture-note and spec-file rules and their
     # commands, the note check over this repository's notes through the composite action, and the

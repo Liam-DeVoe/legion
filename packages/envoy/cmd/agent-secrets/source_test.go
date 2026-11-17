@@ -653,7 +653,6 @@ func TestEveryUnreachableFailureIsClassified(t *testing.T) {
 // source trailer lies about the request path. (A helper answering NOT_A_SESSION, and a socket file
 // that is not there, are no failure: the chain skips the helper for them, chain_test.go.)
 func TestAHelperFailureNamesTheHelperNotTheBroker(t *testing.T) {
-	t.Parallel()
 	binary := buildAgentSecrets(t)
 	socket, _ := fakeHelper(t, helper.Response{
 		Code:  helper.CodeSign,

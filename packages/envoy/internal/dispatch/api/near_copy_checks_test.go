@@ -50,7 +50,6 @@ func sha256Hex(text string) string {
 // Every state of the gate leaves its row: the refusal, which writes nothing else anywhere, keeps
 // the text it refused and what it named; each create that went in names its issue.
 func TestNearCopyChecksRecordEveryAnswerOfTheGate(t *testing.T) {
-	t.Parallel()
 	handler := newTestHandler(t)
 	createDuplicateTestProject(t, handler, "TEST")
 	title := "Astrolabe calibration drifts after a reseat"
@@ -136,7 +135,6 @@ func TestNearCopyChecksRecordEveryAnswerOfTheGate(t *testing.T) {
 
 // A nudge is recorded as one, with the closest issue below the refusal bar.
 func TestNearCopyChecksRecordANudge(t *testing.T) {
-	t.Parallel()
 	handler := newTestHandler(t)
 	fixture := newDuplicateVocabulary(t, handler, "NUDGE", (duplicateNudgeScore+duplicateRefuseScore)/2)
 
@@ -313,7 +311,6 @@ func TestNearCopyChecksARefusalThatCannotBeRecordedRefusesNothing(t *testing.T) 
 // own id stands for that insert, and the refusal's write, which errs, for an answer the server
 // could not read (putUnseenRefusal).
 func TestNearCopyChecksARefusalRowTheServerCannotConfirmGivesWayToTheCreate(t *testing.T) {
-	t.Parallel()
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	createDuplicateTestProject(t, handler, "TEST")
 	title := "Astrolabe calibration drifts after a reseat"
@@ -382,7 +379,6 @@ func putUnseenRefusal(t *testing.T, database *store.Store, id, title string) {
 // when that row cannot replace the refused one, the create is not admitted at all, and the refused
 // row stands beside no issue. So the refusal and the issue never both stand.
 func TestNearCopyChecksACreateWhoseRowCannotReplaceTheRefusalIsNotAdmitted(t *testing.T) {
-	t.Parallel()
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	createDuplicateTestProject(t, handler, "TEST")
 	title := "Astrolabe calibration drifts after a reseat"

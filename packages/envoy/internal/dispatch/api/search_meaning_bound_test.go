@@ -180,8 +180,7 @@ func TestSearchReportsAMeaningStatementTheServerEnded(t *testing.T) {
 // the meaning stage has a reason to be running at all.
 func TestRelatedCheckReportsAMeaningStatementTheServerEndedAsATimeout(t *testing.T) {
 	// Serial: this test swaps process-wide state. endMeaningStatementsAt shortens
-	// searchMeaningScan, a package variable every meaning query in the process reads; and it
-	// measures the process, holding the check under its 3 s meaning allowance.
+	// searchMeaningScan, a package variable every meaning query in the process reads.
 	const title, spec = "Nightly backups overrun their window", "The backup job runs past six in the morning."
 	const text = "Nightly snapshots finish late"
 	embedder := &fakeEmbedder{vectors: map[string][]float32{

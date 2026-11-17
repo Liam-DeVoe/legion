@@ -2735,7 +2735,7 @@ jobs:
               - '!packages/envoy/infra/**/*_test.go'
               # END generated
             # envoy-go's fast half (envoy-go-checks): the format, generated-contract and pmdoc
-            # checks, the eleven shell-script tests, and the build and pack of the envoy commands,
+            # checks, the twelve shell-script tests, and the build and pack of the envoy commands,
             # with the tests of internal/dispatch/architecture/notes, internal/runnerlog,
             # internal/dispatch/specgraph, cmd/architecture-check and cmd/spec-check, whose one
             # run this is (envoy-go's unit step leaves them out), the architecture-note check over
@@ -5078,7 +5078,7 @@ jobs:
     with:
       ci-ok-changes: ${{ toJSON(needs.changes) }}
 
-  # envoy-go's fast half: the Go format check, the two generated-code checks, the eleven
+  # envoy-go's fast half: the Go format check, the two generated-code checks, the twelve
   # shell-script tests and the build and pack of the envoy commands. It also runs the tests of
   # internal/dispatch/architecture/notes, internal/runnerlog, internal/dispatch/specgraph,
   # cmd/architecture-check and cmd/spec-check, whose one run this is (envoy-go's unit step leaves
@@ -5212,9 +5212,10 @@ jobs:
   # (internal/testnats), so no job here needs a container runtime of its own.
   #
   # Delivery, the Dispatch store, the bus, the listener, the registry store, the session cache and
-  # kvwatch share this runner. The Dispatch store's tests (store_test.go:30-32) and delivery's take
-  # their databases from storetest.Open (storetest.go:63-66), which reads DISPATCH_TEST_DATABASE_URL
-  # and skips without it, and cmd/listener/dispatch_resolution_test.go:182 gets its database
+  # kvwatch share this runner. The Dispatch store's tests read DISPATCH_TEST_DATABASE_URL and skip
+  # without it (store_test.go:30-32), cloning their databases through a harness of their own
+  # (store_test.go:37-44), and delivery's take theirs from storetest.Open (storetest.go:63-66),
+  # which does the same; cmd/listener/dispatch_resolution_test.go:182 gets its database
   # through internal/testpg, so the job carries the lane's Postgres service; the registry store
   # itself is the NATS KV view and needs none.
   envoy-go-race:

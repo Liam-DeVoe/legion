@@ -1243,7 +1243,7 @@ func TestSecretCreateSetAndRetagRefuseEveryValueTheKindsMinterRefuses(t *testing
 // its gcp store, CLOUDSDK_AUTH_ACCESS_TOKEN; and the package-level seams retag is reached
 // through, which it sets: awsClients in the aws store and gcpClientDial, gcpCredentialsFile and
 // gcpUserinfo in the gcp one. It types no value, since only create and set read one
-// (readSecretValue, secret.go:934 and :982).
+// (readSecretValue, which only cmdSecretCreate and cmdSecretSet in secret.go call).
 func TestSecretRetagReadsTheValueOnlyWhenItChangesTheKindOrShape(t *testing.T) {
 	noAppID := appValue(t, map[string]string{"private_key": appKeyPEM(t)})
 	says := mintRefusal(t, policy.KindGitHubApp, noAppID)

@@ -276,7 +276,6 @@ func TestCreateIssueDuplicateIgnoresACitedIssueKey(t *testing.T) {
 }
 
 func TestCreateIssueDuplicateCreatesATitleThatNamesAnotherIssue(t *testing.T) {
-	t.Parallel()
 	handler := newTestHandler(t)
 	createDuplicateTestProject(t, handler, "TEST")
 
@@ -317,7 +316,6 @@ func TestCreateIssueDuplicateCreatesATitleThatNamesAnotherIssue(t *testing.T) {
 }
 
 func TestCreateIssueDuplicateRefusesACopyWhoseTitleNamesTheCandidate(t *testing.T) {
-	t.Parallel()
 	handler := newTestHandler(t)
 	createDuplicateTestProject(t, handler, "TEST")
 
@@ -338,7 +336,6 @@ func TestCreateIssueDuplicateRefusesACopyWhoseTitleNamesTheCandidate(t *testing.
 }
 
 func TestCreateIssueDuplicateRefusesAKeyedCopyOfATitleThatNamesNoIssue(t *testing.T) {
-	t.Parallel()
 	handler := newTestHandler(t)
 	createDuplicateTestProject(t, handler, "TEST")
 
@@ -359,7 +356,6 @@ func TestCreateIssueDuplicateRefusesAKeyedCopyOfATitleThatNamesNoIssue(t *testin
 }
 
 func TestCreateIssueDuplicateKeepsACopyThatTemplateIssuesWouldCrowdOut(t *testing.T) {
-	t.Parallel()
 	handler := newTestHandler(t)
 	createDuplicateTestProject(t, handler, "TEST")
 

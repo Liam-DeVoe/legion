@@ -263,12 +263,14 @@ type removedEvent struct {
 // committed; and a settlement of the document that queued behind the removal for the issue's row
 // reads on only after the commit, finds the document gone and ends saying nothing of it.
 func TestAnUntouchedDocumentIsRemovedWholeAndATouchedOneIsRefused(t *testing.T) {
-	// Serial: two of its cases hold what the tests beside it share. The append in flight holds a
+	// Serial: three of its cases hold what the tests beside it share. The append in flight holds a
 	// write transaction open, which takes a transaction id and so holds back the event log's safe
 	// horizon (pg_snapshot_xmin) that the package's parallel horizon readers wait on. The room's
 	// case points slog's default logger at a buffer of its own (captureLogs), which every other
 	// test's logging would join, and its assertion is a quiet window: nothing reads the removed
-	// document again within 1 s.
+	// document again within 1 s. The queued settlement's case holds the issue's row `for no key
+	// update` in an open transaction, which takes a transaction id the same way, and points the
+	// default logger at a buffer of its own too (captureLogs).
 
 	// The settlement is held back for the test's duration, so an edit written into a room is
 	// still unsettled when the removal reads it. The room test below runs a server of its own,

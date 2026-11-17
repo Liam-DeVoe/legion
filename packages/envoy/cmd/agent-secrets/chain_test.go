@@ -1208,18 +1208,12 @@ func pemThumbprint(t *testing.T, data []byte) string {
 // would take its identity from, registering nothing, and the helper's socket on a line of its own
 // whenever the helper answered and is not that source; with none it prints nothing on stdout and
 // the chain's refusal on stderr.
-// Serial: its metadata row sets a process-wide variable, GCE_METADATA_HOST, which
-// startMetadataServer points at the metadata server withMetadata starts and the rig copies into
-// the binary's environment; t.Setenv panics under t.Parallel. Every other row starts no metadata
-// server and runs in parallel.
 func TestIdentitySourceNamesTheSourceItWouldUse(t *testing.T) {
 	binary := chainBinary(t)
 	rows := []struct {
 		name  string
 		setup func(t *testing.T, r *chainRig) string // the stdout the row wants
 		exit  int
-		// serial is the row that starts a metadata server, and so sets a variable of the process.
-		serial bool
 	}{
 		{name: "key dir", setup: func(t *testing.T, r *chainRig) string {
 			writeSessionFiles(t, r.keyDir(), "launcher-enrollment")
@@ -1234,7 +1228,7 @@ func TestIdentitySourceNamesTheSourceItWouldUse(t *testing.T) {
 			r.env["AGENT_SECRETS_HELPER_SOCK"] = sock
 			return "helper: " + sock + "\n"
 		}},
-		{name: "metadata", serial: true, setup: func(t *testing.T, r *chainRig) string {
+		{name: "metadata", setup: func(t *testing.T, r *chainRig) string {
 			r.withMetadata()
 			return "machine: " + brokerclient.NewMetadataIdentity("agent-secrets-vm").Describe() + "\n"
 		}},
@@ -1252,9 +1246,6 @@ func TestIdentitySourceNamesTheSourceItWouldUse(t *testing.T) {
 	}
 	for _, row := range rows {
 		t.Run(row.name, func(t *testing.T) {
-			if !row.serial {
-				t.Parallel()
-			}
 			broker := newChainBroker(t, storeSettings("gcp", "agent-secrets-vm"))
 			r := newChainRig(t, binary, broker)
 			want := row.setup(t, r)
