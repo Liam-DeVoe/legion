@@ -96,8 +96,9 @@ function newPageHeading(page: Page): Locator {
 }
 
 /** The new page as the parts so far draw it: the title as the page's one `h1`, no tab, the
- *  header that part P fills, which draws the key and the title, the view row that part D fills,
- *  the outline's one line for an issue that holds nothing, and nothing else. */
+ *  header, which draws the key and the title, the view row, the outline's one line for an issue
+ *  that holds nothing, the Contents pane and the Spec view that their own slots fill, and
+ *  nothing else. */
 async function expectNewPageAlone(page: Page, issue: Seeded): Promise<void> {
   const newPage = page.locator("[data-issue-page]");
   await expect(newPageHeading(page)).toHaveText(issue.title);
@@ -105,11 +106,12 @@ async function expectNewPageAlone(page: Page, issue: Seeded): Promise<void> {
   // Reads the whole page: a chooser that drew both pages fails here (R4: in place of today's page).
   await expect(page.getByRole("tab", { exact: true, name: "Spec" })).toHaveCount(0);
   await expect(newPage.getByRole("tab")).toHaveCount(0);
-  // The part that fills a slot changes these two: part P fills the header
-  // (`[data-issue-header]`), another the view row (`[data-filter-row]`), the outline draws
-  // its one line for an issue that holds nothing at the issue's own address, and each other slot
-  // drawn so far adds no text or control: a view's address (`/spec`) draws nothing in the body
-  // until that view's own slot is filled.
+  // The slots filled so far change these readings: the header (`[data-issue-header]`), the view
+  // row (`[data-filter-row]`), the outline's one line for an issue that holds nothing at the
+  // issue's own address, and the Contents pane and the Spec view, whose own rows read them; each
+  // other slot drawn so far adds no text or control.
+  const filled =
+    '[data-issue-header], [data-filter-row], [data-testid="issue-contents"], [data-spec-body]';
   const header = newPage.locator("[data-issue-header]");
   const row = newPage.locator("[data-filter-row]");
   await expect(header).toHaveCount(1);
@@ -119,24 +121,29 @@ async function expectNewPageAlone(page: Page, issue: Seeded): Promise<void> {
   await expect
     .poll(
       () =>
-        newPage.evaluate((root) => {
-          const headerText =
-            root.querySelector<HTMLElement>("[data-issue-header]")?.innerText ?? "";
-          const rowText = root.querySelector<HTMLElement>("[data-filter-row]")?.innerText ?? "";
-          return (root as HTMLElement).innerText
-            .replace(headerText, " ")
-            .replace(rowText, " ")
-            .replace(/\s+/g, " ")
-            .trim();
-        }),
-      { message: "the new page draws text outside its header and its view row" }
+        newPage.evaluate((root, parts) => {
+          let text = (root as HTMLElement).innerText;
+          for (const part of root.querySelectorAll<HTMLElement>(parts)) {
+            text = text.replace(part.innerText, " ");
+          }
+          return text.replace(/\s+/g, " ").trim();
+        }, filled),
+      {
+        message:
+          "the new page draws text outside its header, its view row, the Contents pane and the Spec view",
+      }
     )
     .toBe(body);
   const controls = "button, a, input, select, textarea";
   expect(
-    await newPage.locator(controls).count(),
-    "the new page draws a control outside its header and its view row"
-  ).toBe((await header.locator(controls).count()) + (await row.locator(controls).count()));
+    await newPage
+      .locator(controls)
+      .evaluateAll(
+        (found, parts) => found.filter((control) => control.closest(parts) === null).length,
+        filled
+      ),
+    "the new page draws a control outside its header, its view row, the Contents pane and the Spec view"
+  ).toBe(0);
 }
 
 /** Every request to `/api/` or `/ws/` the page sends, with its body, and every frame it sends on
