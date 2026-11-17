@@ -4259,7 +4259,8 @@ test("inside NoTooltips a copy pressed again by Enter while its write is out mak
         }
         for (const write of writes) write.resolve();
         await scope.findByText("Copied");
-        expect(button.hasAttribute("aria-disabled")).toBe(false);
+        // The mark goes in the render after the one that draws Copied, so the case waits for it.
+        await waitFor(() => expect(button.hasAttribute("aria-disabled")).toBe(false));
         if (surface === "inside") {
           await user.keyboard("{Enter}");
           await waitFor(() => expect(writes).toHaveLength(2));
