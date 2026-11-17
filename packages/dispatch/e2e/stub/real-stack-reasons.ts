@@ -172,6 +172,10 @@ export const realStackReasons: Record<string, string> = {
     "the setting is kept under the login the server's sign-in names, and one row signs a second login in on the same context to read that it holds none; one row reads the server's 404 for a key it does not hold",
   "issues-table.e2e.ts":
     "every row writes and then reads its own write: ranks and priorities patched through the API and read back through `getIssue`, plus a refused write kept in the store and an interrupted action finished after a reload",
+  "issues-views-legion.e2e.ts":
+    "the Legion columns, cards, filters and alerts are read against the board route and the items route as the sampler, the facts consumer and the eval refresher leave them, over the live socket; Start next's writes are read back through the API",
+  "issues-views.e2e.ts":
+    "the views' rows, tabs and counts are read against the server's own listing and board route, saved views are read by a second login signed in on the same context and on its own, and the Board's frames come over the live socket",
   "issue.e2e.ts":
     "asserts the fake Envoy's state across resets; status writes re-read; writes persisted and re-read",
   "judged-grant.e2e.ts":

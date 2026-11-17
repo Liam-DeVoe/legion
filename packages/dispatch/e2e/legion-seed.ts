@@ -71,7 +71,7 @@ export function settledCounters(project: string): string[] {
 
 /** One observation row: the field of one issue (or of the project, under the empty key) as a read
  *  found it, and how long ago that read was. */
-interface Observation {
+export interface Observation {
   readonly issue: string;
   readonly field: string;
   readonly value: string;
@@ -255,6 +255,40 @@ export async function pushLegionObservation(
        VALUES ('${LEGION_PROJECT}', now(), true, null, 4096)`,
     `INSERT INTO legion_observations (project, issue_key, field, value, observed_at)
        VALUES ('${LEGION_PROJECT}', '${issue}', '${field}', '${value.replaceAll("'", "''")}'::jsonb, now())`,
+    `SELECT pg_notify('dispatch_legion_state', '${LEGION_PROJECT}')`
+  );
+}
+
+/** What a failed read of `project`'s daemon leaves behind, as the sampler writes one
+ *  (`legion.RecordFailedRead`): a `legion_reads` row now, with `ok` false and `error` its words,
+ *  and the notice on `legion.StateChannel` that sends every open board of the project a new frame.
+ *  The board's header then names the error, and the Issues tab draws it in the alert under its
+ *  tabs. A row that measures a position on a project with a daemon seeds one first, so the alert
+ *  is there from the start rather than arriving with the sampler's own failed read of
+ *  `startFakeLegionDaemon`, which lands within a minute. */
+export async function seedFailedLegionRead(project: string, error: string): Promise<void> {
+  await sql(
+    `INSERT INTO legion_reads (project, read_at, ok, error, bytes)
+       VALUES ('${project}', now(), false, '${error.replaceAll("'", "''")}', 0)`,
+    `SELECT pg_notify('dispatch_legion_state', '${project}')`
+  );
+}
+
+/** What reads of ACME's daemon over the past days leave behind: each of `observations`, first seen
+ *  `ago` before now, then a good read now and the notice that wakes every open board of the
+ *  project and the facts consumer, as `pushLegionObservation` sends for one field. A row that
+ *  needs a card in a phase for a given time, or a phase history the facts count review rounds
+ *  from, seeds it here. */
+export async function pushLegionObservations(observations: readonly Observation[]): Promise<void> {
+  await sql(
+    `INSERT INTO legion_observations (project, issue_key, field, value, observed_at) VALUES ${observations
+      .map(
+        (observation) =>
+          `('${LEGION_PROJECT}', '${observation.issue}', '${observation.field}', '${observation.value.replaceAll("'", "''")}'::jsonb, now() - interval '${observation.ago}')`
+      )
+      .join(", ")}`,
+    `INSERT INTO legion_reads (project, read_at, ok, error, bytes)
+       VALUES ('${LEGION_PROJECT}', now(), true, null, 4096)`,
     `SELECT pg_notify('dispatch_legion_state', '${LEGION_PROJECT}')`
   );
 }

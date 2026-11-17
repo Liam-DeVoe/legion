@@ -517,6 +517,18 @@ export async function listIssues(project: string, options: ApiOptions = {}) {
   return answered;
 }
 
+/** `GET /api/v1/issues` with the narrowings a view of the Issues tab reads by (`open`, `status`,
+ *  `sort`, `limit`, `offset`, `closed_since`, `closed_before`), as the issues it lists: the whole
+ *  list where the query names no page, and the page's own issues where it does. A row computes
+ *  the rows and the order a view must list from this, not from the web code's filters. */
+export async function listIssuesWhere(
+  query: Query<"/api/v1/issues", "get">,
+  options: ApiOptions = {}
+) {
+  const answered = await get("/api/v1/issues", { query }, options);
+  return Array.isArray(answered) ? answered : (answered.issues ?? []);
+}
+
 // The five priority routes. A priority belongs to no project, so each of these reads or writes
 // the whole deployment's one order. Every caller here is the signed-in person rather than the
 // agent bearer (the default `as`), because a priority's margin draws who made each act and a
