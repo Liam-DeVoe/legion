@@ -144,6 +144,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // Case is a command line's commands and how its binary reaches a server, as Conformance checks
@@ -198,6 +200,7 @@ func Conformance(t *testing.T, bin string, c Case) {
 	}
 	home := t.TempDir()
 	h := &harness{
+		wait:     testwait.Context(t),
 		bin:      path,
 		name:     filepath.Base(bin),
 		dir:      home,
@@ -273,6 +276,10 @@ type harness struct {
 	server   *Recorder
 	commands [][]string
 	hidden   [][]string
+	// wait bounds the wait for a fact after each run, the recorder's count of what the run asked:
+	// what is left of the test binary's deadline less testwait's margin, so a loaded machine that
+	// takes the run's connections late costs the test time and not its result.
+	wait context.Context
 }
 
 func (h *harness) help(t *testing.T) {
@@ -519,9 +526,7 @@ func (h *harness) run(args ...string) result {
 	default:
 		r.failed = err.Error()
 	}
-	settle, cancelSettle := context.WithTimeout(context.Background(), runTimeout)
-	defer cancelSettle()
-	r.requests, r.connections, err = h.server.contactsSince(settle, requests, connections)
+	r.requests, r.connections, err = h.server.contactsSince(h.wait, requests, connections)
 	if err != nil && r.failed == "" {
 		r.failed = fmt.Sprintf("the recorder's count after the run could not be read: %v: UNKNOWN", err)
 	}
@@ -660,6 +665,10 @@ type Recorder struct {
 	// beforeTake, when set, runs each time the server takes a connection, before it is counted: a
 	// test's hold on the count.
 	beforeTake func()
+	// beforeWait, when set, runs each time contactsSince finds its own connection not counted yet,
+	// before it waits for the server's next take: the moment a test that holds the count knows the
+	// count is waiting.
+	beforeWait func()
 }
 
 // NewRecorder starts a Recorder on a loopback port, closed when the test ends.
@@ -727,8 +736,11 @@ func (r *Recorder) contactsSince(ctx context.Context, requests, connections int)
 			r.connections = slices.Delete(r.connections, connections+i, connections+i+1)
 			return slices.Clone(r.requests[requests:]), len(r.connections) - connections, nil
 		}
-		taken := r.taken
+		taken, hold := r.taken, r.beforeWait
 		r.mu.Unlock()
+		if hold != nil {
+			hold()
+		}
 		select {
 		case <-taken:
 			r.mu.Lock()
