@@ -1970,6 +1970,26 @@ So after the rollback a merger learns of a removal only when it reads the pull r
 The kind check keeps both names after the rollback, and the rollback needs no statement for it: an earlier release never writes either kind, so the check refuses nothing that release writes.
 This release's one-time start of the mergers that the `awaiting_merge` cutover left stopped ([Idle release](#idle-release)) adds no outbox kind and no payload field, and its one `processed_events` row is harmless to a rollback.
 
+#### Rolling back the release that records each step
+
+This release adds one outbox kind, `step_record`, and its migration `20261117000528_outbox_kinds_with_the_step_record` adds the name to the outbox's kind check (`outbox_kind_check`).
+That migration writes the whole list, the two merge-queue kinds among its kinds, and its version stands above `20261114031356_merge_queue_removal`, so it writes the list last on any database.
+A `step_record` row writes one start or one end of one step of an issue onto Dispatch's record of that step (`PUT /api/v1/issues/{key}/steps/{id}`).
+The migration changes no column.
+
+Run this with the daemon stopped, before the earlier image is pinned:
+
+```sql
+-- The writes of the issues' step records onto Dispatch.
+delete from outbox where kind = 'step_record';
+```
+
+Each deleted row costs one write of one record: Dispatch shows that step without the start or the end the row carried, and nothing else of the issue changes.
+An earlier release puts the kind in no outbox lane (`laneKinds` in `record/outbox.go`), so it never decodes or runs such a row, and a row left in place holds back no other row.
+It waits through the rollback and writes its record at the roll forward, when Dispatch keeps each field the record already holds and takes only the ones it lacks.
+
+The kind check keeps the name after the rollback, and the rollback needs no statement for it: an earlier release never writes the kind, so the check refuses nothing that release writes.
+
 #### Rolling back the release whose update round ends at its bound
 
 This release's migration `20261113110610_drop_claim_update_answer_marks` takes two columns off `claims`: `update_answered_by_turn_end` and `update_reasked_for_push_check`, which the two `alter` statements below add back.
@@ -2489,7 +2509,7 @@ A migration added after it that neither block touches adds one to every count fr
 To roll a release at contract 94 back to contract 87, stop the daemon and run the eleven statements below.
 On a store that a release at contract 146 migrated, run the contract 146 block above first.
 The eleven statements, after that block where it runs, leave the store at the earlier release's schema, but for the columns of later migrations that the list after the block leaves standing, and the store then reports its highest recorded row (`schemaVersion` in `internal/store/store.go`), since neither block deletes a version row but its own:
-20261112180548, the earlier release's own version, on a store the release at contract 94 migrated, which records it above this migration's own 20261111225552, and 20261114031356, the highest row neither block deletes, on a store a release at contract 146 migrated.
+20261112180548, the earlier release's own version, on a store the release at contract 94 migrated, which records it above this migration's own 20261111225552, and the highest row neither block deletes on a store a release at contract 146 migrated, which is 20261114031356 where no later migration has run.
 
 ```sh
 psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
