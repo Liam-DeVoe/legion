@@ -57,14 +57,15 @@ func tryPutPlan(pool *store.Pool, write PlanWrite, at time.Time) (Plan, error) {
 	return written, tx.Commit(ctx)
 }
 
-// planText is a plan as one line, so two plans compare whole and a difference prints whole.
+// planText is a plan as one line, every field of it, so two plans compare whole and a difference
+// prints whole.
 func planText(plan Plan) string {
 	document := "none"
 	if plan.Document != nil {
 		document = fmt.Sprintf("%q version %d", plan.Document.ArtifactID, plan.Document.Version)
 	}
-	return fmt.Sprintf("%s %s gen %d %s document %s tasks %v", plan.ID, plan.Issue, plan.Generation,
-		plan.Source, document, plan.Tasks)
+	return fmt.Sprintf("%s %s project %q gen %d %s document %s tasks %v", plan.ID, plan.Issue, plan.Project,
+		plan.Generation, plan.Source, document, plan.Tasks)
 }
 
 // A plan is one node of kind plan, part of its issue by one relation tuple, holding its source, its
@@ -306,25 +307,25 @@ func ratedRetro(t *testing.T, pool *store.Pool, issue string, generation int64, 
 	return id
 }
 
-// issuePlanText is one issue of the read as one line, its times in UTC, so a difference prints
-// whole.
+// issuePlanText is one issue of the read as one line, every field of it, its plan whole and its
+// times in UTC, so two issues compare whole and a difference prints whole.
 func issuePlanText(issue IssuePlan) string {
 	moment := func(at *time.Time) string {
 		if at == nil {
 			return "-"
 		}
-		return at.UTC().Format(time.RFC3339)
+		return at.UTC().Format(time.RFC3339Nano)
 	}
 	plan := "none"
 	if issue.Plan != nil {
-		plan = fmt.Sprintf("%s gen %d %v", issue.Plan.Source, issue.Plan.Generation, issue.Plan.Tasks)
+		plan = planText(*issue.Plan)
 	}
 	ratings := make([]string, len(issue.Ratings))
 	for index, rating := range issue.Ratings {
 		ratings[index] = fmt.Sprintf("%d %q %s %s", rating.Rating, rating.Reason, rating.StepID, moment(rating.EndedAt))
 	}
 	return fmt.Sprintf("%s %q closed %s plan %s ratings %v from %s to %s failed %d", issue.Issue, issue.Title,
-		issue.ClosedAt.UTC().Format(time.RFC3339), plan, ratings, moment(issue.StartedAt), moment(issue.EndedAt), issue.FailedSteps)
+		issue.ClosedAt.UTC().Format(time.RFC3339Nano), plan, ratings, moment(issue.StartedAt), moment(issue.EndedAt), issue.FailedSteps)
 }
 
 // The read of a project lists each issue of it that is done and closed, newest close first, with
@@ -348,7 +349,8 @@ func TestProjectPlansListsEachFinishedIssueInOneStatement(t *testing.T) {
 	seedIssues(t, pool, "OTH", seededIssue{"OTH-1", "done", &closedThird})
 	seedIssues(t, pool, "LEGX", seededIssue{"LEGX-1", "done", &closedSecond})
 
-	putPlan(t, pool, defaultPlan(uuid.NewString(), "LEG-1", 1), minute(0))
+	planOne, planTwo := uuid.NewString(), uuid.NewString()
+	putPlan(t, pool, defaultPlan(planOne, "LEG-1", 1), minute(0))
 	stepRun(t, pool, "LEG-1", StepKindStep, "planner", 1, 1, new(minute(0)), new(minute(5)), ResultPassed)
 	stepRun(t, pool, "LEG-1", StepKindStep, "tester", 3, 1, new(minute(6)), new(minute(9)), ResultFailed)
 	stepRun(t, pool, "LEG-1", StepKindStep, "reviewer", 4, 1, new(minute(10)), new(minute(15)), ResultFailed)
@@ -357,7 +359,7 @@ func TestProjectPlansListsEachFinishedIssueInOneStatement(t *testing.T) {
 	stepRun(t, pool, "LEG-1", StepKindMerge, "merger", 0, 1, nil, new(minute(25)), ResultFailed)
 	stepRun(t, pool, "LEG-1", StepKindMerge, "merger", 0, 1, nil, new(minute(30)), ResultPassed)
 
-	putPlan(t, pool, defaultPlan(uuid.NewString(), "LEG-2", 1), minute(60))
+	putPlan(t, pool, defaultPlan(planTwo, "LEG-2", 1), minute(60))
 	stepRun(t, pool, "LEG-2", StepKindStep, "planner", 1, 1, new(minute(60)), new(minute(70)), ResultPassed)
 	retroTwo := ratedRetro(t, pool, "LEG-2", 1, minute(71), minute(72), 5, "The plan fit the work.")
 	stepRun(t, pool, "LEG-2", StepKindMerge, "merger", 0, 1, nil, new(minute(75)), ResultPassed)
@@ -377,12 +379,13 @@ func TestProjectPlansListsEachFinishedIssueInOneStatement(t *testing.T) {
 	if sent := counter.Count(); sent != 1 {
 		t.Fatalf("the read sent %d statements, want one for the whole project", sent)
 	}
-	plan := &Plan{Source: PlanSourceDefault, Generation: 1, Tasks: []PlanTask{{ID: "default", Steps: defaultSteps}}}
 	want := []IssuePlan{
-		{Issue: "LEG-2", Title: "Title of LEG-2", ClosedAt: closedThird, Plan: plan,
+		{Issue: "LEG-2", Title: "Title of LEG-2", ClosedAt: closedThird,
+			Plan:      &Plan{ID: planTwo, Issue: "LEG-2", Source: PlanSourceDefault, Generation: 1, Tasks: []PlanTask{{ID: "default", Steps: defaultSteps}}},
 			Ratings:   []Rating{{Rating: 5, Reason: "The plan fit the work.", StepID: retroTwo, EndedAt: new(minute(72))}},
 			StartedAt: new(minute(60)), EndedAt: new(minute(75)), FailedSteps: 0},
-		{Issue: "LEG-1", Title: "Title of LEG-1", ClosedAt: closedSecond, Plan: plan,
+		{Issue: "LEG-1", Title: "Title of LEG-1", ClosedAt: closedSecond,
+			Plan:      &Plan{ID: planOne, Issue: "LEG-1", Source: PlanSourceDefault, Generation: 1, Tasks: []PlanTask{{ID: "default", Steps: defaultSteps}}},
 			Ratings:   []Rating{{Rating: 4, Reason: "The tester found the bug.", StepID: retroOne, EndedAt: new(minute(22))}},
 			StartedAt: new(minute(0)), EndedAt: new(minute(30)), FailedSteps: 2},
 		{Issue: "LEG-4", Title: "Title of LEG-4", ClosedAt: closedFirst},
@@ -411,22 +414,30 @@ func TestProjectPlansListsEachFinishedIssueInOneStatement(t *testing.T) {
 // Two issues of one project that closed at one moment are each listed once and whole: each with
 // its own plan, its own rating, its own time and its own count of failed steps, however the rows of
 // the two come out of the statement. The read is compared by issue, since the contract orders only
-// by the close.
+// by the close. The owner's plan of LEG-2 names its document at version 1, the first version, which
+// the write answers and the read lists as the plan's document; each expected plan is written out
+// here, not taken from what the store answered.
 func TestProjectPlansListsTwoIssuesClosedAtOneMomentWhole(t *testing.T) {
 	pool := storetest.Open(t).Pool
 	closed := t0.Add(5 * time.Hour)
 	seedIssues(t, pool, "LEG", seededIssue{"LEG-1", "done", &closed}, seededIssue{"LEG-2", "done", &closed})
 
-	putPlan(t, pool, defaultPlan(uuid.NewString(), "LEG-1", 1), minute(0))
+	planOne, planTwo, document := uuid.NewString(), uuid.NewString(), uuid.NewString()
+	putPlan(t, pool, defaultPlan(planOne, "LEG-1", 1), minute(0))
 	stepRun(t, pool, "LEG-1", StepKindStep, "planner", 1, 1, new(minute(0)), new(minute(5)), ResultPassed)
 	stepRun(t, pool, "LEG-1", StepKindStep, "reviewer", 4, 1, new(minute(6)), new(minute(9)), ResultFailed)
 	retroOne := ratedRetro(t, pool, "LEG-1", 1, minute(10), minute(12), 3, "The review came late.")
 	stepRun(t, pool, "LEG-1", StepKindMerge, "merger", 0, 1, nil, new(minute(15)), ResultPassed)
 
-	putPlan(t, pool, PlanWrite{
-		ID: uuid.NewString(), Issue: "LEG-2", Generation: new(int64(2)), Source: new(PlanSourceOwner), Document: &PlanDocument{ArtifactID: uuid.NewString(), Version: 1},
+	ownersPlan := Plan{ID: planTwo, Issue: "LEG-2", Source: PlanSourceOwner, Generation: 2, Document: &PlanDocument{ArtifactID: document, Version: 1},
+		Tasks: []PlanTask{{ID: "ui", Steps: []string{"implementer"}}, {ID: "api", Steps: []string{"implementer", "tester"}}}}
+	written := putPlan(t, pool, PlanWrite{
+		ID: planTwo, Issue: "LEG-2", Generation: new(int64(2)), Source: new(PlanSourceOwner), Document: &PlanDocument{ArtifactID: document, Version: 1},
 		Tasks: []PlanTask{{ID: "ui", Steps: []string{"implementer"}}, {ID: "api", Steps: []string{"implementer", "tester"}}},
 	}, minute(20))
+	if planText(written) != planText(ownersPlan) {
+		t.Errorf("the owner's plan write answers\n%s\nwant\n%s", planText(written), planText(ownersPlan))
+	}
 	stepRun(t, pool, "LEG-2", StepKindStep, "implementer", 1, 2, new(minute(20)), new(minute(25)), ResultPassed)
 	stepRun(t, pool, "LEG-2", StepKindStep, "tester", 2, 2, new(minute(26)), new(minute(28)), ResultFailed)
 	stepRun(t, pool, "LEG-2", StepKindStep, "tester", 2, 2, new(minute(29)), new(minute(31)), ResultFailed)
@@ -444,12 +455,10 @@ func TestProjectPlansListsTwoIssuesClosedAtOneMomentWhole(t *testing.T) {
 	slices.Sort(got)
 	want := []string{
 		issuePlanText(IssuePlan{Issue: "LEG-1", Title: "Title of LEG-1", ClosedAt: closed,
-			Plan:      &Plan{Source: PlanSourceDefault, Generation: 1, Tasks: []PlanTask{{ID: "default", Steps: defaultSteps}}},
+			Plan:      &Plan{ID: planOne, Issue: "LEG-1", Source: PlanSourceDefault, Generation: 1, Tasks: []PlanTask{{ID: "default", Steps: defaultSteps}}},
 			Ratings:   []Rating{{Rating: 3, Reason: "The review came late.", StepID: retroOne, EndedAt: new(minute(12))}},
 			StartedAt: new(minute(0)), EndedAt: new(minute(15)), FailedSteps: 1}),
-		issuePlanText(IssuePlan{Issue: "LEG-2", Title: "Title of LEG-2", ClosedAt: closed,
-			Plan: &Plan{Source: PlanSourceOwner, Generation: 2,
-				Tasks: []PlanTask{{ID: "ui", Steps: []string{"implementer"}}, {ID: "api", Steps: []string{"implementer", "tester"}}}},
+		issuePlanText(IssuePlan{Issue: "LEG-2", Title: "Title of LEG-2", ClosedAt: closed, Plan: &ownersPlan,
 			Ratings:   []Rating{{Rating: 5, Reason: "Two tasks fit the work.", StepID: retroTwo, EndedAt: new(minute(33))}},
 			StartedAt: new(minute(20)), EndedAt: new(minute(40)), FailedSteps: 2}),
 	}
