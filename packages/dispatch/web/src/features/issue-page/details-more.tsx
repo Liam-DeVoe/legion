@@ -1,5 +1,14 @@
 import { useQuery } from "@tanstack/react-query";
-import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import {
+  type FocusEvent,
+  type ReactNode,
+  type Ref,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 
 import { api } from "../../api/client";
@@ -55,13 +64,52 @@ export function DetailsPeople({ issue }: DetailsMoreProps): ReactNode {
   useEffect(() => {
     if (opensCollaborators) setCollaboratorsOpen(true);
   }, [opensCollaborators]);
+  const subscribersRow = useRef<HTMLDivElement>(null);
+  const subscribersControl = useRef<HTMLButtonElement>(null);
+  const collaboratorsControl = useRef<HTMLButtonElement>(null);
+  // The control of the Subscribers row the focus was last on (`onFocus` below), and each agent's
+  // Unsubscribe as the last drawing left them, in the list's order. An Unsubscribe goes with its
+  // agent's row once its write lands, and a Retry with its line once what it sent again is out or
+  // has been read, and the focus would fall to the page with them, so it goes on instead, as
+  // Unpin in Pinned hands it on (`IssuePins.tsx`): from an Unsubscribe to the next agent's, and
+  // from a Retry to the Unsubscribe whose write is out; else to the Subscribers control. The
+  // Confirm dialog gives the focus back to the Unsubscribe it opened from itself (`useDialog`).
+  const held = useRef<Element | null>(null);
+  const unsubscribes = useRef<readonly HTMLButtonElement[]>([]);
+  useLayoutEffect(() => {
+    const before = unsubscribes.current;
+    // `SubscribedAgents` draws one row per agent, in `rows`' order, its Unsubscribe its button.
+    const drawn = [
+      ...(subscribersRow.current?.querySelectorAll<HTMLButtonElement>("li > button") ?? []),
+    ];
+    unsubscribes.current = drawn;
+    const gone = held.current;
+    if (gone === null || gone.isConnected) return;
+    held.current = null;
+    if (document.activeElement !== null && document.activeElement !== document.body) return;
+    const at = before.indexOf(gone as HTMLButtonElement);
+    const writing = subscribers.unsubscribe.isPending ? refused : undefined;
+    const next =
+      at === -1
+        ? drawn.find(
+            (_, index) => writing !== undefined && subscribers.rows[index]?.session_id === writing
+          )
+        : before.slice(at + 1).find((control) => control.isConnected && !control.disabled);
+    (next ?? subscribersControl.current)?.focus();
+  });
   return (
     <>
-      <WideRow>
+      <WideRow
+        onFocus={(event) => {
+          held.current = event.target;
+        }}
+        ref={subscribersRow}
+      >
         <button
           aria-expanded={subscribersOpen}
           className={`flex min-h-11 items-center gap-2 rounded-lg text-sm font-medium md:min-h-8 ${pageInkText}`}
           onClick={() => setSubscribersOpen((open) => !open)}
+          ref={subscribersControl}
           type="button"
           {...pageChrome}
         >
@@ -100,6 +148,7 @@ export function DetailsPeople({ issue }: DetailsMoreProps): ReactNode {
           aria-expanded={collaboratorsOpen}
           className={`flex min-h-11 items-center gap-2 rounded-lg text-sm font-medium md:min-h-8 ${pageInkText}`}
           onClick={() => setCollaboratorsOpen((open) => !open)}
+          ref={collaboratorsControl}
           type="button"
           {...pageChrome}
         >
@@ -107,7 +156,7 @@ export function DetailsPeople({ issue }: DetailsMoreProps): ReactNode {
         </button>
         {collaboratorsOpen ? (
           <div className="w-full" {...authorText}>
-            <IssueCollaboratorList issueKey={issue.key} />
+            <IssueCollaboratorList issueKey={issue.key} owner={collaboratorsControl} />
           </div>
         ) : null}
       </WideRow>
@@ -293,10 +342,23 @@ function reachInDetails(selector: string): void {
 /** One row of Details that its own control names, as `IssueMargin.tsx`'s `Row wide` draws it
  *  (the prototype's `.frow`); `row` names the row a control elsewhere opens Details at
  *  (`details-rows.ts`). */
-function WideRow({ children, row }: { children: ReactNode; row?: DetailsRow }): ReactNode {
+function WideRow({
+  children,
+  onFocus,
+  ref,
+  row,
+}: {
+  children: ReactNode;
+  onFocus?: (event: FocusEvent<HTMLDivElement>) => void;
+  ref?: Ref<HTMLDivElement>;
+  row?: DetailsRow;
+}): ReactNode {
   return (
+    // biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the handler only notes which of the row's controls the focus is on, so the row needs no role of its own.
     <div
       className={`grid min-w-0 grid-cols-1 gap-2.5 border-b py-2 text-sm leading-5 ${pageRowBorder}`}
+      onFocus={onFocus}
+      ref={ref}
       {...(row === undefined ? {} : { [DETAILS_ROW_ATTRIBUTE]: row })}
     >
       <div

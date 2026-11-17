@@ -16,6 +16,7 @@ import { primarySpec } from "../../api/issue-cache";
 import { issueQuery, userStateQuery } from "../../api/queries";
 import { refreshQueries } from "../../api/query-refresh";
 import type {
+  ArchitectureSource,
   CommentWithTrees,
   DispatchEvent,
   DisplayTree,
@@ -25,10 +26,14 @@ import type {
   UserState,
 } from "../../api/types";
 import { linkText, pageInkText } from "../../theme/classes";
+import { componentsControlName } from "../issue/IssueComponentsLine";
+import { labelsControlName } from "../issue/IssueLabels";
 import { conversationItemId, pinnedItemMarker, stateForIssue } from "../issue/pins";
 import { type DocumentBridge, MarginProvider, useMargin } from "../margin/margin-context";
 import { issue as marginIssue, specArtifact } from "../margin/margin-fixture";
 import { buildDispatchReference } from "../refs/routes";
+import { KeymapProvider } from "../shell/KeymapProvider";
+import { useKeymapScope } from "../shell/keymap";
 import { userPreferenceStorageKey } from "../shell/userPreference";
 import { blockedByControlName } from "./BlockedByControl";
 import { DETAILS_ROW_ATTRIBUTE, DETAILS_ROW_REQUEST_EVENT, type DetailsRow } from "./details-rows";
@@ -49,6 +54,7 @@ import {
   issueStatusWord,
   NODE_TYPE_NAMES,
 } from "./page-words";
+import { architecture } from "./shared-controls-fixture";
 import { DetailsSlot } from "./slots/details";
 import { blockedByRefusal } from "./useIssueBlockedBy";
 import { type IssueHeaderWrites, useIssueHeaderWrites } from "./useIssueHeaderWrites";
@@ -1216,6 +1222,150 @@ test("a request for the Labels row opens a closed Development in the drawer that
     view.unmount();
     restore();
     window.localStorage.removeItem(kept);
+  }
+});
+
+// R2 and the part's source note: each row draws its name one time. The Labels row of an issue
+// with no label reads its name, None, and a control that adds the first label; that control's
+// visible word is not the row's name again (found by the tester on the preview of d4344116, where
+// INFRA-3570's row read "Labels None Labels").
+test("the Labels row of an issue with no label draws its name one time", async () => {
+  const { restore } = stubIssueApi();
+  const { unmount } = renderDetails();
+
+  try {
+    const row = await waitFor(() => rowAt("labels"));
+    expect(row).toHaveTextContent(CONTROL_LABELS.none);
+    expect(
+      within(row).getByRole("button", { name: labelsControlName([], "CORE-1", CONTROL_LABELS) }),
+      "the Labels row of an issue with no label draws no Edit labels"
+    ).toBeEnabled();
+    expect(
+      (row.textContent ?? "").split(PROPERTY_LABELS.labels).length - 1,
+      "the Labels row draws its name two times on an issue with no label"
+    ).toBe(1);
+  } finally {
+    unmount();
+    restore();
+  }
+});
+
+/** The issue page's scope of keys, pushed as the page pushes it (`useIssueKeymap.ts`), so a key
+ *  the details slot binds in that scope is read. */
+function IssueKeys(): null {
+  useKeymapScope("issue");
+  return null;
+}
+
+// R4, R5 and decision 112 of the parts: on an issue with no label the labels' control is named
+// for adding one (`labelsControlName`), and the add menu's Labels and the key `l` find it by that
+// name. While both looked for "Edit labels", the menu listed no Labels on such an issue and `l`
+// did nothing.
+test("on an issue with no label, the Add menu's Labels and the key l reach the labels control", async () => {
+  const user = userEvent.setup();
+  const { restore } = stubIssueApi();
+  // The labels' popover reads the project's issues for the labels it offers.
+  const listIssues = spyOn(api, "listIssues").mockResolvedValue([]);
+  const queryClient = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false, staleTime: Infinity } },
+  });
+  const view = render(
+    <MemoryRouter initialEntries={["/issues/CORE-1"]}>
+      <QueryClientProvider client={queryClient}>
+        <KeymapProvider>
+          <IssueKeys />
+          <MarginProvider>
+            <MarginSlotProvider drawsSlot>
+              <DetailsSlot issue={issue} route={{ key: "CORE-1", kind: "issue" }} />
+              <MarginBody />
+            </MarginSlotProvider>
+          </MarginProvider>
+        </KeymapProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+
+  try {
+    const control = within(await waitFor(() => rowAt("labels"))).getByRole("button", {
+      name: labelsControlName([], "CORE-1", CONTROL_LABELS),
+    });
+    expect(control).toHaveAttribute("aria-expanded", "false");
+
+    await user.click(screen.getByRole("button", { name: CONTROL_LABELS.add }));
+    await user.click(await screen.findByRole("menuitem", { name: PROPERTY_LABELS.labels }));
+    await waitFor(() =>
+      expect(control, "the add menu's Labels did not open the labels control").toHaveAttribute(
+        "aria-expanded",
+        "true"
+      )
+    );
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(control).toHaveAttribute("aria-expanded", "false"));
+
+    await user.keyboard("l");
+    await waitFor(() =>
+      expect(control, "l did not open the labels control").toHaveAttribute("aria-expanded", "true")
+    );
+  } finally {
+    view.unmount();
+    listIssues.mockRestore();
+    restore();
+  }
+});
+
+/** The project's one architecture source, so the components line draws its picker
+ *  (`shared-writes.test.ts`'s `architectureSource`). */
+const architectureSource: ArchitectureSource = {
+  branch: "main",
+  components: 1,
+  created_at: "2026-09-10T00:00:00Z",
+  created_by: { id: "alice", kind: "user" },
+  enabled: true,
+  last_commit: "3be61df5be90",
+  last_error: null,
+  last_sync_at: "2026-09-17T00:00:00Z",
+  project: "CORE",
+  repo: "legion/legion",
+};
+
+// R11 and decision 114 of the parts: on an issue no component is attached to, the components
+// picker's trigger draws "Set components" and is named for it inside `NoTooltips`
+// (`componentsControlName` given the attachment the line draws), and the add menu's Components
+// finds it by that name. While the menu looked for `main`'s "Edit components of CORE-1", it
+// listed no Components on such an issue.
+test("on an issue with no component, the Add menu's Components reaches the picker", async () => {
+  const user = userEvent.setup();
+  const { restore } = stubIssueApi();
+  // The fixture's issue is not attached. A source draws the picker, and the open picker reads
+  // the project's architecture for the components it offers.
+  const sources = spyOn(api, "listProjectArchitectureSources").mockResolvedValue([
+    architectureSource,
+  ]);
+  const tree = spyOn(api, "getArchitecture").mockResolvedValue(architecture);
+  const { unmount } = renderDetails();
+
+  try {
+    const picker = await screen.findByRole("button", {
+      name: componentsControlName("CORE-1", {
+        components: issue.components,
+        controlLabels: CONTROL_LABELS,
+      }),
+    });
+    expect(picker).toHaveAttribute("aria-expanded", "false");
+
+    await user.click(screen.getByRole("button", { name: CONTROL_LABELS.add }));
+    await user.click(await screen.findByRole("menuitem", { name: PROPERTY_LABELS.components }));
+    await waitFor(() =>
+      expect(picker, "the add menu's Components did not open the picker").toHaveAttribute(
+        "aria-expanded",
+        "true"
+      )
+    );
+  } finally {
+    unmount();
+    tree.mockRestore();
+    sources.mockRestore();
+    restore();
   }
 });
 

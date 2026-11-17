@@ -1,4 +1,5 @@
 import AxeBuilder from "@axe-core/playwright";
+import { labelsControlName } from "../web/src/features/issue/IssueLabels";
 import { DETAILS_ROW_REQUEST_EVENT } from "../web/src/features/issue-page/details-rows";
 import {
   MARGIN_SECTION_ORDER,
@@ -7,7 +8,7 @@ import {
 import { CONTROL_LABELS, PROGRESS_NOUNS } from "../web/src/features/issue-page/page-words";
 import { buildDispatchReference, buildIssuePath } from "../web/src/features/refs/routes";
 import { setLiveSessions } from "./agents";
-import { getIssue, patchIssue } from "./api";
+import { getIssue, patchIssue, putRepoProject } from "./api";
 import { nextFrames } from "./frames";
 import {
   closeDetails,
@@ -248,7 +249,7 @@ test("Details opens on the properties and holds no conversation @phone", async (
         "an element of Details carries a title"
       ).toHaveCount(0);
       const editLabels = detailsRow(page, PROPERTY_LABELS.labels).getByRole("button", {
-        name: "Edit labels",
+        name: labelsControlName(TWENTY_LABELS, one, CONTROL_LABELS),
       });
       await editLabels.click();
       await expect(page.getByRole("combobox", { name: "Search or create label" })).toBeVisible();
@@ -346,7 +347,7 @@ test("every property with a value is visible in Details at every width @phone", 
   await phase(browser, seedDetailsIssue, async (page, seeded) => {
     const { one, parent, three } = seeded.keys;
     const desktopProject = test.info().project.name !== "iphone";
-    // Who opened ONE and how many references point at it, as Dispatch reads them.
+    // ONE as Dispatch reads it, which the readings below take who opened it from.
     const oneRead = await getIssue(one);
     const opener = oneRead.created_by?.id;
     expect(opener, `${one} names no one who opened it`).toBeDefined();
@@ -540,7 +541,7 @@ test("every property with a value is visible in Details at every width @phone", 
       "href",
       buildIssuePath({ key: one, kind: "artifact", slug: firstDocument?.slug ?? "" })
     );
-    // Referenced by's count opens the list of what references ONE.
+    // Referenced by's control opens the list of what references ONE.
     const referencedBy = marginSection(page, "references").getByRole("button", {
       name: /Referenced by/,
     });
@@ -690,6 +691,78 @@ test("every property with a value is visible in Details at every width @phone", 
   });
 });
 
+/** A label of the most characters Dispatch takes (`IssueLabels.tsx`'s `maxLabelLength`, and the
+ *  server's `LABELS_INPUT` refusal "each label must be 1 to 40 characters"), with no space to
+ *  break it at. */
+const LONGEST_LABEL = "a-label-of-forty-characters-and-no-space";
+
+// R4 and (5): the Labels row lists every label, none cut. Found by the tester on the preview of
+// d4344116: on INFRA-3570 a 40-character label ran 39 px past Details' edge at 1440 px and was
+// cut, at 390 px as well.
+test("a label of the most characters Dispatch takes is whole in Details at every width @phone", async ({
+  browser,
+}) => {
+  test.setTimeout(180_000);
+  await phase(browser, seedDetailsIssue, async (page, seeded) => {
+    const { two } = seeded.keys;
+    expect(LONGEST_LABEL).toHaveLength(40);
+    await patchIssue(two, { labels: [LONGEST_LABEL] });
+    const desktopProject = test.info().project.name !== "iphone";
+    for (const width of desktopProject ? [1440, 1280, 1024, 390] : [390]) {
+      await page.setViewportSize(viewportAt(width));
+      await gotoIssue(page, `/issues/${two}`);
+      await openDetails(page);
+      const row = detailsRow(page, PROPERTY_LABELS.labels);
+      const label = row.getByText(LONGEST_LABEL, { exact: true });
+      await expect(label).toBeVisible();
+      const [labelBox, rowBox] = [await label.boundingBox(), await row.boundingBox()];
+      expect(labelBox, `the label has no box at ${width} px`).not.toBeNull();
+      expect(rowBox, `the Labels row has no box at ${width} px`).not.toBeNull();
+      expect(
+        (labelBox?.x ?? 0) + (labelBox?.width ?? 0),
+        `a label of 40 characters runs past the Labels row at ${width} px`
+      ).toBeLessThanOrEqual((rowBox?.x ?? 0) + (rowBox?.width ?? 0) + 1);
+      await assertWholeInDetails(page, [label]);
+    }
+  });
+});
+
+/** A repository whose name runs to 45 characters, which GitHub allows (a name of up to 100), with
+ *  no space to break it at. A name of 32 characters, which a project of this deployment maps,
+ *  already runs 14 px past the row at 1440 px. */
+const LONG_REPOSITORY = "acme/a-repository-name-of-exactly-forty-chars";
+
+// (5): the repository is visible in its row, whole. Found by the tester on the preview of
+// 962ec632: on INFRA-3570 a repository of 44 characters ran 101 px past Details' Repository row
+// at 1440 px and was cut at Details' edge, at 390 px as well.
+test("a repository of a long name is whole in Details at every width @phone", async ({
+  browser,
+}) => {
+  test.setTimeout(180_000);
+  await phase(browser, seedDetailsIssue, async (page, seeded) => {
+    const { two } = seeded.keys;
+    await putRepoProject(LONG_REPOSITORY, { default: false, project: PROJECT });
+    await patchIssue(two, { repo: LONG_REPOSITORY });
+    const desktopProject = test.info().project.name !== "iphone";
+    for (const width of desktopProject ? [1440, 1280, 1024, 390] : [390]) {
+      await page.setViewportSize(viewportAt(width));
+      await gotoIssue(page, `/issues/${two}`);
+      await openDetails(page);
+      const row = detailsRow(page, PROPERTY_LABELS.repository);
+      const repository = row.getByText(LONG_REPOSITORY, { exact: true }).first();
+      await expect(repository).toBeVisible();
+      const [repositoryBox, rowBox] = [await repository.boundingBox(), await row.boundingBox()];
+      expect(repositoryBox, `the repository has no box at ${width} px`).not.toBeNull();
+      expect(rowBox, `the Repository row has no box at ${width} px`).not.toBeNull();
+      expect(
+        (repositoryBox?.x ?? 0) + (repositoryBox?.width ?? 0),
+        `a repository of ${LONG_REPOSITORY.length} characters runs past the Repository row at ${width} px`
+      ).toBeLessThanOrEqual((rowBox?.x ?? 0) + (rowBox?.width ?? 0) + 1);
+      await assertWholeInDetails(page, [repository]);
+    }
+  });
+});
+
 test("each control in Details saves and reads back", async ({ browser }) => {
   test.setTimeout(300_000);
   await phase(browser, seedDetailsIssue, async (page, seeded) => {
@@ -702,7 +775,7 @@ test("each control in Details saves and reads back", async ({ browser }) => {
     // (8) The labels: one removed and one added, then `l` from a closed Details.
     await reopen(one);
     const editLabels = detailsRow(page, PROPERTY_LABELS.labels).getByRole("button", {
-      name: "Edit labels",
+      name: labelsControlName(TWENTY_LABELS, one, CONTROL_LABELS),
     });
     await expect(editLabels, "Details draws no Edit labels").toBeVisible();
     await editLabels.click();
@@ -731,7 +804,9 @@ test("each control in Details saves and reads back", async ({ browser }) => {
     // The labels' control is in the DOM while Details is closed, so whether `l` pressed it is
     // read first, and only then whether Details is open on it.
     await expect(
-      detailsRow(page, PROPERTY_LABELS.labels).getByRole("button", { name: "Edit labels" }),
+      detailsRow(page, PROPERTY_LABELS.labels).getByRole("button", {
+        name: labelsControlName(relabelled, one, CONTROL_LABELS),
+      }),
       "l did not open Details at Edit labels"
     ).toHaveAttribute("aria-expanded", "true");
     await expect(marginShell(page), "l did not open Details").toBeVisible();
@@ -975,8 +1050,11 @@ test("each control in Details saves and reads back", async ({ browser }) => {
     await nextFrames(page);
     await expect(marginShell(page), "l opened Details on a closed issue").toBeHidden();
     await openDetails(page);
+    // TWO has no label, so its control is named for adding one.
     await expect(
-      detailsRow(page, PROPERTY_LABELS.labels).getByRole("button", { name: "Edit labels" }),
+      detailsRow(page, PROPERTY_LABELS.labels).getByRole("button", {
+        name: labelsControlName([], two, CONTROL_LABELS),
+      }),
       "a closed issue's labels can be edited"
     ).toBeDisabled();
     await expect(addControl(page), "a closed issue draws the add control").toHaveCount(0);

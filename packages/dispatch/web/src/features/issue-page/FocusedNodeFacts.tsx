@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import type { ReactNode } from "react";
+import { type ReactNode, useLayoutEffect, useRef } from "react";
 
 import { api, type WriteBounds } from "../../api/client";
 import { whoAmIQuery } from "../../api/queries";
@@ -204,8 +204,30 @@ function ItemControls({
       };
     }),
   ];
+  const pinControl = useRef<HTMLButtonElement>(null);
+  const threadControl = useRef<HTMLButtonElement>(null);
+  // The control of these the focus was last on (`onFocus` below). Accept and Reject go once the
+  // suggestion is decided, a delivery's Retry once a Retry could deliver it twice, and a
+  // failure's Retry once what it sent again is out, each under the reader's own press, and the
+  // focus would fall to the page with them: it goes to the thread's Resolve or Reopen instead,
+  // else to Pin, as Unpin in Pinned hands it on (`IssuePins.tsx`). Pin, Resolve and Reopen, and
+  // the hand-on, stay drawn when pressed.
+  const held = useRef<Element | null>(null);
+  useLayoutEffect(() => {
+    if (held.current === null || held.current.isConnected) return;
+    held.current = null;
+    if (document.activeElement === null || document.activeElement === document.body) {
+      (threadControl.current ?? pinControl.current)?.focus();
+    }
+  });
   return (
-    <div className="mt-2 flex min-w-0 flex-col gap-1">
+    // biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the handler only notes which of these controls the focus is on, so they need no role of their own.
+    <div
+      className="mt-2 flex min-w-0 flex-col gap-1"
+      onFocus={(event) => {
+        held.current = event.target;
+      }}
+    >
       <p className="flex flex-wrap items-center gap-2" data-focused-controls="">
         <button
           aria-pressed={pinned}
@@ -216,6 +238,7 @@ function ItemControls({
               op: isPinnedConversation(dismissed, pinId) ? "unpin" : "pin",
             }))
           }
+          ref={pinControl}
           type="button"
           {...pageChrome}
         >
@@ -228,6 +251,7 @@ function ItemControls({
             onClick={() =>
               actions.mutateItem({ id: item.id, kind: comment.resolved ? "reopen" : "resolve" })
             }
+            ref={threadControl}
             type="button"
             {...pageChrome}
           >

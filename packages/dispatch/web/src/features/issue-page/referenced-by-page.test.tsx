@@ -10,6 +10,13 @@ import { api } from "../../api/client";
 import { primarySpec } from "../../api/issue-cache";
 import { issueQuery, userStateQuery } from "../../api/queries";
 import type { GraphEdge, GraphReferences, IssueDetails, UserState } from "../../api/types";
+import {
+  borderDefault,
+  linkHoverText,
+  linkText,
+  textMutedOnSurface,
+  textSecondaryOnSurface,
+} from "../../theme/classes";
 import { stateForIssue } from "../issue/pins";
 import { MarginProvider } from "../margin/margin-context";
 import { issue as marginIssue } from "../margin/margin-fixture";
@@ -141,6 +148,19 @@ test("with page false an issue's own comment that references it is listed, and w
     );
     expect(kept.getByText(WORDS.otherComment)).toBeInTheDocument();
     expect(within(pageList).getByRole("heading")).toHaveTextContent("Referenced by (1)");
+    // Every colour the list draws in Details is the page's (R10, decision 56): its link and its
+    // excerpt as much as its heading and its lines, so no element carries the application's.
+    const applicationColours = new Set(
+      [linkText, linkHoverText, textSecondaryOnSurface, textMutedOnSurface, borderDefault].flatMap(
+        (classes) => classes.split(" ")
+      )
+    );
+    expect(
+      [pageList, ...pageList.querySelectorAll("*")]
+        .filter((element) => [...element.classList].some((name) => applicationColours.has(name)))
+        .map((element) => element.outerHTML),
+      "the page's list draws the application's colours"
+    ).toEqual([]);
   } finally {
     view.unmount();
     client.clear();

@@ -1,5 +1,5 @@
 import { skipToken, useQuery } from "@tanstack/react-query";
-import { type ReactNode, useId, useMemo, useState } from "react";
+import { type ReactNode, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { api } from "../../../api/client";
@@ -132,6 +132,19 @@ export function NodeReferences({
       open ? referenceRows(itemWords, (query.data?.edges ?? []).filter(drawsEdge), names) : NO_ROWS,
     [itemWords, names, open, query.data]
   );
+  const toggle = useRef<HTMLButtonElement>(null);
+  // The control of the list the focus was last on (`onFocus` below). Retry goes with its line
+  // once the read it sent lands, under the reader's own press, and the focus would fall to the
+  // page with it: it goes back to the list's own control instead, as Unpin in Pinned hands it on
+  // (`IssuePins.tsx`).
+  const held = useRef<Element | null>(null);
+  useLayoutEffect(() => {
+    if (held.current === null || held.current.isConnected) return;
+    held.current = null;
+    if (document.activeElement === null || document.activeElement === document.body) {
+      toggle.current?.focus();
+    }
+  });
   if (addressed === undefined) {
     return null;
   }
@@ -140,12 +153,16 @@ export function NodeReferences({
       aria-label={NODE_REFERENCES_WORDS.what_references}
       className="mt-2"
       data-node-references={node.id}
+      onFocus={(event) => {
+        held.current = event.target;
+      }}
     >
       <button
         aria-controls={panelId}
         aria-expanded={open}
         className={pageHeaderControl}
         onClick={() => setOpenedOn(open ? undefined : node.id)}
+        ref={toggle}
         type="button"
         {...pageChrome}
       >

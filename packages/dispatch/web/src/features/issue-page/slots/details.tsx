@@ -4,20 +4,21 @@ import { createPortal } from "react-dom";
 
 import { primarySpec } from "../../../api/issue-cache";
 import { userStateQuery } from "../../../api/queries";
+import { labelsControlName } from "../../issue/IssueLabels";
 import { stateForIssue } from "../../issue/pins";
 import { useMargin } from "../../margin/margin-context";
 import { useKeymap } from "../../shell/keymap";
 import { DETAILS_ROW_ATTRIBUTE, useOpenDetailsAt } from "../details-rows";
-import { LABELS_CONTROL_NAME } from "../IssueAddMenu";
 import type { IssueField } from "../IssueFieldForms";
 import { IssueMarginCards, IssueMarginPanel } from "../IssueMargin";
 import { DETAILS_ATTRIBUTE, useFillMarginSlot } from "../margin-slot";
 import { NoTooltips } from "../NoTooltips";
+import { CONTROL_LABELS } from "../page-words";
 import type { SlotProps } from "../slot-props";
 import { useIssueHeaderWrites } from "../useIssueHeaderWrites";
 
-/** The labels' control in Details' Labels row (`IssueLabels.tsx`), which the key `l` presses. */
-const LABELS_CONTROL = `[${DETAILS_ROW_ATTRIBUTE}="labels"] button[aria-label="${LABELS_CONTROL_NAME}"]`;
+/** The key `l`'s name in the list of keys (dispatch://INFRA-3945 R4). */
+const LABELS_CONTROL_NAME = "Edit labels";
 
 /**
  * Details' properties (dispatch://INFRA-1196 R13, R14): the one panel `IssueMarginPanel` draws,
@@ -34,7 +35,7 @@ const LABELS_CONTROL = `[${DETAILS_ROW_ATTRIBUTE}="labels"] button[aria-label="$
  * Slots share no state, so this slot keeps which of the two editors of its rows is open and
  * makes its own set of the issue's writes; the header's writes reach the same keyed line of the
  * issue (`useIssueHeaderWrites.ts`). It binds `l`, which opens Details at the Labels row with
- * Edit labels pressed.
+ * the labels' control pressed.
  */
 export function DetailsSlot({ issue }: SlotProps): ReactNode {
   const state = useQuery(userStateQuery()).data;
@@ -76,7 +77,12 @@ export function DetailsSlot({ issue }: SlotProps): ReactNode {
       label: LABELS_CONTROL_NAME,
       run: () => openDetailsAt("labels", true),
       when: () => {
-        const control = document.querySelector(LABELS_CONTROL);
+        // The control, by the name it has for the issue as it is now (`labelsControlName`):
+        // "Add a label to CORE-1" while it has no label, "Edit labels" once it has one.
+        const name = labelsControlName(issue.labels ?? [], issue.key, CONTROL_LABELS);
+        const control = document.querySelector(
+          `[${DETAILS_ROW_ATTRIBUTE}="labels"] button[aria-label="${CSS.escape(name)}"]`
+        );
         return control instanceof HTMLButtonElement && !control.disabled;
       },
     },

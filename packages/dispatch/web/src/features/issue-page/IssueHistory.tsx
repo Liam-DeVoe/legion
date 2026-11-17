@@ -76,9 +76,10 @@ const WORDS = `mt-0.5 min-w-0 text-sm leading-5 [overflow-wrap:anywhere] ${pageK
  * The issue's history, a list in the panel (dispatch://INFRA-1196 R15, `history-model.ts`):
  * newest first, each day before today folded to one line with its count, which opens it. An
  * event is one line with its pin; one author's uploads within a minute are one entry that opens
- * each file; a thread agents wrote among themselves is drawn whole, each turn's words with its
- * Reply, which sets the line at the foot of the outline to reply to it - and once a person has
- * replied in a thread, the outline draws it and this list no longer does (R1).
+ * each file, each with its own upload's pin; a thread agents wrote among themselves is drawn
+ * whole, each turn's words with its Reply, which sets the line at the foot of the outline to
+ * reply to it - and once a person has replied in a thread, the outline draws it and this list no
+ * longer does (R1).
  *
  * `/activity`, `t v` and the address of a comment or message of such a thread open Details here
  * (R20): at `/activity` the heading is brought into Details' view once for each arrival, except a
@@ -203,6 +204,25 @@ export function IssueHistory({
     if (marked === undefined) return;
     setOpened((held) => (held.has(marked) ? held : new Set(held).add(marked)));
   }, [marked]);
+  // The address of a turn of a thread that began before the oldest event read so far names an
+  // entry the history does not draw yet (`HistoryInput.loadedFrom`), so the log is read on, one
+  // page at a time, until that thread is in or the log has ended, and the landing below then
+  // marks the turn, opens its day and brings it on screen (R4). It waits for the comments and
+  // messages the threads are drawn from, before which no thread is drawn at all, and for every
+  // read in flight, so each page is one request; a read that failed stops it, and its line says
+  // so with its Retry.
+  const seeksItem =
+    item !== undefined &&
+    marked === undefined &&
+    comments.data !== undefined &&
+    messages.data !== undefined &&
+    log.hasNextPage &&
+    !log.isFetching &&
+    !log.isError;
+  const { fetchNextPage } = log;
+  useEffect(() => {
+    if (seeksItem) void fetchNextPage();
+  }, [fetchNextPage, seeksItem]);
   const togglePin = (eventId: number) =>
     writePin(queryClient, issueKey, (dismissed) => ({
       id: eventItemId({ id: eventId }),
@@ -261,7 +281,7 @@ export function IssueHistory({
   // That box is found once the list is drawn; moving the panel to another host remounts it.
   const anchorRoot = useRef<HTMLElement | null>(null);
   const scroller = useRef<HTMLElement | null>(null);
-  const listDrawn = log.isSuccess;
+  const listDrawn = log.data !== undefined;
   useLayoutEffect(() => {
     if (listDrawn) scroller.current = scrollingAncestor(anchorRoot.current);
   }, [listDrawn]);
@@ -279,6 +299,56 @@ export function IssueHistory({
       anchorRoot.current?.closest("section")?.contains(active) === true
     );
   };
+  // A control of the history that goes away under the reader's focus leaves the focus in the
+  // history, never on the page, as Details' Unpin does (`IssuePins.tsx`): Load older, gone once
+  // the log has ended, hands it to the last control of the list, beside the entries that page
+  // added; the Retry of a failed read, gone once the read lands, to the heading. Each is held
+  // from its press, made with the focus on it, until the reads settle, and only a focus left on
+  // the page moves: a reader who has put it elsewhere by then keeps it there. A control still
+  // drawn once they settle - Load older with pages left, a Retry whose read failed again - takes
+  // it back.
+  const pressed = useRef<"older" | "retry" | undefined>(undefined);
+  const loadOlder = useRef<HTMLButtonElement>(null);
+  const failure = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const control = pressed.current;
+    if (control === undefined || log.isFetching) return;
+    pressed.current = undefined;
+    const active = document.activeElement;
+    if (active !== null && active !== document.body) return;
+    const drawn =
+      control === "older" ? loadOlder.current : failure.current?.querySelector("button");
+    const besides =
+      control === "older"
+        ? [
+            ...(anchorRoot.current?.querySelectorAll<HTMLElement>(
+              "a[href], button:not(:disabled)"
+            ) ?? []),
+          ].at(-1)
+        : undefined;
+    (drawn ?? besides ?? heading.current)?.focus();
+  });
+  // The history draws the log it holds whatever the last read's outcome (decision 98): a read
+  // that fails once it holds the log - a refetch after an event, a later open of Details, the
+  // next page - says so with its Retry beside the entries, never in their place, and the line
+  // stands alone only while no page is held. A failed next page is said where Load older is,
+  // and its Retry reads that page again; any other failure under the heading, where its Retry
+  // reads the log again.
+  const failed = log.isError ? (
+    <div ref={failure}>
+      <DetailsErrorLine
+        error={log.error}
+        message={ANSWER_LINES.history_unreadable}
+        onRetry={() => {
+          if (failure.current?.contains(document.activeElement) === true) {
+            pressed.current = "retry";
+          }
+          void (log.isFetchNextPageError ? log.fetchNextPage() : log.refetch());
+        }}
+        retrying={log.isFetching}
+      />
+    </div>
+  ) : null;
 
   return (
     <section
@@ -287,21 +357,20 @@ export function IssueHistory({
       data-testid="issue-history"
       tabIndex={-1}
     >
-      <h2 className={`text-sm font-semibold ${pageInkText}`} ref={heading} {...pageChrome}>
+      <h2
+        className={`text-sm font-semibold outline-none ${pageInkText}`}
+        ref={heading}
+        tabIndex={-1}
+        {...pageChrome}
+      >
         {CONTROL_LABELS.history}
       </h2>
+      {log.isFetchNextPageError ? null : failed}
       {log.isPending ? (
         <p className={`text-xs ${pageQuietText}`} {...pageChrome}>
           {ANSWER_LINES.loading_history}
         </p>
-      ) : log.isError ? (
-        <DetailsErrorLine
-          error={log.error}
-          message={ANSWER_LINES.history_unreadable}
-          onRetry={() => void log.refetch()}
-          retrying={log.isFetching}
-        />
-      ) : (
+      ) : log.data === undefined ? null : (
         <ViewportAnchor
           enabled={holdsPlace}
           item="data-history-entry"
@@ -356,11 +425,16 @@ export function IssueHistory({
           </ol>
         </ViewportAnchor>
       )}
+      {log.isFetchNextPageError ? failed : null}
       {log.hasNextPage ? (
         <button
           className={`dispatch-inline-link self-start text-xs font-medium underline ${pageMutedText}`}
           disabled={log.isFetchingNextPage}
-          onClick={() => void log.fetchNextPage()}
+          onClick={(event) => {
+            if (document.activeElement === event.currentTarget) pressed.current = "older";
+            void log.fetchNextPage();
+          }}
+          ref={loadOlder}
           type="button"
           {...pageChrome}
         >
@@ -461,33 +535,48 @@ function Entry({
       </li>
     );
   }
+  // Each file of a run is one event's upload, so each has that event's Pin and Unpin, as every
+  // line of the history has its event's (R2): the run's line says who uploaded, and each file
+  // stands under it on a line of its own, beside its pin, as an event's words stand beside theirs.
   if (entry.kind === "uploads") {
     return (
       <li
-        className={`${ENTRY} min-w-0 break-words`}
+        className={`${ENTRY} flex min-w-0 flex-col`}
         data-event-seq={entry.seq}
         data-history-entry={entry.id}
         data-history-uploads={entry.files.length}
       >
-        {head}
-        <span {...pageChrome}>{CONTROL_LABELS.history_uploaded}</span>{" "}
-        <span>
-          {entry.files.map((file, index) => (
-            <span key={file.id}>
-              {index === 0 ? null : ", "}
-              {file.slug === undefined ? (
-                file.name
-              ) : (
-                <Link
-                  className={`dispatch-inline-link ${ROW_LINK} ${pageInkText}`}
-                  to={buildIssuePath({ key: issueKey, kind: "artifact", slug: file.slug })}
-                >
-                  {file.name}
-                </Link>
-              )}
-            </span>
-          ))}
+        <span className="min-w-0 break-words">
+          {head}
+          <span {...pageChrome}>{CONTROL_LABELS.history_uploaded}</span>
         </span>
+        <ul className="flex min-w-0 flex-col">
+          {entry.files.map((file) => {
+            const isPinned = pinned(file.id);
+            return (
+              <li className="flex min-w-0 items-center gap-x-2" key={file.id}>
+                <span className="min-w-0 flex-1 break-words">
+                  {file.slug === undefined ? (
+                    file.name
+                  ) : (
+                    <Link
+                      className={`dispatch-inline-link ${ROW_LINK} ${pageInkText}`}
+                      to={buildIssuePath({ key: issueKey, kind: "artifact", slug: file.slug })}
+                    >
+                      {file.name}
+                    </Link>
+                  )}
+                </span>
+                <PinButton
+                  label={isPinned ? CONTROL_LABELS.unpin : CONTROL_LABELS.pin}
+                  onClick={() => onPin(file.id)}
+                  pinned={isPinned}
+                  quiet
+                />
+              </li>
+            );
+          })}
+        </ul>
       </li>
     );
   }

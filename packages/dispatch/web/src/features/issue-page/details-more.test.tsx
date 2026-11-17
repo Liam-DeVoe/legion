@@ -218,13 +218,15 @@ const SUBSCRIBER: Subscriber = {
 /** The People rows of Details, at the issue's own address, over the reads `readsHeld` holds:
  *  the subscribers' read is each case's own. */
 function renderPeople() {
-  return render(
+  const client = readsHeld();
+  const view = render(
     <MemoryRouter initialEntries={[`/issues/${KEY}`]}>
-      <QueryClientProvider client={readsHeld()}>
+      <QueryClientProvider client={client}>
         <DetailsPeople issue={issue} state={undefined} />
       </QueryClientProvider>
     </MemoryRouter>
   );
+  return { client, unmount: view.unmount };
 }
 
 /** The Subscribers row's control, which carries the count once the read answers. */
@@ -250,6 +252,27 @@ test("a failed read of the subscribed agents says so, with Retry", async () => {
     expect(getIssueSubscribers).toHaveBeenLastCalledWith(KEY);
     await waitFor(() => expect(subscribers.textContent).toBe(`${PROPERTY_LABELS.subscribers}:1`));
     expect(screen.queryByRole("alert")).toBeNull();
+    // Retry went with its line once the read landed, and the focus with it: it is on the control
+    // of the list the line was about, not on the page.
+    expect(document.activeElement, "the focus fell to the page with Retry").toBe(subscribers);
+
+    // A read that fails once the row holds an answer keeps what it holds: the count and the
+    // agents, with the failure and its Retry beside them (decision 98).
+    await userEvent.click(subscribers);
+    await screen.findByRole("button", { name: "Unsubscribe" });
+    getIssueSubscribers.mockRejectedValueOnce(
+      new ApiError(503, { code: "ENVOY_UNAVAILABLE", error: "envoy listener unreachable" })
+    );
+    await act(() => view.client.invalidateQueries({ queryKey: ["subscribers", KEY] }));
+    expect((await screen.findByRole("alert")).textContent).toBe(STATE_LINES.subscribers_unreadable);
+    expect(subscribers.textContent, "a failed refetch dropped the count it held").toBe(
+      `${PROPERTY_LABELS.subscribers}:1`
+    );
+    expect(
+      screen.queryByRole("button", { name: "Unsubscribe" }),
+      "a failed refetch dropped the agents it held"
+    ).not.toBeNull();
+    expect(screen.getByRole("button", { name: CONTROL_LABELS.retry })).toBeDefined();
   } finally {
     view.unmount();
     getIssueSubscribers.mockRestore();
@@ -260,12 +283,16 @@ test("a failed read of the subscribed agents says so, with Retry", async () => {
 // so, and its Retry sends the same session's unsubscribe again.
 test("a failed Unsubscribe says so, with Retry", async () => {
   let subscribed = [SUBSCRIBER];
+  // The write Retry sends is held until the case lets it land, so that where the focus is while
+  // it is out can be read.
+  const { promise: landed, resolve: land } = Promise.withResolvers<void>();
   const getIssueSubscribers = spyOn(api, "getIssueSubscribers").mockImplementation(
     async () => subscribed
   );
   const unsubscribeIssueSession = spyOn(api, "unsubscribeIssueSession")
     .mockRejectedValueOnce(new ApiError(403, { code: "FORBIDDEN", error: "not yours to remove" }))
     .mockImplementation(async () => {
+      await landed;
       subscribed = [];
     });
   const view = renderPeople();
@@ -287,8 +314,19 @@ test("a failed Unsubscribe says so, with Retry", async () => {
 
     await waitFor(() => expect(unsubscribeIssueSession).toHaveBeenCalledTimes(2));
     expect(unsubscribeIssueSession).toHaveBeenLastCalledWith(KEY, "planner", keyedAttempt);
+    // Retry went with its line as soon as its write was out, and the focus with it: it is on the
+    // Unsubscribe that write is for, which stays drawn until the write lands.
+    const unsubscribe = screen.getByRole("button", { name: "Unsubscribe" });
+    await waitFor(() =>
+      expect(document.activeElement, "the focus fell to the page with Retry").toBe(unsubscribe)
+    );
+
+    land();
     await waitFor(() => expect(subscribers.textContent).toBe(`${PROPERTY_LABELS.subscribers}:0`));
     expect(screen.queryByRole("alert")).toBeNull();
+    // The agent's row went with its Unsubscribe once the write landed; no agent follows it, so
+    // the focus is on the Subscribers control rather than on the page.
+    expect(document.activeElement, "the focus fell to the page with Unsubscribe").toBe(subscribers);
   } finally {
     view.unmount();
     getIssueSubscribers.mockRestore();
@@ -454,6 +492,11 @@ test("a comment's facts pin it, resolve its thread and accept its suggestion", a
     await userEvent.click(within(controls).getByRole("button", { name: CONTROL_LABELS.accept }));
     await waitFor(() => expect(acceptComment).toHaveBeenCalledWith("comment-3", keyedAttempt));
     await waitFor(() => expect(control(CONTROL_LABELS.accept)).toBeNull());
+    // Accept went with the suggestion it decided, and the focus with it: it is on the thread's
+    // Reopen, still drawn, rather than on the page.
+    expect(document.activeElement, "the focus fell to the page with Accept").toBe(
+      control(CONTROL_LABELS.reopen_thread)
+    );
     expect(control(CONTROL_LABELS.reject)).toBeNull();
     expect(control(CONTROL_LABELS.unpin)).not.toBeNull();
     expect(control(CONTROL_LABELS.reopen_thread)).not.toBeNull();
@@ -633,6 +676,11 @@ test("a delivery that could not reach its agent reads Not delivered with Retry, 
     const [reached, unheld] = [...document.querySelectorAll<HTMLElement>("[data-deliveries] > li")];
     expect(reached?.textContent).not.toContain("role:");
     expect(unheld?.textContent).toStartWith(`${CONTROL_LABELS.unnamed_recipient} · `);
+    // The failed attempt's Retry went once the read after it landed, and the focus with it: it
+    // is on the thread's Resolve rather than on the page.
+    expect(document.activeElement, "the focus fell to the page with the delivery's Retry").toBe(
+      screen.getByRole("button", { name: CONTROL_LABELS.resolve })
+    );
 
     // A message's deliveries the same, its Retry sent again for that message.
     view.rerender(
