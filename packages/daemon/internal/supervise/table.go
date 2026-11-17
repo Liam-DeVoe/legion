@@ -36,6 +36,19 @@ type StreamTurnStart struct{ Claim claim.Token }
 // StreamTurnEnd is the agent's turn ending.
 type StreamTurnEnd struct{ Claim claim.Token }
 
+// StreamTurnAnswered is the agent's answer to the daemon's ask whether it is in a turn (get_state,
+// Machine.streaming), as the worker stream delivers it: behind every frame the shim sent before
+// that answer, its replay of the frames it held while no daemon was attached among them, since
+// the shim writes that replay before any later frame on the connection and one claim's events are
+// handled in the order they arrive. Streaming is what the agent said. It is the decision of its
+// own the stale-plugin relaunch of a claim a daemon start restored ready or idle waits for
+// (Machine.askTurn, turnAnswered), which so reads the claim with every replayed turn already
+// applied.
+type StreamTurnAnswered struct {
+	Claim     claim.Token
+	Streaming bool
+}
+
 // IssueTurnEnded is a turn ending on another claim of this claim's issue, posted by the daemon to
 // every other claim of the issue once that turn's own machine has recorded its end. The roles of
 // an issue work one jj workspace, so a phase task this claim is holding rather than adopt that
@@ -564,6 +577,7 @@ func (RuntimeObservation) isEvent()   {}
 func (StreamHello) isEvent()          {}
 func (StreamTurnStart) isEvent()      {}
 func (StreamTurnEnd) isEvent()        {}
+func (StreamTurnAnswered) isEvent()   {}
 func (IssueTurnEnded) isEvent()       {}
 func (StreamToolStep) isEvent()       {}
 func (StreamClosed) isEvent()         {}
@@ -601,6 +615,7 @@ const (
 	onHello         eventKind = "stream_hello"
 	onTurnStart     eventKind = "stream_turn_start"
 	onTurnEnd       eventKind = "stream_turn_end"
+	onTurnAnswered  eventKind = "stream_turn_answered"
 	onIssueTurnEnd  eventKind = "issue_turn_ended"
 	onToolStep      eventKind = "stream_tool_step"
 	onClosed        eventKind = "stream_closed"
@@ -661,6 +676,8 @@ func kindOf(ev Event) eventKind {
 		return onTurnStart
 	case StreamTurnEnd:
 		return onTurnEnd
+	case StreamTurnAnswered:
+		return onTurnAnswered
 	case IssueTurnEnded:
 		return onIssueTurnEnd
 	case StreamToolStep:
@@ -845,7 +862,7 @@ func fillTable(t *builder) {
 	// The shim.
 	t.row(onHello, "the shim connected", helloed, []ClaimState{StateShimConnected}, StateLaunching)
 	t.row(onHello, "the shim reconnected before ready: hand it the enrollment if it lacks one", enrolledOnly, nil, StateShimConnected, StateRegistered)
-	t.row(onHello, "the shim reconnected: write again a value whose take a hold refused", reconnected, nil, prompted...)
+	t.row(onHello, "the shim reconnected: write again a value whose take a hold refused; after a restart, ask a stale claim's agent whether it is in a turn", reconnected, nil, prompted...)
 	t.row(onHello, "the shim reconnected mid-turn: after a restart, ask whether the turn is still running",
 		reconnectedMidTurn, []ClaimState{StateIdle, StateWorking}, StateWorking)
 	t.ignore(onHello, "no launch has minted a boot token", StateQueued)
@@ -904,6 +921,17 @@ func fillTable(t *builder) {
 	t.ignore(onTurnEnd, "the agent is not ready, so no turn of a task is in flight", unready...)
 	t.ignore(onTurnEnd, noProcess, gone...)
 
+	// The agent's answer to whether it is in a turn, behind the frames its shim sent before it. It
+	// decides the stale-plugin relaunch of a claim a daemon start restored ready or idle that waits
+	// for it (turnAnswered): made working by an answer of a turn, then held for that turn's end or
+	// relaunched, which leaves it launching, failed once the launch spends its budget, or suspended
+	// where a held suspension ends it. Every other state has no relaunch waiting for the answer.
+	t.row(onTurnAnswered, "the agent said whether it is in a turn: decide the stale-plugin relaunch a restored claim waited for",
+		turnAnswered, []ClaimState{StateWorking, StateLaunching, StateFailed, StateSuspended}, StateReady, StateIdle, StateWorking)
+	t.ignore(onTurnAnswered, "no claim the daemon's start restored ready or idle waits for its agent's word on its turn",
+		StateQueued, StateLaunchUncertain, StateLaunching, StateShimConnected, StateRegistered)
+	t.ignore(onTurnAnswered, noProcess, gone...)
+
 	t.row(onIssueTurnEnd, "a turn ended elsewhere on the issue: write again the value of a task waiting for the working copy they share",
 		issueTurnEnded, nil, prompted...)
 	t.ignore(onIssueTurnEnd, "the claim is in a turn of its own; a take it refused is offered again when that turn ends", StateWorking)
@@ -928,8 +956,9 @@ func fillTable(t *builder) {
 		[]ClaimState{StateLaunching, StateFailed, StateSuspended}, StateLaunching, StateShimConnected, StateRegistered)
 	// The reconnect deadline of a claim a daemon start restored with its agent ready (NewMachine):
 	// its shim's hello disarms it (reconnected, reconnectedMidTurn), so what fires is a process
-	// whose shim never came back.
-	t.row(onDeadline, "the reconnect deadline: the shim of a restored claim never said hello; probe its process, and retire and relaunch it if it lives", reconnectDeadline,
+	// whose shim never came back — or, armed again by that hello, the bound of an ask the agent
+	// of a restored stale claim left unanswered (askRestoredTurn), which relaunches it uncharged.
+	t.row(onDeadline, "the reconnect deadline: the shim of a restored claim never said hello, so probe its process and retire and relaunch it if it lives; or its agent never said whether it is in a turn, so relaunch it uncharged", reconnectDeadline,
 		[]ClaimState{StateLaunching, StateFailed, StateSuspended}, StateReady, StateWorking, StateIdle)
 	t.ignore(onDeadline, "no boot is being watched", processless...)
 
@@ -1197,7 +1226,9 @@ func (b *builder) ignore(kind eventKind, reason string, states ...ClaimState) {
 // hold refused gets its value written again once no hold stands, when nothing else came
 // (offerPending): the sweep's write is bounded by the sweep's interval and by the worker asking
 // once per revision, never made on the spot. In a working claim it asks again whether the turn an
-// earlier daemon saw start is over, when the last ask went unanswered (askTurnOver).
+// earlier daemon saw start is over, when the last ask went unanswered (askTurnOver); in a ready
+// or idle one a daemon start restored, whether its agent is in a turn, while the stale-plugin
+// relaunch that waits for the answer has none after the shim's hello (askRestoredTurn).
 func observe(m *Machine, ctx context.Context, ev Event) error {
 	return m.judge(ctx, ev.(RuntimeObservation).Observation, func(ctx context.Context) error {
 		if err := m.ensureEnrolled(ctx); err != nil {
@@ -1205,6 +1236,9 @@ func observe(m *Machine, ctx context.Context, ev Event) error {
 		}
 		if m.claim.State == StateWorking {
 			return m.askTurnOver(ctx, ev)
+		}
+		if m.askTurn && !m.askedAt.IsZero() {
+			m.askRestoredTurn(ctx)
 		}
 		return m.offerPending(ctx)
 	}, TimerProbe, m.deps.Timeouts.Probe)
@@ -1234,13 +1268,91 @@ func enrolledOnly(m *Machine, ctx context.Context, _ Event) error { return m.ens
 // reconnected is the shim's hello to a ready or idle claim: an adoption a take lost to the
 // transport is one this ends, so a value whose take was refused is written again
 // (offerPending). A claim a daemon start restored is waiting on exactly this hello (its reconnect
-// deadline, NewMachine), and the hello ends that wait.
+// deadline, NewMachine), and the hello ends that wait. A restored claim whose stale-plugin
+// relaunch waits for its agent's word on whether it is in a turn (askTurn) is asked here
+// (askRestoredTurn): the hello carries no turn, and the shim replays what it held only once this
+// hello is answered.
 func reconnected(m *Machine, ctx context.Context, _ Event) error {
 	m.disarm(TimerRegistration)
 	if err := m.ensureEnrolled(ctx); err != nil {
 		return err
 	}
+	if m.askTurn {
+		if m.askedAt.IsZero() {
+			m.askedAt = m.deps.Clock.Now()
+		}
+		m.askRestoredTurn(ctx)
+	}
 	return m.offerPending(ctx)
+}
+
+// askRestoredTurn asks the agent of a claim a daemon start restored ready or idle whether it is
+// in a turn, for the stale-plugin relaunch that waits for the answer (askTurn). An answer is not
+// acted on here: the shim replays the frames it held while no daemon was attached after its hello
+// and before that answer, and the answer reaches the machine behind them as an event of its own
+// (StreamTurnAnswered), where the relaunch is decided with every replayed turn applied
+// (turnAnswered). An ask the agent does not answer is asked again at the next sweep (observe),
+// and is bounded: a claim whose agent has not answered by the reconnect deadline counted from its
+// hello (askedAt) is relaunched there, uncharged (reconnectDeadline). The bound is armed by the
+// first unanswered ask and kept by the ones after it; a second hello, which disarms the reconnect
+// deadline as every hello does, arms it again for what is left of it.
+func (m *Machine) askRestoredTurn(ctx context.Context) {
+	conn, ok := m.deps.Conns.Conn(m.claim.Token)
+	if !ok {
+		return
+	}
+	if _, answered := m.streaming(ctx, conn); answered {
+		m.unansweredAsks = 0
+		m.log.Info("supervise: the agent of a claim the daemon's start restored said whether it is in a turn; its stale-plugin relaunch is decided behind the frames its shim replayed")
+		return
+	}
+	m.unansweredAsks++
+	level := slog.LevelInfo
+	if m.unansweredAsks >= unansweredAsksWarn {
+		level = slog.LevelWarn
+	}
+	m.log.Log(ctx, level, "supervise: the agent of a claim the daemon's start restored did not say whether it is in a turn; its stale-plugin relaunch waits, and the next sweep asks again",
+		"unanswered", m.unansweredAsks, "askedAt", m.askedAt)
+	if _, armed := m.timers[TimerRegistration]; !armed {
+		bound := runtime.RegistrationDeadline(m.deps.Timeouts.Boot, m.deps.Timeouts.RegistrationIntervals, 0)
+		m.arm(TimerRegistration, max(m.askedAt.Add(bound).Sub(m.deps.Clock.Now()), 0), "")
+	}
+}
+
+// turnAnswered is the agent's answer to whether it is in a turn, reaching the machine behind every
+// frame its shim sent before it (StreamTurnAnswered). For a claim a daemon start restored ready or
+// idle whose stale-plugin relaunch waits for it (askTurn), this is that relaunch's decision:
+//
+//   - an agent in a turn is working: a replay that held the turn's agent_start has made the claim
+//     working already, and one whose backlog dropped it is made working here, which also marks
+//     the turn of a take accepted and awaiting it started (turnStarted, startTakesTurn) — no
+//     confirmation by get_state, since the take was accepted already and the answer says only
+//     that its turn is running — and the relaunch is held for that turn's end (refreshPlugin,
+//     holdStaleRelaunch), where the task is settled first (turnEnded, afterTurn);
+//   - an agent in no turn is relaunched now, every turn the replay showed already applied, so a
+//     take whose turn started and ended in the replay is settled by its contract where the
+//     relaunch lets the process go (interrupted), and one no turn ran is given back with no note.
+//
+// The reconnect deadline the unanswered ask armed goes with the answer. Any other answer — to the
+// ask a restored working claim makes (askTurnOver), or one arriving after the relaunch was decided
+// — changes nothing. One case stays outside it: a task's turn that both started and ended while
+// no daemon served the claim, and whose agent_start fell out of the shim's backlog, reaches the
+// machine as a turn it never saw begin (blindTurnEnded), so the relaunch takes that task back as
+// one no turn ran (dispatch://INFRA-2811, T3's rule three).
+func turnAnswered(m *Machine, ctx context.Context, ev Event) error {
+	answer := ev.(StreamTurnAnswered)
+	if !m.askTurn {
+		return nil
+	}
+	m.askTurn, m.unansweredAsks = false, 0
+	m.disarm(TimerRegistration)
+	if answer.Streaming && m.claim.State != StateWorking {
+		m.log.Info("supervise: the agent of a claim the daemon's start restored is in a turn its shim's replay did not show begin; the claim is working")
+		if err := turnStarted(m, ctx, ev); err != nil {
+			return err
+		}
+	}
+	return m.refreshPlugin(ctx, m.askTrigger, false)
 }
 
 // reconnectedMidTurn is the shim's hello while the claim is working. Within one daemon's life the

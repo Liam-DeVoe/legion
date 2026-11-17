@@ -241,10 +241,12 @@ func TestEachRefusalIsOnlyTheSentinelOfTheCommandItRefused(t *testing.T) {
 	}
 }
 
-// The turn facts are events, in wire order, and an answer is not one of them: an answered
-// get_state, then OMP's agent_start, the tool call it makes, and its agent_end, then the close,
-// is exactly Hello, TurnStart, ToolStep, TurnEnd, Closed (F4, B4).
-func TestEventsCarryTheTurnInWireOrderAndNoAnswer(t *testing.T) {
+// The turn facts are events, in wire order, and so is a get_state answer that says whether a turn
+// runs, in its own place among them (TurnAnswered): an answered get_state, then OMP's agent_start,
+// the tool call it makes, and its agent_end, then the close, is exactly Hello, TurnAnswered,
+// TurnStart, ToolStep, TurnEnd, Closed (F4, B4). The answer is in the order because a restart's
+// decision waits for it behind the frames a shim replayed first (supervise's turnAnswered).
+func TestEventsCarryTheTurnAndTheStateAnswerInWireOrder(t *testing.T) {
 	h := startListener(t, harnessOptions{})
 	p := dial(t, h.listener.Addr())
 	p.hello(testToken)
@@ -262,6 +264,7 @@ func TestEventsCarryTheTurnInWireOrderAndNoAnswer(t *testing.T) {
 	p.conn.Close()
 	want := []Event{
 		Hello{Claim: testClaim, Generation: testGeneration},
+		TurnAnswered{Claim: testClaim},
 		TurnStart{Claim: testClaim},
 		// The length and the fingerprint of what the frame carried, and no argument text at all:
 		// `{"command":"echo hi"}` is 21 bytes, and the first eight of its SHA-256 are this.
@@ -337,7 +340,8 @@ func TestAWorkersExtensionErrorIsLogged(t *testing.T) {
 // replayed for a retried prompt with the delivery it named. Each is dropped quietly — no event,
 // no log line — and the turn frames around them are read as ever; a replayed start is the plain
 // TurnStart. The same frames replayed on a replacement connection, which never sent anything, are
-// dropped the same way, and the connection still answers its next request.
+// dropped the same way, and the connection still answers its next request, whose answer is read
+// behind them (TurnAnswered).
 func TestAnOldWorkersPromptFramesAreDroppedQuietly(t *testing.T) {
 	h := startListener(t, harnessOptions{})
 	p := h.connect(testToken)
@@ -369,7 +373,7 @@ func TestAnOldWorkersPromptFramesAreDroppedQuietly(t *testing.T) {
 		t.Fatalf("GetState after the old frames: %v", err)
 	}
 	replacement.conn.Close()
-	for _, want := range []Event{TurnStart{Claim: testClaim}, TurnEnd{Claim: testClaim}, Closed{Claim: testClaim}} {
+	for _, want := range []Event{TurnStart{Claim: testClaim}, TurnEnd{Claim: testClaim}, TurnAnswered{Claim: testClaim}, Closed{Claim: testClaim}} {
 		if got := h.next(); got != want {
 			t.Fatalf("event on the replacement = %#v, want %#v", got, want)
 		}
@@ -388,7 +392,8 @@ func TestAnOldWorkersPromptFramesAreDroppedQuietly(t *testing.T) {
 }
 
 // rpc_chunk sequences between whole frames reassemble through shimwire and dispatch exactly as
-// a plain line would: a chunked agent_end ends the turn, a chunked response answers its request.
+// a plain line would: a chunked agent_end ends the turn, a chunked response answers its request
+// and is read in its wire place (TurnAnswered).
 func TestChunkSequencesInterleavedWithWholeFramesReassemble(t *testing.T) {
 	h := startListener(t, harnessOptions{})
 	p := h.connect(testToken)
@@ -417,7 +422,8 @@ func TestChunkSequencesInterleavedWithWholeFramesReassemble(t *testing.T) {
 	if !state.IsStreaming {
 		t.Fatal("GetState lost the chunked answer's isStreaming")
 	}
-	want := []Event{TurnStart{Claim: testClaim}, TurnEnd{Claim: testClaim}, TurnStart{Claim: testClaim}, TurnEnd{Claim: testClaim}}
+	want := []Event{TurnStart{Claim: testClaim}, TurnEnd{Claim: testClaim}, TurnStart{Claim: testClaim},
+		TurnAnswered{Claim: testClaim, Streaming: true}, TurnEnd{Claim: testClaim}}
 	var got []Event
 	for range want {
 		got = append(got, h.next())

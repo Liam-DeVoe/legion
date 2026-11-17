@@ -99,9 +99,12 @@ func (m *Machine) resetPromptBudgets() bool {
 // armWaits arms each of the two waits the claim is in as this decision left it, and disarms each
 // it is not in: it runs at the end of every decision (unlock), so a wait is armed from the
 // decision that began it — the seen report, the turn's end that left the worker idle, the hold's
-// end, the accepted take, the worker's first act after a daemon start — and a decision that
-// leaves the claim waiting on the same thing leaves the bound where it was. The claim is listed as
-// unseen only while its first wait is still on a value nobody reported seeing.
+// end, the accepted take, the take's put-back (notTheTakesTurn), the worker's first act after a
+// daemon start — and a decision that leaves the claim waiting on the same thing leaves the bound
+// where it was. A bound is always armed whole (Timeouts.Take, Timeouts.TurnStart), so the moment
+// its clock started is the moment it was armed, which the armed timer records (Machine.timers,
+// its due less the bound). The claim is listed as unseen only while its first wait is still on a
+// value nobody reported seeing.
 func (m *Machine) armWaits() {
 	first, waiting := m.firstWaitNow()
 	if !waiting || !first.unseen {
@@ -157,7 +160,18 @@ func (m *Machine) firstWaitNow() (firstWait, bool) {
 
 // secondWaitNow is the accepted take the claim's second wait is on, and false for none: a take of
 // the pending task accepted and its turn not started (Delivery.awaitsTurn), on a ready or idle
-// claim no hold of its own state stands over (claimHold).
+// claim no hold of its own state stands over (claimHold). The time it answers, the take's
+// acceptance (ConfirmedAt), names which take the wait is on and nothing more: it is not the
+// clock's start. The wait is disarmed at the end of every decision it does not stand through —
+// the take's turn started, or a hold stands over it, the claim's own turn's in-turn hold among
+// them — and armed whole again at the end of the decision that begins it once more (armWaits).
+// So the second wait's clock starts at the latest of the take's acceptance, its put-back
+// (notTheTakesTurn: a report naming no task gives the take back the turn the daemon gave a run
+// that was not its own), the end of the last hold that stood over it (for the in-turn hold, the
+// end of that turn), and the worker's first act after a daemon start (awaitsAct); no time inside
+// a hold, or inside a run the daemon gave the take, is charged (dispatch://INFRA-2811, R5 and
+// finding 1's put-back). The moment is recorded where the bound is armed, as the first wait's
+// restart is (Machine.timers, TimerTurnStart).
 func (m *Machine) secondWaitNow() (time.Time, bool) {
 	p := m.claim.Pending
 	if m.deps.Timeouts.TurnStart <= 0 || m.awaitsAct || p == nil || !p.awaitsTurn() {
@@ -258,9 +272,24 @@ func turnStartBoundOver(m *Machine, ctx context.Context, _ Event) error {
 // shim that never came back. A relaunch the tree lifecycle refuses, a take-back the store would
 // not write and a stop the runtime refuses each keep the process, and the deadline is tried again
 // at the probe interval, as the registration deadline's are.
+//
+// A claim whose shim did say hello, and whose agent has not said since whether it is in a turn
+// for the stale-plugin relaunch that waits for the answer (askTurn, askRestoredTurn), reaches the
+// deadline its hello armed again for that ask: a hung agent's turn costs nothing to cut, and the
+// daemon relaunches onto the current plugin a worker it can (R10). That relaunch is the
+// stale-plugin lane's own (refreshPlugin), charged nothing, as the lane's relaunch is: the
+// process did come back, and the relaunch is for its plugin, not for a failure of the claim. A
+// gate the lane finds full leaves it to the next sweep's post, which no answer holds back any
+// more.
 func reconnectDeadline(m *Machine, ctx context.Context, _ Event) error {
 	if m.held != nil {
 		return m.suspendHeld(ctx)
+	}
+	if m.askTurn && !m.askedAt.IsZero() {
+		m.askTurn, m.unansweredAsks = false, 0
+		m.log.Warn("supervise: the agent of a claim the daemon's start restored did not say whether it is in a turn within the reconnect deadline of its hello; the stale-plugin lane relaunches it, uncharged",
+			"askedAt", m.askedAt)
+		return m.refreshPlugin(ctx, m.askTrigger, false)
 	}
 	return m.probe(ctx, func(ctx context.Context) error {
 		if err := m.checkLaunch(ctx); err != nil {

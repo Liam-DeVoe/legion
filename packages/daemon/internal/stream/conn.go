@@ -133,7 +133,8 @@ func (c *Conn) Negotiate(ctx context.Context) error {
 func (c *Conn) Sequence() uint64 { return c.seq }
 
 // GetState asks OMP whether a turn is running. An answer that does not say is an error, never
-// "not streaming": a restart decides on it whether the turn it recorded is still running.
+// "not streaming": a restart decides on it whether the turn it recorded is still running. An
+// answer that says reaches the event queue too (TurnAnswered, dispatch).
 func (c *Conn) GetState(ctx context.Context) (runtime.ConnState, error) {
 	if err := c.Negotiate(ctx); err != nil {
 		return runtime.ConnState{}, err
@@ -143,16 +144,26 @@ func (c *Conn) GetState(ctx context.Context) (runtime.ConnState, error) {
 	if err != nil {
 		return runtime.ConnState{}, err
 	}
+	streaming, err := c.streamingOf(response)
+	if err != nil {
+		return runtime.ConnState{}, err
+	}
+	return runtime.ConnState{IsStreaming: streaming}, nil
+}
+
+// streamingOf is what a get_state answer says: whether a turn is running, and an error where it
+// does not say.
+func (c *Conn) streamingOf(response shimwire.Response) (bool, error) {
 	var data shimwire.StateData
 	if len(response.Data) > 0 {
 		if err := json.Unmarshal(response.Data, &data); err != nil {
-			return runtime.ConnState{}, fmt.Errorf("worker-stream: %s get_state answer: %w", c.claim, err)
+			return false, fmt.Errorf("worker-stream: %s get_state answer: %w", c.claim, err)
 		}
 	}
 	if data.IsStreaming == nil {
-		return runtime.ConnState{}, fmt.Errorf("worker-stream: %s get_state answer carries no data.isStreaming", c.claim)
+		return false, fmt.Errorf("worker-stream: %s get_state answer carries no data.isStreaming", c.claim)
 	}
-	return runtime.ConnState{IsStreaming: *data.IsStreaming}, nil
+	return *data.IsStreaming, nil
 }
 
 // Compact asks Oh My Pi to compact its session's context. The shim answers nothing of it and
@@ -439,6 +450,13 @@ func (c *Conn) logNotAFrame(line []byte, err error) {
 // prompt's frames an older worker still writes — the `prompt_result` Oh My Pi writes behind a
 // turn's end, a `prompt` response a shim replays from its backlog — are dropped here quietly:
 // the first decodes to Raw and the second answers no request this connection is waiting on.
+//
+// A get_state answer that says whether a turn is running is pushed as TurnAnswered before it is
+// handed to the request waiting on it, whether one still waits or not: pushed here, in the order
+// the frames were read, it follows every event of a frame read before it — a shim's replay of what
+// it held while no daemon was attached among them — and precedes the connection's Closed, so the
+// decision that waits for it reads the claim with all of those applied (supervise's
+// turnAnswered).
 func (c *Conn) dispatch(frame shimwire.Frame) {
 	switch frame := frame.(type) {
 	case shimwire.AgentStart:
@@ -452,6 +470,11 @@ func (c *Conn) dispatch(frame shimwire.Frame) {
 		c.events.push(ToolStep{Claim: c.claim, Tool: frame.ToolName, CallID: frame.ToolCallID,
 			End: true, ConnSequence: c.seq})
 	case shimwire.Response:
+		if frame.Command == shimwire.TypeGetState && frame.Success {
+			if streaming, err := c.streamingOf(frame); err == nil {
+				c.events.push(TurnAnswered{Claim: c.claim, Streaming: streaming})
+			}
+		}
 		c.answerRequest(frame.ID, frame)
 	case shimwire.Raw:
 		if frame.Type == "extension_error" {

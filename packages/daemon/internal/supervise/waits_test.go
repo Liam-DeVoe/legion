@@ -768,3 +768,70 @@ func TestSilentReconnectHelloAfterADaemonRestartClearsNothing(t *testing.T) {
 		t.Fatalf("pending %+v after the reconnect hello, want the accepted take still awaiting its turn", p)
 	}
 }
+
+// The second wait's clock starts at the take's put-back, not at its acceptance. A run the daemon
+// gave the take — the first that started after it — turns out, by its report naming no task, not
+// to have been the take's (notTheTakesTurn), so the take awaits its turn again from that report:
+// a worker that then starts no turn is charged one whole bound after the put-back, though the
+// take was accepted twenty-one minutes before it.
+//
+// The negative control is the bound armed for what is left of it counted from the acceptance
+// (armWaits arming TimerTurnStart for the bound less the time since ConfirmedAt): the charge then
+// comes four minutes after the put-back.
+func TestChargeTheSecondWaitOneBoundAfterThePutBackNotTheAcceptance(t *testing.T) {
+	h := waitsHarness(t, currentPlugin)
+	h.manualTakes()
+	h.reach(StateReady)
+	h.must(RequestDeliver{Claim: testToken, Task: "the task"})
+	h.mustTake()
+	h.advance(time.Minute)
+	h.must(StreamTurnStart{Claim: testToken})
+	h.advance(10 * time.Minute)
+	h.mustQuiet(StreamTurnEnd{Claim: testToken})
+	h.advance(10 * time.Minute)
+	if err := h.reportTurn(0, nil); err != nil {
+		t.Fatalf("report the run as no task's: %v", err)
+	}
+	if p := h.pending(); !p.awaitsTurn() {
+		t.Fatalf("pending %+v after the report, want the take awaiting its turn again", p)
+	}
+
+	h.advance(turnStartBound - time.Second)
+	h.wantCharges()
+	h.advance(time.Second)
+
+	h.wantCharges(WaitTurnStart)
+}
+
+// A take that awaits its turn while the claim runs another turn is held (claimHold, in-turn), and
+// the time inside that hold is never charged: the second wait's clock starts at the hold's end,
+// the end of that turn. Here the run the daemon gave the take reports no task ahead of its own
+// end frame, so the take awaits its turn again while that 40-minute run goes on; its end charges
+// nothing, and a worker that then starts no turn is charged one bound after it.
+//
+// The negative control is the bound counted from the acceptance, as in the case above: the
+// charge then comes at the first moment after the run's end.
+func TestChargeNoneAtTheEndOfALongTurnOverATakeAwaitingItsTurn(t *testing.T) {
+	h := waitsHarness(t, currentPlugin)
+	h.manualTakes()
+	h.reach(StateReady)
+	h.must(RequestDeliver{Claim: testToken, Task: "the task"})
+	h.mustTake()
+	h.must(StreamTurnStart{Claim: testToken})
+	if err := h.reportTurn(0, nil); err != nil {
+		t.Fatalf("report the run as no task's: %v", err)
+	}
+	if p := h.pending(); !p.awaitsTurn() {
+		t.Fatalf("pending %+v after the report, want the take awaiting its turn again", p)
+	}
+
+	h.advance(40 * time.Minute)
+	h.wantCharges()
+	h.mustQuiet(StreamTurnEnd{Claim: testToken})
+	h.wantCharges()
+	h.advance(turnStartBound - time.Second)
+	h.wantCharges()
+	h.advance(time.Second)
+
+	h.wantCharges(WaitTurnStart)
+}

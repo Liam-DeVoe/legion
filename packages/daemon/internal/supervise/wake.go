@@ -161,6 +161,12 @@ type wake struct {
 	// and nothing of the relaunch it held is written, which is right — that relaunch never
 	// replaced anything.
 	pluginMark *pluginIntent
+	// takeBack is the take-back of the task the process this wake replaces holds, which the
+	// wake's turn makes where it lets that process go (runWake): the replacement's own, with the
+	// sentence it was raised with and whether its end was the pod running out of memory
+	// (launchReplacing, replaceNow), so a displacement the pacing parked keeps its out-of-memory
+	// note. It is nil for a wake no replacement parked, whose turn makes the take-back of its own.
+	takeBack func(context.Context) error
 }
 
 // reserveWake is the wake gate: it asks the pacing when this wake may run and, when that moment
@@ -447,7 +453,13 @@ func (m *Machine) runWake(ctx context.Context, waiting *wake, paced bool) error 
 			return m.relaunchRefused(ctx, m.retryHolding(waiting.pluginMark, waiting.again), err)
 		}
 		if m.claim.Locator != nil {
-			if err := m.interrupted(ctx, "the process this launch replaces is let go now that its turn has come", ordinaryEnd); err != nil {
+			takeBack := waiting.takeBack
+			if takeBack == nil {
+				takeBack = func(ctx context.Context) error {
+					return m.interrupted(ctx, "the process this launch replaces is let go now that its turn has come", ordinaryEnd)
+				}
+			}
+			if err := takeBack(ctx); err != nil {
 				return err
 			}
 		}

@@ -1189,6 +1189,7 @@ func TestEveryStreamEventMapsToItsSuperviseEvent(t *testing.T) {
 		{stream.Hello{Claim: token, Generation: 3}, supervise.StreamHello{Claim: token, Generation: 3}},
 		{stream.TurnStart{Claim: token}, supervise.StreamTurnStart{Claim: token}},
 		{stream.TurnEnd{Claim: token}, supervise.StreamTurnEnd{Claim: token}},
+		{stream.TurnAnswered{Claim: token, Streaming: true}, supervise.StreamTurnAnswered{Claim: token, Streaming: true}},
 		{stream.ToolStep{Claim: token, Tool: "bash", CallID: "toolu_turn1_0",
 			ArgsBytes: 21, ArgsHash: "1eab1ef18bb109ae", ConnSequence: 4},
 			supervise.StreamToolStep{Claim: token, Tool: "bash", CallID: "toolu_turn1_0",

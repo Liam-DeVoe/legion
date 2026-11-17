@@ -9,6 +9,7 @@ package supervise
 
 import (
 	"testing"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
@@ -185,4 +186,144 @@ func TestRelaunchTakesBackACurrentPluginsTakeWhoseTurnIsOverWithItsNote(t *testi
 	if again := h.wantPrompts(2)[1]; again.Number != number || again.Message == "review the pull request" {
 		t.Fatalf("the new process took %+v, want task %d behind the word of its cut turn", again, number)
 	}
+}
+
+// restoreStaleMigrated is a daemon start over the migrated take on a plugin the stale-plugin lane
+// replaces: this daemon speaks contract 25 and can relaunch onto it, the claim recorded 24. The
+// boot's pass has posted the claim its relaunch before its shim said hello, as the daemon's start
+// does (refreshStalePlugins after the restored machines are built), and that post relaunched
+// nothing.
+func restoreStaleMigrated(t *testing.T) *harness {
+	t.Helper()
+	h := newBareHarness(t)
+	h.deps.PluginContract, h.deps.PluginRelaunchable = 25, true
+	h.manualTakes()
+	h.restore(migratedTake(StateReady))
+	h.must(StalePlugin{Claim: h.token, Trigger: "boot"})
+	h.wantCalls("Resume", 0)
+	return h
+}
+
+// answer is the agent's word on whether it is in a turn, as the worker stream delivers it: behind
+// every frame the shim replayed after its hello (StreamTurnAnswered, the stream's dispatch).
+func (h *harness) answer(streaming bool) {
+	h.t.Helper()
+	h.must(StreamTurnAnswered{Claim: h.token, Streaming: streaming})
+}
+
+// wantFinishedOnceAndRelaunchedEmpty is the end every ordering that ran the take's turn reaches:
+// the task finished once, by its end frame (the claim's plugin names no number), nothing taken
+// back, the relaunch made, and the process it starts handed nothing to take again.
+func (h *harness) wantFinishedOnceAndRelaunchedEmpty() {
+	h.t.Helper()
+	h.relaunchedTakes()
+	if p := h.claim().Pending; p != nil {
+		h.t.Fatalf("pending %+v after the relaunch, want the task its turn ran finished", p)
+	}
+	finished := h.records.of(finishedLine)
+	if len(finished) != 1 {
+		h.t.Fatalf("%q was logged %d times, want once", finishedLine, len(finished))
+	}
+	wantAttr(h.t, finished[0], "by", finishedByEndFrame)
+	if back := h.records.of(takenBackLiteral); len(back) != 0 {
+		h.t.Fatalf("%q was logged %d times, want the task never taken back", takenBackLiteral, len(back))
+	}
+	h.wantCalls("Resume", 1)
+	h.wantPrompts(0)
+}
+
+// After a daemon start, the stale-plugin lane relaunches a claim restored ready or idle only once
+// its agent has said whether it is in a turn, in the decision that answer arrives in, which the
+// worker stream delivers behind every frame the shim replayed after its hello — or once the
+// reconnect deadline has passed (dispatch://INFRA-2811, T3's rule three). The claim is the
+// migrated take of a stale plugin: accepted and awaiting its turn, which the old process runs as
+// the acknowledged prompt it is. The fake shim, as the real one does, replays the turn's frames
+// only after the daemon has answered its hello.
+//
+//   - A replayed agent_start before an answer of a turn: the claim is working, the relaunch is
+//     held for that turn's end, and the task is finished once.
+//   - An answer of a turn whose agent_start the backlog dropped: the answer makes the claim
+//     working and the take's turn started, and the same follows.
+//   - A replayed start and end before an answer of no turn: the relaunch is made, and it finds
+//     the task's turn over, so the task is finished by its contract and nothing is taken back.
+//   - An ask the agent does not answer: asked again at the next sweep, and relaunched at the
+//     reconnect deadline counted from the hello, by the lane, charged nothing.
+//   - No hello: relaunched at the reconnect deadline, as departure 7's never_reconnected.
+//
+// The negative controls are the boot's relaunch made before the hello (refreshPlugin with no
+// askTurn guard) and made at the hello itself (askRestoredTurn deciding on the answer it is
+// returned): in both the relaunch reads the take as one no turn ran, and it runs before the hello
+// or before the replayed turn.
+func TestBootRelaunchOfAStaleClaimWaitsForTheTurnOverAnswer(t *testing.T) {
+	t.Run("a replayed agent_start before an answer of a turn", func(t *testing.T) {
+		h := restoreStaleMigrated(t)
+		h.conn.SetStreaming(true)
+		h.connect()
+		h.wantCalls("Resume", 0)
+		h.must(StreamTurnStart{Claim: h.token})
+		h.answer(true)
+
+		h.wantState(StateWorking)
+		h.wantCalls("Resume", 0)
+		h.mustQuiet(StreamTurnEnd{Claim: h.token})
+		h.advance(testRPC)
+		h.wantFinishedOnceAndRelaunchedEmpty()
+	})
+	t.Run("an answer of a turn whose agent_start the backlog dropped", func(t *testing.T) {
+		h := restoreStaleMigrated(t)
+		h.conn.SetStreaming(true)
+		h.connect()
+		h.answer(true)
+
+		h.wantState(StateWorking)
+		if p := h.pending(); !p.turnStarted() || p.TakenText != "the task" {
+			t.Fatalf("the task after the answer is %+v, want its take's turn started", p)
+		}
+		h.wantCalls("Resume", 0)
+		h.mustQuiet(StreamTurnEnd{Claim: h.token})
+		h.advance(testRPC)
+		h.wantFinishedOnceAndRelaunchedEmpty()
+	})
+	t.Run("a replayed start and end before an answer of no turn", func(t *testing.T) {
+		h := restoreStaleMigrated(t)
+		h.connect()
+		h.must(StreamTurnStart{Claim: h.token})
+		h.mustQuiet(StreamTurnEnd{Claim: h.token})
+		h.reportActivity()
+		h.wantCalls("Resume", 0)
+		h.answer(false)
+
+		h.wantFinishedOnceAndRelaunchedEmpty()
+	})
+	t.Run("an unanswered ask", func(t *testing.T) {
+		h := restoreStaleMigrated(t)
+		h.conn.FailGetState(errBoom)
+		h.connect()
+		h.advance(deadline / 2)
+		h.observe(runtime.Alive)
+		if asks := h.logs.lines("supervise: the agent could not say whether it is in a turn"); len(asks) != 2 {
+			t.Fatalf("the asks the agent left unanswered are %q, want the hello's and the sweep's", asks)
+		}
+		h.advance(deadline - deadline/2 - time.Second)
+		h.wantCalls("Resume", 0)
+		h.advance(time.Second)
+
+		h.wantCalls("Resume", 1)
+		h.wantState(StateLaunching)
+		h.wantBudgets(Budgets{})
+		if cause := h.claim().PendingCause; cause != "" {
+			t.Fatalf("the relaunch is pending cause %q, want none: the lane's relaunch is charged nothing", cause)
+		}
+	})
+	t.Run("no hello", func(t *testing.T) {
+		h := restoreStaleMigrated(t)
+		h.advance(deadline - time.Second)
+		h.wantCalls("Resume", 0)
+		h.advance(time.Second)
+
+		h.wantCalls("Resume", 1)
+		if cause := h.claim().PendingCause; cause != CauseNeverReconnected {
+			t.Fatalf("the relaunch is pending cause %q, want %q", cause, CauseNeverReconnected)
+		}
+	})
 }

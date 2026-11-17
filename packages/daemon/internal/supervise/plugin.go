@@ -177,6 +177,19 @@ func (m *Machine) refreshPlugin(ctx context.Context, trigger string, admitted bo
 	if !HoldsCapability(m.claim.State) {
 		return nil
 	}
+	// A claim a daemon start restored ready or idle is relaunched only once its agent has said
+	// whether it is in a turn, in the decision that answer arrives in, behind every frame its
+	// shim replayed (askTurn, turnAnswered), or at the reconnect deadline of its hello
+	// (reconnectDeadline). The boot's own pass reaches it before its shim's hello, and a relaunch
+	// then would take a take whose turn the replay was still to show running back as one no turn
+	// ran, so the turn it cut off starts over in the new process.
+	if m.askTurn {
+		m.askTrigger = trigger
+		m.log.Info("supervise: the agent of this claim the daemon's start restored has not said whether it is in a turn; its stale-plugin relaunch waits for that answer",
+			"state", m.claim.State, "pluginContract", m.claim.PluginContract, "daemonApiVersion", m.deps.PluginContract,
+			"trigger", trigger, "askedAt", m.askedAt)
+		return nil
+	}
 	controller := claim.IsController(m.claim.Role, m.claim.Issue, m.claim.Tree)
 	if m.claim.State == StateWorking && !controller {
 		m.holdStaleRelaunch(trigger)

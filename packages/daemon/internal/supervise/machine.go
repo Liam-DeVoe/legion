@@ -1217,6 +1217,16 @@ type Machine struct {
 	// the worker is still sending again to the restarting daemon is not beaten by a bound that
 	// ran while no daemon served it.
 	finishAtAct bool
+	// finishOwed is a finish of the pending task a turn-outcome report naming its number decided
+	// and the store refused to write (finishTask): the end-frame bound is armed for it wherever
+	// that report arrived — ready or idle at once, and at the end of the turn when it came while
+	// the claim was working, whatever the claim's plugin (armEndFrameBound) — and the bound arms
+	// itself again after every write the store refuses, until one lands, which is logged by=report
+	// (finishAtTurnsEnd, overTurnFinish). A let-go that settles the task's over turn finishes it
+	// too rather than take it back (interrupted, settle). The retirement that lands ends it
+	// (retireTask). It is memory only: a daemon that starts while it stands reads the task as the
+	// store holds it, its turn over and unfinished.
+	finishOwed bool
 	// valueWrittenAt is when this machine last wrote the claim's value (putValue), the zero time
 	// before its first write: what the state route names as an unseen value's writtenAt. It is
 	// memory only, as the listing it dates is: a value nobody reported seeing is written again a
@@ -1273,8 +1283,25 @@ type Machine struct {
 	// the claim as in one (askTurnOver), and a take from such a claim is the worker's word that it
 	// is not (takeInTurn).
 	askFirst bool
-	// unansweredAsks counts the asks in a row the agent left unanswered while askFirst stayed armed
-	// on a working claim (askTurnOver); from unansweredAsksWarn on, each one is logged at Warn.
+	// askTurn is a claim a daemon start restored ready or idle, holding a take of its pending task,
+	// on a plugin the stale-plugin lane replaces (NewMachine, staleRefusesClaim), whose agent has
+	// not yet said whether it is in a turn: the lane relaunches it not before that answer, in the
+	// decision of its own the answer arrives in (StreamTurnAnswered, turnAnswered), or the
+	// reconnect deadline counted from its hello (reconnectDeadline). Its shim replays the frames
+	// it held while no daemon was attached only once the daemon has answered its hello, so a
+	// relaunch made at the boot's pass, or at the hello itself, would read a take whose turn the
+	// replay was still to show running as one no turn ran, and take it back with no note
+	// (dispatch://INFRA-2811, T3's rule three). A claim holding no take has no task the order can
+	// run twice, and the boot's pass relaunches it as before. askedAt is when the hello asked, the
+	// zero time before it, and askTrigger the pass whose relaunch the answer waits for ("boot",
+	// "sweep"), for the line the relaunch logs. letGo clears all three with the process; they are
+	// memory only, as askFirst is.
+	askTurn    bool
+	askedAt    time.Time
+	askTrigger string
+	// unansweredAsks counts the asks in a row the agent left unanswered while askFirst or askTurn
+	// stayed armed (askTurnOver, askRestoredTurn); from unansweredAsksWarn on, each one is logged
+	// at Warn.
 	unansweredAsks int
 	// held is the suspension held for the agent's turn (holdSuspension), nil for none.
 	held *RequestSuspend
@@ -1556,6 +1583,11 @@ func NewMachine(ctx context.Context, deps Deps, c Claim) (*Machine, error) {
 		if p := c.Pending; p != nil && p.turnStarted() && TakesNoTask(c.PluginContract) {
 			m.finishAtAct = true
 		}
+		// A claim holding a take that the stale-plugin lane will relaunch waits for its agent's
+		// word on whether it is in a turn, which its shim's hello asks for (askTurn,
+		// askRestoredTurn).
+		m.askTurn = c.Session != "" && c.Pending != nil && c.Pending.taken() && m.staleRefusesClaim()
+		m.askTrigger = "boot"
 	case StateWorking:
 		m.armRegistration()
 		m.askFirst = true
@@ -2412,16 +2444,18 @@ func (m *Machine) launchAfter(ctx context.Context, charged, exempt bool, cause s
 // launchReplacing is launch for a replacement of a process that may hold a task (replaceNow):
 // takeBack, that task's take-back, is made right before the process is let go when the launch
 // runs now, and a refusal of it ends the launch there with the process kept. A launch the wake
-// pacing parks makes none here: the wake's own turn makes the take-back of whatever the process
-// holds then (runWake), so the turn the process may start in the wait stays the take's. A retry
-// of this launch — one the lifecycle check could not answer — is a replacement too, and takes
-// the task back the same way.
+// pacing parks makes none here: the wake carries takeBack to its turn (wake.takeBack), which makes
+// it of whatever the process holds then (runWake), so the turn the process may start in the wait
+// stays the take's, and the take-back keeps the sentence and the out-of-memory end of the
+// replacement that parked it — a displacement's among them — rather than the turn's own generic
+// one. One take-back is made either way. A retry of this launch — one the lifecycle check could
+// not answer — is a replacement too, and takes the task back the same way.
 func (m *Machine) launchReplacing(ctx context.Context, cause string, takeBack func(context.Context) error) error {
 	again := func(ctx context.Context) error { return m.launchReplacing(ctx, cause, takeBack) }
 	if err := m.checkLaunch(ctx); err != nil {
 		return m.relaunchRefused(ctx, again, err)
 	}
-	now := true
+	now, parked := true, m.wake
 	err := m.reserveWake(ctx, false, func(ctx context.Context) error {
 		if now {
 			if err := takeBack(ctx); err != nil {
@@ -2431,8 +2465,11 @@ func (m *Machine) launchReplacing(ctx context.Context, cause string, takeBack fu
 		return m.launchNow(ctx, false, false, cause)
 	}, again)
 	// A run of the launch after this return is the parked wake's turn, whose take-back runWake
-	// makes.
+	// makes, with this replacement's own.
 	now = false
+	if m.wake != nil && m.wake != parked {
+		m.wake.takeBack = takeBack
+	}
 	return err
 }
 
@@ -3159,6 +3196,7 @@ func (m *Machine) letGo(ctx context.Context, cause string) {
 	m.relaunch = nil
 	m.wake = nil
 	m.askFirst = false
+	m.askTurn, m.askedAt, m.askTrigger = false, time.Time{}, ""
 	m.held = nil
 	m.staleRelaunch = nil
 	m.turnsTask, m.reportedAhead, m.rewrite = 0, 0, valueRewrite{}
@@ -3634,6 +3672,8 @@ func claimOf(ev Event) claim.Token {
 	case StreamTurnStart:
 		return ev.Claim
 	case StreamTurnEnd:
+		return ev.Claim
+	case StreamTurnAnswered:
 		return ev.Claim
 	case IssueTurnEnded:
 		return ev.Claim

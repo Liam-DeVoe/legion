@@ -331,3 +331,73 @@ func TestTurnOutcomeRepeatedAfterItsTaskFinishedAnswersTheSameAndAppliesNothing(
 		t.Fatalf("the refused run is %d after the repeat, want %d as before it", got, run)
 	}
 }
+
+// A report's finish the store refused is made again by the end-frame bound, armed wherever the
+// report arrived, and armed again after every write the store refuses, until one lands
+// (decision 8 of dispatch://INFRA-2811, plan v30): across a store outage of several bounds the
+// task is finished once the store answers, once, by the report. The report can come after its
+// turn's end frame, ahead of it — while the claim is still working, where the bound is armed at
+// the turn's end — or, for a plugin that names no number, after the bound already fired and its
+// own write was refused.
+//
+// The negative control is the bound armed once and not again after a refused write (finishTask
+// with no re-arm): the finish is then lost with the first refusal, and the task stands unfinished
+// after the store answers.
+func TestTurnOutcomeFinishTheStoreRefusedIsMadeAgainAcrossAnOutage(t *testing.T) {
+	outage := func(t *testing.T, h *harness, number uint64) {
+		t.Helper()
+		for bound := 1; bound <= 3; bound++ {
+			h.advance(testRPC)
+			if p := h.claim().Pending; p == nil || p.Number != number {
+				t.Fatalf("bound %d of the outage left %+v, want task %d still pending", bound, p, number)
+			}
+		}
+		h.store.fail("RetireDelivery", nil)
+		h.advance(testRPC)
+		if p := h.claim().Pending; p != nil {
+			t.Fatalf("pending %+v a bound after the store answered, want task %d finished", p, number)
+		}
+		finished := h.records.of(finishedLine)
+		if len(finished) != 1 {
+			t.Fatalf("%q was logged %d times, want once", finishedLine, len(finished))
+		}
+		wantAttr(t, finished[0], "by", finishedByReport)
+	}
+	t.Run("a report after its turn's end", func(t *testing.T) {
+		h := newHarnessOf(t, queuedClaim(), currentPlugin)
+		h.reach(StateReady)
+		h.takesTurnEndsWithItsReportToCome()
+		number := h.pending().Number
+		h.store.fail("RetireDelivery", errBoom)
+		if err := h.reportTurn(number, nil); err == nil {
+			t.Fatal("the report whose finish the store refused answered no failure")
+		}
+		outage(t, h, number)
+	})
+	t.Run("a report ahead of its turn's end frame", func(t *testing.T) {
+		h := newHarnessOf(t, queuedClaim(), currentPlugin)
+		h.reach(StateReady)
+		h.taskTheAgentTook()
+		number := h.pending().Number
+		h.must(StreamTurnStart{Claim: h.token})
+		h.store.fail("RetireDelivery", errBoom)
+		if err := h.reportTurn(number, nil); err == nil {
+			t.Fatal("the report whose finish the store refused answered no failure")
+		}
+		h.advance(3 * testRPC)
+		h.mustQuiet(StreamTurnEnd{Claim: h.token})
+		outage(t, h, number)
+	})
+	t.Run("a report after the bound fired", func(t *testing.T) {
+		h := newHarness(t)
+		h.reach(StateReady)
+		h.takesTurnEndsWithItsReportToCome()
+		number := h.pending().Number
+		h.store.fail("RetireDelivery", errBoom)
+		h.advance(testRPC)
+		if err := h.reportTurn(number, nil); err == nil {
+			t.Fatal("the report whose finish the store refused answered no failure")
+		}
+		outage(t, h, number)
+	})
+}

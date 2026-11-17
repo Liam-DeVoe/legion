@@ -105,3 +105,33 @@ func TestAReplacementWithAHeldSuspensionSuspendsTheClaimChargingNothing(t *testi
 		t.Fatalf("claim %+v after the replacement, want the held suspension ended", claim)
 	}
 }
+
+// A displacement whose end was its pod running out of memory keeps that end's note when the wake
+// pacing parks its launch: the take-back is made at the wake's turn, where the process is let go,
+// and it is the displacement's own, with its out-of-memory end (launchReplacing, wake.takeBack),
+// so the relaunched worker's take carries outOfMemoryTask in front of its task.
+//
+// The negative control is the wake's turn making its own generic take-back (runWake with no
+// wake.takeBack): the task is then taken back with no out-of-memory mark.
+func TestTakeBackOfAParkedDisplacementKeepsItsOutOfMemoryNote(t *testing.T) {
+	h := pacedHarness(t, wakeRate)
+	h.reach(StateReady)
+	h.must(RequestDeliver{Claim: h.token, Task: "implement the plan"})
+	h.must(StreamTurnStart{Claim: h.token})
+
+	h.must(RuntimeObservation{Observation: runtime.Observation{Locator: h.locator(), Kind: runtime.Gone,
+		At: h.clock.Now(), Displaced: true, OutOfMemory: true}})
+	waiting := h.wantWaitingWake(WakeLaunch)
+	if p := h.pending(); !p.turnStarted() {
+		t.Fatalf("the task after the park is %+v, want its take's turn still standing until the wake's turn", p)
+	}
+	h.advance(waiting.At.Sub(h.clock.Now()))
+
+	if p := h.pending(); p.taken() || !p.Interrupted || !p.OutOfMemory {
+		t.Fatalf("the task after the wake's turn is %+v, want it taken back from its cut turn with the out-of-memory mark", p)
+	}
+	h.relaunched()
+	if again := h.wantPrompts(2)[1]; !strings.Contains(again.Message, outOfMemoryTask) {
+		t.Fatalf("the relaunched worker took %q, want the out-of-memory note in front of its task", again.Message)
+	}
+}

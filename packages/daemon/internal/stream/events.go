@@ -40,6 +40,16 @@ type TurnEnd struct {
 	Claim claim.Token
 }
 
+// TurnAnswered is OMP's answer to a get_state the daemon asked (Conn.GetState): whether a turn is
+// running. The reader pushes it as it reads that answer (Conn.dispatch), so it follows every event
+// of a frame the connection read before the answer — a shim's replay of the frames it held while
+// no daemon was attached among them, which the shim writes before any later frame — and the
+// supervisor reads it with those frames already applied.
+type TurnAnswered struct {
+	Claim     claim.Token
+	Streaming bool
+}
+
 // ToolStep is one tool call of the agent's turn beginning or ending
 // (shimwire.ToolExecutionStart, shimwire.ToolExecutionEnd): the only fact on the wire that says
 // an agent mid-turn is still moving. The connection measures the start's arguments (below) and
@@ -75,11 +85,12 @@ type Closed struct {
 	Claim claim.Token
 }
 
-func (Hello) isEvent()     {}
-func (TurnStart) isEvent() {}
-func (TurnEnd) isEvent()   {}
-func (ToolStep) isEvent()  {}
-func (Closed) isEvent()    {}
+func (Hello) isEvent()        {}
+func (TurnStart) isEvent()    {}
+func (TurnEnd) isEvent()      {}
+func (TurnAnswered) isEvent() {}
+func (ToolStep) isEvent()     {}
+func (Closed) isEvent()       {}
 
 // eventQueue is the ordered, unbounded hand-off between every connection's reader and the one
 // channel Events() returns.

@@ -817,7 +817,7 @@ func (m *Machine) retireTask(ctx context.Context, finished bool) error {
 	// what finishes it later.
 	m.disarm(TimerPromptRetry)
 	m.disarm(TimerFinish)
-	m.claim, m.unsaved = retired, false
+	m.claim, m.unsaved, m.finishOwed = retired, false, false
 	if err != nil {
 		m.log.Warn("supervise: the store holds no such delivery; the refusal is of a retirement it has already made",
 			"delivery", p.ID, "error", err)
@@ -853,8 +853,10 @@ func (m *Machine) putClaimAndPendingOwed(ctx context.Context) error {
 }
 
 // streaming asks the agent whether a turn is in flight; answered is false when the agent could not
-// say (the ask failed or timed out). Its one caller is the question a restart leaves over a claim
-// stored working (askTurnOver).
+// say (the ask failed or timed out). Its callers are the questions a restart leaves: over a claim
+// stored working (askTurnOver), and over one stored ready or idle whose stale-plugin relaunch
+// waits for the answer (askRestoredTurn), which acts on the answer only as the worker stream
+// delivers it again behind the frames read before it (StreamTurnAnswered).
 func (m *Machine) streaming(ctx context.Context, conn runtime.Conn) (streaming, answered bool) {
 	asking, cancel := context.WithTimeout(ctx, m.deps.Timeouts.RPC)
 	defer cancel()
@@ -951,8 +953,9 @@ func (m *Machine) adopt(ctx context.Context, a adoption) error {
 // at a turn's end and at the worker's first act after a ready or idle restore only (turnEnded,
 // armFinishAtAct). Such a task is settled here by its claim's contract, as interrupted settles a
 // take whose turn is over: finished by its end frame where the end frame finishes a task
-// (endFrameFinishes), as the bound would have finished it, and taken back with the note a cut
-// turn gets where only a report naming its number finishes it. Left, it would stand started for
+// (endFrameFinishes), as the bound would have finished it, or by the report whose finish the
+// store refused (finishOwed, overTurnFinish), and taken back with the note a cut turn gets where
+// only a report naming its number finishes it and none has. Left, it would stand started for
 // good, and the take of it the next process makes would be answered again the text of a turn
 // that already ran.
 //
@@ -975,8 +978,8 @@ func (m *Machine) settle(ctx context.Context) error {
 		}
 	}
 	if !SaidReady(m.claim.State) && p.turnStarted() {
-		if m.endFrameFinishes() {
-			return m.finishTask(ctx, finishedByEndFrame)
+		if by, finishes := m.overTurnFinish(); finishes {
+			return m.finishTask(ctx, by)
 		}
 		if err := m.interrupted(ctx, "the turn of the task's take is over and no report named its number", ordinaryEnd); err != nil {
 			return err
@@ -1087,8 +1090,10 @@ const outOfMemoryTask = "Your pod ran out of memory. Kubernetes ended the contai
 // A take whose turn has already ended is settled by its claim's contract. Where the end frame
 // finishes a task — a plugin below TaskTakeContract, whose reports name no number
 // (endFrameFinishes) — it is not taken back but finished: its turn ran whole, and only the
-// report of it is lost with the process (finishTask, by the end frame). Where only a report
-// naming the number finishes it, the end of a run says nothing of whose run it was, so it is
+// report of it is lost with the process (finishTask, by the end frame). So is one whose report
+// named its number and whose finish the store refused (finishOwed), by that report
+// (overTurnFinish). Where only a report naming the number finishes it, and none has, the end of
+// a run says nothing of whose run it was, so it is
 // taken back with the note a cut turn gets, as though its turn were still running: the next
 // accepted take carries the sentence of its interruption, and the let-go that follows records
 // the task's turn as cut off (Machine.cutTurnOf). Whether a turn runs is the one answer every
@@ -1125,8 +1130,8 @@ func (m *Machine) interrupted(ctx context.Context, why string, outOfMemory bool)
 	}
 	inTurn := m.endState() == StateWorking
 	if p.turnStarted() && !inTurn {
-		if m.endFrameFinishes() {
-			return m.finishTask(ctx, finishedByEndFrame)
+		if by, finishes := m.overTurnFinish(); finishes {
+			return m.finishTask(ctx, by)
 		}
 		inTurn = true
 	}

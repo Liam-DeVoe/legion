@@ -193,7 +193,9 @@ func (m *Machine) replaceProcess(ctx context.Context, interruption string, outOf
 // nothing relaunched and no wake raised (interrupted). A launch the wake pacing parks makes no
 // take-back here: the process it replaces runs on until the wake's turn, and a turn it starts in
 // the wait is the take's turn, which the take-back the wake's turn makes cuts off or finds over
-// (runWake). Taking the task back at the park would leave that process running a turn that is no
+// (runWake) — this replacement's own take-back, carried on the wake with interruption and
+// outOfMemory (launchReplacing), so a parked displacement still tells of an out-of-memory end.
+// Taking the task back at the park would leave that process running a turn that is no
 // take's, and the process the launch starts taking the number again: two runs of one task. A
 // stale-plugin relaunch that ends at a refused take-back is raised again by the next pass, which
 // reads the claim as stale as it left it (refreshStalePlugins in internal/daemon). A take-back
