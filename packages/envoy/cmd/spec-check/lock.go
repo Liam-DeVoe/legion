@@ -16,19 +16,25 @@ var errLockHeld = errors.New("the lock is held")
 const lockPoll = 20 * time.Millisecond
 
 // specDirLock is the hold of one run of print on its directory: the open directory, whose flock is
-// the lock, and each directory that the run made to write into, the deepest first.
+// the lock, its inode, each directory that the run made to write into, the deepest first, and each
+// other open directory whose flock the run holds: the new directory that writeDir builds, which
+// takes the place of the directory.
 type specDirLock struct {
 	dir  *os.File
+	ino  uint64
 	made []string
+	also []*os.File
 }
 
 // lockSpecDir takes the lock of print on dir: an exclusive flock on the directory itself, which
 // the kernel releases when the process ends, so a run that is killed leaves no lock. Git keeps no
 // empty directory, so print writes the first spec file of a repository into a directory that it
 // makes: lockSpecDir makes dir and each missing directory above it first. When another run holds
-// the lock, it tries again every lockPoll until wait ends, then refuses. A run that held the lock
-// before can have removed dir, and another can have made it again, so the lock counts only when
-// the open directory is still the directory that dir names.
+// the lock, it tries again every lockPoll until wait ends, then refuses. A run puts a new
+// directory in the place of dir (writeDir), and another can have removed dir and made it again,
+// so the lock counts only when the open directory is still the directory that dir names; a run
+// holds the flock of its new directory too from before the exchange, so a run that opens dir after
+// the exchange waits for it.
 func lockSpecDir(dir string, wait time.Duration) (*specDirLock, error) {
 	deadline := time.Now().Add(wait)
 	for {
@@ -58,7 +64,7 @@ func lockSpecDir(dir string, wait time.Duration) (*specDirLock, error) {
 			return nil, err
 		}
 		if now, err := os.Stat(dir); err == nil && os.SameFile(held, now) {
-			return &specDirLock{dir: f, made: made}, nil
+			return &specDirLock{dir: f, ino: inode(held), made: made}, nil
 		}
 		f.Close()
 		if time.Now().After(deadline) {
@@ -67,11 +73,19 @@ func lockSpecDir(dir string, wait time.Duration) (*specDirLock, error) {
 	}
 }
 
+// hold adds f, an open directory whose flock the run takes, to the hold, so that release closes it.
+func (l *specDirLock) hold(f *os.File) {
+	l.also = append(l.also, f)
+}
+
 // release ends the hold. When the run wrote nothing (kept is false), it first removes each
 // directory that it made and that is still empty, so a run that print refuses leaves no directory.
 func (l *specDirLock) release(kept bool) {
 	if !kept {
 		removeDirs(l.made)
+	}
+	for _, f := range l.also {
+		f.Close()
 	}
 	l.dir.Close() // closing the last descriptor of the open directory releases its flock
 }

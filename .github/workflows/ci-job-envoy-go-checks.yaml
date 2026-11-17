@@ -113,6 +113,11 @@ jobs:
             exit 1
           fi
         working-directory: packages/envoy
+      # cmd/spec-check's TestAKillAtEachStepOfPrintLeavesTheFilesBeforeOrAfter kills a run of
+      # print at each step of its write with strace's inject, and fails in a CI job without it;
+      # the runner image does not hold strace.
+      - name: Install strace
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends strace
       # These five packages need no database, so they run here on every push. This is their one
       # run: envoy-go's unit step leaves them out, its `grep -Ev` and this step's package list
       # built from NOTE_AND_SPEC_PACKAGES in .github/scripts/ci_job_reads.py.

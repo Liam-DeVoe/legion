@@ -194,7 +194,7 @@ func TestNonStringPlainMatchesEachImplicitType(t *testing.T) {
 		{"int in base 16", []string{"0x1F", "-0xff_ff", "0x_"}, true},
 		{"int in base 60", []string{"190:20:30", "-1:30"}, true},
 		{"float", []string{"1.5", "-1.5", "1.", ".5", "+.5e3", "1e3", "1E-3", "1_000.5", "1.5_", "1.2.3", ".", "1.0e+3"}, true},
-		{"float in base 60", []string{"190:20:30.15", "1:30.5"}, true},
+		{"float in base 60", []string{"190:20:30.15", "1:30.5", "0:7", "03:17", "-0:0"}, true},
 		{"infinity and NaN", []string{".inf", "-.Inf", "+.INF", ".nan", ".NaN", ".NAN"}, true},
 		{"timestamp", []string{"2026-11-16", "2026-11-16T10:00:00", "2026-11-16t10:00:00Z", "2026-1-5 10:00:00", "2026-11-16 10:00:00 +01:00",
 			"2026-11-16 10:00:00 Z", "2026-11-16T10:00:00 +01:00", "2026-11-16T10:00:00.5-1", "2026-11-16\t10:00:00"}, true},

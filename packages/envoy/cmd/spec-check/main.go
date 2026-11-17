@@ -67,8 +67,8 @@
 // names --allow-empty. With --allow-empty, compare reads it as the empty tree, with a line on
 // standard error that says so, since git keeps no empty directory and a revert of the last spec
 // file leaves none. The comparison does not judge the tree, which is tree's work: a problem of
-// Parse that leaves each node as the files write it (specgraph.KeepsEachNode), such as a spelling
-// that print does not write, is no reason for compare to refuse.
+// Parse that leaves each node as the files write it (specgraph.KeepsEachNode), such as a comment
+// or other quotes, a spelling that print does not write, is no reason for compare to refuse.
 // R2 gives the comparison at each push to Dispatch, and no CI job runs compare. So compare exits
 // 2, before it reads an argument, when GITHUB_ACTIONS is "true", with the one line "spec-check:
 // compare does not run in a CI job (GITHUB_ACTIONS=true): R2 gives the comparison of the files with
@@ -98,9 +98,11 @@
 // not hold a node as the files held it, or a node of the run as its approved document
 // ("spec-check: print would lose or change node …"); or when the judgment of tree finds a problem
 // in the files that the run would leave ("spec-check: print would leave <dir>/<file>:<line>:
-// <node>: <detail>"). It exits 2 too when the approved spec does not hold an id or removed it. Else
-// it writes each file that changes, all of them or none as far as the file system allows, prints
-// "spec-check: wrote <id> to <dir>/<file>:<line>" for each node, and exits 0.
+// <node>: <detail>", which for a not-printed node that the run does not name ends with each node
+// of that file to name). It exits 2 too when the approved spec does not hold an id or removed it,
+// and when the system refuses to exchange --dir with the new directory that it builds beside it.
+// Else it changes the files that change in one step, also for a kill, prints "spec-check: wrote
+// <id> to <dir>/<file>:<line>" for each node, and exits 0.
 //
 // guard reads every regular file under <dir>/.github/workflows, <dir>/.github/actions,
 // <dir>/.github/scripts and <dir>/scripts as text, and names each line that names the command that

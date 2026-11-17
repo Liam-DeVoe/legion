@@ -258,7 +258,9 @@ func quoteScalars(node *yaml.Node) {
 }
 
 // quotedScalar reports whether printNode writes s double-quoted, whatever style yaml.v3 would
-// pick: s holds U+2028 or U+2029, or nonStringPlain matches it.
+// pick: s holds U+2028 or U+2029, or nonStringPlain matches it. It is the one rule of both sides of
+// the files: the printer quotes each text that it matches, and the reader (readsAsAnother) takes
+// each plain text that it matches as a value that a YAML reader can read as another value.
 func quotedScalar(s string) bool {
 	return strings.ContainsAny(s, "\u2028\u2029") || nonStringPlain.MatchString(s)
 }
@@ -267,8 +269,10 @@ func quotedScalar(s string) bool {
 // plain scalar, as another type than a string: a null, a bool in each spelling, an int in each
 // base, a float, a timestamp, the merge key "<<" and the value key "=". The YAML 1.1 forms are
 // those of its type repository (yaml.org/type) and of PyYAML's resolver, whose floats differ in
-// what may follow the point ("1.2.3" in the repository, "1.5_" in PyYAML); the YAML 1.2 forms are
-// those of its core schema, which holds those of its JSON schema.
+// what may follow the point ("1.2.3" in the repository, "1.5_" in PyYAML), and the float in base 60
+// with no point, which parsers take in practice and yaml.v3's writer quotes ("0:7", its
+// base60float); the YAML 1.2 forms are those of its core schema, which holds those of its JSON
+// schema.
 var nonStringPlain = regexp.MustCompile(`^(?:` + strings.Join([]string{
 	// null, in YAML 1.1 and 1.2
 	`~|null|Null|NULL|`,
@@ -277,10 +281,11 @@ var nonStringPlain = regexp.MustCompile(`^(?:` + strings.Join([]string{
 	// int: YAML 1.1 in base 2, 8, 10, 16 and 60, then YAML 1.2 in base 10, 8 and 16
 	`[-+]?0b[0-1_]+|[-+]?0[0-7_]+|[-+]?(?:0|[1-9][0-9_]*)|[-+]?0x[0-9a-fA-F_]+|[-+]?[1-9][0-9_]*(?::[0-5]?[0-9])+`,
 	`[-+]?[0-9]+|0o[0-7]+|0x[0-9a-fA-F]+`,
-	// float: YAML 1.1 by the type repository, by PyYAML, and in base 60, then YAML 1.2
+	// float: YAML 1.1 by the type repository, by PyYAML, and in base 60 with or without a point,
+	// then YAML 1.2
 	`[-+]?(?:[0-9][0-9_]*)?\.[0-9.]*(?:[eE][-+][0-9]+)?`,
 	`[-+]?[0-9][0-9_]*\.[0-9_]*(?:[eE][-+][0-9]+)?|\.[0-9][0-9_]*(?:[eE][-+][0-9]+)?`,
-	`[-+]?[0-9][0-9_]*(?::[0-5]?[0-9])+\.[0-9_]*`,
+	`[-+]?[0-9][0-9_]*(?::[0-5]?[0-9])+(?:\.[0-9_]*)?`,
 	`[-+]?(?:\.[0-9]+|[0-9]+(?:\.[0-9]*)?)(?:[eE][-+]?[0-9]+)?`,
 	`[-+]?\.(?:inf|Inf|INF)|\.(?:nan|NaN|NAN)`,
 	// timestamp: YAML 1.1, a date, or a date and a time

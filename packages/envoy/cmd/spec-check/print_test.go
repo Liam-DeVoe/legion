@@ -189,8 +189,8 @@ func TestPrintedFilesPassTheComparison(t *testing.T) {
 	if len(refusals) == 0 || after == nil {
 		t.Fatalf("planPrint of the statements only: refusals %q, after %v; want the refusal and the files", refusals, after)
 	}
-	if err := writeFiles(osFileSystem, only, nil, after); err != nil {
-		t.Fatal(err)
+	for name, content := range after {
+		writeFile(t, filepath.Join(only, name), content)
 	}
 	expect(t, runBinary(t, binary, "", "tree", "--dir", only), result{
 		code:   1,
@@ -356,23 +356,87 @@ func TestPrintLosesNoNodeOfAFileWithOtherLineBreaks(t *testing.T) {
 
 // A file whose documents the reader cannot say for certain is refused by its name, and print
 // writes nothing: a file whose reading stops at a fault of the YAML, beside a valid file that the
-// run would write into.
+// run would write into, and a file that starts with the directive %YAML 1.2, which yaml.v3 does
+// not read (F1 of the second red team). R1 gives the files to a standard YAML library, and R2 has
+// the tree checker refuse each document that is not as the printer writes it, so print takes no
+// such file; the refusal names the file, the library's own words for the fault, and the way out.
 func TestPrintRefusesAFileItCannotCut(t *testing.T) {
 	t.Parallel()
 	binary := cmdtest.Build(t, "spec-check")
 	term := "---\ntype: term\nid: first-term\nname: first term\ndefinition:\n  - A term is a unit of meaning.\n"
 	approved := writeApproved(t, map[string]string{"first-term": term})
-	dir := t.TempDir()
-	writeFile(t, filepath.Join(dir, "terms.yaml"), []byte(term))
-	writeFile(t, filepath.Join(dir, "broken.yaml"), []byte(term+"---\ntype: [\n"))
-	before := readDir(t, dir)
-	expect(t, runBinary(t, binary, "", "print", "--approved", approved, "--id", "first-term", "--dir", dir), result{
-		code: 2,
-		stderr: "spec-check: print would write into " + dir + ", and the reader cannot say which documents " + filepath.Join(dir, "broken.yaml") +
-			" holds: the YAML library stops at line 8, so the reader does not know the documents after that line. Correct that file, then run print again\n",
-	})
-	if got := readDir(t, dir); !maps.EqualFunc(got, before, bytes.Equal) {
-		t.Errorf("the directory changed: %q", got)
+	for _, row := range []struct {
+		name, file, text, why string
+	}{
+		{"a fault after the documents", "broken.yaml", term + "---\ntype: [\n", "the YAML library stops at line 8 (line 8: did not find expected node content)"},
+		{"the directive %YAML 1.2", "versioned.yaml", "%YAML 1.2\n" + term, "the YAML library stops at line 1 (found incompatible YAML document)"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			writeFile(t, filepath.Join(dir, "terms.yaml"), []byte(term))
+			writeFile(t, filepath.Join(dir, row.file), []byte(row.text))
+			before := readDir(t, dir)
+			expect(t, runBinary(t, binary, "", "print", "--approved", approved, "--id", "first-term", "--dir", dir), result{
+				code: 2,
+				stderr: "spec-check: print would write into " + dir + ", and the reader cannot say which documents " + filepath.Join(dir, row.file) +
+					" holds: " + row.why + ", so the reader does not know the documents after that line. Correct that file, then run print again\n",
+			})
+			if got := readDir(t, dir); !maps.EqualFunc(got, before, bytes.Equal) {
+				t.Errorf("the directory changed: %q", got)
+			}
+		})
+	}
+}
+
+// A print of some of the nodes of a file changes only those nodes, so it cannot write in the
+// printed form a node that it is not named: a comment before the first node, or a folded text in
+// it (F2 of the second red team). R2 has the tree checker refuse a document that is not as the
+// printer writes it, and print writes nothing that tree refuses, so the run is refused; the line
+// names the file, the cause and the way out, each node of the file by its id. A run that names
+// each node of the file writes it, and tree takes it.
+func TestPrintNamesTheWayOutOfAFileThatIsNotPrinted(t *testing.T) {
+	t.Parallel()
+	binary := cmdtest.Build(t, "spec-check")
+	term := func(id string) string {
+		return "---\ntype: term\nid: " + id + "\nname: " + strings.ReplaceAll(id, "-", " ") + "\ndefinition:\n  - A term is a unit of meaning.\n"
+	}
+	ids := []string{"first-term", "second-term", "third-term"}
+	approved := writeApproved(t, map[string]string{ids[0]: term(ids[0]), ids[1]: term(ids[1]), ids[2]: term(ids[2])})
+	printed := term(ids[0]) + term(ids[1]) + term(ids[2])
+	for _, row := range []struct {
+		name, text string
+		line       int
+		got, want  string
+		difference string
+	}{
+		{"a comment before the first node", "# Terms used by the service.\n" + printed, 1, "# Terms used by the service.\n", "---\n", "a comment"},
+		{"a folded text", strings.Replace(printed, "  - A term is a unit of meaning.\n", "  - >-\n    A term is\n    a unit of meaning.\n", 1), 6, "  - >-\n", "  - A term is a unit of meaning.\n", "another spelling"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			file := filepath.Join(dir, "terms.yaml")
+			writeFile(t, file, []byte(row.text))
+			expect(t, runBinary(t, binary, "", "print", "--approved", approved, "--id", "third-term", "--dir", dir), result{
+				code: 2,
+				stderr: "spec-check: print would leave " + file + ":" + strconv.Itoa(row.line) + ": first-term: " + notPrinted(row.line, row.got, row.want, row.difference) +
+					"; print changes only the nodes that the run names, and this run does not name first-term, so to write " + file +
+					" in that form, name each node of it: --id first-term --id second-term --id third-term\n",
+			})
+			if got := readTexts(t, dir); got["terms.yaml"] != row.text || len(got) != 1 {
+				t.Fatalf("the refused run changed the directory: %q", got)
+			}
+			if got := runBinary(t, binary, "", "print", "--approved", approved, "--id", "first-term", "--id", "second-term", "--id", "third-term", "--dir", dir); got.code != 0 {
+				t.Fatalf("print of each node of the file: exit %d, stderr %q", got.code, got.stderr)
+			}
+			if got := readTexts(t, dir); got["terms.yaml"] != printed {
+				t.Errorf("print of each node of the file wrote %q, want %q", got["terms.yaml"], printed)
+			}
+			if got := runBinary(t, binary, "", "tree", "--dir", dir); got.code != 0 {
+				t.Errorf("tree after the print of each node: exit %d, stderr %q", got.code, got.stderr)
+			}
+		})
 	}
 }
 
@@ -428,101 +492,6 @@ func TestPrintWritesNothingWhenOneFileCannotBeWritten(t *testing.T) {
 	if got := runBinary(t, binary, "", "tree", "--dir", dir); got.code != 0 {
 		t.Errorf("tree after the refused run: exit %d, stderr %q", got.code, got.stderr)
 	}
-}
-
-// writeFiles changes all of the files of a run or none: with a step that fails at each place, the
-// directory is byte for byte as it was. The run changes a.yaml and b.yaml and adds c.yaml. The
-// faults: no temporary file can be made (the first, and the fourth, which holds the old text of
-// b.yaml); the directory takes no new file, a stand-in for a full disk; and the rename of the
-// second file fails, after the first file was renamed, so writeFiles puts the first back. A rename
-// that fails, and then a put-back that fails too, names the file that it changed. The control
-// writes all three.
-func TestWriteFilesChangesAllOrNone(t *testing.T) {
-	t.Parallel()
-	files := map[string][]byte{"a.yaml": []byte("a before\n"), "b.yaml": []byte("b before\n"), "kept.yaml": []byte("kept\n")}
-	after := map[string][]byte{"a.yaml": []byte("a after\n"), "b.yaml": []byte("b after\n"), "c.yaml": []byte("c after\n"), "kept.yaml": []byte("kept\n")}
-	setUp := func(t *testing.T) string {
-		dir := t.TempDir()
-		for name, content := range files {
-			writeFile(t, filepath.Join(dir, name), content)
-		}
-		return dir
-	}
-	failing := func(n int, step string) fileSystem {
-		var calls int
-		fsys := osFileSystem
-		fail := errors.New(step + " fails")
-		switch step {
-		case "create":
-			fsys.createTemp = func(dir, pattern string) (*os.File, error) {
-				if calls++; calls == n {
-					return nil, fail
-				}
-				return os.CreateTemp(dir, pattern)
-			}
-		case "rename":
-			fsys.rename = func(oldpath, newpath string) error {
-				if calls++; calls == n || n == 0 && calls > 1 {
-					return fail
-				}
-				return os.Rename(oldpath, newpath)
-			}
-		}
-		return fsys
-	}
-	for _, row := range []struct {
-		name string
-		fsys fileSystem
-		err  string
-	}{
-		{"the first temporary file", failing(1, "create"), "create fails"},
-		{"the temporary file of the old text of b.yaml", failing(4, "create"), "create fails"},
-		{"the rename of the second file", failing(2, "rename"), "rename fails"},
-		{"the rename of the second file and each put-back", failing(0, "rename"), "rename fails; print changed DIR/a.yaml and could not put back the text it held"},
-	} {
-		t.Run(row.name, func(t *testing.T) {
-			t.Parallel()
-			dir := setUp(t)
-			err := writeFiles(row.fsys, dir, files, after)
-			if want := strings.ReplaceAll(row.err, "DIR", dir); err == nil || err.Error() != want {
-				t.Fatalf("writeFiles: %v, want %q", err, want)
-			}
-			got := readDir(t, dir)
-			if row.name == "the rename of the second file and each put-back" {
-				got["a.yaml"] = files["a.yaml"] // the one file that the error names
-			}
-			if !maps.EqualFunc(got, files, bytes.Equal) {
-				t.Errorf("the directory is %q, want it as it was, %q", got, files)
-			}
-		})
-	}
-	t.Run("a directory that takes no new file", func(t *testing.T) {
-		t.Parallel()
-		if os.Geteuid() == 0 {
-			t.Skip("root writes into a directory of mode 555")
-		}
-		dir := setUp(t)
-		if err := os.Chmod(dir, 0o555); err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
-		if err := writeFiles(osFileSystem, dir, files, after); err == nil {
-			t.Fatal("writeFiles into a directory of mode 555: no error")
-		}
-		if got := readDir(t, dir); !maps.EqualFunc(got, files, bytes.Equal) {
-			t.Errorf("the directory is %q, want it as it was, %q", got, files)
-		}
-	})
-	t.Run("the control: no step fails", func(t *testing.T) {
-		t.Parallel()
-		dir := setUp(t)
-		if err := writeFiles(osFileSystem, dir, files, after); err != nil {
-			t.Fatal(err)
-		}
-		if got := readDir(t, dir); !maps.EqualFunc(got, after, bytes.Equal) {
-			t.Errorf("the directory is %q, want %q", got, after)
-		}
-	})
 }
 
 // Two runs of print at one time into one directory each write their node (N1): print holds the

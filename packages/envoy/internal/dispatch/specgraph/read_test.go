@@ -6,6 +6,7 @@ import (
 	"flag"
 	"io/fs"
 	"maps"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
 	"github.com/sjawhar/envoy/internal/dispatch/architecture/notes"
+	"gopkg.in/yaml.v3"
 )
 
 // Each document of the hand-written files of testdata/nodes reads, with yaml.v3 and as JSON, as
@@ -208,11 +210,20 @@ func TestReadRefuses(t *testing.T) {
 			quoted(want, "nothing") + " there (" + difference + "); spec-check print writes each node in that form"
 		return Problem{Pos: Position{"x.yaml", line}, Node: node, Rule: "not-printed", Detail: detail, Effect: KeepsEachNode}
 	}
+	// readsAsAnother is the not-printed problem of a file where a YAML reader can read a value as
+	// another value than the text that the file writes, because of what: it loses the node.
+	readsAsAnother := func(line int, node, got, want, difference, because string) Problem {
+		p := notPrinted(line, node, got, want, difference)
+		p.Detail += "; the tree may hold another value than the file writes, because of " + because
+		p.Effect = LosesNode
+		return p
+	}
 	for _, row := range []struct {
 		name  string
 		text  string
 		want  Problem
-		nodes int // how many nodes the tree holds
+		also  *Problem // a second problem, after want
+		nodes int      // how many nodes the tree holds
 	}{
 		{name: "an open flow list", text: "---\ntype: [\n",
 			want: Problem{Pos: Position{"x.yaml", 2}, Node: "-", Rule: "bad-yaml", Detail: "bad-yaml: line 2: did not find expected node content", Effect: LosesNode}},
@@ -254,7 +265,12 @@ func TestReadRefuses(t *testing.T) {
 		{name: "a comment", text: strings.Replace(term, "---\n", "---\n# The term of work.\n", 1), nodes: 1,
 			want: notPrinted(2, "work-unit", "# The term of work.\n", "type: term\n", "a comment")},
 		{name: "a tag", text: strings.Replace(term, "name: work unit", "name: !!str work unit", 1), nodes: 1,
-			want: notPrinted(4, "work-unit", "name: !!str work unit\n", "name: work unit\n", "another spelling")},
+			want: readsAsAnother(4, "work-unit", "name: !!str work unit\n", "name: work unit\n", "another spelling", "the tag !!str at line 4")},
+		{name: "a binary", text: strings.Replace(term, "name: work unit", "name: !!binary d29yayB1bml0", 1), nodes: 1,
+			want: readsAsAnother(4, "work-unit", "name: !!binary d29yayB1bml0\n", "name: work unit\n", "another spelling", "the tag !!binary at line 4")},
+		{name: "a merge key", text: strings.Replace(term, "name: work unit", "<<: {name: work unit}", 1), nodes: 1,
+			want: readsAsAnother(4, "work-unit", "<<: {name: work unit}\n", "name: work unit\n", "another order of keys",
+				`the plain text "<<" at line 4, which a YAML reader can read as another value than this text`)},
 		{name: "a space at the end of a line", text: strings.Replace(term, "name: work unit", "name: work unit ", 1), nodes: 1,
 			want: notPrinted(4, "work-unit", "name: work unit \n", "name: work unit\n", "a space at the end of the line")},
 		{name: "quotes around a plain value", text: strings.Replace(term, "name: work unit", `name: "work unit"`, 1), nodes: 1,
@@ -268,9 +284,25 @@ func TestReadRefuses(t *testing.T) {
 		{name: "an indent of four spaces", text: strings.Replace(term, "  - A work", "    - A work", 1), nodes: 1,
 			want: notPrinted(6, "work-unit", "    - A work unit is work.\n", "  - A work unit is work.\n", "another indent")},
 		{name: "a date that is not quoted", text: strings.Replace(term, "name: work unit", "name: 2026-11-16", 1), nodes: 1,
-			want: notPrinted(4, "work-unit", "name: 2026-11-16\n", "name: \"2026-11-16T00:00:00Z\"\n", "another spelling")},
+			want: readsAsAnother(4, "work-unit", "name: 2026-11-16\n", "name: \"2026-11-16T00:00:00Z\"\n", "another spelling",
+				`the plain text "2026-11-16" at line 4, which a YAML reader can read as another value than this text`)},
+		{name: "a date with one-digit parts, which yaml.v3 reads as a time", text: strings.Replace(term, "  - A work unit is work.", "  - 2026-1-2", 1), nodes: 1,
+			want: readsAsAnother(6, "work-unit", "  - 2026-1-2\n", "  - \"2026-01-02T00:00:00Z\"\n", "another spelling",
+				`the plain text "2026-1-2" at line 6, which a YAML reader can read as another value than this text`)},
+		{name: "a plain text that yaml.v3 reads as a text and YAML 1.1 as a bool", text: strings.Replace(term, "name: work unit", "name: yes", 1), nodes: 1,
+			want: readsAsAnother(4, "work-unit", "name: yes\n", "name: \"yes\"\n", "other quotes",
+				`the plain text "yes" at line 4, which a YAML reader can read as another value than this text`)},
 		{name: "an anchor and an alias", text: strings.Replace(term, "name: work unit\ndefinition:\n  - A work unit is work.", "name: &n work unit\ndefinition:\n  - *n", 1), nodes: 1,
-			want: notPrinted(4, "work-unit", "name: &n work unit\n", "name: work unit\n", "another spelling")},
+			want: readsAsAnother(4, "work-unit", "name: &n work unit\n", "name: work unit\n", "another spelling", "the anchor &n at line 4")},
+		{name: "an anchor with no alias", text: strings.Replace(term, "name: work unit", "name: &n work unit", 1), nodes: 1,
+			want: readsAsAnother(4, "work-unit", "name: &n work unit\n", "name: work unit\n", "another spelling", "the anchor &n at line 4")},
+		// A problem that keeps each node in one document does not hide a value of another document
+		// that a YAML reader reads as another value: the file gets the problem that loses a node too.
+		{name: "a plain date beside an id that breaks its pattern", text: strings.Replace(term, "id: work-unit", "id: Work-Unit", 1) +
+			strings.Replace(strings.Replace(term, "id: work-unit", "id: work-item", 1), "name: work unit", "name: 2026-11-16", 1), nodes: 2,
+			want: Problem{Pos: Position{"x.yaml", 1}, Node: "Work-Unit", Rule: "schema", Detail: "schema: /id: 'Work-Unit' does not match pattern '^[a-z0-9]+(-[a-z0-9]+)*$'", Effect: KeepsEachNode},
+			also: new(readsAsAnother(10, "work-item", "name: 2026-11-16\n", "name: \"2026-11-16T00:00:00Z\"\n", "another spelling",
+				`the plain text "2026-11-16" at line 10, which a YAML reader can read as another value than this text`))},
 		{name: "a first document with no --- line", text: strings.TrimPrefix(term, "---\n"), nodes: 1,
 			want: notPrinted(1, "work-unit", "type: term\n", "---\n", "another spelling")},
 		{name: "CRLF line ends", text: strings.ReplaceAll(term, "\n", "\r\n"), nodes: 1,
@@ -293,8 +325,12 @@ func TestReadRefuses(t *testing.T) {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
 			tree, problems := Parse(map[string][]byte{"x.yaml": []byte(row.text)})
-			if !reflect.DeepEqual(problems, []Problem{row.want}) {
-				t.Errorf("Parse(%q):\n got %+v\nwant %+v", row.text, problems, []Problem{row.want})
+			want := []Problem{row.want}
+			if row.also != nil {
+				want = append(want, *row.also)
+			}
+			if !reflect.DeepEqual(problems, want) {
+				t.Errorf("Parse(%q):\n got %+v\nwant %+v", row.text, problems, want)
 			}
 			if got := len(nodesOf(tree)); got != row.nodes {
 				t.Errorf("Parse(%q): the tree holds %d nodes, want %d: %+v", row.text, got, row.nodes, tree)
@@ -340,6 +376,18 @@ func TestEachProblemOfTheReaderSaysWhetherItLosesANode(t *testing.T) {
 		{timeLimitDropped, LosesNode, `bad-time-limit: "soon" is not a positive Go duration`, strings.Replace(check, "procedure: agent\n", "procedure: agent\ntime_limit: soon\n", 1)},
 		{notPrinted, KeepsEachNode, `not-printed: line 4 is "name: 'work unit'\n", and print writes "name: work unit\n" there (other quotes); spec-check print writes each node in that form`,
 			strings.Replace(term, "name: work unit", "name: 'work unit'", 1)},
+		{notPrintedReadsAsAnother, LosesNode, `not-printed: line 4 is "name: 2026-11-16\n", and print writes "name: \"2026-11-16T00:00:00Z\"\n" there (another spelling); spec-check print writes each node in that form; ` +
+			`the tree may hold another value than the file writes, because of the plain text "2026-11-16" at line 4, which a YAML reader can read as another value than this text`,
+			strings.Replace(term, "name: work unit", "name: 2026-11-16", 1)},
+		{notPrintedReadsAsAnother, LosesNode, `not-printed: line 4 is "name: !!binary d29yayB1bml0\n", and print writes "name: work unit\n" there (another spelling); spec-check print writes each node in that form; ` +
+			`the tree may hold another value than the file writes, because of the tag !!binary at line 4`,
+			strings.Replace(term, "name: work unit", "name: !!binary d29yayB1bml0", 1)},
+		{notPrintedReadsAsAnother, LosesNode, `not-printed: line 4 is "<<: {name: work unit}\n", and print writes "name: work unit\n" there (another order of keys); spec-check print writes each node in that form; ` +
+			`the tree may hold another value than the file writes, because of the plain text "<<" at line 4, which a YAML reader can read as another value than this text`,
+			strings.Replace(term, "name: work unit", "<<: {name: work unit}", 1)},
+		{notPrintedReadsAsAnother, LosesNode, `not-printed: line 4 is "name: &n work unit\n", and print writes "name: work unit\n" there (another spelling); spec-check print writes each node in that form; ` +
+			`the tree may hold another value than the file writes, because of the anchor &n at line 4`,
+			strings.Replace(term, "name: work unit\ndefinition:\n  - A work unit is work.", "name: &n work unit\ndefinition:\n  - *n", 1)},
 	}
 	name := map[Effect]string{LosesNode: "LosesNode", KeepsEachNode: "KeepsEachNode"}
 	covered := map[problemKind]bool{}
@@ -370,6 +418,121 @@ func TestEachProblemOfTheReaderSaysWhetherItLosesANode(t *testing.T) {
 			t.Errorf("kind %d of problem of the reader, %q, has no row in the table: give it the Effect of its column and a file that gives it", kind, problemKinds[kind].format)
 		}
 	}
+}
+
+// The printer and the reader take one rule from its two sides. quotedScalar says whether another
+// YAML reader can read a plain text as another value than the text, and yaml.v3 says it of its own
+// reading; the printer writes a text double-quoted where one of them says so, and the reader gives
+// a problem that loses a node for a plain text where one of them says so. Each text of a fixed list
+// and 20,000 random texts made of the characters of YAML's implicit types is the name of a term,
+// written plain, in a file that yaml.v3 reads with that text as a plain scalar: the reader gives a
+// problem that loses a node exactly when the printer writes the text double-quoted, and a text that
+// the printer writes plain makes the printed document, which the reader takes with no problem. A
+// text that the printer writes in single quotes, for a reason of form such as a leading "---", is
+// no case of the rule, and neither is a text that yaml.v3 reads as more than one plain scalar. The
+// test requires 1,000 cases on each side, so it cannot pass on no case.
+func TestTheReaderLosesANodeAtEachPlainTextThatThePrinterQuotes(t *testing.T) {
+	t.Parallel()
+	texts := []string{
+		"~", "null", "y", "Y", "yes", "No", "on", "OFF", "true", "False",
+		"0b1010", "017", "0o17", "12", "+1_000", "0x1F", "0x_", "190:20:30", "1:30", "-1:30",
+		"1.5", ".5", "1e3", "1E-3", "1.2.3", ".", "...", "1.5_", "190:20:30.15", ".inf", "-.Inf", ".nan",
+		"2026-11-16", "2026-1-2", "2026-11-16T10:00:00Z", "2026-11-16t10:00:00", "2026-1-2 1:2:3", "2026-11-16 10:00:00 +01:00",
+		"<<", "=", "0X1F", "0B101", "0O17", "-0b1", "1e_5", "1_e5", "1__0", "2053-9-40",
+		"work unit", "Legion", "a = b", "<<<", "==", "1a", "0x", "e3", "v1.2.3", "2026-11-16x", "---", "x:y", ":x",
+	}
+	const alphabet = "0123456789+-._:~<= eExXoObBtTfFyYnNlLuUaAsSiIzZ"
+	rng := rand.New(rand.NewPCG(4083, 3))
+	edit := func(text string) string {
+		r := []byte(text)
+		at := rng.IntN(len(r) + 1)
+		c := alphabet[rng.IntN(len(alphabet))]
+		switch rng.IntN(3) {
+		case 0:
+			return string(r[:at]) + string(c) + string(r[at:])
+		case 1:
+			if at < len(r) {
+				return string(r[:at]) + string(r[at+1:])
+			}
+		}
+		if at < len(r) {
+			r[at] = c
+		}
+		return string(r)
+	}
+	fixed := len(texts)
+	for i := range 20000 {
+		if i%2 == 0 {
+			text := texts[rng.IntN(fixed)]
+			for range 1 + rng.IntN(2) {
+				text = edit(text)
+			}
+			texts = append(texts, text)
+			continue
+		}
+		b := make([]byte, 1+rng.IntN(10))
+		for k := range b {
+			b[k] = alphabet[rng.IntN(len(alphabet))]
+		}
+		texts = append(texts, string(b))
+	}
+	const definition = "A work unit is work."
+	quotedCases, plainCases := 0, 0
+	for _, text := range texts {
+		file := "---\ntype: term\nid: work-unit\nname: " + text + "\ndefinition:\n  - " + definition + "\n"
+		if !readsAsPlainName(file, text) {
+			continue
+		}
+		printed, err := printNode(Term{ID: "work-unit", Name: text, Definition: definition})
+		if err != nil {
+			t.Fatalf("printNode of the name %q: %v", text, err)
+		}
+		var quoted bool
+		switch line := strings.Split(printed, "\n")[3]; {
+		case line == "name: "+text:
+		case strings.HasPrefix(line, `name: "`):
+			quoted = true
+		default:
+			continue
+		}
+		_, problems := Parse(map[string][]byte{"x.yaml": []byte(file)})
+		loses := slices.ContainsFunc(problems, func(p Problem) bool { return p.Effect == LosesNode })
+		if loses != quoted {
+			t.Errorf("the name %q: the printer writes it double-quoted: %t, and the reader gives a problem that loses a node for it plain: %t (%+v)", text, quoted, loses, problems)
+		}
+		if quoted {
+			quotedCases++
+			continue
+		}
+		plainCases++
+		if file != printed || len(problems) != 0 {
+			t.Errorf("the name %q, which the printer writes plain: the printed document %q, the file %q, problems %+v", text, printed, file, problems)
+		}
+	}
+	t.Logf("%d texts: %d that the printer double-quotes, %d that it writes plain", len(texts), quotedCases, plainCases)
+	if quotedCases < 1000 || plainCases < 1000 {
+		t.Errorf("%d texts that the printer double-quotes and %d that it writes plain, want 1,000 of each", quotedCases, plainCases)
+	}
+}
+
+// readsAsPlainName reports whether yaml.v3 reads file as one document of the four keys of a term,
+// whose name is the plain scalar text.
+func readsAsPlainName(file, text string) bool {
+	var doc yaml.Node
+	if yaml.Unmarshal([]byte(file), &doc) != nil || len(doc.Content) != 1 {
+		return false
+	}
+	m := doc.Content[0]
+	if m.Kind != yaml.MappingNode || len(m.Content) != 8 {
+		return false
+	}
+	for i, key := range []string{"type", "id", "name", "definition"} {
+		if m.Content[2*i].Value != key {
+			return false
+		}
+	}
+	name := m.Content[5]
+	return name.Kind == yaml.ScalarNode && name.Style == 0 && name.Value == text
 }
 
 // firstUnprinted names a line and a node for each file it is given, and never panics: a file
@@ -456,7 +619,7 @@ func TestReadLayoutKeepsEachFile(t *testing.T) {
 	if n := len(l.Files["broken.yaml"]); n != 6 || l.Files["broken.yaml"][5].Node != nil || l.Files["broken.yaml"][5].Text != "---\ntype: [\n" {
 		t.Errorf("broken.yaml: %d documents %+v, want the five nodes and the text after them as a document of no node", n, l.Files["broken.yaml"])
 	}
-	want := map[string]string{"broken.yaml": "the YAML library stops at line 51, so the reader does not know the documents after that line"}
+	want := map[string]string{"broken.yaml": "the YAML library stops at line 51 (line 51: did not find expected node content), so the reader does not know the documents after that line"}
 	if !reflect.DeepEqual(l.Uncounted, want) {
 		t.Errorf("Uncounted = %q, want %q", l.Uncounted, want)
 	}

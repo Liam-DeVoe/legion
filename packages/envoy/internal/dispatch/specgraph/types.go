@@ -124,14 +124,17 @@ const (
 	// LosesNode is the Effect of a problem after which the tree can miss a node that the files hold,
 	// or hold a node in another text than the files write: a document that the YAML library does not
 	// read, or whose data has no JSON form or gives no node, the documents after a fault that stops
-	// the reading, a key that the node takes no field for, a value of another type, or a component
-	// kind or a time limit that the node drops. A comparison of that tree with an approved spec would
-	// not see that text, so a caller that compares refuses the files.
+	// the reading, a key that the node takes no field for, a value of another type, a component kind
+	// or a time limit that the node drops, or a spelling that Print does not write where a YAML
+	// reader can read a value as another value than the file writes, such as a plain date, a tag or
+	// an alias. A comparison of that tree with an approved spec would not see that text, so a caller
+	// that compares refuses the files.
 	LosesNode Effect = iota + 1
 	// KeepsEachNode is the Effect of a problem of form after which the tree holds each node in the
-	// text that the files write: a spelling that Print does not write, a file with no document, or a
-	// value that the schema refuses and the node keeps, such as a value outside a closed set or a
-	// missing key. The comparison of the files' own text decides.
+	// text that the files write: a spelling that Print does not write in which each value reads as
+	// the file writes it, such as a comment or other quotes, a file with no document, or a value
+	// that the schema refuses and the node keeps, such as a value outside a closed set or a missing
+	// key. The comparison of the files' own text decides.
 	KeepsEachNode
 )
 

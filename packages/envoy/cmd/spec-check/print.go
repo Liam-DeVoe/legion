@@ -1,14 +1,12 @@
 package main
 
 import (
-	"bytes"
 	"cmp"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"maps"
-	"os"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -30,15 +28,16 @@ func (v *ids) Set(id string) error { *v = append(*v, id); return nil }
 // serves a statement named, into the spec files of dir, each node at its place by
 // specgraph.Layout.Place with the bound of one file, notes.MaxFileSize. It holds the lock of dir
 // for the whole run (lockSpecDir), and waits at most printLockWait for another run that holds it.
+// Under the lock, it first removes what a killed run of print left beside dir (cleanLeftovers).
 // It writes nothing, and answers 2, with one line for each refusal on stderr: when the approved
 // spec does not hold an id or removed it; when another run holds the lock after the wait; when
 // dir holds a file whose documents the reader cannot say for certain, Place refuses a node, or
 // the run would lose or change a node that it does not name, or would write a name that is no
 // spec file of dir, or when the judgment of tree finds a problem in the files that the run would
-// leave (planPrint); and for a file it cannot read or arguments it does not take. When it cannot
-// write a file, it answers 2 with the files as they were, as far as the file system allows
-// (writeFiles). Else it writes each file that changes, prints "wrote <id> to <dir>/<file>:<line>"
-// for each node of the run, and answers 0.
+// leave (planPrint); and for a file it cannot read or arguments it does not take. It changes the
+// files in one step (writeDir), so when it cannot write, or the system refuses that step, it
+// answers 2 with dir as it was. Else it changes the files, prints "wrote <id> to
+// <dir>/<file>:<line>" for each node of the run, and answers 0.
 //
 // The documents do not pass through runnerlog.Say: they go into the files byte for byte (R2: "A
 // change copies that output into the files, and no agent types it"). Each is its node's document
@@ -101,6 +100,16 @@ func printApproved(stdout, stderr io.Writer, path string, a specgraph.Approved, 
 	}
 	wrote := false
 	defer func() { lock.release(wrote) }()
+	// The directory that the lock holds, which writeDir exchanges: a --dir that is a symbolic link
+	// stays a link to it.
+	held, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		say(stderr, "%s: %s", dir, err)
+		return 2
+	}
+	for _, line := range cleanLeftovers(held, lock.ino) {
+		say(stderr, "%s", line)
+	}
 	set, err := readSet(stderr, dir)
 	if err != nil {
 		return cannotJudge(stderr, dir, err)
@@ -112,11 +121,15 @@ func printApproved(stdout, stderr io.Writer, path string, a specgraph.Approved, 
 		}
 		return 2
 	}
-	if err := writeFiles(osFileSystem, dir, set.Files, after); err != nil {
+	warnings, err := writeDir(osFileSystem, held, lock, set.Files, after)
+	if err != nil {
 		say(stderr, "%s: cannot be written: %s", dir, err)
 		return 2
 	}
 	wrote = true
+	for _, line := range warnings {
+		say(stderr, "%s", line)
+	}
 	for _, line := range lines {
 		say(stdout, "%s", line)
 	}
@@ -173,7 +186,11 @@ func planPrint(dir string, set notes.Set, a specgraph.Approved, named []string, 
 		refusals = append(refusals, keepsEachNode(dir, before, run, j.tree)...)
 	}
 	for _, p := range j.problems {
-		refusals = append(refusals, fmt.Sprintf("print would leave %s:%d: %s: %s", filepath.Join(dir, p.Pos.File), p.Pos.Line, p.Node, p.Detail))
+		line := fmt.Sprintf("print would leave %s:%d: %s: %s", filepath.Join(dir, p.Pos.File), p.Pos.Line, p.Node, p.Detail)
+		if p.Rule == "not-printed" {
+			line += wayOut(dir, p, run, j.tree)
+		}
+		refusals = append(refusals, line)
 	}
 	if len(refusals) > 0 {
 		return after, nil, refusals
@@ -196,6 +213,30 @@ func planPrint(dir string, set notes.Set, a specgraph.Approved, named []string, 
 		wrote = append(wrote, fmt.Sprintf("wrote %s to %s:%d", id, filepath.Join(dir, at[id].File), at[id].Line))
 	}
 	return after, wrote, nil
+}
+
+// wayOut is the words that end the refusal of a not-printed problem p of the files that a run of
+// print would leave, tree, when the run does not name the node that p is about: print changes only
+// the nodes of its run, so a run that names each node of p's file writes that file in its printed
+// form. It is "" when the run names that node, or p is about no node.
+func wayOut(dir string, p specgraph.Problem, run []any, tree specgraph.Tree) string {
+	if p.Node == "" || p.Node == "-" || slices.ContainsFunc(run, func(n any) bool { return nodeID(n) == p.Node }) {
+		return ""
+	}
+	var held []any
+	for _, n := range treeNodes(tree) {
+		if nodePos(n).File == p.Pos.File {
+			held = append(held, n)
+		}
+	}
+	slices.SortFunc(held, func(a, b any) int { return cmp.Compare(nodePos(a).Line, nodePos(b).Line) })
+	ids := make([]string, 0, len(held))
+	for _, n := range held {
+		ids = append(ids, "--id "+nodeID(n))
+	}
+	file := filepath.Join(dir, p.Pos.File)
+	return fmt.Sprintf("; print changes only the nodes that the run names, and this run does not name %s, so to write %s in that form, name each node of it: %s",
+		p.Node, file, strings.Join(ids, " "))
 }
 
 // heldNodes is each node of each document of l, by the reader of yaml.v3: the nodes that the files
@@ -405,89 +446,4 @@ func nodeID(node any) string {
 		return n.ID
 	}
 	return ""
-}
-
-// fileSystem is each step of writeFiles that can fail on its own: print passes osFileSystem, and
-// a test passes one with a step that fails.
-type fileSystem struct {
-	createTemp func(dir, pattern string) (*os.File, error)
-	rename     func(oldpath, newpath string) error
-}
-
-// osFileSystem is the file system of the process.
-var osFileSystem = fileSystem{createTemp: os.CreateTemp, rename: os.Rename}
-
-// writeFiles writes each file of after that differs from files, the files that dir holds, so that
-// a run changes all of them or none, as far as the file system allows. First it writes, syncs and
-// closes a temporary file of dir with the new text of each file, and one with the old text of each
-// file that it replaces; then it renames each new text over its file, in name order. When a rename
-// fails, it first puts back each file that it already renamed: the old text over a file that dir
-// held, and no file for a new one. It removes each temporary file that it does not rename. Its
-// error is the step that failed, and names each file that it could not put back.
-func writeFiles(fsys fileSystem, dir string, files, after map[string][]byte) error {
-	var changed []string
-	for _, name := range slices.Sorted(maps.Keys(after)) {
-		if old, held := files[name]; !held || !bytes.Equal(old, after[name]) {
-			changed = append(changed, name)
-		}
-	}
-	var temps []string
-	defer func() {
-		for _, tmp := range temps {
-			_ = os.Remove(tmp) // a temporary file that a rename took is gone already
-		}
-	}()
-	write := func(content []byte) (string, error) {
-		tmp, err := fsys.createTemp(dir, ".spec-check-print-*")
-		if err != nil {
-			return "", err
-		}
-		temps = append(temps, tmp.Name())
-		_, err = tmp.Write(content)
-		if err == nil {
-			err = tmp.Sync()
-		}
-		if closeErr := tmp.Close(); err == nil {
-			err = closeErr
-		}
-		if err == nil {
-			err = os.Chmod(tmp.Name(), 0o644)
-		}
-		return tmp.Name(), err
-	}
-	fresh, old := map[string]string{}, map[string]string{}
-	for _, name := range changed {
-		tmp, err := write(after[name])
-		if err != nil {
-			return err
-		}
-		fresh[name] = tmp
-		if content, held := files[name]; held {
-			if old[name], err = write(content); err != nil {
-				return err
-			}
-		}
-	}
-	for i, name := range changed {
-		err := fsys.rename(fresh[name], filepath.Join(dir, name))
-		if err == nil {
-			continue
-		}
-		var kept []string
-		for _, done := range changed[:i] {
-			path := filepath.Join(dir, done)
-			putBack := os.Remove
-			if tmp, held := old[done]; held {
-				putBack = func(path string) error { return fsys.rename(tmp, path) }
-			}
-			if putBack(path) != nil {
-				kept = append(kept, path)
-			}
-		}
-		if len(kept) > 0 {
-			return fmt.Errorf("%w; print changed %s and could not put back the text it held", err, strings.Join(kept, ", "))
-		}
-		return err
-	}
-	return nil
 }
