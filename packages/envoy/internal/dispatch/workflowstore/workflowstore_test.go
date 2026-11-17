@@ -661,7 +661,9 @@ func TestTheTablesAreThePriorityShape(t *testing.T) {
 	}
 }
 
-// A value outside its form is refused ErrStepInput, naming what is wrong, and writes nothing.
+// A value outside its form is refused ErrStepInput by the rule of the field the row names, whose
+// refusal begins with that field, and writes nothing. A retro or a merge away from place 0 names
+// no type, so only the rule of its place can refuse it.
 func TestAStepWriteRefusesAValueOutsideItsForm(t *testing.T) {
 	pool := storetest.Open(t).Pool
 	for name, change := range map[string]func(*StepWrite){
@@ -671,6 +673,8 @@ func TestAStepWriteRefusesAValueOutsideItsForm(t *testing.T) {
 		"result without end": func(write *StepWrite) { write.Result = new(ResultPassed) },
 		"type of a retro":    func(write *StepWrite) { write.Kind, write.Place = new(StepKindRetro), new(0) },
 		"type of a merge":    func(write *StepWrite) { write.Kind, write.Place = new(StepKindMerge), new(0) },
+		"step of a retro":    func(write *StepWrite) { write.Kind, write.Type = new(StepKindRetro), nil },
+		"step of a merge":    func(write *StepWrite) { write.Kind, write.Type = new(StepKindMerge), nil },
 		"returned_to": func(write *StepWrite) {
 			write.ReturnedTo, write.Result, write.EndedAt = new(2), new(ResultPassed), new(minute(1))
 		},
@@ -679,7 +683,6 @@ func TestAStepWriteRefusesAValueOutsideItsForm(t *testing.T) {
 		"task":       func(write *StepWrite) { write.Task = new("Default") },
 		"role":       func(write *StepWrite) { write.Role = new("Implementer") },
 		"type":       func(write *StepWrite) { write.Type = new("Review") },
-		"step":       func(write *StepWrite) { write.Kind = new(StepKindRetro) },
 		"generation": func(write *StepWrite) { write.Generation = new(int64(0)) },
 		"issue":      func(write *StepWrite) { write.Issue = "" },
 	} {
@@ -690,8 +693,9 @@ func TestAStepWriteRefusesAValueOutsideItsForm(t *testing.T) {
 			if !errors.Is(err, ErrStepInput) {
 				t.Fatalf("the write answered %v, want %v", err, ErrStepInput)
 			}
-			if field := strings.Fields(name)[0]; !strings.Contains(err.Error(), field) {
-				t.Errorf("the refusal %q does not name %s", err, field)
+			field := strings.Fields(name)[0]
+			if detail := strings.TrimPrefix(err.Error(), ErrStepInput.Error()+": "); !strings.HasPrefix(detail, field+" ") {
+				t.Errorf("the refusal %q is not the rule of %s", err, field)
 			}
 		})
 	}
