@@ -44,6 +44,11 @@ import { issueTreeQuery, type TreeAnswer, type TreeAnswerNode, type TreeTuple } 
 
 const KEY = "CORE-1";
 
+/** A supertag no part's step drafts, so a node of it is drawn by no row whatever later parts add
+ *  to `treeDraftSteps` (a lens, a finding, a risk and a constraint are part W's, a criterion and
+ *  a reading part Y's). */
+const UNDRAWN = "unknown_kind";
+
 function artifact(id: string, slug: string, name: string, primary = false): Artifact {
   return {
     created_at: "2026-11-05T00:00:00Z",
@@ -388,17 +393,17 @@ test("an unconverted issue's typed block stands under the parent the read answer
   ]);
 });
 
-// R2: a node whose parent is a kind the page does not draw - a risk under a lens, a criterion -
+// R2: a node whose parent is a kind the page does not draw - here a kind no part's step drafts -
 // stands under its nearest ancestor the page draws, and under the issue where it has none.
 test("a node whose parent is not drawn stands under its nearest drawn ancestor", () => {
   const { root } = drawn(
     answer([
       block("r1", "requirement", KEY, SPEC, 0),
-      node("lens-1", "lens", "r1"),
-      node("risk-1", "risk", "lens-1"),
-      personsComment("c1", "risk-1", "2026-11-05T00:00:00Z"),
-      node("criterion-1", "criterion", KEY),
-      personsComment("c2", "criterion-1", "2026-11-05T00:00:00Z"),
+      node("other-1", UNDRAWN, "r1"),
+      node("other-2", UNDRAWN, "other-1"),
+      personsComment("c1", "other-2", "2026-11-05T00:00:00Z"),
+      node("other-3", UNDRAWN, KEY),
+      personsComment("c2", "other-3", "2026-11-05T00:00:00Z"),
     ])
   );
 
@@ -468,45 +473,38 @@ test("a tuple between two nodes becomes F's chip and placement", () => {
   ]);
 });
 
-// R7: a criterion, a reading, a lens, a finding, a risk and the catalogue's context make no
-// draft and no row, and the answer the page keeps (`reads.tree`) still holds each of them whole,
-// its state and its visibility with it, for the parts that draw them.
+// R7: a node of a kind no step drafts makes no draft and no row, and the answer the page keeps
+// (`reads.tree`) still holds every node whole - a lens, a risk under it and the catalogue's
+// constraint among them, each with its state and its visibility - for the parts that draw them.
 test("a node of a kind the page does not draw reaches reads.tree and draws no row", () => {
   const reads: IssueTreeReads & { readonly tree: TreeAnswer } = {
     issue: issueDetails(),
     tree: answer(
       [
         block("r1", "requirement", KEY, SPEC, 0),
-        node("criterion-1", "criterion", KEY),
-        node("reading-1", "reading", KEY),
+        node("other-1", UNDRAWN, "r1", { state: "overtaken", visibility: "author" }),
         node("lens-1", "lens", "r1", { visibility: "author" }),
-        node("finding-1", "block", "lens-1"),
         node("risk-1", "risk", "lens-1", { state: "proposed" }),
         node("constraint-1", "constraint", null, { mark: "context" }),
-        node("lens-kind-1", "lens_kind", null, { mark: "context" }),
-        node("interaction-1", "interaction", null, { mark: "context" }),
       ],
-      [
-        tuple("constrained_by", "r1", "constraint-1"),
-        tuple("has_kind", "lens-1", "lens-kind-1"),
-        tuple("changed_by_run", "r1", "interaction-1"),
-      ]
+      [tuple("constrained_by", "r1", "constraint-1")]
     ),
   };
   const held = structuredClone(reads.tree);
   const root = buildIssueTree(reads);
 
-  expect(nodesOf(root).map((one) => [one.id, one.readId])).toEqual([
-    [KEY, undefined],
-    [blockNodeId("spec", "r1"), "r1"],
-  ]);
+  expect(nodesOf(root).filter((one) => one.readId === "other-1" || one.id === "other-1")).toEqual(
+    []
+  );
   expect(reads.tree).toEqual(held);
-  expect(
-    reads.tree.nodes.map((one) => [one.id, one.supertag, one.state, one.visibility])
-  ).toContainEqual(["risk-1", "risk", "proposed", "project"]);
-  expect(
-    reads.tree.nodes.map((one) => [one.id, one.supertag, one.state, one.visibility])
-  ).toContainEqual(["lens-1", "lens", "live", "author"]);
+  expect(reads.tree.nodes.map((one) => [one.id, one.supertag, one.state, one.visibility])).toEqual(
+    expect.arrayContaining([
+      ["other-1", UNDRAWN, "overtaken", "author"],
+      ["lens-1", "lens", "live", "author"],
+      ["risk-1", "risk", "proposed", "project"],
+      ["constraint-1", "constraint", "live", "project"],
+    ])
+  );
 });
 
 // R1 (plan's map, `id`): a typed block of this issue keeps F's `<slug>#b-<id>` from its
@@ -723,10 +721,10 @@ test("a decision node's address is the outline's", () => {
 });
 
 // R5: a role's blocks come from the tree read in the shape the blocks read answered them: the
-// blocks of that role's document in their `document.position` order, each with its attributes as
-// the schema declares them and the asks and comments the read hangs under it; and, on an issue
-// that has converted whose blocks name no document, the nodes of this issue the role's query
-// takes, in the walk's order.
+// blocks of that role's document in their `document.position` order, each with its attributes -
+// a list of pointers as `block[]` - and the asks and comments the read hangs under it; and, on an
+// issue that has converted whose blocks name no document, the nodes of this issue the role's
+// query takes, in the walk's order.
 test("blocksOf answers a role's typed blocks in the blocks read's shape", () => {
   const issue = issueDetails();
   const unconverted = answer(
@@ -789,8 +787,8 @@ test("a draft carries its read id, and the context answers its tree id and its l
     block("r1", "requirement", KEY, SPEC, 0, {
       text_tree: reading("R1. Draw the tree from one read. Then the rest."),
     }),
-    node("lens-1", "lens", "r1"),
-    personsComment("c1", "lens-1", "2026-11-05T00:00:00Z"),
+    node("other-1", UNDRAWN, "r1"),
+    personsComment("c1", "other-1", "2026-11-05T00:00:00Z"),
   ]);
   const seen: unknown[][] = [];
   const probe: TreeDraftMark = (draft, read, _answer, context) => {
@@ -802,10 +800,10 @@ test("a draft carries its read id, and the context answers its tree id and its l
     ]);
     if (read.id === "c1") {
       seen.push([
-        context.nodeOf("lens-1")?.supertag,
-        context.treeIdOf("lens-1"),
-        context.lineOf("lens-1"),
-        context.drafted("lens-1"),
+        context.nodeOf("other-1")?.supertag,
+        context.treeIdOf("other-1"),
+        context.lineOf("other-1"),
+        context.drafted("other-1"),
       ]);
     }
   };
@@ -818,7 +816,7 @@ test("a draft carries its read id, and the context answers its tree id and its l
     expect(seen).toEqual([
       ["r1", blockNodeId("spec", "r1"), "R1. Draw the tree from one read. Then the rest.", true],
       ["c1", "c1", "Words of c1.", true],
-      ["lens", "lens-1", undefined, false],
+      [UNDRAWN, "other-1", undefined, false],
     ]);
     expect([nodeOf(root, blockNodeId("spec", "r1"))?.readId, nodeOf(root, "c1")?.readId]).toEqual([
       "r1",

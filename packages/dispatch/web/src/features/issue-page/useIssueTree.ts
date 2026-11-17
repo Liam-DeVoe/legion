@@ -2,9 +2,7 @@ import { keepPreviousData, useQueries, useQuery } from "@tanstack/react-query";
 import { useMemo } from "react";
 
 import { api } from "../../api/client";
-import { primarySpec, roleDocument } from "../../api/issue-cache";
 import {
-  artifactBlocksQuery,
   issueCoverageQuery,
   issueResultsQuery,
   referenceTargetsQuery,
@@ -14,61 +12,43 @@ import type { IssueDetails } from "../../api/types";
 import {
   ambiguousTargets,
   buildIssueTree,
-  type DocumentBlocks,
   type IssueTreeReads,
   nodeWords,
   type TreeNode,
+  type TreeViews,
   targetNames,
 } from "./issue-tree";
 import { usePublishReferenceNames } from "./reference-names";
 import { citedReferences } from "./row-references";
-import { useTreeRead } from "./tree-read/tree-read";
+import {
+  type TreeBlocksRead,
+  type TreeFilter,
+  useTreeRead,
+  viewQuery,
+} from "./tree-read/tree-read";
 
-/** The issue's tree, and how far the reads it is built from have got. */
+/** The issue's tree, and how far the tree read it is built from has got. */
 export interface IssueTreeView {
-  /** Whether every document the tree reads (`treeDocumentIds`) holds blocks, which `root` is
-   *  built from: what a view that draws from the blocks it holds waits on. A refetch that fails
-   *  over blocks already read keeps them held - TanStack keeps a query's data through a failed
-   *  refetch, and `root` is still built from it - so the view keeps the text it drew, which
-   *  waiting on `blocksRead` would blank, since that failure turns it false
-   *  (dispatch://INFRA-1196 decision 98). That is the one case where the two differ: both are
-   *  false before a document's first answer and after a first read that fails. */
+  /** Whether the tree read holds an answer for every page, which `root` is built from: what a
+   *  view that draws from the blocks it holds waits on. A refetch that fails over an answer
+   *  already held keeps it held - TanStack keeps a query's data through a failed refetch, and
+   *  `root` is still built from it - so the view keeps the text it drew, which waiting on
+   *  `blocksRead` would blank, since that failure turns it false (dispatch://INFRA-1196 decision
+   *  98). That is the one case where the two differ: both are false before the first answer and
+   *  after a first read that fails. */
   readonly blocksHeld: boolean;
-  /** Whether the blocks of every document the tree reads (`treeDocumentIds`) have been read.
-   *  Until then a typed block - the spec's summary among them - may be missing from `root`
-   *  because it has not arrived rather than because its document holds none, which is what the
-   *  head waits on before it says a spec has no summary (`IssueThreeThings.tsx`). A read that
-   *  failed has not answered either: the page cannot say what a document it could not read
-   *  holds. */
+  /** The typed blocks of the document that plays `role` - the spec, the plan, the Verification
+   *  document - from the tree read, answered as that document's blocks read answered them
+   *  (`tree-read/tree-nodes.ts`'s `blocksOfRole`, dispatch://INFRA-4062 R5), so a view reads its
+   *  blocks here and costs no request of its own. */
+  readonly blocksOf: (role: TreeFilter) => TreeBlocksRead;
+  /** Whether the tree read has answered every page. Until then a typed block - the spec's
+   *  summary among them - may be missing from `root` because it has not arrived rather than
+   *  because the issue holds none, which is what the head waits on before it says a spec has no
+   *  summary (`IssueThreeThings.tsx`). A read that failed has not answered either: the page
+   *  cannot say what a read it could not make holds. */
   readonly blocksRead: boolean;
   readonly root: TreeNode;
-}
-
-/**
- * The documents whose blocks the tree reads: the spec and the plan and Verification documents,
- * whose typed blocks are the ones the page draws (the root spec's R2), each the one the issue
- * read names by its id (`primarySpec`, `roleDocument`). That id is the server's own answer to
- * which document plays the part - the one in that role, or a role-less one under the role's
- * slug, which is how a row a rolling deploy left with no role still plays it
- * (`api/artifacts.go`'s `documentPlays`) - and the coverage and results reads find the document
- * by the same rule. The artifact's own `role` is no answer: the server omits it on such a row,
- * so a plan read by its role would leave that plan's tasks out of the tree while the coverage
- * counts them. A block read for every document of the issue was 25 of a first load's 47
- * requests on the tester's built page (the tester's finding F17 on dispatch://INFRA-1196), so no
- * other document's blocks are read: three reads at most, and fewer where one document plays two
- * parts or the issue holds none in a part. A decision is a node of the tree read wherever it is
- * written (`decision-nodes/decision-nodes.ts`), so no decisions document's blocks are read.
- */
-function treeDocumentIds(issue: IssueDetails): string[] {
-  const ids = new Set<string>();
-  for (const document of [
-    primarySpec(issue),
-    roleDocument(issue, "plan"),
-    roleDocument(issue, "verification"),
-  ]) {
-    if (document !== undefined) ids.add(document.id);
-  }
-  return [...ids];
 }
 
 /**
@@ -104,37 +84,39 @@ const NO_TARGET_NAMES: ReadonlyMap<string, string> = new Map();
 const NO_AMBIGUOUS_TARGETS: ReadonlySet<string> = new Set();
 
 /**
- * The issue's tree, from the page's reads (dispatch://INFRA-1196 R20). This hook is where the
- * reads are; `buildIssueTree` is pure and holds none of them, so the model is testable without a
- * server and the page makes no request per node.
+ * The issue's tree, from the page's reads (dispatch://INFRA-1196 R20, dispatch://INFRA-4062 R1
+ * and R5). This hook is where the reads are; `buildIssueTree` is pure and holds none of them, so
+ * the model is testable without a server and the page makes no request per node.
  *
- * The reads are the issue's own (handed in, because the page already has it), the tree read
- * (`useTreeRead`), whose nodes the decisions are, with their review state, the coverage, the
- * results, the issue's asks, and the blocks of the spec and of the plan and Verification
- * documents (`treeDocumentIds`) - ids, types and attributes, never text, which is how a
- * `serves` edge is held without reading a document the reader has not opened (R20). Every one
- * of them is a key another surface of this issue already reads, so opening the Conversation or
- * the Decisions panel after the tree finds them answered rather than fetching again. The
- * conversation's comments and messages are nodes of this tree too, its turns, and a person's
- * comment the tree read hangs under a decision is a change they asked of it
- * (`decision-review.ts`). No document is a node of the tree (R3), so nothing here reads a
- * document's own text. The reader's login says which open questions wait on the reader
+ * The tree is the issue's tree read (`useTreeRead`), every page of it, which places, orders and
+ * words every node; no document's blocks are read. Every decision is one of its nodes, with its
+ * review state, and a person's comment the read hangs under a decision is a change they asked of
+ * it (`decision-review.ts`), so no decisions read is made. Beside it stand the reads that tell
+ * what the answer does not, each under the key another surface of this issue reads too, so
+ * opening Details, the history or the Contents pane after the tree finds them answered rather
+ * than fetching again: the coverage, the results, the issue's asks, its comments, its messages,
+ * and the reader's login, which says which open questions wait on the reader
  * (`IssueTreeReads.viewer`).
+ *
+ * Each filter's view read (`viewQuery`) is watched here and never sent: `ViewReadProvider`
+ * (`tree-read/view-read.tsx`) reads a view the first time its filter is on, and whatever it holds
+ * is set on the issue's node (`TreeNode.views`), which `presetView` and `filterSignals` draw a
+ * filter from (R4). The root keeps its identity while neither the tree nor a held view changes.
  *
  * The names come last and all at once: the tree is built, every address it holds is read in one
  * batched request (`referenceTargetsQuery`; a tree holding more addresses than the server reads
  * at once costs one request per batch of them, which no ordinary issue reaches), and the tree is
- * built again with the names in it. A typed block that is no statement, check, ask or decision -
- * a plan task, a callout - has no words until that read answers, so what its words cite is in
- * no address the read was given: one more read names those addresses alone, made only where
- * such words cite one, and the tree is built with both answers. That is the last read of a
- * round: a node's words come from the names of node addresses, every one of which the first
- * read holds, so the second's answer changes no node's words. Until the names answer the tree
- * draws, with a chip naming its target's address and a block of a document carrying no words
- * yet; on every read after the first the names already in hand stand while the new set loads.
+ * built again with the names in it. A block's stored source, which that read names it by, may
+ * cite a whole document of the issue no word of the tree cites, which a chip on the block opens
+ * (`tree-drafts.ts`'s `addDocumentChips`), so that address is in no address the read was given:
+ * one more read names those addresses alone, made only where a source cites one, and the tree is
+ * built with both answers. That is the last read of a round: the second's answer adds no chip.
+ * Until the names answer the tree draws, with a chip naming its target's address; on every read
+ * after the first the names already in hand stand while the new set loads.
  */
 export function useIssueTree(issue: IssueDetails): IssueTreeView {
   const key = issue.key;
+  const read = useTreeRead(issue);
   const coverage = useQuery(issueCoverageQuery(key));
   const results = useQuery(issueResultsQuery(key));
   const asks = useQuery({
@@ -155,72 +137,78 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
   // one read of who is signed in, so it costs no request of its own.
   const who = useQuery(whoAmIQuery());
   const viewer = who.data?.login;
-  const answer = useTreeRead(issue).answer;
-  const documentIds = treeDocumentIds(issue);
-  // `combine` is what keeps one value for every document's blocks: TanStack holds its answer and
-  // replaces it only when a document's own read changes, where a map over the results would be a
-  // new array every render and build the tree again with it. It answers whether any of them is
-  // still waiting too, which is part of what holds the one batched name read back below, whether
-  // every one holds blocks the tree draws (`IssueTreeView.blocksHeld`), and whether every one
-  // has answered with its blocks (`IssueTreeView.blocksRead`).
-  const documents = useQueries({
-    combine: (
-      answers
-    ): { blocks: DocumentBlocks[]; held: boolean; pending: boolean; read: boolean } => ({
-      blocks: answers.map((answer, index) => ({
-        artifactId: documentIds[index] ?? "",
-        blocks: answer.data ?? [],
-      })),
-      held: answers.every((answer) => answer.data !== undefined),
-      pending: answers.some((answer) => answer.isPending),
-      read: answers.every((answer) => answer.isSuccess),
-    }),
-    queries: documentIds.map((id) => artifactBlocksQuery(id)),
+  // Each filter's view read, watched by an observer that is never enabled, so it sends nothing
+  // and holds whatever `ViewReadProvider` read for the load.
+  const [specView, verificationView, planView] = useQueries({
+    queries: [
+      { ...viewQuery(key, "spec"), enabled: false },
+      { ...viewQuery(key, "verification"), enabled: false },
+      { ...viewQuery(key, "plan"), enabled: false },
+    ],
   });
+  const spec = specView?.data;
+  const verification = verificationView?.data;
+  const plan = planView?.data;
+  const views = useMemo((): TreeViews | undefined => {
+    const held: TreeViews = {
+      ...(plan === undefined ? {} : { plan }),
+      ...(spec === undefined ? {} : { spec }),
+      ...(verification === undefined ? {} : { verification }),
+    };
+    return Object.keys(held).length === 0 ? undefined : held;
+  }, [plan, spec, verification]);
   // One value, so the model is given the reads and nothing else.
   const reads = useMemo<IssueTreeReads>(
     () => ({
       asks: asks.data,
       comments: comments.data,
       coverage: coverage.data,
-      tree: answer,
       issue,
       messages: messages.data,
       results: results.data,
+      tree: read.answer,
       viewer,
     }),
-    [asks.data, comments.data, coverage.data, answer, issue, messages.data, results.data, viewer]
+    [
+      asks.data,
+      comments.data,
+      coverage.data,
+      issue,
+      messages.data,
+      read.answer,
+      results.data,
+      viewer,
+    ]
   );
   const unnamed = useMemo(() => buildIssueTree(reads), [reads]);
   const refs = useMemo(() => treeReferences(unnamed), [unnamed]);
-  // One request for every name, not one per read that landed. Each of these reads adds nodes to
-  // the tree as it arrives, so asking while any is still out would ask for the addresses known
-  // so far and ask again for the rest: measured on this pod, that cost the first load two reads
-  // and sometimes three, where the design is "the names come last and all at once" (above) and
-  // the issue's own budget is 40 requests (dispatch://INFRA-1196 c-requests). The reader's login
-  // is one of the reads this gate waits on: it adds no node, but the tree is built again when
-  // it answers, since it says which questions wait on the reader. Every one of these reads is
-  // always enabled, so each ends in an answer or an error and none of them holds the names for
-  // good. Nothing waits on the names: until they land the tree draws with each chip naming its
-  // target's address.
-  const treeRead =
+  // One request for every name, not one per read that landed. Each of these reads adds to the
+  // tree as it arrives - the tree read every node, the asks an answer - so asking while any is
+  // still out would ask for the addresses known so far and ask again for the rest: measured on
+  // this pod, that cost the first load two reads and sometimes three, where the design is "the
+  // names come last and all at once" (above) and the issue's own budget is 40 requests
+  // (dispatch://INFRA-1196 c-requests). The reader's login is one of the reads this gate waits
+  // on: it adds no node, but the tree is built again when it answers, since it says which
+  // questions wait on the reader. Every one of these reads is always enabled, so each ends in an
+  // answer or an error and none of them holds the names for good. Nothing waits on the names:
+  // until they land the tree draws with each chip naming its target's address.
+  const answered =
+    !read.pending &&
     !asks.isPending &&
     !comments.isPending &&
     !coverage.isPending &&
     !messages.isPending &&
     !results.isPending &&
-    !who.isPending &&
-    !documents.pending;
+    !who.isPending;
   // The last answer stands while the next one loads, because the key is the set of addresses
   // itself: one comment, message, ask or block arriving changes that set, and without this the
-  // whole page would fall back to no names at all - every block row drawn with empty text and
-  // every chip with its raw address - until the new read lands. Merging the two answers by
-  // `ref` would say no more than this does: the new read names every address the tree now
-  // holds, so the only names it lacks are the ones the previous answer carries, which is what
-  // is kept here. A name that moved is a stale word for as long as one read, where a dropped
-  // one is the whole page's words at once.
+  // whole page would fall back to no names at all - every chip with its raw address - until the
+  // new read lands. Merging the two answers by `ref` would say no more than this does: the new
+  // read names every address the tree now holds, so the only names it lacks are the ones the
+  // previous answer carries, which is what is kept here. A name that moved is a stale word for as
+  // long as one read, where a dropped one is the whole page's names at once.
   const targets = useQuery({
-    ...referenceTargetsQuery(treeRead ? refs : []),
+    ...referenceTargetsQuery(answered ? refs : []),
     placeholderData: keepPreviousData,
   });
   const first = useMemo(
@@ -231,9 +219,10 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
     () => (first === undefined ? unnamed : buildIssueTree({ ...reads, targets: first })),
     [first, reads, unnamed]
   );
-  // What the named tree's words cite that the first read was not given: a typed block's words
-  // come from that read's answer, so what they cite is known only now (above). An empty set is
-  // no request, and the names already in hand stand while a new non-empty set loads, as above.
+  // What the named tree holds that the first read was not given: a block's stored source comes
+  // from that read's answer, so a whole document it cites is known only now (above). An empty
+  // set is no request, and the names already in hand stand while a new non-empty set loads, as
+  // above.
   const extra = useMemo(() => {
     if (first === undefined) return [];
     const asked = new Set(refs);
@@ -260,33 +249,41 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
   // names go the references the read answered ambiguous (`ambiguousTargets`), by that same
   // rule: a short reference two targets carry has no name, as a gone one has none, and a link
   // draws it as written and links nothing (decision 62) where it reads a gone one's own, which
-  // the names alone would not tell it. A chip's name is read from the issue, the documents'
-  // blocks and the names alone (`treeContext`), so the map and the set are built from those and
-  // nothing else: an answer of any other read - an ask, a comment, the coverage, the reader's
-  // login - publishes nothing new, which would draw every link beside the tree again. Until the
-  // names answer there is nothing to publish.
+  // the names alone would not tell it. A chip's name is read from the issue, the tree read and
+  // the names alone (`treeContext`), so the map and the set are built from those and nothing
+  // else: an answer of any other read - an ask, a comment, the coverage, the reader's login -
+  // publishes nothing new, which would draw every link beside the tree again. Until the names
+  // answer there is nothing to publish.
   const names = useMemo(
     () =>
-      named === undefined ? NO_TARGET_NAMES : targetNames({ issue, targets: named, tree: answer }),
-    [answer, issue, named]
+      named === undefined
+        ? NO_TARGET_NAMES
+        : targetNames({ issue, targets: named, tree: read.answer }),
+    [issue, named, read.answer]
   );
   const ambiguous = useMemo(
     () =>
       named === undefined
         ? NO_AMBIGUOUS_TARGETS
-        : ambiguousTargets({ issue, targets: named, tree: answer }),
-    [answer, issue, named]
+        : ambiguousTargets({ issue, targets: named, tree: read.answer }),
+    [issue, named, read.answer]
   );
   usePublishReferenceNames(names, ambiguous);
-  const root = useMemo(
+  const built = useMemo(
     () =>
       named === undefined || named === first
         ? firstTree
         : buildIssueTree({ ...reads, targets: named }),
     [first, firstTree, named, reads]
   );
+  const root = useMemo(() => (views === undefined ? built : { ...built, views }), [built, views]);
   return useMemo(
-    () => ({ blocksHeld: documents.held, blocksRead: documents.read, root }),
-    [documents.held, documents.read, root]
+    () => ({
+      blocksHeld: read.blocksHeld,
+      blocksOf: read.blocksOf,
+      blocksRead: read.blocksRead,
+      root,
+    }),
+    [read.blocksHeld, read.blocksOf, read.blocksRead, root]
   );
 }
