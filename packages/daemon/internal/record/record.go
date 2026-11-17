@@ -1810,11 +1810,19 @@ type Store interface {
 	DeletePlan(ctx context.Context, tx pgx.Tx, issue string, generation uint64) error
 	// DeleteTasks deletes each of tasks, waiting or stopped, with its steps.
 	DeleteTasks(ctx context.Context, tx pgx.Tx, issue string, generation uint64, tasks []string) error
-	// MoveTask writes where task stands and its state, which is not stopped (StopTask), and
-	// clears a stop's reason.
+	// MoveTask writes where task stands and its state, which is not stopped (StopTask) or held
+	// (HoldTask), clears a stop's reason, and ends the task's hold reason and its step's wait.
 	MoveTask(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task string, place TaskPlace, state string) error
-	// StopTask writes task stopped for reason, at the place it stands.
+	// StopTask writes task stopped for reason, at the place it stands, ending a hold's reason.
 	StopTask(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task, reason string) error
+	// HoldTask writes a running or held task held at the place it stands, for reason: "" for a
+	// failed claim, HoldEscalated or HoldForChildren.
+	HoldTask(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task string, reason HoldReason) error
+	// ReleaseTask writes a held task running at the place it stands, with no hold reason.
+	ReleaseTask(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task string) error
+	// SetStepWait writes what the step at a running task's place waits for, since at;
+	// StepWaitNone with a nil at ends its wait.
+	SetStepWait(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task string, wait StepWait, at *time.Time) error
 	// AssignTaskBranch gives task its GitHub branch, once, and answers it: the issue's own branch
 	// for the first task of the generation to start, else the first give of the task's slug that
 	// the generation has given no task, even one a later version removed. The generation's task

@@ -86,7 +86,11 @@ import (
 // so that list is the last word of outbox_kind_check now (migration_20261117194044_test.go). The
 // working copies of a saved bundle (20261117204629) add `workspace_bundles.working_copies` at a
 // default that every row it finds reads as no working copy of a task
-// (migration_20261117204629_test.go), and touch no outbox_kind_check.
+// (migration_20261117204629_test.go), and touch no outbox_kind_check. The held task
+// (20261117224125) stands above the plan of an issue and needs its table: it writes the state check
+// of `plan_tasks` again with `held`, adds `plan_tasks.hold_reason`, `plan_tasks.step_wait` and
+// `plan_tasks.step_wait_since` at defaults every row reads as no hold and no wait, holds the running
+// task of each held issue (migration_20261117224125_test.go), and touches no outbox_kind_check.
 var thisBranchsMigrations = []int{
 	20261029120000, 20261029120100, 20261029120200, 20261029120300, 20261029120400,
 	20261029120600, 20261029120700, 20261029120800, 20261029120900, 20261029121000,
@@ -95,7 +99,7 @@ var thisBranchsMigrations = []int{
 	20261111214351, 20261111225552, 20261112070503, 20261112180548, 20261113082214, 20261113082415,
 	20261113090512, 20261113110610, 20261113181500, 20261113182000, 20261114020537, 20261114031356,
 	20261114061900, 20261116234034, 20261117000528, 20261117004117, 20261117023932, 20261117034837,
-	20261117194044, 20261117204629,
+	20261117194044, 20261117204629, 20261117224125,
 }
 
 // mainsNewestMigration is the newest version main carries, the cause a claim records for its
