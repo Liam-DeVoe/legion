@@ -32,10 +32,11 @@ const (
 	ScopeRead = "read"
 	// ScopeResults is the one OAuth scope a token minted from a result entry
 	// (BROKER_EXCHANGE_RESULT_WORKFLOWS) holds, beside the project scope ProjectScopeResults: a
-	// token that writes the results of its one project's spec checks for the run it carries
-	// (Introspection.CI), and nothing else, on the routes a resource server lists for it. The
-	// entry decides it, never the request, as it decides ScopeRead. ScopeRead and ScopeResults are
-	// the only scopes the exchange grants.
+	// token that writes the results of the run it carries (Introspection.CI), of its one
+	// project's spec checks and of each check CI proves whose ci_check names the job of that run,
+	// and nothing else, on the routes a resource server lists for it. The entry decides it, never
+	// the request, as it decides ScopeRead. ScopeRead and ScopeResults are the only scopes the
+	// exchange grants.
 	ScopeResults = "results"
 	// ExtraCredentialID is the token answer's field naming the launcher credential the login holds;
 	// the login's session carries it under the same key.

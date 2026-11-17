@@ -516,7 +516,8 @@ type Config struct {
 	// present. Unset, no workflow exchanges.
 	ExchangeWorkflows []exchange.WorkflowEntry
 	// BROKER_EXCHANGE_RESULT_WORKFLOWS: the GitHub workflows whose runs exchange their token for
-	// one that writes only the results of their project's spec checks, whitespace-separated
+	// one that writes only the results of its own run, of the project's spec checks and of each
+	// check CI proves whose ci_check names the job of that run, whitespace-separated
 	// <repository>=<workflow path>=<ref pattern>=<project>=<person> entries, such as
 	// example-org/example-repo=.github/workflows/ci-results.yaml=refs/heads/*=EXAMPLE=ada@example.com.
 	// The repository and the path are compared exactly, and the ref pattern is matched as

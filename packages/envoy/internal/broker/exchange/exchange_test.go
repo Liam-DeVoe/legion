@@ -54,7 +54,8 @@ const (
 	otherDomain  = "other.example"
 	stranger     = "mallory@other.example"
 	// resultsWorkflow is the workflow the result entry lists, on every branch resultsPattern
-	// matches: its runs write the results of project's spec checks and nothing else, under
+	// matches: its runs write the results of their own run, of the project's spec checks and of
+	// each check CI proves whose ci_check names the job of that run, and nothing else, under
 	// resultsSession. commitSHA is the commit a run of it was started for.
 	resultsWorkflow = ".github/workflows/ci-results.yaml"
 	resultsPattern  = "refs/heads/*/*"

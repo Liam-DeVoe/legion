@@ -6257,7 +6257,7 @@ An issued token carries these claims and no others:
 
 - `project_scope` — `named`, `person`, `none` or `results`, which says what `projects` means.
   Only a read entry's token carries `none`, and that token writes no project.
-  Only a result entry's token carries `results`, and that token writes only the results of its project's spec checks.
+  Only a result entry's token carries `results`, and that token writes only the results of its own run, of its project's spec checks and of each check CI proves whose `ci_check` names the job of that run.
 
 - `projects` — the token's list of projects: for a `named` token, the one project key its operator's entry names, or none for a `BROKER_EXCHANGE_ACCOUNTS` entry that names none (`<account>==<person>`, the shared public-session account's); for a `person` token, the keys its trade asked for in the `projects` form parameter, each one Dispatch said the token's person may see; for a `results` token, the one project key its result entry names, whose results alone it may write.
   A token whose trade named none, and a token that names a service and no person, a read entry's `none` token among them, carry none.

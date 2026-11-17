@@ -491,7 +491,8 @@ type WorkflowEntry struct {
 }
 
 // ResultWorkflowEntry lists one GitHub workflow of one repository whose runs, on each ref
-// RefPattern matches, may write the results of their project's spec checks and nothing else.
+// RefPattern matches, may write the results of their own run, of their project's spec checks and
+// of each check CI proves whose ci_check names the job of that run, and nothing else.
 // Every field is required. The token a run is minted holds the OAuth scope
 // oauthwire.ScopeResults and the project scope ProjectScopeResults, acts for Person, writes under
 // ResultSession(Repository, Workflow), and carries the run (Claims.CI). A resource server accepts
