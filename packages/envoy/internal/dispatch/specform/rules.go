@@ -32,9 +32,11 @@ const ruleTermLine Rule = "term-line"
 const ruleUnreadable Rule = "unreadable"
 
 // termLineDetail is the detail of a line under Terms that is no term line: it shows the one form
-// of a term line, and the way out for a decision block, whose question line is such a line: the
-// block stands above the heading, and the chosen definition goes under it after the answer.
+// of a term line, and the two ways out. A line that defines no term, such as an example or a note,
+// moves out from under the heading. A decision block, whose question line is such a line, stands
+// above the heading, and the chosen definition goes under it after the answer.
 const termLineDetail = `it is no term line, and a term line has the form "- **<term>**: <definition>". ` +
+	`Move a line that defines no term, such as an example or a note, out from under the heading Terms. ` +
 	`Put a decision block above the heading Terms, and after the answer, write the chosen definition under the heading`
 
 // maxWords is R49's bound on a sentence, which is also ste-lint's.
@@ -55,58 +57,88 @@ var steRules = map[string]string{
 	"dangling-conjunction": "a list item that ends with and or or",
 }
 
-// The forms of a name that the reference rules read. Each one is a whole word (wordForm): a letter,
-// a digit or "_" right before it or right after it joins it to a longer word, which names nothing,
-// so "#12abcd" is a colour, "@types/node" a package and "xACME-12" no key.
+// wordClass is the one class of a character of a word, as the content of a bracket expression: a
+// letter, a mark, a decimal digit or connector punctuation such as "_", of any script, which are
+// Unicode's characters of a word. Each form of a name is built on it (newWordForm), its boundaries
+// and the parts of it that are words, so a form and its boundaries read one alphabet.
+const wordClass = `\p{L}\p{M}\p{Nd}\p{Pc}`
+
+// otherWordNotions are the notions of a word of the regular expressions themselves, which read
+// ASCII only. No form holds one (newWordForm).
+var otherWordNotions = []string{`\w`, `\W`, `\b`, `\B`, `[:word:]`}
+
+// The forms of a name that the reference rules read, each a whole word (newWordForm), so "#12abcd"
+// is a colour, "@types/node" a package and "xACME-12" no key. A part of a form that the rule of its
+// own system writes in ASCII is ASCII: a key of Dispatch (text.issueKeyPattern), an id (hexadecimal
+// digits), the owner and the repository of GitHub (letters, digits, ".", "_" and "-"), a number
+// and a date. So a letter of another script in such a part makes it no form. A part that a person
+// names, the key of an incident, an email address and a handle, is of wordClass.
 var (
 	// bareKey is an issue key standing as a word: the server's own reference grammar finds
 	// only dispatch:// and http(s):// references, so this one is this package's.
-	bareKey  = wordForm{pattern: regexp.MustCompile(`\b[A-Z][A-Z0-9]{1,9}-[1-9][0-9]*\b`)}
-	recordID = wordForm{pattern: regexp.MustCompile(`(?i)\b(?:message:)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b`)}
+	bareKey  = newWordForm(`[A-Z][A-Z0-9]{1,9}-[1-9][0-9]*`, "", "")
+	recordID = newWordForm(`(?i:(?:message:)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})`, "", "")
 	// incident, pullRequestName and pullRequestRepo name a record only by a form that only a name
 	// has: "#" and digits, the word "number" and digits, an incident's key or date, and a pull
-	// request's <owner>/<repo>#<digits>, whose owner has no "/", "." or "-" before it, since that
-	// is a longer path. A bare number after the words is a count, such as "each pull request 10
-	// minutes after", and names nothing. pullRequestAddress is the address of a pull request, the
-	// one form of a name that an address holds (its group 1): its host is github.com or
-	// www.github.com in any case, as a host has no case, at the start of the text or after a
-	// character that no host holds, so github.com at the end of another host names nothing.
-	incident = wordForm{pattern: regexp.MustCompile(
-		`(?i:\bincident\s*#\d+|\bincident\s+(?:number\s+#?\d+|\d{4}-\d{2}-\d{2}|[a-z][a-z0-9]*-\d+))|\bINC-\d+\b`)}
-	pullRequestName    = wordForm{pattern: regexp.MustCompile(`(?i:\b(?:pr|pull request)(?:\s*#\d+|\s+number\s+#?\d+))|#\d+`)}
-	pullRequestRepo    = wordForm{pattern: regexp.MustCompile(`\b[\w.-]+/[\w.-]+#\d+`), left: "./-"}
-	pullRequestAddress = wordForm{pattern: regexp.MustCompile(`(?:^|[^\w.-])((?i:(?:www\.)?github\.com)/[\w.-]+/[\w.-]+/pull/\d+)`), group: 1, left: ".-"}
+	// request's <owner>/<repo>#<digits>, which no "/", "." or "-" comes before, since that is a
+	// longer path. A bare number after the words is a count, such as "each pull request 10 minutes
+	// after", and names nothing. pullRequestAddress is the address of a pull request, the one form
+	// of a name that an address holds: its host is github.com or www.github.com in any case, as a
+	// host has no case, which no "." or "-" comes before, so github.com at the end of another host
+	// names nothing.
+	incident = newWordForm(`(?i:incident\s*#[0-9]+|incident\s+(?:number\s+#?[0-9]+|[0-9]{4}-[0-9]{2}-[0-9]{2}|\p{L}[`+
+		wordClass+`]*-[0-9]+))|INC-[0-9]+`, "", "")
+	pullRequestName    = newWordForm(`(?i:(?:pr|pull request)(?:\s*#[0-9]+|\s+number\s+#?[0-9]+))|#[0-9]+`, "", "")
+	pullRequestRepo    = newWordForm(`[A-Za-z0-9_.\-]+/[A-Za-z0-9_.\-]+#[0-9]+`, `./\-`, "")
+	pullRequestAddress = newWordForm(`(?i:(?:www\.)?github\.com)/[A-Za-z0-9_.\-]+/[A-Za-z0-9_.\-]+/pull/[0-9]+`, `.\-`, "")
 	// email is an e-mail address: its domain's last label is letters, so a version after an at
 	// sign, as in "checker@v1.2.3", is no address. Its local part and its domain take the letters
-	// beside them, so a letter there makes a longer address.
-	email = wordForm{pattern: regexp.MustCompile(`[\w.+-]+@(?:[\w-]+\.)+[A-Za-z]{2,}\b`)}
+	// beside them, so a letter there makes a longer address. A ":" that no white space follows
+	// continues it, as the host and the path of an SSH address, "git@github.com:owner/repo.git".
+	email = newWordForm(`[`+wordClass+`.+\-]+@(?:[`+wordClass+`\-]+\.)+\p{L}[\p{L}\p{M}]+`, "", `:[^\s\p{Z}]`)
 	// handle is an @handle, which no "@" comes before and no "/" or "@" comes after, so the scope
 	// of a package such as "@types/node" is no handle.
-	handle = wordForm{pattern: regexp.MustCompile(`(?:^|[^\w@])(@[A-Za-z][\w-]*)`), group: 1, left: "@", right: "/@"}
+	handle = newWordForm(`@\p{L}[`+wordClass+`\-]*`, "@", `[/@]`)
 )
 
-// wordForm is a form of a name that a rule finds only as a whole word: the submatch group of its
-// pattern (0 for the whole match), when the character before it is the start of the line, or no
-// letter, digit or "_" and none of left, and the character after it is the end of the line, or no
-// letter, digit or "_" and none of right.
+// wordForm is a form of a name that a rule finds only as a whole word (newWordForm).
 type wordForm struct {
-	pattern     *regexp.Regexp
-	group       int
-	left, right string
+	// pattern is the form, its group 1, after the start of the line or a character that does not
+	// continue it; continues matches at the start of what follows the form when that continues it.
+	pattern, continues *regexp.Regexp
+}
+
+// newWordForm is the form of a name whose regular expression is form. Its match is a whole word
+// when the character before it is the start of the line, or no character of a word (wordClass) and
+// none of left, and what follows it is the end of the line, or no character of a word and no match
+// of right. left is the content of a bracket expression of the characters that continue the form
+// on its left, and right a regular expression of what continues it on its right. None of the three
+// holds a notion of a word of its own (otherWordNotions), so no form can read a word otherwise than
+// wordClass does: newWordForm panics on one.
+func newWordForm(form, left, right string) wordForm {
+	for _, part := range []string{form, left, right} {
+		for _, notion := range otherWordNotions {
+			if strings.Contains(part, notion) {
+				panic(fmt.Sprintf("specform: %q holds %s, a notion of a word other than wordClass", part, notion))
+			}
+		}
+	}
+	continues := `^[` + wordClass + `]`
+	if right != "" {
+		continues = `^(?:[` + wordClass + `]|` + right + `)`
+	}
+	return wordForm{
+		pattern:   regexp.MustCompile(`(?:^|[^` + wordClass + left + `])(` + form + `)`),
+		continues: regexp.MustCompile(continues),
+	}
 }
 
 // find is the span of each whole word of the form in line, in the order of the line.
 func (form wordForm) find(line string) []span {
-	joins := func(r rune, also string) bool {
-		return unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_' || strings.ContainsRune(also, r)
-	}
 	var found []span
 	for _, match := range form.pattern.FindAllStringSubmatchIndex(line, -1) {
-		start, end := match[2*form.group], match[2*form.group+1]
-		before, _ := utf8.DecodeLastRuneInString(line[:start])
-		after, _ := utf8.DecodeRuneInString(line[end:])
-		if (start == 0 || !joins(before, form.left)) && (end == len(line) || !joins(after, form.right)) {
-			found = append(found, span{start: start, end: end})
+		if !form.continues.MatchString(line[match[3]:]) {
+			found = append(found, span{start: match[2], end: match[3]})
 		}
 	}
 	return found

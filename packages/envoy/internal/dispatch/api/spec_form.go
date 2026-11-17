@@ -328,10 +328,10 @@ func (r *specFormRefusal) body() specFormError {
 // specFormOf judges the form of documents, each at the version it names, in q. A document in
 // scope is judged on every act; the read route's act (actRead) judges every document, in scope or
 // not. With no root named, the other acts read nothing at all. It reads each version's stored
-// markdown, the projects (a bare key of a project is a link), the emails of the people who signed
-// in (a piece of one is a name) and, under a root, the names of the components and interfaces of
-// the approved covered documents under it (approvedSpecTexts), which are nouns of the system and
-// no person.
+// markdown, the projects (a bare key of a project names a record), the emails of the people who
+// signed in (a piece of one is a name) and, under a root, the names of the components and
+// interfaces of the approved covered documents under it (approvedSpecTexts), which are nouns of
+// the system and no person.
 func (s *server) specFormOf(ctx context.Context, q queryer, documents []model.AskApprovalDocument, act specform.Act) (specFormResult, error) {
 	var result specFormResult
 	if len(s.deps.SpecRoots) == 0 && act != actRead {

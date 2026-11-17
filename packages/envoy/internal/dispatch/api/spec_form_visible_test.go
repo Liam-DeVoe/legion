@@ -114,8 +114,9 @@ func TestTheRequestJudgesTheTextThatThePageShows(t *testing.T) {
 }
 
 // The red team's inputs of a form inside a longer word, through the approval request route: a
-// colour and the scope of a package open, and the number of a pull request and a handle alone are
-// still refused. A bare id names a record, and the refusal says so.
+// colour, the scope of a package and an SSH address open, and the number of a pull request, a
+// handle and an email address alone are still refused, also with a letter of another script in
+// them. A bare id names a record, and the refusal says so.
 func TestTheRequestReadsEachFormOfANameAsAWholeWord(t *testing.T) {
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	requireFormRows(t, tree, []formRow{
@@ -123,10 +124,18 @@ func TestTheRequestReadsEachFormOfANameAsAWholeWord(t *testing.T) {
 			reads: specform.KindStatement},
 		{name: "the scope of a package", spec: formRequirement("npm", "Dispatch installs `@types/node`."),
 			reads: specform.KindStatement},
+		{name: "the SSH address of a repository", spec: formRequirement("ssh", "Legion clones `git@github.com:owner/repo.git` for each run."),
+			reads: specform.KindStatement},
 		{name: "the control: the number of a pull request", spec: formRequirement("number", "Legion merges each change, as `#12` says."),
 			want: []string{"statement number pull-request"}},
 		{name: "the control: a handle", spec: formRequirement("handle", "Dispatch asks `@legion` about each change."),
 			want: []string{"statement handle person"}},
+		{name: "an email address with a letter of another script", spec: formRequirement("accent-mail", "Dispatch sends each summary to `josé.garcia@example.com`."),
+			want: []string{"statement accent-mail person"}},
+		{name: "a handle with a letter of another script", spec: formRequirement("accent-handle", "Dispatch asks @josé about each change."),
+			want: []string{"statement accent-handle person"}},
+		{name: "the control: an email address and then a colon", spec: formRequirement("mail-colon", "Dispatch mails one person: ada@example.com: she approves each change."),
+			want: []string{"statement mail-colon person"}},
 	})
 	const id = "12345678-1234-1234-1234-123456789abc"
 	issue := createFormIssue(t, tree.handler, tree.root, "A bare id", "# Spec\n\n"+formRequirement("id", "Dispatch stores the value `"+id+"`."))
@@ -134,6 +143,30 @@ func TestTheRequestReadsEachFormOfANameAsAWholeWord(t *testing.T) {
 	const line = `- statement id in spec.md version 1: it names a record of Dispatch by its id: "` + id + `".`
 	if body := response.Body.String(); response.Code != http.StatusConflict || !strings.Contains(body, strings.ReplaceAll(line, `"`, `\"`)) {
 		t.Errorf("a bare id: status=%d body=%s, want 409 with the line %q", response.Code, body, line)
+	}
+}
+
+// A line under the heading Terms that is no term line is refused, and the refusal names both ways
+// out: a line that defines no term, such as an example or a note, moves out from under the heading,
+// and a decision block goes above it. The red team of the next slice found that the refusal named
+// the decision block alone, which is wrong for a line of prose and for an example below a term.
+func TestALineUnderTermsIsRefusedWithBothWaysOut(t *testing.T) {
+	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
+	const moveOut = "Move a line that defines no term, such as an example or a note, out from under the heading Terms."
+	const decision = "Put a decision block above the heading Terms, and after the answer, write the chosen definition under the heading."
+	for _, test := range []struct{ name, spec, node string }{
+		{"a line of prose", "## Terms\n\nEach term has one definition.\n\n- **lease**: One record of a claim.\n", `"Each term has one definition."`},
+		{"an example below a term", "## Terms\n\n- **lease**: One record of a claim.\n  - For example, one lease of a work unit.\n",
+			`"For example, one lease of a work unit."`},
+	} {
+		issue := createFormIssue(t, tree.handler, tree.root, test.name, "# Spec\n\n"+test.spec)
+		response := requestFormApproval(t, tree.handler, issue.PrimaryArtifactID, nil)
+		body := decodeBody[map[string]any](t, response)
+		message, _ := body["error"].(string)
+		if response.Code != http.StatusConflict || !strings.Contains(message, "- line "+test.node+" in spec.md version 1:") ||
+			!strings.Contains(message, moveOut) || !strings.Contains(message, decision) {
+			t.Errorf("%s: status=%d error=%q, want 409 naming the line %s and both ways out", test.name, response.Code, message, test.node)
+		}
 	}
 }
 
