@@ -33,8 +33,9 @@ function ratingsText(ratings: readonly PlanRating[] | null): string {
   return `ratings ${ratings.map((rating) => `${rating.rating}/5 ${oneLineJson(rating.reason)}`).join(", ")}`;
 }
 
-/** The issue's time in whole hours and the minutes left, rounded down, or `-` when Dispatch knows
- *  no start or no end of it. */
+/** The issue's time in whole hours and the minutes left, rounded down, or `-` where Dispatch counts
+ *  none: it knows no start of the issue, or no end, or the latest end is before the earliest
+ *  start. */
 function timeText(seconds: number | null): string {
   if (seconds === null) return "time -";
   const minutes = Math.floor(seconds / 60);
