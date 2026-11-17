@@ -91,8 +91,10 @@ import { assertPageFits } from "./unclipped";
  * finding under it (`findingGate`, `e2e/issue-page-w.ts`): it is a row of its own, tagged
  * `@owed`, which checks the three gates the same way and asserts the clause once they are met.
  * Its title, "a finding's own row invokes a lens @owed", matches the `-g` of no check, so the
- * checks' runs, which invert no `@owed`, leave it out, and an owed clause stays out of every
- * check until it can run.
+ * checks' runs, which invert no `@owed`, leave it out, and it stays out after its gates are met
+ * too. The round that lands 5c85ffdc1b on the base gives the row back a title c-premortem's `-g`
+ * matches, or adds the row to that pattern, and takes off `@owed`; until that round, no check
+ * reads the clause.
  *
  * At a base that serves the tree read and holds none of the lens rows, each of rows 1 to 4 fails
  * on an assertion of its own, at the end of a 30 s poll and not at its deadline. Rows 1, 2 and 4
