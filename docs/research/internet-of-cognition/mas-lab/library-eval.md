@@ -44,7 +44,7 @@ The library does not own the text of a stock metric's prompt: that text is in MC
 
 It needs one trace file for each run: `events.jsonl`, in the shape the mas-lab event recorder writes [m-eval-input-trace].
 
-The reader of that file names nine event kinds and five event fields [m-eval-trace-kinds].
+The reader of that file names nine event kinds and reads sixteen keys of an event or of its payload [m-eval-trace-kinds].
 
 It needs a judge model and an OpenAI-compatible endpoint [m-eval-needs-key].
 
@@ -174,7 +174,7 @@ The same measurement on the rig we already have costs 2 engineer-days, because o
 
 The estimate rests on five counted things.
 
-The converter must emit nine event kinds [m-eval-trace-kinds].
+The reader a converter would feed names nine event kinds and reads sixteen keys of an event or of its payload [m-eval-trace-kinds].
 
 The eight Python packages are a new toolchain in a repository of TypeScript and Go [m-eval-deps].
 

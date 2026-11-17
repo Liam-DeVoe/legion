@@ -2663,25 +2663,34 @@ honest_result "m-rt-no-execution as claims.jsonl holds it passes for a reader wh
 pydantic_run reader-lacks-it "$WORK/empty-home"
 honest_result "m-rt-no-execution as claims.jsonl holds it passes for a reader whose python3 finds no pydantic" replay-command "$PYDANTIC_OUT"
 
-# 101. The replay's uv and pip read no setting of the caller's (the tester's note of test
-# round 31). At f7a6cb36ba a caller's shell that exported UV_EXTRA_INDEX_URL, as a torch
-# user's shell often does, reached every install the replay makes: uv looked for a package
-# at that index first and failed, and the replay failed as though the evidence were wrong.
-# env.sh now sets uv's and pip's settings itself (IOC_ENV_ENFORCED): it unsets each of the
-# twelve variables of CALLER_SETTINGS, each of which points uv or pip at another source of
-# packages, changes which index a package is taken from, keeps them from their index or
-# names a configuration file, and it exports UV_NO_CONFIG=1 and PIP_CONFIG_FILE=/dev/null;
-# check.sh reserves each of those names. The case runs env.sh's ioc_env_main, as --replay's
-# env.sh step runs it, offline, from a shell that exports each of the twelve at an address
-# that does not exist or at a configuration file of the case's own, beside UV_NO_CONFIG=0
-# and a PIP_CONFIG_FILE of its own, with every other step of ioc_env_main, each of which
-# clones, reads a source or builds, taken as done. The environment it leaves, which every
-# row inherits, holds none of the twelve, and holds UV_NO_CONFIG=1 and
-# PIP_CONFIG_FILE=/dev/null. And a row that assigns UV_EXTRA_INDEX_URL before an install is
-# refused by name, as a name the gate records with. At f7a6cb36ba the environment held all
-# twelve, and the row was refused only as an assignment to a name the evaluator does not
-# admit.
-CALLER_SETTINGS='UV_INDEX_URL UV_EXTRA_INDEX_URL UV_INDEX UV_DEFAULT_INDEX UV_FIND_LINKS UV_INDEX_STRATEGY UV_NO_INDEX UV_CONFIG_FILE PIP_INDEX_URL PIP_EXTRA_INDEX_URL PIP_FIND_LINKS PIP_NO_INDEX'
+# 101. The replay's uv and pip read no setting of the caller's, and no row reads an optional
+# input of mas-lab's programs the caller set (the tester's note of test round 31, and the
+# side-by-side audit of round 32). At f7a6cb36ba a caller's shell that exported
+# UV_EXTRA_INDEX_URL, as a torch user's shell often does, reached every install the replay
+# makes: uv looked for a package at that index first and failed, and the replay failed as
+# though the evidence were wrong. The audit of round 32 found five optional inputs that
+# mas-lab's programs and tm-load.py read and no row sets, MAS_MANIFEST_VALIDATE,
+# MAS_MANIFEST_RESOLVE_REFS, MAS_MANIFEST_STRICT, OPENAI_API_KEY and MAS_LLM_API_KEY, of
+# which MAS_MANIFEST_VALIDATE=0 turns mas-ctl validate into a skip that exits 0; and env.sh
+# unset UV_NO_VERIFY_HASHES without check.sh reserving it. env.sh now sets or clears each of
+# these itself (IOC_ENV_ENFORCED): it unsets each of the eighteen variables of
+# CALLER_SETTINGS, twelve that point uv or pip at another source of packages, change which
+# index a package is taken from, keep them from their index or name a configuration file,
+# UV_NO_VERIFY_HASHES, which keeps uv from checking a hash, and the five inputs, and it
+# exports UV_NO_CONFIG=1 and PIP_CONFIG_FILE=/dev/null; check.sh reserves each of those
+# names. The case runs env.sh's ioc_env_main, as --replay's env.sh step runs it, offline,
+# from a shell that exports each of the eighteen, the twelve at an address that does not
+# exist or at a configuration file of the case's own, UV_NO_VERIFY_HASHES=1,
+# MAS_MANIFEST_VALIDATE=0, MAS_MANIFEST_RESOLVE_REFS=0, MAS_MANIFEST_STRICT=1 and the two
+# keys at a value of the case's own, beside UV_NO_CONFIG=0 and a PIP_CONFIG_FILE of its own,
+# with every other step of ioc_env_main, each of which clones, reads a source or builds,
+# taken as done. The environment it leaves, which every row inherits, holds none of the
+# eighteen, and holds UV_NO_CONFIG=1 and PIP_CONFIG_FILE=/dev/null. And a row that assigns
+# UV_EXTRA_INDEX_URL before an install is refused by name, as a name the gate records with.
+# At f7a6cb36ba the environment held every one of the eighteen but UV_NO_VERIFY_HASHES, and
+# the row was refused only as an assignment to a name the evaluator does not admit; at
+# 81bed05e14 the environment still held the five inputs.
+CALLER_SETTINGS='UV_INDEX_URL UV_EXTRA_INDEX_URL UV_INDEX UV_DEFAULT_INDEX UV_FIND_LINKS UV_INDEX_STRATEGY UV_NO_INDEX UV_CONFIG_FILE PIP_INDEX_URL PIP_EXTRA_INDEX_URL PIP_FIND_LINKS PIP_NO_INDEX UV_NO_VERIFY_HASHES MAS_MANIFEST_VALIDATE MAS_MANIFEST_RESOLVE_REFS MAS_MANIFEST_STRICT OPENAI_API_KEY MAS_LLM_API_KEY'
 CALLER_INDEX=http://ioc-case-101.invalid/simple
 # caller_settings_env; prints the environment env.sh's ioc_env_main leaves, run from a shell
 # that exports each of CALLER_SETTINGS, UV_NO_CONFIG=0 and a PIP_CONFIG_FILE of the case's
@@ -2698,7 +2707,9 @@ caller_settings_env() {
             UV_INDEX) value="case-101=$CALLER_INDEX" ;;
             UV_FIND_LINKS | PIP_FIND_LINKS) value="$CALLER_INDEX/links" ;;
             UV_INDEX_STRATEGY) value=unsafe-best-match ;;
-            UV_NO_INDEX | PIP_NO_INDEX) value=1 ;;
+            UV_NO_INDEX | PIP_NO_INDEX | UV_NO_VERIFY_HASHES | MAS_MANIFEST_STRICT) value=1 ;;
+            MAS_MANIFEST_VALIDATE | MAS_MANIFEST_RESOLVE_REFS) value=0 ;;
+            OPENAI_API_KEY | MAS_LLM_API_KEY) value=ioc-case-101-key ;;
             UV_CONFIG_FILE) value="$dir/uv.toml" ;;
             *) value="$CALLER_INDEX" ;;
             esac
@@ -2726,9 +2737,9 @@ for name in $CALLER_SETTINGS; do
 done
 if [ "$status" = 0 ] && [ -z "$held" ] && printf '%s\n' "$settings" | grep -qxF UV_NO_CONFIG=1 &&
     printf '%s\n' "$settings" | grep -qxF PIP_CONFIG_FILE=/dev/null; then
-    case_passed "the environment env.sh gives a row holds none of the caller's uv and pip settings, and holds UV_NO_CONFIG=1 and PIP_CONFIG_FILE=/dev/null"
+    case_passed "the environment env.sh gives a row holds none of the caller's uv and pip settings or mas-lab's optional inputs, and holds UV_NO_CONFIG=1 and PIP_CONFIG_FILE=/dev/null"
 else
-    case_failed "the environment env.sh gives a row holds none of the caller's uv and pip settings, and holds UV_NO_CONFIG=1 and PIP_CONFIG_FILE=/dev/null" \
+    case_failed "the environment env.sh gives a row holds none of the caller's uv and pip settings or mas-lab's optional inputs, and holds UV_NO_CONFIG=1 and PIP_CONFIG_FILE=/dev/null" \
         "ioc_env_main ended $status; the caller's settings it still holds:${held:- none}; $(printf '%s\n' "$settings" | grep -E '^(UV_NO_CONFIG|PIP_CONFIG_FILE)=' | tr '\n' ' ')$(printf '%s\n' "$settings" | grep '^env\.sh' | head -1)"
 fi
 planted_run caller-index-assigned "true || UV_EXTRA_INDEX_URL=$CALLER_INDEX uv pip install -r \"\$IOC_EVID/ioc-venv.lock\"; printf 'ran once\\n'"

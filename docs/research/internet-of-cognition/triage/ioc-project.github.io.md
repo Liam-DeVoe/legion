@@ -13,9 +13,9 @@ It is the documentation site of the project [t-site-identity].
 
 It holds 69 files, of which 53 are under docs/ [t-site-identity].
 
-The prose is six markdown files and one PDF whitepaper [t-site-content].
+The prose is five markdown files and one PDF whitepaper [t-site-content].
 
-The rest of docs/ is images and diagrams [t-site-content].
+The rest of docs/ is images and diagrams, a stylesheet, a script and a requirements.txt [t-site-content].
 
 The whole written architecture of the project is about 25 kilobytes of markdown [t-site-content].
 

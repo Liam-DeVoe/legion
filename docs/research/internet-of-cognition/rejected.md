@@ -24,7 +24,7 @@ Each line names the evidence that drops it, and each id is a row of `claims.json
 - **Neo4j, ClickHouse, RabbitMQ, Redis and the five worker images.**
   Fifteen containers in Compose and eighteen pod-producing objects in the charts, whose declared limits sum to about forty-three CPU and seventy-eight gibibytes [d-93, d-94, d-96].
 
-- **The storage layer.** Its only write primitive overwrites in place with no history, and its embedding vector is stored as a string property with no index [d-81, d-82].
+- **The storage layer.** Its node writes overwrite in place with no history, and its embedding vector is stored as a string property with no index [d-81, d-82].
 
 - **The semantic-group machinery.** Our tree is known at admission; it would rediscover a noisy approximation of it by cosine distance over session embeddings [d-99].
 
@@ -39,7 +39,7 @@ What is kept from SCOPE is on the judgement's execution-record page, and it is O
 ## From MAS Lab
 
 - **Its specification format for Legion's phase workflow.** No format in `ctl` holds a whole row of our table: the workflow block holds an entry and nodes, the standalone workflow document holds from, to and a condition and is executed by nothing, and the state-machine table of `library-standard` has no trigger field and no effect field [m-ctl-answer-1, tm-gap-trigger, tm-gap-effects].
-  Their loader does load thirty-eight transitions written as their table, and the guard, which is a Go function value, has no evaluator at all [tm-table-loads].
+  Their loader does load thirty-eight transitions written as their table [tm-table-loads], and the guard, which is a Go function value, has no evaluator at all [tm-gap-guard].
 
 - **`library-kg`.** Its store is one rebuilt document per run and its graph write overwrites in place with no writer and no cause [m-kg-save-overwrite].
 

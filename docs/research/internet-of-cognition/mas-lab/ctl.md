@@ -110,7 +110,7 @@ This is the only transition table in the stack.
 
 It is a plugin of `library-standard`, not of `ctl`, and its table rides inside an agent's `spec.design_pattern.params` [m-ctl-sm-table].
 
-The table has `states`, `start`, `vars`, `signals` and `max_steps`; each state has a `run` kind and a list of transitions under `on` [m-ctl-sm-table].
+The table has `states`, `start`, `vars`, `signals` and `max_steps`; each state has a `run` kind, and each state but an `end` state has a list of transitions under `on` [m-ctl-sm-table].
 
 Field by field, against one of our rows:
 
@@ -122,7 +122,7 @@ Field by field, against one of our rows:
 
 - The effects do not map: a transition row has exactly three keys, `when`, `set` and `goto` [m-ctl-sm-transition-keys]. `set` writes the machine's own variables and nothing else [m-ctl-sm-transition-keys]. An effect must become a state of its own, because only a state can act, and a state can only `delegate`, `react`, run another `pattern`, run `parallel` regions, call one `tool`, or `end` [m-ctl-sm-run-kinds]. Our four effects are durable outbox writes on a session and an issue; the nearest the model offers is a `tool` state [m-ctl-sm-run-kinds]. So one Legion row with two effects becomes a state plus a transition, and the table grows.
 
-- The trigger maps badly: there is no per-row trigger field [m-ctl-sm-transition-keys]. A transition fires on the outcome of the state that just ran, not on a named outside event [m-ctl-sm-table]. The one outside event the model knows is a steer, which arrives as `signal` with four fields, `text`, `sender`, `source` and `intent` [m-ctl-sm-signal-fields]. A named trigger could be written as `when: {signal.intent: {eq: tester_passed}}`, but only under `signals`, and only while a run is in flight [m-ctl-sm-signal-fields].
+- The trigger maps badly: there is no per-row trigger field [m-ctl-sm-transition-keys]. A transition fires on the outcome of the state that just ran, not on a named outside event [m-ctl-sm-table]. The one event hook the plugin defines is `on_steer`, and a steer that arrives during a run with `signals` is kept as `signal` with four fields, `text`, `sender`, `source` and `intent` [m-ctl-sm-signal-fields]. A named trigger could be written as `when: {signal.intent: {eq: tester_passed}}`, but only under `signals`, and only while a run is in flight [m-ctl-sm-signal-fields].
 
 - The ordering maps well: the `on` rows are tried in order and the first match wins, and the `signals` rows are tried before them [m-ctl-sm-order]. This is the same rule our engine uses [m-ctl-our-first-match].
 

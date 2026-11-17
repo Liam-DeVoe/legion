@@ -46,7 +46,7 @@ The model is `sentence-transformers/all-MiniLM-L6-v2`, the family ACCORD names, 
 Its `model.safetensors` is 90868376 bytes and its sha256 is `53aa51172d142c89d9012cce15ae4d6cc0ca6895895114379cacb4fab128d9db` [s-model-checksum].
 It is fetched under the cache directory `docs/research/internet-of-cognition/env.sh` prepares, never the home directory [s-model-install].
 The replay runs `sentence-transformers` 6.3.0 on `torch` 2.15.0+cpu, the CPU build, and CPython 3.12.15 [s-model-versions].
-The transcript `evidence/similarity.txt` was recorded on 2026-11-12 under `torch` 2.15.0+cu132, the CUDA build, and holds the same table the CPU build prints: every score to three decimals and every verdict of the nine pairs [s-model-builds].
+The transcript `evidence/similarity.txt`, committed from an earlier run, holds the same table the replay prints under `torch` 2.15.0+cpu, the CPU build: every score to three decimals and every verdict of the nine pairs [s-model-builds].
 
 Setup, which every recorded command below assumes: `docs/research/internet-of-cognition/env.sh` builds it and exports what the commands read.
 
@@ -64,7 +64,7 @@ cd docs/research/internet-of-cognition/similarity && ACCORD_MODEL_DIR="$IOC_MODE
 ```
 
 The script is `docs/research/internet-of-cognition/similarity/similarity.py` and its output is `evidence/similarity.txt`.
-It imports ACCORD's own `Similarity` class from the clone and calls it; it re-implements no scoring [s-run-uses-their-code].
+It imports ACCORD's own `Similarity` class from the clone and calls it for every score, and it maps each score to a verdict itself, by the `SIM_MERGE` and `SIM_CLARIFY` it reads from the same module [s-run-uses-their-code].
 Each backend scores in its own pass, because the class reads `ACCORD_EMBEDDING` at call time, and the difflib pass asserts that no embedder loaded.
 The script also asserts, for every pair, that the difflib score equals `accord_mce_metrics.terms.string_similarity`, so one number covers both of ACCORD's difflib paths [s-run-crosscheck].
 

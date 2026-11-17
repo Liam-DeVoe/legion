@@ -14,7 +14,7 @@ The driver is `evidence/concord-drive.py`, the pinned corpus is `evidence/concor
 
 ## The input, taken from our own record
 
-The corpus is the review bodies of the last 200 merged pull requests of `cybermonklabs/legion`, read with `gh` on 2026-11-12, pinned as the number list in `evidence/concord-prs.txt`: 5159 review bodies submitted by the time of that reading [tc-corpus-1].
+The corpus is the review bodies of the 200 pull requests of `cybermonklabs/legion` whose numbers `evidence/concord-prs.txt` pins: 5159 review bodies submitted by 2026-11-12T07:55:56Z [tc-corpus-1].
 
 The search over that corpus for a thermonuclear-pair line carrying both graders' verdict words finds 23 lines, on 15 pull requests, where `thermonuclear-deep-review` and `thermonuclear-code-quality` returned different verdicts at one head [tc-disagree-1].
 
@@ -77,4 +77,4 @@ The specification calls a raw value outside 0 to 100, or written as an exponent,
 The specification's `version`, `run_id` and `uuid` attributes and its `concord-resend` and `concord-cancel` messages have no counterpart in the library [tc-ctl-1].
 
 The two are also different protocols in shape.
-The specification is peer-to-peer and says in as many words that nothing requests a score or a repair, each participant working out its own obligations, while the library builds a score request and a repair request that an initiator addresses to named agents [tc-arch-1].
+The specification has no central decision-maker and no coordinator, and says in as many words that nothing requests a score or a repair, each participant working out its own obligations, while the library builds a score request and a repair request addressed to named agents [tc-arch-1].

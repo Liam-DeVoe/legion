@@ -1168,9 +1168,9 @@ dispatch_get() {
 # env_functions makes env.sh's functions and lists those of this shell, so that check.sh
 # and env.sh share each rule they both read: the command that reads a Dispatch record
 # (ioc_env_record_command), a clone (ioc_env_clone), the table of tool caches and its
-# export (ioc_env_cache_table, ioc_env_caches), the variables it sets or clears for uv and
-# pip (IOC_ENV_ENFORCED), the environments and their locks (IOC_ENV_FROZEN, read by
-# ioc_env_frozen_labels and ioc_env_frozen_entry), the stamp of an environment
+# export (ioc_env_cache_table, ioc_env_caches), the variables it sets or clears in every
+# row's environment (IOC_ENV_ENFORCED), the environments and their locks (IOC_ENV_FROZEN,
+# read by ioc_env_frozen_labels and ioc_env_frozen_entry), the stamp of an environment
 # (ioc_env_unstamp), the reader of a lock (ioc_env_lock_py), the check of what an
 # environment holds (ioc_env_frozen), and the values env.sh reads from rows of claims.jsonl
 # and its reader of them (ioc_env_row_fields, ioc_env_row_field). env.sh read this way
@@ -1403,81 +1403,81 @@ prepare_env() {
 # refused, or when a line here differs from what it measured; --self-test runs it.
 #
 #   form                            rows  what it is
-#   &&                               109  runs the next pipeline when this one exits 0
+#   &&                               164  runs the next pipeline when this one exits 0
 #   ||                                 6  runs the next pipeline when this one fails
-#   |                                385  joins the commands of a pipeline
-#   ;                                 48  ends a pipeline
+#   |                                403  joins the commands of a pipeline
+#   ;                                 53  ends a pipeline
 #   newline                            3  an unquoted newline, ending a pipeline as ; does
-#   >                                  6  writes the output to a file
-#   2>                                11  writes the error output to a file
-#   2>&1                               5  sends the error output where the output goes
-#   {                                 24  opens a group
-#   }                                 24  closes a group
+#   >                                  7  writes the output to a file
+#   2>                                12  writes the error output to a file
+#   2>&1                               6  sends the error output where the output goes
+#   {                                 25  opens a group
+#   }                                 25  closes a group
 #   (                                  2  opens a subshell
 #   )                                  2  closes a subshell
-#   for                               16  opens a for loop
-#   in                                16  comes before a for loop's words
-#   do                                16  comes before a for loop's body
-#   done                              16  closes a for loop
-#   simple command                   570  a command word and its arguments
-#   pipeline                         385  two or more commands joined by |
-#   list                             128  two or more pipelines joined by ;, &&, || or newline
-#   group                             24  { list; }, whose status is its last command's
+#   for                               17  opens a for loop
+#   in                                17  comes before a for loop's words
+#   do                                17  comes before a for loop's body
+#   done                              17  closes a for loop
+#   simple command                   571  a command word and its arguments
+#   pipeline                         403  two or more commands joined by |
+#   list                             189  two or more pipelines joined by ;, &&, || or newline
+#   group                             25  { list; }, whose status is its last command's
 #   subshell                           2  ( list ), whose status is its last command's
-#   for loop                          16  for NAME in words; do list; done
-#   assignment before a command       24  NAME=value, set in that command's environment
+#   for loop                          17  for NAME in words; do list; done
+#   assignment before a command       25  NAME=value, set in that command's environment
 #   assignment alone                   6  NAME=value with no command word
-#   command substitution in a word    13  $( ) in a word, its code admitted by this table
-#   assigns ACCORD_MODEL_DIR          12  a name the rows assign
+#   command substitution in a word    12  $( ) in a word, its code admitted by this table
+#   assigns ACCORD_MODEL_DIR          13  a name the rows assign
 #   assigns GOFLAGS                    1  a name the rows assign
 #   assigns IOC_EXPECT_STATUS          8  the declared status, the last prefix of one command
 #   assigns UV_REQUIRE_HASHES          4  0, before a uv pip install of local sources alone
 #   assigns VIRTUAL_ENV                3  a name the rows assign
 #   assigns W                          1  a name the rows assign
 #   assigns c                          3  a name the rows assign
-#   assigns f                          4  a name the rows assign
+#   assigns f                          3  a name the rows assign
 #   assigns g                          1  a name the rows assign
 #   assigns m                          1  a name the rows assign
-#   assigns n                          5  a name the rows assign
+#   assigns n                          6  a name the rows assign
 #   assigns o                          1  a name the rows assign
 #   assigns p                          5  a name the rows assign
-#   assigns r                          4  a name the rows assign
-#   program awk                       14  wrapped in a function that records its status
+#   assigns r                          5  a name the rows assign
+#   program awk                       18  wrapped in a function that records its status
 #   program cat                       26  wrapped in a function that records its status
-#   program cd                        71  wrapped in a function that records its status
+#   program cd                        73  wrapped in a function that records its status
 #   program cmp                        2  wrapped in a function that records its status
 #   program cp                         1  wrapped in a function that records its status
-#   program curl                      28  wrapped in a function that records its status
+#   program curl                      27  wrapped in a function that records its status
 #   program cut                        5  wrapped in a function that records its status
-#   program dispatch                  68  wrapped in a function that records its status
-#   program echo                       7  wrapped in a function that records its status
+#   program dispatch                  71  wrapped in a function that records its status
+#   program echo                      10  wrapped in a function that records its status
 #   program gh                         2  wrapped in a function that records its status
-#   program git                      313  wrapped in a function that records its status
+#   program git                      324  wrapped in a function that records its status
 #   program go                         2  wrapped in a function that records its status
-#   program grep                     188  wrapped in a function that records its status
-#   program jq                        44  wrapped in a function that records its status
+#   program grep                     198  wrapped in a function that records its status
+#   program jq                        46  wrapped in a function that records its status
 #   program mkdir                      1  wrapped in a function that records its status
 #   program mktemp                     1  wrapped in a function that records its status
-#   program printf                    10  wrapped in a function that records its status
-#   program python3                   36  wrapped in a function that records its status
+#   program printf                    12  wrapped in a function that records its status
+#   program python3                   35  wrapped in a function that records its status
 #   program rm                         2  wrapped in a function that records its status
-#   program sed                      229  wrapped in a function that records its status
+#   program sed                      259  wrapped in a function that records its status
 #   program sh                         1  wrapped in a function that records its status
 #   program sha256sum                  7  wrapped in a function that records its status
-#   program sort                      23  wrapped in a function that records its status
+#   program sort                      26  wrapped in a function that records its status
 #   program stat                       2  wrapped in a function that records its status
 #   program tail                       1  wrapped in a function that records its status
-#   program tr                         7  wrapped in a function that records its status
-#   program uniq                      12  wrapped in a function that records its status
+#   program tr                        10  wrapped in a function that records its status
+#   program uniq                      14  wrapped in a function that records its status
 #   program uv                         8  wrapped in a function that records its status
-#   program wc                        65  wrapped in a function that records its status
-#   program xargs                      4  wrapped in a function that records its status
-#   variable $IOC_PY                  33  a program variable, whose shim records its status
+#   program wc                        64  wrapped in a function that records its status
+#   program xargs                      5  wrapped in a function that records its status
+#   variable $IOC_PY                  34  a program variable, whose shim records its status
 #   variable $IOC_MASLAB_PY            4  a program variable, whose shim records its status
-#   variable $IOC_MASLAB_CTL           4  a program variable, whose shim records its status
+#   variable $IOC_MASLAB_CTL           5  a program variable, whose shim records its status
 #   variable $IOC_MASLAB_WHEEL_CTL     2  a program variable, whose shim records its status
 #   variable $IOC_TC_PY                2  a program variable, whose shim records its status
-#   xargs running a program            4  xargs's status carries the program's
+#   xargs running a program            5  xargs's status carries the program's
 #   xargs -0                           3  xargs reads its input split at NUL bytes
 #   xargs -n                           3  xargs passes at most N arguments to each run
 #   uv run --no-project                4  uv run reads no project of the working directory
@@ -1486,9 +1486,9 @@ prepare_env() {
 #   uv run python                      4  uv run's python, whose status uv run exits with
 #   sh running a script file           1  the script's status reaches the row as sh's
 #   true                               6  a command whose status is no read
-#   $NAME or ${NAME}                 386  a parameter, its name in braces or not
-#   $?                                 6  the status of the last command
-#   $( )                              13  a command substitution
+#   $NAME or ${NAME}                 392  a parameter, its name in braces or not
+#   $?                                 7  the status of the last command
+#   $( )                              12  a command substitution
 #   a literal $                        2  a $ that starts no expansion, left as it stands
 #
 # Each program the table names is wrapped in a function of that name that records its
@@ -1515,10 +1515,10 @@ prepare_env() {
 # The names the gate records with, which no row may touch. The list below is the reader's
 # RESERVED, which reader_py builds from PROGRAM_VARIABLES and RUNNER_PREFIXES, the two
 # variables the shims and the runner are written from, and from env.sh's IOC_ENV_ENFORCED,
-# the variables env.sh sets or clears for uv and pip; --admitted holds these lines as it
-# holds the table, and fails a name the runner or a shim records with that no prefix
-# covers. A row is refused by name when it assigns one, alone, before a command, in an
-# argument such as export's, or as a for loop's variable; when it reads one other than
+# the variables env.sh sets or clears in every row's environment; --admitted holds these
+# lines as it holds the table, and fails a name the runner or a shim records with that no
+# prefix covers. A row is refused by name when it assigns one, alone, before a command, in
+# an argument such as export's, or as a for loop's variable; when it reads one other than
 # IOC_EXPECT_STATUS with $ in an argument, an assignment, a for loop's words or a
 # redirection target, such as >"$__ioc_failed", a program variable as a command word
 # excepted; and when it passes one to printf as an argument of its own. The one other
@@ -1535,23 +1535,29 @@ prepare_env() {
 #   IOC_MASLAB_WHEEL_CTL                  a program variable, which points at its shim
 #   IOC_TC_PY                             a program variable, which points at its shim
 #   IOC_EXPECT_STATUS                     the declared status, the last prefix of one command
-#   UV_REQUIRE_HASHES                     a variable env.sh sets or clears for uv or pip
-#   UV_BUILD_CONSTRAINT                   a variable env.sh sets or clears for uv or pip
-#   PIP_REQUIRE_HASHES                    a variable env.sh sets or clears for uv or pip
-#   UV_NO_CONFIG                          a variable env.sh sets or clears for uv or pip
-#   PIP_CONFIG_FILE                       a variable env.sh sets or clears for uv or pip
-#   UV_INDEX_URL                          a variable env.sh sets or clears for uv or pip
-#   UV_EXTRA_INDEX_URL                    a variable env.sh sets or clears for uv or pip
-#   UV_INDEX                              a variable env.sh sets or clears for uv or pip
-#   UV_DEFAULT_INDEX                      a variable env.sh sets or clears for uv or pip
-#   UV_FIND_LINKS                         a variable env.sh sets or clears for uv or pip
-#   UV_INDEX_STRATEGY                     a variable env.sh sets or clears for uv or pip
-#   UV_NO_INDEX                           a variable env.sh sets or clears for uv or pip
-#   UV_CONFIG_FILE                        a variable env.sh sets or clears for uv or pip
-#   PIP_INDEX_URL                         a variable env.sh sets or clears for uv or pip
-#   PIP_EXTRA_INDEX_URL                   a variable env.sh sets or clears for uv or pip
-#   PIP_FIND_LINKS                        a variable env.sh sets or clears for uv or pip
-#   PIP_NO_INDEX                          a variable env.sh sets or clears for uv or pip
+#   UV_REQUIRE_HASHES                     a variable env.sh sets or clears in every row's environment
+#   UV_BUILD_CONSTRAINT                   a variable env.sh sets or clears in every row's environment
+#   PIP_REQUIRE_HASHES                    a variable env.sh sets or clears in every row's environment
+#   UV_NO_CONFIG                          a variable env.sh sets or clears in every row's environment
+#   PIP_CONFIG_FILE                       a variable env.sh sets or clears in every row's environment
+#   UV_INDEX_URL                          a variable env.sh sets or clears in every row's environment
+#   UV_EXTRA_INDEX_URL                    a variable env.sh sets or clears in every row's environment
+#   UV_INDEX                              a variable env.sh sets or clears in every row's environment
+#   UV_DEFAULT_INDEX                      a variable env.sh sets or clears in every row's environment
+#   UV_FIND_LINKS                         a variable env.sh sets or clears in every row's environment
+#   UV_INDEX_STRATEGY                     a variable env.sh sets or clears in every row's environment
+#   UV_NO_INDEX                           a variable env.sh sets or clears in every row's environment
+#   UV_CONFIG_FILE                        a variable env.sh sets or clears in every row's environment
+#   PIP_INDEX_URL                         a variable env.sh sets or clears in every row's environment
+#   PIP_EXTRA_INDEX_URL                   a variable env.sh sets or clears in every row's environment
+#   PIP_FIND_LINKS                        a variable env.sh sets or clears in every row's environment
+#   PIP_NO_INDEX                          a variable env.sh sets or clears in every row's environment
+#   UV_NO_VERIFY_HASHES                   a variable env.sh sets or clears in every row's environment
+#   MAS_MANIFEST_VALIDATE                 a variable env.sh sets or clears in every row's environment
+#   MAS_MANIFEST_RESOLVE_REFS             a variable env.sh sets or clears in every row's environment
+#   MAS_MANIFEST_STRICT                   a variable env.sh sets or clears in every row's environment
+#   OPENAI_API_KEY                        a variable env.sh sets or clears in every row's environment
+#   MAS_LLM_API_KEY                       a variable env.sh sets or clears in every row's environment
 #
 # What the table is checked against. The classifier is a parser of the forms the rows use,
 # so a spelling it misreads into an admitted entry, one that no row writes, is outside what
@@ -1842,11 +1848,14 @@ github_budget() {
 # It sets uv's and pip's other settings there too, whatever the caller's shell held:
 # UV_NO_CONFIG=1 and PIP_CONFIG_FILE=/dev/null, so neither reads a configuration file, and
 # it unsets every variable that would point either at another source of packages, change
-# which index a package is taken from, keep it from its index or name a configuration file
-# (IOC_ENV_ENFORCED in env.sh lists all seventeen). The reader reserves each of those
-# names, so no row assigns, unsets or re-points one. Measured with uv 0.13.5 and the three
-# hash variables set, once with a package no lock hashes (requests==2.32.3, or setuptools
-# as a build backend) and once with a local build under an unhashed -b:
+# which index a package is taken from, keep it from its index, name a configuration file or
+# keep uv from checking a hash. It unsets as well the five optional inputs of mas-lab's
+# programs that no row sets, MAS_MANIFEST_VALIDATE, MAS_MANIFEST_RESOLVE_REFS,
+# MAS_MANIFEST_STRICT, OPENAI_API_KEY and MAS_LLM_API_KEY (IOC_ENV_ENFORCED in env.sh lists
+# all twenty-three). The reader reserves each of those names, so no row assigns, unsets or
+# re-points one. Measured with uv 0.13.5 and the three hash variables set, once with a
+# package no lock hashes (requests==2.32.3, or setuptools as a build backend) and once with
+# a local build under an unhashed -b:
 #
 #   spelling                   package no lock hashes       build under an unhashed -b
 #   uv pip install -c/-r/-e/-b refused: "all requirements  refused: "all requirements
@@ -1996,9 +2005,10 @@ github_budget() {
 # ENVIRONMENTS, and env.sh's reader of a lock.
 reader_py() {
     local v label
-    # env.sh's IOC_ENV_ENFORCED, the variables it sets or clears for uv and pip, which the
-    # reader reserves; its IOC_ENV_FROZEN, the environments a row may install into, which
-    # the gate checks after the row; and ioc_env_lock_py, the one reader of a hashed lock.
+    # env.sh's IOC_ENV_ENFORCED, the variables it sets or clears in every row's environment,
+    # which the reader reserves; its IOC_ENV_FROZEN, the environments a row may install into,
+    # which the gate checks after the row; and ioc_env_lock_py, the one reader of a hashed
+    # lock.
     # env.sh read for its functions defines them and prepares nothing.
     env_functions || return 1
     printf 'PROGRAM_VARIABLES = {'
@@ -2360,16 +2370,16 @@ def foreign_character(text):
 
 # The names the gate records with, which no row may touch: every name of the runner, which
 # starts with one of RUNNER_PREFIXES, the program variables, the declared status, and the
-# variables env.sh sets or clears for uv and pip, ENFORCED, env.sh's IOC_ENV_ENFORCED. A
-# row may write the declared status only as the last prefix of one command,
-# UV_REQUIRE_HASHES only as the prefix 0 of the install hash_exemption reads, and a program
-# variable only as a command word.
+# variables env.sh sets or clears in every row's environment, ENFORCED, env.sh's
+# IOC_ENV_ENFORCED. A row may write the declared status only as the last prefix of one
+# command, UV_REQUIRE_HASHES only as the prefix 0 of the install hash_exemption reads, and a
+# program variable only as a command word.
 EXPECT_STATUS = "IOC_EXPECT_STATUS"
 RESERVED = {
     **{prefix + "*": "a name the runner or a shim records with" for prefix in RUNNER_PREFIXES},
     **{name: "a program variable, which points at its shim" for name in PROGRAM_VARIABLES},
     EXPECT_STATUS: "the declared status, the last prefix of one command",
-    **{name: "a variable env.sh sets or clears for uv or pip" for name in ENFORCED},
+    **{name: "a variable env.sh sets or clears in every row's environment" for name in ENFORCED},
 }
 
 def reserved(name):

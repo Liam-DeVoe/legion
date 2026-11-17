@@ -21,7 +21,7 @@ Both statements are claims of the project, not measurements of its code [t-dg-pr
 
 Only three of the four components have a repository [t-dg-profile-components].
 
-There is no repository for the Cognition Engines [t-org-no-engines-repo].
+GitHub answered `Not Found` on 2026-11-12 for `ioc-project/cognition-engines`, the one name this reading asked for the Cognition Engines [t-org-no-engines-repo].
 
 The profile states that Outshift by Cisco maintains the project [t-org-owner].
 
@@ -41,7 +41,7 @@ The public following is 1 star [t-org-stars].
 
 There is no licence [t-dg-no-licence].
 
-The raw fetch of LICENSE returns 404, and the repository metadata holds no licence [t-dg-no-licence].
+The tree GitHub gave for that commit holds two paths, `profile` and `profile/README.md`, so no licence file of any name, and the repository metadata holds no licence [t-dg-no-licence].
 
 Its prose therefore carries no licence grant.
 A quotation is fair use.

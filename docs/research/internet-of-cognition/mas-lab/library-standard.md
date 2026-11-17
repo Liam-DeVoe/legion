@@ -28,7 +28,7 @@ The source tree holds 125 Python files and 21 YAML files [m-std-python-count].
 
 The Python files are the plugin bodies: design patterns, governance, context managers, memory, observability, control protocol, agent communication, and infra middleware [m-std-plugin-count].
 
-The YAML files are manifest instances, not formats: a Control [m-std-control-file], an Overlay [m-std-overlay-file], and 12 infra bundles of kind `LLMProxy` under `libs/standard` [m-std-infra-bundle].
+The YAML files are manifest instances, not formats: a Control [m-std-control-file], an Overlay [m-std-overlay-file], and 12 infra manifests of apiVersion `infra/v1` under `libs/standard`, two of them of kind `LLMProxy` [m-std-infra-bundle].
 
 The source tree also holds 18 markdown plugin cards next to the implementations [m-std-cards].
 

@@ -18,7 +18,7 @@ On 2026-11-12, before 07:00Z, its status was `in_progress` [ts-issue-status].
 
 On 2026-11-12, before 07:00Z, it held six documents: `spec` at version 7, `verification-md` at version 4, `decisions-md` at version 4, `plan-md` at version 3, `ioc-review-2026-11-11-md` at version 1 and `ioc-design-2026-11-12-md` at version 1 [ts-issue-docs].
 
-`spec.md` carries thirteen requirement blocks, `b-r-verify-the-answer` through `b-r-delivered` [ts-issue-requirements].
+`spec.md` carries thirteen requirement blocks, `r-verify-the-answer` through `r-delivered` [ts-issue-requirements].
 
 `verification.md` carries six check blocks, each with a `serves` list, a `surface`, a `run` command, a `when` and a `negative_control` [ts-issue-checks].
 

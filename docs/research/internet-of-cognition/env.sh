@@ -66,10 +66,13 @@
 #   IOC_TM_OVERLAY  the go overlay of tm-our-count, written for IOC_OUR_TREE
 #   ACCORD_SRC      the cognition-protocols clone, which similarity.py imports from
 #   the variables of ioc_env_cache_table   every tool cache, each under IOC_CACHE
-#   the variables of IOC_ENV_ENFORCED      uv's and pip's settings, which env.sh fixes
-#                   whatever the caller's shell held: it exports the three that enforce
-#                   the locks, UV_NO_CONFIG=1 and PIP_CONFIG_FILE=/dev/null, and unsets
-#                   the other twelve, each a source of packages or a configuration file
+#   the variables of IOC_ENV_ENFORCED      the variables env.sh sets or clears in every
+#                   row's environment, whatever the caller's shell held: it exports the
+#                   three that enforce the locks, UV_NO_CONFIG=1 and
+#                   PIP_CONFIG_FILE=/dev/null, and unsets the other eighteen: twelve, each
+#                   a source of packages or a configuration file of uv or pip,
+#                   UV_NO_VERIFY_HASHES, and five optional inputs of mas-lab's programs,
+#                   which every row then reads as its default
 #
 # What it keeps, and the way each entry is kept whole. The rule, its three ways, and what
 # a recorded command writes under IOC_CACHE are stated once, in check.sh's header ("Nothing
@@ -102,13 +105,13 @@
 # tm-constraints.txt, and every local build reads build-constraints.txt with -b. env.sh
 # exports the variables uv and pip enforce those hashes by, and unsets every variable by
 # which the caller's shell would point uv or pip at another source of packages or at a
-# configuration file (IOC_ENV_ENFORCED); after it builds each environment of
-# IOC_ENV_FROZEN it checks what the environment holds against that environment's own lock
-# (ioc_env_frozen). The rule these serve, the one install written with the visible prefix
-# UV_REQUIRE_HASHES=0, and what none of them can see are stated once, in check.sh's header
-# above reader_py. The stamp of each environment and of the ioc-concord wheel is the
-# sha256 of the files and the clone commit it was built from, so a venv or a wheel that
-# predates the hashed files is never used.
+# configuration file, or keep uv from checking a hash (IOC_ENV_ENFORCED); after it builds
+# each environment of IOC_ENV_FROZEN it checks what the environment holds against that
+# environment's own lock (ioc_env_frozen). The rule these serve, the one install written
+# with the visible prefix UV_REQUIRE_HASHES=0, and what none of them can see are stated
+# once, in check.sh's header above reader_py. The stamp of each environment and of the
+# ioc-concord wheel is the sha256 of the files and the clone commit it was built from, so a
+# venv or a wheel that predates the hashed files is never used.
 #
 # It needs uv, git, jq, gh, python3 and dispatch, and it needs the three clones, which it
 # clones at the commits sources.json pins when they are missing or not whole. It refuses,
@@ -188,27 +191,32 @@ ioc_env_caches() {
     done < <(ioc_env_cache_table)
 }
 
-# uv's and pip's settings in every row's environment, which env.sh sets or clears itself
-# by the one loop below, each with its value, or its removal, from the case there.
+# The variables env.sh sets or clears in every row's environment, each with its value, or
+# its removal, from the case of the one loop below, whatever the caller's shell held.
 # UV_REQUIRE_HASHES, UV_BUILD_CONSTRAINT and PIP_REQUIRE_HASHES enforce the locks.
 # UV_NO_CONFIG=1 keeps uv from reading a configuration file, a uv.toml or the settings of a
 # pyproject.toml, in the directory it runs in, above it or in the user's configuration
-# directory, and PIP_CONFIG_FILE=/dev/null keeps pip from reading any. The other twelve
-# are unset: each points uv or pip at another source of packages, changes which index a
-# package is taken from, keeps them from their index or names a configuration file, and one
+# directory, and PIP_CONFIG_FILE=/dev/null keeps pip from reading any. The other eighteen
+# are unset. Twelve point uv or pip at another source of packages, change which index a
+# package is taken from, keep them from their index or name a configuration file, and one
 # the caller's shell set reached every install, so that uv looked for a package first at an
 # index the caller named and the replay failed as though the evidence were wrong (test
 # round 31). An install that needs a source names it on its own command line, as
-# ioc_env_python gives uv torch's page with --find-links.
+# ioc_env_python gives uv torch's page with --find-links. UV_NO_VERIFY_HASHES, when set,
+# keeps uv from checking the hashes a lock, a constraints file or a build constraints file
+# carries. The last five are optional inputs of mas-lab's programs, which no row sets and
+# each row reads as its default, unset: MAS_MANIFEST_VALIDATE=0 turns mas-ctl validate into
+# 'validation skipped', MAS_MANIFEST_RESOLVE_REFS=0 skips its check of each referenced file
+# with the same OK line, MAS_MANIFEST_STRICT is read by validate_file when it is given no
+# strict, OPENAI_API_KEY is the key their model clients read when a manifest names no
+# other, and tm-load.py prints whether it and MAS_LLM_API_KEY are set (the side-by-side
+# audit of round 32).
 # check.sh reads this list for the names it reserves, so a name set or cleared here is a
 # name it reserves.
-IOC_ENV_ENFORCED="UV_REQUIRE_HASHES UV_BUILD_CONSTRAINT PIP_REQUIRE_HASHES UV_NO_CONFIG PIP_CONFIG_FILE UV_INDEX_URL UV_EXTRA_INDEX_URL UV_INDEX UV_DEFAULT_INDEX UV_FIND_LINKS UV_INDEX_STRATEGY UV_NO_INDEX UV_CONFIG_FILE PIP_INDEX_URL PIP_EXTRA_INDEX_URL PIP_FIND_LINKS PIP_NO_INDEX"
+IOC_ENV_ENFORCED="UV_REQUIRE_HASHES UV_BUILD_CONSTRAINT PIP_REQUIRE_HASHES UV_NO_CONFIG PIP_CONFIG_FILE UV_INDEX_URL UV_EXTRA_INDEX_URL UV_INDEX UV_DEFAULT_INDEX UV_FIND_LINKS UV_INDEX_STRATEGY UV_NO_INDEX UV_CONFIG_FILE PIP_INDEX_URL PIP_EXTRA_INDEX_URL PIP_FIND_LINKS PIP_NO_INDEX UV_NO_VERIFY_HASHES MAS_MANIFEST_VALIDATE MAS_MANIFEST_RESOLVE_REFS MAS_MANIFEST_STRICT OPENAI_API_KEY MAS_LLM_API_KEY"
 
 ioc_env_enforce() {
     local name value
-    # uv checks every hash a lock, a constraints file or a build constraints file carries,
-    # unless this is set; no run of the replay sets it.
-    unset UV_NO_VERIFY_HASHES
     for name in $IOC_ENV_ENFORCED; do
         case "$name" in
         UV_REQUIRE_HASHES | PIP_REQUIRE_HASHES | UV_NO_CONFIG) value=1 ;;
@@ -216,7 +224,9 @@ ioc_env_enforce() {
         PIP_CONFIG_FILE) value=/dev/null ;;
         UV_INDEX_URL | UV_EXTRA_INDEX_URL | UV_INDEX | UV_DEFAULT_INDEX | UV_FIND_LINKS | \
             UV_INDEX_STRATEGY | UV_NO_INDEX | UV_CONFIG_FILE | PIP_INDEX_URL | \
-            PIP_EXTRA_INDEX_URL | PIP_FIND_LINKS | PIP_NO_INDEX)
+            PIP_EXTRA_INDEX_URL | PIP_FIND_LINKS | PIP_NO_INDEX | UV_NO_VERIFY_HASHES | \
+            MAS_MANIFEST_VALIDATE | MAS_MANIFEST_RESOLVE_REFS | MAS_MANIFEST_STRICT | \
+            OPENAI_API_KEY | MAS_LLM_API_KEY)
             unset "$name"
             continue
             ;;

@@ -42,7 +42,7 @@ The write primitive is "build the whole document, then write the whole document"
 
 There is no record of an earlier value beside the new one [m-kg-no-history].
 
-The one enrichment primitive is `annotate_kg_nodes` [m-kg-annotate].
+The enrichment primitive is `annotate_kg_nodes`, which its module calls its primary API [m-kg-annotate].
 
 It adds an annotation node and one edge for each matching node, and it does not change the document it is given [m-kg-annotate].
 
@@ -60,7 +60,7 @@ So a write overwrites, and a write keeps no history [m-kg-no-history].
 
 No tuple carries the identity of its writer, and none carries its cause [m-kg-no-writer].
 
-The word `provenance` in this code names an optional layer of context-contribution nodes of the trace, not the writer of a row [m-kg-provenance-meaning].
+The word `provenance` in this code names an optional layer of context-contribution nodes of the trace, the source telemetry record ids an execution element keeps, and the path a graph was normalized from, and none of them is the writer of a row [m-kg-provenance-meaning].
 
 ## The query surface
 
@@ -101,6 +101,6 @@ Both are data files and neither needs a Python runtime [m-kg-events-schema] [m-k
 
 The ontology extension is of limited use alone, because its header names its classes as pending upstream in SCOPE and says not to treat the file as a second ontology [m-kg-ontology-ext].
 
-Everything else in the directory is 101 Python files beside markdown, YAML and JSON data [m-kg-cross-rest], so it crosses only as a service or as a rebuild.
+By extension, the directory holds 101 Python files, 27 markdown files, 14 YAML files, 11 JSON, JSON Lines and JSON-LD files, the one TTL file, one TOML file, one shell script and one `.gitignore` [m-kg-cross-rest], so everything but the two parts above crosses only as a service or as a rebuild.
 
 Whether either file is worth adopting for Legion is a judgement and not a measurement [m-kg-cross-verdict].

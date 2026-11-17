@@ -116,7 +116,7 @@ Our three surfaces are these.
 
 `packages/envoy/internal/dispatch/api/handler_errors.go`, function `writeHandlerError`: the one place a write's error becomes a refusal code and an HTTP status [m-rt-our-dispatch-refusals].
 
-140 distinct refusal codes are written in the non-test files of that directory [m-rt-our-refusal-count].
+In the non-test files of that directory, `writeError` is passed 133 distinct refusal codes as a string literal on the line of its call [m-rt-our-refusal-count].
 
 `packages/envoy/internal/dispatch/api/project_scope.go`: the project and session scope refusals a credential meets [m-rt-our-scope-refusals].
 
@@ -136,7 +136,7 @@ Their boundary gate runs before the side effect, not only after a bad request [m
 
 A tool call is authorized at a chokepoint, and the chokepoint can hold it for a human [m-rt-egress-gate].
 
-We have no equivalent human gate on any of the three surfaces [m-rt-our-no-hitl].
+None of the three surfaces names a human-in-the-loop gate or a destructive-call classification outside its test files [m-rt-our-no-hitl].
 
 Their refusal algebra has ten verbs, not one [m-rt-gov-actions].
 
@@ -170,7 +170,7 @@ Ours covers facts outside the process: a GitHub pull request, a Dispatch handoff
 
 Their enforcement reads only the kernel's own state [m-rt-ingress-valid].
 
-Ours has a larger named surface: 140 codes against their 24 [m-rt-our-refusal-count] [m-rt-code-count].
+Ours has a larger named surface: at least 133 codes against their 24 [m-rt-our-refusal-count] [m-rt-code-count].
 
 Our codes are generated from one source, so the server and the client read one string [m-rt-our-generated-consts].
 

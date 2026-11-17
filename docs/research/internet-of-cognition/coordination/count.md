@@ -13,12 +13,12 @@ The window is the fourteen days before 2026-11-12T00:00:00Z, that is from 2026-1
 
 Inside it the global event feed runs from event id 103048 to event id 402993 [c-window-1].
 
-The feed is one list for the whole deployment, ascending by event id, and each row carries its project and the instant it was written, so a window and a project are a filter over it and nothing else [c-window-2].
+The feed is one list for the whole deployment, ascending by event id, and each row carries its project and the instant it was written [c-window-2], so a window and a project are a filter over it and nothing else.
 
 A row of the feed is one recorded act.
 Thirty-nine event types were written for INFRA inside the window [c-types-1].
 Five of them carry a body in the feed, read over the first thousand events of the window: `comment.anchor_refreshed`, `comment.created`, `comment.resolved`, `message.answered` and `message.created`.
-The two this count reads are `comment.created` and `message.created`, which are the two that carry the whole text of what a party wrote [c-types-2].
+The two this count reads are `comment.created` and `message.created`, and it leaves out the other types that carry text a party wrote: `message.answered`, with 736 events in the window, `ask.answered`, with 1198, and `artifact.version`, with 30660 [c-types-2].
 
 ## What one instance is, and how a class is decided
 
@@ -50,7 +50,7 @@ The three classes overlap, so the script applies them in one fixed order and the
 
 - across sessions, when the actor is a session and the cited record belongs to another issue.
 
-Where a body cites more than one reference, the first by position decides the class [c-method-3].
+Where a body cites more than one reference, the first by position that names an issue decides the class [c-method-3].
 
 ## The counts
 
@@ -135,7 +135,7 @@ By my reading of `config/stage3.go` and `record/project.go`, which no row prints
 
 Dispatch holds the act itself: a document's approval request is an ask whose answer approves that version or requests changes, and the server hands the request back to the agent when the document changes [c-plan-dispatch-1].
 
-Envoy carries that act to whoever must read it: every issue event is published on the issue's own topic, `notifications.dispatch.issue.<KEY>.<type>`, so the approval of a spec reaches the tree's architect without anybody polling for it [c-plan-envoy-1].
+Envoy carries that act to whoever reads the issue's topic: every issue event, those of the issue's own documents among them, is published on the issue's own topic, `notifications.dispatch.issue.<KEY>.<type>`, and the daemon's intake consumes every issue's topic [c-plan-envoy-1].
 
 In the window this fleet approved documents 2052 times and requested changes 215 times [c-plan-approve-1].
 Every one of the 215 changes requests was written by a person, 124 of them on a `spec.md` and 88 on a `verification.md`, and not one on a `plan.md` [c-plan-approve-1].
@@ -145,7 +145,7 @@ All 1323 approvals of a `plan.md` were written by a session [c-plan-approve-1].
 So the plan a worker follows is agreed between agents, and the spec it serves is agreed with a person.
 dispatch://INFRA-1066 is one instance: its plan document's approval line names a session id, not a person's address [c-plan-line-1].
 dispatch://INFRA-481 is the other side: a person approved its spec, and its approval line names a person's address and no session.
-That approval is at 2026-10-28T00:16:55Z, which is before this window opens, so it is evidence of who approves a spec and not a count inside the window [c-plan-approve-2].
+Six of the eight approvals of its spec written before the window closes fall inside the window, the first at 2026-10-29T00:37:14Z and the last at 2026-11-10T11:39:40Z, and each was written by the person sami@theorem.dev [c-plan-approve-2].
 
 What the plan agreement does not carry is a person's reading.
 The approval of a plan is an agent's, so no part of this record shows a person agreed to the plan before the work [c-plan-gap-1].
@@ -159,7 +159,7 @@ The server reads those blocks out of the issue's Verification document and recor
 
 dispatch://INFRA-1095's Verification document, at its one version, carries six checks, five before the merge and one after it, and before 2026-11-12 each had a result recorded with its verdict, the commit it was proved at and the role that recorded it [c-crit-results-1].
 
-Envoy carries each recorded result on the same issue topic, so the architect that accepts the work reads the verdicts without asking for them [c-plan-envoy-1].
+Envoy publishes each recorded result on the same issue topic [c-plan-envoy-1].
 
 In the window 40291 results were recorded, and every one of them was written by a session [c-crit-who-1].
 The role each names is an agent's role: 22333 an implementer, 17610 a tester, 328 a reviewer, 18 an architect, one a merger and one a cli [c-crit-who-1].
@@ -178,14 +178,14 @@ The project record holds a glossary written by hand, as an ordinary document: `d
 
 The reference graph holds no link to it from anything the project wrote.
 The backlinks to `dispatch://INFRA-460/artifact/glossary-md` written by 2026-11-16T13:00:00Z number one, a block of dispatch://INFRA-3134/artifact/judgement-md, this reading itself [c-terms-3].
-So the glossary this project wrote is cited by nothing it wrote [c-terms-3].
+So the glossary this project wrote is cited by nothing it wrote but this reading [c-terms-3].
 
 Our own tree holds no glossary either.
 At 9542c6fb the word appears in one file, the ASD-STE100 writing skill, which tells a writer that a project glossary is allowed and notes that the dictionary it would extend is absent [c-terms-4].
 No file under `packages` or `deploy` holds the word at all, so no part of the product keeps a term's definition [c-terms-7].
 
-What Legion gives instead is word discipline for the writer: `skills/plain-words` and `skills/asd-ste100` are instructions an agent reads before it writes, not a record two agents can agree on and cite [c-terms-5].
+`skills/plain-words` and `skills/asd-ste100` are instructions an agent reads before it writes [c-terms-5], and by my reading they are what Legion gives instead: word discipline for the writer, not a record two agents can agree on and cite.
 
-Envoy's publisher names each topic it publishes on under `notifications.`, from the recorded event [c-terms-6], so with no record of a term, which is what [c-terms-1] [c-terms-3] [c-terms-7] find, there is nothing of a term for it to carry.
+Envoy's publisher names an event's owner topic under `notifications.dispatch.`, from the recorded event's document, issue or project and its type [c-terms-6], so with no record of a term, which is what [c-terms-1] [c-terms-3] [c-terms-7] find, there is nothing of a term for it to carry.
 
 So, by my reading of those rows, of the three problems two have a surface in the record and one has none: a plan and a Verification document each have a document, an approval and an event, and a term has a document nobody cites and no block, no route and no check.

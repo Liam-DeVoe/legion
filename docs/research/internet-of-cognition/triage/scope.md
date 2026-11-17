@@ -74,7 +74,7 @@ Nothing in scope is a prompt-shaped skill, and nothing in it is a specification 
 
 ## What is dropped, and why
 
-backend/, 881 Python files: the API, the workers, mce, dem, norm and the stateful evaluations.
+backend/, 881 files, 702 of them Python: the API, the workers, mce, dem, norm and the stateful evaluations.
 It is a service beside Legion, and it needs Neo4j, ClickHouse and a broker, which this issue does not start [t-sc-drop-backend].
 
 ui/, 248 files: a dashboard.

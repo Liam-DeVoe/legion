@@ -30,7 +30,7 @@ Their installer path works: mas-lab is a `uv` workspace, and `uv pip install ./r
 
 The brief's premise that mas-lab is not on PyPI is false today: `https://pypi.org/pypi/mas-lab/json` answers 200 with version 0.2.0, one release, and the files `mas_lab-0.2.0-py3-none-any.whl` and `mas_lab-0.2.0.tar.gz` [tm-pypi].
 
-Their table loader takes the workflow: `normalize_table` followed by `validate_definition` returns an empty problem list, and the loaded table holds 10 states and 38 transitions, one for each row of ours [tm-table-loads].
+Their table loader takes the workflow: `normalize_table` followed by `validate_definition` returns an empty problem list, and the loaded table holds 10 states and 38 transitions [tm-table-loads], one for each row of ours [tm-our-count].
 
 Their manifest validator takes both files against their schemas: `mas-ctl validate legion-workflow.yaml legion-workflow-kind.yaml` prints `OK` for each with no warning that a schema is missing and exits 0, and `mas-ctl schemas` lists the agent and workflow schemas [tm-validate].
 
@@ -50,7 +50,7 @@ Each line names the part of our workflow, what of theirs I looked for, and the s
 
 The trigger has no field.
 `TRANSITION_KEYS` is `{when, set, goto}`, and `grep -rnE "trigger"` over their `state_machine.py` is empty.
-The nearest thing of theirs is `signals`, transitions matched against a steer message's `signal.text`, `signal.sender`, `signal.source` and `signal.intent`.
+The nearest thing of theirs is `signals`, transitions matched against a steer message's `signal.text`, `signal.sender`, `signal.source` and `signal.intent` [m-ctl-sm-signal-fields].
 I had to write each of our 13 triggers as a field of the agent's reply, which moves the authorship of the trigger from the daemon's own observation to the worker's answer [tm-gap-trigger].
 
 The guard cannot be a function.
@@ -67,11 +67,11 @@ A transition carries `set` and `goto` alone, `grep -rnE "effect"` over their `st
 The `set: {effects: start,notice}` lines in my file write the effect words into a variable; nothing in their engine reads that variable, so they are a note to the reader, not an effect [tm-gap-effects].
 
 Nothing is durable or transactional.
-Their module says the run state "lives on the plugin for the turn", and `grep -rnE "durable|persist"` and `grep -rnE "transaction|atomic|rollback"` over their `state_machine.py` are both empty [tm-gap-durable].
+Their module says the run state "lives on the plugin for the turn" (`state_machine.py:44-45`), and one case-blind search of their `state_machine.py` for transaction, atomic, rollback, durable, persist and checkpoint is empty [tm-gap-durable].
 Our engine applies a row's effects in one database transaction [m-ctl-our-effects].
 
 A phase that waits for an outside event has no run kind.
-`RUN_KINDS` is `delegate, react, pattern, parallel, tool, end`, and `grep -rnE "'wait'"` over their `state_machine.py` is empty; every state that is not `end` runs a child, and a transition is tried only at that child's boundary.
+`RUN_KINDS` is `delegate, react, pattern, parallel, tool, end`, and `grep -rnE "'wait'"` over their `state_machine.py` is empty [tm-gap-wait]; every state that is not `end` runs a child, and a transition is tried only at that child's boundary [m-ctl-sm-table].
 Our `admitted` waits for the controller's slot gate and our `awaiting_merge` waits for GitHub, so I wrote both as a delegation to an agent named `daemon` that is asked what happened [tm-gap-wait].
 
 The status a row writes has no field.
