@@ -163,6 +163,23 @@ test("the server's text replaces the editor's while the reader is not in it, and
   expect(onSave).toHaveBeenCalledTimes(1);
 });
 
+test("leaving the editor with nothing written takes in the text written elsewhere while the reader was in it", async () => {
+  const { editor, onSave, rerender } = described("Speedruns run again.");
+  const { box, handle } = await editor();
+  handle.view.focus();
+  // Another person's write lands while the reader is in the editor; they type nothing, and leave.
+  rerender("Written elsewhere.");
+  act(() => handle.view.dom.blur());
+  expect(onSave).not.toHaveBeenCalled();
+  // Nothing of theirs stands now, so the server's text is what the editor shows. Left showing
+  // the old text, the reader's next edit writes it back over the other person's, unseen.
+  await waitFor(() => expect(box.textContent).toBe("Written elsewhere."));
+  handle.view.focus();
+  writeAtEnd(handle, " Mine.");
+  act(() => handle.view.dom.blur());
+  expect(onSave.mock.calls).toEqual([["Written elsewhere. Mine.\n"]]);
+});
+
 test("the keyboard reaches the editor as it reaches any field", async () => {
   const { editor, view } = described(OUTLINE);
   const { box } = await editor();
