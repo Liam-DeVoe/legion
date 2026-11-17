@@ -58,9 +58,10 @@ function issueLine(issue: FinishedIssue): string {
  *  count of failed steps, as Dispatch lists them. */
 export async function plansCommand(context: CommandContext): Promise<DispatchToolResult> {
   const { args, client } = context;
-  const since = optionalString(args, "since");
-  const until = optionalString(args, "until");
-  const read = await client.listProjectPlans(stringArg(args, "project"), { since, until });
+  const read = await client.listProjectPlans(stringArg(args, "project"), {
+    since: optionalString(args, "since"),
+    until: optionalString(args, "until"),
+  });
   // The generated shape lets each list be null; Dispatch writes `[]`, and null reads the same, here
   // and in each part of an issue's line.
   const issues = read.issues ?? [];
