@@ -274,11 +274,12 @@ func (t Timer) ObserveDuration(h *Histogram, labels ...[2]string) {
 // Prometheus text exposition format (text/plain; version=0.0.4).
 //
 // It renders the whole text first (render) and then writes it, holding no lock while it writes: a
-// scrape's write waits on its client, for up to the server's WriteTimeout when the client stops
-// reading, and a lock held across it would hold every recording that takes the lock - Counter.Add
-// and Histogram.Observe take their metric's, registration the registry's - for as long. The
-// broker's NATS auth service, Dispatch and the listener record as they answer and serve this
-// handler, so a scrape client that stops reading would otherwise stop them answering.
+// scrape's write waits on its client when the client stops reading - until the server's write
+// timeout where the server sets one, and Dispatch's sets none - and a lock held across it would
+// hold every recording that takes the lock - Counter.Add and Histogram.Observe take their
+// metric's, registration the registry's - for as long. Dispatch, the listener and the broker
+// record as they answer requests and serve this handler, so a scrape client that stops reading
+// would otherwise stop them answering.
 func (r *Registry) Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")

@@ -181,10 +181,17 @@ func TestARefusalStuckOnTheLogHoldsNoDecisionSlot(t *testing.T) {
 	stallWithALine(t, url, log)
 
 	requireRefusedAtOnce(t, url, "second")
+	requireLiveAdmittedAtOnce(t, url, live, "a refusal stuck on the log")
+}
+
+// requireLiveAdmittedAtOnce requires live's connection admitted inside half a second; behind
+// names what would hold the slot it needs, for the failure's message.
+func requireLiveAdmittedAtOnce(t *testing.T, url string, live *session, behind string) {
+	t.Helper()
 	began := time.Now()
 	nc, err := connectSession(t, url, live, nil)
 	took := time.Since(began)
-	require.NoError(t, err, "the live session was not admitted (after %s): the only slot was held by a refusal stuck on the log", took)
+	require.NoError(t, err, "the live session was not admitted (after %s): the slot it needed was held by %s", took, behind)
 	nc.Close()
-	require.Less(t, took, 500*time.Millisecond, "the live session was admitted after %s, behind a refusal stuck on the log", took)
+	require.Less(t, took, 500*time.Millisecond, "the live session was admitted after %s, behind %s", took, behind)
 }

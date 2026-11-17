@@ -9,21 +9,18 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stretchr/testify/require"
-
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// stalledScrape is a scrape's response whose gate holds the first write that carries the line of
-// the metric name's series, and every write after it: a scrape client that stops reading holds
-// the metrics server's writes once the socket's buffers are full, for up to its WriteTimeout.
+// stalledScrape is a scrape's response whose gate holds the write that carries the line of the
+// metric name's series: a scrape client that stops reading holds the metrics server's writes once
+// the socket's buffers are full, for up to the server's write timeout where it sets one.
 type stalledScrape struct {
 	*writeGate
 	name   string
 	header http.Header
-	held   bool
 }
 
 func (s *stalledScrape) Header() http.Header { return s.header }
@@ -31,8 +28,7 @@ func (s *stalledScrape) Header() http.Header { return s.header }
 func (s *stalledScrape) WriteHeader(int) {}
 
 func (s *stalledScrape) Write(p []byte) (int, error) {
-	if s.held || bytes.Contains(p, []byte(s.name+"{")) {
-		s.held = true
+	if bytes.Contains(p, []byte(s.name+"{")) {
 		s.hold()
 	}
 	return len(p), nil
@@ -71,7 +67,7 @@ func TestAStalledScrapeHoldsNoDecisionSlot(t *testing.T) {
 	stallScrape(t, url, registry)
 
 	requireRefusedAtOnce(t, url, "second")
-	requireLiveAdmittedAtOnce(t, url, live)
+	requireLiveAdmittedAtOnce(t, url, live, "a refusal recording behind the stopped scrape")
 	requireHoldsNothing(t, service)
 }
 
@@ -91,17 +87,6 @@ func TestAStalledScrapeHoldsNoneOfTheDeployedSlots(t *testing.T) {
 	for i := range concurrentDecisions + 6 {
 		requireRefusedAtOnce(t, url, fmt.Sprintf("#%d", i+1))
 	}
-	requireLiveAdmittedAtOnce(t, url, live)
+	requireLiveAdmittedAtOnce(t, url, live, "refusals recording behind the stopped scrape")
 	requireHoldsNothing(t, service)
-}
-
-// requireLiveAdmittedAtOnce requires live's connection admitted inside half a second.
-func requireLiveAdmittedAtOnce(t *testing.T, url string, live *session) {
-	t.Helper()
-	began := time.Now()
-	nc, err := connectSession(t, url, live, nil)
-	took := time.Since(began)
-	require.NoError(t, err, "the live session was not admitted (after %s): a slot was held by a refusal recording behind the stopped scrape", took)
-	nc.Close()
-	require.Less(t, took, 500*time.Millisecond, "the live session was admitted after %s, behind refusals recording behind the stopped scrape", took)
 }

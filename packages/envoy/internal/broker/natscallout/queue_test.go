@@ -202,9 +202,9 @@ func TestABudgetSpentWaitingForASlotNamesTheWait(t *testing.T) {
 // is refused within half a second rather than waiting, and the holder and the two held are then
 // admitted. With no bound the third waits behind the slot too and is admitted.
 //
-// The refusal's reason is read from the line the replica writes as it closes, which holds every
-// refusal it counted since its last line, whatever the one-line-a-minute interval says (report),
-// so the test waits on no tick of the reporter.
+// The refusal's reason is read after Close, whose last report writes whatever is still counted
+// (report), so it is in the log whether a tick's line or that last one carried it, and the test
+// waits on no tick of the reporter.
 func TestARequestPastTheWaitingBoundIsRefusedAtOnce(t *testing.T) {
 	withDecisionSlots(t, 1)
 	withWaitingBound(t, 2)
