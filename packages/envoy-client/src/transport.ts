@@ -14,7 +14,6 @@ import { z } from "zod";
 import type { RequestCredential } from "./bearer";
 import { messageFor, withoutUserinfo } from "./errors";
 import { machineID } from "./machine";
-import { streamDeliversNothing } from "./stream-topics";
 import type { TmuxPlace } from "./tmux-place";
 
 /**
@@ -492,10 +491,11 @@ export type UnsubscribeInput = {
 
 /**
  * The concrete subjects a registration carries for each topic: a `<base>.>` wildcard, and its
- * base as a subject of its own when the stream stores a publish to that base. A base no stream
- * subject captures is left out: nothing can be published on it, and the listener would leave it
- * out of the row it stores and warn about it at every registration
- * (`streamDeliversNothing`).
+ * base as a subject of its own, since `<base>.>` matches nothing published on the base itself.
+ * The base is carried whether or not the stream subjects this build was compiled with capture it:
+ * the listener judges that on a fresh read of the deployed stream's subjects, which a newer build
+ * may have widened, and keeps a base nothing captures yet in the session's row and consumer filter
+ * with a warning (`registrationTopics` in `stream-topics.ts`).
  */
 export function expandSubscriptionTopics(topics: readonly string[]): readonly string[] {
   const expanded = new Set<string>();
@@ -511,7 +511,7 @@ export function expandSubscriptionTopics(topics: readonly string[]): readonly st
         `cannot expand Envoy wildcard topic "${topic}": its concrete base must have at least two non-empty segments`
       );
     }
-    if (!streamDeliversNothing(base)) expanded.add(base);
+    expanded.add(base);
     expanded.add(topic);
   }
   return [...expanded];

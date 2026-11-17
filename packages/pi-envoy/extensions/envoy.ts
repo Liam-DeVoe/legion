@@ -107,7 +107,7 @@ import {
   sessionSettings,
 } from "@legion/envoy-client/session-settings";
 import { postSlackReply } from "@legion/envoy-client/slack-post";
-import { refuseUncapturedTopics, replayFollowedSubjects } from "@legion/envoy-client/stream-topics";
+import { replayFollowedSubjects, warningsForNamedTopics } from "@legion/envoy-client/stream-topics";
 import { readTmuxPlace } from "@legion/envoy-client/tmux-place";
 import { createTmuxPlaceCache } from "@legion/envoy-client/tmux-place-cache";
 import {
@@ -4707,14 +4707,16 @@ export default function envoyExtension(pi: PiApi): void {
           // needs NATS: with inbound off the session would follow a topic it can never receive
           // on, so the tool refuses here, saying why.
           requireInbound();
-          const requested = topicsFor(parameters);
-          // A topic no stream subject captures is followed but never registered, since the
-          // listener stores none: it drops such a topic from the row and names it in a warning
-          // (`registrationTopics`). A caller that names one here asked for this topic by name,
-          // so it is told by name, in the listener's own words, rather than left following a
-          // subject nothing is ever delivered on. A private stream subject is left out of the
-          // registration without a word, as it always was (`refuseUncapturedTopics`).
-          refuseUncapturedTopics(sessionID, agentSubject(sessionID), requested);
+          const named = namedTopicsFor(parameters) ?? [];
+          const requested = expandSubscriptionTopics(named);
+          // Every topic named here is followed, and the registration carries each one but a
+          // private stream subject that is not this session's (`registrationTopics`), a topic
+          // no stream subject this build was compiled with captures included: the listener
+          // judges capture on the deployed stream's subjects. Its answer names, in a warning,
+          // each topic it keeps that nothing captures yet and each topic it leaves out. The
+          // result below shows the caller those warnings, except the uncaptured-topic warning
+          // of a topic the caller did not name: the base an `X.>` adds, or a topic the session
+          // already followed (`warningsForNamedTopics`).
           const added: string[] = [];
           const already: string[] = [];
           for (const topic of requested) {
@@ -4724,7 +4726,7 @@ export default function envoyExtension(pi: PiApi): void {
           let registrationError: string | undefined;
           if (added.length > 0) {
             try {
-              warnings = (await registerSession()).warnings;
+              warnings = warningsForNamedTopics((await registerSession()).warnings ?? [], named);
             } catch (error) {
               registrationError = messageFor(error);
             }
@@ -4999,12 +5001,18 @@ function isStringArray(value: unknown): value is readonly string[] {
   return Array.isArray(value) && value.every((entry: unknown) => typeof entry === "string");
 }
 
+/** The topics the caller named, as it named them, or undefined when it named none. */
+function namedTopicsFor(parameters: Record<string, unknown>): readonly string[] | undefined {
+  const value = parameters.topics;
+  if (value === undefined) return undefined;
+  if (!isStringArray(value)) throw new TypeError("topics must be strings");
+  return value;
+}
+
 function topicsFor(
   parameters: Record<string, unknown>,
   fallback: readonly string[] = []
 ): readonly string[] {
-  const value = parameters.topics;
-  if (value === undefined) return fallback;
-  if (!isStringArray(value)) throw new TypeError("topics must be strings");
-  return expandSubscriptionTopics(value);
+  const named = namedTopicsFor(parameters);
+  return named === undefined ? fallback : expandSubscriptionTopics(named);
 }

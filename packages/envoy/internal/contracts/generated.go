@@ -151,15 +151,14 @@ func ControllerRoleToken(project string) string {
 	return "legion-" + project + "-controller"
 }
 
-// UncapturedTopicRefusal is what a caller that named topic, a notification topic no stream
-// subject captures and no role lane (bus.Client.ReachesNoSession), is told: nothing would ever be
-// delivered to sessionID on it. POST /v1/interests/subscribe leaves such a topic out of the
-// registration and names it in this warning (splitUncapturedTopics in cmd/listener), and either
-// plugin's explicit subscribe refuses such a topic in the same words. Generated from
-// uncapturedTopicRefusal in packages/contracts, which both plugins build their refusal from, so
-// the listener and the hosts cannot word it apart.
-func UncapturedTopicRefusal(topic, sessionID string) string {
-	return topic + " was not registered: no stream subject captures it, so nothing would be delivered to " + sessionID + " on it; follow a notifications.team.<name> topic instead"
+// UncapturedTopicWarning is the warning POST /v1/interests/subscribe answers for topic, a
+// notification topic that no stream subject captures yet, that is no role lane and that reaches
+// no private stream subject: the registration keeps it for sessionID, in the row and in the
+// session's consumer filter, and nothing is delivered on it until a stream subject captures it
+// (uncapturedTopics in cmd/listener). Generated from uncapturedTopicWarning in
+// packages/contracts, so the listener and the plugins' tests read one sentence.
+func UncapturedTopicWarning(topic, sessionID string) string {
+	return topic + " is registered, but no stream subject captures it yet, so nothing is delivered to " + sessionID + " on it until one does; to hear what agents publish, follow a notifications.team.<name> topic"
 }
 
 // DeliveryDuplicateWindow is how long a repeated delivery is recognised as a duplicate, by the

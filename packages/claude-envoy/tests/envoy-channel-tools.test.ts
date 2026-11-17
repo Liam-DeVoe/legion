@@ -33,7 +33,7 @@ function sessionWith(followed: string[]): ChannelSession {
     follow: async (topics) => {
       const fresh = topics.filter((topic) => !followed.includes(topic))
       followed.push(...fresh)
-      return fresh
+      return { added: fresh, warnings: [] }
     },
     unfollow: async () => [],
     rememberRole: async () => undefined,

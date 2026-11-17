@@ -487,9 +487,10 @@ order; that relay, not a subscription of this plugin's, is where the session's m
   session switch moves the relay to another id and drops the old subject, nothing answers and
   the send reads `stopped`.
 - The answer's one mode is `consumer` (`takeDeliveryAnswer`), and the relay carries the agent
-  subject and every followed topic, each of which the stream stores (`streamStores`; the listener
-  drops any other `notifications.` topic from the registration and names it in a warning, so a
-  row an earlier build left still registers). A registration the listener can
+  subject and every followed topic the listener stored. No client judges whether the stream
+  stores a topic: the listener judges it on a fresh read of the deployed stream's subjects, and
+  keeps a topic nothing captures yet with a warning, so a row an earlier build left still
+  registers. A registration the listener can
   give no consumer is refused by name, with one of the reasons `ErrorWireSchema.reason` lists
   (`@legion/envoy-client`'s `transport.ts`), and nothing is registered: the session starts with
   Envoy inbound unavailable, says so, and asks again at each heartbeat. There is no second path to fall back to.
@@ -603,16 +604,19 @@ subject and every topic it follows, a role-bound one included, but one reaching 
 subject that is not this session's (`reachesPrivateStreamSubject`: another session's agent
 subject, a failed-delivery lane, another project's Legion controller lane, or a wildcard reaching
 one, the listener's own rule, which it would leave out of the row and warn about on every
-heartbeat), and one nothing would ever be delivered on (`streamDeliversNothing`: a
-`notifications.` topic the stream does not capture, a role lane apart), which the listener
-stores for no session: it leaves such a topic out of the row and warns about it. The session
-still follows such a topic — the stored interest row and the transcript both bring one back —
-and it never reaches the listener, so it draws no warning of its own. A caller that names one
-itself is refused by name instead: `envoy_subscribe` answers `uncapturedTopicRefusal`, the
-listener's own warning for that topic, and follows nothing of that call. Which subjects a
-restore follows again is the sibling rule
-`replayFollowedSubjects`. The listener filters the session's consumer on exactly the registered
-subjects, so a followed topic that got there is one the consumer can deliver. A topic followed
+heartbeat). No topic is left out because the stream subjects this build was compiled with
+capture nothing of it: during a roll the deployed stream holds a newer build's subjects too, and
+only the listener reads them. A topic left out of the registration would stay out of the
+consumer's filter, and the consumer would move past every message stored on it. The listener
+keeps a topic no stream subject captures yet in the row and in the filter, and warns
+(`uncapturedTopicWarning` in `@legion/contracts`). `envoy_subscribe` follows every topic its
+caller names and shows the listener's warnings in its result (`Warnings: ...`, and
+`details.warnings`), less the uncaptured-topic warning of each topic the caller did not name: the
+base a named `X.>` adds, and every topic the session already followed (`warningsForNamedTopics`).
+A heartbeat's warnings are shown nowhere. Which subjects a restore follows
+again is the sibling rule `replayFollowedSubjects`. The listener filters the session's consumer on
+the registered subjects, so a followed topic that got there is one the consumer can deliver once
+a stream subject captures it. A topic followed
 now brings up no older history: the consumer keeps its position when its filter changes, so the
 topic starts there.
 
@@ -1334,7 +1338,7 @@ and arms nothing — an unknown ask state never nudges.
 | Event subjects | `../contracts/src/subject.ts` | Canonical subject construction |
 | Real end-to-end delivery smoke | `scripts/smoke-delivery.sh`, `scripts/smoke-btw.sh`, `scripts/README.md` | Manual installed-plugin smokes against live Envoy; `smoke-btw.sh` creates a targeted Dispatch BTW or Steer attempt and verifies its correlated reply |
 | Consumer delivery | `extensions/envoy.ts` (`createRelay`, `deliverRelayed`, `takeDeliveryAnswer`, `renewRelayEpoch`), `src/missed-messages.ts` (`CONSUMER_STATE_ENTRY`, `consumerSnapshot`), `../envoy-client/src/consumer-delivery.ts`, `../../scripts/e2e/envoy-session-delivery.sh` | The listener's relay of the session's durable consumer ("Consumer delivery" above): the relay subscription and epoch, the frame's `received`, `progress`, `done` and `nak`, and the persisted resume point; the live proof is the repository's `scripts/e2e/envoy-session-delivery.sh` (`scripts/e2e/README.md`) |
-| Each frame shown once | `extensions/envoy.ts`, `src/missed-messages.ts`, `src/unwritten-frames.ts` (`UnwrittenFrames`: the cards and turns handed and not yet written, each claim's settle and release), `../envoy-client/src/delivery-ledger.ts` | The ledger of what this session was shown and the notices it raises ("Each frame shown once" above); the ledger is `@legion/envoy-client/delivery-ledger`'s and the subject rules both plugins share (`registrationTopics`, `replayFollowedSubjects`, `rememberedTopics`, `reachesPrivateStreamSubject`, `streamDeliversNothing`) are `@legion/envoy-client/stream-topics`'s; this package holds its cards and transcript entries |
+| Each frame shown once | `extensions/envoy.ts`, `src/missed-messages.ts`, `src/unwritten-frames.ts` (`UnwrittenFrames`: the cards and turns handed and not yet written, each claim's settle and release), `../envoy-client/src/delivery-ledger.ts` | The ledger of what this session was shown and the notices it raises ("Each frame shown once" above); the ledger is `@legion/envoy-client/delivery-ledger`'s and the subject rules both plugins share (`registrationTopics`, `replayFollowedSubjects`, `rememberedTopics`, `reachesPrivateStreamSubject`) are `@legion/envoy-client/stream-topics`'s; this package holds its cards and transcript entries |
 | NATS stall test | `extensions/envoy.test.ts` (the row `a session whose NATS path freezes subscribes its relay subject again …`, `-t "NATS path freezes"`), `../envoy-client/test/stall-proxy.ts`, `../envoy-client/test/envoy-stack.ts`, `../envoy-client/test/stall-scenario.ts` | Runs only with `LEGION_E2E_ENVOY_STACK=1` (CI's `envoy-session-stall` job), and needs `go` on `PATH` to build natsd and the listener from `packages/envoy`: with the gate set, a missing `go` or a failed build fails the row rather than skipping it. The real extension registers against that listener (its row shows `plugin` and `plugin_version`), which answers `consumer`, and the proxy freezes its NATS path. Within 60 s the connection nats.js dials in place of the frozen one subscribes the relay subject again (natsd's `/connz`), the session registers a new epoch (its `envoy_sessions` entry), and the message sent during the freeze and one sent after it are each shown once, neither as a replay: the freeze and what it checks are `runFreezeScenario`, which claude-envoy's stall test runs too. Without `renewRelayEpoch` on the `reconnect` status the message sent during the freeze is never shown |
 
 ## Critical conventions

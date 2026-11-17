@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test"
-import { uncapturedTopicRefusal } from "@legion/contracts"
-import { EnvoyApiError } from "@legion/envoy-client/transport"
-import { startChannelSession } from "../src/envoy-channel-server"
+import { uncapturedTopicWarning } from "@legion/contracts"
+import { EnvoyApiError, type EnvoyClient } from "@legion/envoy-client/transport"
+import { executeEnvoyTool, startChannelSession } from "../src/envoy-channel-server"
 import { SessionIdentity, sessionHandoffFile, writeSessionHandoff } from "../src/session-identity"
 import {
   directSubject,
@@ -108,7 +108,7 @@ test("a resumed server rebuilds the interests its session id already registered 
     // The relay subject (consumer delivery) is the whole subscription set: a registered topic is
     // what the session's consumer is filtered on, never a subscription of its own.
     expect([...nats.subscriptions.keys()]).toEqual(["notifications.envoy.deliver.ses_claude"])
-    expect(await session.follow([issueTopic])).toEqual([])
+    expect(await session.follow([issueTopic])).toEqual({ added: [], warnings: [] })
   } finally {
     await session.shutdown()
   }
@@ -647,57 +647,95 @@ test("a Dispatch subscription removal that names no topics removes nothing", asy
   }
 })
 
-// A topic the stream captures nothing of is left out of every registration
-// (`registrationTopics`), since the listener stores none: it drops such a topic from the row and
-// names it in a warning (INFRA-771). It is followed all the same when it came back from the
-// interest row a resume reads, and `follow`, which is the tool's call and nothing else, refuses
-// one its caller named itself, in the listener's own words.
-test("never registers a topic no stream subject captures, however it was followed", async () => {
+// No topic is judged uncaptured here on the stream subjects this build was compiled with: the
+// listener judges that on the deployed stream's, which during a roll hold a newer build's too, so
+// every followed topic is registered (`registrationTopics`). The caller of the `envoy_subscribe`
+// tool is shown the listener's uncaptured-topic warning only for a topic it named: not for the
+// base an `X.>` adds (`expandSubscriptionTopics`), nor for a topic the session already followed
+// (`warningsForNamedTopics`). `notifications.x.y` stands for a topic only a newer build's subject
+// captures (`notifications.x.>`, which this build does not compile).
+test("registers a topic no compiled stream subject captures, however it was followed, and shows the listener's warning only for a topic the caller named", async () => {
   const calls: string[] = []
   const nats = new FakeNats(calls)
   const stateDirectory = scratchState()
+  // What the listener, reading the deployed stream, finds nothing captures yet.
+  const uncaptured = new Set([
+    "notifications.team",
+    "notifications.lxspec.probe",
+    "notifications.y.z",
+  ])
   const subscribes: Array<readonly string[]> = []
   const client = recordingClient(calls, {
     getInterest: async () => ({
       ...noInterest(),
       // The row an earlier build left: it expanded `notifications.team.>` to the bare base
-      // beside it, which this build's stream captures nothing of.
+      // beside it, which no stream subject captures.
       topics: [directSubject, "notifications.team", "notifications.team.deploys"],
     }),
     subscribe: async (input) => {
       subscribes.push(input.topics)
-      return noInterest()
+      return {
+        ...noInterest(),
+        warnings: input.topics
+          .filter((topic) => uncaptured.has(topic))
+          .map((topic) => uncapturedTopicWarning(topic, input.sessionID)),
+      }
     },
   })
+  const identity = new SessionIdentity("ses_claude", "/tmp")
   const session = await startChannelSession(
-    sessionOptions(new SessionIdentity("ses_claude", "/tmp"), stateDirectory, {
-      connection: nats,
-      client,
-    }),
+    sessionOptions(identity, stateDirectory, { connection: nats, client }),
   )
 
   try {
-    // The bare base came back with the row and is followed; no registration carried it.
+    // The bare base came back with the row, is followed, and every registration carries it.
     expect(session.topics()).toEqual([
       directSubject,
       "notifications.team",
       "notifications.team.deploys",
     ])
-    expect(subscribes).toEqual([[directSubject, "notifications.team.deploys"]])
+    expect(subscribes).toEqual([
+      [directSubject, "notifications.team", "notifications.team.deploys"],
+    ])
 
-    // The caller named the uncaptured topic itself, so the call is refused by name, in the one
-    // sentence the listener's own warning is generated from, and follows nothing of that call.
-    await expect(
-      session.follow(["notifications.lxspec.probe", "notifications.team.>"]),
-    ).rejects.toThrow(uncapturedTopicRefusal("notifications.lxspec.probe", "ses_claude"))
-    expect(session.topics()).not.toContain("notifications.lxspec.probe")
+    const subscribe = (topics: readonly string[]) =>
+      executeEnvoyTool(
+        { identity, client: client as unknown as EnvoyClient, session, clientInstanceID: "x" },
+        "envoy_subscribe",
+        { topics },
+      )
 
-    expect(await session.follow(["notifications.team.>"])).toEqual(["notifications.team.>"])
+    // A wildcard whose base no stream subject captures: the base is registered, and its warning,
+    // like the restored `notifications.team`'s, is not shown, since the caller named neither.
+    expect(await subscribe(["notifications.y.z.>"])).not.toHaveProperty("warnings")
     expect(subscribes.at(-1)).toEqual([
       directSubject,
+      "notifications.team",
       "notifications.team.deploys",
-      "notifications.team.>",
+      "notifications.y.z",
+      "notifications.y.z.>",
     ])
+
+    // A topic the caller named itself still has its warning shown, and that one alone.
+    expect(await subscribe(["notifications.x.y", "notifications.lxspec.probe"])).toMatchObject({
+      warnings: [uncapturedTopicWarning("notifications.lxspec.probe", "ses_claude")],
+    })
+    expect(session.topics()).toEqual(
+      expect.arrayContaining(["notifications.x.y", "notifications.lxspec.probe"]),
+    )
+    expect(subscribes.at(-1)).toEqual(
+      expect.arrayContaining([
+        "notifications.team",
+        "notifications.x.y",
+        "notifications.lxspec.probe",
+      ]),
+    )
+
+    // `follow` answers the same: the base's warning is left out, a named topic's kept.
+    expect(await session.follow(["notifications.w.v.>", "notifications.lxspec.probe"])).toEqual({
+      added: ["notifications.w.v", "notifications.w.v.>"],
+      warnings: [uncapturedTopicWarning("notifications.lxspec.probe", "ses_claude")],
+    })
   } finally {
     await session.shutdown()
   }

@@ -91,7 +91,7 @@ import {
   legionControllerNoticeSubject,
   SUBJECT_MAX_BYTES,
   SUBJECT_SEGMENT_REPLACED,
-  uncapturedTopicRefusal,
+  uncapturedTopicWarning,
 } from "../src/subject";
 import { renderDispatchTools } from "./gen-go-tools";
 
@@ -173,13 +173,13 @@ const controllerRoleToken = goConcat(
   splitAtSentinels(controllerToken(projectSentinel), projectSentinel),
   ["project"]
 );
-// The refusal interpolates a topic and a session id, reading neither, so any text that appears
+// The warning interpolates a topic and a session id, reading neither, so any text that appears
 // nowhere else in the sentence stands in for them.
 const topicSentinel = "zztopiczz";
 const sessionSentinel = "zzsessionzz";
-const uncapturedTopicRefusalText = goConcat(
+const uncapturedTopicWarningText = goConcat(
   splitAtSentinels(
-    uncapturedTopicRefusal(topicSentinel, sessionSentinel),
+    uncapturedTopicWarning(topicSentinel, sessionSentinel),
     topicSentinel,
     sessionSentinel
   ),
@@ -243,15 +243,14 @@ func ControllerRoleToken(project string) string {
 	return ${controllerRoleToken}
 }
 
-// UncapturedTopicRefusal is what a caller that named topic, a notification topic no stream
-// subject captures and no role lane (bus.Client.ReachesNoSession), is told: nothing would ever be
-// delivered to sessionID on it. POST /v1/interests/subscribe leaves such a topic out of the
-// registration and names it in this warning (splitUncapturedTopics in cmd/listener), and either
-// plugin's explicit subscribe refuses such a topic in the same words. Generated from
-// uncapturedTopicRefusal in packages/contracts, which both plugins build their refusal from, so
-// the listener and the hosts cannot word it apart.
-func UncapturedTopicRefusal(topic, sessionID string) string {
-	return ${uncapturedTopicRefusalText}
+// UncapturedTopicWarning is the warning POST /v1/interests/subscribe answers for topic, a
+// notification topic that no stream subject captures yet, that is no role lane and that reaches
+// no private stream subject: the registration keeps it for sessionID, in the row and in the
+// session's consumer filter, and nothing is delivered on it until a stream subject captures it
+// (uncapturedTopics in cmd/listener). Generated from uncapturedTopicWarning in
+// packages/contracts, so the listener and the plugins' tests read one sentence.
+func UncapturedTopicWarning(topic, sessionID string) string {
+	return ${uncapturedTopicWarningText}
 }
 
 // DeliveryDuplicateWindow is how long a repeated delivery is recognised as a duplicate, by the

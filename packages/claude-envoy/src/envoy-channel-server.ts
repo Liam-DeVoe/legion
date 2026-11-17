@@ -54,10 +54,10 @@ import {
 } from "@legion/envoy-client/session-settings"
 import { postSlackReply } from "@legion/envoy-client/slack-post"
 import {
-  refuseUncapturedTopics,
   registrationTopics,
   rememberedTopics,
   replayFollowedSubjects,
+  warningsForNamedTopics,
 } from "@legion/envoy-client/stream-topics"
 import {
   EnvoyToolOperation,
@@ -284,12 +284,26 @@ export interface ChannelDeliveryPath extends ChannelDelivery {
   notice(content: string, addressed?: string): Promise<void>
 }
 
+/** What `ChannelSession.follow` answers. */
+export interface FollowResult {
+  /** The concrete subjects this call followed that the session did not follow before. */
+  readonly added: readonly string[]
+  /**
+   * The listener's warnings for the registration this call sent, in its own words, less the
+   * uncaptured-topic warning of each topic the caller did not name (`warningsForNamedTopics`).
+   */
+  readonly warnings: readonly string[]
+}
+
 export interface ChannelSession {
   readonly delivery: ChannelDelivery
   /** Every subject this session follows, direct route included. */
   topics(): readonly string[]
-  /** Follow Envoy topics and refresh the registry interest; returns the topics that were new. */
-  follow(topics: readonly string[]): Promise<readonly string[]>
+  /**
+   * Follow Envoy topics and refresh the registry interest. Answers the topics that were new and
+   * the listener's warnings for that registration (`FollowResult.warnings`).
+   */
+  follow(topics: readonly string[]): Promise<FollowResult>
   /** Stop following user-selected topics while retaining the direct session route. */
   unfollow(topics: readonly string[]): Promise<readonly string[]>
   /** Persist the role held by an explicit envoy_role_set call, or by the Legion claim. */
@@ -1064,12 +1078,12 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
   /**
    * Advertise the current id and topics; runs only inside `serialized`. The title is also stamped
    * for the `dispatch` command (`options.stampTitle`) whenever it or the id changes. The rest is
-   * the sequence every host shares, `registerWithRelay`: the topics the listener will store for
-   * this session (`registrationTopics`), taken by the relay as followed first, the relay's
-   * delivery request, the outage told once, and the answer's consumer taken
-   * (`takeDeliveryAnswer`).
+   * the sequence every host shares, `registerWithRelay`: the topics this session's registration
+   * carries (`registrationTopics`), taken by the relay as followed first, the relay's delivery
+   * request, the outage told once, and the answer's consumer taken (`takeDeliveryAnswer`). It
+   * answers the listener's answer, whose `warnings` `follow` hands to the tool.
    */
-  const register = async (): Promise<void> => {
+  const register = async (): Promise<SubscribeResult> => {
     const title = options.title?.(identity.id) ?? ""
     if (
       options.stampTitle !== undefined &&
@@ -1092,7 +1106,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
     }
     const sessionID = identity.id
     const asking = relay?.sessionID === sessionID ? relay : undefined
-    await registerWithRelay({
+    return registerWithRelay({
       relay: asking?.delivery,
       ownAgentSubject: directSubject,
       followed: followedTopics.topics(),
@@ -1718,15 +1732,13 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
     delivery,
     topics: () => followedTopics.topics(),
     async follow(topics) {
-      // A topic no stream subject captures is followed but never registered, since the listener
-      // stores none: it drops such a topic from the row and names it in a warning
-      // (`registrationTopics`). This call is a caller naming the topic by hand — the tool, and
-      // nothing else: a stored row and a restored state reach `followedTopics.follow` instead —
-      // so it is refused by name, in the listener's own words, rather than leaving the session
-      // following a subject nothing is ever delivered on. A private stream subject is left out
-      // of the registration without a word, as it always was (`refuseUncapturedTopics`).
-      refuseUncapturedTopics(identity.id, directSubject, topics)
-      if (shuttingDown) return []
+      // Every topic named here is followed, and the registration carries each one but a private
+      // stream subject that is not this session's (`registrationTopics`), a topic no stream
+      // subject this build was compiled with captures included: the listener judges capture on
+      // the deployed stream's subjects. Its warnings are handed back for the tool to show, less
+      // the uncaptured-topic warning of a topic the caller did not name: the base an `X.>` adds,
+      // or a topic the session already followed. The listener still logs each of them.
+      if (shuttingDown) return { added: [], warnings: [] }
       const fresh: string[] = []
       for (const topic of expandSubscriptionTopics(topics)) {
         if (topic === directSubject || userTopics.has(topic)) continue
@@ -1735,13 +1747,13 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
         fresh.push(topic)
       }
       await options.connection.flush()
-      await serialized(register)
+      const registered = await serialized(register)
       if (fresh.length > 0) {
         // Recorded at once, so a restart follows the topic again; the relay takes frames stored
         // from this follow on, never the stream's older ones (`setFollowed`).
         await ledger.followedChanged()
       }
-      return fresh
+      return { added: fresh, warnings: warningsForNamedTopics(registered.warnings ?? [], topics) }
     },
     async unfollow(topics) {
       const requested = topics.length === 0 ? [...userTopics] : expandSubscriptionTopics(topics)
@@ -1872,8 +1884,11 @@ export async function executeEnvoyTool(
     }
     case EnvoyToolOperation.subscribe: {
       const args = parseArguments(spec, input)
-      await runtime.session.follow(args.topics)
-      return runtime.client.getInterest(identity.id)
+      const { warnings } = await runtime.session.follow(args.topics)
+      const interest = await runtime.client.getInterest(identity.id)
+      // The listener's warnings, as pi-envoy's `envoy_subscribe` shows them: each topic it left
+      // out of the row, and each topic the caller named that no stream subject captures yet.
+      return warnings.length === 0 ? interest : { ...interest, warnings }
     }
     case EnvoyToolOperation.unsubscribe: {
       const args = parseArguments(spec, input)

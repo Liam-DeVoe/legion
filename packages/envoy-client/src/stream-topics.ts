@@ -1,101 +1,12 @@
 import {
   AGENT_TOPIC_PREFIX,
-  DISPATCH_TOPIC_PREFIX,
-  GHOSTWISPR_TOPIC_PREFIX,
   LEGION_NOTICE_TOPIC_PREFIX,
   ROLE_TOPIC_PREFIX,
-  uncapturedTopicRefusal,
+  uncapturedTopicWarning,
 } from "@legion/contracts";
 
 /** The topic a failed delivery's report goes to is this prefix followed by the original topic. */
 export const EXCEPTION_TOPIC_PREFIX = "notifications.envoy.exceptions.";
-
-/**
- * The literal prefixes of the subjects the notification stream (`ENVOY_NOTIFICATIONS`) stores, as
- * the listener's binary compiles them (`streamSubjects` in packages/envoy/internal/bus/stream.go,
- * each a prefix followed by `>`). A session's consumer relays its agent subject and every followed
- * topic under one of them; a topic under none is one the listener's publish route refuses by
- * name and its registration route stores for nobody, since nothing would store it.
- */
-const STREAM_SUBJECT_PREFIXES = [
-  AGENT_TOPIC_PREFIX,
-  DISPATCH_TOPIC_PREFIX,
-  "notifications.github.",
-  "notifications.slack.",
-  LEGION_NOTICE_TOPIC_PREFIX,
-  GHOSTWISPR_TOPIC_PREFIX,
-  "notifications.whatsapp.",
-  "notifications.team.",
-  `${EXCEPTION_TOPIC_PREFIX}${AGENT_TOPIC_PREFIX}`,
-  `${EXCEPTION_TOPIC_PREFIX}notifications.team.`,
-] as const;
-
-/**
- * Whether the stream stores a publish to `topic`, read as the listener's `bus.StreamCaptures`
- * reads it: the topic extends one of the stream's prefixes by at least one token. A `*` or `>` in
- * the topic is read literally, so `notifications.dispatch.issue.X.>` is stored.
- */
-export function streamStores(topic: string): boolean {
-  return STREAM_SUBJECT_PREFIXES.some(
-    (prefix) => topic.length > prefix.length && topic.startsWith(prefix)
-  );
-}
-
-/**
- * Whether nothing would ever be delivered to a session on `topic`: a `notifications.` topic no
- * stream subject captures and that is no role lane (`bus.Client.ReachesNoSession` in
- * packages/envoy/internal/bus). A session takes its messages from its own consumer, which holds
- * what the stream stored, so such an interest would be stored and deliver nothing. A role lane
- * still travels over core NATS and is registered by its holder (POST /v1/roles/set).
- *
- * POST /v1/interests/subscribe leaves such a topic out of the registration and names it in a
- * warning, the rest of the registration stored; POST /v1/messages/publish refuses such a publish
- * by name.
- */
-export function streamDeliversNothing(topic: string): boolean {
-  return (
-    topic.startsWith("notifications.") &&
-    !topic.startsWith(ROLE_TOPIC_PREFIX) &&
-    !streamStores(topic)
-  );
-}
-
-/**
- * Whether a host's subscribe tool refuses `topic` outright: the caller named a topic nothing
- * would ever be delivered on (`streamDeliversNothing`) and the listener would not have left it
- * out as a private stream subject first (`reachesPrivateStreamSubject`, which covers a wildcard
- * such as `notifications.>` or `notifications.*.x`). The listener judges a registration's topics
- * in that order too, warning about a private one as a private one (`subscribeHandler` in
- * packages/envoy/cmd/listener/api.go). A private subject stays followed and merely unregistered,
- * as it always was: a host opens one itself, a fork parent's agent subject among them, where
- * nothing but a caller ever names a topic the stream captures nothing of.
- */
-function subscribeRefusesTopic(ownAgentSubject: string, topic: string): boolean {
-  return streamDeliversNothing(topic) && !reachesPrivateStreamSubject(ownAgentSubject, topic);
-}
-
-/**
- * Throws when a host's subscribe tool was handed a topic it refuses (`subscribeRefusesTopic`),
- * naming every such topic in the listener's own words. Both hosts' tools call it on what their
- * caller named — `envoy_subscribe` in pi-envoy, `follow` in claude-envoy — so a caller reads the
- * same sentence from either, and neither follows a subject nothing is ever delivered on. The
- * sentence is written once, as `uncapturedTopicRefusal` in `@legion/contracts`, which
- * `packages/contracts/scripts/gen-go.ts` emits as `contracts.UncapturedTopicRefusal` for the
- * listener's own warning (`splitUncapturedTopics`), so the tool and the registration read alike:
- * a registration carries topics nobody typed — a stored row, a restored transcript — and is
- * answered with a warning, where a tool call is a caller asking for this one topic by name. A
- * topic a stored row or a restored transcript carries never comes here: those are followed and
- * left out of the registration instead (`registrationTopics`).
- */
-export function refuseUncapturedTopics(
-  sessionID: string,
-  ownAgentSubject: string,
-  topics: readonly string[]
-): void {
-  const uncaptured = topics.filter((topic) => subscribeRefusesTopic(ownAgentSubject, topic));
-  if (uncaptured.length === 0) return;
-  throw new Error(uncaptured.map((topic) => uncapturedTopicRefusal(topic, sessionID)).join("; "));
-}
 
 /**
  * The stream subjects whose topics carry one agent session's private payload: each session's
@@ -175,24 +86,22 @@ export function reachesPrivateStreamSubject(
 
 /**
  * The topics a registration carries, for every host that builds one: the session's own agent
- * subject, which its consumer is always filtered on, and every topic it follows that the
- * listener will store for it. Two are left out, and a host that followed one still follows it:
- * it just never goes to the listener.
+ * subject, which its consumer is always filtered on, and every topic it follows except one
+ * reaching a private stream subject that is not this session's (`reachesPrivateStreamSubject`).
+ * The listener leaves such a topic out of the stored row itself, answering a warning, so a host
+ * that followed one still follows it: it just never goes to the listener.
  *
- * A topic reaching a private stream subject that is not this session's
- * (`reachesPrivateStreamSubject`) is left out because the listener leaves it out of the stored
- * row itself, answering a warning.
- *
- * A topic nothing would ever be delivered on (`streamDeliversNothing`) is left out because the
- * listener stores none: it leaves such a topic out of the row and names it in a warning, so a
- * registration carrying one would draw that warning at every heartbeat, for as long as anything
- * still names it. A host cannot refuse it where a topic is first followed and be done: a topic
- * also comes back from the listener's own stored row and from the transcript the host restores
- * (INFRA-771 review), and a row written by an earlier build holds `notifications.team`, the bare
- * base that build expanded `notifications.team.>` to, which this build's stream captures
- * nothing of. Filtering here is the one place every registration passes through. A caller that
- * names such a topic itself is refused by name instead, at the host's own subscribe tool
- * (`uncapturedTopicRefusal`).
+ * No topic is left out because the stream subjects this build was compiled with capture nothing
+ * of it. The listener judges that on a fresh read of the deployed stream's subjects
+ * (`uncapturedTopics` in packages/envoy/cmd/listener/api.go), which during a roll hold the
+ * subjects a newer build added. A topic only those capture, left out here, would stay out of the
+ * session's consumer filter, and the consumer would move past every message stored on it. The
+ * listener keeps a topic no stream subject captures in the row and in the filter, and warns
+ * (`uncapturedTopicWarning` in `@legion/contracts`). No older listener this plugin works with
+ * refuses a registration for such a topic. A listener built from #2603 until it kept them leaves
+ * the topic out with a warning of its own and stores the rest of the registration. One built from
+ * #2446 (the oldest this plugin needs) until #2603 stores the topic and filters the consumer only
+ * on what its own compiled subjects capture.
  */
 export function registrationTopics(
   ownAgentSubject: string,
@@ -203,12 +112,53 @@ export function registrationTopics(
     ...new Set([
       ownAgentSubject,
       ...[...followed].filter(
-        (topic) =>
-          !reachesPrivateStreamSubject(ownAgentSubject, topic, roles) &&
-          !streamDeliversNothing(topic)
+        (topic) => !reachesPrivateStreamSubject(ownAgentSubject, topic, roles)
       ),
     ]),
   ];
+}
+
+/** Stands for the session id in `uncapturedTopicWarning`'s text; no warning holds it. */
+const WARNING_SESSION_SENTINEL = "\u0000";
+
+/**
+ * Whether `warning` is the listener's uncaptured-topic warning for `topic`: the text
+ * `uncapturedTopicWarning` builds for that topic, whatever session id it names.
+ */
+function isUncapturedTopicWarning(warning: string, topic: string): boolean {
+  const [head = "", tail = ""] = uncapturedTopicWarning(topic, WARNING_SESSION_SENTINEL).split(
+    WARNING_SESSION_SENTINEL
+  );
+  return (
+    warning.length > head.length + tail.length && warning.startsWith(head) && warning.endsWith(tail)
+  );
+}
+
+/**
+ * The listener's warnings a host's subscribe tool shows its caller, out of all those it answered
+ * the registration with: every warning but the uncaptured-topic warning for a topic the caller did
+ * not name in this call. A registration carries topics nobody named there: the base `X` that
+ * `expandSubscriptionTopics` adds for a named `X.>`, and every topic the session already follows.
+ * Each stays registered, so that nothing stored on it is lost once a stream subject captures it,
+ * and the listener still logs its warning. The caller is shown only the warnings for what it named.
+ *
+ * A warning names its topic first, and a NATS subject holds no space, so the text before the first
+ * space is the topic, and the warning is that topic's uncaptured-topic warning only when it is the
+ * whole text `uncapturedTopicWarning` builds for it. The listener's answer carries no structured
+ * field to match on. Every other warning (a private stream subject, a GitHub topic's spelling or
+ * wiring) is shown whatever it names. A listener built before `uncapturedTopicWarning` words its
+ * warning otherwise, and that warning is shown too.
+ */
+export function warningsForNamedTopics(
+  warnings: readonly string[],
+  named: readonly string[]
+): string[] {
+  return warnings.filter((warning) => {
+    const space = warning.indexOf(" ");
+    if (space <= 0) return true;
+    const topic = warning.slice(0, space);
+    return named.includes(topic) || !isUncapturedTopicWarning(warning, topic);
+  });
 }
 
 /**

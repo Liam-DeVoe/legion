@@ -1150,7 +1150,7 @@ describe("one registration", () => {
     };
   }
 
-  test("carries the topics the listener will store, and takes the answer", async () => {
+  test("carries every followed topic but another session's private one, and takes the answer", async () => {
     const relay = fakeRelay();
     const told: string[] = [];
     const answers: string[] = [];
@@ -1159,8 +1159,8 @@ describe("one registration", () => {
     const result = await registerWithRelay({
       relay,
       ownAgentSubject: AGENT,
-      // The bare base a stored row or a transcript brings back: the listener stores it for no
-      // session and warns about it, so it never goes out (INFRA-771 review).
+      // The bare base a stored row or a transcript brings back goes too: no stream subject this
+      // build compiles captures it, and the listener, which reads the deployed stream's, judges it.
       followed: [TEAM, UNCAPTURED, "notifications.agent.ses_b"],
       outage: inboundUnavailable((why) => told.push(why)),
       send: (topics, delivery) => {
@@ -1170,8 +1170,8 @@ describe("one registration", () => {
       answered: (answer) => answers.push(answer),
     });
 
-    expect(sent).toEqual([{ topics: [AGENT, TEAM], epoch: "epoch-1" }]);
-    expect(relay.followed).toEqual([[AGENT, TEAM]]);
+    expect(sent).toEqual([{ topics: [AGENT, TEAM, UNCAPTURED], epoch: "epoch-1" }]);
+    expect(relay.followed).toEqual([[AGENT, TEAM, UNCAPTURED]]);
     expect([result, answers, told]).toEqual(["registered", ["registered"], []]);
   });
 

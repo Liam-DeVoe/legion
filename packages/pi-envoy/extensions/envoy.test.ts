@@ -31,7 +31,7 @@ import { delimiter, dirname, join } from "node:path";
 import {
   dispatchIssueSubject,
   type SessionAnswer,
-  uncapturedTopicRefusal,
+  uncapturedTopicWarning,
 } from "@legion/contracts";
 import {
   askgateState,
@@ -11300,33 +11300,46 @@ console.log(JSON.stringify(args));
     ]);
   });
 
-  // A topic the stream captures nothing of is left out of every registration
-  // (`registrationTopics`), since the listener stores none: it drops such a topic from the row
-  // and names it in a warning (INFRA-771). It is followed all the same when it came back from
-  // the interest row or the transcript a restore reads, and refused by name when a caller named
-  // it itself, in the listener's own words.
-  test("never registers a topic no stream subject captures, however it was followed", async () => {
+  // No topic is judged uncaptured here on the stream subjects this build was compiled with: the
+  // listener judges that on the deployed stream's, which during a roll hold a newer build's too,
+  // so every followed topic is registered (`registrationTopics`). The caller is shown the
+  // listener's uncaptured-topic warning only for a topic it named: not for the base an `X.>` adds
+  // (`expandSubscriptionTopics`), nor for a topic the session already followed
+  // (`warningsForNamedTopics`). `notifications.x.y` stands for a topic only a newer build's
+  // subject captures (`notifications.x.>`, which this build does not compile).
+  test("registers a topic no compiled stream subject captures, however it was followed, and shows the listener's warning only for a topic the caller named", async () => {
+    const session = "ses_uncaptured";
+    // What the listener, reading the deployed stream, finds nothing captures yet.
+    const uncaptured = new Set([
+      "notifications.team",
+      "notifications.lxspec.probe",
+      "notifications.y.z",
+    ]);
     const registrations: string[][] = [];
-    const carried: string[] = [];
     globalThis.fetch = async (input, init) => {
       const url = new URL(input.toString());
-      const body = init?.body === undefined ? undefined : JSON.parse(init.body.toString());
       if (url.pathname === "/v1/interests/subscribe") {
-        const topics: string[] = Array.isArray(body?.topics) ? body.topics : [];
-        registrations.push(topics);
-        // What the listener would drop from the row it stores and warn about (cmd/listener's
-        // subscribeHandler); none is expected to reach it at all.
-        carried.push(
-          ...topics.filter(
-            (topic) => topic === "notifications.team" || topic === "notifications.lxspec.probe"
-          )
-        );
-      }
-      if (url.pathname === "/v1/interests/ses_uncaptured") {
-        // The row an earlier build left: it expanded `notifications.team.>` to the bare base
-        // beside it, which this build's stream captures nothing of.
+        const body = JSON.parse(init?.body?.toString() ?? "{}") as {
+          readonly dir: string;
+          readonly topics: readonly string[];
+        };
+        registrations.push([...body.topics]);
         return response({
-          session_id: "ses_uncaptured",
+          session_id: session,
+          machine_id: "test",
+          dir: body.dir,
+          topics: body.topics,
+          warnings: body.topics
+            .filter((topic) => uncaptured.has(topic))
+            .map((topic) => uncapturedTopicWarning(topic, session)),
+          delivery: consumerDelivery(session, { streamID: TEST_STREAM_ID }),
+        });
+      }
+      if (url.pathname === `/v1/interests/${session}`) {
+        // The row an earlier build left: it expanded `notifications.team.>` to the bare base
+        // beside it, which no stream subject captures.
+        return response({
+          session_id: session,
           machine_id: "test",
           dir: "/tmp",
           topics: ["notifications.team", "notifications.team.deploys"],
@@ -11339,7 +11352,7 @@ console.log(JSON.stringify(args));
     envoyExtension(fixture.pi);
     // A resumed session, which is what reads its stored interest row again and follows what it
     // holds (`recoverRegisteredInterests`).
-    const base = sessionContext("ses_uncaptured");
+    const base = sessionContext(session);
     const context = {
       ...base,
       sessionManager: { ...base.sessionManager, getBranch: () => [{}] },
@@ -11348,36 +11361,51 @@ console.log(JSON.stringify(args));
     const subscribeTool = fixture.tools.find((tool) => tool.name === "envoy_subscribe");
     if (subscribeTool === undefined) throw new Error("envoy_subscribe was not registered");
 
-    const refused = await subscribeTool.execute("", {
-      topics: ["notifications.lxspec.probe", "notifications.team.>"],
+    // A wildcard whose base no stream subject captures: the base is registered, and its warning,
+    // like the restored `notifications.team`'s, is not shown, since the caller named neither.
+    const wildcard = await subscribeTool.execute("", { topics: ["notifications.y.z.>"] });
+
+    expect(wildcard.isError).toBeFalsy();
+    expect(wildcard.details).toMatchObject({ added: ["notifications.y.z", "notifications.y.z.>"] });
+    expect(wildcard.details).not.toHaveProperty("warnings");
+    expect(wildcard.content[0]?.text).not.toContain("Warnings:");
+    expect(registrations.at(-1)).toEqual(
+      expect.arrayContaining(["notifications.team", "notifications.y.z", "notifications.y.z.>"])
+    );
+
+    const subscribed = await subscribeTool.execute("", {
+      topics: ["notifications.x.y", "notifications.lxspec.probe"],
     });
 
-    // The caller named the uncaptured topic itself, so the tool refuses it by name, in the one
-    // sentence the listener's own warning is generated from, and follows nothing of that call.
-    expect(refused.isError).toBe(true);
-    expect(refused.content[0]?.text).toContain(
-      uncapturedTopicRefusal("notifications.lxspec.probe", "ses_uncaptured")
-    );
-    expect(await followedTopics(fixture.tools, context)).not.toContain(
-      "notifications.lxspec.probe"
-    );
-
-    const subscribed = await subscribeTool.execute("", { topics: ["notifications.team.>"] });
-
+    // A topic the caller named itself still has its warning shown, and that one alone.
     expect(subscribed.isError).toBeFalsy();
-    expect(subscribed.details).toMatchObject({ added: ["notifications.team.>"] });
-    // The bare base the restore brought back is followed, and never carried to the listener.
+    expect(subscribed.details).toMatchObject({
+      added: ["notifications.x.y", "notifications.lxspec.probe"],
+      warnings: [uncapturedTopicWarning("notifications.lxspec.probe", session)],
+    });
+    expect(subscribed.content[0]?.text).toEndWith(
+      `\nWarnings: ${uncapturedTopicWarning("notifications.lxspec.probe", session)}`
+    );
     const followed = await followedTopics(fixture.tools, context);
-    expect(followed).toContain("notifications.team");
-    expect(carried).toEqual([]);
+    expect(followed).toEqual(
+      expect.arrayContaining([
+        "notifications.team",
+        "notifications.x.y",
+        "notifications.lxspec.probe",
+      ])
+    );
+    // Every registration carries the bare base the restore brought back, and the last one every
+    // topic the caller named.
     expect(registrations.length).toBeGreaterThan(0);
-    for (const topics of registrations) {
-      expect(topics).not.toContain("notifications.team");
-      expect(topics).not.toContain("notifications.lxspec.probe");
-    }
-    const registered = registrations.at(-1) ?? [];
-    expect(registered).toContain("notifications.team.>");
-    expect(registered).toContain("notifications.team.deploys");
+    for (const topics of registrations) expect(topics).toContain("notifications.team");
+    expect(registrations.at(-1)).toEqual(
+      expect.arrayContaining([
+        "notifications.team",
+        "notifications.team.deploys",
+        "notifications.x.y",
+        "notifications.lxspec.probe",
+      ])
+    );
   });
 
   test("unsubscribes role-shaped subscriptions locally without releasing the held role", async () => {

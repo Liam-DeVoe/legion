@@ -27,7 +27,7 @@ come from ("Session consumers" in
 before it registers, and every registration asks for consumer delivery with the relay's epoch
 (one per NATS connection; a nats.js `reconnect` begins another and registers at once,
 `renewRelayEpoch`) and its resume point. The answer's one mode is `consumer`, and the relay
-carries the agent subject and every followed topic, each of which the stream stores, in stream
+carries what the stream stored on the agent subject and on every followed topic, in stream
 order: each frame is answered `received`
 as it decodes, goes to the server's write queue, and is answered `done` once the
 notifier resolved its write and the ledger recorded it (`deliverRelayed`), at once for a frame
@@ -70,17 +70,20 @@ which subjects the session follows (`replayFollowedSubjects`: the agent subject 
 topic but a role's or one reaching a private stream subject), which remembered topics come back
 at start (`rememberedTopics`), when a `subscription.removed` frame closes a topic and takes it
 out of the registry, and which topics a registration carries (`registrationTopics`: the
-session's own agent subject and every followed topic the listener will store for it, leaving out
-one reaching a private stream subject that is not this session's — `reachesPrivateStreamSubject`,
-the listener's rule: another session's agent subject, a failed-delivery lane, a controller notice
-lane of a project whose controller role this session does not hold, or a wildcard reaching one —
-and one nothing would ever be delivered on, `streamDeliversNothing`, which the listener stores
-for no session: it leaves such a topic out of the row and warns about it, so a topic the session
-follows from its row or its remembered state wedges nothing); those rules are
+session's own agent subject and every followed topic, leaving out one reaching a private stream
+subject that is not this session's — `reachesPrivateStreamSubject`, the listener's rule: another
+session's agent subject, a failed-delivery lane, a controller notice lane of a project whose
+controller role this session does not hold, or a wildcard reaching one); those rules are
 `@legion/envoy-client/stream-topics`'s, and this server keeps only how it shows a card, where it
-warns, and its file. A caller that names such a topic itself is refused by name: `follow`, which
-is the `envoy_subscribe` tool's call and nothing else, throws `uncapturedTopicRefusal`, the
-listener's own warning for that topic, and follows nothing of that call.
+warns, and its file. No topic is left out because the stream subjects this build was compiled
+with capture nothing of it: the listener judges that on a fresh read of the deployed stream's
+subjects, which during a roll hold a newer build's too, and keeps a topic nothing captures yet in
+the row and in the consumer's filter, with a warning (`uncapturedTopicWarning` in
+`@legion/contracts`). `follow`, which is the `envoy_subscribe` tool's call and nothing else,
+follows every topic its caller names and answers the listener's warnings for its registration
+(`FollowResult`), which the tool returns beside the session's interest as `warnings`. It leaves
+out the uncaptured-topic warning of each topic the caller did not name: the base a named `X.>`
+adds, and every topic the session already followed (`warningsForNamedTopics`).
 
 `runEnvoyChannelServer` dials NATS with the shared options of
 `@legion/envoy-client/nats-connection` (`natsConnectionOptions`): a ping every 10 s and the
