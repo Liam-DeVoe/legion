@@ -878,11 +878,14 @@ type PullRequest struct {
 	// task says the commit is unknown and the agent reads it from GitHub (workflow.checkTask).
 	MergeSHA string
 	// Task is the plan's task whose work the pull request carries (PlanTask.Task), for an issue
-	// with plan rows: written when the row is first written, at the opened pull request, and kept
-	// by every later write of the row as it was read. The first step of a new generation rewrites
-	// it (CarryPlan), since an open pull request outlives the clear of a generation and the new
-	// plan's task can have another id. "" for an issue with no plan rows, and on every row the
-	// release before the column wrote.
+	// with plan rows. Four writes name it, and every other write of the row keeps it as it was
+	// read: the row's first write, at the opened pull request (workflow's pullRequestOpened); the
+	// carry of a plan into a new generation (CarryPlan), where the carried plan has exactly one
+	// task; the first step of a run (workflow's planFirstStep), since an open pull request
+	// outlives the clear of a generation and the new run's task can have another id; and the start
+	// of the task a later version put in the place of a stopped one (workflow's restartTask), whose
+	// id is its own. The last two write it through workflow's nameTaskOnPullRequest. "" for an
+	// issue with no plan rows, and on every row the release before the column wrote.
 	Task string
 }
 
