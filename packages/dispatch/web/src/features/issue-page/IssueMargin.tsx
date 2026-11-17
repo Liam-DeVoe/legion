@@ -32,7 +32,7 @@ import { IssueComponentsLine } from "../issue/IssueComponentsLine";
 import { IssueLabels } from "../issue/IssueLabels";
 import { stateForIssue } from "../issue/pins";
 import { RepoControl } from "../issue/RepoControl";
-import { IssuePriorityLine } from "../priorities/IssuePriorityLine";
+import { addPriorityControlName, IssuePriorityLine } from "../priorities/IssuePriorityLine";
 import { AgentName } from "../refs/AgentName";
 import { listedEdges, ReferencedBy } from "../refs/ReferencedBy";
 import { referencesQuery } from "../refs/reference-target";
@@ -242,21 +242,45 @@ export function IssueMarginPanel({
   const referencesRead = useQuery({ ...referencesQuery(issueReference), enabled: false });
   const referencesListed = listedEdges(referencesRead.data?.edges, issueReference, true)?.length;
   // The line of a read that failed goes once the read answers, and the focus its Retry held goes
-  // on in the row rather than to the page: in Blocked by to the row's control, found by its name
-  // as the add menu finds it (`blockedByControlName`), or where the row draws none - on a closed
-  // issue, or while its editor is open - to the first issue the row waits on; in Blocks, which
-  // has no control, to the first issue the answer drew, or else to the None it says.
+  // on in the row rather than to the page. In Blocked by it goes to the row's control, found by
+  // its name as the add menu finds it (`blockedByControlName`); where the row draws none - on a
+  // closed issue, or while its editor is open - to the first issue the row waits on; and where
+  // it waits on none while the editor is open, as another session's write can leave it, to the
+  // editor's box. In Blocks, which has no control, it goes to the first issue the answer drew,
+  // or else to the None it says.
   const blockedByValue = useRef<HTMLDivElement>(null);
   const titlesRetryLeft = useFocusHandOff(
     () =>
       blockedByValue.current?.querySelector<HTMLElement>(
         `[aria-label="${CSS.escape(blockedByControlName(issue.key, blockers.length))}"]`
-      ) ?? blockedByValue.current?.querySelector<HTMLElement>("a[href]")
+      ) ??
+      blockedByValue.current?.querySelector<HTMLElement>("a[href]") ??
+      blockedByValue.current?.querySelector<HTMLElement>("#issue-blocked-by")
   );
   const blocksValue = useRef<HTMLDivElement>(null);
   const blocksNone = useRef<HTMLSpanElement>(null);
   const blocksRetryLeft = useFocusHandOff(
     () => blocksValue.current?.querySelector<HTMLElement>("a[href]") ?? blocksNone.current
+  );
+  // Details draws the priority's line in one of two places: beside Add while the issue advances
+  // none, and in the Advances row once it advances one. The first priority added and the last one
+  // removed take the line out of the place that held the focus, and the focus goes on to the line
+  // in its other place rather than to the page. Out of the place beside Add it goes to the
+  // Advances row's add control: the add control beside Add is where the focus is once an add
+  // lands, so the reader stays on the control of that name, whose next press adds another, with
+  // Remove of what they added just before it; a line at the cap draws no add control, and there
+  // it goes to the row's first priority. Out of the Advances row it goes to the add control
+  // beside Add, the one control the line draws there.
+  const advancesValue = useRef<HTMLDivElement>(null);
+  const addRow = useRef<HTMLDivElement>(null);
+  const priorityAddSelector = `[aria-label="${CSS.escape(addPriorityControlName(issue.key))}"]`;
+  const priorityBesideAddLeft = useFocusHandOff(
+    () =>
+      advancesValue.current?.querySelector<HTMLElement>(priorityAddSelector) ??
+      advancesValue.current?.querySelector<HTMLElement>("a[href]")
+  );
+  const priorityRowLeft = useFocusHandOff(() =>
+    addRow.current?.querySelector<HTMLElement>(priorityAddSelector)
   );
   // Approve and Request changes are here wherever no approval request waits on the reader,
   // and in the header while one does: the approvals are all this reads of the count, so it
@@ -340,10 +364,18 @@ export function IssueMarginPanel({
         </Row>
         {/* The priorities the issue advances, with the control that adds and removes one: an
             issue that advances none draws no such row, and its control stands beside the add
-            control below. */}
+            control below, where a focus in the row moves on as the last one goes
+            (`useFocusHandOff`). */}
         {advances.length === 0 ? null : (
-          <Row glyph="↗" label={PROPERTY_LABELS.advances} testId="issue-advances">
-            <IssuePriorityLine disabled={isClosed} inRow issue={issue} />
+          <Row
+            glyph="↗"
+            label={PROPERTY_LABELS.advances}
+            testId="issue-advances"
+            valueRef={advancesValue}
+          >
+            <div className="contents" ref={priorityRowLeft}>
+              <IssuePriorityLine disabled={isClosed} inRow issue={issue} />
+            </div>
           </Row>
         )}
         {/* The parent's own control first, which opens its editor in this row: the header's Set
@@ -516,8 +548,10 @@ export function IssueMarginPanel({
         )}
         {/* The one add control, which lists every field this issue has no value for and opens
             its control; and, while the issue advances no priority, the control that adds one,
-            which is the priority row (`IssuePriorityLine`) with nothing in it yet. */}
-        <div className="flex min-w-0 flex-wrap items-center gap-2 py-2">
+            which is the priority row (`IssuePriorityLine`) with nothing in it yet. The focus it
+            holds as the first priority moves the line goes on to the Advances row
+            (`useFocusHandOff`). */}
+        <div className="flex min-w-0 flex-wrap items-center gap-2 py-2" ref={addRow}>
           <IssueAddMenu
             drawerBox={drawerBox}
             isClosed={isClosed}
@@ -526,7 +560,7 @@ export function IssueMarginPanel({
             panel={panel}
           />
           {advances.length === 0 ? (
-            <div className="contents" data-testid="issue-advances">
+            <div className="contents" data-testid="issue-advances" ref={priorityBesideAddLeft}>
               <IssuePriorityLine disabled={isClosed} inRow issue={issue} />
             </div>
           ) : null}
