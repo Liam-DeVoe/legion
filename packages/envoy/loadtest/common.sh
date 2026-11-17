@@ -2,7 +2,10 @@
 # common.sh: what run-step.sh, run-series.sh and stack.sh share (README.md). They source it. Not
 # executable.
 #
-# die MESSAGE prints MESSAGE, prefixed with the script's name, and exits 1. note MESSAGE prints
+# die MESSAGE prints MESSAGE, prefixed with the script's name, and exits 1. When
+# LOADTEST_DIE_FILE names a file, die also writes that line there, in place of what the file held:
+# run-step.sh points it at a file of its own for each attempt, so the refusal of a stack.sh it
+# starts, or of a command substitution, reaches the step's not-run record. note MESSAGE prints
 # MESSAGE with the same prefix and goes on. usage prints the script's header comment, from its
 # second line to its `set -euo` line, and exits 2. abs_file FLAG FILE prints FILE's absolute path
 # and dies, naming FLAG, when FILE is not a file. sha256_of FILE prints FILE's sha256, and
@@ -53,14 +56,14 @@
 # refused at once; while it sees none, it tries the lock for up to 3 s, and is admitted when the
 # lock is freed in that time. It tries on descriptor 8 and moves the lock to 9 only once it has it,
 # so a waiting caller never holds descriptor 9 on the file. A refused caller exits 1 before it
-# touches the stack, naming the root and the holder: the record's pid, once the file holds a
-# complete record whose pid runs in this PID namespace; or else the processes here that still hold
-# descriptor 9 on the file (the children of a holder that has exited); or else, when this PID
-# namespace shows neither (a holder in another PID namespace, such as another Legion role in this
-# pod on a shared root), the pid, start time and command that the lock file records for that run,
-# and that the lock file must stay. The record's pid is trusted only when the record's PID
-# namespace is this one. stack.sh closes descriptor 9 in every stack process that it starts, so no
-# stack process keeps the lock.
+# touches the stack, and the one message it dies with names the root and the holder: the record's
+# pid, once the file holds a complete record whose pid runs in this PID namespace; or else the
+# processes here that still hold descriptor 9 on the file (the children of a holder that has
+# exited); or else, when this PID namespace shows neither (a holder in another PID namespace, such
+# as another Legion role in this pod on a shared root), the pid, start time and command that the
+# lock file records for that run, and that the lock file must stay. The record's pid is trusted
+# only when the record's PID namespace is this one. stack.sh closes descriptor 9 in every stack
+# process that it starts, so no stack process keeps the lock.
 #
 # prepare_stack runs stack.sh setup (an incremental build of SRC, and of DISPATCH_SRC's
 # envoy-dispatch), start and seed, each of which does nothing when its work is already done, and the
@@ -69,6 +72,15 @@
 # ("<commit> <dirty>"). run-step.sh calls it before a step that is not part of a series;
 # run-series.sh calls it once, before its first step.
 #
+# A step's window (README.md, "Acting at a moment of the window"): not_run_record DIR is the path
+# of the not-run record of the step whose directory is DIR, DIR.not-run.json, which run-step.sh
+# writes at every exit before the step's window opens. window_start DIR [AFTER] prints the window
+# start that DIR/meta.json names, once it names one; with AFTER, a Unix time, only a start at or
+# after it. pid_started_at PID prints the Unix second at which process PID started, from /proc.
+# wait_for_window STEP PID waits for the window of the step that process PID runs: it prints the
+# window start once meta.json names one, and returns 1 as soon as PID has ended without it, saying
+# why from the step's not-run record. A script that acts at a moment of the window waits with it.
+#
 # The replay's inputs (README.md, The replay): stack.sh replay-get and cluster.sh replay-prepare
 # both download and verify the manifest's parts with replay_fetch_parts and replay_get_bundle
 # below. The manifest names no issue; LOADTEST_REPLAY_ISSUE names the one the parts are file
@@ -76,6 +88,9 @@
 
 die() {
   printf '%s: %s\n' "${0##*/}" "$*" >&2
+  if [ -n "${LOADTEST_DIE_FILE:-}" ]; then
+    { printf '%s: %s\n' "${0##*/}" "$*" >"$LOADTEST_DIE_FILE"; } 2>/dev/null || true
+  fi
   exit 1
 }
 
@@ -476,7 +491,7 @@ lock_root() {
       [ -n "$holders" ] && break
     fi
   done
-  local me=${0##*/} pid ns run
+  local pid ns run held
   pid=$(lock_field pid "$record")
   ns=$(lock_record_ns "$record")
   # A pid of another PID namespace is not written as "pid N": here, pid N is an unrelated process.
@@ -487,8 +502,10 @@ lock_root() {
   fi
   run+=", started $(lock_field started "$record"): $(lock_field command "$record")"
   $runs || [ -n "$holders" ] || holders=$(lock_holders "$file")
+  # One message names the holder and the rule, so a step's not-run record (run-step.sh), which
+  # keeps the message a refusal dies with, names the holder too.
   if $runs; then
-    printf '%s: LOADTEST_ROOT %s is in use by another run (%s)\n' "$me" "$root" "$run" >&2
+    held="LOADTEST_ROOT $root is in use by another run ($run)"
   elif [ -n "$holders" ]; then
     local taker="left no record in the lock file"
     if [ -n "$pid" ]; then
@@ -498,8 +515,7 @@ lock_root() {
         *) taker="($run) wrote no PID namespace in its record, so its pid is not trusted" ;;
       esac
     fi
-    printf '%s: LOADTEST_ROOT %s is in use by another run: %s holds its lock; the run that took it %s\n' \
-      "$me" "$root" "$holders" "$taker" >&2
+    held="LOADTEST_ROOT $root is in use by another run: $holders holds its lock; the run that took it $taker"
   else
     # The lock is held, yet this PID namespace shows no holder: neither the record's pid nor a
     # process with descriptor 9 on the file.
@@ -511,10 +527,9 @@ lock_root() {
         *) named="the lock file names that run as $run, in a record without its PID namespace" ;;
       esac
     fi
-    printf '%s: LOADTEST_ROOT %s is locked by a process that is not visible in this PID namespace, such as a run in another PID namespace (another Legion role in this pod on a shared LOADTEST_ROOT); %s. Do not remove %s: that run still holds it, and a run that locked a new lock file would reset the stack under it\n' \
-      "$me" "$root" "$named" "$file" >&2
+    held="LOADTEST_ROOT $root is locked by a process that is not visible in this PID namespace, such as a run in another PID namespace (another Legion role in this pod on a shared LOADTEST_ROOT); $named. Do not remove $file: that run still holds it, and a run that locked a new lock file would reset the stack under it"
   fi
-  die "one run at a time per root ($file): wait for that run to end, or use another LOADTEST_ROOT"
+  die "$held. One run at a time per root ($file): wait for that run to end, or use another LOADTEST_ROOT"
 }
 
 # build_migration_versions prints the version of each migration in directory $1, one per line: the
@@ -586,6 +601,90 @@ prepare_stack() {
   fi
   seed_migration_check "$ROOT/seed.meta.json" "$build_versions" "$build_what" "$only_highest"
   BUILD=$("$stack" build-info)
+}
+
+# ---- a step's window -----------------------------------------------------------------------------
+
+# not_run_record DIR: the path of the not-run record of the step whose directory is DIR (README.md,
+# "Run one step"): beside that directory and never in it, so the record never makes a later run of
+# the step refuse a directory that already holds a step.
+not_run_record() { printf '%s.not-run.json\n' "${1%/}"; }
+
+# window_start DIR [AFTER]: the window start that DIR/meta.json names, as it names it (RFC 3339),
+# once `loadgen run` has written one; until then meta.json is absent or holds Go's zero time (year
+# 0001). With AFTER, a Unix time, a start before that second is not taken. Status 1 when there is
+# no start to print.
+window_start() {
+  local start at
+  start=$(jq -er '.window_start | select(type == "string" and (startswith("0001") | not))' "$1/meta.json" 2>/dev/null) ||
+    return 1
+  if [ -n "${2:-}" ]; then
+    at=$(date -d "$start" +%s 2>/dev/null) || return 1
+    ((at >= $2)) || return 1
+  fi
+  printf '%s\n' "$start"
+}
+
+# pid_started_at PID: the Unix second at which process PID started, /proc/stat's boot time plus the
+# start time in clock ticks that /proc/PID/stat holds. Both are rounded down, so it is never later
+# than the true start. Status 1 when /proc does not show PID.
+pid_started_at() {
+  local stat btime ticks
+  local -a fields
+  [[ $1 =~ ^[0-9]+$ ]] || return 1
+  { read -r stat <"/proc/$1/stat"; } 2>/dev/null || return 1
+  # The fields after the command's closing parenthesis start at the third, the state; the start
+  # time is the 22nd.
+  read -ra fields <<<"${stat##*) }"
+  btime=$(awk '$1 == "btime" { print $2 }' /proc/stat 2>/dev/null) || return 1
+  ticks=$(getconf CLK_TCK 2>/dev/null) || return 1
+  [[ ${fields[19]:-} =~ ^[0-9]+$ && $btime =~ ^[0-9]+$ && $ticks =~ ^[1-9][0-9]*$ ]] || return 1
+  printf '%s\n' "$((btime + fields[19] / ticks))"
+}
+
+# wait_for_window STEP PID: wait for the window of the step that process PID runs (run-step.sh, or a
+# script that runs it), STEP being the step's name, for $ROOT/runs/<name> (resolve_paths sets
+# ROOT), or its directory, a path with a /, for a step run with --out. It checks PID every 0.1 s and
+# reads the step's meta.json every 0.5 s, since a jq run costs the box more than a read of /proc:
+#
+# - once meta.json names a window that started at or after PID did, it prints that start, as
+#   meta.json writes it, and returns 0. A window that started before PID did is an earlier run's,
+#   left in a step directory that this run refuses, and is not taken;
+# - once PID has ended (exited, or a zombie) first, it returns 1 at once, so within a second of the
+#   end, saying why on stderr: the exit status and reason of the step's not-run record
+#   (not_run_record), or, when there is none, that PID ended before the window without one (a step
+#   killed by SIGKILL, or one that run-step.sh did not run). A step that opened its window just
+#   before it ended has its start printed.
+wait_for_window() {
+  local dir=$1 pid=$2 started start record why tick=0
+  case $dir in
+    */*) dir=${dir%/} ;;
+    *) dir=$ROOT/runs/$dir ;;
+  esac
+  # Read while PID runs: /proc forgets a process that has ended.
+  started=$(pid_started_at "$pid") || started=""
+  while lock_pid_alive "$pid"; do
+    if ((tick++ % 5 == 0)) && start=$(window_start "$dir" "$started"); then
+      printf '%s\n' "$start"
+      return 0
+    fi
+    sleep 0.1
+  done
+  # The record first: run-step.sh removes the record as it starts and writes it before it exits,
+  # so a record here is this run's, whatever an earlier run left in meta.json.
+  record=$(not_run_record "$dir")
+  if [ -f "$record" ]; then
+    why=$(jq -r '"run-step.sh exited \(.exit_status // "on a signal") at \(.at): \(.reason)"' "$record" 2>/dev/null) ||
+      why="its record cannot be read"
+    note "step $dir did not open its window: $why (see $record)"
+    return 1
+  fi
+  if start=$(window_start "$dir" "$started"); then
+    printf '%s\n' "$start"
+    return 0
+  fi
+  note "step $dir did not open its window: pid $pid ended before it and left no not-run record ($record), so it was killed (SIGKILL) or not run by run-step.sh"
+  return 1
 }
 
 # random_hex N: N random bytes in hex.

@@ -99,10 +99,10 @@ same step before and after its change, and compares the two rows.
 | `run-step.sh` | The one command for a named step |
 | `run-series.sh` | The series of six steps, 0.25x to 10x |
 | `restart-step.sh` | One step whose listener is killed in the middle of the window, and its report (The listener restart, below) |
-| `common.sh` | What the step scripts share, sourced by each: the `LOADTEST_ROOT`, `LOADTEST_SRC` and `LOADTEST_DISPATCH_SRC` paths, the run lock (One run at a time, below), and the setup, start, seed and migration check before a step. The CPU lists' checks (`check_cpu_lists`, `check_cpu_affinity`; Environment, below), the server list's CPU count (`server_cpu_count`), Dispatch's `GOMAXPROCS` and its refusal (`gomaxprocs`), and the refusal a step's `meta.json` gives (`gomaxprocs_refusal`). Also the replay's download and verify of the manifest's parts, file artifacts of `LOADTEST_REPLAY_ISSUE` (`replay_fetch_parts`, `replay_get_bundle`), which `stack.sh replay-get` and `cluster/cluster.sh replay-prepare` both call |
+| `common.sh` | What the step scripts share, sourced by each: the `LOADTEST_ROOT`, `LOADTEST_SRC` and `LOADTEST_DISPATCH_SRC` paths, the run lock (One run at a time, below), and the setup, start, seed and migration check before a step. The CPU lists' checks (`check_cpu_lists`, `check_cpu_affinity`; Environment, below), the server list's CPU count (`server_cpu_count`), Dispatch's `GOMAXPROCS` and its refusal (`gomaxprocs`), the refusal a step's `meta.json` gives (`gomaxprocs_refusal`), and the wait for a step's window, which a step that ends without one ends at once with its not-run record (`wait_for_window`, `not_run_record`, `window_start`; Acting at a moment of the window, below). Also the replay's download and verify of the manifest's parts, file artifacts of `LOADTEST_REPLAY_ISSUE` (`replay_fetch_parts`, `replay_get_bundle`), which `stack.sh replay-get` and `cluster/cluster.sh replay-prepare` both call |
 | `*_test.go` | Unit tests. They need no Postgres and no NATS: `cd packages/envoy && go test ./loadtest/` |
-| `run-step.test.sh` | The test of the run lock, and of the refusals a step makes before its build: a `--replay` step's flags, CPU lists that overlap or that `taskset` refuses, and a `LOADTEST_GOMAXPROCS` (`--gomaxprocs`) other than the server list's CPU count; and, on a faked `stack.sh`, that a step `loadgen run` refused for a `GOMAXPROCS` other than that count closes on that refusal. It fakes `go` and `uv` and needs no stack: `cd packages/envoy && bash loadtest/run-step.test.sh` |
-| `common.test.sh` | The test of `lock_root`: a series step keeps the lock after its parent dies, a refusal names the live holder, a token without the holder's descriptor is refused, a lock held by a process that this PID namespace cannot see is refused as held (never as free), a caller takes the lock once its holder has ended, two callers waiting at once never name each other as the holder, and a record of another PID namespace whose pid runs here is refused without naming that pid. Also of the ports, the CPU lists' checks, the decision whether a CPU pin binds (`affinity_verdict`, driven with given times), and Dispatch's `GOMAXPROCS`: its default, the refusal of one that is not the server list's CPU count, and the refusal of a step whose `meta.json` records one (`gomaxprocs`, `gomaxprocs_refusal`). It needs no stack: `cd packages/envoy && bash loadtest/common.test.sh` |
+| `run-step.test.sh` | The test of the run lock, and of the refusals a step makes before its build: a `--replay` step's flags, CPU lists that overlap or that `taskset` refuses, and a `LOADTEST_GOMAXPROCS` (`--gomaxprocs`) other than the server list's CPU count; on a faked `stack.sh`, that a step `loadgen run` refused for a `GOMAXPROCS` other than that count closes on that refusal; that a step refused at a flag, at the lock another run holds, in its build, by its setup, at that refusal, or whose `loadgen run` ended before its window, leaves its not-run record, which never makes a later run of the step refuse it; and that `wait_for_window` gives the start of the window a step opens, or the record within a second of the end of a step that opens none. It fakes `go` and `uv` and needs no stack: `cd packages/envoy && bash loadtest/run-step.test.sh` |
+| `common.test.sh` | The test of `lock_root`: a series step keeps the lock after its parent dies, a refusal names the live holder, a token without the holder's descriptor is refused, a lock held by a process that this PID namespace cannot see is refused as held (never as free), a caller takes the lock once its holder has ended, two callers waiting at once never name each other as the holder, and a record of another PID namespace whose pid runs here is refused without naming that pid. Also of the ports, the CPU lists' checks, the decision whether a CPU pin binds (`affinity_verdict`, driven with given times), Dispatch's `GOMAXPROCS`: its default, the refusal of one that is not the server list's CPU count, and the refusal of a step whose `meta.json` records one (`gomaxprocs`, `gomaxprocs_refusal`), and `wait_for_window`: the window start, never an earlier run's, and the not-run record within a second of the end of a step that opens no window. It needs no stack: `cd packages/envoy && bash loadtest/common.test.sh` |
 | `cluster/cluster.sh` | The load test on a full-size copy in a Kubernetes namespace (Running on a cluster copy, below) |
 | `cluster/manifests/` | The copy's templates: `postgres.yaml`, `dispatch.yaml`, `listener.yaml`, `runner.yaml`, `secrets.yaml.tmpl`, and `nats.yaml`, the committed render of chart `nats/nats` 2.15.1 |
 | `cluster/render-nats.sh`, `cluster/nats-values.yaml` | The render of `manifests/nats.yaml` from the chart and its values, with every image pinned by digest |
@@ -367,6 +367,21 @@ first; `TABLES.md` says so before its first table.
 
 To run a step name again, remove its step directory first.
 
+**A step that never opens its window leaves a not-run record.**
+Every exit of `run-step.sh` before the window opens writes `<step dir>.not-run.json` beside the step directory: `$LOADTEST_ROOT/runs/<name>.not-run.json`, or `<dir>.not-run.json` under `--out <dir>`.
+Whatever refuses the step writes it: a flag, the lock another run holds (the reason names that run), a step directory that already holds a step, the CPU checks, the build, the migration check, the reset, the `GOMAXPROCS` refusal, `loadgen run` ending before the window, or a signal.
+It holds `name`, `step_dir`, `exit_status` (`null` for a signal), `reason`, `at` (UTC) and `last_lines`.
+`reason` is the refusal's own message: the line that `run-step.sh`, or a `stack.sh` it ran, died with, which `die` also writes to the file `LOADTEST_DIE_FILE` names (`common.sh`).
+`last_lines` are the last 40 lines that the step wrote, its standard output and standard error together, which `run-step.sh` copies as it goes.
+An attempt removes the record an earlier one left as it starts, and a run that opens its window leaves none, so a record is the latest attempt's.
+A step that fails after its window opened keeps its step directory and its `summary.json`, as before, and writes no record.
+Only a call with no step name, or with a name that is not one, writes none, and a step killed by `SIGKILL` cannot write one.
+
+The record lies beside the step directory, not in it, so it never makes a later run of the step refuse a directory that already holds a step.
+It is named after the step directory, so the record of a series step lies in the series directory, where that step's directory would be.
+It carries the step's own last lines because the log of the job that ran the step may be gone before anyone reads it.
+So a step missing from a series, or from any job's run of steps, is read from its record, and is not taken for a Dispatch that died.
+
 `loadgen run` also takes `-nats-conns` (default 50), the NATS connections that the sessions share.
 `run-step.sh` does not pass it.
 
@@ -457,6 +472,25 @@ calls of a run, and the `stack.sh restart-dispatch` that `loadgen run -restart-a
 refused, and a series step, with the `loadgen run` that it starts, keeps the root when
 `run-series.sh` is killed. A caller with the token but without the descriptor is refused. No stack
 process holds the lock: `stack.sh` starts each one with descriptor 9 closed.
+
+### Acting at a moment of the window
+
+A job or a script that acts at a moment of a step's window (a restart, a stopped generator, a read of every document) waits for the window with `wait_for_window` from `common.sh`.
+It never writes a loop of its own on a file that a step refused before its window never writes.
+
+```bash
+source packages/envoy/loadtest/common.sh && resolve_paths
+packages/envoy/loadtest/run-step.sh m-stress-2 --events 4 --sessions 400 --requests 60 &
+start=$(wait_for_window m-stress-2 $!) || exit 1 # standard error says why the step did not run
+sleep $(($(date -d "$start" +%s) + 120 - $(date +%s))) # 120 s into the window
+```
+
+`wait_for_window STEP PID` takes the step's name, or its directory for a step run with `--out`, and the pid of the process that runs the step.
+It checks the process every 0.1 s and reads the step's `meta.json` every 0.5 s.
+Once `meta.json` names the window's start, it prints that start as `meta.json` writes it and returns 0.
+A start from before the process started is an earlier run's, left in a step directory that this run refuses, and is not taken.
+Once the process has ended without a window, it returns 1 at once, within a second of the end, and says why on standard error: the exit status and reason of the step's not-run record (Run one step, above), or that the process left none, killed by `SIGKILL` or not a `run-step.sh`.
+`restart-step.sh` waits for its window this way.
 
 ### The set-aside rule
 
@@ -574,6 +608,9 @@ window. Counted from the window start (`meta.json` `window_start`):
 | `--down` (30 s) after the kill | The listener is started again with the same binary, arguments and environment, read from `/proc/<pid>` before the kill. Its output is appended to the stack's listener log and its pid goes into the stack's pidfile, so `stack.sh stop` stops the new one. A start that exits at once (on gVisor the killed listener's port can still be held: `bind: address already in use`) is started again after 1 s. The restart time is the start that stayed up. |
 | The window end | The step ends, and `loadgen restart-report` reads what the run recorded. |
 
+`restart-step.sh` waits for the window start with `wait_for_window` (Acting at a moment of the window, above).
+A step that ends before its window opens ends the script at once, which names the step's not-run record.
+
 The step fails by design: its sampler sees the listener's pid exit, so `summary.json` carries
 `stack_exits` and `run-step.sh` exits non-zero. `restart-step.sh` accepts that one failure and no
 other: a step that exited for anything but the listener it killed fails the script.
@@ -678,6 +715,9 @@ series directory.
 - A failed step stops the series. `run-series.sh` still writes the series `TABLES.md`, over the
   steps that ran (the failed step included when it wrote `summary.json`), and exits with status 1,
   naming the step.
+
+- A step that never opened its window is read from its not-run record in the series directory, `step-<f>x.not-run.json` (Run one step, above).
+  Its directory there is absent, or its `meta.json` names no window.
 
 ## The document-room steps
 
@@ -2274,6 +2314,8 @@ Every percentile in the harness is the lower nearest rank: the value at index
 
 A file that a step could not take is absent, and `run.log` names the reason. The Postgres log stays
 in `$LOADTEST_ROOT/pg/log`, the proxy log in `$LOADTEST_ROOT/logs/proxy.out`.
+
+A step that never opened its window leaves its not-run record beside its directory, `<step dir>.not-run.json` (Run one step, above).
 
 `loadgen tables <step dir>...` renders the tables of one or more steps again. With one directory it
 writes `TABLES.md` in it. With more, it writes `TABLES.md` in the current directory, or the file

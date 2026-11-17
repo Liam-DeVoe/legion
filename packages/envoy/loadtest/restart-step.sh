@@ -172,12 +172,11 @@ rc=0
 step=$!
 trap end_step EXIT
 
-# The window opens once the sessions have registered; meta.json carries its start from then on.
-until jq -e '.window_start | type == "string" and (startswith("0001") | not)' "$out/meta.json" >/dev/null 2>&1; do
-  kill -0 "$step" 2>/dev/null || die "the step ended before its window opened; see $out/run.log"
-  sleep 1
-done
-window_start=$(date -d "$(jq -er .window_start "$out/meta.json")" +%s)
+# The window opens once the sessions have registered; meta.json carries its start from then on
+# (common.sh wait_for_window). A step that ends before it is reported from its not-run record.
+window=$(wait_for_window "$out" "$step") ||
+  die "the step ended before its window opened (above); see $(not_run_record "$out")"
+window_start=$(date -d "$window" +%s)
 note "window starts $(date -u -d "@$window_start" +%FT%TZ); kill at $(date -u -d "@$((window_start + kill_at))" +%FT%TZ)"
 
 if $no_resume; then

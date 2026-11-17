@@ -59,6 +59,15 @@
 # non-zero naming why, and so does this script; it still renders TABLES.md, where the row carries
 # the mark.
 #
+# A step that never opens its window leaves a record of that (README.md, "Run one step"): every
+# exit of this script before the window, whatever refuses it (a flag, the lock another run holds, a
+# step directory that already holds a step, the CPU checks, the build, the migration check, the
+# reset, the GOMAXPROCS refusal, `loadgen run` ending before the window, a signal), writes
+# <step dir>.not-run.json beside the step directory (common.sh not_run_record): the step's name and
+# directory, the exit status, the refusal's own message and the last 40 lines the step wrote. An
+# attempt removes the record an earlier one left as it starts, and one that opens its window leaves
+# none. Only a call with no step name, or with a name that is not one, writes no record.
+#
 # A step whose generator sent more than a tenth over its schedule in a second of the window, or
 # recorded nothing scheduled of a kind it was to send, is set aside (README.md, "The set-aside
 # rule"): neither a pass nor a failure. This script says so first in its closing lines, and
@@ -97,7 +106,86 @@ for flag in "$@"; do
   [ "$flag" = --replay ] && replay=true
 done
 
+# The step directory: the last --out's value (the loop below takes no other), read before any flag
+# is checked, so that the record of a step refused for a flag lies beside the directory it names.
 out=$ROOT/runs/$name
+for ((i = 1; i <= $#; i++)); do
+  case ${!i} in
+    --replay | --heap-samples) ;;
+    --out)
+      i=$((i + 1))
+      if ((i <= $#)) && [ -n "${!i}" ]; then out=${!i}; fi
+      ;;
+    *) i=$((i + 1)) ;;
+  esac
+done
+out=$(realpath -m -- "$out")
+
+# The not-run record of this attempt (finish, below): an earlier attempt's goes now. Everything this
+# script and what it runs write goes to its stdout and stderr through two tees, which append it to
+# the attempt's output file too, and every die, here or in a stack.sh it starts, keeps its message
+# in LOADTEST_DIE_FILE (common.sh). The tees ignore the signals that stop a step, so that its last
+# lines still reach the record, and close descriptor 9, so that they never hold the root's lock
+# that a series step inherits. finish reads only not_run_* globals: bash runs it in the scope of the
+# function that exited, whose locals (lock_root's record, for one) would hide other names.
+not_run_name=$name not_run_dir=$out not_run_file=$(not_run_record "$out")
+rm -f -- "$not_run_file"
+not_run_attempt=$(mktemp -d)
+export LOADTEST_DIE_FILE=$not_run_attempt/refusal
+exec > >(trap '' INT TERM HUP && exec tee -a -- "$not_run_attempt/output" 9>&-)
+not_run_tee_out=$!
+exec 2> >(trap '' INT TERM HUP && exec tee -a -- "$not_run_attempt/output" >&2 9>&-)
+not_run_tee_err=$!
+# step_ours: the step directory held no step when this run checked it, so a window its meta.json
+# names is this run's. dispatch_up: the reset has started Dispatch, which the step stops as it ends.
+step_ours=false dispatch_up=false
+
+# finish, on every exit: stop Dispatch and the listener's latency proxy when the reset started them;
+# then, unless this run's window opened, write the not-run record: the step's name and directory,
+# the exit status (null for a signal, which leaves 0 here and no refusal), the refusal's own
+# message (the last die's, else what the status says) and the last 40 lines the step wrote. It
+# writes no line itself, so a refused step still closes on its refusal. A run whose window opened
+# removes any record of its step instead, such as one a run refused at the lock wrote meanwhile.
+finish() {
+  local status=$? refusal="" opened=false exit_status=null reason lines i
+  set +e
+  # Read before the stop below, whose own refusal would take its place.
+  [ ! -s "$LOADTEST_DIE_FILE" ] || refusal=$(<"$LOADTEST_DIE_FILE")
+  if $dispatch_up; then "$stack" stop dispatch envoy_proxy; fi
+  if $step_ours && window_start "$not_run_dir" >/dev/null; then opened=true; fi
+  # Close this shell's ends of the tees' pipes, and give the tees 5 s to write out what they hold.
+  exec >/dev/null 2>&1
+  for ((i = 0; i < 100; i++)); do
+    lock_pid_alive "$not_run_tee_out" || lock_pid_alive "$not_run_tee_err" || break
+    sleep 0.05
+  done
+  if $opened; then
+    rm -f -- "$not_run_file"
+  else
+    # Every exit of this script before its window is non-zero but one by a signal, for which bash
+    # runs this handler with the status of the last command that ended (0, as a rule), then ends on
+    # the signal: its exit status is not known here.
+    if ((status == 0)); then
+      reason="${0##*/} was stopped by a signal (SIGTERM, SIGINT or SIGHUP) before the window opened"
+    elif [ -n "$refusal" ]; then
+      exit_status=$status reason=$refusal
+    else
+      exit_status=$status
+      reason="${0##*/} exited $status before the window opened, with no refusal of its own: a command it ran failed (last_lines)"
+    fi
+    lines=$(tail -n 40 -- "$not_run_attempt/output")
+    mkdir -p -- "$(dirname -- "$not_run_file")" &&
+      jq -n --arg name "$not_run_name" --arg dir "$not_run_dir" --argjson status "$exit_status" \
+        --arg reason "$reason" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg lines "$lines" \
+        '{name: $name, step_dir: $dir, exit_status: $status, reason: $reason, at: $at,
+          last_lines: (if $lines == "" then [] else ($lines | split("\n")) end)}' >"$not_run_file.tmp" &&
+      mv -f -- "$not_run_file.tmp" "$not_run_file"
+  fi
+  rm -rf -- "$not_run_attempt"
+  exit "$status"
+}
+trap finish EXIT
+
 args=()
 have_events=false have_sessions=false have_requests=false
 manifest="" gomaxprocs="" dispatch_rev=""
@@ -117,7 +205,8 @@ while [ $# -gt 0 ]; do
   value=$2
   shift 2
   if [ "$flag" = --out ]; then
-    out=$value
+    # Read above, before the flags were checked.
+    [ -n "$value" ] || die "--out needs a directory, not ''"
     continue
   fi
   if $replay; then
@@ -192,10 +281,11 @@ check_cpu_pinning
 
 lock_root "$ROOT"
 
-out=$(realpath -m -- "$out")
 if [ -e "$out" ] && [ -n "$(ls -A -- "$out")" ]; then
   die "$out already holds a step; remove it or name another step"
 fi
+# From here the step directory is this run's: a window its meta.json names is this run's (finish).
+step_ours=true
 
 started=$SECONDS
 if $replay; then
@@ -224,7 +314,8 @@ mkdir -p -- "$out"
 # it) and the rest of the stack is idle, so what it shows is other work on the machine. Read after
 # the reset, it would show Dispatch's own start-up work instead.
 box_busy=$("$stack" loadgen box-busy)
-trap '"$stack" stop dispatch envoy_proxy' EXIT
+# finish stops Dispatch and the latency proxy on any exit from here to their stop below.
+dispatch_up=true
 if $replay; then
   "$stack" reset --replay "$out/dispatch.log"
   cp -- "$ROOT/replay/last-reset.json" "$out/last-reset.json"
@@ -235,7 +326,7 @@ fi
 rc=0
 "$stack" loadgen run -name "$name" -out "$out" -build-commit "$commit" -build-dirty="$dirty" -box-busy-before "$box_busy" "${args[@]}" || rc=$?
 "$stack" stop dispatch envoy_proxy
-trap - EXIT
+dispatch_up=false
 cp -- "$ROOT/logs/listener.out" "$out/listener.log"
 cp -- "$ROOT/logs/nats.out" "$out/nats.log"
 [ -z "$LOADTEST_ENVOY_RTT" ] || cp -- "$ROOT/logs/envoy-proxy.out" "$out/envoy-proxy.log"

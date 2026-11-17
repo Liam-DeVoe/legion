@@ -34,7 +34,11 @@
 # durations, no loop timed), and the refusal gives the measurement and names gVisor when
 # /proc/version or dmesg shows it; (m) Dispatch's GOMAXPROCS is the server list's CPU count when the
 # list is set, nproc otherwise, a LOADTEST_GOMAXPROCS that differs from the count is refused naming
-# both, and a step's meta.json that records a GOMAXPROCS other than its list's count is refused.
+# both, and a step's meta.json that records a GOMAXPROCS other than its list's count is refused;
+# (n) wait_for_window prints the window start of a step that opens its window, not the zero time
+# its meta.json holds until then, never takes the window of an earlier run left in the step's
+# directory, and returns non-zero within a second of the end of a step that ends without a window,
+# giving its not-run record's exit status and reason, or saying that it left none.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -668,6 +672,79 @@ case_gomaxprocs() {
   printf 'PASS: GOMAXPROCS follows the server list, and one that differs from its count is refused\n'
 }
 
+# wait_window ROOT STEP PID: wait_for_window STEP PID on ROOT, in a shell that sourced common.sh.
+# Sets rc, out (what it printed) and said (what it said on stderr).
+wait_window() {
+  rc=0
+  out=$(LOADTEST_ROOT="$1" bash -c 'source "$1"; resolve_paths; wait_for_window "$2" "$3"' wait "$helper" "$2" "$3" \
+    2>"${temporary_dir}/wait.err") || rc=$?
+  said=$(<"${temporary_dir}/wait.err")
+}
+
+# case_wait_for_window: a script that acts at a moment of a step's window waits for it with
+# wait_for_window, given the step and the pid of the process that runs it. Each step here is a
+# process that does to the step's directory what run-step.sh does: one opens its window, one ends
+# after it wrote its not-run record beside a directory that held an earlier run, one ends with
+# neither.
+case_wait_for_window() {
+  out=""
+  local root="${temporary_dir}/root-w" dir step ended returned after
+  mkdir -p "${root}/runs"
+
+  # A step that opens its window 1.5 s in, its meta.json holding Go's zero time until then.
+  dir="${root}/runs/opens"
+  bash -c 'mkdir -p "$1"
+    printf "%s\n" "{\"window_start\":\"0001-01-01T00:00:00Z\"}" >"$1/meta.json"
+    sleep 1.5
+    printf "{\"window_start\":\"%s\"}\n" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$1/meta.json"
+    exec sleep 30' opens "$dir" &
+  step=$!
+  pids+=("$step")
+  wait_window "$root" opens "$step"
+  if ((rc != 0)) || [[ $out == 0001* || $out != "$(jq -r .window_start "${dir}/meta.json")" ]]; then
+    out="$out $said" fail "(n) wait_for_window did not print the window start of a step that opened its window (rc $rc)"
+    return
+  fi
+  kill -TERM "$step"
+  wait "$step" 2>/dev/null || true
+
+  # A step whose directory holds an earlier run's meta.json, and that ends 1.5 s in once it has
+  # written its not-run record, as run-step.sh does when that directory makes it refuse the step.
+  dir="${root}/runs/refused"
+  mkdir -p "$dir"
+  printf '%s\n' '{"window_start":"2026-01-01T00:00:00Z"}' >"${dir}/meta.json"
+  bash -c 'sleep 1.5
+    printf "%s\n" "{\"name\":\"refused\",\"exit_status\":1,\"reason\":\"run-step.sh: $1 already holds a step\",\"at\":\"2026-11-17T00:00:00Z\",\"last_lines\":[]}" >"$1.not-run.json"
+    printf "%s\n" "$EPOCHREALTIME" >"$2"
+    exit 1' refused "$dir" "${temporary_dir}/refused-ended" &
+  step=$!
+  pids+=("$step")
+  wait_window "$root" "$dir" "$step"
+  returned=$EPOCHREALTIME
+  ended=$(cat "${temporary_dir}/refused-ended" 2>/dev/null || echo 0)
+  after=$(awk -v a="$ended" -v b="$returned" 'BEGIN { printf "%.2f", b - a }')
+  if ((rc == 0)) || [ -n "$out" ]; then
+    out="$out" fail "(n) wait_for_window took the window of an earlier run left in the directory of a step that never opened its own (rc $rc)"
+    return
+  fi
+  [[ $said == *"run-step.sh exited 1 at 2026-11-17T00:00:00Z: run-step.sh: ${dir} already holds a step"* ]] ||
+    { out="$said" fail "(n) wait_for_window did not give the not-run record's exit status and reason"; return; }
+  awk -v s="$after" 'BEGIN { exit !(s < 1) }' ||
+    { out="$said" fail "(n) wait_for_window returned ${after} s after the step ended, not within a second"; return; }
+
+  # A step that ends with neither a window nor a record.
+  bash -c 'sleep 0.5' gone &
+  step=$!
+  pids+=("$step")
+  wait_window "$root" gone "$step"
+  if ((rc == 0)) || [[ $said != *"pid ${step} ended before it and left no not-run record"* ]]; then
+    out="$out $said" fail "(n) wait_for_window did not say that a step which ended without a window left no record (rc $rc)"
+    return
+  fi
+  out=""
+  printf 'PASS: wait_for_window prints a window start, never an earlier run'"'"'s, and returns within a second (%s s) of a step that ends without one\n' "$after"
+}
+
 failed=0
 case_orphaned_child || failed=$((failed + 1))
 case_stale_record || failed=$((failed + 1))
@@ -683,7 +760,8 @@ case_ephemeral_ports || failed=$((failed + 1))
 case_cpu_lists || failed=$((failed + 1))
 case_cpu_affinity || failed=$((failed + 1))
 case_gomaxprocs || failed=$((failed + 1))
+case_wait_for_window || failed=$((failed + 1))
 if ((failed > 0)); then
-  printf 'FAIL: %d of 14 cases failed\n' "$failed" >&2
+  printf 'FAIL: %d of 15 cases failed\n' "$failed" >&2
   exit 1
 fi

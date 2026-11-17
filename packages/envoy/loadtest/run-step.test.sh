@@ -21,7 +21,14 @@
 # and a series refuse a LOADTEST_GOMAXPROCS (--gomaxprocs) other than the server list's CPU count,
 # naming both numbers, before their build; (h) a step whose loadgen run refused it before its
 # window, for a GOMAXPROCS (meta.json) other than the server list's CPU count, closes on that
-# refusal and not on the generic failure.
+# refusal and not on the generic failure; (i) a step refused at a flag check (also one whose --out
+# comes after the refused flag), at the lock another run holds (naming that run's pid), by the
+# stack.sh setup it runs, at that GOMAXPROCS refusal, and one whose loadgen run ended before its
+# window, each leave a not-run record beside the step directory with their exit status, their
+# reason and their last lines; (j) a run of a step's name after its not-run record is not refused
+# for it, opens its window and leaves no record; (k) common.sh's wait_for_window on a run-step.sh
+# prints the start of the window it opens, and, for one that the stack.sh setup refuses, returns
+# non-zero within a second of the refusal, giving the record's exit status and reason.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -123,11 +130,33 @@ expect_refused() {
   fi
 }
 
+# expect_record WHAT FILE STATUS REASON [LINE]: FILE is the not-run record of the step WHAT names,
+# with exit status STATUS, a reason that holds REASON and, when LINE is given, a last line that holds
+# LINE.
+expect_record() {
+  local what=$1 file=$2 status=$3 reason=$4 line=${5:-}
+  if [[ ! -f $file ]]; then
+    printf 'FAIL: %s left no not-run record at %s\n' "$what" "$file" >&2
+    exit 1
+  fi
+  if ! jq -e --argjson s "$status" --arg r "$reason" --arg l "$line" \
+    '.exit_status == $s and (.reason | contains($r)) and ($l == "" or ([.last_lines[] | select(contains($l))] | length > 0))' \
+    "$file" >/dev/null; then
+    cat "$file" >&2
+    printf 'FAIL: %s: its not-run record does not hold exit status %s, a reason with "%s" and a last line with "%s"\n' \
+      "$what" "$status" "$reason" "$line" >&2
+    exit 1
+  fi
+  printf 'PASS: %s leaves a not-run record with its exit status and reason\n' "$what"
+}
+
 root="${temporary_dir}/root-a"
 start_first "$root" bash "$run_step" first-step "${step_args[@]}"
 expect_refused "$root" "a second run-step.sh on the root of a running run-step.sh" \
   bash "$run_step" second-step "${step_args[@]}"
 printf 'PASS: a second run-step.sh is refused while a run-step.sh holds LOADTEST_ROOT\n'
+expect_record "a run-step.sh refused at the lock a run-step.sh holds" "${root}/runs/second-step.not-run.json" 1 \
+  "is in use by another run (pid ${first_pid},"
 expect_refused "$root" "a run-series.sh on the root of a running run-step.sh" bash "$run_series"
 printf 'PASS: a run-series.sh is refused while a run-step.sh holds LOADTEST_ROOT\n'
 stop_first
@@ -137,6 +166,8 @@ start_first "$root" bash "$run_series"
 expect_refused "$root" "a run-step.sh on the root of a running run-series.sh" \
   bash "$run_step" second-step "${step_args[@]}"
 printf 'PASS: a run-step.sh is refused while a run-series.sh holds LOADTEST_ROOT\n'
+expect_record "a run-step.sh refused at the lock a run-series.sh holds" "${root}/runs/second-step.not-run.json" 1 \
+  "is in use by another run (pid ${first_pid},"
 stop_first
 
 # Once the first run has exited, the root is free again.
@@ -149,6 +180,8 @@ if ! grep -q '^third go ' "$calls_file"; then
   exit 1
 fi
 printf 'PASS: a run on LOADTEST_ROOT after the first run exited is not refused\n'
+expect_record "a run-step.sh whose stack.sh setup failed in its build" "${root}/runs/third-step.not-run.json" 1 \
+  "run-step.sh exited 1 before the window opened, with no refusal of its own" "building envoy-dispatch"
 
 # expect_refused_before_build WHAT PATTERN CMD...: CMD, on a free root, exits non-zero with PATTERN
 # in its output and never reaches its build.
@@ -187,10 +220,30 @@ expect_refused_before_build "a series whose LOADTEST_GOMAXPROCS is not the serve
   "LOADTEST_GOMAXPROCS=2 (run-step.sh --gomaxprocs) differs from LOADTEST_SERVER_CPUS='0', 1 CPU" \
   env LOADTEST_SERVER_CPUS=0 LOADTEST_GOMAXPROCS=2 bash "$run_series"
 
+# A step refused at a flag check leaves its not-run record beside its step directory, also when the
+# --out that names that directory comes after the refused flag.
+rc=0
+LOADTEST_ROOT="${temporary_dir}/root-c" LOADTEST_TEST_RUN=fifth bash "$run_step" flag-step --events 1 --sessions 1 \
+  >"${temporary_dir}/fifth-output" 2>&1 || rc=$?
+((rc == 1)) || { cat "${temporary_dir}/fifth-output" >&2; printf 'FAIL: a step without --requests exited %d, not 1\n' "$rc" >&2; exit 1; }
+expect_record "a step refused at a flag check (no --requests)" "${temporary_dir}/root-c/runs/flag-step.not-run.json" 1 \
+  "run-step.sh: --requests is required (0 sends no requests)" "run-step.sh: --requests is required"
+rc=0
+LOADTEST_ROOT="${temporary_dir}/root-c" LOADTEST_TEST_RUN=fifth bash "$run_step" flag-step --bogus 1 \
+  --out "${temporary_dir}/elsewhere/flag-out" >"${temporary_dir}/fifth-output" 2>&1 || rc=$?
+((rc == 1)) || { cat "${temporary_dir}/fifth-output" >&2; printf 'FAIL: a step with --bogus exited %d, not 1\n' "$rc" >&2; exit 1; }
+expect_record "a step refused at a flag check before its --out" "${temporary_dir}/elsewhere/flag-out.not-run.json" 1 \
+  "run-step.sh: unknown flag '--bogus'"
+
 # A step that loadgen run refused before its window, its meta.json recording a GOMAXPROCS other
 # than the server list's CPU count, closes on that refusal, naming both numbers, and not on the
 # generic failure. The stack is faked: run-step.sh and common.sh are copied beside a stack.sh
-# whose every command succeeds but `loadgen run`, which writes that meta.json and exits 1.
+# whose every command succeeds but `loadgen run`, which writes that meta.json and exits 1. The fake
+# does what the steps after this one need under two variables: LOADTEST_TEST_SETUP=refuse refuses
+# the setup 1.5 s in, as stack.sh refuses a port that another process holds, and
+# LOADTEST_TEST_LOADGEN=early ends `loadgen run` before it writes meta.json, as a failed dashboard
+# probe does, while LOADTEST_TEST_LOADGEN=window opens a window 1.2 s in and holds it until the test
+# creates end-window in the root (10 s at most).
 readonly relay_dir="${temporary_dir}/relay"
 readonly relay_root="${temporary_dir}/root-d"
 mkdir -p "$relay_dir" "${relay_root}/replay" "${relay_root}/logs"
@@ -198,7 +251,16 @@ cp "$run_step" "${here}/common.sh" "$relay_dir/"
 cat >"${relay_dir}/stack.sh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+# shellcheck source=/dev/null
+source "$(dirname -- "$0")/common.sh"
 case "$1" in
+  setup)
+    if [ "${LOADTEST_TEST_SETUP:-}" = refuse ]; then
+      sleep 1.5
+      printf '%s\n' "$EPOCHREALTIME" >"${LOADTEST_ROOT}/setup-refused-at"
+      die "port 10004 (listener, for envoy-listener) is already in use by pid 1 (sleep)"
+    fi
+    ;;
   build-info) echo "abc123 false" ;;
   loadgen)
     case "$2" in
@@ -206,9 +268,27 @@ case "$1" in
       run)
         shift 2
         while [ "$1" != -out ]; do shift; done
-        printf '%s\n' '{"gomaxprocs":"32","server_cpus":"0-1","server_cpu_count":2}' >"$2/meta.json"
-        echo "loadgen run: refused before the window" >&2
-        exit 1
+        case ${LOADTEST_TEST_LOADGEN:-gomaxprocs} in
+          gomaxprocs)
+            printf '%s\n' '{"gomaxprocs":"32","server_cpus":"0-1","server_cpu_count":2}' >"$2/meta.json"
+            echo "loadgen run: refused before the window" >&2
+            exit 1
+            ;;
+          early)
+            echo "loadgen run: the dashboard probe failed: no stream answered" >&2
+            exit 1
+            ;;
+          window)
+            printf '%s\n' '{"window_start":"0001-01-01T00:00:00Z"}' >"$2/meta.json"
+            sleep 1.2
+            printf '{"window_start":"%s"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$2/meta.json"
+            for ((i = 0; i < 200; i++)); do
+              [ ! -e "${LOADTEST_ROOT}/end-window" ] || break
+              sleep 0.05
+            done
+            echo '{}' >"$2/summary.json"
+            ;;
+        esac
         ;;
     esac
     ;;
@@ -229,3 +309,87 @@ if ((rc == 0)) || grep -q 'failed: loadgen run exited' "${temporary_dir}/relay-o
   exit 1
 fi
 printf 'PASS: a step refused for a GOMAXPROCS other than the server list'"'"'s CPU count closes on that refusal\n'
+
+# The environment of a step on the faked stack.
+relay_env=(env -u LOADTEST_SERVER_CPUS -u LOADTEST_GENERATOR_CPUS -u LOADTEST_GOMAXPROCS LOADTEST_ROOT="$relay_root"
+  LOADTEST_REPLAY_ISSUE=INFRA-1)
+
+# A step whose loadgen run ends before its window, writing no meta.json: its record holds the
+# refusal run-step.sh dies with and loadgen run's own line. Then the record of the step above,
+# whose loadgen run did write meta.json, with no window in it.
+rc=0
+"${relay_env[@]}" LOADTEST_TEST_LOADGEN=early bash "${relay_dir}/run-step.sh" early-step --replay \
+  >"${temporary_dir}/early-output" 2>&1 || rc=$?
+((rc == 1)) || { cat "${temporary_dir}/early-output" >&2; printf 'FAIL: a step whose loadgen run ended before its window exited %d, not 1\n' "$rc" >&2; exit 1; }
+expect_record "a step whose loadgen run ended before its window" "${relay_root}/runs/early-step.not-run.json" 1 \
+  "run-step.sh: step early-step failed: loadgen run exited 1 before it wrote summary.json" \
+  "loadgen run: the dashboard probe failed: no stream answered"
+expect_record "a step loadgen run refused before its window for its GOMAXPROCS" "${relay_root}/runs/relay-step.not-run.json" 1 \
+  "run-step.sh: STEP relay-step IS REFUSED before its window opened, so nothing was measured: Dispatch ran with GOMAXPROCS 32" \
+  "loadgen run: refused before the window"
+
+# wait_window STEP PID: common.sh's wait_for_window STEP PID on the faked stack's root. Sets rc,
+# window (what it printed) and said (what it said on stderr).
+wait_window() {
+  rc=0
+  window=$(LOADTEST_ROOT="$relay_root" bash -c 'source "$1"; resolve_paths; wait_for_window "$2" "$3"' wait \
+    "${relay_dir}/common.sh" "$1" "$2" 2>"${temporary_dir}/wait-said") || rc=$?
+  said=$(<"${temporary_dir}/wait-said")
+}
+
+# A step that its stack.sh setup refuses 1.5 s in, while wait_for_window waits on it: the wait
+# returns non-zero within a second of the refusal, giving the record's exit status and the message
+# stack.sh died with, which the record holds as its reason.
+"${relay_env[@]}" LOADTEST_TEST_SETUP=refuse bash "${relay_dir}/run-step.sh" refused-step --replay \
+  >"${temporary_dir}/refused-output" 2>&1 &
+refused_pid=$!
+wait_window refused-step "$refused_pid"
+returned=$EPOCHREALTIME
+wait "$refused_pid" || true
+expect_record "a step its stack.sh setup refused" "${relay_root}/runs/refused-step.not-run.json" 1 \
+  "stack.sh: port 10004 (listener, for envoy-listener) is already in use"
+refused_at=$(cat "${relay_root}/setup-refused-at" 2>/dev/null || echo 0)
+after=$(awk -v a="$refused_at" -v b="$returned" 'BEGIN { printf "%.2f", b - a }')
+if ((rc == 0)) || [[ -n $window ]] ||
+  [[ $said != *"run-step.sh exited 1 at "*"stack.sh: port 10004 (listener, for envoy-listener) is already in use"* ]] ||
+  ! awk -v s="$after" 'BEGIN { exit !(s < 1) }'; then
+  cat "${temporary_dir}/refused-output" >&2
+  printf 'wait_for_window said: %s\n' "$said" >&2
+  printf 'FAIL: wait_for_window on a step its setup refused returned %d, %s s after the refusal, not non-zero within a second with the record'"'"'s exit status and reason\n' \
+    "$rc" "$after" >&2
+  exit 1
+fi
+printf 'PASS: wait_for_window returns within a second (%s s) of a refused step'"'"'s end, with its record'"'"'s exit status and reason\n' "$after"
+
+# A step refused at a flag check, then run again with its flags right: its record does not make
+# the run refuse its step directory, wait_for_window prints the start of the window the run opens,
+# and once the step has ended no record of it is left.
+rc=0
+"${relay_env[@]}" bash "${relay_dir}/run-step.sh" win-step --replay --bogus 1 >"${temporary_dir}/win-output" 2>&1 || rc=$?
+((rc == 1)) || { cat "${temporary_dir}/win-output" >&2; printf 'FAIL: a step with --bogus exited %d, not 1\n' "$rc" >&2; exit 1; }
+expect_record "a --replay step refused at a flag check" "${relay_root}/runs/win-step.not-run.json" 1 \
+  "run-step.sh: unknown flag '--bogus'"
+"${relay_env[@]}" LOADTEST_TEST_LOADGEN=window bash "${relay_dir}/run-step.sh" win-step --replay \
+  >"${temporary_dir}/win-output" 2>&1 &
+win_pid=$!
+wait_window win-step "$win_pid"
+: >"${relay_root}/end-window"
+win_rc=0
+wait "$win_pid" || win_rc=$?
+if ((rc != 0)) || [[ -z $window || $window == 0001* ||
+  $window != "$(jq -r .window_start "${relay_root}/runs/win-step/meta.json" 2>/dev/null)" ]]; then
+  cat "${temporary_dir}/win-output" >&2
+  printf 'wait_for_window said: %s\n' "$said" >&2
+  printf 'FAIL: wait_for_window did not print the start of the window that a run of win-step opened after its not-run record (exit %d, printed "%s")\n' \
+    "$rc" "$window" >&2
+  exit 1
+fi
+printf 'PASS: wait_for_window prints the start of the window a step opens\n'
+if ((win_rc != 0)) || [[ -e "${relay_root}/runs/win-step.not-run.json" || ! -f "${relay_root}/runs/win-step/summary.json" ]]; then
+  cat "${temporary_dir}/win-output" >&2
+  printf 'FAIL: a run of win-step after its not-run record exited %d; its record is %s, and its summary.json %s\n' "$win_rc" \
+    "$([[ -e "${relay_root}/runs/win-step.not-run.json" ]] && echo "still there" || echo "gone")" \
+    "$([[ -f "${relay_root}/runs/win-step/summary.json" ]] && echo "written" || echo "missing")" >&2
+  exit 1
+fi
+printf 'PASS: a run of a step'"'"'s name after its not-run record is not refused for it, and leaves no record once it opened its window\n'
