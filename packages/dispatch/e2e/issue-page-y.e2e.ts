@@ -18,7 +18,7 @@ import { parseDispatchReference, shortForm } from "../web/src/features/refs/rout
 import { getArtifact } from "./api";
 import { seedWholeIssue } from "./issue-layout-seed";
 import { PLANNER_TITLE } from "./issue-layout-seed-support";
-import { gotoIssue, issuePage, issueRead, phase, presetChooser } from "./issue-page";
+import { gotoIssue, issuePage, issueRead, phase, presetChooser, presetCount } from "./issue-page";
 import {
   DESKTOP,
   type DrawnRow,
@@ -46,7 +46,9 @@ import {
   criterionRows,
   editorSockets,
   seedModelRows,
+  TREE_READ_OWED,
   treeAnswerOf,
+  treeReadServed,
   writeCriterionApi,
 } from "./issue-page-y";
 import { expect, test } from "./test";
@@ -64,7 +66,7 @@ import { type ApiRequest, expectLoadSettled, type RouteCount, watchApiRequests }
  * issue born converted, and each first reads that the issue's tree read answers
  * `converted: true`. They are owed until INFRA-1253 serves the tree read
  * (`GET /api/v1/issues/{key}/tree`, its t16a), the issue room and writes to the tree artifact:
- * until then each fails in its seed, on the tree read's absence.
+ * until then each row skips on `treeReadServed` (decision 170).
  */
 
 /** What a failure says where the issue's tree read does not answer `converted: true`. */
@@ -139,7 +141,7 @@ function readsTree(request: ApiRequest, key: string): boolean {
 /** The count of view `preset` the view row draws: beside its toggle from 1280 px up, and below
  *  that inside the one control's menu, which this opens and closes again. */
 async function presetCountOf(page: Page, preset: Preset): Promise<number> {
-  const count = issuePage(page).locator(`[data-preset-count="${preset}"]`);
+  const count = presetCount(page, preset);
   const opened = (await count.count()) === 0;
   if (opened) await presetChooser(page).click();
   const drawn = Number.parseInt((await count.first().innerText()).trim(), 10);
@@ -216,16 +218,17 @@ function idsUnder(rows: readonly DrawnRow[], id: string): string[] {
 /** The words the gap "No check" stands for on a row (`data-gap-kind`). */
 const NO_CHECK: GapKind = "no_check";
 
-/** Fails where statement `id` draws "No check", by its gap and by its word. */
-async function expectChecked(page: Page, id: string, where: string): Promise<void> {
+/** Fails where statement 7, of row `row`, draws "No check", by its gap and by its word. */
+async function expectStatementSevenChecked(page: Page, row: string, where: string): Promise<void> {
   const rows = await drawnRows(page);
-  expect(rowOf(rows, id), `statement 7 draws no row ${where}`).toBeDefined();
-  expect(rowOf(rows, id)?.gapKinds, `statement 7 draws "No check" ${where}`).not.toContain(
+  expect(rowOf(rows, row), `statement 7 draws no row ${where}`).toBeDefined();
+  expect(rowOf(rows, row)?.gapKinds, `statement 7 draws "No check" ${where}`).not.toContain(
     NO_CHECK
   );
-  await expect(nodeRow(page, id).first(), `statement 7 says "No check" ${where}`).not.toContainText(
-    GAP_WORDS.no_check
-  );
+  await expect(
+    nodeRow(page, row).first(),
+    `statement 7 says "No check" ${where}`
+  ).not.toContainText(GAP_WORDS.no_check);
 }
 
 /**
@@ -297,6 +300,12 @@ async function expectNoCaret(page: Page, id: string, report: string, what: strin
   ).toHaveText(report);
   expect(await caretInNode(page), `Enter on ${what} put a caret somewhere`).toBe(false);
 }
+
+// Each row reads the issue's tree read, so each skips, owed, where the server does not serve it
+// (decision 170).
+test.beforeEach(async () => {
+  test.skip(!(await treeReadServed()), TREE_READ_OWED);
+});
 
 // c-write (R2, R6, R7). On the seed's first comment thread, `f` reaches Write a criterion and
 // Enter aims the box at the comment; what alice types and sends is a criterion under that
@@ -607,14 +616,14 @@ test("a reading stands under what it reads and a child's check under the stateme
       ),
       "a row of the child's check, result or plan task stands under the child's own row"
     ).toEqual([]);
-    await expectChecked(page, statementSeven.row, "on the outline");
+    await expectStatementSevenChecked(page, statementSeven.row, "on the outline");
     await pickPreset(page, PRESET_NAMES.verification);
     await expect
       .poll(() => parentOfRow(page, child.check.row), {
         message: "under Verification the child's check is not a row under statement 7",
       })
       .toBe(statementSeven.row);
-    await expectChecked(page, statementSeven.row, "under Verification");
+    await expectStatementSevenChecked(page, statementSeven.row, "under Verification");
 
     // (2) Under Decisions the decision's reading under it, and the question's nowhere.
     await pickPreset(page, PRESET_NAMES.decisions);
@@ -696,6 +705,7 @@ test("a node is edited where it lives", async ({ browser }) => {
   await phase(browser, seedModelRows, async (page, seeded) => {
     const criterion = await writeCriterionApi(
       seeded.key,
+      seeded.tree,
       seeded.thread.address,
       `${WRITTEN.edited} is a criterion written through the page's own request.`
     );

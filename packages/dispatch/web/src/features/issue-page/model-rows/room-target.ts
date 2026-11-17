@@ -104,7 +104,9 @@ export function useRoomFacts(_issueKey: string | undefined): RoomFacts | undefin
  * so the body draws that artifact's editor as it draws a document's. The first Enter on such a
  * row reads it with the artifact read (`GET /api/v1/artifacts/{id}`, R6) under the key the
  * document's own editor reads an artifact by (`ProofDocument.tsx`), so it is read once.
- * `undefined` while the row edits anything else, or nothing.
+ * `undefined` while the row edits anything else, or nothing. While it reads no tree it does not
+ * subscribe to that key (`subscribed`), so a refetch of the edited document's own read under the
+ * same key does not draw the body again.
  */
 export function useEditedTree(
   issue: Pick<IssueDetails, "artifacts" | "key">,
@@ -119,6 +121,7 @@ export function useEditedTree(
     enabled: reads,
     queryFn: () => api.getArtifact(editing ?? ""),
     queryKey: ["artifact", editing],
+    subscribed: reads,
   });
   return reads ? read.data : undefined;
 }

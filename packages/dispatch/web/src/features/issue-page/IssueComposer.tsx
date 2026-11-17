@@ -44,7 +44,7 @@ import { useMediaQuery } from "../shell/useDialog";
 import { FOOT_HEIGHT_PROPERTY, HEADER_SCROLLS_QUERY } from "./identity-block";
 import { firstLineOf } from "./issue-tree";
 import { DETAILS_ATTRIBUTE } from "./margin-slot";
-import { criterionAnswerLine, useCriterionLine } from "./model-rows/criterion-write";
+import { useCriterionLine } from "./model-rows/criterion-write";
 import { useRoomFacts } from "./model-rows/room-target";
 import {
   type AnswerTarget,
@@ -924,7 +924,7 @@ function CriterionForm({
           />
           <div className={pageComposer.controls}>
             <RefusableButton
-              busy={line.busy}
+              busy={line.pending ? ANSWER_LINES.sending : undefined}
               look="page-send"
               // An empty line says why it sends nothing, as the answer's says it by its
               // placeholder.
@@ -937,7 +937,7 @@ function CriterionForm({
         </div>
         {line.answer === undefined ? null : (
           <p data-criterion-answer="" role="status" {...pageChrome}>
-            {criterionAnswerLine(line.answer)}
+            {ANSWER_LINES[line.answer]}
           </p>
         )}
       </fieldset>

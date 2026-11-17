@@ -14,7 +14,6 @@ import {
   OutlineWriterProvider,
   useOutlineWriter,
 } from "../outline-writer";
-import { ANSWER_LINES } from "../page-words";
 import {
   criterionMarkdown,
   criterionOffered,
@@ -251,7 +250,6 @@ test("a refusal keeps the text", async () => {
     answerEdits(() => answered.promise);
     act(() => line.result.current.send());
     expect(line.result.current.pending).toBe(true);
-    expect(line.result.current.busy).toBe(ANSWER_LINES.sending);
     expect(line.result.current.answer).toBeUndefined();
     expect(line.result.current.text).toBe(`${TEXT} Still.`);
     expect(textAtLanding).toEqual([]);
@@ -261,7 +259,7 @@ test("a refusal keeps the text", async () => {
     await waitFor(() => expect(line.result.current.text).toBe(""));
     expect(textAtLanding).toEqual([`${TEXT} Still.`]);
     expect(line.result.current.answer).toBeUndefined();
-    expect(line.result.current.busy).toBeUndefined();
+    expect(line.result.current.pending).toBe(false);
     // The box lets go of its aim before the landing ends it.
     expect(told.slice(4)).toEqual(["out", "settled", "landed"]);
   } finally {

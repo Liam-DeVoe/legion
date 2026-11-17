@@ -2,7 +2,7 @@ import { useState } from "react";
 
 import { ApiError, writeRequest } from "../../../api/client";
 import { useKeyedWrite } from "../../writes/useKeyedWrite";
-import { ANSWER_LINES, CONTROL_LABELS } from "../page-words";
+import { type ANSWER_LINES, CONTROL_LABELS } from "../page-words";
 import type { RoomFacts } from "./room-target";
 
 /**
@@ -13,7 +13,7 @@ import type { RoomFacts } from "./room-target";
  * The send is one `POST /api/v1/artifacts/{id}/edits` on the tree artifact (R6), a keyed write
  * the line shows the refusal of itself. A refusal is read by its status alone, never by the
  * server's text (the plan's decision "A refusal"): `criterionAnswer` answers the key of
- * `ANSWER_LINES` the line draws, and `criterionAnswerLine` that key's sentence.
+ * `ANSWER_LINES` whose sentence the line draws.
  */
 
 /** Where a criterion is written: the issue it is written into, the node it stands under (`parent`,
@@ -115,12 +115,6 @@ export function criterionAnswer(error: unknown): CriterionAnswer {
     : "criterion_not_written";
 }
 
-/** The sentence the line draws for a refused criterion (R2): `answer`'s entry of `ANSWER_LINES`,
- *  so the box reads it from part B's list and holds no word of its own. */
-export function criterionAnswerLine(answer: CriterionAnswer): string {
-  return ANSWER_LINES[answer];
-}
-
 /** Whether a node of this issue offers the act that writes a criterion (R2): only where the
  *  issue's tree read answers a `tree` and no `view_of`. No facts - an issue whose tree read the
  *  cache does not hold, which is every issue until part T's read is on the branch - offer none. */
@@ -165,7 +159,7 @@ export function useCriterionWrite({ onLanded, onOut, parent, tree }: CriterionWr
 }
 
 /** The state of the line that writes a criterion. */
-export interface CriterionLine {
+export interface CriterionLineState {
   /** The box's text, kept while the write is out and after a refusal. */
   readonly text: string;
   /** Sets the text, and lets the last refusal's answer go. */
@@ -174,10 +168,6 @@ export interface CriterionLine {
   readonly send: () => void;
   /** Whether the criterion's write is out. */
   readonly pending: boolean;
-  /** What the line's Send says while the write is out (`ANSWER_LINES.sending`, as the box's
-   *  other Sends say it), read from part B's list as a refusal's sentence is
-   *  (`criterionAnswerLine`); undefined while none is out. */
-  readonly busy: string | undefined;
   /** The key of `ANSWER_LINES` the last refusal draws, until the next change of the text or the
    *  next send; `undefined` while there is none. */
   readonly answer: CriterionAnswer | undefined;
@@ -190,7 +180,7 @@ export interface CriterionLine {
  * going out and its settling are told to `onOut`; a landing, a 200 or `null`, is then told to
  * `onLanded` and lets the text go.
  */
-export function useCriterionLine({ onLanded, ...aim }: CriterionWriteOptions): CriterionLine {
+export function useCriterionLine({ onLanded, ...aim }: CriterionWriteOptions): CriterionLineState {
   const [text, setTyped] = useState("");
   const write = useCriterionWrite({
     ...aim,
@@ -202,7 +192,6 @@ export function useCriterionLine({ onLanded, ...aim }: CriterionWriteOptions): C
   const pending = write.isPending;
   return {
     answer: write.error === null ? undefined : criterionAnswer(write.error),
-    busy: pending ? ANSWER_LINES.sending : undefined,
     pending,
     send: () => {
       if (pending || text.trim() === "") return;
