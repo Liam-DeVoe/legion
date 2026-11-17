@@ -2,7 +2,8 @@
 # Drives what an author is, from both sides, against a running server (dispatch://INFRA-1950's
 # c-agent-bearer-has-no-author, dispatch://INFRA-1950/spec#b-r-author). On the deployment's shared
 # agent bearer, which every holder presents alike, it writes a lens on a spec and reads it back at
-# `project`; asks for `author` on a lens write and is refused 403 AUTHOR_NAMES_NOBODY, the words of
+# `project`, its author the session its body names (attribution, which proves nobody); asks for
+# `author` on a lens write and is refused 403 AUTHOR_NAMES_NOBODY, the words of
 # graphstore.ErrAuthorNamesNobody, with no lens stored; and is refused the going POST with 403
 # GOING_ASKER_NAMES_NOBODY. Both refusals are the one rule, graphstore.ProvesAuthor, which
 # requireOneAuthorRule (packages/envoy/internal/dispatch/api/node_visibility_test.go) holds the
@@ -161,12 +162,15 @@ invoke B1 "the shared bearer writes a pre-mortem on the spec, asking for no visi
   "$(jq -cn --arg on "$spec" --argjson a "$(actor)" '{on: $on, kind: "pre-mortem", actor: $a}')"
 readonly bearer_lens="$lens"
 cp "$work/invoked" "$work/body"
-expect B1 "the write answers $bearer_lens at project, with no author" '{"author":null,"visibility":"project"}' \
+# The shared bearer proves no author, so the lens is the project's, and its authored_by still names
+# the session its body names as its writer (spec v46 R12: attribution is no proof).
+expect B1 "the write answers $bearer_lens at project, written by the session $session its body names" \
+  "$(jq -cnS --arg s "$session" '{author: {kind: "session", id: $s}, visibility: "project"}')" \
   '{author, visibility}'
 lenses_on agent "$bearer_lens"
 want_status 200 B1 "the shared bearer reads $bearer_lens at its address"
-expect B1 "$bearer_lens reads back at project, with no author" \
-  "$(jq -cnS --arg a "$bearer_lens" '{address: $a, author: null, visibility: "project"}')" \
+expect B1 "$bearer_lens reads back at project, written by the session $session its body names" \
+  "$(jq -cnS --arg a "$bearer_lens" --arg s "$session" '{address: $a, author: {kind: "session", id: $s}, visibility: "project"}')" \
   '.lens | {address, author, visibility}'
 
 # --- B2: the shared bearer asks for author and is refused, storing nothing -----------------------

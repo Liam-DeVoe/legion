@@ -42,6 +42,22 @@ import (
 // a beginning wherever it is cut, and is as long as the lenses it holds.
 const lensChainDepth = 50
 
+// lensStandsOnKinds are the kinds of node a lens may stand on, as decodeNodeAddress names them:
+// the kinds of a node under an issue, which is where P9 (dispatch://INFRA-1950/artifact/plan-md)
+// lets a lens be invoked - the issue, a document and its blocks, an ask, a comment or a message
+// and its blocks, and the lenses, findings, risks and constraints under those - as the arms of
+// refs' backlink counts that count a lens on a node (lensStandsOn) name them. A node of any other
+// kind holds no lens, and the read answers it the 404 a node nobody holds answers before it reads
+// the store: a person, a session, a role or a page is a node the store holds and every reader may
+// see, so answering one 200 would tell any caller whether that person exists, which the person
+// page keeps from them (D12b).
+var lensStandsOnKinds = []string{
+	graphstore.KindIssue, graphstore.KindArtifact, refs.BlockNodeKind,
+	string(refs.ItemAsk), refs.ItemAsk.BlockKind(), string(refs.ItemComment), refs.ItemComment.BlockKind(),
+	string(refs.ItemMessage), refs.ItemMessage.BlockKind(),
+	graphstore.KindLens, graphstore.KindLensBlock, graphstore.KindRisk, graphstore.KindConstraint,
+}
+
 // lensesQuery is GET /api/v1/lenses's query: the one node whose lenses are read.
 type lensesQuery struct {
 	// On is the node's dispatch:// address, or its store address as the /nodes/{id} routes take
@@ -91,8 +107,9 @@ type lensRead struct {
 	// On is the address of the node the lens stands on, the far end of its part_of tuple, which
 	// is the log of its invocation; null where the reader may not see that node.
 	On *string `json:"on"`
-	// Author is the person or the session its authored_by tuple names, null for a lens written
-	// on the shared bearer, which proves no author.
+	// Author is the person or the session its authored_by tuple names, the writer
+	// graphstore.AuthorOf names of its made_by: the session its body named for a lens written on
+	// the shared bearer, and null only where the write named only a workload (spec v46 R12).
 	Author    *reasoningAuthor `json:"author"`
 	CreatedAt time.Time        `json:"created_at"`
 	Verdict   *string          `json:"verdict"`
@@ -500,8 +517,10 @@ func lensChildren(ctx context.Context, q refs.Queryer, viewer any, ids []string)
 // readLenses is the lens read of the node address names, for who (nodeLenses). The node is
 // decoded as the /nodes/{id} routes decode theirs (decodeNodeAddress: a dispatch:// address by
 // text.ParseRef and refs.TargetOf, or a store address) and read through the registry with who's
-// visibility (refs.Node), so an address that decodes to nothing, a node nobody holds and a node
-// who may not see all answer one 404 NOT_FOUND, in the same words but the address.
+// visibility (refs.Node), so an address that decodes to nothing, a node of a kind no lens stands on
+// (lensStandsOnKinds), a node nobody holds and a node who may not see all answer one 404
+// NOT_FOUND, in the same words but the address. A kind no lens stands on is refused before
+// anything is read, so that answer is the same whatever the store holds.
 //
 // Its statements, beside the node's own: the lenses on the node; the lenses a chain reaches that
 // stand elsewhere, one statement for each depth of a walk that meets any; the findings and the
@@ -511,7 +530,7 @@ func lensChildren(ctx context.Context, q refs.Queryer, viewer any, ids []string)
 func readLenses(ctx context.Context, q refs.Queryer, who model.Actor, address string) (nodeLenses, error) {
 	notFound := errorf(http.StatusNotFound, "NOT_FOUND", "no node %q", address)
 	kind, id, ok := decodeNodeAddress(address)
-	if !ok {
+	if !ok || !slices.Contains(lensStandsOnKinds, kind) {
 		return nodeLenses{}, notFound
 	}
 	node, found, err := refs.Node(ctx, q, who, kind, id, true)

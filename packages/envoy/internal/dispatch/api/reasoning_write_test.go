@@ -14,22 +14,23 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
-// TestTheReasoningWriteStatesAnAuthorOnlyWhereTheCredentialProvesOne holds the one write path of
-// a lens, a finding, a risk and a constraint (writeReasoningNodes) to what it states of who wrote
-// each node (dispatch://INFRA-1950/spec#b-r-author, #b-r-node-visibility): a project node on a
-// cookie or a personal token is made by the recorded actor and holds its authored_by tuple to the
-// author graphstore.AuthorOf names of that actor, whose own node the write makes; an author-only
-// node is made by the credential that proved the caller; `author` on the shared bearer is refused
-// 403 AUTHOR_NAMES_NOBODY with nothing stored; and a project node on the shared bearer holds no
-// authored_by and makes no node of the session its body claims. Every node is live, in the
-// project of the issue the write names, and no write appends an event. A pointer the request
+// TestTheReasoningWriteStatesTheWriterItsRecordNames holds the one write path of a lens, a
+// finding, a risk and a constraint (writeReasoningNodes) to what it states of who wrote each node
+// (dispatch://INFRA-1950/spec#b-r-author, #b-r-node-visibility): a project node is made by the
+// recorded actor and holds its authored_by tuple to the writer graphstore.AuthorOf names of that
+// actor, whose own node the write makes, on a cookie, a personal token and the shared bearer
+// alike; an author-only node is made by the credential that proved the caller; `author` on the
+// shared bearer is refused 403 AUTHOR_NAMES_NOBODY with nothing stored; and a project node on the
+// shared bearer holds its authored_by to the session its body names, whose node the write makes,
+// while its made_by proves nobody (spec v46 R12: attribution is no proof). Every node is live, in
+// the project of the issue the write names, and no write appends an event. A pointer the request
 // states is held to its type rule by the store, so a lens of a kind that is no lens_kind is 400
 // INVALID_POINTER and a lens of two kinds 409 POINTER_ALREADY_ASSERTED, each with nothing stored.
 // Each attribute a node's row carries - a lens's verdict, a risk's heading, early warning and
 // prevention, a constraint's standard and reference or measurement, value and where it was taken
 // - is also one value tuple of the node, its whole history, as a finding's text is; and an append
 // of a pointer the node holds already writes nothing, under a run as under none.
-func TestTheReasoningWriteStatesAnAuthorOnlyWhereTheCredentialProvesOne(t *testing.T) {
+func TestTheReasoningWriteStatesTheWriterItsRecordNames(t *testing.T) {
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	ctx := context.Background()
 	issue := createInteractionIssue(t, handler, "RSN", "Reasoned work", "# Spec\n\nA passage.")
@@ -237,6 +238,9 @@ func TestTheReasoningWriteStatesAnAuthorOnlyWhereTheCredentialProvesOne(t *testi
 	t.Run("a project lens on the shared bearer", func(t *testing.T) {
 		const session = "session-shared-0002"
 		proving, recorded := actorsOf(t, "Authorization", "Bearer agent-token", session)
+		if nodeHeld(t, graphstore.KindSession, session) {
+			t.Fatalf("the store holds the session %s before any write of it", session)
+		}
 		node := lens("", "trade-off")
 		if _, err := write(t, proving, recorded, node); err != nil {
 			t.Fatalf("write the lens: %v", err)
@@ -245,9 +249,15 @@ func TestTheReasoningWriteStatesAnAuthorOnlyWhereTheCredentialProvesOne(t *testi
 		if made.MadeBy.Kind != "session" || made.MadeBy.ID != session {
 			t.Errorf("the lens is made by %+v, want the session %s its body names", made.MadeBy, session)
 		}
-		requireFarEnds(t, graphstore.KindLens, node.id, graphstore.TupleAuthoredBy)
-		if nodeHeld(t, graphstore.KindSession, session) {
-			t.Errorf("the shared bearer's write made a node of %s, the session its body merely claims", session)
+		// Attribution: the lens names the session its body names as its writer, as a comment
+		// written on the shared bearer does, and the write states that session's node.
+		requireFarEnds(t, graphstore.KindLens, node.id, graphstore.TupleAuthoredBy, "session/"+session)
+		if !nodeHeld(t, graphstore.KindSession, session) {
+			t.Errorf("the write states the lens's authored_by to %s and holds no node of it", session)
+		}
+		// Proof: the shared bearer proves no author, so the lens's made_by proves nobody.
+		if graphstore.ProvesAuthor(made.MadeBy) {
+			t.Errorf("the shared bearer's lens, made by %+v, proves an author", made.MadeBy)
 		}
 	})
 

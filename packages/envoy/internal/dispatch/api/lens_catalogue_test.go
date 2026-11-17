@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"slices"
 	"testing"
 	"time"
 
@@ -14,12 +15,14 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// seededLensSources is the source and the reference each of the ten kinds dispatch://INFRA-1297
-// records holds on its constraint, as INFRA-1950's research task read each in the source itself:
-// six are the sources INFRA-1297 cites, with second-order taking Bastiat where it cited
-// Chesterton's fence, and best-practice, first-principles, conway and botec take the four the
-// research task found and checked. Written here, character for character, so a seed that moves one
-// fails this test rather than passing on whatever the migration says.
+// seededLensSources is the source and the reference each kind c-lens-catalogue names the source of
+// holds on its constraint, as INFRA-1950's research task read each in the source itself. For the
+// ten kinds dispatch://INFRA-1297 records, six are the sources INFRA-1297 cites, with second-order
+// taking Bastiat (1850) where it cited Chesterton's fence, and best-practice, first-principles,
+// conway and botec take the four the research task found and checked. The eleventh is
+// chestertons-fence, the further kind R7 gives Chesterton (1929). Written here, character for
+// character, so a seed that moves one fails this test rather than passing on whatever the
+// migration says.
 var seededLensSources = map[string]struct{ source, reference string }{
 	"pre-mortem": {
 		`Gary Klein, "Performing a Project Premortem", Harvard Business Review, September 2007 (Forethought section)`,
@@ -61,6 +64,10 @@ var seededLensSources = map[string]struct{ source, reference string }{
 		`Jon Bentley, "Programming Pearls: The Back of the Envelope", Communications of the ACM, March 1984`,
 		`Communications of the ACM 27(3), March 1984, pp. 180–184; doi:10.1145/357994.381168`,
 	},
+	"chestertons-fence": {
+		`G. K. Chesterton, The Thing, 1929, chapter "The Drift from Domesticity"`,
+		`The Thing, London: Sheed & Ward, 1929, ch. 4 "The Drift from Domesticity"; p. 29 in the 1946 Sheed & Ward reprint. The US edition is The Thing: Why I Am a Catholic, New York: Dodd, Mead, 1930.`,
+	},
 }
 
 // seededLensKinds is the ten ids dispatch://INFRA-1297 records, in its order.
@@ -69,14 +76,17 @@ var seededLensKinds = []string{
 	"trade-off", "reversibility", "second-order", "conway", "botec",
 }
 
+// sourcedLensKinds is every kind seededLensSources holds a row for: the ten, and chestertons-fence.
+var sourcedLensKinds = append(slices.Clone(seededLensKinds), "chestertons-fence")
+
 // TestLensKindCatalogueIsSeededWithItsSources is c-lens-catalogue
 // (dispatch://INFRA-1950/spec#b-r-lens-catalogue). The store a test opens is migrated, so it holds
 // the seed; the catalogue is read back through GET /api/v1/schema/blocks. At least ten lens kinds
 // exist, the ten INFRA-1297 records among them; every kind carries one constrained_by tuple to a
 // constraint node, and a kind with none fails naming the kind and its missing source; every
 // constraint the seed holds is the far end of exactly one constrained_by tuple from a lens_kind
-// node, and one that is not fails naming it; and each of the ten holds the source and reference
-// seededLensSources writes, character for character.
+// node, and one that is not fails naming it; and each of the ten, and chestertons-fence, holds the
+// source and reference seededLensSources writes, character for character.
 //
 // Then the catalogue is shown to be data and not code: a further kind is added at runtime through
 // graphstore.AddLensKind, the write `envoy-dispatch lens-kind-add` runs, and in this same process,
@@ -99,7 +109,7 @@ func TestLensKindCatalogueIsSeededWithItsSources(t *testing.T) {
 			t.Errorf("the lens kind %s carries %d constrained_by tuples to a constraint node, want one: its source is missing", kind.ID, len(kind.Sources))
 		}
 	}
-	for _, id := range seededLensKinds {
+	for _, id := range sourcedLensKinds {
 		kind, held := kinds[id]
 		if !held {
 			t.Errorf("the catalogue lacks the lens kind %s", id)

@@ -54,21 +54,22 @@ const (
 	codeInvalidPointer   = "INVALID_POINTER"
 )
 
-// reasoningAuthor is the node a reasoning node's authored_by tuple names: the person a
-// credential proved, by canonical login, or the session it proved. A node written on a
-// credential that proves no author - the deployment's shared bearer - has none.
+// reasoningAuthor is the writer a reasoning node's authored_by tuple names, the one
+// graphstore.AuthorOf names of its made_by: a person, by canonical login, or a session - on the
+// deployment's shared bearer, and on a pod's write, the session the request's body names, which
+// that credential does not prove (spec v46 R12). A node whose write names only a workload, or
+// nobody AuthorOf names, has none.
 type reasoningAuthor struct {
 	Kind string `json:"kind" enum:"person,session"`
 	ID   string `json:"id"`
 }
 
-// writtenAuthor is the author writeReasoningNodes stated of node, written by the proving
-// credential: the one graphstore.AuthorOf names of its made_by where that credential proves an
-// author and the author's id is one the store can key (graphstore.AuthorFacts), and nil otherwise.
-func writtenAuthor(proving model.Actor, node graphstore.Node) *reasoningAuthor {
-	if !graphstore.ProvesAuthor(proving) {
-		return nil
-	}
+// writtenAuthor is the writer writeReasoningNodes stated of node through its authored_by tuple:
+// the one graphstore.AuthorOf names of its made_by, where the store can key that writer's id
+// (graphstore.AuthorFacts), and nil otherwise. It is attribution, whichever credential proved the
+// caller, as every read of the node answers it from that tuple; the author the one rule compares
+// is the one made_by proves (graphstore.SameAuthor).
+func writtenAuthor(node graphstore.Node) *reasoningAuthor {
 	kind, id, ok := graphstore.AuthorOf(node.MadeBy)
 	if !ok || !graphstore.AddressFits(id) {
 		return nil
@@ -265,11 +266,11 @@ func newFinding(lens, visibility, text string) reasoningNode {
 }
 
 // findingWritten is the answer for a finding the write wrote as node, holding text.
-func findingWritten(proving model.Actor, node graphstore.Node, text string) lensFinding {
+func findingWritten(node graphstore.Node, text string) lensFinding {
 	lens, blockID, _ := strings.Cut(strings.TrimPrefix(node.ID, graphstore.KindLens+"/"), "#")
 	return lensFinding{
 		Address: refs.StoreRef(graphstore.KindLensBlock, node.ID), ID: node.ID, BlockID: blockID,
-		Lens: lensAddress(lens), Text: text, Author: writtenAuthor(proving, node),
+		Lens: lensAddress(lens), Text: text, Author: writtenAuthor(node),
 		CreatedAt: node.MadeAt, State: node.State, Visibility: node.Visibility,
 	}
 }
@@ -378,12 +379,12 @@ func (s *server) invokeLens(w http.ResponseWriter, r *http.Request) {
 	invoked := written[0]
 	answer := lensInvoked{
 		Address: lensAddress(id), ID: id, Kind: kind.ID, On: cmp.Or(on.Ref, input.On),
-		Verdict: verdict, TriggeredBy: triggeredBy, Author: writtenAuthor(caller.proving, invoked),
+		Verdict: verdict, TriggeredBy: triggeredBy, Author: writtenAuthor(invoked),
 		CreatedAt: invoked.MadeAt, State: invoked.State, Visibility: invoked.Visibility,
 		Findings: make([]lensFinding, 0, len(input.Findings)),
 	}
 	for index, text := range input.Findings {
-		answer.Findings = append(answer.Findings, findingWritten(caller.proving, written[index+1], text))
+		answer.Findings = append(answer.Findings, findingWritten(written[index+1], text))
 	}
 	WriteJSON(w, http.StatusCreated, answer)
 }
@@ -462,7 +463,7 @@ func (s *server) addLensFinding(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	WriteJSON(w, http.StatusCreated, findingWritten(caller.proving, written[0], input.Text))
+	WriteJSON(w, http.StatusCreated, findingWritten(written[0], input.Text))
 }
 
 // --- POST /api/v1/issues/{key}/risks ------------------------------------------------------------
@@ -584,7 +585,7 @@ func (s *server) writeRisk(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusCreated, riskWritten{
 		Address: refs.StoreRef(graphstore.KindRisk, id), ID: id, Lens: cmp.Or(lens.Ref, input.Lens),
 		Heading: input.Heading, EarlyWarning: input.EarlyWarning, Prevention: input.Prevention,
-		PreventedBy: preventedBy, Author: writtenAuthor(caller.proving, node),
+		PreventedBy: preventedBy, Author: writtenAuthor(node),
 		CreatedAt: node.MadeAt, State: node.State, Visibility: node.Visibility,
 	})
 }
@@ -644,7 +645,8 @@ func missingFields(fields map[string]string) string {
 
 // constraintRead is one constraint of an issue: its address, `dispatch://constraint/<uuid>`, the
 // fields of its shape (each null where it holds none), the person or session its authored_by
-// tuple names (none on the shared bearer), when it was written, and its state and visibility.
+// tuple names (the session its body names for one written on the shared bearer, and none where
+// the write named only a workload), when it was written, and its state and visibility.
 type constraintRead struct {
 	Address     string           `json:"address"`
 	ID          string           `json:"id"`
@@ -749,7 +751,7 @@ func (s *server) writeConstraint(w http.ResponseWriter, r *http.Request) {
 		Address: refs.StoreRef(graphstore.KindConstraint, id), ID: id,
 		Standard: namedOrNull(input.Standard), Reference: namedOrNull(input.Reference),
 		Measurement: namedOrNull(input.Measurement), Value: namedOrNull(input.Value),
-		TakenWhere: namedOrNull(input.TakenWhere), Author: writtenAuthor(caller.proving, node),
+		TakenWhere: namedOrNull(input.TakenWhere), Author: writtenAuthor(node),
 		CreatedAt: node.MadeAt, State: node.State, Visibility: node.Visibility,
 	})
 }

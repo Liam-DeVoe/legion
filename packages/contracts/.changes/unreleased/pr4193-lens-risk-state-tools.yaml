@@ -9,4 +9,5 @@ body: |-
   `constraint`). `GraphNode.kind`, a string before, is now a closed enum of the node kinds Dispatch
   answers, so a consumer that switches on it learns of a new kind at its type check. Each member
   added to an existing response schema is optional, among them the `kind` and `address` a member of
-  an issue's reference closure now carries.
+  an issue's reference closure now carries. An actor, in the bus schema and in the OpenAPI
+  document, takes an optional `proof`, which reads `broker` for a session the broker verified.

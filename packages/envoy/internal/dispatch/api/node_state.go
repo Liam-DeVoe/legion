@@ -239,14 +239,16 @@ func (s *server) writeNodeStateRoute(w http.ResponseWriter, r *http.Request) {
 // maySettle is whether the caller whose credential is proving settles a proposal whose made_by is
 // author (dispatch://INFRA-1950/spec#b-r-proposed): a person settles any proposal - a browser's
 // cookie, or a token holding the person scope, the credential actingPerson acts for a person on -
-// and any other caller one its own credential wrote, compared with model.Actor.SameCredential.
-// The deployment's shared bearer proves no author (graphstore.ProvesAuthor), and every holder of it
-// is one credential, so it settles nothing.
+// and any other caller only a proposal whose recorded author is the author its credential proves,
+// by the root's one author rule (graphstore.SameAuthor, the Go half of graphstore.AuthorIsSQL,
+// which every read binds): the same person for a personal token, the same session for a session
+// the broker verified, and the same workload for a pod's service-account token, whose write the
+// rule reads as that workload's whether it reserved the node for itself or wrote it project-visible
+// under a session its body named. No rule here reads a record any other way. The deployment's
+// shared bearer proves no author (graphstore.ProvesAuthor), and every holder of it is one
+// credential, so it settles nothing.
 func maySettle(proving, author model.Actor) bool {
-	if proving.Credential.Holds(model.ScopePerson) {
-		return true
-	}
-	return graphstore.ProvesAuthor(proving) && proving.SameCredential(author)
+	return proving.Credential.Holds(model.ScopePerson) || graphstore.SameAuthor(author, proving)
 }
 
 // settleNode is POST /api/v1/issues/{key}/nodes/{id}/settle: the one write that settles a proposed

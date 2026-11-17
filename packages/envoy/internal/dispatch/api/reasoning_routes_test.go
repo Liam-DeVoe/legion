@@ -267,15 +267,17 @@ func TestTheReasoningRoutesRefuseAndStoreNothing(t *testing.T) {
 		t.Fatalf("the store holds %d lenses after the refusals, and held %d before", after, before)
 	}
 
-	// On the shared bearer a lens is project-visible and names no author.
+	// On the shared bearer a lens is project-visible and names the session its body names as
+	// its writer (spec v46 R12), though that bearer proves no author.
 	shared := sessionRequest(t, rig.handler, http.MethodPost, "/api/v1/issues/"+rig.issue+"/lenses",
 		map[string]any{"on": rig.spec, "kind": "inversion", "actor": sessionActor()})
 	if shared.Code != http.StatusCreated {
 		t.Fatalf("a lens on the shared bearer: status=%d body=%s", shared.Code, shared.Body.String())
 	}
 	inversion := decodeBody[lensInvoked](t, shared)
-	if inversion.Author != nil || inversion.Visibility != graphstore.VisibilityProject {
-		t.Fatalf("the shared bearer's lens answers author %+v and visibility %q, want none and project", inversion.Author, inversion.Visibility)
+	if inversion.Author == nil || inversion.Author.Kind != graphstore.KindSession || inversion.Author.ID != sessionActor()["id"] ||
+		inversion.Visibility != graphstore.VisibilityProject {
+		t.Fatalf("the shared bearer's lens answers author %+v and visibility %q, want the session its body names and project", inversion.Author, inversion.Visibility)
 	}
 
 	// A second has_kind is the store's 409, and the lens holds the kind it held.

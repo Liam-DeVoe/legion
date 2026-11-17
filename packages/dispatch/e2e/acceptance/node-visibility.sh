@@ -449,7 +449,7 @@ finds() {
 # Bob reads each address with his cookie and with his personal token, and each answers him what an
 # address of the same form nobody wrote answers through the same credential. The first person's
 # cookie, which wrote all three, finds each. Her personal token proves her too, so it finds her
-# pre-mortem and her risk, whose predicate compares the person a credential proves, and reads her
+# pre-mortem and her risk, whose predicate compares the author a credential proved, and reads her
 # run as an address nobody wrote: a run's predicate compares the whole credential that asked it,
 # and her cookie asked it.
 for name in premortem risk interaction; do

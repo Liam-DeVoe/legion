@@ -36,8 +36,11 @@ import (
 )
 
 // PremortemConverter is the actor `envoy-dispatch premortem-convert` writes as: the server's own
-// credential, which proves no author a node could be reserved for and names no person or session
-// an authored_by tuple could point at, as the catalogue command's writer is (graphstore.AddLensKind).
+// credential. It proves an author, itself, by the id it carries (graphstore.ProvesAuthor), so it
+// reads the checks it names as an author no node is reserved for; and it names no person or
+// session (graphstore.AuthorOf), so what it converts holds no authored_by tuple and the conversion
+// writes no author's node, as the catalogue command's writer (graphstore.AddLensKind) writes none.
+// The conversion asks for no visibility, so every node it writes is project-visible.
 var PremortemConverter = model.Actor{Kind: "system", ID: "premortem-convert"}
 
 // PremortemEntry is one entry of the map from each risk of a pre-mortem to the checks that prevent

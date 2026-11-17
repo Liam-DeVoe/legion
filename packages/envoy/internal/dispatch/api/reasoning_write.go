@@ -62,19 +62,25 @@ func lockIssueRow(ctx context.Context, tx pgx.Tx, key string) (string, error) {
 // node, its part_of tuple to its parent, one value tuple of each attribute its row carries
 // (graphstore.AttributeTuples, in the attributes' name order), so the row is the projection of its
 // tuples and the history and the as-of reads answer each attribute, the tuples the request states
-// with it, and, where the proving credential proves an author (graphstore.ProvesAuthor), its
-// authored_by tuple to the author graphstore.AuthorOf names of its made_by, with that author's own
-// person or session node and its alias and recorded_as tuples (graphstore.AuthorFacts), as the
-// comment path states who wrote a comment. A credential that proves no author - the deployment's
-// shared bearer - states no author and no author node at all, though the node's made_by names the
-// session its body claims, so a claimed session never becomes a node of the store.
+// with it, and its authored_by tuple to the writer graphstore.AuthorOf names of its made_by, with
+// that writer's own person or session node and its alias and recorded_as tuples
+// (graphstore.AuthorFacts), as the comment path states who wrote a comment. That tuple is
+// attribution, not proof (spec v46 R12): on the deployment's shared bearer it names the session
+// the body names, and on a pod's write the session its body names beside the pod's workload,
+// though neither credential proves that session (graphstore.ProvesAuthor). The author a read and
+// a settle compare is the one the node's made_by proves (graphstore.SameAuthor), which this tuple
+// does not decide. A node whose made_by names only a workload - a pod's node reserved for its
+// author, made by the pod's token - or nobody AuthorOf names states no authored_by and no author's
+// node.
 //
 // Each node's visibility is graphstore.VisibilityFor of what it asked for and the proving
 // credential: `author` on a credential that proves no author is graphstore.ErrAuthorNamesNobody,
 // 403 AUTHOR_NAMES_NOBODY, refused before the first statement, so nothing of the write is stored.
 // An author-only node is made by the proving credential, so the credential its author reads it
-// with matches its made_by; a project node is made by the recorded actor. Every node is live, in
-// the project of the issue (the project graphstore.IssueNode states of the issue's own node), and
+// with matches its made_by; a project node is made by the recorded actor. A node written on the
+// shared bearer is always project-visible and its writer settles nothing, since that bearer proves
+// no author, while its authored_by names the session its body names. Every node is live, in the
+// project of the issue (the project graphstore.IssueNode states of the issue's own node), and
 // between no parties.
 //
 // It takes the issue's row first (lockIssueRow) and reads the project off it; an issue that does
@@ -131,7 +137,6 @@ func writeReasoningNodes(ctx context.Context, tx pgx.Tx, write reasoningWrite) (
 	// still states its own authored_by.
 	authors := map[[2]string]struct{}{}
 	aliases := map[[5]string]struct{}{}
-	proves := graphstore.ProvesAuthor(write.proving)
 	for index := range written {
 		node := &written[index]
 		node.Project = project
@@ -146,9 +151,6 @@ func writeReasoningNodes(ctx context.Context, tx pgx.Tx, write reasoningWrite) (
 			stated.Seq, stated.LegacySourceSeq = 0, nil
 			stated.At, stated.Who, stated.SourceEvent, stated.Asserted = write.at, node.MadeBy, graphstore.NoEvent, true
 			tuples = append(tuples, stated)
-		}
-		if !proves {
-			continue
 		}
 		authorNodes, facts, named := graphstore.AuthorFacts(node.Kind, node.ID, node.MadeBy, write.at, graphstore.NoEvent)
 		if !named {

@@ -671,11 +671,17 @@ who has signed in, so the project may name her.
 was written `bun e2e/run.ts -- <command>`; that program is gone, and the browser suite starts its
 stacks through Playwright's own global setup now, which no shell driver can reach.
 
-All nine drivers source `e2e/acceptance/lib.sh`, the preamble and the check vocabulary they
-share: it refuses an unset input or a missing command with exit 2, reads the bearer from
-`DISPATCH_TOKEN` or `DISPATCH_TOKEN_FILE` without printing it, unsetting both so no process the
-script starts inherits it, and holds the `pass`, `fail`, `skip`, `want_status`, `expect` and
-`query` every driver checks with. `with-harness.sh` is no driver and sources none of it.
+Twenty of the twenty-three drivers in `e2e/acceptance/` source `e2e/acceptance/lib.sh`, the
+preamble and the check vocabulary they share: it refuses an unset input or a missing command with
+exit 2, reads the bearer from `DISPATCH_TOKEN` or `DISPATCH_TOKEN_FILE` without printing it,
+unsetting both so no process the script starts inherits it, and holds the `pass`, `fail`, `skip`,
+`want_status`, `expect` and `query` each of them checks with. Eighteen source it themselves;
+`lens-schema.sh` and `node-visibility-census.sh` source `lib-processes.sh`, which sources
+`lib-baseline.sh`, which sources `lib.sh`. The other three source none of it:
+`document-roundtrip.sh` and `omp-roundtrip.sh` check with functions of their own, and
+`outside-path-reach.sh` is handed to a person as one file (below). `with-harness.sh` is no driver
+and sources none of it, and `lib-baseline.sh`, `lib-processes.sh` and `seed-decisions.sh` are
+files the drivers source, not drivers.
 
 `e2e/acceptance/outside-path-reach.sh` is the driver of the check `c-outside-path-reach`
 (dispatch://INFRA-3862): a person from outside runs it on their own device, over the path they

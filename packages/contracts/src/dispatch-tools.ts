@@ -2532,15 +2532,17 @@ export const dispatchToolSpecs = [
       "Append, retract or retarget one pointer out of a node of an issue. kind is has_kind (a " +
       "lens to its kind, from and to being lens_kind ids such as trade-off), triggered_by (a " +
       "lens to the lens of the issue whose finding asked for it), constrained_by (a requirement " +
-      "block of the issue's spec to a constraint, dispatch://constraint/<uuid>) or prevented_by " +
-      "(a risk to a check block that covers it). action append adds a pointer at to, retract " +
-      "removes the one at to, and retarget moves the one at from to to in one write. node is " +
-      "the dispatch:// address of the node the pointer goes out of. Dispatch holds every pointer " +
-      "to its type rule: a far end of the wrong type, a lens triggered by itself and a lens left " +
-      "with no kind are refused with 400 INVALID_POINTER, and a second has_kind on a lens, or a " +
-      "retarget of a pre-mortem's kind away from pre-mortem, with 409 POINTER_ALREADY_ASSERTED. " +
-      "A node or a far end outside the issue, or one you may not see, and a pointer to retract " +
-      "or retarget that the node does not hold, are 404 NOT_FOUND. No pointer moves a node to " +
+      "block of the issue's spec to a constraint of the issue or of the catalogue, " +
+      "dispatch://constraint/<uuid>) or prevented_by (a risk to a check block that covers it). " +
+      "action append adds a pointer at to, retract removes the one at to, and retarget moves " +
+      "the one at from to to in one write. node is the dispatch:// address of the node the " +
+      "pointer goes out of. Dispatch holds every pointer to its type rule: a far end of the " +
+      "wrong type, a lens triggered by itself and a lens left with no kind are refused with 400 " +
+      "INVALID_POINTER, and a second has_kind on a lens, or a retarget of a pre-mortem's kind " +
+      "away from pre-mortem, with 409 POINTER_ALREADY_ASSERTED. A node outside the issue, a far " +
+      "end outside it (but a has_kind's lens_kind and a constrained_by's constraint of the " +
+      "catalogue, which stand under no issue), one you may not see, and a pointer to retract or " +
+      "retarget that the node does not hold are 404 NOT_FOUND. No pointer moves a node to " +
       `another parent. ${REASONING_WRITE_RULE} ${ISSUE_REFERENCE}`,
     arguments: (z) => ({
       issue: z.string().describe(ISSUE_REFERENCE),
@@ -2552,7 +2554,7 @@ export const dispatchToolSpecs = [
       to: z
         .string({ min: 1 })
         .describe(
-          "The pointer's far end: the one added or removed, or the one a retarget moves it to. A has_kind's is a lens_kind id; any other is a dispatch:// address of the issue."
+          "The pointer's far end: the one added or removed, or the one a retarget moves it to. A has_kind's is a lens_kind id; a constrained_by's is the dispatch://constraint/<uuid> address of a constraint of the issue or of the catalogue; any other is a dispatch:// address of the issue."
         ),
       from: z
         .string({ min: 1 })
@@ -2630,11 +2632,13 @@ export const dispatchToolSpecs = [
     example: { issue: "DSP-1", node: "dispatch://DSP-1/spec#b-r-cache" },
     description:
       "Settle one proposed node of an issue: its state becomes settled, written by you. A " +
-      "person settles any proposal. An agent settles only a proposal its own credential wrote " +
-      "(for a block of a document, the writer of the version that first held the block) and " +
-      "is refused with 403 SETTLE_NOT_PERMITTED otherwise; the deployment's shared agent token " +
-      "proves no author, so it settles nothing. A node that is not proposed is refused with 409 " +
-      "NODE_NOT_PROPOSED. dispatch proposed lists the issue's proposed nodes. " +
+      "person settles any proposal. An agent settles only a proposal whose author (for a block " +
+      "of a document, the writer of the version that first held the block) is the author its " +
+      "credential proves: the same person for a personal token, the same session for a " +
+      "session the secrets broker verified, the same workload for a pod's service-account " +
+      "token. Any other is refused with 403 SETTLE_NOT_PERMITTED; the deployment's shared " +
+      "agent token proves no author, so it settles nothing. A node that is not proposed is " +
+      "refused with 409 NODE_NOT_PROPOSED. dispatch proposed lists the issue's proposed nodes. " +
       `${REASONING_WRITE_RULE} ${ISSUE_REFERENCE}`,
     arguments: (z) => ({
       issue: z.string().describe(ISSUE_REFERENCE),

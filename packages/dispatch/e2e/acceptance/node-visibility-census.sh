@@ -27,10 +27,14 @@
 #       check, a trade-off lens with one finding block, triggered by the pre-mortem, a constraint
 #       reserved for bob, the requirement's constrained_by tuple to it, one lens_kind through
 #       `envoy-dispatch lens-kind-add` (that kind's only writer), an edit of the words of an
-#       existing requirement block under the header of one of alice's runs, and one lens on the
-#       shared bearer e2e-token whose body names a session no other row names. It keeps an
-#       inventory of those writes. Before any further backfill the census reads the person and the
-#       session kinds at zero differences: that lens proved no author and has no author node.
+#       existing requirement block under the header of one of alice's runs, whose ends_at psql first
+#       sets a day ahead on both sides in one transaction, so the run's window decides no result,
+#       and one lens on the shared bearer e2e-token whose body names a session no other row names.
+#       It keeps an inventory of those writes. Before any further backfill the census reads the
+#       person and the session kinds at zero differences: the shared bearer proves no author, so
+#       that lens is the project's and settles nothing, yet it names the session its body names as
+#       its writer through authored_by and its write stated that session's node (spec v46 R12),
+#       so the session is on both sides; the driver reads that authored_by tuple.
 #   B2  The base build again, as after a rollback, through run-server.sh: one new run, whose frames
 #       it writes with no frame value; with psql the hand-written run's ends_at moves into the past,
 #       standing for time passing, on both sides in one transaction (its row, and its node's
@@ -332,6 +336,46 @@ nodes_json() {
   printf '%s\n' "$answer" >"$3"
 }
 
+# ends_at_moved: the statements that set the ends_at of the run psql's :'run' names to now() plus
+# psql's :'by', an interval, on both sides, for a caller to run inside its own transaction. In
+# production no recorded fact moves: a run's ends_at is written once, by the write that records the
+# run. So a move moves the going_requests row, the interaction node's ends_at attribute and a new
+# ends_at value tuple together, written as graphstore.InteractionFacts writes that attribute (RFC
+# 3339 in UTC with the fraction of a second time.RFC3339Nano writes, as migration 20261116205055
+# spells it, stated by the run's made_by and caused by no event), so the newest tuple and the column
+# agree with the row.
+readonly ends_at_moved="
+  update going_requests set ends_at = now() + :'by'::interval where id = :'run'::uuid;
+  with moved as (
+    select r.id::text as id,
+           to_char(r.ends_at at time zone 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS')
+             || coalesce('.' || nullif(rtrim(to_char(r.ends_at at time zone 'UTC', 'US'), '0'), ''), '')
+             || 'Z' as ends_at
+    from going_requests r where r.id = :'run'::uuid
+  ),
+  node as (
+    update graph_nodes n set attributes = jsonb_set(n.attributes, '{ends_at}', to_jsonb(moved.ends_at))
+    from moved where n.kind = 'interaction' and n.id = moved.id
+    returning n.id, n.made_by
+  )
+  insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event, legacy_source_seq, asserted)
+  select 'interaction', node.id, 'ends_at', 'value', moved.ends_at, now(), node.made_by, 0, null, true
+  from node join moved on moved.id = node.id;"
+
+# want_ends_at SECTION WHAT RUN WHEN: RUN's going_requests row holds an ends_at of which WHEN, an SQL
+# condition over r.ends_at, holds, and its interaction node's ends_at attribute and its newest
+# ends_at value tuple both equal it.
+want_ends_at() {
+  want_value "$1" "$2" "true|true|true" \
+    "select ($4)::text || '|' || (r.ends_at = (n.attributes->>'ends_at')::timestamptz)::text || '|'
+            || (r.ends_at = (select t.to_id::timestamptz from graph_tuples t
+                             where t.from_kind = 'interaction' and t.from_id = n.id and t.kind = 'ends_at'
+                               and t.to_kind = 'value' and t.asserted
+                             order by t.seq desc limit 1))::text
+     from going_requests r join graph_nodes n on n.kind = 'interaction' and n.id = r.id::text
+     where r.id = '$3'"
+}
+
 # against_inventory INVENTORY STORE TABLE: one line for each run INVENTORY holds that the store's
 # interaction nodes (STORE) or the going tables (TABLE) lack or hold otherwise: its author, its words
 # or its frames. A side holds a run's frames when the inventory's are the first frames it holds: a
@@ -622,6 +666,14 @@ pass H2 "envoy-dispatch lens-kind-add added dispatch://lens_kind/$added_kind, he
 
 ask H2 "$alice" "Edit the requirement r2 of $key for me."
 readonly run_edit="$asked"
+# The run's window is this driver's, so a slow pod cannot fail the edit below: straight after the
+# ask, well inside the window the server gave the run, its ends_at goes a day ahead on both sides.
+with_vars H2 "set run $run_edit's ends_at a day ahead on both sides" "
+  begin;
+  $ends_at_moved
+  commit;" "run=$run_edit" "by=1 day"
+want_ends_at H2 "run $run_edit's ends_at is a day ahead on both sides: its row, its node's ends_at attribute and its newest ends_at value tuple" \
+  "$run_edit" "r.ends_at > now() + interval '23 hours'"
 query H2 "read the requirement block r2 before the edit" \
   "select (made_at < (select created_at from going_requests where id = '$run_edit'))::text || '|' || state
    from graph_nodes where kind = 'block' and id = '$key/spec#r2'"
@@ -661,12 +713,23 @@ want_status 201 H2 "the shared bearer invokes a lens whose body names the sessio
 bearer_lens="$(jq -er '.address' "$work/body")" || fail H2 "invoke the lens on the shared bearer" "no address: $(body)"
 readonly bearer_lens bearer_lens_id="${bearer_lens#dispatch://lens/}"
 expect H2 "the lens on the shared bearer is project-visible" '"project"' '.visibility'
+expect H2 "the lens on the shared bearer answers the session its body names as its author" \
+  "$(jq -cnS --arg s "$bearer_session" '{kind: "session", id: $s}')" '.author'
 written lens "$bearer_lens_id"
 written has_kind "lens:$bearer_lens_id has_kind lens_kind:boring-solution"
-want_value H2 "the lens on the shared bearer records the session its body names and states no authored_by" "$bearer_session|0" \
-  "select (made_by->>'id') || '|' || (select count(*) from graph_tuples
-     where from_kind = 'lens' and from_id = '$bearer_lens_id' and kind = 'authored_by')
-   from graph_nodes where kind = 'lens' and id = '$bearer_lens_id'"
+# Attribution is no proof (spec v46 R12): the shared bearer proves no author, so the lens is the
+# project's and its writer settles nothing, while its authored_by names the session its body names,
+# whose node the write stated beside that tuple. The tuple is read as it stands now, its newest
+# entry for each far end, and only one that is asserted counts.
+want_value H2 "the lens on the shared bearer is made by the session its body names, holds its authored_by to that session, and its write stated the session's node" \
+  "$bearer_session|session:$bearer_session|1" \
+  "select (l.made_by->>'id') || '|'
+          || coalesce((select string_agg(held.to_kind || ':' || held.to_id, ' ' order by held.to_kind, held.to_id) from (
+               select distinct on (t.to_kind, t.to_id) t.to_kind, t.to_id, t.asserted from graph_tuples t
+               where t.from_kind = 'lens' and t.from_id = l.id and t.kind = 'authored_by'
+               order by t.to_kind, t.to_id, t.seq desc) held where held.asserted), '') || '|'
+          || (select count(*) from graph_nodes s where s.kind = 'session' and s.id = '$bearer_session')
+   from graph_nodes l where l.kind = 'lens' and l.id = '$bearer_lens_id'"
 jq -r 'to_entries[] | "  inventory of writes: \(.key) \(.value | length)"' "$work/writes.json"
 pass H2 "kept the inventory of this build's writes in $work/writes.json"
 
@@ -674,11 +737,10 @@ pass H2 "kept the inventory of this build's writes in $work/writes.json"
 take_census H2 h2
 census_zero H2 h2 person
 census_zero H2 h2 session
-want_value H2 "the store holds no node of the session $bearer_session, which no other row names" 0 \
-  "select count(*) from graph_nodes where kind = 'session' and id = '$bearer_session'"
-! grep -Fq "$bearer_session" "$work/census.h2" ||
-  fail H2 "the census names the session $bearer_session nowhere" "$(grep -F "$bearer_session" "$work/census.h2")"
-pass H2 "the lens on the shared bearer proved no author, so it has no author node and puts no session on the census's row side"
+! grep -Fq " difference at session $bearer_session:" "$work/census.h2" ||
+  fail H2 "the census reads no difference of the session $bearer_session" \
+    "$(grep -F " difference at session $bearer_session:" "$work/census.h2")"
+pass H2 "the lens on the shared bearer names $bearer_session as its writer through authored_by, and its write stated that session's node, so the session is on both sides of the census"
 
 # --- B2: the base build again, as after a rollback ------------------------------------------------
 
@@ -699,46 +761,19 @@ want_value B2 "the base build wrote run $run_new with no interaction node and it
           || ((select count(*) from going_events where request_id = '$run_new') > 0)::text"
 want_value B2 "the run row $run_ahead, written by hand, has the node this head gave it" 1 \
   "select count(*) from graph_nodes where kind = 'interaction' and id = '$run_ahead'"
-# The edit below stands for time passing, so that the older build's sweep finds the run overdue. In
-# production no recorded fact moves: a run's ends_at is written once, by the write that records the
-# run. So the edit moves both sides in one transaction: the going_requests row, the interaction
-# node's ends_at attribute and a new ends_at value tuple, written as graphstore.InteractionFacts
-# writes that attribute (RFC 3339 in UTC with the fraction of a second time.RFC3339Nano writes, as
-# migration 20261116205055 spells it, stated by the run's made_by and caused by no event), so the
-# newest tuple and the column agree with the row. The third run, carol's own (bob's stays, for P to
-# read his run admitted to him alone), is dated two hours back on its row alone: that build's sweep
-# deletes the row, and the backfill states its node gone.
+# The edit below stands for time passing, so that the older build's sweep finds the run overdue,
+# and moves both sides in one transaction (ends_at_moved). The third run, carol's own (bob's stays,
+# for P to read his run admitted to him alone), is dated two hours back on its row alone: that
+# build's sweep deletes the row, and the backfill states its node gone.
 readonly run_dated="$run_carol"
 with_vars B2 "move run $run_ahead's ends_at into the past on both sides, and date run $run_dated two hours back" "
   begin;
-  update going_requests set ends_at = now() - interval '1 minute' where id = :'ahead'::uuid;
-  with moved as (
-    select r.id::text as id,
-           to_char(r.ends_at at time zone 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS')
-             || coalesce('.' || nullif(rtrim(to_char(r.ends_at at time zone 'UTC', 'US'), '0'), ''), '')
-             || 'Z' as ends_at
-    from going_requests r where r.id = :'ahead'::uuid
-  ),
-  node as (
-    update graph_nodes n set attributes = jsonb_set(n.attributes, '{ends_at}', to_jsonb(moved.ends_at))
-    from moved where n.kind = 'interaction' and n.id = moved.id
-    returning n.id, n.made_by
-  )
-  insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event, legacy_source_seq, asserted)
-  select 'interaction', node.id, 'ends_at', 'value', moved.ends_at, now(), node.made_by, 0, null, true
-  from node join moved on moved.id = node.id;
+  $ends_at_moved
   update going_requests set created_at = now() - interval '2 hours', ends_at = now() - interval '2 hours'
   where id = :'dated'::uuid;
-  commit;" "ahead=$run_ahead" "dated=$run_dated"
-want_value B2 "run $run_ahead's ends_at is in the past on both sides: its row, its node's ends_at attribute and its newest ends_at value tuple" \
-  "true|true|true" \
-  "select (r.ends_at < now())::text || '|' || (r.ends_at = (n.attributes->>'ends_at')::timestamptz)::text || '|'
-          || (r.ends_at = (select t.to_id::timestamptz from graph_tuples t
-                           where t.from_kind = 'interaction' and t.from_id = n.id and t.kind = 'ends_at'
-                             and t.to_kind = 'value' and t.asserted
-                           order by t.seq desc limit 1))::text
-   from going_requests r join graph_nodes n on n.kind = 'interaction' and n.id = r.id::text
-   where r.id = '$run_ahead'"
+  commit;" "run=$run_ahead" "by=-1 minute" "dated=$run_dated"
+want_ends_at B2 "run $run_ahead's ends_at is in the past on both sides: its row, its node's ends_at attribute and its newest ends_at value tuple" \
+  "$run_ahead" "r.ends_at < now()"
 pass B2 "moved run $run_ahead's ends_at into the past on both sides in one transaction, and dated run $run_dated two hours back"
 readonly sweep_sql="select (select count(*) from going_events where request_id = '$run_ahead' and name in ('end', 'error'))
   || '|' || (select count(*) from going_requests where id = '$run_dated')"
@@ -889,8 +924,12 @@ for named in "person $carol" "person $twin" "session $carol_session"; do
     fail C "the census reads no difference of $named" "$(grep -F " difference at $named:" "$work/census.h3")"
 done
 pass C "the census reads the person and the session kinds at zero differences for $carol, her session and $twin: each is a node, and none is a node without a row or a row without a node"
-want_value C "the store still holds no node of the session $bearer_session" 0 \
+want_value C "the store still holds the node of the session $bearer_session, the writer the lens on the shared bearer names" 1 \
   "select count(*) from graph_nodes where kind = 'session' and id = '$bearer_session'"
+! grep -Fq " difference at session $bearer_session:" "$work/census.h3" ||
+  fail C "the census reads no difference of the session $bearer_session" \
+    "$(grep -F " difference at session $bearer_session:" "$work/census.h3")"
+pass C "the census reads no difference of the session $bearer_session, which is on both of its sides"
 
 # --- S: the store-only kinds against the inventory of the writes and the migration's seed ---------
 
