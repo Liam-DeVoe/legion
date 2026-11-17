@@ -154,8 +154,8 @@ func newMergeWaitReadableLive(t *testing.T) *mergeWaitReadableLive {
 	// GitHub answers `mergeable: true` for a head it holds on a check or a review the repository
 	// requires as surely as for one it would merge now, which is what makes `mergeable_state` the
 	// only answer that tells those two apart (record.PullRequest.MergeState).
-	r.github.open(r.stuckNumber, "legion/"+r.stuck, mergeWaitFirstHead, true, "blocked", r.openedAt)
-	r.github.open(r.movingNumber, "legion/"+r.moving, mergeWaitMovingHead, true, "blocked", r.openedAt)
+	r.github.open(r.stuckNumber, claim.IssueBranch(r.stuck), mergeWaitFirstHead, true, "blocked", r.openedAt)
+	r.github.open(r.movingNumber, claim.IssueBranch(r.moving), mergeWaitMovingHead, true, "blocked", r.openedAt)
 	r.seed()
 	// The runtime provisions each claim's workspace itself (fake.Runtime's InPod), so the start a
 	// move makes reaches the fake's launch without the daemon cloning acme/widgets from github.com.
@@ -203,7 +203,7 @@ func (r *mergeWaitReadableLive) seed() {
 			}
 			if err := r.records.PutPullRequest(ctx, tx, record.PullRequest{
 				State: seeded.state, Issue: seeded.key, Repo: liveRepo, Number: seeded.number,
-				Branch: "legion/" + seeded.key, HeadSHA: seeded.head, Base: mergeWaitBase,
+				Branch: claim.IssueBranch(seeded.key), HeadSHA: seeded.head, Base: mergeWaitBase,
 				HeadUpdatedAt: r.openedAt, Failing: []string{},
 			}); err != nil {
 				return err

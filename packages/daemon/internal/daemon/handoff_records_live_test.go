@@ -226,7 +226,7 @@ func (r *handoffRecordsLive) seed() {
 	}
 	// The implementer's completion of implementing reads GitHub for the open pull request on its
 	// branch, so GitHub lists the one the record holds for the issue that completes rounds here.
-	r.github = handoffRecordsDaemonGitHub(t, "legion/"+r.renew, int(number)+2)
+	r.github = handoffRecordsDaemonGitHub(t, claim.IssueBranch(r.renew), int(number)+2)
 	r.seedIssues([]dispatchSeed{
 		{key: r.a3, phase: phase.Planning, role: claim.RolePlanner},
 		{key: r.a7, phase: phase.Testing, role: claim.RoleTester, pr: int(number) + 1, head: "head-" + r.a7},
@@ -266,7 +266,7 @@ func (r *handoffRecordsLive) seedIssues(issues []dispatchSeed) {
 			}
 			if s.pr != 0 {
 				if err := r.records.PutPullRequest(ctx, tx, record.PullRequest{
-					State: record.PullRequestOpen, Issue: s.key, Repo: liveRepo, Number: s.pr, Branch: "legion/" + s.key, HeadSHA: s.head, Failing: []string{},
+					State: record.PullRequestOpen, Issue: s.key, Repo: liveRepo, Number: s.pr, Branch: claim.IssueBranch(s.key), HeadSHA: s.head, Failing: []string{},
 				}); err != nil {
 					return err
 				}
