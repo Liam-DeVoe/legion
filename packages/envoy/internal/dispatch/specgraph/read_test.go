@@ -208,15 +208,7 @@ func TestReadRefuses(t *testing.T) {
 		}
 		detail := "not-printed: line " + strconv.Itoa(line) + " is " + quoted(got, "past the end of the file") + ", and print writes " +
 			quoted(want, "nothing") + " there (" + difference + "); spec-check print writes each node in that form"
-		return Problem{Pos: Position{"x.yaml", line}, Node: node, Rule: "not-printed", Detail: detail, Effect: KeepsEachNode}
-	}
-	// readsAsAnother is the not-printed problem of a file where a YAML reader can read a value as
-	// another value than the text that the file writes, because of what: it loses the node.
-	readsAsAnother := func(line int, node, got, want, difference, because string) Problem {
-		p := notPrinted(line, node, got, want, difference)
-		p.Detail += "; the tree may hold another value than the file writes, because of " + because
-		p.Effect = LosesNode
-		return p
+		return Problem{Pos: Position{"x.yaml", line}, Node: node, Rule: "not-printed", Detail: detail, Effect: LosesNode}
 	}
 	for _, row := range []struct {
 		name  string
@@ -265,12 +257,11 @@ func TestReadRefuses(t *testing.T) {
 		{name: "a comment", text: strings.Replace(term, "---\n", "---\n# The term of work.\n", 1), nodes: 1,
 			want: notPrinted(2, "work-unit", "# The term of work.\n", "type: term\n", "a comment")},
 		{name: "a tag", text: strings.Replace(term, "name: work unit", "name: !!str work unit", 1), nodes: 1,
-			want: readsAsAnother(4, "work-unit", "name: !!str work unit\n", "name: work unit\n", "another spelling", "the tag !!str at line 4")},
+			want: notPrinted(4, "work-unit", "name: !!str work unit\n", "name: work unit\n", "another spelling")},
 		{name: "a binary", text: strings.Replace(term, "name: work unit", "name: !!binary d29yayB1bml0", 1), nodes: 1,
-			want: readsAsAnother(4, "work-unit", "name: !!binary d29yayB1bml0\n", "name: work unit\n", "another spelling", "the tag !!binary at line 4")},
+			want: notPrinted(4, "work-unit", "name: !!binary d29yayB1bml0\n", "name: work unit\n", "another spelling")},
 		{name: "a merge key", text: strings.Replace(term, "name: work unit", "<<: {name: work unit}", 1), nodes: 1,
-			want: readsAsAnother(4, "work-unit", "<<: {name: work unit}\n", "name: work unit\n", "another order of keys",
-				`the plain text "<<" at line 4, which a YAML reader can read as another value than this text`)},
+			want: notPrinted(4, "work-unit", "<<: {name: work unit}\n", "name: work unit\n", "another order of keys")},
 		{name: "a space at the end of a line", text: strings.Replace(term, "name: work unit", "name: work unit ", 1), nodes: 1,
 			want: notPrinted(4, "work-unit", "name: work unit \n", "name: work unit\n", "a space at the end of the line")},
 		{name: "quotes around a plain value", text: strings.Replace(term, "name: work unit", `name: "work unit"`, 1), nodes: 1,
@@ -284,25 +275,21 @@ func TestReadRefuses(t *testing.T) {
 		{name: "an indent of four spaces", text: strings.Replace(term, "  - A work", "    - A work", 1), nodes: 1,
 			want: notPrinted(6, "work-unit", "    - A work unit is work.\n", "  - A work unit is work.\n", "another indent")},
 		{name: "a date that is not quoted", text: strings.Replace(term, "name: work unit", "name: 2026-11-16", 1), nodes: 1,
-			want: readsAsAnother(4, "work-unit", "name: 2026-11-16\n", "name: \"2026-11-16T00:00:00Z\"\n", "another spelling",
-				`the plain text "2026-11-16" at line 4, which a YAML reader can read as another value than this text`)},
+			want: notPrinted(4, "work-unit", "name: 2026-11-16\n", "name: \"2026-11-16T00:00:00Z\"\n", "another spelling")},
 		{name: "a date with one-digit parts, which yaml.v3 reads as a time", text: strings.Replace(term, "  - A work unit is work.", "  - 2026-1-2", 1), nodes: 1,
-			want: readsAsAnother(6, "work-unit", "  - 2026-1-2\n", "  - \"2026-01-02T00:00:00Z\"\n", "another spelling",
-				`the plain text "2026-1-2" at line 6, which a YAML reader can read as another value than this text`)},
+			want: notPrinted(6, "work-unit", "  - 2026-1-2\n", "  - \"2026-01-02T00:00:00Z\"\n", "another spelling")},
 		{name: "a plain text that yaml.v3 reads as a text and YAML 1.1 as a bool", text: strings.Replace(term, "name: work unit", "name: yes", 1), nodes: 1,
-			want: readsAsAnother(4, "work-unit", "name: yes\n", "name: \"yes\"\n", "other quotes",
-				`the plain text "yes" at line 4, which a YAML reader can read as another value than this text`)},
+			want: notPrinted(4, "work-unit", "name: yes\n", "name: \"yes\"\n", "other quotes")},
 		{name: "an anchor and an alias", text: strings.Replace(term, "name: work unit\ndefinition:\n  - A work unit is work.", "name: &n work unit\ndefinition:\n  - *n", 1), nodes: 1,
-			want: readsAsAnother(4, "work-unit", "name: &n work unit\n", "name: work unit\n", "another spelling", "the anchor &n at line 4")},
+			want: notPrinted(4, "work-unit", "name: &n work unit\n", "name: work unit\n", "another spelling")},
 		{name: "an anchor with no alias", text: strings.Replace(term, "name: work unit", "name: &n work unit", 1), nodes: 1,
-			want: readsAsAnother(4, "work-unit", "name: &n work unit\n", "name: work unit\n", "another spelling", "the anchor &n at line 4")},
-		// A problem that keeps each node in one document does not hide a value of another document
-		// that a YAML reader reads as another value: the file gets the problem that loses a node too.
+			want: notPrinted(4, "work-unit", "name: &n work unit\n", "name: work unit\n", "another spelling")},
+		// A problem that keeps each node in one document does not hide a document of the file that is
+		// not in its printed form: the file gets the problem that loses a node too.
 		{name: "a plain date beside an id that breaks its pattern", text: strings.Replace(term, "id: work-unit", "id: Work-Unit", 1) +
 			strings.Replace(strings.Replace(term, "id: work-unit", "id: work-item", 1), "name: work unit", "name: 2026-11-16", 1), nodes: 2,
 			want: Problem{Pos: Position{"x.yaml", 1}, Node: "Work-Unit", Rule: "schema", Detail: "schema: /id: 'Work-Unit' does not match pattern '^[a-z0-9]+(-[a-z0-9]+)*$'", Effect: KeepsEachNode},
-			also: new(readsAsAnother(10, "work-item", "name: 2026-11-16\n", "name: \"2026-11-16T00:00:00Z\"\n", "another spelling",
-				`the plain text "2026-11-16" at line 10, which a YAML reader can read as another value than this text`))},
+			also: new(notPrinted(10, "work-item", "name: 2026-11-16\n", "name: \"2026-11-16T00:00:00Z\"\n", "another spelling"))},
 		{name: "a first document with no --- line", text: strings.TrimPrefix(term, "---\n"), nodes: 1,
 			want: notPrinted(1, "work-unit", "type: term\n", "---\n", "another spelling")},
 		{name: "CRLF line ends", text: strings.ReplaceAll(term, "\n", "\r\n"), nodes: 1,
@@ -317,6 +304,15 @@ func TestReadRefuses(t *testing.T) {
 			want: notPrinted(1, "work-unit", "---\r", "---\n", "a carriage return: print ends each line with a line feed only")},
 		{name: "a line separator in a quoted name", text: strings.Replace(term, "name: work unit", "name: 'work\u2028  unit'", 1), nodes: 1,
 			want: notPrinted(4, "work-unit", "name: 'work\u2028", "name: \"work\\Lunit\"\n", "the character U+2028, which YAML reads as a line break")},
+		// A problem that keeps each node is no reason to trust a file that is not in its printed form:
+		// the file gets the not-printed problem too, in the document of that problem and in a file
+		// of no node.
+		{name: "a space at the end of a line beside an id that breaks its pattern", text: strings.Replace(strings.Replace(term, "id: work-unit", "id: Work-Unit", 1), "name: work unit", "name: work unit ", 1), nodes: 1,
+			want: Problem{Pos: Position{"x.yaml", 1}, Node: "Work-Unit", Rule: "schema", Detail: "schema: /id: 'Work-Unit' does not match pattern '^[a-z0-9]+(-[a-z0-9]+)*$'", Effect: KeepsEachNode},
+			also: new(notPrinted(4, "Work-Unit", "name: work unit \n", "name: work unit\n", "a space at the end of the line"))},
+		{name: "a file of a comment only", text: "# No node.\n",
+			want: Problem{Pos: Position{"x.yaml", 1}, Node: "-", Rule: "no-node", Detail: "no-node: a spec file holds one or more nodes", Effect: KeepsEachNode},
+			also: new(notPrinted(1, "-", "# No node.\n", "", "a line after the last node"))},
 		{name: "a time limit that is not a Go duration", text: strings.Replace(program, "%s", "a day", 1), nodes: 1,
 			want: Problem{Pos: Position{"x.yaml", 1}, Node: "a-restart-keeps-the-claim", Rule: "bad-time-limit", Detail: `bad-time-limit: "a day" is not a positive Go duration`, Effect: LosesNode}},
 		{name: "a time limit of zero", text: strings.Replace(program, "%s", "0s", 1), nodes: 1,
@@ -374,20 +370,27 @@ func TestEachProblemOfTheReaderSaysWhetherItLosesANode(t *testing.T) {
 		{schemaKept, KeepsEachNode, "schema: node: missing property 'failing_example'", strings.Replace(check, "failing_example:\n  - A daemon with no store.\n", "", 1)},
 		{schemaKept, KeepsEachNode, "schema: /id: 'Work-Unit' does not match pattern '^[a-z0-9]+(-[a-z0-9]+)*$'", strings.Replace(term, "id: work-unit", "id: Work-Unit", 1)},
 		{timeLimitDropped, LosesNode, `bad-time-limit: "soon" is not a positive Go duration`, strings.Replace(check, "procedure: agent\n", "procedure: agent\ntime_limit: soon\n", 1)},
-		{notPrinted, KeepsEachNode, `not-printed: line 4 is "name: 'work unit'\n", and print writes "name: work unit\n" there (other quotes); spec-check print writes each node in that form`,
+		// A file that is not in its printed form loses a node, whatever the reason: two YAML libraries
+		// can read it as two texts, as for a raw U+2028, U+2029 or U+0085, which YAML 1.1 reads as a
+		// line break and YAML 1.2 as a character, in any style of text.
+		{notPrinted, LosesNode, `not-printed: line 4 is "name: 'work unit'\n", and print writes "name: work unit\n" there (other quotes); spec-check print writes each node in that form`,
 			strings.Replace(term, "name: work unit", "name: 'work unit'", 1)},
-		{notPrintedReadsAsAnother, LosesNode, `not-printed: line 4 is "name: 2026-11-16\n", and print writes "name: \"2026-11-16T00:00:00Z\"\n" there (another spelling); spec-check print writes each node in that form; ` +
-			`the tree may hold another value than the file writes, because of the plain text "2026-11-16" at line 4, which a YAML reader can read as another value than this text`,
+		{notPrinted, LosesNode, `not-printed: line 4 is "name: 2026-11-16\n", and print writes "name: \"2026-11-16T00:00:00Z\"\n" there (another spelling); spec-check print writes each node in that form`,
 			strings.Replace(term, "name: work unit", "name: 2026-11-16", 1)},
-		{notPrintedReadsAsAnother, LosesNode, `not-printed: line 4 is "name: !!binary d29yayB1bml0\n", and print writes "name: work unit\n" there (another spelling); spec-check print writes each node in that form; ` +
-			`the tree may hold another value than the file writes, because of the tag !!binary at line 4`,
+		{notPrinted, LosesNode, `not-printed: line 4 is "name: !!binary d29yayB1bml0\n", and print writes "name: work unit\n" there (another spelling); spec-check print writes each node in that form`,
 			strings.Replace(term, "name: work unit", "name: !!binary d29yayB1bml0", 1)},
-		{notPrintedReadsAsAnother, LosesNode, `not-printed: line 4 is "<<: {name: work unit}\n", and print writes "name: work unit\n" there (another order of keys); spec-check print writes each node in that form; ` +
-			`the tree may hold another value than the file writes, because of the plain text "<<" at line 4, which a YAML reader can read as another value than this text`,
+		{notPrinted, LosesNode, `not-printed: line 4 is "<<: {name: work unit}\n", and print writes "name: work unit\n" there (another order of keys); spec-check print writes each node in that form`,
 			strings.Replace(term, "name: work unit", "<<: {name: work unit}", 1)},
-		{notPrintedReadsAsAnother, LosesNode, `not-printed: line 4 is "name: &n work unit\n", and print writes "name: work unit\n" there (another spelling); spec-check print writes each node in that form; ` +
-			`the tree may hold another value than the file writes, because of the anchor &n at line 4`,
+		{notPrinted, LosesNode, `not-printed: line 4 is "name: &n work unit\n", and print writes "name: work unit\n" there (another spelling); spec-check print writes each node in that form`,
 			strings.Replace(term, "name: work unit\ndefinition:\n  - A work unit is work.", "name: &n work unit\ndefinition:\n  - *n", 1)},
+		{notPrinted, LosesNode, "not-printed: line 4 is " + strconv.Quote("name: \"work\u2028") + ", and print writes " + strconv.Quote("name: \"work\\Lunit\"\n") +
+			" there (the character U+2028, which YAML reads as a line break); spec-check print writes each node in that form",
+			strings.Replace(term, "name: work unit", "name: \"work\u2028  unit\"", 1)},
+		{notPrinted, LosesNode, "not-printed: line 4 is " + strconv.Quote("name: 'work\u2029") + ", and print writes " + strconv.Quote("name: \"work\\Punit\"\n") +
+			" there (the character U+2029, which YAML reads as a line break); spec-check print writes each node in that form",
+			strings.Replace(term, "name: work unit", "name: 'work\u2029  unit'", 1)},
+		{notPrinted, LosesNode, `not-printed: line 6 is "  - |-\n", and print writes "  - A work\n" there (another spelling); spec-check print writes each node in that form`,
+			strings.Replace(term, "  - A work unit is work.", "  - |-\n    A work\u0085    unit is work.", 1)},
 	}
 	name := map[Effect]string{LosesNode: "LosesNode", KeepsEachNode: "KeepsEachNode"}
 	covered := map[problemKind]bool{}
@@ -420,10 +423,10 @@ func TestEachProblemOfTheReaderSaysWhetherItLosesANode(t *testing.T) {
 	}
 }
 
-// The printer and the reader take one rule from its two sides. quotedScalar says whether another
-// YAML reader can read a plain text as another value than the text, and yaml.v3 says it of its own
-// reading; the printer writes a text double-quoted where one of them says so, and the reader gives
-// a problem that loses a node for a plain text where one of them says so. Each text of a fixed list
+// The printer writes a text double-quoted where quotedScalar says that another YAML reader can read
+// it plain as another value than the text, or yaml.v3 says it of its own reading, and the reader
+// gives a problem that loses a node for each file that is not in that printed form, so for the
+// plain spelling of each such text. Each text of a fixed list
 // and 20,000 random texts made of the characters of YAML's implicit types is the name of a term,
 // written plain, in a file that yaml.v3 reads with that text as a plain scalar: the reader gives a
 // problem that loses a node exactly when the printer writes the text double-quoted, and a text that

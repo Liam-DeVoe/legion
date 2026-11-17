@@ -297,7 +297,11 @@ func TestReadApprovedRefusesAMalformedFixture(t *testing.T) {
 			`approved node "a-page-shows-it" version 1: bad-approved-document: the document holds 2 nodes, not one`},
 		{"a document that Print does not write", `{"nodes":[{"id":"a-page-shows-it","versions":[` + version("1", "2026-11-10T00:00:00Z", `"---\ntype: requirement\nid: a-page-shows-it\nkind:  behavior\ntext:\n  - The page shows it.\n"`) + `]}]}`,
 			`approved node "a-page-shows-it" version 1: not-printed: line 4 is "kind:  behavior\n", and print writes "kind: behavior\n" there (other spaces)`},
+		// A problem of the schema that keeps the node leaves the printed form to the reader, which
+		// names the line; one that loses or changes the node leaves it to ReadApproved.
 		{"a document that Print does not write, of a node that breaks a rule of the schema", `{"nodes":[{"id":"a-page-shows-it","versions":[` + version("1", "2026-11-10T00:00:00Z", `"---\ntype: requirement\nid: a-page-shows-it\ntext:\n  -   The page shows it.\n"`) + `]}]}`,
+			`approved node "a-page-shows-it" version 1: not-printed: line 5 is "  -   The page shows it.\n", and print writes "  - The page shows it.\n" there (other spaces)`},
+		{"a document that Print does not write, of a node that the schema changes", `{"nodes":[{"id":"a-page-shows-it","versions":[` + version("1", "2026-11-10T00:00:00Z", `"---\ntype: requirement\nid: a-page-shows-it\nkind: behavior\ntext:\n  - The page shows it.\nsurprise: true\n"`) + `]}]}`,
 			`approved node "a-page-shows-it" version 1: bad-approved-document: the document is not as Print writes it`},
 		{"null", `null`, `it holds no "nodes" list`},
 		{"an empty object", `{}`, `it holds no "nodes" list`},
@@ -455,7 +459,7 @@ func TestCurrentNamesADocumentThatDoesNotRead(t *testing.T) {
 	}
 	want := []Problem{{Pos: Position{"approved a-page-shows-it version 1", 2}, Node: "a-page-shows-it", Rule: "not-printed",
 		Detail: `not-printed: line 2 is "# A comment.\n", and print writes "type: requirement\n" there (a comment); spec-check print writes each node in that form`,
-		Effect: KeepsEachNode}}
+		Effect: LosesNode}}
 	if !reflect.DeepEqual(problems, want) {
 		t.Errorf("Current problems:\n got %+v\nwant %+v", problems, want)
 	}

@@ -92,10 +92,13 @@ func (osFileSystem) remove(path string) error                  { return os.Remov
 // print refuses with dir as it was, and names the way out where it knows one (exchangeRefusal). A
 // run that is killed leaves the new or the old directory beside dir, which the next run finishes
 // (cleanLeftovers). A directory that the process may not write is refused, as the files of such a
-// directory were. warnings is a line for each step after the exchange that did not finish, or for
+// directory were, and so is a parent that it may not write, where the new directory goes, and an
+// owner that it may not give the new directory, each with the way out (writable, sameOwner).
+// warnings is a line for each step after the exchange that did not finish, or for
 // an entry that another program changed while the run built the new directory, which writeDir
-// keeps beside dir. Each change that it makes in the file system goes through fsys.
-func writeDir(fsys fileSystem, dir string, lock *specDirLock, files, after map[string][]byte) (warnings []string, err error) {
+// keeps beside dir; kept is whether it kept such an entry, which a person must compare with dir.
+// Each change that it makes in the file system goes through fsys.
+func writeDir(fsys fileSystem, dir string, lock *specDirLock, files, after map[string][]byte) (warnings []string, kept bool, err error) {
 	var changed []string
 	for _, name := range slices.Sorted(maps.Keys(after)) {
 		if old, held := files[name]; !held || !bytes.Equal(old, after[name]) {
@@ -103,18 +106,18 @@ func writeDir(fsys fileSystem, dir string, lock *specDirLock, files, after map[s
 		}
 	}
 	if len(changed) == 0 {
-		return nil, nil
+		return nil, false, nil
 	}
 	if err := writable(dir); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	old, err := os.Lstat(dir)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	staging := stagingPath(dir, inode(old))
 	if err := fsys.mkdir(staging, 0o700); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	exchanged := false
 	defer func() {
@@ -130,49 +133,66 @@ func writeDir(fsys fileSystem, dir string, lock *specDirLock, files, after map[s
 			err = linkOrCopy(fsys, filepath.Join(dir, name), to, after[name])
 		}
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 	}
 	if err := fsys.chmod(staging, old.Mode()&(fs.ModePerm|fs.ModeSetgid|fs.ModeSticky)); err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	if err := sameOwner(fsys, staging, old); err != nil {
-		return nil, err
+	if err := sameOwner(fsys, staging, dir, old); err != nil {
+		return nil, false, err
 	}
 	built, err := os.Open(staging)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	lock.hold(built)
 	if err := fsys.lock(built); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if err := fsys.sync(built); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if err := fsys.exchange(staging, dir); err != nil {
-		return nil, exchangeRefusal(err)
+		return nil, false, exchangeRefusal(err)
 	}
 	exchanged = true
 	if err := syncDir(fsys, filepath.Dir(dir)); err != nil {
 		warnings = append(warnings, fmt.Sprintf("%s: the system did not sync the directory that holds it, so a power loss can undo the run: %s", dir, err))
 	}
-	return append(warnings, finishOld(fsys, staging, dir, files)...), nil
+	lines, kept := finishOld(fsys, staging, dir, files)
+	return append(warnings, lines...), kept, nil
 }
 
-// exchangeRefusal is the error of writeDir when the system refuses the exchange with err. For the
-// two refusals that a writer meets, it names the cause and the way out: EXDEV, which overlayfs
-// answers for a directory that comes from the layers of a container image, and EBUSY, which the
-// system answers for a directory that is a mount point. A copy of the directory in its place, made
-// in the container, and a mount of the checkout, or of the directory above the mount point, each
-// let print run there (measured in a container; the pull request says how).
+// The words of the refusals of print where a system or a file system cannot do what print does,
+// each with its way out: noExchange, of a system that gives no call that exchanges two directories
+// (exchange_other.go); noFlock, of a system that gives no flock (lock_other.go); noExchangeWayOut,
+// after the refusal of the exchange by a file system that does not exchange two directories; and
+// mountPointWayOut, the way out of a spec directory that is a mount point.
+const (
+	noExchange       = "print changes its directory in one step with renameat2 (Linux) or renamex_np (macOS), which this system does not give; run print on Linux or macOS"
+	noFlock          = "print locks its directory with flock, which this system does not give; run print on Linux or macOS"
+	noExchangeWayOut = ". This file system does not exchange two directories, as some network and FUSE file systems do not: run print on a checkout on a local file system of Linux or macOS"
+	mountPointWayOut = "mount a directory above it instead, such as the checkout (docker run -v <checkout>:/work, not -v <checkout>/.dispatch/spec:/work/spec), then run print again"
+)
+
+// exchangeRefusal is the error of writeDir when the system refuses the exchange with err. For each
+// refusal that a writer meets, it names the cause and the way out: EXDEV, which overlayfs answers
+// for a directory that comes from the layers of a container image; EBUSY, which the system answers
+// for a directory that is a mount point; and EINVAL (Linux) and ENOTSUP (macOS), which a file
+// system that does not exchange two directories answers. A copy of the directory in its place,
+// made in the container, or a mount of the checkout, or of the directory above the mount point,
+// lets print run there (measured in a container; the pull request says how); a checkout on a local
+// file system gives the exchange.
 func exchangeRefusal(err error) error {
 	var wayOut string
 	switch {
 	case errors.Is(err, syscall.EXDEV):
 		wayOut = ". The file system refuses so to move a directory that comes from the layers of a container image (overlayfs): put a copy of the directory in its place in the container (cp -a <dir> <dir>.copy && rm -rf <dir> && mv <dir>.copy <dir>), or mount the checkout into the container, then run print again"
 	case errors.Is(err, syscall.EBUSY):
-		wayOut = ". The system refuses so to move a directory that is a mount point: mount a directory above it instead, such as the checkout (docker run -v <checkout>:/work, not -v <checkout>/.dispatch/spec:/work/spec), then run print again"
+		wayOut = ". The system refuses so to move a directory that is a mount point: " + mountPointWayOut
+	case errors.Is(err, syscall.EINVAL), errors.Is(err, syscall.ENOTSUP):
+		wayOut = noExchangeWayOut
 	}
 	return fmt.Errorf("print changes its files in one step, by an exchange of the directory with a new directory that it builds beside it, and the system refused the exchange: %w%s", err, wayOut)
 }
@@ -248,36 +268,41 @@ func syncDir(fsys fileSystem, dir string) error {
 // when its text is the text that the run read. A run that finishes a killed run (cleanLeftovers)
 // passes no files, and removes each spec file of old that dir holds. An entry that it can neither
 // move nor remove, which another program made or changed in old while the run built the new
-// directory, it keeps, with old under another name (keep), and it answers a line that names them.
-func finishOld(fsys fileSystem, old, dir string, files map[string][]byte) []string {
+// directory, it keeps, with old under another name (keep), and it answers a line that names them
+// and where it kept them, and kept true. It answers no line when it finished old.
+func finishOld(fsys fileSystem, old, dir string, files map[string][]byte) (lines []string, kept bool) {
 	list, err := os.ReadDir(old)
 	if err != nil {
-		return []string{fmt.Sprintf("print could not read %s, which held %s before the run, so it leaves it: %s", old, dir, err)}
+		return []string{fmt.Sprintf("print could not read %s, which held %s before the run, so it leaves it: %s", old, dir, err)}, false
 	}
-	var kept []string
+	var names []string
 	for _, entry := range list {
 		name := entry.Name()
 		path, now := filepath.Join(old, name), filepath.Join(dir, name)
 		current, err := os.Lstat(now)
 		if errors.Is(err, fs.ErrNotExist) {
 			if fsys.moveNoReplace(path, now) != nil {
-				kept = append(kept, name)
+				names = append(names, name)
 			}
 			continue
 		}
 		if err != nil || !entry.Type().IsRegular() || !current.Mode().IsRegular() || !removable(path, current, files, name) || fsys.remove(path) != nil {
-			kept = append(kept, name)
+			names = append(names, name)
 		}
 	}
-	if len(kept) == 0 && fsys.remove(old) == nil {
-		return nil
+	if len(names) == 0 && fsys.remove(old) == nil {
+		return nil, false
+	}
+	what := strings.Join(names, ", ")
+	if what == "" {
+		what = "an entry" // made in old after the run read it, so old was not empty
 	}
 	path, err := keep(fsys, old)
 	if err != nil {
-		return []string{fmt.Sprintf("print could not remove %s, which held %s before the run: %s", old, dir, err)}
+		return []string{fmt.Sprintf("print could not remove %s, which held %s before the run, and holds %s, which another program made or changed there while print ran: %s", old, dir, what, err)}, true
 	}
 	return []string{fmt.Sprintf("print kept %s, which held %s before the run: another program made or changed %s there while print ran, so compare each with the entry of that name in %s",
-		path, dir, strings.Join(kept, ", "), dir)}
+		path, dir, what, dir)}, true
 }
 
 // removable reports whether finishOld may remove the regular file path of an old directory, whose
@@ -301,27 +326,31 @@ func removable(path string, current fs.FileInfo, files map[string][]byte, name s
 
 // undoNew removes staging, a new directory that a killed run of print built beside dir and did not
 // exchange: it holds only new files and second names of the spec files of dir. An entry that it
-// cannot remove, it keeps, with staging under another name (keep), and answers a line that names
-// it.
-func undoNew(fsys fileSystem, staging, dir string) []string {
+// cannot remove, it keeps, with staging under another name (keep), and answers a line that names it
+// and where it kept it, and kept true. It answers no line when it removed staging.
+func undoNew(fsys fileSystem, staging, dir string) (lines []string, kept bool) {
 	list, err := os.ReadDir(staging)
 	if err != nil {
-		return []string{fmt.Sprintf("print could not read %s, so it leaves it: %s", staging, err)}
+		return []string{fmt.Sprintf("print could not read %s, so it leaves it: %s", staging, err)}, false
 	}
-	var kept []string
+	var names []string
 	for _, entry := range list {
 		if !entry.Type().IsRegular() || fsys.remove(filepath.Join(staging, entry.Name())) != nil {
-			kept = append(kept, entry.Name())
+			names = append(names, entry.Name())
 		}
 	}
-	if len(kept) == 0 && fsys.remove(staging) == nil {
-		return nil
+	if len(names) == 0 && fsys.remove(staging) == nil {
+		return nil, false
+	}
+	what := strings.Join(names, ", ")
+	if what == "" {
+		what = "an entry" // made in staging after the run read it, so staging was not empty
 	}
 	path, err := keep(fsys, staging)
 	if err != nil {
-		return []string{fmt.Sprintf("print could not remove %s: %s", staging, err)}
+		return []string{fmt.Sprintf("print could not remove %s, which a killed run of print left beside %s, and holds %s, which print did not make: %s", staging, dir, what, err)}, true
 	}
-	return []string{fmt.Sprintf("print kept %s, which a killed run of print left beside %s: it holds %s, which print did not make", path, dir, strings.Join(kept, ", "))}
+	return []string{fmt.Sprintf("print kept %s, which a killed run of print left beside %s: it holds %s, which print did not make", path, dir, what)}, true
 }
 
 // keep gives path, a directory that print leaves, a name that cleanLeftovers does not take as its
@@ -332,19 +361,20 @@ func keep(fsys fileSystem, path string) (string, error) {
 }
 
 // cleanLeftovers finishes each directory that a killed run of print left beside dir, whose inode
-// is ino, and answers a line for each. The caller holds the lock of dir, and a run holds that lock
-// from before it makes its directory beside dir until it has removed it, so each such directory is
-// a dead run's. A directory is print's own when its name is the name that stagingPath gives and the
-// inode in that name is the inode of dir, then it is a new directory that the run did not exchange
-// (undoNew), or its own inode, then it is the old directory that the run exchanged out of dir
-// (finishOld). Each other entry of that form it passes over with a line that says so.
-func cleanLeftovers(fsys fileSystem, dir string, ino uint64) []string {
+// is ino, and answers a line for each, and whether it kept an entry beside dir that a person must
+// compare with dir. The caller holds the lock of dir, and a run holds that lock from before it
+// makes its directory beside dir until it has removed it, so each such directory is a dead run's.
+// A directory is print's own when its name is the name that stagingPath gives and the inode in that
+// name is the inode of dir, then it is a new directory that the run did not exchange (undoNew), or
+// its own inode, then it is the old directory that the run exchanged out of dir (finishOld); the
+// line says that print removed or finished it, or, where it could not, what it left and where.
+// Each other entry of that form it passes over with a line that says so.
+func cleanLeftovers(fsys fileSystem, dir string, ino uint64) (lines []string, kept bool) {
 	parent, prefix := filepath.Dir(dir), "."+filepath.Base(dir)+stagingInfix
 	list, err := os.ReadDir(parent)
 	if err != nil {
-		return []string{fmt.Sprintf("print could not read %s, so it cannot finish what a killed run of print left there: %s", parent, err)}
+		return []string{fmt.Sprintf("print could not read %s, so it cannot finish what a killed run of print left there: %s", parent, err)}, false
 	}
-	var lines []string
 	for _, entry := range list {
 		rest, ok := strings.CutPrefix(entry.Name(), prefix)
 		made, err := strconv.ParseUint(rest, 10, 64)
@@ -357,14 +387,20 @@ func cleanLeftovers(fsys fileSystem, dir string, ino uint64) []string {
 		case err != nil || !entry.IsDir():
 			lines = append(lines, fmt.Sprintf("print passes over %s: it has the name of a directory that print builds beside %s, and it is no directory", path, dir))
 		case made == ino:
-			lines = append(lines, fmt.Sprintf("print removed %s, a new directory that a killed run of print built and did not put in the place of %s", path, dir))
-			lines = append(lines, undoNew(fsys, path, dir)...)
+			left, k := undoNew(fsys, path, dir)
+			if len(left) == 0 {
+				left = []string{fmt.Sprintf("print removed %s, a new directory that a killed run of print built and did not put in the place of %s", path, dir)}
+			}
+			lines, kept = append(lines, left...), kept || k
 		case made == inode(info):
-			lines = append(lines, fmt.Sprintf("print finished %s, the directory that a killed run of print put out of the place of %s: it moved each entry that is no spec file into %s", path, dir, dir))
-			lines = append(lines, finishOld(fsys, path, dir, nil)...)
+			left, k := finishOld(fsys, path, dir, nil)
+			if len(left) == 0 {
+				left = []string{fmt.Sprintf("print finished %s, the directory that a killed run of print put out of the place of %s: it moved each entry that is no spec file into %s", path, dir, dir)}
+			}
+			lines, kept = append(lines, left...), kept || k
 		default:
 			lines = append(lines, fmt.Sprintf("print passes over %s: it has the name of a directory that print builds beside %s, and no run of print on %s made it", path, dir, dir))
 		}
 	}
-	return lines
+	return lines, kept
 }

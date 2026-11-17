@@ -19,11 +19,13 @@ const ciVariable = "GITHUB_ACTIONS"
 // runCompare is "spec-check compare --dir <dir> --approved <approved.json> [--allow-empty]": it
 // compares the files of dir with the approved spec and answers 0 when the approved spec held each
 // text that they hold, 1 when it did not, and 2 for files with a problem of Parse that can lose a
-// node or change one (its Effect is specgraph.LosesNode), a directory or a file it cannot read, a
-// directory that holds no spec file without --allow-empty, or arguments it does not take. A problem
-// of Parse that leaves each node as the files write it (specgraph.KeepsEachNode), such as a comment
-// or other quotes, a spelling that print does not write, is tree's to judge, and compare compares
-// those files.
+// node or change one (its Effect is specgraph.LosesNode), a file that is not as print writes it
+// among them, a directory or a file it cannot read, a directory that holds no spec file without
+// --allow-empty, or arguments it does not take. The printed form is the one form that each YAML
+// library reads alike, so compare trusts no reading of another form, and the not-printed line names
+// the way out, spec-check print. A problem of Parse that leaves each node as a printed file writes
+// it (specgraph.KeepsEachNode), a value that the schema refuses and the node keeps or an empty
+// file, is tree's to judge, and compare compares those files.
 //
 // It answers 2, before it reads an argument, in a CI job: R2 gives the comparison at each push to
 // Dispatch, and no CI job compares the files. No route of the Dispatch server calls
@@ -74,9 +76,10 @@ func runCompare(args []string, stdout, stderr io.Writer) int {
 		return cannotJudge(stderr, dir, err)
 	case len(lost) > 0:
 		// The tree misses the text of a document that the reader does not read into its node, or of a
-		// value that its node drops, so a comparison of the tree would pass that text.
+		// value that its node drops, or holds yaml.v3's reading of a file that another library can
+		// read as another text, so a comparison of the tree would pass that text.
 		judged{dir: dir, problems: lost}.sayProblems(stderr)
-		say(stderr, "%s: the files do not parse, so no comparison was made", dir)
+		say(stderr, "%s: the files do not parse, or are not as print writes them, so no comparison was made", dir)
 		return 2
 	}
 

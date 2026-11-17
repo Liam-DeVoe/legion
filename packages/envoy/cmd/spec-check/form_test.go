@@ -21,18 +21,15 @@ func testForm(t *testing.T, binary string) {
 	const term = "---\ntype: term\nid: fault\nname: fault term\ndefinition:\n  - A fault term is a word of a fault.\n"
 	// v-yaml-tree: five files, one at a time, each beside the valid tree and each with one fault
 	// that the YAML library reads past: an alias, a tag and a comment read as the same data as the
-	// valid term, so only the printed form refuses them, and for the alias and the tag the line
-	// says that a YAML reader can read another value there; yaml.v3 refuses a key written two
-	// times; and the schema refuses a key that a term does not take.
+	// valid term, so only the printed form refuses them; yaml.v3 refuses a key written two times;
+	// and the schema refuses a key that a term does not take.
 	for _, row := range []struct {
 		name, text, line, counts string
 	}{
 		{"an alias", strings.Replace(term, "name: fault term\ndefinition:\n  - A fault term is a word of a fault.\n", "name: &n fault term\ndefinition:\n  - *n\n", 1),
-			"fault.yaml:4: fault: " + notPrinted(4, "name: &n fault term\n", "name: fault term\n", "another spelling") +
-				"; the tree may hold another value than the file writes, because of the anchor &n at line 4", "2 terms"},
+			"fault.yaml:4: fault: " + notPrinted(4, "name: &n fault term\n", "name: fault term\n", "another spelling"), "2 terms"},
 		{"a tag", strings.Replace(term, "name: fault term", "name: !!str fault term", 1),
-			"fault.yaml:4: fault: " + notPrinted(4, "name: !!str fault term\n", "name: fault term\n", "another spelling") +
-				"; the tree may hold another value than the file writes, because of the tag !!str at line 4", "2 terms"},
+			"fault.yaml:4: fault: " + notPrinted(4, "name: !!str fault term\n", "name: fault term\n", "another spelling"), "2 terms"},
 		{"a comment", strings.Replace(term, "---\n", "---\n# The term of a fault.\n", 1),
 			"fault.yaml:2: fault: " + notPrinted(2, "# The term of a fault.\n", "type: term\n", "a comment"), "2 terms"},
 		{"a key written two times", strings.Replace(term, "name: fault term\n", "name: fault term\nname: fault term\n", 1),

@@ -172,7 +172,6 @@ const (
 	schemaKept
 	timeLimitDropped
 	notPrinted
-	notPrintedReadsAsAnother
 	numProblemKinds
 )
 
@@ -189,29 +188,28 @@ const (
 //     component kind that is not "component" or "interface", or any refusal of a document that
 //     gives no node;
 //   - timeLimitDropped: a time limit that is not a positive Go duration, which the check drops;
-//   - notPrintedReadsAsAnother: the file is not as Print writes its nodes, and a YAML reader can
-//     read a value of it as another value than the text that the file writes (readsAsAnother), such
-//     as a plain date, which yaml.v3 reads as a time, a !!binary, which it decodes, or a merge key.
+//   - notPrinted: the file is not as Print writes its nodes. The printed form is the one form that
+//     each YAML library reads alike, because the printer writes it; another form can read as two
+//     texts in two libraries, such as a plain date, which yaml.v3 reads as a time, or a raw U+2028,
+//     which yaml.v3 (YAML 1.1) reads as a line break and a YAML 1.2 library as a character. So the
+//     tree that yaml.v3 reads from it is no text that the file holds for each reader.
 //
 // A kind keeps each node (KeepsEachNode) when the tree holds each node as the file writes it:
 //   - noNode: a file with no document, which holds no node to lose;
 //   - schemaKept: the schema refuses a value that the node keeps, such as a value outside a closed
-//     set, a text that breaks a pattern or a missing key;
-//   - notPrinted: the file is not as Print writes its nodes, and each value of it reads as the text
-//     that it writes, such as a comment, other quotes or a space at the end of a line.
+//     set, a text that breaks a pattern or a missing key.
 var problemKinds = [numProblemKinds]struct {
 	effect Effect
 	format string
 }{
-	yamlStops:                {LosesNode, "bad-yaml: %s"},
-	yamlDocument:             {LosesNode, "bad-yaml: %s"},
-	noJSONForm:               {LosesNode, "bad-yaml: the document holds a value that JSON cannot hold"},
-	noNode:                   {KeepsEachNode, "no-node: a spec file holds one or more nodes"},
-	schemaDropped:            {LosesNode, "schema: %s"},
-	schemaKept:               {KeepsEachNode, "schema: %s"},
-	timeLimitDropped:         {LosesNode, "bad-time-limit: %q is not a positive Go duration"},
-	notPrinted:               {KeepsEachNode, "not-printed: %s"},
-	notPrintedReadsAsAnother: {LosesNode, "not-printed: %s; the tree may hold another value than the file writes, because of %s"},
+	yamlStops:        {LosesNode, "bad-yaml: %s"},
+	yamlDocument:     {LosesNode, "bad-yaml: %s"},
+	noJSONForm:       {LosesNode, "bad-yaml: the document holds a value that JSON cannot hold"},
+	noNode:           {KeepsEachNode, "no-node: a spec file holds one or more nodes"},
+	schemaDropped:    {LosesNode, "schema: %s"},
+	schemaKept:       {KeepsEachNode, "schema: %s"},
+	timeLimitDropped: {LosesNode, "bad-time-limit: %q is not a positive Go duration"},
+	notPrinted:       {LosesNode, "not-printed: %s"},
 }
 
 // readerProblem is the problem of the kind kind at pos, of the node id ("" for none): its Detail
@@ -225,11 +223,9 @@ func readerProblem(pos Position, id string, kind problemKind, args ...any) Probl
 }
 
 // document is one YAML document of a spec file: the line of its "---" (or of its first line, for a
-// document that has none), the node that yaml.v3 decoded, with the tag that it gave each scalar,
-// and its data written as JSON, nil when the reader refused the data.
+// document that has none) and its data written as JSON, nil when the reader refused the data.
 type document struct {
 	line int
-	node *yaml.Node
 	data []byte
 }
 
@@ -256,7 +252,7 @@ func readDocuments(name string, data []byte) (documents []document, problems []P
 			stopped = true
 			break
 		}
-		d := document{line: doc.Line, node: &doc}
+		d := document{line: doc.Line}
 		var value any
 		var typeErr *yaml.TypeError
 		switch err := doc.Decode(&value); {
@@ -357,17 +353,17 @@ func stringKeys(value any) bool {
 // readFile reads one spec file: each of its documents, in order, with its node (Pos{name, the
 // line of its document's "---"}, nil for a document that gives none) and its text, and each
 // problem. A document whose data the schema refuses still gives its node when its keys have the
-// schema's types, so one fault gives one problem. When the file has no other problem, it must be
-// exactly the documents that printNode writes for its nodes, in its order: one node has one
-// spelling. A file where a YAML reader can read a value as another value than the text that the
-// file writes (readsAsAnother) gets that problem with the Effect LosesNode, also beside problems
-// that keep each node, so that no comparison of the tree passes a text that the file does not
-// write. The texts of the documents, joined, are data: the text of a document runs from the line
-// of its "---" to the next document's (the first from the start of the file), each line as
-// yaml.v3 counts it (lineStarts), and the part of a file after a fault that stopped the reading is
-// a document of its own with no node, from the first line after the last document read that
-// starts the next one ("---" or "..."). uncounted is why the reader cannot say for certain which
-// documents the file holds, "" when it can (splitFile).
+// schema's types, so one fault gives one problem. When the file has no problem that loses a node,
+// it must be exactly the documents that printNode writes for its nodes, in its order: one node has
+// one spelling, and it is the one that each YAML library reads alike. So a file with a problem that
+// keeps each node and that is not in its printed form gets the not-printed problem too, and no
+// comparison of the tree trusts a reading of a file that is not printed. The texts of the
+// documents, joined, are data: the text of a document runs from the line of its "---" to the next
+// document's (the first from the start of the file), each line as yaml.v3 counts it (lineStarts),
+// and the part of a file after a fault that stopped the reading is a document of its own with no
+// node, from the first line after the last document read that starts the next one ("---" or
+// "..."). uncounted is why the reader cannot say for certain which documents the file holds, ""
+// when it can (splitFile).
 func readFile(name string, data []byte) (documents []Document, problems []Problem, uncounted string) {
 	read, problems, stopped := readDocuments(name, data)
 	stop, fault := 0, ""
@@ -376,11 +372,7 @@ func readFile(name string, data []byte) (documents []Document, problems []Proble
 	}
 	var nodes []any
 	var lines []int
-	another := ""
 	for _, d := range read {
-		if another == "" {
-			another = readsAsAnother(d.node)
-		}
 		if d.data == nil {
 			continue
 		}
@@ -391,46 +383,13 @@ func readFile(name string, data []byte) (documents []Document, problems []Proble
 			lines = append(lines, d.line)
 		}
 	}
-	losesNode := slices.ContainsFunc(problems, func(p Problem) bool { return p.Effect == LosesNode })
-	if len(problems) == 0 || another != "" && !losesNode {
+	if !slices.ContainsFunc(problems, func(p Problem) bool { return p.Effect == LosesNode }) {
 		if u := firstUnprinted(data, nodes, lines); u.line > 0 {
-			pos := Position{File: name, Line: u.line}
-			if another == "" {
-				problems = append(problems, readerProblem(pos, nodeID(u.node), notPrinted, u.detail()))
-			} else {
-				problems = append(problems, readerProblem(pos, nodeID(u.node), notPrintedReadsAsAnother, u.detail(), another))
-			}
+			problems = append(problems, readerProblem(Position{File: name, Line: u.line}, nodeID(u.node), notPrinted, u.detail()))
 		}
 	}
 	documents, uncounted = splitFile(data, read, nodes, lines, stop, fault)
 	return documents, problems, uncounted
-}
-
-// readsAsAnother is the first value of node, in the order of the file, that a YAML reader can read
-// as another value than the text that the file writes, named with its line, and "" for none: an
-// alias, a node with an anchor, a scalar with a tag, and a plain scalar that yaml.v3 read as
-// another type than a string (its tag) or that another reader can (quotedScalar, the printer's own
-// rule, so that the reader takes as another value each plain text that the printer would quote).
-// The merge key "<<" is such a plain scalar. Each name and text in it is cut (Cut).
-func readsAsAnother(node *yaml.Node) string {
-	const quoted = yaml.DoubleQuotedStyle | yaml.SingleQuotedStyle | yaml.LiteralStyle | yaml.FoldedStyle
-	switch {
-	case node.Kind == yaml.AliasNode:
-		return fmt.Sprintf("the alias *%s at line %d", Cut(node.Value), node.Line)
-	case node.Anchor != "":
-		return fmt.Sprintf("the anchor &%s at line %d", Cut(node.Anchor), node.Line)
-	case node.Kind != yaml.ScalarNode:
-	case node.Style&yaml.TaggedStyle != 0:
-		return fmt.Sprintf("the tag %s at line %d", Cut(node.Tag), node.Line)
-	case node.Style&quoted == 0 && (node.ShortTag() != "!!str" || quotedScalar(node.Value)):
-		return fmt.Sprintf("the plain text %q at line %d, which a YAML reader can read as another value than this text", Cut(node.Value), node.Line)
-	}
-	for _, child := range node.Content {
-		if another := readsAsAnother(child); another != "" {
-			return another
-		}
-	}
-	return ""
 }
 
 // splitFile is the documents of data, each with its node: documents is each document read, at

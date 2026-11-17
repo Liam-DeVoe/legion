@@ -39,21 +39,32 @@ The command takes every rule from the package `packages/envoy/internal/dispatch/
     A key in another order, a comment, an anchor or an alias, a tag, a flow list, a block scalar, another indentation, other quotes, a space at the end of a line, a carriage return and a byte order mark each give this rule, so one node has one form in git.
     The line shows the text of that line in the file and the text that print writes there, each in Go's quotes, so an invisible change shows, and it names what differs, for example `not-printed: line 4 is "kind: behavior \n", and print writes "kind: behavior\n" there (a space at the end of the line); spec-check print writes each node in that form`.
     The command counts lines as the YAML library does, so a carriage return, U+0085, U+2028 and U+2029 each end a line too.
-    Where a YAML reader can read a value of the file as another value than the file writes, such as a plain date, a plain `yes`, a tag, an anchor or an alias, or the merge key `<<`, the line also names that value, and the `compare` subcommand makes no comparison of the files.
+    The printed form is the one form that each YAML library reads alike, and another form can read as two texts in two libraries, so the `compare` subcommand makes no comparison of a file that is not in it, and its line names `spec-check print`.
 
   - `bad-time-limit`: a time limit that is not a positive Go duration.
 
+- **How `spec-check print` writes the files.**
   `spec-check print` writes the documents in the form that the command reads back.
   The printer double-quotes each text that a YAML 1.1 or YAML 1.2 library reads, as a plain value, as another type than a string, such as `=`, `<<`, `yes`, `0x_` or `2026-11-16 10:00:00 Z`, so each standard library reads the same strings.
-  On a system that gives no `flock`, `spec-check print` refuses to write, because it locks the directory with `flock` for each run.
+  On a system that gives no `flock`, `spec-check print` refuses to write, because it locks the directory with `flock` for each run, and the line says to run print on Linux or macOS.
   `spec-check print` changes all of its files or none, also when it is killed: it builds a new directory beside the spec directory, named `.<name>.spec-check-print-<number>`, and puts it in the place of the spec directory with one call.
   The new directory holds a second name of each spec file that the run does not change, or a copy of it with its mode where the system refuses that name, for example for another user's file.
-  A file system that cannot exchange two directories refuses that call, and `spec-check print` then writes nothing and names the reason.
+  A file system that cannot exchange two directories refuses that call, and `spec-check print` then writes nothing and names the reason and the way out.
   For a spec directory that comes from the layers of a container image (overlayfs, `invalid cross-device link`), the line says to put a copy of the directory in its place in the container, `cp -a <dir> <dir>.copy && rm -rf <dir> && mv <dir>.copy <dir>`, or to mount the checkout into the container.
   For a spec directory that is itself a mount point (`device or resource busy`), the line says to mount a directory above it instead, such as the checkout.
+  For a file system that does not exchange two directories (`invalid argument` on Linux, `operation not supported` on macOS), the line says to run print on a checkout on a local file system.
+  `spec-check print` needs write permission on the directory above the spec directory, where it builds the new directory, and it refuses before any change when the process may not write there, with a line that says what to change, or, for a spec directory that is a mount point, to mount a directory above it.
+  It gives the new directory the owner and the group of the spec directory, and where the system refuses that, the line says to run print as the owner of the spec directory, as a member of its group, or as root.
   A run that is killed can leave the directory that it built beside the spec directory, or the old spec directory, which `git status` shows; the next run of `spec-check print` on the spec directory removes it, or moves the entries that are no spec files back into the spec directory, and says so.
+  Where another program made or changed an entry there, or changed a spec file while print ran, print keeps that directory beside the spec directory under a new name, names it and the entry in its line, and exits 1, so that a person compares the entry with the spec directory.
   A process whose working directory was the spec directory before a run keeps the old directory, which the run removes, so it changes to the spec directory again to see the new files.
-  A run of `spec-check print` changes only the nodes that it names, so it refuses a file where another node is not in its printed form, and the line names each node of that file to print it whole.
+  A run of `spec-check print` changes only the nodes that it names, so it refuses a file where another node is not in its printed form, and the line names each node of that file, by its whole id, to print it whole.
+  Each command reads the spec directory through one open directory, so a read while print runs reads the files as they were or as the run leaves them.
+  The limits of `spec-check print`:
+  a stop between the exchange and the last move leaves the entries that print does not own, such as a README, beside the spec directory until the next run puts them back;
+  two long ids that differ only in their middle look alike in a line that cuts them;
+  in a directory with the set-group-ID bit, a file that print writes takes the writer's group;
+  an id over 131,072 bytes cannot be one argument, and a top-level id over 250 bytes makes a file name that the system refuses.
 
 - **Every rule of `specgraph.Validate`.**
   These rules include ids (one id on two nodes, or an id that has a word that states a position), a parent or a relation to a node that the files do not hold, a loop, a leaf statement that no check serves, a statement that other statements serve and that no check serves, a text with no letter or digit, a claim or a component purpose of more than one sentence, and a name of code in a text, a term's name included.

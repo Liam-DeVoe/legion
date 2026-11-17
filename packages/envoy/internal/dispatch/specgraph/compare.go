@@ -2,12 +2,35 @@ package specgraph
 
 import "slices"
 
-// The Detail of each rule of Compare.
+// approvalKind is one kind of problem of a comparison with the approved spec, an index of
+// approvalKinds: a rule of Compare, or bad-approved-document, which versionText gives for a
+// document of the approved spec.
+type approvalKind int
+
+// The kinds of problem of a comparison with the approved spec. numApprovalKinds counts them, so
+// each new kind is a place of approvalKinds, which ProblemKinds lists, and the table test of the
+// lines that print a problem (cmd/spec-check) fails until it has a row.
 const (
-	detailUnapprovedID   = "unapproved-id: the approved spec never held this id"
-	detailUnapprovedText = "unapproved-text: the approved spec never held this text"
-	detailRemovedID      = "removed-id: the approved spec removed this id and never held this text for it"
+	unapprovedID approvalKind = iota
+	unapprovedText
+	removedID
+	approvedNodeCount
+	approvedOtherNode
+	approvedNotPrinted
+	numApprovalKinds
 )
+
+// approvalKinds is the format of the Detail of each kind of problem of a comparison with the
+// approved spec, which begins with its rule: Compare's rules, and bad-approved-document for a
+// document of no node or of two, of a node with another id, or not as Print writes its node.
+var approvalKinds = [numApprovalKinds]string{
+	unapprovedID:       "unapproved-id: the approved spec never held this id",
+	unapprovedText:     "unapproved-text: the approved spec never held this text",
+	removedID:          "removed-id: the approved spec removed this id and never held this text for it",
+	approvedNodeCount:  "bad-approved-document: the document holds %d nodes, not one",
+	approvedOtherNode:  "bad-approved-document: the document is of node %s, not %s",
+	approvedNotPrinted: "bad-approved-document: the document is not as Print writes it",
+}
 
 // Holding is which approved text of a node the files hold: Present when they hold one, Version its
 // number, and Current when it is the node's current text.
@@ -67,11 +90,11 @@ func Compare(files Tree, a Approved) Comparison {
 		detail := ""
 		switch {
 		case !held:
-			detail = detailUnapprovedID
+			detail = approvalKinds[unapprovedID]
 		case !approvedText && approved.Removed:
-			detail = detailRemovedID
+			detail = approvalKinds[removedID]
 		case !approvedText:
-			detail = detailUnapprovedText
+			detail = approvalKinds[unapprovedText]
 		case approved.Removed:
 			// The files still hold a text of a removed node; it holds no current text.
 			if !slices.Contains(c.Removed, f.id) {

@@ -61,14 +61,16 @@
 // comparison, for an approved.json that ReadApproved refuses (JSON that is not UTF-8, or that
 // gives a member that the format does not name in its own letters or one member two times, is one
 // of them), and for files with a problem of Parse that can lose a node or change one (its Effect
-// is specgraph.LosesNode), such as a document that the YAML library does not read or a key that
-// the node does not take, since the comparison would not see that text; it names only those
-// problems. A directory that does not exist or holds no spec file is exit 2 too, with a line that
-// names --allow-empty. With --allow-empty, compare reads it as the empty tree, with a line on
-// standard error that says so, since git keeps no empty directory and a revert of the last spec
-// file leaves none. The comparison does not judge the tree, which is tree's work: a problem of
-// Parse that leaves each node as the files write it (specgraph.KeepsEachNode), such as a comment
-// or other quotes, a spelling that print does not write, is no reason for compare to refuse.
+// is specgraph.LosesNode), such as a document that the YAML library does not read, a key that the
+// node does not take, or a file that is not as print writes it, which two YAML libraries can read
+// as two texts, since the comparison would not see that text; it names only those problems, and the
+// line of a file that is not printed names spec-check print, the way out. A directory that does
+// not exist or holds no spec file is exit 2 too, with a line that names --allow-empty. With
+// --allow-empty, compare reads it as the empty tree, with a line on standard error that says so,
+// since git keeps no empty directory and a revert of the last spec file leaves none. The
+// comparison does not judge the tree, which is tree's work: a problem of Parse that leaves each
+// node as a printed file writes it (specgraph.KeepsEachNode), a value that the schema refuses and
+// the node keeps or an empty file, is no reason for compare to refuse.
 // R2 gives the comparison at each push to Dispatch, and no CI job runs compare. So compare exits
 // 2, before it reads an argument, when GITHUB_ACTIONS is "true", with the one line "spec-check:
 // compare does not run in a CI job (GITHUB_ACTIONS=true): R2 gives the comparison of the files with
@@ -99,10 +101,12 @@
 // ("spec-check: print would lose or change node …"); or when the judgment of tree finds a problem
 // in the files that the run would leave ("spec-check: print would leave <dir>/<file>:<line>:
 // <node>: <detail>", which for a not-printed node that the run does not name ends with each node
-// of that file to name). It exits 2 too when the approved spec does not hold an id or removed it,
-// and when the system refuses to exchange --dir with the new directory that it builds beside it.
-// Else it changes the files that change in one step, also for a kill, prints "spec-check: wrote
-// <id> to <dir>/<file>:<line>" for each node, and exits 0.
+// of that file to name, by its whole id). It exits 2 too when the approved spec does not hold an
+// id or removed it, and when the system refuses to exchange --dir with the new directory that it
+// builds beside it. Else it changes the files that change in one step, also for a kill, prints
+// "spec-check: wrote <id> to <dir>/<file>:<line>" for each node, and exits 0, or 1 when it kept
+// beside --dir an entry that another program made or changed there, with a line that names what it
+// kept and where.
 //
 // guard reads every regular file under <dir>/.github/workflows, <dir>/.github/actions,
 // <dir>/.github/scripts and <dir>/scripts as text, and names each line that names the command that
@@ -190,11 +194,12 @@
 // runner's log or names a workflow command. Each statement, check and wait line starts with its
 // fixed word and passes through runnerlog.Printable for the same reason. A JSON line holds no raw
 // line break, as encoding/json escapes each control character, and checks and state write the "["
-// of each "##[" in it as \u005b, which a JSON reader reads back as "[". Each value of the input
-// that a line names, a node id, a value or a line of a file, a name of code or a value of a
-// scenario, is cut (specgraph.Cut): whole up to 100 bytes, else its first and its last 50 bytes
-// with … between them, so no line grows with the files; a path and an argument that is no id print
-// whole, and a JSON line holds each value whole, as data for a program. print writes each document
+// of each "##[" in it as \u005b, which a JSON reader reads back as "[". A line cuts a long value of
+// the input, except a value that the line tells the reader to type or to open (a path, an
+// argument, an id of a way out): a node id, a value or a line of a file, a name of code or a value
+// of a scenario is cut (specgraph.Cut), whole up to 100 bytes, else its first and its last 50 bytes
+// with … between them, so no line grows with the files, and a JSON line holds each value whole, as
+// data for a program. print writes each document
 // into the files as the approved spec holds it, since a change copies it byte for byte; no CI job
 // runs print.
 package main
@@ -204,6 +209,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"maps"
 	"os"
 	"path/filepath"
@@ -387,12 +393,21 @@ func readFiles(stderr io.Writer, dir string) (map[string][]byte, error) {
 }
 
 // readSet reads the spec files of dir with notes.ReadSet and specgraph.IsFile, and warns on stderr
-// of each entry that is not a spec file; for a file, the warning says what a spec file is. The
-// error is ReadSet's: notes.ErrNoDirectory for a directory that does not exist, a
-// *notes.SizeRefusal for a file above the bound, and an error naming the path for any other
-// failure to read.
+// of each entry that is not a spec file; for a file, the warning says what a spec file is. It opens
+// dir one time (os.OpenRoot) and reads each file through it, so a read while print exchanges dir
+// reads the files as they were or as the run leaves them, never a mix. The error is ReadSet's:
+// notes.ErrNoDirectory for a directory that does not exist, a *notes.SizeRefusal for a file above
+// the bound, and an error naming the path for any other failure to read.
 func readSet(stderr io.Writer, dir string) (notes.Set, error) {
-	set, err := notes.ReadSet(os.DirFS(dir), dir, specgraph.IsFile)
+	root, err := os.OpenRoot(dir)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return notes.Set{}, notes.ErrNoDirectory
+	case err != nil:
+		return notes.Set{}, fmt.Errorf("cannot be read: %w", err)
+	}
+	defer root.Close()
+	set, err := notes.ReadSet(root.FS(), dir, specgraph.IsFile)
 	for _, entry := range set.Rejected {
 		if entry.Kind == notes.KindFile {
 			say(stderr, "warning: %s: not a spec file (file): a spec file is a *.yaml file, which spec-check print writes; the importer passes over it", entry.Path)

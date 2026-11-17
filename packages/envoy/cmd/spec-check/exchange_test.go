@@ -101,12 +101,18 @@ func TestWriteDirChangesAllOrNone(t *testing.T) {
 			refused + syscall.EXDEV.Error() + ". The file system refuses so to move a directory that comes from the layers of a container image (overlayfs): put a copy of the directory in its place in the container (cp -a <dir> <dir>.copy && rm -rf <dir> && mv <dir>.copy <dir>), or mount the checkout into the container, then run print again"},
 		{"the exchange of a directory that is a mount point", failing(callFault{"exchange", "/spec", syscall.EBUSY}),
 			refused + syscall.EBUSY.Error() + ". The system refuses so to move a directory that is a mount point: mount a directory above it instead, such as the checkout (docker run -v <checkout>:/work, not -v <checkout>/.dispatch/spec:/work/spec), then run print again"},
+		// A file system that does not exchange two directories answers EINVAL (Linux) or ENOTSUP
+		// (macOS), and the way out is a checkout on a local file system.
+		{"the exchange on a file system that does not exchange two directories, on Linux", failing(callFault{"exchange", "/spec", syscall.EINVAL}),
+			refused + syscall.EINVAL.Error() + ". This file system does not exchange two directories, as some network and FUSE file systems do not: run print on a checkout on a local file system of Linux or macOS"},
+		{"the exchange on a file system that does not exchange two directories, on macOS", failing(callFault{"exchange", "/spec", syscall.ENOTSUP}),
+			refused + syscall.ENOTSUP.Error() + ". This file system does not exchange two directories, as some network and FUSE file systems do not: run print on a checkout on a local file system of Linux or macOS"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
 			dir, lock := setUp(t)
 			before, ino := entries(t, dir), inodes(t, dir, kept...)
-			if warnings, err := writeDir(row.fsys, dir, lock, files, after); err == nil || err.Error() != row.err || len(warnings) != 0 {
+			if warnings, keptEntry, err := writeDir(row.fsys, dir, lock, files, after); err == nil || err.Error() != row.err || len(warnings) != 0 || keptEntry {
 				t.Fatalf("writeDir: %v, warnings %q, want %q", err, warnings, row.err)
 			}
 			unchanged(t, dir, before, ino)
@@ -123,10 +129,101 @@ func TestWriteDirChangesAllOrNone(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
-		if _, err := writeDir(osFileSystem{}, dir, lock, files, after); !errors.Is(err, fs.ErrPermission) {
+		if _, _, err := writeDir(osFileSystem{}, dir, lock, files, after); !errors.Is(err, fs.ErrPermission) {
 			t.Fatalf("writeDir into a directory of mode 555: %v, want a refusal of permission", err)
 		}
 		unchanged(t, dir, before, ino)
+	})
+	// print builds its new directory in the parent of the directory, so a parent that the process
+	// may not write is refused before print makes any change, with what to change.
+	t.Run("a parent that the process may not write", func(t *testing.T) {
+		t.Parallel()
+		if os.Geteuid() == 0 {
+			t.Skip("root writes into a directory of mode 555")
+		}
+		dir, lock := setUp(t)
+		before, ino := entries(t, dir), inodes(t, dir, kept...)
+		parent := filepath.Dir(dir)
+		if err := os.Chmod(parent, 0o555); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(parent, 0o755) })
+		want := "print builds the directory that takes the place of " + dir + " beside it, in " + parent + ", and this process may not write there (write " + parent + ": permission denied): " +
+			"give this process write permission on " + parent + ", or run print as a user who may write there, then run print again"
+		if _, _, err := writeDir(osFileSystem{}, dir, lock, files, after); err == nil || err.Error() != want {
+			t.Fatalf("writeDir with a parent of mode 555: %v, want %q", err, want)
+		}
+		if err := os.Chmod(parent, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		unchanged(t, dir, before, ino)
+	})
+	// A mount point whose parent the process may not write, as a spec directory mounted into a
+	// container (R3-N2): the line names the way out of the mount point, since a parent that the
+	// process may write would meet the refusal of the exchange next. /dev/shm is such a directory
+	// on Linux, for each user but root; writable reads it and changes nothing.
+	t.Run("a mount point whose parent the process may not write", func(t *testing.T) {
+		t.Parallel()
+		const dir = "/dev/shm"
+		mount, parent := new(syscall.Stat_t), new(syscall.Stat_t)
+		if os.Geteuid() == 0 || syscall.Stat(dir, mount) != nil || syscall.Stat(filepath.Dir(dir), parent) != nil || mount.Dev == parent.Dev || syscall.Access(filepath.Dir(dir), 2) == nil {
+			t.Skipf("%s is no mount point that this process may write in a parent that it may not", dir)
+		}
+		want := "print builds the directory that takes the place of " + dir + " beside it, in /dev, and this process may not write there (write /dev: permission denied): " +
+			dir + " is a mount point, which print cannot put another directory in the place of: " + mountPointWayOut
+		if err := writable(dir); err == nil || err.Error() != want {
+			t.Fatalf("writable(%s): %v, want %q", dir, err, want)
+		}
+	})
+	// A directory whose owner or group this process may not give the new directory (lchown) is
+	// refused with the way out. The process gives the parent one of its other groups and the
+	// set-group-ID bit, so the new directory takes that group and differs from the directory's, and
+	// print calls lchown, which the row fails as the system fails it for a user who may not.
+	t.Run("a directory whose owner and group the process may not give the new directory", func(t *testing.T) {
+		t.Parallel()
+		other := -1
+		groups, err := os.Getgroups()
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, g := range groups {
+			if g != os.Getegid() {
+				other = g
+				break
+			}
+		}
+		if other < 0 {
+			t.Skipf("the process is in no group but its own (%d), so the new directory takes the group of the directory", os.Getegid())
+		}
+		dir, lock := setUp(t)
+		before, ino := entries(t, dir), inodes(t, dir, kept...)
+		parent := filepath.Dir(dir)
+		if err := os.Chown(parent, -1, other); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(parent, 0o755|fs.ModeSetgid); err != nil {
+			t.Fatal(err)
+		}
+		info, err := os.Lstat(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		st := info.Sys().(*syscall.Stat_t)
+		want := "print gives the new directory the owner and the group of " + dir + ", " + strconv.Itoa(int(st.Uid)) + ":" + strconv.Itoa(int(st.Gid)) + ", and the system refused it (operation not permitted): " +
+			"run print as the owner of " + dir + ", as a member of its group, or as root, then run print again"
+		if _, _, err := writeDir(failing(callFault{"lchown", "", syscall.EPERM}), dir, lock, files, after); err == nil || err.Error() != want {
+			t.Fatalf("writeDir with lchown refused: %v, want %q", err, want)
+		}
+		unchanged(t, dir, before, ino)
+	})
+	// The way out of a system that gives no exchange or no flock names the systems where print runs.
+	t.Run("a system that gives no exchange, and a system that gives no flock", func(t *testing.T) {
+		t.Parallel()
+		for _, refusal := range []string{noExchange, noFlock} {
+			if !strings.HasSuffix(refusal, "; run print on Linux or macOS") {
+				t.Errorf("%q names no way out, want it to end %q", refusal, "; run print on Linux or macOS")
+			}
+		}
 	})
 	// A link that the system refuses: another user's file under fs.protected_hardlinks (EPERM), a
 	// file on another file system (EXDEV), a file at its bound of links (EMLINK), a file system with
@@ -145,7 +242,7 @@ func TestWriteDirChangesAllOrNone(t *testing.T) {
 				}
 				return do()
 			}}
-			if warnings, err := writeDir(fsys, dir, lock, files, after); err != nil || len(warnings) != 0 {
+			if warnings, keptEntry, err := writeDir(fsys, dir, lock, files, after); err != nil || len(warnings) != 0 || keptEntry {
 				t.Fatalf("writeDir: %v, warnings %q, want the run to copy the file that it may not link", err, warnings)
 			}
 			want := maps.Clone(before)
@@ -172,7 +269,7 @@ func TestWriteDirChangesAllOrNone(t *testing.T) {
 		dir, lock := setUp(t)
 		before, ino := entries(t, dir), inodes(t, dir, kept...)
 		old := inodeOf(t, dir)
-		if warnings, err := writeDir(osFileSystem{}, dir, lock, files, after); err != nil || len(warnings) != 0 {
+		if warnings, keptEntry, err := writeDir(osFileSystem{}, dir, lock, files, after); err != nil || len(warnings) != 0 || keptEntry {
 			t.Fatalf("writeDir: %v, warnings %q", err, warnings)
 		}
 		want := maps.Clone(before)
@@ -369,6 +466,128 @@ func TestPrintRemovesWhatAKilledRunLeft(t *testing.T) {
 			if got := entries(t, path); !maps.Equal(got, map[string]string{"terms.yaml": "file " + term}) {
 				t.Errorf("%s holds %q, want it as it was", path, got)
 			}
+		}
+	})
+}
+
+// A run of print that keeps beside its directory an entry that another program made or changed
+// exits 1, and its line names what it kept and where (M8): a person must compare that entry with
+// the spec directory, and an exit 0 would hide it. The rows: a spec file that another program
+// changes in place while the run builds its new directory, so the old directory holds that change;
+// a new directory that a killed run left, which holds an entry that print did not make; and the old
+// directory that a killed run left, which holds an entry of a name that the spec directory holds
+// too. The control is the run of the first row with no other program: exit 0, nothing beside.
+func TestPrintExitsOneWhenItKeepsAnEntryOfAnotherProgram(t *testing.T) {
+	t.Parallel()
+	first := "---\ntype: term\nid: first-term\nname: first term\ndefinition:\n  - A term is a unit of meaning.\n"
+	second := strings.Replace(first, "unit", "part", 1)
+	other := strings.Replace(first, "unit", "piece", 1)
+	approved := writeApproved(t, map[string]string{"first-term": second})
+	a := readApprovedFile(t, approved)
+	run := func(t *testing.T, dir string, fsys fileSystem) (int, string) {
+		t.Helper()
+		var stderr strings.Builder
+		code := printApproved(io.Discard, &stderr, fsys, approved, a, []string{"first-term"}, dir, printBounds{limit: 1 << 20, wait: 0})
+		return code, stderr.String()
+	}
+	// keptBeside is the one directory beside dir whose name says that print kept it.
+	keptBeside := func(t *testing.T, dir string) string {
+		t.Helper()
+		var kept []string
+		for _, name := range dirNames(t, filepath.Dir(dir)) {
+			if strings.Contains(name, "-kept-") {
+				kept = append(kept, filepath.Join(filepath.Dir(dir), name))
+			}
+		}
+		if len(kept) != 1 {
+			t.Fatalf("beside %s: %q, want one directory that print kept", dir, dirNames(t, filepath.Dir(dir)))
+		}
+		return kept[0]
+	}
+	// changeAtExchange writes other into terms.yaml of the spec directory in place, as another
+	// program does, just before the exchange.
+	changeAtExchange := callFS{func(op, path string, do func() error) error {
+		if op == "exchange" {
+			if err := os.WriteFile(filepath.Join(path, "terms.yaml"), []byte(other), 0o644); err != nil {
+				return err
+			}
+		}
+		return do()
+	}}
+	t.Run("a spec file that another program changes while the run builds its new directory", func(t *testing.T) {
+		t.Parallel()
+		dir := filepath.Join(t.TempDir(), "spec")
+		if err := os.Mkdir(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		writeFile(t, filepath.Join(dir, "terms.yaml"), []byte(first))
+		code, stderr := run(t, dir, changeAtExchange)
+		kept := keptBeside(t, dir)
+		want := "spec-check: print kept " + kept + ", which held " + dir + " before the run: another program made or changed terms.yaml there while print ran, so compare each with the entry of that name in " + dir + "\n"
+		if code != 1 || stderr != want {
+			t.Fatalf("print: exit %d, stderr %q, want exit 1 and %q", code, stderr, want)
+		}
+		if got := specFiles(t, kept); !maps.Equal(got, map[string]string{"terms.yaml": other}) {
+			t.Errorf("%s holds %q, want the change of the other program", kept, got)
+		}
+		if got := specFiles(t, dir); !maps.Equal(got, map[string]string{"terms.yaml": second}) {
+			t.Errorf("%s holds %q, want the run's text", dir, got)
+		}
+	})
+	t.Run("a new directory that a killed run left, with an entry that print did not make", func(t *testing.T) {
+		t.Parallel()
+		dir := filepath.Join(t.TempDir(), "spec")
+		if err := os.Mkdir(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		writeFile(t, filepath.Join(dir, "terms.yaml"), []byte(second))
+		staging := stagingPath(dir, inodeOf(t, dir))
+		if err := os.MkdirAll(filepath.Join(staging, "notes"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		code, stderr := run(t, dir, osFileSystem{})
+		kept := keptBeside(t, dir)
+		want := "spec-check: print kept " + kept + ", which a killed run of print left beside " + dir + ": it holds notes, which print did not make\n"
+		if code != 1 || stderr != want {
+			t.Fatalf("print: exit %d, stderr %q, want exit 1 and %q", code, stderr, want)
+		}
+	})
+	t.Run("the old directory that a killed run left, with an entry of a name that the directory holds", func(t *testing.T) {
+		t.Parallel()
+		root := t.TempDir()
+		dir := filepath.Join(root, "spec")
+		if err := os.MkdirAll(filepath.Join(dir, "notes"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		writeFile(t, filepath.Join(dir, "terms.yaml"), []byte(second))
+		old := filepath.Join(root, "old")
+		if err := os.MkdirAll(filepath.Join(old, "notes"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		staging := stagingPath(dir, inodeOf(t, old))
+		if err := os.Rename(old, staging); err != nil {
+			t.Fatal(err)
+		}
+		code, stderr := run(t, dir, osFileSystem{})
+		kept := keptBeside(t, dir)
+		want := "spec-check: print kept " + kept + ", which held " + dir + " before the run: another program made or changed notes there while print ran, so compare each with the entry of that name in " + dir + "\n" +
+			"spec-check: warning: " + filepath.Join(dir, "notes") + ": not a spec file (directory); the importer passes over it\n"
+		if code != 1 || stderr != want {
+			t.Fatalf("print: exit %d, stderr %q, want exit 1 and %q", code, stderr, want)
+		}
+	})
+	t.Run("the control: no other program", func(t *testing.T) {
+		t.Parallel()
+		dir := filepath.Join(t.TempDir(), "spec")
+		if err := os.Mkdir(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		writeFile(t, filepath.Join(dir, "terms.yaml"), []byte(first))
+		if code, stderr := run(t, dir, osFileSystem{}); code != 0 || stderr != "" {
+			t.Fatalf("print: exit %d, stderr %q, want exit 0 and nothing", code, stderr)
+		}
+		if names := dirNames(t, filepath.Dir(dir)); !slices.Equal(names, []string{"spec"}) {
+			t.Errorf("the parent holds %q, want spec alone", names)
 		}
 	})
 }

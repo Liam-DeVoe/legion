@@ -108,9 +108,8 @@ func TestEachLineCutsALongValueOfTheInput(t *testing.T) {
 		{name: "an id that breaks the pattern", kind: schema, effect: specgraph.KeepsEachNode, files: files(requirement(longValue(1<<18, "Value-start-", "-value-end"), "", "Envoy keeps it.")), shows: []string{"Value-start-", "-value-end"}},
 		{name: "a time limit that is no duration", kind: `bad-time-limit: %q is not a positive Go duration`, effect: specgraph.LosesNode,
 			files: files(agentCheck("a-check-of-time", "messages-reach-sessions", "time_limit: "+v+"\n", "The page shows it.", "An agent opens the page.", "A page that shows nothing.")), shows: shows},
-		{name: "a space at the end of a line", kind: "not-printed: %s", effect: specgraph.KeepsEachNode, files: files(term("work-unit", "work unit", "A work unit is "+v+". ")), shows: shows},
-		{name: "an anchor", kind: "not-printed: %s; the tree may hold another value than the file writes, because of %s", effect: specgraph.LosesNode,
-			files: files(term("work-unit", "&"+v+" work unit", "A work unit is work.")), shows: shows},
+		{name: "a space at the end of a line", kind: "not-printed: %s", effect: specgraph.LosesNode, files: files(term("work-unit", "work unit", "A work unit is "+v+". ")), shows: shows},
+		{name: "an anchor", kind: "not-printed: %s", effect: specgraph.LosesNode, files: files(term("work-unit", "&"+v+" work unit", "A work unit is work.")), shows: shows},
 
 		{name: "one id two times", kind: "doubled-id: also at %s:%d", files: files(term(v, "work unit", "A work unit is work."), term(v, "work unit", "A work unit is work.")), shows: shows},
 		{name: "an id with a word that states a position", kind: ruleFormat(t, "bad-id: "), files: files(term(longValue(1<<18, "value-start-s3-", "-value-end"), "work unit", "A work unit is work.")), shows: []string{"value-start-s3-", "-value-end"}},

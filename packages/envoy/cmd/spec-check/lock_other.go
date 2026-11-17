@@ -8,7 +8,7 @@ import (
 )
 
 // tryLock refuses: print locks its directory with flock, which this system does not give, and it
-// does not write without the lock.
+// does not write without the lock (noFlock).
 func tryLock(*os.File) error {
-	return errors.New("print locks its directory with flock, which this system does not give")
+	return errors.New(noFlock)
 }

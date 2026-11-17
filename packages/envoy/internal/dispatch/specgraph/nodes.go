@@ -259,9 +259,8 @@ func quoteScalars(node *yaml.Node) {
 }
 
 // quotedScalar reports whether printNode writes s double-quoted, whatever style yaml.v3 would
-// pick: s holds U+2028 or U+2029, or nonStringPlain matches it. It is the one rule of both sides of
-// the files: the printer quotes each text that it matches, and the reader (readsAsAnother) takes
-// each plain text that it matches as a value that a YAML reader can read as another value.
+// pick: s holds U+2028 or U+2029, or nonStringPlain matches it. The reader refuses each other
+// spelling of such a text, as of each text, as not printed.
 func quotedScalar(s string) bool {
 	return strings.ContainsAny(s, "\u2028\u2029") || nonStringPlain.MatchString(s)
 }

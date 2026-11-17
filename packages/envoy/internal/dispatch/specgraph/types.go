@@ -132,14 +132,12 @@ const (
 	// or hold a node in another text than the files write: a document that the YAML library does not
 	// read, or whose data has no JSON form or gives no node, the documents after a fault that stops
 	// the reading, a key that the node takes no field for, a value of another type, a component kind
-	// or a time limit that the node drops, or a spelling that Print does not write where a YAML
-	// reader can read a value as another value than the file writes, such as a plain date, a tag or
-	// an alias. A comparison of that tree with an approved spec would not see that text, so a caller
-	// that compares refuses the files.
+	// or a time limit that the node drops, or a file that is not as Print writes its nodes, which two
+	// YAML libraries can read as two texts. A comparison of that tree with an approved spec would
+	// not see that text, so a caller that compares refuses the files.
 	LosesNode Effect = iota + 1
-	// KeepsEachNode is the Effect of a problem of form after which the tree holds each node in the
-	// text that the files write: a spelling that Print does not write in which each value reads as
-	// the file writes it, such as a comment or other quotes, a file with no document, or a value
+	// KeepsEachNode is the Effect of a problem after which the tree holds each node in the text that
+	// the files write, each file in the form that Print writes: a file with no document, or a value
 	// that the schema refuses and the node keeps, such as a value outside a closed set or a missing
 	// key. The comparison of the files' own text decides.
 	KeepsEachNode
@@ -153,20 +151,21 @@ type ProblemKind struct {
 }
 
 // ProblemKinds is each kind of problem that the package gives: the reader's (problemKinds),
-// Validate's (ruleKinds), Compare's, and bad-approved-document, which ReadApproved names. Two kinds
-// can have one format, such as the two of bad-yaml. A caller that must meet each kind, such as the
-// table test of the lines that print a problem (cmd/spec-check), checks itself against it, so a new
-// kind fails that test until it has a row.
+// Validate's (ruleKinds), and those of a comparison with the approved spec, Compare's and
+// bad-approved-document, which ReadApproved names (approvalKinds). Each list is the table that the
+// code makes its problems from, so no kind can be made that it does not give. Two kinds can have
+// one format, such as the two of bad-yaml. A caller that must meet each kind, such as the table
+// test of the lines that print a problem (cmd/spec-check), checks itself against it, so a new kind
+// fails that test until it has a row.
 func ProblemKinds() []ProblemKind {
-	others := []string{detailUnapprovedID, detailUnapprovedText, detailRemovedID, approvedNodeCount, approvedOtherNode, approvedNotPrinted}
-	kinds := make([]ProblemKind, 0, len(problemKinds)+len(ruleKinds)+len(others))
+	kinds := make([]ProblemKind, 0, len(problemKinds)+len(ruleKinds)+len(approvalKinds))
 	for _, k := range problemKinds {
 		kinds = append(kinds, ProblemKind{Format: k.format, Effect: k.effect})
 	}
 	for _, format := range ruleKinds {
 		kinds = append(kinds, ProblemKind{Format: format})
 	}
-	for _, format := range others {
+	for _, format := range approvalKinds {
 		kinds = append(kinds, ProblemKind{Format: format})
 	}
 	return kinds

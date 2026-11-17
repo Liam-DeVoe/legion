@@ -37,7 +37,10 @@ func (v *ids) Set(id string) error { *v = append(*v, id); return nil }
 // leave (planPrint); and for a file it cannot read or arguments it does not take. It changes the
 // files in one step (writeDir), so when it cannot write, or the system refuses that step, it
 // answers 2 with dir as it was. Else it changes the files, prints "wrote <id> to
-// <dir>/<file>:<line>" for each node of the run, and answers 0.
+// <dir>/<file>:<line>" for each node of the run, and answers 0, or 1 when it kept beside dir an
+// entry that another program made or changed there, which a person must compare with dir: in the
+// old directory of this run (finishOld) or in a directory that a killed run left (cleanLeftovers).
+// The line names what it kept and where.
 //
 // The documents do not pass through runnerlog.Say: they go into the files byte for byte (R2: "A
 // change copies that output into the files, and no agent types it"). Each is its node's document
@@ -108,7 +111,8 @@ func printApproved(stdout, stderr io.Writer, fsys fileSystem, path string, a spe
 		say(stderr, "%s: %s", dir, err)
 		return 2
 	}
-	for _, line := range cleanLeftovers(fsys, held, lock.ino) {
+	leftovers, kept := cleanLeftovers(fsys, held, lock.ino)
+	for _, line := range leftovers {
 		say(stderr, "%s", line)
 	}
 	set, err := readSet(stderr, dir)
@@ -122,7 +126,7 @@ func printApproved(stdout, stderr io.Writer, fsys fileSystem, path string, a spe
 		}
 		return 2
 	}
-	warnings, err := writeDir(fsys, held, lock, set.Files, after)
+	warnings, keptNow, err := writeDir(fsys, held, lock, set.Files, after)
 	if err != nil {
 		say(stderr, "%s: cannot be written: %s", dir, err)
 		return 2
@@ -133,6 +137,9 @@ func printApproved(stdout, stderr io.Writer, fsys fileSystem, path string, a spe
 	}
 	for _, line := range lines {
 		say(stdout, "%s", line)
+	}
+	if kept || keptNow {
+		return 1
 	}
 	return 0
 }
@@ -219,8 +226,9 @@ func planPrint(dir string, set notes.Set, a specgraph.Approved, named []string, 
 // wayOut is the words that end the refusal of a not-printed problem p of the files that a run of
 // print would leave, tree, when the run does not name the node that p is about: print changes only
 // the nodes of its run, so a run that names each node of p's file writes that file in its printed
-// form. It is "" when the run names that node, or p is about no node. Each id is cut as Cut cuts a
-// value of the input.
+// form. It is "" when the run names that node, or p is about no node. Each id of the way out is
+// whole, since the writer types it: a line cuts a long value of the input, but not a value that
+// the line tells the reader to type.
 func wayOut(dir string, p specgraph.Problem, run []any, tree specgraph.Tree) string {
 	if p.Node == "" || p.Node == "-" || slices.ContainsFunc(run, func(n any) bool { return nodeID(n) == p.Node }) {
 		return ""
@@ -234,7 +242,7 @@ func wayOut(dir string, p specgraph.Problem, run []any, tree specgraph.Tree) str
 	slices.SortFunc(held, func(a, b any) int { return cmp.Compare(nodePos(a).Line, nodePos(b).Line) })
 	ids := make([]string, 0, len(held))
 	for _, n := range held {
-		ids = append(ids, "--id "+specgraph.Cut(nodeID(n)))
+		ids = append(ids, "--id "+nodeID(n))
 	}
 	file := filepath.Join(dir, p.Pos.File)
 	return fmt.Sprintf("; print changes only the nodes that the run names, and this run does not name %s, so to write %s in that form, name each node of it: %s",

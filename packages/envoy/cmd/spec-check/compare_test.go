@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -245,32 +246,39 @@ func testCompare(t *testing.T, binary string) {
 		expect(t, runBinary(t, binary, "", "compare", "--dir", dir, "--approved", fixture(t, "compare", "approved-text", "approved.json")), result{
 			code: 2,
 			stderr: "spec-check: " + filepath.Join(dir, "a.yaml") + ":1: -: schema: node: got string, want object\n" +
-				"spec-check: " + dir + ": the files do not parse, so no comparison was made\n",
+				"spec-check: " + dir + noComparison,
 		})
 	})
-	// A spelling that print does not write breaks a rule of form, which tree judges, and leaves every
-	// node in the tree (specgraph.KeepsEachNode), so compare compares the files and gives its own
-	// answer. Beside a file whose reading stops, which can hide a node (specgraph.LosesNode), the
-	// spelling is no reason of the refusal, and only the fault of that file is named.
-	t.Run("compare compares files with a spelling that print does not write", func(t *testing.T) {
+	// A file in other quotes is not in its printed form, so compare makes no comparison of it, and
+	// its line names the way out (TestCompareMakesNoComparisonOfAFileThatIsNotPrinted). A problem
+	// that leaves each node as a printed file writes it (specgraph.KeepsEachNode), a value that the
+	// schema refuses and the node keeps, is no reason of a refusal: beside a file whose reading
+	// stops, which can hide a node (specgraph.LosesNode), only the fault of that file is named.
+	t.Run("compare makes no comparison of files with a spelling that print does not write", func(t *testing.T) {
 		t.Parallel()
 		dir := copyOf(t, fixture(t, "compare", "approved-text", "spec"))
 		orders := filepath.Join(dir, "orders.yaml")
 		replaceIn(t, orders, "kind: behavior\n", "kind: 'behavior'\n")
 		approved := fixture(t, "compare", "approved-text", "approved.json")
-		expect(t, runBinary(t, binary, "", "compare", "--dir", dir, "--approved", approved), result{stdout: passLine(dir, "3 of 3")})
+		expect(t, runBinary(t, binary, "", "compare", "--dir", dir, "--approved", approved), result{
+			code: 2,
+			stderr: "spec-check: " + orders + ":4: acme-keeps-each-order: not-printed: line 4 is \"kind: 'behavior'\\n\", and print writes \"kind: behavior\\n\" there (other quotes); spec-check print writes each node in that form\n" +
+				"spec-check: " + dir + noComparison,
+		})
 
+		replaceIn(t, orders, "kind: 'behavior'\n", "kind: behavior\n")
+		replaceIn(t, orders, "subject: code\n", "subject: the logs\n")
 		writeFile(t, filepath.Join(dir, "broken.yaml"), []byte("---\ntype: [\n"))
 		expect(t, runBinary(t, binary, "", "compare", "--dir", dir, "--approved", approved), result{
 			code: 2,
 			stderr: "spec-check: " + filepath.Join(dir, "broken.yaml") + ":2: -: bad-yaml: line 2: did not find expected node content\n" +
-				"spec-check: " + dir + ": the files do not parse, so no comparison was made\n",
+				"spec-check: " + dir + noComparison,
 		})
 	})
-	// compare compares files whose only problems of Parse keep each node (specgraph.KeepsEachNode):
-	// a spelling that print does not write, a value that the schema refuses and the node keeps, and
-	// a file with no document. Beside each, a text that the approved spec never held still fails the
-	// comparison (R2), so a compare that passed whenever such a problem stands fails here.
+	// compare compares files whose only problems of Parse keep each node (specgraph.KeepsEachNode),
+	// each file in its printed form: a value that the schema refuses and the node keeps, and an empty
+	// file. Beside each, a text that the approved spec never held still fails the comparison (R2), so
+	// a compare that passed whenever such a problem stands fails here.
 	t.Run("compare fails on a text never approved beside a problem of Parse that keeps each node", func(t *testing.T) {
 		t.Parallel()
 		approved := fixture(t, "compare", "approved-text", "approved.json")
@@ -278,7 +286,6 @@ func testCompare(t *testing.T, binary string) {
 		for _, row := range []struct {
 			name, old, new, extra string
 		}{
-			{"other quotes", "kind: behavior\n", "kind: 'behavior'\n", ""},
 			{"a subject that the schema refuses", "subject: code\n", "subject: the logs\n", ""},
 			{"an empty file beside the files", "", "", "empty.yaml"},
 		} {
@@ -542,61 +549,103 @@ func TestTheApprovedSpecIsReadStrictly(t *testing.T) {
 	}
 }
 
-// compare makes no comparison of a file where a YAML reader can read a value as another value than
-// the text that the file writes (B3 of the review): the tree that yaml.v3 reads holds a text that
-// the file does not write, so a comparison of that tree could pass a text that the approved spec
-// never held. The rows are the files of the review, each with the approved text that yaml.v3 reads
-// from it: a plain date, as a name and as a line of a definition; a !!binary; a merge key; and an
-// alias, whose data is the same. tree refuses each file, as before, and compare exits 2. The
-// control is a file in other quotes, which keeps its node: compare compares it and finds the text
-// that the approved spec never held.
-func TestCompareMakesNoComparisonOfAValueThatAReaderReadsAsAnother(t *testing.T) {
+// noComparison is the last line of compare for files that it does not compare, after the directory.
+const noComparison = ": the files do not parse, or are not as print writes them, so no comparison was made\n"
+
+// compare makes no comparison of a file that is not in its printed form (B3 and B4 of the review):
+// the printed form is the one form that each YAML library reads alike, because the printer writes
+// it, and two libraries can read another form as two texts, so a comparison of the tree that
+// yaml.v3 reads from it could pass a text that the approved spec never held. The rows are the files
+// of the review, each with the approved text that yaml.v3 reads from it as Print writes it: a plain
+// date, as a name and as a line of a definition; a !!binary; a merge key; an alias; and each of
+// U+2028, U+2029 and U+0085, which a YAML 1.1 library such as yaml.v3 reads as a line break and a
+// YAML 1.2 library as a character, in a text in double quotes, in single quotes and in a block; and
+// a text in other quotes, which the libraries read alike. tree refuses each file, as before, and
+// compare exits 2, and its line names the way out, spec-check print. The control is a file in its
+// printed form with a text that the approved spec never held: compare compares it.
+func TestCompareMakesNoComparisonOfAFileThatIsNotPrinted(t *testing.T) {
 	t.Parallel()
 	binary := cmdtest.Build(t, "spec-check")
 	term := func(name, definition string) string {
 		return "---\ntype: term\nid: a-day\n" + name + "\ndefinition:\n" + definition + "\n"
 	}
 	const day = "  - A day is a unit of time."
-	const plain = ", which a YAML reader can read as another value than this text"
-	for _, row := range []struct {
+	// readsAs is the document that Print writes for the term that yaml.v3 reads from file.
+	readsAs := func(t *testing.T, file string) string {
+		t.Helper()
+		tree, _ := specgraph.Parse(map[string][]byte{"terms.yaml": []byte(file)})
+		if len(tree.Terms) != 1 {
+			t.Fatalf("yaml.v3 reads %d terms from %q, want 1", len(tree.Terms), file)
+		}
+		document, err := tree.Terms[0].Print()
+		if err != nil {
+			t.Fatalf("Print of the term that yaml.v3 reads from %q: %v", file, err)
+		}
+		if document == file {
+			t.Fatalf("%q is in its printed form, so the row is no file that print does not write", file)
+		}
+		return document
+	}
+	// row is one file and its approved text ("" for yaml.v3's reading of it, readsAs), and the
+	// not-printed line that compare and tree print for it: line is got in the file, print writes
+	// want there, and why names what differs. A row with no got takes any not-printed line of the
+	// term that names the way out.
+	type row struct {
 		name, approved, file string
 		line                 int
 		got, want, why       string
-	}{
-		{"a plain date as a name", term(`name: "2026-11-16T00:00:00Z"`, day), term("name: 2026-11-16", day),
-			4, "name: 2026-11-16\n", "name: \"2026-11-16T00:00:00Z\"\n", `another spelling); spec-check print writes each node in that form; the tree may hold another value than the file writes, because of the plain text "2026-11-16" at line 4` + plain},
-		{"a plain date as a line of a definition", term("name: day", `  - "2026-11-16T00:00:00Z"`), term("name: day", "  - 2026-11-16"),
-			6, "  - 2026-11-16\n", "  - \"2026-11-16T00:00:00Z\"\n", `another spelling); spec-check print writes each node in that form; the tree may hold another value than the file writes, because of the plain text "2026-11-16" at line 6` + plain},
-		{"a binary", term("name: work unit", day), term("name: !!binary d29yayB1bml0", day),
-			4, "name: !!binary d29yayB1bml0\n", "name: work unit\n", "another spelling); spec-check print writes each node in that form; the tree may hold another value than the file writes, because of the tag !!binary at line 4"},
-		{"a merge key", term("name: day", day), term("<<: {name: day}", day),
-			4, "<<: {name: day}\n", "name: day\n", `another order of keys); spec-check print writes each node in that form; the tree may hold another value than the file writes, because of the plain text "<<" at line 4` + plain},
-		{"an alias", term("name: day", "  - day"), term("name: &n day", "  - *n"),
-			4, "name: &n day\n", "name: day\n", "another spelling); spec-check print writes each node in that form; the tree may hold another value than the file writes, because of the anchor &n at line 4"},
-	} {
+	}
+	rows := []row{
+		{"a plain date as a name", term(`name: "2026-11-16T00:00:00Z"`, day), term("name: 2026-11-16", day), 4, "name: 2026-11-16\n", "name: \"2026-11-16T00:00:00Z\"\n", "another spelling"},
+		{"a plain date as a line of a definition", term("name: day", `  - "2026-11-16T00:00:00Z"`), term("name: day", "  - 2026-11-16"), 6, "  - 2026-11-16\n", "  - \"2026-11-16T00:00:00Z\"\n", "another spelling"},
+		{"a binary", term("name: work unit", day), term("name: !!binary d29yayB1bml0", day), 4, "name: !!binary d29yayB1bml0\n", "name: work unit\n", "another spelling"},
+		{"a merge key", term("name: day", day), term("<<: {name: day}", day), 4, "<<: {name: day}\n", "name: day\n", "another order of keys"},
+		{"an alias", term("name: day", "  - day"), term("name: &n day", "  - *n"), 4, "name: &n day\n", "name: day\n", "another spelling"},
+		{"a text in other quotes", term("name: day", day), term("name: 'day'", day), 4, "name: 'day'\n", "name: day\n", "other quotes"},
+	}
+	for _, c := range []struct{ name, char string }{{"U+2028", "\u2028"}, {"U+2029", "\u2029"}, {"U+0085", "\u0085"}} {
+		for _, style := range []struct{ name, file string }{
+			{"double quotes", term(`name: "a`+c.char+`  day"`, day)},
+			{"single quotes", term(`name: 'a`+c.char+`  day'`, day)},
+			{"a block", term("name: day", "  - |-\n    A day"+c.char+"    is a unit of time.")},
+		} {
+			rows = append(rows, row{name: c.name + " in a text in " + style.name, file: style.file})
+		}
+	}
+	for _, row := range rows {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
+			if row.approved == "" {
+				row.approved = readsAs(t, row.file)
+			}
 			approved := writeApproved(t, map[string]string{"a-day": row.approved})
 			dir := t.TempDir()
 			file := filepath.Join(dir, "terms.yaml")
 			writeFile(t, file, []byte(row.file))
-			detail := fmt.Sprintf("not-printed: line %d is %q, and print writes %q there (%s", row.line, row.got, row.want, row.why)
-			problem := "spec-check: " + file + ":" + strconv.Itoa(row.line) + ": a-day: " + detail + "\n"
-			expect(t, runBinary(t, binary, "", "compare", "--dir", dir, "--approved", approved), result{
-				code:   2,
-				stderr: problem + "spec-check: " + dir + ": the files do not parse, so no comparison was made\n",
-			})
-			if got := runBinary(t, binary, "", "tree", "--dir", dir); got.code != 1 || !strings.Contains(got.stderr, problem) {
+			compare := runBinary(t, binary, "", "compare", "--dir", dir, "--approved", approved)
+			var problem string
+			if row.got != "" {
+				problem = "spec-check: " + file + ":" + strconv.Itoa(row.line) + ": a-day: " +
+					fmt.Sprintf("not-printed: line %d is %q, and print writes %q there (%s); spec-check print writes each node in that form\n", row.line, row.got, row.want, row.why)
+				expect(t, compare, result{code: 2, stderr: problem + "spec-check: " + dir + noComparison})
+			} else {
+				refusal := regexp.MustCompile(`^spec-check: ` + regexp.QuoteMeta(file) + `:[0-9]+: a-day: not-printed: line [0-9]+ is .*; spec-check print writes each node in that form\n`)
+				problem = refusal.FindString(compare.stderr)
+				if compare.code != 2 || problem == "" || compare.stderr != problem+"spec-check: "+dir+noComparison || compare.stdout != "" {
+					t.Errorf("compare: exit %d, stdout %q, stderr %q; want exit 2, a not-printed line that names spec-check print, and %q", compare.code, compare.stdout, compare.stderr, dir+noComparison)
+				}
+			}
+			if got := runBinary(t, binary, "", "tree", "--dir", dir); got.code != 1 || problem == "" || !strings.Contains(got.stderr, problem) {
 				t.Errorf("tree: exit %d, stderr %q, want exit 1 and the line %q", got.code, got.stderr, problem)
 			}
 		})
 	}
-	t.Run("the control: a file in other quotes keeps its node, and compare compares it", func(t *testing.T) {
+	t.Run("the control: a file in its printed form, and compare compares it", func(t *testing.T) {
 		t.Parallel()
 		approved := writeApproved(t, map[string]string{"a-day": term("name: day", day)})
 		dir := t.TempDir()
 		file := filepath.Join(dir, "terms.yaml")
-		writeFile(t, file, []byte(term("name: 'night'", day)))
+		writeFile(t, file, []byte(term("name: night", day)))
 		expect(t, runBinary(t, binary, "", "compare", "--dir", dir, "--approved", approved), result{
 			code:   1,
 			stdout: "spec-check: " + dir + ": the comparison fails on 1 node\n",

@@ -221,32 +221,26 @@ func (a Approved) Since(id string) time.Time {
 	return n.Versions[len(n.Versions)-1].At
 }
 
-// The formats of the Detail of bad-approved-document, the problem of versionText for a document of
-// no node or of two, of a node with another id, or not as Print writes its node.
-const (
-	approvedNodeCount  = "bad-approved-document: the document holds %d nodes, not one"
-	approvedOtherNode  = "bad-approved-document: the document is of node %s, not %s"
-	approvedNotPrinted = "bad-approved-document: the document is not as Print writes it"
-)
-
 // versionText is the tree of the one node that version v of the approved node id holds, at the
 // position "approved <id> version <n>". problems is each reason it holds none: a problem of the
-// reader in the document (bad-yaml, no-node, bad-time-limit), or bad-approved-document for a
-// document of no node or of two, of a node with another id, or not as Print writes its node. The
+// reader in the document (bad-yaml, no-node, bad-time-limit, not-printed), or bad-approved-document
+// (approvalKinds) for a document of no node or of two, of a node with another id, or not as Print
+// writes its node. The
 // schema's problems are the rules' of the files, as Validate's are, and pass here: an approved text
 // that breaks a rule reads as its node, so a check with no failing example reads as such (R9).
 func versionText(id string, v ApprovedVersion) (Tree, []Problem) {
 	name := fmt.Sprintf("approved %s version %d", id, v.Version)
 	tree, problems := Parse(map[string][]byte{name: []byte(v.Document)})
-	// Parse holds a document with no problem to the document that Print writes (not-printed); a
-	// document with a problem of the schema it does not hold to it, so the check below does.
-	printedFormUnchecked := len(problems) > 0
+	// Parse holds a document with no problem that loses a node to the document that Print writes
+	// (not-printed); a document with a problem of the schema that loses a node it does not hold to
+	// it, so the check below does.
+	printedFormUnchecked := slices.ContainsFunc(problems, func(p Problem) bool { return p.Effect == LosesNode })
 	problems = slices.DeleteFunc(problems, func(p Problem) bool { return p.Rule == "schema" })
 	if len(problems) != 0 {
 		return Tree{}, problems
 	}
-	refuse := func(format string, args ...any) (Tree, []Problem) {
-		return Tree{}, []Problem{idProblem(Position{File: name, Line: 1}, id, fmt.Sprintf(format, args...))}
+	refuse := func(kind approvalKind, args ...any) (Tree, []Problem) {
+		return Tree{}, []Problem{idProblem(Position{File: name, Line: 1}, id, fmt.Sprintf(approvalKinds[kind], args...))}
 	}
 	nodes := nodesOf(tree)
 	switch {
