@@ -55,15 +55,17 @@ func TestARelayRestartWhoseInterestReadTheDropCutOffGivesTheSessionUpAndRestarts
 	// session's consumer until the hold is in place.
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
 	standIn := startSessionStandIn(t, url, sessionID, answerDone)
+	// The interest row read is a KV direct get, which sends no flush behind it: it waits for its
+	// reply from the moment the hold withholds it.
 	held := hold.Hold("$JS.API.DIRECT.GET.KV_" + bus.InterestBucket + ".")
 	relays.setOwned(true)
 	select {
-	case <-held:
+	case <-held.Withheld():
 	case <-time.After(5 * time.Second):
 		t.Fatal("the relay restart read no interest row within 5 s of gaining the binding")
 	}
 
-	// The restart holds the session's lock over the read the hold keeps from the server; a
+	// The restart holds the session's lock over the read whose reply the hold keeps from it; a
 	// registration of the session takes the same lock.
 	locked := make(chan time.Time, 1)
 	go func() {
@@ -131,7 +133,7 @@ func TestARegistrationsConfirmWhoseReadTheDropCutOffIsMadeAgainOnTheNewConnectio
 	// The first confirm pass takes the consumer away, as a delete on another listener does
 	// between this registration's consumer call and its entry write, and holds the reply to the
 	// session record read the pass makes next.
-	var held atomic.Pointer[<-chan struct{}]
+	var held atomic.Pointer[testnats.HeldReplies]
 	var first atomic.Bool
 	rig.deps.consumers.beforeRepairPlan = func() {
 		if !first.CompareAndSwap(false, true) {
@@ -140,8 +142,7 @@ func TestARegistrationsConfirmWhoseReadTheDropCutOffIsMadeAgainOnTheNewConnectio
 		if err := js.DeleteConsumer(bus.Stream, name); err != nil {
 			t.Errorf("delete the session's consumer under the confirm: %v", err)
 		}
-		holding := hold.Hold("$JS.API.DIRECT.GET.KV_" + bus.SessionBucket + ".")
-		held.Store(&holding)
+		held.Store(hold.Hold("$JS.API.DIRECT.GET.KV_" + bus.SessionBucket + "."))
 	}
 	answered := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
@@ -157,7 +158,7 @@ func TestARegistrationsConfirmWhoseReadTheDropCutOffIsMadeAgainOnTheNewConnectio
 		time.Sleep(time.Millisecond)
 	}
 	select {
-	case <-*held.Load():
+	case <-held.Load().Withheld():
 	case <-time.After(5 * time.Second):
 		t.Fatal("the confirm read no session record within 5 s")
 	}

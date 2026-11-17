@@ -9,7 +9,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 )
 
 // ReplyHold relays a client's TCP connections to a NATS server and can hold the replies to the
@@ -29,18 +28,32 @@ type ReplyHold struct {
 	prefix string
 	// replies are the reply subjects of the held requests, whose answers the hold drops.
 	replies map[string]struct{}
-	// held is closed once a reply has been held and the client's flush behind its request, if it
-	// sent one, has been answered (holdSettled); nil while nothing is held.
-	held  chan struct{}
+	// held is what the hold reports of the replies it holds now; nil while it holds none.
+	held  *HeldReplies
 	conns map[net.Conn]struct{}
 }
 
-// holdSettle is how long after holding a reply the hold waits for the server's next PONG before it
-// reports the reply held anyway: a request that flushes after its publish (bus.Client's
-// publishConfirmed) sent a PING the server answers right behind the reply, within microseconds,
-// and the hold reports it held once that PONG has reached the client; a request that sends no
-// flush draws no PONG, and nothing of it is still on the wire.
-const holdSettle = 50 * time.Millisecond
+// HeldReplies is what a hold (ReplyHold.Hold) reports, as two events: a reply withheld, and the
+// PONG of the client's first flush after a held request, forwarded.
+type HeldReplies struct {
+	withheld, flushed chan struct{}
+}
+
+// Withheld is closed once the hold has kept the first reply to a request on its prefix from the
+// client. A request that sends no flush behind its publish (nats.go's own requests, a legacy
+// JetStream call or a KV read or write) is waiting for that reply from then on: its publish has
+// reached the server, which answered it.
+func (r *HeldReplies) Withheld() <-chan struct{} { return r.withheld }
+
+// Flushed is closed once the PONG answering the first PING the client sent after a request on the
+// hold's prefix has been forwarded to the client: that request's own flush, for a request that
+// flushes behind its publish (bus.Client's publishConfirmed). A PONG answers the PINGs of its
+// connection in order, so the hold counts them on each connection and knows which one it is,
+// whether it comes before the reply or after it: nats-server answers a PING on the connection's
+// own goroutine and a JetStream API request on another, so the PONG often comes first. Nothing
+// closes it before that PONG is forwarded. A request that flushes is past its flush and waiting
+// for its reply once both events are in.
+func (r *HeldReplies) Flushed() <-chan struct{} { return r.flushed }
 
 // StartReplyHold relays to the NATS server at target, a client URL such as URL returns, on a
 // loopback port of its own until the test ends. URL is the same server through the hold.
@@ -67,15 +80,14 @@ func StartReplyHold(t testing.TB, target string) *ReplyHold {
 func (h *ReplyHold) URL() string { return h.url }
 
 // Hold holds the reply to every request the client sends from now on whose subject starts with
-// prefix, until Drop, and returns a channel closed once the first of them is held with the
-// client's flush behind it answered, so a test knows the request it waits on is past its publish
-// and waiting for a reply that is not coming.
-func (h *ReplyHold) Hold(prefix string) <-chan struct{} {
+// prefix, until Drop, and reports when it has withheld the first of them and when the first PONG
+// after it reached the client (HeldReplies).
+func (h *ReplyHold) Hold(prefix string) *HeldReplies {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.prefix = prefix
 	h.replies = map[string]struct{}{}
-	h.held = make(chan struct{})
+	h.held = &HeldReplies{withheld: make(chan struct{}), flushed: make(chan struct{})}
 	return h.held
 }
 
@@ -91,35 +103,66 @@ func (h *ReplyHold) Drop() {
 	}
 }
 
+// flushes is one relayed connection's count of the PINGs the client sent and the PONGs forwarded
+// to it, under ReplyHold.mu, and the PONG a held request's flush waits for.
+type flushes struct {
+	pings, pongs int
+	// due is the PONG, by its count on this connection, that answers the first PING the client
+	// sent after a held request, and 0 while none is due; held is the hold it belongs to.
+	due  int
+	held *HeldReplies
+}
+
 // request notes the reply subject of a request the client sent on subject when its reply is to be
-// held.
-func (h *ReplyHold) request(subject, reply string) {
+// held, and that the next PING the client sends on the connection is that request's flush.
+func (h *ReplyHold) request(conn *flushes, subject, reply string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.replies != nil && reply != "" && strings.HasPrefix(subject, h.prefix) {
 		h.replies[reply] = struct{}{}
+		if conn.due == 0 {
+			conn.due, conn.held = conn.pings+1, h.held
+		}
 	}
 }
 
-// holds reports whether the server's message on subject is a reply the hold drops, and returns the
-// channel to close once it has settled.
-func (h *ReplyHold) holds(subject string) (bool, chan struct{}) {
+// pinged counts a PING the client sent on conn.
+func (h *ReplyHold) pinged(conn *flushes) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if _, ok := h.replies[subject]; !ok {
-		return false, nil
-	}
-	return true, h.held
+	conn.pings++
 }
 
-// settled closes held, the channel of the hold a reply was held for, once.
-func (h *ReplyHold) settled(held chan struct{}) {
+// withhold reports whether the server's message on subject is a reply the hold drops, and when it
+// is, reports it withheld.
+func (h *ReplyHold) withhold(subject string) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if _, ok := h.replies[subject]; !ok || h.held == nil {
+		return false
+	}
+	closeOnce(h.held.withheld)
+	return true
+}
+
+// ponged counts a PONG forwarded to the client on conn, and reports the held request's flush
+// answered when it is the PONG that flush waits for.
+func (h *ReplyHold) ponged(conn *flushes) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	conn.pongs++
+	if conn.due != 0 && conn.pongs >= conn.due {
+		closeOnce(conn.held.flushed)
+		conn.due, conn.held = 0, nil
+	}
+}
+
+// closeOnce closes ch unless it is closed already; the caller holds h.mu.
+func closeOnce(ch chan struct{}) {
 	select {
-	case <-held:
+	case <-ch:
 	default:
-		close(held)
+		close(ch)
 	}
 }
 
@@ -134,8 +177,9 @@ func (h *ReplyHold) serve() {
 }
 
 // relay joins client to the server, a protocol line at a time each way: what the client sends is
-// relayed as it is, noting the replies of the requests to hold, and what the server sends is
-// relayed but for each held reply and its payload.
+// relayed as it is, noting the replies of the requests to hold and counting its PINGs, and what
+// the server sends is relayed but for each held reply and its payload. Both ends are out of the
+// hold's map once the relay ends.
 func (h *ReplyHold) relay(client net.Conn) {
 	server, err := net.Dial("tcp", h.target)
 	if err != nil {
@@ -153,16 +197,20 @@ func (h *ReplyHold) relay(client net.Conn) {
 		delete(h.conns, server)
 		h.mu.Unlock()
 	}()
-	go h.down(server, client)
+	conn := &flushes{}
+	go h.down(conn, server, client)
 	lines := bufio.NewReader(client)
 	for {
 		line, payload, fields, err := readMessage(lines, "PUB", "HPUB")
 		if err != nil {
 			return
 		}
+		switch {
 		// `PUB <subject> <reply> <bytes>` and `HPUB <subject> <reply> <header bytes> <bytes>`.
-		if (strings.EqualFold(fields[0], "PUB") && len(fields) == 4) || (strings.EqualFold(fields[0], "HPUB") && len(fields) == 5) {
-			h.request(fields[1], fields[2])
+		case (strings.EqualFold(fields[0], "PUB") && len(fields) == 4) || (strings.EqualFold(fields[0], "HPUB") && len(fields) == 5):
+			h.request(conn, fields[1], fields[2])
+		case len(fields) == 1 && strings.EqualFold(fields[0], "PING"):
+			h.pinged(conn)
 		}
 		if _, err := server.Write(append(line, payload...)); err != nil {
 			return
@@ -170,43 +218,27 @@ func (h *ReplyHold) relay(client net.Conn) {
 	}
 }
 
-// down relays what the server sends to client, leaving out each held reply: once one is left out,
-// the hold reports it held at the next PONG the client is sent, or after holdSettle when none
-// comes.
-func (h *ReplyHold) down(server, client net.Conn) {
+// down relays what the server sends to client, leaving out each held reply, and counts the PONGs
+// it forwards (HeldReplies.Flushed).
+func (h *ReplyHold) down(conn *flushes, server, client net.Conn) {
 	defer func() {
 		_ = client.Close()
 		_ = server.Close()
 	}()
 	lines := bufio.NewReader(server)
-	var pending chan struct{}
-	var settle *time.Timer
-	defer func() {
-		if settle != nil {
-			settle.Stop()
-		}
-	}()
 	for {
 		line, payload, fields, err := readMessage(lines, "MSG", "HMSG")
 		if err != nil {
 			return
 		}
-		if len(fields) >= 4 && (strings.EqualFold(fields[0], "MSG") || strings.EqualFold(fields[0], "HMSG")) {
-			if held, settled := h.holds(fields[1]); held {
-				if settled != nil && pending == nil {
-					pending = settled
-					settle = time.AfterFunc(holdSettle, func() { h.settled(settled) })
-				}
-				continue
-			}
+		if len(fields) >= 4 && (strings.EqualFold(fields[0], "MSG") || strings.EqualFold(fields[0], "HMSG")) && h.withhold(fields[1]) {
+			continue
 		}
 		if _, err := client.Write(append(line, payload...)); err != nil {
 			return
 		}
-		if pending != nil && len(fields) == 1 && strings.EqualFold(fields[0], "PONG") {
-			settle.Stop()
-			h.settled(pending)
-			pending = nil
+		if len(fields) == 1 && strings.EqualFold(fields[0], "PONG") {
+			h.ponged(conn)
 		}
 	}
 }

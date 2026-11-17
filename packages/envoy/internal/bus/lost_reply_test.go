@@ -34,21 +34,38 @@ func heldClient(t *testing.T) (*Client, *testnats.ReplyHold) {
 	return client, hold
 }
 
+// flushes says whether a request sends a flush behind its publish (publishConfirmed) and so is
+// waiting for its reply only once that flush's PONG has reached it (testnats.HeldReplies.Flushed),
+// or sends none and is waiting from the moment its reply is withheld.
+type flushes bool
+
+const (
+	withFlush flushes = true
+	noFlush   flushes = false
+)
+
 // requireLostAtTheDrop holds the replies to the requests on prefix, runs send, waits until the hold
-// holds its reply with the request's own flush answered, so the request is past its publish and
-// waiting for that reply, drops the connection, and requires send to fail within lostReplyWithin
-// of the drop with ErrConnectionLost.
-func requireLostAtTheDrop(t *testing.T, hold *testnats.ReplyHold, prefix string, send func() error) {
+// has withheld its reply and, for a request that flushes, forwarded that flush's PONG, so the
+// request is past its publish and its flush and waiting for its reply, drops the connection, and
+// requires send to fail within lostReplyWithin of the drop with ErrConnectionLost.
+func requireLostAtTheDrop(t *testing.T, hold *testnats.ReplyHold, prefix string, flush flushes, send func() error) {
 	t.Helper()
 	held := hold.Hold(prefix)
 	answered := make(chan error, 1)
 	go func() { answered <- send() }()
-	select {
-	case <-held:
-	case err := <-answered:
-		t.Fatalf("the request on %s answered %v before the hold held its reply", prefix, err)
-	case <-time.After(lostReplyWait):
-		t.Fatalf("no reply to a request on %s reached the hold within %s", prefix, lostReplyWait)
+	waitFor := func(event <-chan struct{}, what string) {
+		t.Helper()
+		select {
+		case <-event:
+		case err := <-answered:
+			t.Fatalf("the request on %s answered %v before the hold %s", prefix, err, what)
+		case <-time.After(lostReplyWait):
+			t.Fatalf("the hold had not %s of a request on %s within %s", what, prefix, lostReplyWait)
+		}
+	}
+	waitFor(held.Withheld(), "withheld its reply")
+	if flush {
+		waitFor(held.Flushed(), "forwarded the PONG of its flush")
 	}
 	dropped := time.Now()
 	hold.Drop()
@@ -82,11 +99,12 @@ func requireLostAtTheDrop(t *testing.T, hold *testnats.ReplyHold, prefix string,
 func TestARequestWhoseReplyTheDropLostFailsAtTheDrop(t *testing.T) {
 	for _, row := range []struct {
 		name, prefix string
+		flush        flushes
 		// prepare makes what the row's request needs before anything is held, and returns the
 		// request.
 		prepare func(*testing.T, *Client) func() error
 	}{
-		{"core request", "$JS.API.STREAM.INFO.", func(_ *testing.T, c *Client) func() error {
+		{"core request", "$JS.API.STREAM.INFO.", withFlush, func(_ *testing.T, c *Client) func() error {
 			return func() error {
 				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 				defer cancel()
@@ -94,7 +112,7 @@ func TestARequestWhoseReplyTheDropLostFailsAtTheDrop(t *testing.T) {
 				return err
 			}
 		}},
-		{"core request on a channel inbox", "envoy.lostreply.probe", func(_ *testing.T, c *Client) func() error {
+		{"core request on a channel inbox", "envoy.lostreply.probe", withFlush, func(_ *testing.T, c *Client) func() error {
 			return func() error {
 				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 				defer cancel()
@@ -102,7 +120,7 @@ func TestARequestWhoseReplyTheDropLostFailsAtTheDrop(t *testing.T) {
 				return err
 			}
 		}},
-		{"forward", "notifications.lostreply.", func(_ *testing.T, c *Client) func() error {
+		{"forward", "notifications.lostreply.", withFlush, func(_ *testing.T, c *Client) func() error {
 			item := contracts.Envelope{Topic: "notifications.lostreply.forward", Source: "test", DedupeKey: "lost-reply"}
 			return func() error {
 				forward, err := c.StartRequestStoredTo(item.Topic, item, "lost-reply", 3*time.Second)
@@ -112,20 +130,20 @@ func TestARequestWhoseReplyTheDropLostFailsAtTheDrop(t *testing.T) {
 				return forward.Wait()
 			}
 		}},
-		{"JetStream API call", "$JS.API.STREAM.INFO.", func(_ *testing.T, c *Client) func() error {
+		{"JetStream API call", "$JS.API.STREAM.INFO.", noFlush, func(_ *testing.T, c *Client) func() error {
 			return func() error {
 				_, err := c.JS().StreamInfo(Stream)
 				return err
 			}
 		}},
-		{"KV read", "$JS.API.DIRECT.GET.KV_envoy_lost_reply", func(t *testing.T, c *Client) func() error {
+		{"KV read", "$JS.API.DIRECT.GET.KV_envoy_lost_reply", noFlush, func(t *testing.T, c *Client) func() error {
 			kv := lostReplyBucket(t, c)
 			return func() error {
 				_, err := kv.Get("key")
 				return err
 			}
 		}},
-		{"KV write", "$KV.envoy_lost_reply.", func(t *testing.T, c *Client) func() error {
+		{"KV write", "$KV.envoy_lost_reply.", noFlush, func(t *testing.T, c *Client) func() error {
 			kv := lostReplyBucket(t, c)
 			return func() error {
 				_, err := kv.Put("key", []byte("value"))
@@ -135,7 +153,7 @@ func TestARequestWhoseReplyTheDropLostFailsAtTheDrop(t *testing.T) {
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			client, hold := heldClient(t)
-			requireLostAtTheDrop(t, hold, row.prefix, row.prepare(t, client))
+			requireLostAtTheDrop(t, hold, row.prefix, row.flush, row.prepare(t, client))
 		})
 	}
 }
@@ -172,7 +190,7 @@ func TestAStreamReadTheDropCutOffReleasesTheCallsWaitingOnIt(t *testing.T) {
 		t.Fatalf("connect the session consumers: %v", err)
 	}
 	t.Cleanup(consumers.Close)
-	requireLostAtTheDrop(t, hold, "$JS.API.STREAM.INFO."+Stream, func() error {
+	requireLostAtTheDrop(t, hold, "$JS.API.STREAM.INFO."+Stream, withFlush, func() error {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
 		_, err := consumers.StreamID(ctx)
