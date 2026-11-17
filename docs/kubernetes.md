@@ -1972,7 +1972,7 @@ This release's one-time start of the mergers that the `awaiting_merge` cutover l
 
 #### Rolling back the release that records each step
 
-This release adds one outbox kind, `step_record`, and one table, `step_starts`; its migration `20261117000528_outbox_kinds_with_the_step_record` adds the kind's name to the outbox's kind check (`outbox_kind_check`).
+This release adds one outbox kind, `step_record`, and the table `step_starts` with what its rollback keeps; its migration `20261117000528_outbox_kinds_with_the_step_record` adds the kind's name to the outbox's kind check (`outbox_kind_check`).
 That migration writes the whole list, the two merge-queue kinds among its kinds, and its version stands above `20261114031356_merge_queue_removal`, so it writes the list last on any database.
 A `step_record` row writes one start or one end of one step of an issue onto Dispatch's record of that step (`PUT /api/v1/issues/{key}/steps/{id}`).
 That migration changes no column.
@@ -1990,11 +1990,27 @@ It waits through the rollback and writes its record at the roll forward, when Di
 
 The kind check keeps the name after the rollback, and the rollback needs no statement for it: an earlier release never writes the kind, so the check refuses nothing that release writes.
 
-The table `step_starts` (`20261117004117_step_starts`) stays in place, and the rollback needs no statement for it: an earlier release names it in no statement, so that release boots with the table and its rows there.
-It holds the count of the starts of each step of each issue, which carries a record's id from the step's start to its end (`StepID` in `internal/workflow/steps.go`).
-What a rollback and a roll forward cost is the record of each step that started under the earlier release, which writes no start and raises no count.
-At the roll forward, the end of such a step reads the count of its place's last run under this release: where that run had ended, the end writes nothing and the step has no record;
-where that run was still open at the rollback, the end ends that run's record, with the moment and the result of the later run.
+The table `step_starts` (`20261117004117_step_starts`) stays in place: an earlier release names it in no statement, so that release boots with the table and its rows there.
+It holds the count of the starts of each step of each issue, which carries a record's id from the step's start to its end (`StepID` in `internal/workflow/steps.go`), and the mark that gives each run one end.
+An earlier release starts and ends steps and counts none of them, so the rollback keeps what the roll forward needs to tell the runs this release counted from the ones it did not.
+Run this too, with the daemon stopped, before the earlier image is pinned:
+
+```sql
+insert into step_starts_rollback (issue, tree, witness)
+select key, tree, step_run_witness(key, tree) from issues
+where key in (select issue from step_starts)
+on conflict (issue) do nothing;
+delete from schema_version where version = 20261117064152;
+```
+
+The `insert` keeps, for each issue with a counted step, what this release ends or starts a step on (`step_run_witness`, whose definition and reasons stand in the header of `20261117004117_step_starts`): the phase the issue stands in, its generation, its implementer's pass, the generation of its tree's root, and whether that root lingers while the issue stands outside merging.
+A second run before any roll forward keeps what the first kept.
+The `delete` re-arms `20261117064152_step_starts_roll_forward`, so the newer image's `Migrate` applies it again at the roll forward, before the daemon serves; where that file carries another identifier in the release you roll back from, use that one.
+
+The roll forward reads each issue again, and each row of an issue the earlier release moved reads `uncounted` from then on; every other row stands as it was.
+A step the earlier release started gets a record of its own when it ends under this release: the count after its place's last, or 0 where its place has no row, with the agent its start would have named and the start time its role's entry records (`upgradedStart` in `internal/workflow/steps.go`).
+A step running at the rollback on an issue the earlier release did not move is still the step this release counted, and its end ends the record its start wrote.
+What the rollback costs is the record of each step that both starts and ends under the earlier release, and the end of each step running at the rollback that ends under it: that record reads `running`.
 
 #### Rolling back the release whose update round ends at its bound
 
@@ -2564,7 +2580,8 @@ The migrations recorded above this one are these.
 20261113090512_phase_entry_moved_back, of cybermonklabs/legion#3793, adds `phases.entry_moved_back` and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release's inserts fill with its default, false.
 20261112070503_pull_request_state_read_at, of cybermonklabs/legion#3937, adds `pull_requests.state_read_at` and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release's inserts fill with its default, the zero time.
 20261113082415_claim_ended_work, of cybermonklabs/legion#3983, adds `claims.ended_work` and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release names in no statement.
-20261117004117_step_starts adds the table `step_starts` and touches none of the six, so the block holds over it and leaves the table standing, which the earlier release names in no statement.
+20261117004117_step_starts adds the tables `step_starts` and `step_starts_rollback` and the function `step_run_witness`, which reads none of the six, so the block holds over it and leaves the three standing, which the earlier release names in no statement.
+20261117064152_step_starts_roll_forward writes `step_starts` and `step_starts_rollback` alone and touches none of the six either, so the block holds over it, and the steps of its own section, [Rolling back the release that records each step](#rolling-back-the-release-that-records-each-step), re-arm it for the roll forward.
 20261113182000_architect_entry_upgrade writes into three of the six, and 20261113181500_architect_stalled_notices adds the table that upgrade marks, so the contract 146 block above reverses both first.
 20261114020537_claim_entry_handshake adds four columns of `claims` and touches none of the six, and the contract 146 block above reverses it too, because the earlier release writes no handshake into them.
 20261114061900_phase_entry_verbatim adds `phases.entry_verbatim` and touches none of the six, and the contract 146 block above reverses it too, so that the roll-forward can add it again.

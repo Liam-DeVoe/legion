@@ -141,32 +141,35 @@ func (e *Engine) startStep(ctx context.Context, tx pgx.Tx, issue record.Issue, a
 // whichever reaches Dispatch first. One run gets one end: the end marks the run ended in the
 // store, in its own transaction (record.Store.EndStepStart), and an end of a run already marked
 // writes nothing, so a run two writes end — the linger's and the hand-over's of one member — keeps
-// the first end, and Dispatch never takes the later one for it. A step running when this release
-// deployed has no count, and its end writes the record with the count 0, the agent its start would
-// have named and, for a phase worker, the moment its role's entry was raised, and marks that run
-// ended too (record.Store.EndUncountedStep): the route makes the node from the end alone. The end
-// carries the moment now, end's fields, and the session and the model of one read of the agent
-// now, the only write that names either (startStep). A phase that runs no step writes nothing, and
-// neither does a record key that is no issue key (recordsSteps).
+// the first end, and Dispatch never takes the later one for it. A run no start of this release
+// counted — one running when this release deployed, or one an earlier release started after a
+// rollback, whose place the roll forward marked uncounted — gets a record of its own at the count
+// the store gives it, with the agent its start would have named and, for a phase worker, the
+// moment its role's entry was raised, and is marked ended too (record.Store.EndUncountedStep): the
+// route makes the node from the end alone, and no record this release counted takes that end.
+// The end carries the moment now, end's fields, and the session and the model of one read of the
+// agent now, the only write that names either (startStep). A phase that runs no step writes
+// nothing, and neither does a record key that is no issue key (recordsSteps).
 func (e *Engine) endStep(ctx context.Context, tx pgx.Tx, before record.Issue, end StepEnd) error {
 	at := record.StandsAt(before)
 	place, role, typ, ok := stepOf(at)
 	if !ok || !recordsSteps(before) {
 		return nil
 	}
-	start, open, err := e.store.EndStepStart(ctx, tx, before.Key, place)
-	if err != nil {
+	start, mark, err := e.store.EndStepStart(ctx, tx, before.Key, place)
+	if err != nil || mark == record.AlreadyEnded {
 		return err
 	}
 	agent, startedAt := claim.Token(start.Agent), start.StartedAt
-	if !open {
+	if mark == record.NotCounted {
 		if agent, startedAt, err = e.upgradedStart(ctx, tx, before, at); err != nil {
 			return err
 		}
-		first, err := e.store.EndUncountedStep(ctx, tx, before.Key, place, string(agent), startedAt)
+		starts, first, err := e.store.EndUncountedStep(ctx, tx, before.Key, place, string(agent), startedAt)
 		if err != nil || !first {
 			return err
 		}
+		start.Starts = starts
 	}
 	write := stepWrite(before, place, role, typ, string(agent), start.Starts)
 	if !startedAt.IsZero() {
@@ -299,7 +302,7 @@ func (e *Engine) StartStepRecord(ctx context.Context, tx pgx.Tx, issue record.Is
 		return nil
 	}
 	latest, err := e.store.StepStarts(ctx, tx, issue.Key, place)
-	if err != nil || latest.Starts > 0 && !latest.Ended {
+	if err != nil || latest.Run == record.RunOpen {
 		return err
 	}
 	agent, err := e.startAgent(ctx, tx, issue, at)
