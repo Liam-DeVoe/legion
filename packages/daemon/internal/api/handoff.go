@@ -51,7 +51,11 @@ import (
 // PlanRating and PlanReason are the rating of the plan the issue ran, which the completion that
 // ends the retro carries and no other completion does (PlanRatingContract). PlanRating is a
 // pointer for the reason WakeAt is: a completion naming no rating is told from one naming 0, which
-// is refused as outside 1 to 5.
+// is refused as outside 1 to 5. ReturnTo is the step of the issue's running task that a failed
+// step names as the one its task returns to (R7), by its place in the task, 1 for its first: only
+// a tester's completion with the verdict fail names one (returnToRefusal), and it is a pointer for
+// the reason PlanRating is, so a completion naming 0 is refused rather than read as naming none.
+// Which step it may name is the workflow's to judge against the task's steps (RETURN_REFUSED).
 type HandoffCompleteRequest struct {
 	GrantID        string     `json:"grantId"`
 	Summary        string     `json:"summary"`
@@ -62,6 +66,7 @@ type HandoffCompleteRequest struct {
 	WakeAt         *time.Time `json:"wakeAt,omitempty"`
 	PlanRating     *int       `json:"planRating,omitempty"`
 	PlanReason     string     `json:"planReason,omitempty"`
+	ReturnTo       *int       `json:"returnTo,omitempty"`
 }
 
 // PlanRatingContract is the daemon contract that added the rating of the plan to the completion
@@ -233,6 +238,12 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 		writeFailure(w, http.StatusBadRequest, "VERDICT_ROLE_FORBIDDEN", "only a tester may report a verdict")
 		return
 	}
+	// The step a failed step's task returns to is the tester's fail's alone (returnToRefusal),
+	// refused here on every other completion before anything is read or recorded.
+	if refusal := returnToRefusal(req, req.Verdict == "fail", fmt.Sprintf("this completion of phase %s of %s", issue.Phase, grant.Issue)); refusal != nil {
+		writeFailure(w, refusal.Status, refusal.Code, refusal.Message)
+		return
+	}
 	// A wake is a production check's pending report alone: it names when that check's next look is
 	// due, and a phase ends with no look to follow it. The contract says so for every client
 	// (contracts' LegionHandoffCompleteRequest), so the daemon holds a phase completion to it
@@ -375,11 +386,21 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	// by bumping only the root's, and restarts a child's worker in the phase it stood in, so a
 	// child's completion refused before (while the tree lingered, or while the old gate was closed)
 	// would otherwise take the new generation's key.
+	//
+	// The step a fail names its task's return to (returnTo) ends the key when the completion
+	// names one, for the reason the verdict is in it: the workflow commits its refusal of a step it
+	// may not name (RETURN_REFUSED) as processed, so the same fail naming another step must be a
+	// fact of its own. A completion naming none keeps the key it had before returnTo existed.
 	reported, received := req.Commit, "at commit "+req.Commit
 	if recordBacked {
 		reported, received = req.HandoffID, fmt.Sprintf("naming handoff record %s (%s version %d)", req.HandoffID, word, req.HandoffVersion)
 	}
 	eventID := fmt.Sprintf("handoff:%s:%d:%d:%d:%s:%s:%d:%s:%s", grant.Issue, treeGeneration, issue.Generation, serving, grant.Role, issue.Phase, pass, reported, req.Verdict)
+	returnTo := 0
+	if req.ReturnTo != nil {
+		returnTo = *req.ReturnTo
+		eventID += fmt.Sprintf(":%d", returnTo)
+	}
 	if grant.Role == claim.RoleImplementer && issue.Phase == phase.Implementing && !position.lingers && reported != position.lastHandoff {
 		if !s.implementationPullRequest(w, r, issue, position.pullRequest, eventID) {
 			return
@@ -394,7 +415,7 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	}
 	result, err := intake.ApplyFact(r.Context(), s.pool, "api", eventID, intake.HandoffComplete{Generation: serving, Issue: grant.Issue, Role: grant.Role, Claim: grant.Claim,
 		Summary: req.Summary, Verdict: req.Verdict, Commit: req.Commit,
-		HandoffRecord: req.HandoffID, HandoffVersion: req.HandoffVersion, PlanRating: rating, PlanReason: req.PlanReason}, s.handlers...)
+		HandoffRecord: req.HandoffID, HandoffVersion: req.HandoffVersion, PlanRating: rating, PlanReason: req.PlanReason, ReturnTo: returnTo}, s.handlers...)
 	if err != nil {
 		writeFailure(w, http.StatusInternalServerError, "FACT_APPLY_FAILED", "could not apply handoff fact")
 		return
@@ -462,6 +483,30 @@ func planRatingRefusal(req HandoffCompleteRequest, endsRetro bool, pluginContrac
 	}
 	return &intake.Refusal{Status: http.StatusBadRequest, Code: "PLAN_RATING_INPUT", Message: fmt.Sprintf(
 		"%s: a rating of the plan is a whole number from 1 to 5 in planRating with why in planReason, one to %d characters, the two together; nothing was recorded", wrong, planReasonMax)}
+}
+
+// returnToRefusal holds a completion's returnTo (R7) to its rule, and is nil when the completion
+// names none or names one it may. failsAStep is whether the completion fails a step (a tester's
+// verdict fail, which VERDICT_ROLE_FORBIDDEN leaves to the tester alone), and what names the
+// completion in a refusal. Every refusal is a 400 its caller writes before anything is recorded,
+// so the same completion sent again, corrected, is taken:
+//
+//   - INVALID_RETURN_TO: returnTo below 1, which names no step of a task.
+//   - RETURN_TO_NEEDS_FAIL: a completion that fails no step names returnTo: a pass, another role's
+//     completion, or a production check's report, which is no step. Dropping it unread would let
+//     an agent believe it had sent the task back.
+func returnToRefusal(req HandoffCompleteRequest, failsAStep bool, what string) *intake.Refusal {
+	switch {
+	case req.ReturnTo == nil:
+		return nil
+	case *req.ReturnTo < 1:
+		return &intake.Refusal{Status: http.StatusBadRequest, Code: "INVALID_RETURN_TO", Message: fmt.Sprintf(
+			"returnTo is %d, and it names a step of the task by its place, 1 for its first; nothing was recorded", *req.ReturnTo)}
+	case !failsAStep:
+		return &intake.Refusal{Status: http.StatusBadRequest, Code: "RETURN_TO_NEEDS_FAIL", Message: fmt.Sprintf(
+			"%s names returnTo, and only the completion of a step that failed, with the verdict fail, names the step its task returns to: send it again without returnTo; nothing was recorded", what)}
+	}
+	return nil
 }
 
 // handoffRecord reads the Dispatch handoff record a completion of issue's file-backed phase of,
@@ -966,7 +1011,13 @@ func (s *server) checkReport(w http.ResponseWriter, r *http.Request, grant crede
 			"this report names wakeAt and no look follows it: %s; send it again without a time, and nothing was recorded", why))
 		return
 	}
-	if refusal := planRatingRefusal(req, false, 0, grant.Issue, fmt.Sprintf("this report on look %d of %s's production check", look.Look, grant.Issue)); refusal != nil {
+	what := fmt.Sprintf("this report on look %d of %s's production check", look.Look, grant.Issue)
+	if refusal := planRatingRefusal(req, false, 0, grant.Issue, what); refusal != nil {
+		writeFailure(w, refusal.Status, refusal.Code, refusal.Message)
+		return
+	}
+	// A look is no step of a task, so its report fails none and names no step to return to.
+	if refusal := returnToRefusal(req, false, what); refusal != nil {
 		writeFailure(w, refusal.Status, refusal.Code, refusal.Message)
 		return
 	}
