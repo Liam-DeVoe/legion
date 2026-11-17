@@ -1,4 +1,4 @@
--- packages/envoy/internal/broker/store/migrations/0032_launcher_credential_issuer.up.sql
+-- packages/envoy/internal/broker/store/migrations/0033_launcher_credential_issuer.up.sql
 -- BROKER_K8S_OIDC_ISSUER names several clusters' issuers, and a BROKER_SERVICE_LOGINS entry names
 -- the issuers its account logs in from. A token login's credential is read again against that
 -- entry on every use (enroll.Service.AuthenticateLauncher), so the credential records which

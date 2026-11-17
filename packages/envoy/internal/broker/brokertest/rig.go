@@ -79,6 +79,11 @@ const (
 	ExchangeSession = "example-worker"
 )
 
+// The second account every Rig's BROKER_EXCHANGE_ACCOUNTS lists: its entry fixes no session, as
+// a Legion issue pod's does, so each pod of it trades only for a session a registrar registered for
+// that pod (POST /v1/oauth/exchange/pod-sessions), with the key the registration names.
+const ExchangeRolesAccount = "system:serviceaccount:example-ns:example-roles"
+
 // The one workflow every Rig's BROKER_EXCHANGE_WORKFLOWS lists and what a run of it may write. It
 // fixes no session, so a run names its own.
 const (
@@ -290,9 +295,9 @@ const MachineLoginURL = "https://dispatch.example/credentials/machine"
 // cmd/broker/main.go does: device codes live as long as a pending machine login, access tokens
 // fifteen minutes, refresh tokens as long as a launcher credential, and verification_uri is
 // MachineLoginURL. Its token exchange reads issuer for both kinds of subject token — a pod's, for
-// exchangeAudience, and a workflow run's, for githubAudience — and lists the one account and the
-// one workflow the Rig's constants name, so an exchange test has an identity to be and an unlisted
-// one to be refused as.
+// exchangeAudience, and a workflow run's, for githubAudience — and lists the two accounts and the
+// one workflow the Rig's constants name, so an exchange test has an identity to be, a registered
+// one, and an unlisted one to be refused as.
 func NewOAuthProvider(t *testing.T, st *store.Store, issuer *oidctest.Issuer) *oauth.Provider {
 	t.Helper()
 	oauthStore := oauthstore.New(st.Pool)
@@ -302,9 +307,12 @@ func NewOAuthProvider(t *testing.T, st *store.Store, issuer *oidctest.Issuer) *o
 		t.Fatalf("OAuth secret: %v", err)
 	}
 	policy, err := exchange.NewSet(
-		// The entry names the rig's one cluster issuer, which, written as a bare URL, has the
+		// Each entry names the rig's one cluster issuer, which, written as a bare URL, has the
 		// empty name.
-		[]exchange.AccountEntry{{Account: ExchangeAccount, Project: ExchangeProject, Person: ExchangePerson, Session: ExchangeSession, Issuers: []string{""}}},
+		[]exchange.AccountEntry{
+			{Account: ExchangeAccount, Project: ExchangeProject, Person: ExchangePerson, Session: ExchangeSession, Issuers: []string{""}},
+			{Account: ExchangeRolesAccount, Project: ExchangeProject, Person: ExchangePerson, Issuers: []string{""}},
+		},
 		nil,
 		[]exchange.WorkflowEntry{{Repository: ExchangeRepository, Workflow: ExchangeWorkflow, Ref: ExchangeRef, Project: ExchangeProject, Person: ExchangePerson}},
 		nil,
