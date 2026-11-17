@@ -638,38 +638,33 @@ def decision_readers(path, doc):
             problem(f"{described(selector)} of {job_name} has the if: `{have}`, which reads a checked version step's "
                     f"decision, and {PLAN}'s DECISION_READERS names no such reader: a new step or job that reads the "
                     f"decision is an entry there, so that no edit of its if: can throw the decision away unseen", path)
-    # The steps a listed reader's if: reads, found by parsing it: each is itself listed in the same
-    # job, or is a checked version step, so that no edit of the step it reads (an `if: false` on
-    # pair, which legion_pair reads) skips the reader unseen.
+    # Per job that holds listed readers, in one pass:
+    # - the steps a listed reader's if: reads, found by parsing it, are each listed in the same job
+    #   or a checked version step, so that no edit of the step it reads (an `if: false` on pair,
+    #   which legion_pair reads) skips the reader unseen;
+    # - no two steps share a name, since a reader with no id: is found by its name: and a decoy
+    #   of that name ahead of it could carry its if: while the real step skips;
+    # - the listed readers stand in the module's order: each reads the outcome of one before it,
+    #   so a reader moved above the step it reads finds no outcome and skips, and the chain with it.
     for (workflow, job_name), readers in sorted(plan.DECISION_READERS.items()):
         if workflow != path:
             continue
         known = {r.id.lower() for r in readers if r.id} | {s.step_id.lower() for s in specs if s.job == job_name}
         for reader in readers:
-            for ref in sorted(set(re.findall(r"\bsteps\.([A-Za-z_][A-Za-z0-9_-]*)\.", reader.if_, re.IGNORECASE))):
+            refs = re.findall(r"\bsteps\.([A-Za-z_][A-Za-z0-9_-]*)\.", reader.if_ or "", re.IGNORECASE)
+            for ref in sorted(set(refs)):
                 if ref.lower() not in known:
                     problem(f"{described(reader_selector(reader))} of {job_name} reads steps.{ref}, which {PLAN}'s "
                             f"DECISION_READERS does not list for {job_name}: a step whose output a reader's if: reads "
                             f"is listed with it, since an if: that skips it skips the reader as well", path)
-    # One name a step in a job that holds listed readers: a reader is found by its name: when it
-    # has no id:, so a decoy of the same name ahead of it could carry its if: while the real step
-    # skips.
-    for (workflow, job_name), readers in sorted(plan.DECISION_READERS.items()):
         job = jobs.get(job_name)
-        if workflow != path or not isinstance(job, dict):
-            continue
-        steps = job.get("steps") if isinstance(job.get("steps"), list) else []
+        steps = job.get("steps") if isinstance(job, dict) and isinstance(job.get("steps"), list) else []
         counts = collections.Counter(s["name"] for s in steps if isinstance(s, dict) and isinstance(s.get("name"), str))
         for name, count in sorted(counts.items()):
             if count > 1:
                 problem(f"{path}'s job {job_name}, which holds listed decision readers, has {count} steps named `{name}`: "
                         f"a step there has a name of its own, since a decoy of a reader's name could carry its if: "
                         f"while the reader itself skips", path)
-    # The order the listed readers run in: each reads the outcome of one before it, so a reader moved
-    # above the step it reads finds no outcome and skips, and every reader after it with it.
-    for (workflow, job_name), readers in sorted(plan.DECISION_READERS.items()):
-        if workflow != path:
-            continue
         placed = [(index[(job_name, reader_selector(r))], reader_selector(r)) for r in readers
                   if r.position != 0 and (job_name, reader_selector(r)) in index]
         for (before, first), (after, second) in itertools.pairwise(placed):
