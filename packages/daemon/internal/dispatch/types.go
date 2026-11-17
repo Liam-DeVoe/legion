@@ -39,6 +39,10 @@ type Client interface {
 	// serves it: the boot catch-up's read of what a root's durable stream may not have delivered.
 	EventsAfter(ctx context.Context, key string, after int64) ([]json.RawMessage, error)
 	Approval(ctx context.Context, artifactID string) (Approval, error)
+	// PlanDocument is one version of a document with its typed blocks and the issue carrying it:
+	// what register_plan reads a plan from at the version its owner gave. A Dispatch that
+	// predates the read with blocks answers ErrNoBlocks.
+	PlanDocument(ctx context.Context, artifactID string, version int) (PlanDocument, error)
 	Handoff(ctx context.Context, id string) (Handoff, error)
 	ListRepoProjects(ctx context.Context) ([]RepoProject, error)
 	// PutGatedSteps publishes the design-gate steps the deployment gates onto project's Dispatch
