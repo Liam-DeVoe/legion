@@ -664,6 +664,17 @@ beforeEach(() => {
  */
 let rowGeneration = 0;
 
+// A hang guard, not a bound on the work: what can hang here is a managed-timer callback a row
+// scheduled that never settles, which the `await` below waits for; the rest of the body is
+// resets. Timed round the body on this two-CPU pod: 0.47 / 0.79 / 39.22 ms (min / median / max)
+// over the 3 087 invocations of 3 idle runs of this file, and under 96 busy loops (48 per CPU)
+// 2.92 / 1 207.24 / 5 393.72 ms over 10 runs of the `session_shutdown resolves within its budget`
+// row alone and up to 7 275.17 ms over the 359 invocations of a whole-file run. Bun's unwritten
+// 5 s default, which the hook carried at the base, is what failed that row's correct runs there:
+// 1 in 10 here, and one that testing charged 18 876.76 ms, each `a beforeEach/afterEach hook
+// timed out for this test`. 60_000 is 8.2 times the worst body measured and sits well inside the
+// pi-envoy job's `timeout-minutes: 10` (.github/workflows/ci.yaml), so a callback that never
+// settles fails the row it follows, named, instead of cancelling the job, which names nothing.
 afterEach(async () => {
   rowGeneration += 1;
   // A row abandoned at its limit while it held the test's clock would otherwise leave fake timers
@@ -753,7 +764,7 @@ afterEach(async () => {
   natsState.failFlushClosesConnection = false;
   hostBuiltins.length = 0;
   ledgerSeam.beforeFailureNotice = undefined;
-});
+}, 60_000);
 
 function createPi(options: { readonly clipboardError?: Error; readonly zod?: typeof z } = {}) {
   clipboardState.error = options.clipboardError;
