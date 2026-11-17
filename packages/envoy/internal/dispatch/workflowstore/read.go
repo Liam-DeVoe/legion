@@ -81,10 +81,10 @@ func compareRuns(left, right Step) int {
 
 // ProjectPlans answers each finished issue of project, an issue whose status is done and whose
 // closed_at is set, newest close first, its close within window ([Since, Until), each nil for no
-// bound). Each issue carries its plan (the node of its newest generation, nil where it
-// has none), the rating of each retro in the order the retros ran, the earliest start and the
-// latest end its runs hold (nil where none holds one), and its count of runs of kind step that
-// failed. A finished issue Legion never ran is listed with none of these.
+// bound, each rounded up to the microsecond). Each issue carries its plan (the node of its newest
+// generation, nil where it has none), the rating of each retro in the order the retros ran, the
+// earliest start and the latest end its runs hold (nil where none holds one), and its count of
+// runs of kind step that failed. A finished issue Legion never ran is listed with none of these.
 //
 // It is one statement for the whole project, whatever the number of issues: the project's
 // finished issues, each left-joined through the `part_of` tuples into it (workflow_tuples_inbound,
@@ -100,7 +100,7 @@ func ProjectPlans(ctx context.Context, q Queryer, project string, window Window)
 			and ($2::timestamptz is null or i.closed_at >= $2)
 			and ($3::timestamptz is null or i.closed_at < $3)
 		order by i.closed_at desc, i.key
-	`, project, window.Since, window.Until)
+	`, project, microsecondCeiling(window.Since), microsecondCeiling(window.Until))
 	if err != nil {
 		return nil, fmt.Errorf("read the plans of %s: %w", project, err)
 	}
@@ -171,6 +171,23 @@ func ProjectPlans(ctx context.Context, q Queryer, project string, window Window)
 		finished = append(finished, issue)
 	}
 	return finished, nil
+}
+
+// microsecondCeiling is a bound of a window as the statement compares it. PostgreSQL holds a close
+// to the microsecond, and pgx encodes a bound by truncating its nanoseconds, which lowers it: a
+// close at the truncated microsecond, before the bound the caller named, would be kept by
+// `>= since` and dropped by `< until`. Every close is a whole microsecond, so it is at or after a
+// bound exactly when it is at or after the bound rounded up to the next microsecond, and before the
+// bound exactly when it is before that: rounding up keeps both meanings. nil is no bound.
+func microsecondCeiling(bound *time.Time) *time.Time {
+	if bound == nil {
+		return nil
+	}
+	ceiling := bound.Truncate(time.Microsecond)
+	if ceiling.Before(*bound) {
+		ceiling = ceiling.Add(time.Microsecond)
+	}
+	return &ceiling
 }
 
 // newerPlan answers whether plan, its node made at made, is newer than held, made at heldMade: of

@@ -133,7 +133,7 @@ func (s *server) listProjectPlans(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
-	since, until, err := parsePlansWindow(r.URL.Query())
+	window, err := parsePlansWindow(r.URL.Query())
 	if err != nil {
 		writeError(w, "INVALID_QUERY", http.StatusBadRequest, err.Error())
 		return
@@ -143,10 +143,7 @@ func (s *server) listProjectPlans(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	// Each bound as the statement compares it: PostgreSQL holds a close to the microsecond, and pgx
-	// would truncate a finer bound onto it (microsecondCeiling).
-	finished, err := workflowstore.ProjectPlans(r.Context(), s.deps.Store.Pool, key,
-		workflowstore.Window{Since: microsecondCeiling(since), Until: microsecondCeiling(until)})
+	finished, err := workflowstore.ProjectPlans(r.Context(), s.deps.Store.Pool, key, window)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -178,10 +175,11 @@ func (s *server) listProjectPlans(w http.ResponseWriter, r *http.Request) {
 }
 
 // parsePlansWindow is the plans read's [since, until) window on the close: each bound an RFC 3339
-// time, nil when the query leaves it out or blank, and since before until when both are given. Its
-// error is the text of the route's 400 INVALID_QUERY.
-func parsePlansWindow(query url.Values) (since, until *time.Time, err error) {
-	bounds := [2]*time.Time{}
+// time, nil when the query leaves it out or blank, and since before until when both are given, as
+// the caller wrote them; the read rounds each up to the microsecond it compares. Its error is the
+// text of the route's 400 INVALID_QUERY.
+func parsePlansWindow(query url.Values) (workflowstore.Window, error) {
+	var bounds [2]*time.Time
 	for index, bound := range []string{"since", "until"} {
 		text := strings.TrimSpace(query.Get(bound))
 		if text == "" {
@@ -189,14 +187,14 @@ func parsePlansWindow(query url.Values) (since, until *time.Time, err error) {
 		}
 		parsed, err := time.Parse(time.RFC3339, text)
 		if err != nil {
-			return nil, nil, fmt.Errorf("%s must be an RFC 3339 time, such as 2026-11-01T00:00:00Z", bound)
+			return workflowstore.Window{}, fmt.Errorf("%s must be an RFC 3339 time, such as 2026-11-01T00:00:00Z", bound)
 		}
 		bounds[index] = &parsed
 	}
 	if bounds[0] != nil && bounds[1] != nil && !bounds[0].Before(*bounds[1]) {
-		return nil, nil, errors.New("since must be before until")
+		return workflowstore.Window{}, errors.New("since must be before until")
 	}
-	return bounds[0], bounds[1], nil
+	return workflowstore.Window{Since: bounds[0], Until: bounds[1]}, nil
 }
 
 // planRecord is a plan as the routes answer it: the owner's document and version are null for a

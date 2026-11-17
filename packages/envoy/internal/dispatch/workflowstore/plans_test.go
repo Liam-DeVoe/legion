@@ -537,3 +537,38 @@ func TestProjectPlansFiltersOnClosedAt(t *testing.T) {
 		})
 	}
 }
+
+// A bound finer than the microsecond PostgreSQL holds a close to keeps its meaning for every caller
+// of the read, not the route alone: an issue closed at …00.123456 is before …00.123456001, so a
+// since at that bound leaves it out and an until at it keeps it. pgx encodes a timestamptz by
+// truncating it to the microsecond, which would move each comparison onto the close itself.
+func TestProjectPlansKeepsASubMicrosecondBoundsMeaning(t *testing.T) {
+	pool := storetest.Open(t).Pool
+	closed := time.Date(2026, time.November, 3, 0, 0, 0, 123456000, time.UTC)
+	seedIssues(t, pool, "LEG", seededIssue{"LEG-1", "done", &closed})
+	before, after, later := closed.Add(-time.Nanosecond), closed.Add(time.Nanosecond), closed.Add(999*time.Nanosecond)
+	for _, bounded := range []struct {
+		name   string
+		window Window
+		want   []string
+	}{
+		{"since at the close", Window{Since: &closed}, []string{"LEG-1"}},
+		{"since a nanosecond after the close", Window{Since: &after}, []string{}},
+		{"until at the close", Window{Until: &closed}, []string{}},
+		{"until a nanosecond after the close", Window{Until: &after}, []string{"LEG-1"}},
+		{"a nanosecond either side of the close", Window{Since: &before, Until: &after}, []string{"LEG-1"}},
+		{"both after the close in its microsecond", Window{Since: &after, Until: &later}, []string{}},
+	} {
+		read, err := ProjectPlans(context.Background(), pool, "LEG", bounded.window)
+		if err != nil {
+			t.Fatalf("%s: read the plans of LEG: %v", bounded.name, err)
+		}
+		keys := []string{}
+		for _, issue := range read {
+			keys = append(keys, issue.Issue)
+		}
+		if !slices.Equal(keys, bounded.want) {
+			t.Errorf("%s lists %v, want %v", bounded.name, keys, bounded.want)
+		}
+	}
+}
