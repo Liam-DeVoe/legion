@@ -56,8 +56,9 @@ func (s *server) documentOwnerFromRequest(ctx context.Context, q queryer, r *htt
 	if artifact.IssueKey != nil {
 		return model.Artifact{}, owner{}, errorf(
 			apicode.ArtifactLinked,
-			"artifact belongs to issue %s; use /api/v1/issues/%s/...",
+			"artifact belongs to issue %s; use %s/issues/%s/...",
 			*artifact.IssueKey,
+			versionPrefix(requestAPIVersion(r)),
 			*artifact.IssueKey,
 		)
 	}

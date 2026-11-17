@@ -308,7 +308,7 @@ func (s *server) putIssueRoleHoldersFrom(w http.ResponseWriter, r *http.Request,
 }
 
 // getIssueRoleHolders answers the stored set of an issue: GET /api/v1/issues/{key}/role-holders,
-// and GET /api/v2/issues/{key}/role-holders, which answers it alike. A closed issue reads as an
+// and GET /api/v2/issues/{key}/role-holder-set, which answers it alike. A closed issue reads as an
 // open one does.
 func (s *server) getIssueRoleHolders(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {

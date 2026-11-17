@@ -985,7 +985,7 @@ func (s *server) writeComment(w http.ResponseWriter, r *http.Request, owner owne
 	var advice *writeAdvice
 	if owner.IssueKey != nil && status != nil {
 		advice = s.writeAdvice(
-			r.Context(), tx, "POST /api/v1/issues/{key}/comments", *owner.IssueKey, actor, "", *status, false,
+			r.Context(), tx, routeName(r.Context()), *owner.IssueKey, actor, "", *status, false,
 		)
 	}
 	if err := ledger.Commit(r.Context()); err != nil {

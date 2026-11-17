@@ -69,8 +69,7 @@ func (s *server) createHandoff(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var input createHandoffInput
-	limit, tooLarge := routeBody(http.MethodPost, handoffWritePattern)
-	if err := decodeJSONWithin(r, &input, limit, tooLarge); err != nil {
+	if err := decodeJSONWithin(r, &input, handoffBodyLimit.Bytes, handoffBodyLimit.TooLarge); err != nil {
 		s.writeHandlerError(w, r, err)
 		return
 	}

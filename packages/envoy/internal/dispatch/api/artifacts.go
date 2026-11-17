@@ -745,13 +745,10 @@ func (s *server) storeArtifact(
 	var superseded *supersededApproval
 	var moved *movedApprovalRequest
 	if kind == "doc" && !created {
-		// This handler serves the project upload as well (uploadProjectArtifact), and a document
-		// upload is an issue's or a project's, so the route both reads below name is the one the
-		// request came in on: a read that failed is logged where it ran.
-		route := "POST /api/v1/projects/{key}/artifacts"
-		if target.IssueKey != nil {
-			route = "POST /api/v1/issues/{key}/artifacts"
-		}
+		// This handler serves the project upload and the upload of each version as well, so the
+		// route both reads below name is the one the request came in on: a read that failed is
+		// logged where it ran.
+		route := routeName(r.Context())
 		superseded = s.supersededApprovalAdvice(
 			r.Context(), tx, route, artifactIssueKey(artifact), artifact.ID, version.Number,
 		)
@@ -765,7 +762,7 @@ func (s *server) storeArtifact(
 	var advice *writeAdvice
 	if target.IssueKey != nil && issueStatus != nil {
 		advice = s.writeAdvice(
-			r.Context(), tx, "POST /api/v1/issues/{key}/artifacts", *target.IssueKey, actor, "", *issueStatus, false,
+			r.Context(), tx, routeName(r.Context()), *target.IssueKey, actor, "", *issueStatus, false,
 		)
 	}
 	if err := ledger.Commit(r.Context()); err != nil {
@@ -1403,14 +1400,14 @@ func (s *server) applyEdits(w http.ResponseWriter, r *http.Request, input editAr
 	var moved *movedApprovalRequest
 	if written != nil {
 		superseded = s.supersededApprovalAdvice(
-			r.Context(), tx, routeEditDocument, artifactIssueKey(artifact), artifact.ID, written.Version.Number,
+			r.Context(), tx, routeName(r.Context()), artifactIssueKey(artifact), artifact.ID, written.Version.Number,
 		)
 		// The open approval request this edit's own version took back from the person it was
 		// waiting on, read after that version moved it (docs.MoveApprovalAsk) and after any
 		// carry: an edit that stored no version moved nothing, and one whose carry answered the
 		// request leaves it with the person and reports nothing.
 		moved = s.movedApprovalRequestAdvice(
-			r.Context(), tx, routeEditDocument, artifactIssueKey(artifact), artifact.ID,
+			r.Context(), tx, routeName(r.Context()), artifactIssueKey(artifact), artifact.ID,
 		)
 	}
 	// An edit hears about the asks of this issue a person declined to answer only where it added
@@ -1420,7 +1417,7 @@ func (s *server) applyEdits(w http.ResponseWriter, r *http.Request, input editAr
 	var advice *writeAdvice
 	if artifact.IssueKey != nil && status != nil {
 		advice = s.writeAdvice(
-			r.Context(), tx, routeEditDocument, *artifact.IssueKey, actor, "", *status, len(edit.AddedAskBlocks) > 0,
+			r.Context(), tx, routeName(r.Context()), *artifact.IssueKey, actor, "", *status, len(edit.AddedAskBlocks) > 0,
 		)
 	}
 	if err := ledger.Commit(r.Context()); err != nil {
@@ -1611,18 +1608,28 @@ func parseArtifactID(id string) (string, error) {
 	return parsed.String(), nil
 }
 
+// loadArtifactForRequest reads the artifact the request's path names: an agent conversation's file
+// by its slug, an issue's or a project's document by its slug or filename, whichever the route's
+// row names as the owner a slug is read among (routeRow.DocumentOwner), or an artifact by its id.
 func (s *server) loadArtifactForRequest(ctx context.Context, q queryer, r *http.Request) (model.Artifact, error) {
 	if r.PathValue("session_id") != "" {
 		return s.loadAgentArtifact(ctx, q, r)
 	}
-	if key := r.PathValue("key"); key != "" {
-		target := artifactTarget{Project: key}
-		if strings.HasPrefix(r.URL.Path, "/api/v1/issues/") {
-			target = artifactTarget{IssueKey: &key}
-		}
-		return s.loadArtifactByDocumentReference(ctx, q, target, r.PathValue("slug"))
+	key := r.PathValue("key")
+	if key == "" {
+		return s.loadArtifact(ctx, q, r.PathValue("id"))
 	}
-	return s.loadArtifact(ctx, q, r.PathValue("id"))
+	var owner documentOwnerKind
+	if route, mounted := mountedRoute(r.Context()); mounted {
+		owner = route.DocumentOwner
+	}
+	switch owner {
+	case documentOwnerIssue:
+		return s.loadArtifactByDocumentReference(ctx, q, artifactTarget{IssueKey: &key}, r.PathValue("slug"))
+	case documentOwnerProject:
+		return s.loadArtifactByDocumentReference(ctx, q, artifactTarget{Project: key}, r.PathValue("slug"))
+	}
+	return model.Artifact{}, fmt.Errorf("%s reads a document by its path's {key} and the row names no owner of its documents (routeRow.DocumentOwner)", r.Pattern)
 }
 
 const documentHintLimit = 8
@@ -1666,7 +1673,7 @@ func resolveDocumentReference[T any](
 	}
 	switch len(matches) {
 	case 0:
-		return none, documentReferenceError(target, reference, documents)
+		return none, documentReferenceError(contextAPIVersion(ctx), target, reference, documents)
 	case 1:
 		return byID(matches[0].ID)
 	default:
@@ -1706,13 +1713,17 @@ func (s *server) loadDocumentReferences(ctx context.Context, q queryer, target a
 
 // documentReferenceError refuses a reference that names none of the owner's documents. An owner
 // with more documents than the hint lists (documentHintLimit) is named with its count, the
-// documents nearest the reference first (documentsNearest), and the route that lists them all.
-func documentReferenceError(target artifactTarget, reference string, documents []model.Artifact) error {
+// documents nearest the reference first (documentsNearest), and the route of the version that
+// answers that lists them all.
+func documentReferenceError(version apiVersion, target artifactTarget, reference string, documents []model.Artifact) error {
 	scope := "this project's"
 	everyDocument := "/api/v1/projects/" + target.Project + "/artifacts?unlinked=true"
+	if version == apiV2 {
+		everyDocument = "/api/v2/projects/" + target.Project + "/artifacts?issue=none"
+	}
 	if target.IssueKey != nil {
 		scope = "this issue's"
-		everyDocument = "/api/v1/issues/" + *target.IssueKey + "/artifacts"
+		everyDocument = versionPrefix(version) + "/issues/" + *target.IssueKey + "/artifacts"
 	}
 	if len(documents) <= documentHintLimit {
 		return errorf(

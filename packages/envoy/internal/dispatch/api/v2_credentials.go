@@ -23,12 +23,14 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
-// The refusals of the broker's ids a credential route's path names (decision 11).
+// The refusals of the broker's ids a credential route's path names (decision 11), and of every
+// credential route on a Dispatch with no secrets broker (requireAgentSecrets).
 var (
 	credentialRequestMissingRefusal = apicode.Refusal{Condition: apicode.CredentialRequestMissing, Code: apicode.CredentialRequestNotFound}
 	credentialGrantMissingRefusal   = apicode.Refusal{Condition: apicode.CredentialGrantMissing, Code: apicode.CredentialGrantNotFound}
 	machineLoginMissingRefusal      = apicode.Refusal{Condition: apicode.MachineLoginMissing, Code: apicode.MachineLoginNotFound}
 	signinMissingRefusal            = apicode.Refusal{Condition: apicode.SigninMissing, Code: apicode.SigninNotFound}
+	brokerUnconfiguredRefusal       = apicode.Refusal{Condition: apicode.BrokerUnconfigured, Code: apicode.FeatureOff}
 )
 
 // brokerRelayText is what every credential route says of the broker's answers.
@@ -58,7 +60,7 @@ func (s *server) v2CredentialRows() []routeRow {
 			Query:       brokerListV2Query{},
 			Shape:       routeShape{Status: http.StatusOK, Response: page[wire.ApproverGrantResp]{}},
 			OAuthScopes: person,
-			Refusals:    listRefusals(),
+			Refusals:    listRefusals(brokerUnconfiguredRefusal),
 		},
 		{
 			Method: http.MethodDelete, Pattern: "/credential-grants/{id}", Auth: authAny, Versions: onlyV2,
@@ -72,23 +74,22 @@ func (s *server) v2CredentialRows() []routeRow {
 			OAuthScopes: settles,
 			Scope:       scopeDeployment,
 			IDs:         &idRoute{Reason: "a credential grant id"},
-			Refusals:    []apicode.Refusal{undeclaredKeyRefusal, credentialGrantMissingRefusal},
+			Refusals:    []apicode.Refusal{undeclaredKeyRefusal, credentialGrantMissingRefusal, brokerUnconfiguredRefusal},
 		},
 		{
 			Method: http.MethodGet, Pattern: "/credential-requests", Auth: authAny, Versions: onlyV2,
 			Description: "The credential requests the caller may decide, from the secrets broker, newest first: those " +
 				"naming the caller, and a shared secret's and a service's machine login, which anyone signed in decides, " +
 				"each {record_id, kind, identifiers, requested_at, session, approve_url?}, a secret request's approve_url " +
-				"the broker's own page where it is decided. The caller is the approver; no query names another. An empty " +
-				"page for a Dispatch with no secrets broker. Needs the person scope. " + brokerPageText + ". 503 " +
-				"AGENT_SECRETS_UNAVAILABLE when the broker cannot be reached, and every other refusal the broker answers " +
-				"relayed with its own status and code.",
+				"the broker's own page where it is decided. The caller is the approver; no query names another. Needs the " +
+				"person scope. " + brokerPageText + ". " + brokerRelayText + ", so a client tells a Dispatch with no " +
+				"broker from one with nothing waiting.",
 			Handler:  s.listCredentialRequestsV2,
 			Resource: "credential-requests", Kind: kindCollection, Key: "{id}",
 			Query:       brokerListV2Query{},
 			Shape:       routeShape{Status: http.StatusOK, Response: page[wire.PendingEntry]{}},
 			OAuthScopes: person,
-			Refusals:    listRefusals(),
+			Refusals:    listRefusals(brokerUnconfiguredRefusal),
 		},
 		{
 			Method: http.MethodPut, Pattern: "/credential-requests/{id}/state", Auth: authAny, Versions: onlyV2,
@@ -114,7 +115,7 @@ func (s *server) v2CredentialRows() []routeRow {
 			},
 			Scope:    scopeDeployment,
 			IDs:      &idRoute{Reason: "a credential request id"},
-			Refusals: []apicode.Refusal{undeclaredKeyRefusal, credentialRequestMissingRefusal},
+			Refusals: []apicode.Refusal{undeclaredKeyRefusal, credentialRequestMissingRefusal, brokerUnconfiguredRefusal},
 		},
 		{
 			Method: http.MethodPost, Pattern: "/machine-login-lookups", Auth: authAny, Versions: onlyV2,
@@ -130,7 +131,7 @@ func (s *server) v2CredentialRows() []routeRow {
 			Shape:       routeShape{Status: http.StatusOK, Response: wire.RecordResponse{}},
 			OAuthScopes: settles,
 			Scope:       scopeDeployment,
-			Refusals:    []apicode.Refusal{undeclaredKeyRefusal},
+			Refusals:    []apicode.Refusal{undeclaredKeyRefusal, brokerUnconfiguredRefusal},
 		},
 		{
 			Method: http.MethodGet, Pattern: "/machine-logins", Auth: authAny, Versions: onlyV2,
@@ -144,7 +145,7 @@ func (s *server) v2CredentialRows() []routeRow {
 			Query:       brokerListV2Query{},
 			Shape:       routeShape{Status: http.StatusOK, Response: page[wire.LauncherCredentialResp]{}},
 			OAuthScopes: person,
-			Refusals:    listRefusals(),
+			Refusals:    listRefusals(brokerUnconfiguredRefusal),
 		},
 		{
 			Method: http.MethodDelete, Pattern: "/machine-logins/{id}", Auth: authAny, Versions: onlyV2,
@@ -159,7 +160,7 @@ func (s *server) v2CredentialRows() []routeRow {
 			OAuthScopes: settles,
 			Scope:       scopeDeployment,
 			IDs:         &idRoute{Reason: "a machine login id"},
-			Refusals:    []apicode.Refusal{undeclaredKeyRefusal, machineLoginMissingRefusal},
+			Refusals:    []apicode.Refusal{undeclaredKeyRefusal, machineLoginMissingRefusal, brokerUnconfiguredRefusal},
 		},
 		{
 			Method: http.MethodGet, Pattern: "/me/signins", Auth: authAny, Versions: onlyV2,
@@ -173,7 +174,7 @@ func (s *server) v2CredentialRows() []routeRow {
 			Query:       brokerListV2Query{},
 			Shape:       routeShape{Status: http.StatusOK, Response: page[wire.PersonSignInResp]{}},
 			OAuthScopes: person,
-			Refusals:    listRefusals(),
+			Refusals:    listRefusals(brokerUnconfiguredRefusal),
 		},
 		{
 			Method: http.MethodDelete, Pattern: "/me/signins/{id}", Auth: authAny, Versions: onlyV2,
@@ -189,7 +190,7 @@ func (s *server) v2CredentialRows() []routeRow {
 			OAuthScopes: settles,
 			Scope:       scopeDeployment,
 			IDs:         &idRoute{Reason: "a sign-in id at the secrets broker"},
-			Refusals:    []apicode.Refusal{undeclaredKeyRefusal, signinMissingRefusal},
+			Refusals:    []apicode.Refusal{undeclaredKeyRefusal, signinMissingRefusal, brokerUnconfiguredRefusal},
 		},
 	}
 }
@@ -276,18 +277,19 @@ func (s *server) revokeCredentialGrantV2(w http.ResponseWriter, r *http.Request)
 }
 
 // listCredentialRequestsV2 answers GET /api/v2/credential-requests: one page of the requests GET
-// /api/v1/credential-requests?approver=me relays, and an empty page where /api/v1 answers null, for
-// a Dispatch with no broker.
+// /api/v1/credential-requests?approver=me relays. A Dispatch with no broker is 404 FEATURE_OFF, as
+// every other credential route answers it, where /api/v1 answers null: an empty page would read
+// as nothing waiting, and the web app stops asking only on the refusal.
 func (s *server) listCredentialRequestsV2(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
 	if !ok {
 		return
 	}
-	if s.deps.AgentSecrets == nil {
-		WriteJSON(w, http.StatusOK, newPage([]wire.PendingEntry{}, 0, v2Query[brokerListV2Query](r).pageQuery))
+	client, ok := s.requireAgentSecrets(w, r)
+	if !ok {
 		return
 	}
-	body, err := s.deps.AgentSecrets.Pending(r.Context(), model.CanonicalLogin(actor.ID))
+	body, err := client.Pending(r.Context(), model.CanonicalLogin(actor.ID))
 	writeBrokerPage(s, w, r, body, err, func(answer wire.PendingResponse) []wire.PendingEntry { return answer.Pending })
 }
 

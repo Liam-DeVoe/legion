@@ -19,21 +19,21 @@ func roleHoldersTourSteps() []tourStep {
 	issueMissing := []tourMissing{{Param: "key", Value: "NOPE-404", Code: apicode.IssueNotFound}}
 	return []tourStep{
 		{
-			Method: http.MethodGet, Pattern: "/issues/{key}/role-holders", Status: http.StatusOK,
+			Method: http.MethodGet, Pattern: "/issues/{key}/role-holder-set", Status: http.StatusOK,
 			Setup: func(t *testing.T, tour *routeTour) tourRequest {
 				return tourRequest{Path: map[string]string{"key": tour.issue(t).Key}, As: tourPerson("alice")}
 			},
 			Missing: issueMissing,
 		},
 		{
-			Method: http.MethodPut, Pattern: "/issues/{key}/role-holders", Status: http.StatusOK,
+			Method: http.MethodPut, Pattern: "/issues/{key}/role-holder-set", Status: http.StatusOK,
 			Setup: func(t *testing.T, tour *routeTour) tourRequest {
 				return roleHoldersPublication(tour.issue(t), tourHolders)
 			},
 			Missing: issueMissing,
 		},
 		{
-			Method: http.MethodPut, Pattern: "/issues/{key}/role-holders", Name: "the set it holds, in another order",
+			Method: http.MethodPut, Pattern: "/issues/{key}/role-holder-set", Name: "the set it holds, in another order",
 			Status: http.StatusOK,
 			Setup: func(t *testing.T, tour *routeTour) tourRequest {
 				issue := tour.issue(t)
@@ -77,7 +77,7 @@ func roleHoldersPublication(issue tourIssue, holders []issueRoleHolder) tourRequ
 // stored.
 func (tour *routeTour) publishRoleHolders(t *testing.T, issue tourIssue, holders []issueRoleHolder) issueRoleHolders {
 	t.Helper()
-	published := tour.send(t, tour.stepRoute(t, tourStep{Method: http.MethodPut, Pattern: "/issues/{key}/role-holders"}),
+	published := tour.send(t, tour.stepRoute(t, tourStep{Method: http.MethodPut, Pattern: "/issues/{key}/role-holder-set"}),
 		roleHoldersPublication(issue, holders), "")
 	if published.Code != http.StatusOK {
 		t.Fatalf("publish the role holders of %s: %d %s", issue.Key, published.Code, published.Body.String())
@@ -92,7 +92,7 @@ func (tour *routeTour) publishRoleHolders(t *testing.T, issue tourIssue, holders
 // to another session is a change, and stores it.
 func TestV2RoleHoldersPublicationOfTheStoredSetWritesNothing(t *testing.T) {
 	tour := newRouteTour(t)
-	route := tour.stepRoute(t, tourStep{Method: http.MethodPut, Pattern: "/issues/{key}/role-holders"})
+	route := tour.stepRoute(t, tourStep{Method: http.MethodPut, Pattern: "/issues/{key}/role-holder-set"})
 	issue := tour.issue(t)
 	stored := tour.publishRoleHolders(t, issue, tourHolders)
 

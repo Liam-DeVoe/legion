@@ -99,8 +99,7 @@ func (s *server) postMarkdownRoundTrip(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var input markdownRoundTripInput
-	limit, tooLarge := routeBody(http.MethodPost, markdownRoundTripPattern)
-	if err := decodeJSONWithin(r, &input, limit, tooLarge); err != nil {
+	if err := decodeJSONWithin(r, &input, markdownRoundTripBodyLimit.Bytes, markdownRoundTripBodyLimit.TooLarge); err != nil {
 		s.writeHandlerError(w, r, err)
 		return
 	}

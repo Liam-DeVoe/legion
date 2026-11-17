@@ -820,11 +820,13 @@ func register(mux *http.ServeMux, lifetime context.Context, deps Deps) *server {
 // (read_only_token_test.go) build the same chain.
 func (s *server) routeHandler(route apiRoute) http.HandlerFunc {
 	// Every fact a layer below reads is the route's own (routes_versions.go): its version, which
-	// reaches the error writers on the request (withAPIVersion) and the drain from here, its
+	// reaches the error writers on the request (withMountedRoute) and the drain from here, its
 	// replay and its body bound, its owner's closed state, its write class and the object its
 	// path names, the session its path names, its id facts, its scopes and whether a read-only
 	// token may call it, and on a route the rules of /api/v2 bind its query and body types and
-	// its authorities.
+	// its authorities. The route itself rides the request too, for the code behind the layers
+	// that reads a fact of it: whose documents a slug names (loadArtifactForRequest) and the
+	// route a write's advice logs (routeName).
 	var decoder *v2Decoder
 	if route.v2Bound() {
 		decoder = mustV2Decoder(route)
@@ -921,15 +923,16 @@ func (s *server) routeHandler(route apiRoute) http.HandlerFunc {
 		// pins: without either, the client is told to continue and the answer waits on its body.
 		handler = s.drainBeforeAnswer(route, handler)
 	}
-	// The access-log line is outermost but for the version, so it records what every layer
+	// The access-log line is outermost but for the mount, so it records what every layer
 	// answered - a keyed replay, a refused login, an early answer the drain held - and the
 	// caller the first of them resolved. Compression sits just inside it, so every one of those
 	// answers is compressed for a caller that takes gzip and the line counts the bytes that went
 	// on the wire. The two websockets register mounts beside the table carry no compressed
 	// answer: the upgrade is not a body, and the frames after it are the socket's
-	// (compressAnswers). The version is put on the request before any of them, so every layer
-	// that refuses answers for it.
-	return withAPIVersion(route.Version, accesslog.HandlerFunc(route.Pattern, compressAnswers(s.decideBrokerToken(trackTransactions(handler)))))
+	// (compressAnswers). The route and its version are put on the request before any of them, so
+	// every layer that refuses answers for the version, and the code behind reads the route
+	// rather than the path (withMountedRoute).
+	return withMountedRoute(route, accesslog.HandlerFunc(route.Pattern, compressAnswers(s.decideBrokerToken(trackTransactions(handler)))))
 }
 
 // liveSocketPattern is the path of the live socket, which register mounts beside the table.

@@ -101,7 +101,7 @@ func miscTourSteps() []tourStep {
 			Missing: []tourMissing{{Param: "id", Value: uuid.NewString(), Code: apicode.GoingRequestNotFound}},
 		},
 		{
-			Method: http.MethodGet, Pattern: "/limits", Status: http.StatusOK,
+			Method: http.MethodGet, Pattern: "/limit-set", Status: http.StatusOK,
 			Setup: asAlice(nil),
 		},
 		{

@@ -123,13 +123,20 @@ func (s *server) deliverySettings(w http.ResponseWriter, r *http.Request) (deliv
 	settings, err := delivery.GetSettings(r.Context(), s.deps.Store.Pool)
 	if err != nil {
 		if errors.Is(err, delivery.ErrNoSettings) {
-			writeError(w, r, apicode.DeliveryNotConfigured, "delivery is not configured; set delivery_settings through PUT /api/v1/settings/delivery")
+			writeError(w, r, apicode.DeliveryNotConfigured, deliveryNotConfigured(requestAPIVersion(r)))
 			return delivery.DeliverySettings{}, false
 		}
 		s.writeHandlerError(w, r, err)
 		return delivery.DeliverySettings{}, false
 	}
 	return settings, true
+}
+
+// deliveryNotConfigured is the refusal of a delivery read made before its settings are written,
+// naming the write of the version that answers: PUT <version>/settings/delivery. The live socket,
+// which no version serves, names /api/v2's, the version the web app reads it beside.
+func deliveryNotConfigured(version apiVersion) string {
+	return "delivery is not configured; set delivery_settings through PUT " + versionPrefix(version) + "/settings/delivery"
 }
 
 // getDeliveryTimeline answers GET /api/v1/delivery/timeline: merges, deploys, pipeline failures

@@ -520,10 +520,11 @@ func (body marksPatchV2Input) sessionsAddressed(*http.Request) []string {
 
 // markItemV2 is one item of PATCH /api/v2/me/marks: a mark's kind and id, and the members of its
 // write, which are its kind's arm (markArms) and are read in it by the handler (markItemWrite),
-// as the decoder reads a mark's body by the path's {kind}.
+// as the decoder reads a mark's body by the path's {kind}. The document declares it as the union
+// of those arms (itemUnions).
 type markItemV2 struct {
-	Kind    string `json:"kind" enum:"issue,agent,document,thread,message,ask"`
-	ID      string `json:"id"`
+	Kind    string `json:"kind" required:"true" enum:"issue,agent,document,thread,message,ask"`
+	ID      string `json:"id" required:"true"`
 	members json.RawMessage
 }
 

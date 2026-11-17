@@ -520,7 +520,7 @@ func (s *server) createIssueFrom(w http.ResponseWriter, r *http.Request, input c
 		return
 	}
 	advice := s.writeAdvice(
-		r.Context(), tx, "POST /api/v1/issues", key, actor, "", issue.Status, false,
+		r.Context(), tx, routeName(r.Context()), key, actor, "", issue.Status, false,
 	)
 	nearCopyRecord.issue = key
 	// A near copy let in because its refusal's row could not be confirmed (recordInTx) writes its
@@ -695,7 +695,7 @@ func (s *server) respondWithExistingExternalIssue(
 		return
 	}
 	advice := s.writeAdvice(
-		r.Context(), adviceReadTx, "POST /api/v1/issues", existingKey, actor, "", existingStatus, false,
+		r.Context(), adviceReadTx, routeName(r.Context()), existingKey, actor, "", existingStatus, false,
 	)
 	if err := adviceReadTx.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, r, err)

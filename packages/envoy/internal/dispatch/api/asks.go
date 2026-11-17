@@ -328,7 +328,7 @@ func (s *server) openAsk(
 	var advice *writeAdvice
 	if owner.IssueKey != nil && status != nil {
 		advice = s.writeAdvice(
-			r.Context(), tx, routeOpenAsk, *owner.IssueKey, actor, rowID, *status, true,
+			r.Context(), tx, routeName(r.Context()), *owner.IssueKey, actor, rowID, *status, true,
 		)
 	}
 	if err := ledger.Commit(r.Context()); err != nil {

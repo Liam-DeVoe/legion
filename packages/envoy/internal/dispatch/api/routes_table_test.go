@@ -248,10 +248,12 @@ func TestRoutesTablePinsEveryRegisteredRoute(t *testing.T) {
 
 // The Inbox route's description states the rule the person a question reaches is resolved by —
 // the person it was handed to, then the issue's assignee, then the project's default assignee —
-// and the four descriptions that rule narrowed no longer carry what it replaced. This is a test
-// of its own because the two route tests above read every description and assert no word of
-// one: the index leaves descriptions out (routeIndexLines) and the pin only holds each row to
-// having one, so nothing else fails when a description outlives the code it describes.
+// and that the read filters by no caller unless it asks for the caller's own (R10.1 of
+// dispatch://INFRA-2946/spec), in both versions, and the four descriptions that rule narrowed no
+// longer carry what it replaced. This is a test of its own because the two route tests above read
+// every description and assert no word of one: the index leaves descriptions out
+// (routeIndexLines) and the pin only holds each row to having one, so nothing else fails when a
+// description outlives the code it describes.
 func TestTheInboxRouteDescriptionStatesTheRule(t *testing.T) {
 	descriptions := map[string]string{}
 	for _, route := range (&server{}).routes() {
@@ -262,6 +264,12 @@ func TestTheInboxRouteDescriptionStatesTheRule(t *testing.T) {
 		{"GET /api/v1/inbox", "handed to"},
 		{"GET /api/v1/inbox", "the issue's assignee"},
 		{"GET /api/v1/inbox", "the project's default assignee"},
+		{"GET /api/v2/asks", "handed to"},
+		{"GET /api/v2/asks", "the issue's assignee"},
+		{"GET /api/v2/asks", "the project's default assignee"},
+		// With no filter the read lists every open ask, whoever it waits on.
+		{"GET /api/v1/inbox", "filters by no caller unless ?assignee=me"},
+		{"GET /api/v2/asks", "with no filter, every open ask of every project the caller reads, whoever it waits on"},
 		// A create names the person, and says what happens when it names nobody.
 		{"POST /api/v1/projects", "default_assignee"},
 		{"POST /api/v1/projects", "ASSIGNEE_NOT_ALLOWED"},
@@ -287,6 +295,9 @@ func TestTheInboxRouteDescriptionStatesTheRule(t *testing.T) {
 		{"POST /api/v1/issues", "still names a person who has signed in"},
 		// The inbox resolves three steps and stops at none of them.
 		{"GET /api/v1/inbox", "until somebody hands it on"},
+		// Neither read lists only the asks waiting on the caller unless it is asked to.
+		{"GET /api/v1/inbox", "waiting on the caller"},
+		{"GET /api/v2/asks", "waiting on the caller"},
 	} {
 		description, mounted := descriptions[stale.route]
 		if !mounted {

@@ -66,10 +66,11 @@ func (s *server) v2AskRows() []routeRow {
 			Method: http.MethodGet, Pattern: "/asks", Auth: authAny, Versions: onlyV2,
 			Description: "The asks of every project, filtered; with no filter, every open ask of every project the caller reads, " +
 				"whoever it waits on. state=open (the default; an open ask on an open issue or a project document), answered, " +
-				"resolved or all. project=<key>, repeatable, keeps those projects' asks. waiting_on=me (the person scope), " +
-				"unassigned or <email> keeps the asks waiting on that person, resolved as each ask is read in three steps: the " +
-				"person the question was handed to, then the issue's assignee, then the project's default assignee (an email " +
-				"nobody has signed in with is 400 ASSIGNEE_NOT_ALLOWED). author_session=<session> keeps one session's own asks. " +
+				"resolved or all. project=<key>, repeatable, keeps those projects' asks. waiting_on=me (the person scope) or " +
+				"<email> keeps the asks waiting on that person, resolved as each ask is read in three steps: the person the " +
+				"question was handed to, then the issue's assignee, then the project's default assignee (an email nobody has " +
+				"signed in with is 400 ASSIGNEE_NOT_ALLOWED), and waiting_on=none the asks no step names anybody for. " +
+				"author_session=<session> keeps one session's own asks. " +
 				"from and to (RFC3339) window created_at, from inclusive and to exclusive. source=<kind>:<id> (kind artifact, " +
 				"ask, comment or message; id a whole uuid or a unique prefix of 8 characters or more) reads the question map of " +
 				"the document that source's text belongs to: one row for each `:::ask{#id}` block the document's latest version " +
@@ -266,8 +267,8 @@ type askListV2Query struct {
 	State string `query:"state" enum:"open,answered,resolved,all"`
 	// Project keeps the asks of these projects.
 	Project []string `query:"project"`
-	// WaitingOn is me, unassigned or a person's email.
-	WaitingOn string `query:"waiting_on"`
+	// WaitingOn is me, a person's email, or none: the asks no step names anybody for.
+	WaitingOn queryFilter[string] `query:"waiting_on"`
 	// AuthorSession keeps the asks one session asked.
 	AuthorSession string `query:"author_session"`
 	// Source is `<kind>:<id>`, a reference source whose document's question map the list reads.
@@ -729,18 +730,18 @@ func (s *server) listAsksV2(w http.ResponseWriter, r *http.Request) {
 	// The person each ask waits on, three steps resolved as it is read (askedOfPersonExpression),
 	// as the Inbox's ?assignee= reads it (inboxAssigneeFilter); every login is resolved before the
 	// snapshot below opens, since the pool gives a caller holding a connection no second one.
-	switch query.WaitingOn {
-	case "":
-	case "unassigned":
+	switch waitingOn := query.WaitingOn; {
+	case waitingOn.None:
 		read.where(askedOfPersonExpression + " is null")
-	case "me":
+	case waitingOn.Value == "":
+	case waitingOn.Value == "me":
 		person, ok := s.actingPerson(w, r)
 		if !ok {
 			return
 		}
 		read.where(askedOfPersonExpression + " = " + read.argument(person.ID))
 	default:
-		login, err := s.allowedLogin(r.Context(), query.WaitingOn)
+		login, err := s.allowedLogin(r.Context(), waitingOn.Value)
 		if err != nil {
 			s.writeHandlerError(w, r, err)
 			return

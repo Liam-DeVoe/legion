@@ -35,6 +35,13 @@ import (
 // resultMissingRefusal is the refusal of a result id no check result has (decision 11).
 var resultMissingRefusal = apicode.Refusal{Condition: apicode.ResultMissing, Code: apicode.ResultNotFound}
 
+// The refusals of a parent or blocked_by write that would make a loop, which /api/v2 answers with
+// one code, 409 ISSUE_CYCLE, where /api/v1 answers PARENT_INPUT and DEPENDENCY_CYCLE (R7).
+var (
+	parentLoopRefusal     = apicode.Refusal{Condition: apicode.ParentLoop, Code: apicode.ParentCycle}
+	dependencyLoopRefusal = apicode.Refusal{Condition: apicode.DependencyLoop, Code: apicode.DependencyCycle}
+)
+
 // issuePinnedAuthority is the authority of GET /api/v2/issues's pinned=true (plan t4 step 2,
 // authorities_v2.go): the pins are one person's, so reading them needs the person scope.
 var issuePinnedAuthority = authorityRule{
@@ -114,7 +121,8 @@ func (s *server) v2IssueRows() []routeRow {
 				"meaning and by its rarest words and waits at most 5 seconds; the advice's suggestions say whether it found "+
 				"related items (outcome found, none or not_made with the reason in missing), how it searched, the three items "+
 				"most like the new issue with each ask item's answer state, words to search with by hand (search_query), and "+
-				"under force the near copies forced past (title_matches).", contracts.IssueTitleMax),
+				"under force the near copies forced past (title_matches). A blocked_by that would make the new issue wait on "+
+				"itself through its parent is 409 ISSUE_CYCLE.", contracts.IssueTitleMax),
 			Handler:  s.createIssueV2,
 			Resource: "issues", Kind: kindCollection, Key: "{key}",
 			Body: requestBody{Kind: bodyJSON, Type: createIssueInput{}},
@@ -130,7 +138,7 @@ func (s *server) v2IssueRows() []routeRow {
 				Refusals: []routeAnswer{{Status: http.StatusConflict, Body: issueDuplicateError{}}},
 			},
 			Scope:    scopeProjectInBody,
-			Refusals: []apicode.Refusal{undeclaredKeyRefusal},
+			Refusals: []apicode.Refusal{undeclaredKeyRefusal, dependencyLoopRefusal},
 		},
 		{
 			Method: http.MethodGet, Pattern: "/projects/{key}/issues", Auth: authAny, Versions: onlyV2,
@@ -178,14 +186,15 @@ func (s *server) v2IssueRows() []routeRow {
 				"Closing the issue (status done) withdraws every open ask it holds, each recorded resolved with resolution "+
 				"kind withdrawn naming the closer, and releases its claim; reopening it opens exactly those asks again. "+
 				"expected_sequence makes the write conditional: 409 ISSUE_CHANGED when the issue's last event is no longer "+
-				"that sequence. Answers the issue with advice beside it; a patch that changes nothing, design_gates alone "+
-				"among them, appends no event. 404 ISSUE_NOT_FOUND.", contracts.IssueTitleMax),
+				"that sequence. A parent that would make the issue its own ancestor, and a parent or blocked_by that would "+
+				"make it wait on itself, are 409 ISSUE_CYCLE. Answers the issue with advice beside it; a patch that changes "+
+				"nothing, design_gates alone among them, appends no event. 404 ISSUE_NOT_FOUND.", contracts.IssueTitleMax),
 			Handler:  s.patchIssueV2,
 			Resource: "issues", Kind: kindItem, Key: "{key}",
 			Body:  requestBody{Kind: bodyJSON, Type: patchIssueV2Input{}},
 			Shape: routeShape{Status: http.StatusOK, Response: model.Issue{}, Advice: writeAdvice{}},
 			Scope: scopeProject, ProjectOf: projectPathIssue,
-			Refusals: []apicode.Refusal{undeclaredKeyRefusal, issueMissingRefusal},
+			Refusals: []apicode.Refusal{undeclaredKeyRefusal, issueMissingRefusal, parentLoopRefusal, dependencyLoopRefusal},
 		},
 		{
 			Method: http.MethodDelete, Pattern: "/issues/{key}/claim", Auth: authAny, Versions: onlyV2,

@@ -177,6 +177,8 @@ func (s *server) v2MiscRows() []routeRow {
 				apicode.GoingAskerNamesNobody.Name(), contracts.GoingErrorNoModelConfigured),
 			Handler:  s.createGoingRequestV2,
 			Resource: "going-requests", Kind: kindCollection, Key: "{id}",
+			// project is optional in the body, so a question may belong to no project: a collection
+			// of no one project's, which stands at the top level (R1.2 of dispatch://INFRA-2946/spec).
 			Body:     requestBody{Kind: bodyJSON, Type: createGoingRequestInput{}},
 			Shape:    routeShape{Status: http.StatusCreated, Response: goingRequest{}},
 			Scope:    scopeProjectInBody,
@@ -206,14 +208,14 @@ func (s *server) v2MiscRows() []routeRow {
 			Refusals: []apicode.Refusal{undeclaredKeyRefusal, goingRequestMissingRefusal},
 		},
 		{
-			Method: http.MethodGet, Pattern: "/limits", Auth: authAny, Versions: onlyV2,
+			Method: http.MethodGet, Pattern: "/limit-set", Auth: authAny, Versions: onlyV2,
 			Description: "The bounds a write is held to, each read from the constant that enforces it: block_units, how " +
 				"long one block of a body may be; item_blocks, how many blocks a body may hold; ask_options and " +
 				"ask_units, how many options an ask may have and how long its question and options are together; " +
 				"event_body_units, how long a body an event carries whole may be; and request_bytes, document_bytes and " +
 				"handoff_bytes, the bytes a request, a document and a handoff body may hold.",
 			Handler:  s.getLimits,
-			Resource: "limits", Kind: kindSingleton,
+			Resource: "limit-set", Kind: kindSingleton,
 			Shape:    routeShape{Status: http.StatusOK, Response: model.DispatchLimits{}},
 			Refusals: []apicode.Refusal{undeclaredKeyRefusal},
 		},

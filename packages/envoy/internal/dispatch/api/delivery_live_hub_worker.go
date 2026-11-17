@@ -168,8 +168,7 @@ func (h *deliveryHub) recompute(g *hubGeneration, view *deliveryView, cause stri
 		view.body, view.expiry, view.seq = nil, time.Time{}, read.seq
 		for sub := range view.subs {
 			if !sub.told {
-				sub.conn.Send(liveRefusal(sub.id, "DELIVERY_NOT_CONFIGURED",
-					"delivery is not configured; set delivery_settings through PUT /api/v1/settings/delivery"))
+				sub.conn.Send(liveRefusal(sub.id, "DELIVERY_NOT_CONFIGURED", deliveryNotConfigured(apiV2)))
 				sub.told = true
 				sent++
 			}

@@ -188,6 +188,12 @@ func openAPIDocuments() (map[apiVersion]openAPIEmit, error) {
 				openAPIGoTypeName(goType), name))
 		}
 	}
+	for goType := range itemUnions {
+		if name := openAPISchemaName(goType); v1.schemaOwners[name] != goType && v2.schemaOwners[name] != goType {
+			failures = append(failures, fmt.Sprintf("itemUnions names %s, and neither document declares "+
+				"a schema of that type: drop the row or name the type it meant", openAPIGoTypeName(goType)))
+		}
+	}
 	if len(failures) > 0 {
 		sort.Strings(failures)
 		return nil, fmt.Errorf("emit the OpenAPI documents:\n\t%s", strings.Join(slices.Compact(failures), "\n\t"))
@@ -264,6 +270,9 @@ func openAPIDocument(version apiVersion) (*openAPIEmitter, *openapi31.Spec, erro
 	}
 	for pattern, item := range paths {
 		spec.PathsEns().WithMapOfPathItemValuesItem(pattern, *item)
+	}
+	if err := emitter.writeItemUnions(); err != nil {
+		return nil, nil, err
 	}
 	if version == apiV2 {
 		emitter.writeCodeList(spec)
@@ -446,10 +455,11 @@ func openAPIUnionArms(route apiRoute) []any {
 }
 
 // openAPIReach gathers into every struct type the JSON of one Go type reaches: the type itself,
-// what its fields carry through the pointers, slices, arrays and maps between, and what a
+// what its fields carry through the pointers, slices, arrays and maps between, what a
 // json.RawMessage field's bytes hold, which is rawFieldSchemas' to say rather than the field's
-// own Go type. carried, where it is given, collects each type that table names, since the
-// document reflects those bytes as a body of their own.
+// own Go type, and the arms of a type itemUnions names, whose members its bytes carry too.
+// carried, where it is given, collects each type rawFieldSchemas names and each such arm, since
+// the document reflects those as bodies of their own.
 func openAPIReach(t reflect.Type, into map[reflect.Type]bool, carried *[]reflect.Type) {
 	t = openAPIStructOf(t)
 	if t == nil || into[t] {
@@ -457,6 +467,15 @@ func openAPIReach(t reflect.Type, into map[reflect.Type]bool, carried *[]reflect
 	}
 	into[t] = true
 	openAPIReachFields(t, t, into, carried)
+	if union, named := itemUnions[t]; named {
+		for _, value := range slices.Sorted(maps.Keys(union.Arms)) {
+			arm := reflect.TypeOf(union.Arms[value])
+			if carried != nil {
+				*carried = append(*carried, arm)
+			}
+			openAPIReach(arm, into, carried)
+		}
+	}
 }
 
 // openAPIReachFields walks the fields one object's JSON holds: owner's own, and those an
@@ -1324,53 +1343,24 @@ func (e *openAPIEmitter) unionBody(route apiRoute) (*openapi31.RequestBody, erro
 	if route.Body.Kind == bodyKindUnion {
 		key = "kind"
 	}
-	values := slices.Sorted(maps.Keys(route.Body.Arms))
-	mapping := map[string]any{}
-	var arms []reflect.Type
-	picks := map[reflect.Type][]string{}
-	refs := map[reflect.Type]map[string]any{}
-	for _, value := range values {
-		arm := route.Body.Arms[value]
-		goType := reflect.TypeOf(arm)
-		schema, err := e.schema(arm)
-		if err != nil {
-			return nil, err
-		}
-		reference, named := schema["$ref"].(string)
-		if !named {
-			return nil, fmt.Errorf("the %s arm %T is no named struct, and a union's arm is a schema of its own", value, arm)
-		}
-		mapping[value] = reference
-		if _, seen := picks[goType]; !seen {
-			arms = append(arms, goType)
-			refs[goType] = schema
-		}
-		picks[goType] = append(picks[goType], value)
+	arms, err := e.unionArms(route.Body.Arms)
+	if err != nil {
+		return nil, err
 	}
-	members := make([]any, 0, len(arms))
+	members := make([]any, 0, len(arms.types))
 	var union map[string]any
 	if patternNames(route.Pattern, key) {
-		for _, arm := range arms {
-			members = append(members, refs[arm])
+		for _, arm := range arms.types {
+			members = append(members, arms.refs[arm])
 		}
 		union = map[string]any{
 			"anyOf":           members,
-			"x-discriminator": map[string]any{"in": "path", "name": key, "mapping": mapping},
+			"x-discriminator": map[string]any{"in": "path", "name": key, "mapping": arms.mapping},
 		}
 	} else {
-		for _, arm := range arms {
-			members = append(members, map[string]any{"allOf": []any{
-				refs[arm],
-				map[string]any{
-					"type":       "object",
-					"required":   []any{key},
-					"properties": map[string]any{key: map[string]any{"enum": picks[arm]}},
-				},
-			}})
-		}
 		union = map[string]any{
-			"oneOf":         members,
-			"discriminator": map[string]any{"propertyName": key, "mapping": mapping},
+			"oneOf":         arms.keyedMembers(key),
+			"discriminator": map[string]any{"propertyName": key, "mapping": arms.mapping},
 		}
 	}
 	body := &openapi31.RequestBody{Content: map[string]openapi31.MediaType{"application/json": {Schema: union}}}
@@ -1378,6 +1368,100 @@ func (e *openAPIEmitter) unionBody(route apiRoute) (*openapi31.RequestBody, erro
 		body.WithRequired(true)
 	}
 	return body, nil
+}
+
+// openAPIArms are a union's arms as the document writes them: each distinct arm type once, in
+// the order of the first value that picks it, with its schema (a reference) and the values that
+// pick it, and the mapping of each value to its arm's schema.
+type openAPIArms struct {
+	types   []reflect.Type
+	picks   map[reflect.Type][]string
+	refs    map[reflect.Type]map[string]any
+	mapping map[string]any
+}
+
+// unionArms reflects the arms of a union by the values that pick them, in the values' order. An
+// arm is a named struct, since each is a schema of its own that the union refers to.
+func (e *openAPIEmitter) unionArms(byValue map[string]any) (openAPIArms, error) {
+	arms := openAPIArms{
+		picks: map[reflect.Type][]string{}, refs: map[reflect.Type]map[string]any{}, mapping: map[string]any{},
+	}
+	for _, value := range slices.Sorted(maps.Keys(byValue)) {
+		arm := byValue[value]
+		goType := reflect.TypeOf(arm)
+		schema, err := e.schema(arm)
+		if err != nil {
+			return openAPIArms{}, err
+		}
+		reference, named := schema["$ref"].(string)
+		if !named {
+			return openAPIArms{}, fmt.Errorf("the %s arm %T is no named struct, and a union's arm is a schema of its own", value, arm)
+		}
+		arms.mapping[value] = reference
+		if _, seen := arms.picks[goType]; !seen {
+			arms.types = append(arms.types, goType)
+			arms.refs[goType] = schema
+		}
+		arms.picks[goType] = append(arms.picks[goType], value)
+	}
+	return arms, nil
+}
+
+// keyedMembers are the members of a union whose JSON carries its key: each distinct arm's schema
+// with key required beside it, holding the values that pick that arm, so a value matches the one
+// arm it is decoded into.
+func (arms openAPIArms) keyedMembers(key string) []any {
+	members := make([]any, 0, len(arms.types))
+	for _, arm := range arms.types {
+		members = append(members, map[string]any{"allOf": []any{
+			arms.refs[arm],
+			map[string]any{
+				"type":       "object",
+				"required":   []any{key},
+				"properties": map[string]any{key: map[string]any{"enum": arms.picks[arm]}},
+			},
+		}})
+	}
+	return members
+}
+
+// writeItemUnions adds to the schema of each type itemUnions names, where this document declares
+// it, the union its JSON is beside the type's own members: oneOf its arms, each keyed by the
+// values of its key that pick it (keyedMembers), so an item matches the one arm its key names. It
+// names its key in x-discriminator, not in discriminator: openapi-typescript writes a
+// discriminator's value into each schema the mapping names, and an arm is a body of its own
+// elsewhere that carries no key (PATCH /api/v2/me/marks/{kind}/{id} takes a mark's arm with its
+// kind in the path).
+func (e *openAPIEmitter) writeItemUnions() error {
+	schemas := e.reflector.SpecEns().ComponentsEns().Schemas
+	for _, goType := range itemUnionTypes() {
+		name := openAPISchemaName(goType)
+		own, declared := schemas[name]
+		if !declared || e.schemaOwners[name] != goType {
+			continue
+		}
+		union := itemUnions[goType]
+		if properties, _ := own["properties"].(map[string]any); properties[union.Key] == nil {
+			return fmt.Errorf("itemUnions keys %s by %s, which is no member of it", openAPIGoTypeName(goType), union.Key)
+		}
+		arms, err := e.unionArms(union.Arms)
+		if err != nil {
+			return fmt.Errorf("%s: %w", openAPIGoTypeName(goType), err)
+		}
+		own["oneOf"] = arms.keyedMembers(union.Key)
+		own["x-discriminator"] = map[string]any{"propertyName": union.Key, "mapping": arms.mapping}
+	}
+	return nil
+}
+
+// itemUnionTypes are the types itemUnions names, by their schema names, so an emit that fails
+// names the same type whichever run reads the table.
+func itemUnionTypes() []reflect.Type {
+	types := slices.Collect(maps.Keys(itemUnions))
+	slices.SortFunc(types, func(left, right reflect.Type) int {
+		return strings.Compare(openAPISchemaName(left), openAPISchemaName(right))
+	})
+	return types
 }
 
 // openAPIAnswer is one status of one operation while it is being built: every schema the route

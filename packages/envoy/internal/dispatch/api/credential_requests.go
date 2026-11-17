@@ -47,8 +47,8 @@ func noteActingAgent(r *http.Request, actor model.Actor) {
 }
 
 // requireAgentSecrets answers 404 FEATURE_OFF when this Dispatch has no broker configured
-// (DISPATCH_AGENT_SECRETS_URL unset); every credential-request route but the pending list needs it
-// after actingPerson.
+// (DISPATCH_AGENT_SECRETS_URL unset); every credential route of both versions needs it after
+// actingPerson but /api/v1's pending list, which answers null.
 func (s *server) requireAgentSecrets(w http.ResponseWriter, r *http.Request) (*agentsecrets.Client, bool) {
 	if s.deps.AgentSecrets == nil {
 		writeError(w, r, apicode.FeatureOff, "agent-secrets is not configured on this Dispatch")

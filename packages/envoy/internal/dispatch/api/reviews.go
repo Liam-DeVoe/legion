@@ -645,8 +645,9 @@ func (s *server) requestApproval(w http.ResponseWriter, r *http.Request, input a
 		return
 	}
 	if documentPlays(artifact, model.ArtifactRolePlan) {
-		writeError(w, r, apicode.PlanApprovedByReview,
-			"a plan is approved by its plan review, not by a person: record it with dispatch plan-approve (POST /api/v1/artifacts/{id}/plan-reviews)")
+		writeError(w, r, apicode.PlanApprovedByReview, fmt.Sprintf(
+			"a plan is approved by its plan review, not by a person: record it with dispatch plan-approve (POST %s/artifacts/{id}/plan-reviews)",
+			versionPrefix(requestAPIVersion(r))))
 		return
 	}
 	// include_verification asks the human to approve the issue's spec and its Verification

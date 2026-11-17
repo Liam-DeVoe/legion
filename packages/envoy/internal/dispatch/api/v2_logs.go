@@ -144,9 +144,11 @@ func (s *server) v2LogRows() []routeRow {
 				"both in one order. state is unread (the default), the rows somebody else has written in since they read them, " +
 				"newest reply first; inbox, every row in their Inbox, read or not, dismissed ones aside, newest reply first; or " +
 				"dismissed, what they have dismissed out of it, newest dismissal first. Position, of state=dismissed alone: " +
-				"dismissed_at,thread_id, before=<RFC3339 time>,<thread id> keeping the rows dismissed before that row, the " +
-				"position of the last row a page answered (before under any other state is 400 INVALID_QUERY, and one that is " +
-				"no time and thread id is 400 POSITION_INVALID naming before and dismissed_at,thread_id). issue=<key> or " +
+				"dismissed_at,thread_id, each bound <RFC3339 time>,<thread id>, the position of a row a page answered: " +
+				"after keeps the rows dismissed after that row, oldest dismissal first, and before the rows dismissed before " +
+				"it, newest first where no after is given (after or before under any other state is 400 INVALID_QUERY; one " +
+				"that is no time and thread id, and an after above the newest dismissal, are 400 POSITION_INVALID naming the " +
+				"parameter and dismissed_at,thread_id). issue=<key> or " +
 				"artifact=<document id> narrows to one owner (both is 400 INVALID_QUERY), and an agent row, which has neither, is " +
 				"then in no answer. limit 1 to 200 (default 50) and offset; {items, total, limit, offset, as_of}, total the exact " +
 				"count of both kinds the filters keep, and as_of the database time of the one read-only repeatable-read snapshot " +
@@ -225,8 +227,10 @@ type myThreadsV2Query struct {
 	Kind []string `query:"kind,comma" enum:"reply,agent"`
 	// State is unread, inbox or dismissed.
 	State string `query:"state" enum:"unread,inbox,dismissed" default:"unread"`
-	// Before is where a page of the dismissed threads starts: the dismissed_at and thread_id of
-	// the last row the page before it answered.
+	// After and Before bound a page of the dismissed threads, each the dismissed_at and thread_id
+	// of a row: After keeps the rows dismissed after it, oldest dismissal first, and Before the
+	// rows dismissed before it, newest dismissal first where no After is given.
+	After  *string `query:"after"`
 	Before *string `query:"before"`
 	// Issue and Artifact narrow the rows to one owner's threads.
 	Issue    string `query:"issue"`
@@ -596,8 +600,8 @@ func boolOrder(left, right bool) int {
 }
 
 // listMyThreadsV2 answers GET /api/v2/me/threads: the read GET /api/v1/me/replies makes
-// (readMyReplies), paged by limit and offset in every state, the dismissed threads from a before
-// in place of a cursor, and every state's total counted.
+// (readMyReplies), paged by limit and offset in every state, the dismissed threads between an after
+// and a before in place of a cursor, and every state's total counted.
 func (s *server) listMyThreadsV2(w http.ResponseWriter, r *http.Request) {
 	caller, ok := s.actingPerson(w, r)
 	if !ok {
@@ -617,14 +621,27 @@ func (s *server) listMyThreadsV2(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, r, err)
 		return
 	}
-	var from *myRepliesCursor
-	if query.Before != nil {
+	var from, after *myRepliesCursor
+	for _, position := range []struct {
+		name string
+		raw  *string
+		into **myRepliesCursor
+	}{{"after", query.After, &after}, {"before", query.Before, &from}} {
+		if position.raw == nil {
+			continue
+		}
 		if query.State != myRepliesStateDismissed {
 			s.writeHandlerError(w, r, errorf(apicode.InvalidQuery,
-				"before reads the dismissed threads alone, state=%s, which are ordered by when each was dismissed", myRepliesStateDismissed))
+				"%s reads the dismissed threads alone, state=%s, which are ordered by when each was dismissed", position.name, myRepliesStateDismissed))
 			return
 		}
-		if from, err = dismissedThreadPosition(*query.Before); err != nil {
+		if *position.into, err = dismissedThreadPosition(position.name, *position.raw); err != nil {
+			s.writeHandlerError(w, r, err)
+			return
+		}
+	}
+	if after != nil {
+		if err := s.dismissedAfterWritten(r.Context(), caller, *query.After, after); err != nil {
 			s.writeHandlerError(w, r, err)
 			return
 		}
@@ -632,7 +649,7 @@ func (s *server) listMyThreadsV2(w http.ResponseWriter, r *http.Request) {
 	limit := query.Limit
 	response, err := s.readMyReplies(r.Context(), caller, myRepliesRead{
 		reply: reply, agent: agent, state: query.State,
-		limit: &limit, offset: query.Offset, from: from, issue: issue, artifact: artifact,
+		limit: &limit, offset: query.Offset, from: from, after: after, issue: issue, artifact: artifact,
 		countDismissed: true,
 	})
 	if err != nil {
@@ -642,13 +659,13 @@ func (s *server) listMyThreadsV2(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, myThreadsV2{page: newPage(response.Rows, response.Total, query.pageQuery), AsOf: response.AsOf})
 }
 
-// dismissedThreadPosition reads a position of the dismissed threads, `<RFC3339 time>,<thread id>`:
-// the dismissed_at and thread_id of a row, as the answer writes them. One that is not is 400
-// POSITION_INVALID naming before and the two fields (R5).
-func dismissedThreadPosition(raw string) (*myRepliesCursor, error) {
+// dismissedThreadPosition reads a position of the dismissed threads, `<RFC3339 time>,<thread id>`,
+// that the parameter name gives: the dismissed_at and thread_id of a row, as the answer writes
+// them. One that is not is 400 POSITION_INVALID naming the parameter and the two fields (R5).
+func dismissedThreadPosition(name, raw string) (*myRepliesCursor, error) {
 	at, thread, found := strings.Cut(raw, ",")
 	refusal := errorf(apicode.PositionInvalid,
-		"before reads the dismissed threads' %s, an RFC3339 time and a thread id joined by a comma; %q is none", dismissedPosition.Field, raw)
+		"%s reads the dismissed threads' %s, an RFC3339 time and a thread id joined by a comma; %q is none", name, dismissedPosition.Field, raw)
 	if !found {
 		return nil, refusal
 	}
@@ -659,4 +676,20 @@ func dismissedThreadPosition(raw string) (*myRepliesCursor, error) {
 		return nil, refusal
 	}
 	return &myRepliesCursor{at: at, thread: thread}, nil
+}
+
+// dismissedAfterWritten refuses an after above the last position the caller's dismissed threads
+// hold, 400 POSITION_INVALID naming after and the two fields (R5): no thread has been dismissed at
+// or after it, so it names no row this log has written.
+func (s *server) dismissedAfterWritten(ctx context.Context, caller model.Actor, raw string, after *myRepliesCursor) error {
+	var reached bool
+	if err := s.deps.Store.Pool.QueryRow(ctx, myDismissedReachesQuery,
+		model.CanonicalLogin(caller.ID), after.at, after.thread).Scan(&reached); err != nil {
+		return fmt.Errorf("read the newest dismissal of %s: %w", caller.ID, err)
+	}
+	if !reached {
+		return errorf(apicode.PositionInvalid,
+			"after is %q, above this log's last %s: no thread has been dismissed at or after it", raw, dismissedPosition.Field)
+	}
+	return nil
 }

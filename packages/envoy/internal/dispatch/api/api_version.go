@@ -16,15 +16,39 @@ const (
 	apiV2 apiVersion = 2
 )
 
-// apiVersionKey is the request-context key of the route's apiVersion.
-type apiVersionKey struct{}
+// mountKey is the request-context key of the *mount a request was served under.
+type mountKey struct{}
 
-// withAPIVersion serves handler with version on the request's context. register wraps every
-// route it mounts in it, outermost, so every layer of the route and its handler answer for one
-// version.
+// mount is what the mount puts on a request's context: the version its route is mounted under,
+// and the route itself, so the code behind the route keys a behaviour on the route the request
+// reached and never on its path (R10 of dispatch://INFRA-4071/spec): the route a write's advice
+// names in its log lines (routeName), and whose documents a slug is read among
+// (loadArtifactForRequest).
+type mount struct {
+	version apiVersion
+	// route is the route register mounted, and name its full name, "<method> <pattern>"; nil
+	// and "" where a test serves a handler under a version alone (withAPIVersion).
+	route *apiRoute
+	name  string
+}
+
+// withMountedRoute serves handler with route and its version on the request's context. register
+// wraps every route it mounts in it, outermost (routeHandler), so every layer of the route and its
+// handler answer for one version and read one route. The mount is made once, here, so a request
+// adds nothing to its context but the one value.
+func withMountedRoute(route apiRoute, handler http.HandlerFunc) http.HandlerFunc {
+	return withMount(&mount{version: route.Version, route: &route, name: route.Method + " " + route.Pattern}, handler)
+}
+
+// withAPIVersion serves handler with version on the request's context and no route, as a test
+// serves a handler of its own under one version.
 func withAPIVersion(version apiVersion, handler http.HandlerFunc) http.HandlerFunc {
+	return withMount(&mount{version: version}, handler)
+}
+
+func withMount(served *mount, handler http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		handler(w, r.WithContext(context.WithValue(r.Context(), apiVersionKey{}, version)))
+		handler(w, r.WithContext(context.WithValue(r.Context(), mountKey{}, served)))
 	}
 }
 
@@ -36,8 +60,34 @@ func requestAPIVersion(r *http.Request) apiVersion {
 	if r == nil {
 		return apiV1
 	}
-	if version, ok := r.Context().Value(apiVersionKey{}).(apiVersion); ok {
-		return version
+	return contextAPIVersion(r.Context())
+}
+
+// contextAPIVersion is requestAPIVersion for code that holds the request's context and not the
+// request: the version the mount put on ctx, and apiV1 where it put none.
+func contextAPIVersion(ctx context.Context) apiVersion {
+	if served, ok := ctx.Value(mountKey{}).(*mount); ok {
+		return served.version
 	}
 	return apiV1
+}
+
+// mountedRoute is the route the mount served ctx's request by, and false for a request no mount
+// served: a websocket, or a handler a test calls under a version alone or directly.
+func mountedRoute(ctx context.Context) (*apiRoute, bool) {
+	served, ok := ctx.Value(mountKey{}).(*mount)
+	if !ok || served.route == nil {
+		return nil, false
+	}
+	return served.route, true
+}
+
+// routeName is the full name of the route ctx's request was served by, "<method> <pattern>" as it
+// is mounted (`POST /api/v2/issues/{key}/comments`), which a log line of a write names its route
+// by; "" for a request no mount served.
+func routeName(ctx context.Context) string {
+	if served, ok := ctx.Value(mountKey{}).(*mount); ok {
+		return served.name
+	}
+	return ""
 }

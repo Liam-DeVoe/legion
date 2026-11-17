@@ -110,6 +110,7 @@ func projectsTourSteps() []tourStep {
 			Setup: onSource(nil),
 			Missing: []tourMissing{
 				projectMissing[0],
+				{Param: "owner", Value: "no-such-owner", Code: apicode.SourceNotFound},
 				{Param: "repo", Value: "no-such-source", Code: apicode.SourceNotFound},
 			},
 		},
@@ -178,7 +179,10 @@ func projectsTourSteps() []tourStep {
 				owner, name, _ := strings.Cut(repo, "/")
 				return tourRequest{Path: map[string]string{"owner": owner, "repo": name}, As: alice}
 			},
-			Missing: []tourMissing{{Param: "repo", Value: "no-such-repository", Code: apicode.RepositoryNotFound}},
+			Missing: []tourMissing{
+				{Param: "owner", Value: "no-such-owner", Code: apicode.RepositoryNotFound},
+				{Param: "repo", Value: "no-such-repository", Code: apicode.RepositoryNotFound},
+			},
 		},
 		{
 			Method: http.MethodPut, Pattern: "/repositories/{owner}/{repo}", Status: http.StatusOK,

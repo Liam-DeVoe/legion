@@ -523,7 +523,23 @@ func v1Route(row routeRow, replays map[string]keyedReplay) apiRoute {
 	row.RefusesClosedOwner = name == issueUploadRoute
 	row.Replay = replays[name]
 	row.AnswerHoldsSecret = answerHoldsSecret[name]
+	row.DocumentOwner = documentOwnerOf(row.Pattern)
 	return apiRoute{routeRow: row, Version: apiV1}
+}
+
+// documentOwnerOf is whose documents a /api/v1 pattern looks a document up among by its slug or
+// filename, read from its shape as projectPathOf reads the object a pattern names, which routes()
+// copies onto a v1 route's DocumentOwner column (v1Route): an issue's under
+// /api/v1/issues/{key}/artifacts/{slug}, a project's under /api/v1/projects/{key}/artifacts/{slug},
+// each with anything under it.
+func documentOwnerOf(pattern string) documentOwnerKind {
+	switch {
+	case addresses(pattern, "/api/v1/issues/{key}/artifacts/{slug}"):
+		return documentOwnerIssue
+	case addresses(pattern, "/api/v1/projects/{key}/artifacts/{slug}"):
+		return documentOwnerProject
+	}
+	return documentOwnerNone
 }
 
 // mountRow is the apiRoutes of one routeRow: one at /api/v2, and one at /api/v1 first where its

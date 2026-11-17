@@ -224,6 +224,69 @@ func TestV2LogPositions(t *testing.T) {
 		}
 	})
 
+	t.Run("the dismissed threads read forward from an after", func(t *testing.T) {
+		mark := tour.requireMounted(t, http.MethodPatch, "/me/marks/{kind}/{id}")
+		// bob answers the first thread, as a thread in the Inbox is answered, and nobody writes in
+		// the second, which alice may dismiss too: its row has no reply and no replied_at, and the
+		// read answers it with its root's time (myRepliesPageRest) rather than failing the page.
+		for index := range 2 {
+			issue := tour.issue(t)
+			thread := tour.comment(t, issue)
+			if index == 0 {
+				if reply := dispatchRequest(t, tour.handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/comments",
+					map[string]any{"body": "An answer in alice's thread.", "reply_to": thread}, "bob"); reply.Code != http.StatusCreated {
+					t.Fatalf("bob answers thread %s: %d %s", thread, reply.Code, reply.Body.String())
+				}
+			}
+			if dismissed := tour.send(t, mark, tourRequest{
+				Path: map[string]string{"kind": "thread", "id": thread},
+				Body: map[string]any{"dismissed": true, "version": tour.threadVersion(t, thread)}, As: alice,
+			}, ""); dismissed.Code != http.StatusOK {
+				t.Fatalf("dismiss thread %s: %d %s", thread, dismissed.Code, dismissed.Body.String())
+			}
+		}
+		type dismissedThreads struct {
+			Items []struct {
+				ThreadID    string    `json:"thread_id"`
+				DismissedAt time.Time `json:"dismissed_at"`
+			} `json:"items"`
+			Total int `json:"total"`
+		}
+		threads := func(t *testing.T, query url.Values) dismissedThreads {
+			t.Helper()
+			query.Set("state", "dismissed")
+			response := tour.send(t, tour.requireMounted(t, http.MethodGet, "/me/threads"), tourRequest{Query: query, As: alice}, "")
+			if response.Code != http.StatusOK {
+				t.Fatalf("GET /api/v2/me/threads %v: %d %s", query, response.Code, response.Body.String())
+			}
+			return decodeBody[dismissedThreads](t, response)
+		}
+		newestFirst := threads(t, url.Values{})
+		if len(newestFirst.Items) < 2 {
+			t.Fatalf("the dismissed threads answered %d rows, want the two dismissed", len(newestFirst.Items))
+		}
+		position := func(index int) string {
+			row := newestFirst.Items[index]
+			return row.DismissedAt.UTC().Format(time.RFC3339Nano) + "," + row.ThreadID
+		}
+		newest, older := newestFirst.Items[0].ThreadID, newestFirst.Items[1].ThreadID
+		if above := threads(t, url.Values{"after": {position(1)}}); len(above.Items) != 1 || above.Items[0].ThreadID != newest || above.Total != 1 {
+			t.Fatalf("after the older dismissal: %+v, want the newest alone, total 1", above)
+		}
+		if between := threads(t, url.Values{"after": {position(1)}, "before": {position(0)}}); len(between.Items) != 0 || between.Total != 0 {
+			t.Fatalf("between the two dismissals: %+v, want none, total 0", between)
+		}
+		if below := threads(t, url.Values{"before": {position(0)}, "limit": {"1"}}); len(below.Items) != 1 || below.Items[0].ThreadID != older {
+			t.Fatalf("before the newest dismissal: %+v, want the older first", below)
+		}
+		if atTheNewest := threads(t, url.Values{"after": {position(0)}}); len(atTheNewest.Items) != 0 || atTheNewest.Total != 0 {
+			t.Fatalf("after the newest dismissal itself: %+v, want none, total 0", atTheNewest)
+		}
+		later := newestFirst.Items[0].DismissedAt.Add(time.Hour).UTC().Format(time.RFC3339Nano) + "," + uuid.NewString()
+		refused(t, "/me/threads", nil, url.Values{"state": {"dismissed"}, "after": {later}}, "after", "dismissed_at,thread_id")
+		refused(t, "/me/threads", nil, url.Values{"state": {"dismissed"}, "after": {"abc"}}, "after", "dismissed_at,thread_id")
+	})
+
 	t.Run("an offset of a long log answers the page it names", func(t *testing.T) {
 		long := map[string]string{"key": tour.issueOfEvents(t, 250)}
 		answer := read(t, "/issues/{key}/events", long, url.Values{"offset": {"200"}})

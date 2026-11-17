@@ -66,3 +66,10 @@ var (
 	// DependencyLoop is a dependency that would make an issue wait on itself.
 	DependencyLoop = Condition{"dependency loop"}
 )
+
+// The conditions of what a deployment configures.
+var (
+	// BrokerUnconfigured is a request to a route that relays to the secrets broker, on a Dispatch
+	// configured with none (DISPATCH_AGENT_SECRETS_URL unset).
+	BrokerUnconfigured = Condition{"secrets broker unconfigured"}
+)

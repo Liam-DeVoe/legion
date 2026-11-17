@@ -562,7 +562,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The asks of every project, filtered; with no filter, every open ask of every project the caller reads, whoever it waits on. state=open (the default; an open ask on an open issue or a project document), answered, resolved or all. project=<key>, repeatable, keeps those projects' asks. waiting_on=me (the person scope), unassigned or <email> keeps the asks waiting on that person, resolved as each ask is read in three steps: the person the question was handed to, then the issue's assignee, then the project's default assignee (an email nobody has signed in with is 400 ASSIGNEE_NOT_ALLOWED). author_session=<session> keeps one session's own asks. from and to (RFC3339) window created_at, from inclusive and to exclusive. source=<kind>:<id> (kind artifact, ask, comment or message; id a whole uuid or a unique prefix of 8 characters or more) reads the question map of the document that source's text belongs to: one row for each `:::ask{#id}` block the document's latest version declares with the ask settlement made for it, question_block_id naming the block a #id in the source's text names, of every state where no state is given; the document's id is beside the page as document, a source on no document is 404 NOT_FOUND and a prefix two sources carry 409 ID_AMBIGUOUS (any other source is 400 INVALID_QUERY). Each ask is one row: the ask's own fields at top level, opened_event_id, ref (its dispatch:// address, "" for an ask no address names), issue {key, title, assignee} or document {project, slug, name}, the issue's priority and last_reply; include=thread adds its thread (replies, rewordings, answers, followers, claimant, route, route_status, route_holder) and include=mark (the person scope) the caller's mark on it, {kind, id, snoozed_until}. sort=priority (the default: the issue's priority, unset last, then whose turn it is, the person's before the agent's, then the latest activity, newest first) or created_at (oldest first), each reversed after a -. limit 1 to 200 (default 50) and offset; {items, total, limit, offset, count, waiting_on_human, waiting_on_agent, as_of}: count the asks the filters keep, as total does, the two waiting_on counts the open ones among them by whose turn it is, and as_of the database time the read was made at. */
+    /** @description The asks of every project, filtered; with no filter, every open ask of every project the caller reads, whoever it waits on. state=open (the default; an open ask on an open issue or a project document), answered, resolved or all. project=<key>, repeatable, keeps those projects' asks. waiting_on=me (the person scope) or <email> keeps the asks waiting on that person, resolved as each ask is read in three steps: the person the question was handed to, then the issue's assignee, then the project's default assignee (an email nobody has signed in with is 400 ASSIGNEE_NOT_ALLOWED), and waiting_on=none the asks no step names anybody for. author_session=<session> keeps one session's own asks. from and to (RFC3339) window created_at, from inclusive and to exclusive. source=<kind>:<id> (kind artifact, ask, comment or message; id a whole uuid or a unique prefix of 8 characters or more) reads the question map of the document that source's text belongs to: one row for each `:::ask{#id}` block the document's latest version declares with the ask settlement made for it, question_block_id naming the block a #id in the source's text names, of every state where no state is given; the document's id is beside the page as document, a source on no document is 404 NOT_FOUND and a prefix two sources carry 409 ID_AMBIGUOUS (any other source is 400 INVALID_QUERY). Each ask is one row: the ask's own fields at top level, opened_event_id, ref (its dispatch:// address, "" for an ask no address names), issue {key, title, assignee} or document {project, slug, name}, the issue's priority and last_reply; include=thread adds its thread (replies, rewordings, answers, followers, claimant, route, route_status, route_holder) and include=mark (the person scope) the caller's mark on it, {kind, id, snoozed_until}. sort=priority (the default: the issue's priority, unset last, then whose turn it is, the person's before the agent's, then the latest activity, newest first) or created_at (oldest first), each reversed after a -. limit 1 to 200 (default 50) and offset; {items, total, limit, offset, count, waiting_on_human, waiting_on_agent, as_of}: count the asks the filters keep, as total does, the two waiting_on counts the open ones among them by whose turn it is, and as_of the database time the read was made at. */
     get: operations["getApiV2Asks"];
     put?: never;
     post?: never;
@@ -821,7 +821,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The credential requests the caller may decide, from the secrets broker, newest first: those naming the caller, and a shared secret's and a service's machine login, which anyone signed in decides, each {record_id, kind, identifiers, requested_at, session, approve_url?}, a secret request's approve_url the broker's own page where it is decided. The caller is the approver; no query names another. An empty page for a Dispatch with no secrets broker. Needs the person scope. limit 1 to 200 (default 50) and offset over what the broker answers, which Dispatch slices; {items, total, limit, offset}. 503 AGENT_SECRETS_UNAVAILABLE when the broker cannot be reached, and every other refusal the broker answers relayed with its own status and code. */
+    /** @description The credential requests the caller may decide, from the secrets broker, newest first: those naming the caller, and a shared secret's and a service's machine login, which anyone signed in decides, each {record_id, kind, identifiers, requested_at, session, approve_url?}, a secret request's approve_url the broker's own page where it is decided. The caller is the approver; no query names another. Needs the person scope. limit 1 to 200 (default 50) and offset over what the broker answers, which Dispatch slices; {items, total, limit, offset}. 404 FEATURE_OFF without a configured secrets broker, 503 AGENT_SECRETS_UNAVAILABLE when it cannot be reached, and every other refusal the broker answers relayed with its own status and code, so a client tells a Dispatch with no broker from one with nothing waiting. */
     get: operations["getApiV2CredentialRequests"];
     put?: never;
     post?: never;
@@ -1028,7 +1028,7 @@ export interface paths {
     /** @description List the issues of every project, filtered. project=<key>, repeatable, keeps those projects' issues, with no default project; GET /api/v2/projects/{key}/issues lists one project's. ref=<KEY or owner/repo#n> keeps the issue a key names, or every issue linked to that GitHub issue or pull request (an issue imported from it, or one a link names), none where nothing is; any other ref is 400 INVALID_ISSUE_REF. status=, repeatable, keeps the issues standing in any of those statuses (a blank value names none, and a value is matched as written, so a status the lifecycle does not hold matches no issue); parent=<key> an issue's children; label=, repeatable, the issues carrying every label named; priority=, repeatable, 0 to 3 or none for unset; advances=, repeatable, a priority id, none for the work that advances no live priority or any for the work that advances one, own or inherited, several a union; open=true the open issues; updated_from and updated_to window updated_at, and closed_from and closed_to closed_at, RFC3339, each from inclusive and to exclusive, so an open issue matches no closed window (a closed_to at or before closed_from is 400 INVALID_CLOSED_WINDOW, an updated_to at or before updated_from 400 INVALID_QUERY); route_status=live, holder_unresponsive, no_holder or unknown keeps the open issues whose route stands so (503 ENVOY_UNAVAILABLE or ENVOY_REFILLING where the listener cannot judge a route); pinned=true the issues the caller pinned, which needs the person scope; moved=true adds moved_at and moved_by to each issue standing in backlog or icebox, when it was moved there and by whom. Issues come in lifecycle order of their status, then by rank, creation time and key. Each is one row: its own fields, its route's reach (route_status, route_holder, route_status_reason), closed_at, open_asks and progress {tasks, children}, each null when it has none. limit 1 to 250 (default 50) and offset; {items, total, limit, offset}, total counting every issue the filters match. */
     get: operations["getApiV2Issues"];
     put?: never;
-    /** @description Create an issue {project, title, parent?, blocked_by?, advances?, external?, force?, spec?, labels?, priority?, assignee?, components?, repo?}, a bearer naming its session in actor: a native issue in project, or one imported from a GitHub owner/repo#n named in external, whose project is the repository's mapping (400 PROJECT_UNMAPPED with no mapping and no default project, 400 EXTERNAL_PROJECT_MISMATCH for another project named beside it). assignee defaults to the creating person, the personal token's owner, the parent's assignee, or the project's default assignee. A title over 1000 characters is 400 CAP_EXCEEDED. An unforced create whose title is a near copy of another issue's is 409 POSSIBLE_DUPLICATE with the candidates. Answers 201 the issue with advice beside it, and 200 the issue an external ref already imported. After the write commits, a related-item check searches the project by meaning and by its rarest words and waits at most 5 seconds; the advice's suggestions say whether it found related items (outcome found, none or not_made with the reason in missing), how it searched, the three items most like the new issue with each ask item's answer state, words to search with by hand (search_query), and under force the near copies forced past (title_matches). */
+    /** @description Create an issue {project, title, parent?, blocked_by?, advances?, external?, force?, spec?, labels?, priority?, assignee?, components?, repo?}, a bearer naming its session in actor: a native issue in project, or one imported from a GitHub owner/repo#n named in external, whose project is the repository's mapping (400 PROJECT_UNMAPPED with no mapping and no default project, 400 EXTERNAL_PROJECT_MISMATCH for another project named beside it). assignee defaults to the creating person, the personal token's owner, the parent's assignee, or the project's default assignee. A title over 1000 characters is 400 CAP_EXCEEDED. An unforced create whose title is a near copy of another issue's is 409 POSSIBLE_DUPLICATE with the candidates. Answers 201 the issue with advice beside it, and 200 the issue an external ref already imported. After the write commits, a related-item check searches the project by meaning and by its rarest words and waits at most 5 seconds; the advice's suggestions say whether it found related items (outcome found, none or not_made with the reason in missing), how it searched, the three items most like the new issue with each ask item's answer state, words to search with by hand (search_query), and under force the near copies forced past (title_matches). A blocked_by that would make the new issue wait on itself through its parent is 409 ISSUE_CYCLE. */
     post: operations["postApiV2Issues"];
     delete?: never;
     options?: never;
@@ -1050,7 +1050,7 @@ export interface paths {
     delete?: never;
     options?: never;
     head?: never;
-    /** @description Change an issue, a bearer naming its session in actor: title (over 1000 characters is 400 CAP_EXCEEDED), status, priority, labels (or labels_add, which adds to the labels the issue holds when the write commits rather than replacing them; not with labels), route, parent, blocked_by, advances (with advances_revision, the revision the read gave, for a whole-set write), rank, assignee (the email of a person who has signed in, or null; anyone may reassign), external_links, repo or components ({mode: inherit|explicit|none, ids, reason}); and design_gates, the whole set of documents its design-gate steps record [{step, artifact_id}], step one of decisions, criteria and spec, or [] for none (a step named twice, one that is none of the three, or an empty artifact_id is 400 INVALID_ISSUE), which appends no event and notifies nobody. A closed issue takes rank, components, design_gates, an external_links write adding no URL and a reopening status, and is 409 ISSUE_CLOSED for anything else. Closing the issue (status done) withdraws every open ask it holds, each recorded resolved with resolution kind withdrawn naming the closer, and releases its claim; reopening it opens exactly those asks again. expected_sequence makes the write conditional: 409 ISSUE_CHANGED when the issue's last event is no longer that sequence. Answers the issue with advice beside it; a patch that changes nothing, design_gates alone among them, appends no event. 404 ISSUE_NOT_FOUND. */
+    /** @description Change an issue, a bearer naming its session in actor: title (over 1000 characters is 400 CAP_EXCEEDED), status, priority, labels (or labels_add, which adds to the labels the issue holds when the write commits rather than replacing them; not with labels), route, parent, blocked_by, advances (with advances_revision, the revision the read gave, for a whole-set write), rank, assignee (the email of a person who has signed in, or null; anyone may reassign), external_links, repo or components ({mode: inherit|explicit|none, ids, reason}); and design_gates, the whole set of documents its design-gate steps record [{step, artifact_id}], step one of decisions, criteria and spec, or [] for none (a step named twice, one that is none of the three, or an empty artifact_id is 400 INVALID_ISSUE), which appends no event and notifies nobody. A closed issue takes rank, components, design_gates, an external_links write adding no URL and a reopening status, and is 409 ISSUE_CLOSED for anything else. Closing the issue (status done) withdraws every open ask it holds, each recorded resolved with resolution kind withdrawn naming the closer, and releases its claim; reopening it opens exactly those asks again. expected_sequence makes the write conditional: 409 ISSUE_CHANGED when the issue's last event is no longer that sequence. A parent that would make the issue its own ancestor, and a parent or blocked_by that would make it wait on itself, are 409 ISSUE_CYCLE. Answers the issue with advice beside it; a patch that changes nothing, design_gates alone among them, appends no event. 404 ISSUE_NOT_FOUND. */
     patch: operations["patchApiV2IssuesByKey"];
     trace?: never;
   };
@@ -1298,7 +1298,7 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
-  "/api/v2/issues/{key}/role-holders": {
+  "/api/v2/issues/{key}/role-holder-set": {
     parameters: {
       query?: never;
       header?: never;
@@ -1306,9 +1306,9 @@ export interface paths {
       cookie?: never;
     };
     /** @description The session that holds each Legion role of this issue, as the Legion daemon last published it: {issue, holders}, each holder {role, session, recorded_at} in workflow order, [] when no session holds a role. A closed issue's read too. 404 ISSUE_NOT_FOUND for an issue that does not exist. */
-    get: operations["getApiV2IssuesByKeyRoleHolders"];
+    get: operations["getApiV2IssuesByKeyRoleHolderSet"];
     /** @description Publish the session that holds each Legion role of this issue {holders}, a bearer naming its session in actor: each entry {role, session}, role one of architect, planner, implementer, tester, reviewer and merger and session a session id of at most 256 bytes, or [] for an issue where no session holds a role. The actor must be session legion-daemon:<project>, the key up to its first -, the session the Legion daemon of the issue's project writes as; any other actor is 403 ROLE_HOLDER_FORBIDDEN. Before the airlock a bearer caller names its own session, so any caller whose credential proves no session can name that one. The body is the issue's whole set and replaces the stored set under a lock of the issue row, so a session that it does not name holds no role of the issue, two writes at once store the set of the one that finishes last, and a pair that did not change keeps its recorded_at. The write appends no issue event, notifies nobody and takes a closed issue. Answers 200 the set this write stored, {issue, holders}, each holder {role, session, recorded_at} in workflow order, [] when no session holds a role; a body naming the set already stored, in any order, answers that set and writes nothing. A body without holders, a role that is not one of the six, a session that is not a session id or is over 256 bytes, a role or a session named twice and an empty session are each 400 INVALID_ROLE_HOLDER, and nothing is stored. The session of an ended claim keeps its role until the daemon's next publication lands, and its process can still run in that window. 404 ISSUE_NOT_FOUND for an issue that does not exist. */
-    put: operations["putApiV2IssuesByKeyRoleHolders"];
+    put: operations["putApiV2IssuesByKeyRoleHolderSet"];
     post?: never;
     delete?: never;
     options?: never;
@@ -1350,7 +1350,7 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
-  "/api/v2/limits": {
+  "/api/v2/limit-set": {
     parameters: {
       query?: never;
       header?: never;
@@ -1358,7 +1358,7 @@ export interface paths {
       cookie?: never;
     };
     /** @description The bounds a write is held to, each read from the constant that enforces it: block_units, how long one block of a body may be; item_blocks, how many blocks a body may hold; ask_options and ask_units, how many options an ask may have and how long its question and options are together; event_body_units, how long a body an event carries whole may be; and request_bytes, document_bytes and handoff_bytes, the bytes a request, a document and a handoff body may hold. */
-    get: operations["getApiV2Limits"];
+    get: operations["getApiV2LimitSet"];
     put?: never;
     post?: never;
     delete?: never;
@@ -1582,7 +1582,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The caller's Inbox threads (the person scope), of the kinds kind=<kind>,<kind> names: reply (the default) lists the threads they wrote in - an ask, a comment thread, an issue message thread - that somebody else has written in, less an open ask on an open issue that waits on them, which GET /api/v2/asks?waiting_on=me lists; agent lists their one-off messages to an agent session (a BTW, a broadcast's copy, or a Send or Aside the session did not take as a turn of its live conversation) holding a reply from that session; reply,agent lists both in one order. state is unread (the default), the rows somebody else has written in since they read them, newest reply first; inbox, every row in their Inbox, read or not, dismissed ones aside, newest reply first; or dismissed, what they have dismissed out of it, newest dismissal first. Position, of state=dismissed alone: dismissed_at,thread_id, before=<RFC3339 time>,<thread id> keeping the rows dismissed before that row, the position of the last row a page answered (before under any other state is 400 INVALID_QUERY, and one that is no time and thread id is 400 POSITION_INVALID naming before and dismissed_at,thread_id). issue=<key> or artifact=<document id> narrows to one owner (both is 400 INVALID_QUERY), and an agent row, which has neither, is then in no answer. limit 1 to 200 (default 50) and offset; {items, total, limit, offset, as_of}, total the exact count of both kinds the filters keep, and as_of the database time of the one read-only repeatable-read snapshot every row was read in, which is what a mark-all passes back as its read mark. Each row names the thread, its owner, its issue's priority, its project, the thread's subject, its root's deep link (an agent row's is the session's live view), the newest reply's author, first line and time, the caller's read mark, whether it is unread and how many writes in it they have not read, the root's document anchor when it has one, its dismissal mark when it has been dismissed, and, on an agent row, the session and the ids of its unread replies. */
+    /** @description The caller's Inbox threads (the person scope), of the kinds kind=<kind>,<kind> names: reply (the default) lists the threads they wrote in - an ask, a comment thread, an issue message thread - that somebody else has written in, less an open ask on an open issue that waits on them, which GET /api/v2/asks?waiting_on=me lists; agent lists their one-off messages to an agent session (a BTW, a broadcast's copy, or a Send or Aside the session did not take as a turn of its live conversation) holding a reply from that session; reply,agent lists both in one order. state is unread (the default), the rows somebody else has written in since they read them, newest reply first; inbox, every row in their Inbox, read or not, dismissed ones aside, newest reply first; or dismissed, what they have dismissed out of it, newest dismissal first. Position, of state=dismissed alone: dismissed_at,thread_id, each bound <RFC3339 time>,<thread id>, the position of a row a page answered: after keeps the rows dismissed after that row, oldest dismissal first, and before the rows dismissed before it, newest first where no after is given (after or before under any other state is 400 INVALID_QUERY; one that is no time and thread id, and an after above the newest dismissal, are 400 POSITION_INVALID naming the parameter and dismissed_at,thread_id). issue=<key> or artifact=<document id> narrows to one owner (both is 400 INVALID_QUERY), and an agent row, which has neither, is then in no answer. limit 1 to 200 (default 50) and offset; {items, total, limit, offset, as_of}, total the exact count of both kinds the filters keep, and as_of the database time of the one read-only repeatable-read snapshot every row was read in, which is what a mark-all passes back as its read mark. Each row names the thread, its owner, its issue's priority, its project, the thread's subject, its root's deep link (an agent row's is the session's live view), the newest reply's author, first line and time, the caller's read mark, whether it is unread and how many writes in it they have not read, the root's document anchor when it has one, its dismissal mark when it has been dismissed, and, on an agent row, the session and the ids of its unread replies. */
     get: operations["getApiV2MeThreads"];
     put?: never;
     post?: never;
@@ -4625,10 +4625,35 @@ export interface components {
       code: string;
     };
     MarkItemV2: {
-      id?: string;
+      id: string;
       /** @enum {string} */
-      kind?: "issue" | "agent" | "document" | "thread" | "message" | "ask";
-    };
+      kind: "issue" | "agent" | "document" | "thread" | "message" | "ask";
+    } & (
+      | (components["schemas"]["AgentMarkV2Input"] & {
+          /** @enum {unknown} */
+          kind: "agent";
+        })
+      | (components["schemas"]["AskMarkV2Input"] & {
+          /** @enum {unknown} */
+          kind: "ask";
+        })
+      | (components["schemas"]["DocumentMarkV2Input"] & {
+          /** @enum {unknown} */
+          kind: "document";
+        })
+      | (components["schemas"]["IssueMarkV2Input"] & {
+          /** @enum {unknown} */
+          kind: "issue";
+        })
+      | (components["schemas"]["MessageMarkV2Input"] & {
+          /** @enum {unknown} */
+          kind: "message";
+        })
+      | (components["schemas"]["ThreadMarkV2Input"] & {
+          /** @enum {unknown} */
+          kind: "thread";
+        })
+    );
     MarkSetV2: {
       dismissed?: null | boolean;
       dismissed_through?: null | string;
@@ -7680,7 +7705,7 @@ export interface operations {
         offset?: number;
         state?: "open" | "answered" | "resolved" | "all";
         project?: string[];
-        waiting_on?: string;
+        waiting_on?: string | "none";
         author_session?: string;
         source?: string;
         from?: string;
@@ -10402,7 +10427,7 @@ export interface operations {
       };
     };
   };
-  getApiV2IssuesByKeyRoleHolders: {
+  getApiV2IssuesByKeyRoleHolderSet: {
     parameters: {
       query?: {
         /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
@@ -10447,7 +10472,7 @@ export interface operations {
       };
     };
   };
-  putApiV2IssuesByKeyRoleHolders: {
+  putApiV2IssuesByKeyRoleHolderSet: {
     parameters: {
       query?: {
         /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
@@ -10587,7 +10612,7 @@ export interface operations {
       };
     };
   };
-  getApiV2Limits: {
+  getApiV2LimitSet: {
     parameters: {
       query?: {
         /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
@@ -11399,6 +11424,7 @@ export interface operations {
         offset?: number;
         kind?: ("reply" | "agent")[];
         state?: "unread" | "inbox" | "dismissed";
+        after?: string;
         before?: string;
         issue?: string;
         artifact?: string;

@@ -2,9 +2,13 @@ package api
 
 // v2_role_holders.go is an issue's role holders under /api/v2: the two routes #4228 added to
 // /api/v1 before /api/v2's change merged (testdata/v1-only-routes.txt), each answered at
-// /api/v2/issues/{key}/role-holders, a singleton of the issue whose PUT replaces it whole. Both
-// run the work their /api/v1 route runs (getIssueRoleHolders, putIssueRoleHoldersFrom), the issue
-// checked first and answered 404 ISSUE_NOT_FOUND (decision 11).
+// /api/v2/issues/{key}/role-holder-set, a singleton of the issue whose PUT replaces it whole. A
+// singleton that holds a set is named the singular of the plural /api/v1 named it by, and -set
+// (the architect's ruling, dispatch://INFRA-4071/comment/fa6c9d57-e6a5-462b-8d95-063e5b48b163),
+// so the name is singular, as R1.1 of dispatch://INFRA-2946/spec names a singleton, and a reader
+// of the /api/v1 name can tell it. Both run the work their /api/v1 route runs
+// (getIssueRoleHolders, putIssueRoleHoldersFrom), the issue checked first and answered 404
+// ISSUE_NOT_FOUND (decision 11).
 
 import (
 	"cmp"
@@ -24,17 +28,17 @@ const issueRoleHoldersText = "{issue, holders}, each holder {role, session, reco
 func (s *server) v2RoleHolderRows() []routeRow {
 	return []routeRow{
 		{
-			Method: http.MethodGet, Pattern: "/issues/{key}/role-holders", Auth: authAny, Versions: onlyV2,
+			Method: http.MethodGet, Pattern: "/issues/{key}/role-holder-set", Auth: authAny, Versions: onlyV2,
 			Description: "The session that holds each Legion role of this issue, as the Legion daemon last published " +
 				"it: " + issueRoleHoldersText + ". A closed issue's read too. 404 ISSUE_NOT_FOUND for an issue that does " +
 				"not exist.",
 			Handler:  s.getIssueRoleHolders,
-			Resource: "role-holders", Kind: kindSingleton,
+			Resource: "role-holder-set", Kind: kindSingleton,
 			Shape:    routeShape{Status: http.StatusOK, Response: issueRoleHolders{}},
 			Refusals: []apicode.Refusal{undeclaredKeyRefusal, issueMissingRefusal},
 		},
 		{
-			Method: http.MethodPut, Pattern: "/issues/{key}/role-holders", Auth: authAny, Versions: onlyV2,
+			Method: http.MethodPut, Pattern: "/issues/{key}/role-holder-set", Auth: authAny, Versions: onlyV2,
 			Description: fmt.Sprintf("Publish the session that holds each Legion role of this issue {holders}, a "+
 				"bearer naming its session in actor: each entry {role, session}, role one of architect, planner, "+
 				"implementer, tester, reviewer and merger and session a session id of at most %d bytes, or [] for an "+
@@ -52,7 +56,7 @@ func (s *server) v2RoleHolderRows() []routeRow {
 				"daemon's next publication lands, and its process can still run in that window. 404 ISSUE_NOT_FOUND for "+
 				"an issue that does not exist.", maxRoleHolderSessionBytes, issueRoleHoldersText, maxRoleHolderSessionBytes),
 			Handler:  s.putIssueRoleHoldersV2,
-			Resource: "role-holders", Kind: kindSingleton,
+			Resource: "role-holder-set", Kind: kindSingleton,
 			Body:  requestBody{Kind: bodyJSON, Type: issueRoleHoldersInput{}},
 			Shape: routeShape{Status: http.StatusOK, Response: issueRoleHolders{}},
 			Scope: scopeProject, ProjectOf: projectPathIssue,
@@ -61,7 +65,7 @@ func (s *server) v2RoleHolderRows() []routeRow {
 	}
 }
 
-// putIssueRoleHoldersV2 answers PUT /api/v2/issues/{key}/role-holders: the publication PUT
+// putIssueRoleHoldersV2 answers PUT /api/v2/issues/{key}/role-holder-set: the publication PUT
 // /api/v1/issues/{key}/role-holders makes (putIssueRoleHoldersFrom), once the no-op rule of
 // decision 8 has found the body is a change. The set records no setter, and the daemon of the
 // issue's project is its one writer, so a body naming the stored set answers it and writes nothing
