@@ -1,10 +1,13 @@
 import { expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor, within } from "@testing-library/react";
+// biome-ignore lint/style/noRestrictedImports: the table's own scroll events below, which user-event has no form for
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
+import { installResizeObserver, layOutScrollBox } from "../../__tests__/scroll-box";
 import { ApiError, api } from "../../api/client";
 import type { IssueSteps, StepRecord } from "../../api/types";
+import { scrollFadeTrailing } from "../../theme/classes";
 import { StepsTab } from "./StepsTab";
 
 function record(fields: Partial<StepRecord> & Pick<StepRecord, "id">): StepRecord {
@@ -189,6 +192,51 @@ test("the Steps tab never leaves a number or a single letter of an id on a line 
     }
   } finally {
     tab.restore();
+  }
+});
+
+// At 390 px the table is twice as wide as its card and scrolls sideways inside it, and the column
+// cut at the card's edge read as clipped text. The table wears the trailing fade the tablist and
+// the details rail wear, on the same terms: while columns lie past the edge, not where the table
+// fits, and not at the end of the scroll.
+test("a Steps table wider than its box wears the trailing fade, and one that fits or is scrolled to its end does not", async () => {
+  const sizes = installResizeObserver();
+  const tab = renderTab(async () => ({
+    issue: "CORE-1",
+    tasks: [{ steps: [record({ id: "implement-1" })], task: "default" }],
+  }));
+  try {
+    const table = await screen.findByRole("table", { name: "Steps of task default" });
+    const scroller = table.parentElement;
+    if (scroller === null) {
+      throw new Error("the Steps table has no box around it");
+    }
+    // A desktop width: the table fits its 688 px box.
+    const box = { client: 688, scroll: 688 };
+    layOutScrollBox(scroller, box);
+    sizes.resize();
+    expect(scroller).not.toHaveClass(scrollFadeTrailing);
+
+    // A phone: the table's 683 px of columns in a 340 px box.
+    box.client = 340;
+    box.scroll = 683;
+    sizes.resize();
+    expect(scroller).toHaveClass(scrollFadeTrailing);
+
+    // At the end of the scroll the last column is all there is to see; a fade there would hide it.
+    // The reader's scroll is the box's own scroll event, which user-event has no form for.
+    scroller.scrollLeft = 343;
+    fireEvent.scroll(scroller);
+    expect(scroller).not.toHaveClass(scrollFadeTrailing);
+
+    // The reader scrolls back to the start, and the columns past the edge are cued again: a
+    // scroll event, which user-event has no form for.
+    scroller.scrollLeft = 0;
+    fireEvent.scroll(scroller);
+    expect(scroller).toHaveClass(scrollFadeTrailing);
+  } finally {
+    tab.restore();
+    sizes.restore();
   }
 });
 
