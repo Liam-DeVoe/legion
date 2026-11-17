@@ -359,6 +359,15 @@ func (s *server) recordArtifactReview(w http.ResponseWriter, r *http.Request, ve
 		}
 		readVersion = &number
 	}
+	s.recordReview(w, r, actor, input, readVersion)
+}
+
+// recordReview records actor's review of the document {id} names, as input asks, once the route
+// has read its body and the version the caller read where it names one (readVersion, nil for
+// none): the work of both /api/v1 review routes (recordArtifactReview) and of POST
+// /api/v2/artifacts/{id}/reviews (createArtifactReviewV2), whose body names the version. It
+// answers the review 201.
+func (s *server) recordReview(w http.ResponseWriter, r *http.Request, actor model.Actor, input createArtifactReviewInput, readVersion *int) {
 	state := strings.TrimSpace(input.State)
 	if state != "approved" && state != "changes_requested" {
 		writeError(w, r, apicode.InvalidReview, "state must be approved or changes_requested")
@@ -544,6 +553,14 @@ func (s *server) requestArtifactApproval(w http.ResponseWriter, r *http.Request)
 	if !s.decodeOptionalJSON(w, r, &input) {
 		return
 	}
+	s.requestApproval(w, r, input)
+}
+
+// requestApproval opens, renews or hands back the approval request of the document {id} names,
+// as input asks, once the route has read its body: the work of POST
+// /api/v1/artifacts/{id}/approval-requests (requestArtifactApproval) and of its /api/v2 route
+// (requestArtifactApprovalV2). It answers 201 for a request it wrote, 200 for one that stood.
+func (s *server) requestApproval(w http.ResponseWriter, r *http.Request, input approvalRequestInput) {
 	// A summary is trimmed and must hold text, so "" below means the request named none.
 	var summary string
 	if input.Summary != nil {
@@ -1012,6 +1029,13 @@ func (s *server) createArtifactPlanReview(w http.ResponseWriter, r *http.Request
 		s.writeHandlerError(w, r, err)
 		return
 	}
+	s.recordPlanReview(w, r, input)
+}
+
+// recordPlanReview records the plan review input names of the plan {id} names, once the route has
+// read its body: the work of POST /api/v1/artifacts/{id}/plan-reviews (createArtifactPlanReview)
+// and of its /api/v2 route (createArtifactPlanReviewV2). It answers the review 201.
+func (s *server) recordPlanReview(w http.ResponseWriter, r *http.Request, input createPlanReviewInput) {
 	actor, ok := s.requireActor(w, r, input.Actor)
 	if !ok {
 		return

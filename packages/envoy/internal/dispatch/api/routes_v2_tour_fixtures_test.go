@@ -114,7 +114,9 @@ type tourIssue struct {
 	Document string `json:"primary_artifact_id"`
 }
 
-// issue makes an issue with a spec in a project of its own.
+// issue makes an issue with a spec in a project of its own, answering it once the spec owes no
+// settlement: the settlement writes after the create answers, and a step's write that lands
+// between the two fingerprints of unknown-keys would read as the refused request's.
 func (tour *routeTour) issue(t *testing.T) tourIssue {
 	t.Helper()
 	created := dispatchRequest(t, tour.handler, http.MethodPost, "/api/v1/issues", map[string]string{
@@ -123,7 +125,9 @@ func (tour *routeTour) issue(t *testing.T) tourIssue {
 	if created.Code != http.StatusCreated {
 		t.Fatalf("create issue: %d %s", created.Code, created.Body.String())
 	}
-	return decodeBody[tourIssue](t, created)
+	issue := decodeBody[tourIssue](t, created)
+	awaitSettled(t, tour.database, issue.Document)
+	return issue
 }
 
 // tourSession is the session the fixtures' agent writes as.

@@ -161,8 +161,9 @@ func tourSteps() []tourStep {
 //   - unauthenticated: each step of a route that is not public, sent with no credential, is
 //     answered 401 with the identity layer's code.
 //   - replays: each write step sent twice under one Idempotency-Key is answered the same body the
-//     second time, marked a replay, with no second event; a route whose answer holds a secret
-//     answers the repeat 409 KEY_COMMITTED (R8).
+//     second time (the same JSON value, for a route whose Replay answers the resource afresh),
+//     marked a replay, with no second event; a route whose answer holds a secret answers the
+//     repeat 409 KEY_COMMITTED (R8).
 func TestV2RouteTour(t *testing.T) {
 	tour := newRouteTour(t)
 	steps := tourSteps()
@@ -301,12 +302,18 @@ func TestV2RouteTour(t *testing.T) {
 				}
 				events := tour.eventCount(t, "", "")
 				again := tour.send(t, route, request, key)
+				sameAnswer := again.Body.String() == first.Body.String()
+				if route.Replay != nil {
+					// A route with a Replay answers a repeat with the resource as it stands now
+					// (writeRefreshed), re-encoded, so its members may come back in another order.
+					sameAnswer = jsonEqual(t, again.Body.Bytes(), first.Body.String())
+				}
 				if route.AnswerHoldsSecret {
 					if code, _ := refusalOf(t, again); again.Code != http.StatusConflict || code != "KEY_COMMITTED" {
 						t.Fatalf("a repeat of a write whose answer holds a secret answered %d %s, want 409 KEY_COMMITTED",
 							again.Code, again.Body.String())
 					}
-				} else if again.Code != first.Code || !replayed(again) || again.Body.String() != first.Body.String() {
+				} else if again.Code != first.Code || !replayed(again) || !sameAnswer {
 					t.Fatalf("the repeat answered %d %s (replayed %v), want the first answer %d %s, replayed",
 						again.Code, again.Body.String(), replayed(again), first.Code, first.Body.String())
 				}

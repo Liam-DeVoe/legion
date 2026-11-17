@@ -779,6 +779,11 @@ func (s *server) keepDecision(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, r, err)
 		return
 	}
+	// The keep's /api/v2 route is under the document's issue, which the v1 path does not name
+	// (decision 9); a document of no issue is refused below, as it always was.
+	if document.IssueKey != nil {
+		successorValue(r, "key", *document.IssueKey)
+	}
 	blockID := r.PathValue("block_id")
 	decision, err := s.keptDecision(r.Context(), document, blockID)
 	if err != nil {

@@ -34,6 +34,13 @@ func (s *server) rebuildArtifact(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, r, err)
 		return
 	}
+	s.rebuildDocument(w, r, actor, input)
+}
+
+// rebuildDocument rebuilds the document the path names for actor, as input asks, once the route
+// has read its body: the work of POST /api/v1/artifacts/{id}/rebuild (rebuildArtifact) and POST
+// /api/v2/artifacts/{id}/rebuilds (rebuildArtifactV2). It answers the rebuild's report 200.
+func (s *server) rebuildDocument(w http.ResponseWriter, r *http.Request, actor model.Actor, input rebuildArtifactInput) {
 	artifact, err := s.loadArtifactForRequest(r.Context(), s.deps.Store.Pool, r)
 	if err != nil {
 		s.writeHandlerError(w, r, err)

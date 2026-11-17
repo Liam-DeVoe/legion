@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -171,6 +172,12 @@ func (s *server) refuseUploadToAClosedIssue(handler http.HandlerFunc) http.Handl
 			handler(w, r)
 			return
 		}
+		// A /api/v2 path names an issue that must exist (decision 11 of the plan of
+		// dispatch://INFRA-4071): a missing one is 404 ISSUE_NOT_FOUND there, and /api/v1 keeps
+		// the 404 NOT_FOUND it has always answered.
+		if requestAPIVersion(r) == apiV2 && errors.Is(refusal, pgx.ErrNoRows) {
+			refusal = errorf(apicode.IssueNotFound, "no issue %s", r.PathValue("key"))
+		}
 		// Only the issue's own refusal (closed, missing) stands aside for the key: a check that
 		// failed is answered as it always was.
 		var ownerRefusal *apiError
@@ -221,6 +228,14 @@ func (s *server) uploadArtifactFor(w http.ResponseWriter, r *http.Request, targe
 	if !ok {
 		return
 	}
+	s.storeUpload(w, r, input, target)
+}
+
+// storeUpload stores the upload input holds under target, once the route has read it: the work
+// of every upload, POST /api/v1/{issues,projects}/{key}/artifacts and
+// /api/v1/agents/{session_id}/artifacts (uploadArtifactFor) and their /api/v2 routes
+// (uploadArtifactV2). It refuses what the upload cannot store and answers the stored version 201.
+func (s *server) storeUpload(w http.ResponseWriter, r *http.Request, input artifactUploadInput, target artifactTarget) {
 	actor, ok := s.requireActor(w, r, input.supplied)
 	if !ok {
 		return
@@ -290,11 +305,20 @@ func (s *server) jsonArtifactUpload(w http.ResponseWriter, r *http.Request) (art
 		return artifactUploadInput{}, false
 	}
 	logUndeclaredMembers(r, &body, read.Bytes())
-	// `primary` stays declared, though no upload may set it, so that it is refused by name rather
-	// than ignored: an upload never makes a document the issue's primary one.
-	if body.Primary != nil {
-		writeError(w, r, apicode.ArtifactInput, "primary is fixed at issue creation")
+	input, err := jsonUploadInput(body)
+	if err != nil {
+		s.writeHandlerError(w, r, err)
 		return artifactUploadInput{}, false
+	}
+	return input, true
+}
+
+// jsonUploadInput is what an inline upload's decoded JSON body stores, on both versions: a markdown
+// document named body.Name. `primary` stays declared, though no upload may set it, so that it is
+// refused by name rather than ignored: an upload never makes a document the issue's primary one.
+func jsonUploadInput(body jsonArtifactUpload) (artifactUploadInput, error) {
+	if body.Primary != nil {
+		return artifactUploadInput{}, errorf(apicode.ArtifactInput, "primary is fixed at issue creation")
 	}
 	blank := body.Content == nil || strings.TrimSpace(*body.Content) == ""
 	var content []byte
@@ -308,7 +332,7 @@ func (s *server) jsonArtifactUpload(w http.ResponseWriter, r *http.Request) (art
 		summary:     strings.TrimSpace(body.Summary),
 		supplied:    body.Actor,
 		blank:       blank,
-	}, true
+	}, nil
 }
 
 func (s *server) multipartArtifactUpload(w http.ResponseWriter, r *http.Request) (artifactUploadInput, bool) {
@@ -382,13 +406,7 @@ func (s *server) multipartArtifactUpload(w http.ResponseWriter, r *http.Request)
 		s.writeHandlerError(w, r, err)
 		return artifactUploadInput{}, false
 	}
-	contentType := header.Header.Get("Content-Type")
-	if contentType == "" {
-		contentType = mime.TypeByExtension(path.Ext(name))
-	}
-	if contentType == "" {
-		contentType = "application/octet-stream"
-	}
+	contentType := uploadContentType(header.Header.Get("Content-Type"), name)
 	return artifactUploadInput{
 		name:        name,
 		content:     content,
@@ -396,6 +414,15 @@ func (s *server) multipartArtifactUpload(w http.ResponseWriter, r *http.Request)
 		summary:     strings.TrimSpace(r.FormValue("summary")),
 		supplied:    supplied,
 	}, true
+}
+
+// uploadContentType is the type a multipart upload's file is read as: the type its part declares,
+// else the one its name's extension gives, else application/octet-stream.
+func uploadContentType(declared, name string) string {
+	if declared == "" {
+		declared = mime.TypeByExtension(path.Ext(name))
+	}
+	return cmp.Or(declared, "application/octet-stream")
 }
 
 // writeDocumentVersion stores the document-version row uploads write directly, returning the same
@@ -856,20 +883,27 @@ func (s *server) getArtifactText(w http.ResponseWriter, r *http.Request) {
 }
 
 // artifactTextBody is the markdown and the token the three text routes answer, with the blocks
-// beside them for a request that asked for them with ?blocks=true. The three come from one
-// rendering of one tree (docs.TextWithTokenAndBlocks), so a write by another session cannot leave
-// a listing's byte ranges indexing markdown they were not computed over; nil blocks for a request
-// that asked for none, which pays for none of that rendering.
+// beside them for a request that asked for them with ?blocks=true (documentText).
 func (s *server) artifactTextBody(r *http.Request, artifactID string) (string, string, *[]model.ArtifactBlock, error) {
-	if r.URL.Query().Get("blocks") != "true" {
-		markdown, token, err := s.deps.Docs.TextWithToken(r.Context(), artifactID)
+	return s.documentText(r.Context(), artifactID, r.URL.Query().Get("blocks") == "true")
+}
+
+// documentText is a document's markdown and token, with its blocks beside them where withBlocks
+// asks for them: what the /api/v1 text routes answer and what include=text and include=blocks add
+// to a /api/v2 artifact row. The three come from one rendering of one tree
+// (docs.TextWithTokenAndBlocks), so a write by another session cannot leave a listing's byte
+// ranges indexing markdown they were not computed over; nil blocks for a read that asked for none,
+// which pays for none of that rendering.
+func (s *server) documentText(ctx context.Context, artifactID string, withBlocks bool) (string, string, *[]model.ArtifactBlock, error) {
+	if !withBlocks {
+		markdown, token, err := s.deps.Docs.TextWithToken(ctx, artifactID)
 		return markdown, token, nil, err
 	}
-	markdown, token, blocks, err := s.deps.Docs.TextWithTokenAndBlocks(r.Context(), artifactID)
+	markdown, token, blocks, err := s.deps.Docs.TextWithTokenAndBlocks(ctx, artifactID)
 	if err != nil {
 		return "", "", nil, err
 	}
-	if err := s.describeBlocks(r.Context(), artifactID, blocks); err != nil {
+	if err := s.describeBlocks(ctx, artifactID, blocks); err != nil {
 		return "", "", nil, err
 	}
 	// A document with no blocks answers the empty list, never a missing key: the key is absent
@@ -893,16 +927,26 @@ func (s *server) getArtifactBlocks(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, apicode.NotDocument, "artifact is not a document")
 		return
 	}
-	blocks, err := s.deps.Docs.Blocks(r.Context(), artifact.ID)
+	blocks, err := s.documentBlocks(r.Context(), artifact.ID)
 	if err != nil {
 		s.writeHandlerError(w, r, err)
 		return
 	}
-	if err := s.describeBlocks(r.Context(), artifact.ID, blocks); err != nil {
-		s.writeHandlerError(w, r, err)
-		return
-	}
 	WriteJSON(w, http.StatusOK, blocks)
+}
+
+// documentBlocks is a document's blocks as GET /api/v1/artifacts/{id}/blocks reports them, each
+// described (describeBlocks), for a read that wants the blocks without the markdown. A document
+// with no stored state answers nil.
+func (s *server) documentBlocks(ctx context.Context, artifactID string) ([]model.ArtifactBlock, error) {
+	blocks, err := s.deps.Docs.Blocks(ctx, artifactID)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.describeBlocks(ctx, artifactID, blocks); err != nil {
+		return nil, err
+	}
+	return blocks, nil
 }
 
 // describeBlocks writes onto each block what the document's rows say about it, which its
@@ -1025,6 +1069,15 @@ func (s *server) getArtifactVersion(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, r, err)
 		return
 	}
+	successorValue(r, "id", artifact.ID)
+	s.serveArtifactVersion(w, r, artifact, number, download)
+}
+
+// serveArtifactVersion answers version number of artifact, read with its versions: the work of
+// the four /api/v1 version routes (getArtifactVersion) and of GET
+// /api/v2/artifacts/{id}/versions/{number} (getArtifactVersionV2). download answers a document's
+// Markdown, and every kind's bytes, as a download.
+func (s *server) serveArtifactVersion(w http.ResponseWriter, r *http.Request, artifact model.Artifact, number int, download bool) {
 	latest := 0
 	for _, version := range artifact.Versions {
 		latest = max(latest, version.Number)
@@ -1132,6 +1185,13 @@ func (s *server) createNamedVersion(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, r, err)
 		return
 	}
+	s.nameVersion(w, r, input)
+}
+
+// nameVersion names the document's current version as input asks, once the route has read its
+// body: the work of the three /api/v1 named-version routes (createNamedVersion) and of POST
+// /api/v2/artifacts/{id}/versions (createNamedVersionV2). It answers the version 201.
+func (s *server) nameVersion(w http.ResponseWriter, r *http.Request, input createVersionInput) {
 	actor, ok := s.requireActor(w, r, input.Actor)
 	if !ok {
 		return
@@ -1156,6 +1216,7 @@ func (s *server) createNamedVersion(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, r, err)
 		return
 	}
+	successorValue(r, "id", artifact.ID)
 	eventOwner := ownerForArtifact(artifact)
 	if err := s.requireOpenOwner(r.Context(), tx, eventOwner); err != nil {
 		s.writeHandlerError(w, r, err)
@@ -1230,6 +1291,13 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, r, err)
 		return
 	}
+	s.applyEdits(w, r, input)
+}
+
+// applyEdits applies the op batch input holds to the document the path names, once the route has
+// read its body: the work of the three /api/v1 edit routes (editArtifact) and of POST
+// /api/v2/artifacts/{id}/edits (editArtifactV2). It answers what the batch did with its advice.
+func (s *server) applyEdits(w http.ResponseWriter, r *http.Request, input editArtifactInput) {
 	actor, ok := s.requireActor(w, r, input.Actor)
 	if !ok {
 		return
@@ -1239,6 +1307,7 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, r, err)
 		return
 	}
+	successorValue(r, "id", artifact.ID)
 	if artifact.Kind != "doc" {
 		writeError(w, r, apicode.NotDocument, "artifact is not a document")
 		return

@@ -107,19 +107,31 @@ func (s *server) listArtifactSubscribers(w http.ResponseWriter, r *http.Request)
 }
 
 func (s *server) writeSubscribers(w http.ResponseWriter, r *http.Request, base string) {
+	subscribers, ok := s.subscribersOf(w, r, base)
+	if !ok {
+		return
+	}
+	WriteJSON(w, http.StatusOK, subscribers)
+}
+
+// subscribersOf is every session whose Envoy interests deliver the events published under base,
+// newest heartbeat first: what the /api/v1 subscriber lists answer (writeSubscribers) and GET
+// /api/v2/artifacts/{id}/subscribers pages. It writes the listener's refusal itself and answers
+// false.
+func (s *server) subscribersOf(w http.ResponseWriter, r *http.Request, base string) ([]subscriber, bool) {
 	if s.deps.Envoy == nil {
 		writeError(w, r, apicode.EnvoyUnavailable, "ENVOY_URL is not configured")
-		return
+		return nil, false
 	}
 	interests, err := s.deps.Envoy.ListInterests(r.Context())
 	if err != nil {
 		s.writeEnvoyError(w, r, err)
-		return
+		return nil, false
 	}
 	sessions, err := s.deps.Envoy.Sessions(r.Context())
 	if err != nil {
 		s.writeEnvoyError(w, r, err)
-		return
+		return nil, false
 	}
 	// Every session the registry holds a record of, whatever its state; the row decides what
 	// the subscriber reads as, so this is no longer the list of the live ones.
@@ -159,7 +171,7 @@ func (s *server) writeSubscribers(w http.ResponseWriter, r *http.Request, base s
 		}
 		return result[left].SessionID < result[right].SessionID
 	})
-	WriteJSON(w, http.StatusOK, result)
+	return result, true
 }
 
 func (s *server) unsubscribeIssueSession(w http.ResponseWriter, r *http.Request) {
