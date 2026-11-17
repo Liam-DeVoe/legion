@@ -112,6 +112,23 @@ describe("step-records-read.sh", () => {
     expect(code).toBe(1);
   });
 
+  test("an end that is no moment, `-` or any word, fails, exit 1: only a moment ends a record", () => {
+    // steps.ts prints `running` there for a run that has not ended; a printer that wrote the end
+    // through orDash would print `-`, and another a word of its own: none of them is an end.
+    for (const end of ["-", "unknown"]) {
+      const { code, stdout } = read(
+        changed(/ 2 step implementer implementation attempt 2 /, (line) =>
+          line.replace(/ \S+ passed$/, ` ${end} passed`)
+        )
+      );
+      expect(stdout).toContain(
+        `FAIL: the record never ended: default 2 step implementer implementation attempt 2 legion-infra-infra-42-implementer anthropic/claude-opus-5 2026-11-20T09:00:00Z ${end} passed`
+      );
+      expect(stdout).not.toContain("PASS");
+      expect(code).toBe(1);
+    }
+  });
+
   test("a retro with no agent fails, exit 1, naming it", () => {
     const { code, stdout } = read(
       changed(/ retro implementer /, (line) =>
