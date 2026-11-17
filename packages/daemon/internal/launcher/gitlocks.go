@@ -59,6 +59,13 @@ var gitLockRecheck = 2 * time.Second
 // worktree entry's gitdir that is a fifo among them (internal/workspace's readGitdir).
 var gitLockRemove = os.Remove
 
+// gitLockProc is the /proc newGitLockSweep gives the sweep (gitLockSweep.proc): the container's
+// own, which its first process sees whole. It is a variable for the rows that drive a real
+// launcher, which builds its sweep here: a test process is no container's first process, and the
+// machine's /proc holds every process of the machine, among them a git or jj of another user whose
+// open files the row cannot read, which keeps every lock of the pass (holders).
+var gitLockProc = "/proc"
+
 // gitLockFirstPassBound is how long the launcher's first pass may spend between the locks it
 // decides. It exists for the reason testPGBound exists: the first pass runs before the launcher
 // serves any role, the daemon's boot timeout for a pod is 120 s by default, and a pass that goes
@@ -85,13 +92,13 @@ const gitLockFirstPassBound = 30 * time.Second
 //
 // ws is the jj workspace the clone is swept through and the clone itself, which the launcher
 // derives from its own working directory and otherwise learns from the first role start it
-// serves (learn), and fromWorkDir says which of the two it was. proc is the container's /proc,
-// which the holder read walks. guard, interval and recheck are the package's three numbers, read
-// once by whoever builds the sweep. remove and now are the removal (os.Remove, through
-// gitLockRemove) and the clock, each a field because a test answers them itself: one to refuse or
-// hold a removal, one to pin a line's age. The walk (workspace.GitLocksOf) is called outright,
-// since every caller of the sweep, test or not, wants the real one; it is the layout guard and
-// the walk of the clone in one call, so every pass of this sweep holds the rule the init
+// serves (learn), and fromWorkDir says which of the two it was. proc is the container's /proc
+// (gitLockProc), which the holder read walks. guard, interval and recheck are the package's three
+// numbers, read once by whoever builds the sweep. remove and now are the removal (os.Remove,
+// through gitLockRemove) and the clock, each a field because a test answers them itself: one to
+// refuse or hold a removal, one to pin a line's age. The walk (workspace.GitLocksOf) is called
+// outright, since every caller of the sweep, test or not, wants the real one; it is the layout
+// guard and the walk of the clone in one call, so every pass of this sweep holds the rule the init
 // container's own sweep holds, from the same helper. The workspace is derived once, by whoever
 // gave the sweep its workspace, and held in ws. log is the launcher's own log line,
 // roleLog.linef, which carries no role prefix: the sweep belongs to no role.
@@ -214,15 +221,15 @@ func serveGitLockSweep(ctx context.Context, managers []*manager) <-chan struct{}
 // person reading the pod's log sees which clone every pass of the pod walks, or which one it
 // would not walk and why.
 //
-// The two numbers a test shortens, the interval and the recheck, and the removal a test holds are
-// read here, in the caller's own goroutine, and never inside the ticker's: they are package
-// variables, and a goroutine still reading one after the test restored it is a data race the race
-// detector fails the test for (serveTestPG reads its interval the same way). The guard and the
-// first pass's bound are constants nothing writes; a test that varies the guard writes the
-// sweep's own field.
+// The two numbers a test shortens, the interval and the recheck, the removal a test holds and the
+// /proc a test gives are read here, in the caller's own goroutine, and never inside the ticker's:
+// they are package variables, and a goroutine still reading one after the test restored it is a
+// data race the race detector fails the test for (serveTestPG reads its interval the same way).
+// The guard and the first pass's bound are constants nothing writes; a test that varies the guard
+// writes the sweep's own field.
 func newGitLockSweep(log func(format string, args ...any)) *gitLockSweep {
 	s := &gitLockSweep{
-		proc: "/proc", guard: gitLockGuard, interval: gitLockInterval, recheck: gitLockRecheck,
+		proc: gitLockProc, guard: gitLockGuard, interval: gitLockInterval, recheck: gitLockRecheck,
 		remove: gitLockRemove, now: time.Now, log: log,
 	}
 	dir, err := os.Getwd()
