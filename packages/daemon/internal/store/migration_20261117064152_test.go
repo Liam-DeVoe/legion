@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -205,6 +206,83 @@ func TestTheRollForwardMarksUncountedEachIssueTheEarlierReleaseMoved(t *testing.
 		if end.ID != id || end.Agent != "agent of "+issue || end.Role != "tester" || end.Generation != 1 ||
 			end.Result == nil || *end.Result != "stopped" || end.EndedAt == nil || !end.EndedAt.Equal(rolledBackAt) {
 			t.Errorf("the roll forward's end of %s = %+v, want the record %s the row kept, stopped at the rollback, %s", run, end, id, rolledBackAt)
+		}
+	}
+}
+
+// The way back an operator runs keeps what the roll forward needs and touches nothing else: every
+// pending row of the outbox — the step records' own, which fill their records at the roll forward,
+// and the issue's other work — and every row of step_starts stand as they stood, and the one
+// schema row it deletes is the roll forward's. Run twice, as a second rollback would before any roll
+// forward, it leaves the same store.
+func TestTheWayBackOfTheStepRecordsKeepsEveryOtherRow(t *testing.T) {
+	ctx := context.Background()
+	store := emptyStore(t)
+	if _, err := store.Migrate(ctx); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	for _, seed := range []string{
+		`insert into issues (key, tree, project, title, phase, generation, status, rank, last_dispatch_seq)
+			values ('LEGION-208', 'LEGION-208', 'LEGION', 'root', 'testing', 1, 'testing', 'A', 1)`,
+		`insert into step_starts (issue, task, kind, place, starts, agent, started_at, run, record)
+			values ('LEGION-208', 'default', 'step', 3, 4, 'legion-legion-legion-208-tester', '2026-11-17T01:00:00Z', 'open', '{"id": "kept"}'),
+			('LEGION-208', 'default', 'step', 2, 2, 'legion-legion-legion-208-implementer', '2026-11-17T00:00:00Z', 'ended', null)`,
+		`insert into outbox (kind, issue, payload, attempts, next_at, last_error) values
+			('step_record', 'LEGION-208', '{"id": "a start not yet written"}', 3, now() + interval '1 minute', 'Dispatch answered 503'),
+			('supervise', 'LEGION-208', '{"op": "start"}', 0, now(), ''),
+			('dispatch_status', 'LEGION-209', '{"status": "testing"}', 1, now() + interval '2 minutes', 'timeout')`,
+	} {
+		if _, err := store.Pool().Exec(ctx, seed); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+	}
+	read := func(query string) []string {
+		t.Helper()
+		rows, err := store.Pool().Query(ctx, query)
+		if err != nil {
+			t.Fatalf("%s: %v", query, err)
+		}
+		defer rows.Close()
+		var all []string
+		for rows.Next() {
+			var row string
+			if err := rows.Scan(&row); err != nil {
+				t.Fatalf("%s: %v", query, err)
+			}
+			all = append(all, row)
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("%s: %v", query, err)
+		}
+		return all
+	}
+	const (
+		outbox   = `select row(id, kind, issue, payload, attempts, next_at, last_error, lease_token, lease_until)::text from outbox order by id`
+		starts   = `select row(s.*)::text from step_starts s order by issue, kind, place`
+		versions = `select version::text from schema_version order by version`
+	)
+	outboxBefore, startsBefore, versionsBefore := read(outbox), read(starts), read(versions)
+	if len(outboxBefore) != 3 || len(startsBefore) != 2 {
+		t.Fatalf("seeded %d outbox rows and %d step_starts rows, want 3 and 2", len(outboxBefore), len(startsBefore))
+	}
+	for run := 1; run <= 2; run++ {
+		if _, err := store.Pool().Exec(ctx, stepRecordsWayBack(t)); err != nil {
+			t.Fatalf("run %d of the way back: %v", run, err)
+		}
+		if got := read(outbox); !reflect.DeepEqual(got, outboxBefore) {
+			t.Errorf("after run %d of the way back the outbox holds %v, want every pending row as it stood: %v", run, got, outboxBefore)
+		}
+		if got := read(starts); !reflect.DeepEqual(got, startsBefore) {
+			t.Errorf("after run %d of the way back step_starts holds %v, want every count as it stood: %v", run, got, startsBefore)
+		}
+		var want []string
+		for _, version := range versionsBefore {
+			if version != fmt.Sprint(stepRecordsRollForwardVersion) {
+				want = append(want, version)
+			}
+		}
+		if got := read(versions); !reflect.DeepEqual(got, want) {
+			t.Errorf("after run %d of the way back schema_version lost %d rows, want the roll forward's alone", run, len(versionsBefore)-len(got))
 		}
 	}
 }
