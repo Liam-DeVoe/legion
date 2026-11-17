@@ -26,17 +26,21 @@ const (
 	Implementing   Phase = "implementing"
 	Testing        Phase = "testing"
 	Reviewing      Phase = "reviewing"
-	Accepting      Phase = "accepting"
-	Retro          Phase = "retro"
-	Merging        Phase = "merging"
-	Done           Phase = "done"
-	Held           Phase = "held"
+	// Step is a step of a role the deployment defines: none of Legion's own roles works it, and
+	// the role that does is the one the issue's plan names for the step it stands at, so RoleFor
+	// names none.
+	Step      Phase = "step"
+	Accepting Phase = "accepting"
+	Retro     Phase = "retro"
+	Merging   Phase = "merging"
+	Done      Phase = "done"
+	Held      Phase = "held"
 )
 
 // All is every phase, in the transition table's order.
 var All = []Phase{
-	Admitted, AwaitingPerson, Planning, Implementing, Testing, Reviewing, Accepting, Retro, Merging,
-	Done, Held,
+	Admitted, AwaitingPerson, Planning, Implementing, Testing, Reviewing, Step, Accepting, Retro,
+	Merging, Done, Held,
 }
 
 // Order is the line an issue walks forward, and the only phases a move back is read against. It
@@ -159,7 +163,7 @@ func buildMovePairSet() map[string]bool {
 // `handoff_complete` reads and names (packages/pi-shared/src/handoff-record.ts). The writer is the
 // role the workflow starts on the phase (RoleFor, whose tests tie the two). Retro and merging
 // write none, and report the commit they stand on; accepting is the architect's sign-off, no
-// handoff at all.
+// handoff at all; and step, whose role the deployment defines, writes none either.
 func Handoff(p Phase) (word string, writer claim.Role, ok bool) {
 	switch p {
 	case Planning:
@@ -178,7 +182,8 @@ func Handoff(p Phase) (word string, writer claim.Role, ok bool) {
 // RoleFor is the role that works a phase: the one a transition starts, and the one whose handoff
 // record the `legion` tool's `handoff_complete` reads for a phase with a handoff (Handoff, whose
 // writer a test holds to this; packages/pi-shared/src/handoff-record.ts). A phase no role works —
-// awaiting_person, done, held — has none. Admitted and accepting are the tree architect's, a
+// awaiting_person, done, held — has none, and neither has step, whose role is the one the issue's
+// plan names rather than one of the phase's. Admitted and accepting are the tree architect's, a
 // claim per tree that no row starts: every site that starts, resumes or reports a phase's worker
 // skips the architect, so it skips both phases (workflow's start, admit's startMidPhaseMembers,
 // workflow's booted and Stranded).
@@ -211,9 +216,10 @@ func RoleFor(p Phase) claim.Role {
 // LeftBy is the phase role has left when the issue, standing at at, no longer stands in a phase
 // that role works: RoleFor read the other way round, the one phase each role works, and, for the
 // implementer, which works two, implementing while the issue stands before retro and retro once
-// it stands past it. A completion that arrives after the issue moved on without its role is of
-// this phase (Of). The architect works admitted and accepting, signs accepting off and completes
-// nothing, so it leaves no phase here.
+// it stands past it. A role the deployment defines works step alone, so step is the phase it has
+// left wherever the issue stands. A completion that arrives after the issue moved on without its
+// role is of this phase (Of). The architect works admitted and accepting, signs accepting off and
+// completes nothing, so it leaves no phase here, and neither does a name that is no role.
 func LeftBy(role claim.Role, at Phase) Phase {
 	switch role {
 	case claim.RolePlanner:
@@ -229,6 +235,9 @@ func LeftBy(role claim.Role, at Phase) Phase {
 			return Retro
 		}
 		return Implementing
+	}
+	if claim.IsRole(role) && !claim.IsBuiltin(role) {
+		return Step
 	}
 	return ""
 }

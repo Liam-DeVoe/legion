@@ -3,13 +3,15 @@ package phase
 import (
 	"slices"
 	"testing"
+
+	"github.com/sjawhar/legion/daemon/internal/claim"
 )
 
 // All is the wire contract's phase list, in the transition table's order.
 func TestPhaseValuesMatchWorkflowWireContract(t *testing.T) {
 	want := []string{
-		"admitted", "awaiting_person", "planning", "implementing", "testing", "reviewing", "accepting", "retro",
-		"merging", "done", "held",
+		"admitted", "awaiting_person", "planning", "implementing", "testing", "reviewing", "step", "accepting",
+		"retro", "merging", "done", "held",
 	}
 	got := make([]string, len(All))
 	for index, value := range All {
@@ -94,6 +96,36 @@ func TestMovesBackIgnoresPhasesOutsideOrder(t *testing.T) {
 	for _, outside := range []Phase{Admitted, AwaitingPerson, Done, Held} {
 		if MovesBack(Merging, outside) || MovesBack(outside, Planning) {
 			t.Fatalf("%s stands outside Order, so no move into or out of it moves back", outside)
+		}
+	}
+}
+
+// A step of a role the deployment defines runs as the phase step, which no role of Legion's own
+// works: RoleFor names none for it, it ends with no handoff record, and it is the phase such a
+// role has left wherever the issue stands, so its completion is of step. Legion's own roles leave
+// the phases they left before, and a name that is no role leaves none.
+func TestADeploymentRoleLeavesTheStepPhase(t *testing.T) {
+	step := Phase("step")
+	if got := RoleFor(step); got != "" {
+		t.Errorf("RoleFor(step) = %q, want none: the deployment's role is the plan's", got)
+	}
+	if word, writer, ok := Handoff(step); ok {
+		t.Errorf("Handoff(step) = %q, %q, true; want no handoff record", word, writer)
+	}
+	for _, at := range []Phase{step, Implementing, Retro, Held} {
+		if got := LeftBy("checker", at); got != step {
+			t.Errorf("LeftBy(checker, %s) = %q, want step", at, got)
+		}
+	}
+	if got := Of("checker", step); got != step {
+		t.Errorf("Of(checker, step) = %q, want step", got)
+	}
+	for role, want := range map[claim.Role]Phase{
+		claim.RoleTester: Testing, claim.RoleImplementer: Implementing, claim.RoleArchitect: "",
+		claim.RoleController: "", "": "", "Checker": "",
+	} {
+		if got := LeftBy(role, step); got != want {
+			t.Errorf("LeftBy(%q, step) = %q, want %q", role, got, want)
 		}
 	}
 }

@@ -2053,6 +2053,18 @@ delete from outbox where kind = 'supervise' and payload->>'op' = 'step_stop';
 
 Each deleted row costs the stop of one step's process: that process runs on until its issue closes, and the way back above drops the task's stop with the plan rows.
 
+#### Rolling back the release whose deployment defines roles
+
+This release's migration `20261117223524_deployment_roles.up.sql` writes five checks again.
+The role checks of `claims`, `phases` and `issue_releases` take a name of the role grammar `^[a-z][a-z0-9-]{0,31}$`, the names a deployment gives the roles it defines, and `issues_phase_check` and `issues_held_from_check` take the phase `step`, where a step of such a role runs.
+An earlier release has no role of the deployment and no phase `step`, and the checks it wrote refuse a row of either; written again over such a row, a check refuses the whole statement, naming the check and no row, since `alter table … add constraint … check` reads every row the table holds.
+Before a rollback past this release, finish or stop each issue whose plan names a role of the deployment; the way back in the migration's header refuses while one stands at step or one claim of such a role remains, and names it.
+It also refuses, naming the row, while a phases row or an idle release of such a role remains.
+A role's claim and its phases row stay after its issue is done, so once the issue is done or stopped, delete each row the way back names (`delete from claims where token = '<token>';`, `delete from phases where issue = '<issue>' and role = '<role>';`, `delete from issue_releases where issue = '<issue>';`) and run it again.
+With no such row left, it writes the five checks again as the earlier release wrote them and deletes the migration's version row, so the roll-forward's `Migrate` runs the migration again (`versionRecorded` in `internal/store/store.go` decides each migration on its own row).
+Run it with the daemon stopped, before the earlier image is pinned.
+The controller's claim and the release of an unowned pod, which names no role, pass the way back and stay.
+
 #### Rolling back the release whose update round ends at its bound
 
 This release's migration `20261113110610_drop_claim_update_answer_marks` takes two columns off `claims`: `update_answered_by_turn_end` and `update_reasked_for_push_check`, which the two `alter` statements below add back.
@@ -2508,6 +2520,7 @@ Contract 132, cybermonklabs/legion#3715, has no section of its own here either: 
 Contract 123, cybermonklabs/legion#3793, has no section of its own here either: the header of its migration, `20261113090512_phase_entry_moved_back.up.sql`, gives its steps, which are none at the rollback and one statement, `update phases set entry_moved_back = true;`, before a roll-forward across it.
 To roll a release at contract 146 back to contract 144 instead, the release just before it, run the block below alone: that release keeps the six columns, and its sweep passes over every architect, since it chooses a role through `workflow.OpenPhaseRole`, which names none for an architect.
 A rollback of the release whose owner's plan picks the steps to any release before it, either of these two included, also takes the steps of that release's own section above, [Rolling back the release whose owner's plan picks the steps](#rolling-back-the-release-whose-owners-plan-picks-the-steps), a rollback of the release that rates each plan to any release before it also takes the steps of its own section, [Rolling back the release that rates each plan](#rolling-back-the-release-that-rates-each-plan), and a rollback of the release that records each step to any release before it also takes the steps of its own section, [Rolling back the release that records each step](#rolling-back-the-release-that-records-each-step).
+A rollback of the release whose deployment defines roles to any release before it also takes the steps of its own section, [Rolling back the release whose deployment defines roles](#rolling-back-the-release-whose-deployment-defines-roles).
 The block below is the way back of those four migrations, and the header of each carries it:
 
 ```sh
@@ -2628,6 +2641,7 @@ The migrations recorded above this one at contract 146 are these.
 20261114061900_phase_entry_verbatim adds `phases.entry_verbatim` and touches none of the six, and the contract 146 block above reverses it too, so that the roll-forward can add it again.
 20261116234034_phase_reviewed_head adds `phases.reviewed_head` and touches none of the six, so the block holds over it; a rollback past it runs that migration's own way back too ([Rolling back the release that keeps the commit a reviewer last read](#rolling-back-the-release-that-keeps-the-commit-a-reviewer-last-read)), so that the roll-forward adds the column again at its default.
 20261117034837_issue_plans adds the tables `issue_plans`, `plan_tasks` and `plan_steps` and the columns `phases.step_task`, `phases.step_place` and `pull_requests.task`, and touches none of the six, so the block holds over it; a rollback past it runs that migration's own way back too ([Rolling back the release whose owner's plan picks the steps](#rolling-back-the-release-whose-owners-plan-picks-the-steps)), so that the roll-forward creates the tables again empty and adds the columns again at their defaults.
+20261117223524_deployment_roles writes the role checks of `claims`, `phases` and `issue_releases` and the checks `issues_phase_check` and `issues_held_from_check` again, and touches none of the six, so the block holds over it; a rollback past it runs that migration's own way back first ([Rolling back the release whose deployment defines roles](#rolling-back-the-release-whose-deployment-defines-roles)), so that the roll-forward writes the checks again.
 The `20261111225552` is the identifier of `20261111225552_phase_entry.up.sql`, whose header carries this same block;
 where that file carries another identifier in the release you roll back from, use that one.
 The SQL was run on 2026-11-13 at 04:00Z against PostgreSQL 18.6, on a scratch database that `internal/store`'s own `Migrate` took to the head of the branch the run was made on, as that head stood at that time, applying 133 migrations and leaving 133 versions recorded, the highest 20261112180548, and that held four outbox rows:
