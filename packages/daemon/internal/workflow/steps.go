@@ -53,19 +53,37 @@ func stepOf(p phase.Phase) (place record.StepPlace, role, typ string, ok bool) {
 	return record.StepPlace{}, "", "", false
 }
 
+// StepResult is how a run of a step ended: one of the three results Dispatch takes for a step
+// record. Any other text is refused there as 400 STEP_INPUT, which the outbox drops for good
+// (internal/daemon's stepRecordRefused), so every end names its result by one of the three
+// constants below.
+type StepResult string
+
+const (
+	// ResultPassed is a run whose step's work was done: the move that ended it went forward, or
+	// its merge landed in a lingering tree (closeMerged).
+	ResultPassed StepResult = "passed"
+	// ResultFailed is a run a role or a report sent back: the tester's fail, a review's request
+	// for changes, a role's or the architect's backward move.
+	ResultFailed StepResult = "failed"
+	// ResultStopped is a run that ended under its role with neither: a head that conflicts with
+	// its base, or an end no move of the table wrote (stepStopped).
+	ResultStopped StepResult = "stopped"
+)
+
 // endOf is how a transition on trigger ends the step it moves the issue out of. A move back a role
 // or a report asked for — the tester's fail, a review's request for changes, a role's or the
 // architect's backward move — ends it failed; a move back nobody asked for, a head that conflicts
 // with its base, ends it stopped. Both return the work to the step the issue moves into, which the
 // record names. Every other move ends the step passed and returns nowhere.
-func endOf(trigger TriggerKind) (result string, returns bool) {
+func endOf(trigger TriggerKind) (result StepResult, returns bool) {
 	switch trigger {
 	case TriggerTesterFailed, TriggerReviewRejected, TriggerBackward:
-		return "failed", true
+		return ResultFailed, true
 	case TriggerConflict:
-		return "stopped", true
+		return ResultStopped, true
 	}
-	return "passed", false
+	return ResultPassed, false
 }
 
 // stepRecordNamespace is the namespace of every step record's id.
@@ -81,18 +99,18 @@ func StepID(issue string, generation uint64, task, kind string, step int, starts
 	return uuid.NewSHA1(stepRecordNamespace, []byte(name)).String()
 }
 
-// StepEnd is how a step ends: its result (passed, failed or stopped), the step the work returns
-// to (nil where it returns nowhere; a retro's or a merge's place is 0) and the handoff record the
-// ending role's completion named ("" for none).
+// StepEnd is how a step ends: its result, the step the work returns to (nil where it returns
+// nowhere; a retro's or a merge's place is 0) and the handoff record the ending role's completion
+// named ("" for none).
 type StepEnd struct {
-	Result     string
+	Result     StepResult
 	ReturnedTo *int
 	Report     string
 }
 
 // stepStopped is the end of a step that no completion and no move of the table ended: the issue
 // left the workflow, its tree lingered, or its run ended under it.
-var stepStopped = StepEnd{Result: "stopped"}
+var stepStopped = StepEnd{Result: ResultStopped}
 
 // startStep writes the start of the step issue stands in (record.StandsAt), run by agent: one more
 // start counted at its place (record.Store.RaiseStepStarts), and a step record row, committed with
@@ -156,7 +174,7 @@ func (e *Engine) endStep(ctx context.Context, tx pgx.Tx, before record.Issue, en
 	if !startedAt.IsZero() {
 		write.StartedAt = new(startedAt)
 	}
-	write.EndedAt, write.Result, write.ReturnedTo = new(e.now()), new(end.Result), end.ReturnedTo
+	write.EndedAt, write.Result, write.ReturnedTo = new(e.now()), new(string(end.Result)), end.ReturnedTo
 	if end.Report != "" {
 		write.Report = new(end.Report)
 	}

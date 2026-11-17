@@ -52,7 +52,7 @@ func TestStepOfIsTodaysSequence(t *testing.T) {
 func TestEndOfReadsTheTrigger(t *testing.T) {
 	for _, tc := range []struct {
 		trigger TriggerKind
-		result  string
+		result  StepResult
 		returns bool
 	}{
 		{TriggerTesterFailed, "failed", true},
