@@ -379,11 +379,14 @@ func (b *Broker) tokenContext(ctx context.Context, key *ecdsa.PrivateKey) contex
 // credential, which the broker or anyone answering for it can repeat back - stays as it printed
 // it, the failure's class and status: the code and description under it are the very text it
 // withheld, and a BrokerError made of them would print them all the same. The redactor printed
-// err whole exactly when it answers err itself, which is what its own contract says it does.
+// the answer whole exactly when its Cause, which is what it prints of the failure without a call's
+// operation and URL, is the answer's own text. That holds under a caller's %w too, whose words it
+// drops while it still prints the answer, which is why this asks the text and not whether Error
+// answered err itself.
 func oauthBrokerError(err error, addr brokeraddr.Address) error {
 	shown := addr.Error(err)
 	var re *oauth2.RetrieveError
-	if !errors.As(err, &re) || shown != err {
+	if !errors.As(err, &re) || addr.Cause(err).Error() != re.Error() {
 		return shown
 	}
 	be := &BrokerError{Code: re.ErrorCode, Message: re.ErrorDescription}
