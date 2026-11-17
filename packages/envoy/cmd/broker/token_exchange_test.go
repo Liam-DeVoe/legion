@@ -453,6 +453,7 @@ func TestAPodWritesOnlyUnderASessionRegisteredForIt(t *testing.T) {
 // the pod, since the entry fixes the session. The same request naming the scope read is refused
 // invalid_scope, so the scope is the entry's to grant and never the request's.
 func TestTheBinaryExchangesAReadEntrysPodTokenForOneThatOnlyReads(t *testing.T) {
+	t.Parallel()
 	databaseURL := storetest.URL(t)
 	cluster, github := oidctest.New(t), oidctest.New(t)
 	clusterKey := cluster.PublishKey(t, "cluster-key")

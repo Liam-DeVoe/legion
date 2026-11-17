@@ -348,6 +348,7 @@ const v1RoutePatterns = 15
 // same, since apiAuth wraps the whole of /v1 once (main.go); TestAPIAuthBrokerToken holds that
 // apiAuth refuses the token before any handler runs.
 func TestAPIAuthRefusesAReadOnlyTokenOnEveryV1Route(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerRig(t)
 	const (
 		reader        = "ses_rig_reader"

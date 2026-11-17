@@ -1783,6 +1783,7 @@ func TestLoadReadsTheExchangeAccounts(t *testing.T) {
 // twice. An account BROKER_EXCHANGE_ACCOUNTS lists too is refused naming both settings, and the
 // setting needs the cluster issuer and the exchange audience, whose tokens its pods present.
 func TestLoadReadsTheExchangeReadAccounts(t *testing.T) {
+	t.Parallel()
 	cfg, err := Load(env(validEnv()))
 	if err != nil {
 		t.Fatal(err)

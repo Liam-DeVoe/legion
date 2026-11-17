@@ -91,6 +91,7 @@ func readOnlyTable() []apiRoute {
 // registered server mounts (its route index, one entry a row), so a walk that skipped a row, or
 // walked none, fails.
 func TestEveryRowTheReadListDoesNotNameRefusesAReadOnlyTokenBeforeItsHandler(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerTokenRigOn(t, testServerOptions{testHooks: true})
 	caller := newBrokerCaller(t)
 	const token = "a-read-only-token-walking-every-chain"
@@ -163,6 +164,7 @@ var readListAnswers = map[string]struct {
 // A row is counted once its assertions have run, and the count is held to the rows the
 // registered server mounts, as the walk above is.
 func TestTheMountedServerServesAReadOnlyTokenOnTheReadListAlone(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerTokenRigOn(t, testServerOptions{testHooks: true})
 	caller := newBrokerCaller(t)
 	const token = "a-read-only-token-walking-the-mounted-server"
@@ -221,6 +223,8 @@ func registerRefusal(t *testing.T) (refusal string) {
 // that is not there, so Register refuses either and names the route. It replaces the package's
 // list for its length, so it is not parallel.
 func TestRegisterRefusesAReadOnlyListOfNoMountedGETRow(t *testing.T) {
+	// Serial: this test swaps process-wide state. It replaces readScopeRoutes, a package
+	// variable every route table and every Register in the process reads.
 	kept := readScopeRoutes
 	t.Cleanup(func() { readScopeRoutes = kept })
 	if refusal := registerRefusal(t); refusal != "" {
@@ -231,6 +235,7 @@ func TestRegisterRefusesAReadOnlyListOfNoMountedGETRow(t *testing.T) {
 		"no row at all": "GET /api/v1/projects/{key}/architecture/no-such-route",
 	} {
 		t.Run(why, func(t *testing.T) {
+			// Serial: it sets readScopeRoutes, which every route table in the process reads.
 			readScopeRoutes = []string{name}
 			refusal := registerRefusal(t)
 			if !strings.Contains(refusal, "read list") || !strings.Contains(refusal, name) {
@@ -244,6 +249,7 @@ func TestRegisterRefusesAReadOnlyListOfNoMountedGETRow(t *testing.T) {
 // list names, sorted, each name that is no row of the table and each row that is a write, and
 // passes a GET row whether the deployment serves it or only a server with its test hooks in does.
 func TestTheReadOnlyListCheckNamesEveryRowThatIsNoMountedGET(t *testing.T) {
+	t.Parallel()
 	if refused := readRoutesNotMountedAsGET(readScopeRoutes); len(refused) != 0 {
 		t.Fatalf("the read list as it stands is refused: %v", refused)
 	}
@@ -276,6 +282,7 @@ func TestTheReadOnlyListCheckNamesEveryRowThatIsNoMountedGET(t *testing.T) {
 // token's key would be free whatever the first request did - which is why the key table is read
 // as well.
 func TestAReadOnlyTokenIsRefusedBeforeTheIdempotencyKey(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
 	const readOnly, named = "a-read-only-token-that-tries-to-write", "a-named-token-that-writes"
@@ -389,6 +396,7 @@ func readOnlyTreeFiles(nonce string) map[string]string {
 // caches Dispatch rebuilds from what it holds. The positive controls are the proof's insert, a
 // tree's insert and the read of architecture_sources, so a tracer that saw nothing cannot pass.
 func TestTheReadOnlyListedRouteWritesOnlyItsProofAndCaches(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	marked := &markedStatements{}
 	traced := storetest.TracedStore(t, database, marked)
@@ -477,8 +485,8 @@ func TestTheReadOnlyListedRouteWritesOnlyItsProofAndCaches(t *testing.T) {
 
 	// The trees are stored beside the request, on a goroutine of the server's background work, so
 	// the statements are read once the rows it stores are back.
-	if !testwait.Holds(10*time.Second, 20*time.Millisecond, func() bool { return storedTrees() == len(sums) }) {
-		t.Fatalf("the read stored %d of the prose's %d trees within 10s, want every one", storedTrees(), len(sums))
+	if !testwait.Holds(concurrentWait, 20*time.Millisecond, func() bool { return storedTrees() == len(sums) }) {
+		t.Fatalf("the read stored %d of the prose's %d trees within %s, want every one", storedTrees(), len(sums), concurrentWait)
 	}
 
 	statements := marked.take()
