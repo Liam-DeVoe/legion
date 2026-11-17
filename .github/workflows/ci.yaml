@@ -2840,7 +2840,7 @@ jobs:
               - 'scripts/e2e/README.md'
               # The guide packages/envoy/internal/broker/oauth, packages/daemon/internal/runtime/sandbox
               # and packages/daemon/internal/daemon hold their committed extracts to
-              # (internal/textcheck/claims_doc_test.go:37,44, reclaim_doc_test.go:51,277 and
+              # (internal/textcheck/claims_doc_test.go:43,50, reclaim_doc_test.go:51,277 and
               # way_back_doc_test.go:132).
               - 'docs/kubernetes.md'
               # The three files packages/daemon/internal/textcheck/design_approved_wake_test.go
