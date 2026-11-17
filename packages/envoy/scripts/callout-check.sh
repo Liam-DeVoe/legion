@@ -19,7 +19,8 @@
 #      the auth service's queue group, so no request waits on it. A session opened before the hub
 #      has read that connection's close can be routed to the dead replica and is refused at the
 #      hub's authorization timeout (measured), so the check opens the first session only once the
-#      hub's connection list no longer names the killed replica, inside the first session's 2 s.
+#      hub lists one envoy-broker-callout connection fewer (both replicas carry that name), inside
+#      the first session's 2 s.
 #
 # Each probe is cmd/natsprobe, run with only the variables it needs: as a session, it trades the
 # pod's exchange token for a broker access token under the session the stack registered the pod
@@ -232,7 +233,7 @@ else
 fi
 
 # 5. The listener's own connection, as the hub lists it: authorized as listener/<machine id>.
-users="$(curl -sf "$DEV_STACK_NATS_MONITOR_URL/connz?auth=true&limit=1024" | jq -r '.connections[]?.authorized_user // empty' 2>/dev/null || true)"
+users="$(curl -sf --max-time 2 "$DEV_STACK_NATS_MONITOR_URL/connz?auth=true&limit=1024" | jq -r '.connections[]?.authorized_user // empty' 2>/dev/null || true)"
 listener_user="$(printf '%s\n' "$users" | grep '^listener/' | head -n1 || true)"
 if [ -z "$users" ]; then
   unknown "the listener is connected by its service token: the hub's connection list ($DEV_STACK_NATS_MONITOR_URL/connz) named no connection"
@@ -243,11 +244,12 @@ else
 fi
 
 # callout_connections prints how many connections the hub's connection list names as the auth
-# service's (natscallout's connectionName), or nothing when the list cannot be read. nats-server
-# marks a connection closed, and so routes nothing more to its subscriptions (client.go,
-# deliverMsg), before it takes the connection off that list (closeConnection, removeClient).
+# service's (natscallout's connectionName), or nothing when the list cannot be read inside 2 s.
+# nats-server marks a connection closed, and so routes nothing more to its subscriptions
+# (client.go, deliverMsg), before it takes the connection off that list (closeConnection,
+# removeClient).
 callout_connections() {
-  curl -sf "$DEV_STACK_NATS_MONITOR_URL/connz?limit=1024" 2>/dev/null |
+  curl -sf --max-time 2 "$DEV_STACK_NATS_MONITOR_URL/connz?limit=1024" 2>/dev/null |
     jq -r '[.connections[]? | select(.name == "envoy-broker-callout")] | length' 2>/dev/null || true
 }
 
@@ -267,22 +269,27 @@ else
     killed=$(date +%s%N)
     kill -KILL "$second_broker"
     dropped=""
-    count=""
+    listed=""
     waited=0
     while :; do
       count="$(callout_connections)"
       waited=$((($(date +%s%N) - killed) / 1000000))
-      if [ -n "$count" ] && [ "$count" -lt "$before" ]; then
-        dropped=$waited
-        break
+      if [ -n "$count" ]; then
+        listed=$count
+        if [ "$count" -lt "$before" ]; then
+          dropped=$waited
+          break
+        fi
       fi
       [ "$waited" -ge 2000 ] && break
       sleep 0.02
     done
-    if [ -z "$dropped" ] && [ -z "$count" ]; then
+    # A list that could not be read at all after the kill says nothing; one read that still named
+    # both connections says the hub kept the killed broker, whatever the reads after it answered.
+    if [ -z "$dropped" ] && [ -z "$listed" ]; then
       unknown "$killed_property: the hub's connection list ($DEV_STACK_NATS_MONITOR_URL/connz) could not be read after the kill"
     elif [ -z "$dropped" ]; then
-      fail "$killed_property: the hub still listed $count connections named envoy-broker-callout ${waited} ms after the kill"
+      fail "$killed_property: the hub still listed $listed connections named envoy-broker-callout ${waited} ms after the kill"
     else
       slowest=0
       outcome=pass

@@ -328,9 +328,9 @@ endpoint plays the other broker); the hub lists the listener's connection author
 `listener/<its machine id>`; and with one broker killed, three new sessions are each
 admitted within 2 s, the first counted from the kill. A session opened before the hub has
 read the killed broker's close can be routed to the dead replica and refused at the hub's
-authorization timeout, so the check opens the first session once the hub's connection list
-no longer names that broker's `envoy-broker-callout` connection, and says how long the drop
-took. The last line is `all 6 assertions passed` (exit 0) or `<k> of 6
+authorization timeout, so the check opens the first session once the hub lists one
+`envoy-broker-callout` connection fewer (both brokers' connections carry that name), and says
+how long the drop took. The last line is `all 6 assertions passed` (exit 0) or `<k> of 6
 assertions failed` (exit 1); a probe that reports nothing reads `UNKNOWN` and fails.
 
 ```bash
