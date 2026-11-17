@@ -50,10 +50,11 @@
 #      bash` runs); every step before it one of STEPS_BEFORE_VERSION_STEPS on every key but name,
 #      id, if, timeout-minutes and continue-on-error; the workflow's env: a literal mapping of
 #      WORKFLOW_ENV_KEYS' variables alone, so a BASH_ENV, PATH, LD_PRELOAD, GIT_DIR or GH_REPO is
-#      refused as one more unlisted name; the job on the module's runs-on: (a self-hosted runner
-#      runs its own hooks first), with no env:, no container:, no reusable workflow, and, as the
-#      workflow, no defaults but `run: {shell: bash}`; and the step under
-#      `bash` itself (`bash --rcfile x -i {0}` sources x first). An expression in place of any of
+#      refused as one more unlisted name; the job setting only the module's JOB_KEYS, so no
+#      services:, container:, env:, defaults: or reusable workflow, on its runs-on: (a self-hosted
+#      runner runs its own hooks first); the workflow with no defaults but `run: {shell: bash}`;
+#      and the step under `bash` itself (`bash --rcfile x -i {0}` sources x first). An expression
+#      in place of any of
 #      those mappings is refused, since no one can read what it sets;
 #   4. a path go names for the legion-envoy archives that no path of $LEGION_ENVOY_VERSION_ARGS
 #      covers, naming it and the listing that names it;
@@ -377,16 +378,8 @@ def approved(spec):
 
 def differences(have, want, name):
     """What a step's pinned keys `have` hold where the listed step `name`'s `want` hold otherwise."""
-    parts = []
-    for key in sorted(set(have) | set(want)):
-        if have.get(key) == want.get(key):
-            continue
-        if key == "run" and isinstance(have.get(key), str) and isinstance(want.get(key), str):
-            n, got, need = text_difference(have[key], want[key])
-            parts.append(f"its run:'s line {n} is {shown(got)} where `{name}`'s is {shown(need)}")
-        else:
-            parts.append(f"its {key}: is {rendered(have.get(key))} where `{name}`'s is {rendered(want.get(key))}")
-    return "; ".join(parts)
+    return "; ".join(f"its {key}: is {rendered(have.get(key))} where `{name}`'s is {rendered(want.get(key))}"
+                     for key in sorted(set(have) | set(want)) if have.get(key) != want.get(key))
 
 
 def earlier_step(path, spec, where, n, step):
@@ -421,15 +414,15 @@ def earlier_step(path, spec, where, n, step):
 
 
 def defaults_problem(scope, defaults, where, path):
-    """A defaults: other than none or `run: {shell: bash}` reaches the step: a working-directory:
-    runs its relative .github/scripts/release-push.sh from another tree."""
+    """A workflow defaults: other than none or `run: {shell: bash}` reaches the step: a
+    working-directory: runs its relative .github/scripts/release-push.sh from another tree."""
     if defaults is None:
         return
     run = defaults.get("run") if isinstance(defaults, dict) else None
     if not isinstance(defaults, dict) or set(defaults) - {"run"} or not isinstance(run, dict) or set(run) - {"shell"}:
-        problem(f"{scope} defaults: is {rendered(defaults)}, which reaches {where}: a job holding a checked version "
-                f"step, and its workflow, set no defaults but `run: {{shell: bash}}`, since a working-directory: "
-                f"runs the step's relative release-push.sh from another tree", path)
+        problem(f"{scope} defaults: is {rendered(defaults)}, which reaches {where}: a workflow holding a checked "
+                f"version step sets no defaults but `run: {{shell: bash}}`, since a working-directory: runs the "
+                f"step's relative release-push.sh from another tree", path)
 
 
 def default_shell(defaults):
@@ -441,10 +434,9 @@ def default_shell(defaults):
 
 def version_step(doc, spec):
     """Rule 3 for one of release_version_inputs.py's VERSION_STEPS: its job is pinned up to and
-    including the step. The job calls no reusable workflow, runs in no container:, sets no env:
-    and no defaults but bash; every step before the step is one of STEPS_BEFORE_VERSION_STEPS; and
-    the step's run: and env: are the module's, it sets no other pinned key, and it runs under
-    `bash` itself."""
+    including the step. The job sets only JOB_KEYS and runs on the module's runner; every step
+    before the step is one of STEPS_BEFORE_VERSION_STEPS; and the step's run: and env: are the
+    module's, it sets no other pinned key, and it runs under `bash` itself."""
     path = spec.workflow
     jobs = doc.get("jobs") if isinstance(doc, dict) else None
     job = (jobs or {}).get(spec.job)
@@ -452,21 +444,15 @@ def version_step(doc, spec):
     if not isinstance(job, dict):
         problem(f"{path} must hold the job {spec.job}, with {where}; it holds none", path)
         return
-    if "uses" in job:
-        problem(f"{spec.job} calls the reusable workflow {rendered(job['uses'])}, whose steps this check does not "
-                f"read; a job holding a checked version step runs its steps inline", path)
-    if "container" in job:
-        problem(f"{spec.job} runs in a container:, so {where} runs under that image's bash and environment, which "
-                f"this check does not read; run the job on the runner itself", path)
+    for key in sorted(set(job) - set(plan.JOB_KEYS)):
+        problem(f"{spec.job} sets {key}: ({rendered(job[key])}), which {PLAN}'s JOB_KEYS does not list: a job holding "
+                f"a checked version step sets only the keys those jobs use today, since another (services:, "
+                f"container:, env:, defaults:, a reusable workflow's uses:, …) can run code or set the environment "
+                f"before {where}, none of which this check reads", path)
     if job.get("runs-on") != spec.runs_on:
         problem(f"{spec.job}'s runs-on: is {rendered(job.get('runs-on'))}, where {PLAN} names `{spec.runs_on}` for it: "
                 f"another runner, a self-hosted one above all, can run its own hooks and set its own environment "
                 f"before {where}, none of which this check reads", path)
-    if "env" in job:
-        problem(f"{spec.job}'s env: is {rendered(job['env'])}, and a job's env: reaches every step of it up to {where}: "
-                f"a job holding a checked version step sets no env: of its own, since {PLAN} pins each step's env: "
-                f"and a variable here (BASH_ENV, PATH, GIT_DIR, …) can change what those steps run or read", path)
-    defaults_problem(f"{spec.job}'s", job.get("defaults"), where, path)
     steps = job.get("steps") if isinstance(job.get("steps"), list) else []
     found = [i for i, step in enumerate(steps) if isinstance(step, dict) and step.get("id") == spec.step_id]
     if len(found) != 1 or not isinstance(steps[found[0]].get("run"), str):
@@ -495,9 +481,7 @@ def version_step(doc, spec):
                 f"(PATH picks the bash its `#!/usr/bin/env bash` runs): {detail}", path)
     for key in sorted(set(step) - set(FREE_STEP_KEYS) - {"run", "env", "shell"}):
         problem(f"{where} sets {key}: ({rendered(step[key])}), which a checked version step does not", path)
-    for scope, shell in (("its own", step.get("shell")),
-                         ("its job's defaults.run", default_shell(job.get("defaults"))),
-                         ("the workflow's defaults.run", default_shell(doc.get("defaults")))):
+    for scope, shell in (("its own", step.get("shell")), ("the workflow's defaults.run", default_shell(doc.get("defaults")))):
         if shell is not None and shell != "bash":
             problem(f"{scope} shell: is `{shell}`, where {where} must run under `bash` itself: any other shell line "
                     f"runs other code first or reads the run: another way (`bash --rcfile x -i {{0}}` sources x)", path)

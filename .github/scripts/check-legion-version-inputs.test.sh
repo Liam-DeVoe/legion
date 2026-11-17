@@ -322,7 +322,7 @@ replace "$root/.github/workflows/release.yaml" $'    runs-on: ubuntu-24.04\n' $'
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "names the job's env:" \
-  "$(contains "$out" "legion_build's env: is .*a job holding a checked version step sets no env: of its own")"
+  "$(contains "$out" "legion_build sets env: (\`{\"LEGION_VERSION_ARGS\": \"-- packages/daemon/\"}\`), which $plan_file's JOB_KEYS does not list")"
 
 echo "case: the command left in a shell comment"
 root=$(written comment)
@@ -379,7 +379,7 @@ root=$(written jobenv-env)
 replace "$root/.github/workflows/release.yaml" $'    runs-on: ubuntu-24.04\n' $'    runs-on: ubuntu-24.04\n    env:\n      ENV: ./version-startup.sh\n'
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
-check "names the job's env:" "$(contains "$out" "legion_build's env: is \`{\"ENV\": \"./version-startup.sh\"}\`")"
+check "names the job's env:" "$(contains "$out" "legion_build sets env: (\`{\"ENV\": \"./version-startup.sh\"}\`), which")"
 
 echo "case: the listener's confirm step's own env: sets BASH_ENV"
 root=$(written stepenv-bashenv)
@@ -396,8 +396,8 @@ replace "$root/.github/workflows/release.yaml" $'    runs-on: ubuntu-24.04\n' \
   $'    runs-on: ubuntu-24.04\n    defaults:\n      run:\n        shell: bash --noprofile --rcfile ./version-startup.sh -i {0}\n'
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
-check "names the shell line" \
-  "$(contains "$out" "its job's defaults.run shell: is \`bash --noprofile --rcfile ./version-startup.sh -i {0}\`")"
+check "names the job's defaults" \
+  "$(contains "$out" "legion_build sets defaults: (\`{\"run\": {\"shell\": \"bash --noprofile --rcfile ./version-startup.sh -i {0}\"}}\`), which")"
 
 echo "case: the workflow's defaults.run.shell is sh"
 root=$(written workflow-shell)
@@ -412,7 +412,7 @@ replace "$root/.github/workflows/release.yaml" $'    runs-on: ubuntu-24.04\n' \
   $'    runs-on: ubuntu-24.04\n    defaults:\n      run:\n        working-directory: elsewhere\n'
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
-check "names the defaults" "$(contains "$out" "legion_build's defaults: is \`{\"run\": {\"working-directory\": \"elsewhere\"}}\`")"
+check "names the defaults" "$(contains "$out" "legion_build sets defaults: (\`{\"run\": {\"working-directory\": \"elsewhere\"}}\`), which")"
 root=$(written step-working-directory)
 replace "$root/.github/workflows/release.yaml" $'      - id: version\n' $'      - id: version\n        working-directory: elsewhere\n'
 run_check "$root"
@@ -471,14 +471,36 @@ root=$(written container)
 replace "$root/.github/workflows/release.yaml" $'    runs-on: ubuntu-24.04\n' $'    runs-on: ubuntu-24.04\n    container: debian:trixie-slim\n'
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
-check "names the job" "$(contains "$out" "legion_build runs in a container:, so legion_build's step \`version\` runs under that image's bash")"
+check "names the key" "$(contains "$out" "legion_build sets container: (\`debian:trixie-slim\`), which $plan_file's JOB_KEYS does not list")"
 
 echo "case: the version step's job calls a reusable workflow"
 root=$(written reusable)
 replace "$root/.github/workflows/release.yaml" $'    runs-on: ubuntu-24.04\n' $'    runs-on: ubuntu-24.04\n    uses: ./.github/workflows/other.yaml\n'
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
-check "names the workflow" "$(contains "$out" "legion_build calls the reusable workflow \`./.github/workflows/other.yaml\`")"
+check "names the workflow" "$(contains "$out" "legion_build sets uses: (\`./.github/workflows/other.yaml\`), which")"
+
+# The round-4 review's reproduction: the runner starts a service and waits for its health check
+# before the job's first step, so one with a writable host mount can replace host tools - a git
+# wrapper that answers `git log` with nothing - while every pinned step stays as listed.
+echo "case: a service container with a writable host mount and a health-check command"
+root=$(written services)
+replace "$root/.github/workflows/release.yaml" $'    runs-on: ubuntu-24.04\n' \
+  $'    runs-on: ubuntu-24.04\n    services:\n      tools:\n        image: alpine:3.22\n        volumes:\n          - /usr/local/bin:/host-bin\n        options: --health-cmd "cp /wrap/git /host-bin/git"\n'
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the key and the list" "$(contains "$out" "legion_build sets services: (\`{\"tools\": .*/usr/local/bin:/host-bin.*}\`), which $plan_file's JOB_KEYS does not list")"
+root=$(written services-confirm)
+replace "$root/.github/workflows/release-envoy-listener.yaml" $'  release_publish:\n    runs-on: ubuntu-24.04\n' \
+  $'  release_publish:\n    runs-on: ubuntu-24.04\n    services:\n      tools:\n        image: alpine:3.22\n'
+run_check "$root"
+check "exits 1 on the listener's confirm job" "$(is "$status" 1)"
+check "names it" "$(contains "$out" "release_publish sets services: (")"
+root=$(written strategy)
+replace "$root/.github/workflows/release.yaml" $'    runs-on: ubuntu-24.04\n' $'    runs-on: ubuntu-24.04\n    strategy:\n      matrix:\n        n: [1]\n'
+run_check "$root"
+check "exits 1 on a key no checked job sets today" "$(is "$status" 1)"
+check "names it" "$(contains "$out" "legion_build sets strategy: (")"
 
 echo "case: the listener's confirm step sets its paths' variable"
 root=$(written confirmenv)
@@ -501,7 +523,7 @@ root=$(written job-env-expression)
 replace "$root/.github/workflows/release.yaml" $'    runs-on: ubuntu-24.04\n' $'    runs-on: ubuntu-24.04\n    env: ${{ fromJSON(needs.setup.outputs.env) }}\n'
 run_check "$root"
 check "exits 1 on the job's" "$(is "$status" 1)"
-check "names it" "$(contains "$out" "legion_build's env: is \`\${{ fromJSON(needs.setup.outputs.env) }}\`")"
+check "names it" "$(contains "$out" "legion_build sets env: (\`\${{ fromJSON(needs.setup.outputs.env) }}\`), which")"
 root=$(written earlier-env-expression)
 replace "$root/.github/workflows/release.yaml" $'        with:\n' $'        env: ${{ fromJSON(needs.setup.outputs.env) }}\n        with:\n'
 run_check "$root"

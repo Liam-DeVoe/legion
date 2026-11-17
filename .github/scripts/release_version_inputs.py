@@ -38,6 +38,13 @@ accounts for are one plan, kept here.
                                change what the step hands release-push.sh or what that script
                                reads. A list of what may be set closes that class; a list of what
                                may not would name its members one review at a time.
+  JOB_KEYS                     the keys a job holding one of VERSION_STEPS may set: those the three
+                               jobs set today. Another key can run code or set the environment
+                               before the step - services: (a container with a writable host
+                               mount and a health-check command can replace host tools such as
+                               git), container:, env:, defaults:, a reusable workflow's uses: -
+                               so the class is closed with a list of what may be set, as
+                               WORKFLOW_ENV_KEYS closes the variables'.
 
 Pure: each caller reads the target lists its own way and hands them in, and keeps its own
 annotations and its own handling of a failure.
@@ -62,6 +69,9 @@ WORKFLOW_ENV_KEYS = {
               "PI_LEGION_VERSION_ARGS"),
     LISTENER: ("GOPROXY", ENVOY_ARGS),
 }
+
+JOB_KEYS = ("cache-mode", "concurrency", "if", "needs", "outputs", "permissions", "runs-on", "steps",
+            "timeout-minutes")
 
 
 # The GitHub-hosted runner each checked job runs on: its image is GitHub's, with no hook or
