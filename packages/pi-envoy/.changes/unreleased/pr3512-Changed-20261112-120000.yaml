@@ -8,7 +8,8 @@ body: |-
   to post a reply instead, which two lanes answered by resending whole comments. A message of a
   direct conversation takes no edit, so the note still asks there for a reply with the correction,
   and only where the original would mislead its reader. The four commands need a Dispatch of this
-  release: where an older server answers with no route, or with the scope or the `actor` refusal
+  release, except an edit of a person's own comment made with that person's token, which an older
+  Dispatch takes as the person and keeps no earlier body of: where an older server answers with no route, or with the scope or the `actor` refusal
   its comment edit gives, each says that this Dispatch predates post corrections. Against an older
   Dispatch, a person's own token that names a session can be answered as the person, so an edit
   of that session's own comment can be refused NOT_AUTHOR.

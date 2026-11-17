@@ -2480,7 +2480,7 @@ test("the Conversation marks an edited message and reads a deleted one as delete
 });
 
 // An author who edits a reply and then deletes it leaves both marks on the record, and the
-// reader meets only the deleted line: ` · edited` points at a body nobody can read any more.
+// reader meets only the deleted line: ` · edited` points at a body no read of the reply gives any more.
 test("a deleted reply its author had edited reads as deleted, with no edited mark", async () => {
   const root = message("message-1");
   const deletedReply = message("message-2", {

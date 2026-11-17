@@ -255,7 +255,7 @@ func TestEditMessageReadsBackTheNewBodyAndTheTimeOfTheEdit(t *testing.T) {
 		t.Fatalf("the message.edited payload = %#v, want the message with its new body", payload)
 	}
 
-	// The history keeps the body the edit replaced, which no read of the message gives.
+	// The history keeps the body the edit replaced, which GET /api/v1/messages/{id} no longer gives.
 	history := readPostHistory(t, handler, "/api/v1/messages/"+message.ID+"/history")
 	if len(history.Entries) != 1 || history.Entries[0].Body != "the first body" {
 		t.Fatalf("the message's history = %#v, want the one body the edit replaced", history.Entries)

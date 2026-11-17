@@ -32,8 +32,9 @@ export function passageItem<T extends { readonly id: string }>(
  *  A reply that names one block of its parent (`block`, the reply's `reply_block`) quotes that
  *  passage instead, worded `Replying to <author>'s passage — <text>`; once the parent's edit
  *  removed the passage, the quote says so in place of its text. Once the parent's author
- *  deleted the parent, the quote says that instead of either, since a delete gives no part of
- *  the body to any read that quotes it.
+ *  deleted the parent, the quote says that instead of either: no read of the parent gives its
+ *  body, and a reply's read carries the quote with the parent's mark and no text (only the
+ *  reply's own event keeps the preview it froze).
  *
  *  A parent its author edited carries ` · edited` after its author's name, as its own byline
  *  does (`edited`); without a loaded parent there is no author and no edit to mark.

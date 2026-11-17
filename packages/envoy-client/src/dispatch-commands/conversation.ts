@@ -172,10 +172,11 @@ export async function editCommentCommand(context: CommandContext): Promise<Dispa
 }
 
 /** What each delete command says the delete leaves readable: no read of the post gives its body
- *  again, and a reply's own event keeps the preview of the post it quoted (`reply_block.text` of
- *  a comment reply, `reply_body` of a message reply), which the delete leaves as it froze. */
+ *  again, and a reply's own event keeps the preview of the post it froze when it was written
+ *  (`reply_block.text` of a reply naming a block, `reply_body` of a message reply, which holds
+ *  one whether or not the reply named a block), which the delete leaves as it froze. */
 const DELETED_POST_READS =
-  "No read of it gives its body again; a reply's own event keeps the preview it quoted.";
+  "No read of it gives its body again; a reply's own event keeps the preview of it the reply froze.";
 
 /** `dispatch delete-comment`: the author withdraws their own comment. */
 export async function deleteCommentCommand(context: CommandContext): Promise<DispatchToolResult> {

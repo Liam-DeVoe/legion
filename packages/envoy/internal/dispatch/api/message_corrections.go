@@ -143,8 +143,9 @@ func (s *server) editMessage(w http.ResponseWriter, r *http.Request) {
 	message.EditedAt = &editedAt
 	// The blocks of the new body are indexed at the time of the edit, as an edited comment's
 	// are, which settles the index messages_item_blocks_owed owes on this update (migration
-	// 20261110224508). A message keeps no per-revision block text, so the body this edit
-	// replaced is kept by the history row above and nowhere else.
+	// 20261110224508). A message keeps no per-revision block text, so the history row above is
+	// the one copy served as the body this edit replaced; the message's earlier events and the
+	// excerpt kept of a block this edit removed still hold parts of it.
 	referenceChanges, err := refs.ReplaceCountedItemEdit(
 		r.Context(), tx, refs.ItemMessage, message.ID, previousBody, message.Body, s.deps.ServerURL, editedAt, nil)
 	if err != nil {
@@ -169,9 +170,11 @@ func (s *server) editMessage(w http.ResponseWriter, r *http.Request) {
 }
 
 // deleteMessage answers DELETE /api/v1/messages/{id}: the author withdraws its own message. The
-// row and its place in the thread stay; the body goes, and with it each copy of the body that
-// does not follow the cleared column — the block index and each block's stored excerpt — in the
-// one transaction that clears it. Each reply keeps its own text and its own place.
+// row and its place in the thread stay; the body goes, and with it each copy a read serves as the
+// message's own text that does not follow the cleared column — the block index and each block's
+// stored excerpt — in the one transaction that clears it. The event log's payloads stay as
+// written and are masked at each read (attachPostMarks), and a reply's own events keep the
+// preview they froze. Each reply keeps its own text and its own place.
 func (s *server) deleteMessage(w http.ResponseWriter, r *http.Request) {
 	if !requireUUIDPath(w, r, "message") {
 		return

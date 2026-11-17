@@ -1281,7 +1281,7 @@ export const dispatchToolSpecs = [
       "author alone may delete a comment: every other caller is refused 403 NOT_AUTHOR. The " +
       "comment keeps its id and its place in its thread, and no read of it gives any part of its " +
       "body again: each read of it marks it deleted and names who deleted it and when, and a " +
-      "reply's own event keeps the preview of it the reply quoted. Its replies keep " +
+      "reply's own event keeps the preview of it the reply froze. Its replies keep " +
       "their own text and their own places, a suggestion's replacement text goes with the body, " +
       "the document's margin mark holds no text, each mention delivery still waiting is failed, " +
       "and search stops matching it. A suggestion of it still waiting is rejected out of the " +
@@ -1374,7 +1374,7 @@ export const dispatchToolSpecs = [
       "an issue is deleted; a message of a direct conversation, which names no issue, is refused " +
       "409 NOT_AN_ISSUE_MESSAGE. The message keeps its id and its place in its thread, and no read " +
       "of it gives any part of its body again: each read of it marks it deleted and names who " +
-      "deleted it and when, and a reply's own event keeps the preview of it the reply quoted. " +
+      "deleted it and when, and a reply's own event keeps the preview of it the reply froze. " +
       "Its replies keep their own text, each send still waiting is failed, and search stops " +
       "matching it. A Dispatch of this release keeps the body: dispatch read --ref " +
       "dispatch://KEY/message/<id> " +

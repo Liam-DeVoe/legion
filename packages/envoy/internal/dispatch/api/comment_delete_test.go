@@ -317,7 +317,7 @@ func TestAPinnedBlockReferenceToADeletedCommentGivesNoText(t *testing.T) {
 	requirePinnedText("the comment that stands, after the delete", standingRef, standing)
 }
 
-// R3: every read that quotes a post says that it is deleted. A block of a deleted comment is
+// R3: every read of a deleted post says that it is deleted. A block of a deleted comment is
 // gone with the body, so neither block read can give text; what each must not do is answer that
 // the block is missing and leave the deletion unsaid. Both reads of the withdrawn comment's
 // block - the unpinned one and a pin to the revision that recorded it - name the deletion in

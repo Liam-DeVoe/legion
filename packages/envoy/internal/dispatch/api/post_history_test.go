@@ -199,8 +199,8 @@ func TestDeletedPostHistoryGivesTheMarkAndNoBody(t *testing.T) {
 		}
 	}
 	// The answer is the comment as the delete left it: the body it could give is the one that
-	// stood at the delete. The body the edit replaced is kept in the comment's history alone,
-	// which the answer does not carry.
+	// stood at the delete. The body the edit replaced is no longer on the comment's row, and the
+	// answer carries no history.
 	if body := deleted.Body.String(); strings.Contains(body, "the second body") {
 		t.Fatalf("the delete answered %s, want no part of the body", body)
 	}

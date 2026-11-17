@@ -265,7 +265,7 @@ func DecodeAnchor(data []byte, anchor *Anchor) error {
 // stands behind all of them and no read of a deleted post can answer a mark of another shape.
 // Both are nil for a post that stands, the time is answered in UTC as every other time a read
 // answers is, and an author that deleted the post is read as the actor it was stored as. A mark
-// with no actor stored (a row an older build wrote) is the time alone.
+// with no actor stored (deleted_by null, which no delete of this build writes) is the time alone.
 func DeletedPostMark(at *time.Time, by []byte) (*time.Time, *Actor, error) {
 	if at == nil {
 		return nil, nil, nil

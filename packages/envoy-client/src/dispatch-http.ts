@@ -1627,8 +1627,9 @@ export class DispatchClient {
     return this.#json("DELETE", ["api", "v1", "messages", id], { actor });
   }
 
-  /** `GET /api/v1/messages/{id}/history`: every body an edit or a delete of the message
-   *  replaced, newest first, with the deleted mark the post carries. It is read under
+  /** `GET /api/v1/messages/{id}/history`: each entry an edit or a delete of the message wrote,
+   *  newest first: with the body an edit replaced while the message stands, and with the deleted
+   *  mark and no body once it is deleted. It is read under
    *  `GET /api/v1/messages/{id}`'s rule, so the session goes in the query as `messageBlocks`
    *  sends it. */
   async messageHistory(id: string, session?: string): Promise<PostHistoryRead> {
@@ -1825,8 +1826,9 @@ export class DispatchClient {
     return this.#json("DELETE", ["api", "v1", "comments", id], { actor });
   }
 
-  /** `GET /api/v1/comments/{id}/history`: every body an edit or a delete of the comment
-   *  replaced, newest first, with the deleted mark the post carries. Any authenticated caller
+  /** `GET /api/v1/comments/{id}/history`: each entry an edit or a delete of the comment wrote,
+   *  newest first: with the body an edit replaced while the comment stands, and with the deleted
+   *  mark and no body once it is deleted. Any authenticated caller
    *  reads it, as it reads `getComment`. */
   async commentHistory(id: string): Promise<PostHistoryRead> {
     return this.#json("GET", ["api", "v1", "comments", id, "history"]);

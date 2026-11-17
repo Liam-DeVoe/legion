@@ -190,9 +190,9 @@ func TestAnOlderBuildSkipsItemBlockRows(t *testing.T) {
 
 // A block node of a comment or of an issue message carries its post's edit time and delete mark,
 // as the post's own node does. A delete takes every block out of the post's current revision
-// (TombstoneItem), so no current block node of a deleted post resolves after it; the one read
-// that still builds a node of such a block is RemovedItemBlockNode, a comment's, which builds it
-// with the comment's mark. The message's current block is read with the mark stamped on its row
+// (TombstoneItem), so no current block node of a deleted post resolves after it.
+// RemovedItemBlockNode, a comment's, builds a node of such a block with the comment's mark when
+// called; no API read reaches it for a deleted post, whose pinned block read answers 404 first. The message's current block is read with the mark stamped on its row
 // and no tombstone, the one state in which loadMessageBlockNodes can be seen to carry it.
 func TestAPostsBlockNodesCarryThePostsMarks(t *testing.T) {
 	database := storetest.Open(t)

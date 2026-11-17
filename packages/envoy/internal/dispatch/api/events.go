@@ -444,8 +444,9 @@ type postKey struct {
 // replaced the body: an event keeps the edited_at of the moment it was written, null on the
 // post's creation, beside the body as it stood then, so without the post's own mark a read of
 // the log would print that body as if nobody had replaced it since. Of a deleted post it also
-// takes the body out of the payload: a read of the event log says that the post is deleted and
-// gives no part of what it said. The stored row is never rewritten - the log is the record of
+// takes the body out of the payload: a read of the post's own events says that it is deleted and
+// gives no part of what it said, while a reply's own event keeps the preview it froze of it
+// (below). The stored row is never rewritten - the log is the record of
 // what happened - so the marks are read here, at every read, which is why readEventRows calls it
 // for readEvents and readEventsAfterID alike. The time of each edit stays the created_at of the
 // edit's own event.
@@ -455,10 +456,11 @@ type postKey struct {
 // nothing for eventSelect to join on, and a column joined onto the row could not remove the
 // payload's body anyway.
 //
-// The two frozen previews of another post stay, as the delete leaves them: the reply_body of a
-// reply's own message.created payload, and the reply_block.text of a reply's comment.created.
-// Each is part of the event of the post that quoted it, and only the quoted post's own events
-// are marked here.
+// The frozen previews of another post stay, as the delete leaves them: the reply_body and the
+// reply_block.text of a message reply's message.answered, and the reply_block.text of a comment
+// reply's comment.created or comment.answered, and of each later event of that reply. Each is
+// part of an event of the post that quoted it, and only the quoted post's own events are marked
+// here.
 func (s *server) attachPostMarks(ctx context.Context, events []model.Event) error {
 	// The ids the page names, by the kind of post each is an id of; that kind names the table
 	// readPostMarks reads it in.

@@ -468,10 +468,10 @@ func itemBlockNoun(kind string) string {
 // `missing`, the words the read's own case wrote, and after them the deletion when the item is
 // a post its author withdrew. The delete clears the body, the block index and the text each
 // revision recorded (refs.TombstoneItem), so a read of a deleted post's block would otherwise
-// say that the block is missing and leave the deletion unsaid, where every read that quotes a
-// post says that it is deleted. The status stays 404: the reference names a node no read can
-// give, which is what NOT_FOUND says here, and the words are deletedPostError's, the one place
-// this server says a post is deleted. The mark is read on this path alone, so a reference to a
+// say that the block is missing and leave the deletion unsaid, where every read of the post
+// says that it is deleted. The status stays 404: the reference names a node no read can give,
+// which is what NOT_FOUND says here, and the words match deletedPostError's
+// (handler_errors.go), written again here under that 404. The mark is read on this path alone, so a reference to a
 // block that is there costs no query for it.
 func (s *server) itemBlockNotFound(ctx context.Context, kind refs.ItemKind, itemID, missing string) error {
 	deleted, err := s.postIsDeleted(ctx, kind, itemID)

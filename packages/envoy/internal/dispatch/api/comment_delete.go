@@ -1,8 +1,10 @@
 // comment_delete.go is DELETE /api/v1/comments/{id}: the author withdraws its own comment. The
-// row and its place in the thread stay; the body goes, and with it every copy of the body that
-// does not follow the cleared column — the block index, each block's stored excerpt, the text
-// each revision recorded of a block, and the document margin mark — each rewritten in the one
-// transaction that clears it. A pending suggestion's proof is in the document itself, so the
+// row and its place in the thread stay; the body goes, and with it every copy a read serves as
+// the comment's own text that does not follow the cleared column — the block index, each
+// block's stored excerpt, the text each revision recorded of a block, and the document margin
+// mark — each rewritten in the one transaction that clears it. The event log's payloads stay as
+// written and are masked at each read (attachPostMarks), and a reply's own events keep the
+// preview they froze. A pending suggestion's proof is in the document itself, so the
 // same transaction rejects it before the clear.
 package api
 

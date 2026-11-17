@@ -29,8 +29,8 @@ export function actorText(actor: Actor | WrittenActor): string {
 /**
  * How every read names a post its author withdrew, in place of its body: who deleted it and
  * when. No read of a deleted post gives any part of its body, so this line stands wherever the
- * body would, and never an empty one. The actor is unknown only on an older record that kept
- * the time alone, which reads as `its author`.
+ * body would, and never an empty one. The actor is unknown only on a mark that stores no
+ * actor, which no delete of this release writes, and it reads as `its author`.
  *
  * One wording for every surface: every read of a post a tool prints and a reply's quote of a
  * deleted parent (`dispatch-commands/render-item.ts`), an event of one

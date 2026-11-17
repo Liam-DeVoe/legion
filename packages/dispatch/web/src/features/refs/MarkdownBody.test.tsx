@@ -1023,9 +1023,9 @@ test("a block reference reads as the headline of its text: the pinned version's,
 });
 
 // A block of a post its author deleted is gone with the post's text, so its link keeps the words
-// its author wrote, whichever way the read says so: a node that carries the post's deletion and
-// the empty text the delete left, or a 404 `NOT_FOUND`, in words nothing reads, that has the
-// post read for its mark. It never reads as the deleted line, which is the post's own link's
+// its author wrote: the block read answers a 404 `NOT_FOUND`, in words nothing reads, that has
+// the post read for its mark, and a node that carried the post's deletion and the empty text the
+// delete left would read the same. It never reads as the deleted line, which is the post's own link's
 // text, nor as an empty link (`useReferenceLabel`). A block of an edited post reads as its words
 // then ` · edited`.
 test("a block reference to a deleted post keeps the words its author wrote, and one to an edited post marks it", async () => {
