@@ -39,7 +39,7 @@ import { assertPageFits, assertWhole } from "./unclipped";
 import { asUser } from "./users";
 
 /**
- * The new issue page's frame (dispatch://INFRA-3946, part D of dispatch://INFRA-1196): the icon
+ * The new issue page's frame (part D): the icon
  * rail, Details over the page, the Contents pane and the Outline sheet, the view row and its
  * chords, the frame's skeleton, and the guards that today's shell is what every other reader
  * and every other page still gets. Every row but the preference-off guard turns the new page on
@@ -706,7 +706,7 @@ test("the five controls are toggles with an address each, one line at every widt
 
 // "760 px and below" starts at 760 px itself, where `HEADER_SCROLLS_QUERY` (`(max-width:
 // 760px)`) matches, the header scrolls away and the view row is the band that stays (decision
-// 72 of INFRA-1196's parts). Tailwind builds `max-[760px]:` as `@media not all and (min-width:
+// 72 of the parts). Tailwind builds `max-[760px]:` as `@media not all and (min-width:
 // 760px)`, which is under 760 px alone, so the row's classes are `max-[761px]:`; with
 // `max-[760px]:` the row has no sticky box at 760 px, and this row fails on "the view row has no
 // sticky box at 760 px", and with the one control's `max-[760px]:flex-1` it fails on "the one
@@ -779,7 +779,7 @@ async function topPadding(page: Page): Promise<{ padding: string; stays: number 
 }
 
 // What a scroll brings into view stands below everything that stays at the top of the screen
-// (decision 113 of INFRA-1196's parts): the page scrolls the document, whose
+// (decision 113 of the parts): the page scrolls the document, whose
 // `scroll-padding-top` is the height of the bands above the rows that are sticky at that width,
 // the view row at 390 px and the header's identity block, where a part draws it, at 1440 px. A
 // later part's focused row lands by `scrollIntoView`, which reads that padding. With no padding
@@ -820,7 +820,7 @@ async function scrollYInTwoFrames(page: Page): Promise<number> {
 }
 
 // A focus that enters the view row while it stays at the top of the screen leaves a scrolled page
-// where it is (decision 113 of INFRA-1196's parts, review 5930786767): each control in the row
+// where it is (decision 113 of the parts, review 5930786767): each control in the row
 // takes a top scroll margin of minus the row's height. The row stands in the band the page's
 // `scroll-padding-top` keeps clear, so without that margin the browser scrolls the page up to
 // bring a focused control below the band, and the row does not move: this row then fails on
@@ -955,7 +955,7 @@ test("adding one row to a page of many rows recalculates the style of that row a
 
 // From an address that names a node (`#b-`), a pointer press on Spec, then on Decisions, then on
 // Verification's count moves to each view's address, one history entry each, and leaves the
-// focus where it was (decision 93 of INFRA-1196's parts). There, a press whose mousedown took the
+// focus where it was (decision 93 of the parts). There, a press whose mousedown took the
 // focus out of the outline closed the body of the outline's row, the page grew shorter under the
 // pointer, and the press ended elsewhere and did nothing. The outline is a later part's; here the
 // page's `main`, which takes the focus on a page change, holds it in the row's place. A count is
@@ -997,7 +997,7 @@ test("from an address that names a node, a press on Spec, on Decisions and on Ve
 
 // On the phone, Details is a modal dialog, so a press on its text keeps the focus inside it, and
 // the sheet's own `Shift+M`, which acts only while the focus is inside, still closes it (decision
-// 168 of INFRA-1196's parts). With no focusable box in the sheet, the press moves the focus to
+// 168 of the parts). With no focusable box in the sheet, the press moves the focus to
 // the body, and this row fails on "a press on Details' text took the focus out of the sheet".
 test("at 390 px a press on Details' text keeps the focus in the sheet, and Shift+M then closes it", async ({
   browser,
@@ -1090,8 +1090,8 @@ test("a reader with the preference off keeps today's shell on the issue page", a
 });
 
 /**
- * The new page fills a slot in the shell's margin and draws its own frame (dispatch://INFRA-1196
- * R12, R14), and the margin is mounted once for every route. These three rows say the frame
+ * The new page fills a slot in the shell's margin and draws its own frame (R12, R14), and the
+ * margin is mounted once for every route. These three rows say the frame
  * changed no other page for a reader who turned the new page on: each draws its margin as it did,
  * no rail, and no Details. Details carries `data-details` (`margin-slot.tsx`'s
  * `DETAILS_ATTRIBUTE`) open or closed, wherever the shell hands the margin a drawer.
