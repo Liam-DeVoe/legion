@@ -1587,10 +1587,13 @@ func scanSearchRows(rows pgx.Rows, q string, limit, offset int, trees bool) (mod
 		// text it is given is null, and txt.text is null for a document hit whose latest
 		// artifact_versions row carries no markdown while an earlier one holds the markdown the
 		// search matched (searchPageAndTailSQL's document arm reads the latest version alone).
-		// The write path refuses the shape that leaves such a row - a blob version under a
-		// document artifact answers ARTIFACT_KIND_MISMATCH - so this is a bound on the scan and
-		// not a path a caller drives: deref costs nothing per row, and without it one row of a
-		// database somebody wrote by hand takes the process down for every search.
+		// The write path never leaves that shape: a file or an image upload onto a document is
+		// refused (ARTIFACT_ROLE_NAME, ARTIFACT_KIND_MISMATCH), and a document holds versions
+		// without markdown only where an upload made a role document of a file or an image
+		// (storeArtifact), before its first markdown version and never after it. So this is a
+		// bound on the scan and not a path a caller drives: deref costs nothing per row, and
+		// without it one row of a database somebody wrote by hand takes the process down for
+		// every search.
 		headlineText := deref(headline)
 		result.Snippet = markSnippet(headlineText)
 		// A snippet's tree is no stored tree and is never primed from the table or stored in it:

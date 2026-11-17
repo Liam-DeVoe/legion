@@ -57,7 +57,8 @@ func (s *server) putUploadedFile(w http.ResponseWriter, r *http.Request, kind, s
 
 // refuseUploadBeforeItsObject answers, from the pool and locking nothing, the refusal
 // storeArtifact's transaction would make of a file or image upload to target under name: a
-// project that does not exist, an artifact the name or slug finds whose kind is not kind, or a new
+// project that does not exist, a name or a slug that belongs to one of an issue's role documents
+// (fileUnderRoleNameRefusal), an artifact the name or slug finds whose kind is not kind, or a new
 // artifact whose name or reference key is past its bound. It reads as that transaction reads, so
 // the two refuse alike whenever nothing writes the owner's artifacts between them.
 func (s *server) refuseUploadBeforeItsObject(ctx context.Context, target artifactTarget, name, kind string) error {
@@ -69,6 +70,9 @@ func (s *server) refuseUploadBeforeItsObject(ctx context.Context, target artifac
 	}
 	artifact, err := lookupArtifactByNameOrSlug(ctx, pool, target, name)
 	if err == nil {
+		if refusal := fileUnderRoleNameRefusal(target, kind, name, &artifact, ""); refusal != nil {
+			return refusal
+		}
 		if artifact.Kind != kind {
 			return artifactKindMismatch(name, artifact, kind)
 		}
@@ -83,6 +87,9 @@ func (s *server) refuseUploadBeforeItsObject(ctx context.Context, target artifac
 	slug, err := s.nextArtifactSlug(ctx, pool, target, name)
 	if err != nil {
 		return err
+	}
+	if refusal := fileUnderRoleNameRefusal(target, kind, name, nil, slug); refusal != nil {
+		return refusal
 	}
 	return newArtifactKeyRefusal(target, slug)
 }
@@ -124,8 +131,8 @@ const (
 // from `?download=true`) answers `no-cache` instead, so a browser asks again before each use of a
 // copy it holds and saves under the name of the moment: an older version's name gains its
 // `-v<number>` once a newer version arrives, which the year-long cache would hide. `private`
-// either way, since the route is authenticated and no shared cache may hold them. A document
-// version is not served here (getArtifactVersion).
+// either way, since the route is authenticated and no shared cache may hold them. A version that
+// stores Markdown is not served here (serveArtifactVersion).
 func (s *server) serveFileVersion(w http.ResponseWriter, r *http.Request, artifactID, filename string, number int, download bool, content []byte, contentType, sha *string, size *int64) {
 	headers := func(length int64) {
 		w.Header().Set("Content-Type", cmp.Or(deref(contentType), "application/octet-stream"))
@@ -191,16 +198,18 @@ func (s *server) serveFileVersion(w http.ResponseWriter, r *http.Request, artifa
 }
 
 // versionFilename is the name a version saves under, before safeFilename makes it safe for the
-// header: the artifact's stored name, with `.md` added to a document's name that ends in no
-// Markdown extension, since a document downloads as its Markdown, and with `-v<number>` before
-// the extension of a version older than latest, so it does not take the latest version's name in
-// a folder. The extension starts at the last `.` after the first byte, so `.env` and `Makefile`
-// take the suffix at their end.
-func versionFilename(name, kind string, number, latest int) string {
+// header: the artifact's stored name, with `.md` added where the version is Markdown (markdown) -
+// a document's version, which downloads as its Markdown - and the name ends in no Markdown
+// extension, and with `-v<number>` before the extension of a version older than latest, so it does
+// not take the latest version's name in a folder. A version that stores a file's bytes keeps the
+// name as it is, the version a document holds from before an upload made it one included
+// (serveArtifactVersion). The extension starts at the last `.` after the first byte, so `.env` and
+// `Makefile` take the suffix at their end.
+func versionFilename(name string, markdown bool, number, latest int) string {
 	hasExtension := func(extension string) bool {
 		return len(name) >= len(extension) && strings.EqualFold(name[len(name)-len(extension):], extension)
 	}
-	if kind == "doc" && !hasExtension(".md") && !hasExtension(".markdown") {
+	if markdown && !hasExtension(".md") && !hasExtension(".markdown") {
 		name += ".md"
 	}
 	if number >= latest {

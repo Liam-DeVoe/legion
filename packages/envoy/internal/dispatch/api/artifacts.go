@@ -533,7 +533,9 @@ func (s *server) storeArtifact(
 		}
 	}
 	var artifact model.Artifact
-	var created bool
+	// created is an upload that made its artifact, and converted one that made a file or an image
+	// at a role's slug that role's document (below): neither artifact has a document state yet.
+	var created, converted bool
 	artifact, err = s.findArtifactByNameOrSlug(r.Context(), tx, target, input.name)
 	if errors.Is(err, pgx.ErrNoRows) {
 		created = true
@@ -544,6 +546,10 @@ func (s *server) storeArtifact(
 		slug, err := s.nextArtifactSlug(r.Context(), tx, target, input.name)
 		if err != nil {
 			s.writeHandlerError(w, r, err)
+			return
+		}
+		if refusal := fileUnderRoleNameRefusal(target, kind, input.name, nil, slug); refusal != nil {
+			s.writeHandlerError(w, r, refusal)
 			return
 		}
 		if refusal := newArtifactKeyRefusal(target, slug); refusal != nil {
@@ -575,9 +581,31 @@ func (s *server) storeArtifact(
 	} else if err != nil {
 		s.writeHandlerError(w, r, err)
 		return
-	} else if artifact.Kind != kind {
-		s.writeHandlerError(w, r, artifactKindMismatch(input.name, artifact, kind))
+	} else if refusal := fileUnderRoleNameRefusal(target, kind, input.name, &artifact, ""); refusal != nil {
+		s.writeHandlerError(w, r, refusal)
 		return
+	} else if artifact.Kind != kind {
+		// A Markdown upload under the name of an issue's role document that an earlier upload
+		// stored as a file or an image - before fileUnderRoleNameRefusal, or from a client that
+		// typed the upload by its path - makes it that document, as its next version: the reader
+		// that finds the document by its slug already reads it as the plan, the Verification
+		// document or the decisions document, and no other write could ever give it text. One
+		// statement sets both columns, since artifacts_role_is_an_issue_document holds a role to
+		// a document. The file's versions keep their rows, and every reader of a version decides
+		// by what that version stores (serveArtifactVersion). Every other change of kind is
+		// refused: a document never becomes a file, an artifact at any other slug keeps its kind,
+		// and a write with no content makes no document of one that exists.
+		role := documentRole(target, kind, artifact.Slug)
+		if role == nil || input.blank {
+			s.writeHandlerError(w, r, artifactKindMismatch(input.name, artifact, kind))
+			return
+		}
+		if _, err := tx.Exec(r.Context(), `update artifacts set kind = 'doc', role = $2 where id = $1 and kind <> 'doc'`, artifact.ID, *role); err != nil {
+			s.writeHandlerError(w, r, err)
+			return
+		}
+		artifact.Kind, artifact.Role = kind, *role
+		converted = true
 	} else if input.blank {
 		s.writeHandlerError(w, r, blankWriteToADocumentThatExists(input.name, artifact))
 		return
@@ -633,7 +661,9 @@ func (s *server) storeArtifact(
 	var documentChanges model.ReferenceChanges
 	var movedEvents []model.Event
 	if kind == "doc" {
-		if created {
+		// A converted artifact is seeded as a created one is: a file never had a room or a stored
+		// update to replace, since the document service opens documents alone.
+		if created || converted {
 			documentMarkdown, err = s.deps.Docs.SeedText(documentCtx, artifact.ID, string(input.content), actor)
 		} else {
 			documentMarkdown, err = s.deps.Docs.ReplaceText(documentCtx, artifact.ID, string(input.content), actor)
@@ -1113,22 +1143,31 @@ func (s *server) getArtifactVersion(w http.ResponseWriter, r *http.Request) {
 // serveArtifactVersion answers version number of artifact, read with its versions: the work of
 // the four /api/v1 version routes (getArtifactVersion) and of GET
 // /api/v2/artifacts/{id}/versions/{number} (getArtifactVersionV2). download answers a document's
-// Markdown, and every kind's bytes, as a download.
+// Markdown, and every kind's bytes, as a download. What the version stores decides how it is
+// served, not the artifact's kind: a document holds a version that stores bytes and no Markdown
+// when an upload made a file or an image that document (storeArtifact), and that version is
+// served as the file it was.
 func (s *server) serveArtifactVersion(w http.ResponseWriter, r *http.Request, artifact model.Artifact, number int, download bool) {
 	latest := 0
 	for _, version := range artifact.Versions {
 		latest = max(latest, version.Number)
 	}
-	// The file name is the artifact's name as this read finds it, so a renamed document downloads
-	// under its new name, and an older version's carries its number (versionFilename).
-	filename := versionFilename(artifact.Name, artifact.Kind, number, latest)
+	// A document's version is read with its Markdown, which is nil for a version that stores a
+	// file's bytes instead; every version of a file or an image stores bytes.
+	var version model.Version
+	var stored *string
 	if artifact.Kind == "doc" {
-		var markdown string
-		version, err := s.loadVersion(r.Context(), s.deps.Store.Pool, artifact.ID, number, &markdown)
-		if err != nil {
+		var err error
+		if version, stored, err = s.loadVersion(r.Context(), s.deps.Store.Pool, artifact.ID, number); err != nil {
 			s.writeHandlerError(w, r, err)
 			return
 		}
+	}
+	// The file name is the artifact's name as this read finds it, so a renamed document downloads
+	// under its new name, and an older version's carries its number (versionFilename).
+	filename := versionFilename(artifact.Name, stored != nil, number, latest)
+	if stored != nil {
+		markdown := *stored
 		if download {
 			// The download is the Markdown file itself, not the JSON that wraps it: the text the
 			// JSON's `markdown` field holds, with no display tree read.
@@ -2106,25 +2145,31 @@ func (s *server) loadVersions(ctx context.Context, q queryer, artifactID string)
 }
 
 // loadVersion reads one version of a document with its markdown, which the content route answers,
-// so its size is that markdown's length rather than a second read of the column.
-func (s *server) loadVersion(ctx context.Context, q queryer, artifactID string, number int, markdown *string) (model.Version, error) {
+// so its size is that markdown's length rather than a second read of the column. The markdown is
+// nil for a version that stores a file's bytes instead, one a document holds from before an upload
+// made it a document (storeArtifact), and the version is then read for no more than that.
+func (s *server) loadVersion(ctx context.Context, q queryer, artifactID string, number int) (model.Version, *string, error) {
 	var version model.Version
 	var authors []byte
+	var markdown *string
 	if err := q.QueryRow(ctx, `
 		select v.number, v.named, v.summary, v.authors, v.created_at, v.mime, v.sha256, v.markdown
 		from artifact_versions v where v.artifact_id = $1 and v.number = $2
 	`, artifactID, number).Scan(
 		&version.Number, &version.Named, &version.Summary, &authors, &version.CreatedAt,
-		&version.MIME, &version.SHA256, markdown,
+		&version.MIME, &version.SHA256, &markdown,
 	); err != nil {
-		return model.Version{}, err
+		return model.Version{}, nil, err
+	}
+	if markdown == nil {
+		return version, nil, nil
 	}
 	if err := json.Unmarshal(authors, &version.Authors); err != nil {
-		return model.Version{}, fmt.Errorf("decode version authors: %w", err)
+		return model.Version{}, nil, fmt.Errorf("decode version authors: %w", err)
 	}
 	size := len(*markdown)
 	version.Size = &size
-	return version, nil
+	return version, markdown, nil
 }
 
 // artifactKind is what an upload is stored as - doc, image or file - and the type a file or an
@@ -2292,6 +2337,38 @@ func createRoleNameRefusal(name, slug, role string) error {
 	return errorf(apicode.ArtifactRoleName,
 		"%q gives the slug %s, the slug of the issue's %s document, which Dispatch makes itself; give this document another name",
 		name, slug, role)
+}
+
+// fileUnderRoleNameRefusal is the 400 ARTIFACT_ROLE_NAME refusing a file or an image (kind) that
+// an upload stores under name on target, an issue, where the slug it lands on belongs to one of
+// the documents that play a role there (roleSlugs): found, the artifact the name or the slug finds,
+// plays one (documentRoleOf), or, where the name finds none, minted, the slug a new artifact takes
+// (nextArtifactSlug), is a role's. Such a document holds Markdown, and a file stored there would
+// read as the issue's plan, Verification document or decisions document to every reader that
+// finds it by its slug while holding no text any of them reads. A project's or a session's
+// artifact plays no role (documentPlays), and a slug the owner already holds mints another
+// (plan-md-2), which plays none either, so both answer nil, as a document upload does. Both places
+// that refuse an upload ask it before they compare kinds (refuseUploadBeforeItsObject,
+// storeArtifact), so a file under the name of a role document that is already a document reads
+// this refusal and not ARTIFACT_KIND_MISMATCH.
+func fileUnderRoleNameRefusal(target artifactTarget, kind, name string, found *model.Artifact, minted string) error {
+	if target.IssueKey == nil || kind == "doc" {
+		return nil
+	}
+	slug, role := minted, ""
+	if found != nil {
+		slug, role = found.Slug, documentRoleOf(*found)
+	} else if played := documentRole(target, "doc", minted); played != nil {
+		role = *played
+	}
+	if role == "" {
+		return nil
+	}
+	// Every role document's name is its role's with the Markdown extension (plan.md), the name
+	// whose upload the dispatch command sends as Markdown.
+	return errorf(apicode.ArtifactRoleName,
+		"%q names the issue's %s document (%s), which holds Markdown: upload it as text/markdown (dispatch artifact --name %s sends its file as Markdown), or give this file another name",
+		name, role, slug, role+".md")
 }
 
 // newArtifactNameRefusal is the 400 refusing a new artifact's name past maxNewArtifactKeyBytes,

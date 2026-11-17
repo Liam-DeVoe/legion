@@ -1776,7 +1776,7 @@
     },
     "/api/v1/artifacts/{id}/plan-reviews": {
       "post": {
-        "description": "Record a plan review's approval of a plan version: {version}, on an issue's plan.md alone (409 NOT_PLAN_DOCUMENT otherwise). A plan is never sent to a person for approval, so POST /api/v1/artifacts/{id}/approval-requests refuses it with 409 PLAN_APPROVED_BY_REVIEW; a later plan version makes this approval stale, as a spec's goes stale.",
+        "description": "Record a plan review's approval of a plan version: {version}, on an issue's plan.md alone, and only while it is a document (409 NOT_PLAN_DOCUMENT otherwise; for a plan an upload stored as a file or an image, the refusal names its kind, and a Markdown upload under its name makes it a document). A plan is never sent to a person for approval, so POST /api/v1/artifacts/{id}/approval-requests refuses it with 409 PLAN_APPROVED_BY_REVIEW; a later plan version makes this approval stale, as a spec's goes stale.",
         "operationId": "postApiV1ArtifactsByIdPlanReviews",
         "parameters": [
           {
@@ -5509,7 +5509,7 @@
         "x-auth": "any"
       },
       "post": {
-        "description": "Upload an issue document or file (JSON or multipart). A text/markdown upload is a document; any other is an image only when its bytes are a PNG, JPEG, GIF or WebP, stored under the type its bytes are whatever was declared, and otherwise a file under its declared type. A name no artifact has yet is 400 INVALID_ARTIFACT when it, or the reference key \u003cowner\u003e/\u003cslug\u003e it gives the new artifact, is over 2692 bytes; an upload under an existing artifact's name is never refused for its length.",
+        "description": "Upload an issue document or file (JSON or multipart). A text/markdown upload is a document; any other is an image only when its bytes are a PNG, JPEG, GIF or WebP, stored under the type its bytes are whatever was declared, and otherwise a file under its declared type. The issue's plan, Verification document and decisions document are always documents: a file or an image under the name or the slug of one of them (plan.md, verification.md, decisions.md; plan-md, verification-md, decisions-md) is 400 ARTIFACT_ROLE_NAME, and a Markdown upload under such a name where an earlier upload stored a file or an image makes it that document as its next version, its earlier versions still served as the files they are. A name no artifact has yet is 400 INVALID_ARTIFACT when it, or the reference key \u003cowner\u003e/\u003cslug\u003e it gives the new artifact, is over 2692 bytes; an upload under an existing artifact's name is never refused for its length.",
         "operationId": "postApiV1IssuesByKeyArtifacts",
         "parameters": [
           {

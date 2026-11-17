@@ -69,6 +69,11 @@ const artifactUploadText = "JSON {name, content?, summary?, actor?} stores a mar
 	"part and the fields name, summary and actor stores the file: a text/markdown file is a document, any other an " +
 	"image only when its bytes are a PNG, JPEG, GIF or WebP, stored under the type its bytes are, and otherwise a file " +
 	"under its declared type. An upload under a name or slug the owner already holds is that artifact's next version. " +
+	"An issue's plan, Verification document and decisions document are always documents: a file or an image under " +
+	"the name or the slug of one of them (plan.md, verification.md, decisions.md; plan-md, verification-md, " +
+	"decisions-md) is 400 ARTIFACT_ROLE_NAME, and a Markdown upload under such a name where an earlier upload stored " +
+	"a file or an image makes it that document as its next version, its earlier versions still served as the files they " +
+	"are. " +
 	"Answers 201 {artifact, version}, artifact the artifact's row as it stands once the upload is stored (its own " +
 	"fields, latest_version, latest_version_at, latest_version_size, version_count and a document's approval) and " +
 	"version the version the upload wrote, for a new artifact and for a new version alike. 400 ARTIFACT_INPUT " +
@@ -298,11 +303,12 @@ func (s *server) v2DocumentRows() []routeRow {
 		{
 			Method: http.MethodPost, Pattern: "/artifacts/{id}/plan-reviews", Auth: authAny, Versions: onlyV2,
 			Description: "Record a plan review's approval of a plan version {version, actor?}, any authenticated caller, on " +
-				"an issue's plan.md alone (409 NOT_PLAN_DOCUMENT otherwise): version is any settled version from 1 to the " +
-				"latest (400 INVALID_REVIEW otherwise). A plan is never sent to a person for approval, so POST " +
-				"/api/v2/artifacts/{id}/approval-requests refuses it with 409 PLAN_APPROVED_BY_REVIEW; a later plan version " +
-				"makes this approval stale, as a spec's goes stale. Answers 201 the review. 409 NO_VERSION, 409 ISSUE_CLOSED, " +
-				"404 ARTIFACT_NOT_FOUND.",
+				"an issue's plan.md alone, and only while it is a document (409 NOT_PLAN_DOCUMENT otherwise; for a plan an " +
+				"upload stored as a file or an image, the refusal names its kind, and a Markdown upload under its name makes " +
+				"it a document): version is any settled version from 1 to the latest (400 INVALID_REVIEW otherwise). A plan " +
+				"is never sent to a person for approval, so POST /api/v2/artifacts/{id}/approval-requests refuses it with 409 " +
+				"PLAN_APPROVED_BY_REVIEW; a later plan version makes this approval stale, as a spec's goes stale. Answers 201 " +
+				"the review. 409 NO_VERSION, 409 ISSUE_CLOSED, 404 ARTIFACT_NOT_FOUND.",
 			Handler:  s.createArtifactPlanReviewV2,
 			Resource: "plan-reviews", Kind: kindCollection, Key: "{id}",
 			Body:  requestBody{Kind: bodyJSON, Type: createPlanReviewInput{}},

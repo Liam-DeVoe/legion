@@ -1061,7 +1061,7 @@ type createPlanReviewInput struct {
 // A plan is approved by the plan review an agent runs over it, never by a person: this records
 // that approval of one plan version, as a person's answer records theirs, so every read of the
 // document shows it approved and a later version makes it stale. It is refused on any document
-// whose role is not plan, the issue's spec included.
+// whose role is not plan, the issue's spec included, and on a plan stored as a file or an image.
 func (s *server) createArtifactPlanReview(w http.ResponseWriter, r *http.Request) {
 	var input createPlanReviewInput
 	if err := decodeJSON(r, &input); err != nil {
@@ -1093,6 +1093,20 @@ func (s *server) recordPlanReview(w http.ResponseWriter, r *http.Request, input 
 	if !documentPlays(artifact, model.ArtifactRolePlan) {
 		writeError(w, r, apicode.NotPlanDocument,
 			"only an issue's plan document (plan.md) is approved by a plan review")
+		return
+	}
+	// A file or an image stored under the plan's slug reads as the plan to documentPlays, which
+	// asks the slug of a row with no role, but it is no document: its versions hold no text a
+	// plan review read, and the coverage read finds no plan task in it. A Markdown upload under
+	// its name makes it the plan (storeArtifact).
+	if artifact.Kind != "doc" {
+		stored := "a file"
+		if artifact.Kind == "image" {
+			stored = "an image"
+		}
+		writeError(w, r, apicode.NotPlanDocument, fmt.Sprintf(
+			"%s (%s) is %s, not a document: a plan review approves a version of a document; upload its Markdown under %s to make it one",
+			artifact.Name, artifact.Slug, stored, artifact.Name))
 		return
 	}
 	if err := s.requireOpenOwner(r.Context(), tx, ownerForArtifact(artifact)); err != nil {

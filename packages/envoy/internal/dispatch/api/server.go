@@ -1935,11 +1935,16 @@ func artifactCreatedEventPayload(artifact model.Artifact, changes model.Referenc
 	return payload
 }
 
+// namedVersionDiff is the diff a named version's event carries, from the version before it. A
+// previous version that stores no markdown - the file a document was before an upload made it one
+// (storeArtifact), whose converting upload names its version when it carries a summary - is read
+// as the empty text, so the diff is the whole of the named version.
 func (s *server) namedVersionDiff(ctx context.Context, tx pgx.Tx, artifactID string, version model.Version) (*string, error) {
 	if !version.Named || version.Number < 2 {
 		return nil, nil
 	}
-	var previous, current string
+	var previous *string
+	var current string
 	if err := tx.QueryRow(ctx, `
 		select markdown from artifact_versions where artifact_id = $1 and number = $2
 	`, artifactID, version.Number-1).Scan(&previous); err != nil {
@@ -1953,6 +1958,6 @@ func (s *server) namedVersionDiff(ctx context.Context, tx pgx.Tx, artifactID str
 	`, artifactID, version.Number).Scan(&current); err != nil {
 		return nil, fmt.Errorf("load current artifact version: %w", err)
 	}
-	diff := text.UnifiedDiff(previous, current)
+	diff := text.UnifiedDiff(deref(previous), current)
 	return &diff, nil
 }
