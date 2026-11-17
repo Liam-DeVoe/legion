@@ -160,8 +160,9 @@ jobs:
   #
   # It carries no `if:` of its own, as no job of a reusable workflow needs one: the caller has
   # already decided the call. ci.yaml's dispatch-browser job holds the `dispatch_browser` filter
-  # and the merge-group attempt term, and the nightly calls this file unconditionally, so a
-  # condition here could only hold back a run its caller had asked for.
+  # and the merge-group attempt term, and the nightly's `full` job calls it on its 02:17 schedule
+  # and on every dispatch, by an `if:` of its own, so a condition here could only hold back a run
+  # its caller had asked for.
   binaries:
     runs-on: ubuntu-24.04
     # Measured over three dispatched runs, jobs 128520516081 (83 s), 128528093378 (84 s) and

@@ -66,10 +66,10 @@ name: CI
 # of docs-pages.yaml, which saves it), go-envoy (envoy-e2e-local and envoy-session-stall, which
 # build the same listener and natsd, listener-server-change and envoy-go-checks, which build the
 # listener, and envoy-go-race-docs and envoy-go-docs-finalizers), go-envoy-test (envoy-go, which
-# builds the test binary of every package of the envoy module, and the binaries, multiprocess
-# and visual jobs of dispatch-browser.yaml, which build the Dispatch server and the real
-# broker's commands out of that same set), go-envoy-infra
-# (envoy-infra-go) and go-notices (lint's notices step). Every family but go-docs is filled by
+# builds the test binary of every package of the envoy module, and the binaries job of
+# dispatch-browser.yaml, which builds the Dispatch server, the real broker's commands and the dev
+# OIDC issuer for the whole run, out of that same set), go-envoy-infra (envoy-infra-go) and
+# go-notices (lint's notices step). Every family but go-docs is filled by
 # .github/workflows/ci-caches.yaml, which builds those sets on a push to main and saves them;
 # go-docs stays with docs-pages.yaml, which saves it on that same push. Each family keeps one
 # entry, keyed on the Go version its job's setup-go installed, so it is
