@@ -50,7 +50,7 @@ type ApprovedFile struct {
 
 // approvedForm is the form of approved.json, with the type of each value, as ReadApproved names it
 // for a value of another type.
-const approvedForm = `{"nodes":[{"id":"<id>","removed":<true or false>,"partly_checked":<true or false>,"versions":[{"version":<whole number from 1>,"at":"<RFC 3339 time>","block":"<block>"}, …]}, …]}`
+const approvedForm = `{"nodes":[{"id":"<id>","removed":<true or false>,"partly_checked":<true or false>,"versions":[{"version":<whole number from 1>,"at":"<RFC 3339 time with an upper-case T and Z>","block":"<block>"}, …]}, …]}`
 
 // ReadApproved reads an approved spec in the form of approved.json (ApprovedFile). It refuses
 // what decodeJSON refuses (a byte that is not UTF-8, a field it does not know or that is written

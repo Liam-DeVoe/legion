@@ -319,10 +319,13 @@ func TestReadApprovedRefusesAMalformedFixture(t *testing.T) {
 // ReadApproved names a value of another type than approved.json's form needs by the form and the
 // place of the value, in the package's own words: no Go type and no verb of encoding/json/v2, which
 // picks "cannot" or "unable to" once in each process, reaches the person. A time that is not RFC
-// 3339 as the writer writes it, also one with a lower-case t and z, is of another type too.
+// 3339 as the writer writes it, also one with a lower-case t and z, is of another type too, and so
+// is a version number above 2^63-1, the largest that the reader holds: the form in the same line
+// gives the time as an RFC 3339 time with an upper-case T and Z and the version as a whole number
+// from 1, without that bound.
 func TestReadApprovedNamesTheFormAndThePlaceOfAValueOfAnotherType(t *testing.T) {
 	t.Parallel()
-	const notInTheForm = `specgraph: approved spec: it is not in the form {"nodes":[{"id":"<id>","removed":<true or false>,"partly_checked":<true or false>,"versions":[{"version":<whole number from 1>,"at":"<RFC 3339 time>","block":"<block>"}, …]}, …]}`
+	const notInTheForm = `specgraph: approved spec: it is not in the form {"nodes":[{"id":"<id>","removed":<true or false>,"partly_checked":<true or false>,"versions":[{"version":<whole number from 1>,"at":"<RFC 3339 time with an upper-case T and Z>","block":"<block>"}, …]}, …]}`
 	version := func(n, at, block string) string {
 		return `{"nodes":[{"id":"a-page-shows-it","versions":[{"version":` + n + `,"at":` + at + `,"block":` + block + `}]}]}`
 	}
@@ -333,6 +336,7 @@ func TestReadApprovedNamesTheFormAndThePlaceOfAValueOfAnotherType(t *testing.T) 
 		{"a string in the place of removed", `{"nodes":[{"id":"a-page-shows-it","removed":"yes"}]}`, notInTheForm + `: the value at "/nodes/0/removed" is of another type`},
 		{"a string in the place of a version number", version(`"1"`, `"2026-11-10T00:00:00Z"`, `""`), notInTheForm + `: the value at "/nodes/0/versions/0/version" is of another type`},
 		{"a version number that is not whole", version(`1.5`, `"2026-11-10T00:00:00Z"`, `""`), notInTheForm + `: the value at "/nodes/0/versions/0/version" is of another type`},
+		{"a version number that no Go int holds", version(`1000000000000000000000000000000`, `"2026-11-10T00:00:00Z"`, `""`), notInTheForm + `: the value at "/nodes/0/versions/0/version" is of another type`},
 		{"a time that is not RFC 3339", version(`1`, `"2026-11-10"`, `""`), notInTheForm + `: the value at "/nodes/0/versions/0/at" is of another type`},
 		{"a time with a lower-case t and z", version(`1`, `"2026-11-10t00:00:00z"`, `""`), notInTheForm + `: the value at "/nodes/0/versions/0/at" is of another type`},
 		{"a list in the place of a block", version(`1`, `"2026-11-10T00:00:00Z"`, `["x"]`), notInTheForm + `: the value at "/nodes/0/versions/0/block" is of another type`},

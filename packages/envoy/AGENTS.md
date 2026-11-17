@@ -3223,7 +3223,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   A directory that does not exist or holds no spec file is exit 2 too, since every text of no file is approved, with a line that names `--allow-empty`.
   With `--allow-empty`, `compare` reads it as the empty tree, as `tree` does, with a line on stderr that says so:
   git keeps no empty directory, so a revert of the change that added the last spec file leaves none, and each approved node then reads `not in the files` (R2: the revert "takes it out of the files").
-  It does not judge the tree, which is `tree`'s work: a problem of `Parse` that leaves each node as the files write it (`specgraph.KeepsEachNode`), such as a heading that names code, is no reason to refuse, and `compare` compares those files.
+  A problem of `Parse` that keeps each node (`specgraph.KeepsEachNode`), such as a heading that names code, is `tree`'s to judge, and `compare` compares those files: each node holds the text that the files write, except a raw `0xA0` or `0x85` byte where its opening line's attributes take white space (after `{`, between two attributes or before `}`), which it drops as white space.
   A heading is no node, so `compare` never compares it.
   `spec-check print --approved <approved.json> --id <id> [--id <id>...]` writes the current approved block of each node named, in the order named, and after a statement the block of each current check that serves it, each block once and the blocks separated by one blank line (`cmd/spec-check/print.go`):
   the block as the approved spec holds it, which `ReadApproved` checked is the block `Print` writes, so a change copies it into the files byte for byte and no agent types it (R2 of The Spec).
@@ -3247,13 +3247,11 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
 - `spec-check guard --root <dir>` is the other part of the refusal above: it reads the workflows that `v-two-specs` asks about (`cmd/spec-check/guard.go`), every regular file under `<dir>/.github/workflows`, `<dir>/.github/actions`, `<dir>/.github/scripts` and `<dir>/scripts`.
   `ciFilesThatCompare` (`cmd/spec-check/cifiles.go`, the command's own rule, so `specgraph` holds no reader of CI files) reads each file as text, and knows nothing of shell or of YAML.
   The guard names each place of a CI file where the command's name and then the word `compare` follow each other with only white space, commas, `(` or `[` between them, and with quote characters (also a `$` before one), backslashes, and line breaks with the indentation after them ignored.
-  The name is `spec-check`, under any path, as a word of its own: a word that only holds it, such as `envoy-spec-check`, `myspec-check`, `spec-checker` or `spec-check-linux`, is another name, and a suffix such as `.exe` or `@v1` keeps it.
-  `compare` is a word of its own too: a letter, a digit, `_`, `-`, `.` or `/` right after it makes another word or a path, so `needs: [spec-check, compare-baselines]`, `spec-check compare-all`, `spec-check compare.sh` and `paths: ['cmd/spec-check', 'compare/**']` are not named.
-  A letter right after a backslash ends an escape, which a double-quoted YAML value or a string of a script turns into a character of its own, so `run: "set -e\nspec-check compare …"` and `execSync("set -e\nspec-check compare …")` are named, and after `compare` a `\n` or a `\t` ends the word.
-  A name right after an escape that ends in a digit or that another character starts, such as `\x20`, PowerShell's `` `n `` or a batch file's `%~dp0`, is not named, nor `compare` before a `\x20`.
+  The name is `spec-check`, under any path, as a word of its own: a word that only holds it, such as `envoy-spec-check` or `spec-checker`, is another name, and a suffix such as `.exe` keeps it.
+  `compare` is a word of its own too, and the next item gives the two bounds of the rule.
   A list of arguments in a script, such as `spawnSync('spec-check', ['compare'])` or `subprocess.run(["spec-check","compare"])`, is named too.
   The guard also names a comment or a quoted text that no shell runs, and the author rewords that line.
-  It does not find a command that an expansion, an escape or an alias builds, or one with another word between the two, and it is no defence against an author who hides the command: `compare` itself refuses to run in a CI job.
+  It is no defence against an author who hides the command: `compare` itself refuses to run in a CI job.
   A hit is exit 1, `spec-check: <dir>/<path>:<line>: this line names the command that compares the files with the approved spec, and no CI job runs that command (R2). If the line only mentions the command, for example in a comment, a quoted text, a pattern or a name, reword it.` on stderr for each, at the line where the command's name stands, and `spec-check: <dir>: <n> lines of CI files name the command that compares the files` on stdout.
   No file under `.github/workflows` is exit 1 with `spec-check: <dir>: read no workflow`, since an instrument that read nothing has not passed;
   a clean tree is exit 0 with `spec-check: <dir>: no line of <k> CI files names the command that compares the files`.
@@ -3261,6 +3259,18 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   A Go program that calls `specgraph.Compare` is outside both the guard and the refusal of `compare`.
   The guard follows no symbolic link at or under the four directories (the path to them, `--root` and `.github` included, resolves as the system resolves it), and it reads each file whole, with no bound on its size.
   `envoy-go-checks` runs the guard over this repository (`go run ./cmd/spec-check guard --root ../..`, in `.github/workflows/ci-job-envoy-go-checks.yaml`), and its filter `envoy_go_checks` takes the four directories, so a change under any of them starts the job.
+
+- Each bound of the guard's rule reads the file's own bytes (`nameStart` and `compareEnds` in `cmd/spec-check/cifiles.go`).
+  Right before the name, a letter, a digit, `_` or `-` makes the name part of another word.
+  Right after `compare`, a letter, a digit, `_`, `-`, `.` or `/` makes `compare` part of another word or a path, such as `compare-all`, `compare.sh` or `compare/`.
+  Each other byte ends the word: white space, a quote, `;`, `|`, `&`, `(`, `)`, `<`, `>`, a comma, a bracket, and the start or the end of the file.
+  A backslash right after `compare` is an escape, and the byte after it takes its place.
+  After a backslash, `n`, `t` and `r` stand for white space, so `\n`, `\t` and `\r` end the word on each side, as a backslash before a space or a line break does after `compare`.
+  So a name right after `\7` or `\-` is not named, nor `compare` before `\x20` or `\x64`.
+  So `run: "set -e\nspec-check compare …"`, `run: "spec-check compare\ --dir …"` and `"spec-check compare".split()` are named, and `needs: [spec-check, compare-baselines]` is not.
+  The rule reads the file's bytes and runs no shell expansion, so it does not find a command that an expansion, an escape or an alias builds, one with another word between the two, such as a redirection, a here-document or an image, or a `run: |` block whose two line continuations need the indentation after one kept and after the other removed.
+  Before the name, only `\n`, `\t` and `\r` of the escapes stand for white space; each other escape or expansion of one language that builds the boundary is outside the claim (`\x20`, `\x0a`, `\012`, `\u000a`, PowerShell's `` `n ``, a batch file's `%~dp0`, `$1`).
+  `TestCIFilesThatCompareLeavesAFormOutsideTheClaim` holds each of these limits, and `TestCIFilesThatCompareNamesEachCallThatAHeadNamed` each calling line that a head of #4183 named (`cmd/spec-check/testdata/ci-files/named-calls.txt`).
 
 - `cmd/spec-check state --scenario <dir> [--json]` derives the states of a scenario of The Spec (`cmd/spec-check/state.go`), in the format `specgraph.ReadScenario` reads (`internal/dispatch/specgraph/scenario.go`).
   The four scenarios in `internal/dispatch/specgraph/testdata/scenarios` each hold the answers that the spec gives them in `want.txt`.
