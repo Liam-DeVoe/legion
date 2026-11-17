@@ -367,7 +367,8 @@ FETCHES_NOTHING = "a CI job runs it, and it fetches nothing"
 
 # Every file outside the reach that may name mirror.gcr.io, and the one ground that admits it.
 # `no CI job runs it`: the devbox live proofs and their libraries, the compose files, the
-# walkthrough recorder, the corpus copy a developer restores on a devbox, and documentation.
+# walkthrough recorder, the corpus copy a developer restores on a devbox, the research record's
+# run.sh, and documentation.
 # `a CI job runs it, and it fetches nothing`: a script a CI job runs whose mirror.gcr.io text no
 # job ever hands to a registry — dev-postgres.test.sh, which the envoy-go job runs, installs a
 # fake `docker` on PATH; the load test's cluster copy (packages/envoy/loadtest/cluster/), whose
@@ -379,6 +380,7 @@ EXCEPTIONS = {
     "docs/kubernetes.md": NO_CI_JOB,
     "docs/plans/2026-10-14-dispatch-gcp-plan.md": NO_CI_JOB,
     "docs/plans/2026-10-14-envoy-infra-plan.md": NO_CI_JOB,
+    "docs/research/temporal-evaluation-2026-11/run.sh": NO_CI_JOB,
     "docs/solutions/github/an-image-pull-that-fails-in-ci-is-this-repositorys-own-package-read-the-failure-do-not-re-run-pr2512.md": NO_CI_JOB,
     "docs/site/media/walkthroughs/legion-operator/record-casts.sh": NO_CI_JOB,
     "docs/solutions/testing/a-docker-run-line-is-proven-from-a-pod-with-no-container-runtime-as-a-two-container-job-whose-client-ships-in-the-image-pr2498.md": NO_CI_JOB,

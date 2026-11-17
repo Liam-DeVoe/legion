@@ -717,6 +717,10 @@ cmd_setup() {
   command -v jq >/dev/null || die "jq is required"
   [ -d "$ENVOY_SRC/cmd/dispatch" ] || die "LOADTEST_SRC=$SRC holds no packages/envoy/cmd/dispatch"
   [ -d "$DISPATCH_SRC/packages/envoy/cmd/dispatch" ] || die "LOADTEST_DISPATCH_SRC=$DISPATCH_SRC holds no packages/envoy/cmd/dispatch"
+  # The ports before any build: a setup that could not record the operator's ports refuses at
+  # once (write_stack_json records them at the end).
+  if ! { [ -f "$STACK" ] && ports_given; }; then stack_ports >/dev/null || exit 1; fi
+  given_ports >/dev/null || exit 1
   mkdir -p -- "$BIN" "$RUN" "$LOGS" "$PGDIR/log" "$STACK_HOME" "$ROOT/tmp" "$ROOT/runs"
 
   if [ -n "$commit" ]; then
