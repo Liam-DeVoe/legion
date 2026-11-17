@@ -297,9 +297,9 @@ func TestReadApprovedRefusesAMalformedFixture(t *testing.T) {
 			`approved node "a-page-shows-it" version 1: bad-approved-block: the block holds 2 nodes`},
 		{"a block that Print does not write", `{"nodes":[{"id":"a-page-shows-it","versions":[` + version("1", "2026-11-10T00:00:00Z", `":::requirement{#a-page-shows-it  kind=\"behavior\"}\nThe page shows it.\n:::\n"`) + `]}]}`,
 			`approved node "a-page-shows-it" version 1: bad-approved-block: the block is not as Print writes it`},
-		{"null", `null`, `it holds no "nodes" list`},
+		{"null", `null`, `: it is null`},
 		{"an empty object", `{}`, `it holds no "nodes" list`},
-		{"a null list of nodes", `{"nodes":null}`, `it holds no "nodes" list`},
+		{"a null list of nodes", `{"nodes":null}`, `: the value at "/nodes" is null`},
 		{"the list's name in capitals", `{"NODES":[]}`, `member "/NODES" is not in the format`},
 		{"an id in capitals", `{"nodes":[{"ID":"a-page-shows-it","versions":[` + good + `]}]}`, `member "/nodes/0/ID" is not in the format`},
 		{"removed in capitals", `{"nodes":[{"id":"a-page-shows-it","REMOVED":true,"versions":[` + good + `]}]}`, `member "/nodes/0/REMOVED" is not in the format`},
@@ -321,11 +321,11 @@ func TestReadApprovedRefusesAMalformedFixture(t *testing.T) {
 // picks "cannot" or "unable to" once in each process, reaches the person. A time that is not RFC
 // 3339 as the writer writes it, also one with a lower-case t and z, is of another type too, and so
 // is a version number above 2^63-1, the largest that the reader holds: the form in the same line
-// gives the time as an RFC 3339 time with an upper-case T and Z and the version as a whole number
-// from 1, without that bound.
+// gives the time as an RFC 3339 time with an upper-case T, and Z or an offset, and the version as a
+// whole number from 1, without that bound.
 func TestReadApprovedNamesTheFormAndThePlaceOfAValueOfAnotherType(t *testing.T) {
 	t.Parallel()
-	const notInTheForm = `specgraph: approved spec: it is not in the form {"nodes":[{"id":"<id>","removed":<true or false>,"partly_checked":<true or false>,"versions":[{"version":<whole number from 1>,"at":"<RFC 3339 time with an upper-case T and Z>","block":"<block>"}, …]}, …]}`
+	const notInTheForm = `specgraph: approved spec: it is not in the form {"nodes":[{"id":"<id>","removed":<true or false>,"partly_checked":<true or false>,"versions":[{"version":<whole number from 1>,"at":"<RFC 3339 time with an upper-case T, and Z or an offset such as +01:00>","block":"<block>"}, …]}, …]}`
 	version := func(n, at, block string) string {
 		return `{"nodes":[{"id":"a-page-shows-it","versions":[{"version":` + n + `,"at":` + at + `,"block":` + block + `}]}]}`
 	}

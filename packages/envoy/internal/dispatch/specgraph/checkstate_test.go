@@ -350,8 +350,22 @@ func TestCheckState(t *testing.T) {
 		{name: "v-citations 4: CI refused the check at the subject", change: func(c *checkCase) {
 			c.commit("c2", "c1", "docs/x.md")
 			c.Subject.Commit = "c2"
-			c.Uncited = map[string]string{c.check: "test-not-in-code"}
+			c.Uncited = map[string]map[string]string{"c2": {c.check: "test-not-in-code"}}
 		}, want: CheckState{State: "unknown", Reason: "uncited", Detail: "test-not-in-code"}},
+		// R48: "At that commit, such a check reads unknown, and no earlier result of it counts." A
+		// refusal counts wherever the results of its commit count, a failing example's commit too,
+		// and for a program check of production the commit of its test.
+		{name: "R48, a refusal at the commit of the caught failing example alone, whose results count at c2", change: func(c *checkCase) {
+			c.commit("x1", "c1", "docs/x.md")
+			c.commit("c2", "c1", "docs/x.md")
+			c.Subject.Commit = "c2"
+			c.Results[1].Commit = "x1"
+			c.Uncited = map[string]map[string]string{"x1": {c.check: "test-not-in-code"}}
+		}, want: CheckState{State: "unknown", Reason: "uncited", Detail: "test-not-in-code"}},
+		{name: "R48, a program check of production that CI refused at the commit of the test that caught its fault", change: func(c *checkCase) {
+			c.productionProgram("docs/x.md", "c1")
+			c.Uncited = map[string]map[string]string{"c1": {checkStateProductionProgram.ID: "test-not-in-code"}}
+		}, want: CheckState{ID: checkStateProductionProgram.ID, State: "unknown", Reason: "uncited", Detail: "test-not-in-code"}},
 		{name: "R9, the job ended with no result", change: func(c *checkCase) {
 			c.commit("c2", "c1", "packages/envoy/cmd/listener/main.go")
 			c.Subject.Commit = "c2"
@@ -556,8 +570,10 @@ func TestARunOfProductionOrTheGraphCountsForTheCodeThatRanIt(t *testing.T) {
 // result of each leg counts, a newer result replaces an older one only in its own leg, a leg whose
 // run of the job ended with no result that counts reads unknown, and legs whose newest results
 // disagree read unknown. Each row: Q at subject c2 under deploy d2, where c2 differs from c1 outside
-// the tie; the runs of legs linux and arm of Q's job ended at c2; the row's runs under d2 at the
-// test of c2, and a failing example that the test at c2 caught; C taken out.
+// the tie, or, in a row that carries, at c3, which differs from c2 outside the tie too, so that the
+// results of the test at c2 count there (R8); the runs of legs linux and arm of Q's job ended at c2;
+// the row's runs under d2 at the test of c2, and a failing example that the test at c2 caught; C
+// taken out. A leg that ended with no result at c2 counts wherever the results of c2 count.
 func TestEachLegOfAProgramCheckOfProductionKeepsItsResult(t *testing.T) {
 	t.Parallel()
 	q := checkStateProductionProgram
@@ -569,18 +585,23 @@ func TestEachLegOfAProgramCheckOfProductionKeepsItsResult(t *testing.T) {
 		runs       []Result
 		want       CheckState
 		statements string
+		carries    bool // the subject is c3, where the results of c2 count
 	}{
 		{"control: leg linux and leg arm pass", []Result{run("linux", OutcomePass, time.Hour), run("arm", OutcomePass, time.Hour)},
-			CheckState{State: "true", Reason: "passed", From: "d2"}, "met"},
+			CheckState{State: "true", Reason: "passed", From: "d2"}, "met", false},
 		{"leg linux passes after leg arm failed", []Result{run("arm", OutcomeFail, time.Hour), run("linux", OutcomePass, 2*time.Hour)},
-			CheckState{State: "unknown", Reason: "disagree", Disagree: true}, "unknown"},
+			CheckState{State: "unknown", Reason: "disagree", Disagree: true}, "unknown", false},
 		{"leg linux passes, and the run of leg arm ended with no result", []Result{run("linux", OutcomePass, time.Hour)},
-			CheckState{State: "unknown", Reason: "ci_fault", Detail: "arm"}, "unknown"},
+			CheckState{State: "unknown", Reason: "ci_fault", Detail: "arm"}, "unknown", false},
+		{"leg linux passes, and the run of leg arm ended with no result, at c3, where the results of c2 count", []Result{run("linux", OutcomePass, time.Hour)},
+			CheckState{State: "unknown", Reason: "ci_fault", Detail: "arm"}, "unknown", true},
+		{"control: leg linux and leg arm pass, at c3, where the results of c2 count", []Result{run("linux", OutcomePass, time.Hour), run("arm", OutcomePass, time.Hour)},
+			CheckState{State: "true", Reason: "passed", From: "d2"}, "met", true},
 		{"control: in leg arm a newer pass replaces a failure, and leg linux passes", []Result{
 			run("arm", OutcomeFail, time.Hour), run("arm", OutcomePass, 2*time.Hour), run("linux", OutcomePass, 2*time.Hour)},
-			CheckState{State: "true", Reason: "passed", From: "d2"}, "met"},
+			CheckState{State: "true", Reason: "passed", From: "d2"}, "met", false},
 		{"control: both legs fail", []Result{run("linux", OutcomeFail, time.Hour), run("arm", OutcomeFail, time.Hour)},
-			CheckState{State: "false", Reason: "failed", From: "d2"}, "not_met"},
+			CheckState{State: "false", Reason: "failed", From: "d2"}, "not_met", false},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
@@ -588,6 +609,10 @@ func TestEachLegOfAProgramCheckOfProductionKeepsItsResult(t *testing.T) {
 			s.add(q)
 			s.commit("c2", "c1", "docs/x.md")
 			s.Subject = Point{Commit: "c2", Deploy: "d2"}
+			if row.carries {
+				s.commit("c3", "c2", "docs/x.md")
+				s.Subject.Commit = "c3"
+			}
 			s.JobRuns = []JobRun{{Job: q.Test.Job, Leg: "linux", Commit: "c2", Ended: true}, {Job: q.Test.Job, Leg: "arm", Commit: "c2", Ended: true}}
 			s.Results = append(append(s.Results, row.runs...), Result{Check: q.ID, Kind: ResultFailingExample, Outcome: OutcomeFail, TestCommit: "c2",
 				At: checkStateRun.Add(5 * time.Minute), FaultAuthor: "author-b", TestAuthors: []string{"author-a"}})
@@ -658,11 +683,19 @@ func newCheckCase(t *testing.T) *checkCase {
 }
 
 // input is the Input of the case: the files parsed, each result with no digest given the digest of
-// its check's current approved text, each result's Seq its place in Results, and Now, unless the
-// row set it, one hour after the newest result, or after checkStateRun when there is none.
+// its check's current approved text, each result's Seq its place in Results, Now, unless the row set
+// it, one hour after the newest result, or after checkStateRun when there is none, and an empty
+// JobRuns and Uncited, unless the row set them, for a case at whose commit no job ran and CI refused
+// no check.
 func (s *checkCase) input() Input {
 	s.t.Helper()
 	in := s.Input
+	if in.JobRuns == nil {
+		in.JobRuns = []JobRun{}
+	}
+	if in.Uncited == nil {
+		in.Uncited = map[string]map[string]string{}
+	}
 	in.Files = s.parse()
 	current, problems := in.Approved.Current()
 	if len(problems) != 0 {
@@ -688,6 +721,16 @@ func (s *checkCase) input() Input {
 // parse is the tree of the case's spec files.
 func (s *checkCase) parse() Tree {
 	s.t.Helper()
+	tree, problems := Parse(s.specFiles())
+	if len(problems) != 0 {
+		s.t.Fatalf("the files of the case: %+v", problems)
+	}
+	return tree
+}
+
+// specFiles is the text of each spec file of the case, by name: its nodes as Print writes them.
+func (s *checkCase) specFiles() map[string][]byte {
+	s.t.Helper()
 	files := map[string][]byte{}
 	for name, nodes := range s.files {
 		var blocks []string
@@ -700,11 +743,7 @@ func (s *checkCase) parse() Tree {
 		}
 		files[name] = []byte(strings.Join(blocks, "\n"))
 	}
-	tree, problems := Parse(files)
-	if len(problems) != 0 {
-		s.t.Fatalf("the files of the case: %+v", problems)
-	}
-	return tree
+	return files
 }
 
 // approve adds a version of each node to the approved spec, approved at at.

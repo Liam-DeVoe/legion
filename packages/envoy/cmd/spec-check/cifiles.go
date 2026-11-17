@@ -41,13 +41,17 @@ var compareCall = regexp.MustCompile(regexp.QuoteMeta(string(commandName)) + `(?
 // So a name right after \7 or \- is not named, nor compare before \x20 or \x64. The rule reads the
 // file's bytes and runs no shell expansion, so it does not find a command that an expansion, an
 // escape or an alias builds, one with another word between the two, such as a redirection, a
-// here-document or an image, or a run: | block whose two line continuations need the indentation
-// after one kept and after the other removed. Before the name, only \n, \t and \r of the escapes
-// stand for white space; each other escape or expansion of one language that builds the boundary
-// is outside the claim (\x20, \x0a, \012, \u000a, PowerShell's `n, a batch file's %~dp0, $1), and
-// so are \0 before the name, whose NUL byte Bash skips, and \t between the two words. It is no
-// defence against an author who hides the command: compare itself refuses to run in a CI job. It
-// reads each file as text (textHits), and knows nothing of shell or of YAML.
+// here-document or an image (docker run --entrypoint spec-check <image> compare), or a run: |
+// block whose two line continuations need the indentation after one kept and after the other
+// removed. Before the name, only \n, \t and \r of the escapes stand for white space; each other
+// escape or expansion of one language that builds the boundary is outside the claim (\x20, \x0a,
+// \012, \u000a, PowerShell's `n, a batch file's %~dp0, $1), and so are \0 right before the name or
+// right after compare, a NUL byte that Bash skips or stops at, \t between the two words, and a
+// letter, a digit or _ right after the quote that ends compare, which Bash reads as more of the
+// word and another language can read as its next token, such as Python's f or r prefix
+// ("compare"f" --dir"). It is no defence against an author who hides the command: compare itself
+// refuses to run in a CI job. It reads each file as text (textHits), and knows nothing of shell or
+// of YAML.
 //
 // The keys are the repository paths of the files that guard reads (ciDirs): every file under
 // .github/workflows/, .github/actions/, .github/scripts/ and scripts/, which hold the workflows

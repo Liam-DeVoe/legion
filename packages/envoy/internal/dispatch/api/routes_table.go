@@ -106,6 +106,7 @@ var writeClasses = map[string]writeScope{
 	"POST /api/v1/issues/{key}/results":                    scopeProject,
 	"POST /api/v1/issues/{key}/handoffs/{phase}":           scopeProject,
 	"PUT /api/v1/issues/{key}/design-gates":                scopeProject,
+	"PUT /api/v1/issues/{key}/role-holders":                scopeProject,
 
 	// A result's retraction: the row belongs to the project of the issue the result was
 	// recorded on, one hop through check_results (projectOfCheckResult).
@@ -448,10 +449,15 @@ type routeScopeSet []string
 // token, a project-scoped session's token and a broker-issued token that names a service and no
 // person hold neither.
 //
+// The scope `read` a read-only token holds is no value of this map: a scope here is one the
+// caller must hold, and no person holds that one. The routes such a token may call are a list of
+// their own, readScopeRoutes below, which its own gate reads (refuseReadOnlyToken).
+//
 // A route that takes an id written short needs no scope of its own for it: the prefix layer
-// (resolveIDPrefixes, idRoutes) runs inside this gate - register wraps the gate around it, so
-// the row's scopes are the first thing a request is held to and a credential that holds none is
-// refused before any id is read - and it only rewrites the path value, so a short id reaches
+// (resolveIDPrefixes, idRoutes) runs inside this gate - register wraps the gate around it, so a
+// credential that holds none of the row's scopes is refused before any id is read, and the one
+// check a request meets ahead of the row's scopes is whether a read-only token may call the row
+// at all (refuseReadOnlyToken) - and it only rewrites the path value, so a short id reaches
 // exactly the scopes the whole id reaches, and a row that needs none with a whole id needs none
 // with a prefix.
 var routeScopes = map[string]routeScopeSet{
@@ -520,6 +526,27 @@ var routeScopes = map[string]routeScopeSet{
 	"POST /api/v1/artifacts/{id}/versions/{number}/reviews": {model.ScopePerson, model.ScopeApprove},
 }
 
+// readScopeRoutes is every route a read-only token may call, by "<method> <pattern>": a token the
+// secrets broker minted from a read entry, which holds the scope read alone and names a service
+// and a session and no person and no project (model.Credential.ReadOnly). Every other row of the
+// table, and GET /ws/live beside it, answers such a token 403 READ_ONLY_TOKEN before anything
+// else the route does (refuseReadOnlyToken), so a route added later stays closed to it until it
+// is listed here.
+//
+// A route is listed only when, for such a caller, it writes nothing but the row that records its
+// DPoP proof as spent (store.DPoPProofs) and caches Dispatch rebuilds from what it already holds:
+// the display trees a read with Dispatch-Trees: 1 stores (displayTreeReader.storeOf) and the
+// stored listener roster (route_roster). TestTheReadOnlyListedRouteWritesOnlyItsProofAndCaches
+// holds the route listed today to that.
+//
+// It is a list beside the table and not a value of routeScopes: a scope there is one the caller
+// must hold, and no person holds read, so the list says what a credential that holds read alone
+// may still call rather than what a route requires. For the same reason the route index (GET
+// /api/v1), the OpenAPI document and the reference generated from it do not carry it. routes()
+// stamps it onto the row (apiRoute.ReadScope), and register refuses to mount a table whose list
+// names anything but a GET row it mounts (readRoutesNotMountedAsGET).
+var readScopeRoutes = []string{"GET /api/v1/projects/{key}/architecture"}
+
 // routesNotMounted names every route of names that is no row of the table, sorted. The walk is
 // over the table with its test hooks in, since a hook's row is a row of the table wherever a
 // deployment leaves it out.
@@ -547,6 +574,23 @@ func scopedRoutesNotMounted() []string {
 	return routesNotMounted(maps.Keys(routeScopes))
 }
 
+// readRoutesNotMountedAsGET names every route of names that is not a GET row of the table,
+// sorted: one no row holds (routesNotMounted) and one whose method is not GET. register refuses
+// to mount a read list that names either (readScopeRoutes). A name no row holds opens nothing
+// while the list reads as though it opened a route - a row renamed or deleted and its entry left
+// behind - and a POST, PUT, PATCH or DELETE row is a write, which a read-only token is minted
+// never to make. The walk is over the table with its test hooks in, as routesNotMounted's is.
+func readRoutesNotMountedAsGET(names []string) []string {
+	refused := routesNotMounted(slices.Values(names))
+	for _, name := range names {
+		if method, _, _ := strings.Cut(name, " "); method != http.MethodGet && !slices.Contains(refused, name) {
+			refused = append(refused, name)
+		}
+	}
+	sort.Strings(refused)
+	return refused
+}
+
 // routeRow is a row as the table writes it: the five columns every route has, written as a
 // positional literal, which is why the write class is not among them (writeClasses).
 type routeRow struct {
@@ -558,16 +602,19 @@ type routeRow struct {
 }
 
 // apiRoute is one mounted route: the table's row, the class routes() stamps onto it from
-// writeClasses and the OAuth scopes it stamps from routeScopes. Register mounts the table and
-// GET /api/v1 lists it, so the two can never disagree about what the server serves. Every
-// mutating row carries a Scope, and a GET row carries none (project_scope.go); OAuthScopes is
-// empty on every row any authenticated caller may reach; the row's own five columns are read
-// through it by promotion. What the route takes and answers is routeShapes', which only the
-// OpenAPI emitter reads, so no row carries it.
+// writeClasses, the OAuth scopes it stamps from routeScopes, and whether a read-only token may
+// call it, which it stamps from readScopeRoutes. Register mounts the table and GET /api/v1 lists
+// it, so the two can never disagree about what the server serves. Every mutating row carries a
+// Scope, and a GET row carries none (project_scope.go); OAuthScopes is empty on every row any
+// authenticated caller may reach; ReadScope is true on the rows the read list names and on no
+// other, and only the read-only gate reads it (refuseReadOnlyToken), never the route index or the
+// OpenAPI document; the row's own five columns are read through it by promotion. What the route
+// takes and answers is routeShapes', which only the OpenAPI emitter reads, so no row carries it.
 type apiRoute struct {
 	routeRow
 	Scope       writeScope
 	OAuthScopes routeScopeSet
+	ReadScope   bool
 }
 
 // routeIndexEntry is the public shape of a route in GET /api/v1. Scopes is left out of a route
@@ -685,6 +732,8 @@ func (s *server) routes() []apiRoute {
 		{http.MethodGet, "/api/v1/issues/{key}/handoffs", authAny, "List an issue's handoffs, newest first, each {id, issue_key, phase, version, author, created_at} without its body; a closed issue's read too.", s.listHandoffs},
 		{http.MethodGet, "/api/v1/issues/{key}/handoffs/{phase}/latest", authAny, "The newest handoff of one phase of an issue with its body, the exact text written; 404 HANDOFF_NOT_FOUND when the phase has none. A closed issue's read too.", s.getLatestHandoff},
 		{http.MethodPut, "/api/v1/issues/{key}/design-gates", authAny, "Publish the documents this issue's design-gate steps record {gates}: each entry {step, artifact_id}, step one of decisions, criteria and spec and artifact_id the document that step's gate recorded, or [] for an issue whose gates record none. The deployment's daemon writes it and replaces the issue's whole set, appending no issue event and notifying nobody whether the set changed or not. Answers 200 {issue, gates} with the stored set in step order. A body without gates, a step that is none of the three, a step named twice, and an artifact_id that is empty are each 400 INVALID_ISSUE; an issue Dispatch does not know is 404 ISSUE_NOT_FOUND.", s.putIssueDesignGates},
+		{http.MethodPut, "/api/v1/issues/{key}/role-holders", authAny, fmt.Sprintf("Publish the session that holds each Legion role of this issue {holders}: each entry {role, session}, role one of architect, planner, implementer, tester, reviewer and merger and session a session id of at most %d bytes, or [] for an issue where no session holds a role. The actor must be session legion-daemon:<project>, the key up to its first -, the session the Legion daemon of the issue's project writes as; any other actor is 403 ROLE_HOLDER_FORBIDDEN. Before the airlock a bearer caller names its own session, so any caller whose credential proves no session can name that one. The body is the issue's whole set and replaces the stored set under a lock of the issue row, so a session that it does not name holds no role of the issue, two writes at once store the set of the one that finishes last, and a pair that did not change keeps its recorded_at. The write appends no issue event, notifies nobody and takes a closed issue. Answers 200 {issue, holders} with the set this write stored, in workflow order, each {role, session, recorded_at}. A body without holders, a role that is not one of the six, a session that is not a session id or is over %d bytes, a role or a session named twice and an empty session are each 400 INVALID_ROLE_HOLDER, and nothing is stored; an issue Dispatch does not know is 404 ISSUE_NOT_FOUND. The session of an ended claim keeps its role until the daemon's next publication lands, and its process can still run in that window.", maxRoleHolderSessionBytes, maxRoleHolderSessionBytes), s.putIssueRoleHolders},
+		{http.MethodGet, "/api/v1/issues/{key}/role-holders", authAny, "The session that holds each Legion role of this issue, as the Legion daemon last published it: {issue, holders}, each {role, session, recorded_at} in workflow order, [] when no session holds a role. A closed issue's read too. An issue Dispatch does not know is 404 ISSUE_NOT_FOUND.", s.getIssueRoleHolders},
 		{http.MethodGet, "/api/v1/handoffs/{id}", authAny, "One handoff by id with its body, the exact text written; 404 HANDOFF_NOT_FOUND when there is none, 400 HANDOFF_ID_INPUT for an id that is not a uuid.", s.getHandoff},
 		{http.MethodGet, "/api/v1/messages/{id}", authAny, "Read the conversation a message belongs to by any message id in it, issue-less or not: the thread root with its deliveries and every reply, oldest first. An issue thread follows the issue's rule. A direct (issue-less) thread is read whole by a credential holding the person scope, since the conversation is that person's own; every other credential names its session in ?session= and reads only one whose root targets that session or that it replied in (403 THREAD_FORBIDDEN), a guard against reading another session's conversation by mistake, not an authorization boundary. Direct-conversation text also reaches every authenticated caller through that caller's events view on GET /ws/live; nothing in Dispatch restricts it by session.", s.getMessageThread},
 		{http.MethodGet, "/api/v1/messages/{id}/blocks", authAny, "A message's current blocks in body order: {item, indexed, blocks: [{id, type, text, ref, from, to, embedding}]}, item the message's graph node, from and to UTF-16 code units into its stored body, ref absent for a direct message's block (it has no address), embedding where meaning search stands on the block (embedded, pending, or none while no window covers it). Read under GET /api/v1/messages/{id}'s rule: a credential without the person scope reading a direct message names its session in ?session= (400 SESSION_REQUIRED, 403 THREAD_FORBIDDEN). While the message is owed a block index, indexed is false and blocks empty; the read writes nothing.", s.getMessageBlocks},
@@ -826,7 +875,7 @@ func (s *server) routes() []apiRoute {
 	routes := make([]apiRoute, len(rows))
 	for index, row := range rows {
 		name := row.Method + " " + row.Pattern
-		routes[index] = apiRoute{row, writeClasses[name], routeScopes[name]}
+		routes[index] = apiRoute{row, writeClasses[name], routeScopes[name], slices.Contains(readScopeRoutes, name)}
 	}
 	return routes
 }

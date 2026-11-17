@@ -61,7 +61,8 @@ func TestBothCallersOfTheCarryRuleDecideAlike(t *testing.T) {
 			const check = "check-a"
 			history := &historyStub{paths: row.changed}
 			judge, err := newCheckJudge(Input{Subject: Point{Commit: "head", Branch: "b1"}, Now: time.Unix(1, 0), History: history,
-				Ties: CommitTies{"head": {check: row.head}, "base": {check: row.base}}})
+				Ties: CommitTies{"head": {check: row.head}, "base": {check: row.base}}, JobRuns: []JobRun{},
+				Uncited: map[string]map[string]string{}})
 			if err != nil {
 				t.Fatal(err)
 			}

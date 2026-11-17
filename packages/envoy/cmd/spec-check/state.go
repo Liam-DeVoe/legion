@@ -55,7 +55,10 @@ func runState(args []string, stdout, stderr io.Writer) int {
 	}
 	var cycle []string
 	if scenario.Units != nil {
-		cycle = specgraph.WaitCycle(scenario.Units)
+		if cycle, err = specgraph.WaitCycle(scenario.Units); err != nil {
+			say(stderr, "%s: %s", dir, err)
+			return 2
+		}
 	}
 	if *asJSON {
 		return printStatesJSON(stdout, stderr, dir, states, scenario.Units != nil, cycle)

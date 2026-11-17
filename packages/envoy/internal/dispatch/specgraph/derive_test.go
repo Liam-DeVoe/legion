@@ -6,14 +6,17 @@ import (
 )
 
 // A member of an Input that the caller did not set is its zero value, and the derivation would read
-// that value as a real one: a failure with no time as older than every approval, a run with no
-// subject, no job or no test commit as one that counts nowhere, a subject with no now as one at
-// which no time limit ends, an approved text with no time as one that makes no result suspect, a
-// commit of the history with no files and a known tie with no path as no change between two
-// commits, and a job run with no job or no commit as no run of the check's job. Each turns a state
-// toward true or hides a failure (R7: "A pass and a failure on one such subject and one procedure
-// make the state unknown", "a later failure cancels an earlier pass"), so Derive and CheckStates
-// give an error and no state, in the words that the scenario reader refuses the same input with.
+// that value as a real one: a failure with no time as older than every approval, one with no seq as
+// the first record of its time, a run with no subject, no job or no test commit as one that counts
+// nowhere, a subject with no now as one at which no time limit ends, an approved text with no time
+// as one that makes no result suspect, a commit of the history with no files and a known tie with no
+// path as no change between two commits, a job run with no job, no commit or not ended as no run of
+// the check's job, and no list of job runs or of the checks that CI refused as none. Each turns a
+// state toward true or hides a failure (R7: "A pass and a failure on one such subject and one
+// procedure make the state unknown", "a later failure cancels an earlier pass"), and so do an
+// approved node under another key than its id, which Current leaves out, and a subject that is no
+// subject of R10, so Derive and CheckStates give an error and no state, in the words that the
+// scenario reader refuses the same input with.
 // Each row: the case of TestCheckState, at c1, the head of branch b, with the row's checks added,
 // its setup, and its change of the Input. The three rows that name a test of their own are that
 // test's rows, whose input is refused here: they read unknown before.
@@ -102,12 +105,48 @@ func TestTheDerivationRefusesAnInputThatIsNotWhole(t *testing.T) {
 		{name: "two results of a check at one at and one seq", change: func(in *Input) {
 			in.Results[1].At, in.Results[1].Seq = in.Results[0].At, in.Results[0].Seq
 		}, want: "specgraph: result 2: it has the at and the seq of result 1, so neither of the two is the later"},
+		// R7: "Of several results that count, the latest counts, and a later failure cancels an
+		// earlier pass." The order of record is at, then seq, which Dispatch numbers from 1: a result
+		// with seq 0 would sort before each result of its at, so a later failure would be hidden.
+		{name: "a result with no seq", change: func(in *Input) { in.Results[1].Seq = 0 },
+			want: "specgraph: result 2: it sets no seq"},
+		{name: "a result whose seq is below 1", change: func(in *Input) { in.Results[0].Seq = -4 },
+			want: "specgraph: result 1: it sets no seq"},
+		{name: "a failure of production with no seq, at the at of its pass", add: []Check{checkStateProduction}, setup: func(s *checkCase) {
+			s.Subject = Point{Commit: "c1", Deploy: "d1"}
+			s.Results = append(s.Results, productionPassed(checkStateProduction, "d1")...)
+			s.Results = append(s.Results, productionRun(checkStateProduction, "d1", OutcomeFail, checkStateRun))
+		}, change: func(in *Input) { in.Results[4].Seq = 0 }, want: "specgraph: result 5: it sets no seq"},
+		{name: "control: the same failure of production, recorded after its pass",
+			add: []Check{checkStateProduction}, setup: func(s *checkCase) {
+				s.Subject = Point{Commit: "c1", Deploy: "d1"}
+				s.Results = append(s.Results, productionPassed(checkStateProduction, "d1")...)
+				s.Results = append(s.Results, productionRun(checkStateProduction, "d1", OutcomeFail, checkStateRun))
+			}},
+		// The entry reads each approved node by its key, as Current does, so a node under another key
+		// than its own id would be left out, with its checks (R10: "Not met: one of them is false").
+		{name: "an approved node under another key than its id", change: func(in *Input) {
+			in.Approved.Nodes["x-"+checkStateCheck.ID] = in.Approved.Nodes[checkStateCheck.ID]
+			delete(in.Approved.Nodes, checkStateCheck.ID)
+		}, want: `specgraph: approved spec: node "a-restart-loses-no-message" is under the id "x-a-restart-loses-no-message"`},
+		{name: "an approved node with no id", change: func(in *Input) {
+			n := in.Approved.Nodes[checkStateCheck.ID]
+			n.ID = ""
+			delete(in.Approved.Nodes, checkStateCheck.ID)
+			in.Approved.Nodes[""] = n
+		}, want: "specgraph: approved spec: a node has no id"},
 		{name: "a subject with no commit", change: func(in *Input) { in.Subject.Commit = "" },
 			want: "specgraph: subject: it sets no commit"},
 		{name: "a subject with no now", change: func(in *Input) { in.Now = time.Time{} },
 			want: "specgraph: subject: it sets no now"},
 		{name: "a subject with neither branch nor deploy", change: func(in *Input) { in.Subject.Branch = "" },
 			want: "specgraph: subject: it sets neither branch nor deploy; a subject sets exactly one of them"},
+		// R10: "The subject is the head of the branch that the files are read from, or the commit that
+		// production runs"; one subject is one of the two, and the head of a branch reads no graph.
+		{name: "a subject with a branch and a deploy", change: func(in *Input) { in.Subject.Deploy = "d1" },
+			want: "specgraph: subject: it sets both branch and deploy; a subject sets exactly one of them"},
+		{name: "a subject of a branch with a transaction of the graph", change: func(in *Input) { in.Subject.GraphTx = "tx1" },
+			want: "specgraph: subject: it sets graph_tx with no deploy; the commit that production runs reads the graph, and the head of a branch does not"},
 		{name: "an approved text with no time", change: func(in *Input) {
 			n := in.Approved.Nodes[checkStateLeaf.ID]
 			n.Versions = []ApprovedVersion{{Version: 1, Block: n.Versions[0].Block}}
@@ -126,6 +165,17 @@ func TestTheDerivationRefusesAnInputThatIsNotWhole(t *testing.T) {
 		{name: "a commit of the history with no files", change: func(in *Input) {
 			in.History = &FixtureHistory{Commits: []FixtureCommit{{ID: "c1"}}}
 		}, want: `specgraph: history: commit "c1": it sets no files`},
+		// A nil value of each type that implements History, a type of the package or of the caller,
+		// would panic where a result carries, and an Input with no history sets no History.
+		{name: "a nil *FixtureHistory", change: func(in *Input) { in.History = (*FixtureHistory)(nil) },
+			want: "specgraph: history: a nil *specgraph.FixtureHistory is no history; an Input with no history sets no History"},
+		{name: "a nil *GitHistory", change: func(in *Input) { in.History = (*GitHistory)(nil) },
+			want: "specgraph: history: a nil *specgraph.GitHistory is no history; an Input with no history sets no History"},
+		{name: "a nil History of a type of the caller", change: func(in *Input) { in.History = historyOfTheCaller(nil) },
+			want: "specgraph: history: a nil specgraph.historyOfTheCaller is no history; an Input with no history sets no History"},
+		{name: "a GitHistory with no Dir", change: func(in *Input) { in.History = GitHistory{} },
+			want: "specgraph: history: a GitHistory sets no Dir, so git would read the clone of the working directory of the process"},
+		{name: "control: no History", change: func(in *Input) { in.History = nil }},
 		{name: "a known tie with no path", change: func(in *Input) { in.Ties = CommitTies{"c1": {checkStateCheck.ID: {Known: true}}} },
 			want: `specgraph: ties: commit "c1": check "a-restart-loses-no-message": specgraph: a tie holds no path`},
 		{name: "control: a tie that is not known has no path", change: func(in *Input) { in.Ties = CommitTies{"c1": {checkStateCheck.ID: {}}} }},
@@ -133,6 +183,21 @@ func TestTheDerivationRefusesAnInputThatIsNotWhole(t *testing.T) {
 			want: "specgraph: job run 1: it sets no job"},
 		{name: "a job run with no commit", change: func(in *Input) { in.JobRuns = []JobRun{{Job: "go-checks", Ended: true}} },
 			want: "specgraph: job run 1: it sets no commit"},
+		// The runs and the checks that CI refused only lower a state: a run of a leg that ended with
+		// no result reads unknown (R9), and so does a check that CI refused (R48). A caller that gives
+		// none of them would read as one in whose history no job ran and CI refused no check, so it
+		// gives each, empty for none. A run that has not ended is a run of its job too.
+		{name: "control: a job run that has not ended", change: func(in *Input) { in.JobRuns = []JobRun{{Job: "go-checks", Commit: "c1"}} }},
+		// R13: a query "reads the graph at one transaction", and the runner knows the one that it
+		// tried to read, the subject's: a run that could not run names it too.
+		{name: "a run of a check of the graph that could not run and names no transaction", add: []Check{checkStateGraph}, setup: func(s *checkCase) {
+			s.Subject = Point{Commit: "c1", Deploy: "d1", GraphTx: "tx1"}
+			s.Results = append(s.Results, Result{Check: checkStateGraph.ID, Kind: ResultRun, Outcome: OutcomeCouldNotRun, At: checkStateRun})
+		}, want: "specgraph: result 3: it sets no graph_tx, the subject that a check of the graph reads"},
+		{name: "no list of job runs", change: func(in *Input) { in.JobRuns = nil },
+			want: "specgraph: it sets no JobRuns; an Input at a commit where no job ran sets an empty list"},
+		{name: "no map of the checks that CI refused", change: func(in *Input) { in.Uncited = nil },
+			want: "specgraph: it sets no Uncited; an Input in whose history CI refused no check sets an empty map"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
@@ -188,3 +253,8 @@ func checkStates(t *testing.T, in Input) []CheckState {
 	}
 	return states
 }
+
+// historyOfTheCaller is a History of a type that a caller of the library defines.
+type historyOfTheCaller func(from, to string) ([]string, bool)
+
+func (h historyOfTheCaller) Changed(from, to string) ([]string, bool) { return h(from, to) }

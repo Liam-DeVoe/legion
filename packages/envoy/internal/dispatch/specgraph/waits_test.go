@@ -60,10 +60,20 @@ func TestTheShortestCycleFromTheSmallestUnit(t *testing.T) {
 	expectCycle(t, units, want)
 }
 
-// expectCycle fails the test unless WaitCycle(units) is want.
+// expectCycle fails the test unless WaitCycle(units) is want, with no error.
 func expectCycle(t *testing.T, units []Unit, want []string) {
 	t.Helper()
-	if got := WaitCycle(units); !slices.Equal(got, want) || (got == nil) != (want == nil) {
-		t.Errorf("WaitCycle = %q, want %q", got, want)
+	if got, err := WaitCycle(units); err != nil || !slices.Equal(got, want) || (got == nil) != (want == nil) {
+		t.Errorf("WaitCycle = %q, %v, want %q", got, err, want)
+	}
+}
+
+// A unit that sets no id would read as a unit named "", so WaitCycle refuses it, in the words of
+// the reader of units.json, and gives no cycle.
+func TestWaitCycleRefusesAUnitWithNoID(t *testing.T) {
+	t.Parallel()
+	got, err := WaitCycle([]Unit{{ID: "u-a", Serves: []string{"s-a"}, WaitsOn: []string{"s-b"}}, {Serves: []string{"s-b"}, WaitsOn: []string{"s-a"}}})
+	if want := "specgraph: unit 2 has no id"; err == nil || err.Error() != want || got != nil {
+		t.Errorf("WaitCycle = %q, %v, want no cycle and the error %q", got, err, want)
 	}
 }
