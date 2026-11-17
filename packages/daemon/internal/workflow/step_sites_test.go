@@ -220,6 +220,39 @@ func TestAFailedReviewEndsFailedAndStartsTheImplementerAgain(t *testing.T) {
 	}
 }
 
+// A move back to the retro returns the work to place 0, the retro's: the end of the merge it
+// interrupts is failed, its merger having asked for the move, and names returned_to 0, present in
+// the row the outbox holds, where the forward end of the retro before it names none. A 0 left out
+// would read as a return to nowhere.
+func TestAMoveBackToTheRetroReturnsToPlaceZero(t *testing.T) {
+	pool := migratedPool(t)
+	stepRoot(t, pool, phase.Retro)
+	engine := stepEngine(nil)
+	move(t, pool, engine, "LEGION-208", TriggerRetroCompleted, "", record.PhaseRow{})
+	applyFacts(t, pool, engine)("merger-moves-back", intake.BackwardMove{Issue: "LEGION-208", Requester: claim.RoleMerger, To: phase.Retro,
+		Reason: "the retro missed a finding"})
+	if got := issueAt(t, pool, "LEGION-208"); got != phase.Retro {
+		t.Fatalf("LEGION-208 stands at %s after the merger's move back, want retro", got)
+	}
+	writes := stepWrites(t, pool, "LEGION-208")
+	if len(writes) != 4 || !isStart(writes[1]) || writes[1].Kind != "merge" || !isStart(writes[3]) || writes[3].Kind != "retro" || writes[3].Step != 0 {
+		t.Fatalf("step rows = %+v, want the retro's end, the merge's start and end, and the retro's start again", writes)
+	}
+	assertEnd(t, writes[0], "retro", 0, 1, "passed", nil)
+	assertEnd(t, writes[2], "merge", 0, 1, "failed", new(0))
+	rows := issueOutboxOf(t, pool, "LEGION-208", string(record.OutboxKindStepRecord))
+	for i, want := range map[int]bool{0: false, 2: true} {
+		var payload map[string]any
+		if err := json.Unmarshal(rows[i].payload, &payload); err != nil {
+			t.Fatalf("decode step row %d: %v", i, err)
+		}
+		returned, present := payload["returned_to"]
+		if present != want || present && returned != float64(0) {
+			t.Fatalf("step row %d carries returned_to %v (present %t), want present %t and 0: %s", i, returned, present, want, rows[i].payload)
+		}
+	}
+}
+
 // A head that conflicts with its base sends the work back with no report asking for it: the step
 // it interrupts ends stopped, naming the step the work returns to.
 func TestAConflictEndsTheStepStopped(t *testing.T) {
