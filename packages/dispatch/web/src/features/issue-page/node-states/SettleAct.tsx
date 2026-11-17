@@ -5,12 +5,8 @@ import { pageFailedText, pageRowAct } from "../../../theme/classes";
 import type { TreeNode } from "../issue-tree";
 import { pageChrome } from "../page-structure";
 import { CONTROL_LABELS, SETTLE_ANSWERS } from "../page-words";
+import { READER_ACTS } from "../useNodeEditing";
 import { settleKeyOf, useSettle } from "./settle-write";
-
-/** The reader's acts that end a refusal's sentence: the four of `IssueTree.tsx`'s `READER_ACTS`,
- *  named again here, since importing that file, which draws the rows this act stands in, would
- *  close an import cycle. */
-const READER_ACTS = ["keydown", "pointerdown", "wheel", "touchstart"] as const;
 
 /** The sentence a refused settle draws after the act, read from the refusal's status and
  *  code, never from its text: every refusal the page names no sentence for - a 403 with no code,
