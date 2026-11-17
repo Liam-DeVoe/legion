@@ -353,11 +353,7 @@ func holdsTen(printed stepsPrinted) error {
 // hold no other run. The error names the first run that is missing or wrong as lineName spells it.
 func holdsLines(lines []stepLine, want []stepWant, exact bool) error {
 	for _, w := range want {
-		got, name := findLine(lines, w), lineName(w)
-		typ := w.typ
-		if typ == "" {
-			typ = "-"
-		}
+		got, name, typ := findLine(lines, w), lineName(w), printedType(w)
 		switch {
 		case got.text == "":
 			return fmt.Errorf("no line of %s", name)
@@ -385,12 +381,17 @@ func findLine(lines []stepLine, w stepWant) stepLine {
 	return stepLine{}
 }
 
+// printedType is w's type as the command prints it: `-` for the retro and the merge, which have
+// none.
+func printedType(w stepWant) string {
+	if w.typ == "" {
+		return "-"
+	}
+	return w.typ
+}
+
 // lineName spells w as the command prints its leading fields, then its result: `4 step reviewer
 // review attempt 1 … failed`.
 func lineName(w stepWant) string {
-	typ := w.typ
-	if typ == "" {
-		typ = "-"
-	}
-	return fmt.Sprintf("%d %s %s %s attempt %d … %s", w.step, w.kind, w.role, typ, w.attempt, w.result)
+	return fmt.Sprintf("%d %s %s %s attempt %d … %s", w.step, w.kind, w.role, printedType(w), w.attempt, w.result)
 }
