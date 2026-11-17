@@ -243,7 +243,9 @@ func (m *Machine) ensureEnrolled(ctx context.Context) error {
 // (its startRenewer), so a revocation that fails here keeps the enrollment recorded and handed to
 // no connection, and the next observation tries it again (review round 14 of #4220). The claim
 // then has no enrollment, so the next decision asks the hold again before any new one and waits
-// for the shim's next hello, and an operator's settle of the name enrolls the process again. A
+// for the shim's next hello. The same process is not enrolled again: its shim runs one renewer, and
+// the revoked enrollment's ended at the broker's refusal, so a claim given its session back is
+// enrolled again at its next launch (review round 14 of #4220). A
 // broker that refuses the revocation for good is not asked again, since it would refuse again:
 // the enrollment is recorded no longer, and the refusal is logged at Error naming it.
 func (m *Machine) revokeUnheld(ctx context.Context, refused error) error {
@@ -254,7 +256,7 @@ func (m *Machine) revokeUnheld(ctx context.Context, refused error) error {
 	var permanent PermanentError
 	switch {
 	case err == nil:
-		m.log.Error("supervise: agent-secrets: revoked the enrollment of a claim that does not hold its session; its process is enrolled again once the claim holds it",
+		m.log.Error("supervise: agent-secrets: revoked the enrollment of a claim that does not hold its session; once the claim holds it, its next launch is enrolled again",
 			"enrollment", e.ID, "incarnation", e.Incarnation, "session", m.claim.Session, "error", refused)
 	case errors.As(err, &permanent) && permanent.Permanent():
 		m.log.Error("supervise: agent-secrets: the broker refused to revoke the enrollment of a claim that does not hold its session; it is recorded no longer, and its lease ends it once its pod stops renewing",
