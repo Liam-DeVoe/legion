@@ -34,8 +34,10 @@ jobs:
     runs-on: ubuntu-24.04
     # The step's -timeout 30m must fire before the runner cancels the job, so a hung test prints
     # the dump that names it: about 1 minute of setup, up to 5 minutes to compile the race
-    # binaries, then the step's own 30 minutes, which is 36.
-    timeout-minutes: 45
+    # binaries, then the step's own 30 minutes, which is 36. Each forced-order step then compiles
+    # a hooked nats-server and the packages above it under the detector again, up to 5 minutes,
+    # and runs under forced-order.sh's -timeout of 10 minutes, 15 each, so 66 in all.
+    timeout-minutes: 75
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -62,6 +64,20 @@ jobs:
         run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
       - name: Race-test delivery, the store, the bus, the listener, the registry store, the session cache and kvwatch
         run: go test -count=1 -race -timeout 30m ./internal/dispatch/delivery/... ./internal/dispatch/store/... ./internal/bus/ ./cmd/listener/ ./internal/store/ ./internal/session/ ./internal/kvwatch/...
+        working-directory: packages/envoy
+
+      # The forced-order tests (packages/envoy/scripts/forced-order.sh): every TestForcedOrder
+      # test of the packages named, built with -tags odatrace and -race against a nats-server whose
+      # own code carries the hold points internal/testnats/hooks.go drives, once on v2.15.1, the
+      # version the module requires and the hub runs, and once on v2.10.29. The script hooks a copy
+      # of nats-server from internal/testnats/testdata/hooked, and fails a package that declares no
+      # such test. Neither step sets an environment variable: check-ci-filters.sh reduces no go
+      # command of a job one of whose steps sets a GO* name.
+      - name: Forced-order tests on the hooked nats-server v2.15.1
+        run: scripts/forced-order.sh -server 2.15.1 ./internal/testnats/hooktest/
+        working-directory: packages/envoy
+      - name: Forced-order tests on the hooked nats-server v2.10.29
+        run: scripts/forced-order.sh -server 2.10.29 ./internal/testnats/hooktest/
         working-directory: packages/envoy
 
       - name: Report ci-ok when this job decides a merge-group run
