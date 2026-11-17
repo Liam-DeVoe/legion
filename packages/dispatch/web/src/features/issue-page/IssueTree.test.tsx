@@ -2791,6 +2791,59 @@ test("a focus a redraw drops from the first row while the question's landing wai
   }
 });
 
+// The same where the focus is on the question's own row before its landing's frame - a script's
+// focus, which is no act of the reader's, put where the landing is to put it: the focus is the
+// opening's still, and reads that draw the tree meanwhile end nothing. Read as somebody else's
+// focus - neither nobody's nor where the landing found it - it ended the opening: a later read
+// that drew the question's row again under another key left the focus on the page, and the
+// frame asked for the row that had left it landed nowhere.
+test("a focus on the question's own row while its landing waits is still the opening's", async () => {
+  setViewport(1440);
+  const question = node({
+    id: "ask-1",
+    question: true,
+    text: "Which flag?",
+    type: "ask",
+    waiting: true,
+  });
+  const frames = framesByHand();
+  try {
+    const tree = renderPageTree(node({ children: [question], id: KEY, type: "issue" }));
+    const { container } = tree.view;
+    const asked = rowsFor(container, "ask-1")[0];
+    await act(async () => asked?.focus());
+    expect(focusedRow(container), "the script's focus is not on the question's row").toBe("ask-1");
+
+    // Another read draws the tree again, and a later one places the question under a node that
+    // has arrived since, all before the landing's frame.
+    tree.redraw(node({ children: [question], id: KEY, type: "issue" }));
+    tree.redraw(
+      node({
+        children: [
+          node({
+            children: [question],
+            held: 1,
+            id: "comment-1",
+            text: "A thread.",
+            type: "comment",
+          }),
+        ],
+        id: KEY,
+        type: "issue",
+      })
+    );
+    expect(rowsFor(container, "ask-1"), "the read drew the question's row nowhere").toHaveLength(1);
+    expect(rowsFor(container, "ask-1")[0], "the read kept the question's row").not.toBe(asked);
+    await frames.run();
+    expect(
+      focusedRow(container),
+      "the question's row drawn again lost the focus: the focus on it while its landing waited ended the opening"
+    ).toBe("ask-1");
+  } finally {
+    frames.restore();
+  }
+});
+
 // A row the page takes the reader to of its own accord - the node an address names, the open
 // question the page opens on, or the outline's first row where no question waits - takes the
 // focus in the frame after the commit that draws it, not in that commit: a focus given there
