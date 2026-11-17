@@ -866,16 +866,16 @@ func (e *Engine) ranUnreported(ctx context.Context, tx pgx.Tx, issue record.Issu
 // records or refuses as late (NotCurrentPhase); late, the refusal handoff answers after the
 // lingering tree's, for a task with plan rows whose step's run Legion ended (lateReport); or
 // neither, where handoff records the completion of a run the daemon moved the issue on from
-// without it (leftItsPhase), on its own row, moving nothing.
+// without it (leftPhaseReported), on its own row, moving nothing.
 func (e *Engine) pastCompletion(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.HandoffComplete, reported phase.Phase) (now, late *intake.Refusal, err error) {
-	left, err := e.leftItsPhase(ctx, tx, issue, fact.Role, fact.Claim)
+	past, err := e.pastReportOf(ctx, tx, issue, fact, reported)
 	if err != nil {
 		return nil, nil, err
 	}
-	if late, err = e.lateReport(ctx, tx, issue, fact, reported, left); err != nil {
+	if late, err = e.lateReport(ctx, tx, issue, fact, reported, past); err != nil {
 		return nil, nil, err
 	}
-	if !left && late == nil {
+	if past != leftPhaseReported && late == nil {
 		return intake.NotCurrentPhase(fact.Role, issue.Phase, issue.Key), nil, nil
 	}
 	return nil, late, nil

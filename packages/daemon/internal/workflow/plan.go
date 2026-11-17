@@ -288,22 +288,53 @@ func (e *Engine) planHoldRefusal(ctx context.Context, tx pgx.Tx, issue record.Is
 	return intake.RetryOfStoppedTask(issue.Key, w.Task), nil
 }
 
+// pastReport is the run that a completion of a phase its issue no longer stands in reports, which
+// pastReportOf decides once: a run of a phase the daemon moved the issue on from, the run of the
+// step that the stop of its task ended, or no run that handoff answers.
+type pastReport int
+
+const (
+	// noRunReported is a completion of no run: handoff refuses it as one of a phase the issue
+	// does not stand in (NotCurrentPhase), unless a late report refuses it first.
+	noRunReported pastReport = iota
+	// leftPhaseReported is the run of a phase the daemon moved the issue on from without it
+	// (leftItsPhase), which handoff records.
+	leftPhaseReported
+	// stoppedStepReported is a completion of the phase the issue is held from because its task
+	// was stopped there (record.HoldTaskStopped).
+	stoppedStepReported
+)
+
+// pastReportOf is the run that role's completion of reported, a phase issue no longer stands in,
+// reports. A held issue stands where no role works, so no role has left its phase there
+// (leftItsPhase), and a run of a left phase is never also the run a stop ended.
+func (e *Engine) pastReportOf(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.HandoffComplete, reported phase.Phase) (pastReport, error) {
+	left, err := e.leftItsPhase(ctx, tx, issue, fact.Role, fact.Claim)
+	switch {
+	case err != nil:
+		return noRunReported, err
+	case left:
+		return leftPhaseReported, nil
+	case planHold(issue) && issue.Hold.Reason == record.HoldTaskStopped && issue.Hold.From == reported:
+		return stoppedStepReported, nil
+	}
+	return noRunReported, nil
+}
+
 // lateReport is the refusal of fact, role's report of reported, a phase issue no longer stands in,
 // where issue's run has plan rows and reported is the phase of a step of its task whose run Legion
-// ended (R7). left says whether the report is one handoff would record (leftItsPhase): the task
-// went on to the step issue stands at now, and a task runs one step at a time, so the reported
-// step's run is over (LateReportOfEndedStep). A report it would not record is late where issue is
-// held because its task was stopped at reported (record.HoldTaskStopped), and the report is of
-// the run the stop ended (ranUnreported); its first sentence is the reason the task stores
-// (LateReportOfStoppedTask). Every other report gets nil and keeps today's answer: one of an
-// issue with no plan rows (R20), one of the retro or the merge, one while the task stands at its
-// retro or its merge, one of a task whose issue left the workflow (HANDOFF_NOT_CURRENT_PHASE),
-// and one of a step other than the one the stop ended. The refusal writes nothing itself: the
-// caller answers it after the lingering tree's and keeps the report's handoff record
-// (spendLateHandoff).
-func (e *Engine) lateReport(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.HandoffComplete, reported phase.Phase, left bool) (*intake.Refusal, error) {
-	stopped := planHold(issue) && issue.Hold.Reason == record.HoldTaskStopped && issue.Hold.From == reported
-	if !left && !stopped {
+// ended. past is the run the report is of (pastReportOf). A run of a phase the issue moved on
+// from is over: the task went on to the step issue stands at now, and a task runs one step at a
+// time (LateReportOfEndedStep). The report of the phase a stop holds the issue from is late where
+// it is of the run the stop ended (ranUnreported); its first sentence is the reason the task
+// stores (LateReportOfStoppedTask). Every other report gets nil and keeps today's answer: one of
+// no run, one of an issue with no plan rows, one of the retro or the merge, one while the task
+// stands at its retro or its merge, one of a task whose issue left the workflow
+// (HANDOFF_NOT_CURRENT_PHASE), and one of a step other than the one the stop ended. The refusal
+// writes nothing itself: the caller answers it after the lingering tree's and keeps the report's
+// handoff record (spendLateHandoff).
+func (e *Engine) lateReport(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.HandoffComplete, reported phase.Phase, past pastReport) (*intake.Refusal, error) {
+	if past == noRunReported {
 		return nil, nil
 	}
 	w, err := e.walk(ctx, tx, issue)
@@ -316,7 +347,7 @@ func (e *Engine) lateReport(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	}
 	ended := w.Steps[at.Position-1].Role
 	named := fact.HandoffRecord != ""
-	if left {
+	if past == leftPhaseReported {
 		now, _ := w.PlaceOf(issue.Phase)
 		if now.Kind != record.PlaceStep {
 			return nil, nil
