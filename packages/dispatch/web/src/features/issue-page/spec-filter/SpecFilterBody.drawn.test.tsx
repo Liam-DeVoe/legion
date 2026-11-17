@@ -589,6 +589,49 @@ test("while the asks read is out, no statement a person's decision shaped reads 
   }
 });
 
+// R2 and decision 98: a person's decision is a question they answered, which only the asks read
+// says, so where that read failed with nothing held the column cannot draw a person's decision
+// beside the statements it shaped. It says the decisions could not be read, as it says it of the
+// Spec view read, and draws no person's decision missing in silence, nor a line that no decision
+// shaped a statement.
+test("where the asks read failed, the column says the decisions could not be read", async () => {
+  const words = "Put the decisions beside the statements. Please.";
+  const { client, read, view } = drawBody(
+    issueTree([statement("r1"), statement("r2"), answeredAsk("ask-1", { text: words })]),
+    [
+      ...["r1", "r2"].map((block, position) =>
+        answerNode(block, "requirement", {
+          document: { artifact_id: "artifact-spec", position, slug: SPEC_SLUG },
+          mark: "query",
+        })
+      ),
+      answerNode("ask-1", "ask", { mark: "context" }),
+    ],
+    { asksRead: "out", tuples: [{ from: "ask-1", kind: "shaped", to: "r1" }] }
+  );
+  try {
+    // The asks read failed, as the page's own observer of it left it (`useIssueTree.ts`).
+    await act(async () => {
+      await client.prefetchQuery({
+        queryFn: () => Promise.reject(new Error("offline")),
+        queryKey: ["asks", KEY],
+      });
+    });
+    await waitFor(
+      () =>
+        expect(
+          view.container.textContent,
+          "the column does not say its decisions could not be read where the asks read failed"
+        ).toContain(ANSWER_LINES.decisions_unreadable),
+      { timeout: 3000 }
+    );
+    expect(textsOf(view, "[data-spec-nothing]")).toEqual([]);
+  } finally {
+    view.unmount();
+    read.mockRestore();
+  }
+});
+
 // R35: a statement with no decision beside it is drawn as such, which is what makes a missing
 // tie visible.
 test("a statement no decision shaped says so where its decision would stand", () => {
