@@ -156,8 +156,6 @@ func (s *server) editMessage(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	// The answer lists the message's attempts as GET /api/v1/messages/{id} reads them, read in
-	// this transaction before its commit (hydrateWrittenMessage).
 	if err := s.hydrateWrittenMessage(r.Context(), tx, &message); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -224,9 +222,6 @@ func (s *server) deleteMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	events = append(events, event)
-	// The answer lists the message's attempts, each send the delete failed among them, as GET
-	// /api/v1/messages/{id} reads them, read in this transaction before its commit
-	// (hydrateWrittenMessage).
 	if err := s.hydrateWrittenMessage(r.Context(), tx, &message); err != nil {
 		s.writeHandlerError(w, err)
 		return

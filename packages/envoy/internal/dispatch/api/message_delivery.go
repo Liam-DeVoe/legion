@@ -1234,11 +1234,9 @@ func (s *server) loadMessageDeliveries(ctx context.Context, q queryer, messageID
 }
 
 // hydrateWrittenMessage sets message.Deliveries to every attempt of the message, as GET
-// /api/v1/messages/{id} lists them (hydrateMessageThreads), for the answer of a write of it. The
-// edit and the delete read them on their own transaction, after their last write and before the
-// commit, so a read that fails returns before the commit and rolls the write back: an answer
-// never says a write that landed failed. A send reads them on the pool, once its attempt is on
-// its way (recoveredMessage, createStoredMessage).
+// /api/v1/messages/{id} lists them (hydrateMessageThreads), for the answer of a write of it. A
+// write that still holds its transaction passes it as q, after its last write and before its
+// commit, so a read that fails rolls the write back.
 func (s *server) hydrateWrittenMessage(ctx context.Context, q queryer, message *model.Message) error {
 	deliveries, err := s.loadMessageDeliveries(ctx, q, []string{message.ID})
 	if err != nil {

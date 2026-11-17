@@ -1,10 +1,8 @@
 package api
 
 // The answer of each write to a comment or to an issue message lists the mentions and the
-// delivery attempts a read of that post lists right after it. Each write used to answer the post
-// as its row alone had it, with no mention and no attempt, where the read listed both. The write
-// reads them in its own transaction before its commit, so a read that fails takes the write back
-// with it, and the error the caller is answered is true.
+// delivery attempts a read of that post lists right after it, and a write whose answer cannot be
+// read answers an error and leaves the post as it was.
 
 import (
 	"bytes"
@@ -13,7 +11,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -209,10 +206,10 @@ func TestMessageCorrectionAnswersListTheDeliveriesAReadLists(t *testing.T) {
 // unreadableAttempt makes the post's one settled delivery attempt unreadable to Dispatch: it sets
 // the row's created_at to 'infinity', a timestamptz Postgres stores, compares and orders, which
 // pgx refuses to scan into the time.Time every read of an attempt decodes it into
-// (scanCommentDelivery, scanMessageDelivery: "cannot scan Infinity into *time.Time"). No
-// statement of an edit or a delete of a post scans a settled attempt of it - the delete's settle
-// returns the pending ones alone (settleDeletedPostDeliveries) - so the one read it fails is the
-// answer's, wherever that read runs: in the write's transaction, or on the pool after its commit.
+// (scanCommentDelivery, scanMessageDelivery: "cannot scan Infinity into *time.Time"). No write
+// below scans a settled attempt of its post but its answer's read - the delete's settle returns
+// the pending ones alone (settleDeletedPostDeliveries) - so that read is the one it fails,
+// wherever it runs: in the write's transaction, or on the pool after its commit.
 func (f writeAnswersFixture) unreadableAttempt(t *testing.T, attempts, owner, id string) {
 	t.Helper()
 	tag, err := f.database.Pool.Exec(context.Background(), `
@@ -226,64 +223,98 @@ func (f writeAnswersFixture) unreadableAttempt(t *testing.T, attempts, owner, id
 	}
 }
 
-// A correction whose answer cannot be read answers an error and leaves the post as it was: the
-// read of the attempts its answer lists runs in the correction's own transaction, before the
-// commit, so its failure rolls the write back. A correction that read them after its commit
-// answered 500 for a write that had landed, and a retried delete then met 409 POST_DELETED. The
-// post is read back from its row: a GET would read the same unreadable attempt and fail too.
+// rowColumns is columns of row id of table rows as one JSON object, read straight from the
+// database: a GET of a post whose attempt is unreadable would fail on that attempt too.
+func (f writeAnswersFixture) rowColumns(t *testing.T, rows, columns, id string) string {
+	t.Helper()
+	var read string
+	if err := f.database.Pool.QueryRow(context.Background(), `
+		select to_jsonb(r)::text from (select `+columns+` from `+rows+` where id = $1) r
+	`, id).Scan(&read); err != nil {
+		t.Fatalf("read %s of %s %s: %v", columns, rows, id, err)
+	}
+	return read
+}
+
+// A write whose answer cannot be read answers an error and leaves the post as it was: the edit
+// and the delete of a comment and of an issue message, and a comment's resolve, reopen, accept
+// and reject. A write that read the attempts its answer lists after its commit answered 500 for
+// a write that had landed, and a retried delete then met 409 POST_DELETED. Each row reads the
+// columns its write moves from the post's row before and after the write, and wants them equal.
 func TestACorrectionWhoseAnswerCannotBeReadDoesNotLand(t *testing.T) {
 	f := newWriteAnswersFixture(t)
 	issue := createInteractionIssue(t, f.handler, "TEST", "A correction whose answer cannot be read", "before")
-	const original = "Reviewers, read the spec."
 	type post struct {
 		route, rows, attempts, owner string
-		create                       func(t *testing.T) string
 	}
-	comment := post{
-		route: "/api/v1/comments/", rows: "comments", attempts: "comment_deliveries", owner: "comment_id",
-		create: func(t *testing.T) string {
-			return f.mentioningComment(t, issue.Key, map[string]any{"body": original})
-		},
+	comments := post{route: "/api/v1/comments/", rows: "comments", attempts: "comment_deliveries", owner: "comment_id"}
+	messages := post{route: "/api/v1/messages/", rows: "messages", attempts: "message_deliveries", owner: "message_id"}
+	remark := func(t *testing.T) string {
+		return f.mentioningComment(t, issue.Key, map[string]any{"body": "Reviewers, read the spec."})
 	}
-	message := post{
-		route: "/api/v1/messages/", rows: "messages", attempts: "message_deliveries", owner: "message_id",
-		create: func(t *testing.T) string {
-			return createIssueMessage(t, f.handler, issue.Key, map[string]any{
-				"body": original, "target": "role:reviewer", "delivery": "btw",
-			}, "alice").ID
-		},
+	message := func(t *testing.T) string {
+		return createIssueMessage(t, f.handler, issue.Key, map[string]any{
+			"body": "Reviewers, read the spec.", "target": "role:reviewer", "delivery": "btw",
+		}, "alice").ID
 	}
+	// resolvedRemark is a remark whose thread alice resolved while its attempt still read.
+	resolvedRemark := func(t *testing.T) string {
+		id := remark(t)
+		path := "/api/v1/comments/" + id + "/resolve"
+		if answer := dispatchRequest(t, f.handler, http.MethodPost, path, nil, "alice"); answer.Code != http.StatusOK {
+			t.Fatalf("POST %s with its attempt readable: status=%d body=%s", path, answer.Code, answer.Body.String())
+		}
+		return id
+	}
+	anchoredSuggestion := func(t *testing.T) string {
+		return f.mentioningComment(t, issue.Key, map[string]any{
+			"body": "Say after.", "anchor": map[string]any{"artifact": "spec", "quote": "before"},
+			"suggestion": map[string]string{"replace_with": "after"},
+		})
+	}
+	suggestion := func(t *testing.T) string {
+		return f.mentioningComment(t, issue.Key, map[string]any{
+			"body": "Say ignored.", "suggestion": map[string]string{"replace_with": "ignored"},
+		})
+	}
+	const (
+		correction = "body, edited_at, deleted_at"
+		resolution = "resolved, resolved_by, resolved_at"
+		decision   = "suggestion->>'accepted' as accepted, resolved, resolved_by, resolved_at"
+	)
 	edit := map[string]any{"body": "Reviewers, read the new spec."}
 	for _, test := range []struct {
-		name   string
-		post   post
-		method string
-		body   any
+		name           string
+		post           post
+		create         func(t *testing.T) string
+		method, action string
+		body           any
+		// columns is what the write moves in the post's row.
+		columns string
 	}{
-		{name: "comment delete", post: comment, method: http.MethodDelete},
-		{name: "comment edit", post: comment, method: http.MethodPatch, body: edit},
-		{name: "message delete", post: message, method: http.MethodDelete},
-		{name: "message edit", post: message, method: http.MethodPatch, body: edit},
+		{name: "comment delete", post: comments, create: remark, method: http.MethodDelete, columns: correction},
+		{name: "comment edit", post: comments, create: remark, method: http.MethodPatch, body: edit, columns: correction},
+		{name: "message delete", post: messages, create: message, method: http.MethodDelete, columns: correction},
+		{name: "message edit", post: messages, create: message, method: http.MethodPatch, body: edit, columns: correction},
+		{name: "resolve", post: comments, create: remark, method: http.MethodPost, action: "/resolve", columns: resolution},
+		{name: "reopen", post: comments, create: resolvedRemark, method: http.MethodPost, action: "/reopen", columns: resolution},
+		{name: "accept", post: comments, create: anchoredSuggestion, method: http.MethodPost, action: "/accept", columns: decision},
+		{name: "reject", post: comments, create: suggestion, method: http.MethodPost, action: "/reject", columns: decision},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			id := test.post.create(t)
+			id := test.create(t)
 			f.unreadableAttempt(t, test.post.attempts, test.post.owner, id)
-			write := test.method + " " + test.post.route + id
-			answer := dispatchRequest(t, f.handler, test.method, test.post.route+id, test.body, "alice")
+			path := test.post.route + id + test.action
+			write := test.method + " " + path
+			before := f.rowColumns(t, test.post.rows, test.columns, id)
+			answer := dispatchRequest(t, f.handler, test.method, path, test.body, "alice")
 			if answer.Code != http.StatusInternalServerError {
 				t.Fatalf("%s with its attempt unreadable: status=%d body=%s, want 500, the answer's read failing",
 					write, answer.Code, answer.Body.String())
 			}
-			var body string
-			var editedAt, deletedAt *time.Time
-			if err := f.database.Pool.QueryRow(context.Background(), `
-				select body, edited_at, deleted_at from `+test.post.rows+` where id = $1
-			`, id).Scan(&body, &editedAt, &deletedAt); err != nil {
-				t.Fatalf("read %s back after %s: %v", id, write, err)
-			}
-			if body != original || editedAt != nil || deletedAt != nil {
-				t.Fatalf("%s answered %d and landed: the row reads body %q, edited_at %v, deleted_at %v, want %q, never edited nor deleted",
-					write, answer.Code, body, editedAt, deletedAt, original)
+			if after := f.rowColumns(t, test.post.rows, test.columns, id); after != before {
+				t.Fatalf("%s answered %d and landed: the row reads %s, want %s, as before the write",
+					write, answer.Code, after, before)
 			}
 		})
 	}
