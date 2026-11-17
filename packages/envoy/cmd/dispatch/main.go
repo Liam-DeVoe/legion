@@ -477,6 +477,10 @@ func main() {
 		ServerURL: serverURL,
 	})
 	publishRoomFigures(documentService)
+	// The decisions step's third phase writes the issues' documents through this service: the
+	// restore of the answered asks that left their specs and the conversion of the decisions
+	// documents, on the step's tick below.
+	decisionStep.UseDocuments(documentService)
 	restoreDecidedWordings(ctx, documentService, decidedWordingRestoreTimeout)
 	// The asks a close or a reopen by a release older than the withdrawal left: at boot, then on an
 	// interval below. It appends events and takes no copy lock, so it runs after
@@ -914,8 +918,9 @@ func main() {
 	// a build indexed without the block grammar.
 	go documentService.RunBlockIndexReconciliation(ctx, blockIndexLeases)
 	// The decisions step's tick, for as long as the process runs: the backfill while a row the
-	// release before wrote stands unmarked, and the catch-up of what a process of another build
-	// writes while one lives.
+	// release before wrote stands unmarked, the catch-up of what a process of another build
+	// writes while one lives, and, once the fleet is this one build, the restore of the answered
+	// asks that left their specs and the conversion of every decisions document.
 	if !boot.HoldDecisionsStep {
 		go decisionStep.Run(ctx)
 	}

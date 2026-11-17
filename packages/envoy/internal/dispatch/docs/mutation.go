@@ -55,6 +55,11 @@ type versionWrite struct {
 	// as the reopen's own move does (moveApprovalAsk, which takes those versions to hold that
 	// editor's text, since no stored version says whose text each added).
 	keptEditor *model.Actor
+	// steps names the phases of the decisions step whose own write this version is (restoreCase,
+	// conversionCase): set by SnapshotVersion from the mark the step alone puts on its context
+	// (withDecisionStepWrite), which no route can send, and zero for every other version, which
+	// the restore's and the conversion's carry cases do not reach.
+	steps decisionStepCases
 }
 
 // mergeInto copies src into *dst, allocating *dst if it is nil and src holds anything; a nil or
@@ -1650,6 +1655,7 @@ func (s *Service) SnapshotVersion(ctx context.Context, artifactID string, actor 
 	result, err := s.writeVersionTx(ctx, tx, artifactID, rendered, actor, &versionWrite{
 		authors: actorSlice(capture.authors),
 		capture: &capture,
+		steps:   decisionStepCasesOf(ctx),
 	})
 	if err != nil {
 		return VersionResult{}, err
@@ -2653,7 +2659,7 @@ func (s *Service) writeVersionTx(ctx context.Context, tx pgx.Tx, artifactID stri
 		// that text with the questions the close withdrew and the reopen opened again. It runs
 		// after the move, so an open request already names this version when the carry answers
 		// it in his name.
-		carried, err := s.carryApproval(ctx, tx, artifactID, version, rendered)
+		carried, err := s.carryApproval(ctx, tx, artifactID, version, rendered, write.steps)
 		if err != nil {
 			return versionWriteResult{}, err
 		}

@@ -112,6 +112,12 @@ var storeWriteCallSites = []string{
 	// row, the person's node, then the decision_keeps row that projects the Keep, then
 	// decision.kept, and the kept_by tuple and the kept_text_sum value under it, through Caused.
 	"api/decisions.go#keepDecisionNode",
+	// The decisions step's restore and conversion of an issue (dispatch://INFRA-1150 R6 to R9),
+	// under the issue's owner row and its asks' rows: each document's version and its event, the
+	// index pass's facts under that event through Caused, then the moves, the restored asks'
+	// relations and the carried Keeps, with the person node a Keep names, under the spec's event.
+	"docs/decision_restore.go#writeVersion",
+	"docs/decision_restore.go#writeFacts",
 	// The seed's comments, with their author's person node and each comment's authored_by
 	// tuple, which its one batch write states as a seeded database's own writer, the session
 	// nodes of the followers its ask batch copies, and its issues', asks' and messages' nodes,

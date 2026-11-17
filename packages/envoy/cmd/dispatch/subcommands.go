@@ -45,6 +45,12 @@ var subcommands = []subcommand{
 	{"backfill-graph-store", func(ctx context.Context, _ []string, env settingValues, stdout, _ io.Writer) int {
 		return backfillGraphStore(ctx, env.get("DATABASE_URL"), stdout)
 	}},
+	{"restore-answered-asks", func(ctx context.Context, args []string, env settingValues, stdout, stderr io.Writer) int {
+		return runDecisionsStep(ctx, "restore-answered-asks", false, args, env, stdout, stderr)
+	}},
+	{"convert-decisions", func(ctx context.Context, args []string, env settingValues, stdout, stderr io.Writer) int {
+		return runDecisionsStep(ctx, "convert-decisions", true, args, env, stdout, stderr)
+	}},
 	{"rebuild-refs", func(ctx context.Context, _ []string, env settingValues, stdout, _ io.Writer) int {
 		return rebuildRefs(ctx, env.get("DATABASE_URL"), loadServerURL(env), stdout)
 	}},
@@ -271,6 +277,90 @@ func backfillGraphStore(ctx context.Context, databaseURL string, out io.Writer) 
 		}
 	}
 	return 0
+}
+
+// runDecisionsStep runs `envoy-dispatch restore-answered-asks --project <KEY> [--dry-run]` (name,
+// convert false) and `envoy-dispatch convert-decisions --project <KEY> [--dry-run]` (convert
+// true): the decisions step by hand (docs.DecisionStep.RunByHand) over the issues of one project.
+// Each migrates the database as every database subcommand does (openMigrated), waits for the
+// step's lock, runs the step's first two phases - the backfill of the rows the release before
+// wrote and the catch-up of what another build appended - and then its third phase for the
+// project, whatever DISPATCH_TEST_HOLD_DECISIONS_STEP says, and only on a fleet of this binary's
+// own build (buildCommit), as a server's step compares its own commit: the restore of every
+// answered ask that left an issue's spec alone, or, for convert-decisions, the rewrite of the
+// project's gated steps without `decisions`, that restore, and the conversion of each issue's
+// decisions document into the spec, which retires the document once it holds no section.
+// --dry-run does all of it and rolls each issue's transaction back.
+//
+// It prints one line for each issue it touched (writeDecisionIssue), and one for each issue whose
+// transaction failed, and exits 1 on such a failure, on another build live, or on any other
+// error, 2 on a usage error, and 0 otherwise.
+func runDecisionsStep(ctx context.Context, name string, convert bool, args []string, env settingValues, stdout, stderr io.Writer) int {
+	flags := flag.NewFlagSet(name, flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	project := flags.String("project", "", "the key of the project whose issues the step runs over (required)")
+	dryRun := flags.Bool("dry-run", false, "do all of it, print what it did, and roll each issue's transaction back")
+	if err := flags.Parse(args); err != nil {
+		return 2
+	}
+	if flags.NArg() > 0 || strings.TrimSpace(*project) == "" {
+		fmt.Fprintf(stderr, "%s: usage: envoy-dispatch %s --project <KEY> [--dry-run]\n", name, name)
+		return 2
+	}
+	database, ok := openMigrated(ctx, name, env.get("DATABASE_URL"), stdout)
+	if !ok {
+		return 1
+	}
+	defer database.Pool.Close()
+	documents := docs.New(docs.Deps{Store: database, Events: events.NewBroker(), ServerURL: loadServerURL(env)})
+	defer documents.Shutdown(context.Background())
+	step := docs.NewDecisionStep(database, buildCommit, slog.New(slog.NewTextHandler(stderr, nil)))
+	step.UseDocuments(documents)
+	issues, failures, err := step.RunByHand(ctx, strings.TrimSpace(*project), convert, *dryRun)
+	for _, issue := range issues {
+		writeDecisionIssue(stdout, name, issue, *dryRun)
+	}
+	for _, failure := range failures {
+		fmt.Fprintf(stdout, "%s: issue=%s failed: %v\n", name, failure.Issue, failure.Err)
+	}
+	if err != nil {
+		fmt.Fprintf(stdout, "%s: %v\n", name, err)
+		return 1
+	}
+	if len(failures) > 0 {
+		return 1
+	}
+	return 0
+}
+
+// writeDecisionIssue prints the one line of what the decisions step did to issue: how many
+// answered asks it restored, how many of them it moved out of the decisions document and how many
+// took a new block id; what became of the document's sections; whether it retired the document;
+// the versions it wrote; what became of the spec's approval; and each approval it superseded,
+// with the asks, as their nodes and their blocks, whose restore superseded it.
+func writeDecisionIssue(w io.Writer, name string, issue docs.DecisionIssue, dryRun bool) {
+	moved, renamed := 0, 0
+	for _, ask := range issue.Restored {
+		if ask.From != "" {
+			moved++
+		}
+		if ask.NewID {
+			renamed++
+		}
+	}
+	superseded := make([]string, 0, len(issue.Superseded))
+	for _, approval := range issue.Superseded {
+		superseded = append(superseded, fmt.Sprintf("%s/review=%s/approved_version=%d/asks=%s/nodes=%s",
+			approval.Document, approval.Approval.ReviewID, approval.Approval.ApprovedVersion,
+			strings.Join(approval.Asks, ","), strings.Join(approval.Nodes, ",")))
+	}
+	approval := issue.SpecApproval
+	if approval == "" {
+		approval = "none"
+	}
+	fmt.Fprintf(w, "%s: issue=%s restored=%d moved=%d new_ids=%d decisions=%d readings=%d dropped=%d left=%d retired=%t spec_version=%d decisions_version=%d other_versions=%d spec_approval=%s superseded=%s dry_run=%t\n",
+		name, issue.Issue, len(issue.Restored), moved, renamed, issue.Decisions, issue.Readings, issue.Dropped, issue.Left,
+		issue.Retired, issue.SpecVersion, issue.DecisionsVersion, issue.OtherVersions, approval, strings.Join(superseded, ";"), dryRun)
 }
 
 func backfillAnchorBlocks(ctx context.Context, databaseURL string, out io.Writer) int {

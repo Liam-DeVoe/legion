@@ -45,13 +45,18 @@ import (
 // carries nothing however its bytes compare. And every block id A holds must still stand in N,
 // but for the readings a case takes out.
 //
-// The cases are R2's and R10's today. A reading never changes the decision it reads, so the
+// The cases are R2's, R10's, R7's and R9's. A reading never changes the decision it reads, so the
 // readings of a version's decisions and of its answered asks, added, edited or removed, are no
 // change to anything its reviewer approved (readingCase): the version a session writes when it
 // adds its reading of a person's decision still reads approved, at the version it wrote. The
-// server-owned ask attributes are the other (attributeRemovalCase). The conversion of D6 and the
-// restore of D1 join carryCases as further cases of the same rule, each with the reason it
-// records.
+// server-owned ask attributes are R10's (attributeRemovalCase). The answered asks the restore
+// returns to the spec's `## Decisions` part, in place of the part's pointer line, are R7's
+// (restoreCase): the restore changes where an ask's block stands and not its words. The decisions
+// the conversion of an issue's decisions document writes into that part, and the links it gives
+// an answered ask as `shaped` pointers, are R9's (conversionCase): a decision and its ties are
+// outside what a spec's approval covers (dispatch://INFRA-1098 R4). Those two hold for the
+// decisions step's own write alone (decisionStepCases): an agent's upload or edit that makes the
+// same change carries nothing by them.
 //
 // A version whose text is the approved text carries that approval too, byte for byte and before
 // any case is weighed (restoresApprovedText). The document's newest review approves version A; a
@@ -97,11 +102,12 @@ var askServerAttributeNames = [...]string{"state", "answered_by", "answered_at",
 // the approval: what its reason says the change was, and neutral, a copy of a tree with what the
 // case may change taken out of it, with whether it took anything out. Two versions that differ by
 // such changes alone are the same once both are taken through it. neutral reads the tree beside
-// answered, each ask block of the version whose ask holds an answer, by block id
-// (answeredAskBlocks).
+// what carryNewestApproval read of the two versions (carryInput): each ask block of the version
+// whose ask holds an answer, the pointer lines of the issue's decisions document, and the asks the
+// restore returned.
 type carryCase struct {
 	change  string
-	neutral func(tree *pmdoc.Node, answered map[string]bool) (*pmdoc.Node, bool)
+	neutral func(tree *pmdoc.Node, input carryInput) (*pmdoc.Node, bool)
 }
 
 // readingCase is R2's: the readings a version's decisions and its answered asks close with,
@@ -111,8 +117,10 @@ type carryCase struct {
 // decision, and stays a difference of its own: the write paths refuse one, and settlement flags
 // its ask block, which then agrees with no node.
 var readingCase = carryCase{
-	change:  "the readings of its decisions and of its answered asks, which change no decision",
-	neutral: withoutReadings,
+	change: "the readings of its decisions and of its answered asks, which change no decision",
+	neutral: func(tree *pmdoc.Node, input carryInput) (*pmdoc.Node, bool) {
+		return withoutReadings(tree, input.answered)
+	},
 }
 
 // attributeRemovalCase is R10's: the server-owned attributes of every ask block
@@ -120,24 +128,108 @@ var readingCase = carryCase{
 // which a write while two builds serve keeps in step with an answer given since.
 var attributeRemovalCase = carryCase{
 	change: "the server-owned attributes of its ask blocks, which hold no answer",
-	neutral: func(tree *pmdoc.Node, _ map[string]bool) (*pmdoc.Node, bool) {
+	neutral: func(tree *pmdoc.Node, _ carryInput) (*pmdoc.Node, bool) {
 		return withoutAskServerAttributes(tree)
 	},
 }
 
+// restoreCase is R7's (D1): the answered ask blocks the restore writes into the spec's
+// `## Decisions` part, in place of its pointer line, with the `## Decisions` heading it adds to a
+// spec holding no such part, a block under a new id included. Where the approved version held the
+// ask's block already, under the id it stands at now, the block is taken out of both versions only
+// where its words are the words the person approved (restoredAskBlocks), so a restore that returns
+// other words than the approved ones is a difference no case carries. It holds for the restore's
+// own write alone (decisionStepCases.restore): an agent's write that makes the same change carries
+// nothing by it.
+var restoreCase = carryCase{
+	change: "the answered asks its Decisions part holds again, which changed where they stand and not their words",
+	neutral: func(tree *pmdoc.Node, input carryInput) (*pmdoc.Node, bool) {
+		if !input.steps.restore {
+			return tree, false
+		}
+		tree, took := withoutBlocks(tree, func(node *pmdoc.Node) bool {
+			id, _ := node.Attrs[pmdoc.BlockIDAttr].(string)
+			return node.Type == "ask" && input.restored[id]
+		})
+		restored, restoredTook := withoutDecisionsPartBlocks(tree, input.pointsAtDecisions)
+		return restored, took || restoredTook
+	},
+}
+
+// conversionCase is R9's (D6, E2): the decision blocks of the spec's `## Decisions` part, which the
+// conversion of the issue's decisions document writes in place of the part's pointer line to that
+// document, and the `shaped` pointers an answered ask's restored or present block takes from the
+// section that restated it. A decision, and an answered ask's ties, are outside what an approval
+// of a spec covers (dispatch://INFRA-1098 R4); the readings the conversion writes inside answered
+// asks are readingCase's. A `## Decisions` heading the part holds nothing else under is taken out
+// with them, since the conversion adds it to a spec that holds no such part. It holds for the
+// conversion's own write alone (decisionStepCases.conversion): an agent's upload that adds the same
+// `shaped` pointers to an answered ask supersedes the approval as any other change does.
+var conversionCase = carryCase{
+	change: "the decisions its Decisions part holds in place of the pointer line to the issue's decisions document, " +
+		"and the spec nodes its answered asks shaped, which an approval of a spec does not cover",
+	neutral: func(tree *pmdoc.Node, input carryInput) (*pmdoc.Node, bool) {
+		if !input.steps.conversion {
+			return tree, false
+		}
+		tree, took := withoutAnsweredAskTies(tree, input.decided)
+		converted, convertedTook := withoutDecisionsPartBlocks(tree, func(node *pmdoc.Node) bool {
+			return node.Type == decisionType || input.pointsAtDecisions(node)
+		})
+		return converted, took || convertedTook
+	},
+}
+
 // carryCases are the cases carryVerdict composes, in the order their reasons are named.
-var carryCases = [...]carryCase{readingCase, attributeRemovalCase}
+var carryCases = [...]carryCase{readingCase, attributeRemovalCase, restoreCase, conversionCase}
+
+// decisionStepCases names the phases of the decisions step whose own write a version is: the
+// restore (restoreCase) and the conversion (conversionCase). Only the step sets it, through a mark
+// on its write's context no route can put there (withDecisionStepWrite), and SnapshotVersion
+// carries it on the version's write (versionWrite.steps); every other version write leaves it zero,
+// and its carry weighs the reading case and the attribute-removal case alone.
+type decisionStepCases struct {
+	restore, conversion bool
+}
+
+// any reports whether the version is the decisions step's own write.
+func (steps decisionStepCases) any() bool {
+	return steps.restore || steps.conversion
+}
+
+// decisionStepWriteKey marks a context as the decisions step's own write (withDecisionStepWrite).
+type decisionStepWriteKey struct{}
+
+// withDecisionStepWrite marks ctx as the decisions step's own write, of the phases steps names.
+func withDecisionStepWrite(ctx context.Context, steps decisionStepCases) context.Context {
+	return context.WithValue(ctx, decisionStepWriteKey{}, steps)
+}
+
+// decisionStepCasesOf is the phases ctx's mark names, zero for a context the step did not mark.
+func decisionStepCasesOf(ctx context.Context) decisionStepCases {
+	steps, _ := ctx.Value(decisionStepWriteKey{}).(decisionStepCases)
+	return steps
+}
 
 // carryInput is what carryVerdict decides on: A's tree and the markdown it is stored with, and
 // N's tree, each as its own read gives it, whether every ask block of N agrees with its node
-// (asksAgreeWithTheirNodes), and which of N's ask blocks show an ask that holds an answer
-// (answeredAskBlocks).
+// (asksAgreeWithTheirNodes), which of N's ask blocks show an ask that holds an answer among those
+// closing with readings (answeredAskBlocks) and among them all (decided), the documents of N's
+// issue that are its decisions documents, by ref_key (decisionsDocumentRefs), whose pointer lines
+// conversionCase and restoreCase take out, the answered ask blocks of N's `## Decisions` part
+// that restoreCase takes out of both versions (restoredAskBlocks), and the decisions step's phases
+// whose own write N is (steps), the only writes those two cases reach.
 type carryInput struct {
 	approved     *pmdoc.Node
 	approvedText string
 	version      *pmdoc.Node
 	agrees       bool
 	answered     map[string]bool
+	decided      map[string]bool
+	decisions    map[string]bool
+	serverURL    string
+	restored     map[string]bool
+	steps        decisionStepCases
 }
 
 // carryApproval carries the document's newest approval to version, just written from rendered,
@@ -146,21 +238,23 @@ type carryInput struct {
 // ask.answered, when one is open, then artifact.approved - and nothing when the version carries no
 // approval. A version approved that holds an element this build does not know is a
 // NewerContentError, which fails the version write (skipUnreadableVersion). It reads rendered.tree
-// and never changes it: the tree is the live document's.
-func (s *Service) carryApproval(ctx context.Context, tx pgx.Tx, artifactID string, version model.Version, rendered renderedTree) ([]model.Event, error) {
+// and never changes it: the tree is the live document's. steps names the decisions step's phases
+// whose own write the version is (versionWrite.steps), whose cases alone it weighs beside the
+// reading case and the attribute-removal case.
+func (s *Service) carryApproval(ctx context.Context, tx pgx.Tx, artifactID string, version model.Version, rendered renderedTree, steps decisionStepCases) ([]model.Event, error) {
 	// Every version write runs this: anything past the newest review is read only once a carry is
 	// possible at all, which needs an approval still standing.
 	newest, err := NewestReview(ctx, tx, artifactID)
 	if err != nil || newest == nil || newest.State != "approved" {
 		return nil, err
 	}
-	return s.carryStandingApproval(ctx, tx, artifactID, version.Number, rendered, *newest)
+	return s.carryStandingApproval(ctx, tx, artifactID, version.Number, rendered, *newest, steps)
 }
 
 // carryStandingApproval is carryApproval once newest, the document's newest review, is known to be
 // an approval (carryNewestApproval).
-func (s *Service) carryStandingApproval(ctx context.Context, tx pgx.Tx, artifactID string, number int, rendered renderedTree, newest model.ArtifactReview) ([]model.Event, error) {
-	return carryNewestApproval(ctx, tx, s.events, artifactID, number, rendered.markdown, rendered.tree, newest, s.serverURL)
+func (s *Service) carryStandingApproval(ctx context.Context, tx pgx.Tx, artifactID string, number int, rendered renderedTree, newest model.ArtifactReview, steps decisionStepCases) ([]model.Event, error) {
+	return carryNewestApproval(ctx, tx, s.events, artifactID, number, rendered.markdown, rendered.tree, newest, s.serverURL, steps)
 }
 
 // CarryUploadedApproval is carryApproval for the route that writes a document version itself
@@ -168,10 +262,12 @@ func (s *Service) carryStandingApproval(ctx context.Context, tx pgx.Tx, artifact
 // storeArtifact) - once that version, number, is written with markdown and the open approval
 // request has moved to it (MoveApprovalAsk). tree is markdown's read-back, which the caller holds
 // when its write left one, and nil otherwise, when markdown is parsed here. The upload runs the
-// same rules as every other version write: an upload that adds, edits or removes the readings of
-// its decisions and answered asks, or that drops the server-owned attributes of an ask block, as
-// every upload does, carries its approval where those are the whole change. It returns the events
-// it appended, as carryApproval does.
+// same rules as every other version write but the decisions step's: an upload that adds, edits or
+// removes the readings of its decisions and answered asks, or that drops the server-owned
+// attributes of an ask block, as every upload does, carries its approval where those are the whole
+// change, and an upload that makes the change of the restore or of the conversion carries nothing
+// by their cases (restoreCase, conversionCase), which no route can reach. It returns the events it
+// appended, as carryApproval does.
 func CarryUploadedApproval(ctx context.Context, tx pgx.Tx, broker *events.Broker, artifactID string, number int, markdown string, tree *pmdoc.Node, serverURL string) ([]model.Event, error) {
 	newest, err := NewestReview(ctx, tx, artifactID)
 	if err != nil || newest == nil || newest.State != "approved" {
@@ -182,7 +278,7 @@ func CarryUploadedApproval(ctx context.Context, tx pgx.Tx, broker *events.Broker
 			return nil, skipUnreadableVersion(artifactID, number, err)
 		}
 	}
-	return carryNewestApproval(ctx, tx, broker, artifactID, number, markdown, tree, *newest, serverURL)
+	return carryNewestApproval(ctx, tx, broker, artifactID, number, markdown, tree, *newest, serverURL, decisionStepCases{})
 }
 
 // carryNewestApproval carries newest, the document's newest review and an approval of version A,
@@ -192,8 +288,10 @@ func CarryUploadedApproval(ctx context.Context, tx pgx.Tx, broker *events.Broker
 // carry cases (carryVerdict). It appends nothing otherwise. A is read only for a version holding an
 // ask block or a decision: every case is a difference in one of those blocks, and a version
 // holding neither either holds A's text or holds none of A's decisions and ask blocks, which
-// still have to stand.
-func carryNewestApproval(ctx context.Context, tx pgx.Tx, broker *events.Broker, artifactID string, number int, markdown string, tree *pmdoc.Node, newest model.ArtifactReview, serverURL string) ([]model.Event, error) {
+// still have to stand. steps names the decisions step's phases whose own write the version is,
+// whose cases (restoreCase, conversionCase) it weighs beside the other two; zero for every other
+// write.
+func carryNewestApproval(ctx context.Context, tx pgx.Tx, broker *events.Broker, artifactID string, number int, markdown string, tree *pmdoc.Node, newest model.ArtifactReview, serverURL string, steps decisionStepCases) ([]model.Event, error) {
 	shown, agrees, err := asksAgreeWithTheirNodes(ctx, tx, artifactID, tree)
 	if err != nil || !agrees {
 		return nil, err
@@ -220,7 +318,17 @@ func carryNewestApproval(ctx context.Context, tx pgx.Tx, broker *events.Broker, 
 	if err != nil {
 		return nil, err
 	}
-	change, carried, err := carryVerdict(carryInput{approved: approved, approvedText: approvedText, version: tree, agrees: agrees, answered: answered})
+	input := carryInput{
+		approved: approved, approvedText: approvedText, version: tree, agrees: agrees, answered: answered,
+		decided: decidedAskBlocks(shown), serverURL: serverURL, steps: steps,
+	}
+	if steps.any() && (hasDecisionsPart(tree) || hasDecisionsPart(approved)) {
+		if input.decisions, err = decisionsDocumentRefs(ctx, tx, artifactID); err != nil {
+			return nil, err
+		}
+		input.restored = restoredAskBlocks(approved, tree, input.decided)
+	}
+	change, carried, err := carryVerdict(input)
 	if err != nil {
 		return nil, skipUnreadableVersion(artifactID, number, err)
 	}
@@ -739,8 +847,8 @@ func (input carryInput) neutral(skipped []bool) (approved, version *pmdoc.Node, 
 			continue
 		}
 		var tookApproved, tookVersion bool
-		approved, tookApproved = carried.neutral(approved, input.answered)
-		version, tookVersion = carried.neutral(version, input.answered)
+		approved, tookApproved = carried.neutral(approved, input)
+		version, tookVersion = carried.neutral(version, input)
 		took = took || tookApproved || tookVersion
 	}
 	return approved, version, took

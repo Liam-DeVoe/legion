@@ -453,7 +453,7 @@ func (s *Service) followLatestVersion(ctx context.Context, tx pgx.Tx, artifactID
 	if err != nil {
 		return moved, skipUnreadableVersion(artifactID, latest.Number, err)
 	}
-	carried, err := s.carryStandingApproval(ctx, tx, artifactID, latest.Number, renderedTree{tree: tree, markdown: latest.markdown}, *newest)
+	carried, err := s.carryStandingApproval(ctx, tx, artifactID, latest.Number, renderedTree{tree: tree, markdown: latest.markdown}, *newest, decisionStepCases{})
 	if err != nil {
 		return nil, err
 	}

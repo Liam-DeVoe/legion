@@ -168,6 +168,10 @@ type StoreReport struct {
 	// deleted before this release, which no move made and no deploy should wait on.
 	Dangling   DanglingReport
 	Collisions []Collision
+	// Decisions is what the decisions step's third phase still owes (DecisionsCensus), set by the
+	// census command from docs' reader of the decisions documents' sections, nil where no caller
+	// read it. It refuses nothing.
+	Decisions *DecisionsCensus
 	// Sizing is what the sizing pass found, or nil when it was not asked for.
 	Sizing *SizingReport
 }
@@ -1700,6 +1704,9 @@ func (r *StoreReport) write(w io.Writer, verbose bool) {
 	}
 	if !r.Absent {
 		writeMoves(w, r.Dangling, r.Collisions, verbose)
+		if r.Decisions != nil {
+			writeDecisions(w, *r.Decisions)
+		}
 	}
 	writeProjectCensus(w, r.Projects)
 	for _, row := range r.ProjectIncomplete {
