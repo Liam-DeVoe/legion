@@ -17,6 +17,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -318,8 +319,9 @@ func (s *server) sinceHorizon(ctx context.Context) (int64, error) {
 }
 
 // blockReferenceNode is the block node ref names (query addresses it), with its whole current
-// text. A block no current version of its document holds answers 404, unless ref is pinned to a
-// version N that held it: the node then carries what N recorded (model.BlockPin), "unchanged"
+// text. A block no current version of its document holds is the block its moved_to tuples reach
+// (movedBlockNode), and answers 404 where they reach none, unless ref is pinned to a version N
+// that held it: the node then carries what N recorded (model.BlockPin), "unchanged"
 // or "changed" by comparing the current text with N's, or "removed" with the version that deleted
 // it, as a node with no text or changed version whose facts are a removed block's
 // (refs.RemovedBlockNode); a pin to a current block carries the current block's facts. A pin to
@@ -329,7 +331,7 @@ func (s *server) sinceHorizon(ctx context.Context) (int64, error) {
 func (s *server) blockReferenceNode(ctx context.Context, who model.Actor, query refs.Query, ref text.Ref) (model.GraphNode, error) {
 	pool := s.deps.Store.Pool
 	documentKey, _, _ := strings.Cut(query.ID, "#")
-	document, found, err := refs.Node(ctx, pool, who, "artifact", documentKey, true)
+	document, found, err := s.documentAtAddress(ctx, who, documentKey)
 	if err != nil {
 		return model.GraphNode{}, err
 	}
@@ -342,7 +344,7 @@ func (s *server) blockReferenceNode(ctx context.Context, who model.Actor, query 
 	}
 	if ref.Pin == 0 {
 		if !current {
-			return model.GraphNode{}, errorf(http.StatusNotFound, "NOT_FOUND", "no block %q in %s", ref.Block, document.Ref)
+			return s.movedBlockNode(ctx, who, query.ID, ref, document)
 		}
 		node.Text, err = refs.CurrentBlockText(ctx, pool, document.ID, ref.Block)
 		return node, err
@@ -394,6 +396,51 @@ func (s *server) blockReferenceNode(ctx context.Context, who model.Actor, query 
 	}
 	node.Pin = pin
 	return node, nil
+}
+
+// movedBlockNode is the block an address no current version holds moved to (dispatch://INFRA-1150
+// R8): the block the address's moved_to tuples reach (graphstore.MovedTo), named by its own
+// address and carrying its whole current text, so a citation written before the block moved reads
+// the block where it stands now. Where no move reaches a block, and where who may not see the
+// block one reaches, it answers the 404 of a block no current version holds, naming the address
+// asked, so a move says nothing of a block the reader may not see. The edges the read lists beside
+// it are those at the address asked: the citations of that address.
+func (s *server) movedBlockNode(ctx context.Context, who model.Actor, address string, ref text.Ref, document model.GraphNode) (model.GraphNode, error) {
+	pool := s.deps.Store.Pool
+	noBlock := errorf(http.StatusNotFound, "NOT_FOUND", "no block %q in %s", ref.Block, document.Ref)
+	reached, moved, err := graphstore.MovedTo(ctx, pool, address)
+	if err != nil {
+		return model.GraphNode{}, err
+	}
+	if !moved {
+		return model.GraphNode{}, noBlock
+	}
+	node, found, err := refs.Node(ctx, pool, who, refs.BlockNodeKind, reached, true)
+	if err != nil {
+		return model.GraphNode{}, err
+	}
+	if !found || node.Parent == nil {
+		return model.GraphNode{}, noBlock
+	}
+	node.Text, err = refs.CurrentBlockText(ctx, pool, node.Parent.ID, node.BlockID)
+	return node, err
+}
+
+// documentAtAddress is the document stored at refKey, as a read of its blocks needs it: the node
+// refs.Node answers for the address, or, where the address is a retired document's, which refs
+// answers as the document's issue (refs.loadArtifactNodes), the document itself, read by its uuid,
+// since a retired document's blocks and versions stay readable.
+func (s *server) documentAtAddress(ctx context.Context, who model.Actor, refKey string) (model.GraphNode, bool, error) {
+	pool := s.deps.Store.Pool
+	document, found, err := refs.Node(ctx, pool, who, graphstore.KindArtifact, refKey, true)
+	if err != nil || !found || document.Kind == graphstore.KindArtifact {
+		return document, found, err
+	}
+	var id string
+	if err := pool.QueryRow(ctx, `select id::text from artifacts where ref_key = $1`, refKey).Scan(&id); err != nil {
+		return model.GraphNode{}, false, fmt.Errorf("read the retired document at %s: %w", refKey, err)
+	}
+	return refs.Node(ctx, pool, who, graphstore.KindArtifact, id, false)
 }
 
 // itemBlockReferenceNode is the block node ref, a part of an ask or a block of a comment or a

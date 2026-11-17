@@ -60,8 +60,9 @@ export type AskApprovalDocument = z.output<typeof AskApprovalDocumentSchema>;
 /** The document's approval as of its latest version: `draft` has never been reviewed or
  *  requested; `awaiting` has an open approval ask; `approved` is approved at the latest version;
  *  `stale` is approved at an older version: a later version leaves the approval there unless
- *  Dispatch carries it to that version (`ArtifactReview`); `changes_requested` carries the
- *  reviewer's reason. */
+ *  Dispatch carries it to that version (`ArtifactReview`); a retired document's approval reads
+ *  `stale` too, since its retirement supersedes it; `changes_requested` carries the reviewer's
+ *  reason. */
 export const ArtifactApprovalSchema = z
   .strictObject({
     state: z.enum(["draft", "awaiting", "approved", "stale", "changes_requested"]),

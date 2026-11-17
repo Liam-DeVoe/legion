@@ -268,6 +268,16 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "document not found", http.StatusNotFound)
 		return
 	}
+	// A retired document takes no new text (RetireDocument), so no socket opens on it: its
+	// retirement closed every room of it, and a browser that comes back is refused here, before
+	// anything reserves a room for it.
+	if retired, err := documentRetired(r.Context(), s.queryFrom(r.Context()), room); err != nil {
+		http.Error(w, "document not found", http.StatusNotFound)
+		return
+	} else if retired {
+		http.Error(w, "DOCUMENT_RETIRED: the document was retired; it takes no new text, and its versions stay readable", http.StatusConflict)
+		return
+	}
 	if err := s.awaitRoomRecovery(r.Context(), room); err != nil {
 		http.Error(w, ErrServiceUnavailable.Error(), http.StatusServiceUnavailable)
 		return

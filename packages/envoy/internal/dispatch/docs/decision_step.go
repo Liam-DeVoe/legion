@@ -100,25 +100,36 @@ type DecisionStep struct {
 	owed atomic.Pointer[DecisionStepOwed]
 }
 
-// DecisionStepOwed is what the step's last pass found the restore and the conversion owe, as
-// /healthz answers it in `decisions_step_owed`: the decisions documents still standing, the
-// answered asks whose block left their spec, the stored lists of gated steps that hold
-// `decisions`, and their sum. A deploy check reads total 0 as the step having nothing left to do.
+// DecisionStepOwed is what the step's last pass found the restore and the conversion owe: the
+// decisions documents still standing, the answered asks whose block left their spec, the stored
+// lists of gated steps that hold `decisions`, and their sum. /healthz answers the sum alone, as
+// `decisions_step_owed` (OwedTotal), which a deploy check reads at zero as the step having nothing
+// left to do; each count logs the three parts beside it (recountOwed).
 type DecisionStepOwed struct {
-	DecisionsDocuments int64 `json:"decisions_documents"`
-	AnswersLeftSpec    int64 `json:"answers_left_spec"`
-	GatedStepsLists    int64 `json:"gated_steps_lists"`
-	Total              int64 `json:"total"`
+	DecisionsDocuments int64
+	AnswersLeftSpec    int64
+	GatedStepsLists    int64
+	Total              int64
 }
 
-// Owed is what the step's last pass found owed, nil before a tick has counted it - and so through
-// the boot, whose pass counts nothing, for as long as DISPATCH_TEST_HOLD_DECISIONS_STEP holds the
-// step, and on a nil step.
+// Owed is what the step's last pass found owed, part by part, nil before a tick has counted it -
+// and so through the boot, whose pass counts nothing, for as long as
+// DISPATCH_TEST_HOLD_DECISIONS_STEP holds the step, and on a nil step.
 func (s *DecisionStep) Owed() *DecisionStepOwed {
 	if s == nil {
 		return nil
 	}
 	return s.owed.Load()
+}
+
+// OwedTotal is the sum of what the step's last pass found owed (Owed), nil while Owed is.
+func (s *DecisionStep) OwedTotal() *int64 {
+	owed := s.Owed()
+	if owed == nil {
+		return nil
+	}
+	total := owed.Total
+	return &total
 }
 
 // countDecisionStepOwed reads what the restore and the conversion owe, in one statement. It is
@@ -332,6 +343,10 @@ func (s *DecisionStep) recountOwed(ctx context.Context, other bool) error {
 		return err
 	}
 	s.owed.Store(&owed)
+	s.logger.Info("dispatch: decisions step counted what it owes",
+		"owed", owed.Total, "decisions_documents", owed.DecisionsDocuments,
+		"answers_left_spec", owed.AnswersLeftSpec, "gated_steps_lists", owed.GatedStepsLists,
+		"commit", s.commit)
 	s.recount, s.countedThrough, s.countedIndexOwed = other, floor, indexOwed
 	return nil
 }

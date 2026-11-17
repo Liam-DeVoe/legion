@@ -53,8 +53,9 @@ const (
 )
 
 // artifactColumns is the canonical artifact column list scanArtifact reads. role is read through
-// coalesce because model.Artifact carries it as "" when the document plays no role.
-const artifactColumns = `id::text, issue_key, project_key, session_id, ref_key, slug, name, kind, is_primary, coalesce(role, ''), created_by, created_at`
+// coalesce because model.Artifact carries it as "" when the document plays no role, and retired_at
+// as whether it is set (model.Artifact.Retired).
+const artifactColumns = `id::text, issue_key, project_key, session_id, ref_key, slug, name, kind, is_primary, coalesce(role, ''), created_by, created_at, retired_at is not null`
 
 func (s *server) listArtifacts(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
@@ -589,6 +590,9 @@ func (s *server) storeArtifact(
 		}
 	} else if err != nil {
 		s.writeHandlerError(w, err)
+		return
+	} else if artifact.Retired {
+		s.writeHandlerError(w, documentRetiredRefusal(artifact))
 		return
 	} else if artifact.Kind != kind {
 		s.writeHandlerError(w, artifactKindMismatch(input.name, artifact, kind))
@@ -1347,6 +1351,10 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "NOT_DOCUMENT", http.StatusBadRequest, "artifact is not a document")
 		return
 	}
+	if artifact.Retired {
+		s.writeHandlerError(w, documentRetiredRefusal(artifact))
+		return
+	}
 	// release ends the conditional edit gate once: right after the commit, which is all a later
 	// conditional edit of this document waits on, so the checks of this edit's new decision blocks
 	// never hold it; on every earlier return, here.
@@ -1523,10 +1531,11 @@ func participantsOrEmpty(participants []model.Actor) []model.Actor {
 // issueArtifactsStatement lists an issue's artifacts, $1 the issue key, in the order every
 // reader of the issue shows them; collectArtifacts reads its rows. The issue read queues it in
 // a batch with its other reads (getIssue), so the statement and the scan live apart from the
-// sequential loader that every other route calls.
+// sequential loader that every other route calls. A retired document is in no list of its
+// issue's documents (docs.RetireDocument), and its own address and id still read it.
 const issueArtifactsStatement = `
 		select ` + artifactColumns + `
-		from artifacts where issue_key = $1 order by created_at, id
+		from artifacts where issue_key = $1 and retired_at is null order by created_at, id
 	`
 
 func (s *server) loadArtifacts(ctx context.Context, q queryer, issueKey string) ([]model.Artifact, error) {
@@ -1702,17 +1711,21 @@ func isArtifactNotFound(err error) bool {
 	return errors.As(err, &apiErr) && apiErr.code == "ARTIFACT_NOT_FOUND"
 }
 
+// loadDocumentReferences lists the documents of target, an issue or a project, in the order
+// their owner's reads show them: the list a document reference by filename is matched in, and the
+// one its refusal hints from. A retired document is in no such list, though its slug still reads
+// it (resolveDocumentReference).
 func (s *server) loadDocumentReferences(ctx context.Context, q queryer, target artifactTarget) ([]model.Artifact, error) {
 	query := `
 		select ` + artifactColumns + `
-		from artifacts where issue_key = $1 and kind = 'doc' order by created_at, id`
+		from artifacts where issue_key = $1 and kind = 'doc' and retired_at is null order by created_at, id`
 	value := target.Project
 	if target.IssueKey != nil {
 		value = *target.IssueKey
 	} else {
 		query = `
 			select ` + artifactColumns + `
-			from artifacts where project_key = $1 and issue_key is null and kind = 'doc' order by created_at, id`
+			from artifacts where project_key = $1 and issue_key is null and kind = 'doc' and retired_at is null order by created_at, id`
 	}
 	rows, err := q.Query(ctx, query, value)
 	if err != nil {
@@ -1959,7 +1972,7 @@ func scanArtifact(row pgx.Row) (model.Artifact, error) {
 	var createdBy []byte
 	if err := row.Scan(
 		&artifact.ID, &artifact.IssueKey, &project, &artifact.SessionID, &artifact.RefKey, &artifact.Slug,
-		&artifact.Name, &artifact.Kind, &artifact.Primary, &artifact.Role, &createdBy, &artifact.CreatedAt,
+		&artifact.Name, &artifact.Kind, &artifact.Primary, &artifact.Role, &createdBy, &artifact.CreatedAt, &artifact.Retired,
 	); err != nil {
 		return model.Artifact{}, err
 	}
@@ -2187,18 +2200,20 @@ func documentRole(target artifactTarget, kind, slug string) *string {
 }
 
 // documentPlays reports whether an artifact already read plays role: it carries that role, or it
-// is an issue's markdown document that carries none and its slug is the role's, for a row a
-// rolling deploy left with no role because the build that created it did not know the column. A
-// role belongs to an issue's markdown documents alone - documentRole gives none to any other, and
-// the constraint artifacts_role_is_an_issue_document (migration
-// 20261102110000_artifact_document_roles) holds the column to them - so a project document whose
-// slug is a role's, a project's plan.md, plays no role and is a plain document, and neither does a
-// file or a picture uploaded under a role's name, a file plan.md whose bytes are not markdown. It
-// is documentRolePredicate's answer about one row, so every reader — the queries that find a
-// document by its role and the routes that judge the document in hand — agrees about the same row.
+// is an issue's markdown document that carries none and its slug is the role's, for a row a rolling
+// deploy left with no role because the build that created it did not know the column. A role
+// belongs to an issue's markdown documents alone - documentRole gives none to any other, and the
+// constraint artifacts_role_is_an_issue_document (migration 20261102110000_artifact_document_roles)
+// holds the column to them - so a project document whose slug is a role's, a project's plan.md,
+// plays no role and is a plain document, and neither does a file or a picture uploaded under a
+// role's name, a file plan.md whose bytes are not markdown. A retired document plays none either:
+// its retirement cleared its role (docs.RetireDocument), and its slug, which stays, gives it none
+// back. It is documentRolePredicate's answer about one row, so every reader — the queries that find
+// a document by its role and the routes that judge the document in hand — agrees about the same
+// row.
 func documentPlays(artifact model.Artifact, role string) bool {
 	return artifact.Role == role ||
-		(artifact.Role == "" && artifact.IssueKey != nil && artifact.Kind == "doc" && artifact.Slug == roleSlugs[role])
+		(artifact.Role == "" && !artifact.Retired && artifact.IssueKey != nil && artifact.Kind == "doc" && artifact.Slug == roleSlugs[role])
 }
 
 // documentRoleOf is the part a document plays: the role of roleSlugs that documentPlays answers
@@ -2228,16 +2243,16 @@ func isSpecDocument(artifact model.Artifact) bool {
 }
 
 // documentRolePredicate holds the artifacts row of the table aliased `alias` to the issue's
-// document of one role: the role itself, or, for an issue's markdown document a rolling deploy
-// left with no role, the slug a document of that name carries. A project document, a file and a
-// picture never play a role (documentPlays), whatever their slug. `alias` is empty where the query
-// names no alias.
+// document of one role: the role itself, or, for an issue's markdown document a rolling deploy left
+// with no role, the slug a document of that name carries, unless the document is retired, whose
+// slug plays no role. A project document, a file and a picture never play a role (documentPlays),
+// whatever their slug. `alias` is empty where the query names no alias.
 func documentRolePredicate(alias, role string) string {
 	if alias != "" {
 		alias += "."
 	}
-	return `(` + alias + `role = '` + role + `' or (` + alias + `role is null and ` + alias + `issue_key is not null and ` +
-		alias + `kind = 'doc' and ` + alias + `slug = '` + roleSlugs[role] + `'))`
+	return `(` + alias + `role = '` + role + `' or (` + alias + `role is null and ` + alias + `retired_at is null and ` +
+		alias + `issue_key is not null and ` + alias + `kind = 'doc' and ` + alias + `slug = '` + roleSlugs[role] + `'))`
 }
 
 // verificationRolePredicate is documentRolePredicate for the Verification document of a query
@@ -2250,6 +2265,16 @@ var verificationRolePredicate = documentRolePredicate("", model.ArtifactRoleVeri
 var aliasedVerificationRole = documentRolePredicate("a", model.ArtifactRoleVerification)
 var aliasedPlanRole = documentRolePredicate("a", model.ArtifactRolePlan)
 var aliasedDecisionsRole = documentRolePredicate("a", model.ArtifactRoleDecisions)
+
+// documentRetiredRefusal is the 409 refusing a write of new text to artifact, a retired document
+// (docs.RetireDocument): an upload or a create under its name or slug, and an edit by its id or
+// its slug. The document is in no list of its issue's or its project's documents, so text written
+// into it would be stored where no reader looks for it. Its versions stay readable.
+func documentRetiredRefusal(artifact model.Artifact) error {
+	return errorf(http.StatusConflict, "DOCUMENT_RETIRED",
+		"%s (%s, %s) was retired: it takes no new text and is in no list of its documents, though its versions stay readable at /api/v1/artifacts/%s/versions; write a document of another name",
+		artifact.Name, artifact.Slug, artifact.ID, artifact.ID)
+}
 
 // artifactKindMismatch is the 400 refusing an upload under name, of kind, as the next version of
 // artifact, the one the name or slug finds, whose kind is another.

@@ -83,7 +83,7 @@ func statedMovedTo(t *testing.T, database *store.Store, from, to string) {
 	}
 	defer tx.Rollback(ctx)
 	if err := graphstore.Write(ctx, tx, nil, []graphstore.Tuple{{
-		FromKind: refs.BlockNodeKind, FromID: from, Kind: movedTo, ToKind: refs.BlockNodeKind, ToID: to,
+		FromKind: refs.BlockNodeKind, FromID: from, Kind: graphstore.TupleMovedTo, ToKind: refs.BlockNodeKind, ToID: to,
 		At: time.Now().UTC(), Who: censusWriter, SourceEvent: graphstore.NoEvent, Asserted: true,
 	}}); err != nil {
 		t.Fatalf("state the moved_to from %s to %s: %v", from, to, err)
@@ -127,7 +127,7 @@ func TestTheCensusLeavesOutAMovedToIntoADocumentThatOwesItsBlockIndex(t *testing
 	report := storeCensusOf(t, database)
 	var printed strings.Builder
 	report.Write(&printed)
-	moved := storeOnlyKind(t, report, movedTo)
+	moved := storeOnlyKind(t, report, graphstore.TupleMovedTo)
 	line := "census: store-only kind=moved_to tuples=1 unresolved=0 left_out=1\n"
 	if moved.Tuples != 1 || moved.Unresolved != 0 || moved.LeftOut != 1 || report.Refused() || !strings.Contains(printed.String(), line) {
 		t.Fatalf("a moved_to into a document that owes its block index reads %+v and refused=%t, want %q and a pass:\n%s",
@@ -140,7 +140,7 @@ func TestTheCensusLeavesOutAMovedToIntoADocumentThatOwesItsBlockIndex(t *testing
 		t.Fatalf("stand the document's block index at version 1: %v", err)
 	}
 	report = storeCensusOf(t, database)
-	moved = storeOnlyKind(t, report, movedTo)
+	moved = storeOnlyKind(t, report, graphstore.TupleMovedTo)
 	if moved.Tuples != 1 || moved.Unresolved != 1 || moved.LeftOut != 0 || !report.Refused() {
 		t.Fatalf("a moved_to into a block no row holds of a document owing nothing reads %+v and refused=%t, want it unresolved and a refusal",
 			moved, report.Refused())

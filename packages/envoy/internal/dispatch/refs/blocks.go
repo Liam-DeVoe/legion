@@ -1383,17 +1383,26 @@ func scanBlockRefRows(rows pgx.Rows, err error) ([]blockRefRow, error) {
 // toArtifact (artifact uuids; the two may be one document), newest first, then by the source
 // block's node id, then by the target's. A link counts only while both of its blocks are current
 // blocks of their documents: a deleted block's links drop out, and its stored mentions bring them
-// back when a version holds its id again. A pointer's link counts only while its target has a
-// type the pointer allows (block_ref_listed). A link either of whose blocks who may not see
-// drops out the same way, since neither end resolves to a node.
+// back when a version holds its id again. A link whose target no current version holds but whose
+// moved_to tuples reach a block of toArtifact (graphstore.MovedTo) counts as a link to that block,
+// which it names, so a citation written before its target moved still reaches it
+// (dispatch://INFRA-1150 R8); only a target no row holds is followed through block_moved_to, so a
+// link to a block that stands costs the probe alone. A pointer's link counts only while the block
+// it reaches has a type the pointer allows (block_ref_listed). A link either of whose blocks who
+// may not see drops out the same way, since neither end resolves to a node.
 func BlockLinks(ctx context.Context, q Queryer, who model.Actor, fromArtifact, toArtifact string) ([]model.BlockLink, error) {
 	rows, err := q.Query(ctx, `
-		select r.kind, r.from_node, r.to_id, r.created_at, r.created_version
+		select r.kind, r.from_node, t.node_id, r.created_at, r.created_version
 		from block_refs r
 		join document_blocks f on f.artifact_id = r.artifact_id and f.block_id = r.block_id
-		join document_blocks t on t.node_id = r.to_id and t.artifact_id = $2::uuid
-		where r.artifact_id = $1::uuid and r.to_kind = 'block' and (r.to_types is null or block_ref_listed(r.to_types, r.to_id))
-		order by r.created_at desc, r.from_node, r.to_id`, fromArtifact, toArtifact)
+		cross join lateral (
+			select coalesce(
+				(select held.node_id from document_blocks held where held.node_id = r.to_id limit 1),
+				block_moved_to(r.to_id)) as node_id
+		) target
+		join document_blocks t on t.node_id = target.node_id and t.artifact_id = $2::uuid
+		where r.artifact_id = $1::uuid and r.to_kind = 'block' and (r.to_types is null or block_ref_listed(r.to_types, t.node_id))
+		order by r.created_at desc, r.from_node, t.node_id`, fromArtifact, toArtifact)
 	if err != nil {
 		return nil, fmt.Errorf("list the block links from %s to %s: %w", fromArtifact, toArtifact, err)
 	}
