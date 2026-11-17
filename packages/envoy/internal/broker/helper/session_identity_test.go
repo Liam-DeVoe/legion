@@ -19,6 +19,7 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -309,21 +310,27 @@ func TestASessionThatDoesNotComeBackLosesItsGrants(t *testing.T) {
 func TestASecondProcessMayNotTakeALiveSessionsIdentity(t *testing.T) {
 	t.Parallel()
 	r := startRig(t, "")
-	// The session root is a child process, so this test process is NOT inside it: a register
-	// from here is a second root asking for the same name, not the session itself asking again.
+	// The session root is a child process, and every other register here comes from a sibling
+	// of it: a register from there is a second root asking for the same name, not the session
+	// itself asking again. Not from this test process, which is the root's parent and so a root
+	// no register may take while that session lives (Registry.AdmitRoot), whatever its name.
 	child := sleeper(t)
 	r.callerPID.Store(int64(child.Process.Pid))
 	id := testSessionID
 	first := r.call(t, Request{Op: "register", WaitSeconds: 10, SessionID: &id})
-	r.callerPID.Store(0)
 	if !first.OK {
 		t.Fatalf("first register: %+v", first)
 	}
+	held := fmt.Sprintf(sessionHeldMsg, id, child.Process.Pid)
+	second := sleeper(t)
+	r.callerPID.Store(int64(second.Process.Pid))
 	resp := r.call(t, Request{Op: "register", SessionID: &id})
-	if resp.OK || resp.Code != CodeBadRequest {
-		t.Fatalf("a second process taking a live session's identity: %+v, want BAD_REQUEST", resp)
+	if resp.OK || resp.Code != CodeBadRequest || resp.Error != held {
+		t.Fatalf("a second process taking a live session's identity: %+v, want BAD_REQUEST %q", resp, held)
 	}
 	// And the same refusal for a second root that registered unnamed and then asks for the name.
+	third := sleeper(t)
+	r.callerPID.Store(int64(third.Process.Pid))
 	unnamed := r.call(t, Request{Op: "register", WaitSeconds: 10})
 	if !unnamed.OK {
 		t.Fatalf("second root register: %+v", unnamed)
@@ -331,6 +338,7 @@ func TestASecondProcessMayNotTakeALiveSessionsIdentity(t *testing.T) {
 	if resp := r.call(t, Request{Op: "register", SessionID: &id}); resp.OK || resp.Code != CodeBadRequest {
 		t.Fatalf("a second root taking the name later: %+v, want BAD_REQUEST", resp)
 	}
+	r.callerPID.Store(0)
 }
 
 // TestASessionNamedAfterItStartedEnrolsUnderThatName: omp opens its transcript seconds after it

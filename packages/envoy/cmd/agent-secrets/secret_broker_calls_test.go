@@ -54,7 +54,7 @@ func recordBrokerCalls(t *testing.T) func() []string {
 // it sets: awsClients in the aws store, gcpClientDial, gcpCredentialsFile and gcpUserinfo in the
 // gcp one, and secretStdin for the values it types.
 func TestNoSecretFormAsksTheBrokerForACredential(t *testing.T) {
-	onEachStore(t, func(t *testing.T, store kindStore, _ *secretBroker) {
+	onEachStore(t, func(t *testing.T, store typeStore, _ *secretBroker) {
 		store.put(t, "HELD_TEST", map[string]string{policy.TagOwner: "ada@example.com", policy.TagTier: policy.TierAgent}, "v1")
 		calls := recordBrokerCalls(t)
 		for _, form := range []struct {
