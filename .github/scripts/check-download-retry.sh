@@ -135,11 +135,15 @@
 #      sourcing text or another library it sources defines and which fetches, since bash runs
 #      that one; and a library one shell text sources more than once, as one it reaches along
 #      two paths, since its own commands run at each source. A script that sources a library
-#      and that one step runs more than once is a shell of its own at each run, and that library
-#      is charged once for the step: this tree writes it, as ci-job-tool-fallback.yaml's 'Seed
-#      mise's install of jj with the staged binary, one byte changed' runs ci-tools-proof.sh
-#      three times, whose DECLARED_LIBRARIES entry prices the rig's one `ci_tools_fetch`
-#      (dispatch://INFRA-1545, round 37).
+#      and that one step runs more than once is a shell of its own at each run, each of which
+#      can call the library's functions, while that library is charged once for the step; so
+#      such a step is refused by name unless a DECLARED_LIBRARIES entry for that step, or for
+#      the composite action whose step it is, writes what the library contributes to it
+#      (dispatch://INFRA-1545, round 37). Until round 37's class search it was charged once and
+#      refused nothing. This tree writes it once, as ci-job-tool-fallback.yaml's 'Seed mise's
+#      install of jj with the staged binary, one byte changed' runs ci-tools-proof.sh three
+#      times, whose entry writes the rig's one `ci_tools_fetch`, 1281 s: none of the three runs
+#      calls a function that fetches.
 #   4. A DECLARATION, keyed as the tree keys it: a DECLARED_LOOPS entry names a workflow step by
 #      its file, its name and the verb, or a script by its file and the verb, with no step; a
 #      DECLARED_LIBRARIES entry names a workflow step by its file and its name, or a script or a
@@ -216,9 +220,10 @@
 #     leading zero or an expression, and a line of text below a pricing comment that reads as
 #     `timeout-minutes: <n>` and is no key, wherever written;
 #   - and, outside rule 8's shapes but for its arithmetic, a site an exception leaves unretried
-#     that makes attempts of its own with no bound, which rule 4 would refuse anywhere else and
-#     whose wait no budget can be held above, a curl it leaves unretried that writes no bound or
-#     writes one in a form curl_bound_refusal names (dispatch://INFRA-1545, round 37).
+#     that makes attempts of its own with no bound, or under a `retry_fetch` whose seconds are a
+#     variable, which rule 4 would refuse anywhere else and whose wait no budget can be held
+#     above, a curl it leaves unretried that writes no bound or writes one in a form
+#     curl_bound_refusal names (dispatch://INFRA-1545, round 37).
 # Three shapes this tree writes are REFUSED BY NAME UNLESS DECLARED, since a refusal alone would
 # refuse the tree's own scripts (dispatch://INFRA-1545, round 37): a call of a function through a
 # variable where the text can see a function that fetches (DECLARED_CALLS, or a DECLARED_LOOPS
@@ -226,7 +231,8 @@
 # `$fn`, `${fn}`, `$1`, `"$@"` or an array's `"${cmd[@]}"`, outside the operands of a
 # `[[ … ]]`, and a `$x)` after a `|`, which may be a pattern's alternative or a pipeline's last
 # command, refused by name where such a function is seen; a library a step reaches along more
-# than one path; and a library's fetching functions called more than once after sourcing it
+# than one path, or along one path more than once, as a script sourcing it that the step runs in
+# more than one place; and a library's fetching functions called more than once after sourcing it
 # (DECLARED_LIBRARIES).
 # Each declaration's figure enters the step's arithmetic, and WHAT IT COUNTS ONCE OR MISCOUNTS
 # under rule 8 names the tree's instances.
@@ -247,12 +253,13 @@
 # time the step runs it: the loops around it, the calls of the function holding it and the
 # loops around those, so a step that runs a.sh and then b.sh, each running c.sh, waits for
 # c.sh twice. A library a step SOURCES — itself, through another library, or inside any script
-# it runs — is charged once for that step, at the most expensive path to it, and the two shapes
-# where that charge falls short, more than one path to it and more than one call of its
-# functions, are refused unless declared, as the paragraph above says. A step is one shell: a
-# workflow step, or one step of a composite action, which rule 8 already reads as steps of their
-# own, so install-jj, which sources .github/scripts/ci-tools.sh in two of its steps, is charged
-# that library twice. A script that reaches itself is refused by name, as the list above says.
+# it runs — is charged once for that step, at the most expensive path to it, and the three shapes
+# where that charge falls short, more than one path to it, one path to it walked more than once
+# and more than one call of its functions, are refused unless declared, as the paragraph above
+# says. A step is one shell: a workflow step, or one step of a composite action, which rule 8
+# already reads as steps of their own, so install-jj, which sources .github/scripts/ci-tools.sh
+# in two of its steps, is charged that library twice. A script that reaches itself is refused by
+# name, as the list above says.
 #
 # Two limits are left in that reading set, and each is a limit of what this check can read, a
 # script it cannot name, rather than a shape it reads and miscounts (dispatch://INFRA-1545,
@@ -584,9 +591,12 @@
 #      a call of a function after any word but `if`, `if !`, `!` and `elif !`, which is no call
 #      it reads (dispatch://INFRA-1545, round 37). This list therefore names no shape that
 #      prices a step under its real cost: each is read, refused by name, or refused by name
-#      unless a declaration writes its figure by hand. Three shapes this tree writes are the
-#      last kind, each refused where no declaration covers it, and each declaration's figure is
-#      the one the budget holding it already writes, with the sum it comes from:
+#      unless a declaration writes its figure by hand. A script that sources a library and that
+#      one step runs in more than one place was such a shape until round 37's class search,
+#      charged that library once and refused nothing; it is the second kind below now
+#      (dispatch://INFRA-1545, round 37). Three shapes this tree writes are the last kind, each
+#      refused where no declaration covers it, and each declaration's figure is the one the
+#      budget holding it already writes, with the sum it comes from:
 #
 #        * a call of a function through a variable, such as `"$fn"` or `$fetch`, which is no
 #          call this check reads (variable_calls). Where the text can see a function that
@@ -598,16 +608,20 @@
 #          engine and of its `true`/`false` flags are DECLARED_CALLS entries at 0 s.
 #          runner-shutdown.sh writes no call through a variable.
 #        * a library a step reaches along more than one path — it sources it and runs a script
-#          that sources it too, or runs two scripts that each do — which is charged once, at
-#          its most expensive path, though each path can call its functions (shell_arithmetic,
-#          SHARED_LIBRARIES). The step is refused unless a DECLARED_LIBRARIES entry writes what
-#          the library contributes to it, which then replaces that charge. The tool-fallback
-#          steps that source .github/scripts/ci-tools.sh and run ci-tools-proof.sh's
-#          `version-answers`, which fetches nothing, are declared at 1281 s, the library's one
-#          `ci_tools_fetch`, and the ci-ok-report action, which reaches runner-shutdown.sh
+#          that sources it too, or runs two scripts that each do — or along one path more than
+#          once, as a script sourcing it that the step runs in more than one place, each run a
+#          shell of its own; either is charged once, at its most expensive path, though each
+#          path and each run can call its functions (shell_arithmetic, SHARED_LIBRARIES). The
+#          step is refused unless a DECLARED_LIBRARIES entry writes what the library
+#          contributes to it, which then replaces that charge. The tool-fallback steps that
+#          source .github/scripts/ci-tools.sh and run ci-tools-proof.sh's `version-answers`,
+#          which fetches nothing, are declared at 1281 s, the library's one `ci_tools_fetch`,
+#          and so is the step 'Seed mise's install of jj with the staged binary, one byte
+#          changed', which runs ci-tools-proof.sh three times, none of the runs calling a
+#          function that fetches. The ci-ok-report action, which reaches runner-shutdown.sh
 #          through ci-ok-report.sh and through the ci-ok.sh that runs, each of which makes one
-#          call of runner_shutdown_kills in a shell of its own, at 2 x (300 + 480) = 1560 s,
-#          which .github/ci-budgets.md's Budgets note writes into the report's 2160 s.
+#          call of runner_shutdown_kills in a shell of its own, is declared at 2 x (300 + 480) =
+#          1560 s, which .github/ci-budgets.md's Budgets note writes into the report's 2160 s.
 #        * a library's fetching functions called more than once after sourcing it, or inside a
 #          loop whose passes this check cannot read, which are charged as the library's one
 #          charge (library_functions). The body is refused unless a DECLARED_LIBRARIES entry,
@@ -2665,6 +2679,9 @@ class Uncounted:
     `unbounded` tells those last two apart, for an UNCOUNTED_SITE: True where this check finds
     no bound on one attempt of the site in any spelling (bound_spelled answers False), so the
     refusal names that rather than a variable nobody wrote (dispatch://INFRA-1545, round 37).
+    `helper` is True where the variable is the seconds of a `retry_fetch`, which rule 4 refuses
+    at the site whatever a declaration writes, so the refusal offers no declaration in place of
+    a number there (dispatch://INFRA-1545, round 37).
 
     `kind` tells apart the three things this class holds: UNCOUNTED_SITE, a fetch written in
     the body the item was read from, inside a loop with no pass count; UNCOUNTED_UNREAD_BOUND,
@@ -2678,7 +2695,8 @@ class Uncounted:
     (review round 8 of dispatch://INFRA-1545)."""
 
     def __init__(self, path: str, line: int, what: str, loop: int | None,
-                 one: int | None, kind: str, unbounded: bool = False) -> None:
+                 one: int | None, kind: str, unbounded: bool = False,
+                 helper: bool = False) -> None:
         self.path = path
         self.line = line
         self.what = what
@@ -2686,6 +2704,7 @@ class Uncounted:
         self.one = one
         self.kind = kind
         self.unbounded = unbounded
+        self.helper = helper
 
 
 def one_call(site: Site) -> int | None:
@@ -2747,11 +2766,18 @@ def bound_written(site: Site) -> bool:
 def bound_spelled(site: Site) -> bool:
     """Whether one attempt of this site carries a bound in any spelling, a variable included,
     which is what rule 8 says of a site one_call answers None for: bound_written's answer, and
-    also a curl's own `--max-time` under a `retry_fetch` whose seconds this check cannot read,
-    where rule 4 reads no bound. False is a site with no bound this check finds, and a refusal
+    also the seconds of a `retry_fetch` this check cannot read as a number, which bound every
+    attempt of whatever verb it runs and where rule 4 reads no bound. A `retry_fetch` writing
+    those seconds in any other spelling than a number or a variable is no site (odd_command),
+    so they are a variable here, the word the refusal of that site quotes
+    (variable_helper_bound). False is a site with no bound this check finds, and a refusal
     saying its bound was written as a variable told the author of a curl with no `--max-time`
-    to write as a number a bound they had not written (dispatch://INFRA-1545, round 37)."""
-    return bound_written(site) or (site.verb == "curl" and curl_options(site.words)[2])
+    to write as a number a bound they had not written (dispatch://INFRA-1545, round 37). Until
+    round 37's class search the helper's seconds counted here only around a curl writing
+    `--max-time`, so `retry_fetch <what> "$T" -- gh api …` in a loop this check cannot count
+    was told this check finds no bound on it, while the refusal of that site said its seconds
+    were written as `$T` (dispatch://INFRA-1545, round 37)."""
+    return bound_written(site) or site.retry == "retry_fetch"
 
 
 def declared_arithmetic(site: Site) -> "DeclaredArithmetic | None":
@@ -3245,7 +3271,8 @@ def uncounted_of(found: list[Site]) -> list[Uncounted]:
             if one != 0:
                 kept.append(Uncounted(site.path, site.line, site.verb, site.blocked, one,
                                       UNCOUNTED_SITE,
-                                      unbounded=one is None and not bound_spelled(site)))
+                                      unbounded=one is None and not bound_spelled(site),
+                                      helper=one is None and site.retry == "retry_fetch"))
         elif one is None and bound_written(site):
             # No loop in the item: `loop` names the one whose passes could not be read, and
             # this site's were read, whether it sits in a loop or in none. The refusal below
@@ -3583,14 +3610,16 @@ class DeclaredLibrary:
     """What one fetching library contributes to a step, written down where rule 8 charges it
     once and the step can run its fetches more than once (dispatch://INFRA-1545, round 37): a
     library the step reaches along more than one path, sourced by the step and by the scripts
-    it runs, and a library whose fetching functions a body calls more than once, or inside a
-    loop whose passes this check cannot read, after sourcing it. Either is refused by name
-    unless an entry covers it. `path` and `step` name the step, its file and its name; or
-    `path` names the script or the composite action whose calls are the reading, with `step`
-    None, for every step reaching that file — a step's own entry wins over a file's. `seconds`
-    replaces what that library is charged for the step, which is its own arithmetic at its most
-    expensive path, and `why` writes that figure out as a sum. An entry naming a file this tree
-    holds and matching nothing fails this check, as a stale declaration does."""
+    it runs; one it reaches along one path more than once, as a script sourcing it that the
+    step runs in more than one place; and a library whose fetching functions a body calls more
+    than once, or inside a loop whose passes this check cannot read, after sourcing it. Each is
+    refused by name unless an entry covers it. `path` and `step` name the step, its file and
+    its name; or `path` names the script or the composite action whose calls are the reading,
+    with `step` None, for every step reaching that file — a step's own entry wins over a
+    file's. `seconds` replaces what that library is charged for the step, which is its own
+    arithmetic at its most expensive path, and `why` writes that figure out as a sum. An entry
+    naming a file this tree holds and matching nothing fails this check, as a stale declaration
+    does."""
 
     def __init__(self, path: str, step: str | None, library: str, seconds: int,
                  why: str) -> None:
@@ -3606,8 +3635,8 @@ class DeclaredLibrary:
         return self.path + (f" step '{self.step}'" if self.step else "") + f" {self.library}"
 
 
-# The tree's own readings of these two shapes, each at the worst case its `why` derives, which is
-# the figure the budget holding it writes (dispatch://INFRA-1545, round 37).
+# The tree's own readings of these three shapes, each at the worst case its `why` derives, which
+# is the figure the budget holding it writes (dispatch://INFRA-1545, round 37).
 TOOL_FALLBACK = ".github/workflows/ci-job-tool-fallback.yaml"
 CI_TOOLS = ".github/scripts/ci-tools.sh"
 RUNNER_SHUTDOWN = ".github/scripts/runner-shutdown.sh"
@@ -3640,6 +3669,21 @@ DECLARED_LIBRARIES: list[DeclaredLibrary] = [
                     "for crane, changie and jj, which fetches nothing, and calls "
                     "ci_tools_verify, a digest read off disk: 1 x 1281 s, the figure the step's "
                     "comment writes for its 22 minutes"),
+    # A script that sources the library, run three times by one step, each run a shell of its
+    # own: the one tree instance of that shape, counted at b5aba1e5 with this check's own
+    # survey instrumented (dispatch://INFRA-1545, round 37).
+    DeclaredLibrary(TOOL_FALLBACK,
+                    "Seed mise's install of jj with the staged binary, one byte changed",
+                    CI_TOOLS, 1281,
+                    "the step runs ci-tools-proof.sh three times, each run a shell of its own "
+                    "that sources ci-tools.sh: `payload-path jj` reads the row's second source "
+                    "and its digest off .github/ci-tools.yaml (ci_tools_field, ci_tools_digest), "
+                    "`flip-last-byte` changes the copy's last byte with python3, and "
+                    "`seed-mise-jj` installs that copy in mise's directory. None of the three "
+                    "calls a function that fetches, so the runs fetch 0 + 0 + 0 = 0 s, and the "
+                    "step is charged the library once, as it sources it, the charge every step "
+                    "running a subcommand of the rig but `stage` carries: 1 x 1281 s, the figure "
+                    "the step's comment writes for its 22 minutes"),
     DeclaredLibrary(TOOL_FALLBACK, "Check the package holds the blob of every mirrored row",
                     CI_TOOLS, 2015,
                     "the anonymous pull token at 60 s an attempt, 427 s, and one HEAD per "
@@ -4451,11 +4495,14 @@ for site in sites:
     else:
         problem(site.path, site.line, refusal)
 
-# An excepted site, which rules 1 to 6 do not read, that makes attempts of its own — a
-# `retry_fetch`, or a curl's own `--retry` — with no bound: rule 4 refuses such an attempt
-# everywhere else, and rule 8 leaves it to rule 4, so here nothing refused it and the step holding
-# it passed with no figure (dispatch://INFRA-1545, round 37). Its wait has no limit, and no budget
-# can be held above it. An unretried fetch is one attempt, which rule 8 prices at nothing wherever
+# An excepted site, which rules 1 to 6 do not read, that makes attempts of its own with no
+# bound — a curl's own `--retry` with no `--max-time`, or a `retry_fetch` whose seconds are a
+# variable: rule 4 refuses such an attempt everywhere else, and rule 8 leaves it to rule 4, so
+# here nothing refused it and the step holding it passed with no figure (dispatch://INFRA-1545,
+# round 37). No budget can be held above that wait. The `retry_fetch` is told its seconds are
+# the variable they are: until round 37's class search it was told this check finds no bound on
+# it, while its attempts are bounded at what that word holds (dispatch://INFRA-1545, round 37).
+# An unretried fetch is one attempt, which rule 8 prices at nothing wherever
 # it sits, as exception (d) leaves it, but an unretried curl is priced at the floor its own
 # options make, and one writing no `--max-time` has no figure: the step holding it was compared
 # with nothing, its other retries included, and nothing refused it; and a curl writing its bound
@@ -4468,8 +4515,18 @@ for site in exempted:
         problem(site.path, site.line,
                 f"{where_of(site)} is a site an exception above leaves unretried, and it "
                 f"{spelled} (dispatch://INFRA-1545, round 37).")
-    elif one_call(site) is None and not bound_written(site) and (
-            site.retry or curl_options(site.words)[0] is not None):
+    elif one_call(site) is None and not bound_written(site) and site.retry == "retry_fetch":
+        problem(site.path, site.line,
+                f"{where_of(site)} is a site an exception above leaves unretried, and it is "
+                f"retried by `retry_fetch` with its seconds written as `{site.helper_bound}`, "
+                "which is no number this check reads: each attempt is bounded at what that word "
+                "holds when the step runs, so no figure can be put on the attempts and no budget "
+                "can be held above the wait for them; rule 4, which refuses such seconds "
+                "everywhere else, does not read an excepted site. Write the helper's seconds as a "
+                "whole number above 0, or drop its retry, as the excepted sites do "
+                "(dispatch://INFRA-1545, round 37).")
+    elif (one_call(site) is None and not bound_written(site)
+          and curl_options(site.words)[0] is not None):
         problem(site.path, site.line,
                 f"{where_of(site)} is a site an exception above leaves unretried, and it makes "
                 "attempts of its own with no bound this check finds, so whatever runs it waits "
@@ -4575,10 +4632,11 @@ for site in sites:
 
 # While one step is charged, the seconds the DeclaredLibrary entries covering it write for each
 # library, which replace that library's own arithmetic (shell_arithmetic); and the libraries the
-# step's shell, or a composite action step's it runs, reaches along more than one path, each with
-# that action or None for the step itself (dispatch://INFRA-1545, round 37).
+# step's shell, or a composite action step's it runs, reaches along more than one path or along
+# one path more than once, each with that action or None for the step itself, and with that one
+# path where it is the second form, or None (dispatch://INFRA-1545, round 37).
 PRICED_LIBRARIES: dict[str, int] = {}
-SHARED_LIBRARIES: dict[str, str | None] = {}
+SHARED_LIBRARIES: dict[str, tuple[str | None, tuple[str, ...] | None]] = {}
 
 
 def file_arithmetic(path: str, seen: set[str], inside: tuple[str, ...] = ()) -> int | None:
@@ -4633,11 +4691,16 @@ def shell_arithmetic(calls: list[Occurrence], seen: set[str],
     arithmetic at its most expensive path (dispatch://INFRA-1545, round 37). So is a library one
     shell text sources more than once, the step's own or a script's it runs: its own commands
     run at each source, and until round 37 the two sources were one path, so it was charged once
-    and refused nothing (dispatch://INFRA-1545, round 37). A script that sources a library and
-    is run more than once by one step is not that form, since each run is a shell of its own: it
-    is charged that library once for the step, and this tree writes it, as ci-job-tool-fallback's
-    'Seed mise's install of jj with the staged binary, one byte changed' runs ci-tools-proof.sh
-    three times.
+    and refused nothing (dispatch://INFRA-1545, round 37). And so is a library the shell reaches
+    along one path more than once, as a script that sources it and that the step runs in more
+    than one place: each run is a shell of its own that sources the library and can call its
+    functions, while the library is charged once for the step. Until round 37's class search it
+    was charged once and refused nothing: a step running zz-a.sh on two lines, which sources
+    zz-lib.sh and calls its zz_fetch, one `retry_fetch` at 180 s, waits 2100 s and was charged
+    1050 s, where the same two runs written as a `for pass in 1 2` are charged 2100 s. This tree
+    writes it, as ci-job-tool-fallback's 'Seed mise's install of jj with the staged binary, one
+    byte changed' runs ci-tools-proof.sh three times, and that step's DeclaredLibrary entry
+    writes its figure (dispatch://INFRA-1545, round 37).
 
     A call whose loop writes no count (factor None) is charged nothing where the file it
     reaches, with what that file calls in turn, costs 0: the figure those passes would multiply
@@ -4656,9 +4719,10 @@ def shell_arithmetic(calls: list[Occurrence], seen: set[str],
     # The most expensive path to each library the shell reaches: the product of its factors and
     # the names along it.
     best: dict[str, tuple[int, tuple[str, ...]]] = {}
-    # Every path along which the shell sources each library, and the libraries one shell text
-    # sources more than once.
+    # Every path along which the shell sources each library, how many times the shell walks to
+    # it along any of them, and the libraries one shell text sources more than once.
     paths: dict[str, set[tuple[str, ...]]] = {}
+    walks: dict[str, int] = {}
     again: set[str] = set()
 
     def survey(path: tuple[str, ...], product: int, calls: list[Occurrence]) -> None:
@@ -4680,6 +4744,7 @@ def shell_arithmetic(calls: list[Occurrence], seen: set[str],
                     again.add(call.target)
                 sourced.add(call.target)
                 paths.setdefault(call.target, set()).add(here)
+                walks[call.target] = walks.get(call.target, 0) + 1
                 known = best.get(call.target)
                 if (known is None or reached[0] > known[0]
                         or (reached[0] == known[0] and here < known[1])):
@@ -4717,10 +4782,15 @@ def shell_arithmetic(calls: list[Occurrence], seen: set[str],
         if cost is None:
             return None
         # The shell's own paths are the step's, or a composite action step's: a script's are
-        # walked again, and refused once, in the shell of the step that runs it.
-        if ((len(paths[target]) > 1 or target in again) and cost
-                and (not inside or inside[-1] in action_files)):
-            SHARED_LIBRARIES.setdefault(target, inside[-1] if inside else None)
+        # walked again, and refused once, in the shell of the step that runs it. One path walked
+        # more than once is a script on it that the shell runs, or sources, in more than one
+        # place, and the refusal names that path (dispatch://INFRA-1545, round 37).
+        if cost and (not inside or inside[-1] in action_files):
+            holder = inside[-1] if inside else None
+            if len(paths[target]) > 1 or target in again:
+                SHARED_LIBRARIES.setdefault(target, (holder, None))
+            elif walks[target] > 1:
+                SHARED_LIBRARIES.setdefault(target, (holder, path[len(inside):]))
         total += PRICED_LIBRARIES.get(target, product * cost)
     if unread:
         return None
@@ -5248,25 +5318,37 @@ for budget in budgets:
     SHARED_LIBRARIES.clear()
     cost = added(budget.cost, shell_arithmetic(budget.calls, seen, ()))
     # The libraries this step may run the fetches of more often than once: one it reaches along
-    # more than one path, and one whose fetching functions a body it runs calls more than once.
-    # Each is refused by name unless a DeclaredLibrary entry covers it — the step's own entry
-    # first, then one for the file whose calls are the reading — and the entries' seconds then
-    # replace each library's own arithmetic in the step's figure (dispatch://INFRA-1545, round
-    # 37).
+    # more than one path, one it reaches along one path more than once, and one whose fetching
+    # functions a body it runs calls more than once. Each is refused by name unless a
+    # DeclaredLibrary entry covers it — the step's own entry first, then one for the file whose
+    # calls are the reading — and the entries' seconds then replace each library's own
+    # arithmetic in the step's figure (dispatch://INFRA-1545, round 37).
     mine = (budget.path, budget.step)
     owed: list[tuple[str, str, int, str, list[tuple[str, str | None]]]] = []
-    for library, holder in sorted(SHARED_LIBRARIES.items()):
+    for library, (holder, rerun) in sorted(SHARED_LIBRARIES.items()):
         where, line, who = ((budget.path, budget.line, f"step '{step_name(budget)}'")
                             if holder is None else (holder, 1, holder))
-        owed.append((library, where, line,
-                     f"{who} reaches {library}, a library that fetches, along more than one "
-                     "path: it sources it, or runs scripts that source it, in more than one "
-                     "place, and each of those can call its functions. This check charges a "
-                     "library once for each shell, at its most expensive path, so what the "
-                     "other paths run of it is charged nothing. Declare what that library "
-                     "contributes to this step in DECLARED_LIBRARIES in "
-                     ".github/scripts/check-download-retry.sh, with the sum it comes from, or "
-                     "reach it along one path",
+        sentence = (
+            f"{who} reaches {library}, a library that fetches, along more than one path: it "
+            "sources it, or runs scripts that source it, in more than one place, and each of "
+            "those can call its functions. This check charges a library once for each shell, "
+            "at its most expensive path, so what the other paths run of it is charged nothing. "
+            "Declare what that library contributes to this step in DECLARED_LIBRARIES in "
+            ".github/scripts/check-download-retry.sh, with the sum it comes from, or reach it "
+            "along one path" if rerun is None else
+            # A script that sources the library, run in more than one place: each run is a
+            # shell of its own, and the path the runs give is one (dispatch://INFRA-1545, round
+            # 37).
+            f"{who} reaches {library}, a library that fetches, along one path more than once, "
+            f"{' to '.join(rerun)}: it runs a script on that path, or sources one, in more than "
+            "one place, and each run is a shell of its own that sources the library and can "
+            "call its functions. This check charges a library once for the step, at its most "
+            "expensive path, however many of the shells it runs source it, so what the other "
+            "runs make of it is charged nothing. Declare what that library contributes to this "
+            "step in DECLARED_LIBRARIES in .github/scripts/check-download-retry.sh, with the sum "
+            "it comes from, or write the runs as one call in a `for` over literal words, whose "
+            "passes this check multiplies")
+        owed.append((library, where, line, sentence,
                      [mine] + ([] if holder is None else [(holder, None)])))
     for path, name, owner, who, over in library_calls:
         if owner is budget:
@@ -5314,13 +5396,18 @@ for budget in budgets:
     # The slowest retried step of each job, kept as this loop computes it — the step's own calls,
     # the scripts it runs and the composite action it uses — for the job-derivation clause below.
     # It is taken here and never recomputed there, because a `uses:` step's whole arithmetic is
-    # the action's and is known only at this point.
+    # the action's and is known only at this point. Beside it, the longest key a retried step of
+    # the job writes, which the last refusal of this loop holds the job's key above, so the
+    # advice of the job-derivation clause can name a key that refusal passes too
+    # (dispatch://INFRA-1545, round 37).
     if cost is not None and budget.job_minutes is not None and budget.job_line is not None:
         slowest = JOB_SLOWEST.setdefault((budget.path, budget.job),
                                          {"line": budget.job_line, "minutes": budget.job_minutes,
-                                          "cost": 0, "step": ""})
+                                          "cost": 0, "step": "", "key": 0, "key_step": ""})
         if cost > slowest["cost"]:
             slowest["cost"], slowest["step"] = cost, step_name(budget)
+        if cost and budget.minutes is not None and budget.minutes > slowest["key"]:
+            slowest["key"], slowest["key_step"] = budget.minutes, step_name(budget)
     blocking = list(budget.uncounted)
     for target in sorted(seen):
         blocking += script_uncounted.get(target, []) + action_uncounted.get(target, [])
@@ -5387,6 +5474,10 @@ for budget in budgets:
         unread_bound = not script_call and blocking[0].one is None
         unbounded = unread_bound and blocking[0].unbounded
         variable_bound = unread_bound and not unbounded
+        # A variable that is a `retry_fetch`'s seconds is refused at the site by rule 4, which no
+        # declaration answers, so the advice asks for the number first and offers a declaration
+        # only for the loop after it (dispatch://INFRA-1545, round 37).
+        helper = variable_bound and blocking[0].helper
         one = (file_arithmetic(blocking[0].what, set()) if script_call
                else blocking[0].one)
         unread_kinds = unpriced_waits(blocking[0].what, set()) if script_call else set()
@@ -5432,7 +5523,7 @@ for budget in budgets:
                 "step and the verb it retries, and a call of a script writes a path where "
                 "that verb would be, so an entry pointed at it matches no retried call and "
                 "fails this check in its own right.")
-        elif variable_bound:
+        elif variable_bound and not helper:
             # The bound first and the loop second, and in that order rather than as a choice:
             # a bound written as a number leaves the loop still unread, which is this rule's
             # ordinary refusal, while a pass count written over an unread bound leaves the
@@ -5457,16 +5548,24 @@ for budget in budgets:
                 "DECLARED_LOOPS in .github/scripts/check-download-retry.sh: a "
                 "DeclaredArithmetic entry there writes the seconds the site contributes to "
                 "this budget and the sum they come from.")
-        count_advice = ("" if variable_bound else
-                        "Write the count where this check reads it, as literal words — a "
-                        "`for x in 1 2 3 4 5 6 7` — or ")
+        count_advice = ("" if variable_bound and not helper else
+                        ("then write" if helper else "write") + " the count where this check "
+                        "reads it, as literal words — a `for x in 1 2 3 4 5 6 7` — or ")
         # A site with no bound is told to write one first, as a number, which is the figure
         # the passes multiply, and then the ordinary advice about the loop: a bound alone
-        # leaves the loop unread (dispatch://INFRA-1545, round 37).
+        # leaves the loop unread (dispatch://INFRA-1545, round 37). So is a site whose bound is
+        # a `retry_fetch`'s seconds written as a variable: a declaration answers this refusal,
+        # but the refusal of the site stands whatever is declared, and until round 37's class
+        # search the advice offered that declaration in place of the number
+        # (dispatch://INFRA-1545, round 37).
         bound_advice = ("Bound each attempt with a number of seconds — `--max-time "
                         "<seconds>` on a curl, or the seconds `retry_fetch` takes before its "
                         "`--` — which is the figure this check multiplies by the passes it "
-                        "reads. " if unbounded else "")
+                        "reads. " if unbounded else
+                        "Write that bound as a number, the seconds `retry_fetch` takes before "
+                        "its `--`, which is the figure this check multiplies by the passes it "
+                        "reads: the refusal of the site asks for that number too, and no "
+                        "declaration answers that refusal. " if helper else "")
         # The advice after the sentence above starts a sentence of its own whichever pieces it
         # is built from: with the count left out, it began with the lowercase word of the
         # clause that follows the count (dispatch://INFRA-1545, round 37).
@@ -5542,6 +5641,12 @@ for budget in budgets:
             f"{60 * budget.job_minutes} s" if budget.job_minutes is not None
             else f"job '{budget.job}' writes no `timeout-minutes`, so GitHub gives it "
                  f"{JOB_DEFAULT_MINUTES} minutes, {60 * JOB_DEFAULT_MINUTES} s")
+        # The figure the advice names passes both of this rule's readings of a job: it is above
+        # this arithmetic and above the step's own key, which the reading below holds the job's
+        # key over. The step's key already exceeds this arithmetic wherever this is reached, so
+        # the first minimum alone, which the advice named, was a job key the reading below
+        # refused (dispatch://INFRA-1545, round 37).
+        least = max(cost // 60 + 1, budget.minutes + 1)
         problem(budget.path, budget.job_line,
                 f"{job_carries}, and its step '{step_name(budget)}' holds retries taking {cost} s to "
                 "exhaust, which that budget does not strictly exceed. A job whose ceiling sits "
@@ -5549,7 +5654,10 @@ for budget in budgets:
                 "budget can name the site that failed, so the step's `timeout-minutes` buys "
                 "nothing: a job carries its measured duration plus the arithmetic of its "
                 "slowest retried step, which is the rule ci-budgets.md's Budgets note writes out. "
-                f"Write `timeout-minutes: {cost // 60 + 1}` or more on this job.")
+                "The job's key must also strictly exceed that step's own `timeout-minutes: "
+                f"{budget.minutes}`, which this rule refuses a job for too, so the least key "
+                f"passing both is the larger of {cost // 60 + 1} and {budget.minutes + 1}. "
+                f"Write `timeout-minutes: {least}` or more on this job.")
         continue
     if allowed <= budget.minutes:
         job_carries = (
@@ -5742,6 +5850,24 @@ for path in sorted(set(budget.path for budget in budgets)):
 # this check stayed green — the reviewer drove all nine, and three of them again afterwards to
 # see them refused.
 DERIVATION = re.compile(r"(\d+)\s*\+\s*(\d+)\s*=\s*(\d+)\s*s\s*->\s*(\d+)\s*min")
+
+
+def job_key_floor(row: dict, least: int) -> tuple[int, str]:
+    """The key a job-derivation refusal advises, and the sentence saying why where it is not
+    `least`, the first whole minute above the sum that refusal compares: the larger of `least`
+    and the first minute above the longest key a retried step of the job writes, which the
+    step-budget loop's last refusal holds a job's key above. Until round 37's class search the
+    advice named `least` alone, and a job written at it could sit at a step's key and be refused
+    there: a comment deriving 0 + 450 = 450 s over a step keyed at 8 minutes was told 8
+    (dispatch://INFRA-1545, round 37)."""
+    if not row["key"]:
+        return least, ""
+    return (max(least, row["key"] + 1),
+            f"The job's key must also strictly exceed the `timeout-minutes: {row['key']}` of its "
+            f"step '{row['key_step']}', which this rule refuses a job for too, so the least key "
+            f"passing both is the larger of {least} and {row['key'] + 1}. ")
+
+
 for (path, job), row in sorted(JOB_SLOWEST.items()):
     # The block that prices this job's key, and nothing else: a figure outside it belongs to
     # another job or another step and is never read here. A key no block prices has no
@@ -5761,13 +5887,14 @@ for (path, job), row in sorted(JOB_SLOWEST.items()):
         continue
     allowed = 60 * row["minutes"]
     if allowed <= total:
+        least, why = job_key_floor(row, total // 60 + 1)
         problem(path, row["line"],
                 f"job '{job}' carries `timeout-minutes: {row['minutes']}`, {allowed} s, and its "
                 f"own comment derives {measured} + {term} = {total} s, which that key does not strictly exceed. A job "
                 "is its measured duration plus the arithmetic of its slowest retried step "
                 "(ci-budgets.md's Budgets note), so a key at or under the sum the comment itself "
                 "states reports GitHub's bare timeout line part way through a step that is still "
-                f"inside its own budget. Write `timeout-minutes: {total // 60 + 1}` or more, or "
+                f"inside its own budget. {why}Write `timeout-minutes: {least}` or more, or "
                 "correct the derivation.")
         continue
     recomputed = measured + row["cost"]
@@ -5775,6 +5902,7 @@ for (path, job), row in sorted(JOB_SLOWEST.items()):
     # measured + term here, so it can sit at or under measured + cost only when cost is the
     # larger, and a test of that would be a condition no input can tell from its absence.
     if allowed <= recomputed:
+        least, why = job_key_floor(row, recomputed // 60 + 1)
         problem(path, row["line"],
                 f"job '{job}' carries `timeout-minutes: {row['minutes']}`, {allowed} s, and its "
                 f"own comment derives {measured} + {term} = {total} s, but the slowest retried "
@@ -5784,8 +5912,8 @@ for (path, job), row in sorted(JOB_SLOWEST.items()):
                 "COMMENT IS SELF-CONSISTENT AND STILL WRONG: it names a step that stopped being "
                 "the slowest when a bound moved under it, which is how eight jobs of this "
                 "repository came to stand under their own derivation while every other clause of "
-                "this rule was green (dispatch://INFRA-1545). Re-pick the slowest step, rewrite "
-                f"the derivation, and write `timeout-minutes: {recomputed // 60 + 1}` or more.")
+                "this rule was green (dispatch://INFRA-1545). Re-pick the slowest step and rewrite "
+                f"the derivation. {why}Write `timeout-minutes: {least}` or more.")
 
 # Rule 8, the job that prices nothing. The priced-comment clause and the job-derivation clause
 # above each read a figure a comment states; this one refuses a retried job that states none
@@ -5898,9 +6026,10 @@ for entry in DECLARED_LIBRARIES:
     problem(SELF, 1,
             f"the declared library figure for {entry.names()} "
             + ("matches no step that reaches that library along more than one path or through "
-               "more than one call of its fetching functions. A declaration outliving what it "
-               "answered for is a figure nobody checks again: drop it, or point it at where that "
-               "reach moved" if (entry.step is not None) == (entry.path in workflows)
+               "more than one call of its fetching functions, or along one path more than once. "
+               "A declaration outliving what it answered for is a figure nobody checks again: "
+               "drop it, or point it at where that reach moved"
+               if (entry.step is not None) == (entry.path in workflows)
                else "is keyed in a form this check does not read: a workflow step by its file "
                     "and its name, or a script or a composite action by its path, with no step, "
                     "which are the forms this tree writes. Key it in one of them")

@@ -2367,7 +2367,8 @@ run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "names the job, its budget and the step's arithmetic" \
   "$(contains "$out" "job .build. carries .timeout-minutes: 5., 300 s, and its step .Install changie. holds retries taking 450 s to exhaust")"
-check "says what to write on the job" "$(contains "$out" 'timeout-minutes: 8. or more on this job')"
+check "says what to write on the job, above the step's own key of 8 as well" \
+  "$(contains "$out" 'timeout-minutes: 9. or more on this job')"
 
 echo "case: the same job with a budget above that step passes"
 root=$(fixture job-budget-headroom)
@@ -2416,7 +2417,8 @@ run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "refuses the job at 600 s against a step whose retries take 600 s" \
   "$(contains "$out" "job .build. carries .timeout-minutes: 10., 600 s, and its step .Install changie. holds retries taking 600 s to exhaust, which that budget does not strictly exceed")"
-check "says what to write on the job" "$(contains "$out" 'timeout-minutes: 11. or more on this job')"
+check "says what to write on the job, above the step's own key of 11 as well" \
+  "$(contains "$out" 'timeout-minutes: 12. or more on this job')"
 
 # The job half of the same rule, which the clause above cannot reach: a step whose retries fit
 # inside its own budget is still cut by a job ceiling that is not above that budget, because the
@@ -2449,6 +2451,95 @@ check "says the job budget does not strictly exceed it" \
 check "says what to write on the job" "$(contains "$out" 'timeout-minutes: 9. or more on this job')"
 check "does not also report the step's own retries against this job" \
   "$(is "$(printf '%s\n' "$out" | grep -c 'holds retries taking')" 0)"
+
+# The figure the refusal of a job under its step's arithmetic advises is a key the job passes
+# with (dispatch://INFRA-1545, round 37). That refusal is reached only where the step's own key
+# already exceeds the step's arithmetic, so the arithmetic's own minute, which it advised, was
+# never above the step's key: written as advised, 8 under a step key of 8, the job was refused
+# for not exceeding its step's key. It advises the larger of the two minimums now, and the case
+# writes the job at the figure the refusal names, with the comment pricing it, which passes.
+echo "case: a job written at the figure its arithmetic refusal advises passes"
+root=$(fixture job-budget-advice-followed)
+write_advice_case() {
+  cat > "$root/.github/workflows/case.yaml" <<YAML
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    # Budget: the changie tarball's ladder alone, 450 s -> $1 min.
+    timeout-minutes: $1
+    steps:
+      - name: Install changie
+        timeout-minutes: 8
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "the changie tarball" 60 -- curl -fsSL --max-time 60 -o changie.tar.gz https://example.com/changie.tar.gz
+YAML
+}
+write_advice_case 5
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "refuses the job under its step's arithmetic" \
+  "$(contains "$out" "job .build. carries .timeout-minutes: 5., 300 s, and its step .Install changie. holds retries taking 450 s to exhaust")"
+advised=$(grep -o 'Write .timeout-minutes: [0-9]*. or more on this job' <<<"$out" | grep -o '[0-9][0-9]*' || true)
+check "advises the least key above both the arithmetic and the step's key of 8, which is 9" \
+  "$(is "$advised" 9)"
+write_advice_case "${advised:-0}"
+run_check "$root"
+check "with the job written at the figure advised, passes" "$(is "$status" 0)"
+check "with the job written at the figure advised, refuses nothing" \
+  "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 0)"
+
+# The job-derivation clause's advice is a key the job passes with too (dispatch://INFRA-1545,
+# round 37). It named the first minute above the sum it compares, and a job written there can sit
+# at a step's own key, which the step-budget loop refuses a job for. Here the step's key is 8
+# minutes and its retries take 450 s. A comment deriving 0 + 450 = 450 s over a job key of 5 was
+# told 8, and one deriving 0 + 300 = 300 s over a key of 6, under the step's 450 s, was told 8 as
+# well; each is told 9 now, the first minute above the step's key, and the job written at the
+# figure the clause names, with its comment deriving the step's 450 s, passes.
+echo "case: a job written at the figure the job-derivation clause advises passes"
+root=$(fixture job-derivation-advice-followed)
+write_derivation_case() {
+  cat > "$root/.github/workflows/case.yaml" <<YAML
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    # Budget: nothing measured, plus the changie tarball's ladder: 0 + $1 = $1 s -> $2 min.
+    timeout-minutes: $2
+    steps:
+      - name: Install changie
+        timeout-minutes: 8
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "the changie tarball" 60 -- curl -fsSL --max-time 60 -o changie.tar.gz https://example.com/changie.tar.gz
+YAML
+}
+write_derivation_case 450 5
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "refuses the job under the sum its comment derives" \
+  "$(contains "$out" "job 'build' carries .timeout-minutes: 5., 300 s, and its own comment derives 0 + 450 = 450 s, which that key does not strictly exceed")"
+advised=$(grep 'which that key does not strictly exceed' <<<"$out" | grep -o 'Write .timeout-minutes: [0-9]*. or more, or correct the derivation' | grep -o '[0-9][0-9]*' || true)
+check "advises the least key above both that sum and the step's key of 8, which is 9" \
+  "$(is "$advised" 9)"
+check "says the job's key must exceed the step's own key" \
+  "$(contains "$out" "inside its own budget\. The job's key must also strictly exceed the .timeout-minutes: 8. of its step 'Install changie'")"
+write_derivation_case 300 6
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "refuses the job under the sum its slowest step makes" \
+  "$(contains "$out" "job 'build' carries .timeout-minutes: 6., 360 s, and its own comment derives 0 + 300 = 300 s, but the slowest retried step of this job is 'Install changie', whose retries take 450 s")"
+readvised=$(grep 'SELF-CONSISTENT AND STILL WRONG' <<<"$out" | grep -o 'Write .timeout-minutes: [0-9]*. or more\.$' | grep -o '[0-9][0-9]*' || true)
+check "advises the least key above both the step's sum and its key of 8, which is 9" \
+  "$(is "$readvised" 9)"
+write_derivation_case 450 "${advised:-0}"
+run_check "$root"
+check "with the job written at the figure advised, passes" "$(is "$status" 0)"
+check "with the job written at the figure advised, refuses nothing" \
+  "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 0)"
 
 # The job-derivation clause, which reads a job key against THE SUM ITS OWN COMMENT STATES and
 # recomputes the second term from this check's own step arithmetic. Its fixtures are the shapes
@@ -4637,7 +4728,8 @@ run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "says what GitHub gives the job, in minutes and in seconds, against the step's retries" \
   "$(contains "$out" "job 'build' writes no .timeout-minutes., so GitHub gives it 360 minutes, 21600 s, and its step 'The large fetch, thirty times' holds retries taking 31500 s to exhaust")"
-check "says exactly what to write on the job" "$(contains "$out" 'Write .timeout-minutes: 526. or more on this job\.')"
+check "says exactly what to write on the job, above the step's own key of 600" \
+  "$(contains "$out" 'Write .timeout-minutes: 601. or more on this job\.')"
 
 # The priced-comment clause reads a block to the last line of the file, and a file whose last line
 # is a comment with no newline after it ends the block there.
@@ -6908,9 +7000,9 @@ check "refuses the variable at line 10, then eval at line 11" \
 
 # The bound rule 8 names for an item it cannot price is the first item's (dispatch://INFRA-1545,
 # round 37): the step's first uncounted site writes its bound as a variable and its second
-# writes none, and the refusal speaks of the first. A site whose verb is no curl reads no bound
-# off a `-m` among its words: `wget -m` mirrors, and the `"$T"` this site hands `retry_fetch` is
-# no number, so it is told this check finds no bound on it.
+# writes none, and the refusal speaks of the first. The wget step's bound is the `"$T"` it hands
+# `retry_fetch`, a variable, and it is told so: until round 37's class search it was told this
+# check finds no bound on it, while the refusal of the site itself quoted that `$T`.
 echo "case: the bound an uncounted site is told of is its own"
 root=$(fixture sc-bound-advice)
 cat > "$root/.github/workflows/case.yaml" <<'YAML'
@@ -6949,10 +7041,114 @@ check "tells the first step its first site's bound is a variable" \
   "$(contains "$out" "step 'Read every run and its jobs' .*What one call of .curl. there takes is a figure this check cannot make, because its bound is written as a variable rather than as a number")"
 check "gives the first step the variable bound's advice" \
   "$(contains "$out" "step 'Read every run and its jobs' .*it exists to allow\. Write that bound as a number")"
-check "tells the wget step it finds no bound" \
-  "$(contains "$out" "step 'Mirror every site' .*What one call of .wget. there takes is a figure this check cannot make, because this check finds no bound on one attempt of it")"
-check "does not tell the wget step its bound is written as a variable" \
-  "$(is "$(contains "$out" "step 'Mirror every site' .*written as a variable")" false)"
+check "tells the wget step its bound is written as a variable" \
+  "$(contains "$out" "step 'Mirror every site' .*What one call of .wget. there takes is a figure this check cannot make, because its bound is written as a variable rather than as a number")"
+check "does not tell the wget step it finds no bound" \
+  "$(is "$(contains "$out" "step 'Mirror every site' .*finds no bound")" false)"
+
+# A `retry_fetch` whose seconds are a variable, around a verb that is no curl, is told by rule 8
+# that its bound is written as a variable, as the refusal of the site itself says
+# (dispatch://INFRA-1545, round 37). Inside a loop this check cannot count, rule 8 said it found
+# no bound on one attempt and asked for a bound, while the site's own refusal said its seconds
+# were written as `$READ_BOUND`; and a script holding that call, run in such a loop, was said to
+# make attempts on which this check finds no bound. Round 37's class search found both, inputs D
+# and D2: bound_spelled read the helper's seconds only around a curl writing `--max-time`.
+echo "case: a retry_fetch whose seconds are a variable is told so by rule 8, around a gh api"
+root=$(fixture r37-helper-variable-bound)
+cat > "$root/.github/scripts/zz-v.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+. .github/scripts/ci-retry.sh
+retry_fetch "the repository" "$READ_BOUND" -- gh api "repos/$1"
+SH
+chmod +x "$root/.github/scripts/zz-v.sh"
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Read every listed repository
+        timeout-minutes: 30
+        run: |
+          . .github/scripts/ci-retry.sh
+          while read -r repo; do
+            retry_fetch "the repository" "$READ_BOUND" -- gh api "repos/$repo"
+          done < repos.txt
+      - name: Run the reader for every listed repository
+        timeout-minutes: 30
+        run: |
+          while read -r repo; do
+            .github/scripts/zz-v.sh "$repo"
+          done < repos.txt
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+check "refuses the step's site for its seconds written as a variable" \
+  "$(contains "$out" '::error file=.github/workflows/case.yaml,line=12::.gh api. in step .Read every listed repository. is retried by .retry_fetch. with its seconds written as .\$READ_BOUND.')"
+check "refuses the script's site for its seconds written as a variable" \
+  "$(contains "$out" '::error file=.github/scripts/zz-v.sh,line=4::.gh api. is retried by .retry_fetch. with its seconds written as .\$READ_BOUND.')"
+check "tells the step its bound is written as a variable" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=8::step 'Read every listed repository' .*What one call of .gh api. there takes is a figure this check cannot make, because its bound is written as a variable rather than as a number")"
+check "does not tell the step it finds no bound" \
+  "$(is "$(contains "$out" "step 'Read every listed repository' .*finds no bound")" false)"
+check "does not ask the step to bound attempts its seconds bound" \
+  "$(is "$(contains "$out" "step 'Read every listed repository' .*Bound each attempt")" false)"
+check "tells the step running the script its attempts' bound is written as a variable" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=15::step 'Run the reader for every listed repository' .*One run of ..github/scripts/zz-v.sh. makes attempts whose bound is written as a variable rather than as a number, there or in a script it calls")"
+check "does not tell the step running the script it finds no bound" \
+  "$(is "$(contains "$out" "step 'Run the reader for every listed repository' .*finds no bound")" false)"
+check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 4)"
+
+# The advice for a `retry_fetch` whose seconds are a variable, in a loop this check cannot count,
+# is advice that turns the gate green (dispatch://INFRA-1545, round 37). It offered a
+# DECLARED_LOOPS entry in place of the number, and an entry answers rule 8's refusal while the
+# refusal of the site itself, which no declaration answers, stands, so the gate stays red. It
+# asks for the number now, and offers the loop's count or a declaration after it. The step is
+# refused; with the site declared and its seconds still a variable it is still refused, at the
+# site; with the seconds written as 60 and the site declared, three listed repositories,
+# 3 x (5 x 60 + 150) = 1350 s under a key of 30 minutes, it passes.
+echo "case: a retry_fetch whose seconds are a variable, in a loop, is asked for the number before any declaration"
+root=$(fixture r37-helper-variable-advice)
+write_helper_case() {
+  cat > "$root/.github/workflows/case.yaml" <<YAML
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Read every listed repository
+        timeout-minutes: 30
+        run: |
+          . .github/scripts/ci-retry.sh
+          while read -r repo; do
+            retry_fetch "the repository" $1 -- gh api "repos/\$repo"
+          done < repos.txt
+YAML
+}
+write_helper_case '"$READ_BOUND"'
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+check "asks for the helper's seconds as a number, which no declaration replaces" \
+  "$(contains "$out" "step 'Read every listed repository' .*it exists to allow\. Write that bound as a number, the seconds .retry_fetch. takes before its .--., which is the figure this check multiplies by the passes it reads: the refusal of the site asks for that number too, and no declaration answers that refusal\.")"
+check "offers the loop's count, or a declaration, only after the number" \
+  "$(contains "$out" "step 'Read every listed repository' .*no declaration answers that refusal\. Then write the count where this check reads it, as literal words — a .for x in 1 2 3 4 5 6 7. — or where the passes are as many as the run finds work, declare that site in DECLARED_LOOPS")"
+check "offers no declaration in place of the number" \
+  "$(is "$(contains "$out" "step 'Read every listed repository' .*or declare that site in DECLARED_LOOPS in .github/scripts/check-download-retry.sh\. An entry there writes the seconds the site contributes to this budget, whole")" false)"
+declare_entry "$root" '    DeclaredArithmetic(".github/workflows/case.yaml", "Read every listed repository", "gh api", 1350, "three listed repositories: 3 x (5 x 60 + 150) = 1350 s"),'
+run_check "$root"
+check "with the site declared and its seconds a variable, exits 1" "$(is "$status" 1)"
+check "with the site declared and its seconds a variable, still refuses the site" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=12::.gh api. in step 'Read every listed repository' is retried by .retry_fetch. with its seconds written as")"
+check "with the site declared and its seconds a variable, refuses nothing else" \
+  "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 1)"
+write_helper_case 60
+run_check "$root"
+check "with the seconds written as a number and the site declared, passes" "$(is "$status" 0)"
 
 # What a script in an uncounted loop is told of is every script it runs, not the first
 # (dispatch://INFRA-1545, round 37): sc-outer.sh runs sc-quiet.sh, which fetches nothing, and
@@ -10043,13 +10239,15 @@ for refusal in "14	11	Call it through a variable at a pipe's end" \
 done
 check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 4)"
 
-# An excepted site whose `retry_fetch` seconds are a variable makes attempts of its own with no
-# bound this check reads, and is refused for it whatever its verb (dispatch://INFRA-1545, round
-# 37). In the credentialed publish job every site is excepted (exception (d)), so rule 4 does not
-# read this one and no figure prices it: `retry_fetch` runs five attempts of "$READ_SECONDS" each
-# with 150 s of sleeps between them, at least 150 s, under a key of 1 minute. A refusal that read
-# a curl's own `--retry` alone passed this `gh api`.
-echo "case: an excepted gh api under a retry_fetch whose seconds are a variable is refused as unbounded"
+# An excepted site whose `retry_fetch` seconds are a variable makes attempts of its own that no
+# figure this check reads bounds, and is refused for it whatever its verb (dispatch://INFRA-1545,
+# round 37). In the credentialed publish job every site is excepted (exception (d)), so rule 4
+# does not read this one and no figure prices it: `retry_fetch` runs five attempts of
+# "$READ_SECONDS" each with 150 s of sleeps between them, at least 150 s, under a key of 1 minute.
+# A refusal that read a curl's own `--retry` alone passed this `gh api`. The refusal says the
+# seconds are that variable: until round 37's class search it said this check finds no bound on
+# the attempts, which the helper bounds at what "$READ_SECONDS" holds.
+echo "case: an excepted gh api under a retry_fetch whose seconds are a variable is refused for that variable"
 root=$(fixture fc-excepted-unbounded)
 cat >> "$root/.github/workflows/release.yaml" <<'YAML'
       - name: Read it under seconds the step sets
@@ -10060,8 +10258,12 @@ YAML
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
-check "refuses the gh api as an excepted site making unbounded attempts" \
-  "$(contains "$out" "::error file=.github/workflows/release.yaml,line=23::.gh api. in step 'Read it under seconds the step sets' is a site an exception above leaves unretried, and it makes attempts of its own with no bound this check finds")"
+check "refuses the gh api as an excepted site whose helper's seconds are a variable" \
+  "$(contains "$out" "::error file=.github/workflows/release.yaml,line=23::.gh api. in step 'Read it under seconds the step sets' is a site an exception above leaves unretried, and it is retried by .retry_fetch. with its seconds written as .\\\$READ_SECONDS., which is no number this check reads")"
+check "asks for the helper's seconds as a number, or no retry" \
+  "$(contains "$out" "Write the helper's seconds as a whole number above 0, or drop its retry, as the excepted sites do")"
+check "does not say it finds no bound on the attempts" \
+  "$(is "$(contains "$out" 'no bound this check finds')" false)"
 check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 1)"
 
 # A library a composite action's step reaches along more than one path is refused at that action,
@@ -11679,6 +11881,92 @@ for refusal in "8	Source the library twice" "13	Run a script that sources the li
     "$(contains "$out" "::error file=.github/workflows/case.yaml,line=$line::step '$step' reaches .github/scripts/r37-lib.sh, a library that fetches, along more than one path")"
 done
 check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 2)"
+
+# A1's class search. A script that sources a library and that one step runs in more than one
+# place is a shell of its own at each run, each of which can call the library's functions, and
+# the library is charged once for the step (dispatch://INFRA-1545, round 37). zz-lib.sh defines
+# zz_fetch, one `retry_fetch` at 180 s, 1050 s, and zz-a.sh sources it and calls zz_fetch once.
+# The step running zz-a.sh on two lines waits 2100 s, and the gate at b5aba1e5 charged it 1050 s,
+# since both runs give one path, and passed it under a key of 30 minutes, while the same two
+# runs in a `for pass in 1 2` were charged 2100 s. So was a composite action whose step runs
+# zz-a.sh twice. Each is refused by name, at the step and at the action, and a DECLARED_LIBRARIES
+# entry writing 2100 s replaces the charge, so a key of 30 minutes is refused and one of 36
+# passes. The step running zz-a.sh once and the loop of two passes are no such shape, and pass.
+echo "case: r37 a script that sources a library, run twice by one step or one action step, is refused unless declared"
+root=$(fixture r37-library-script-twice)
+mkdir -p "$root/.github/actions/zz-twice"
+cat > "$root/.github/scripts/zz-lib.sh" <<'SH'
+#!/usr/bin/env bash
+. .github/scripts/ci-retry.sh
+zz_fetch() {
+  retry_fetch "the index" 180 -- gh api repos/o/r
+}
+SH
+cat > "$root/.github/scripts/zz-a.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+. .github/scripts/zz-lib.sh
+zz_fetch
+SH
+chmod +x "$root/.github/scripts/zz-a.sh"
+cat > "$root/.github/actions/zz-twice/action.yml" <<'YAML'
+name: Run the caller twice
+description: Runs a script that sources the library, twice.
+runs:
+  using: composite
+  steps:
+    - name: Run the caller twice
+      shell: bash
+      run: |
+        .github/scripts/zz-a.sh
+        .github/scripts/zz-a.sh
+YAML
+write_twice_case() {
+  cat > "$root/.github/workflows/case.yaml" <<YAML
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Run the caller twice
+        timeout-minutes: $1
+        run: |
+          .github/scripts/zz-a.sh
+          .github/scripts/zz-a.sh
+      - name: Run the caller once
+        timeout-minutes: 18
+        run: .github/scripts/zz-a.sh
+      - name: Run the caller in a loop of two passes
+        timeout-minutes: 36
+        run: |
+          for pass in 1 2; do
+            .github/scripts/zz-a.sh
+          done
+      - name: Use the action that runs the caller twice
+        uses: ./.github/actions/zz-twice
+        timeout-minutes: 36
+YAML
+}
+write_twice_case 30
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+check "refuses the step by name for the library it reaches along one path twice" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=8::step 'Run the caller twice' reaches .github/scripts/zz-lib.sh, a library that fetches, along one path more than once, .github/scripts/zz-a.sh to .github/scripts/zz-lib.sh: it runs a script on that path, or sources one, in more than one place")"
+check "refuses the action by name for the library its step reaches along one path twice" \
+  "$(contains "$out" "::error file=.github/actions/zz-twice/action.yml,line=1::.github/actions/zz-twice/action.yml reaches .github/scripts/zz-lib.sh, a library that fetches, along one path more than once, .github/scripts/zz-a.sh to .github/scripts/zz-lib.sh")"
+check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 2)"
+twice_why='two runs of zz-a.sh, each one call of zz_fetch: 2 x (5 x 180 + 150) = 2100 s'
+declare_in "$root" DECLARED_LIBRARIES "    DeclaredLibrary(\".github/workflows/case.yaml\", \"Run the caller twice\", \".github/scripts/zz-lib.sh\", 2100, \"$twice_why\"),"
+declare_in "$root" DECLARED_LIBRARIES "    DeclaredLibrary(\".github/actions/zz-twice/action.yml\", None, \".github/scripts/zz-lib.sh\", 2100, \"$twice_why\"),"
+run_check "$root"
+check "with the library declared, charges the step the declared 2100 s" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=8::step 'Run the caller twice' carries .timeout-minutes: 30., 1800 s, and its own retries take 2100 s to exhaust")"
+check "with the library declared, refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 1)"
+write_twice_case 36
+run_check "$root"
+check "with the library declared and a key above 2100 s, passes" "$(is "$status" 0)"
 
 # A2. A `}` written as an argument closed the function's body in this check's reading, so the
 # fetch after it was read as the text's, charged once, 1650 s, under a key of 28 minutes, where
