@@ -20,9 +20,9 @@ import (
 // the nodes and tuples that hold the plans and the step records.
 //
 // The write is the daemon's alone, as a step record's is (403 STEP_WRITER), appends no issue
-// event and reads the issue with no open check. The read writes nothing, is one statement for the
-// whole project whatever the number of its issues, and a read-only token may call it
-// (readScopeRoutes).
+// event and reads the issue with no open check. The read writes nothing, reads the project, then
+// all its finished issues in one statement whatever their number, and a read-only token may call
+// it (readScopeRoutes).
 
 // The refusals of a plan write, beside the step write's STEP_WRITER, the package's own decode
 // error and 404 ISSUE_NOT_FOUND.

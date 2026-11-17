@@ -368,8 +368,8 @@ func TestTheDaemonsIDIsNoWriterButAsASession(t *testing.T) {
 	if steps := stepsOf(t, handler, issue); len(steps) != 0 {
 		t.Fatalf("the refused writes left %d records, want none", len(steps))
 	}
-	if plans := readPlansOf(t, handler, issue); plans != 0 {
-		t.Fatalf("the refused writes left %d plan nodes, want none", plans)
+	if holdsPlan(t, handler, issue) {
+		t.Fatalf("the refused writes left a plan of %s, want none", issue)
 	}
 
 	putPlanRecordOK(t, handler, issue, plan, defaultPlanBody(daemonSession("LEG"), 1))
@@ -880,8 +880,8 @@ func TestAPlanWriteRefusesItsBadValues(t *testing.T) {
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	requireStepRefusal(t, "a tasks that is no list", response, http.StatusBadRequest, "INVALID_JSON")
-	if read := readPlansOf(t, handler, issues[0]); read != 0 {
-		t.Fatalf("the refused plans left %d plan nodes, want none", read)
+	if holdsPlan(t, handler, issues[0]) {
+		t.Fatalf("the refused plans left a plan of %s, want none", issues[0])
 	}
 
 	id := uuid.NewString()
@@ -913,16 +913,16 @@ func TestThePlanSourceTagsNameTheStoresSources(t *testing.T) {
 	}
 }
 
-// readPlansOf counts the plan nodes of issue, read from the read of its finished project: the issue
-// is closed for the count and its plan read back.
-func readPlansOf(t *testing.T, handler http.Handler, issue string) int {
+// holdsPlan closes issue, which the read of a project lists only once it is finished, and answers
+// whether that read lists a plan for it: the plans of an issue a test wrote are seen only so.
+func holdsPlan(t *testing.T, handler http.Handler, issue string) bool {
 	t.Helper()
 	closeIssue(t, handler, issue)
 	project, _, _ := strings.Cut(issue, "-")
 	for _, finished := range readPlans(t, handler, project, "").Issues {
-		if finished.Issue == issue && finished.Plan != nil {
-			return 1
+		if finished.Issue == issue {
+			return finished.Plan != nil
 		}
 	}
-	return 0
+	return false
 }

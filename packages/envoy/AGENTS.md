@@ -398,7 +398,7 @@ Each item below names a task and where its code is, then notes on it.
     (`400 INVALID_QUERY` for a bound that is not RFC 3339 or a since not before until, judged as the caller wrote them, `404 PROJECT_NOT_FOUND` for a project Dispatch does not hold);
     each bound reaches the statement rounded up to the next microsecond (`microsecondCeiling`), as the issue listing's closed bounds do, so a finer bound keeps its meaning.
     Each issue carries its newest plan (the highest generation, null where it has none), every retro's rating in the order the retros ran, the earliest start and the latest end of its runs with their difference in whole seconds (each null where no run holds one, and the difference null too where that end is before that start), and its count of runs of kind `step` that failed.
-    The read is one statement for the whole project, whatever the number of its issues, and a read-only token may call it (`readScopeRoutes`).
+    The read is the project's lookup, then one statement for all the project's finished issues, whatever their number, and a read-only token may call it (`readScopeRoutes`).
 
   `workflowstore` is the one writer of the two tables, a node per run or plan and a tuple per fact.
   Shapes: `StepRecord`, `StepTask`, `IssueSteps`, `PlanRecord`, `PlanTask`, `PlanRating`, `FinishedIssue`, `ProjectPlans` in `internal/dispatch/model/model.go`, generated into `packages/contracts/src/dispatch-api.generated.ts`
