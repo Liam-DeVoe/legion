@@ -58,11 +58,11 @@ const (
 	// operator should look. A wait that ends on its own (routineWait) stays debug at every
 	// attempt.
 	waitWarnAttempts = 7
-	// issueBranchTimeout bounds one issue_branch row's GitHub calls, its token's mint with them:
-	// the row runs on its issue's lifecycle lane, one row at a time, so a call GitHub never
-	// answers would hold the lane and every later lifecycle row of the issue behind it — the
-	// starts that wait for the branch first of all.
-	issueBranchTimeout = 30 * time.Second
+	// branchRowTimeout bounds the GitHub calls of one issue_branch or task_branch row, its
+	// token's mint with them: the row runs on its issue's lifecycle lane, one row at a time, so a
+	// call GitHub never answers would hold the lane and every later lifecycle row of the issue
+	// behind it — the starts that wait for the branch first of all.
+	branchRowTimeout = 30 * time.Second
 )
 
 // outbox runs each effect that the workflow transaction committed, one lane per issue and kind of
@@ -570,15 +570,16 @@ type rateLimit struct {
 }
 
 // githubBudgets is the GitHub budgets a row of each kind spends, as the implement App: its REST
-// calls (an issue branch's create) the REST core's, and every call GitHub's secondary limit. A
-// row of a kind it does not name is never deferred for a limit another row met, and every such
-// kind but one calls no GitHub API. The one is the merge-queue read (record.MergeQueueRead,
-// mergeQueueRead), which reads its pull request and stays out of this map on purpose: a deferral
-// is a retry, which spends one of the read's mergeStateLadderReads attempts with no read made. A
-// read GitHub refuses for its rate limit is a failed read instead, and the next read waits for
-// the longer of the runtime's wait and GitHub's Retry-After.
+// calls (an issue branch's create, a task branch's create and merges) the REST core's, and every
+// call GitHub's secondary limit. A row of a kind it does not name is never deferred for a limit
+// another row met, and every such kind but one calls no GitHub API. The one is the merge-queue
+// read (record.MergeQueueRead, mergeQueueRead), which reads its pull request and stays out of this
+// map on purpose: a deferral is a retry, which spends one of the read's mergeStateLadderReads
+// attempts with no read made. A read GitHub refuses for its rate limit is a failed read instead,
+// and the next read waits for the longer of the runtime's wait and GitHub's Retry-After.
 var githubBudgets = map[record.OutboxKind][]githubrest.Budget{
 	record.OutboxKindIssueBranch: {githubrest.BudgetCore, githubrest.BudgetSecondary},
+	record.OutboxKindTaskBranch:  {githubrest.BudgetCore, githubrest.BudgetSecondary},
 }
 
 // standingLimit is the limit in limits, among the budgets a row of kind spends, that still stands
@@ -704,6 +705,8 @@ func (r *outbox) execute(ctx context.Context, row record.OutboxRow) error {
 		return r.publishPlanRecord(ctx, row, value)
 	case record.IssueBranch:
 		return r.issueBranch(ctx, row, value)
+	case record.TaskBranch:
+		return r.taskBranch(ctx, row, value)
 	case record.CheckWakeDue:
 		return r.checkWake(ctx, row, value)
 	case record.CheckLook:
@@ -3031,26 +3034,148 @@ func (r *outbox) issueBranch(ctx context.Context, row record.OutboxRow, payload 
 	return nil
 }
 
-// createBranch creates issue's branch on GitHub, in the repository GitHub holds the one its
-// record names under now (serving), at the default branch the record names, unless GitHub
-// already has it, as the implement App for that repository's owner: the App of the roles that
-// write an issue branch (appauth.AppRoleFor), and the one workspace provisioning clones with.
-// The create is a REST write, so a tree recorded before a transfer gets its branch on the
-// repository as GitHub holds it today rather than a write to an owner whose installation has
-// lost it.
+// createBranch creates issue's branch on GitHub, at the default branch the record names, unless
+// GitHub already has it, as branchClient makes each write of a branch.
 func (r *outbox) createBranch(ctx context.Context, issue record.Issue) error {
-	ctx, cancel := context.WithTimeout(ctx, issueBranchTimeout)
+	ctx, cancel := context.WithTimeout(ctx, branchRowTimeout)
 	defer cancel()
-	recorded, err := issue.Repository()
+	github, repo, err := r.branchClient(ctx, issue)
 	if err != nil {
 		return err
+	}
+	return ghbranch.Create(ctx, github, repo, workspace.Bookmark(issue.Key), issue.DefaultBranch)
+}
+
+// branchClient is the client a write of one of issue's branches is made with, and the repository
+// it writes: the repository GitHub holds the one the issue's record names under now (serving), as
+// the implement App for that repository's owner, the App of the roles that write an issue's
+// branches (appauth.AppRoleFor) and the one workspace provisioning clones with. Each write is a
+// REST call, so a tree recorded before a transfer gets its branches on the repository as GitHub
+// holds it today rather than a write to an owner whose installation has lost it.
+func (r *outbox) branchClient(ctx context.Context, issue record.Issue) (githubrest.Client, ghrepo.Repository, error) {
+	recorded, err := issue.Repository()
+	if err != nil {
+		return githubrest.Client{}, ghrepo.Repository{}, err
 	}
 	repo := r.repositories.serving(recorded)
 	github, err := implementClient(ctx, r.tokens, r.githubAPI, repo)
 	if err != nil {
-		return fmt.Errorf("mint the implement App token for %s: %w", repo, err)
+		return githubrest.Client{}, ghrepo.Repository{}, fmt.Errorf("mint the implement App token for %s: %w", repo, err)
 	}
-	return ghbranch.Create(ctx, github, repo, workspace.Bookmark(issue.Key), issue.DefaultBranch)
+	return github, repo, nil
+}
+
+// taskBranch makes the GitHub branch of the row's task (record.PlanTask.BranchOf) start from the
+// joined work of the tasks it needs, the work its first step starts on. A task that needs none
+// starts at the default branch the issue's record names; one that needs some starts at the head of
+// its first need's branch, in the order of its needs. Each need is then merged into the branch in
+// that order (ghbranch.Merge), whether the row created the branch or GitHub had it: a branch GitHub
+// has keeps its head, so a start again, after a later version changed the needs of a stopped task,
+// joins each need whose head the branch does not hold, and GitHub answers a need the branch holds
+// with nothing to merge, which moves no ref, so a row that runs again changes nothing. A merge
+// GitHub refuses as a conflict is no refusal: the branch stands on the needs that joined, and the
+// id of each need that conflicted is written on the task's row (record.Store.SetJoinConflicts), in
+// place of what an earlier start wrote, for the first step to repair. A row of a task its plan no
+// longer holds, of a generation the issue has left, or of a tree that lingers finishes without
+// acting, as issueBranch's does: the starts it held back meet their own fences.
+func (r *outbox) taskBranch(ctx context.Context, row record.OutboxRow, payload record.TaskBranch) error {
+	issue, err := r.issue(ctx, row.Issue)
+	if err != nil {
+		return err
+	}
+	if payload.Generation != issue.Generation {
+		r.log.Info("outbox task branch serves an earlier generation; finished without acting", "row", row.ID, "issue", issue.Key,
+			"task", payload.Task, "generation", payload.Generation, "current", issue.Generation)
+		return nil
+	}
+	root, err := r.root(ctx, issue)
+	if err != nil {
+		return err
+	}
+	if root != nil && root.Lingers() {
+		r.log.Info("outbox task branch of a member of a lingering tree; finished without acting", "row", row.ID, "issue", issue.Key,
+			"task", payload.Task, "tree", issue.Tree)
+		return nil
+	}
+	var stored *record.StoredPlan
+	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+		stored, err = r.records.Plan(ctx, tx, issue.Key, payload.Generation)
+		return err
+	}); err != nil {
+		return fmt.Errorf("read the plan of %s for the branch of its task %s: %w", issue.Key, payload.Task, err)
+	}
+	task, ok := planTaskOf(stored, payload.Task)
+	if !ok {
+		r.log.Info("outbox task branch of a task the plan no longer holds; finished without acting", "row", row.ID, "issue", issue.Key,
+			"task", payload.Task, "generation", payload.Generation)
+		return nil
+	}
+	needs := make([]record.PlanTask, 0, len(task.Needs))
+	for _, id := range task.Needs {
+		need, ok := planTaskOf(stored, id)
+		if !ok {
+			return fmt.Errorf("make the branch of task %s of %s: it needs %s, which its plan holds no task of", task.Task, issue.Key, id)
+		}
+		needs = append(needs, need)
+	}
+	branch := task.BranchOf(issue.Key)
+	conflicts, err := r.joinBranch(ctx, issue, branch, needs)
+	if err != nil {
+		return fmt.Errorf("make the branch %s of task %s of %s, which its first step waits for: %w", branch, task.Task, issue.Key, err)
+	}
+	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+		return r.records.SetJoinConflicts(ctx, tx, issue.Key, payload.Generation, task.Task, conflicts)
+	}); err != nil {
+		return err
+	}
+	r.log.Info("outbox task branch joined its needs", "row", row.ID, "issue", issue.Key, "task", task.Task, "branch", branch,
+		"needs", task.Needs, "conflicts", conflicts)
+	return nil
+}
+
+// joinBranch makes branch of issue on GitHub at the head of the first of needs, or at the issue's
+// default branch where it needs none, unless GitHub has it, and merges each of needs into it in
+// order, with the message `<KEY>: join the work of task <id>`, as branchClient makes each write of
+// a branch, within branchRowTimeout. It answers the id of each need whose merge GitHub refused as
+// a conflict, nil for none.
+func (r *outbox) joinBranch(ctx context.Context, issue record.Issue, branch string, needs []record.PlanTask) ([]string, error) {
+	ctx, cancel := context.WithTimeout(ctx, branchRowTimeout)
+	defer cancel()
+	github, repo, err := r.branchClient(ctx, issue)
+	if err != nil {
+		return nil, err
+	}
+	base := issue.DefaultBranch
+	if len(needs) > 0 {
+		base = needs[0].BranchOf(issue.Key)
+	}
+	if err := ghbranch.Create(ctx, github, repo, branch, base); err != nil {
+		return nil, err
+	}
+	var conflicts []string
+	for _, need := range needs {
+		joined, err := ghbranch.Merge(ctx, github, repo, branch, need.BranchOf(issue.Key), fmt.Sprintf("%s: join the work of task %s", issue.Key, need.Task))
+		if err != nil {
+			return nil, err
+		}
+		if joined == ghbranch.MergeConflict {
+			conflicts = append(conflicts, need.Task)
+		}
+	}
+	return conflicts, nil
+}
+
+// planTaskOf is the task of stored whose id is id, and whether it holds one: a nil plan holds none.
+func planTaskOf(stored *record.StoredPlan, id string) (record.PlanTask, bool) {
+	if stored == nil {
+		return record.PlanTask{}, false
+	}
+	for _, task := range stored.Tasks {
+		if task.Task == id {
+			return task, true
+		}
+	}
+	return record.PlanTask{}, false
 }
 
 // removeWorkspace removes the workspace of the row's issue once its tree's linger expired. The
