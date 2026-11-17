@@ -128,9 +128,9 @@ Dispatch message (step 5) is for a finished retro only.
    on a task with no reviewer step, step 1's thread replies and resolutions.
    It sets no GitHub or Dispatch label: Legion keeps phase state in the daemon, not in labels.
    In the same call, the agent that does the retro rates the plan the issue ran.
-   The plan is the task's steps and the role that worked each, as your task's `Steps:` line names
-   them (today's line, on a task with no `Task:` line), and not the implementation plan a planner
-   step wrote in `plan.md`.
+   The plan is the issue's steps and the role that worked each, not the planner's `plan.md`.
+   The steps are your task's, as its `Steps:` line names them (today's line, on a task with no
+   `Task:` line).
    `plan_rating` is a whole number from 1 (the plan cost the work) to 5 (the plan fit the work), and
    `plan_reason` is one sentence of why, from the evidence step 1 read.
    Send the two together: the daemon refuses this completion without them (`PLAN_RATING_REQUIRED`)
