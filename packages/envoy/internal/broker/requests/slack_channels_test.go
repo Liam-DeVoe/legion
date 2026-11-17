@@ -133,7 +133,7 @@ func TestAPrivateProjectsSlackGrantCarriesItsOwnersChannels(t *testing.T) {
 func TestTheSlackTokenOfAPodOnABrokerWithNoProjectAccessIsServedAsBefore(t *testing.T) {
 	rules := airlock.Rules{Secrets: []airlock.SecretRule{rule(slackToken, "")}}
 	m, _, _, _ := newProjectFixture(t, rules, publicTeam)
-	set, err := exchange.NewSet([]exchange.AccountEntry{{Account: fixtureSubject, Project: teamProject, Person: insider}}, nil, nil, "")
+	set, err := exchange.NewSet([]exchange.AccountEntry{{Account: fixtureSubject, Project: teamProject, Person: insider}}, nil, nil, nil, "")
 	if err != nil {
 		t.Fatalf("exchange.NewSet: %v", err)
 	}

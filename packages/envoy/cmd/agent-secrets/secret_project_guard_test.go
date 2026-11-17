@@ -26,7 +26,7 @@ func guarded(list string) string {
 // without the guard: a google-service-account secret at agent tier names its one owner, and the
 // guard, which has no @, would otherwise read as a service listed below human tier.
 func TestCreateWritesTheRollbackGuardBesideAProjectTag(t *testing.T) {
-	onEachStore(t, func(t *testing.T, store kindStore, _ *secretBroker) {
+	onEachStore(t, func(t *testing.T, store typeStore, _ *secretBroker) {
 		for _, c := range []struct {
 			name  string
 			args  []string
@@ -36,7 +36,7 @@ func TestCreateWritesTheRollbackGuardBesideAProjectTag(t *testing.T) {
 			{"PRIV_KEY", []string{"--tier", "agent", "--project", "PRIV"}, "v", guarded("")},
 			{"SLACK_TOKEN", []string{"--tier", "agent", "--project-channels", "slack"}, "v", guarded("")},
 			{"LISTED_KEY", []string{"--tier", "human", "--project", "PRIV", "--requesters", "ada@example.com"}, "v", guarded("ada@example.com")},
-			{"ACCOUNT_KEY", []string{"--tier", "agent", "--project", "PRIV", "--kind", policy.KindGoogleServiceAccount, "--requesters", "ada@example.com", "--max-grant", "1h"}, policytest.KindValue(policy.KindGoogleServiceAccount), guarded("ada@example.com")},
+			{"ACCOUNT_KEY", []string{"--tier", "agent", "--project", "PRIV", "--type", policy.TypeGoogleServiceAccount, "--requesters", "ada@example.com", "--max-grant", "1h"}, policytest.TypeValue(policy.TypeGoogleServiceAccount), guarded("ada@example.com")},
 			{"PLAIN_LISTED", []string{"--tier", "human", "--requesters", "ada@example.com"}, "v", "ada@example.com"},
 		} {
 			useStdin(t, c.value)
@@ -65,7 +65,7 @@ func TestCreateWritesTheRollbackGuardBesideAProjectTag(t *testing.T) {
 // and keeps the guard, so the tag is written as the guard alone; beside another removal it is
 // refused before any write, since the guard's write is no removal and the two would be two calls.
 func TestRetagKeepsTheRollbackGuardWhileAProjectTagRemains(t *testing.T) {
-	onEachStore(t, func(t *testing.T, store kindStore, _ *secretBroker) {
+	onEachStore(t, func(t *testing.T, store typeStore, _ *secretBroker) {
 		store.put(t, "API_KEY", map[string]string{policy.TagOwner: "ada@example.com", policy.TagTier: policy.TierHuman, policy.TagRequesters: "ada@example.com", policy.TagAdmin: policy.AdminTrue, policy.TagMaxGrant: "1h"}, "v1")
 		step := func(want string, args ...string) {
 			t.Helper()
@@ -106,7 +106,7 @@ func TestRetagKeepsTheRollbackGuardWhileAProjectTagRemains(t *testing.T) {
 // two writes, the removal and then the list's rewrite, in that order, so a failed second write
 // leaves the guard on a secret with no project tag, which no broker serves any differently.
 func TestRetagTakesTheGuardOutOfAListWithTheLastProjectTag(t *testing.T) {
-	onEachStore(t, func(t *testing.T, store kindStore, _ *secretBroker) {
+	onEachStore(t, func(t *testing.T, store typeStore, _ *secretBroker) {
 		store.put(t, "LISTED_KEY", map[string]string{policy.TagOwner: "ada@example.com", policy.TagTier: policy.TierHuman, policy.TagProject: "PRIV", policy.TagRequesters: guarded("ada@example.com")}, "v1")
 		stdout, stderr, code := runSecret("retag", "LISTED_KEY", "--project", "none")
 		if code != 0 {

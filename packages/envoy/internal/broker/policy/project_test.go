@@ -235,7 +235,7 @@ func TestAPrivateProjectSecretWithNoStateIsAnError(t *testing.T) {
 // TestAPrivateProjectSecretTagMovesTheVersionOnlyWhenPresent pins the digest's bytes: a secret
 // with no project tag writes exactly the line it wrote before the tag existed, in each of
 // NewSet's three forms, so no deployed version moves; a tagged one ends its line with
-// "\tproject=<KEY>" after the shape field, and so moves the version, which ends the grants the
+// "\tproject=<KEY>" after the admin field, and so moves the version, which ends the grants the
 // policy decided before the tag.
 func TestAPrivateProjectSecretTagMovesTheVersionOnlyWhenPresent(t *testing.T) {
 	const arn = "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/"
@@ -252,10 +252,10 @@ func TestAPrivateProjectSecretTagMovesTheVersionOnlyWhenPresent(t *testing.T) {
 			untagged: "A_KEY\tcarol@example.com\tagent\t" + arn + "a-key\n",
 			line:     "A_KEY\tcarol@example.com\tagent\t" + arn + "a-key\t0s\t\tproject=PRIV\n",
 		},
-		"a secret with a shape and a max-grant": {
-			secret:   policy.Secret{Name: "A_KEY", Owner: carol, Tier: policy.TierAgent, Source: arn + "a-key", Shape: policy.ShapeToken, MaxGrant: time.Hour},
-			untagged: "A_KEY\tcarol@example.com\tagent\t" + arn + "a-key\t1h0m0s\t\tshape=token\n",
-			line:     "A_KEY\tcarol@example.com\tagent\t" + arn + "a-key\t1h0m0s\t\tshape=token\tproject=PRIV\n",
+		"a secret with a max-grant": {
+			secret:   policy.Secret{Name: "A_KEY", Owner: carol, Tier: policy.TierAgent, Source: arn + "a-key", MaxGrant: time.Hour},
+			untagged: "A_KEY\tcarol@example.com\tagent\t" + arn + "a-key\t1h0m0s\t\n",
+			line:     "A_KEY\tcarol@example.com\tagent\t" + arn + "a-key\t1h0m0s\t\tproject=PRIV\n",
 		},
 		"a session-default secret": {
 			secret:   policy.Secret{Name: "A_KEY", Owner: carol, Tier: policy.TierAgent, Source: arn + "a-key", SessionDefault: true},

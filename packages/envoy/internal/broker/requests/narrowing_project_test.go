@@ -29,7 +29,7 @@ const privateAppProject = "PRIV"
 func newPrivateNarrowingFixture(t *testing.T, named ...string) *narrowingFixture {
 	t.Helper()
 	st := storetest.Open(t)
-	app := policytest.KindSecret("PRIV_APP_KEY", checkOperator, policy.TierHuman, policy.KindGitHubApp, standInAppValue(t))
+	app := policytest.TypeSecret("PRIV_APP_KEY", checkOperator, policy.TierHuman, policy.TypeGitHubApp, standInAppValue(t))
 	app.Tags[policy.TagProject] = privateAppProject
 	local := secrets.NewLocal(app)
 	loader := policytest.Loader(local)
@@ -60,7 +60,7 @@ func newPrivateNarrowingFixture(t *testing.T, named ...string) *narrowingFixture
 		Audience:   checkAudience,
 		Skew:       time.Minute,
 		Replay:     replayer(st),
-		Minters:    map[string]requests.Minter{policy.KindGitHubApp: secrets.GitHubApp{Base: stand.service.URL()}.Mint},
+		Minters:    map[string]requests.Minter{policy.TypeGitHubApp: secrets.GitHubApp{Base: stand.service.URL()}.Mint},
 		Projects:   projectaccess.New(dispatch.URL, dispatch.Account, nil),
 	}
 	machine.Chain = requests.NewChainVerifier(st, checkAudience, time.Minute, machine.Airlock)

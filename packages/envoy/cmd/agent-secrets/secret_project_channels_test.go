@@ -26,7 +26,7 @@ import (
 // for a secret carrying none, so a census of the tagged secrets counts the rows where it is not
 // null.
 func TestRetagWritesAndRemovesProjectChannels(t *testing.T) {
-	onEachStore(t, func(t *testing.T, store kindStore, _ *secretBroker) {
+	onEachStore(t, func(t *testing.T, store typeStore, _ *secretBroker) {
 		useStdin(t, "xoxb-stored")
 		if _, stderr, code := runSecret("create", "SLACK_TOKEN", "--owner", "me", "--tier", "agent", "--project-channels", "slack"); code != 0 {
 			t.Fatalf("create --project-channels slack: exit %d, stderr %q", code, stderr)

@@ -20,7 +20,7 @@ import (
 // that follows reaches the person at once: a broker that cannot check projects refuses the
 // secret project-unchecked, which the create prints and exits 1 for.
 func TestCreateWritesTheProjectTag(t *testing.T) {
-	onEachStore(t, func(t *testing.T, store kindStore, _ *secretBroker) {
+	onEachStore(t, func(t *testing.T, store typeStore, _ *secretBroker) {
 		useStdin(t, "stored-value")
 		if _, stderr, code := runSecret("create", "PRIV_KEY", "--owner", "me", "--tier", "agent", "--project", "PRIV"); code != 0 {
 			t.Fatalf("create --project PRIV: exit %d, stderr %q", code, stderr)
@@ -56,7 +56,7 @@ func TestCreateWritesTheProjectTag(t *testing.T) {
 // --project none removes it as every other none removes its own, and a removal beside another
 // change is refused before anything is written, since it is a retag of its own.
 func TestRetagNoneRemovesTheProjectTag(t *testing.T) {
-	onEachStore(t, func(t *testing.T, store kindStore, _ *secretBroker) {
+	onEachStore(t, func(t *testing.T, store typeStore, _ *secretBroker) {
 		store.put(t, "API_KEY", map[string]string{policy.TagOwner: "ada@example.com", policy.TagTier: policy.TierAgent}, "v1")
 		if _, stderr, code := runSecret("retag", "API_KEY", "--project", "PRIV"); code != 0 {
 			t.Fatalf("retag --project PRIV: exit %d, stderr %q", code, stderr)

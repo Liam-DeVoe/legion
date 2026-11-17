@@ -2,9 +2,8 @@ package policy_test
 
 // This file is the merge-base half of c-private-secrets' R9 check: a grid of secrets and
 // requesters, and each cell's Set.Evaluate answer as legion main 545b2116 gave it, before the
-// dispatch-project tag existed. It uses only API that exists at that commit, so it is the one
-// file the golden is generated from. testdata/evaluate-merge-base.json was written once, at the
-// merge base, by:
+// dispatch-project tag existed. testdata/evaluate-merge-base.json was written once, at the merge
+// base, by this file as it was then (it used only API that existed at that commit):
 //
 //	git worktree add <tmp>/d-golden 545b2116
 //	cp packages/envoy/internal/broker/policy/basegrid_test.go <tmp>/d-golden/packages/envoy/internal/broker/policy/
@@ -12,9 +11,11 @@ package policy_test
 //	cp <tmp>/d-golden/packages/envoy/internal/broker/policy/testdata/evaluate-merge-base.json packages/envoy/internal/broker/policy/testdata/
 //	git worktree remove <tmp>/d-golden
 //
-// Never regenerate it at a later commit: a golden written by the code it checks compares that
-// code with itself and proves nothing. A change that means to move an answer of this grid is a
-// change to R9, which the golden exists to catch.
+// Since #4144 renamed a secret's kind tag to type, the builder writes the type tag where it wrote
+// the kind tag, with the same values; the cells and their names are unchanged. Never regenerate
+// the golden at a later commit: a golden written by the code it checks compares that code with
+// itself and proves nothing. A change that means to move an answer of this grid is a change to
+// R9, which the golden exists to catch.
 
 import (
 	"context"
@@ -55,7 +56,7 @@ type gridAnswer struct {
 }
 
 // gridSecrets is the grid's secrets and their names: owner shared, person or service × tier
-// agent or human × requesters none, a person or a service × kind stored or github-app. Each name
+// agent or human × requesters none, a person or a service × type stored or github-app. Each name
 // spells its cell. A combination the loader refuses — a service owning a human-tier secret —
 // stays in the grid, answered ErrUnknownSecret, since a refusal is an answer too. edit, when not
 // nil, changes each secret before it is stored.
@@ -65,11 +66,11 @@ func gridSecrets(edit func(*secrets.LocalSecret)) (*secrets.Local, []string) {
 	for _, owner := range []struct{ name, tag string }{{"SHARED", policy.OwnerShared}, {"PERSON", gridPerson}, {"SERVICE", gridService}} {
 		for _, tier := range []string{policy.TierAgent, policy.TierHuman} {
 			for _, list := range []struct{ name, tag string }{{"NOLIST", ""}, {"LISTPERSON", gridPerson}, {"LISTSERVICE", gridService}} {
-				for _, kind := range []struct{ name, tag string }{{"STORED", ""}, {"APP", policy.KindGitHubApp}} {
-					name := "GRID_" + owner.name + "_" + map[string]string{policy.TierAgent: "AGENT", policy.TierHuman: "HUMAN"}[tier] + "_" + list.name + "_" + kind.name
+				for _, secretType := range []struct{ name, tag string }{{"STORED", ""}, {"APP", policy.TypeGitHubApp}} {
+					name := "GRID_" + owner.name + "_" + map[string]string{policy.TierAgent: "AGENT", policy.TierHuman: "HUMAN"}[tier] + "_" + list.name + "_" + secretType.name
 					s := policytest.Secret(name, owner.tag, tier, "v")
-					if kind.tag != "" {
-						s = policytest.KindSecret(name, owner.tag, tier, kind.tag, "v")
+					if secretType.tag != "" {
+						s = policytest.TypeSecret(name, owner.tag, tier, secretType.tag, "v")
 					}
 					if list.tag != "" {
 						s.Tags[policy.TagRequesters] = list.tag

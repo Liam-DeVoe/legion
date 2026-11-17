@@ -67,10 +67,10 @@ func TestProjectChannelsTagMovesTheVersionOnlyWhenPresent(t *testing.T) {
 			untagged: "SLACK_TOKEN\tshared\tagent\t" + arn + "slack-token\n",
 			line:     "SLACK_TOKEN\tshared\tagent\t" + arn + "slack-token\t0s\t\tproject-channels=slack\n",
 		},
-		"a secret with a shape and a max-grant": {
-			secret:   policy.Secret{Name: "SLACK_TOKEN", Owner: policy.OwnerShared, Tier: policy.TierAgent, Source: arn + "slack-token", Shape: policy.ShapeToken, MaxGrant: time.Hour},
-			untagged: "SLACK_TOKEN\tshared\tagent\t" + arn + "slack-token\t1h0m0s\t\tshape=token\n",
-			line:     "SLACK_TOKEN\tshared\tagent\t" + arn + "slack-token\t1h0m0s\t\tshape=token\tproject-channels=slack\n",
+		"a secret with a max-grant": {
+			secret:   policy.Secret{Name: "SLACK_TOKEN", Owner: policy.OwnerShared, Tier: policy.TierAgent, Source: arn + "slack-token", MaxGrant: time.Hour},
+			untagged: "SLACK_TOKEN\tshared\tagent\t" + arn + "slack-token\t1h0m0s\t\n",
+			line:     "SLACK_TOKEN\tshared\tagent\t" + arn + "slack-token\t1h0m0s\t\tproject-channels=slack\n",
 		},
 		"a session-default secret of a project": {
 			secret:   policy.Secret{Name: "SLACK_TOKEN", Owner: policy.OwnerShared, Tier: policy.TierAgent, Source: arn + "slack-token", SessionDefault: true, Project: privProject},

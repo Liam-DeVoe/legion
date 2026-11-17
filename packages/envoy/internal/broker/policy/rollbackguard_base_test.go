@@ -40,6 +40,21 @@ const (
 	baseTagProject         = "dispatch-project"
 	baseTagProjectChannels = "project-channels"
 	baseRollbackGuard      = "rollback-guard:project-tags"
+	// The classifier and shape tags as the CLI wrote them when the golden was recorded, spelled
+	// out because this broker has no names for them since #4144: it reads "kind" as its legacy
+	// type tag (policy.LegacyTypeTag) and no "shape" tag at all. Writing the same strings keeps
+	// the cases the ones the golden answers, and keeps this file one that builds at the merge
+	// base. Today's CLI writes "type" instead of "kind", which a broker as old as the merge base
+	// does not read; that rollback floor is #4144's, and the guard entry this check is about is
+	// read from the requesters tag whichever classifier tag a secret carries.
+	baseTagKind     = "kind"
+	baseTagShape    = "shape"
+	baseShapeToken  = "token"
+	baseKindApp     = "github-app"
+	baseKindAccount = "google-service-account"
+	// baseKindGuard is the classifier's own rollback guard value as the CLI wrote it beside kind
+	// (policy.RollbackGuardValue at the merge base); #4144 made it type-secret.
+	baseKindGuard = "kind-secret"
 	// guardOwner owns the person-owned cases and is the person their requesters lists name.
 	guardOwner = "carol@example.com"
 	// guardOutsider is a person who owns nothing and is on no list: the session a broker that
@@ -69,8 +84,8 @@ type rollbackAnswer struct {
 // tags without it. The bare twin is the control: the merge base serves it, so the guard, and no
 // other tag of the shape, is what refuses its guarded twin. The shapes are a stored shared secret,
 // a person's human-tier one with its own requesters list, an admin one (a list and an hour's cap
-// are required), a github-app kind one (with the kind's own rollback guard), a
-// google-service-account kind one (its owner's list is required), a project-channels one with no
+// are required), a github-app one (with the classifier's own rollback guard), a
+// google-service-account one (its owner's list is required), a project-channels one with no
 // project, and the Slack token as a project holds it (session default, token shape, both tags).
 func rollbackGuardCases() []rollbackCase {
 	shapes := []struct {
@@ -89,17 +104,17 @@ func rollbackGuardCases() []rollbackCase {
 			return policytest.Secret(name, guardOwner, policy.TierHuman, "v")
 		}, guardOwner, map[string]string{baseTagProject: "PRIV", policy.TagAdmin: policy.AdminTrue, policy.TagMaxGrant: "1h"}},
 		{"APP", func(name string) secrets.LocalSecret {
-			return policytest.KindSecret(name, policy.OwnerShared, policy.TierAgent, policy.KindGitHubApp, "v")
-		}, "", map[string]string{baseTagProject: "PRIV", policy.TagRollbackGuard: policy.RollbackGuardValue}},
+			return baseKindSecret(name, policy.OwnerShared, policy.TierAgent, baseKindApp)
+		}, "", map[string]string{baseTagProject: "PRIV", policy.TagRollbackGuard: baseKindGuard}},
 		{"ACCOUNT", func(name string) secrets.LocalSecret {
-			return policytest.KindSecret(name, guardOwner, policy.TierHuman, policy.KindGoogleServiceAccount, "v")
-		}, guardOwner, map[string]string{baseTagProject: "PRIV", policy.TagRollbackGuard: policy.RollbackGuardValue}},
+			return baseKindSecret(name, guardOwner, policy.TierHuman, baseKindAccount)
+		}, guardOwner, map[string]string{baseTagProject: "PRIV", policy.TagRollbackGuard: baseKindGuard}},
 		{"CHANNELS", func(name string) secrets.LocalSecret {
 			return policytest.Secret(name, policy.OwnerShared, policy.TierAgent, "v")
 		}, "", map[string]string{baseTagProjectChannels: "slack"}},
 		{"SLACK", func(name string) secrets.LocalSecret {
 			return policytest.Secret(name, policy.OwnerShared, policy.TierAgent, "v")
-		}, "", map[string]string{baseTagProject: "PRIV", baseTagProjectChannels: "slack", policy.TagDefaultGrant: policy.DefaultGrantSession, policy.TagShape: policy.ShapeToken}},
+		}, "", map[string]string{baseTagProject: "PRIV", baseTagProjectChannels: "slack", policy.TagDefaultGrant: policy.DefaultGrantSession, baseTagShape: baseShapeToken}},
 	}
 	var cases []rollbackCase
 	for _, shape := range shapes {
@@ -125,6 +140,22 @@ func rollbackGuardCases() []rollbackCase {
 		}
 	}
 	return cases
+}
+
+// baseKindSecret is the merge base's policytest.KindSecret, spelled with this file's literals: a
+// secret tagged kind, with the github-owners a github-app one needs and the requesters list and
+// hour's cap a google-service-account one needs.
+func baseKindSecret(name, owner, tier, kind string) secrets.LocalSecret {
+	secret := policytest.Secret(name, owner, tier, "v")
+	secret.Tags[baseTagKind] = kind
+	switch kind {
+	case baseKindApp:
+		secret.Tags[policy.TagGitHubOwners] = policytest.FixtureGitHubOwners
+	case baseKindAccount:
+		secret.Tags[policy.TagRequesters] = owner
+		secret.Tags[policy.TagMaxGrant] = policytest.FixtureMaxGrant
+	}
+	return secret
 }
 
 // rollbackGuardStore is a store holding every case.

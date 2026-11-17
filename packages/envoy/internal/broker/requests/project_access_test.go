@@ -175,7 +175,7 @@ func TestAPodOfThePrivateProjectGetsItsSecret(t *testing.T) {
 	set, err := exchange.NewSet([]exchange.AccountEntry{
 		{Account: fixtureSubject, Project: privProject, Person: insider},
 		{Account: otherSubject, Project: teamProject, Person: insider},
-	}, nil, nil, "")
+	}, nil, nil, nil, "")
 	if err != nil {
 		t.Fatalf("exchange.NewSet: %v", err)
 	}
