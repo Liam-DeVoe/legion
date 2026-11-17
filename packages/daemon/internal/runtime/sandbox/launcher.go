@@ -830,12 +830,12 @@ func launcherCommand(l launch, r *Runtime) shimwire.LauncherStart {
 	}
 	files[bootTokenKey] = l.spec.BootToken
 	files[runtime.SystemPromptFile] = l.prompt
-	claudeDir := ""
+	claudeDir, stateHome := "", roleStateHome(slotOf(l.spec.Claim))
 	if l.runsClaude() {
-		claudeDir = claudeConfigDir(l.spec.Role)
+		claudeDir = claudeConfigDir(slotOf(l.spec.Claim))
 		files[claudeMCPFile] = l.claude.mcp
 	}
-	agentArgv := startArgv(roleStateHome(l.spec.Role), l.spec.Generation, l.spec.Plugins, claudeDir, l.skillsInstall(r), r.setup,
+	agentArgv := startArgv(stateHome, l.spec.Generation, l.spec.Plugins, claudeDir, l.skillsInstall(r), r.setup,
 		l.agentArgv(r.agent), installLockWait(r.bootTimeout, r.registrationIntervals))
 	return shimwire.LauncherStart{
 		ID: "start-" + fmt.Sprint(l.spec.Generation), Generation: l.spec.Generation,
