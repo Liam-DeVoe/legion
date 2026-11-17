@@ -103,10 +103,10 @@ func TestACommentAskedForAuthorIsRefusedNamingItsKind(t *testing.T) {
 // asked and one her personal token asked: bob's page of her lists the project comment alone; the
 // page her cookie reads lists the three, the lens titled by its verdict and opening the issue's
 // page, and the cookie's run titled by the first line of its words and opening nothing; and the
-// page her token reads lists the project comment, the comment reserved for her, whose predicate
-// compares the author a credential proved (dispatch://INFRA-1149's one rule), the lens, whose
-// predicate compares the person, and the token's run, and not the run her cookie asked, whose
-// predicate compares the whole credential. Each row answers its state and its visibility.
+// page her token reads lists the project comment, the comment reserved for her and the lens,
+// whose predicates both compare the author a credential proved (dispatch://INFRA-1149's one rule),
+// and the token's run, and not the run her cookie asked, whose predicate compares the whole
+// credential. Each row answers its state and its visibility.
 //
 // The store's writer takes no comment reserved for its author (graphstore.ErrVisibilityNotAdmitted),
 // so each such comment's node is seeded as such a write would store it

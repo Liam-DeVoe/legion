@@ -230,8 +230,9 @@ var personNodesQuery = personNodesHeld + `, items as (
 // Each row's predicate is bound at the credential the request itself proved, not at the person
 // actingPerson reads it as: a kind that compares the whole credential - a run of the command bar -
 // is listed to the credential that wrote it and to no other, so a person's cookie lists none of
-// what their personal token asked and their token none of what the cookie asked, while a kind that
-// compares the person lists the same for both. The caller is the one gateRouteScopes resolved for
+// what their personal token asked and their token none of what the cookie asked, while every other
+// kind compares the author a credential proved (graphstore.AuthorIsSQL) and lists the same for both.
+// The caller is the one gateRouteScopes resolved for
 // the route's scope and handed on the request's context, which optionalActor and actingPerson
 // both read, so it is resolved once.
 func (s *server) listPersonNodes(w http.ResponseWriter, r *http.Request) {

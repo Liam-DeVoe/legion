@@ -86,6 +86,10 @@ export const ActorSchema = z.union([
        *  none, a browser cookie, a personal token and a broker token scoped to its person
        *  included. */
       project: z.string().optional(),
+      /** `broker` where the secrets broker verified the session, with or without a person behind
+       *  it; absent for a session a request body named. The server sets it from the token and
+       *  never from a body. */
+      proof: z.literal("broker").optional(),
     })
     .readonly(),
   /** A server-owned writer, such as the architecture importer

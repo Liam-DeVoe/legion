@@ -103,12 +103,22 @@ type Actor struct {
 	// does an agent's own write on a route that always took tokens, which is recorded as the
 	// session it always was.
 	Act *ActorAct `json:"act,omitempty"`
+	// Proof is how the server knows the session this actor names: ProofBroker where the
+	// secrets broker verified it, whether or not its token names a person, and empty for every
+	// other actor - above all a session a request body merely named, which a personal token, a
+	// pod's service-account token and the shared bearer record. It is set by the server from the
+	// token (brokerTokenActor) and never from a request body: bearerSessionActor builds the
+	// recorded actor of every other bearer afresh, so a body's proof never reaches a row.
+	Proof string `json:"proof,omitempty" enum:"broker"`
 	// Credential is what authenticated the request: the OAuth scopes it holds and how it names
 	// the agent behind it. It is a fact of the request and never of the record, so it is not
 	// serialised; the scope gate and actingPerson read it, actingPerson copies what it needs
 	// onto Act, and Recorded drops it from the actor a handler writes and compares.
 	Credential *Credential `json:"-"`
 }
+
+// ProofBroker is Actor.Proof for a session the secrets broker verified.
+const ProofBroker = "broker"
 
 // Recorded is the actor as a write records it: the request's credential dropped. A stored actor
 // is decoded from JSON, which carries no credential, so the credential never reaches a row.
@@ -143,9 +153,10 @@ func (a Actor) SameAs(other Actor) bool {
 // service-account token is {Service: &subject}. Under SameAs any two personal tokens are one
 // writer, whoever owns them, and the shared token is every pod's token.
 //
-// Origin, Project and Act are not compared: they say where a write came from and who it acted
-// for, which two requests of one credential differ in, so comparing them would call one
-// credential two.
+// Origin, Project, Act and Proof are not compared: the first three say where a write came from
+// and who it acted for, which two requests of one credential differ in, and Proof how the server
+// learned the session, which a record written before Proof existed does not carry, so comparing
+// any of them would call one credential two.
 func (a Actor) SameCredential(other Actor) bool {
 	return a.SameAs(other) && sameActorName(a.Owner, other.Owner) && sameActorName(a.Service, other.Service)
 }

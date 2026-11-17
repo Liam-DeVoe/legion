@@ -18,7 +18,7 @@ import (
 // a finding of a lens, a block node whose id names its lens, `dispatch://lens/<uuid>#b-<id>`; and
 // a risk under a pre-mortem, `dispatch://risk/<uuid>`. Each is a node of the store alone, with no
 // projection row, so each is read from graph_nodes, through the predicate of its kind, which
-// compares the person a credential proves, so a node reserved for its author reaches that author
+// compares the author a credential proved, so a node reserved for its author reaches that author
 // alone. One the store holds gone is absent, as a node that does not exist is.
 //
 // Each stands on another node through its current part_of tuple: a lens on the node it was

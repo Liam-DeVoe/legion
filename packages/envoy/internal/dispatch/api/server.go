@@ -1201,7 +1201,9 @@ func bearerSessionActor(r *http.Request, authenticated model.Actor, supplied *mo
 				"this request's credential acts for session %s; its actor names another writer", authenticated.ID)
 		}
 		// Recorded: the actor a handler writes and compares carries no credential, as a stored
-		// actor decoded from JSON carries none (model.Actor.Recorded).
+		// actor decoded from JSON carries none (model.Actor.Recorded). It keeps the Proof the
+		// broker's resolution set (brokerTokenActor, model.ProofBroker), with or without an owner,
+		// so the record says the broker verified this session.
 		actor := authenticated.Recorded()
 		if supplied != nil {
 			actor.Origin = supplied.Origin
@@ -1217,8 +1219,8 @@ func bearerSessionActor(r *http.Request, authenticated model.Actor, supplied *mo
 		//
 		// A session named in a request body earns none of this: the branch below, which every
 		// credential that proves no session of its own takes, records the session the caller
-		// asked for and no act, because an actor that merely claims a session proves nothing
-		// about whose it is (R14).
+		// asked for, no act and no proof, because an actor that merely claims a session proves
+		// nothing about whose it is (R14).
 		if actor.Owner != nil && *actor.Owner != "" && authenticated.Credential != nil &&
 			authenticated.Credential.Session == authenticated.ID {
 			actor.Act = &model.ActorAct{
@@ -1241,7 +1243,8 @@ func bearerSessionActor(r *http.Request, authenticated model.Actor, supplied *mo
 		Service: authenticated.Service,
 		// No Credential: this actor is one a handler records and compares, and a stored actor
 		// was decoded from JSON, which carries none (model.Actor.Recorded). A layer that needs
-		// the request's own credential reads it from optionalActor (callerHoldsScope).
+		// the request's own credential reads it from optionalActor (callerHoldsScope). No Proof
+		// either, whatever the body says: nothing verified the session it names.
 	}, nil
 }
 

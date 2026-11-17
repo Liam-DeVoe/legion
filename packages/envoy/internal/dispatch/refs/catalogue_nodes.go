@@ -53,8 +53,8 @@ func loadLensKindNodes(ctx context.Context, q Queryer, who model.Actor, _ string
 // and the project its row names - and a route of `/issues/{key}/nodes/{id}/…` finds it there; a
 // constraint of the catalogue, the far end of a lens kind's constrained_by tuple, stands under no
 // issue and answers none of the three. Its text is its standard, or its measurement where it holds
-// no standard (standingText). Through the predicate of its kind, which compares the person a
-// credential proves, a constraint reserved for its author reaches that author alone. One the store
+// no standard (standingText). Through the predicate of its kind, which compares the author a
+// credential proved, a constraint reserved for its author reaches that author alone. One the store
 // holds gone is absent.
 func loadConstraintNodes(ctx context.Context, q Queryer, who model.Actor, _ string, _ bool, ids []string, nodes map[[2]string]resolvedNode) error {
 	rows, err := q.Query(ctx, `

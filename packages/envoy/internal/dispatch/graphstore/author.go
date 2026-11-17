@@ -11,12 +11,14 @@ import (
 )
 
 // ProvesAuthor reports whether a credential proves an author: the person a cookie, a personal
-// token or a session the broker verified for its owner proves, the workload a service-account
-// token proved, or a session that names no owner (provedAuthor). A credential that names none of
-// them - the deployment's shared agent bearer, which resolves as {} - proves nobody: every holder
-// of it presents the same value, so model.Actor.SameCredential reports two such credentials as
-// one, and a node reserved for the author of such a write would be readable by every holder of
-// the bearer rather than by its writer.
+// token or a session the broker verified for its owner proves, a session the broker proved
+// (model.Actor's Proof), or the workload a service-account token proved, a session a pod's body
+// named beside it included (provedAuthor). A credential that names none of them - the
+// deployment's shared agent bearer, which resolves as {}, and a session id only a request's body
+// named, with no proof and no workload - proves nobody: every holder of the bearer presents the
+// same value, so model.Actor.SameCredential reports two such credentials as one, any caller can
+// name any session id, and a node reserved for the author of such a write would be readable by
+// every such caller rather than by its writer.
 //
 // This is the one rule, and every reader and every writer asks it rather than keeping a copy:
 // the going routes (api.createGoingRequest, api.streamGoingAnswer), the visibility a write may
@@ -27,18 +29,30 @@ func ProvesAuthor(actor model.Actor) bool {
 	return proved
 }
 
+// SameAuthor is the one rule stated in Go over two actors, as AuthorIsSQL states it in SQL: true
+// when the author writer's record proved (provedAuthor) and the author reader's credential proves
+// are one author, and false where either proves none.
+func SameAuthor(writer, reader model.Actor) bool {
+	written, proved := provedAuthor(writer)
+	read, reads := provedAuthor(reader)
+	return proved && reads && written == read
+}
+
 // author is who a credential proved, the one thing an author-private node is read by: the root's
 // R19 makes an author the person a credential proved, so two credentials of one person - her
 // cookie, her personal token, a session the broker verified as hers - are one author, and a node
 // any of them wrote is hers under each of them. Kind is "person", with the canonical login as the
 // id; the actor's own kind, for a credential that proves its own id and no person, which is a
-// session nobody owns; or "service", with the workload a service-account token proved.
+// session the broker proved and owned by nobody; or "service", with the workload a
+// service-account token proved.
 //
-// Only a person joins credentials. A session that names a workload and no person - a session the
-// broker verified for a service, the shared public-session account's among them - is its own
-// author, by its own id, because every session of that workload carries the same workload: an
-// author by the workload would let each of them read what any other reserved, which is the shared
-// bearer's fault again.
+// Only a person joins credentials, and a workload the sessions a pod names. A session is its own
+// author, by its own id, only where the record says the broker proved it (model.Actor's Proof,
+// model.ProofBroker): every session of a workload carries the same workload, so an author by the
+// workload would let each such session read what any other reserved. A session id with no such
+// proof is one a request's body named, which proves nothing: beside the workload the pod's own
+// token proved its author is that workload, as the pod's token's is, and with no workload it is
+// nobody.
 type author struct {
 	Kind string `json:"kind"`
 	ID   string `json:"id"`
@@ -52,15 +66,16 @@ const (
 
 // provedAuthor is the author a credential proved, in the order authorSQL reads a stored one: the
 // owner a session or a personal token carries, then a person at a browser, then the credential's
-// own id, then a workload, which only a credential with no id of its own is authored by. proved is
-// false for a credential that names none of them.
+// own id, which a session proves only where the broker proved it (author), then a workload, which
+// a credential with no id it proves is authored by. proved is false for a credential that names
+// none of them.
 func provedAuthor(actor model.Actor) (author, bool) {
 	switch {
 	case actor.Owner != nil && *actor.Owner != "":
 		return author{Kind: authorPerson, ID: model.CanonicalLogin(*actor.Owner)}, true
 	case actor.Kind == "user" && actor.ID != "":
 		return author{Kind: authorPerson, ID: model.CanonicalLogin(actor.ID)}, true
-	case actor.ID != "":
+	case actor.ID != "" && (actor.Kind != "session" || actor.Proof == model.ProofBroker):
 		return author{Kind: actor.Kind, ID: actor.ID}, true
 	case actor.Service != nil && *actor.Service != "":
 		return author{Kind: authorService, ID: *actor.Service}, true
@@ -103,34 +118,29 @@ func VisibilityFor(requested string, actor model.Actor) (string, error) {
 // credential that names none is a JSON null here and a missing key there, which compare equal
 // as jsonb, where an empty string would compare equal to neither.
 //
-// Person and Author ride beside those four and are never compared with them. Person is the
-// person the credential proves (provedPerson), which the kinds that compare the person read
-// (AuthorPersonIsSQL); a credential that proves no person leaves the key out. Author is the
-// author the credential proved (provedAuthor), which the one rule compares (AuthorIsSQL).
-// AuthorCredentialIsSQL takes both off the argument before it compares the four.
+// Author rides beside those four and is never compared with them: it is the author the credential
+// proved (provedAuthor), which the one rule compares (AuthorIsSQL). AuthorCredentialIsSQL takes it
+// off the argument before it compares the four.
 type authorCredential struct {
 	Kind    string  `json:"kind"`
 	ID      string  `json:"id"`
 	Owner   *string `json:"owner"`
 	Service *string `json:"service"`
-	Person  string  `json:"person,omitempty"`
 	Author  author  `json:"author"`
 }
 
 // ActingCredential is the one value an author-private read binds beside its own arguments: the
-// acting credential as AuthorCredentialIsSQL compares it, and beside it the person that
-// credential proves, as AuthorPersonIsSQL compares that, and the author it proved
+// acting credential as AuthorCredentialIsSQL compares it, and beside it the author it proved
 // (provedAuthor), as AuthorIsSQL compares that. A credential that proves no author binds nil,
-// which is SQL null, which every comparison answers false for - so a reader the store cannot
-// name reads no author-private node at all, rather than every node written on the shared bearer.
+// which is SQL null, which both comparisons answer false for - so a reader the store cannot name
+// reads no author-private node at all, rather than every node written on the shared bearer.
 func ActingCredential(actor model.Actor) any {
 	proved, ok := provedAuthor(actor)
 	if !ok {
 		return nil
 	}
 	encoded, err := json.Marshal(authorCredential{
-		Kind: actor.Kind, ID: actor.ID, Owner: actor.Owner, Service: actor.Service,
-		Person: provedPerson(actor), Author: proved,
+		Kind: actor.Kind, ID: actor.ID, Owner: actor.Owner, Service: actor.Service, Author: proved,
 	})
 	if err != nil {
 		// Strings and string pointers: json.Marshal has nothing here to fail on.
@@ -139,27 +149,15 @@ func ActingCredential(actor model.Actor) any {
 	return encoded
 }
 
-// provedPerson is the person a credential proves, by canonical login (model.CanonicalLogin): a
-// cookie's user, whose actor is the user's own login, or the owner a token names - a personal
-// token's, or the person a broker-issued token bound its session to. Any other credential proves
-// none, and answers the empty string. It is authorPersonSQL's reading of a stored author, stated
-// of the acting one.
-func provedPerson(actor model.Actor) string {
-	switch {
-	case actor.Kind == "user" && actor.ID != "":
-		return model.CanonicalLogin(actor.ID)
-	case actor.Owner != nil && *actor.Owner != "":
-		return model.CanonicalLogin(*actor.Owner)
-	}
-	return ""
-}
-
 // AuthorIsSQL is the SQL half of the one rule: true when the author a node's `made_by` column
 // records proved somebody, and that somebody is the author bound at param (ActingCredential). It
 // states in SQL exactly what provedAuthor states of a credential, so a read and a route cannot
 // answer differently. A login is compared in the form user_threads_login gives it on both sides,
 // the stored one and the bound one, so the two are canonical by one function. It is the
-// comparison of every kind dispatch://INFRA-1149 registers.
+// comparison of every kind refs' registry holds but an interaction: every kind
+// dispatch://INFRA-1149 registers, and a lens, a finding of one, a risk and a constraint
+// (dispatch://INFRA-1950's R19), so a person's cookie, her personal token and a session the
+// broker verified as hers read what any of them wrote.
 //
 // The whole test is wrapped in coalesce so it is false rather than unknown for an acting
 // credential that binds null, and for a stored author that names nobody: a reader that proves no
@@ -170,47 +168,48 @@ func AuthorIsSQL(column, param string) string {
 }
 
 // AuthorCredentialIsSQL is the comparison of a kind whose predicate compares the whole acting
-// credential rather than the author it proved (refs' registry states which a kind compares): true
-// when the author a node's `made_by` column records proved somebody (authorIsSomebodySQL) and is
-// the credential bound at param. It states in SQL what model.Actor.SameCredential states of two
-// credentials, so a run is read by the credential that asked it and by no other, as the going
-// stream reads it. It compares the credential's four fields and nothing else: the argument also
-// carries the person the credential proves and the author it proved, which are taken off it
-// first, since the stored author this compares it with is those four fields alone.
+// credential rather than the author it proved (refs' registry states which a kind compares), an
+// interaction alone: true when the author a node's `made_by` column records names a credential at
+// all (namesCredentialSQL) and is the credential bound at param. It states in SQL what
+// model.Actor.SameCredential states of two credentials, so a run is read by the credential that
+// asked it and by no other, as the going stream reads it, and a run whose author is nobody - the
+// shared bearer's empty author - by nobody. It compares the credential's four fields and nothing
+// else: the argument also carries the author the credential proved, which is taken off it first,
+// since the stored author this compares it with is those four fields alone.
+//
+// It does not ask the one rule of the stored author, and need not: a run's made_by is the
+// credential its POST proved, and the bound credential is nil unless the reader proves an author
+// (ActingCredential), so the four-field equality already holds the run to the one credential
+// that asked it. Asking the rule instead would hide from its own session a run recorded before
+// model.Actor's Proof existed, by a broker session that names no owner and no workload: the rule
+// counts such a record as nobody, while the session that asked it, proved by the broker now,
+// presents the same four fields.
 //
 // It is wrapped in coalesce as AuthorIsSQL is, and for the same reason.
 func AuthorCredentialIsSQL(column, param string) string {
-	return `coalesce((` + authorIsSomebodySQL(column) + `) and ` + authorNameSQL(column) + ` = ` + actingCredentialSQL(param) + `, false)`
+	return `coalesce((` + namesCredentialSQL(column) + `) and ` + authorNameSQL(column) + ` = ` + actingCredentialSQL(param) + `, false)`
 }
 
-// AuthorPersonIsSQL is the comparison of a kind whose predicate compares the person a credential
-// proves rather than the credential (refs' registry states which a kind compares): true when the
-// author a node's `made_by` column records is somebody and, where that author names a person -
-// a user's login, or the owner a token named (authorPersonSQL) - that person is the person the
-// credential bound at param proves; where it names none, the whole credential, as
-// AuthorCredentialIsSQL compares it. So a person's personal token reads what that person's cookie
-// wrote, and a node a workload or a session no person owns wrote is read by that credential alone.
-//
-// It is false for a reader that proves no author, as AuthorIsSQL is, and false for a reader that
-// proves no person against a node whose author names one: such a reader's credential names no
-// login and no owner, so it is never the credential that wrote the node either.
-func AuthorPersonIsSQL(column, param string) string {
-	person := authorPersonSQL(column)
-	return `coalesce((` + authorIsSomebodySQL(column) + `) and case when ` + person + ` is null then ` +
-		authorNameSQL(column) + ` = ` + actingCredentialSQL(param) + ` else ` + person + ` = (` + param + `::jsonb ->> 'person') end, false)`
+// NamesCredential reports whether a recorded actor names a credential at all: an id, an owner or
+// a workload. It is the test a run's owner is held to beside model.Actor.SameCredential (api's
+// goingRunIsTheCallers), as AuthorCredentialIsSQL holds it in SQL (namesCredentialSQL): the
+// shared bearer's empty author names none, so SameCredential's reading of two such authors as one
+// credential reaches nobody's run. It is no test of the one rule (ProvesAuthor): a run is read by
+// the credential that asked it, whatever that credential's record proves.
+func NamesCredential(actor model.Actor) bool {
+	return actor.ID != "" || (actor.Owner != nil && *actor.Owner != "") || (actor.Service != nil && *actor.Service != "")
 }
 
 // actingCredentialSQL is the acting credential bound at param as authorNameSQL builds a stored
-// one: its four fields, with the person and the author ActingCredential sets beside them taken
-// off.
+// one: its four fields, with the author ActingCredential sets beside them taken off.
 func actingCredentialSQL(param string) string {
-	return `(` + param + `::jsonb - 'person'::text - 'author'::text)`
+	return `(` + param + `::jsonb - 'author'::text)`
 }
 
-// authorIsSomebodySQL is ProvesAuthor over a stored author: the one rule finds an author in it
-// (authorSQL is not null), so a stored author proves somebody exactly where a credential does.
-func authorIsSomebodySQL(column string) string {
-	return `(` + authorSQL(column) + `) is not null`
+// namesCredentialSQL is NamesCredential over a stored author.
+func namesCredentialSQL(column string) string {
+	return `coalesce(` + column + `->>'id', '') <> '' or coalesce(` + column + `->>'owner', '') <> ''` +
+		` or coalesce(` + column + `->>'service', '') <> ''`
 }
 
 // authorNameSQL is a stored author as ActingCredential encodes the acting one: the kind and the
@@ -225,8 +224,8 @@ func authorNameSQL(column string) string {
 }
 
 // authorSQL is provedAuthor over a stored author, case for case and in the same order, and null
-// for a stored author that names none. An actor with no owner or no workload leaves the key out
-// (model.Actor's omitempty), which reads as null here as an empty name does.
+// for a stored author that names none. An actor with no owner, no workload or no proof leaves the
+// key out (model.Actor's omitempty), which reads as null here as an empty name does.
 func authorSQL(column string) string {
 	return `case
 		when coalesce(` + column + `->>'owner', '') <> ''
@@ -234,6 +233,7 @@ func authorSQL(column string) string {
 		when ` + column + `->>'kind' = 'user' and coalesce(` + column + `->>'id', '') <> ''
 			then ` + authorKeySQL(`'`+authorPerson+`'`, column+`->>'id'`) + `
 		when coalesce(` + column + `->>'id', '') <> ''
+		     and (coalesce(` + column + `->>'kind', '') <> 'session' or ` + column + `->>'proof' = '` + string(model.ProofBroker) + `')
 			then ` + authorKeySQL(`coalesce(`+column+`->>'kind', '')`, column+`->>'id'`) + `
 		when coalesce(` + column + `->>'service', '') <> ''
 			then ` + authorKeySQL(`'`+authorService+`'`, column+`->>'service'`) + `
@@ -245,15 +245,6 @@ func authorSQL(column string) string {
 func authorKeySQL(kind, id string) string {
 	return `jsonb_build_object('kind', ` + kind + `, 'id', case when ` + kind + ` = '` + authorPerson +
 		`' then user_threads_login(` + id + `) else ` + id + ` end)`
-}
-
-// authorPersonSQL is provedPerson over a stored author: the canonical login of a user, or of the
-// owner the record names, and null for an author that names neither. lower(btrim()) is
-// model.CanonicalLogin, as graphcensus's authorParty reads it.
-func authorPersonSQL(column string) string {
-	return `(case when ` + column + `->>'kind' = 'user' and coalesce(` + column + `->>'id', '') <> '' ` +
-		`then lower(btrim(` + column + `->>'id')) ` +
-		`else nullif(lower(btrim(` + column + `->>'owner')), '') end)`
 }
 
 // ErrVisibilityNotAdmitted refuses a node reserved for its author whose kind takes no such node.
