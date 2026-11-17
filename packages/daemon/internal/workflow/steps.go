@@ -90,12 +90,13 @@ func endOf(trigger TriggerKind) (result StepResult, returns bool) {
 var stepRecordNamespace = uuid.NewSHA1(uuid.NameSpaceOID, []byte("legion-step-record"))
 
 // StepID is the id of the record of one run of one step: a version 5 uuid of the issue, its run
-// (record.Issue.Generation), the task, the kind, the place and the count of starts of that place
-// (record.Store.StepStarts). The start of the run raises the count and the end reads it unchanged,
-// so the two writes compute one id apart, across a restart too, and the next start of the same
-// place, which raises the count again, writes another record.
-func StepID(issue string, generation uint64, task, kind string, step int, starts int64) string {
-	name := fmt.Sprintf("%s/%d/%s/%s/%d/%d", issue, generation, task, kind, step, starts)
+// (record.Issue.Generation), the place — its task, kind and place in the task, the key the count
+// of starts is kept under, taken whole so no call can give its fields in another order — and the
+// count of starts of that place (record.Store.StepStarts). The start of the run raises the count
+// and the end reads it unchanged, so the two writes compute one id apart, across a restart too,
+// and the next start of the same place, which raises the count again, writes another record.
+func StepID(issue string, generation uint64, place record.StepPlace, starts int64) string {
+	name := fmt.Sprintf("%s/%d/%s/%s/%d/%d", issue, generation, place.Task, place.Kind, place.Place, starts)
 	return uuid.NewSHA1(stepRecordNamespace, []byte(name)).String()
 }
 
@@ -286,7 +287,7 @@ func stepClaim(issue record.Issue, key string, role claim.Role) (claim.Token, er
 // stepWrite is the identity of one run of a step of issue: the fields every write of its record
 // carries.
 func stepWrite(issue record.Issue, place record.StepPlace, role, typ, agent string, starts int64) record.StepRecord {
-	return record.StepRecord{ID: StepID(issue.Key, issue.Generation, place.Task, place.Kind, place.Place, starts), Task: place.Task,
+	return record.StepRecord{ID: StepID(issue.Key, issue.Generation, place, starts), Task: place.Task,
 		Step: place.Place, Kind: place.Kind, Role: role, Type: typ, Agent: agent, Generation: issue.Generation}
 }
 

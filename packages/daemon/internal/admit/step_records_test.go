@@ -86,7 +86,7 @@ func assertStepWrites(t *testing.T, pool *pgxpool.Pool, key string, want ...step
 		if g.Result != nil {
 			result = *g.Result
 		}
-		if g.ID != workflow.StepID(key, w.generation, "default", w.kind, w.step, w.starts) || g.Kind != w.kind || g.Step != w.step ||
+		if g.ID != workflow.StepID(key, w.generation, record.StepPlace{Task: "default", Kind: w.kind, Place: w.step}, w.starts) || g.Kind != w.kind || g.Step != w.step ||
 			g.Generation != w.generation || (g.EndedAt != nil) != (w.end != "") || result != w.end {
 			fail(fmt.Sprintf("row %d is not %+v", i, w))
 		}

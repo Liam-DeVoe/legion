@@ -78,8 +78,8 @@ func TestEndOfReadsTheTrigger(t *testing.T) {
 // other: the issue, its run, the task, the kind, the place and the count of starts of that place.
 // The start and the end of one run compute it apart, so it depends on nothing else.
 func TestAStepIDIsStableAndDistinct(t *testing.T) {
-	first := StepID("LEG-1", 1, "default", "step", 2, 1)
-	if again := StepID("LEG-1", 1, "default", "step", 2, 1); again != first {
+	first := StepID("LEG-1", 1, record.StepPlace{Task: "default", Kind: "step", Place: 2}, 1)
+	if again := StepID("LEG-1", 1, record.StepPlace{Task: "default", Kind: "step", Place: 2}, 1); again != first {
 		t.Fatalf("StepID twice = %s then %s; one run of one step has one id", first, again)
 	}
 	parsed, err := uuid.Parse(first)
@@ -92,12 +92,12 @@ func TestAStepIDIsStableAndDistinct(t *testing.T) {
 	}
 	seen := map[string]string{first: "the first"}
 	for name, id := range map[string]string{
-		"issue":      StepID("LEG-2", 1, "default", "step", 2, 1),
-		"generation": StepID("LEG-1", 2, "default", "step", 2, 1),
-		"task":       StepID("LEG-1", 1, "a", "step", 2, 1),
-		"kind":       StepID("LEG-1", 1, "default", "retro", 2, 1),
-		"step":       StepID("LEG-1", 1, "default", "step", 3, 1),
-		"starts":     StepID("LEG-1", 1, "default", "step", 2, 2),
+		"issue":      StepID("LEG-2", 1, record.StepPlace{Task: "default", Kind: "step", Place: 2}, 1),
+		"generation": StepID("LEG-1", 2, record.StepPlace{Task: "default", Kind: "step", Place: 2}, 1),
+		"task":       StepID("LEG-1", 1, record.StepPlace{Task: "a", Kind: "step", Place: 2}, 1),
+		"kind":       StepID("LEG-1", 1, record.StepPlace{Task: "default", Kind: "retro", Place: 2}, 1),
+		"step":       StepID("LEG-1", 1, record.StepPlace{Task: "default", Kind: "step", Place: 3}, 1),
+		"starts":     StepID("LEG-1", 1, record.StepPlace{Task: "default", Kind: "step", Place: 2}, 2),
 	} {
 		if other, ok := seen[id]; ok {
 			t.Errorf("another %s gives the id of %s: %s", name, other, id)
