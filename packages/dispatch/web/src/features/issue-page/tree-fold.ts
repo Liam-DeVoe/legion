@@ -96,6 +96,35 @@ export const NOTHING_OPENED: OpenedBranches = {
   deeper: new Set(),
 };
 
+/** Whether the node is proposed: put forward and not yet settled by a person
+ *  (dispatch://INFRA-4063 R2). The page draws it with its mark and no gap, and it opens no
+ *  path of the fold as an open statement or check would. */
+export function isProposed(node: TreeNode): boolean {
+  return node.life === "proposed";
+}
+
+/** Whether the node is overtaken: a later node took its place (dispatch://INFRA-4063 R5). It is
+ *  no row until the reader opens its parent's line, and it and every node under it are
+ *  `closed`. */
+export function isOvertaken(node: TreeNode): boolean {
+  return node.life === "overtaken";
+}
+
+/**
+ * Whether no count of the page reads the node (dispatch://INFRA-4063 R3). No count treats a
+ * proposed statement, check or plan task as done or owed, since it is only put forward until a
+ * person settles it; and no count treats a node at or under an overtaken one as open or
+ * unproved, since a later node took its place (`closed`). A proposed question and a proposed
+ * decision are not out of the counts: what asks the reader stays counted.
+ */
+export function outOfCounts(node: TreeNode): boolean {
+  if (node.closed === true) return true;
+  return (
+    isProposed(node) &&
+    (node.type === "requirement" || node.type === "check" || node.type === "plan_task")
+  );
+}
+
 /**
  * Whether the node is itself open and unanswered, which is what the frontier is the path to
  * (R1). One answer per kind the tree draws, because "open" is a different fact in each, and
