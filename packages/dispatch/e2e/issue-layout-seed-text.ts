@@ -32,10 +32,10 @@ export const SUMMARY_BLOCK_ID = "summary";
 export const OPEN_QUESTION_BLOCK_ID = "q-open";
 
 /** How a seeded check's newest result stands, in the words `NODE_STATE_WORDS.check` draws
- *  (`web/src/features/issue-page/page-words.ts`), plus `no-control`: a pass on a before-merge run
- *  that records no negative control, which reads `passed` on the page and draws no gap -
- *  dispatch://INFRA-1253 R3 refuses such a result, so the page names nothing it lacks - and is
- *  what `c-chain` reads that for. */
+ *  (`web/src/features/issue-page/page-words.ts`), plus `no-control`: a pass of an after-merge
+ *  check that records no negative control, which reads `passed` on the page and draws no gap -
+ *  dispatch://INFRA-1253 R3 refuses such a result of a before-merge check, so the page names
+ *  nothing it lacks - and is what `c-chain` reads that for. */
 export const CHECK_STATE_ORDER = [
   "passed",
   "failed",
@@ -219,7 +219,11 @@ export function specDocument(options: {
 
 /** The issue's Verification document: `checks` `check` blocks, each serving one requirement in
  *  turn and each seeded in the state `checkStateOf` names. The one in `no-control` carries no
- *  `negative_control` attribute at all, which is what "records no negative control" is. */
+ *  `negative_control` attribute at all, which is what "records no negative control" is. It runs
+ *  `after_merge`, since a server that holds INFRA-1253's model refuses a passing `before_merge`
+ *  result with no negative control (`NEGATIVE_CONTROL_REQUIRED`) and takes a pass of any other
+ *  check; the one in `unmarked` runs `after_merge` too, so with the App gone it is the branch
+ *  nothing can be read of (`recordSeededResults`). */
 export function verificationDocument(options: {
   checks: number;
   issueKey: string;
@@ -228,13 +232,15 @@ export function verificationDocument(options: {
   const blocks = counted(options.checks).map((index) => {
     const served = ((index - 1) % options.requirements) + 1;
     const serves = specBlockRef(options.issueKey, requirementBlockId(served));
+    const state = checkStateOf(index);
     const control =
-      checkStateOf(index) === "no-control"
+      state === "no-control"
         ? ""
         : ' negative_control="Draw a row with no state and the test fails."';
+    const when = state === "no-control" || state === "unmarked" ? "after_merge" : "before_merge";
     return (
       `:::check{#${checkBlockId(index)} serves="${serves}" surface="browser"` +
-      ` run="bun run e2e -- e2e/issue-layout.e2e.ts" when="before_merge"${control}}\n` +
+      ` run="bun run e2e -- e2e/issue-layout.e2e.ts" when="${when}"${control}}\n` +
       `${checkText(index)}\n:::`
     );
   });
