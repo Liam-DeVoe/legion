@@ -36,7 +36,9 @@ function answerOf(frames: readonly RunFrame[], edges: readonly GraphEdge[] = [])
     node: Object.assign(
       graphNode({
         id: RUN,
-        kind: "interaction",
+        // Not in this stack's `GraphNode["kind"]` until INFRA-1950's tip that adds it, as
+        // `RunFrame` says; that merge drops the cast.
+        kind: "interaction" as GraphReferences["node"]["kind"],
         made_at: ASKED_AT,
         ref: `dispatch://interaction/${RUN}`,
         text: QUESTION,
