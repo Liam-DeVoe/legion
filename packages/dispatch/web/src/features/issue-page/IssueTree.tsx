@@ -336,6 +336,18 @@ export function IssueTree({
     setReport(undefined);
   }, []);
   const releaseFocus = useReleaseFocus({ editing: editing !== undefined, onLeave: leave });
+  // A press on a line of overtaken nodes gives it the stop once the press is over, as a press
+  // gives a row the focus (`press`): the row above the line letting go of its body and its acts
+  // while the press was held moved the line up from under the pointer, and the click missed it.
+  // The stop goes to the line the press focused while that line still holds the focus; a key's
+  // move onto a line gives it the stop at once.
+  const linePress = usePressFocus<{ readonly line: Element | null; readonly row: string }>(
+    ({ row }) => {
+      leave();
+      setStop(row);
+    },
+    ({ line }) => line?.contains(document.activeElement) === true
+  );
   // What the twisty and the arrow keys do to one branch. Folding a branch is held as its own
   // set and not as the absence of an opened one: the fold draws the reasoning and the path to
   // an open question of its own accord, so a reader folding one of those shut has nothing to
@@ -749,6 +761,8 @@ export function IssueTree({
         onBlur={releaseFocus}
         // A press in the tree, whose focus the row takes once the press is over (`press`).
         onMouseDown={press.onMouseDown}
+        // And whose stop a line of overtaken nodes takes then (`linePress`).
+        onMouseDownCapture={linePress.onMouseDown}
         ref={body}
         role="tree"
       >
@@ -772,11 +786,10 @@ export function IssueTree({
                 // A line of overtaken nodes takes the stop as a row does, and lets go of the row
                 // the focus left, as the focus leaving the tree does (`leave`): its body, its
                 // focused look, its acts, which no key reaches from the line, and what a key
-                // reported there. The line focuses no node: Details goes on drawing what it drew.
-                onStop={(row) => {
-                  leave();
-                  setStop(row);
-                }}
+                // reported there; under a press, once it is over (`linePress`). The line focuses
+                // no node: Details goes on drawing what it drew. Its focus is heard as it lands,
+                // so the element that holds the focus is the line.
+                onStop={(row) => linePress.focus({ line: document.activeElement, row })}
                 // A branch opens where it is at every width (R16): below 1024 px the outline draws
                 // one level under the node it is read from, so an opened branch deeper than that is
                 // one counted line, which opens its nodes in place too. Zooming is `.`'s alone.

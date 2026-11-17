@@ -1,10 +1,11 @@
-import { beforeAll, expect, spyOn, test } from "bun:test";
+import { beforeAll, expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { act, render, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
+import { jump, realClock } from "../../../__tests__/fake-clock";
 import {
   ApiError,
   api,
@@ -13,6 +14,7 @@ import {
   type WriteRequest,
 } from "../../../api/client";
 import { issueCoverageQuery } from "../../../api/queries";
+import { MIN_REFETCH_INTERVAL_MS } from "../../../api/query-refresh";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
 import type { TreeNode } from "../issue-tree";
 import { NodeRow } from "../NodeRow";
@@ -97,9 +99,13 @@ interface DrawnRow {
   readonly unmount: () => void;
 }
 
-/** The focused proposed row, its settle answered by `answer` at each attempt, and the first
- *  `failedCoverage` reads of the coverage failing. */
-function drawRow(answer: (attempt: number) => Promise<unknown>, failedCoverage = 0): DrawnRow {
+/** The focused proposed row, its settle answered by `answer` at each attempt, the first
+ *  `failedCoverage` reads of the coverage failing, and each other read of it answered `covered`. */
+function drawRow(
+  answer: (attempt: number) => Promise<unknown>,
+  failedCoverage = 0,
+  covered: unknown = { requirements: [] }
+): DrawnRow {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
@@ -122,7 +128,7 @@ function drawRow(answer: (attempt: number) => Promise<unknown>, failedCoverage =
     read("coverage");
     coverageReads += 1;
     if (coverageReads <= failedCoverage) throw new ApiError(503, { error: "unavailable" });
-    return { requirements: [] } as never;
+    return covered as never;
   });
   const sent: WriteRequest[] = [];
   const keys: string[] = [];
@@ -280,6 +286,35 @@ test("a 200 reads the tree again while the coverage read is marked stale", async
     expect(document.activeElement).toBe(drawn.row());
     await waitFor(() => expect(drawn.settle().textContent).toBe(CONTROL_LABELS.settle));
     expect(drawn.sentence()).toBeNull();
+  } finally {
+    drawn.unmount();
+  }
+});
+
+// The coverage is invalidated before the tree is read again, so its read begins first, and a
+// changed answer of it is no newer than the tree read the 200 made: the tree read's subscription
+// (`subscribeTreeFreshness`) reads nothing again for it. Each read goes out once, the coverage's
+// first; a second read of the tree or the view would wait out the refresh scheduler's interval.
+test("a 200 that changes the coverage reads the coverage, the tree and the open view once each", async () => {
+  const user = userEvent.setup();
+  const landing = Promise.withResolvers<unknown>();
+  const drawn = drawRow(() => landing.promise, 0, {
+    requirements: [{ block_id: "r7", checks: 0, gaps: [], plan_tasks: 0, ref: REFERENCE }],
+  });
+  try {
+    await user.click(drawn.settle());
+    await waitFor(() => expect(drawn.sent).toHaveLength(1));
+    expect(drawn.reads).toEqual([]);
+    jest.useFakeTimers();
+    try {
+      await act(async () => landing.resolve(settled()));
+      await waitFor(() => expect(drawn.reads).toHaveLength(3));
+      await jump(MIN_REFETCH_INTERVAL_MS);
+      expect(drawn.reads).toEqual(["coverage", "tree", "verification"]);
+    } finally {
+      realClock();
+    }
+    await waitFor(() => expect(drawn.settle().textContent).toBe(CONTROL_LABELS.settle));
   } finally {
     drawn.unmount();
   }

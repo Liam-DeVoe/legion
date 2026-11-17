@@ -600,6 +600,17 @@ test("the overtaken line is the tree's tab stop once the reader is on it", async
   }
 });
 
+/** A proposed requirement the tree draws first, and the line its overtaken sibling folds to. */
+function proposedAndLine(R7: string): TreeNode {
+  return stamped(
+    node(KEY, "issue", [
+      node(R7, "requirement", [], { reference: `dispatch://${KEY}/${R7}` }),
+      node("comment-2", "comment"),
+    ]),
+    { [R7]: { life: "proposed" }, "comment-2": { life: "overtaken" } }
+  );
+}
+
 // The focus going from a row to the line lets go of the row it left, as the focus leaving the
 // tree does: its focused look and its acts, Settle among them for a proposed row, which no key
 // reaches from the line. The line looks focused instead.
@@ -607,15 +618,7 @@ test("the row the reader leaves for the overtaken line no longer looks focused",
   readWide();
   const user = userEvent.setup();
   const R7 = "spec#b-r7";
-  const view = renderTree(
-    stamped(
-      node(KEY, "issue", [
-        node(R7, "requirement", [], { reference: `dispatch://${KEY}/${R7}` }),
-        node("comment-2", "comment"),
-      ]),
-      { [R7]: { life: "proposed" }, "comment-2": { life: "overtaken" } }
-    )
-  );
+  const view = renderTree(proposedAndLine(R7));
   const left = () => rowOf(view.container, R7);
   try {
     await waitFor(() => expect(focusedRow(view.container)).toBe(R7));
@@ -636,6 +639,45 @@ test("the row the reader leaves for the overtaken line no longer looks focused",
     expect(line.className, "the line holds the focus with no focused look").toContain(
       pageFocusedRow
     );
+  } finally {
+    view.unmount();
+  }
+});
+
+// A press focuses the line as it goes down, and the row above it letting go of its look and its
+// acts then would shrink the rows under the pointer, so the press could end off the line and open
+// nothing. The row the press left is let go once the press is over, as a pressed row takes the
+// focus then (`press-focus.ts`), and the line holds the stop from then on.
+test("a press on the overtaken line lets go of the row the reader left once it ends", async () => {
+  readWide();
+  const user = userEvent.setup();
+  const R7 = "spec#b-r7";
+  const view = renderTree(proposedAndLine(R7));
+  const left = () => rowOf(view.container, R7);
+  try {
+    await waitFor(() => expect(focusedRow(view.container)).toBe(R7));
+    await waitFor(() => expect(left()?.querySelector('[data-row-act="settle"]')).not.toBeNull());
+    const line = theLine(view.container);
+
+    await user.pointer({ keys: "[MouseLeft>]", target: line });
+    expect(document.activeElement, "the press did not focus the line").toBe(line);
+    expect(
+      left()?.querySelector("[data-node-card]")?.className,
+      "the held press let go of the row's focused look"
+    ).toContain(pageFocusedRow);
+    expect(
+      left()?.querySelector('[data-row-act="settle"]'),
+      "the held press let go of the row's acts"
+    ).not.toBeNull();
+    expect(line, "the held press gave the line the stop").toHaveAttribute("tabindex", "-1");
+
+    await user.pointer({ keys: "[/MouseLeft]", target: line });
+    await waitFor(() =>
+      expect(left()?.querySelector("[data-node-card]")?.className).not.toContain(pageFocusedRow)
+    );
+    expect(left()?.querySelector("[data-row-acts]"), "the row left kept its acts").toBeNull();
+    expect(line).toHaveAttribute("tabindex", "0");
+    expect(line, "the press did not open the line").toHaveAttribute("aria-expanded", "true");
   } finally {
     view.unmount();
   }

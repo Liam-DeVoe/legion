@@ -82,18 +82,21 @@ export function useSettleIssue(): string | undefined {
  * is made again under its key, so the write stays out while it is tried again.
  *
  * A landing - a 200, or `null` for `409 KEY_COMMITTED` - tells `landed` first, so the act puts
- * the focus on its row before anything is read again. It then reads the tree again as the page
- * does on an event of the issue (`refreshQueries`, which waits for a read already out rather than
- * cutting it off), drops the view reads held for the load (`dropViews`), so the open view is read
- * again, and reads the coverage again; the write stays out until that read is answered. The tree
- * and the views are those of the issue the tree is drawn for (`SettleIssueProvider`), else of
- * `key`: a node whose own address names another issue settles under that issue, whose coverage
- * is the one read again. The tree is read here, not left to `subscribeTreeFreshness`, which hears
- * an invalidation of the coverage: a coverage read already marked stale - a read of it failed, or
- * a refresh still owes one - raises none, and another issue's coverage is no query of the page's.
- * Where it does hear one, it reads the tree once more, which the refresh scheduler starts after
- * this read has landed, and drops the views again, which starts the open view's read over. A
- * refusal reads nothing again.
+ * the focus on its row before anything is read again. It then reads the coverage again, reads
+ * the tree again as the page does on an event of the issue (`refreshQueries`, which waits for a
+ * read already out rather than cutting it off), and drops the view reads held for the load
+ * (`dropViews`), so the open view is read again; the write stays out until the coverage's read
+ * is answered. The tree and the views are those of the issue the tree is drawn for
+ * (`SettleIssueProvider`), else of `key`: a node whose own address names another issue settles
+ * under that issue, whose coverage is the one read again. The tree is read here, not left to
+ * `subscribeTreeFreshness`, which hears an invalidation of the coverage: a coverage read already
+ * marked stale - a read of it failed, or a refresh still owes one - raises none, and another
+ * issue's coverage is no query of the page's. Where it does hear one, it refreshes the tree and
+ * the views and drops none, leaving out each whose read began in the turn it heard that in, as
+ * the reads begun here did. The coverage's read begins first, so its answer, changed or not, is
+ * no newer than the tree read begun here (`answeredNewer`), for which the subscription would read
+ * the tree and the open view again: the coverage, the tree and the open view are read once each.
+ * A refusal reads nothing again.
  */
 export function useSettle(key: string, reference: string, landed: () => void) {
   const queryClient = useQueryClient();
@@ -103,12 +106,13 @@ export function useSettle(key: string, reference: string, landed: () => void) {
     label: () => CONTROL_LABELS.settle,
     onSuccess: () => {
       landed();
-      refreshQueries(queryClient, [{ exact: true, queryKey: issueTreeKey(drawn) }]);
-      dropViews(queryClient, drawn);
-      return queryClient.invalidateQueries({
+      const coverage = queryClient.invalidateQueries({
         exact: true,
         queryKey: issueCoverageQuery(key).queryKey,
       });
+      refreshQueries(queryClient, [{ exact: true, queryKey: issueTreeKey(drawn) }]);
+      dropViews(queryClient, drawn);
+      return coverage;
     },
     request: () => settleRequest(key, reference),
     target: () => `settle:${reference}`,

@@ -82,7 +82,7 @@ import { RowText, useOutOfTabOrder } from "../RowText";
 import { specSummary } from "../spec-summary";
 import { treeContext } from "../tree-drafts";
 import type { DrawnRow } from "../tree-fold";
-import { isOvertaken, outOfCounts } from "../tree-fold";
+import { outOfCounts } from "../tree-fold";
 import { nodesInOrder } from "../tree-keys";
 import { useTreeRead, viewQuery } from "../tree-read/tree-read";
 import { useTreeKeymap } from "../useTreeKeymap";
@@ -804,34 +804,21 @@ const NO_FOLDS: FoldedLines = { holding: new Map(), lines: new Map() };
 /**
  * The lines the body folds its statements at or under an overtaken node to, each drawn closed,
  * by the group that draws it. A statement folds with the topmost overtaken node it stands at or
- * under: under the line of the group that node's own statement is drawn in, where the view draws
- * it, so a statement under an overtaken statement is drawn after it; and where the view draws
- * that node as no row - a comment, a question, a statement the query left out - under the line
- * of its own group. Each group that holds folded statements draws one line after its other
- * statements, keyed by the group's first statement (`line:` and its id), so two groups under one
- * parent draw two lines, and the line counts the overtaken nodes its statements fold with: "1
- * overtaken", "N overtaken". Its row carries the key as its `of`'s id too, which the keys hand
- * back to open or close it (`useTreeKeymap.ts`'s `onOvertaken`). Where no statement is closed
- * it walks nothing.
+ * under, the one its `closedBy` names (`TreeNode.closedBy`): under the line of the group that
+ * node's own statement is drawn in, where the view draws it, so a statement under an overtaken
+ * statement is drawn after it; and where the view draws that node as no row - a comment, a
+ * question, a statement the query left out - under the line of its own group. Each group that
+ * holds folded statements draws one line after its other statements, keyed by the group's first
+ * statement (`line:` and its id), so two groups under one parent draw two lines, and the line
+ * counts the overtaken nodes its statements fold with: "1 overtaken", "N overtaken". Its row
+ * carries the key as its `of`'s id too, which the keys hand back to open or close it
+ * (`useTreeKeymap.ts`'s `onOvertaken`).
  */
 function foldedLines(
   groups: readonly SpecGroup[],
   root: TreeNode
 ): ReadonlyMap<SpecGroup, GroupLine> {
   const lines = new Map<SpecGroup, GroupLine>();
-  const folds = groups.some((group) =>
-    group.runs.some((run) => run.statements.some((statement) => statement.node.closed === true))
-  );
-  if (!folds) return lines;
-  // The topmost overtaken node at or above each node of the tree, by the node's id, at the
-  // node's first place in it.
-  const tops = new Map<string, TreeNode>();
-  const walk = (node: TreeNode, top: TreeNode | undefined): void => {
-    const here = top ?? (isOvertaken(node) ? node : undefined);
-    if (here !== undefined && !tops.has(node.id)) tops.set(node.id, here);
-    for (const child of node.children) walk(child, here);
-  };
-  walk(root, undefined);
   const groupOf = new Map<string, SpecGroup>();
   for (const group of groups) {
     for (const run of group.runs) {
@@ -848,11 +835,11 @@ function foldedLines(
     for (const run of group.runs) {
       for (const statement of run.statements) {
         if (statement.node.closed !== true) continue;
-        const top = tops.get(statement.node.id);
-        const owner = (top === undefined ? undefined : groupOf.get(top.id)) ?? group;
+        const top = statement.node.closedBy ?? statement.node.id;
+        const owner = groupOf.get(top) ?? group;
         const into = held.get(owner) ?? { counted: new Set<string>(), folded: [] };
         held.set(owner, into);
-        into.counted.add(top?.id ?? statement.node.id);
+        into.counted.add(top);
         into.folded.push({
           ...(run.decision === undefined ? {} : { decision: run.decision }),
           statement,
