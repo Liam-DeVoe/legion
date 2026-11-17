@@ -169,6 +169,44 @@ func TestAPersonsReviewDoesNotMoveTheReviewersCommit(t *testing.T) {
 	}
 }
 
+// Only the reviewer's own review-App session moves the commit (byReviewer), not every review the
+// review App submitted (byReviewApp): the controller, an architect and a sibling tree's role post
+// under the same login. A deciding review-App review whose footer names another session decides the
+// round when its author can write (DecidesRound), and the round's decision is that review's; the
+// commit is still the one the reviewer's own last deciding review read. The pull request moves to
+// headTwo before the other session's review, so a commit moved by that review would differ from
+// the reviewer's headOne.
+func TestAReviewAppReviewFromAnotherSessionDoesNotMoveTheReviewersCommit(t *testing.T) {
+	pool := migratedPool(t)
+	seedReviewOf(t, pool, headOne, "green")
+	seedClaimSession(t, pool, "review-claim", "ses-reviewer")
+	engine := testEngine(config.DesignGateRootIssues, nil)
+	apply := applyFacts(t, pool, engine)
+	apply("reviewer-requests-changes", reviewAt(1, "changes_requested", headOne, reviewTestedAt))
+	if got := reviewerRow(t, pool).ReviewedHead; got != headOne {
+		t.Fatalf("after the reviewer's own review the reviewer's row reads the reviewed commit %q, want %s: its footer names the session on the reviewer's claim", got, headOne)
+	}
+	mergesForward(t, pool, engine, headOne, headTwo, reviewTestedAt.Add(time.Hour))
+	backToReviewing(t, apply, 2)
+	if got := issuePhase(t, pool); got != phase.Reviewing {
+		t.Fatalf("after the tester passed round 2 the issue is in %s, want reviewing", got)
+	}
+
+	apply("another-session-requests-changes", intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, ID: 2, State: "changes_requested", CommitID: headTwo,
+		Author: testReviewApp, AuthorCanWrite: true, Body: "rename it\n\n<!-- legion: {\"session\":\"ses-controller\",\"phase\":\"review\",\"head\":\"" + headTwo + "\"} -->",
+		SubmittedAt: reviewTestedAt.Add(2 * time.Hour)})
+	if got := issuePhase(t, pool); got != phase.Implementing {
+		t.Fatalf("after the other session's request for changes the issue is in %s, want implementing: its author can write, so it decides the round", got)
+	}
+	row := reviewerRow(t, pool)
+	if row.Decision == nil || row.Decision.State != "changes_requested" || row.Decision.Head != headTwo {
+		t.Fatalf("round 2's decision = %+v, want the other session's request for changes at %s", row.Decision, headTwo)
+	}
+	if row.ReviewedHead != headOne {
+		t.Fatalf("the reviewer's row reads the reviewed commit %q, want %s: a review from another review-App session is no review the reviewer read", row.ReviewedHead, headOne)
+	}
+}
+
 // reviewedPartOf is the part of a later round's task that names head as the commit the
 // reviewer's own last deciding review read.
 func reviewedPartOf(head string) string {
