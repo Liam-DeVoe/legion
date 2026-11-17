@@ -44,6 +44,11 @@ const REPORT = {
   handoffVersion: 2,
 };
 
+/** What the implementer's retro reports in the pane: the commit alone, since a retro ends with no
+ * handoff record and the daemon refuses a retro's completion that names one
+ * (`HANDOFF_RECORD_MISMATCH`). */
+const RETRO_REPORT = { commit: "c".repeat(40) };
+
 /** A daemon refusal as its route answers it: the status, the code and the sentence. */
 type DaemonRefusal = { readonly status: number; readonly code: string; readonly error: string };
 
@@ -333,7 +338,12 @@ function stateAtPhase(phase: string): Record<string, unknown> {
 // retro. Which completion that is, is the daemon's to say (PLAN_RATING_UNEXPECTED,
 // PLAN_RATING_REQUIRED), so the tool sends the two fields as given, under the daemon's names.
 test("the retro's completion sends plan_rating and plan_reason as planRating and planReason", async () => {
-  const { ops, routes, posted, lookups } = runtime(implementer, stateAtPhase("retro"));
+  const { ops, routes, posted, lookups } = runtime(
+    implementer,
+    stateAtPhase("retro"),
+    undefined,
+    RETRO_REPORT
+  );
   const reason = "The tester found the bug the plan had left out.";
   await expect(
     executePhaseOp(ops, {
@@ -349,7 +359,7 @@ test("the retro's completion sends plan_rating and plan_reason as planRating and
     grantId: "grant-for-one-command",
     summary: "Retro done.",
     verdict: "",
-    ...REPORT,
+    ...RETRO_REPORT,
     planRating: 4,
     planReason: reason,
   });
@@ -447,7 +457,12 @@ test("the tool takes exactly the ratings the daemon takes, and sends a refused o
   expect(cases.map((c) => c.planReason)).toEqual(expect.arrayContaining(["\u0085", "\uFEFF"]));
   const parted: string[] = [];
   for (const c of cases) {
-    const { ops, routes, posted } = runtime(implementer, stateAtPhase("retro"));
+    const { ops, routes, posted } = runtime(
+      implementer,
+      stateAtPhase("retro"),
+      undefined,
+      RETRO_REPORT
+    );
     const rating = {
       ...(c.planRating === undefined ? {} : { plan_rating: c.planRating }),
       ...(c.planReason === undefined ? {} : { plan_reason: c.planReason }),
@@ -467,7 +482,7 @@ test("the tool takes exactly the ratings the daemon takes, and sends a refused o
         grantId: "grant-for-one-command",
         summary: "Retro done.",
         verdict: "",
-        ...REPORT,
+        ...RETRO_REPORT,
         planRating: c.planRating,
         planReason: c.planReason,
       };
