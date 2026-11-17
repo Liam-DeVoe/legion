@@ -273,7 +273,7 @@ func TestAStepRecordKeepsWhatItOmitsApartFromWhatItWritesEmpty(t *testing.T) {
 	started := time.Date(2026, 11, 16, 23, 0, 0, 123456789, time.UTC)
 	ended := started.Add(time.Hour)
 	session, model, result, report := "ses-1", "anthropic/claude-opus-5", "failed", "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b"
-	returnedTo := 2
+	returnedTo, retro := 2, 0
 	for _, tc := range []struct {
 		name    string
 		record  StepRecord
@@ -301,6 +301,14 @@ func TestAStepRecordKeepsWhatItOmitsApartFromWhatItWritesEmpty(t *testing.T) {
 				EndedAt: &ended, Result: &result},
 			absent:  []string{"session", "model", "started_at", "returned_to", "report"},
 			present: map[string]string{"agent": `""`, "type": `""`},
+		},
+		{
+			name: "the end of a merge that moved back to the retro, whose place it returned to is 0",
+			record: StepRecord{ID: stepRecordID, Task: "default", Kind: "merge", Role: "merger",
+				Agent: "legion-leg-leg-1-merger", Generation: 1, Session: &session, Model: &model, EndedAt: &ended,
+				Result: &result, ReturnedTo: &retro},
+			absent:  []string{"started_at", "report"},
+			present: map[string]string{"step": "0", "returned_to": "0"},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

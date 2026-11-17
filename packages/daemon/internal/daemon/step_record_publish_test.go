@@ -117,13 +117,19 @@ type stepRecordRig struct {
 
 func newStepRecordRig(t *testing.T, answer func(int) error) *stepRecordRig {
 	t.Helper()
+	return newStepRecordRigOf(t, stepRecordOf(), answer)
+}
+
+// newStepRecordRigOf is the rig with rec queued as the issue's step record row.
+func newStepRecordRigOf(t *testing.T, rec record.StepRecord, answer func(int) error) *stepRecordRig {
+	t.Helper()
 	pool := isolatedOutboxPool(t)
 	logs := &syncBuffer{}
 	client := &stepRecordDispatch{outboxDispatch: &outboxDispatch{}, answer: answer}
 	rig := &stepRecordRig{t: t, pool: pool, client: client, clock: microClock(), logs: logs}
 	rig.runner = &outbox{pool: pool, dispatchProject: "LEGION", records: record.NewStore(), dispatch: client,
 		log: slog.New(slog.NewJSONHandler(logs, nil)), now: rig.clock.Now}
-	enqueueOutbox(t, pool, record.NewStore(), mustOutboxRow(t, stepIssue, stepRecordOf(), rig.clock.Now()))
+	enqueueOutbox(t, pool, record.NewStore(), mustOutboxRow(t, stepIssue, rec, rig.clock.Now()))
 	return rig
 }
 
@@ -179,6 +185,28 @@ func TestAStepRecordRetriesUntilDispatchHasTheRoute(t *testing.T) {
 	}
 	if warned := loggedLines(t, logs, `"level":"WARN"`); len(warned) != 0 {
 		t.Fatalf("logged %d warnings, want none for a record that landed: %s", len(warned), logs)
+	}
+}
+
+// A merge that moves back to the retro returns its task to place 0, the retro's: the row carries
+// that 0 through the store, and the write Dispatch gets names it, where a nil would read as a
+// failed merge that returned nowhere.
+func TestAReturnToTheRetroReachesDispatchAsPlaceZero(t *testing.T) {
+	ended := time.Date(2026, 11, 17, 2, 0, 0, 0, time.UTC)
+	session, model, result, retro := "ses-merger", "anthropic/claude-opus-5", "failed", 0
+	rig := newStepRecordRigOf(t, record.StepRecord{ID: stepRecordID, Task: "default", Kind: "merge", Role: "merger",
+		Agent: "legion-legion-legion-1-merger", Generation: 1, Session: &session, Model: &model, EndedAt: &ended,
+		Result: &result, ReturnedTo: &retro}, nil)
+	rig.run()
+	if left := rig.left(); left != 0 {
+		t.Fatalf("rows left after Dispatch took the record = %d, want none", left)
+	}
+	puts := rig.client.received()
+	if len(puts) != 1 {
+		t.Fatalf("PUTs of the record = %d, want one", len(puts))
+	}
+	if got := puts[0].Write.ReturnedTo; got == nil || *got != 0 {
+		t.Fatalf("the write's returned_to = %v, want a pointer to 0, the retro's place", got)
 	}
 }
 

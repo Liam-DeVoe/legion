@@ -409,6 +409,40 @@ func TestPutStepWritesTheRecordUnderTheDaemonSession(t *testing.T) {
 	}
 }
 
+// A merge that moves back to the retro ends failed and returns its task to place 0, the retro's:
+// the end write names returned_to as 0, a value, where a write that returns nowhere leaves it out
+// (TestPutStepWritesTheRecordUnderTheDaemonSession), so Dispatch can tell the two apart.
+func TestPutStepWritesAReturnToTheRetroAsPlaceZero(t *testing.T) {
+	const id = "1c2d3e4f-5a6b-5c7d-8e9f-0a1b2c3d4e5f"
+	ended := time.Date(2026, 11, 17, 2, 0, 0, 0, time.UTC)
+	var body map[string]json.RawMessage
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut || r.URL.EscapedPath() != "/api/v1/issues/LEG-1/steps/"+id {
+			t.Fatalf("request = %s %s, want PUT /api/v1/issues/LEG-1/steps/%s", r.Method, r.URL.EscapedPath(), id)
+		}
+		assertBearer(t, r)
+		decodeJSON(t, r, &body)
+		writeJSON(t, w, map[string]any{"id": id, "issue": "LEG-1"})
+	}))
+	defer server.Close()
+
+	session, model, result, retro := "ses-merger", "anthropic/claude-opus-5", "failed", 0
+	write := StepWrite{Task: "default", Step: 0, Kind: "merge", Role: "merger", Type: "",
+		Agent: "legion-leg-leg-1-merger", Generation: 1, Session: &session, Model: &model, EndedAt: &ended,
+		Result: &result, ReturnedTo: &retro}
+	if err := New(server.URL, dispatchToken).PutStep(context.Background(), "LEG-1", id, write); err != nil {
+		t.Fatalf("write the step record: %v", err)
+	}
+	for name, want := range map[string]string{
+		"kind": `"merge"`, "step": "0", "session": `"ses-merger"`, "model": `"anthropic/claude-opus-5"`,
+		"ended_at": `"2026-11-17T02:00:00Z"`, "result": `"failed"`, "returned_to": "0",
+	} {
+		if got, ok := body[name]; !ok || string(got) != want {
+			t.Errorf("the body writes %s as %q (written: %t), want %s", name, got, ok, want)
+		}
+	}
+}
+
 func TestPostMessageSendsBodyWithoutAnUnsupportedIdempotencyKey(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/issues/LEGION-5/messages" {
