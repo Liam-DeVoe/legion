@@ -95,7 +95,10 @@ export function lensActFor(node: TreeNode, act: LensAct): boolean {
  * `rowStops`). It carries `data-row-lens` and not `data-row-act`, which names the writer's acts
  * alone. A press opens the menu, titled `LENS_WORDS.menu_title`, which reads the lens catalogue
  * as it opens - once in a load, and again after a read that failed - and lists each kind in the
- * catalogue's order by its words and, under them, its first source's standard.
+ * catalogue's order by its words and, under them, its first source's standard. While the
+ * catalogue is read, once its read failed, and while a pick is out, the menu says so on one line
+ * with the role `status` beside it, in the panel the menu stands in
+ * (`LENS_ANSWERS.loading_kinds`, `kinds_failed`, `examining`).
  *
  * The menu is drawn with phrasing elements, since it stands in `RowActs`' `<p>`, on a line of its
  * own under the acts, hung from that line's left edge and no wider than it, so it stays inside
@@ -151,10 +154,11 @@ function ActAndMenu({
     if (focus === list || !list.contains(focus)) first.focus();
   }, [open, listed]);
 
-  // A press outside the act and the menu closes it, and leaves the focus to the press. Escape is
-  // read in the capture phase, as `IssuePresets.tsx`'s menu reads it, so it is marked before any
-  // other listener of the page's: the tree's own Escape passes a marked key by (`keymap.ts`). A
-  // dialog over the page takes its own presses and its own Escape.
+  // A press outside the act and the menu closes it - a press on the line beside the menu too,
+  // which takes no focus - and leaves the focus to the press. Escape is read in the capture
+  // phase, as `IssuePresets.tsx`'s menu reads it, so it is marked before any other listener of
+  // the page's: the tree's own Escape passes a marked key by (`keymap.ts`). A dialog over the
+  // page takes its own presses and its own Escape.
   useEffect(() => {
     if (!open) return;
     const inDialog = (target: EventTarget | null) =>
@@ -185,8 +189,6 @@ function ActAndMenu({
   const openMenu = () => {
     setRefusal(undefined);
     setOpen(true);
-    // A failed read holds no catalogue: the next opening reads it again (R6).
-    if (kinds.isError) void kinds.refetch();
   };
 
   /** Closes the menu once an invocation is answered, giving the focus back to the row where it
@@ -202,7 +204,8 @@ function ActAndMenu({
     if (examining) return;
     setExamining(true);
     void invoke(on, kind).then(
-      // The tree read and the move to the new lens's row are t8's.
+      // By the time `useInvokeLens` answers, it has read the tree again and, where Dispatch
+      // answered the lens it made, moved the address to the new lens's row.
       answered,
       (error: unknown) => {
         setRefusal(error instanceof ApiError && error.status === 404 ? "gone" : "failed");
@@ -235,6 +238,16 @@ function ActAndMenu({
     const to = step(event.key, at, items.length);
     if (to !== undefined) items[to]?.focus();
   };
+
+  // What the menu's line says: that a pick is out, else, while the menu lists no kind, that the
+  // catalogue's read failed or is out; nothing once the kinds are listed.
+  const line: { readonly failed: boolean; readonly words: string } | undefined = examining
+    ? { failed: false, words: LENS_ANSWERS.examining }
+    : listed !== undefined
+      ? undefined
+      : kinds.isError && !kinds.isFetching
+        ? { failed: true, words: LENS_ANSWERS.kinds_failed }
+        : { failed: false, words: LENS_ANSWERS.loading_kinds };
 
   return (
     <>
@@ -269,23 +282,23 @@ function ActAndMenu({
       {open ? (
         // A line of its own under the acts, which the menu hangs from.
         <span className="relative block h-0 basis-full">
-          <span
-            aria-labelledby={titleId}
-            className={`${pageMenu} left-0 max-w-full text-left`}
-            onKeyDown={walk}
-            ref={menu}
-            role="menu"
-            tabIndex={-1}
-          >
+          <span className={`${pageMenu} left-0 max-w-full text-left`}>
             <span
-              className={`block px-2 pt-1 pb-1.5 text-xs font-semibold ${pageMutedText}`}
-              id={titleId}
-              {...pageChrome}
+              aria-labelledby={titleId}
+              className="flex flex-col"
+              onKeyDown={walk}
+              ref={menu}
+              role="menu"
+              tabIndex={-1}
             >
-              {LENS_WORDS.menu_title}
-            </span>
-            {listed !== undefined ? (
-              listed.map((kind) => {
+              <span
+                className={`block px-2 pt-1 pb-1.5 text-xs font-semibold ${pageMutedText}`}
+                id={titleId}
+                {...pageChrome}
+              >
+                {LENS_WORDS.menu_title}
+              </span>
+              {(listed ?? []).map((kind) => {
                 const standard = kind.sources?.[0]?.standard ?? "";
                 return (
                   <button
@@ -310,21 +323,25 @@ function ActAndMenu({
                     )}
                   </button>
                 );
-              })
-            ) : kinds.isError && !kinds.isFetching ? (
-              <span className={`block px-2 py-[7px] text-sm ${pageFailedText}`} {...pageChrome}>
-                {LENS_ANSWERS.kinds_failed}
-              </span>
-            ) : (
-              <span className={`block px-2 py-[7px] text-sm ${pageQuietText}`} {...pageChrome}>
-                {LENS_ANSWERS.loading_kinds}
-              </span>
-            )}
-            {examining ? (
-              <span className={`block px-2 py-[7px] text-sm ${pageQuietText}`} {...pageChrome}>
-                {LENS_ANSWERS.examining}
-              </span>
-            ) : null}
+              })}
+            </span>
+            {/* What the menu says of its reads stands beside it, not in it, on one line with the
+                role `status`: the menu holds the focus while the catalogue is read, and a screen
+                reader reads a status out as it changes, which it does not do for words inside
+                the focused menu. The line is drawn while the menu is open, empty while it says
+                nothing, so it is in place before it first speaks. */}
+            <span
+              className={
+                line === undefined
+                  ? undefined
+                  : `block px-2 py-[7px] text-sm ${line.failed ? pageFailedText : pageQuietText}`
+              }
+              data-lens-menu-line=""
+              role="status"
+              {...pageChrome}
+            >
+              {line?.words}
+            </span>
           </span>
         </span>
       ) : null}
