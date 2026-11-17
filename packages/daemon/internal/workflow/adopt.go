@@ -182,7 +182,7 @@ func (e *Engine) tellReparented(ctx context.Context, tx pgx.Tx, issue *record.Is
 		return err
 	}
 	issue.ToldParent = fact.Parent
-	if err := e.putIssue(ctx, tx, *issue); err != nil {
+	if err := e.WriteIssue(ctx, tx, *issue); err != nil {
 		return err
 	}
 	told := fmt.Sprintf("%s is now a child of %s in Dispatch, and it stays a tree of its own in Legion: %s, so the tree of %s cannot take it in and its architect cannot release it. It runs under its own architect, and its work reaches the tree of %s only through that tree's own issues.",
@@ -280,7 +280,7 @@ func (e *Engine) moveIntoTree(ctx context.Context, tx pgx.Tx, member, root recor
 	// again at a run of its own (ReenterChild).
 	member.Tree, member.Project, member.Generation, member.Phase = root.Tree, root.Project, next, phase.Done
 	member.LingerUntil, member.Hold, member.Ancestry = nil, nil, nil
-	return e.putIssue(ctx, tx, member)
+	return e.WriteIssue(ctx, tx, member)
 }
 
 // joinedTheTree is the child-status notice an adoption sends the architect of the tree that

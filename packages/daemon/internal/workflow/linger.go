@@ -110,7 +110,7 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 			return err
 		}
 		issue.Hold = nil
-		if err := e.putIssue(ctx, tx, issue); err != nil {
+		if err := e.WriteIssue(ctx, tx, issue); err != nil {
 			return err
 		}
 	}
@@ -242,7 +242,7 @@ func (e *Engine) leaveUnderOperator(ctx context.Context, tx pgx.Tx, root record.
 		return err
 	}
 	root.Hold, root.Awaiting = nil, nil
-	return e.putIssue(ctx, tx, root)
+	return e.WriteIssue(ctx, tx, root)
 }
 
 // LeaveUnslotted takes out of the workflow a root admission found in it with neither a slot nor a
@@ -365,7 +365,7 @@ func (e *Engine) beginLinger(ctx context.Context, tx pgx.Tx, root record.Issue, 
 		return err
 	}
 	root.Hold, root.Awaiting = nil, nil
-	if err := e.putIssue(ctx, tx, root); err != nil {
+	if err := e.WriteIssue(ctx, tx, root); err != nil {
 		return err
 	}
 	for _, member := range members {

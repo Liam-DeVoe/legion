@@ -122,7 +122,7 @@ func issuePhaseOf(w Walk, place record.TaskPlace, state string) phase.Phase {
 // moveTask is the one writer of where a task stands: it moves w's task to the place of to in state
 // (record.Store.MoveTask), keeping its place on a move to done, and sets issue.Phase to the phase
 // that place derives (issuePhaseOf), in the caller's transaction and before the caller's write of
-// issue (putIssue). w then stands where the task does, for whatever the caller reads of it after
+// issue (WriteIssue). w then stands where the task does, for whatever the caller reads of it after
 // the move. A run with no plan rows has no task to move, and issue.Phase is to, as it always was. A
 // move to where the task already stands writes nothing. The caller clears or keeps issue.Hold
 // itself.
@@ -148,15 +148,18 @@ func (e *Engine) moveTask(ctx context.Context, tx pgx.Tx, issue *record.Issue, w
 	return nil
 }
 
-// putIssue writes issue (record.Store.PutIssue), and is the one write of an issue in this package.
-// issues.phase and the place of the run's task are two records of where the issue stands, and
-// putIssue refuses a write in which they disagree: the issue stands in the phase its task's place
-// and state derive (issuePhaseOf), a hold overlays that phase and names it (record.StandsAt), and
-// a root that waits on a person before its first step stands in awaiting_person over the admitted
-// of a task at no act. It reads the walk in the caller's transaction, after any move of the task
-// (moveTask), so a write that names its phase itself is checked against the store and not against
-// the caller's copy. A run with no plan rows has only its phase, and nothing is checked.
-func (e *Engine) putIssue(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
+// WriteIssue writes issue (record.Store.PutIssue), and is the one write of an issue of the workflow
+// and of admission: no other code of either package calls a store's PutIssue (the scan of
+// TestEveryWriteOfAnIssueChecksItsPhaseAgainstItsTasksPlace). issues.phase and the place of the
+// run's task are two records of where the issue stands, and WriteIssue refuses a write in which
+// they disagree: the issue stands in the phase its task's place and state derive (issuePhaseOf), a
+// hold overlays that phase and names it (record.StandsAt), and a root that waits on a person
+// before its first step stands in awaiting_person over the admitted of a task at no act. It reads
+// the walk in the caller's transaction, after any move of the task (moveTask), so a write that
+// names its phase itself is checked against the store and not against the caller's copy: one read
+// of issue_plans for a run with no plan rows, which has only its phase and is not checked, and
+// three reads (issue_plans, plan_tasks, plan_steps) for a run with plan rows.
+func (e *Engine) WriteIssue(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
 	w, err := e.walk(ctx, tx, issue)
 	if err != nil {
 		return err
