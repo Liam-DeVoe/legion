@@ -2385,9 +2385,9 @@ Parsing mints an omitted id, while live document reads and writes validate each 
 Schema changes are additive: add a type, add a defaulted attribute, add an enum choice, or widen a content rule.
 Tightening content, removing or renaming a type or attribute, or requiring a new attribute requires a document migration and version bump.
 
-The shipped types are `callout`, `ask`, `requirement`, `plan_task` and `check` (`pmdoc/schema/blocks.json`, version 4, which added `ci_check` to `check`), the last three each holding `paragraph+`:
+The shipped types are `callout`, `ask`, `requirement`, `plan_task` and `check` (`pmdoc/schema/blocks.json`, version 8), the last three each holding `paragraph+`:
 `requirement`, one requirement of an issue's spec, with no attribute of its own;
-`plan_task`, one task of a plan, with the `block[]` attributes `serves` (the requirements it serves) and `needs` (the tasks of the same plan it needs first);
+`plan_task`, one task of a plan, with the `block[]` attributes `serves` (the requirements it serves) and `needs` (the tasks of the same plan it needs first), the string `steps` (the steps the task runs, in order; read and created from version 5) and the enum `merges` (`true`, `false`: whether the task's work merges by itself; read and created from version 8);
 and `check`, one thing that must be proved, with `serves`, the enum `surface` (`browser`, `cli`, `api`), the strings `run`, `negative_control` and `ci_check` (the GitHub check run that proves the check), and the enum `when` (`before_merge`, `after_merge`, `default_branch`, defaulted `before_merge`).
 A document holding them is an ordinary document: the role its name gave it (`verification`, `plan`) says which blocks a reader expects, and nothing refuses a `check` block in another document.
 A check whose `ci_check` names a run carries no `run`, keeps `when` `before_merge`, names its `negative_control` and holds no recorded result (`docs.CICheckRuleIn`), and no rule of `blocks.json` can say so, since an attribute there declares only itself:
