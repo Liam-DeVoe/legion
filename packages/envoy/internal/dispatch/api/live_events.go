@@ -472,17 +472,19 @@ func sightMoved(held, next *model.Viewer, event model.Event) bool {
 	if held.Open != next.Open {
 		return true
 	}
-	if sameProjects(held.Sees, next.Sees) {
+	if sameSet(held.Sees, next.Sees) {
 		return false
 	}
 	if event.Type == projectCreatedEvent && !slices.Contains(held.Sees, event.Project) {
-		return !sameProjects(append(slices.Clone(held.Sees), event.Project), next.Sees)
+		return !sameSet(append(slices.Clone(held.Sees), event.Project), next.Sees)
 	}
 	return true
 }
 
-// sameProjects reports whether a and b hold the same project keys, each holding a key once.
-func sameProjects(a, b []string) bool {
+// sameSet reports whether a and b hold the same strings, each holding a string once: the projects
+// two viewers see, or the projects and the scopes two resolutions of one credential grant
+// (sameCredentialGrant).
+func sameSet(a, b []string) bool {
 	return len(a) == len(b) && slices.Equal(slices.Sorted(slices.Values(a)), slices.Sorted(slices.Values(b)))
 }
 
