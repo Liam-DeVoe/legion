@@ -87,6 +87,7 @@ import { nodesInOrder } from "../tree-keys";
 import { useTreeRead, viewQuery } from "../tree-read/tree-read";
 import { useTreeKeymap } from "../useTreeKeymap";
 import {
+  cellNodeOf,
   type SpecDecision,
   type SpecGroup,
   type SpecMark,
@@ -203,9 +204,10 @@ export function SpecFilterBody({
   // `shaped` ties, which the asks read says is answered (`decisionNodes`). The view read is
   // watched by an observer that is never enabled, under the key the page reads it by
   // (`ViewReadProvider`). A change of the issue marks the view stale and reads it again with its
-  // answer kept (`subscribeTreeFreshness`); a new load, a Keep, a Change and a Settle drop it
-  // (`dropViews`), and the column then draws the answer it last held (`last`) until the next one
-  // lands. A read again that fails keeps its answer, which leaves the body an answer to draw too.
+  // answer kept (`subscribeTreeFreshness`); a new load, a Keep, a Change, a Settle and a lens
+  // pick that lands drop it (`dropViews`), and the column then draws the answer it last held
+  // (`last`) until the next one lands. A read again that fails keeps its answer, which leaves the
+  // body an answer to draw too.
   const specRead = useQuery({ ...viewQuery(issue.key, "spec"), enabled: false });
   const answered = root.views?.spec;
   const [last, setLast] = useState(answered);
@@ -290,7 +292,7 @@ export function SpecFilterBody({
   );
   // Each group of `groups` as the body draws it: read again with each decision at or under an
   // overtaken node left out before any run is headed, so no cell draws one and no statement
-  // names one. A decision stands where the node its cell is drawn as stands (`decisionOf` in
+  // names one. A decision stands where the node its cell is drawn as stands (`cellNodeOf` in
   // `spec-decided-by.ts`): its own node where the tree holds it, else, for a person's, the answered
   // question it is drawn by. A statement such a decision would have headed is headed by its next
   // tie, as `specDecidedBy` picks it - a person's decision that waits on the asks read keeps its
@@ -298,26 +300,10 @@ export function SpecFilterBody({
   // groups of the two readings are one for one; each is itself where no decision is closed.
   const drawnGroups = useMemo((): ReadonlyMap<SpecGroup, SpecGroup> => {
     if (closedIds.size === 0) return new Map(groups.map((group) => [group, group]));
-    // Every node of the tree, and each ask by the id a decision names it with (`Decision.asks`),
-    // the first placement of each, as `specDecidedBy` reads them.
-    const held = new Set<string>();
-    const asked = new Map<string, TreeNode>();
-    for (const node of nodesInOrder(root)) {
-      held.add(node.id);
-      const route =
-        node.type === "ask" && node.reference !== undefined
-          ? parseNodeReference(node.reference)
-          : undefined;
-      if (route?.kind === "ask" && !asked.has(route.id)) asked.set(route.id, node);
-    }
+    const cellOf = cellNodeOf(root, nodeIdOf);
     const standing = decisions.filter((made) => {
-      const own = nodeIdOf(made.ref);
-      if (own !== undefined && held.has(own)) return !closedIds.has(own);
-      if (made.kind !== "person") return true;
-      const answered = (made.asks ?? [])
-        .map((ask) => asked.get(ask))
-        .find((ask) => ask?.answer !== undefined);
-      return answered === undefined || !closedIds.has(answered.id);
+      const cell = cellOf(made);
+      return cell === undefined || !closedIds.has(cell.id);
     });
     const read =
       standing.length === decisions.length
