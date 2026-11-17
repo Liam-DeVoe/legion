@@ -220,6 +220,9 @@ type Watcher struct {
 	unverifiedErr   error
 	unverifiedRuns  int
 	settleSince     time.Time
+	// settleDeadline is when the armed bound on the current read's wait past its barrier runs
+	// out (armSettle, settleExpired).
+	settleDeadline time.Time
 
 	// completedOnce is set by the first read that completed, and following while the copy follows
 	// the bucket: from a read's completion until the next stop (stopFollowing, watch). staleSince is
@@ -600,7 +603,7 @@ func (w *Watcher) consume(sub *subscription, generation uint64, read Read, start
 			case scanning && w.idleExpired(generation, last, idle):
 				scanning = false
 				w.endScan(generation, scan, started, true)
-			case settle != nil && settle.barrier != 0 && w.settleExpired(generation):
+			case settle != nil && settle.barrier != 0 && w.settleExpired(generation, idle):
 				// A consumer left on a bucket deleted and created again never reaches a barrier
 				// written to the new one: the stream check says so, and reads the new bucket.
 				if w.confirmStream(generation) == streamReplaced {
@@ -753,22 +756,32 @@ func (w *Watcher) beginSettle(generation uint64, read Read) *settling {
 }
 
 // armSettle arms generation's bound on its wait past the barrier, the idle timeout from the
-// barrier's acknowledgement, on the scan's idle wait, which the scan's end disarmed.
+// barrier's acknowledgement, on the scan's idle wait, which the scan's end disarmed. The bound's
+// deadline is kept (settleDeadline), so a signal on that channel ends the wait only once it has
+// gone (settleExpired).
 func (w *Watcher) armSettle(generation uint64, idle chan<- struct{}) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if generation == w.generation && !w.stopped {
+		w.settleDeadline = w.now().Add(w.scanIdle)
 		w.armIdle(w.scanIdle, idle)
 	}
 }
 
 // settleExpired reports whether generation's wait past its barrier has gone the idle timeout, when
-// its bound signalled: a signal for a generation no longer current, after Stop, or once the bound
-// was disarmed ends nothing.
-func (w *Watcher) settleExpired(generation uint64) bool {
+// a signal came on its channel: a signal for a generation no longer current, after Stop, or once
+// the bound was disarmed ends nothing. The scan's idle wait signals the same channel, and a
+// stopped wait's callback may already be running (time.Timer.Stop does not wait for it), so a
+// signal before the bound's deadline - the scan's retired wait - ends nothing either: the bound is
+// armed again for what remains of it, as idleExpired does for a scan.
+func (w *Watcher) settleExpired(generation uint64, idle chan<- struct{}) bool {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if generation != w.generation || w.stopped || w.idleTimer == nil {
+		return false
+	}
+	if remaining := w.settleDeadline.Sub(w.now()); remaining > 0 {
+		w.armIdle(remaining, idle)
 		return false
 	}
 	w.clearIdleArm()

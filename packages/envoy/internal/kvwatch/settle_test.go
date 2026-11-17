@@ -260,6 +260,9 @@ func TestAReadsWaitPastItsBarrierIsBoundedAndReported(t *testing.T) {
 	if err := w.ReadErr(); !errors.Is(err, kvwatch.ErrUnverified) || !strings.Contains(err.Error(), "still waiting") {
 		t.Fatalf("ReadErr once a wait still under way has outlasted the 2m stale bound = %v, want %v naming the wait", err, kvwatch.ErrUnverified)
 	}
+	// The wait's own deadline has gone once it fires: a signal before it ends nothing
+	// (TestARetiredScanWaitDoesNotEndTheWaitPastTheBarrier).
+	clock.advance(7 * time.Hour)
 	timers.last(t, 7*time.Hour).fire()
 	eventually(t, "the failed wait's re-read to be armed", func() bool { return len(timers.armed(5*time.Second)) == 1 })
 	if err := w.ReadErr(); !errors.Is(err, kvwatch.ErrUnverified) || !strings.Contains(err.Error(), "over 1 reads") {
