@@ -122,7 +122,7 @@ export function MultiSelect({
   const activeRow = activeValue !== undefined && rows.includes(activeValue) ? activeValue : rows[0];
 
   // What the reader picked, compared as the server compares a label: a URL that lower-cased
-  // `Epic` still ticks the option the project spells `Epic`, and ticking it again removes it
+  // `Legion` still ticks the option the project spells `Legion`, and ticking it again removes it
   // rather than adding a second spelling.
   const isPicked = (value: string) => selected.some((current) => fold(current) === fold(value));
   const toggle = (value: string) => {

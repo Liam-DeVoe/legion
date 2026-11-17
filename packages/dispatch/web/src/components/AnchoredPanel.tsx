@@ -68,7 +68,7 @@ const PANEL_MARK = { [PANEL_ATTRIBUTE]: "" };
  *
  * The host owns whether it is open: it renders the panel or it does not. Every popover in
  * Dispatch is built on this, so a dismissal fix is made once (`MultiSelect`, and the issues
- * table's column filters, Columns menu and epic actions).
+ * table's column filters and Columns menu).
  */
 export function AnchoredPanel({
   align = "left",

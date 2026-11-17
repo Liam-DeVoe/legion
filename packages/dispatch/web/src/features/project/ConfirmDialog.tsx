@@ -15,10 +15,10 @@ import {
 import { useDialog } from "../shell/useDialog";
 
 /**
- * The page's own "are you sure", for a table action that closes an issue: the same small modal
- * `EpicNameDialog` uses, so it traps focus, closes on Escape and gives focus back to the
- * control the reader came from. Never `window.confirm`, which a browser may suppress and which
- * cannot name what is about to happen in the page's own words.
+ * The page's own "are you sure", for a table action the reader has not seen the whole of: the
+ * same small modal create-issue uses, so it traps focus, closes on Escape and gives focus back to
+ * the control the reader came from. Never `window.confirm`, which a browser may suppress and
+ * which cannot name what is about to happen in the page's own words.
  */
 export function ConfirmDialog({
   title,

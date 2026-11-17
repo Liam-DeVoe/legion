@@ -1,27 +1,24 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ApiError } from "../../api/client";
 import { readStore, writeStore } from "../../components/table-storage";
 import { newSendKey } from "../../lib/send-key";
 import { settledWithLimit } from "../../lib/settled";
-import { defineWriteKind, useWrites } from "../writes/write-store";
+import { useWrites } from "../writes/write-store";
 import { tableStorageKey, WRITES_IN_FLIGHT } from "./issues-table-model";
 
 /** The kinds of action a reload can interrupt. The union and the check a stored record passes
  *  are one list, so neither can gain a kind the other refuses. */
-export const ACTION_KINDS = ["newEpic", "startNext", "merge"] as const;
+export const ACTION_KINDS = ["startNext"] as const;
+/** The kinds an earlier build recorded for its epic tools, which are gone. A stored record of
+ *  one is dropped when it is read, and the layout stored beside it stays. */
+const REMOVED_KINDS: readonly string[] = ["newEpic", "merge"];
 export interface TableAction {
   id: string;
   kind: (typeof ACTION_KINDS)[number];
   project: string;
   keys: readonly string[];
-  source?: string;
-  target?: string;
   /** When the action was begun, as epoch milliseconds. A record older than `ACTION_LIFETIME_MS`
    *  is a tab somebody closed a day ago, not work this reader left half-done. */
   startedAt?: number;
-  /** The merge reason exactly as it was sent, so a resume knows the sentence it is looking for
-   *  even if the target has been renamed, or closed, since. */
-  reasonBody?: string;
   writes: Record<string, string>;
 }
 /** How long a stored action is still the reader's to finish: a day. Past that the banner goes
@@ -33,6 +30,10 @@ export const ACTION_LIFETIME_MS = 24 * 60 * 60 * 1000;
  *  one storage key, and read back only where every field is the kind it was written as. */
 export function readTableAction(project: string): TableAction | undefined {
   const action = readStore(tableStorageKey(project)).action as TableAction | undefined;
+  if (REMOVED_KINDS.includes(String(action?.kind))) {
+    writeTableAction(project, undefined);
+    return undefined;
+  }
   if (
     action?.project === project &&
     typeof action.id === "string" &&
@@ -43,13 +44,8 @@ export function readTableAction(project: string): TableAction | undefined {
     typeof action.writes === "object" &&
     !Array.isArray(action.writes) &&
     Object.values(action.writes).every((key) => typeof key === "string") &&
-    (action.target === undefined || typeof action.target === "string") &&
     (action.startedAt === undefined ||
-      (typeof action.startedAt === "number" &&
-        Date.now() - action.startedAt < ACTION_LIFETIME_MS)) &&
-    (action.reasonBody === undefined || typeof action.reasonBody === "string") &&
-    (action.kind !== "merge" ||
-      (typeof action.source === "string" && typeof action.target === "string"))
+      (typeof action.startedAt === "number" && Date.now() - action.startedAt < ACTION_LIFETIME_MS))
   )
     return action;
   return undefined;
@@ -58,30 +54,6 @@ export function readTableAction(project: string): TableAction | undefined {
 export function writeTableAction(project: string, action: TableAction | undefined): void {
   writeStore(tableStorageKey(project), { action });
 }
-
-// Keep the answer's issue key even when the table that started creation is no longer mounted.
-export const tableEpicWrite = defineWriteKind<string>({
-  name: "issues-table-epic",
-  kept: (value): value is string => typeof value === "string",
-  landed: (client, write, answer, awaited) => {
-    const action = readTableAction(write.detail);
-    if (
-      action?.writes.create === write.key &&
-      answer &&
-      typeof answer === "object" &&
-      "key" in answer &&
-      typeof answer.key === "string"
-    ) {
-      writeTableAction(write.detail, { ...action, target: answer.key });
-    }
-    // What a created epic changes is this project's listings and the ancestry read that hangs
-    // off them, not every query the tab holds.
-    if (!awaited || answer === null) {
-      void client.invalidateQueries({ queryKey: ["issues", "project", write.detail] });
-      void client.invalidateQueries({ queryKey: ["issue-ancestors", write.detail] });
-    }
-  },
-});
 
 export function useTableRecovery(project: string, report: (text: string) => void) {
   const writes = useWrites();
@@ -132,14 +104,13 @@ export function useTableRecovery(project: string, report: (text: string) => void
         setAction(record);
       }
       if (event.kind === "refused") {
-        if (!(event.refusal instanceof ApiError && event.refusal.code === "POSSIBLE_DUPLICATE"))
-          failed.current.set(
-            event.write.id,
-            owned.current.get(event.write.id)?.issue ?? event.write.label
-          );
+        failed.current.set(
+          event.write.id,
+          owned.current.get(event.write.id)?.issue ?? event.write.label
+        );
       } else if (failed.current.delete(event.write.id)) {
         // Only a write of the interrupted action's own says anything about finishing it: a
-        // Move or a Rename retried beside one reports like any other change.
+        // write of an action the reader dismissed reports like any other change.
         const ofAction =
           current.current !== undefined &&
           owned.current.get(event.write.id)?.action === current.current.id;
@@ -191,14 +162,10 @@ export function useTableRecovery(project: string, report: (text: string) => void
     /** The keys of the writes a step of `id`'s action is about to send, kept with the record so
      *  a resume can wait on them. One storage write and one render for the whole batch: a
      *  250-row action records its keys once, not once per issue. */
-    record: (
-      steps: Readonly<Record<string, string>>,
-      id?: string,
-      fields?: Partial<TableAction>
-    ) => {
+    record: (steps: Readonly<Record<string, string>>, id: string) => {
       const held = current.current;
-      if (id && held?.id === id && (Object.keys(steps).length || fields))
-        remember({ ...held, ...fields, writes: { ...held.writes, ...steps } });
+      if (held?.id === id && Object.keys(steps).length)
+        remember({ ...held, writes: { ...held.writes, ...steps } });
     },
     watch: (key: string, issue: string) => {
       const row = writes.rows().find((value) => value.key === key);

@@ -8,11 +8,9 @@ import {
   compareGroups,
   defaultView,
   facetCounts,
-  isEpic,
   isQueued,
   matchesFilters,
   matchesSearch,
-  mergeMembers,
   queuedInOrder,
   readSelection,
   readUrl,
@@ -121,7 +119,7 @@ test("URL round trip preserves Board status and label params plus every table co
       { id: "priority", desc: true },
       { id: "key", desc: false },
     ],
-    grouping: ["epic"],
+    grouping: ["assignee"],
     search: "two words",
     page: 3,
     pageSize: 25,
@@ -166,19 +164,13 @@ test("Start next ranks the selected rows in queue order and skips the ones alrea
   ]);
 });
 
-// The server matches a label on `lower(label)`, so an issue labelled `Legion` is queued and one
-// labelled `Epic` is an epic, exactly as the lower-case spellings are.
-test("the legion and epic labels are matched case-insensitively", () => {
+// The server matches a label on `lower(label)`, so an issue labelled `Legion` is queued, exactly
+// as the lower-case spelling is.
+test("the legion label is matched case-insensitively", () => {
   expect(isQueued(issue("A", { labels: ["Legion"] }))).toBe(true);
   expect(isQueued(issue("A", { labels: ["LEGION"], status: "testing" }))).toBe(false);
-  expect(isEpic(issue("A", { labels: ["Epic"] }))).toBe(true);
-  expect(isEpic(issue("A", { labels: ["epic"], status: "done" }))).toBe(false);
-  const rows = buildItems(
-    [issue("A", { labels: ["Epic"] }), issue("B", { parent: "A", labels: ["Legion"] })],
-    (actor) => actor.id
-  );
+  const rows = buildItems([issue("B", { labels: ["Legion"] })], (actor) => actor.id);
   expect(rows.find((row) => row.issue.key === "B")?.queue).toBe(1);
-  expect(rows.find((row) => row.issue.key === "B")?.epicKey).toBe("A");
 });
 
 test("Nobody or lapsed picks unheld and takeable claims, and ?unclaimed=1 still sets it", () => {
@@ -188,7 +180,6 @@ test("Nobody or lapsed picks unheld and takeable claims, and ?unclaimed=1 still 
   const rows = buildItems(
     [held, issue("B")],
     (actor) => actor.id,
-    [],
     (row) => row.key === "B"
   );
   const picked = [{ id: "claim", value: [UNCLAIMED_FACET] }];
@@ -204,47 +195,6 @@ test("Nobody or lapsed picks unheld and takeable claims, and ?unclaimed=1 still 
   expect(fromLink.filters.find(({ id }) => id === "claim")?.value).toEqual([UNCLAIMED_FACET]);
   // And a view written back from it keeps the parameter the Board's own chip reads.
   expect(writeUrl(new URLSearchParams(), fromLink).get("unclaimed")).toBe("1");
-});
-
-test("an open root labelled epic is a row of its own, and equal titles never merge groups", () => {
-  const rows = buildItems(
-    [
-      issue("A", { labels: ["epic"], title: "Same" }),
-      issue("B", { labels: ["epic"], title: "Same" }),
-      issue("C", { parent: "A" }),
-      issue("D", { parent: "C" }),
-      issue("E", { parent: "B" }),
-    ],
-    (actor) => actor.id
-  );
-  expect(rows.find((row) => row.issue.key === "A")?.epicKey).toBe("A");
-  expect(rows.find((row) => row.issue.key === "B")?.epicKey).toBe("B");
-  expect(rows.find((row) => row.issue.key === "D")?.epicKey).toBe("A");
-  expect(rows.find((row) => row.issue.key === "D")?.epic).not.toBe(
-    rows.find((row) => row.issue.key === "E")?.epic
-  );
-});
-
-test("a closed intermediate parent does not hide an open root epic", () => {
-  const rows = buildItems(
-    [issue("A", { labels: ["epic"] }), issue("C", { parent: "B" })],
-    (actor) => actor.id,
-    [issue("B", { parent: "A", status: "done" })]
-  );
-  expect(rows.find((row) => row.issue.key === "C")?.epicKey).toBe("A");
-});
-
-test("a merge crosses closed intermediates but does not flatten an open subtree", () => {
-  const rows = [
-    issue("A", { labels: ["epic"] }),
-    issue("B", { parent: "A", status: "done" }),
-    issue("C", { parent: "B" }),
-    issue("D", { parent: "C" }),
-    issue("E", { parent: "A" }),
-    issue("F", { parent: "B", status: "done" }),
-    issue("G", { parent: "F" }),
-  ];
-  expect(mergeMembers(rows, "A")).toEqual(["C", "E", "G"]);
 });
 
 // B1: a `?status=` this bundle does not know is still the reader's filter, under its own text.
@@ -282,12 +232,25 @@ test("the Key column filters by typed text", () => {
   expect(matchesFilters(item, [{ id: "key", value: "CORE-9" }])).toBe(false);
 });
 
-// I3: a key reads as a number where it is one, and the empty group reads last.
+// I3: a number inside a name reads as a number, and the empty group reads last.
 test("groups order by number inside a name, with the empty group last", () => {
-  expect(compareGroups("epic", "CORE-2 · Two", "CORE-10 · Ten")).toBeLessThan(0);
-  expect(compareGroups("epic", "No epic", "CORE-10 · Ten")).toBeGreaterThan(0);
+  expect(compareGroups("assignee", "agent-2", "agent-10")).toBeLessThan(0);
   expect(compareGroups("claim", "Nobody", "zoe")).toBeGreaterThan(0);
   expect(compareGroups("assignee", "Unassigned", "alice")).toBeGreaterThan(0);
+});
+
+// R5: an address of the build before still loads. The table has no Epic column and no grouping
+// by it, so `f.epic` narrows nothing and `group=epic` groups nothing, and `q=epic` matches only
+// what a row's own text holds: no row holds the words No epic or Unknown epic now.
+test("f.epic, group=epic and q=epic name no column, grouping or text of a row", () => {
+  expect(readUrl(new URLSearchParams("f.epic=No+epic&group=epic&sort=epic"))).toEqual(defaultView);
+  const [plain, labelled] = buildItems(
+    [issue("CORE-1", { parent: "CORE-9" }), issue("CORE-2", { labels: ["epic"] })],
+    () => ""
+  );
+  if (plain === undefined || labelled === undefined) throw new Error("no items");
+  expect(matchesSearch(plain, "epic")).toBe(false);
+  expect(matchesSearch(labelled, "epic")).toBe(true);
 });
 
 // F8: nothing typed matches every row, before any of the work a query needs.
@@ -353,7 +316,7 @@ test("a stateKey prefixes the table's own controls and leaves the bare ones to t
   const state = {
     ...defaultView,
     sorting: [{ id: "key", desc: true }],
-    grouping: ["epic"],
+    grouping: ["assignee"],
     search: "rank",
     page: 2,
     pageSize: 25,
@@ -361,7 +324,7 @@ test("a stateKey prefixes the table's own controls and leaves the bare ones to t
   };
   const scoped = writeUrl(new URLSearchParams("sort=-priority&q=other"), state, "advances");
   expect(scoped.get("advances.sort")).toBe("-key");
-  expect(scoped.get("advances.group")).toBe("epic");
+  expect(scoped.get("advances.group")).toBe("assignee");
   expect(scoped.get("advances.q")).toBe("rank");
   expect(scoped.get("advances.page")).toBe("3");
   expect(scoped.get("advances.size")).toBe("25");

@@ -1,6 +1,6 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
-import { ApiError, api, issuePatchRequest, type WriteRequest } from "../../api/client";
+import { api, issuePatchRequest, type WriteRequest } from "../../api/client";
 import { mergeIssue } from "../../api/issue-cache";
 import { advancesIssuesParams } from "../../api/queries";
 import type { IssueSummary, UpdateIssueInput } from "../../api/types";
@@ -11,12 +11,11 @@ import { type IssueListing, listingName } from "./issues-table-data";
 import {
   buildItems,
   type Item,
-  mergeMembers,
   queuedInOrder,
   startNextWrites,
   WRITES_IN_FLIGHT,
 } from "./issues-table-model";
-import { type TableAction, tableEpicWrite, useTableRecovery } from "./issues-table-recovery";
+import { type TableAction, useTableRecovery } from "./issues-table-recovery";
 
 interface Patch {
   key: string;
@@ -28,11 +27,6 @@ interface Notice {
   kind: "success" | "error";
   text: string;
 }
-interface DuplicateEpic {
-  keys: readonly string[];
-  title: string;
-  message: string;
-}
 /** An action waiting on the reader's yes, with everything the dialog says and does. */
 interface Confirmation {
   title: string;
@@ -40,16 +34,6 @@ interface Confirmation {
   confirmLabel: string;
   run: () => void;
 }
-/** The epic whose name the reader is typing: a new one for the selected issues, or a rename. */
-export type EpicNaming =
-  | { kind: "new"; keys: readonly string[] }
-  | { kind: "rename"; key: string; title: string };
-
-/** The one sentence a merge records on the source issue, written and recognised in one place.
- *  A resume compares the whole sentence against the source's own messages, because the server
- *  is what knows whether it was posted: a recorded key only says a write was made. */
-const mergeReason = (into: string, title: string) =>
-  `Merged into ${into} (“${title}”) from the issues table.`;
 
 /** What an interrupted action of each kind says it left behind, and how it is finished. The
  *  record's kind union is the only list of kinds: a new one fails to compile until both are
@@ -75,13 +59,7 @@ export function useIssueTableActions({
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<Notice>();
   const [moved, setMoved] = useState<ReadonlySet<string>>(new Set());
-  const [duplicateEpic, setDuplicateEpic] = useState<DuplicateEpic>();
-  const [unansweredEpic, setUnansweredEpic] = useState<string>();
-  const [naming, setNaming] = useState<EpicNaming>();
   const [confirming, setConfirming] = useState<Confirmation>();
-  // The project a write of this table may name, which a scoped table has none of: the epic
-  // actions are withheld rather than sent against a listing that belongs to no project.
-  const project = "project" in listing ? listing.project : undefined;
   // What an interrupted action is recorded under, which is the set it was started on: one
   // priority's work table resumes its own action and not the table of the priority beside it.
   const recoveryKey = listingName(listing);
@@ -104,20 +82,17 @@ export function useIssueTableActions({
       request: value,
       target: `issue:${issue}`,
     });
-    // Every write is watched, so a refusal names its issue; only a write of a recorded action
-    // belongs to it, so a refused Move or Rename retries with the ordinary wording.
+    // Every write is watched, so a refusal names its issue.
     recovery.watch(key, issue);
     return answer;
   };
-  const apply = async (operations: readonly Patch[], id?: string, minted?: Keys) => {
+  /** Sends each patch under the key its step was given: the action recorded every key in one
+   *  storage write before the first send, rather than one write per issue. */
+  const apply = async (operations: readonly Patch[], minted: Keys) => {
     const sends = operations.map((operation) => ({
       ...operation,
-      write: minted?.[operation.key] ?? newSendKey(),
+      write: minted[operation.key] ?? newSendKey(),
     }));
-    // A caller that minted the keys has already recorded them: a step-at-a-time action records
-    // its whole batch once rather than re-serialising the store on every step.
-    if (minted === undefined)
-      recovery.record(Object.fromEntries(sends.map(({ key, write }) => [key, write])), id);
     const results = await settledWithLimit(
       sends,
       WRITES_IN_FLIGHT,
@@ -144,11 +119,7 @@ export function useIssueTableActions({
       );
     return operations.map(({ key }) => key);
   };
-  const perform = async (
-    said: string,
-    action: () => Promise<readonly string[] | undefined>,
-    duplicate?: (error: ApiError) => void
-  ) => {
+  const perform = async (said: string, action: () => Promise<readonly string[] | undefined>) => {
     setBusy(true);
     setNotice(undefined);
     setMoved(new Set());
@@ -160,10 +131,7 @@ export function useIssueTableActions({
         clearSelection();
       }
     } catch (error) {
-      if (error instanceof ApiError && error.code === "POSSIBLE_DUPLICATE" && duplicate)
-        duplicate(error);
-      else
-        setNotice({ kind: "error", text: error instanceof Error ? error.message : String(error) });
+      setNotice({ kind: "error", text: error instanceof Error ? error.message : String(error) });
     } finally {
       setBusy(false);
       void client.invalidateQueries({ queryKey: ["issues"] });
@@ -174,10 +142,6 @@ export function useIssueTableActions({
   const titleOf = (key: string) => issues.find((issue) => issue.key === key)?.title ?? key;
   const named = (keys: readonly string[]) =>
     keys.length === 1 ? `${keys[0]} “${titleOf(keys[0] ?? "")}”` : `${keys.length} issues`;
-  const openSelected = (keys: readonly string[]) =>
-    keys.filter((key) => issues.some((issue) => issue.key === key && issue.status !== "done"));
-  const skippedClosed = (count: number) =>
-    count ? ` Skipped ${count} closed ${count === 1 ? "issue" : "issues"}.` : "";
   const canBegin = () => {
     if (!recovery.current.current) return true;
     setNotice({
@@ -185,19 +149,6 @@ export function useIssueTableActions({
       text: "Finish or Dismiss the interrupted action before starting another one.",
     });
     return false;
-  };
-  const moveTo = (keys: readonly string[], epic: string | null) => {
-    const open = openSelected(keys);
-    const skipped = skippedClosed(keys.length - open.length);
-    if (!open.length) {
-      setNotice({ kind: "error", text: `Only open issues can change epic.${skipped}` });
-      return;
-    }
-    const said =
-      (epic === null
-        ? `Took ${named(open)} out of ${open.length === 1 ? "its epic" : "their epics"}.`
-        : `Moved ${named(open)} to the epic “${titleOf(epic)}”.`) + skipped;
-    void perform(said, () => apply(open.map((key) => ({ key, input: { parent: epic } }))));
   };
   /** The rank writes of a start-next action, sent in order, stopping the moment the reader
    *  dismisses it. One loop and one guard serve the first attempt and the resume; `failure`
@@ -217,7 +168,7 @@ export function useIssueTableActions({
     for (const [index, operation] of operations.entries()) {
       if (!recovery.active(record.id)) return false;
       try {
-        await apply([operation], record.id, minted);
+        await apply([operation], minted);
       } catch (error) {
         throw new Error(
           failure(
@@ -277,180 +228,8 @@ export function useIssueTableActions({
     }
     runQueued(queued);
   };
-  const newEpic = async (keys: readonly string[], chosenTitle?: string, force = false) => {
-    if (project === undefined || unansweredEpic || !canBegin()) return;
-    const open = openSelected(keys);
-    const skipped = skippedClosed(keys.length - open.length);
-    if (!open.length) {
-      setNotice({
-        kind: "error",
-        text: `Select at least one open issue before creating an epic.${skipped}`,
-      });
-      return;
-    }
-    if (chosenTitle === undefined) {
-      setNaming({ kind: "new", keys: open });
-      return;
-    }
-    const title = chosenTitle.trim();
-    if (!title) return;
-    setNaming(undefined);
-    setDuplicateEpic(undefined);
-    const record = recovery.begin({ kind: "newEpic", keys: open });
-    const key = newSendKey();
-    recovery.record({ create: key }, record.id);
-    await perform(
-      `Made the epic “${title}” from ${named(open)}.${skipped}`,
-      async () => {
-        const creation = writes.run({
-          kind: tableEpicWrite,
-          detail: recoveryKey,
-          key,
-          label: `Create epic “${title}”`,
-          presentation: "indicator",
-          write: (bounds) =>
-            api.createIssue(
-              { project, title, labels: ["epic"], ...(force ? { force: true } : {}) },
-              bounds
-            ),
-        });
-        recovery.watch(key, `Create epic “${title}”`);
-        const epic = await creation;
-        if (!recovery.active(record.id)) return undefined;
-        if (epic === null) {
-          setUnansweredEpic(title);
-          return undefined;
-        }
-        mergeIssue(client, epic);
-        const changed = await apply(
-          open.map((key) => ({ key, input: { parent: epic.key } })),
-          record.id
-        );
-        if (!recovery.active(record.id)) return undefined;
-        recovery.dismiss();
-        return changed;
-      },
-      (error) => {
-        const refused = writes.rows().find((row) => row.key === key);
-        if (refused) writes.discard(refused.id);
-        recovery.dismiss();
-        setDuplicateEpic({ keys, title, message: error.message });
-      }
-    );
-  };
-  const renameEpic = (key: string, chosenTitle?: string) => {
-    if (chosenTitle === undefined) {
-      setNaming({ kind: "rename", key, title: titleOf(key) });
-      return;
-    }
-    const title = chosenTitle.trim();
-    setNaming(undefined);
-    if (title && title !== titleOf(key))
-      void perform(`Renamed the epic to “${title}”.`, () => apply([{ key, input: { title } }]));
-  };
-  const closeMerge = async (record: TableAction, resumed: boolean) => {
-    const from = record.source;
-    const into = record.target;
-    if (!from || !into || !recovery.active(record.id)) return;
-    // Whether the reason was posted is the server's answer on a resume: a recorded key says
-    // only that a write was made, and a write discarded in Pending changes leaves that key
-    // behind. `settle` has already waited on any write of this action still in flight, so a
-    // reason that landed is in the source's messages, compared as the whole sentence.
-    const posted = recovery.current.current?.reasonBody;
-    const prefix = `Merged into ${into} (`;
-    const alreadySaid =
-      resumed &&
-      (await api.listIssueMessages(from)).some(({ message }) =>
-        // The sentence the merge actually sent, kept with the record: the target may have been
-        // renamed or closed since, which would make a freshly built sentence miss and post a
-        // second one. A record from before this was kept falls back to the title-free opening.
-        posted === undefined ? message.body.startsWith(prefix) : message.body === posted
-      );
-    if (!recovery.active(record.id)) return;
-    if (!alreadySaid) {
-      const reason = newSendKey();
-      const body = mergeReason(into, titleOf(into));
-      recovery.record({ reason }, record.id, { reasonBody: body });
-      await request(
-        {
-          method: "POST",
-          path: `/api/v1/issues/${encodeURIComponent(from)}/messages`,
-          body: { body },
-        },
-        `Record the merge reason on ${from}`,
-        from,
-        reason
-      );
-    }
-    if (recovery.active(record.id))
-      await apply([{ key: from, input: { status: "done" } }], record.id);
-  };
-  /** What a merge is about to do, in the page, before any write: a merge closes an issue, so
-   *  it is the one table action that asks whatever the input device. */
-  const askMerge = (from: string, into: string) => {
-    if (!canBegin()) return;
-    const moving = mergeMembers(issues, from).length;
-    setConfirming({
-      title: "Merge this epic?",
-      body: `${moving} open ${moving === 1 ? "issue moves" : "issues move"} from ${from} “${titleOf(from)}” to ${into} “${titleOf(into)}”, and ${from} closes as done.`,
-      confirmLabel: "Merge",
-      run: () => void mergeEpic(from, into),
-    });
-  };
-  const mergeEpic = (from: string, into: string) => {
-    if (!canBegin()) return;
-    return perform(`Merged “${titleOf(from)}” into “${titleOf(into)}”.`, async () => {
-      const descendants = await listAll();
-      const members = mergeMembers(descendants, from);
-      const record = recovery.begin({ kind: "merge", keys: members, source: from, target: into });
-      try {
-        await apply(
-          members.map((key) => ({ key, input: { parent: into } })),
-          record.id
-        );
-      } catch (error) {
-        throw new Error(
-          `The source epic ${from} remains open. ${error instanceof Error ? error.message : String(error)}`
-        );
-      }
-      await closeMerge(record, false);
-      if (!recovery.active(record.id)) return undefined;
-      recovery.dismiss();
-      return members;
-    });
-  };
 
   const kinds: Record<TableAction["kind"], ResumableAction> = {
-    newEpic: {
-      describe: (record) =>
-        `New epic${record.target ? ` ${record.target}` : ""}: ${record.keys.join(", ")} are not yet adopted. Finish checks which open issues still need to move.`,
-      resume: async (record, current) => {
-        // A creation still in Pending changes can be retried; one the reader discarded is gone
-        // with its step, so there is no epic and nothing to adopt — Finish says which it is.
-        if (!record.target)
-          throw new Error(
-            record.writes.create === undefined
-              ? "The epic was never created: its creation was discarded. Nothing has been adopted. Dismiss this action and make the epic again."
-              : "The created epic's key is still unknown. Retry its creation in Pending changes before finishing adoption."
-          );
-        const target = current.find((issue) => issue.key === record.target);
-        if (!target || target.status === "done")
-          throw new Error(
-            `The created epic ${record.target} is unavailable or closed. The selected issues have not been adopted.`
-          );
-        await apply(
-          current
-            .filter(
-              (issue) =>
-                record.keys.includes(issue.key) &&
-                issue.status !== "done" &&
-                issue.parent !== record.target
-            )
-            .map((issue) => ({ key: issue.key, input: { parent: record.target } })),
-          record.id
-        );
-      },
-    },
     startNext: {
       describe: (record) =>
         `Start next: ${record.keys.join(", ")} may still need to move up, in that order.`,
@@ -459,25 +238,6 @@ export function useIssueTableActions({
           record,
           buildItems(current, () => "")
         );
-      },
-    },
-    merge: {
-      describe: (record) =>
-        `Merge ${record.source} into ${record.target}: remaining open issues, the merge reason and closing the source still need to be checked.`,
-      resume: async (record, current) => {
-        if (current.find((issue) => issue.key === record.source)?.status === "done") return;
-        const members = mergeMembers(current, record.source ?? "");
-        await apply(
-          members.map((key) => ({ key, input: { parent: record.target } })),
-          record.id
-        );
-        if (!recovery.active(record.id)) return;
-        const remaining = mergeMembers(await listAll(), record.source ?? "");
-        if (remaining.length)
-          throw new Error(
-            `The source epic ${record.source} remains open: ${remaining.join(", ")} still need to move.`
-          );
-        await closeMerge(record, true);
       },
     },
   };
@@ -494,7 +254,6 @@ export function useIssueTableActions({
       await kinds[record.kind].resume(record, current);
       if (!recovery.active(record.id)) return undefined;
       recovery.dismiss();
-      setUnansweredEpic(undefined);
       return record.keys;
     });
   };
@@ -503,17 +262,8 @@ export function useIssueTableActions({
     busy,
     notice,
     moved,
-    duplicateEpic,
-    setDuplicateEpic,
-    unansweredEpic,
-    dismissUnansweredEpic: () => {
-      setUnansweredEpic(undefined);
-      recovery.dismiss();
-    },
     interrupted,
     interruptedDescription: interrupted && kinds[interrupted.kind].describe(interrupted),
-    naming,
-    cancelNaming: () => setNaming(undefined),
     confirming,
     cancelConfirming: () => setConfirming(undefined),
     confirmed: () => {
@@ -523,12 +273,6 @@ export function useIssueTableActions({
     },
     finish,
     dismiss: recovery.dismiss,
-    moveTo,
     startNext,
-    renameEpic,
-    // An epic belongs to a project, so a table that stands on none offers neither action: the
-    // controls draw nothing where they are given nothing.
-    newEpic: project === undefined ? undefined : newEpic,
-    mergeEpic: project === undefined ? undefined : askMerge,
   };
 }

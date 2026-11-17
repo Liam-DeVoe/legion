@@ -720,9 +720,9 @@ test("the rows carry the caller's own data attribute and no word of another page
   expect(DEPLOY_NAMES.rowAttribute).toBe("data-deploy-row");
 });
 
-// The caller that asked for it: the project List draws an epic's actions beside its heading, and
-// the priorities page a "Start all" beside a priority's. The heading itself is a node, since a
-// group can stand for a row elsewhere.
+// The caller that asked for it: the project List draws a group's issues by status beside its
+// heading, and the priorities page a "Start all" beside a priority's. The heading itself is a
+// node, since a group can stand for a row elsewhere.
 test("a group's heading is the caller's node, with the caller's slot beside it", async () => {
   const user = userEvent.setup();
   draw(

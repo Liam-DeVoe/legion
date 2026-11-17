@@ -184,13 +184,6 @@ const renderings = (
       issueStatuses.indexOf(b.original.issue.status as IssueStatus),
     cell: ({ getValue }) => <StatusPill>{statusLabel(getValue<IssueStatus>())}</StatusPill>,
   },
-  epic: {
-    header: "Epic",
-    accessorFn: (item) => item.epic,
-    cell: ({ getValue }) => (
-      <span className={`line-clamp-2 ${textSecondaryOnCanvas}`}>{getValue<string>()}</span>
-    ),
-  },
   assignee: {
     header: "Assignee",
     accessorFn: (item) => item.issue.assignee ?? "Unassigned",

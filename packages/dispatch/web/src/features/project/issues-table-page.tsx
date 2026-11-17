@@ -1,6 +1,5 @@
 import type { Table } from "@tanstack/react-table";
 import { type ReactNode, type RefObject, useState } from "react";
-import type { IssueSummary } from "../../api/types";
 import { Chip } from "../../components/Chip";
 import { ColumnsMenu } from "../../components/ColumnsMenu";
 import { ControlRow } from "../../components/ControlRow";
@@ -19,7 +18,6 @@ import { useAddressUpdate } from "../../lib/page-address";
 import {
   borderDefault,
   issueStatusScale,
-  surfaceBg,
   surfaceMutedBg,
   textPrimaryOnCanvas,
   textSecondaryOnCanvas,
@@ -40,11 +38,9 @@ import {
 export function IssueTableStatus({
   table,
   items,
-  epics,
 }: {
   table: Table<Item>;
   items: readonly Item[];
-  epics: readonly IssueSummary[];
 }): ReactNode {
   const statusColumn = table.getColumn("status");
   const statusPicks = (statusColumn?.getFilterValue() as string[] | undefined) ?? [];
@@ -67,10 +63,6 @@ export function IssueTableStatus({
         </span>
         <span>
           <b className={`text-lg tabular-nums ${textPrimaryOnCanvas}`}>{runningCount}</b> running
-        </span>
-        <span>
-          <b className={`text-lg tabular-nums ${textPrimaryOnCanvas}`}>{epics.length}</b>{" "}
-          {epics.length === 1 ? "epic" : "epics"}
         </span>
       </div>
       <fieldset
@@ -267,7 +259,7 @@ export function IssueTableToolbar({
             className="w-full"
             label="Search issues"
             onChange={(value) => setSearch(value)}
-            placeholder="Search issues: key, title, epic, assignee, author, labels"
+            placeholder="Search issues: key, title, assignee, author, labels"
             ref={searchRef}
             size="compact"
             value={search}
@@ -304,30 +296,18 @@ export function IssueTableToolbar({
 export function IssueTableSelection({
   returnFocus,
   table,
-  epics,
   busy,
-  unansweredEpic,
   startNext,
-  moveTo,
-  newEpic,
 }: {
   /** Where the focus goes when the bar goes with it (`SelectionBar`), which the List names. */
   returnFocus: () => HTMLElement | null;
   table: Table<Item>;
-  epics: readonly IssueSummary[];
   busy: boolean;
-  unansweredEpic: string | undefined;
   startNext: (keys: readonly string[], confirmFirst?: boolean) => void;
-  moveTo: (keys: readonly string[], epic: string | null) => void;
-  /** How an epic is made of the selected issues; absent on a table that stands on no project,
-   *  since an epic is created in one and a cross-project selection names none. */
-  newEpic?: (keys: readonly string[]) => void;
 }): ReactNode {
   const selectedKeys = table.getSelectedRowModel().flatRows.map((row) => row.original.issue.key);
   const leafCount = table.getFilteredRowModel().rows.length;
   const setSelection = table.setRowSelection;
-  /** The epic the reader has picked to move the selection into; no write has been sent yet. */
-  const [epic, setEpic] = useState("");
   return (
     // Over the list, not in it: selecting a row moves no row (INFRA-3135, R4).
     <SelectionBar count={selectedKeys.length} label="Selected issues" returnFocus={returnFocus}>
@@ -346,47 +326,6 @@ export function IssueTableSelection({
       >
         Start next
       </StepButton>
-      {/* Two steps: the select stages an epic and Move commits it. A closed `<select>`
-          commits on an arrow key in Chrome on Linux and Windows, and this one reparents
-          every selected issue. While a press is out it is held as a `StepButton` is, and for
-          the same reason. */}
-      <select
-        aria-disabled={busy || undefined}
-        aria-label="Move to epic"
-        className={`rounded-lg border px-2 py-1 refused:opacity-40 ${borderDefault} ${surfaceBg}`}
-        onChange={(event) => {
-          if (!busy) setEpic(event.target.value);
-        }}
-        value={epic}
-      >
-        <option value="">Move to epic…</option>
-        {epics.map((option) => (
-          <option key={option.key} value={option.key}>
-            {option.title}
-          </option>
-        ))}
-      </select>
-      <StepButton
-        ariaDisabled={busy || epic === ""}
-        onClick={() => {
-          const into = epic;
-          setEpic("");
-          void moveTo(selectedKeys, into);
-        }}
-      >
-        Move
-      </StepButton>
-      <StepButton ariaDisabled={busy} onClick={() => void moveTo(selectedKeys, null)}>
-        Take out of epic
-      </StepButton>
-      {newEpic === undefined ? null : (
-        <StepButton
-          ariaDisabled={busy || unansweredEpic !== undefined}
-          onClick={() => void newEpic(selectedKeys)}
-        >
-          New epic from these
-        </StepButton>
-      )}
       <StepButton ariaDisabled={busy} onClick={() => setSelection({})}>
         Clear selection
       </StepButton>

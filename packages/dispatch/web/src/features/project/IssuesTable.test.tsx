@@ -6,12 +6,11 @@ import type { ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { ApiError, api } from "../../api/client";
 import { boardMoveMutationKey, projectIssuesQuery } from "../../api/queries";
-import type { CreateIssueInput, Issue, IssueDetails, IssueSummary } from "../../api/types";
+import type { Issue, IssueSummary } from "../../api/types";
 import { readLayout } from "../../components/table-storage";
 import { readSelectedIssues } from "../search/bar-scope";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { useKeymapScope } from "../shell/keymap";
-import { SendStoppedError } from "../writes/keyed-write";
 import { writesOf } from "../writes/write-store";
 import { IssuesTable } from "./IssuesTable";
 import type { IssueListing } from "./issues-table-data";
@@ -100,19 +99,12 @@ function table(
     stateKey?: string;
   } = {}
 ) {
-  const parents = [
-    ...new Set(
-      issues.flatMap((row) =>
-        row.parent && !issues.some((candidate) => candidate.key === row.parent) ? [row.parent] : []
-      )
-    ),
-  ].map((key) => issue(key, { status: "triage" }));
   // The listing route as the server answers it: `open` leaves the closed rows out, and
   // `advances` keeps the issues that carry that relation, whichever project they are in.
   const listing = spyOn(api, "listIssues").mockImplementation(async (options = {}) => {
     if (!options.open && full) return full;
     if (options.open && open) return open;
-    return [...issues, ...parents].filter(
+    return issues.filter(
       (issue) =>
         (!options.open || issue.status !== "done") &&
         (options.advances === undefined ||
@@ -160,15 +152,6 @@ function table(
     else Reflect.deleteProperty(HTMLElement.prototype, "clientHeight");
   });
   return { client, listing, view };
-}
-
-/** Fills in the in-page dialog an epic is named or renamed through, once it opens. */
-async function nameTheEpic(user: UserEvent, name: string) {
-  const dialog = await screen.findByRole("dialog", { name: /epic/i });
-  const field = within(dialog).getByRole("textbox", { name: "Name" });
-  await user.clear(field);
-  await user.type(field, name);
-  await user.click(within(dialog).getByRole("button", { name: /^(Create|Rename) epic$/ }));
 }
 
 /** Picks a grouping in the row's display menu, which is where **Group by** lives: the menu is
@@ -288,121 +271,6 @@ test("a table rank write is held by the durable store on the issue's write line"
   );
 });
 
-test("an epic creation committed without an answer never sends parent writes to an unknown issue", async () => {
-  const user = userEvent.setup();
-  const create = spyOn(api, "createIssue").mockRejectedValue(
-    new ApiError(409, { code: "KEY_COMMITTED", error: "already made" })
-  );
-  const send = spyOn(api, "send").mockRejectedValue(new Error("Unexpected parent write"));
-  const named = nameTheEpic(user, "Made once");
-  table([issue("CORE-1")]);
-  restores.push(() => {
-    create.mockRestore();
-    send.mockRestore();
-  });
-  await user.click(await screen.findByRole("checkbox", { name: "Select CORE-1" }));
-  await user.click(screen.getByRole("button", { name: "New epic from these" }));
-  await named;
-  expect((await screen.findByTestId("landed-without-answer")).textContent).toContain(
-    "The selected issues have not been moved"
-  );
-  expect(send).not.toHaveBeenCalled();
-  // Held rather than disabled: the name dialog hands the focus back to it.
-  expect(screen.getByRole("button", { name: "New epic from these" })).toHaveAttribute(
-    "aria-disabled",
-    "true"
-  );
-  expect(create.mock.calls.length).toBe(1);
-  expect(screen.queryByRole("alert")).toBeNull();
-});
-
-test("a possible duplicate offers an explicit force choice rather than forcing the first create", async () => {
-  const user = userEvent.setup();
-  const calls: CreateIssueInput[] = [];
-  const create = spyOn(api, "createIssue").mockImplementation(async (input) => {
-    calls.push(input);
-    if (!input.force)
-      throw new ApiError(409, {
-        code: "POSSIBLE_DUPLICATE",
-        error: "Possible duplicate of CORE-9",
-      });
-    return savedIssue("CORE-9");
-  });
-  const send = spyOn(api, "send").mockResolvedValue(savedIssue("CORE-1"));
-  const named = nameTheEpic(user, "Existing epic");
-  table([issue("CORE-1")]);
-  restores.push(() => {
-    create.mockRestore();
-    send.mockRestore();
-  });
-  await user.click(await screen.findByRole("checkbox", { name: "Select CORE-1" }));
-  await user.click(screen.getByRole("button", { name: "New epic from these" }));
-  await named;
-  expect((await screen.findByRole("alert")).textContent).toContain("CORE-9");
-  await user.click(screen.getByRole("button", { name: "Create anyway" }));
-  await waitFor(() =>
-    expect(
-      within(screen.getByRole("region", { name: "Project issues" })).getByRole("status").textContent
-    ).toContain("Made the epic")
-  );
-  expect(calls.map((input) => input.force)).toEqual([undefined, true]);
-});
-
-test("a stopped epic creation retries its committed request under the same key", async () => {
-  const user = userEvent.setup();
-  const rows = [issue("CORE-1")];
-  const created = new Map<string, Issue>();
-  const keys: string[] = [];
-  let stopped = false;
-  const create = spyOn(api, "createIssue").mockImplementation(async (input, bounds) => {
-    keys.push(bounds.key);
-    bounds.sent?.({ method: "POST", path: "/api/v1/issues", body: input });
-    if (!created.has(bounds.key)) {
-      const epic = savedIssue("CORE-9");
-      created.set(bounds.key, epic);
-      rows.push({ ...issue(epic.key), ...epic });
-    }
-    if (!stopped) {
-      stopped = true;
-      throw new SendStoppedError();
-    }
-    return created.get(bounds.key) as Issue;
-  });
-  const send = spyOn(api, "send").mockImplementation(async (request) => {
-    const row = rows.find((value) => request.path.endsWith(value.key));
-    if (!row) throw new Error("Missing issue");
-    Object.assign(row, request.body);
-    return { ...savedIssue(row.key), ...row } as never;
-  });
-  const named = nameTheEpic(user, "Committed once");
-  restores.push(() => {
-    create.mockRestore();
-    send.mockRestore();
-  });
-  const { client } = table(rows);
-  await user.click(await screen.findByRole("checkbox", { name: "Select CORE-1" }));
-  await user.click(screen.getByRole("button", { name: "New epic from these" }));
-  await named;
-  await screen.findByRole("alert");
-  const refused = writesOf(client)
-    .rows()
-    .find((write) => write.status === "refused");
-  expect(refused).toBeDefined();
-  if (!refused) throw new Error("The stopped creation was dropped");
-  writesOf(client).retry(refused.id);
-  await waitFor(() => expect(keys).toHaveLength(2));
-  expect(keys[1]).toBe(keys[0]);
-  expect(created.size).toBe(1);
-  await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
-  const recovery = screen.getByRole("region", { name: "Interrupted table action" });
-  expect(recovery.textContent).toContain("not yet adopted");
-  await user.click(within(recovery).getByRole("button", { name: "Finish" }));
-  await waitFor(() => expect(rows[0]?.parent).toBe("CORE-9"));
-  await waitFor(() =>
-    expect(screen.queryByRole("region", { name: "Interrupted table action" })).toBeNull()
-  );
-});
-
 test("dismissing an interrupted action preserves layout and sends none of its future steps", async () => {
   const user = userEvent.setup();
   localStorage.setItem(
@@ -467,9 +335,9 @@ test("a failed project listing can be retried without navigating away", async ()
   expect(await screen.findByRole("row", { name: "CORE-1 Work CORE-1" })).toBeDefined();
 });
 
-// Every panel the table hangs off a control - a header's filter, Columns, Epic actions - and
-// the shared MultiSelect dismiss by one set of rules: a press outside, or Escape, which puts
-// focus back on the control that opened it.
+// Every panel the table hangs off a control - a header's filter, Columns - and the shared
+// MultiSelect dismiss by one set of rules: a press outside, or Escape, which puts focus back on
+// the control that opened it.
 test("Title and Columns popovers allow internal Tab, dismiss on an outside press and on Escape", async () => {
   const user = userEvent.setup();
   table([issue("CORE-1")]);
@@ -490,25 +358,6 @@ test("Title and Columns popovers allow internal Tab, dismiss on an outside press
   expect(screen.getByRole("dialog", { name: "Columns" })).toBeDefined();
   await user.click(screen.getByRole("searchbox", { name: "Search issues" }));
   await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
-});
-
-test("a partially refused batch keeps selection and identifies the writes already saved", async () => {
-  const user = userEvent.setup();
-  const send = spyOn(api, "send")
-    .mockResolvedValueOnce(savedIssue("CORE-1"))
-    .mockRejectedValueOnce(new ApiError(403, { error: "refused", code: "FORBIDDEN" }));
-  table([issue("CORE-1"), issue("CORE-2")]);
-  restores.push(() => send.mockRestore());
-  await user.click(await screen.findByRole("checkbox", { name: "Select CORE-1" }));
-  await user.click(screen.getByRole("checkbox", { name: "Select CORE-2" }));
-  await user.click(screen.getByRole("button", { name: "Take out of epic" }));
-  expect((await screen.findByRole("alert")).textContent).toContain("1 of 2 changes saved.");
-  expect(screen.getByRole<HTMLInputElement>("checkbox", { name: "Select CORE-1" }).checked).toBe(
-    true
-  );
-  expect(screen.getByRole("row", { name: "CORE-1 Work CORE-1" }).getAttribute("data-moved")).toBe(
-    "true"
-  );
 });
 
 test("Clear filters also clears Needs you, Unread and the lapsed-claim filter", async () => {
@@ -565,91 +414,6 @@ test("the closed issues arriving keeps the cells already drawn", async () => {
   expect(screen.getByRole("checkbox", { name: "Select CORE-1" })).toBe(select);
 });
 
-test("an epic's Start all includes queued siblings hidden by a priority filter", async () => {
-  const user = userEvent.setup();
-  const written: string[] = [];
-  const send = spyOn(api, "send").mockImplementation(async (request) => {
-    const key = request.path.split("/").at(-1) ?? "";
-    written.push(key);
-    return savedIssue(key) as never;
-  });
-  table(
-    [
-      issue("CORE-1", { labels: ["epic"] }),
-      issue("CORE-2", { parent: "CORE-1", priority: 0, labels: ["legion"] }),
-      issue("CORE-3", { parent: "CORE-1", priority: 1, labels: ["legion"] }),
-      issue("CORE-9", { labels: ["legion"], rank: "0" }),
-    ],
-    "?group=epic&f.priority=0"
-  );
-  restores.push(() => send.mockRestore());
-  await user.click(await screen.findByRole("button", { name: "Epic actions ▾" }));
-  await user.click(screen.getByRole("button", { name: "Start all its queued issues next" }));
-  await waitFor(() => expect(new Set(written)).toEqual(new Set(["CORE-2", "CORE-3"])));
-});
-
-test("a refused bulk operation retries independently while the other operations land", async () => {
-  const user = userEvent.setup();
-  const sent: string[] = [];
-  let refused = false;
-  const send = spyOn(api, "send").mockImplementation(async (request) => {
-    const key = request.path.split("/").at(-1) ?? "";
-    sent.push(key);
-    if (key === "CORE-2" && !refused) {
-      refused = true;
-      throw new ApiError(403, { error: "refused", code: "FORBIDDEN" });
-    }
-    return savedIssue(key) as never;
-  });
-  restores.push(() => send.mockRestore());
-  const { client, listing } = table([issue("CORE-1"), issue("CORE-2"), issue("CORE-3")]);
-  await screen.findByRole("checkbox", { name: "Select CORE-1" });
-  for (const key of ["CORE-1", "CORE-2", "CORE-3"])
-    await user.click(screen.getByRole("checkbox", { name: `Select ${key}` }));
-  const before = listing.mock.calls.length;
-  await user.click(screen.getByRole("button", { name: "Take out of epic" }));
-  await screen.findByRole("alert");
-  expect(sent).toEqual(["CORE-1", "CORE-2", "CORE-3"]);
-  expect(
-    writesOf(client)
-      .rows()
-      .map((write) => write.label)
-  ).toEqual(["Update CORE-2 from the issues table"]);
-  expect(listing.mock.calls.length - before).toBe(1);
-  const retry = writesOf(client)
-    .rows()
-    .find((write) => write.status === "refused");
-  if (!retry) throw new Error("The refused operation was lost");
-  writesOf(client).retry(retry.id);
-  await waitFor(() => expect(sent).toEqual(["CORE-1", "CORE-2", "CORE-3", "CORE-2"]));
-  await waitFor(() => expect(writesOf(client).rows()).toHaveLength(0));
-  await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
-  expect(
-    within(screen.getByRole("region", { name: "Project issues" })).getByRole("status").textContent
-  ).toContain("All changes saved");
-});
-
-test("a live unseen ancestor keeps the same scroll box and marks unknown ancestry on failure", async () => {
-  const read = Promise.withResolvers<IssueDetails>();
-  const get = spyOn(api, "getIssue").mockReturnValue(read.promise);
-  restores.push(() => get.mockRestore());
-  const { client } = table([issue("CORE-1")]);
-  await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
-  const box = screen.getByTestId("issues-table-scroll");
-  box.scrollTop = 200;
-  box.scrollLeft = 300;
-  client.setQueryData(projectIssuesQuery("CORE", [], true).queryKey, [
-    issue("CORE-1", { parent: "CORE-9" }),
-  ]);
-  await waitFor(() => expect(get).toHaveBeenCalled());
-  expect(screen.getByTestId("issues-table-scroll")).toBe(box);
-  expect(box.scrollTop).toBe(200);
-  read.reject(new Error("ancestor unreachable"));
-  await screen.findByText("Unknown epic");
-  expect(screen.getByTestId("issues-table-scroll")).toBe(box);
-  expect(box.scrollLeft).toBe(300);
-});
-
 test("a late Done listing applies the requested URL page instead of clamping it early", async () => {
   const done = Promise.withResolvers<IssueSummary[]>();
   table([issue("CORE-1")], "?status=done&page=3&size=25", { full: done.promise });
@@ -659,29 +423,6 @@ test("a late Done listing applies the requested URL page instead of clamping it 
   );
   await screen.findByRole("row", { name: "CORE-52 Work CORE-52" });
   expect(screen.getByText("Page 3 of 4")).toBeDefined();
-});
-
-test("parent-changing actions skip closed selections and New epic refuses an all-closed selection", async () => {
-  const user = userEvent.setup();
-  const send = spyOn(api, "send").mockResolvedValue(savedIssue("CORE-1"));
-  const create = spyOn(api, "createIssue").mockRejectedValue(new Error("Unexpected create"));
-  restores.push(() => {
-    send.mockRestore();
-    create.mockRestore();
-  });
-  table([issue("CORE-1"), issue("CORE-2", { status: "done" })], "?nofilter=1");
-  await user.click(await screen.findByRole("checkbox", { name: "Select CORE-1" }));
-  await user.click(screen.getByRole("checkbox", { name: "Select CORE-2" }));
-  await user.click(screen.getByRole("button", { name: "Take out of epic" }));
-  await screen.findByText(/Skipped 1 closed issue/);
-  expect(send.mock.calls.map(([request]) => request.path)).toEqual(["/api/v1/issues/CORE-1"]);
-  await user.click(screen.getByRole("checkbox", { name: "Select CORE-2" }));
-  await user.click(screen.getByRole("button", { name: "New epic from these" }));
-  expect((await screen.findByRole("alert")).textContent).toContain(
-    "Select at least one open issue"
-  );
-  expect(create).not.toHaveBeenCalled();
-  expect(screen.queryByRole("dialog")).toBeNull();
 });
 
 test("created-by sessions use their live name and state, and a null creator is Unknown", async () => {
@@ -770,65 +511,6 @@ test("the Legion queue puts an issue with no created_at after one of the same ra
     within(screen.getByRole("row", { name: "CORE-2 Work CORE-2" })).getByText("#1")
   ).toBeDefined();
   expect(within(older).getByText("#2")).toBeDefined();
-});
-
-test("a refused merge move leaves the source open and does not post the close reason", async () => {
-  const user = userEvent.setup();
-  const requests: { path: string; body: unknown }[] = [];
-  const send = spyOn(api, "send").mockImplementation(async (request) => {
-    requests.push({ path: request.path, body: request.body });
-    if (request.path.endsWith("CORE-3")) throw new ApiError(403, { error: "Move refused" });
-    return savedIssue("CORE-4") as never;
-  });
-  const message = spyOn(api, "createMessage").mockRejectedValue(
-    new Error("Unexpected close reason")
-  );
-  restores.push(() => {
-    send.mockRestore();
-    message.mockRestore();
-  });
-  table(
-    [
-      issue("CORE-1", { labels: ["epic"], title: "Source" }),
-      issue("CORE-2", { labels: ["epic"], title: "Target" }),
-      issue("CORE-3", { parent: "CORE-1" }),
-      issue("CORE-4", { parent: "CORE-1" }),
-    ],
-    "?group=epic"
-  );
-  // The childless target epic keeps a heading of its own, so the merge starts from the source's.
-  const source = (await screen.findByRole("link", { name: "CORE-1 · Source" })).closest("tr");
-  if (!source) throw new Error("The source epic has no heading row");
-  await user.click(within(source).getByRole("button", { name: "Epic actions ▾" }));
-  await user.selectOptions(
-    screen.getByRole("combobox", { name: "Merge into another epic" }),
-    "CORE-2"
-  );
-  await user.click(screen.getByRole("button", { name: "Merge…" }));
-  await user.click(
-    within(await screen.findByRole("dialog", { name: "Merge this epic?" })).getByRole("button", {
-      name: /^Merge$/,
-    })
-  );
-  expect((await screen.findByRole("alert")).textContent).toContain("CORE-3");
-  expect(requests.map(({ path }) => path)).toEqual([
-    "/api/v1/issues/CORE-3",
-    "/api/v1/issues/CORE-4",
-  ]);
-  expect(message).not.toHaveBeenCalled();
-});
-
-test("ancestor reads have one retry policy rather than multiplying inner and outer retries", async () => {
-  const get = spyOn(api, "getIssue").mockRejectedValue(new Error("Unavailable ancestor"));
-  restores.push(() => get.mockRestore());
-  const { client } = table([issue("CORE-1")]);
-  await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
-  client.setDefaultOptions({ queries: { retry: 2, retryDelay: 1 } });
-  client.setQueryData(projectIssuesQuery("CORE", [], true).queryKey, [
-    issue("CORE-1", { parent: "CORE-9" }),
-  ]);
-  await screen.findByText(/Could not load 1 ancestor;/);
-  expect(get.mock.calls.length).toBe(3);
 });
 
 test("Start next stops at a refused predecessor and names every issue that did not move up", async () => {
@@ -952,18 +634,35 @@ test("the row's filter panel turns Unclaimed on and the table narrows to it", as
   expect(screen.getByRole("button", { name: "Remove Unclaimed filter" })).toBeDefined();
 });
 
-test("an open epic is an ordinary row, and a group heading only when grouped by Epic", async () => {
+// R5, R9: no column, grouping, filter or action is about epics. An address of the build before
+// that names the Epic column's filter or its grouping lists every row, with no heading.
+test("no column, grouping or selection action is about epics, and an old epic address lists every row", async () => {
   const user = userEvent.setup();
-  table([
-    issue("CORE-1", { labels: ["epic"], title: "Platform" }),
-    issue("CORE-2", { parent: "CORE-1" }),
-  ]);
-  await screen.findByRole("row", { name: "CORE-1 Platform" });
-  await user.click(screen.getByRole("checkbox", { name: "Select CORE-1" }));
-  expect(readSelectedIssues()).toEqual(["CORE-1"]);
-  await groupRowsBy(user, "Epic");
-  await waitFor(() => expect(screen.queryByRole("row", { name: "CORE-1 Platform" })).toBeNull());
-  expect(screen.getByRole("link", { name: "CORE-1 · Platform" })).toBeDefined();
+  table([issue("CORE-1", { parent: "CORE-9" }), issue("CORE-2")], "?f.epic=No+epic&group=epic");
+  const list = await screen.findByRole("table", { name: "Project issues table" });
+  await within(list).findByRole("row", { name: "CORE-1 Work CORE-1" });
+  expect(within(list).getByRole("row", { name: "CORE-2 Work CORE-2" })).toBeDefined();
+  expect(headings()).toEqual([]);
+  const headers = within(list)
+    .getAllByRole("columnheader")
+    .map((header) => header.textContent ?? "");
+  expect(headers.filter((text) => /epic/i.test(text))).toEqual([]);
+  await user.click(screen.getByRole("button", { name: "Columns" }));
+  expect(screen.queryByRole("checkbox", { name: /epic/i })).toBeNull();
+  await user.keyboard("{Escape}");
+  await user.click(screen.getByRole("button", { name: "View" }));
+  expect(screen.getByRole("radio", { name: "Status" })).toBeDefined();
+  expect(screen.queryByRole("radio", { name: /epic/i })).toBeNull();
+  await user.keyboard("{Escape}");
+  await user.click(screen.getByRole("checkbox", { name: "Select CORE-2" }));
+  const bar = screen.getByRole("toolbar");
+  expect(within(bar).getByRole("button", { name: "Start next" })).toBeDefined();
+  expect(within(bar).queryByRole("combobox")).toBeNull();
+  expect(
+    within(bar)
+      .getAllByRole("button")
+      .filter((button) => /epic/i.test(button.textContent ?? ""))
+  ).toEqual([]);
 });
 
 test("Start next says so when every queued row selected already starts next", async () => {
@@ -980,37 +679,6 @@ test("Start next says so when every queued row selected already starts next", as
     ).toContain("already start next")
   );
   expect(send).not.toHaveBeenCalled();
-});
-
-// "Select all N matching" is two clicks from every open issue in the project, so a bulk action
-// sends a bounded stream rather than one request per row at once.
-test("a bulk action keeps at most eight writes in flight", async () => {
-  const user = userEvent.setup();
-  const gates: (() => void)[] = [];
-  let running = 0;
-  let peak = 0;
-  const send = spyOn(api, "send").mockImplementation(async (request) => {
-    running += 1;
-    peak = Math.max(peak, running);
-    const gate = Promise.withResolvers<void>();
-    gates.push(gate.resolve);
-    await gate.promise;
-    running -= 1;
-    return savedIssue(request.path.split("/").at(-1) ?? "CORE-1") as never;
-  });
-  restores.push(() => send.mockRestore());
-  const keys = Array.from({ length: 20 }, (_, index) => `CORE-${index + 1}`);
-  table(keys.map((key) => issue(key, { parent: null })));
-  await screen.findByRole("checkbox", { name: "Select CORE-1" });
-  await user.click(screen.getByRole("checkbox", { name: "Select every row on this page" }));
-  await user.click(screen.getByRole("button", { name: "Take out of epic" }));
-  await waitFor(() => expect(gates.length).toBe(8));
-  for (let index = 0; index < keys.length; index += 1) {
-    await waitFor(() => expect(gates.length).toBeGreaterThan(index));
-    gates[index]?.();
-  }
-  await waitFor(() => expect(send.mock.calls.length).toBe(keys.length));
-  expect(peak).toBeLessThanOrEqual(8);
 });
 
 // A browser that refuses local storage loses the saved layout and the interrupted-action
@@ -1122,54 +790,6 @@ test("the box is measured through an observer over itself and the content above 
   expect(measured).toContain("issues-table-scroll");
 });
 
-// An epic becomes a heading through the rows that belong to it. Taking the last one out leaves
-// it with no heading to be, so it must keep its own row rather than leave the view.
-test("an epic left with no children is still a row while grouped by epic", async () => {
-  const user = userEvent.setup();
-  // The listing answers from this array, so the move takes the child out of the epic there too.
-  const rows = [
-    issue("CORE-1", { labels: ["epic"], title: "Source" }),
-    issue("CORE-2", { parent: "CORE-1" }),
-  ];
-  const send = spyOn(api, "send").mockImplementation(async () => {
-    rows[1] = issue("CORE-2");
-    return savedIssue("CORE-2") as never;
-  });
-  restores.push(() => send.mockRestore());
-  table(rows, "?group=epic");
-  await user.click(await screen.findByRole("checkbox", { name: "Select CORE-2" }));
-  await user.click(screen.getByRole("button", { name: "Take out of epic" }));
-  const row = await screen.findByRole("row", { name: "CORE-1 Source" });
-  expect(within(row).getByRole("checkbox", { name: "Select CORE-1" })).toBeDefined();
-});
-
-// An epic is filterable and searchable in every grouping: grouped by Epic its heading is made
-// by the children the table lists, under the same filters and search, so one that leaves the
-// epic no child leaves the epic its own row rather than taking it out of the view.
-test("an epic whose children a status filter hides keeps its own row while grouped by epic", async () => {
-  table(
-    [
-      issue("CORE-1", { labels: ["epic"], status: "triage", title: "Telemetry rollout" }),
-      issue("CORE-2", { parent: "CORE-1", status: "todo", title: "Wire the exporter" }),
-    ],
-    "?group=epic&status=triage"
-  );
-  expect(await screen.findByRole("row", { name: "CORE-1 Telemetry rollout" })).toBeDefined();
-  expect(screen.queryByRole("row", { name: "CORE-2 Wire the exporter" })).toBeNull();
-});
-
-test("a Labels filter of epic shows the epics while grouped by epic", async () => {
-  table(
-    [
-      issue("CORE-1", { labels: ["epic"], title: "Telemetry rollout" }),
-      issue("CORE-2", { parent: "CORE-1", title: "Wire the exporter" }),
-    ],
-    "?group=epic&label=epic&nofilter=1"
-  );
-  expect(await screen.findByRole("row", { name: "CORE-1 Telemetry rollout" })).toBeDefined();
-  expect(screen.queryByRole("row", { name: "CORE-2 Wire the exporter" })).toBeNull();
-});
-
 /** The group headings on the page, in the order they are drawn. */
 function headings(): string[] {
   return [...document.querySelectorAll("tbody tr")]
@@ -1268,96 +888,6 @@ test.each([
   );
 });
 
-// Start all its queued issues next is Start next over an epic's queued children: it moves them
-// and says so, rather than leaving the reader to guess whether anything happened.
-test("Start all its queued issues next moves the epic's queued children and reports it", async () => {
-  const user = userEvent.setup();
-  const sent: { path: string; body: unknown }[] = [];
-  const send = spyOn(api, "send").mockImplementation(async (request) => {
-    sent.push({ path: request.path, body: request.body });
-    return savedIssue("CORE-3") as never;
-  });
-  restores.push(() => send.mockRestore());
-  table(
-    [
-      issue("CORE-1", { labels: ["epic"], title: "Queue epic" }),
-      issue("CORE-2", { labels: ["legion"], rank: "a", title: "Ahead of the epic" }),
-      issue("CORE-3", { labels: ["legion"], parent: "CORE-1", rank: "b", title: "Behind" }),
-    ],
-    "?group=epic"
-  );
-  const heading = (await screen.findByRole("link", { name: "CORE-1 · Queue epic" })).closest("tr");
-  if (!heading) throw new Error("The epic has no heading row");
-  await user.click(within(heading).getByRole("button", { name: "Epic actions ▾" }));
-  await user.click(screen.getByRole("button", { name: "Start all its queued issues next" }));
-  await waitFor(() =>
-    expect(
-      within(screen.getByRole("region", { name: "Project issues" })).getByRole("status").textContent
-    ).toContain("now starts next")
-  );
-  expect(sent).toEqual([{ path: "/api/v1/issues/CORE-3", body: { rank: { before: "CORE-2" } } }]);
-});
-
-// Finish sends what a refusal left behind under the same bound a bulk action keeps, so a
-// 250-row refusal is a stream of eight rather than 250 requests at once.
-test("Finish retries a refused action's writes eight at a time", async () => {
-  const user = userEvent.setup();
-  let inFlight = 0;
-  let peak = 0;
-  let refuse = true;
-  const held: (() => void)[] = [];
-  const send = spyOn(api, "send").mockImplementation(async () => {
-    if (refuse) throw new ApiError(403, { error: "refused", code: "FORBIDDEN" });
-    inFlight += 1;
-    peak = Math.max(peak, inFlight);
-    const holding = Promise.withResolvers<void>();
-    held.push(holding.resolve);
-    await holding.promise;
-    inFlight -= 1;
-    return savedIssue("CORE-1") as never;
-  });
-  restores.push(() => send.mockRestore());
-  const children = Array.from({ length: 20 }, (_, index) =>
-    issue(`CORE-${index + 1}`, { parent: "CORE-98" })
-  );
-  const { client } = table(
-    [
-      issue("CORE-98", { labels: ["epic"], title: "Merge source" }),
-      issue("CORE-99", { labels: ["epic"], title: "Merge target" }),
-      ...children,
-    ],
-    "?group=epic"
-  );
-  const heading = (await screen.findByRole("link", { name: "CORE-98 · Merge source" })).closest(
-    "tr"
-  );
-  if (!heading) throw new Error("The source epic has no heading row");
-  await user.click(within(heading).getByRole("button", { name: "Epic actions ▾" }));
-  await user.selectOptions(
-    screen.getByRole("combobox", { name: "Merge into another epic" }),
-    "CORE-99"
-  );
-  await user.click(screen.getByRole("button", { name: "Merge…" }));
-  await user.click(
-    within(await screen.findByRole("dialog", { name: "Merge this epic?" })).getByRole("button", {
-      name: /^Merge$/,
-    })
-  );
-  await screen.findByRole("alert");
-  refuse = false;
-  expect(
-    writesOf(client)
-      .rows()
-      .filter((write) => write.status === "refused").length
-  ).toBeGreaterThan(8);
-  const interrupted = await screen.findByRole("region", { name: "Interrupted table action" });
-  await user.click(within(interrupted).getByRole("button", { name: "Finish" }));
-  await waitFor(() => expect(inFlight).toBe(8));
-  expect(peak).toBe(8);
-  for (const resolve of held.splice(0)) resolve();
-  await waitFor(() => expect(peak).toBe(8));
-});
-
 // TanStack hands a resize to the state the reader owns, not to the widths a narrow window
 // derives from it, so a drag on a phone leaves the saved desktop key and title widths alone.
 test("resizing a column on a phone leaves the saved key and title widths alone", async () => {
@@ -1453,7 +983,6 @@ async function headerLayout(width: number): Promise<string[]> {
 /** The columns after the pinned ones, at the registry's widths, then the Start next column. */
 const UNPINNED_REST = [
   "Status 132px -",
-  "Epic 220px -",
   "Assignee 180px -",
   "Created by 200px -",
   "Labels 200px -",
@@ -1509,10 +1038,10 @@ test("the List pins Select, Key and Title on a 390 px phone", async () => {
 test("a stored desktop width reaches the List's header", async () => {
   localStorage.setItem(
     "dispatch.project-table.CORE",
-    JSON.stringify({ sizing: { epic: 300, status: 50 } })
+    JSON.stringify({ sizing: { assignee: 300, status: 50 } })
   );
   const cells = await headerLayout(1400);
-  expect(cells).toContain("Epic 300px -");
+  expect(cells).toContain("Assignee 300px -");
   expect(cells).toContain("Status 132px -");
 });
 
@@ -1524,140 +1053,38 @@ test("the Status filter counts Done once the closed issues are loaded", async ()
   expect(screen.getByRole("option", { name: "Done, 1 issue" })).toBeDefined();
 });
 
-// A Move is nobody's interrupted action. Retried beside one, it reports like any other change
-// rather than telling the reader to finish steps it has nothing to do with.
-test("a retried Move reports in the ordinary wording while an action waits to be finished", async () => {
+// A write of an action the reader dismissed is nobody's interrupted action. Retried after, it
+// reports like any other change rather than telling the reader to finish steps that are gone.
+test("a write retried after its action was dismissed reports in the ordinary wording", async () => {
   const user = userEvent.setup();
-  localStorage.setItem(
-    "dispatch.project-table.CORE",
-    JSON.stringify({
-      action: { id: "waiting", kind: "startNext", project: "CORE", keys: ["CORE-2"], writes: {} },
-    })
-  );
   let refused = false;
   const send = spyOn(api, "send").mockImplementation(async (request) => {
     if (!refused) {
       refused = true;
       throw new ApiError(403, { error: "refused", code: "FORBIDDEN" });
     }
-    return savedIssue(request.path.split("/").at(-1) ?? "CORE-1") as never;
+    return savedIssue(request.path.split("/").at(-1) ?? "CORE-2") as never;
   });
   restores.push(() => send.mockRestore());
-  const { client } = table([issue("CORE-1"), issue("CORE-2", { labels: ["legion"] })]);
-  await user.click(await screen.findByRole("checkbox", { name: "Select CORE-1" }));
-  await user.click(screen.getByRole("button", { name: "Take out of epic" }));
-  await screen.findByRole("alert");
+  const { client } = table([
+    issue("CORE-1", { labels: ["legion"], rank: "a" }),
+    issue("CORE-2", { labels: ["legion"], rank: "b" }),
+  ]);
+  await user.click(await screen.findByRole("checkbox", { name: "Select CORE-2" }));
+  await user.click(within(screen.getByRole("toolbar")).getByRole("button", { name: "Start next" }));
+  const recovery = await screen.findByRole("region", { name: "Interrupted table action" });
+  await user.click(within(recovery).getByRole("button", { name: "Dismiss" }));
   const retry = writesOf(client)
     .rows()
     .find((write) => write.status === "refused");
-  if (!retry) throw new Error("The refused move was lost");
+  if (!retry) throw new Error("The refused write was lost");
   writesOf(client).retry(retry.id);
   await waitFor(() =>
     expect(
       within(screen.getByRole("region", { name: "Project issues" })).getByRole("status").textContent
     ).toContain("All changes saved")
   );
-  expect(screen.getByRole("region", { name: "Interrupted table action" })).toBeDefined();
-});
-
-// On a resume the server decides whether the reason was posted: the source's own messages,
-// compared as the whole sentence the merge builds.
-test("a resumed merge posts no second reason when the source already holds it", async () => {
-  const user = userEvent.setup();
-  const paths: string[] = [];
-  const send = spyOn(api, "send").mockImplementation(async (request) => {
-    paths.push(request.path);
-    return savedIssue("CORE-1") as never;
-  });
-  const messages = spyOn(api, "listIssueMessages").mockResolvedValue([
-    { message: { body: "Merged into CORE-2 (“Target”) from the issues table." } },
-  ] as never);
-  restores.push(() => {
-    send.mockRestore();
-    messages.mockRestore();
-  });
-  localStorage.setItem(
-    "dispatch.project-table.CORE",
-    JSON.stringify({
-      action: {
-        id: "merging",
-        kind: "merge",
-        project: "CORE",
-        keys: [],
-        source: "CORE-1",
-        target: "CORE-2",
-        writes: {},
-      },
-    })
-  );
-  table([
-    issue("CORE-1", { labels: ["epic"], title: "Source" }),
-    issue("CORE-2", { labels: ["epic"], title: "Target" }),
-  ]);
-  const recovery = await screen.findByRole("region", { name: "Interrupted table action" });
-  await user.click(within(recovery).getByRole("button", { name: "Finish" }));
-  await waitFor(() => expect(paths).toEqual(["/api/v1/issues/CORE-1"]));
-  expect(paths.some((path) => path.endsWith("/messages"))).toBe(false);
-});
-
-// A refused reason the reader discards leaves no write behind, so the record must not go on
-// claiming it: Finish posts the reason itself, and only then closes the source.
-test("a resumed merge whose discarded reason never landed posts it before closing", async () => {
-  const user = userEvent.setup();
-  const paths: string[] = [];
-  let refuseReason = true;
-  const send = spyOn(api, "send").mockImplementation(async (request) => {
-    paths.push(request.path);
-    if (refuseReason && request.path.endsWith("/messages"))
-      throw new ApiError(403, { error: "Message refused", code: "FORBIDDEN" });
-    return savedIssue("CORE-1") as never;
-  });
-  const messages = spyOn(api, "listIssueMessages").mockResolvedValue([]);
-  restores.push(() => {
-    send.mockRestore();
-    messages.mockRestore();
-  });
-  const { client } = table(
-    [
-      issue("CORE-1", { labels: ["epic"], title: "Source" }),
-      issue("CORE-2", { labels: ["epic"], title: "Target" }),
-    ],
-    "?group=epic"
-  );
-  const source = (await screen.findByRole("link", { name: "CORE-1 · Source" })).closest("tr");
-  if (!source) throw new Error("The source epic has no heading row");
-  await user.click(within(source).getByRole("button", { name: "Epic actions ▾" }));
-  await user.selectOptions(
-    screen.getByRole("combobox", { name: "Merge into another epic" }),
-    "CORE-2"
-  );
-  await user.click(screen.getByRole("button", { name: "Merge…" }));
-  await user.click(
-    within(await screen.findByRole("dialog", { name: "Merge this epic?" })).getByRole("button", {
-      name: /^Merge$/,
-    })
-  );
-  await screen.findByRole("alert");
-  const refused = writesOf(client)
-    .rows()
-    .find((write) => write.status === "refused");
-  if (!refused) throw new Error("The merge reason was not refused");
-  writesOf(client).discard(refused.id);
-  refuseReason = false;
-  await waitFor(() =>
-    expect(
-      JSON.parse(localStorage.getItem("dispatch.project-table.CORE") ?? "{}").action?.writes.reason
-    ).toBeUndefined()
-  );
-  const recovery = await screen.findByRole("region", { name: "Interrupted table action" });
-  await user.click(within(recovery).getByRole("button", { name: "Finish" }));
-  await waitFor(() =>
-    expect(paths).toEqual([
-      "/api/v1/issues/CORE-1/messages",
-      "/api/v1/issues/CORE-1/messages",
-      "/api/v1/issues/CORE-1",
-    ])
-  );
+  expect(screen.queryByRole("region", { name: "Interrupted table action" })).toBeNull();
 });
 
 // B1: a status the bundle does not know — a bookmark in another casing, a deploy window — is a
@@ -1675,99 +1102,6 @@ test.each([
   expect(screen.getAllByRole("option", { name: new RegExp(`^${status}`) }).length).toBeGreaterThan(
     0
   );
-});
-
-// B2: a closed `<select>` commits on an arrow key in Chrome on Linux. Neither of the table's
-// two destructive selects may write on one, so each stages a value for a button to commit.
-test("an arrow key on the move or merge select writes nothing", async () => {
-  const user = userEvent.setup();
-  const send = spyOn(api, "send").mockResolvedValue(savedIssue("CORE-3") as never);
-  restores.push(() => send.mockRestore());
-  table(
-    [
-      issue("CORE-1", { labels: ["epic"], title: "Source" }),
-      issue("CORE-2", { labels: ["epic"], title: "Target" }),
-      issue("CORE-3", { parent: "CORE-1" }),
-    ],
-    "?group=epic"
-  );
-  const source = (await screen.findByRole("link", { name: "CORE-1 · Source" })).closest("tr");
-  if (!source) throw new Error("The source epic has no heading row");
-  await user.click(within(source).getByRole("button", { name: "Epic actions ▾" }));
-  const merge = screen.getByRole("combobox", { name: "Merge into another epic" });
-  merge.focus();
-  await user.keyboard("{ArrowDown}");
-  expect(send).not.toHaveBeenCalled();
-  expect(screen.queryByRole("dialog", { name: "Merge this epic?" })).toBeNull();
-  await user.keyboard("{Escape}");
-
-  await user.click(await screen.findByRole("checkbox", { name: "Select CORE-3" }));
-  const move = screen.getByRole("combobox", { name: "Move to epic" });
-  move.focus();
-  await user.keyboard("{ArrowDown}");
-  expect(send).not.toHaveBeenCalled();
-  // The staged value is committed by its own button, and only then is anything written.
-  await user.selectOptions(move, "CORE-2");
-  expect(send).not.toHaveBeenCalled();
-  await user.click(screen.getByRole("button", { name: /^Move$/ }));
-  await waitFor(() => expect(send).toHaveBeenCalled());
-});
-
-/** The text boxes in the page now: a list's own box is one that appears when the list opens. */
-function textBoxes(): Element[] {
-  return [
-    ...document.querySelectorAll('input[type="search"], input[type="text"], input:not([type])'),
-  ];
-}
-
-/** Every option or button named `name`: what a reader picks from a list, however it is drawn. */
-function picks(name: RegExp): HTMLElement[] {
-  return [
-    ...screen.queryAllByRole("option", { name }),
-    ...screen.queryAllByRole("button", { name }),
-  ];
-}
-
-// INFRA-3135, R3: "Every list of options a reader picks from holds a text box that narrows the
-// options." The List's two lists of epics - the selection bar's Move to epic and an epic's own
-// Merge into another epic - are such lists: opened, each holds a text box of its own, and a word
-// typed into it leaves only the epics that match.
-test("the List's Move to epic and Merge into another epic each hold a text box that narrows the epics", async () => {
-  const user = userEvent.setup();
-  table(
-    [
-      issue("CORE-1", { labels: ["epic"], title: "Source" }),
-      issue("CORE-2", { labels: ["epic"], title: "Target" }),
-      issue("CORE-4", { labels: ["epic"], title: "Rollout" }),
-      issue("CORE-3", { parent: "CORE-1" }),
-    ],
-    "?group=epic"
-  );
-  const source = (await screen.findByRole("link", { name: "CORE-1 · Source" })).closest("tr");
-  if (!source) throw new Error("The source epic has no heading row");
-  await user.click(await screen.findByRole("checkbox", { name: "Select CORE-3" }));
-  for (const [name, open] of [
-    ["Move to epic", async () => undefined],
-    [
-      "Merge into another epic",
-      async () => {
-        await user.click(within(source).getByRole("button", { name: "Epic actions ▾" }));
-      },
-    ],
-  ] as const) {
-    await open();
-    const before = new Set(textBoxes());
-    const control = screen.getByLabelText(name);
-    await user.click(control);
-    const own = textBoxes().filter((box) => !before.has(box));
-    expect(own, `${name} holds no text box of its own`).toHaveLength(1);
-    await user.type(own[0] as HTMLElement, "Targ");
-    await waitFor(() =>
-      expect(picks(/Rollout/), `"Targ" leaves Rollout in ${name}`).toHaveLength(0)
-    );
-    expect(picks(/Target/).length, `"Targ" takes Target out of ${name}`).toBeGreaterThan(0);
-    await user.keyboard("{Escape}");
-  }
 });
 
 // B2: Start next over a selection the reader cannot see all of says how many it will move.
@@ -1895,130 +1229,21 @@ test.each([
   expect(screen.getByRole("searchbox", { name: "Search issues" })).toHaveFocus();
 });
 
-test.each([
-  "Create anyway",
-  "Cancel new epic",
-])("the possible duplicate's %s hands its focus to the search box", async (press) => {
-  const user = userEvent.setup();
-  const create = spyOn(api, "createIssue").mockImplementation(async (input) => {
-    if (!input.force)
-      throw new ApiError(409, {
-        code: "POSSIBLE_DUPLICATE",
-        error: "Possible duplicate of CORE-9",
-      });
-    return savedIssue("CORE-9");
-  });
-  const send = spyOn(api, "send").mockResolvedValue(savedIssue("CORE-1"));
-  const named = nameTheEpic(user, "Existing epic");
-  table([issue("CORE-1")]);
-  restores.push(() => {
-    create.mockRestore();
-    send.mockRestore();
-  });
-  await user.click(await screen.findByRole("checkbox", { name: "Select CORE-1" }));
-  await user.click(screen.getByRole("button", { name: "New epic from these" }));
-  await named;
-  const duplicate = await screen.findByRole("alert");
-  within(duplicate).getByRole("button", { name: press }).focus();
-  await user.keyboard("{Enter}");
-  expect(screen.queryByRole("button", { name: press })).toBeNull();
-  const search = screen.getByRole("searchbox", { name: "Search issues" });
-  expect(search).toHaveFocus();
-  if (press === "Create anyway") {
-    // The write the press sent lands, and the focus stays where it went.
-    await waitFor(() =>
-      expect(
-        within(screen.getByRole("region", { name: "Project issues" })).getByRole("status")
-          .textContent
-      ).toContain("Made the epic")
-    );
-    expect(search).toHaveFocus();
-  }
-});
-
-// F3: the sentence a merge posted is kept with the record, so a target renamed or closed before
-// Finish cannot make the resume post a second one.
-test.each([
-  ["renamed", { title: "Payments and billing" }],
-  ["closed", { status: "done" as const }],
-])("a resumed merge whose target was %s posts no second reason", async (_name, change) => {
-  const user = userEvent.setup();
-  const paths: string[] = [];
-  const send = spyOn(api, "send").mockImplementation(async (request) => {
-    paths.push(request.path);
-    return savedIssue("CORE-1") as never;
-  });
-  const messages = spyOn(api, "listIssueMessages").mockResolvedValue([
-    { message: { body: "Merged into CORE-2 (“Payments”) from the issues table." } },
-  ] as never);
-  restores.push(() => {
-    send.mockRestore();
-    messages.mockRestore();
-  });
-  localStorage.setItem(
-    "dispatch.project-table.CORE",
-    JSON.stringify({
-      action: {
-        id: "merging",
-        kind: "merge",
-        project: "CORE",
-        keys: [],
-        source: "CORE-1",
-        target: "CORE-2",
-        reasonBody: "Merged into CORE-2 (“Payments”) from the issues table.",
-        writes: {},
-      },
-    })
-  );
-  table([
-    issue("CORE-1", { labels: ["epic"], title: "Source" }),
-    issue("CORE-2", { labels: ["epic"], title: "Payments", ...change }),
-  ]);
-  const recovery = await screen.findByRole("region", { name: "Interrupted table action" });
-  await user.click(within(recovery).getByRole("button", { name: "Finish" }));
-  await waitFor(() => expect(paths).toEqual(["/api/v1/issues/CORE-1"]));
-  expect(paths.some((path) => path.endsWith("/messages"))).toBe(false);
-});
-
-// F4: a parent this reader cannot read costs its own rows their epic, and nothing else.
-test("one unreadable ancestor leaves every other row its epic", async () => {
-  const get = spyOn(api, "getIssue").mockImplementation(async (key: string) =>
-    key === "CORE-99"
-      ? Promise.reject(new Error("404 NOT_FOUND"))
-      : ({ ...savedIssue(key), labels: ["epic"], title: `Epic ${key}` } as never)
-  );
-  restores.push(() => get.mockRestore());
-  const { client } = table([issue("CORE-1")]);
-  await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
-  client.setQueryData(
-    projectIssuesQuery("CORE", [], true).queryKey,
-    Array.from({ length: 12 }, (_, index) =>
-      issue(`CORE-${index + 1}`, { parent: index === 0 ? "CORE-99" : `CORE-${100 + index}` })
-    )
-  );
-  expect((await screen.findByRole("alert")).textContent).toContain("Could not load 1 ancestor");
-  await waitFor(() => expect(screen.getAllByText("Unknown epic").length).toBe(1));
-});
-
 // F6: a page never ends with a heading whose rows all start on the next one, and a heading
 // that shows part of its group says how much of it is here.
 test.each([
-  ["a heading with no rows left on the page is dropped", 24, "Epic two"],
+  ["a heading with no rows left on the page is dropped", 24, "bob"],
   ["a heading showing part of its group counts what is here", 20, "3 of 20 issues"],
 ])("%s", async (_name, first, expected) => {
-  const epics = [
-    issue("CORE-1", { labels: ["epic"], title: "Epic one" }),
-    issue("CORE-2", { labels: ["epic"], title: "Epic two" }),
-  ];
   const leaves = [
     ...Array.from({ length: first }, (_, index) =>
-      issue(`CORE-1${String(index).padStart(2, "0")}`, { parent: "CORE-1" })
+      issue(`CORE-1${String(index).padStart(2, "0")}`, { assignee: "alice" })
     ),
     ...Array.from({ length: 20 }, (_, index) =>
-      issue(`CORE-2${String(index).padStart(2, "0")}`, { parent: "CORE-2" })
+      issue(`CORE-2${String(index).padStart(2, "0")}`, { assignee: "bob" })
     ),
   ];
-  table([...epics, ...leaves], "?group=epic&size=25");
+  table(leaves, "?group=assignee&size=25");
   await screen.findByRole("row", { name: "CORE-100 Work CORE-100" });
   const rows = [...document.querySelectorAll("tbody tr")].filter(
     (row) => row.querySelector("td[colspan]") !== null || row.hasAttribute("data-issue-row")
@@ -2029,7 +1254,7 @@ test.each([
   expect(isHeading(rows.at(-1))).toBe(false);
   for (const [index, row] of rows.entries())
     if (isHeading(row)) expect(isHeading(rows[index + 1])).toBe(false);
-  if (expected === "Epic two") expect(headings().join(" | ")).not.toContain(expected);
+  if (expected === "bob") expect(headings().join(" | ")).not.toContain(expected);
   else expect(headings().join(" | ")).toContain(expected);
 });
 
@@ -2099,7 +1324,6 @@ test("Finish completes when a refused write was retried from Pending changes", a
   });
   restores.push(() => send.mockRestore());
   const { client } = table([
-    issue("CORE-1", { labels: ["epic"], title: "Epic" }),
     issue("CORE-2", { labels: ["legion"], rank: "b" }),
     issue("CORE-3", { labels: ["legion"], rank: "a" }),
   ]);
@@ -2186,26 +1410,6 @@ test("a scoped table lists the issues the server answers for the priority, over 
     '{"sizing":{},"order":[],"visibility":{"updated":false,"project":false,"advances":false}}'
   );
   expect(localStorage.getItem("dispatch.project-table.priority:PRI-7")).toBeNull();
-});
-
-test("a scoped table offers no epic action, because an epic belongs to a project", async () => {
-  const user = userEvent.setup();
-  table(
-    [
-      issue("CORE-2", { advances: [{ id: "PRI-7", inherited: false }] }),
-      issue("OPS-3", { advances: [{ id: "PRI-7", inherited: false }] }),
-    ],
-    "",
-    undefined,
-    { listing: { advances: "PRI-7" }, stateKey: "w" }
-  );
-  await user.click(await screen.findByRole("checkbox", { name: "Select CORE-2" }));
-  await user.click(screen.getByRole("checkbox", { name: "Select OPS-3" }));
-  // The selection is of two projects, so no epic could hold it and none is offered; what each
-  // issue can be written one at a time still is.
-  expect(screen.queryByRole("button", { name: "New epic from these" })).toBeNull();
-  expect(screen.getByRole("button", { name: "Start next" })).toBeDefined();
-  expect(screen.getByRole("button", { name: "Take out of epic" })).toBeDefined();
 });
 
 test("a stateKey puts the table's own view under its prefix, and none keeps the bare keys", async () => {

@@ -28,9 +28,7 @@ import {
 } from "../../theme/classes";
 import { useAgentRegistry } from "../refs/agent-registry";
 import { setSelectedIssues } from "../search/bar-scope";
-import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
 import { ConfirmDialog } from "./ConfirmDialog";
-import { EpicNameDialog } from "./EpicNameDialog";
 import { useIssueFilters } from "./issue-filters";
 import { useIssueTableActions } from "./issues-table-actions";
 import {
@@ -50,8 +48,6 @@ import {
   ISSUE_LINK_ATTRIBUTE,
   ISSUE_ROW_ATTRIBUTE,
   type Item,
-  isEpic,
-  matchesFilters,
   matchesSearch,
   PAGE_SIZES,
   tableStorageKey,
@@ -194,17 +190,10 @@ export function IssuesTable({
   // filter asks for it: because it is picked, or because its panel is open and counting.
   const wantsFree = claimPicked.includes(UNCLAIMED_FACET);
   const registry = useAgentRegistry(wantsFree || openFilter === "claim");
-  const {
-    all,
-    allItems,
-    ancestry,
-    doneLoaded,
-    epics,
-    everyIssue,
-    issues,
-    listingError,
-    missingParents,
-  } = useIssueTableItems(listing, { wantsDone, registry });
+  const { all, allItems, doneLoaded, everyIssue, issues, listingError } = useIssueTableItems(
+    listing,
+    { wantsDone, registry }
+  );
   const loading = issues.isPending || userState.isPending;
   const failed = !loading && ((issues.isError && issues.data === undefined) || userState.isError);
   const loaded = !loading && !failed;
@@ -212,28 +201,16 @@ export function IssuesTable({
   // removed. The narrowing is the reader's, so it outranks nothing: every other filter still
   // applies to what is left.
   const picked = view.selection;
-  const items = useMemo(() => {
-    const shown = allItems.filter(
-      ({ issue }) =>
-        (picked === null || picked.keys.has(issue.key)) &&
-        (!flags.needsYou || issue.open_asks > 0) &&
-        (!flags.unread || issueIsUnread(issue, userState.data?.[issue.key]?.last_read_seq ?? 0))
-    );
-    if (grouping[0] !== "epic") return shown;
-    // An epic is an ordinary row, except where it is already a group's heading. A heading is
-    // made by the children the table lists — the same filters and search it applies to every
-    // row — so an epic none of the listed rows belongs to keeps its own row rather than leaving
-    // the view with nothing to show it, select it or act on it.
-    const headings = new Set(
-      shown
-        .filter(
-          (item) =>
-            !isEpic(item.issue) && matchesFilters(item, filters) && matchesSearch(item, search)
-        )
-        .map(({ epicKey }) => epicKey)
-    );
-    return shown.filter(({ issue }) => !isEpic(issue) || !headings.has(issue.key));
-  }, [allItems, filters, flags.needsYou, flags.unread, grouping, picked, search, userState.data]);
+  const items = useMemo(
+    () =>
+      allItems.filter(
+        ({ issue }) =>
+          (picked === null || picked.keys.has(issue.key)) &&
+          (!flags.needsYou || issue.open_asks > 0) &&
+          (!flags.unread || issueIsUnread(issue, userState.data?.[issue.key]?.last_read_seq ?? 0))
+      ),
+    [allItems, flags.needsYou, flags.unread, picked, userState.data]
+  );
   // What the table is narrowed to, and the way back to every row: removing the chip clears
   // `only=` and leaves every other control where the reader set it. It is a chip of the control
   // row, beside the flags' and the columns', drawn by the same `filterChips` and named as they
@@ -298,12 +275,11 @@ export function IssuesTable({
   // A control of the table's head - a column filter, or the list it opened in a portal of its
   // own - goes with the table when a press in it sends the List back to its skeleton, and the
   // focus it held goes to the search box rather than the page's body. A notice's button under
-  // the toolbar goes with the notice it answers - the interrupted action's Finish and Dismiss, the
-  // possible duplicate's Create anyway and Cancel new epic, the unanswered epic's Dismiss - and its
-  // focus goes to the control now at its place among the notices, else the one before it, else
-  // the search box. Only the head and the notices are counted: the selection bar, the rows and
-  // the dialogs each hand the focus on themselves. The handler sits on the List's section, which
-  // stays in every branch.
+  // the toolbar goes with the notice it answers - the interrupted action's Finish and Dismiss -
+  // and its focus goes to the control now at its place among the notices, else the one before
+  // it, else the search box. Only the head and the notices are counted: the selection bar, the
+  // rows and the dialogs each hand the focus on themselves. The handler sits on the List's
+  // section, which stays in every branch.
   const sectionRef = useRef<HTMLElement>(null);
   const noticesRef = useRef<HTMLDivElement>(null);
   const noteFocus = useFocusPlace(
@@ -359,17 +335,7 @@ export function IssuesTable({
     busy,
     notice,
     moved,
-    duplicateEpic,
-    setDuplicateEpic,
-    unansweredEpic,
-    dismissUnansweredEpic,
-    moveTo,
     startNext,
-    newEpic,
-    renameEpic,
-    mergeEpic,
-    naming,
-    cancelNaming,
     confirming,
     cancelConfirming,
     confirmed,
@@ -384,14 +350,6 @@ export function IssuesTable({
     clearSelection: () => setSelection({}),
   });
 
-  // How many parents the walk could not read: every one of them when the walk itself failed,
-  // else the ones it named. The rest of the rows keep the epic they were read with.
-  const unreadableAncestors =
-    missingParents.length === 0
-      ? 0
-      : ancestry.isError
-        ? missingParents.length
-        : (ancestry.data?.unreadable.length ?? 0);
   const pageCount = table.getPageCount();
   useEffect(() => {
     if (
@@ -436,23 +394,13 @@ export function IssuesTable({
                 </button>
               </p>
             ) : null}
-            {unreadableAncestors > 0 ? (
-              <p className={dangerText} role="alert">
-                Could not load {unreadableAncestors}{" "}
-                {unreadableAncestors === 1 ? "ancestor" : "ancestors"}; affected rows show Unknown
-                epic.{" "}
-                <button type="button" onClick={() => void ancestry.refetch()}>
-                  Retry loading ancestors
-                </button>
-              </p>
-            ) : null}
             {wantsDone && everyIssue.isPending ? (
               <p aria-live="polite" className={textMutedOnCanvas}>
                 Loading closed issues…
               </p>
             ) : null}
             {/* Issues by status: a click shows only that status, a second click every status. */}
-            <IssueTableStatus table={table} items={allItems} epics={epics} />
+            <IssueTableStatus table={table} items={allItems} />
           </>
         ) : null}
 
@@ -498,30 +446,6 @@ export function IssuesTable({
                 </button>
               </section>
             ) : null}
-            {unansweredEpic ? (
-              <LandedWithoutAnswer what={`The epic “${unansweredEpic}”`}>
-                The selected issues have not been moved. Find the epic in the project before moving
-                them.{" "}
-                <button type="button" onClick={dismissUnansweredEpic}>
-                  Dismiss
-                </button>
-              </LandedWithoutAnswer>
-            ) : null}
-            {duplicateEpic && newEpic ? (
-              <div role="alert" className={textSecondaryOnCanvas}>
-                <p>{duplicateEpic.message}</p>
-                <button
-                  type="button"
-                  disabled={busy}
-                  onClick={() => void newEpic(duplicateEpic.keys, duplicateEpic.title, true)}
-                >
-                  Create anyway
-                </button>
-                <button type="button" onClick={() => setDuplicateEpic(undefined)}>
-                  Cancel new epic
-                </button>
-              </div>
-            ) : null}
           </div>
         ) : null}
       </div>
@@ -535,7 +459,6 @@ export function IssuesTable({
             onClick={() => {
               void issues.refetch();
               void userState.refetch();
-              if (missingParents.length) void ancestry.refetch();
             }}
           >
             Retry loading issues
@@ -559,18 +482,10 @@ export function IssuesTable({
                 columns={visibleColumns}
                 viewportWidth={boxWidth}
                 continued={entry.continued}
-                epics={epics}
                 grouping={grouping[0] ?? ""}
                 index={index}
                 measure={measure}
-                onMerge={mergeEpic}
                 shown={entry.shown}
-                onRename={renameEpic}
-                onStartAll={(key) =>
-                  startNext(
-                    allItems.filter((item) => item.epicKey === key).map((item) => item.issue.key)
-                  )
-                }
                 row={entry.row}
               />
             )}
@@ -592,12 +507,8 @@ export function IssuesTable({
           <IssueTableSelection
             returnFocus={returnFocus}
             table={table}
-            epics={epics}
             busy={busy}
-            unansweredEpic={unansweredEpic}
             startNext={startNext}
-            moveTo={moveTo}
-            newEpic={newEpic}
           />
           {confirming === undefined ? null : (
             <ConfirmDialog
@@ -607,26 +518,6 @@ export function IssuesTable({
               onCancel={cancelConfirming}
               onConfirm={confirmed}
               title={confirming.title}
-            />
-          )}
-          {naming === undefined ? null : naming.kind === "new" ? (
-            newEpic === undefined ? null : (
-              <EpicNameDialog
-                key="new-epic"
-                onCancel={cancelNaming}
-                onSubmit={(name) => void newEpic(naming.keys, name)}
-                submitLabel="Create epic"
-                title="Name the new epic"
-              />
-            )
-          ) : (
-            <EpicNameDialog
-              initial={naming.title}
-              key={`rename-${naming.key}`}
-              onCancel={cancelNaming}
-              onSubmit={(name) => renameEpic(naming.key, name)}
-              submitLabel="Rename epic"
-              title="Rename the epic"
             />
           )}
         </>

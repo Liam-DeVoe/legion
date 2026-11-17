@@ -9,8 +9,6 @@ import { type IssueStatus, issueStatuses, openIssueStatuses, statusText } from "
 export interface Item {
   readonly issue: IssueSummary;
   readonly queue?: number;
-  readonly epic: string;
-  readonly epicKey?: string;
   readonly author: string;
   readonly claimedBy: string;
   /** Whether an agent could pick this issue up now: nobody holds it, or the server would hand
@@ -85,7 +83,6 @@ export type ColumnId =
   | "key"
   | "title"
   | "status"
-  | "epic"
   | "assignee"
   | "author"
   | "labels"
@@ -216,7 +213,6 @@ export const COLUMNS: readonly ColumnSpec[] = [
       always: issueStatuses,
     },
   },
-  { id: "epic", size: 220, min: 116, filter: one((item) => item.epic) },
   {
     id: "assignee",
     size: 180,
@@ -353,28 +349,21 @@ export const defaultView: View = {
 const hasLabel = (issue: Pick<IssueSummary, "labels">, label: string) =>
   (issue.labels ?? []).some((value) => value.toLowerCase() === label);
 /** The server matches a label on `lower(label)`, so the table does too: an issue labelled
- *  `Legion` is in Legion's queue, and one labelled `Epic` is an epic. */
+ *  `Legion` is in Legion's queue. */
 export const isQueued = (issue: Pick<IssueSummary, "status" | "labels">) =>
   issue.status === "todo" && hasLabel(issue, "legion");
-export const isEpic = (issue: Pick<IssueSummary, "parent" | "labels" | "status">) =>
-  issue.parent === null && hasLabel(issue, "epic") && issue.status !== "done";
-export type EpicAncestor = Pick<IssueSummary, "key" | "parent" | "status" | "labels" | "title">;
 export function buildItems(
   issues: readonly IssueSummary[],
   label: (actor: Actor) => string,
-  ancestors: readonly EpicAncestor[] = [],
   isFree: (issue: IssueSummary) => boolean = (issue) => issue.claim === null
 ): Item[] {
-  const byKey = new Map<string, EpicAncestor>(
-    [...ancestors, ...issues].map((issue) => [issue.key, issue])
-  );
   // Rank's alphabet is byte-ordered, not locale-ordered. Two issues of one rank break the tie
   // by `compareCreated`, not `compareTimestamps`: a server of the release before the one that
   // added `created_at` sends none, and that absent time would throw there, which is what
   // `IssuesTable.test.tsx`'s "the Legion queue puts an issue with no created_at after one of
   // the same rank that has one" shows.
   const queue = issues
-    .filter((issue) => !isEpic(issue) && isQueued(issue))
+    .filter((issue) => isQueued(issue))
     .sort((a, b) =>
       a.rank < b.rank
         ? -1
@@ -384,32 +373,17 @@ export function buildItems(
     );
   const positions = new Map(queue.map((issue, index) => [issue.key, index + 1]));
   return issues.map((issue) => {
-    let root: EpicAncestor | undefined = issue;
-    const seen = new Set<string>();
-    while (root?.parent && !seen.has(root.key)) {
-      seen.add(root.key);
-      root = byKey.get(root.parent);
-    }
-    const epic = root && isEpic(root) ? root : undefined;
     const author = issue.created_by ? label(issue.created_by) : "Unknown";
     const claimedBy = issue.claim ? label(issue.claim.actor) : "Nobody";
-    const epicName = epic
-      ? `${epic.key} · ${epic.title}`
-      : root === undefined || root.parent !== null
-        ? "Unknown epic"
-        : "No epic";
     return {
       issue,
       queue: positions.get(issue.key),
-      epic: epicName,
-      epicKey: epic?.key,
       author,
       claimedBy,
       claimFree: isFree(issue),
       search: [
         issue.key,
         issue.title,
-        epicName,
         issue.assignee ?? "",
         author,
         claimedBy,
@@ -419,25 +393,6 @@ export function buildItems(
   });
 }
 
-/** Move the first open issue on each path out of the source. Its open or closed descendants
- *  travel with it; only a path made entirely of closed intermediates needs another parent write. */
-export function mergeMembers(issues: readonly IssueSummary[], source: string): string[] {
-  const byKey = new Map(issues.map((issue) => [issue.key, issue]));
-  return issues
-    .filter((issue) => {
-      if (issue.status === "done" || issue.key === source) return false;
-      let parent = issue.parent;
-      const seen = new Set<string>();
-      while (parent !== null && parent !== source && !seen.has(parent)) {
-        seen.add(parent);
-        const intermediate = byKey.get(parent);
-        if (!intermediate || intermediate.status !== "done") return false;
-        parent = intermediate.parent;
-      }
-      return parent === source;
-    })
-    .map((issue) => issue.key);
-}
 function withinOneEdit(a: string, b: string): boolean {
   if (Math.abs(a.length - b.length) > 1) return false;
   let i = 0,
@@ -460,8 +415,8 @@ function withinOneEdit(a: string, b: string): boolean {
   return edits + a.length - i + b.length - j <= 1;
 }
 export function matchesSearch(item: Item, query: string): boolean {
-  // Nothing typed matches everything, and the two hot callers — the epic fold-in and the
-  // facet counts — ask on every render, so this answers before any work is done.
+  // Nothing typed matches everything, and the facet counts ask on every render, so this
+  // answers before any work is done.
   if (query.trim() === "") return true;
   let words: string[] | undefined;
   const searchWords = () => {
@@ -498,7 +453,7 @@ export function matchesFilters(item: Item, filters: ColumnFiltersState, except?:
 }
 /** The headings that stand for "none of them", wherever a column has one: they read last, after
  *  every named group. */
-const EMPTY_GROUPS: readonly string[] = ["No epic", "Unknown epic", "Nobody", "Unassigned"];
+const EMPTY_GROUPS: readonly string[] = ["Nobody", "Unassigned"];
 /** Which of two of column `id`'s groups comes first: the order its filter lists its values in,
  *  and by name where the registry gives none — numbers inside a name counted as numbers, so
  *  `CORE-2` reads before `CORE-10`, and the empty group last. A group's place is its column's,
