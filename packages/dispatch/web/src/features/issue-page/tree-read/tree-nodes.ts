@@ -126,6 +126,9 @@ export interface TreeDraftContext extends TreeWords {
    *  `parent` names, since a parent comes before its children; and under the issue, `[]`, where
    *  none stands. */
   readonly placeOf: (node: TreeAnswerNode) => string[];
+  /** The node's own `dispatch://` address, as its draft carries it (`referenceOf`), or undefined
+   *  where it has none. */
+  readonly referenceOf: (node: TreeAnswerNode) => string | undefined;
   /** The id the tree draws the node `readId` names by (`treeIdOf`). */
   readonly treeIdOf: (readId: string) => string;
   /** The id the tree draws `node` by, read from the node itself (`treeIdOfNode`). */
@@ -247,6 +250,7 @@ export function treeDraftsFrom(
       }
       return [];
     },
+    referenceOf: (node) => referenceOf(node, drafting),
     treeIdOf: idOf,
     treeIdOfNode: idOfNode,
     tuplesFrom: (readId) => tuples.get(readId) ?? [],
