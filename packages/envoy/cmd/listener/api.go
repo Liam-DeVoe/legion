@@ -2997,8 +2997,10 @@ func (d *listenerDeps) registerPass(
 	if err := d.sessions.PutWithin(ctx, body.SessionID, sessionEntryFromSubscribe(body, machineID, outcome)); err != nil {
 		// The row is stored and nothing tells another reader the session is here, so the
 		// registration travels as this error alone and no caller is handed it. The pass
-		// answers nothing: the error is the registration's, and the caller's switch over it
-		// returns it rather than planning again.
+		// answers nothing: the error is the registration's. The caller's switch over it returns
+		// it, except when the write lost its connection and that connection is back
+		// (registersAgain): the registration then plans again from the bucket's row and makes the
+		// pass again, the entry write with it.
 		return registeredSession{}, false, nil, &sessionEntryWriteError{cause: err}
 	}
 	if outcome.relayed() {
