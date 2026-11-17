@@ -35,9 +35,10 @@ func assignmentsOf(t *testing.T, body []byte, key string) []map[string]any {
 
 // Every assignment that applies to an issue rides its record: the tree experiment its whole tree
 // was drawn for and the issue experiment drawn for the issue itself, each with the arm, the mode
-// and the instant of the draw. A row a hand-over settled carries an empty arm, an empty mode and
-// no instant, which is how a reader tells a unit settled at no arm from a unit never drawn,
-// which carries no row — and no key at all, since the wire never writes an empty list.
+// and the instant of the draw, and, for an experiment that sets how its issues are done, the group
+// its arm set (`plan`). A row a hand-over settled carries an empty arm, an empty mode and no
+// instant, which is how a reader tells a unit settled at no arm from a unit never drawn, which
+// carries no row — and no key at all, since the wire never writes an empty list.
 func TestTheStateShowsEveryIssueTheExperimentsItRunsUnder(t *testing.T) {
 	body := stateFrom(t, populatedState(t), "192.0.2.1:41000", podClaims(DaemonAPIVersion))
 
@@ -51,6 +52,7 @@ func TestTheStateShowsEveryIssueTheExperimentsItRunsUnder(t *testing.T) {
 		"LEGION-209": {
 			{"experiment": "memory", "variant": "memory", "mode": "random", "drawnAt": drawn},
 			{"experiment": "plan-length", "variant": "long", "mode": "random", "drawnAt": planned},
+			{"experiment": "planning", "variant": "b", "mode": "random", "drawnAt": planned, "plan": "default"},
 		},
 		// The hand-over's answer: an arm and a mode on the wire, both empty, and no instant.
 		"LEGION-210": {{"experiment": "plan-length", "variant": "", "mode": ""}},

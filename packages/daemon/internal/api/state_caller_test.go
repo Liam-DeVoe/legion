@@ -218,6 +218,28 @@ func withoutAssignmentKeys(t *testing.T, body []byte) []byte {
 	return encoded
 }
 
+// withoutAssignmentPlanKeys is a state body with no assignment carrying `plan`, which is what a
+// caller below assignmentPlanContract is served of a state that carries it (api's
+// withoutAssignmentPlans). It serves the table below as withoutQuietKeys does.
+func withoutAssignmentPlanKeys(t *testing.T, body []byte) []byte {
+	t.Helper()
+	var served map[string]any
+	if err := json.Unmarshal(body, &served); err != nil {
+		t.Fatalf("decode state %s: %v", body, err)
+	}
+	for _, issue := range served["issues"].(map[string]any) {
+		rows, _ := issue.(map[string]any)["assignments"].([]any)
+		for _, row := range rows {
+			delete(row.(map[string]any), "plan")
+		}
+	}
+	encoded, err := json.Marshal(served)
+	if err != nil {
+		t.Fatalf("encode the state %s without its assignments' plan: %v", body, err)
+	}
+	return encoded
+}
+
 // withoutMergeWaitKey is a state body with no issue carrying `mergeWait`, which is what a caller
 // below mergeWaitContract is served of a state (api's withoutMergeWait). It serves the table
 // below as withoutQuietKeys does: a row's baseline is the full state with exactly the keys that
@@ -452,6 +474,10 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// that added them), so a pod at it or above is served them and every older pod is not.
 		// The three leave together (withoutEntryTimes), so one column answers for all of them.
 		times bool
+		// plans is whether the caller is served each assignment's `plan` (assignmentPlanContract,
+		// the contract that added it), so a pod at it or above is served the key and every older
+		// pod is not.
+		plans bool
 	}{
 		{name: "a pod whose plugin is a contract behind", remote: statePodAddr + ":41000", claims: podClaims(supervise.PodUpdateContract - 1)},
 		{name: "the same pod asking over IPv6", remote: "[::ffff:" + statePodAddr + "]:41000", claims: podClaims(supervise.PodUpdateContract - 1)},
@@ -492,9 +518,9 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// architect-stalled arms are held back, at the band's foot and at its top alike.
 		{name: "a pod at assignmentsContract", remote: statePodAddr + ":41000", claims: podClaims(assignmentsContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true},
 		{name: "a pod just below entryTimesContract", remote: statePodAddr + ":41000", claims: podClaims(entryTimesContract - 1), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true},
-		{name: "a pod at this contract", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true},
-		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true},
-		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(supervise.PodUpdateContract - 1), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true},
+		{name: "a pod at this contract", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, plans: true},
+		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, plans: true},
+		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(supervise.PodUpdateContract - 1), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, plans: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			body := stateFrom(t, populatedState(t), tc.remote, tc.claims)
@@ -546,6 +572,9 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 				}
 				if !tc.times {
 					want = withoutEntryTimeKeys(t, want)
+				}
+				if !tc.plans {
+					want = withoutAssignmentPlanKeys(t, want)
 				}
 				if unmarked(t, body) != unmarked(t, want) {
 					t.Fatalf("state = %s, want the state as this row's contract is served it, %s", body, want)
