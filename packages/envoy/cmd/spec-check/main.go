@@ -139,7 +139,8 @@
 // {"states":[…],"cycle":[…]}. It exits 0 for a scenario it reads, and 2, with one line on standard
 // error naming the file and the fault, for one it does not: a file or a field that the format does
 // not hold (JSON that is not UTF-8, a member written in other letters or given two times, or a
-// value of another type, named with the form of the file and its place, too), a missing file, spec
+// value of another type, named with the form of the file and its place, too), a missing file, a
+// member that the derivation reads and that a file does not set (such as the at of a result), spec
 // files that do not parse or that the rules of tree refuse, or a loop of parent and support
 // relations in the approved spec. A check of production or of the graph is judged only
 // at a subject that names a deploy, and there a check of the graph counts only the results at the

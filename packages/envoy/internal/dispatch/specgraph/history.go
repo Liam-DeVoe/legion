@@ -40,24 +40,54 @@ type FixtureCommit struct {
 const historyForm = `{"commits":[{"id":"<commit>","parent":"<commit>","files":{"<repository path>":"<content label>"}}, …]}`
 
 // ReadFixtureHistory reads a history.json. It refuses what decodeJSON refuses, a value of another
-// type than historyForm needs named by its place among them, a commit with no id, and an id on two
-// commits.
+// type than historyForm needs named by its place among them, and what FixtureHistory.check
+// refuses.
 func ReadFixtureHistory(r io.Reader) (FixtureHistory, error) {
 	var h FixtureHistory
 	if err := decodeJSONFrom(r, &h, historyForm); err != nil {
 		return FixtureHistory{}, fmt.Errorf("specgraph: history: %w", err)
 	}
+	if err := h.check(); err != nil {
+		return FixtureHistory{}, err
+	}
+	return h, nil
+}
+
+// check is the first fault of h that ReadFixtureHistory and the entry of the derivation refuse,
+// or nil: a commit with no id, an id on two commits, and then a commit that sets no files, whose
+// tree would read as empty, so that two such commits would read as one tree and a result would
+// carry between them (R8). A commit whose files are {} holds the empty tree.
+func (h FixtureHistory) check() error {
 	seen := map[string]bool{}
 	for _, c := range h.Commits {
 		if c.ID == "" {
-			return FixtureHistory{}, errors.New("specgraph: history: a commit has no id")
+			return errors.New("specgraph: history: a commit has no id")
 		}
 		if seen[c.ID] {
-			return FixtureHistory{}, fmt.Errorf("specgraph: history: commit %q is in the history two times", c.ID)
+			return fmt.Errorf("specgraph: history: commit %q is in the history two times", c.ID)
 		}
 		seen[c.ID] = true
 	}
-	return h, nil
+	for _, c := range h.Commits {
+		if c.Files == nil {
+			return fmt.Errorf("specgraph: history: commit %q: it sets no files", c.ID)
+		}
+	}
+	return nil
+}
+
+// historyFault is the fault of h that FixtureHistory.check gives when h is a FixtureHistory, and
+// nil for any other History, such as GitHistory, which reads the trees of a clone.
+func historyFault(h History) error {
+	switch h := h.(type) {
+	case FixtureHistory:
+		return h.check()
+	case *FixtureHistory:
+		if h != nil {
+			return h.check()
+		}
+	}
+	return nil
 }
 
 // Changed is the sorted paths whose label differs between the trees of from and to, or that one

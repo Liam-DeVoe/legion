@@ -1,6 +1,11 @@
 package specgraph
 
-import "slices"
+import (
+	"errors"
+	"fmt"
+	"maps"
+	"slices"
+)
 
 // State is the state of each check and each statement at one subject (R10: "A page says which
 // subject it shows"): Checks as CheckStates gives them, and Statements in the order of Derive.
@@ -57,8 +62,14 @@ type State struct {
 // of them is false, unknown when one is unknown, and met when all are true, also when S has
 // statements under it, no supporter and no own check, or none of its checks reads the subject. So
 // at the head of main a wait on S never waits for a check of production.
-func Derive(in Input) State {
-	checks := newCheckJudge(in)
+//
+// Derive gives an error, and no state, for an Input that is not whole (Input.check), as
+// CheckStates does.
+func Derive(in Input) (State, error) {
+	checks, err := newCheckJudge(in)
+	if err != nil {
+		return State{}, err
+	}
 	s := State{Subject: in.Subject, Checks: checks.states()}
 	if s.Checks == nil {
 		s.Checks = []CheckState{}
@@ -69,7 +80,73 @@ func Derive(in Input) State {
 	for _, id := range order {
 		s.Statements = append(s.Statements, j.state(id))
 	}
-	return s
+	return s, nil
+}
+
+// check is the first fault of in that the derivation refuses, nil when in is whole, in the words
+// that the scenario reader refuses the same fault with. A member that the caller did not set is its
+// zero value, and the judge would read that value as a real one, which turns a state toward true or
+// hides a failure; so the judge never reads one, and no state is given:
+//
+//   - the subject: its commit, its now, and a branch or a deploy (subjectFault); with no now no
+//     time limit would end, and with neither, no check of production would be judged;
+//   - each approved node, as ReadApproved refuses it (ApprovedNode.check): a node with no version or
+//     a block that is not its one block would leave the node out, and a version with no time would
+//     make no result suspect (R7: "A change to the text of a statement makes every result under it
+//     suspect");
+//   - each result (Result.fault), with the current text of its check when it carries that text's
+//     digest, so it is judged by what the judge reads of it, and no two results of one check at one
+//     At and one Seq (sameRecord);
+//   - a FixtureHistory, as ReadFixtureHistory refuses it (FixtureHistory.check): a commit with no
+//     files would be an empty tree, and two of them one tree;
+//   - each known tie, as NewTie refuses it: a known tie with no path covers no change;
+//   - each job run (JobRun.fault).
+//
+// current is the tree of the current texts of in.Approved.
+func (in Input) check(current Tree) error {
+	if fault := subjectFault(in.Subject, in.Now); fault != "" {
+		return fmt.Errorf("specgraph: subject: %s", fault)
+	}
+	for _, id := range slices.Sorted(maps.Keys(in.Approved.Nodes)) {
+		if err := in.Approved.Nodes[id].check(); err != nil {
+			return err
+		}
+	}
+	digests := make(map[string]string, len(current.Checks))
+	for _, c := range current.Checks {
+		digests[c.ID] = c.Digest()
+	}
+	for i, r := range in.Results {
+		var procedure *Check
+		if digest, held := digests[r.Check]; held && digest == r.CheckDigest {
+			c, _ := current.CheckByID(r.Check)
+			procedure = &c
+		}
+		if fault := r.fault(procedure); fault != "" {
+			return fmt.Errorf("specgraph: result %d: %s", i+1, fault)
+		}
+	}
+	if i, j, same := sameRecord(in.Results); same {
+		return errors.New("specgraph: " + sameRecordFault(i, j))
+	}
+	if err := historyFault(in.History); err != nil {
+		return err
+	}
+	for _, commit := range slices.Sorted(maps.Keys(in.Ties)) {
+		for _, check := range slices.Sorted(maps.Keys(in.Ties[commit])) {
+			if tie := in.Ties[commit][check]; tie.Known {
+				if err := tiePathsFault(tie.Paths); err != nil {
+					return fmt.Errorf("specgraph: ties: commit %q: check %q: %w", commit, check, err)
+				}
+			}
+		}
+	}
+	for i, r := range in.JobRuns {
+		if fault := r.fault(); fault != "" {
+			return fmt.Errorf("specgraph: job run %d: %s", i+1, fault)
+		}
+	}
+	return nil
 }
 
 // WaitEnds is whether a wait on the statement ends at the subject (R29: "That wait ends when main
