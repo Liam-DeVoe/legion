@@ -168,6 +168,12 @@ func SessionReplySubject(inbox, sessionID string) string {
 // SessionReplies is the one publish entry under _INBOX. a grant of session sessionID needs: it
 // admits every reply subject SessionReplySubject makes for that session, and none it makes for
 // another, nor a requester's plain inbox (_INBOX.<id> or nats.go's _INBOX.<id>.<token>).
+//
+// sessionID must be one subject token: no dot, no wildcard (* or >) and no whitespace, the rule
+// SessionConsumerName holds a session's id to. SessionReplies does not check it, so its caller
+// must: a wildcard in the id would admit every session's replies, and a dot or whitespace would
+// write an entry that names no reply subject SessionReplySubject makes. A grant built from an id
+// a client supplied checks it first, as the NATS auth service's session grant does.
 func SessionReplies(sessionID string) string {
 	return nats.InboxPrefix + "*." + sessionID + ".>"
 }
