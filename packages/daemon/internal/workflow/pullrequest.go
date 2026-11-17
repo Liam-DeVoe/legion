@@ -451,6 +451,8 @@ func (e *Engine) closeMerged(ctx context.Context, tx pgx.Tx, issue record.Issue,
 	if !awaitsMerge(issue) {
 		return nil, nil
 	}
+	// Only the copy in hand leaves the hold here: the task keeps its place, its merge, which a hold
+	// keeps too (moveTask), and the close below writes the move to done.
 	issue.Phase, issue.Hold = phase.Merging, nil
 	lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree)
 	if err != nil {
@@ -468,7 +470,11 @@ func (e *Engine) closeMerged(ctx context.Context, tx pgx.Tx, issue record.Issue,
 		}
 		return nil, e.transition(ctx, tx, issue, TriggerPullRequestMerged, "", record.PhaseRow{}, pr, "")
 	}
-	row, ok := e.row(issue.Phase, TriggerPullRequestMerged, "", Snapshot{Phase: issue.Phase})
+	w, err := e.walk(ctx, tx, issue)
+	if err != nil {
+		return nil, err
+	}
+	row, ok := w.row(issue.Phase, TriggerPullRequestMerged, "", Snapshot{Phase: issue.Phase})
 	if !ok {
 		return nil, nil
 	}
@@ -481,7 +487,10 @@ func (e *Engine) closeMerged(ctx context.Context, tx pgx.Tx, issue record.Issue,
 	if err := e.endStep(ctx, tx, issue, StepEnd{Result: "passed"}); err != nil {
 		return nil, err
 	}
-	issue.Phase, issue.Hold = row.To, nil
+	if err := e.moveTask(ctx, tx, &issue, &w, row.To, record.TaskDone); err != nil {
+		return nil, err
+	}
+	issue.Hold = nil
 	if status != "" {
 		issue.Status = status
 	}

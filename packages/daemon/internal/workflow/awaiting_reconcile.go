@@ -508,6 +508,8 @@ func answerOfAct(ask record.RootAsk, seq int64, otherwise record.Answer) record.
 // waits on another issue as well (blockers.waitsOf leaves it out). The architect stays live to
 // read the person's answer, and the controller is told.
 func (e *Engine) enterAwaiting(ctx context.Context, tx pgx.Tx, root record.Issue, waiting record.Awaiting, reason string) error {
+	// The root's task keeps its place (moveTask): the wait comes before its first step, so the task
+	// has not started, and awaiting_person, like admitted, is a phase of the architect before it.
 	root.Phase, root.Awaiting = phase.AwaitingPerson, &waiting
 	if err := e.store.PutIssue(ctx, tx, root); err != nil {
 		return err

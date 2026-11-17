@@ -100,8 +100,16 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 	if err := e.endStep(ctx, tx, issue, stepStopped); err != nil {
 		return err
 	}
+	// The leave ends the child's task with its run: the task is done where it stands (moveTask).
 	if issue.Phase != phase.Done {
-		issue.Phase, issue.Hold = phase.Done, nil
+		w, err := e.walk(ctx, tx, issue)
+		if err != nil {
+			return err
+		}
+		if err := e.moveTask(ctx, tx, &issue, &w, phase.Done, record.TaskDone); err != nil {
+			return err
+		}
+		issue.Hold = nil
 		if err := e.store.PutIssue(ctx, tx, issue); err != nil {
 			return err
 		}
@@ -200,6 +208,9 @@ func (e *Engine) releaseParkedClaim(ctx context.Context, tx pgx.Tx, issue record
 func (e *Engine) leaveUnderOperator(ctx context.Context, tx pgx.Tx, root record.Issue, status string) error {
 	e.logOnCommit(ctx, "workflow: a waiting root left the workflow while the operator runs a tree under its key; the operator's tree is left alone",
 		"issue", root.Key, "tree", root.Tree, "status", status)
+	// The record's phase is done and its task keeps its place (moveTask): this takes the root out of
+	// the workflow without ending its task, which the workflow never started, since the operator's
+	// tree runs the work under this key. A todo re-admits it as a closed root's does.
 	root.Phase, root.Hold, root.Awaiting = phase.Done, nil, nil
 	return e.store.PutIssue(ctx, tx, root)
 }
@@ -312,7 +323,15 @@ func (e *Engine) beginLinger(ctx context.Context, tx pgx.Tx, root record.Issue) 
 		return err
 	}
 	root.LingerUntil = &until
-	root.Phase, root.Hold, root.Awaiting = phase.Done, nil, nil
+	// The root's leave writes it done, and its task with it: done where it stands (moveTask).
+	w, err := e.walk(ctx, tx, root)
+	if err != nil {
+		return err
+	}
+	if err := e.moveTask(ctx, tx, &root, &w, phase.Done, record.TaskDone); err != nil {
+		return err
+	}
+	root.Hold, root.Awaiting = nil, nil
 	if err := e.store.PutIssue(ctx, tx, root); err != nil {
 		return err
 	}
