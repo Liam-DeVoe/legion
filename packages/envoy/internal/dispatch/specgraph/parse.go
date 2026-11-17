@@ -40,6 +40,7 @@ const (
 	detailBadBlockLine     = "bad-block-line: the line opens no block"
 	detailBadField         = "bad-field: a check holds one Claim, one Procedure and one Failing example line, in that order"
 	detailClaimOneLine     = "bad-field: a claim is one line"
+	detailClaimOneSentence = "bad-field: a claim is one sentence"
 	detailBadEncoding      = "bad-encoding: a spec file is UTF-8 text with no NUL byte"
 )
 
@@ -48,14 +49,19 @@ const (
 //
 // A block opens on a line that starts with exactly three colons and that
 // pmdoc.ParseTypedDirectiveOpen reads, and closes on the next line that is exactly ":::". Outside a
-// block a file holds only headings and blank lines. A file's leading byte order mark is dropped, a
-// CRLF or a lone CR ends a line as an LF does, each line loses its trailing white space, and a body
-// loses its leading and trailing blank lines. A file that is not UTF-8, or that holds a NUL byte,
-// is refused at its first such line, as the importer of .dispatch/architecture refuses it (both by
-// text.Storable's rule), and is read all the same. A block whose opening line the grammar refuses,
-// or whose name is not one of the four, gives no node, and its lines up to its closing line are its
-// own; every other block gives its node even when Parse finds a problem in it, so one fault does
-// not make others appear.
+// block a file holds only headings and blank lines, and a heading names no code (code-in-text, as
+// Validate reads each text). A check's claim is one line and one sentence, split as a component's
+// purpose is (sentenceEnd). A file's leading byte order mark is dropped, a CRLF or a lone CR ends a
+// line as an LF does, each line loses its trailing white space, and a body loses its leading and
+// trailing blank lines. A file that is not UTF-8, or that holds a NUL byte, is refused at its first
+// such line, as the importer of .dispatch/architecture refuses it (both by text.Storable's rule),
+// and is read all the same. A block whose opening line the grammar refuses, or whose name is not
+// one of the four, gives no node, and its lines up to its closing line are its own; every other
+// block gives its node even when Parse finds a problem in it. A block with no closing line runs on
+// to the next line that is exactly ":::", so the block after it gives no node either
+// (nested-block). So one fault can give more than one problem: a node that names a lost block, or
+// that a lost block named, can then break a rule of its own, such as leaf-without-check or
+// check-serves.
 func Parse(files map[string][]byte) (Tree, []Problem) {
 	var r reader
 	for _, name := range slices.Sorted(maps.Keys(files)) {
@@ -148,6 +154,9 @@ func (r *reader) file(name string, content []byte) {
 			open = r.open(pos, text)
 		case heading.MatchString(text):
 			inParagraph = false
+			if names := CodeNames(strings.TrimLeft(text, "#")); len(names) > 0 {
+				r.problem(pos, "-", "code-in-text: heading names code: "+strings.Join(names, ", "))
+			}
 		default:
 			if !inParagraph {
 				r.problem(pos, "-", detailTextOutsideBlock)
@@ -295,8 +304,11 @@ func (r *reader) check(b *block) Check {
 			fields[current] = append(fields[current], l)
 		}
 	}
-	if claim := trimBlank(fields[0]); len(claim) > 1 {
+	switch claim := trimBlank(fields[0]); {
+	case len(claim) > 1:
 		r.problem(Position{File: b.pos.File, Line: claim[1].number}, b.node(), detailClaimOneLine)
+	case len(claim) == 1 && sentenceEnd.MatchString(claim[0].text):
+		r.problem(Position{File: b.pos.File, Line: claim[0].number}, b.node(), detailClaimOneSentence)
 	}
 	c.Claim, c.ProcedureText, c.FailingExample = bodyText(fields[0]), bodyText(fields[1]), bodyText(fields[2])
 	return c

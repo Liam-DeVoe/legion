@@ -360,7 +360,7 @@ Pi sets it in `process.env` at load, Claude Code's `SessionStart` hook appends i
 
 The `dispatch` command reads the file its session's plugin chose: with `DISPATCH_HOST` set, the
 file `ENVOY_CONFIG_FILE` names, else its host's own rule (`envoyConfigPath(host)`). A Bash that
-lacks what the hook wrote, as a Claude Code subagent's can (anthropics/claude-code#46696), has
+lacks what the hook wrote, as a Claude Code subagent's can (Claude Code issue 46696), has
 `DISPATCH_HOST` unset and `CLAUDE_CODE_CHILD_SESSION=1`, which Claude Code sets in every Bash it
 runs; `dispatch` then takes host `claude` and Claude Code's rule, so `CLAUDE_CONFIG_DIR`, the
 session's own directory, comes ahead of any `ENVOY_CONFIG_FILE` an outer session exported.
@@ -570,8 +570,9 @@ repeat sends its whole body again. No attempt of any write starts more than 55 s
 was made, since its 60 s deadline counts from there; a caller with a bound of its own hands the
 client that bound's one timeout as `deadline`, and an `inFlightWithinMs` inside it, as `dispatch
 result --project` does. The client hands its signal to the credential for each request
-(`RequestCredential.headers`' `signal`), so a broker credential's trade and the identity it reads
-end at the same deadline. The numbers come from the 3,612 `dispatch`
+(`RequestCredential.headers`' `signal`), so the request's wait on a broker credential's trade ends
+at the same deadline; the trade itself runs under its own 30 s bound, and goes on for every other
+request that shares it. The numbers come from the 3,612 `dispatch`
 write commands that succeeded between 2026-10-31 21:00Z and 2026-11-02 07:30Z, each timed whole
 (p50 1.8 s, p95 19.6 s, p99 45.5 s). All of it sits inside the call's own 60 s deadline, so a
 Dispatch that is down holds a `dispatch` command, and the session waiting on it, no longer than
@@ -594,7 +595,10 @@ means no resend, and the attempt's own failure is the call's. Only a yes is reme
 for those five minutes, so a rollback to a Dispatch without the layer is noticed within that
 bound. Dispatch's own refusal that carries no echo says its layer did not judge the request, so
 it sets the memory aside and `/healthz` decides afresh. The probe runs only after a write has
-already failed, so the ordinary path makes no request of its own.
+already failed, so the ordinary path makes no request of its own. Writes of one process that fail
+together share one probe, which runs under its own 5 s and under no write's signal: a write's own
+end ends its wait on the probe alone, as a failed probe would, and the probe goes on for the
+others.
 
 The `dispatch` command runs each call in a process of its own, so it carries that memory in its
 session's `state.json` (`keyedLayer`: each origin with the wall-clock time of its last sighting,
@@ -647,10 +651,12 @@ What the attempts showed is a fact of the whole call (`WriteCall`), not of one s
 write carries one key across its no-route retries and its re-send after a dead token, which the
 keyed layer, wrapping each route's handler, stores nothing under, and once one attempt may have
 reached a handler the call ends as a `DispatchWriteUnsettledError` unless its last answer is the
-keyed layer's verdict on the key (a definitive answer that names the key back: the stored result,
-a replay, a landed answer, or the handler's refusal). A no-route answer, Dispatch's check of the
-token, a dead token or a credential that could not present proves nothing of the earlier attempt.
-The caller's own cancellation is thrown as it is.
+keyed layer's verdict on the key, a kept one (a definitive answer that names the key back and that
+the layer keeps as the key's outcome: the stored result, a replay, a landed answer, or the
+handler's refusal, but neither an echoed 401, which can come after the handler committed, nor
+`422 KEY_REUSED`, which says only that this request was not run). A no-route answer, Dispatch's
+check of the token, a dead token or a credential that could not present proves nothing of the
+earlier attempt. The caller's own cancellation is thrown as it is.
 `writeOutcomeUnknown(error)` says whether a write's error leaves its outcome unknown: a
 `DispatchWriteUnsettledError`, a gateway's answer with `mayHaveReachedDispatch`, Dispatch's own
 5xx, or a transport failure after an attempt that may have reached Dispatch, which is thrown as it
@@ -659,10 +665,13 @@ nothing, and so did a request Dispatch's check of its broker token turned away b
 ran (`tokenNotChecked`: `429 BROKER_TOKEN_RATE_LIMITED`, `503 BROKER_UNAVAILABLE`), which counts
 as no attempt that may have reached Dispatch. A refusal carries its `Retry-After` as
 `retryAfterMs`. A write Dispatch
-made whose answer is gone is a `DispatchWriteLandedError` (`code`, an `IdempotencyLandedCode`, and
+made whose answer is gone is a `DispatchWriteLandedError` (`code`, a `DispatchLandedCode`, and
 `status`): `409 KEY_COMMITTED`, a write that landed before its answer was lost, which Dispatch will
-not run again, or a replayed 2xx (`Idempotency-Replayed: ?1`) reading `ANSWER_NOT_KEPT`, a first
-answer larger than Dispatch keeps (`answerNotKept`, shared with the page). It is no refusal and no
+not run again, a replayed 2xx (`Idempotency-Replayed: ?1`) reading `ANSWER_NOT_KEPT`, a first
+answer larger than Dispatch keeps (`answerNotKept`, shared with the page), or a write's 2xx whose
+body could not be read after its status line (cut, stalled past the deadline, or not the JSON it
+says it is), the client's own `ANSWER_LOST` (`DISPATCH_ANSWER_LOST`), since Dispatch answers a
+write's 2xx only after the write committed. It is no refusal and no
 `DispatchServiceError`, and it is never asked again. Its message is the one line the session
 reads: the method and URL were made, why the answer is gone, and to read what it made back with
 `dispatch read` or the matching list. The `dispatch` command exits 0 on one and records
@@ -897,18 +906,22 @@ middle was cut (`SPEC_CHECK_OBSERVED_CUT_NOTE`) and its last characters
 failed at its end, and a test log of any size still writes its result. A NUL, which Dispatch
 cannot store, goes as U+FFFD, and so does each byte of a file that is not UTF-8. It prints the
 stored result as JSON and exits 0. A write that landed with its answer lost prints
-`{"landed_without_answer":"<code>"}` and exits 0: the result is stored. A write that reached
+`{"landed_without_answer":"<code>"}` and exits 0: the result is stored, and that includes a 201
+whose body was cut or stalled (`ANSWER_LOST`). A write that reached
 Dispatch with no answer that says whether it stored the result (`writeOutcomeUnknown`) prints
 `{"write_outcome_unknown":"<code>"}`, the code of its last failure such as `ECONNRESET`, and exits
 1: the result may be stored, and a second run is safe, because Dispatch keeps each result. A 2xx
-answer that is not Dispatch's JSON is such an answer (`DispatchForeignAnswerError`, code
-`HTTP_<status>`): whatever answered in Dispatch's place may have sent the write on first. A call
-that the broker's rate limit (429), a broker that cannot answer the trade (5xx) or Dispatch's check
+answer that is not Dispatch's JSON, a body of another content type or JSON of another shape, is
+such an answer (`DispatchForeignAnswerError`, code `HTTP_<status>`): whatever answered in
+Dispatch's place may have sent the write on first. A call that the broker's rate limit (429), a
+broker that cannot answer the trade (a 5xx, or no answer within the trade's own 30 s) or
+Dispatch's check
 of the job's token (`429 BROKER_TOKEN_RATE_LIMITED`, `503 BROKER_UNAVAILABLE`, `tokenNotChecked`)
 turns away before anything is stored is asked again after the answer's `Retry-After`, or a second.
 The whole call has one bound, 60 s from its start: one timeout, made where the call starts, is the
-signal every await of it runs under, the runner's token request and the broker's trade included
-(`ResultBound`). The write client's deadline is that signal, its asks again under the key and the
+signal every await of it runs under, its waits on the runner's token request and the broker's
+trade included (`ResultBound`); the trade itself runs under its own 30 s bound. The write client's
+deadline is that signal, its asks again under the key and the
 command's rounds start no later than 7 s before its end, a reserve greater than the 5 s Dispatch's
 check of a token waits on the broker, and a call turned away until then prints
 which turned it away with the last answer, its code named, and exits 1, with no

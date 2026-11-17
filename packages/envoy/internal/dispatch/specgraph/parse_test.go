@@ -180,6 +180,16 @@ func TestParseRefuses(t *testing.T) {
 			text: ":::term{#cafe-term name=\"cafe\"}\nA caf\xe9 is a place.\nA caf\xe9 is a room.\n:::\n",
 			want: Problem{Pos: Position{"x.md", 2}, Node: "-", Rule: "bad-encoding", Detail: "bad-encoding: a spec file is UTF-8 text with no NUL byte"},
 		},
+		{
+			name: "a claim of two sentences on one line",
+			text: ":::check{#c serves=\"s\" subject=\"code\" procedure=\"agent\"}\nClaim: The daemon reads the claim. It deletes no claim.\nProcedure: An agent reads the claims.\n:::\n",
+			want: Problem{Pos: Position{"x.md", 2}, Node: "c", Rule: "bad-field", Detail: "bad-field: a claim is one sentence"},
+		},
+		{
+			name: "a heading that names code",
+			text: "# The internal/dispatch/store package\n\n" + term,
+			want: Problem{Pos: Position{"x.md", 1}, Node: "-", Rule: "code-in-text", Detail: "code-in-text: heading names code: internal/dispatch/store"},
+		},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
@@ -198,6 +208,22 @@ func TestParseReadsUTF8Text(t *testing.T) {
 	tree, problems := Parse(map[string][]byte{"x.md": []byte(":::term{#cafe-term name=\"caf\u00e9\"}\nA caf\u00e9 is a place where a session waits.\n:::\n")})
 	if len(problems) != 0 || len(tree.Terms) != 1 || tree.Terms[0].Name != "caf\u00e9" {
 		t.Errorf("Parse: tree %+v, problems %+v; want the term café and no problem", tree, problems)
+	}
+}
+
+// A claim of one sentence and a heading of plain words read with no problem, also with a dot inside
+// a word: the controls of the claim and heading rows of TestParseRefuses.
+func TestParseReadsAClaimOfOneSentenceAndAPlainHeading(t *testing.T) {
+	t.Parallel()
+	for _, claim := range []string{
+		"Version 2.1 of the daemon reads the claim of an issue.",
+		"The daemon reads the claim of each Node.js client.",
+		"The daemon reads the claim of an issue after it starts again",
+	} {
+		text := "# Claims of Node.js clients\n\n:::check{#c serves=\"s\" subject=\"code\" procedure=\"agent\"}\nClaim: " + claim + "\n:::\n"
+		if tree, problems := Parse(map[string][]byte{"x.md": []byte(text)}); len(problems) != 0 || len(tree.Checks) != 1 || tree.Checks[0].Claim != claim {
+			t.Errorf("claim %q: tree %+v, problems %+v; want the claim and no problem", claim, tree, problems)
+		}
 	}
 }
 

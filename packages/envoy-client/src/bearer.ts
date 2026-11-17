@@ -73,10 +73,11 @@ export interface RequestCredential {
    * the two would reverse that. A caller that cares takes the answer as it comes and awaits only
    * a promise (`transport.ts`).
    *
-   * `signal` is the call's own cancellation, which ends whatever the credential awaits for this
-   * request: a broker credential's trade, the identity it reads for it, and each ask again of
-   * either, so a caller's bound reaches the trade as it reaches the request. A bearer awaits
-   * nothing and ignores it.
+   * `signal` is the call's own cancellation, which ends this call's wait on whatever the
+   * credential awaits for it, so a caller's bound reaches the credential as it reaches the
+   * request. A broker credential's trade is shared by every call that needs a token at once and
+   * runs under its own bound, so the signal ends this call's wait on the trade, and the trade
+   * goes on for the others (`BrokerTokenClient.token`). A bearer awaits nothing and ignores it.
    */
   headers(
     method: string,

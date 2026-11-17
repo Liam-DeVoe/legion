@@ -745,7 +745,7 @@ export const dispatchToolSpecs = [
     name: "dispatch_issue",
     example: { project: "DSP", title: "Native workspace" },
     description:
-      "Create a native Dispatch issue for newly tracked work. Search first with dispatch search; if potentially duplicate issues exist, this returns 409 POSSIBLE_DUPLICATE unless --force is set after reading them. " +
+      "Create a native Dispatch issue for newly tracked work. Search first with dispatch search; if potentially duplicate issues exist, this returns 409 POSSIBLE_DUPLICATE unless --force is set after reading them, or, when the refusal cannot be recorded, creates the issue and names the near copy to read in the result. " +
       "When passing a spec, before calling, have a fresh read-only reader check it against the code and the human's words, then resolve every finding; a Legion architect uses `plan-gap-analyst`. " +
       "A spec holding an ask block whose body breaks its content rule (one or more question paragraphs, then at most one bullet list of options, last) is refused with 400 INVALID_ASK_BLOCK. " +
       `${CI_CHECK_RULE} ` +
@@ -1749,8 +1749,9 @@ export const dispatchToolSpecs = [
       "run. A write that reached Dispatch with no answer that says whether it stored the result " +
       'prints {"write_outcome_unknown":"<code>"} and exits 1: the result may be stored, and a ' +
       "second run is safe, because Dispatch keeps each result. A call that the broker's rate " +
-      "limit (429), a broker that cannot answer the trade (5xx) or Dispatch's check of the job's " +
-      "token (429 BROKER_TOKEN_RATE_LIMITED, 503 BROKER_UNAVAILABLE) turns away before anything " +
+      "limit (429), a broker that cannot answer the trade (a 5xx, or no answer in 30 s) or " +
+      "Dispatch's check of the job's token (429 BROKER_TOKEN_RATE_LIMITED, 503 " +
+      "BROKER_UNAVAILABLE) turns away before anything " +
       "is stored is asked again after the answer's Retry-After, or a second. The whole call has " +
       "one bound, 60 s from its start, which the runner's token request, the broker's trade and " +
       "the write all run under, and no round starts in its last 7 s; a call turned away until " +

@@ -28,8 +28,9 @@ import {
   type ResultBound,
   runDispatchCli,
 } from "../dispatch-cli";
+import { ownIdentityDispatch } from "../dispatch-config";
 import { resetAdviceMemory } from "../dispatch-execute";
-import { forgetKeyedLayerMemory, KEYED_LAYER_MEMORY_MS } from "../dispatch-http";
+import { DispatchClient, forgetKeyedLayerMemory, KEYED_LAYER_MEMORY_MS } from "../dispatch-http";
 import { forgetShownPictures } from "../dispatch-picture-tools";
 
 interface Recorded {
@@ -1839,8 +1840,9 @@ describe("dispatch result --project, as a CI job writes it", () => {
   const written: Seen[] = [];
   let brokerAnswer: () => Response | Promise<Response>;
   /** What the runner's token endpoint waits on before it answers: settled at once by default, and
-   *  held by a test of a runner that answers only after the command's bound. */
-  let runnerHold: Promise<void> = Promise.resolve();
+   *  held by a test of a runner that answers only after the command's bound: false fails the
+   *  request with a 503. */
+  let runnerHold: Promise<boolean> = Promise.resolve(true);
   let dispatchAnswer: () => Response | Promise<Response>;
   const stored = storedSpecResult(43, "pass", "", 1);
 
@@ -1852,7 +1854,7 @@ describe("dispatch result --project, as a CI job writes it", () => {
         authorization: request.headers.get("Authorization"),
         audience: new URL(request.url).searchParams.get("audience"),
       });
-      await runnerHold;
+      if (!(await runnerHold)) return new Response("unavailable", { status: 503 });
       return Response.json({ count: 1, value: OIDC_TOKEN });
     },
   });
@@ -1889,7 +1891,7 @@ describe("dispatch result --project, as a CI job writes it", () => {
     runnerAsked.length = 0;
     trades.length = 0;
     written.length = 0;
-    runnerHold = Promise.resolve();
+    runnerHold = Promise.resolve(true);
     forgetBrokerClients();
     brokerAnswer = () =>
       Response.json(
@@ -2214,6 +2216,61 @@ describe("dispatch result --project, as a CI job writes it", () => {
    *  round starts later than `reserveMs` before `totalMs`. */
   const shortBound = (totalMs: number, reserveMs: number): ResultBound => ({ totalMs, reserveMs });
 
+  // Dispatch answers 201 only after it stored the result, so a body lost after that status line is
+  // a landing whose answer was lost: the job prints landed_without_answer, which its reporter reads
+  // as stored, and exits 0, whether the body is cut, stalls until the bound (B4 of the review of
+  // 2f29345b8d, its two rows) or comes whole and is not the JSON it says it is. The stand-in
+  // Dispatch is a raw socket, so the status line and the first bytes of the body surely reach the
+  // job before the connection closes or goes silent. The stall is ended by the command's own
+  // bound, a real timer as in the bound rows below, since that bound is what the row tests.
+  const bodyStart = '{"id":"00000000-0000-4000-8000-';
+  for (const [name, length, close] of [
+    ["is cut", 400, true],
+    ["stalls past the bound", 400, false],
+    ["is not the JSON it says it is", bodyStart.length, false],
+  ] as const) {
+    test(`a 201 whose body ${name} prints landed_without_answer and exits 0`, async () => {
+      let posts = 0;
+      const lost = Bun.listen({
+        hostname: "127.0.0.1",
+        port: 0,
+        socket: {
+          data(socket, request) {
+            if (!request.subarray(0, 5).toString("latin1").startsWith("POST ")) return;
+            posts += 1;
+            socket.write(
+              "HTTP/1.1 201 Created\r\nContent-Type: application/json\r\n" +
+                `Content-Length: ${length}\r\n\r\n${bodyStart}`
+            );
+            if (close) socket.end();
+          },
+        },
+      });
+      try {
+        const ran = await timedJob(
+          record,
+          { ...jobEnvironment(), DISPATCH_URL: `http://127.0.0.1:${lost.port}` },
+          shortBound(1_000, 200)
+        );
+        expect({
+          code: ran.code,
+          stdout: ran.stdout,
+          stderr: ran.stderr,
+          posts,
+          withinTheBound: ran.ms < 1_500,
+        }).toEqual({
+          code: 0,
+          stdout: `${JSON.stringify({ landed_without_answer: "ANSWER_LOST" })}\n`,
+          stderr: "",
+          posts: 1,
+          withinTheBound: true,
+        });
+      } finally {
+        lost.stop(true);
+      }
+    }, 30_000);
+  }
+
   // The broker's rate limit refuses a trade before any work, and a job of many checks meets it
   // with no fault of its own: the trade is asked again after the answer's Retry-After, and the
   // result is stored once. Each wait is a real second.
@@ -2443,19 +2500,20 @@ describe("dispatch result --project, as a CI job writes it", () => {
     });
   }, 90_000);
 
-  // The one bound reaches the trade too: the runner's token request and the broker's exchange
-  // run under the same signal as the write, so a runner or a broker that takes the request and
-  // never answers it ends the call at the bound, with a line that names which of the two it was and
-  // says nothing was written, and Dispatch is sent nothing. The answer is held on a promise the
-  // test settles only once the call has ended; the bound itself is a real timer, since it is what
-  // the rows test (a stopped clock is how the fault of D-A hid), so the call waits the 400 ms of
-  // its bound. The immediate case is the control: with nothing held, the same bound stores the
-  // result.
+  // The one bound reaches the trade too: the call waits on the runner's token request and the
+  // broker's exchange under the same signal as the write, so a runner or a broker that takes the
+  // request and never answers it ends the call at the bound, with a line that names which of the
+  // two it was and says nothing was written, and Dispatch is sent nothing. The answer is held on a
+  // promise the test settles only once the call has ended; the bound itself is a real timer, since
+  // it is what the rows test (a stopped clock is how the fault of D-A hid), so the call waits the
+  // 400 ms of its bound. The trade runs on under its own bound after the call ended, so the held
+  // runner fails it once it is let go, and it sends a later row's broker nothing. The immediate
+  // case is the control: with nothing held, the same bound stores the result.
   for (const [name, hold, lead] of [
     [
       "the runner's token request",
       (held: Promise<void>) => {
-        runnerHold = held;
+        runnerHold = held.then(() => false);
       },
       "this command's 0.4 s ended while it read the job's own token for the secrets broker, and nothing was written: ",
     ],
@@ -2531,8 +2589,10 @@ describe("dispatch result --project, as a CI job writes it", () => {
 
   // The same at the real bound of 60 s, the case of the reviewer's B1 and the tester's D-C at
   // 462bc83094, where a broker that took the trade and never answered held the call for 360 s: the
-  // call ends at its bound, names the trade, and sends Dispatch nothing. It waits the whole real
-  // bound, since what it tests is that bound.
+  // call ends at its bound, names the trade, and sends Dispatch nothing. The trade's own 30 s bound
+  // ends the first trade, which got no answer, and the call trades again inside its bound, so it
+  // is the call's bound that ends the second. It waits the whole real bound, since what it tests
+  // is that bound.
   test("a broker that never answers the trade ends the call at the real 60 s bound", async () => {
     const { promise: held, resolve: release } = Promise.withResolvers<void>();
     const answer = brokerAnswer;
@@ -2551,14 +2611,60 @@ describe("dispatch result --project, as a CI job writes it", () => {
             "this command's 60 s ended while the secrets broker traded the job's token, and nothing was written: "
           ),
           sentToDispatch: written.length,
+          trades: trades.length,
           atTheBound: ms >= 59_000 && ms < 63_000,
         },
         `${Math.round(ms)} ms: ${ran.stdout}`
-      ).toEqual({ code: 1, namesTheTrade: true, sentToDispatch: 0, atTheBound: true });
+      ).toEqual({ code: 1, namesTheTrade: true, sentToDispatch: 0, trades: 2, atTheBound: true });
     } finally {
       release();
     }
   }, 90_000);
+
+  // Two Dispatch clients that share the job's broker credential share its one trade, and the end
+  // of one is no end of the other: client A starts the trade and is cancelled while it runs, and
+  // client B, which joined it with no signal of its own, gets its answer from it (B3 of the review
+  // of 2f29345b8d, its probe as a row). A asks first, so its credential starts the trade, and B's
+  // joins it before the trade reaches the broker, which answers only once A has left.
+  test("one client's cancellation during a shared trade ends that client alone", async () => {
+    const { promise: arrived, resolve: arrive } = Promise.withResolvers<void>();
+    const { promise: held, resolve: release } = Promise.withResolvers<void>();
+    const answer = brokerAnswer;
+    brokerAnswer = async () => {
+      arrive();
+      await held;
+      return answer();
+    };
+    dispatchAnswer = () => Response.json({ results: [] });
+    const resolution = ownIdentityDispatch(jobEnvironment());
+    if (!resolution.enabled) throw new Error(resolution.error ?? resolution.notice);
+    const cancel = new AbortController();
+    const a = new DispatchClient(resolution.url, resolution.credential, fetch, {
+      signal: cancel.signal,
+    });
+    const b = new DispatchClient(resolution.url, resolution.credential, fetch);
+    try {
+      const first = a.specCheckResults("ACME", SPEC_COMMIT).then(
+        () => "answered",
+        (error: Error) => error.name
+      );
+      const second = b.specCheckResults("ACME", SPEC_COMMIT).then(
+        () => "answered",
+        (error: Error) => `${error.name}: ${error.message}`
+      );
+      await arrived;
+      cancel.abort();
+      const left = await first;
+      release();
+      expect({ a: left, b: await second, trades: trades.length }).toEqual({
+        a: "AbortError",
+        b: "answered",
+        trades: 1,
+      });
+    } finally {
+      release();
+    }
+  }, 30_000);
 
   // A job's log is read by its runner, which ends a line at \n and at \r, and reads a workflow
   // command from a line that starts with "::" once its leading white space is trimmed and from a

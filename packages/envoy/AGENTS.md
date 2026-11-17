@@ -3189,6 +3189,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
 
 - The composite action `.github/actions/architecture-check` is how another repository runs `cmd/architecture-check` (`README.md` there is that caller's guide):
   it builds the command from this repository at the commit the caller pins, with the Go that `packages/envoy/go.mod` names, runs it over its `path` input (default `.dispatch/architecture`, resolved against the caller's checkout) with `--allow-empty` when `allow-empty` is `true`, exits with the command's status, and hands the count line's number to the caller as its `count` output, on exit 0 and on exit 1.
+  Its `check.sh build` runs `.github/scripts/build-envoy-command.sh`, the one build of the commands of both composite actions, which holds the settings that keep the caller's job out of the build: `GOWORK=off`, `GOTOOLCHAIN=local`, an empty `GOFLAGS` with `GOENV=off`, `GOOS` and `GOARCH` unset, and the action's own module and build caches.
   Right after its setup-go it removes the `go` problem matcher that setup-go adds (`::remove-matcher owner=go::`), since that matcher reads every later line of the job and would make an error annotation, with the author's text, of a check line holding `.go: `, such as one naming a file `cmd.go: forged annotation`;
   the runner keeps one matcher per owner, so in a caller's job that set up Go earlier the action's setup-go replaces that job's `go` matcher and the removal deletes it for every later step, and the README sends a caller to a job of its own or to a place before the job's own setup-go, which adds the matcher again.
   Any other matcher an earlier step of the job added reads the check's lines too, one more reason for a job of its own.
@@ -3201,21 +3202,39 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   `Parse` reads the four blocks, statements (`requirement`), checks (`check`), components (`component`) and terms (`term`), with `pmdoc.ParseTypedDirectiveOpen`, the one reader of a typed block's opening line, and refuses any attribute a block does not take;
   it does not call `pmdoc.Parse`, whose block schema lacks the attributes these files need.
   It refuses a file that is not UTF-8 or holds a NUL byte at its first such line (`bad-encoding`), as the architecture importer refuses such a file.
+  It refuses a claim of more than one sentence (`bad-field: a claim is one sentence`) and a heading that names code (`code-in-text`).
   `Print` writes a node as the block that `Parse` reads back as that node, and `Digest` names a node's content apart from its file and line.
   `Validate` finds each fault a program can find (`go doc ./internal/dispatch/specgraph Validate` lists the rules):
-  a doubled, malformed or retired id, a parent or a relation to a node the files do not hold, a loop, a leaf statement that no check serves, a statement that other statements serve and that no check serves (`supported-without-check`, R5), a check without its parts, a component purpose of more than one sentence, and a name of code in a text (`CodeNames`).
-  `CodeNames` finds a name of code only in a shape that no plain word or product name has, such as a Go test's name, `readSet` or `pmdoc.ReadSet`;
-  a word with a capital at the start of each part, such as `ReadSet`, and a bare package word, such as `pmdoc`, are left to the reviewer.
+  a doubled, malformed or retired id, a parent or a relation to a node the files do not hold, a loop, a leaf statement that no check serves, a statement that other statements serve and that no check serves (`supported-without-check`, R5), a check without its parts, a component purpose of more than one sentence, and a name of code in a text, a term's name among them (`CodeNames`).
+  A claim and a purpose are split into sentences as ste-lint splits a line: after `.`, `!` or `?` and any white space that Python's `\s` matches.
+  `CodeNames` reads a word as a name of code by its shape alone, such as a Go test's name, `readSet` or `pmdoc.ReadSet`, so it refuses a plain word or a product name of that shape too: a slash between two ASCII letters (`I/O`, `and/or`, `client/server`, `https://example.com/docs`, but not `https://example.com/2024`), small ASCII letters and then an ASCII capital and a small letter in a word of ASCII letters and digits only (`mmHg` and `ownCloud`, but not `mmHg-based` or `véloCity`), a small word, a dot and a capital (`works.Then`), a file ending (`Three.js`, `https://bun.sh`) and the form of a Go test's name (`TestFlight`), which the writer says in other words, such as "input and output";
+  of the words of such a shape, only the product names that `productNames` lists, such as `Node.js`, pass;
+  a word with a capital at the start of each part, such as `ReadSet`, unless it has the form of a Go test's name, and a bare package word, such as `pmdoc`, have the shapes of product names such as GitHub and of plain words, so `CodeNames` reads no shape for them and they are left to the reviewer.
   `Changes` lists each statement that only one of two trees holds, or whose text, parent, relations or checks differ between them;
   a statement that only moved to another file is no change.
-  `ReadGoTestJSON` reads a `go test -json` report and `MatchTests` matches a check's selector to its one test:
-  a test that go test killed, or that started and has no end, could not run and never reads as a failure.
+
+- `specgraph.ReadGoTestJSON` reads a `go test -json` report, or the report that `go tool test2json` writes for a test binary run with `-test.v=test2json`, and `specgraph.MatchTests` matches a check's selector to its one test.
+  The reader reads exactly those two forms, because only in them does the marker separate go test's own lines from what a test prints;
+  a report of another form, as of a test binary run with `-test.v=true` or the text of `go test -v` through `go tool test2json`, lets a test write an end line with no marker, and the reader cannot see which form made a report.
+  In CI, the job's own `go test -json` command makes the report that the reporter reads.
+  The outcome of a run of a test is its one end event of its own (`pass`, `fail` or `skip`), which counts only after go test's own end line of its kind for the test, a frame of the run (`OutputType` `frame`) such as `--- PASS: <name> (0.00s)`;
+  in the two forms, what a test prints with no marker decides no outcome, go test's kill line and its end lines included.
+  A run reads `could_not_run`, and never a pass or a failure, when it has no end event (go test killed it at its `-timeout`, or its process ended inside it, by `os.Exit` with a status that is not 0 or by a fatal error of the runtime), when its end has no end line before it (the end event that `go tool test2json` writes at its exit for the test it named last), when it has two or more end events (a result line that a test printed with the testing package's marker byte), and when it overlaps another run of its name in its package (two parallel tests of one name in `p` and `p_test`, or a test that prints a marked run line of its own name, whose two entries both read `could_not_run`).
+  A test's pass stays when a goroutine that outlives the test fails the package later.
+  The report is the test binary's own account, and the reader trusts its order, so a report that someone changed or put in another order can give a run the wrong outcome;
+  a line that the binary prints with the marker, or before its first test, can still make a whole run, and a test that prints, with the marker, an end line of its own name, or of another test of its package that is running, can still give that test an outcome when that test then does not end by itself.
+  For its own name, under `go test -json` the kind of its line when go test kills it or its process ends with a status that is not 0, and under `go tool test2json` `fail` for a fail line when its process ends with an error and `pass` for a pass line when it calls `os.Exit(0)`;
+  for another test, a parallel test that prints the pass line of a running test that go test then kills gives that test `pass`, in both forms.
+  A run's output is the output events that the converter gave it, which can hold a parallel sibling's line or go test's kill trace, whole up to 64 KiB, and a longer one keeps its first 4 KiB and its last 60 KiB with one line between them that says how many bytes are cut; the reader finds an end line in each event before it cuts.
+  A value that is no JSON object, a `null` and an object with no `Action` are refused, and so is a report that holds a run and no frame, as the converter of a Go before 1.27 writes;
+  any other report that names no test, an empty one included, reads as a run of no tests: `MatchTests` then gives no entry for a check, and a reporter must read a check with no entry as a check with no result, which R9 of the spec reads as unknown and never true.
 
 - `cmd/spec-check` runs those rules over directories of spec files on disk (`cmd/spec-check/main.go`).
   It reads each directory with `notes.ReadSet`, so the entries it reads and its bounds are the architecture importer's and the results route's: at most 1 MiB a file, and at most 1,000 files and 16 MiB in sum (`notes.MaxFiles`, `notes.MaxSetSize`), a set over either one problem before any file is read.
   `spec-check tree --dir <dir> [--allow-empty] [--retired <file>]` judges one directory:
-  a valid tree is exit 0 and `spec-check: <dir>: <n> statements, <n> checks, <n> components, <n> interfaces, <n> terms; the tree is valid` on stdout, each noun in the singular for one and an interface being a component with `kind="interface"`;
+  a valid tree is exit 0 and `spec-check: <dir>: <n> statements, <n> checks, <n> components, <n> interfaces, <n> terms; the tree is valid` on stdout, each noun in the singular for one, `components` counting the components other than interfaces and `interfaces` those with `kind="interface"`;
   a refused tree is exit 1, one line on stderr for each problem, `spec-check: <dir>/<file>:<line>: <node>: <detail>`, the detail starting with the rule, then the count line ending `; the tree is refused`;
+  a spec file above the 1 MiB bound gives one line instead, `spec-check: file too large: <dir>/<file> is <n> bytes (limit 1048576)`, and the counts are 0, since no file is parsed;
   with `--allow-empty`, a directory that does not exist or holds no spec file is exit 0, the count line ending `; the tree is empty`, and without it exit 2.
   `--retired` names a file of the ids the approved spec removed, one id a line;
   without it, a line on stderr says that no id was checked against them.
