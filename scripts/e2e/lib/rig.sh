@@ -325,6 +325,25 @@ stop_tree() {
   kill -KILL "$pid" 2>/dev/null || true
 }
 
+# start_container IDS NAME ARGS... makes the container NAME of this run (`docker create --name NAME
+# ARGS...`), adds the id that create printed to the array IDS, and starts it; remove_containers IDS
+# removes each container of IDS by that id. A run removes a container only by the id its own create
+# printed, never by a name: another run on the Docker daemon can hold a name, and a create that the
+# name refused made no container of this run's to remove. remove_containers is best effort, as
+# stop_pid is.
+start_container() {
+  local -n _start_container_ids=$1
+  local id
+  id=$(docker create --name "$2" "${@:3}") || fail "docker create of the container $2 failed"
+  _start_container_ids+=("$id")
+  docker start "$id" >/dev/null || fail "docker start of the container $2 failed"
+}
+
+remove_containers() {
+  local -n _remove_container_ids=$1
+  [ "${#_remove_container_ids[@]}" -eq 0 ] || docker rm -f -v "${_remove_container_ids[@]}" >/dev/null 2>&1 || true
+}
+
 # run_processes prints every pid of this run still alive: any whose working directory is under
 # $work, and any whose command line names $work. A process whose working directory this user cannot
 # read is another user's, so it is none of the run's and gets no further look, as a kill of it would

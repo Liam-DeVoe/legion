@@ -63,14 +63,18 @@ export async function startNatsServer(directory: string, nkeyUser?: string): Pro
       : `jetstream {}\nauthorization {\n  users = [ { nkey: ${JSON.stringify(nkeyUser)} } ]\n}\n`,
     { mode: 0o644 }
   );
+  // The id `docker run` printed, by which `stop` removes the container: never by its name.
+  let id = "";
   const stop = () => {
     // With -v, since the image declares a VOLUME a plain `docker rm -f` leaves on the host
     // (docs/testing.md).
-    Bun.spawnSync(["docker", "rm", "-f", "-v", name], { stdout: "ignore", stderr: "ignore" });
+    if (id !== "") {
+      Bun.spawnSync(["docker", "rm", "-f", "-v", id], { stdout: "ignore", stderr: "ignore" });
+    }
     rmSync(config, { force: true });
   };
   try {
-    await docker(
+    const run = await docker(
       "run",
       "-d",
       // A container that dies on its own is gone with it, so the readiness loop's `docker logs`
@@ -100,6 +104,7 @@ export async function startNatsServer(directory: string, nkeyUser?: string): Pro
       "-p",
       "-1"
     );
+    id = run.stdout.trim();
     const deadline = Date.now() + 90_000;
     // nats-server logs to stderr, the client line before the ready line.
     let log = (await docker("logs", name)).stderr;

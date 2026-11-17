@@ -5927,6 +5927,17 @@ Each item below names a function, then what it does.
   `kill -STOP 0` would freeze the whole driver and a later `kill -KILL 0` end it.
   Stage 3's and Stage 4b's watchers are stopped with it
 
+- `start_container IDS NAME ARGS…`
+
+  makes the container NAME of the run with `docker create --name NAME ARGS…`, adds the id that create printed to the array IDS, and starts it.
+  A `docker create` that a name refused made no container of the run's, and the caller fails
+
+- `remove_containers IDS`
+
+  removes each container of the array IDS by its id, best effort, as `stop_pid` is.
+  A run removes a container only by the id its own create printed, never by a name, which another run on the Docker daemon can hold.
+  The controller, Stage 3 and parked-decision proofs and the skill-scenarios rig (`packages/pi-legion/scripts/skill-scenarios/rig.sh`) start and remove their containers with these two
+
 - `run_processes`
 
   prints every pid whose working directory or command line names `$work`.

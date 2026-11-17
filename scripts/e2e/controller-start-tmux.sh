@@ -41,8 +41,12 @@ profile=legion-e2e-controller-$$-$(date +%s)
 project="CS$$$(date +%s)"
 project=${project:0:10}
 ptoken=${project,,}
-nats_container=legion-e2e-controller-nats-$$
-pg_container=legion-e2e-controller-pg-$$
+# Random bytes, never the pid, which a run in another PID namespace on one Docker daemon can share;
+# the containers are removed by the ids their creates printed (start_container, lib/rig.sh).
+containers_tag=$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')
+nats_container=legion-e2e-controller-nats-$containers_tag
+pg_container=legion-e2e-controller-pg-$containers_tag
+containers=()
 state=$work/state
 omp_home=$work/omp-home
 profile_agent=$omp_home/.omp/profiles/$profile/agent
@@ -73,7 +77,7 @@ cleanup() {
   stop_pid "$listener_pid"
   stop_pid "$daemon_keeper_pid"
   for p in $(run_processes); do kill -KILL "$p" 2>/dev/null; done
-  docker rm -f -v "$nats_container" "$pg_container" >/dev/null 2>&1
+  remove_containers containers
   rm -rf "$work"
   [ -n "$ok" ] || echo "controller start e2e: FAIL (check $check)"
   echo "evidence: $evidence (transcript.log, logs/daemon.log, logs/listener.log, and checks/: each check's own output and the controller panes)"
@@ -129,14 +133,14 @@ refuse_leftovers legion-e2e-controller
 # Docker chooses each container's host port and binds it itself, trying the next port when one is
 # taken, so no port is free between its choice and its bind; the start fails only when ten ports
 # in a row are taken.
-docker run -d --name "$pg_container" --cpus 2 --memory 2g --mount type=tmpfs,destination=/var/lib/postgresql \
+start_container containers "$pg_container" --cpus 2 --memory 2g --mount type=tmpfs,destination=/var/lib/postgresql \
   -e POSTGRES_USER=legion -e POSTGRES_PASSWORD="$(cat "$work/postgres-password")" -e POSTGRES_DB=legion \
-  -p "127.0.0.1::5432" mirror.gcr.io/library/postgres@sha256:979bccfde35445db618c65107d27d08c6c21339d8dc3ad4c830c6633947be0e4 >/dev/null
+  -p "127.0.0.1::5432" mirror.gcr.io/library/postgres@sha256:979bccfde35445db618c65107d27d08c6c21339d8dc3ad4c830c6633947be0e4
 pg_port=$(docker port "$pg_container" 5432/tcp | head -1 | sed 's/.*://')
 until_true 60 "Postgres to accept TCP connections" docker exec "$pg_container" pg_isready -h 127.0.0.1 -p 5432 -U legion -d legion
 dsn="postgres://legion:$(cat "$work/postgres-password")@127.0.0.1:${pg_port}/legion?sslmode=disable"
 
-docker run -d --name "$nats_container" --cpus 1 --memory 512m -p 127.0.0.1::4222 nats:2.10 -js >/dev/null
+start_container containers "$nats_container" --cpus 1 --memory 512m -p 127.0.0.1::4222 nats:2.10 -js
 until_true 90 "NATS to be ready" sh -c "docker logs '$nats_container' 2>&1 | grep -q 'Server is ready'"
 nats_url="nats://127.0.0.1:$(docker port "$nats_container" 4222/tcp | head -1 | sed 's/.*://')"
 (umask 077 && head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n' >"$work/envoy-token" &&

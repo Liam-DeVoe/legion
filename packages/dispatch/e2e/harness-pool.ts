@@ -25,6 +25,7 @@
  *  answers; and the stack lines below name every port of every stack, so the log of such a run
  *  still shows the collision.
  */
+import { randomBytes } from "node:crypto";
 import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -288,7 +289,7 @@ async function startPool(count: number, options: StackPoolOptions): Promise<read
     const postgres =
       count === 1 && given !== ""
         ? undefined
-        : stackPostgres({ dir: runDir, env, run: String(process.pid) });
+        : stackPostgres({ dir: runDir, env, run: randomBytes(8).toString("hex") });
     if (count > 1 && postgres === undefined) {
       throw new Error(
         `${count} Playwright workers run ${count} stacks, each with a Postgres of its own, so ` +

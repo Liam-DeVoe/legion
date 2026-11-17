@@ -23,6 +23,7 @@
 
 import { expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -36,19 +37,13 @@ test.skipIf(
   "the image provider's Postgres serves though another program holds the ports just past Docker's last choice",
   async () => {
     const { value: image } = requirePostgres([pgImageVariable]);
-    const probe = `dispatch-e2e-pg-port-probe-${process.pid}`;
-    execFileSync("docker", [
-      "run",
-      "--detach",
-      "--name",
-      probe,
-      "--entrypoint",
-      "sleep",
-      "--publish",
-      "127.0.0.1::5432",
-      image,
-      "60",
-    ]);
+    // The probe has no name of the row's: Docker names it, and the row removes it by the id its
+    // `docker run` printed, which no other run's container can have.
+    const probe = execFileSync(
+      "docker",
+      ["run", "--detach", "--entrypoint", "sleep", "--publish", "127.0.0.1::5432", image, "60"],
+      { encoding: "utf8" }
+    ).trim();
     let last: number;
     try {
       const published = execFileSync("docker", ["port", probe, "5432/tcp"], { encoding: "utf8" });
@@ -73,7 +68,7 @@ test.skipIf(
     try {
       const provider = stackPostgres({
         dir,
-        run: `port-${process.pid}`,
+        run: `port-${randomBytes(8).toString("hex")}`,
         env: {
           ...process.env,
           DISPATCH_E2E_PG_CONNECTIONS: process.env.DISPATCH_E2E_PG_CONNECTIONS ?? "100",

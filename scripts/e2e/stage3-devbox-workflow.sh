@@ -109,8 +109,12 @@ operator_home=$HOME
 repo="sjawhar/legion-smoke"
 # Anthropic through the configured route: the Google provider answered long workflow turns with
 # empty responses (finishReason STOP with no content), so no Gemini-backed implementer could finish.
-pg_container="legion-e2e3-pg-$$"
-nats_container="legion-e2e3-nats-$$"
+# Random bytes, never the pid, which a run in another PID namespace on one Docker daemon can share;
+# the containers are removed by the ids their creates printed (start_container, lib/rig.sh).
+containers_tag=$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')
+pg_container="legion-e2e3-pg-$containers_tag"
+nats_container="legion-e2e3-nats-$containers_tag"
+containers=()
 daemon_pid=
 dispatch_pid=
 listener_pid=
@@ -210,7 +214,7 @@ cleanup() {
   fi
   TMUX_TMPDIR="$work/tmux" tmux -L "legion-$ptoken" kill-server >/dev/null 2>&1 || true
   for p in $(run_processes); do kill -KILL "$p" 2>/dev/null || true; done
-  docker rm -f -v "$pg_container" "$nats_container" >/dev/null 2>&1 || true
+  remove_containers containers
   collect_transcripts
   close_unpassed_run_pull_requests
   rm -rf "$work/model-gateway-cache" || true
@@ -708,14 +712,14 @@ docker ps >/dev/null
 # Docker chooses each container's host port and binds it itself, trying the next port when one is
 # taken, so no port is free between its choice and its bind; the start fails only when ten ports
 # in a row are taken.
-docker run -d --name "$pg_container" --cpus 2 --memory 2g --mount type=tmpfs,destination=/var/lib/postgresql \
+start_container containers "$pg_container" --cpus 2 --memory 2g --mount type=tmpfs,destination=/var/lib/postgresql \
   -e POSTGRES_USER=legion -e POSTGRES_PASSWORD="$(cat "$work/postgres-password")" -e POSTGRES_DB=dispatch \
-  -p "127.0.0.1::5432" mirror.gcr.io/pgvector/pgvector@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11 >/dev/null
+  -p "127.0.0.1::5432" mirror.gcr.io/pgvector/pgvector@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
 port_pg=$(docker port "$pg_container" 5432/tcp | sed -n '1s/.*://p')
 [ -n "$port_pg" ] || fail "docker assigned Postgres no host port"
 until_true 60 "Postgres to accept TCP connections" docker exec "$pg_container" pg_isready -h 127.0.0.1 -p 5432 -U legion -d dispatch
 docker exec "$pg_container" createdb -U legion legion
-docker run -d --name "$nats_container" --cpus 1 --memory 512m -p "127.0.0.1::4222" nats:2.10 -js >/dev/null
+start_container containers "$nats_container" --cpus 1 --memory 512m -p "127.0.0.1::4222" nats:2.10 -js
 port_nats=$(docker port "$nats_container" 4222/tcp | sed -n '1s/.*://p')
 [ -n "$port_nats" ] || fail "docker assigned NATS no host port"
 until_true 60 "NATS to be ready" sh -c "docker logs '$nats_container' 2>&1 | grep -q 'Server is ready'"
@@ -1415,7 +1419,7 @@ if [ "$model_route" = box-login ]; then
   unlink_box_login_db "$profile_agent"
 fi
 TMUX_TMPDIR="$work/tmux" tmux -L "legion-$ptoken" kill-server >/dev/null 2>&1 || true
-docker rm -f -v "$pg_container" "$nats_container" >/dev/null 2>&1 || true
+remove_containers containers
 for p in $(run_processes); do kill -KILL "$p" 2>/dev/null || true; done
 [ "$(docker ps -aq --filter "name=^/$pg_container$" --filter "name=^/$nats_container$")" = "" ] || fail "a proof container remains"
 TMUX_TMPDIR="$work/tmux" tmux -L "legion-$ptoken" has-session 2>/dev/null && fail "the proof tmux server remains"

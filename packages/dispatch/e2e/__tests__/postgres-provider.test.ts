@@ -58,7 +58,10 @@ test("a run outside CI that lacks a Postgres skips, and a CI run fails instead",
   expect(() => requireNothingMissing([])).not.toThrow();
 });
 
-/** The faults the check below finds, each as one line naming the file and what is wrong. */
+/** The faults the check below finds, each as one line naming the file and what is wrong. It
+ *  proves that each file calling `requirePostgres` is left out of the lane and named by a step
+ *  that exports a provider, and nothing of its rows: a row that no step's `bun test -t` selects
+ *  runs nowhere and still passes it. */
 function stackTestFaults(input: {
   /** Each test file of the directory, relative to `e2e`, with its source. */
   readonly files: readonly { readonly file: string; readonly source: string }[];

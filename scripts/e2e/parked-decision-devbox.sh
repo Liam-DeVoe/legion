@@ -92,8 +92,12 @@ state="$work/state"
 omp_home="$work/omp-home"
 profile_agent="$omp_home/.omp/profiles/$profile/agent"
 repo="sjawhar/legion-smoke"
-pg_container="legion-e2e-pd-pg-$$"
-nats_container="legion-e2e-pd-nats-$$"
+# Random bytes, never the pid, which a run in another PID namespace on one Docker daemon can share;
+# the containers are removed by the ids their creates printed (start_container, lib/rig.sh).
+containers_tag=$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')
+pg_container="legion-e2e-pd-pg-$containers_tag"
+nats_container="legion-e2e-pd-nats-$containers_tag"
+containers=()
 tmux_server="legion-e2e-pd-$$"
 daemon_pid=
 dispatch_pid=
@@ -182,7 +186,7 @@ cleanup() {
   TMUX_TMPDIR="$work/tmux" tmux -L "legion-$ptoken" kill-server >/dev/null 2>&1 || true
   stop_agent_daemons
   for p in $(run_processes); do kill -KILL "$p" 2>/dev/null || true; done
-  docker rm -f "$pg_container" "$nats_container" >/dev/null 2>&1 || true
+  remove_containers containers
   close_unpassed_run_pull_requests
   remove_run_branches >&2
   collect_transcripts
@@ -679,14 +683,14 @@ docker ps >/dev/null
 # Docker chooses each container's host port and binds it itself, trying the next port when one is
 # taken, so no port is free between its choice and its bind; the start fails only when ten ports
 # in a row are taken. The Postgres image and its data path are Stage 3's.
-docker run -d --name "$pg_container" --cpus 2 --memory 2g --mount type=tmpfs,destination=/var/lib/postgresql \
+start_container containers "$pg_container" --cpus 2 --memory 2g --mount type=tmpfs,destination=/var/lib/postgresql \
   -e POSTGRES_USER=legion -e POSTGRES_PASSWORD="$(cat "$work/postgres-password")" -e POSTGRES_DB=dispatch \
-  -p "127.0.0.1::5432" mirror.gcr.io/pgvector/pgvector@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11 >/dev/null
+  -p "127.0.0.1::5432" mirror.gcr.io/pgvector/pgvector@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
 port_pg=$(docker port "$pg_container" 5432/tcp | sed -n '1s/.*://p')
 [ -n "$port_pg" ] || fail "docker assigned Postgres no host port"
 until_true 60 "Postgres to accept TCP connections" docker exec "$pg_container" pg_isready -h 127.0.0.1 -p 5432 -U legion -d dispatch
 docker exec "$pg_container" createdb -U legion legion
-docker run -d --name "$nats_container" --cpus 1 --memory 512m -p "127.0.0.1::4222" mirror.gcr.io/library/nats:2.10 -js >/dev/null
+start_container containers "$nats_container" --cpus 1 --memory 512m -p "127.0.0.1::4222" mirror.gcr.io/library/nats:2.10 -js
 port_nats=$(docker port "$nats_container" 4222/tcp | sed -n '1s/.*://p')
 [ -n "$port_nats" ] || fail "docker assigned NATS no host port"
 until_true 60 "NATS to be ready" sh -c "docker logs '$nats_container' 2>&1 | grep -q 'Server is ready'"
@@ -1041,7 +1045,7 @@ stop_agent_daemons
 for pid in $daemon_pid $dispatch_pid $listener_pid $daemon_keeper_pid $dispatch_keeper_pid; do
   ! kill -0 "$pid" 2>/dev/null || fail "process $pid still runs"
 done
-docker rm -f "$pg_container" "$nats_container" >/dev/null
+remove_containers containers
 for container in "$pg_container" "$nats_container"; do
   ! docker inspect "$container" >/dev/null 2>&1 || fail "the container $container remains"
 done

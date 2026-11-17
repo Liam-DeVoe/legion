@@ -36,7 +36,7 @@ function docker(...args: string[]): string {
 }
 
 async function startNats(): Promise<void> {
-  docker(
+  const id = docker(
     "run",
     "--detach",
     // --rm, so a container this run stops is reclaimed by docker itself rather than by a later
@@ -60,9 +60,10 @@ async function startNats(): Promise<void> {
     "127.0.0.1",
     "-p",
     "-1"
-  );
+  ).trim();
+  // By the id `docker run` printed, never by the container's name.
   removeContainer = () => {
-    Bun.spawnSync(["docker", "rm", "-f", "-v", container], { cwd: root });
+    Bun.spawnSync(["docker", "rm", "-f", "-v", id], { cwd: root });
   };
   try {
     // A poll of a real container's log, which is the only signal the server gives, bounded by

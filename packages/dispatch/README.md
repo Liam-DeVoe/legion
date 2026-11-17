@@ -215,18 +215,47 @@ socket or would hold a `,`. A stop removes it.
 
 A harness killed hard (SIGKILL) stops nothing, so its Postgres keeps serving,
 with its data and socket directories. Each start of a stack removes what such a
-harness left. Each Postgres carries a mark of the process that started it: a
-file in the run's directory, and the image provider's container also carries
-it as a label (`e2e/harness-postgres-marks.ts`). A start removes each Postgres
-whose process is gone: the container, or the postmaster through `pg_ctl`, and
-then the data and socket directories that the mark names. It leaves the
-Postgres of a process that still runs, and it leaves each mark of another boot,
-PID namespace or user, or from a machine with no `/proc`. It names those on one
-line, and it names on another line each mark that it cannot read, such as
-another user's run directory. A removal that fails is one line, and the start
-goes on. A start finds the files only in run directories of its own
-`TMPDIR`; it finds the containers wherever their stack ran. The logs of a
-killed run stay in its directory.
+harness left, where it can show the harness dead. Each Postgres carries a mark
+of the process that started it: a file in the run's directory, and the image
+provider's container also carries it as a label
+(`e2e/harness-postgres-marks.ts`). A start reads three places: the
+`dispatch-e2e-run-*` directories of its own `TMPDIR`; the containers that Docker
+lists with the label, wherever their stack ran; and `/proc`, for each postmaster
+of its own user whose working directory is a stack's data directory in a
+`dispatch-e2e-run-*` directory of another `TMPDIR`, which that directory's
+`postmaster.pid` names. A name only finds a candidate; the mark decides. The
+start reads a mark only where no other user can have written it (each
+directory of its path, read without following a link, is root's or the user's,
+and none that another user can reach may be written by another user but for a
+sticky one such as `/tmp`), and it follows no link. It removes each Postgres
+whose process is gone, in this boot and PID namespace, by the steps the mark
+names: the container by its id, or the postmaster by a signal to the pid that
+the kernel shows running as this user from that data directory with the mark's
+`postgres` for its program, and then the data and socket directories. It runs
+no program that a mark names. It leaves the Postgres of a process that still
+runs without a word, and it names each one it leaves, one line per kind. A
+removal that fails is one line, and the start goes on. The logs of a killed run
+stay in its directory.
+
+What a start leaves and names, and what you do to remove it by hand:
+
+- A mark of another boot: this machine before it restarted, or another
+  machine on a shared Docker daemon or `TMPDIR`. A start cannot tell which, so
+  it judges none. Once you know no machine still runs that stack, remove the
+  container the line names (`docker rm -f -v <id>`) and the run directory.
+- A mark of another PID namespace: a stack that ran in a container of its own,
+  or in a namespace that has since ended. Its process cannot be seen from here.
+  From that namespace, or once you know it ended, stop the postmaster with its
+  own binaries (`pg_ctl -D <data> -m immediate stop`) or remove the container,
+  then the run directory.
+- A mark from a machine with no `/proc`, such as macOS, carries no owner, and a
+  start there judges no mark. Stop its Postgres the same way by hand.
+- A run directory of another `TMPDIR` whose postmaster has already ended holds
+  no running server, so no start finds it: remove that `dispatch-e2e-run-*`
+  directory by hand. One whose postmaster still runs is removed as above, and
+  a postmaster there that no mark names is named, for you to stop by hand.
+- A mark, or a path it names, that another user could have written or that a
+  link leads through is never acted on: read who owns it before you remove it.
 
 ```bash
 cd packages/dispatch

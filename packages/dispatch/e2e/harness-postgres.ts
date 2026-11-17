@@ -498,20 +498,26 @@ function imageProvider(
         // child is given.
         const own = socketDirectory(dir, `pg-${index}`, join("s", socketFile));
         // The mark comes before anything is in the socket directory and before the container
-        // exists, and the `docker run` below sets it as the container's label, so the container
-        // is marked from the moment it exists (`e2e/harness-postgres-marks.ts`).
+        // exists, and the `docker create` below sets it as the container's label, so the
+        // container is marked from the moment it exists (`e2e/harness-postgres-marks.ts`).
         const mark = markPostgres(dir, `worker-${index}`, { sockets: own, container });
         const sockets = join(own, "s");
         mkdirSync(sockets, { mode: 0o700 });
         const removeSockets = (): void => rmSync(own, { recursive: true, force: true });
+        // The id this stack's own `docker create` printed, and every removal, log read and wait
+        // below names the container by it, never by its name: another run on the Docker daemon
+        // may hold the name, and a create that the name refused made no container of this
+        // stack's to remove.
+        let id = "";
         const remove = async (): Promise<void> => {
-          await execFileAsync("docker", ["rm", "--force", "--volumes", container]).catch(() => {});
+          if (id !== "") {
+            await execFileAsync("docker", ["rm", "--force", "--volumes", id]).catch(() => {});
+          }
           removeSockets();
         };
         try {
-          await execFileAsync("docker", [
-            "run",
-            "--detach",
+          const { stdout: created } = await execFileAsync("docker", [
+            "create",
             "--name",
             container,
             "--label",
@@ -548,8 +554,13 @@ function imageProvider(
             "-c",
             "listen_addresses=",
           ]);
+          if (!/^[0-9a-f]{64}$/.test(created.trim())) {
+            throw new Error(`docker create printed no container id but "${created.trim()}"`);
+          }
+          id = created.trim();
+          await execFileAsync("docker", ["start", id]);
         } catch (error) {
-          const said = await containerLog(container);
+          const said = id === "" ? "no container of this stack's was made" : await containerLog(id);
           await remove();
           throw new Error(
             `The Dispatch e2e harness cannot start: ${what} did not start from ${image}: ` +
@@ -561,14 +572,14 @@ function imageProvider(
           // One deadline for both waits, so the image's initialisation and the final server's
           // start take no more together than `ready` gives a server alone.
           const deadline = Date.now() + readyMs;
-          await initialised(container, what, signal, deadline);
+          await initialised(id, what, signal, deadline);
           await ready(url, what, signal, deadline);
           // The image carries the extension; the database the image made still has to install it,
           // as migration 0072 needs it.
           await sqlAt(url, ["create extension if not exists vector"], signal);
         } catch (error) {
           // The server inside never answered. Its own last lines are read before it is removed.
-          const said = await containerLog(container);
+          const said = await containerLog(id);
           await remove();
           throw new Error(
             `The Dispatch e2e harness cannot start: ${what} came up from ${image} in ${sockets} ` +
@@ -581,7 +592,7 @@ function imageProvider(
           url,
           stop: async () => {
             try {
-              await execFileAsync("docker", ["rm", "--force", "--volumes", container]);
+              await execFileAsync("docker", ["rm", "--force", "--volumes", id]);
             } finally {
               removeSockets();
             }
@@ -596,7 +607,9 @@ function imageProvider(
 export function stackPostgres(options: {
   /** The run's own temporary directory, which it removes when it ends. */
   readonly dir: string;
-  /** What names this run's containers apart from another run's on one machine. */
+  /** What names this run's containers apart from another run's on one machine: random bytes, as
+   *  the pool makes it, never a pid, which two runs in two PID namespaces on one Docker daemon can
+   *  share. A container is removed only by the id its own `docker create` printed. */
   readonly run: string;
   readonly env?: NodeJS.ProcessEnv;
 }): StackPostgres | undefined {

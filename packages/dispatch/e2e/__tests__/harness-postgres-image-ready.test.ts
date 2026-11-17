@@ -18,6 +18,7 @@
 
 import { expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -47,14 +48,16 @@ test.skipIf(skipped)(
   "image provider: a stack's Postgres answers from the moment its start returns, though the image's own init runs a script after it made the database",
   async () => {
     const { value: image } = requirePostgres([pgImageVariable]);
-    const slow = `dispatch-e2e-pg-slow-init-${process.pid}`;
-    const builder = `${slow}-build`;
+    // Random bytes, never the pid, which a run in another PID namespace can share: the image's
+    // tag is the row's alone, and the builder has no name and is removed by its id.
+    const own = randomBytes(8).toString("hex");
+    const slow = `dispatch-e2e-pg-slow-init-${own}`;
     const dir = mkdtempSync(join(tmpdir(), "pg-image-ready-"));
     let made = false;
     try {
       const script = join(dir, "slow.sh");
       writeFileSync(script, `sleep ${initSleep}\n`);
-      docker("create", "--name", builder, image);
+      const builder = docker("create", image).trim();
       try {
         docker("cp", script, `${builder}:/docker-entrypoint-initdb.d/slow.sh`);
         docker("commit", builder, slow);
@@ -65,7 +68,7 @@ test.skipIf(skipped)(
 
       const provider = stackPostgres({
         dir,
-        run: `slow-init-${process.pid}`,
+        run: `slow-init-${own}`,
         env: {
           ...process.env,
           [pgImageVariable]: slow,

@@ -48,7 +48,13 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import type { Subprocess } from "bun";
 
-import { pgBinVariable, pgConnectionsVariable, pgImageVariable } from "../harness-postgres";
+import {
+  pgBinVariable,
+  pgConnectionsVariable,
+  pgImageVariable,
+  type StackDatabase,
+  stackPostgres,
+} from "../harness-postgres";
 import {
   markLabel,
   marksDirectory,
@@ -57,6 +63,7 @@ import {
   stackOwner,
   startOf,
 } from "../harness-postgres-marks";
+import { type HostileMark, hostileMarkKept, plantHostileMark } from "./planted-marks";
 import { type ProviderVariable, requirePostgres, skipsWithoutPostgres } from "./postgres-provider";
 
 const file = "e2e/__tests__/harness-postgres-leftover.test.ts";
@@ -251,16 +258,42 @@ async function stopStack(stack: Stack | undefined): Promise<void> {
   await exited(stack.child, childMs, `the stack in ${stack.dir}`).catch(() => {});
 }
 
-/** Removes what a stack this row started left, by the names and paths it recorded for it: its
- *  container, or its postmasters, then its directories. */
+/** Removes each container whose mark names `run`, the run directory of a stack this row started,
+ *  by the id Docker lists it under: a container's name is no one stack's alone. */
+function removeContainersOf(run: string): void {
+  const listed = docker(
+    "ps",
+    "--all",
+    "--no-trunc",
+    "--filter",
+    `label=${markLabel}`,
+    "--format",
+    `{{.ID}} {{.Label "${markLabel}"}}`
+  );
+  for (const line of listed.split("\n")) {
+    const space = line.indexOf(" ");
+    if (space === -1) continue;
+    let mark: unknown;
+    try {
+      mark = JSON.parse(line.slice(space + 1));
+    } catch {
+      continue;
+    }
+    if (typeof mark === "object" && mark !== null && "run" in mark && mark.run === run) {
+      docker("rm", "--force", "--volumes", line.slice(0, space));
+    }
+  }
+}
+
+/** Removes what a stack this row started left, by the paths it recorded for it: its container,
+ *  by the id its mark is listed under, or its postmasters, then its directories. */
 function removeLeft(
   stack: Stack | undefined,
-  provider: { variable: ProviderVariable; value: string },
-  container: string
+  provider: { variable: ProviderVariable; value: string }
 ) {
   if (stack === undefined) return;
   if (provider.variable === pgImageVariable) {
-    if (containerExists(container)) docker("rm", "--force", "--volumes", container);
+    removeContainersOf(stack.dir);
     rmSync(dirname(stack.address), { recursive: true, force: true });
   } else {
     for (const data of [
@@ -282,7 +315,7 @@ for (const provider of [
   { title: "binaries provider", variable: pgBinVariable, skip: skipBinaries },
 ] as const) {
   test.skipIf(provider.skip)(
-    `${provider.title}: the next start removes the Postgres of a stack killed hard, with its data and socket directories, and leaves the Postgres of a stack that runs`,
+    `${provider.title}: v-no-leftover-postgres: the next start removes the Postgres of a stack killed hard, with its data and socket directories, leaves the Postgres of a stack that runs, leaves and names one whose stack it cannot judge, and runs no program a mark names`,
     async () => {
       const named = requirePostgres([provider.variable]);
       const tmp = mkdtempSync(join(tmpdir(), "leftover-"));
@@ -294,7 +327,19 @@ for (const provider of [
       };
       let killed: Stack | undefined;
       let kept: Stack | undefined;
+      let hostile: HostileMark | undefined;
       try {
+        // Two marks beside the stacks, in a run directory of the row's TMPDIR named as the pool
+        // names one: another boot's, which the start cannot judge, and one that names a program
+        // of the planter's and a directory outside its run.
+        const beside = mkdtempSync(join(tmp, runDirectoryPrefix));
+        hostile = plantHostileMark(beside, tmp, owners().gone);
+        const unjudged = leaveCluster(
+          beside,
+          1,
+          mkdtempSync(join(tmp, "no-bin-")),
+          owners().otherBoot
+        );
         [killed, kept] = await Promise.all([
           startStack(env, runs.killed),
           startStack(env, runs.kept),
@@ -327,11 +372,17 @@ for (const provider of [
           expect(existsSync(join(kept.dir, "worker-0", "pgdata"))).toBe(true);
         }
         expect(existsSync(kept.address)).toBe(true);
+        // The mark the start cannot judge stays with its directories, and the start names it in
+        // one line; the start ran no program that a mark names.
+        expect(unjudged.left()).toEqual([true, true, true]);
+        expect(linesWith(third.stderr, `${unjudged.mark} (boot `)).toHaveLength(1);
+        expect(hostile.kept()).toEqual(hostileMarkKept);
       } finally {
         if (killed !== undefined) kill(killed.child);
+        hostile?.live.stop();
         await stopStack(kept);
-        removeLeft(killed, named, containers.killed);
-        removeLeft(kept, named, containers.kept);
+        removeLeft(killed, named);
+        removeLeft(kept, named);
         rmSync(tmp, { recursive: true, force: true });
       }
     },
@@ -386,7 +437,7 @@ function leaveCluster(
 
 /** A container an image provider's stack left, made and never started, under a name of this
  *  row's process: a start judges it by its label alone, which is its mark unless `label` names
- *  another. `made` collects its name before Docker makes it, for the row's removal. */
+ *  another. `made` collects the id Docker made it under, for the row's removal. */
 function leaveContainer(
   image: string,
   made: string[],
@@ -397,16 +448,16 @@ function leaveContainer(
   label?: string
 ) {
   const name = `dispatch-e2e-pg-leftover-${process.pid}-${index}`;
-  made.push(name);
   const mark = label ?? JSON.stringify({ owner, run, sockets, container: name });
-  const id = docker("create", "--name", name, "--label", `${markLabel}=${mark}`, image);
-  return { name, id: id.trim().slice(0, 12), sockets };
+  const id = docker("create", "--name", name, "--label", `${markLabel}=${mark}`, image).trim();
+  made.push(id);
+  return { name, id: id.slice(0, 12), sockets };
 }
 
-/** Removes every container a row made, by the names it gave them. */
+/** Removes every container a row made, by the ids Docker made them under. */
 function removeMade(made: readonly string[]): void {
-  for (const name of made) {
-    if (containerExists(name)) docker("rm", "--force", "--volumes", name);
+  for (const id of made) {
+    if (containerExists(id)) docker("rm", "--force", "--volumes", id);
   }
 }
 
@@ -480,6 +531,51 @@ test.skipIf(skipBinaries)(
   // The row drives one start of the pool, a `bun` child that reads the row's marks and removes
   // one data and one socket directory. It read 0.04 to 0.08 s on a shared Linux machine under a
   // load of about 300, on 2026-11-17; 300 s leaves a cold `bun` and a slow disk room.
+  300_000
+);
+
+test.skipIf(skipImage)(
+  "image provider: a stack whose start fails removes no container of another stack, though both stacks have one run name, as two stacks of one pid in two PID namespaces once had",
+  async () => {
+    const { value: image } = requirePostgres([pgImageVariable]);
+    const tmp = mkdtempSync(join(tmpdir(), "leftover-"));
+    const env = childEnv(tmp, { variable: pgImageVariable, value: image });
+    // One run name for both stacks, as the pool's pid made it for two pools of one pid: the
+    // second stack's container then has the first's name, so its `docker run` fails.
+    const run = `leftover-${process.pid}-shared`;
+    const dirs: string[] = [];
+    let first: StackDatabase | undefined;
+    try {
+      const start = (prefix: string) => {
+        const dir = mkdtempSync(join(tmp, prefix));
+        dirs.push(dir);
+        const provider = stackPostgres({ dir, run, env });
+        if (provider === undefined) throw new Error(`${pgImageVariable} named no provider`);
+        return provider.start(0);
+      };
+      first = await start("a-");
+      expect(answers(first.url)).toBe(true);
+
+      let failed = "";
+      await start("b-").then(
+        () => {},
+        (error: unknown) => {
+          failed = error instanceof Error ? error.message : String(error);
+        }
+      );
+      expect(failed).toContain("did not start");
+
+      // The failed start removed nothing of the first stack's: its container still serves.
+      expect(answers(first.url)).toBe(true);
+    } finally {
+      await first?.stop().catch(() => {});
+      for (const dir of dirs) removeContainersOf(dir);
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  },
+  // The row drives two starts of the image provider in this process, the first a `docker run`
+  // and a readiness wait that gives up at 120 s, the second a `docker run` refused at once, and
+  // the first's stop; 300 s leaves the wait and a slow Docker daemon room.
   300_000
 );
 
