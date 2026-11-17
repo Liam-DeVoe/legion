@@ -51,6 +51,7 @@
 import { writeFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { LIVE_SOCKET_MAX_AGE_CLOSE } from "@legion/contracts";
+import { shownSettingUrl, withoutUserinfo } from "@legion/contracts/setting-url";
 
 import { REQUEST_DEADLINE_MS } from "../web/src/api/client";
 import {
@@ -395,15 +396,14 @@ function parseView(text: string): DeliveryLiveView {
 function parseOptions(argv: readonly string[]): Options {
   const values = readArgs(argv);
   const rawUrl = required(values.url, "--url");
-  let url: URL;
-  try {
-    url = new URL(rawUrl);
-  } catch {
-    throw new UsageError(`--url is not a URL: ${rawUrl}`);
+  // --url may carry a user and a password: one that is no http or https URL with a host is named
+  // by its length alone (`shownSettingUrl`), and every later line names it with neither.
+  if (shownSettingUrl(rawUrl) === undefined) {
+    throw new UsageError(
+      `--url must be Dispatch's http or https address: its value is ${rawUrl.length} characters long`
+    );
   }
-  if (url.protocol !== "http:" && url.protocol !== "https:") {
-    throw new UsageError(`--url is Dispatch's http or https address, not ${rawUrl}`);
-  }
+  const url = new URL(rawUrl);
   const rawOpenWithin = values["open-within"];
   const rawReadWithin = values["read-within"];
   const rawSpread = values["reconnect-spread-ms"];
@@ -653,7 +653,9 @@ async function watch(options: Options, token: string): Promise<ProbeHeld | null>
       write({ at: now(), code, reason, type: "close", wait_ms: waitMs });
     if (!opened) {
       closed(null);
-      fail(`Dispatch refused the connection to ${liveUrl.href}: ${reason || `close ${code}`}`);
+      fail(
+        `Dispatch refused the connection to ${withoutUserinfo(liveUrl.href)}: ${reason || `close ${code}`}`
+      );
       return;
     }
     if (code === LIVE_SOCKET_MAX_AGE_CLOSE) {
@@ -700,7 +702,7 @@ async function watch(options: Options, token: string): Promise<ProbeHeld | null>
   timer = setTimeout(
     () =>
       fail(
-        `the socket to ${liveUrl.href} did not open within ${options.openWithinMs / 1000} s (--open-within)`
+        `the socket to ${withoutUserinfo(liveUrl.href)} did not open within ${options.openWithinMs / 1000} s (--open-within)`
       ),
     options.openWithinMs
   );

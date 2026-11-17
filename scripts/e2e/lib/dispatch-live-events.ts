@@ -1,5 +1,6 @@
 import { parseArgs } from "node:util";
 import { LIVE_SOCKET_MAX_AGE_CLOSE } from "../../../packages/contracts/src/dispatch-api";
+import { shownSettingUrl } from "../../../packages/contracts/src/setting-url";
 
 const USAGE =
   "usage: bun scripts/e2e/lib/dispatch-live-events.ts --url <dispatch> [--bearer-file <file> | --cookie-file <file> | --user <email>] [--since <id> | --from-whoami [--subscribe-after <s>]] [--until <substring>] [--timeout <s>]";
@@ -116,16 +117,15 @@ async function optionsFrom(argv: readonly string[]): Promise<Options> {
     throw new UsageError("--subscribe-after waits after whoami's answer; it needs --from-whoami");
   }
 
-  let url: URL;
   const rawURL = required(values.url, "--url");
-  try {
-    url = new URL(rawURL);
-  } catch {
-    throw new UsageError(`--url is not a URL: ${rawURL}`);
+  // --url may carry a user and a password: one that is no http or https URL with a host is named
+  // by its length alone (`shownSettingUrl`).
+  if (shownSettingUrl(rawURL) === undefined) {
+    throw new UsageError(
+      `--url must be Dispatch's http or https address: its value is ${rawURL.length} characters long`
+    );
   }
-  if (url.protocol !== "http:" && url.protocol !== "https:") {
-    throw new UsageError(`--url is Dispatch's http or https address, not ${rawURL}`);
-  }
+  const url = new URL(rawURL);
 
   const rawTimeout = values.timeout ?? "60";
   const timeoutSeconds = Number(rawTimeout);

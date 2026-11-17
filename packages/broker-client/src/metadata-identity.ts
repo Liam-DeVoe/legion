@@ -1,6 +1,7 @@
 // packages/broker-client/src/metadata-identity.ts
 
 import { Agent, request } from "node:http";
+import { shownSettingUrl } from "@legion/contracts/setting-url";
 import type { SubjectToken, TokenSource } from "./source";
 import { SUBJECT_TOKEN_TYPE_GOOGLE } from "./wire";
 
@@ -96,20 +97,30 @@ export function metadataIdentity(
   return {
     async read(signal?: AbortSignal): Promise<SubjectToken> {
       const url = tokenUrl(audience, env);
+      // The host may carry a user and a password: each line names the URL with neither, and a host
+      // that makes no http URL with a host fails the read naming its length alone, before anything
+      // is asked (`shownSettingUrl`).
+      const shown = shownSettingUrl(url);
+      if (shown === undefined) {
+        const host = (env[METADATA_HOST_VAR] ?? "").trim();
+        throw new Error(
+          `${METADATA_HOST_VAR} must name the metadata server's host: its value is ${host.length} characters long`
+        );
+      }
       let answer: { status: number; body: string };
       try {
         answer = await get(url, signal);
       } catch (error) {
         throw new Error(
-          `the metadata server at ${url} could not be reached (${METADATA_HOST_VAR} names its host): ${(error as Error).message}`
+          `the metadata server at ${shown} could not be reached (${METADATA_HOST_VAR} names its host): ${(error as Error).message}`
         );
       }
       if (answer.status < 200 || answer.status > 299) {
-        throw new Error(`the metadata server at ${url} answered HTTP ${answer.status}`);
+        throw new Error(`the metadata server at ${shown} answered HTTP ${answer.status}`);
       }
       const token = answer.body.trim();
       if (token === "") {
-        throw new Error(`the metadata server at ${url} answered an empty identity token`);
+        throw new Error(`the metadata server at ${shown} answered an empty identity token`);
       }
       return { token, tokenType: SUBJECT_TOKEN_TYPE_GOOGLE };
     },

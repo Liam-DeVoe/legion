@@ -6,6 +6,7 @@
 // that has been ended, and trades afresh when a caller is told the token in hand is dead.
 
 import { expect, test } from "bun:test";
+import { inspect } from "node:util";
 import { signedIn, stubIssuer } from "../../test/sign-ins";
 import { newDpopKey } from "../dpop";
 import { personIdentity } from "../person-identity";
@@ -51,6 +52,55 @@ async function clientAt(
     now: () => clock.now,
   });
 }
+
+// The broker's URL may carry a user and a password: a refusal names the broker with neither, and
+// a URL that is no http or https URL with a host is refused naming its length alone, before the
+// identity is read or anything traded. No member of the error, nor of a cause under it, holds the
+// password. The password is made for this run.
+test("a broker URL with a user part is named without it, and one that is no http or https URL with a host by its length alone", async () => {
+  const password = crypto.randomUUID();
+  const withUser = (url: string) => url.replace("http://", `http://made-up-user:${password}@`);
+  const broker = stubBroker(() => ({ body: { ...accepted("never", 600), token_type: "Bearer" } }));
+  const down = stubBroker(() => ({ status: 503, body: { error: "temporarily_unavailable" } }));
+  const source = countingSource();
+  const unreadable = `made-up-user:${password}@127.0.0.1:1`;
+  try {
+    const said: { readonly message: string; readonly holds: boolean }[] = [];
+    for (const url of [withUser(broker.url), withUser(down.url), unreadable]) {
+      const client = await clientAt(url, { now: Date.now() }, source);
+      const error = await client.token().then(
+        () => undefined,
+        (thrown: unknown) => thrown
+      );
+      said.push({
+        message: error instanceof Error ? error.message : String(error),
+        holds: inspect(error, { depth: Number.POSITIVE_INFINITY, showHidden: true }).includes(
+          password
+        ),
+      });
+    }
+    expect(said).toEqual([
+      {
+        message: `the broker at ${broker.url}/v1/oauth/token answered token_type "Bearer", and this grant mints DPoP-bound tokens alone`,
+        holds: false,
+      },
+      {
+        message: expect.stringContaining(
+          `trade a scripted identity at ${down.url}/v1/oauth/token: HTTP 503`
+        ),
+        holds: false,
+      },
+      {
+        message: `the broker URL must be an http or https URL: its value is ${unreadable.length} characters long`,
+        holds: false,
+      },
+    ]);
+    expect(source.reads).toBe(2);
+  } finally {
+    broker.stop();
+    down.stop();
+  }
+});
 
 test("the token in hand is reused until the renewal window, then traded again", async () => {
   const broker = stubBroker((_trade, count) => ({ body: accepted(`token-${count}`, 600) }));

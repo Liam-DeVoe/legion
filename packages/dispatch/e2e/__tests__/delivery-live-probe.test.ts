@@ -842,6 +842,41 @@ test(
   rowLimit("short")
 );
 
+// --url may carry a user and a password. One that is no http or https URL with a host is a usage
+// error naming its length alone, and the socket of one that carries a user part is named without
+// it when Dispatch refuses it. The password is made for this run.
+test(
+  "a --url that is no http or https URL with a host is named by its length, and one with a user part without it",
+  async () => {
+    const password = crypto.randomUUID();
+    const dispatch = probeDispatch({ onSubscribe() {} });
+    const unreadable = `made-up-user:${password}@127.0.0.1:1`;
+    const usage = await runProbeToEnd(
+      args(dispatch).map((arg) => (arg === dispatch.url ? unreadable : arg))
+    );
+    expect({ code: usage.code, holds: usage.stderr.includes(password) }).toEqual({
+      code: 2,
+      holds: false,
+    });
+    expect(usage.stderr).toContain(
+      `--url must be Dispatch's http or https address: its value is ${unreadable.length} characters long`
+    );
+    const withUser = dispatch.url.replace("http://", `http://made-up-user:${password}@`);
+    const refused = await runProbeToEnd(
+      args(dispatch, "not-the-token").map((arg) => (arg === dispatch.url ? withUser : arg))
+    );
+    expect({ code: refused.code, holds: refused.stderr.includes(password) }).toEqual({
+      code: 1,
+      holds: false,
+    });
+    expect(refused.stderr).toContain(
+      `Dispatch refused the connection to ${dispatch.url.replace("http://", "ws://")}/ws/live`
+    );
+  },
+  // The usage error's probe, then the refused one's, one after the other.
+  rowLimit("short", "short")
+);
+
 /** A Dispatch on a loopback port of its own that sends each subscribe the fixture snapshot and
  *  answers each GET with `answer`, and the paths read. Bun.serve closes a connection silent for
  *  10 s unless told not to, which would answer a read with a reset; the fake Dispatch keeps that

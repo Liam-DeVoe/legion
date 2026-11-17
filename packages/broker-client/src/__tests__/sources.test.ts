@@ -9,6 +9,7 @@
 import { afterAll, expect, test } from "bun:test";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { inspect } from "node:util";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { METADATA_HOST_VAR, metadataIdentity } from "../metadata-identity";
 import { projectedToken } from "../projected-token";
@@ -105,6 +106,48 @@ test("a metadata server that refuses is an error naming the URL it was asked", a
   } as NodeJS.ProcessEnv);
   expect(source.read()).rejects.toThrow(`127.0.0.1:${server.port}`);
   expect(source.read()).rejects.toThrow("HTTP 403");
+});
+
+// GCE_METADATA_HOST may carry a user and a password before the host: an error names the metadata
+// server's URL with neither, and a host the URL parser cannot read is named by its length alone,
+// with nothing asked. No member of the error, nor of a cause under it, holds the password. The
+// password is made for this run.
+test("a metadata host with a user part is named without it, and one that is no host by its length alone", async () => {
+  const password = crypto.randomUUID();
+  const server = Bun.serve({
+    port: 0,
+    hostname: "127.0.0.1",
+    fetch: () => new Response("no identity here", { status: 403 }),
+  });
+  servers.push(server);
+  const unreadable = `made-up-user:${password}@bad host`;
+  const said: { readonly message: string; readonly holds: boolean }[] = [];
+  for (const host of [`made-up-user:${password}@127.0.0.1:${server.port}`, unreadable]) {
+    const error = await metadataIdentity("example-audience", {
+      [METADATA_HOST_VAR]: host,
+    } as NodeJS.ProcessEnv)
+      .read()
+      .then(
+        () => undefined,
+        (thrown: unknown) => thrown
+      );
+    said.push({
+      message: error instanceof Error ? error.message : String(error),
+      holds: inspect(error, { depth: Number.POSITIVE_INFINITY, showHidden: true }).includes(
+        password
+      ),
+    });
+  }
+  expect(said).toEqual([
+    {
+      message: `the metadata server at http://127.0.0.1:${server.port}/computeMetadata/v1/instance/service-accounts/default/identity?audience=example-audience&format=full answered HTTP 403`,
+      holds: false,
+    },
+    {
+      message: `${METADATA_HOST_VAR} must name the metadata server's host: its value is ${unreadable.length} characters long`,
+      holds: false,
+    },
+  ]);
 });
 
 test("no proxy variable can take the identity token", async () => {

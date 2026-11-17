@@ -23,6 +23,7 @@
 // only with what `token()` gave it never writes with no identity, nor with one that has been
 // ended.
 
+import { shownSettingUrl } from "@legion/contracts/setting-url";
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import {
   allowInsecureRequests,
@@ -555,6 +556,16 @@ export class BrokerTokenClient {
    * process makes with the token it got.
    */
   async #trade(signal: AbortSignal | undefined): Promise<BrokerToken> {
+    const endpoint = this.#brokerUrl + TOKEN_PATH;
+    // The broker's URL may carry a user and a password: each line names it with neither, and one
+    // that is no http or https URL with a host fails the trade naming its length alone, before
+    // the identity is read (`shownSettingUrl`).
+    const shown = shownSettingUrl(endpoint);
+    if (shown === undefined) {
+      throw new Error(
+        `the broker URL must be an http or https URL: its value is ${this.#brokerUrl.length} characters long`
+      );
+    }
     const subject = await this.#subject.read(signal);
     const form: Record<string, string> = {
       subject_token: subject.token,
@@ -584,7 +595,6 @@ export class BrokerTokenClient {
       form["actor_token_type"] =
         actor.tokenType === SUBJECT_TOKEN_TYPE_GOOGLE ? ACTOR_TOKEN_TYPE_MACHINE : actor.tokenType;
     }
-    const endpoint = this.#brokerUrl + TOKEN_PATH;
     const raw: { body: unknown } = { body: undefined };
     const config = new Configuration(
       { issuer: this.#brokerUrl, token_endpoint: endpoint },
@@ -600,9 +610,9 @@ export class BrokerTokenClient {
     try {
       answered = await genericGrantRequest(config, GRANT_TYPE_TOKEN_EXCHANGE, form);
     } catch (error) {
-      throw this.#refusal(endpoint, error);
+      throw this.#refusal(shown, error);
     }
-    return this.#read(endpoint, answered, raw.body);
+    return this.#read(shown, answered, raw.body);
   }
 
   /**
@@ -612,7 +622,7 @@ export class BrokerTokenClient {
    * library reports without naming it is named here, since "the broker answered HTTP 503" is what
    * tells a reader to look at the broker rather than at this process.
    */
-  #refusal(endpoint: string, error: unknown): Error {
+  #refusal(shown: string, error: unknown): Error {
     if (error instanceof ResponseBodyError && error.status >= 400 && error.status < 500) {
       return new BrokerRefusedError(
         error.status,
@@ -624,7 +634,7 @@ export class BrokerTokenClient {
     const status = statusOf(error);
     const message = messageOf(error);
     const said = status === 0 ? message : `HTTP ${status}: ${message}`;
-    return new Error(`trade ${this.#subject.describe()} at ${endpoint}: ${said}`, {
+    return new Error(`trade ${this.#subject.describe()} at ${shown}: ${said}`, {
       cause: error,
     });
   }
@@ -681,24 +691,24 @@ export class BrokerTokenClient {
    * case-insensitive, while the corpus names the spelling the broker wrote and holds both clients
    * to it.
    */
-  #read(endpoint: string, answered: TokenEndpointResponse, raw: unknown): BrokerToken {
+  #read(shown: string, answered: TokenEndpointResponse, raw: unknown): BrokerToken {
     const written =
       typeof raw === "object" && raw !== null && "token_type" in raw ? raw.token_type : undefined;
     const tokenType = typeof written === "string" ? written : "";
     if (tokenType.toLowerCase() !== TOKEN_TYPE_DPOP.toLowerCase()) {
       throw new Error(
-        `the broker at ${endpoint} answered token_type ${JSON.stringify(tokenType)}, and this grant mints DPoP-bound tokens alone`
+        `the broker at ${shown} answered token_type ${JSON.stringify(tokenType)}, and this grant mints DPoP-bound tokens alone`
       );
     }
     if (answered.refresh_token !== undefined && answered.refresh_token !== "") {
       throw new Error(
-        `the broker at ${endpoint} answered a refresh token, which this grant never issues; a renewal trades a fresh identity token instead`
+        `the broker at ${shown} answered a refresh token, which this grant never issues; a renewal trades a fresh identity token instead`
       );
     }
     const seconds = answered.expires_in ?? 0;
     if (!(seconds > 0)) {
       throw new Error(
-        `the broker at ${endpoint} answered no usable expires_in (${JSON.stringify(answered.expires_in)})`
+        `the broker at ${shown} answered no usable expires_in (${JSON.stringify(answered.expires_in)})`
       );
     }
     const expiresAtText =
@@ -710,7 +720,7 @@ export class BrokerTokenClient {
       credentialExpiresAt = new Date(expiresAtText);
       if (Number.isNaN(credentialExpiresAt.getTime())) {
         throw new Error(
-          `the broker at ${endpoint} answered a credential_expires_at that is no RFC 3339 time (${JSON.stringify(expiresAtText)})`
+          `the broker at ${shown} answered a credential_expires_at that is no RFC 3339 time (${JSON.stringify(expiresAtText)})`
         );
       }
     }

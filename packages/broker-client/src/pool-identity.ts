@@ -5,6 +5,7 @@
 // (`packages/envoy/internal/brokerclient/pool.go`), and asks the two services Go asks with the
 // bodies Go sends, so a deployment that names a pool gets one identity from either client.
 
+import { shownSettingUrl } from "@legion/contracts/setting-url";
 import { messageOf } from "./error-text";
 import type { SubjectToken, TokenSource } from "./source";
 import {
@@ -123,6 +124,11 @@ export function poolIdentity(options: PoolIdentityOptions): TokenSource {
   );
   const account = pathEscape(options.serviceAccount);
   const mintEndpoint = `${iamCredentials}/v1/projects/-/serviceAccounts/${account}:generateIdToken`;
+  // Either URL may carry a user and a password: each line names it with neither, and one that is
+  // no http or https URL with a host fails the call naming its length alone, before it is asked
+  // anything (`shownSettingUrl`).
+  const shownService = shownSettingUrl(securityTokenService);
+  const shownMint = shownSettingUrl(mintEndpoint);
 
   /**
    * Posts `body` to `endpoint` as JSON, with `bearer` on the `Authorization` header where it is
@@ -170,6 +176,11 @@ export function poolIdentity(options: PoolIdentityOptions): TokenSource {
   /** The security token service's half: the external credential for a federated access token
    *  that acts as the pool's own principal (Go's `federate`). */
   const federate = async (subject: SubjectToken, signal: AbortSignal | undefined) => {
+    if (shownService === undefined) {
+      throw new Error(
+        `the security token service URL must be an http or https URL: its value is ${securityTokenService.length} characters long`
+      );
+    }
     let federated: string;
     try {
       federated = await call(
@@ -188,14 +199,12 @@ export function poolIdentity(options: PoolIdentityOptions): TokenSource {
       );
     } catch (error) {
       throw new Error(
-        `trade this machine's credential at the security token service ${securityTokenService}: ${messageOf(error)}`,
+        `trade this machine's credential at the security token service ${shownService}: ${messageOf(error)}`,
         { cause: error }
       );
     }
     if (federated === "") {
-      throw new Error(
-        `the security token service ${securityTokenService} answered no access_token`
-      );
+      throw new Error(`the security token service ${shownService} answered no access_token`);
     }
     return federated;
   };
@@ -203,6 +212,11 @@ export function poolIdentity(options: PoolIdentityOptions): TokenSource {
   /** IAM Credentials' half: the federated access token spent on one `generateIdToken` for the
    *  managed identity, with `includeEmail` set (Go's `generateIDToken`). */
   const generateIdToken = async (federated: string, signal: AbortSignal | undefined) => {
+    if (shownMint === undefined) {
+      throw new Error(
+        `the IAM Credentials URL must be an http or https URL: its value is ${iamCredentials.length} characters long`
+      );
+    }
     let token: string;
     try {
       token = await call(
@@ -213,12 +227,11 @@ export function poolIdentity(options: PoolIdentityOptions): TokenSource {
         signal
       );
     } catch (error) {
-      throw new Error(
-        `mint this machine's identity token at ${mintEndpoint}: ${messageOf(error)}`,
-        { cause: error }
-      );
+      throw new Error(`mint this machine's identity token at ${shownMint}: ${messageOf(error)}`, {
+        cause: error,
+      });
     }
-    if (token === "") throw new Error(`generateIdToken at ${mintEndpoint} answered no token`);
+    if (token === "") throw new Error(`generateIdToken at ${shownMint} answered no token`);
     return token;
   };
 

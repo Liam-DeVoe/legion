@@ -12,6 +12,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { inspect } from "node:util";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { signedIn, stubIssuer } from "../../test/sign-ins";
 import { importDpopKey } from "../dpop";
@@ -228,6 +229,53 @@ test("an answer that is not JSON is named without its text, which could be a tok
     `trade this machine's credential at the security token service ${sts.url}/v1/token: HTTP 200: the answer is not JSON`
   );
   expect(refusal?.message).not.toContain(FEDERATED_TOKEN);
+});
+
+// The two services' URLs may carry a user and a password: an error names each with neither, and
+// one that is no http or https URL with a host is refused naming its length alone, before it is
+// asked anything. No member of the error, nor of a cause under it, holds the password. The
+// password is made for this run.
+test("a pool URL with a user part is named without it, and one that is no http or https URL with a host by its length alone", async () => {
+  const password = crypto.randomUUID();
+  const withUser = (url: string) => url.replace("http://", `http://made-up-user:${password}@`);
+  const refusing = stubService(() => ({ status: 400, body: '{"error":"invalid_grant"}' }));
+  const sts = stubService(federating);
+  const iam = stubService(minting);
+  const mintRefusing = stubService(() => ({ status: 403, body: '{"error":"denied"}' }));
+  const unreadable = `made-up-user:${password}@127.0.0.1:1`;
+  const said: { readonly message: string; readonly holds: boolean }[] = [];
+  for (const [stsUrl, iamUrl] of [
+    [withUser(refusing.url), iam.url],
+    [sts.url, withUser(mintRefusing.url)],
+    [unreadable, iam.url],
+    [sts.url, unreadable],
+  ] as const) {
+    const error = await refusalOf(async () => (await poolAt(stsUrl, iamUrl)).read());
+    said.push({
+      message: error?.message ?? "no error",
+      holds: inspect(error, { depth: Number.POSITIVE_INFINITY, showHidden: true }).includes(
+        password
+      ),
+    });
+  }
+  expect(said).toEqual([
+    {
+      message: `trade this machine's credential at the security token service ${refusing.url}/v1/token: HTTP 400: {"error":"invalid_grant"}`,
+      holds: false,
+    },
+    {
+      message: `mint this machine's identity token at ${mintRefusing.url}/v1/projects/-/serviceAccounts/${SERVICE_ACCOUNT}:generateIdToken: HTTP 403: {"error":"denied"}`,
+      holds: false,
+    },
+    {
+      message: `the security token service URL must be an http or https URL: its value is ${`${unreadable}/v1/token`.length} characters long`,
+      holds: false,
+    },
+    {
+      message: `the IAM Credentials URL must be an http or https URL: its value is ${unreadable.length} characters long`,
+      holds: false,
+    },
+  ]);
 });
 
 test("an external credential that cannot be read stops the pool before either service is asked", async () => {

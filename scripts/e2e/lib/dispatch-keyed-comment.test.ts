@@ -38,6 +38,35 @@ async function run(...args: string[]): Promise<{ code: number; stderr: string; l
   };
 }
 
+// --url may carry a user and a password: one that is no http or https URL with a host is a usage
+// error naming its length alone. The password is made for this run.
+test("a --url that is no http or https URL with a host is a usage error naming its length alone", async () => {
+  const password = crypto.randomUUID();
+  const said: { code: number; holds: boolean; named: boolean }[] = [];
+  const values = [
+    `made-up-user:${password}@127.0.0.1:1`,
+    `ftp://made-up-user:${password}@host.example`,
+  ];
+  for (const url of values) {
+    const { code, stderr } = await run(
+      "--url",
+      url,
+      "--bearer-file",
+      tokenFile(),
+      "--issue",
+      "CORE-1"
+    );
+    said.push({
+      code,
+      holds: stderr.includes(password),
+      named: stderr.includes(
+        `--url must be Dispatch's http or https address: its value is ${url.length} characters long`
+      ),
+    });
+  }
+  expect(said).toEqual(values.map(() => ({ code: 2, holds: false, named: true })));
+});
+
 interface StandIn {
   readonly url: string;
   /** Every comment POST it took: its key and whether it made a comment. */

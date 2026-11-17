@@ -178,6 +178,29 @@ test("a run of more than one stack refuses to start without a Postgres provider"
   );
 });
 
+// DISPATCH_E2E_FILE_STORE_ENDPOINT may carry a user and a password. One that is no http or https
+// URL with a host is refused naming its length alone, and one that carries a user part is refused
+// named without it, since the fetch of Playwright's Node refuses such a URL printing it whole;
+// each before a Postgres or a server starts. The password is made for this run.
+test("a file store endpoint that is no http or https URL with a host, or that carries a user part, is refused printing no part of the password", async () => {
+  const password = crypto.randomUUID();
+  const unreadable = `made-up-user:${password}@127.0.0.1:1`;
+  const said: string[] = [];
+  for (const endpoint of [unreadable, `http://made-up-user:${password}@127.0.0.1:1`]) {
+    const error = await startStacks(2, {
+      env: { DISPATCH_E2E_FILE_STORE_ENDPOINT: endpoint, DISPATCH_E2E_FILE_STORE_BUCKET: "acme" },
+    }).then(
+      () => undefined,
+      (thrown: unknown) => thrown
+    );
+    said.push(error instanceof Error ? error.message : String(error));
+  }
+  expect(said).toEqual([
+    `DISPATCH_E2E_FILE_STORE_ENDPOINT must be an http or https URL: its value is ${unreadable.length} characters long`,
+    "DISPATCH_E2E_FILE_STORE_ENDPOINT http://127.0.0.1:1 must carry no user and no password: the fetch of Playwright's Node refuses a URL that carries them, printing it whole",
+  ]);
+});
+
 // The database a stack reads is the psql it starts, so the case that proves which one it picked
 // needs psql and a live database to answer; without either it would prove nothing and is
 // skipped, as e2e/__tests__/psql-session.test.ts's cases are, and its two halves are composed
