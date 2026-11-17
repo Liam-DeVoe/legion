@@ -2839,7 +2839,7 @@ GATES = [
     gate("dispatch_two_builds_go", TWO_BUILDS_JOB, step=TWO_BUILDS_STEP, runs=[ceiling_run(TWO_BUILDS_JOB)],
          exact=[two_builds_go_step()], reads=two_builds_go_reads()),
 
-    # The private-projects acceptance drivers. The step runs project-access-blob.sh, which sources
+    # The private-projects blob driver. The step runs project-access-blob.sh, which sources
     # scripts/e2e/lib/two-builds.sh, whose head build compiles this tree's ./cmd/dispatch; its base
     # build compiles the merge base's tree, taken out of git history, so it reads no file of this
     # one.
