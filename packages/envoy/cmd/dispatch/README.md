@@ -3124,6 +3124,7 @@ The join is what keeps a rollback whole, since a build of the previous release r
 The arm also answers no row for a node whose current `state` is `gone`, the test the backfill's pointer guard takes too, and a pointer a version dropped is retracted in the same statement that deletes its `block_refs` row.
 `refs.BacklinkCounts` moves the same four arms the same way, each reading its own table for the rows that name no node and the tuples, through the same join, for the rest, so a count and the list behind it cannot disagree.
 A pointer's allowed targets come from the attribute node once the store answers it (`block_pointer_targets`), read as `pmdoc/schemanodes.Read` installs the schema: through the current `attribute_of` tuple and from a live attribute node, so a change to an attribute's `targets` reaches every link of that attribute with no pass over documents nobody edits.
+The reads of the `block_refs` rows themselves, a document's links out (`refs.Edges`) and `refs.BlockLinks`, make the same test of a row that names its node (`refs.blockRefListed`), so no reader lists a link another hides; a row that names no node keeps the `to_types` its index copied.
 `TestGraphEdgesLosesEveryArmOverAMovedKind` reads the arm list back out of the catalogue and reads the whole view, the previous release's view over the same rows and each arm on its own before the backfill, after it, beside rows a previous release wrote and after a rollback that deletes and rewrites rows, with every backlink count and the store census beside them.
 
 ## Stored-order check
