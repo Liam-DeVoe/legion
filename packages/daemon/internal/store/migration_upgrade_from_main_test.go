@@ -47,9 +47,10 @@ import (
 // dispatch://INFRA-3274's kind list with the merge-queue read and removal (20261114031356), which
 // stand above all of them and are applied after them, in version order: the kind list with the
 // update ask, the record of what a relaunch ended, the drop, then the merge-queue kind list. The
-// last of them is the last word of outbox_kind_check: the upgrade applies it after 20261029120800
-// has deleted main's merge-lane rows, and it names every other kind main's daemon writes
-// (mainsOutboxKinds), with update_ask and the two merge-queue kinds besides, which main's daemon
+// last of them was the last word of outbox_kind_check until the two kind lists below stood above
+// it: the upgrade applies it after 20261029120800 has deleted main's merge-lane rows, and it
+// names every other kind main's daemon writes (mainsOutboxKinds), with update_ask and the two
+// merge-queue kinds besides, which main's daemon
 // never writes. And so is dispatch://INFRA-3146's `phases.entry_moved_back` (20261113090512),
 // which stands between INFRA-2981's two and adds one column beside the phase entry's, true on
 // every row it finds and false by default after, and so needs no row of its own here
@@ -93,9 +94,11 @@ var thisBranchsMigrations = []int{
 // 20261112070503, dispatch://INFRA-3219's 20261112180548, dispatch://INFRA-2981's 20261113082214
 // and 20261113110610, dispatch://INFRA-3276's 20261113082415, dispatch://INFRA-3146's
 // 20261113090512, dispatch://INFRA-3274's 20261114031356, dispatch://INFRA-2614's
-// 20261113181500, 20261113182000, 20261114020537 and 20261114061900, and the role-holders
-// publication's 20261116165926, which is why the loop below holds the list rather than counting
-// it, so that a version added above any of them is named here rather than read as main's.
+// 20261113181500, 20261113182000, 20261114020537 and 20261114061900, the role-holders
+// publication's 20261116165926, and the step records' three: the kind list with the step record
+// (20261117000528), the count of starts of each step (20261117004117) and its roll forward
+// (20261117064152). That is why the loop below holds the list rather than counting it, so that a
+// version added above any of them is named here rather than read as main's.
 const mainsNewestMigration = 20261111212544
 
 // mainsKindCheck is the constraint main's own 20261110235320 wrote, which is what a database main
