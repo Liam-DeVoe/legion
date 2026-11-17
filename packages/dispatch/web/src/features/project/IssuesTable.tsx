@@ -732,6 +732,13 @@ function IssueTableBody({
   // advances a priority reads its whole listing once closed issues are let through.
   const statusPicks = picksOf(filters, "status");
   const onBoard = tab !== undefined && tab.layout === "board";
+  // The selection is the table's: the Board in its place takes it with the table, as leaving the
+  // page does, and the table drawn again over the Board comes back with no row selected.
+  const [selectionLayout, setSelectionLayout] = useState(onBoard);
+  if (selectionLayout !== onBoard) {
+    setSelectionLayout(onBoard);
+    setSelection({});
+  }
   const listsDone = !whole && (statusPicks.length === 0 || statusPicks.includes("done"));
   const readsOpen =
     project === undefined || statusPicks.length === 0 || statusPicks.some((s) => s !== "done");
@@ -891,6 +898,8 @@ function IssueTableBody({
     getRowId: (item) => item.issue.key,
     layout,
     names: moveFrom === "row" ? ISSUE_TABLE_BESIDE_NAMES : ISSUE_TABLE_NAMES,
+    // The Board's own keys answer while it shows, and its help lists no key of the table it hides.
+    keys: !onBoard,
     state: {
       sorting,
       grouping: onBoard ? NO_GROUPING : grouping,

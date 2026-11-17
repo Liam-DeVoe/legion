@@ -1,6 +1,6 @@
 import type { Row } from "@tanstack/react-table";
 import { type RefObject, useLayoutEffect, useRef } from "react";
-import { type KeymapScope, useKeymap } from "../features/shell/keymap";
+import { type KeyBinding, type KeymapScope, useKeymap } from "../features/shell/keymap";
 import { closestMatching } from "../features/shell/roving";
 import { CONTROL } from "./control-names";
 
@@ -41,6 +41,9 @@ export interface RowKeymap {
 /** Focuses the row whose id is `key`, or the element `selector` names inside it. */
 export type FocusRow = (key: string, selector?: string) => HTMLElement | null;
 
+/** What a table registers while its keys are off (`useRowKeymap`'s `keys`): nothing. */
+const NO_BINDINGS: readonly KeyBinding[] = [];
+
 /**
  * The keys a reader walks the table's rows with, under the ids and words the caller gives, the
  * same ids and palette rows the list they replace had: two keys move between rows, two open the
@@ -53,6 +56,7 @@ export type FocusRow = (key: string, selector?: string) => HTMLElement | null;
 export function useRowKeymap<TData>({
   displayRows,
   keymap,
+  keys,
   linkAttribute,
   onMark,
   rowAttribute,
@@ -62,6 +66,9 @@ export function useRowKeymap<TData>({
 }: {
   displayRows: readonly { row: Row<TData> }[];
   keymap: RowKeymap;
+  /** Whether the keys are registered at all: false registers none, so the shortcut help lists
+   *  none (`DataTableOptions.keys`). */
+  keys: boolean;
   /** The attribute on the link inside a row that opening the row follows. */
   linkAttribute: string;
   /** Told the row `x` marks, as it marks it; never one it unmarks. */
@@ -143,49 +150,55 @@ export function useRowKeymap<TData>({
           );
         };
   const { select } = keymap;
-  useKeymap(keymap.scope, [
-    {
-      ...keymap.next,
-      palette: false,
-      run: () => moveFocus(1),
-      when: canMove,
-    },
-    {
-      ...keymap.previous,
-      palette: false,
-      run: () => moveFocus(-1),
-      when: canMove,
-    },
-    {
-      ...keymap.open,
-      run: openFocusedRow,
-      when: () => focusedRow() !== null,
-    },
-    {
-      ...keymap.openOnEnter,
-      palette: false,
-      run: openFocusedRow,
-      when: () =>
-        document.activeElement?.matches(`[${rowAttribute}]`) === true && focusedRow() !== null,
-    },
-    ...(select === undefined
-      ? []
+  useKeymap(
+    keymap.scope,
+    !keys
+      ? NO_BINDINGS
       : [
           {
-            // Selecting walks the list with the row in hand, as the moving keys do, so it is no
-            // palette row.
-            ...select,
+            ...keymap.next,
             palette: false,
-            run: () => {
-              const key = focusedRow()?.getAttribute(rowAttribute);
-              const row = key === null || key === undefined ? undefined : rowsById[key];
-              if (row === undefined) return;
-              if (!row.getIsSelected()) onMark?.(row.id);
-              row.toggleSelected();
-            },
+            run: () => moveFocus(1),
+            when: canMove,
+          },
+          {
+            ...keymap.previous,
+            palette: false,
+            run: () => moveFocus(-1),
+            when: canMove,
+          },
+          {
+            ...keymap.open,
+            run: openFocusedRow,
             when: () => focusedRow() !== null,
           },
-        ]),
-  ]);
+          {
+            ...keymap.openOnEnter,
+            palette: false,
+            run: openFocusedRow,
+            when: () =>
+              document.activeElement?.matches(`[${rowAttribute}]`) === true &&
+              focusedRow() !== null,
+          },
+          ...(select === undefined
+            ? []
+            : [
+                {
+                  // Selecting walks the list with the row in hand, as the moving keys do, so it
+                  // is no palette row.
+                  ...select,
+                  palette: false,
+                  run: () => {
+                    const key = focusedRow()?.getAttribute(rowAttribute);
+                    const row = key === null || key === undefined ? undefined : rowsById[key];
+                    if (row === undefined) return;
+                    if (!row.getIsSelected()) onMark?.(row.id);
+                    row.toggleSelected();
+                  },
+                  when: () => focusedRow() !== null,
+                },
+              ]),
+        ]
+  );
   return focusRow;
 }

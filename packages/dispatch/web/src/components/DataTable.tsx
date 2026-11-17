@@ -135,6 +135,11 @@ export interface DataTableOptions<Row> {
    *  pages by that count and slices nothing, and a step of the pager asks the caller for the
    *  next page (`onPaginationChange`). Without it the table pages the rows it holds. */
   readonly serverPage?: { readonly rowCount: number };
+  /** Whether the table's row keys (`names.keymap`) are registered: false while the page draws
+   *  another layout of the same rows in the table's place, such as the Issues tab's Board,
+   *  whose own keys answer then and whose shortcut help lists no key of a table it hides. True
+   *  where unset. */
+  readonly keys?: boolean;
 }
 
 /** One line the table draws: a row, or a group's heading. */
@@ -204,6 +209,7 @@ export function useDataTable<Row>({
   columns,
   getRowId,
   groupOrder,
+  keys = true,
   layout,
   names,
   onColumnFiltersChange,
@@ -316,6 +322,7 @@ export function useDataTable<Row>({
   const focusRow = useRowKeymap({
     displayRows,
     keymap: names.keymap,
+    keys,
     linkAttribute: names.linkAttribute,
     onMark: selection?.onMark,
     rowAttribute: names.rowAttribute,

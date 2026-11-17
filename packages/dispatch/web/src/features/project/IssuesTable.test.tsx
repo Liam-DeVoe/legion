@@ -28,7 +28,7 @@ import { readLayout } from "../../components/table-storage";
 import * as routeReach from "../issue/RouteReach";
 import { readSelectedIssues } from "../search/bar-scope";
 import { KeymapProvider } from "../shell/KeymapProvider";
-import { useKeymapScope } from "../shell/keymap";
+import { appKeymap, useKeymapScope } from "../shell/keymap";
 import { writesOf } from "../writes/write-store";
 import { IssuesTable } from "./IssuesTable";
 import { CLOSE_ITEMS_AGAIN_MS, type IssueListing } from "./issues-table-data";
@@ -622,6 +622,45 @@ test("leaving the table clears what the bar says it will act on", async () => {
   expect(readSelectedIssues()).toEqual(["CORE-1"]);
   view.unmount();
   expect(readSelectedIssues()).toEqual([]);
+});
+
+// The Board in the table's place takes the selection with the table, as leaving the page does,
+// and the table drawn again comes back with no row selected.
+test("the Board in the table's place clears what the bar says it will act on", async () => {
+  const user = userEvent.setup();
+  table([issue("CORE-1"), issue("CORE-2")]);
+  await user.click(await screen.findByRole("checkbox", { name: "Select CORE-1" }));
+  await user.click(screen.getByRole("checkbox", { name: "Select CORE-2" }));
+  expect(readSelectedIssues()).toEqual(["CORE-1", "CORE-2"]);
+  await user.click(screen.getByRole("button", { name: "Board" }));
+  await screen.findByRole("region", { name: "Project board" });
+  expect(readSelectedIssues()).toEqual([]);
+  await user.click(screen.getByRole("button", { name: "Table" }));
+  const first = await screen.findByRole<HTMLInputElement>("checkbox", { name: "Select CORE-1" });
+  expect(first.checked).toBe(false);
+  expect(screen.getByRole<HTMLInputElement>("checkbox", { name: "Select CORE-2" }).checked).toBe(
+    false
+  );
+  expect(readSelectedIssues()).toEqual([]);
+});
+
+// The Board's own keys answer while it shows: the shortcut help lists them and none of the table
+// it hides, and the table's come back with the table.
+test("the Board in the table's place takes the table's keys off the help, and the table brings them back", async () => {
+  const user = userEvent.setup();
+  table([issue("CORE-1")]);
+  await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
+  const labels = () => appKeymap.describe().map((entry) => entry.label);
+  expect(labels()).toContain("Next issue");
+  await user.click(screen.getByRole("button", { name: "Board" }));
+  await screen.findByRole("region", { name: "Project board" });
+  expect(labels()).toContain("Next card");
+  expect(labels()).not.toContain("Next issue");
+  expect(labels()).not.toContain("Open the focused issue");
+  await user.click(screen.getByRole("button", { name: "Table" }));
+  await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
+  expect(labels()).toContain("Next issue");
+  expect(labels()).not.toContain("Next card");
 });
 
 // Open's bar counts the rows the table lists. With closed issues unloaded it shows no Done
