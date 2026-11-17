@@ -1792,9 +1792,9 @@ type Store interface {
 	// nil where the generation has no plan rows: an issue that ran before plans, and a generation
 	// no plan reached yet.
 	Plan(ctx context.Context, tx pgx.Tx, issue string, generation uint64) (*StoredPlan, error)
-	// OwnersNewestPlan is the newest plan in force that owner gave for issue, of any generation,
-	// generation 0 included; nil where owner gave none in force.
-	OwnersNewestPlan(ctx context.Context, tx pgx.Tx, issue string, owner claim.Token) (*StoredPlan, error)
+	// OwnersNewestPlan is the newest plan in force, of any generation, generation 0 included, that
+	// an architect of issue's tree now gave (ArchitectOfTree); nil where no owner gave one in force.
+	OwnersNewestPlan(ctx context.Context, tx pgx.Tx, issue Issue) (*StoredPlan, error)
 	// PlansOfEarlierOwners is the version in force of each generation of issue whose giver is no
 	// architect of the issue's tree now (ArchitectOfTree): the plans its first step passes over.
 	PlansOfEarlierOwners(ctx context.Context, tx pgx.Tx, issue Issue) ([]PlanVersion, error)

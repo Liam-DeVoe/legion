@@ -279,13 +279,16 @@ func TestACarriedPlanKeepsWhereEachTaskStands(t *testing.T) {
 	})
 }
 
-// The owner's newest plan is the newest plan in force that the owner gave, in any generation, the
-// generation 0 of a plan given before the daemon recorded the issue among them. A plan another
-// tree's architect gave is not the owner's, however new, and neither is a plan of the default
-// steps, which nobody gave.
-func TestOwnersNewestPlanReadsOnlyTheOwnersGift(t *testing.T) {
+// The owners' newest plan is the newest plan in force that an owner of the issue gave, in any
+// generation, the generation 0 of a plan given before the daemon recorded the issue among them.
+// An owner is an architect of the issue's tree now (ArchitectOfTree): a plan another tree's
+// architect gave is not an owner's, however new, until that architect's issue is a member of the
+// tree, and neither is a plan of the default steps, which nobody gave. An issue of a tree whose
+// architects gave none has none.
+func TestOwnersNewestPlanReadsOnlyAnOwnersGift(t *testing.T) {
 	st := migratedStore(t)
 	ctx := context.Background()
+	issue := issueFixture(planIssue)
 	given, givenTasks, givenSteps := ownersPlan(planIssue, 0, 3, planOwner, planGivenAt)
 	another, anotherTasks, anotherSteps := ownersPlan(planIssue, 1, 5, otherOwner, planGivenAt.Add(time.Hour))
 	defaults := PlanVersion{Issue: planIssue, Generation: 2, Version: 0, Source: PlanSourceDefault, GivenAt: planGivenAt.Add(2 * time.Hour)}
@@ -296,25 +299,31 @@ func TestOwnersNewestPlanReadsOnlyTheOwnersGift(t *testing.T) {
 		putPlan(t, tx, another, anotherTasks, anotherSteps)
 		putPlan(t, tx, defaults, defaultTasks, defaultSteps)
 	})
-	inTx(t, st, func(tx pgx.Tx) {
-		got, err := NewStore().OwnersNewestPlan(ctx, tx, planIssue, planOwner)
-		must(t, err)
-		if want := storedOf(given, givenTasks, givenSteps); !reflect.DeepEqual(got, want) {
-			t.Fatalf("the owner's newest plan = %#v, want the plan it gave at generation 0: %#v", got, want)
-		}
-		got, err = NewStore().OwnersNewestPlan(ctx, tx, planIssue, otherOwner)
-		must(t, err)
-		if want := storedOf(another, anotherTasks, anotherSteps); !reflect.DeepEqual(got, want) {
-			t.Fatalf("the other architect's newest plan = %#v, want the plan it gave at generation 1: %#v", got, want)
-		}
-		for _, owner := range []claim.Token{"", "legion-legion-legion-400-architect"} {
-			got, err = NewStore().OwnersNewestPlan(ctx, tx, planIssue, owner)
+	newest := func(t *testing.T, issue Issue) *StoredPlan {
+		t.Helper()
+		var got *StoredPlan
+		inTx(t, st, func(tx pgx.Tx) {
+			var err error
+			got, err = NewStore().OwnersNewestPlan(ctx, tx, issue)
 			must(t, err)
-			if got != nil {
-				t.Fatalf("the newest plan of %q, which gave none = %#v, want none", owner, got)
-			}
-		}
-	})
+		})
+		return got
+	}
+
+	if got, want := newest(t, issue), storedOf(given, givenTasks, givenSteps); !reflect.DeepEqual(got, want) {
+		t.Fatalf("the owners' newest plan = %#v, want the one the root's architect gave at generation 0: %#v", got, want)
+	}
+	member := issueFixture("LEGION-300")
+	member.Tree = planIssue
+	inTx(t, st, func(tx pgx.Tx) { must(t, NewStore().PutIssue(ctx, tx, member)) })
+	if got, want := newest(t, issue), storedOf(another, anotherTasks, anotherSteps); !reflect.DeepEqual(got, want) {
+		t.Fatalf("the owners' newest plan with LEGION-300 a member = %#v, want the one its sub-architect gave at generation 1: %#v", got, want)
+	}
+	elsewhere := issue
+	elsewhere.Tree = "LEGION-400"
+	if got := newest(t, elsewhere); got != nil {
+		t.Fatalf("the owners' newest plan of %s in tree LEGION-400 = %#v, want none: no architect of that tree gave one", planIssue, got)
+	}
 }
 
 // An architect of an issue's tree now is the architect of the tree's root, or of a member the

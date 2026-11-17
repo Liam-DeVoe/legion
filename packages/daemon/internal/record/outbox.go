@@ -1905,11 +1905,12 @@ func validateOutboxPayload(payload OutboxPayload) error {
 // architect, in its reason.
 //
 // `plan-not-taken` is a plan an earlier owner gave for an issue, which its first step did not take
-// (workflow's passOverEarlierOwners): its giver is no architect of the issue's tree now
-// (ArchitectOfTree), as after an orphan is admitted again as a root of its own or an adoption
+// (workflow's passOverEarlierOwners, tellPassedOver): its giver is no architect of the issue's tree
+// now (ArchitectOfTree), as after an orphan is admitted again as a root of its own or an adoption
 // moves a member to another tree. The first step deletes its rows and tells the issue's architect
 // once, whatever number of versions it passed over; the reason names each version, its document
-// and its giver, and the plan the first step runs, the owner's own or the default steps.
+// and its giver, and the plan the first step runs: an owner's, of the issue's generation or carried
+// to it, or the default steps.
 var validNoticeKinds = []NoticeKind{
 	"phase-finished", "worker-died", "worker-stalled", "worker-silent", "worker-background-stalled", "held",
 	"pr-blocked", "pr-merged", "pr-closed-unmerged", "pull-request-missing", "message-refused",

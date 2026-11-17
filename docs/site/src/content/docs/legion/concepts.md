@@ -166,8 +166,11 @@ among them, where `acceptance:owner` is the architect's own acceptance in `accep
 the plan as the issue's `plan.md` document, with one `plan_task` block such as
 `:::plan_task{#a steps="implementer reviewer"}` whose text says what the task must deliver, and
 gives that version to Legion with the `legion` tool's `register_plan` before the issue's work
-starts. Legion runs only those steps, in that order, then the retro and the merge, so an issue with
-that plan runs no planner and no tester. Legion refuses any other plan with `PLAN_REFUSED` and one
+starts: for a child, before `release_children` releases it, since a released child can start its
+first step in the same admission pass. Legion holds a plan given for a child it has not recorded
+yet, and the child's first step takes the newest plan its owner gave. Legion runs only those steps,
+in that order, then the retro and the merge, so an issue with that plan runs no planner and no
+tester. Legion refuses any other plan with `PLAN_REFUSED` and one
 reason for each cause. An issue whose owner gives it no plan, or a task with no steps, runs the
 project's default steps, `projects.<KEY>.default_steps` in `legion.yaml`, which are the whole table
 unless the project sets others; so does an issue whose work started before its owner gave it a

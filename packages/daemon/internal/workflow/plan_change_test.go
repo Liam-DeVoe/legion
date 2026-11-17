@@ -790,8 +790,9 @@ func planRowsOf(t *testing.T, pool *pgxpool.Pool, key string) [3]int {
 // own generation: the first step stores the project's default steps in their place. The owner is
 // any architect of the issue's tree now (record.ArchitectOfTree): a sub-architect's plan for an
 // issue of its tree is the owner's, and so is the tree root architect's plan for its child (the
-// control); each is kept, and nobody is told or logged. The twin: an issue given no plan starts
-// planning on the default steps, with no notice and no log line.
+// control); each is carried to the issue's generation and its first step starts, and nobody is
+// told or logged. The twin: an issue given no plan starts planning on the default steps, with no
+// notice and no log line.
 func TestAPlanOfAnEarlierOwnerIsNotTaken(t *testing.T) {
 	const notTaken = "workflow: a plan of an earlier owner is not taken"
 	earlier, owner := architectOf(t), claim.Token(token(t, "LEGION-209", claim.RoleArchitect))
@@ -892,7 +893,7 @@ func TestAPlanOfAnEarlierOwnerIsNotTaken(t *testing.T) {
 		}
 	})
 
-	t.Run("a sub-architect's plan for an issue of its tree is the owner's: kept, and nobody told", func(t *testing.T) {
+	t.Run("a sub-architect's plan for an issue of its tree is the owner's: carried, and nobody told", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine, logged := loggedEngine()
 		recordedAt(t, pool, "LEGION-208", "LEGION-208")
@@ -903,10 +904,11 @@ func TestAPlanOfAnEarlierOwnerIsNotTaken(t *testing.T) {
 
 		firstStep(t, pool, engine, "LEGION-210")
 
-		kept(t, pool, logged.String(), "LEGION-210", [3]int{2, 2, 7})
+		assertWalksAt(t, pool, engine, "LEGION-210", phase.Implementing, record.TaskPlace{Kind: record.PlaceStep, Position: 1})
+		kept(t, pool, logged.String(), "LEGION-210", [3]int{2, 2, 4})
 	})
 
-	t.Run("control: the tree root architect's plan for its child is the owner's: kept, and nobody told", func(t *testing.T) {
+	t.Run("control: the tree root architect's plan for its child is the owner's: carried, and nobody told", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine, logged := loggedEngine()
 		recordedAt(t, pool, "LEGION-208", "LEGION-208")
@@ -916,7 +918,8 @@ func TestAPlanOfAnEarlierOwnerIsNotTaken(t *testing.T) {
 
 		firstStep(t, pool, engine, "LEGION-209")
 
-		kept(t, pool, logged.String(), "LEGION-209", [3]int{2, 2, 7})
+		assertWalksAt(t, pool, engine, "LEGION-209", phase.Implementing, record.TaskPlace{Kind: record.PlaceStep, Position: 1})
+		kept(t, pool, logged.String(), "LEGION-209", [3]int{2, 2, 4})
 	})
 
 	t.Run("the twin: an issue given no plan starts planning on the default steps, with no notice and no log line", func(t *testing.T) {

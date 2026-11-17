@@ -316,21 +316,33 @@ func scanPlanTasks(rows pgx.Rows) ([]PlanTask, error) {
 const inForce = `source = 'owner' and issue = $1
 	and version = (select max(version) from issue_plans newest where newest.issue = issue_plans.issue and newest.generation = issue_plans.generation)`
 
-// OwnersNewestPlan is the newest plan in force that owner gave for issue, of any generation,
+// OwnersNewestPlan is the newest plan in force that an owner of issue gave, of any generation,
 // generation 0 among them, which holds a plan given before the daemon recorded the issue: the
-// latest given, and of two given at one moment the later generation's. nil where owner gave no
-// plan that is in force; a default plan is nobody's.
-func (s *Postgres) OwnersNewestPlan(ctx context.Context, tx pgx.Tx, issue string, owner claim.Token) (*StoredPlan, error) {
-	var generation int64
-	err := tx.QueryRow(ctx, `select generation from issue_plans where `+inForce+` and given_by = $2
-		order by given_at desc, generation desc limit 1`, issue, string(owner)).Scan(&generation)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, nil
-	}
+// latest given whose giver is an architect of the issue's tree now (ArchitectOfTree), and of two
+// given at one moment the later generation's. nil where no owner gave a plan that is in force; a
+// default plan is nobody's. The versions are read, and their rows closed, before each giver is
+// judged, since a transaction runs one statement at a time.
+func (s *Postgres) OwnersNewestPlan(ctx context.Context, tx pgx.Tx, issue Issue) (*StoredPlan, error) {
+	describe := fmt.Sprintf("read the newest plan an owner gave for %s", issue.Key)
+	rows, err := tx.Query(ctx, "select "+planVersionColumns+` from issue_plans where `+inForce+`
+		order by given_at desc, generation desc`, issue.Key)
 	if err != nil {
-		return nil, fmt.Errorf("read the newest plan %s gave for %s: %w", owner, issue, err)
+		return nil, fmt.Errorf("%s: %w", describe, err)
 	}
-	return s.Plan(ctx, tx, issue, uint64(generation))
+	given, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (PlanVersion, error) { return scanPlanVersion(row) })
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", describe, err)
+	}
+	for _, version := range given {
+		owner, err := ArchitectOfTree(ctx, s, tx, version.GivenBy, issue)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", describe, err)
+		}
+		if owner {
+			return s.Plan(ctx, tx, issue.Key, version.Generation)
+		}
+	}
+	return nil, nil
 }
 
 // PlansOfEarlierOwners is the version in force of each generation of issue whose giver is no

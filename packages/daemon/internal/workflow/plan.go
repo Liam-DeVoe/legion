@@ -110,9 +110,14 @@ func (e *Engine) passOverEarlierOwners(ctx context.Context, tx pgx.Tx, issue rec
 // planFirstStep settles the plan the first step of issue's run walks, in the transaction that
 // starts it (gateOpened) and before the transition reads it (walk), so each run that starts its
 // work in this release has plan rows (R5). A plan an earlier owner gave is passed over first
-// (passOverEarlierOwners). A run whose generation then holds no plan rows takes the project's
-// default steps (defaultRows); one whose generation holds them, the owner's own or a hand-over's
-// carried plan, keeps them. Nothing is passed over in silence (tellPassedOver).
+// (passOverEarlierOwners), so nothing below carries one. A run whose generation then holds plan
+// rows, the owner's own or a hand-over's carried plan, keeps them. One whose generation holds none
+// takes the newest plan its owner gave, of any generation, generation 0 among them, which holds a
+// plan given before the daemon recorded the issue (record.Store's OwnersNewestPlan), carried from
+// its start (CarryPlan without carried): each task waits at no act, and the transition starts the
+// first step of its line. Where the owner gave none, the run takes the project's default steps
+// (defaultRows). Nothing is passed over in silence, and the plan the run takes is the one the
+// telling names (tellPassedOver).
 func (e *Engine) planFirstStep(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
 	earlier, err := e.passOverEarlierOwners(ctx, tx, issue)
 	if err != nil {
@@ -123,11 +128,21 @@ func (e *Engine) planFirstStep(ctx context.Context, tx pgx.Tx, issue record.Issu
 		return err
 	}
 	if stored == nil {
+		if stored, err = e.store.OwnersNewestPlan(ctx, tx, issue); err != nil {
+			return err
+		}
+	}
+	switch {
+	case stored == nil:
 		version, tasks, steps := e.defaultRows(issue)
 		if err := e.store.PutPlan(ctx, tx, version, tasks, steps); err != nil {
 			return err
 		}
 		stored = &record.StoredPlan{Version: version}
+	case stored.Version.Generation != issue.Generation:
+		if err := e.store.CarryPlan(ctx, tx, issue.Key, stored.Version.Generation, issue.Generation, false); err != nil {
+			return err
+		}
 	}
 	return e.tellPassedOver(ctx, tx, issue, earlier, stored.Version)
 }

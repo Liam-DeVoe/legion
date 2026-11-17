@@ -137,6 +137,110 @@ func TestAnIssueWithNoPlanStoresTheDefaultSteps(t *testing.T) {
 	})
 }
 
+// An owner's plan starts its first step (C2-2): `implementer reviewer` given while the root stands
+// at admitted starts implementing at its first step, and no planner claim starts. A plan the owner
+// gave at generation 0 for a child the daemon had not recorded is carried to the child's
+// generation when its first step starts (StartFirstPhase), each task from its start, and the child
+// walks it; the rows at generation 0 stay. Where the first step passes over an earlier owner's
+// plan of the child's own generation and carries the owner's plan of generation 0, the log line
+// and the notice name the plan it runs: the carried one. The twin: a child whose owner gave no
+// plan runs the default steps, from planning.
+func TestAnOwnersPlanStartsItsFirstStep(t *testing.T) {
+	const notTaken = "workflow: a plan of an earlier owner is not taken"
+
+	t.Run("a plan given at admitted starts its first step, and no planner", func(t *testing.T) {
+		pool := migratedPool(t)
+		engine := returnEngine()
+		root := stepRoot(t, pool, phase.Admitted)
+		mustTake(t, "version 1", applyFacts(t, pool, engine)(planID(root.Key, root.Generation, 1),
+			ownersPlan(t, root.Key, root.Generation, 1, givenTask(t, "Build the widget.", "implementer", "reviewer"))))
+
+		firstStep(t, pool, engine, root.Key)
+
+		assertWalksAt(t, pool, engine, root.Key, phase.Implementing, record.TaskPlace{Kind: record.PlaceStep, Position: 1})
+		if got := planStandingOf(t, pool, engine, root.Key, root.Generation).versions; !reflect.DeepEqual(got, []string{"1 owner"}) {
+			t.Fatalf("the versions of %s = %v, want the owner's alone", root.Key, got)
+		}
+		if planners := startsOf(t, pool, root.Key, claim.RolePlanner); len(planners) != 0 {
+			t.Fatalf("the planner's starts = %+v, want none", planners)
+		}
+		if implementers := startsOf(t, pool, root.Key, claim.RoleImplementer); len(implementers) != 1 || implementers[0].Phase != phase.Implementing {
+			t.Fatalf("the implementer's starts = %+v, want one, of implementing", implementers)
+		}
+	})
+
+	t.Run("a plan given at generation 0 for a child is carried to its generation", func(t *testing.T) {
+		pool := migratedPool(t)
+		engine, logged := loggedEngine()
+		recordedAt(t, pool, "LEGION-208", "LEGION-208")
+		mustTake(t, "version 1 at generation 0", applyFacts(t, pool, engine)(planID("LEGION-209", 0, 1),
+			ownersPlan(t, "LEGION-209", 0, 1, givenTask(t, "Build the widget.", "implementer", "reviewer"))))
+		recordedAt(t, pool, "LEGION-209", "LEGION-208")
+		logged.Reset()
+
+		firstStep(t, pool, engine, "LEGION-209")
+
+		want := walkStanding{phase.Implementing, record.TaskPlace{Kind: record.PlaceStep, Position: 1}, record.TaskRunning, []string{"1 owner"},
+			[]string{"implementer/implementation", "reviewer/review"}}
+		if got := walkStandingOf(t, pool, engine, "LEGION-209", 1); !reflect.DeepEqual(got, want) {
+			t.Fatalf("LEGION-209 after its first step stands at %+v, want %+v, the owner's plan carried from generation 0", got, want)
+		}
+		if got := planRowsOf(t, pool, "LEGION-209"); got != [3]int{2, 2, 4} {
+			t.Fatalf("the plan rows of LEGION-209 = %v, want the plan at generation 0 and its copy at generation 1", got)
+		}
+		if planners := startsOf(t, pool, "LEGION-209", claim.RolePlanner); len(planners) != 0 {
+			t.Fatalf("the planner's starts = %+v, want none", planners)
+		}
+		if strings.Contains(logged.String(), notTaken) || len(noticesOf(t, pool, "LEGION-209", "plan-not-taken")) != 0 {
+			t.Fatalf("the carry of the owner's plan logged or told a plan not taken:\n%s", logged.String())
+		}
+	})
+
+	t.Run("a plan passed over at the child's generation names the carried plan it runs", func(t *testing.T) {
+		pool := migratedPool(t)
+		engine, logged := loggedEngine()
+		earlier, owner := architectOf(t), claim.Token(token(t, "LEGION-209", claim.RoleArchitect))
+		recordedAt(t, pool, "LEGION-209", "LEGION-208")
+		mustTake(t, "the earlier owner's version 1", applyFacts(t, pool, engine)(planID("LEGION-209", 1, 1),
+			ownersPlan(t, "LEGION-209", 1, 1, givenTask(t, "Build the widget.", "implementer", "tester"))))
+		recordedAt(t, pool, "LEGION-209", "LEGION-209")
+		given := ownersPlan(t, "LEGION-209", 0, 2, givenTask(t, "Build the widget.", "implementer", "reviewer"))
+		given.GivenBy = owner
+		mustTake(t, "the owner's version 2 at generation 0", applyFacts(t, pool, engine)(planID("LEGION-209", 0, 2), given))
+		logged.Reset()
+
+		firstStep(t, pool, engine, "LEGION-209")
+
+		assertWalksAt(t, pool, engine, "LEGION-209", phase.Implementing, record.TaskPlace{Kind: record.PlaceStep, Position: 1})
+		if got := stepsOfTask(planStandingOf(t, pool, engine, "LEGION-209", 1).plan, "a"); !reflect.DeepEqual(got, []string{"implementer/implementation", "reviewer/review"}) {
+			t.Fatalf("the steps LEGION-209 walks = %v, want the owner's, carried", got)
+		}
+		runs := "version 2 of document " + planArtifact + ", given by " + string(owner)
+		if line := `msg="` + notTaken + `" issue=LEGION-209 generation=1 version=1 document=` + planArtifact + " giver=" + string(earlier) + ` runs="` + runs + `"`; strings.Count(logged.String(), notTaken) != 1 || !strings.Contains(logged.String(), line) {
+			t.Fatalf("the log =\n%s\nwant the one line %s", logged.String(), line)
+		}
+		want := []record.Notice{{Kind: "plan-not-taken", Role: claim.RoleArchitect, Reason: "The first step of LEGION-209 took no plan of an earlier owner: version 1 of document " +
+			planArtifact + ", given by " + string(earlier) + ". It runs " + runs + ". To run a plan it did not take, give it again with register_plan as your own."}}
+		if got := noticesOf(t, pool, "LEGION-209", "plan-not-taken"); !reflect.DeepEqual(got, want) {
+			t.Fatalf("the plan-not-taken notices = %+v, want %+v", got, want)
+		}
+	})
+
+	t.Run("the twin: a child whose owner gave no plan runs the default steps from planning", func(t *testing.T) {
+		pool := migratedPool(t)
+		engine := returnEngine()
+		recordedAt(t, pool, "LEGION-208", "LEGION-208")
+		recordedAt(t, pool, "LEGION-209", "LEGION-208")
+
+		firstStep(t, pool, engine, "LEGION-209")
+
+		want := walkStanding{phase.Planning, record.TaskPlace{Kind: record.PlaceStep, Position: 1}, record.TaskRunning, []string{"0 default"}, todaysDefaultSteps}
+		if got := walkStandingOf(t, pool, engine, "LEGION-209", 1); !reflect.DeepEqual(got, want) {
+			t.Fatalf("LEGION-209 after its first step stands at %+v, want %+v", got, want)
+		}
+	})
+}
+
 // An issue admitted in this release that its owner gave no plan holds the rows of the task
 // default from its first step, so a plan its owner gives later is judged as a later version over
 // them (R16): while default runs it is refused with the running task's text, never with the text
