@@ -317,13 +317,13 @@ func refusedStart(t *testing.T, cmd *exec.Cmd) *cmdtest.Process {
 }
 
 // listeningAddr waits for the listener's "envoy-listener listening" line and returns its addr. The
-// wait is the start's own (listenerStartWait): it ends when the line is logged or the process
-// exits, and otherwise only at the test binary's deadline.
+// wait is the listener's own (listenerWait): it ends when the line is logged or the process exits,
+// and otherwise only at the test binary's deadline.
 func listeningAddr(t *testing.T, process *cmdtest.Process) string {
 	t.Helper()
 	const listening = `"msg":"envoy-listener listening"`
 	began := time.Now()
-	logged := testwait.Holds(listenerStartWait(t), 20*time.Millisecond, func() bool {
+	logged := testwait.Holds(listenerWait(t), 20*time.Millisecond, func() bool {
 		select {
 		case <-process.Exited:
 			return true
@@ -362,20 +362,22 @@ func listeningAddr(t *testing.T, process *cmdtest.Process) string {
 	return ""
 }
 
-// listenerStartWait is how long a wait on a listener's own start may last: what the test binary's
-// deadline (go test -timeout) leaves, less the second testwait leaves to report a wait, and no end
-// at all under -timeout 0. The test adds no bound of its own, because the listener bounds its start
-// itself: a JetStream request left unanswered three times, ten seconds each, ends the start, its
-// cache warm-ups give up after 30 s and serve, and its durable bind gives up after
-// durableBindDeadline and shuts the listener down, so a start that cannot finish exits, which the
-// waits report at once. A fixed span on top of those measures how much of the machine the test
-// binary and the listener were given. On a box at load1 1,254 neither ran for minutes at a time:
-// the listener reported its first ten-second request wait over 152 s after it began listening and
-// the next 238 s after that, and the test binary, which runs the NATS server, logged nothing for six
-// and a half minutes. TestListenerFollowsTheInterestRegistryAcrossNATSRestarts had given up on a
-// 30 s span, and when both ran again it killed a listener that logged it was ready in that same
-// second.
-func listenerStartWait(t *testing.T) time.Duration {
+// listenerWait is how long a test may wait on the listener's own work: its start, its reconnect
+// after a NATS server restart, a read of a bucket, its exit. It is what the test binary's deadline
+// (go test -timeout) leaves, less the second testwait leaves to report a wait, and no end at all
+// under -timeout 0. The test adds no bound of its own, because how long that work takes is the
+// machine's, and work that never finishes still fails, at the deadline, naming what the test
+// waited for. A start bounds itself besides: a JetStream request left unanswered three times, ten
+// seconds each, ends the start, its cache warm-ups give up after 30 s and serve, and its durable
+// bind gives up after durableBindDeadline and shuts the listener down, so a start that cannot
+// finish exits, which the waits report at once. A fixed span on top of those measures how much of
+// the machine the test binary and the listener were given. On a box at load1 1,254 neither ran for
+// minutes at a time: the listener reported its first ten-second request wait over 152 s after it
+// began listening and the next 238 s after that, and the test binary, which runs the NATS server,
+// logged nothing for six and a half minutes. TestListenerFollowsTheInterestRegistryAcrossNATSRestarts
+// had given up on a 30 s span, and when both ran again it killed a listener that logged it was
+// ready in that same second.
+func listenerWait(t *testing.T) time.Duration {
 	return testwait.Bounded(t, time.Duration(math.MaxInt64), time.Second)
 }
 
@@ -389,7 +391,7 @@ func postListener(t *testing.T, port int, path, body string) {
 
 // waitHealthy waits for the listener to log that it listens on its own loopback port, then for
 // /healthz there to report "healthy" (healthyWithin), and kills the listener and fails the test
-// when it exits first or the test binary's deadline comes first (listenerStartWait): it is the wait
+// when it exits first or the test binary's deadline comes first (listenerWait): it is the wait
 // for a listener's start. The socket the listener inherited is not readiness: the kernel queues
 // connections on it from before the process starts, so a request there waits rather than fails
 // until the process serves, and only its listening line says it does. /healthz answers 200 with
@@ -403,7 +405,7 @@ func (p *listenerProcess) waitHealthy(t *testing.T) {
 		t.Fatalf("the listener logged that it listens on %s, not on its own %s:\n%s", addr, own, p.Output.String())
 	}
 	// Read after the listening line's wait, which spends what the deadline leaves too.
-	p.healthyWithin(t, listenerStartWait(t))
+	p.healthyWithin(t, listenerWait(t))
 }
 
 // healthyWithin waits up to within for a listener that serves to report "healthy" on /healthz, and

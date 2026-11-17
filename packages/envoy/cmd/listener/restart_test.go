@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A NATS server restart leaves the listener following the interest registry, and a shutdown soon
@@ -54,15 +55,14 @@ func TestListenerFollowsTheInterestRegistryAcrossNATSRestarts(t *testing.T) {
 	subscribe(0, time.Now())
 
 	for restart := 1; restart <= 3; restart++ {
+		// The restart's own reconnect: the first line of the registry's connection reconnecting
+		// that the listener logs after this restart began. A count of reconnect lines would not do:
+		// the listener's three connections each log one per restart, so the first restart's lines
+		// alone would already count up to the third.
+		stopped := len(listener.Output.String())
 		server.Stop(t)
 		server.Start(t)
-		deadline := time.Now().Add(30 * time.Second)
-		for strings.Count(listener.Output.String(), "envoy nats reconnected") < restart {
-			if time.Now().After(deadline) {
-				t.Fatalf("restart %d: the listener never reconnected:\n%s", restart, listener.Output.String())
-			}
-			time.Sleep(100 * time.Millisecond)
-		}
+		listenerLineAfter(t, listener, stopped, registryReconnected, "restart "+strconv.Itoa(restart)+": the registry's connection to reconnect")
 		reconnectedAt := time.Now()
 
 		// Every watcher a watch installs reads the whole bucket again, and nothing empties the
@@ -99,6 +99,47 @@ func TestListenerFollowsTheInterestRegistryAcrossNATSRestarts(t *testing.T) {
 			t.Fatalf("NATS restarts and the shutdown after them logged an error: %s", line)
 		}
 	}
+}
+
+// registryReconnected is what the bus logs when the connection the listener's registry reads its
+// buckets through, which it names envoy, has reconnected (internal/bus/connect.go). The listener's
+// two other connections, envoy-session-consumers and envoy-role-lane, log the same message under
+// their own names, so the name and the field after it are part of the match.
+const registryReconnected = "envoy nats reconnected name=envoy url="
+
+// listenerLineAfter waits for a line of the listener's output that holds text and starts at or
+// past offset from, and returns the offset just past it. The wait is the listener's own
+// (listenerWait): it ends when the line is logged, fails at once when the listener exits without
+// it, and otherwise ends only at the test binary's deadline, failing as the wait for what.
+func listenerLineAfter(t *testing.T, p *listenerProcess, from int, text, what string) int {
+	t.Helper()
+	end := -1
+	exited := false
+	wait := listenerWait(t)
+	testwait.Holds(wait, 20*time.Millisecond, func() bool {
+		select {
+		case <-p.Exited:
+			exited = true
+		default:
+		}
+		// Read after the exit check, so the output of a listener that has exited is whole.
+		output := p.Output.String()
+		if at := strings.Index(output[from:], text); at >= 0 {
+			if newline := strings.IndexByte(output[from+at:], '\n'); newline >= 0 {
+				end = from + at + newline + 1
+				return true
+			}
+		}
+		return exited
+	})
+	if end >= 0 {
+		return end
+	}
+	if exited {
+		t.Fatalf("%s: the listener exited with %s first:\n%s", what, p.Cmd.ProcessState, p.Output.String())
+	}
+	t.Fatalf("%s: the listener had not logged %q in the %v the test binary's deadline left:\n%s", what, text, wait.Round(time.Millisecond), p.Output.String())
+	return 0
 }
 
 // interestWarmUp waits for the listener's nth interest registry warm-up line (1 is its start's)
