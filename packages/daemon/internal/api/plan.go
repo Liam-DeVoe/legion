@@ -85,10 +85,11 @@ func writeRefusal(w http.ResponseWriter, refusal *intake.Refusal) {
 
 // registerPlan is register_plan (R5, R14). It authorizes the owner (planOwner), reads the
 // document's approval for the version Dispatch has and the issue carrying it (documentOfIssue),
-// reads the plan's blocks at the version given (planAt), and refuses with one reason for each
-// cause of a plan this release does not carry out (plan.Supported) or no release can
-// (plan.Validate); each of those answers records nothing. A plan both take is recorded as
-// intake.PlanGiven, whose rules of a later version (R16) are the workflow's.
+// reads the plan's blocks at the version given (planAt), reads each need as the task it names
+// (plan.ResolveNeeds), and refuses with one reason for each cause of a plan this release does not
+// carry out (plan.Supported) or no release can (plan.Validate); each of those answers records
+// nothing. A plan both take is recorded as intake.PlanGiven, its needs as task ids, whose rules of
+// a later version (R16) are the workflow's.
 //
 // The fact's id is the issue, the generation the plan is given at, the document and the version:
 // a retry of a registration taken is that fact, answered the same, and the same version given at
@@ -133,8 +134,11 @@ func (s *server) registerPlan(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	// Both checks run, so a plan with two causes gets two reasons: what this release does not
-	// carry out yet, then what no release can.
+	// Each need is read as the task it names before either check, so a need that names no task is
+	// Validate's, and the plan recorded and answered holds task ids, which every reader of a need
+	// reads (plan.ResolveNeeds). Both checks run, so a plan with two causes gets two reasons: what
+	// this release does not carry out yet, then what no release can.
+	given = plan.ResolveNeeds(given)
 	refusals := append(plan.Supported(given), plan.Validate(given, plan.Deployment{Roles: plan.BuiltinRoles()})...)
 	if len(refusals) > 0 {
 		writeRefusal(w, intake.PlanRefused(refusals))

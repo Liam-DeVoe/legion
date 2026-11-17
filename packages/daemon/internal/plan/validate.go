@@ -25,11 +25,13 @@ var todaysOrder = func() string {
 	return strings.Join(names, ", ")
 }()
 
-// Validate is what Legion cannot carry out in any release (R14): a plan with no task, and each
-// step that names a role neither d nor the plan's own role blocks define, refused once for each
-// role at the first step that names it (B-11). It refuses no plan for a step the plan lacks. The
-// other refusals of R14 need an attribute or a block that Supported refuses in this release, so
-// the release that lifts that refusal adds them here.
+// Validate is what Legion cannot carry out in any release (R14): a plan with no task; for each
+// task, each `needs` word that names no task of the plan, in the block's order (Task.Unresolved,
+// so p is the plan ResolveNeeds answers); and each step that names a role neither d nor the plan's
+// own role blocks define, refused once for each role at the first step that names it (B-11). It
+// refuses no plan for a step the plan lacks. The other refusals of R14 need an attribute or a
+// block that Supported refuses in this release, so the release that lifts that refusal adds them
+// here.
 func Validate(p Plan, d Deployment) []Refusal {
 	if len(p.Tasks) == 0 {
 		return []Refusal{{Reason: noTask}}
@@ -40,6 +42,9 @@ func Validate(p Plan, d Deployment) []Refusal {
 	}
 	var refusals []Refusal
 	for _, task := range p.Tasks {
+		for _, word := range task.Unresolved {
+			refusals = append(refusals, Refusal{Task: task.ID, Reason: fmt.Sprintf("task %s needs %s, which names no task of this plan.", task.ID, word)})
+		}
 		refused := map[string]bool{}
 		for i, step := range task.Steps {
 			if _, ok := d.Roles[step.Role]; ok || defined[step.Role] || refused[step.Role] {

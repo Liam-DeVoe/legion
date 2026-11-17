@@ -187,6 +187,35 @@ func TestRegisterPlanAnswersADocumentItCannotRead(t *testing.T) {
 	}
 }
 
+// needing is block with `needs` writing the words needs.
+func needing(block dispatch.DocumentBlock, needs string) dispatch.DocumentBlock {
+	block.Attributes["needs"] = needs
+	return block
+}
+
+// register_plan reads each need as the task it names (plan.ResolveNeeds) before either check, so
+// the reasons name the task a reference names, and a word that names no task gets R14's reason
+// rather than the reason of a need this release does not carry out yet; the plan recorded is the
+// one both checks read. The fault is a route that checks, and records, the words as the blocks
+// write them; the control is the route without the call, which answers `task b needs
+// dispatch://LEGION-208/artifact/plan-md#b-a.` and `task b needs x.`, each as not carried out yet.
+func TestRegisterPlanReadsEachNeedAsTheTaskItNames(t *testing.T) {
+	h, facts, statuses := planHarness(t)
+	architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
+	statuses.givePlan(planDoc, 1, taskBlock("a", "implementer reviewer"),
+		needing(taskBlock("b", "implementer reviewer"), "dispatch://LEGION-208/artifact/plan-md#b-a"))
+	statuses.givePlan(planDoc, 2, taskBlock("a", "implementer reviewer"), needing(taskBlock("b", "implementer reviewer"), "x"))
+
+	twoTasks := PlanReason{Reason: "the plan has 2 tasks (a, b), and this release runs one task for each issue. This release of Legion does not carry it out yet."}
+	assertPlanRefused(t, registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 1), twoTasks,
+		PlanReason{Task: "b", Reason: "task b needs a. This release of Legion does not carry it out yet."})
+	assertPlanRefused(t, registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 2), twoTasks,
+		PlanReason{Task: "b", Reason: "task b needs x, which names no task of this plan."})
+	if got := facts.recorded(); len(got) != 0 {
+		t.Fatalf("refused registrations recorded %#v, want nothing", got)
+	}
+}
+
 // The rules of a later version are the workflow's (R16), which answers each refusal of them as
 // a committed refusal of the fact: the route writes it as it came, a refused plan with its
 // reasons beside the code.
