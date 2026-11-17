@@ -384,17 +384,12 @@ func upsertClaim(ctx context.Context, db execer, c supervise.Claim) error {
 		endedWork = encoded
 	}
 	// Null is a claim no turn has confirmed the daemon's own relaunch record in, or one a later
-	// turn start or a task's confirmation cleared it on; one that holds it records that turn's
-	// start, the two counts at its confirmation and what it takes back at its end (supervise's
-	// RecordTurn, turnEndsCounts). The start is written to the microsecond, as last_turn_start is:
-	// the turn is the record's only while the two are equal (supervise's Claim.recordsTurn), and
-	// the JSON would keep the nanoseconds the timestamptz column drops, so a claim read back would
-	// find no record turn at its last turn's start.
+	// turn start or a task's confirmation cleared it on; one that holds it records the two counts
+	// at that turn's confirmation and what the turn takes back at its end (supervise's RecordTurn,
+	// turnEndsCounts).
 	var recordTurn []byte
 	if c.RecordTurn != nil {
-		turn := *c.RecordTurn
-		turn.At = turn.At.Truncate(time.Microsecond)
-		encoded, err := json.Marshal(turn)
+		encoded, err := json.Marshal(c.RecordTurn)
 		if err != nil {
 			return fmt.Errorf("put claim %s: encode its relaunch record's turn: %w", c.Token, err)
 		}

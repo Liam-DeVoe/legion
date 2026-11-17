@@ -4,7 +4,6 @@ import (
 	"context"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
@@ -17,21 +16,16 @@ const recordTurnVersion = 20261117075935
 // (supervise.Claim.RecordTurn), because the end of that turn, and the confirmation of the record
 // sent again after a cut, can each be a daemon restart away: the restarted daemon decides from
 // the row alone whether the turn ending is the record's and what it takes back. The round trip
-// is the column through putClaim and scanClaim, and a claim read back must still find its record
-// turn at its last turn's start, to the microsecond the timestamptz column keeps, or a restart
-// would read the record's turn as a turn of work and end every count. The decode refuses a
-// record no confirmation writes, and the migration gives every row it finds none.
+// is the column through putClaim and scanClaim. A row an earlier build of this release wrote also
+// holds the start of the record's turn (`at`), which nothing reads any more: it still reads back
+// as the record it holds, or a daemon rolled onto this build could not read its claims. The
+// decode refuses a record no confirmation writes, and the migration gives every row it finds none.
 func TestARelaunchRecordsTurnIsKeptOnTheClaimRow(t *testing.T) {
-	t.Run("the record round-trips with the claim at its turn's start, and its absence is null", func(t *testing.T) {
+	t.Run("the record round-trips with the claim, and its absence is null", func(t *testing.T) {
 		ctx := context.Background()
 		store := migratedStore(t)
 		want := tmuxClaim("legion-LEGION-209-recordturn")
-		// A start with nanoseconds, as the daemon's clock gives one: last_turn_start keeps its
-		// microseconds alone.
-		started := time.Date(2026, 11, 17, 7, 59, 35, 123456789, time.UTC)
-		want.LastTurnStart = started
 		want.RecordTurn = &supervise.RecordTurn{
-			At:       started,
 			Base:     supervise.TurnCounts{Deaths: 1, PodEndsNotOurs: 2},
 			TakeBack: supervise.TurnCounts{Deaths: 1, PodEndsNotOurs: 1},
 		}
@@ -42,10 +36,6 @@ func TestARelaunchRecordsTurnIsKeptOnTheClaimRow(t *testing.T) {
 		turn := read.RecordTurn
 		if turn == nil {
 			t.Fatal("the claim read back holds no record turn, want the one written")
-		}
-		if !turn.At.Equal(read.LastTurnStart) {
-			t.Errorf("the record turn read back starts at %s and the claim's last turn at %s, want the same instant: "+
-				"the restarted daemon would read the record's turn as a turn of work", turn.At, read.LastTurnStart)
 		}
 		if turn.Base != want.RecordTurn.Base || turn.TakeBack != want.RecordTurn.TakeBack {
 			t.Errorf("the record turn read back holds base %+v and take-back %+v, want %+v and %+v",
@@ -70,6 +60,27 @@ func TestARelaunchRecordsTurnIsKeptOnTheClaimRow(t *testing.T) {
 		}
 	})
 
+	t.Run("a record written with its turn's start still reads back", func(t *testing.T) {
+		ctx := context.Background()
+		store := migratedStore(t)
+		c := tmuxClaim("legion-LEGION-209-recordturn")
+		if err := store.PutClaim(ctx, c); err != nil {
+			t.Fatalf("put the claim: %v", err)
+		}
+		const stored = `{"at": "2026-11-17T07:59:35.123456Z", "base": {"deaths": 1, "podEndsNotOurs": 2}, "takeBack": {"deaths": 1, "podEndsNotOurs": 1}}`
+		if _, err := store.Pool().Exec(ctx, "update claims set record_turn = $2::jsonb where token = $1",
+			string(c.Token), stored); err != nil {
+			t.Fatalf("write the record turn %s: %v", stored, err)
+		}
+		want := supervise.RecordTurn{
+			Base:     supervise.TurnCounts{Deaths: 1, PodEndsNotOurs: 2},
+			TakeBack: supervise.TurnCounts{Deaths: 1, PodEndsNotOurs: 1},
+		}
+		if read := onlyClaim(t, store); read.RecordTurn == nil || *read.RecordTurn != want {
+			t.Errorf("the record turn %s read back as %+v, want %+v", stored, read.RecordTurn, want)
+		}
+	})
+
 	t.Run("the decode refuses a record no confirmation writes", func(t *testing.T) {
 		ctx := context.Background()
 		store := migratedStore(t)
@@ -78,10 +89,10 @@ func TestARelaunchRecordsTurnIsKeptOnTheClaimRow(t *testing.T) {
 			t.Fatalf("put the claim: %v", err)
 		}
 		for _, stored := range []string{
-			`{"at": "2026-11-17T07:59:35Z", "base": {"deaths": -1, "podEndsNotOurs": 0}, "takeBack": {"deaths": 0, "podEndsNotOurs": 0}}`,
-			`{"at": "2026-11-17T07:59:35Z", "base": {"deaths": 0, "podEndsNotOurs": 0}, "takeBack": {"deaths": 0, "podEndsNotOurs": -1}}`,
-			`{"at": "2026-11-17T07:59:35Z", "base": {"deaths": 0, "podEndsNotOurs": 3}, "takeBack": {"deaths": 0, "podEndsNotOurs": 2}}`,
-			`{"at": "2026-11-17T07:59:35Z", "base": {"deaths": 3, "podEndsNotOurs": 0}, "takeBack": {"deaths": 2, "podEndsNotOurs": 0}}`,
+			`{"base": {"deaths": -1, "podEndsNotOurs": 0}, "takeBack": {"deaths": 0, "podEndsNotOurs": 0}}`,
+			`{"base": {"deaths": 0, "podEndsNotOurs": 0}, "takeBack": {"deaths": 0, "podEndsNotOurs": -1}}`,
+			`{"base": {"deaths": 0, "podEndsNotOurs": 3}, "takeBack": {"deaths": 0, "podEndsNotOurs": 2}}`,
+			`{"base": {"deaths": 3, "podEndsNotOurs": 0}, "takeBack": {"deaths": 2, "podEndsNotOurs": 0}}`,
 		} {
 			if _, err := store.Pool().Exec(ctx, "update claims set record_turn = $2::jsonb where token = $1",
 				string(c.Token), stored); err != nil {

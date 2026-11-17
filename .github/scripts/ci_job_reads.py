@@ -529,13 +529,13 @@ RULES = {
     # what holds those two copies to the guide, in the text-check job (dispatch://INFRA-1117).
     f"{DAEMON}/internal/textcheck/workspace_copy_doc_test.go": reads(
         ("docs/kubernetes.md", "internal/textcheck/waiting_line_texts_test.go:390 reads it under ../../../.. "
-                               "for workspace_copy_doc_test.go:45 (shippedText)"),
+                               "for workspace_copy_doc_test.go:46 (shippedText)"),
         (f"{DAEMON}/internal/daemon/workspace_copy_doc_extract.txt",
          "internal/textcheck/waiting_line_texts_test.go:380 reads it as ../daemon/workspace_copy_doc_extract.txt for "
-         "workspace_copy_doc_test.go:89, the committed copy it holds the guide's regions to (readExtract)"),
+         "workspace_copy_doc_test.go:90, the committed copy it holds the guide's regions to (readExtract)"),
         (f"{DAEMON}/internal/runtime/sandbox/workspace_copy_doc_extract.txt",
          "internal/textcheck/waiting_line_texts_test.go:380 reads it as ../runtime/sandbox/workspace_copy_doc_extract.txt "
-         "for workspace_copy_doc_test.go:89, the committed copy it holds the guide's regions to (readExtract)")),
+         "for workspace_copy_doc_test.go:90, the committed copy it holds the guide's regions to (readExtract)")),
     f"{DAEMON}/internal/textcheck/waiting_line_texts_test.go": reads(
         # The four copies of the shipped texts, each committed beside the package whose own
         # test is held to it and read here through readExtract.

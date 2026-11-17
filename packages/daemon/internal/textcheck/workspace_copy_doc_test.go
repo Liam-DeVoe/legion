@@ -12,11 +12,12 @@ import (
 // Two doc tests hold regions of docs/kubernetes.md to the code those regions document.
 // internal/daemon's workspace_copy_doc_test.go holds the copy's cadence paragraphs and the
 // paragraph on what each kind of pod end loses and keeps to the running copy's constants;
-// internal/runtime/sandbox's holds the extended-run-time annotation's bullet, the paragraphs on an
-// end from outside the pod and the two-kinds and AWS paragraphs of the copy to the runtime's
-// annotations and pod-end reasons. That comparison is in two halves, because a test that reads the
-// guide puts the guide in its job's filter — a declared read applies to every compiled source file
-// of a run — and a documentation-only edit would then start the whole daemon Go lane. The product
+// internal/runtime/sandbox's holds the extended-run-time annotation's bullet and the guide's three
+// other statements of that rule, the paragraphs on an end from outside the pod and the copy's
+// two-kinds and AWS paragraphs to the runtime's annotations and pod-end reasons. That comparison
+// is in two halves, because a test that reads the guide puts the guide in its job's filter — a
+// declared read applies to every compiled source file of a run — and a documentation-only edit
+// would then start the whole daemon Go lane. The product
 // halves read workspace_copy_doc_extract.txt, a copy of their regions committed beside each of the
 // two packages, through internal/testdoc; this half holds each region of both copies to the guide
 // itself. Neither half alone is the guarantee: together they are the one the two tests used to

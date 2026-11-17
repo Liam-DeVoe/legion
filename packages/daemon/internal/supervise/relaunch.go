@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 )
@@ -220,15 +219,12 @@ func HoldsTask(pending *Delivery) bool { return pending != nil && !pending.Relau
 // (Delivery.Relaunch), which is what that turn's end reads to decide what it ends of the two counts
 // a completed turn ends (turnEndsCounts). confirm writes it at every confirmation of a record and
 // clears it at the confirmation of a task (confirmRecordTurn), and every turn start that confirms
-// no record clears it (forgetRecordTurn). It is persisted with the claim (store's record_turn), in
-// the write that confirms the record, so a daemon restarted at any point between that confirmation
-// and the turn's end reads what the daemon before it wrote. A claim holds none (nil) until a turn
-// confirms a record, and none is also what says the base is unknown.
+// no record clears it (forgetRecordTurn), so a claim that holds one is in, or last ran, the turn
+// that confirmed the record (Claim.recordsTurn). It is persisted with the claim (store's
+// record_turn), in the write that confirms the record, so a daemon restarted at any point between
+// that confirmation and the turn's end reads what the daemon before it wrote. A claim holds none
+// (nil) until a turn confirms a record, and none is also what says the base is unknown.
 type RecordTurn struct {
-	// At is the start of the turn that confirmed the record: the claim's LastTurnStart at that
-	// confirmation. The turn now ending is that record's exactly while At is not zero and equals
-	// Claim.LastTurnStart (Claim.recordsTurn).
-	At time.Time `json:"at"`
 	// Base is the two counts when that confirmation was made, which the confirmation of the same
 	// record sent again measures the charge of the end between them from.
 	Base TurnCounts `json:"base"`
@@ -275,19 +271,18 @@ func countsOf(b Budgets) TurnCounts {
 func oneAtMost(n int) int { return min(max(n, 0), 1) }
 
 // recordsTurn is whether the turn the claim last began is the turn that confirmed a relaunch
-// record: the claim holds a record turn whose start is that turn's (RecordTurn.At). It reads the
-// persisted claim alone.
-func (c Claim) recordsTurn() bool {
-	r := c.RecordTurn
-	return r != nil && !r.At.IsZero() && r.At.Equal(c.LastTurnStart)
-}
+// record: the claim holds a record turn. Every turn start writes or clears it in the decision that
+// records the start — the start that confirms a record writes a new one and a task's confirmation
+// clears it (confirmRecordTurn), and every other start forgets it (forgetRecordTurn) — so a record
+// turn the claim holds is always its last turn's. It reads the persisted claim alone.
+func (c Claim) recordsTurn() bool { return c.RecordTurn != nil }
 
 // confirmRecordTurn records, at the confirmation of d (confirm), what the turn now confirming it
 // takes back at its end (turnEndsCounts, which states the rule). A task's confirmation clears the
-// record turn: its turn is the claim's own work. A record's confirmation dates the turn
-// (Claim.LastTurnStart) and records the two counts now as its base. Its take-back is zero but for
-// a record a let-go took back from an earlier turn of it (Delivery.Interrupted) whose base the
-// claim still holds: then each amount is the count now less that base, one at most and never
+// record turn: its turn is the claim's own work. A record's confirmation marks the turn the
+// record's (Claim.recordsTurn) and records the two counts now as its base. Its take-back is zero
+// but for a record a let-go took back from an earlier turn of it (Delivery.Interrupted) whose base
+// the claim still holds: then each amount is the count now less that base, one at most and never
 // below zero, which is what the end that cut the earlier turn charged.
 func (m *Machine) confirmRecordTurn(d Delivery) {
 	if !d.Relaunch() {
@@ -295,7 +290,7 @@ func (m *Machine) confirmRecordTurn(d Delivery) {
 		return
 	}
 	now := countsOf(m.claim.Budgets)
-	turn := &RecordTurn{At: m.claim.LastTurnStart, Base: now}
+	turn := &RecordTurn{Base: now}
 	if last := m.claim.RecordTurn; d.Interrupted && last != nil {
 		turn.TakeBack = TurnCounts{
 			Deaths:         oneAtMost(now.Deaths - last.Base.Deaths),
@@ -309,9 +304,10 @@ func (m *Machine) confirmRecordTurn(d Delivery) {
 // start of a turn that is not the pending delivery's, the busy answer that records a turn
 // (recordBusyTurn), the agent's word that it is in a turn of its own after its task was dropped
 // (answerAskFirstAfterDrop), and a turn Oh My Pi starts under a compaction (turnStartedWhileBusy).
-// Such a turn is no record's, and an end that cuts it is counted against it, so the base is
-// forgotten: a record re-sent after it takes back nothing (turnEndsCounts), and the claim fails
-// sooner.
+// Such a turn is no record's, so the record turn goes: left standing, it would make the turn's end
+// read as the record's (Claim.recordsTurn), which ends neither count. And an end that cuts it is
+// counted against it, so the base is forgotten: a record re-sent after it takes back nothing
+// (turnEndsCounts), and the claim fails sooner.
 func (m *Machine) forgetRecordTurn() { m.claim.RecordTurn = nil }
 
 // turnEndsCounts ends, at a turn's end (turnEnded), what that turn ends of the two counts a
@@ -360,13 +356,12 @@ func (m *Machine) forgetRecordTurn() { m.claim.RecordTurn = nil }
 // The record's retirement ends nothing (retirePending, HoldsTask): it is no task of the claim's.
 //
 // Whose turn is ending is decided from the persisted claim alone, read here: the turn is the
-// record's exactly while the claim's record turn starts where its last turn did
-// (Claim.recordsTurn). Every turn start either moves Claim.LastTurnStart or forgets the record
-// turn, and the one that confirms a record writes a new one, so no earlier turn's record can be
-// read for this one. A task delivered during the record's turn (queue) and a provider error's
-// result before its end (providerErrored) change the pending delivery and neither field, and a
-// daemon restarted before, after or between them reads both fields from the row, so none of them
-// changes the answer.
+// record's exactly while the claim holds a record turn (Claim.recordsTurn). Every turn start
+// writes one or clears it — the start that confirms a record writes a new one, and every other
+// start clears it — so no earlier turn's record can be read for this one. A task delivered during
+// the record's turn (queue) and a provider error's result before its end (providerErrored) change
+// the pending delivery and not the record turn, and a daemon restarted before, after or between
+// them reads the record turn from the row, so none of them changes the answer.
 //
 // The record turn's take-back is zeroed here, beside the counts it changes, so the turn's end
 // writes both together and a second end of the same turn takes nothing more.

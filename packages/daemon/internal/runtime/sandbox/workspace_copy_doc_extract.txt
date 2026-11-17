@@ -1,15 +1,17 @@
-# A copy of the four regions of docs/kubernetes.md that this package's workspace_copy_doc_test.go
+# A copy of the seven regions of docs/kubernetes.md that this package's workspace_copy_doc_test.go
 # holds to the runtime's annotations and pod-end reasons, each in the guide's own bytes and none of
-# the prose around it, in the guide's order: the extended-run-time annotation's bullet of "Anatomy
-# of a Sandbox pod", the paragraphs under **An end from outside the pod.** in "The disk dies with
-# its pod", and the two-kinds paragraphs and the AWS paragraph of "The copy of a running pod's
-# workspace". A region is every line of the guide from the one holding its start marker through
-# the one its end marker finishes on.
+# the prose around it, in the guide's order: the stop-eviction annotations of a microVM issue pod
+# in "Issue pods in microVMs", the extended-run-time annotation's bullet of "Anatomy of a Sandbox
+# pod", the annotation's sentences of the burst paragraph in "Issue sizing: one reservation per
+# pod", the paragraphs under **An end from outside the pod.** in "The disk dies with its pod", the
+# two-kinds paragraphs and the AWS paragraph of "The copy of a running pod's workspace", and the
+# controller pod's annotations in "Daemon-launched controller". A region is every line of the guide
+# from the one holding its start marker through the one its end marker finishes on.
 #
 # The guide still answers for the runtime, in two halves. This package's
 # workspace_copy_doc_test.go reads each region out of this copy through internal/testdoc and holds
-# it to safeToEvictAnnotation, doNotDisruptAnnotation, clusterEndedReasons, evictedReason and
-# podEndLine and to the facts it must state; packages/daemon/internal/textcheck's
+# it to safeToEvictAnnotation, doNotDisruptAnnotation, podShapeAnnotation, clusterEndedReasons,
+# evictedReason and podEndLine and to the facts it must state; packages/daemon/internal/textcheck's
 # TestTheWorkspaceCopyDocExtractsAreTheGuidesOwnLines holds each region to the guide's own lines
 # between the same two markers. Splitting it that way is what lets an edit to the guide alone
 # start the text-check run rather than every Go lane: the product test no longer reads the guide
@@ -26,6 +28,11 @@
 # guide's own bytes, its blank lines included; the blank line that closes it is none of them,
 # since a region ends on the line holding its end marker.
 
+from: A microVM issue pod carries the annotations a gVisor issue pod carries
+to: as a `Burstable` gVisor pod carries none
+A microVM issue pod carries the annotations a gVisor issue pod carries, by the same rule: `karpenter.sh/do-not-disrupt: "true"` and `legion.dev/pod-shape` always, and `cluster-autoscaler.kubernetes.io/safe-to-evict: "false"` only while its reservation is `Guaranteed` (`podKind.asksExtendedRunTime`, `podkind.go`).
+The rule reads the pod's reservation and never its runtime, so a `Burstable` microVM pod carries no safe-to-evict annotation, as a `Burstable` gVisor pod carries none ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)).
+
 from: the project controller's pod additionally carries
 to: with no death charged
   - the project controller's pod additionally carries `cluster-autoscaler.kubernetes.io/safe-to-evict: "false"`, the upstream Cluster Autoscaler's own annotation, whatever its reservation, and an issue pod carries it only while its cpu request equals its cpu limit and its memory request equals its memory limit, which is the `Guaranteed` reservation (`podKind.asksExtendedRunTime`, `podkind.go`);
@@ -35,6 +42,13 @@ to: with no death charged
     it asks GKE Autopilot for no extended run time, so Autopilot gives it no node of its own, and the pod shares a node and bursts ([Issue sizing](#issue-sizing-one-reservation-per-pod), "Guaranteed or Burstable").
     What such a pod gives up is the seven-day protection, since the cluster may end it to repack a node;
     what it keeps is its work and its roles, because the daemon holds a copy of each issue workspace outside the pod and continues every role of a pod the cluster ended in that role's own session, with no death charged ([The copy of a running pod's workspace](#the-copy-of-a-running-pods-workspace), [The disk dies with its pod](#the-disk-dies-with-its-pod));
+
+from: An issue pod carries `cluster-autoscaler.kubernetes.io/safe-to-evict: "false"` only while
+to: rather than into a node of its own.
+An issue pod carries `cluster-autoscaler.kubernetes.io/safe-to-evict: "false"` only while its reservation is `Guaranteed`, and the controller's pod carries it whatever its reservation ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)).
+A pod carrying it gets a node of its own on Autopilot whenever possible, so on the general-purpose platform its ceiling is about its own requests, whatever its limits say.
+A `Burstable` issue pod carries it not at all:
+`issue: {memory: 32Gi, memory_request: 8Gi}` requests 8Gi under a 32Gi limit, asks for no extended run time, and so shares a node and bursts into that node's burstable capacity rather than into a node of its own.
 
 from: The daemon reads what ended each watched pod once
 to: would be relaunched for ever.
@@ -205,3 +219,9 @@ to: and no repacking of its pods.
 `karpenter.sh/do-not-disrupt` is the AWS scheduler's annotation, and every Legion pod carries it whatever its reservation.
 Karpenter therefore consolidates and drifts no node a Legion pod runs on, as before this release.
 So an AWS deployment gains the copy and the uncharged resume from this change, and no repacking of its pods.
+
+from: Legion sets no affinity on it, so under Karpenter
+to: where an issue pod carries the second only while its reservation is `Guaranteed`
+Legion sets no affinity on it, so under Karpenter it lands wherever the pool has room for it (on GKE Autopilot it usually gets a node of its own, [Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)), and it is annotated `karpenter.sh/do-not-disrupt:
+"true"` and `cluster-autoscaler.kubernetes.io/safe-to-evict: "false"`, both whatever its reservation
+— a `controller` request below its limit makes the pod `Burstable` and takes neither annotation away, where an issue pod carries the second only while its reservation is `Guaranteed` ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)):

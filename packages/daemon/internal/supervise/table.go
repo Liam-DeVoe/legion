@@ -1861,9 +1861,9 @@ func (m *Machine) staleStep(s StreamToolStep) bool {
 // (compactEnded). That turn's start line is written here (startTurn), because its end writes the
 // end line (turnEnded): an operator reads an end with no start as a turn the daemon never saw
 // begin, and the daemon saw this one. The daemon prompted nothing for it, so it is no task's turn
-// and its line names no delivery, and it confirms no record: it dates no turn start
-// (Claim.LastTurnStart), so the record turn goes (forgetRecordTurn), or its end would be read as
-// the turn of the record the claim's last turn confirmed. The compaction's end writes the claim.
+// and its line names no delivery, and it confirms no record, so the record turn goes
+// (forgetRecordTurn), or its end would be read as the turn of the record the claim's last turn
+// confirmed. The compaction's end writes the claim.
 //
 // The two never meet: a compaction is taken only from a ready or idle claim (compactStart), and a
 // busy answer records only a ready or idle one.

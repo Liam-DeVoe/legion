@@ -15,7 +15,7 @@ import (
 // that no longer exists, or to wait for work that no copy holds.
 //
 // These checks do not read the guide. They read workspace_copy_doc_extract.txt, this package's
-// own copy of the four regions in the guide's bytes, which internal/textcheck's
+// own copy of the seven regions in the guide's bytes, which internal/textcheck's
 // TestTheWorkspaceCopyDocExtractsAreTheGuidesOwnLines holds to the guide's lines between the same
 // markers. The split is what keeps docs/kubernetes.md out of this job's filter: a declared read
 // applies to every compiled source file of a run, so a test that reads the guide starts the whole
@@ -38,7 +38,7 @@ import (
 // reasons.
 //
 // The annotation keys, the three cluster reasons and the reason that needs the condition come
-// from the code they document (safeToEvictAnnotation, doNotDisruptAnnotation,
+// from the code they document (safeToEvictAnnotation, doNotDisruptAnnotation, podShapeAnnotation,
 // clusterEndedReasons, evictedReason), never from a list written beside the check: a reason added
 // to the set is then a reason the document must name, and nobody has to remember to edit this
 // file. The paragraphs that state internal/daemon's constants — the copy's cadence, with the
@@ -54,8 +54,14 @@ const (
 	// beside the code it is about and needs no declared read of its own.
 	workspaceCopyDocExtract = "workspace_copy_doc_extract.txt"
 
+	microVMAnnotationsStart = "A microVM issue pod carries the annotations a gVisor issue pod carries"
+	microVMAnnotationsEnd   = "as a `Burstable` gVisor pod carries none"
+
 	annotationRuleStart = "the project controller's pod additionally carries"
 	annotationRuleEnd   = "with no death charged"
+
+	burstAnnotationStart = "An issue pod carries `cluster-autoscaler.kubernetes.io/safe-to-evict: \"false\"` only while"
+	burstAnnotationEnd   = "rather than into a node of its own."
 
 	copyKindsStart = "An issue therefore holds up to two kinds of copy"
 	copyKindsEnd   = "and both stay through a linger and a park."
@@ -65,6 +71,9 @@ const (
 
 	karpenterStart = "`" + doNotDisruptAnnotation + "` is the AWS scheduler's annotation"
 	karpenterEnd   = "and no repacking of its pods."
+
+	controllerAnnotationsStart = "Legion sets no affinity on it, so under Karpenter"
+	controllerAnnotationsEnd   = "where an issue pod carries the second only while its reservation is `Guaranteed`"
 )
 
 // The issue pod carries cluster-autoscaler.kubernetes.io/safe-to-evict only while its reservation
@@ -84,6 +93,66 @@ func TestKubernetesDocStatesWhichPodsCarryTheExtendedRunTimeAnnotation(t *testin
 		{Fact: "what such a pod gives up", Phrase: "the seven-day protection"},
 		{Fact: "what such a pod keeps, and why", Phrase: "copy of each issue workspace outside the pod"},
 	})
+}
+
+// The guide says when an issue pod carries cluster-autoscaler.kubernetes.io/safe-to-evict in three
+// places besides the "Anatomy of a Sandbox pod" bullet: the stop-eviction annotations of a microVM
+// issue pod, the burst paragraph of "Issue sizing: one reservation per pod", and the controller
+// pod's paragraph, which sets the issue pod's rule beside the controller's. Each must state the
+// rule the code applies (podKind.asksExtendedRunTime): only while the pod's reservation is
+// Guaranteed, whatever its runtime. A microVM paragraph that says the pod carries the annotation
+// unconditionally sends an operator who lowered an issue request to look for a node of its own
+// that the pod no longer asks for.
+//
+// "Rolling back the running copy" also names the annotation on every issue pod whatever its
+// reservation, and is no region here: that sentence says what an earlier daemon release does, so
+// this release's code is not what it answers to.
+func TestKubernetesDocStatesTheSafeToEvictRuleWhereverElseItNamesIt(t *testing.T) {
+	const rule = "only while its reservation is `Guaranteed`"
+	safeToEvict := "`" + safeToEvictAnnotation + `: "false"` + "`"
+	for _, tc := range []struct {
+		name, what string
+		start, end string
+		facts      []testdoc.Fact
+	}{
+		{
+			name: "the microVM issue pod", what: `docs/kubernetes.md's stop-eviction annotations of "Issue pods in microVMs"`,
+			start: microVMAnnotationsStart, end: microVMAnnotationsEnd,
+			facts: []testdoc.Fact{
+				{Fact: "that a microVM issue pod takes a gVisor issue pod's rule", Phrase: "by the same rule"},
+				{Fact: "the annotations every such pod carries",
+					Phrase: "`" + doNotDisruptAnnotation + `: "true"` + "` and `" + podShapeAnnotation + "` always"},
+				{Fact: "the rule for the annotation the paragraph is about", Phrase: safeToEvict + " " + rule},
+				{Fact: "that the rule reads the reservation and not the runtime", Phrase: "reads the pod's reservation and never its runtime"},
+				{Fact: "that a Burstable microVM pod carries none", Phrase: "a `Burstable` microVM pod carries no safe-to-evict annotation"},
+			},
+		},
+		{
+			name: "the burst paragraph", what: `docs/kubernetes.md's burst paragraph of "Issue sizing: one reservation per pod"`,
+			start: burstAnnotationStart, end: burstAnnotationEnd,
+			facts: []testdoc.Fact{
+				{Fact: "the rule for the annotation the paragraph is about", Phrase: safeToEvict + " " + rule},
+				{Fact: "that the controller's pod carries it whatever its reservation", Phrase: "the controller's pod carries it whatever its reservation"},
+				{Fact: "that a Burstable issue pod carries it not at all", Phrase: "A `Burstable` issue pod carries it not at all"},
+				{Fact: "what such a pod asks GKE Autopilot for", Phrase: "asks for no extended run time"},
+			},
+		},
+		{
+			name: "the controller's pod", what: `docs/kubernetes.md's paragraph of the controller's pod in "Daemon-launched controller"`,
+			start: controllerAnnotationsStart, end: controllerAnnotationsEnd,
+			facts: []testdoc.Fact{
+				{Fact: "the two annotations the controller's pod carries whatever its reservation",
+					Phrase: "`" + doNotDisruptAnnotation + `: "true"` + "` and " + safeToEvict + ", both whatever its reservation"},
+				{Fact: "that a Burstable controller's pod keeps both", Phrase: "takes neither annotation away"},
+				{Fact: "the issue pod's rule beside it", Phrase: "an issue pod carries the second " + rule},
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, region := testdoc.Region(t, workspaceCopyDocExtract, tc.what, tc.start, tc.end)
+			testdoc.RequireDocFacts(t, tc.what, region, tc.facts)
+		})
+	}
 }
 
 // The two kinds of copy: which a new pod restores, what becomes of the older, which of the two

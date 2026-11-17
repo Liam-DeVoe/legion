@@ -398,51 +398,94 @@ func TestARunOfEndsWhoseLastCutsARelaunchRecordsTurnFailsAtTheLimit(t *testing.T
 	}
 }
 
-// One relaunch record cut twice and then completed takes back one end, the second: each
-// confirmation of the record measures what the end before it charged from the counts at the
-// confirmation before, so the record sent the second time takes back the second end alone, and
-// the counts stand one end above where they were. A death under a compaction between the cut and
-// the record sent again is the other way two charges meet in one difference without a turn
-// start: the compaction takes the record's prompt back and puts the claim in working, so the
-// death is counted, and the record's turn still takes back one death, no more. Forgiving both
-// ends, as the turn of a record sent again once did, or every death the difference holds, would
-// let a claim that ends on each turn of its record twice in a row run for ever.
+// A relaunch record's completed turn takes back one end at most, the end that cut the record's
+// turn before it: each confirmation of the record measures what the end before it charged from the
+// counts at the confirmation before (confirmRecordTurn). So one record cut twice and then completed
+// takes back the second end alone, and the counts stand one end above where they were. Where the
+// first end is a process death and the second an end from outside the pod below the limit, the
+// death stands and the outside end is taken back: a base kept from the record's first confirmation
+// would measure both ends, and the cap of one a count would then take back the death as well,
+// which a record cut twice by ends of one kind cannot show. A death under a compaction between the
+// cut and the record sent again is the other way two charges meet in one difference without a
+// turn start: the compaction takes the record's prompt back and puts the claim in working, so the
+// death is counted, and the record's turn still takes back one death, no more. A fresh record
+// takes back nothing, whatever an earlier record's turn left in the claim's record turn: an
+// earlier record's turn completes, a compaction of the idle claim loses its process, the death is
+// charged, and the fresh record the relaunch gives the claim leaves that death standing. Measured
+// from the earlier record's base, as a record cut off would be, it would take the death back,
+// though no end cut a turn of it. Forgiving both ends, as the turn of a record sent again once did,
+// or every death the difference holds, would let a claim that ends on each turn of its record
+// twice in a row run for ever.
 func TestARelaunchRecordsTurnTakesBackOneEndAtMost(t *testing.T) {
 	limit := testLimits().LaunchFailures
-	t.Run("a record cut twice, then completed", func(t *testing.T) {
-		for _, end := range recordTurnEnds {
-			t.Run(end.name, func(t *testing.T) {
-				h := newHarness(t)
-				h.reach(StateIdle)
-				h.parkedEndWhileIdle(end, limit)
-				h.endInRecordsTurn(end.reading)
-				h.relaunched()
-				h.endInRecordsTurn(end.reading)
-				h.relaunched()
-				h.wantBudgets(atReady(end.counted(2, limit)))
-				h.cutRecordsTurnCompletes(1, atReady(end.counted(1, limit)))
-			})
-		}
-	})
-	t.Run("a record cut, then a death under a compaction before it is sent again", func(t *testing.T) {
-		h := newHarness(t)
-		h.reach(StateIdle)
-		death := recordTurnEnds[1]
-		h.parkedEndWhileIdle(death, limit)
-		h.endInRecordsTurn(death.reading)
-		h.relaunched()
+	outside, death := recordTurnEnds[0], recordTurnEnds[1]
+	// diesUnderACompaction loses the claim's process while a compaction of its session is held,
+	// and lets the compaction give up on the process it lost.
+	diesUnderACompaction := func(h *harness) {
+		h.t.Helper()
 		release, compacted := h.compactHeld()
 		h.observe(runtime.Gone)
 		h.wantState(StateLaunching)
 		release()
 		if err := <-compacted; !errors.Is(err, ErrCompactProcessGone) {
-			t.Fatalf("the compaction whose process died answered %v, want ErrCompactProcessGone", err)
+			h.t.Fatalf("the compaction whose process died answered %v, want ErrCompactProcessGone", err)
 		}
 		h.m.Wait()
-		h.relaunched()
-		h.wantBudgets(Budgets{Deaths: 2})
-		h.cutRecordsTurnCompletes(1, Budgets{Deaths: 1})
-	})
+	}
+	cutTwice := func(end recordTurnEnd) func(*harness) {
+		return func(h *harness) {
+			h.parkedEndWhileIdle(end, limit)
+			h.endInRecordsTurn(end.reading)
+			h.relaunched()
+			h.endInRecordsTurn(end.reading)
+			h.relaunched()
+			h.wantBudgets(atReady(end.counted(2, limit)))
+			h.cutRecordsTurnCompletes(1, atReady(end.counted(1, limit)))
+		}
+	}
+	for _, tc := range []struct {
+		name string
+		walk func(h *harness)
+	}{
+		{name: "a record cut twice by ends from outside the pod, then completed", walk: cutTwice(outside)},
+		{name: "a record cut twice by process deaths, then completed", walk: cutTwice(death)},
+		{name: "a record cut by a death and then by an end from outside the pod, then completed", walk: func(h *harness) {
+			h.parkedEndWhileIdle(death, limit)
+			h.endInRecordsTurn(death.reading)
+			h.relaunched()
+			h.endInRecordsTurn(outside.reading)
+			h.relaunched()
+			h.wantBudgets(Budgets{Deaths: 1, PodEndsNotOurs: 1})
+			h.cutRecordsTurnCompletes(1, Budgets{Deaths: 1})
+		}},
+		{name: "a record cut, then a death under a compaction before it is sent again", walk: func(h *harness) {
+			h.parkedEndWhileIdle(death, limit)
+			h.endInRecordsTurn(death.reading)
+			h.relaunched()
+			diesUnderACompaction(h)
+			h.relaunched()
+			h.wantBudgets(Budgets{Deaths: 2})
+			h.cutRecordsTurnCompletes(1, Budgets{Deaths: 1})
+		}},
+		{name: "a fresh record after an earlier record's completed turn and a death under a compaction", walk: func(h *harness) {
+			h.parkedEndWhileIdle(death, limit)
+			h.relaunchRecordTurnCompletes(true)
+			h.wantState(StateIdle)
+			diesUnderACompaction(h)
+			h.relaunched()
+			if held := h.claim().Pending; held == nil || !held.Relaunch() {
+				h.t.Fatalf("the claim holds %+v after the death under a compaction, want a fresh relaunch record", held)
+			}
+			h.wantBudgets(Budgets{Deaths: 1})
+			h.relaunchRecordTurnCompletes(true)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			h.reach(StateIdle)
+			tc.walk(h)
+		})
+	}
 }
 
 // A claim whose process ends in every turn of its relaunch record completes no turn, so each of
@@ -481,8 +524,8 @@ func TestAClaimWhoseProcessEndsInEveryTurnOfItsRelaunchRecordFailsAtTheLimit(t *
 // The daemon restarts around a relaunch record sent again: between the cut of the record's
 // earlier turn and the confirmation of the record sent again, or inside the turn of the record
 // sent again. The rebuilt machine holds nothing of either in memory and reads the claim it stored
-// (Claim.RecordTurn): the base the earlier turn's confirmation recorded, and the turn the
-// confirmation of the record sent again dated with what it takes back. Its completion then takes
+// (Claim.RecordTurn): the base the earlier turn's confirmation recorded, and the record turn the
+// confirmation of the record sent again wrote with what it takes back. Its completion then takes
 // back exactly the end that cut the earlier turn, as it would have without the restart. The claim
 // comes up holding the count of an end in a turn a message started, so a restart that lost the
 // record turn shows either way: read as a turn of work, the record's turn would end that count
@@ -701,67 +744,4 @@ func TestAnEndFromOutsideThePodIsToldAsSuchAndOnlyTheDaemonsReplacementAsAReplac
 			}
 		})
 	}
-}
-
-// A record cut off twice, first by a process death and then by an end from outside the pod below
-// the limit, is forgiven the second cut alone: the confirmation of the record sent after the first
-// cut moves the base to the counts it finds, so the completed turn of the record sent after the
-// second takes back the outside end and leaves the death standing. A base kept from the record's
-// first confirmation would measure both ends, and the cap of one a count would then take back the
-// death as well; a record cut twice by ends of one kind cannot tell those two apart.
-func TestARelaunchRecordCutTwiceByDifferentEndsForgivesOnlyTheLast(t *testing.T) {
-	limit := testLimits().LaunchFailures
-	h := newHarness(t)
-	h.reach(StateIdle)
-	h.parkedEndWhileIdle(recordTurnEnds[1], limit)
-	h.endInRecordsTurn("")
-	h.relaunched()
-	h.endInRecordsTurn(runtime.PodEndNotOurs)
-	h.relaunched()
-	before := h.budgets()
-	h.pendingTurnCompletes()
-	if got := h.budgets(); got.Deaths != 1 || got.PodEndsNotOurs != 0 {
-		t.Errorf("the record cut by a death and then an outside end left budgets %+v after its turn (%+v before), "+
-			"want the death standing and the outside end taken back", got, before)
-	}
-}
-
-// A fresh relaunch record takes back nothing, whatever an earlier record's turn left in the claim's
-// record: here an earlier record's turn completes, a compaction of the idle claim loses its process,
-// the death is charged, and the relaunch gives the claim a fresh record, whose completed turn must
-// leave that death standing. Measured from the earlier record's base, as a record cut off would be,
-// it would take the death back, though no end cut a turn of this record.
-func TestAFreshRelaunchRecordAfterADeathUnderACompactionTakesNothingBack(t *testing.T) {
-	limit := testLimits().LaunchFailures
-	h := newHarness(t)
-	h.reach(StateIdle)
-	h.parkedEndWhileIdle(recordTurnEnds[1], limit)
-	h.pendingTurnCompletes()
-	h.wantState(StateIdle)
-	release, compacted := h.compactHeld()
-	h.observe(runtime.Gone)
-	release()
-	if err := <-compacted; !errors.Is(err, ErrCompactProcessGone) {
-		t.Fatalf("the compaction answered %v, want ErrCompactProcessGone", err)
-	}
-	h.m.Wait()
-	h.relaunched()
-	if held := h.claim().Pending; held == nil || !held.Relaunch() {
-		t.Fatalf("the claim holds %+v after the death under a compaction, want a fresh relaunch record", held)
-	}
-	h.pendingTurnCompletes()
-	if got := h.budgets(); got.Deaths != 1 {
-		t.Errorf("a fresh record's turn after a death under a compaction left budgets %+v, want the death standing", got)
-	}
-}
-
-// pendingTurnCompletes is a turn of the delivery the claim holds, its start confirming it, its end
-// a minute later and its prompt's result after that, which retires it.
-func (h *harness) pendingTurnCompletes() {
-	h.t.Helper()
-	delivery := h.pending()
-	h.must(StreamTurnStart{Claim: h.token})
-	h.advance(time.Minute)
-	h.mustQuiet(StreamTurnEnd{Claim: h.token})
-	h.must(StreamPromptResult{Claim: h.token, DeliveryID: delivery.ID, AgentInvoked: true})
 }

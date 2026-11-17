@@ -1326,14 +1326,14 @@ func (m *Machine) adopt(ctx context.Context, role claim.Role, loc *runtime.Locat
 // claim holds, which is the row putClaimAndPending writes, so the write below carries it.
 //
 // It is also where the claim's record of a relaunch record's turn is written (Claim.RecordTurn,
-// confirmRecordTurn): a record's confirmation dates the turn, records the two counts a completed
-// turn ends as its base, and measures what the turn takes back at its end — for a record a let-go
-// took back from an earlier turn of it, what the end that cut that turn charged, one at most of
-// each count — and a task's confirmation clears it (turnEndsCounts states the rule). Every path
-// that confirms a delivery comes through here — a turn's start (beginTurn), sendPending's askFirst
-// branch, and a prompt's result that confirms a task no start was matched to (promptResulted) —
-// and the record is the claim's own field, so it goes in the same write as the confirmation and
-// a restart reads it with the claim.
+// confirmRecordTurn): a record's confirmation marks the turn the record's, records the two counts
+// a completed turn ends as its base, and measures what the turn takes back at its end — for a
+// record a let-go took back from an earlier turn of it, what the end that cut that turn charged,
+// one at most of each count — and a task's confirmation clears it (turnEndsCounts states the
+// rule). Every path that confirms a delivery comes through here — a turn's start (beginTurn),
+// sendPending's askFirst branch, and a prompt's result that confirms a task no start was matched
+// to (promptResulted) — and the record is the claim's own field, so it goes in the same write as
+// the confirmation and a restart reads it with the claim.
 //
 // A task of the entry the claim's handshake names records its confirmation there too, the first
 // one only (Claim.Handshake, EntryHandshake.confirmed): the delivery's own ConfirmedAt goes with
