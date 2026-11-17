@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, expect, type Mock, spyOn, test } from "bun:test";
+import { MAX_ISSUE_ADVANCES } from "@legion/contracts";
 import { type RenderResult, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
@@ -11,6 +12,7 @@ import type {
   Actor,
   ArchitectureSource,
   ArtifactApproval,
+  ArtifactReview,
   ClaimHolderLiveness,
   Issue,
   IssueClaim,
@@ -1802,6 +1804,8 @@ test("the default shapes keep main's class strings", async () => {
 
     "ApprovalSteps list's host": "flex w-full min-w-0 flex-col gap-2",
     "ApprovalSteps list": "flex w-full min-w-0 flex-wrap items-center gap-x-4 gap-y-2",
+    // `main`'s features/issue/ApprovalSteps.tsx: a step's `<li>`.
+    "ApprovalSteps entry": "flex min-w-0 flex-wrap items-center gap-2",
     "ApprovalSteps step name": "text-xs font-medium text-slate-500 dark:text-slate-400",
     "ApprovalSteps chip":
       "inline-flex min-w-0 items-center rounded-full border px-2 py-1 text-center text-xs font-medium [overflow-wrap:anywhere] border-amber-700 dark:border-amber-400 text-amber-800 dark:text-amber-300",
@@ -1813,6 +1817,34 @@ test("the default shapes keep main's class strings", async () => {
       "min-h-11 rounded-lg border px-3 py-2 text-sm font-medium md:min-h-8 md:py-1 border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-300 not-refused:hover:border-sky-500 dark:not-refused:hover:border-sky-400",
     "ApprovalSteps reason":
       "min-w-0 text-xs [overflow-wrap:anywhere] text-slate-700 dark:text-slate-300",
+
+    // `main`'s features/doc/ApprovalChip.tsx: the Reviews dialog's backdrop, its box, its heading,
+    // Close, the line it says while the reviews load, once their read failed and with none yet,
+    // and a review with its reason.
+    "ApprovalChip reviews backdrop": "fixed inset-0 z-40 bg-slate-950/40",
+    "ApprovalChip reviews dialog":
+      "pointer-events-auto w-full max-w-md space-y-3 rounded-lg border p-4 shadow-xl border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900",
+    "ApprovalChip reviews heading": "text-sm font-semibold text-slate-700 dark:text-slate-300",
+    "ApprovalChip reviews Close": "text-sm font-medium text-slate-500 dark:text-slate-400",
+    "ApprovalChip reviews loading": "text-sm text-slate-500 dark:text-slate-400",
+    "ApprovalChip reviews unread": "text-sm text-rose-700 dark:text-rose-400",
+    "ApprovalChip no reviews": "text-sm text-slate-500 dark:text-slate-400",
+    "ApprovalChip review": "text-sm font-medium text-slate-900 dark:text-slate-100",
+    "ApprovalChip review's reason": "mt-1 text-sm text-slate-700 dark:text-slate-300",
+    // `main`'s features/doc/ApprovalChip.tsx: the Request changes dialog's backdrop, its box, its
+    // heading, its label, the reason box, a refused request's line, Cancel and its Request changes.
+    "ApprovalChip request backdrop": "fixed inset-0 z-40 bg-slate-950/40",
+    "ApprovalChip request dialog":
+      "pointer-events-auto w-full max-w-sm space-y-3 rounded-lg border p-4 shadow-xl border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900",
+    "ApprovalChip request heading": "text-sm font-semibold text-slate-700 dark:text-slate-300",
+    "ApprovalChip request label": "block text-sm font-medium text-slate-700 dark:text-slate-300",
+    "ApprovalChip request reason box":
+      "mt-1 block w-full rounded-lg border px-2 py-1.5 text-sm font-normal outline-none border-slate-300 bg-white focus:border-sky-600 dark:border-slate-700 dark:bg-slate-900 dark:focus:border-sky-400",
+    "ApprovalChip request refused": "text-sm text-rose-700 dark:text-rose-400",
+    "ApprovalChip request Cancel":
+      "rounded-lg border px-3 py-1.5 text-sm font-medium border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-300 not-refused:hover:border-sky-500 dark:not-refused:hover:border-sky-400",
+    "ApprovalChip request Request changes":
+      "rounded-lg px-3 py-1.5 text-sm font-medium bg-sky-700 text-white not-refused:hover:bg-sky-800 refused:cursor-not-allowed refused:bg-slate-300 refused:text-slate-700 dark:refused:bg-slate-700 dark:refused:text-slate-300",
 
     "AssigneeControl wrapper":
       "relative inline-flex min-h-11 shrink-0 items-center rounded-sm md:min-h-8 has-focus-visible:ring-2 has-focus-visible:ring-sky-600 dark:has-focus-visible:ring-sky-400 ",
@@ -1837,6 +1869,11 @@ test("the default shapes keep main's class strings", async () => {
     "ClaimChip, lapsed":
       "inline-flex shrink-0 items-center rounded-full px-2 py-1 text-xs font-medium whitespace-nowrap bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 min-w-0 max-w-full gap-1",
     "ClaimChip not running": "shrink-0",
+    // `main`'s features/issue/ClaimChip.tsx: the dot before a lapsed claim's "not running", and
+    // an unresponsive holder's dot and words.
+    "ClaimChip lapsed dot": "shrink-0",
+    "ClaimChip unresponsive dot": "shrink-0",
+    "ClaimChip unresponsive": "shrink-0",
 
     "RepoControl line":
       "flex shrink-0 items-center gap-2 text-sm text-slate-700 dark:text-slate-300",
@@ -1857,12 +1894,18 @@ test("the default shapes keep main's class strings", async () => {
     "IssueComponentsLine inherited link":
       "dispatch-inline-link underline text-sky-700 dark:text-sky-400 hover:text-sky-900 dark:hover:text-sky-300",
     "IssueComponentsLine not attached": "text-slate-500 dark:text-slate-400",
+    // `main`'s features/issue/IssueComponentsLine.tsx: a none attachment with its reason, and a
+    // refused save's line.
+    "IssueComponentsLine none": "text-slate-500 dark:text-slate-400",
+    "IssueComponentsLine refusal": "shrink-0 text-xs text-rose-700 dark:text-rose-400",
 
     "IssueLabels line": "relative mt-2 flex flex-wrap items-center gap-2",
     "IssueLabels chip":
       "inline-flex min-h-11 shrink-0 items-center rounded-full px-3 py-1 text-xs font-medium whitespace-nowrap sm:min-h-7 sm:px-2 bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300",
     "IssueLabels trigger":
       "min-h-11 shrink-0 rounded-lg border px-3 py-1 text-xs font-medium whitespace-nowrap sm:min-h-7 sm:px-2 border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-300 not-refused:hover:border-sky-500 dark:not-refused:hover:border-sky-400 refused:text-slate-400 dark:refused:text-slate-600",
+    // `main`'s features/issue/IssueLabels.tsx: the line at `variant="rail"`.
+    "IssueLabels rail line": "relative flex shrink-0 flex-nowrap items-center gap-1",
 
     "IssuePriorityLine line":
       "flex shrink-0 items-center gap-2 text-sm text-slate-700 dark:text-slate-300",
@@ -1881,6 +1924,11 @@ test("the default shapes keep main's class strings", async () => {
       "min-h-11 rounded px-2 py-1 text-sm font-medium disabled:cursor-not-allowed md:min-h-8 border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-300 refused:text-slate-400 dark:refused:text-slate-600",
     "IssuePriorityLine Cancel":
       "min-h-11 rounded px-2 py-1 text-sm font-medium md:min-h-8 text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300",
+    // `main`'s features/priorities/IssuePriorityLine.tsx: the line at the cap, the refusal of the
+    // priorities' read and that of a save.
+    "IssuePriorityLine at the cap": "shrink-0 text-xs text-slate-500 dark:text-slate-400",
+    "IssuePriorityLine priorities unread": "shrink-0 text-xs text-rose-700 dark:text-rose-400",
+    "IssuePriorityLine not saved": "shrink-0 text-xs text-rose-700 dark:text-rose-400",
 
     "AgentName link":
       "rounded outline-none focus-visible:ring-2 focus-visible:ring-sky-600 dark:focus-visible:ring-sky-400 text-sky-700 dark:text-sky-400 hover:text-sky-900 dark:hover:text-sky-300",
@@ -1985,6 +2033,9 @@ test("the default shapes keep main's class strings", async () => {
       "ml-auto flex min-h-11 min-w-11 items-center justify-center rounded-full md:min-h-7 md:min-w-7 border-slate-300 dark:border-slate-700 not-refused:hover:border-sky-500 dark:not-refused:hover:border-sky-400 text-slate-700 dark:text-slate-300",
     "ProofDocument block references":
       "pointer-events-auto absolute right-0 min-h-11 min-w-11 rounded-full text-xs font-semibold bg-sky-100 dark:bg-sky-950 text-sky-800 dark:text-sky-300",
+    // `main`'s features/doc/ProofDocument.tsx: the line naming what changed since the reader's
+    // last read.
+    "ProofDocument read line": "text-sm text-slate-700 dark:text-slate-300",
     "ProofDocument repair refusal": "text-rose-700 dark:text-rose-400",
     "ProofDocument rebuild refusal": "text-rose-700 dark:text-rose-400",
     "ProofDocument Rebuild":
@@ -2047,6 +2098,13 @@ test("the default shapes keep main's class strings", async () => {
     "AskCard unsent answer note": "text-xs text-slate-500 dark:text-slate-400",
     "AskCard unsent answer words":
       "mt-1 text-sm whitespace-pre-wrap text-slate-900 dark:text-slate-100",
+    // `main`'s features/inbox/AskCard.tsx: a decision question's "Open in document" line, the
+    // warning that the question changed under the reader, and Cancel while an answer is changed.
+    "AskCard block link":
+      "mt-2 text-sm text-sky-700 dark:text-sky-400 hover:text-sky-900 dark:hover:text-sky-300",
+    "AskCard question changed": "mt-3 text-sm font-medium text-amber-800 dark:text-amber-300",
+    "AskCard Cancel, changing an answer":
+      "min-h-11 rounded-lg border px-3 py-2 text-sm font-medium border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-300 hover:border-sky-400 dark:hover:border-sky-300",
   };
 
   const read: Record<string, string | null> = {};
@@ -2098,6 +2156,9 @@ test("the default shapes keep main's class strings", async () => {
       <div data-case="lapsed">
         <ClaimChip claim={sessionClaim(GONE_SESSION)} />
       </div>
+      <div data-case="unresponsive claim">
+        <ClaimChip claim={sessionClaim(STALLED_SESSION)} liveness={waitingLiveness()} />
+      </div>
       <div data-case="repository">
         <RepoControl issueKey="CORE-1" project="CORE" repo="acme/api" resolvedRepo="acme/api" />
       </div>
@@ -2130,6 +2191,16 @@ test("the default shapes keep main's class strings", async () => {
           onSave={async () => undefined}
           project="CORE"
           saving={false}
+        />
+      </div>
+      <div data-case="rail labels">
+        <IssueLabels
+          disabled={false}
+          labels={["api"]}
+          onSave={async () => undefined}
+          project="CORE"
+          saving={false}
+          variant="rail"
         />
       </div>
       <div data-case="priorities">
@@ -2237,6 +2308,10 @@ test("the default shapes keep main's class strings", async () => {
     classAt("ApprovalSteps list's host", list.parentElement);
     classAt("ApprovalSteps list", list);
     classAt(
+      "ApprovalSteps entry",
+      caseOf(view, "approval steps").querySelector('[data-approval-step="spec"]')
+    );
+    classAt(
       "ApprovalSteps step name",
       caseOf(view, "approval steps").querySelector('[data-approval-step="spec"] > span')
     );
@@ -2276,11 +2351,22 @@ test("the default shapes keep main's class strings", async () => {
     classAt("ClaimChip holder", held.querySelector("[data-agent-name]"));
     classAt("ClaimChip dot", held.querySelector(":scope > span[aria-hidden='true']"));
     classAt("ClaimChip age", held.querySelector(":scope > time"));
-    classAt("ClaimChip, lapsed", within(caseOf(view, "lapsed")).getByTestId("issue-claim"));
+    const lapsed = within(caseOf(view, "lapsed")).getByTestId("issue-claim");
+    classAt("ClaimChip, lapsed", lapsed);
+    classAt(
+      "ClaimChip lapsed dot",
+      lapsed.querySelectorAll(":scope > span[aria-hidden='true']")[1]
+    );
     classAt(
       "ClaimChip not running",
       within(caseOf(view, "lapsed")).getByTestId("issue-claim-lapsed")
     );
+    const unresponsive = within(caseOf(view, "unresponsive claim")).getByTestId("issue-claim");
+    classAt(
+      "ClaimChip unresponsive dot",
+      unresponsive.querySelectorAll(":scope > span[aria-hidden='true']")[1]
+    );
+    classAt("ClaimChip unresponsive", within(unresponsive).getByTestId("issue-claim-unresponsive"));
 
     const repository = within(caseOf(view, "repository")).getByRole("combobox", {
       name: "Repository of CORE-1",
@@ -2309,6 +2395,10 @@ test("the default shapes keep main's class strings", async () => {
     classAt("IssueLabels line", labels.getByTestId("issue-labels"));
     classAt("IssueLabels chip", labels.getByText("api"));
     classAt("IssueLabels trigger", labels.getByRole("button", { name: "Edit labels" }));
+    classAt(
+      "IssueLabels rail line",
+      within(caseOf(view, "rail labels")).getByTestId("issue-labels")
+    );
 
     const advances = within(caseOf(view, "priorities"));
     const priorityLink = advances.getByRole("link", { name: /Rocq and Lean/ });
@@ -2529,12 +2619,216 @@ test("the default shapes keep main's class strings", async () => {
     undraw(pickers);
   }
 
-  // The document's own lines and controls: its open decisions and a block's references, then
-  // each refusal its admission or its rebuild draws.
+  // The lines' refusals: an issue at the cap whose priorities could not be read, a save of what
+  // an issue advances that failed, and a none attachment, whose change the server then refused.
+  stubs.listPriorities.mockRejectedValueOnce(new Error("the priorities read failed"));
+  const patchIssue = answerIssuePatches().mockRejectedValue(new Error("the connection dropped"));
+  const refusals = draw(
+    <>
+      <div data-case="at the cap">
+        <IssuePriorityLine
+          disabled={false}
+          issue={{
+            advances: Array.from({ length: MAX_ISSUE_ADVANCES }, (_, index) => ({
+              id: `priority-${index + 1}`,
+              inherited: false,
+            })),
+            advances_revision: 1,
+            key: "CORE-1",
+          }}
+        />
+      </div>
+      <div data-case="not saved">
+        <IssuePriorityLine
+          disabled={false}
+          issue={{
+            advances: [{ id: "rocq-lean", inherited: false }],
+            advances_revision: 1,
+            key: "CORE-2",
+          }}
+        />
+      </div>
+      <div data-case="none attached">
+        <IssueComponentsLine
+          issue={componentsIssue(
+            {
+              ids: [],
+              inherited_from: null,
+              mode: "none",
+              reason: "A process change",
+              unknown: [],
+            },
+            "CORE-3"
+          )}
+        />
+      </div>
+    </>,
+    "outside"
+  );
+  try {
+    const atCap = within(caseOf(refusals, "at the cap"));
+    classAt("IssuePriorityLine at the cap", atCap.getByText(/^An issue advances at most/));
+    classAt(
+      "IssuePriorityLine priorities unread",
+      await atCap.findByText("Could not load the priorities.")
+    );
+    const notSaved = within(caseOf(refusals, "not saved"));
+    await user.click(notSaved.getByRole("button", { name: /^Remove / }));
+    classAt(
+      "IssuePriorityLine not saved",
+      await notSaved.findByText("Could not save what this issue advances.")
+    );
+    const none = within(caseOf(refusals, "none attached"));
+    classAt("IssueComponentsLine none", none.getByText(/^None — /));
+    await user.click(await none.findByRole("button", { name: "Edit components of CORE-3" }));
+    const body = within(refusals.baseElement);
+    await user.click(
+      await body.findByRole("option", { name: "dispatch-server · Dispatch server" })
+    );
+    // The picker closes, and saves, on an Escape its search box takes.
+    body.getByRole("combobox", { name: "Search components" }).focus();
+    await user.keyboard("{Escape}");
+    classAt("IssueComponentsLine refusal", await none.findByRole("alert"));
+  } finally {
+    undraw(refusals);
+    patchIssue.mockRestore();
+  }
+
+  // The approval chip's two dialogs: its reviews once read, while their read is out, once it
+  // failed and with none yet, and a request for changes whose write failed.
+  const review: ArtifactReview = {
+    actor: { id: "bob", kind: "user" },
+    artifact_id: "artifact-reviewed",
+    ask_id: null,
+    content_sha256: null,
+    content_sha256_source: null,
+    created_at: "2026-09-11T00:00:00Z",
+    id: "review-1",
+    kind: "person",
+    reason: "Please tighten the intro.",
+    state: "changes_requested",
+    version: 3,
+  };
+  const listArtifactReviews = spyOn(api, "listArtifactReviews").mockImplementation((id) => {
+    if (id === "artifact-loading") return new Promise<ArtifactReview[]>(() => undefined);
+    if (id === "artifact-unread") return Promise.reject(new Error("the reviews read failed"));
+    return Promise.resolve(id === "artifact-unreviewed" ? [] : [review]);
+  });
+  const createArtifactReview = spyOn(api, "createArtifactReview").mockRejectedValue(
+    new Error("the connection dropped")
+  );
+  const approvedV3 = { latest_version: 3, state: "approved", version: 3 } as const;
+  const chips = draw(
+    <>
+      <div data-case="reviewed">
+        <ApprovalChip
+          artifact={doc("artifact-reviewed", "notes.md", {
+            latest_version: 3,
+            state: "changes_requested",
+            version: 3,
+          })}
+          variant="header"
+        />
+      </div>
+      <div data-case="reviews loading">
+        <ApprovalChip artifact={doc("artifact-loading", "notes.md", approvedV3)} />
+      </div>
+      <div data-case="reviews unread">
+        <ApprovalChip artifact={doc("artifact-unread", "notes.md", approvedV3)} />
+      </div>
+      <div data-case="reviews unreviewed">
+        <ApprovalChip artifact={doc("artifact-unreviewed", "notes.md", approvedV3)} />
+      </div>
+    </>,
+    "outside"
+  );
+  try {
+    const reviewed = within(caseOf(chips, "reviewed"));
+    await user.click(reviewed.getByRole("button", { name: "Changes requested" }));
+    const reviews = await reviewed.findByRole("dialog", { name: "Reviews" });
+    await within(reviews).findByText("Please tighten the intro.");
+    classAt("ApprovalChip reviews backdrop", reviews.parentElement?.previousElementSibling);
+    classAt("ApprovalChip reviews dialog", reviews);
+    classAt(
+      "ApprovalChip reviews heading",
+      within(reviews).getByRole("heading", { name: "Reviews" })
+    );
+    const close = within(reviews).getByRole("button", { name: "Close" });
+    classAt("ApprovalChip reviews Close", close);
+    const entry = within(reviews).getByRole("listitem");
+    classAt("ApprovalChip review", entry.firstElementChild);
+    classAt("ApprovalChip review's reason", entry.lastElementChild);
+    await user.click(close);
+    for (const [state, key, words] of [
+      ["loading", "ApprovalChip reviews loading", "Loading reviews…"],
+      ["unread", "ApprovalChip reviews unread", "Could not load reviews."],
+      ["unreviewed", "ApprovalChip no reviews", "No reviews yet."],
+    ] as const) {
+      const chip = within(caseOf(chips, `reviews ${state}`));
+      await user.click(chip.getByRole("button", { name: "Approved v3" }));
+      const dialog = await chip.findByRole("dialog", { name: "Reviews" });
+      classAt(key, await within(dialog).findByText(words));
+      await user.click(within(dialog).getByRole("button", { name: "Close" }));
+    }
+
+    await user.click(reviewed.getByRole("button", { name: "Request changes" }));
+    const request = await reviewed.findByRole("dialog", { name: "Request changes" });
+    const requestScope = within(request);
+    classAt("ApprovalChip request backdrop", request.parentElement?.previousElementSibling);
+    classAt("ApprovalChip request dialog", request);
+    classAt(
+      "ApprovalChip request heading",
+      requestScope.getByRole("heading", { name: "Request changes" })
+    );
+    const reason = requestScope.getByRole("textbox", { name: "Reason" });
+    classAt("ApprovalChip request label", reason.closest("label"));
+    classAt("ApprovalChip request reason box", reason);
+    classAt("ApprovalChip request Cancel", requestScope.getByRole("button", { name: "Cancel" }));
+    const send = requestScope.getByRole("button", { name: "Request changes" });
+    classAt("ApprovalChip request Request changes", send);
+    await user.type(reason, "Tighten the intro.");
+    await user.click(send);
+    classAt("ApprovalChip request refused", await requestScope.findByRole("alert"));
+  } finally {
+    undraw(chips);
+    listArtifactReviews.mockRestore();
+    createArtifactReview.mockRestore();
+  }
+
+  // The document's own lines and controls: its open decisions, a block's references and the
+  // line naming what changed since the reader last read it (version 1, and the spec's one block
+  // changed in version 2), then each refusal its admission or its rebuild draws.
   stubs.listIssueAsks.mockResolvedValue([
     blockAsk("ask-b1", "b-1", "Should we ship?"),
     blockAsk("ask-b2", "b-2", "Which region?"),
   ]);
+  stubs.getDocumentRead.mockImplementation(async (id) => ({
+    artifact_id: id,
+    read_at: "2026-09-09T00:00:00Z",
+    version: 1,
+  }));
+  stubs.getReferences.mockImplementation(async (_reference, options) =>
+    options?.kind === "part_of"
+      ? {
+          edges: [
+            {
+              created_at: "2026-09-10T00:00:00Z",
+              direction: "in",
+              excerpt: { block_id: "block-1", text: "The live document" },
+              kind: "part_of",
+              node: graphNode({
+                block_id: "block-1",
+                changed_version: 2,
+                id: "CORE-1/spec#block-1",
+                kind: "block",
+              }),
+              source_seq: null,
+            },
+          ],
+          node: graphNode({ id: specDocument.id, kind: "artifact" }),
+        }
+      : { edges: [], node: graphNode({ id: "ask-1", kind: "ask" }) }
+  );
   const decisions = draw(proofDocument(), "outside");
   try {
     const scope = within(decisions.container);
@@ -2550,10 +2844,23 @@ test("the default shapes keep main's class strings", async () => {
       "ProofDocument block references",
       await scope.findByRole("button", { name: "2 references on block" })
     );
+    classAt(
+      "ProofDocument read line",
+      await scope.findByText(/^Changed since you last read version 1:/)
+    );
   } finally {
     undraw(decisions);
   }
   stubs.listIssueAsks.mockResolvedValue([]);
+  stubs.getDocumentRead.mockImplementation(async (id) => ({
+    artifact_id: id,
+    read_at: null,
+    version: null,
+  }));
+  stubs.getReferences.mockResolvedValue({
+    edges: [],
+    node: graphNode({ id: "ask-1", kind: "ask" }),
+  });
 
   stubs.getArtifactText.mockRejectedValueOnce(
     new ApiError(409, {
@@ -2754,6 +3061,68 @@ test("the default shapes keep main's class strings", async () => {
     classAt("AskCard submit hint", card.getByText(/^Add a reason to send/));
   } finally {
     undraw(approvalCard);
+  }
+
+  // A decision question's card, a card whose question changed under the answer the reader sent,
+  // and a card changing the reader's recorded answer.
+  const decision = blockAsk("ask-4", "b-1", "Should we ship?");
+  const edited = openAsk({ id: "ask-5" });
+  const recorded = openAsk({
+    answer: { at: "2026-10-08T01:00:00Z", selected: ["Ship"], text: "First note", user: "alice" },
+    id: "ask-6",
+    state: "answered",
+  });
+  const otherCards = draw(
+    <>
+      <div data-case="decision">
+        <AskCard
+          ask={decision}
+          getAskThread={async () => threadOf(decision)}
+          initialThread={threadOf(decision)}
+        />
+      </div>
+      <div data-case="edited">
+        <AskCard
+          answerAsk={async () => {
+            throw new ApiError(409, { code: "ASK_EDITED", error: "question changed" });
+          }}
+          ask={edited}
+          getAskThread={async () => threadOf(edited)}
+          initialThread={threadOf(edited)}
+        />
+      </div>
+      <div data-case="changing">
+        <AskCard
+          ask={recorded}
+          getAskThread={async () => threadOf(recorded)}
+          initialThread={threadOf(recorded)}
+          mode="change"
+        />
+      </div>
+    </>,
+    "outside"
+  );
+  try {
+    await settleReads();
+    classAt(
+      "AskCard block link",
+      within(caseOf(otherCards, "decision"))
+        .getByRole("link", { name: "Open in document" })
+        .closest("p")
+    );
+    const changed = within(caseOf(otherCards, "edited"));
+    await user.click(changed.getByRole("radio", { name: "Ship" }));
+    await user.click(changed.getByRole("button", { name: "Answer" }));
+    classAt(
+      "AskCard question changed",
+      await changed.findByText(/^This question changed while you were answering/)
+    );
+    classAt(
+      "AskCard Cancel, changing an answer",
+      await within(caseOf(otherCards, "changing")).findByRole("button", { name: "Cancel" })
+    );
+  } finally {
+    undraw(otherCards);
   }
 
   expect(read).toEqual(want);
