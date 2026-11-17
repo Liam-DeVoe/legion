@@ -9,11 +9,12 @@ body: |-
   a `LoggableError` (this package's own reasons and a caller's, which keeps no cause), and for
   anything else its type and `(message withheld)`. `envoySettings`'s inbound settings name the
   setting their servers came from (`natsServersSetting`). `natsDialedAddress(server)` is the host
-  and port nats.js itself dials, from its own `hostPort`. A broker token's `ready` waits at most
-  20 s, nats.js's own dial timeout, for the secrets broker to answer the trade, and then fails
-  naming the setting that chose the broker token, rather than holding a session's start in
-  silence; a trade's failure (`tradeFailureReason`) is the broker's status, OAuth error code and
-  description, or the allowlist, never the identity's path or the broker's URL.
+  and port nats.js itself dials, from its own `hostPort`. A broker token's `ready()` waits 20 s,
+  nats.js's own dial timeout, on the token client's retry loop, and then fails naming the setting
+  that chose the broker token and what the loop's last trade came to, rather than holding a
+  session's start in silence (`ready(life)` waits as long as its caller lives); a trade's failure
+  (`tradeFailureReason`) is the broker's status, OAuth error code and description, or the
+  allowlist, never the identity's path or the broker's URL.
   `followNatsCredential` reconnects again when a redial that was in flight comes back with the old
   token, rather than waiting out its 15 s.
 time: 2026-11-16T22:46:51Z

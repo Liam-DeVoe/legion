@@ -34,9 +34,8 @@ import { DispatchClient } from "../dispatch-http";
 import { envoySettings } from "../envoy-settings";
 import { brokerStandIns } from "./broker-stand-ins";
 
-const { noFile, podEnvironment, servers, stubBroker, stubDispatch, tempDir } = brokerStandIns(
-  "broker-credential-signins"
-);
+const { noFile, podEnvironment, projectedToken, servers, stubBroker, stubDispatch, tempDir } =
+  brokerStandIns("broker-credential-signins");
 
 const PERSON = "ada@example.com";
 const CLIENT_ID = "example-device-client";
@@ -56,11 +55,18 @@ interface ProvedTrade {
 /**
  * A broker that mints a random token good for ten minutes for every trade, kept with the trade,
  * except a trade proved with a key whose thumbprint `revoked` holds, which it refuses as it
- * refuses a sign-in its person revoked.
+ * refuses a sign-in its person revoked, and one proved with a key `away` holds, which it answers
+ * 503, as a broker that is down for that one.
  */
-function signInBroker(): { url: string; trades: ProvedTrade[]; revoked: Set<string> } {
+function signInBroker(): {
+  url: string;
+  trades: ProvedTrade[];
+  revoked: Set<string>;
+  away: Set<string>;
+} {
   const trades: ProvedTrade[] = [];
   const revoked = new Set<string>();
+  const away = new Set<string>();
   const server = Bun.serve({
     port: 0,
     hostname: "127.0.0.1",
@@ -68,6 +74,14 @@ function signInBroker(): { url: string; trades: ProvedTrade[]; revoked: Set<stri
       const header = (request.headers.get("DPoP") ?? "").split(".")[0] ?? "";
       const { jwk } = JSON.parse(Buffer.from(header, "base64url").toString("utf8"));
       const thumbprint = await thumbprintOf(jwk);
+      if (away.has(thumbprint)) {
+        trades.push({
+          form: new URLSearchParams(await request.text()),
+          thumbprint,
+          token: undefined,
+        });
+        return new Response("the broker is away", { status: 503 });
+      }
       const token = revoked.has(thumbprint) ? undefined : fixtureSecret("broker");
       trades.push({ form: new URLSearchParams(await request.text()), thumbprint, token });
       if (token === undefined) {
@@ -85,7 +99,7 @@ function signInBroker(): { url: string; trades: ProvedTrade[]; revoked: Set<stri
     },
   });
   servers.push(server);
-  return { url: `http://127.0.0.1:${server.port}`, trades, revoked };
+  return { url: `http://127.0.0.1:${server.port}`, trades, revoked, away };
 }
 
 /** The issuer {@link PERSON}'s sign-in is renewed at, stopped after the test; `answer` replaces
@@ -242,7 +256,7 @@ test("with nobody signed in, a caller acting as no session and one acting as AGE
   expect(broker.trades.length).toBeGreaterThan(0);
   for (const trade of broker.trades) {
     expect([trade.form.get("subject_token"), trade.form.get("session")]).toEqual([
-      "projected.service.account.token",
+      projectedToken,
       MACHINE_SESSION,
     ]);
   }
@@ -334,6 +348,37 @@ test("after a refusal, a new sign-in with a new box key gets a client of its own
   ]);
 });
 
+test("a new sign-in closes the client it replaces, so a client whose trades were failing trades no more", async () => {
+  // A client's retry loop trades again for as long as the process runs. The credential replaces
+  // a client when the sign-in it trades is no longer the one the machine chooses, after a sign-in
+  // refused for good; the client it replaced would go on trading its sign-in, at 15 s doubling to
+  // 5 minutes, for nothing, so the credential closes it.
+  const broker = signInBroker();
+  const dispatch = stubDispatch();
+  const issuer = await issuerFor();
+  const revoked = await signedIn(PERSON, { client_id: CLIENT_ID });
+  const { env, signins } = await signedInPod(broker.url, dispatch.url, issuer.url, [revoked]);
+  broker.revoked.add(revoked.thumbprint);
+  const client = await dispatchOf(env, "ses_01a9");
+  expect(await refusalOf(client.listAllIssues({}))).toContain("agent-secrets login");
+  // Signed in again, with a key the broker is down for.
+  const failing = await signedIn(PERSON, { client_id: CLIENT_ID });
+  broker.away.add(failing.thumbprint);
+  await writeSignIn(signins, failing);
+  expect(await refusalOf(client.listAllIssues({}))).toContain("HTTP 503");
+  // Signed in once more: that sign-in's client replaces the failing one's.
+  const working = await signedIn(PERSON, { client_id: CLIENT_ID });
+  await writeSignIn(signins, working);
+  await client.listAllIssues({});
+  const tradesOf = (thumbprint: string) =>
+    broker.trades.filter((trade) => trade.thumbprint === thumbprint);
+  expect(tradesOf(working.thumbprint)).toHaveLength(1);
+  expect(tradesOf(failing.thumbprint)).toHaveLength(1);
+  // Past the failing client's next slot, 15 s at its longest: it trades no more.
+  await Bun.sleep(16_000);
+  expect(tradesOf(failing.thumbprint)).toHaveLength(1);
+}, 40_000);
+
 test("a sign-in the issuer has ended is remembered too: no trade at the broker, and no second refresh", async () => {
   const broker = signInBroker();
   const dispatch = stubDispatch();
@@ -381,7 +426,7 @@ test("a process that turns the person trade off writes Dispatch as the machine w
       trade.form.get("session"),
     ])
   ).toEqual([
-    [SUBJECT_TOKEN_TYPE_KUBERNETES, "projected.service.account.token", false, "ses_01a9"],
+    [SUBJECT_TOKEN_TYPE_KUBERNETES, projectedToken, false, "ses_01a9"],
     [SUBJECT_TOKEN_TYPE_PERSON, issuer.idTokens[0], true, "ses_01a9"],
   ]);
   // The machine's proof is signed with a key of this process's, the person's with the box key.

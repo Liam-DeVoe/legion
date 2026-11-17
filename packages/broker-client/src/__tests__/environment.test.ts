@@ -143,7 +143,7 @@ test("a machine's client this factory builds asks the broker for no launcher cre
   });
   try {
     const file = join(makeDirectory(), "token");
-    await writeFile(file, "projected.service.account.token\n");
+    await writeFile(file, `${fixtureSecret("proj")}\n`);
     const made = await brokerTokenClient({
       [BROKER_URL_VAR]: `http://127.0.0.1:${broker.port}`,
       [IDENTITY_VAR]: "kubernetes",

@@ -54,12 +54,14 @@ export type NatsCredential =
 export interface BrokerNatsCredential {
   /**
    * Takes the token to present, trading for one where the token in hand is not live: a connection
-   * is dialled only once this has answered, since the CONNECT is signed at once. A broker that
-   * gives no answer within the trade's deadline fails it. A pod session the broker holds no
-   * registration for yet is no failure: the trade is retried for as long as the session runs
-   * (#4153), so where `life` is given, the wait goes on until the registration lands or `life`
-   * ends, the token client saying so once and every 30 minutes. A caller that cannot wait that
-   * long gives no `life`, and is told at the deadline that the registration is pending, by session.
+   * is dialled only once this has answered, since the CONNECT is signed at once. It is one wait on
+   * the token client's retry loop (`BrokerTokenClient.token`), in one of two modes. Given `life`,
+   * it waits for ready: until a token lands, a refusal no trade cures ends the loop, or `life`
+   * ends, through every failure the loop trades again on, a pod session not registered yet, a
+   * broker that does not answer and an identity source that cannot be read among them. Given
+   * none, it fails fast: a failure the loop trades again on is told at once, naming it, and a
+   * pod session not registered yet is waited out for `tradeDeadlineMs`. Either way the loop goes
+   * on, and the token client logs as its schedule says.
    */
   ready(life?: AbortSignal): Promise<void>;
   /**
@@ -79,9 +81,10 @@ export interface BrokerNatsCredential {
   expiresAt(): Date;
   /** Takes the session's token again: a renewed one inside the renewal window, and the token of
    *  the session the name now reads, after a switch, even one made while a renewal was in flight.
-   *  It waits no longer than `signal`: the token client waits out a pod session's missing
-   *  registration for as long as its caller does, so every caller in this package names its
-   *  deadline, and a switch to another session ends the waits for the one before. */
+   *  It fails fast (`TokenCallOptions`): where the token client's last trade failed in a way its
+   *  retry loop trades again on and nothing live is in hand, it is told so at once. It waits out a
+   *  pod session's missing registration no longer than `signal`, and a switch to another session
+   *  ends the waits for the one before. */
   renew(signal?: AbortSignal): Promise<void>;
   /** Whether the last CONNECT presented a token other than the one in hand, so the connection
    *  should reconnect to present it. */
@@ -173,7 +176,7 @@ export function brokerNatsCredential(
   source: string = NATS_AUTH_VAR,
   tradeDeadlineMs: number = TRADE_DEADLINE_MS
 ): BrokerNatsCredential {
-  const take = brokerTokenFor(env, session);
+  const traded = brokerTokenFor(env, session);
   let held: TradedToken | undefined;
   let presented: string | undefined;
   // The session the last renewal was for, and what ends every wait for it at a switch.
@@ -184,7 +187,9 @@ export function brokerNatsCredential(
   // leave the token client's back-off on a missing registration as it is.
   let connecting: Promise<void> | undefined;
   const live = (): boolean => held !== undefined && held.token.expiresAt.getTime() > Date.now();
-  const renew = (signal?: AbortSignal): Promise<void> => {
+  /** One wait on the token client's retry loop for the session the name reads now, failing fast
+   *  unless `waitForReady` (`TokenCallOptions`). */
+  const take = (signal: AbortSignal | undefined, waitForReady: boolean): Promise<void> => {
     const name = sessionName(session);
     if (waitingFor !== undefined && name !== waitingFor) {
       switched.abort(new SessionMovedError(waitingFor, name));
@@ -193,7 +198,7 @@ export function brokerNatsCredential(
     waitingFor = name;
     const moved = switched.signal;
     const limit = signal === undefined ? moved : AbortSignal.any([signal, moved]);
-    return take(limit).then(
+    return traded(limit, waitForReady).then(
       (taken) => {
         const now = sessionName(session);
         if (taken.session !== now) throw new SessionMovedError(taken.session, now);
@@ -207,6 +212,7 @@ export function brokerNatsCredential(
       }
     );
   };
+  const renew = (signal?: AbortSignal): Promise<void> => take(signal, false);
   /** Why a wait in `ready` ended, as this package's own line naming the setting `source`. */
   const notReady = (error: unknown, deadlineMs: number): unknown => {
     if (isDeadline(error)) return new LoggableError(tradeUnanswered(source, deadlineMs));
@@ -226,11 +232,14 @@ export function brokerNatsCredential(
   };
   return {
     // One wait on the token client's retry loop, which trades on past it for the keeper and the
-    // next `ready`: `life` where the caller gives one, else `tradeDeadlineMs`.
+    // next `ready`: for `life`, waiting for ready, where the caller gives one, else failing fast
+    // within `tradeDeadlineMs`.
     ready: async (life?: AbortSignal) => {
       if (live()) return;
       try {
-        await renew(life ?? AbortSignal.timeout(tradeDeadlineMs));
+        await (life === undefined
+          ? take(AbortSignal.timeout(tradeDeadlineMs), false)
+          : take(life, true));
       } catch (error) {
         if (life?.aborted === true) throw life.reason;
         throw notReady(error, tradeDeadlineMs);

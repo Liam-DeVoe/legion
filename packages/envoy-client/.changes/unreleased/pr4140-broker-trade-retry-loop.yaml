@@ -1,17 +1,19 @@
 kind: Changed
 body: |-
-  The broker credential trades through one retry loop per session, which every caller waits on
-  within its own deadline and none cuts short, so the broker sees one trade per slot of the
-  loop's schedule however many callers ask. Each trade ends at 30 s where the broker has not
-  answered. A trade the broker did not answer, answered with a 5xx, its 429 or a DPoP refusal, or
-  that the identity's source could not make, is traded again 15 s later, doubling to 5 minutes,
-  with a line at each wait; a pod session not registered yet is traded again on its own 2 s to
-  30 s schedule; a refusal no trade cures ends the loop, and a call before the next slot is told
-  the same with no trade. A call whose deadline ends while the loop trades again fails with
-  `TradeRetryingError`, saying what the last trade came to. Once a renewal has failed, calls take
-  the token in hand at once while it is live. The NATS credential's `ready` waits on the loop for
-  as long as its caller gives it (`ready(life)`), and a session switch ends every wait for the
-  session before.
+  The broker credential trades through one retry loop per session, which no caller cuts short, so
+  the broker sees one trade per slot of the loop's schedule however many callers ask. Each trade
+  ends at 30 s where the broker has not answered. A trade the broker did not answer, answered with
+  a 5xx, its 429 or a DPoP refusal, or that the identity's source could not make, is traded again
+  15 s later, doubling to 5 minutes; a pod session not registered yet is traded again on its own
+  2 s to 30 s schedule; a refusal no trade cures ends the loop, and a call before the next slot is
+  told the same with no trade. A caller fails fast, as gRPC's default call does: where the last
+  trade failed in a way the loop trades again on and no live token is in hand, it is told so at
+  once with `TradeRetryingError`, so a listener that asks for no credential keeps its calls while
+  the broker is down. Every caller waits out a pending registration within its own deadline.
+  Once a renewal has failed, calls take the token in hand at once while it is live. The NATS
+  credential's `ready(life)` waits for ready, for as long as its caller gives it, and a session
+  switch ends every wait for the session before. The loop logs as the Go client does: a pending
+  registration once, every 30 minutes and when it ends; any other failure at each wait.
 time: 2026-11-17T12:39:04Z
 custom:
     Issue: pr4140

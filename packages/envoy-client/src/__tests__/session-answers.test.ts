@@ -818,7 +818,9 @@ describe("readSessionAnswers", () => {
   // A password holding an unencoded '@' names no host, and the URL parser reads the password's
   // tail as one. The runtime's own fetch (no stand-in) fails to resolve it and names it in its
   // message; the line both plugins add to every model request names the failure by its class and
-  // the URL by its fixed phrase (#4140, B1).
+  // the URL by its fixed phrase (#4140, B1). The read waits for that failure, not the 800 ms a
+  // model request waits: on a loaded machine the resolver's answer comes later than that, and a
+  // read that ran out first names no failure at all.
   test("a failed read of a Dispatch whose password holds an '@' names no part of the password", async () => {
     const tail = `Tail${crypto.randomUUID().slice(0, 8)}`;
     const dispatch = { ...dispatchAt(), url: `https://user-7f2a:p@ssword${tail}.invalid` };
@@ -827,6 +829,7 @@ describe("readSessionAnswers", () => {
       dispatch,
       env: envAt(stateDir()),
       now: () => NOW,
+      deadlineMs: 10_000,
     });
     expect(read.text).toContain(
       `Dispatch at the configured Dispatch URL ${URL_NOT_PRINTED} is unreachable: `

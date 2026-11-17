@@ -237,6 +237,8 @@ async function clientFor(
     const chosen = record === undefined ? "" : signInName(record);
     if (entry.refused.has(chosen)) throw entry.refused.get(chosen);
     if (entry.made !== undefined && entry.made.signIn !== chosen) {
+      // Closed, so its retry loop trades no more for a sign-in this machine no longer chooses.
+      entry.made.client?.close();
       entry.making = undefined;
       entry.made = undefined;
     }
@@ -292,15 +294,17 @@ function untilAborted<T>(promise: Promise<T>, signal: AbortSignal | undefined): 
  * The token this process holds, or trades now, for a caller of `env` acting as the session
  * `own`, and the key the broker bound it to, out of the one client {@link clientFor} keeps for
  * that session. A caller whose `signal` ends stops waiting, for the client's making as for its
- * trade; a trade still waiting out a pod's missing registration goes on, and the token client
- * tells the caller so (`BrokerTokenClient.token`, `RegistrationPendingError`). A person's sign-in
- * refused for good is remembered against that sign-in (`Held.refused`), so later calls fail with
- * the same words.
+ * trade. A caller fails fast unless `waitForReady` says otherwise (`TokenCallOptions`): it is told
+ * the client's last failure at once where its retry loop trades again on it, and a pod's missing
+ * registration is waited out within `signal` either way (`BrokerTokenClient.token`,
+ * `RegistrationPendingError`). A person's sign-in refused for good is remembered against that
+ * sign-in (`Held.refused`), so later calls fail with the same words.
  */
 async function tradedToken(
   env: BrokerEnvironment,
   own: string,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  waitForReady = false
 ): Promise<TradedToken> {
   const { entry, made } = await untilAborted(clientFor(env, own), signal);
   const { client } = made;
@@ -310,7 +314,11 @@ async function tradedToken(
     );
   }
   try {
-    return { token: await client.token(signal), key: client.key, session: own };
+    return {
+      token: await client.token(signal, { waitForReady }),
+      key: client.key,
+      session: own,
+    };
   } catch (error) {
     if (made.signIn !== "" && isFinalRefusal(error)) entry.refused.set(made.signIn, error);
     throw error;
@@ -322,14 +330,14 @@ async function tradedToken(
  * answers the token {@link brokerCredential} presents for the same session, and the key it is
  * bound to, since both are this process's one client for that session (`CLIENTS`). A session
  * name read from a function is read at each call, so a process that moved to another session
- * takes that session's token. A call whose `signal` ends stops waiting for a trade still waiting
- * out a pod's missing registration, as `tradedToken` says.
+ * takes that session's token. A call fails fast, or waits for ready where `waitForReady` says
+ * so, as `tradedToken` says.
  */
 export function brokerTokenFor(
   env: BrokerEnvironment,
   session: BrokerSessionName | undefined
-): (signal?: AbortSignal) => Promise<TradedToken> {
-  return (signal) => tradedToken(env, sessionName(session), signal);
+): (signal?: AbortSignal, waitForReady?: boolean) => Promise<TradedToken> {
+  return (signal, waitForReady) => tradedToken(env, sessionName(session), signal, waitForReady);
 }
 
 /**

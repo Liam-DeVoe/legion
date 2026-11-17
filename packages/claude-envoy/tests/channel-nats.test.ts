@@ -195,6 +195,71 @@ test("a pod session registered past the trade deadline still comes up, admitted"
   opened.stop()
 }, 90_000)
 
+test("a channel server's start waits through a broker that refuses connections, and comes up when it answers", async () => {
+  // The channel server's start is the one caller that waits for ready (`ready(life)`): Claude
+  // Code does not restart a channel server that ended, so a start that failed fast on a broker
+  // that is down would leave the session with no delivery for its life. Every other caller fails
+  // fast. The broker's port is closed at the first trade, and a broker listens there once the
+  // retry loop has failed once.
+  const SESSION = "ses_channel_broker_down"
+  const probe = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response() })
+  const port = probe.port as number
+  probe.stop(true)
+  const minted: string[] = []
+  const home = await mkdtemp(join(tmpdir(), "channel-nats-"))
+  const tokenFile = join(home, "token")
+  await writeFile(tokenFile, `${fixtureSecret("machine")}\n`)
+  const credential = brokerNatsCredential(
+    {
+      HOME: home,
+      AGENT_SECRETS_URL: `http://127.0.0.1:${port}`,
+      AGENT_SECRETS_MACHINE_IDENTITY: "kubernetes",
+      AGENT_SECRETS_MACHINE_TOKEN_FILE: tokenFile,
+    },
+    SESSION,
+    "NATS_AUTH",
+    300,
+  )
+  // The broker comes up 1 s on, past the first refused trade and inside the retry loop's wait.
+  setTimeout(() => {
+    servers.push(
+      Bun.serve({
+        port,
+        hostname: "127.0.0.1",
+        fetch: () => {
+          const token = fixtureSecret("channel")
+          minted.push(token)
+          return Response.json({
+            access_token: token,
+            issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
+            token_type: "DPoP",
+            expires_in: 900,
+          })
+        },
+      }),
+    )
+  }, 1_000)
+  const fake = fakeDial()
+  const opened = await dialChannelNats(
+    {
+      natsUrls: ["nats://nats.test:4222"],
+      natsServersSetting: "ENVOY_NATS_URL",
+      natsCredential: { kind: "broker", broker: credential },
+    },
+    `claude-envoy-channel-${SESSION}`,
+    () => {},
+    fake.dial,
+  ).then(
+    (dialled) => dialled,
+    (error: unknown) => (error instanceof Error ? error.message : String(error)),
+  )
+  if (typeof opened === "string") throw new Error(`the channel server's start failed: ${opened}`)
+  const [first] = minted
+  if (first === undefined) throw new Error("the broker minted no token before the dial")
+  expect(fake.presented).toEqual([first])
+  opened.stop()
+}, 90_000)
+
 test("dialChannelNats runs no keeper and no follow for a connection with no broker token", async () => {
   const fake = fakeDial()
   const opened = await dialChannelNats(

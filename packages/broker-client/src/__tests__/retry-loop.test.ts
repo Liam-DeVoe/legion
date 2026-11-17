@@ -41,6 +41,9 @@ const POD: TokenSource = {
 /** How long one trade may take before the client reads it as unanswered. */
 const ATTEMPT_MS = 25;
 
+/** A caller that waits through the loop's retries, as the channel server's start does. */
+const READY = { waitForReady: true } as const;
+
 /** What the broker does with one trade. */
 type Answer = "granted" | "pending" | "503" | "refused" | "connect refused" | "silent";
 
@@ -159,7 +162,7 @@ interface Row {
 
 const ROWS: [string, Row][] = [
   [
-    "pending, then granted: traded again on the short schedule, a line at each wait",
+    "pending, then granted: traded again on the short schedule, said once, and once more when the token lands",
     {
       answer: (n) => (n <= 2 ? "pending" : "granted"),
       budget: 10,
@@ -169,9 +172,10 @@ const ROWS: [string, Row][] = [
         expect(trades()).toBe(3);
         expect(waits).toEqual([2_000, 4_000]);
         expect(lines).toHaveLength(2);
-        for (const line of lines) {
-          expect(line).toContain(`no registration for this pod's session ${SESSION}`);
-        }
+        expect(lines[0]).toContain(`no registration for this pod's session ${SESSION}`);
+        expect(lines[1]).toContain(
+          `answered this pod's session ${SESSION} once it was registered, 6 s and 2 failed trades after the first`
+        );
       },
     },
   ],
@@ -182,12 +186,13 @@ const ROWS: [string, Row][] = [
       budget: 4,
       drive: async ({ client, waits, lines, trades }) => {
         const life = new AbortController();
-        const call = client.token(life.signal);
+        const call = client.token(life.signal, READY);
         await until(() => waits.length === 5, "at its fifth wait");
         expect(trades()).toBe(5);
         // The short schedule's first wait, then the long schedule's: a different failure starts
         // no schedule over.
         expect(waits).toEqual([2_000, 15_000, 30_000, 60_000, 120_000]);
+        // The pending wait said once; each unanswered trade at its own wait.
         expect(lines).toHaveLength(5);
         for (const line of lines.slice(1)) {
           expect(line).toContain(
@@ -209,12 +214,13 @@ const ROWS: [string, Row][] = [
       answer: (n) => (n === 1 ? "pending" : n === 2 ? "503" : "granted"),
       budget: 10,
       drive: async ({ client, waits, lines, trades }) => {
-        const token = await client.token(new AbortController().signal);
+        const token = await client.token(new AbortController().signal, READY);
         expect(token.accessToken).toStartWith("granted-");
         expect(trades()).toBe(3);
         expect(waits).toEqual([2_000, 15_000]);
-        expect(lines).toHaveLength(2);
+        expect(lines).toHaveLength(3);
         expect(lines[1]).toContain("HTTP 503");
+        expect(lines[2]).toContain("once it was registered");
       },
     },
   ],
@@ -248,7 +254,7 @@ const ROWS: [string, Row][] = [
       answer: (n) => (n <= 2 ? "connect refused" : "granted"),
       budget: 10,
       drive: async ({ client, waits, lines, trades }) => {
-        const token = await client.token(new AbortController().signal);
+        const token = await client.token(new AbortController().signal, READY);
         expect(token.accessToken).toStartWith("granted-");
         expect(trades()).toBe(3);
         expect(waits).toEqual([15_000, 30_000]);
@@ -258,22 +264,30 @@ const ROWS: [string, Row][] = [
     },
   ],
   [
-    "never answers: a caller's deadline ends its wait, told the signal before a trade has failed and the failure after",
+    "never answers: the trade ends at its own timeout, and each caller is told what it waited for",
     {
       answer: () => "silent",
       budget: 0,
       drive: async ({ client, waits }) => {
+        // A deadline before any trade has failed is the caller's own.
         const early = new AbortController();
         const before = client.token(early.signal);
         early.abort(new Error("the caller's own deadline"));
         expect(((await outcome(before)) as Error).message).toBe("the caller's own deadline");
+        // A fail-fast caller with no deadline of its own is told when the trade's time runs out:
+        // a trade that never returns ends, and so does the wait on it.
+        const fast = client.token().catch((error: unknown) => error);
+        // A caller that waits for ready waits on past the failure, and its deadline then names it.
         const late = new AbortController();
-        const after = client.token(late.signal);
+        const waiting = client.token(late.signal, READY).catch((error: unknown) => error);
         await until(() => waits.length === 1, "at its first wait");
-        late.abort();
-        const told = await outcome(after);
+        const told = await fast;
         expect(told).toBeInstanceOf(TradeRetryingError);
         expect((told as Error).message).toContain("did not answer");
+        late.abort();
+        const named = await waiting;
+        expect(named).toBeInstanceOf(TradeRetryingError);
+        expect((named as Error).message).toContain("did not answer");
         client.close();
       },
     },
@@ -303,9 +317,12 @@ const ROWS: [string, Row][] = [
     },
   ],
   [
-    "a registration that lands just after a trade at the cap is in hand within 30 s",
+    "a registration that lands just after a trade at the cap is traded for within one capped wait, 30 s",
     {
       // The registration lands 1 ms after the eighth pending trade, when the wait is at its cap.
+      // The row's clock moves only in the loop's waits, so it reads the schedule alone: the time
+      // from the landing to the trade that follows. That trade has its own 30 s, which the row's
+      // immediate answer does not spend.
       answer: (n, now) => {
         if (n === 8) LANDS_AT.at = now + 1;
         return n <= 8 || now < LANDS_AT.at ? "pending" : "granted";
@@ -315,10 +332,91 @@ const ROWS: [string, Row][] = [
         const token = await client.token();
         expect(token.accessToken).toStartWith("granted-");
         expect(trades()).toBe(9);
-        const inHand = clock.now - LANDS_AT.at;
+        const untilNextTrade = clock.now - LANDS_AT.at;
         // The worst case of the schedule: the whole cap, with the jitter at its longest.
-        expect(inHand).toBeLessThan(30_000);
+        expect(untilNextTrade).toBeLessThan(30_000);
         expect(waits).toEqual([2_000, 4_000, 8_000, 16_000, 30_000, 30_000, 30_000, 30_000]);
+      },
+    },
+  ],
+  [
+    "inside the renewal window, a caller whose deadline ends before the loop's first trade answers takes the live token in hand",
+    {
+      answer: (n) => (n === 1 ? "granted" : "silent"),
+      budget: 10,
+      drive: async ({ client, clock, trades }) => {
+        const first = await client.token();
+        // Inside the 5-minute window ahead of the token's 600 s: the loop trades, and the broker
+        // does not answer.
+        clock.now += 400_000;
+        const deadline = new AbortController();
+        const call = client.token(deadline.signal);
+        await until(() => trades() === 2, "at its second trade");
+        deadline.abort();
+        expect(await outcome(call)).toBe(first);
+        client.close();
+      },
+    },
+  ],
+  [
+    "after close, a waiting caller is told the client is closed, and nothing is traded again",
+    {
+      answer: () => "pending",
+      budget: 0,
+      drive: async ({ client, waits, trades }) => {
+        const call = client.token();
+        await until(() => waits.length === 1, "at its first wait");
+        client.close();
+        const told = await outcome(call);
+        expect((told as Error).message).toBe(
+          "the secrets broker client was closed, and trades no more"
+        );
+        expect(await outcome(client.token())).toBe(told);
+        expect(trades()).toBe(1);
+      },
+    },
+  ],
+  [
+    "fail-fast: a caller behind a refused connection is told at once, and a wait-for-ready caller waits on",
+    {
+      answer: (n) => (n <= 1 ? "connect refused" : "granted"),
+      budget: 0,
+      drive: async ({ client, waits, trades, advance }) => {
+        const ready = client.token(new AbortController().signal, READY);
+        const fast = client.token(new AbortController().signal).catch((error: unknown) => error);
+        await until(() => waits.length === 1, "at its first wait");
+        const told = await fast;
+        expect(told).toBeInstanceOf(TradeRetryingError);
+        expect((told as Error).message).toContain("ECONNREFUSED");
+        // A caller arriving now is told the same at once, with no trade of its own.
+        expect(await outcome(client.token())).toBeInstanceOf(TradeRetryingError);
+        expect(trades()).toBe(1);
+        expect(await outcome(ready)).toBe("pending");
+        advance();
+        expect((await ready).accessToken).toStartWith("granted-");
+      },
+    },
+  ],
+  [
+    "fail-fast: a caller behind a 503 is told at once, and a pending registration still waits within its deadline",
+    {
+      answer: (n) => (n === 1 ? "503" : "pending"),
+      budget: 0,
+      drive: async ({ client, waits, trades, advance }) => {
+        const fast = client.token(new AbortController().signal).catch((error: unknown) => error);
+        await until(() => waits.length === 1, "at its first wait");
+        const told = await fast;
+        expect(told).toBeInstanceOf(TradeRetryingError);
+        expect((told as Error).message).toContain("HTTP 503");
+        advance();
+        await until(() => trades() === 2 && waits.length === 2, "at its second wait");
+        // Pending: a fail-fast caller waits within its own deadline, as every caller does.
+        const deadline = new AbortController();
+        const pending = client.token(deadline.signal);
+        expect(await outcome(pending)).toBe("pending");
+        deadline.abort();
+        expect(await outcome(pending)).toBeInstanceOf(RegistrationPendingError);
+        client.close();
       },
     },
   ],
