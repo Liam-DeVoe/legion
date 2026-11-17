@@ -176,6 +176,11 @@ type whoamiAgent struct {
 	// Projects is the list of projects the credential may use, sorted, and absent when it lists
 	// none, so a credential with no list answers what it always did (whoamiProjects).
 	Projects []string `json:"projects,omitempty"`
+	// PrivateProjects lists, sorted, the keys of Projects the caller must treat as private: a
+	// private project's, one the credential no longer sees whatever its visibility, and one that
+	// names no project; absent when there is none (whoamiPrivateProjects, KF4). A key is public
+	// exactly when it is in Projects and not here.
+	PrivateProjects []string `json:"private_projects,omitempty"`
 	// Project is deprecated: the one key of a one-key list, and null for any other list.
 	Project *string  `json:"project"`
 	Scopes  []string `json:"scopes"`
@@ -221,7 +226,12 @@ func (s *server) whoami(w http.ResponseWriter, r *http.Request) {
 		WriteJSON(w, http.StatusOK, newWhoamiUser(actor, memberKind, scopes))
 		return
 	}
-	WriteJSON(w, http.StatusOK, newWhoamiAgent(actor, memberKind, scopes))
+	answer := newWhoamiAgent(actor, memberKind, scopes)
+	if answer.PrivateProjects, err = s.whoamiPrivateProjects(r, answer.Projects); err != nil {
+		s.writeHandlerError(w, fmt.Errorf("read which of the credential's projects are private: %w", err))
+		return
+	}
+	WriteJSON(w, http.StatusOK, answer)
 }
 
 // newWhoamiUser is whoami's answer to a person at a browser.
@@ -294,4 +304,38 @@ func whoamiProjects(credential *model.Credential) []string {
 		return nil
 	}
 	return slices.Sorted(slices.Values(credential.Projects))
+}
+
+// whoamiPrivateProjects answers which of projects, a credential's sorted list, the caller must treat
+// as private (KF4): every key but those of a public project its viewer sees, read in one statement
+// over the list and intersected with Viewer.Sees, so a key the credential no longer sees answers
+// private whatever its project's visibility, and the answer tells nothing of a project the caller
+// cannot see. A list of none answers nil; with no store every key answers private (fail closed).
+func (s *server) whoamiPrivateProjects(r *http.Request, projects []string) ([]string, error) {
+	if len(projects) == 0 {
+		return nil, nil
+	}
+	if s.deps.Store == nil || s.deps.Store.Pool == nil {
+		return projects, nil
+	}
+	reader, err := s.resolveReader(r)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.deps.Store.Pool.Query(r.Context(),
+		`select key from projects where key = any($1) and visibility = 'public'`, projects)
+	if err != nil {
+		return nil, err
+	}
+	public, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, err
+	}
+	var private []string
+	for _, key := range projects {
+		if !slices.Contains(public, key) || reader.Viewer == nil || !slices.Contains(reader.Viewer.Sees, key) {
+			private = append(private, key)
+		}
+	}
+	return private, nil
 }

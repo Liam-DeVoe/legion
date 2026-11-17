@@ -620,7 +620,7 @@ func TestWhoamiAnswersAPersonalTokensProjects(t *testing.T) {
 	}
 	seed.tokens[callerCarolBothToken] = minted.Token
 	for caller, want := range map[privateCaller]string{
-		callerCarolBothToken: `{"kind":"agent","owner":"carol@example.com","projects":["PRIV","PUB"],"project":null,"scopes":["person","approve"],"service":null,"session":null}`,
+		callerCarolBothToken: `{"kind":"agent","owner":"carol@example.com","projects":["PRIV","PUB"],"private_projects":["PRIV"],"project":null,"scopes":["person","approve"],"service":null,"session":null}`,
 		callerCarolToken:     `{"kind":"agent","owner":"carol@example.com","project":null,"scopes":["person","approve"],"service":null,"session":null}`,
 		callerSharedToken:    `{"kind":"agent","owner":null,"project":null,"scopes":[],"service":null,"session":null}`,
 		callerAlice:          `{"kind":"user","login":"alice","scopes":["person","approve"]}`,

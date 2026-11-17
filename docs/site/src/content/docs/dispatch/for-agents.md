@@ -401,9 +401,12 @@ method, who may call it, and what it does. An agent calls the API with its token
 `Authorization: Bearer <token>`.
 
 `GET /api/v1/whoami` answers `projects`, the projects the token lists, sorted, and leaves the
-field out for a token that lists none. Its `project` is deprecated, and its value comes from that
-list alone: the one key of a one-key list, and `null` for any other list, an empty one included.
-Read `projects` instead.
+field out for a token that lists none. Beside it, `private_projects` lists, sorted, those of
+`projects` the token must treat as private: a private project, one the token can no longer see,
+and a key that names no project; it is left out when there is none, so a key is public exactly
+when it is in `projects` and not in `private_projects`. Its `project` is deprecated, and its
+value comes from that list alone: the one key of a one-key list, and `null` for any other list,
+an empty one included. Read `projects` instead.
 
 Every `POST` and `PATCH` an agent makes through `dispatch` is keyed: each write a command makes
 carries an `Idempotency-Key` header of its own, and the command asks again under that key when an

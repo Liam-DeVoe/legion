@@ -4216,10 +4216,11 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/api/v1/whoami` (GET; cookie, trusted header, bearer, or a broker-issued DPoP token)
 
-  Who the server takes the caller for: `{kind: "user", login, scopes}` for a person (`login` their lowercase email), `{kind: "agent", owner, service, session, projects, project, scopes}` for every other credential (`owner` is a personal token's owner or a broker-issued token's person, by lowercase email, null for the shared token and for a broker-issued token that names a service;
+  Who the server takes the caller for: `{kind: "user", login, scopes}` for a person (`login` their lowercase email), `{kind: "agent", owner, service, session, projects, private_projects, project, scopes}` for every other credential (`owner` is a personal token's owner or a broker-issued token's person, by lowercase email, null for the shared token and for a broker-issued token that names a service;
   `service` is a verified service-account token's Kubernetes subject, or the fleet a broker-issued token naming no person belongs to, null for every other credential;
   `session` is the session the credential itself proved, which only a broker-issued token does, null otherwise;
   `projects` is the projects the credential lists, sorted, and absent when it lists none;
+  `private_projects` is those of `projects` the caller must treat as private, sorted, and absent when there is none: a private project's key, a key the credential no longer sees whatever its project's visibility, and a key that names no project, so a key is public exactly when it is in `projects` and not here, and the field tells nothing of a project the caller cannot see;
   `project` is deprecated, and its value comes from that list alone: the one key of a one-key list, and null for any other list, an empty one included).
   `scopes` is the OAuth scopes the credential holds, `[]` for one that holds none, and every caller is answered it.
   Either shape carries `member_kind: "restricted"` when the person the caller is or acts for is a restricted member, and leaves it out for everyone else;
