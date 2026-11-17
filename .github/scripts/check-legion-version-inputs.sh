@@ -91,7 +91,10 @@
 #      not canonical - a relative path with no `./`, no leading `/`, no `//` and no `..`, which git
 #      reads as the same path while a compare of paths as written does not - naming the canonical
 #      spelling; an exclude holding a wildcard, which git matches by its own glob rules and this
-#      check does not; a value holding a `${{ }}` expression, which GitHub renders into the paths
+#      check does not; a plain path that is not a file of the tree written without a trailing /
+#      or a directory of the tree written with one, canonical and with no wildcard, naming the
+#      spelling to write, since git reads `F/` as a directory alone and matches no change to a
+#      file F; a value holding a `${{ }}` expression, which GitHub renders into the paths
 #      first; or a path written with any other pathspec magic, which this check cannot read;
 #   6. a go command that fails, a package of this repository that go list cannot load, or a
 #      listing that does not name the program it lists, since what that program links is then
@@ -247,11 +250,41 @@ def spelling(payload):
     return norm if canonical(norm) else None
 
 
+def plain_refusal(key, word):
+    """Rule 5's refusal of the plain path `word` after `--` in `key`, or None where it is a file of
+    the tree written without a trailing / or a directory of the tree written with one, spelled
+    canonically. git reads `F/` as a directory alone, so for a file F it matches no change; and this
+    check reads a path without a / as a file, so for a directory it would read a push pattern that
+    names the path alone as covering what lies inside it. A symlink is a file to git."""
+    if WILDCARD.search(word):
+        return (f"{key} names `{word}`, a path with a wildcard, which git matches by its own glob rules and this "
+                f"check does not: it cannot say which paths it covers; name the paths it means instead")
+    fixed = spelling(word)
+    node = Path(fixed) if fixed else None
+    kind = None if node is None else "file" if node.is_symlink() or node.is_file() else (
+        "directory" if node.is_dir() else None)
+    if kind is None:
+        return (f"{key} names `{word}`, which is no file or directory of this tree, so this check cannot say what "
+                f"it covers; name a file as its path and a directory with its trailing /")
+    want = f"{fixed}/" if kind == "directory" else fixed
+    if not canonical(word):
+        return (f"{key} names `{word}`, a path that is not canonical: git reads a `./`, a leading `/`, a `//` or a "
+                f"`..` as another spelling of a path, and this check compares paths as written; write it `{want}`")
+    if word == want:
+        return None
+    if kind == "file":
+        return (f"{key} names `{word}`, the file {fixed} with a trailing /: git reads a path with a trailing / as a "
+                f"directory alone, so it matches no change to the file; write it `{want}`")
+    return (f"{key} names `{word}`, the directory {fixed} without its trailing /: this check reads a path without "
+            f"one as a file, so it cannot say what a push pattern covers inside it; write it `{want}`")
+
+
 def pathspecs(path, doc, key):
     """The paths after `--` in the workflow env's `key`: the plain ones, and each exclude as
-    (its text, the path it drops). Rule 5's refusals: a value holding a `${{ }}` expression; an
-    exclude in any spelling but `:(exclude)` and `:!`, one holding a wildcard, and one whose path is
-    not canonical; and any other magic."""
+    (its text, the path it drops). Rule 5's refusals: a value holding a `${{ }}` expression; a plain
+    path that plain_refusal refuses, which is left out, so no later rule reads it as covering
+    anything; an exclude in any spelling but `:(exclude)` and `:!`, one holding a wildcard, and one
+    whose path is not canonical; and any other magic."""
     value = env_of(path, doc).get(key)
     if not isinstance(value, str):
         fatal(f"{path}'s workflow env: holds no {key} string", path)
@@ -264,7 +297,11 @@ def pathspecs(path, doc, key):
     plain, excludes = [], []
     for word in words[words.index("--") + 1:]:
         if not word.startswith(":"):
-            plain.append(word)
+            refusal = plain_refusal(key, word)
+            if refusal:
+                problem(refusal, path)
+            else:
+                plain.append(word)
             continue
         form = next((form for form in EXCLUDE_FORMS if word.startswith(form)), None)
         payload = word[len(form):] if form else word[2:]

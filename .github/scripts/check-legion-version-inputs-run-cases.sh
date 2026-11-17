@@ -170,6 +170,62 @@ for path in go.work go.work.sum packages/daemon/go.mod packages/daemon/go.sum; d
   check "names $path" "$(contains "$out" "release-envoy-listener.yaml's on.push.paths $paths_rule $path, which its version step reads through LEGION_ENVOY_VERSION_ARGS")"
 done
 
+# git reads a path after `--` with a trailing / as a directory alone: `git log -- go.work/` finds
+# no commit. A plain path is a file of the tree written without one or a directory written with
+# one, and a refused path is left out, so no rule after reads it as covering anything (R4 to R6,
+# and R11 through write).
+plain_rule="git reads a path with a trailing / as a directory alone, so it matches no change to the file"
+echo "case: a file the version step reads written with a trailing / (R4, R5, R6, R11)"
+root=$(written plain-file-slash)
+replace "$root/.github/workflows/release-envoy-listener.yaml" $'    go.work go.work.sum' $'    go.work/ go.work.sum'
+replace "$root/.github/workflows/release-envoy-listener.yaml" $'    paths: ["**"]\n' \
+  $'    paths: ["packages/**", ".github/**", "go.work", "go.work.sum"]\n'
+run_check "$root"
+check "exits 1 on the listener's go.work argument as go.work/ (R4)" "$(is "$status" 1)"
+check "names it and the spelling to write" \
+  "$(contains "$out" "LEGION_ENVOY_VERSION_ARGS names \`go.work/\`, the file go.work with a trailing /: $plain_rule; write it \`go.work\`")"
+check "and says no path of it covers go.work" "$(contains "$out" "LEGION_ENVOY_VERSION_ARGS names no path that covers go.work, which go names")"
+check "and no longer advises go.work/**, which led R4 into R5" "$(is "$(contains "$out" 'go\.work/\*\*')" false)"
+root=$(written plain-file-slash-glob)
+replace "$root/.github/workflows/release-envoy-listener.yaml" $'    go.work go.work.sum' $'    go.work/ go.work.sum'
+replace "$root/.github/workflows/release-envoy-listener.yaml" $'    paths: ["**"]\n' \
+  $'    paths: ["packages/**", ".github/**", "go.work/**", "go.work.sum"]\n'
+run_check "$root"
+check "exits 1 on the argument and the push path both written as a directory (R5)" "$(is "$status" 1)"
+check "names the argument" "$(contains "$out" "LEGION_ENVOY_VERSION_ARGS names \`go.work/\`, the file go.work with a trailing /")"
+root=$(written plain-file-slash-release)
+replace "$root/.github/workflows/release.yaml" $'    -- packages/daemon/ .github/go-release-targets.json\n' \
+  $'    -- packages/daemon/ .github/go-release-targets.json/\n'
+replace "$root/.github/workflows/release.yaml" $'    paths: ["**"]\n' \
+  $'    paths: ["packages/**", "go.work", "go.work.sum", ".github/go-release-targets.json/**"]\n'
+run_check "$root"
+check "exits 1 on release.yaml's target list so (R6)" "$(is "$status" 1)"
+check "names it" \
+  "$(contains "$out" "LEGION_VERSION_ARGS names \`.github/go-release-targets.json/\`, the file .github/go-release-targets.json with a trailing /: $plain_rule; write it \`.github/go-release-targets.json\`")"
+root=$(written plain-file-slash-write)
+replace "$root/.github/workflows/release.yaml" $'    -- packages/daemon/ .github/go-release-targets.json\n' \
+  $'    -- packages/daemon/ .github/go-release-targets.json\n    packages/envoy/go.mod/ packages/envoy/go.sum/\n'
+before=$(release "$root")
+run_check "$root" write
+check "write exits 1 on two module files written with a trailing / (R11)" "$(is "$status" 1)"
+for path in packages/envoy/go.mod packages/envoy/go.sum; do
+  check "names $path/" "$(contains "$out" "LEGION_VERSION_ARGS names \`$path/\`, the file $path with a trailing /")"
+done
+check "and writes nothing, so the block keeps both files" "$(is "$(release "$root")" "$before")"
+run_check "$root"
+check "the check exits 1 on it too" "$(is "$status" 1)"
+
+echo "case: a plain path that is no file or directory of the tree, not canonical, or a glob"
+root=$(written plain-missing)
+replace "$root/.github/workflows/release-envoy-listener.yaml" $'    go.work go.work.sum' $'    go.work packages/nowhere/ ./go.work.sum packages/envoy/*'
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the path that is not there" \
+  "$(contains "$out" "LEGION_ENVOY_VERSION_ARGS names \`packages/nowhere/\`, which is no file or directory of this tree")"
+check "names the spelling that is not canonical, and the one to write" \
+  "$(contains "$out" "LEGION_ENVOY_VERSION_ARGS names \`./go.work.sum\`, a path that is not canonical: .*; write it \`go.work.sum\`")"
+check "names the glob" "$(contains "$out" "LEGION_ENVOY_VERSION_ARGS names \`packages/envoy/\*\`, a path with a wildcard")"
+
 echo "case: a later ! pattern reaching into a path the version step reads"
 root=$(written paths-negated)
 replace "$root/.github/workflows/release-envoy-listener.yaml" $'    paths: ["**"]\n' $'    paths: ["**", "!packages/envoy/alpha/**"]\n'
