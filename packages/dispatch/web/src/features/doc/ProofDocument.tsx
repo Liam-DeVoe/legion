@@ -330,7 +330,12 @@ export function ProofDocument({
       ? undefined
       : fragmentOf(artifactQuery.data);
   const fragmentReadError = fragmentName === undefined ? artifactQuery.error : null;
-  const liveTextQuery = useQuery(liveTextQueryOptions(artifact.id));
+  // The text is read once the page knows its fragment, beside the admission's own fresh read of
+  // it (`admit`), so the two are one request; read before it, the admission would read it again.
+  const liveTextQuery = useQuery({
+    ...liveTextQueryOptions(artifact.id),
+    enabled: fragmentName !== undefined,
+  });
   // The repair replaces this document, so it uploads under the document's own name whatever the
   // picked file is called; a closed issue takes none.
   const repairUpload = useArtifactUpload(
