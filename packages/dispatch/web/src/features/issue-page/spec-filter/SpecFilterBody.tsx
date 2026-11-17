@@ -416,6 +416,23 @@ export function SpecFilterBody({
   // at its ends.
   const leaveCell = useCallback(
     (cell: HTMLElement, step: 1 | -1): void => {
+      // Where the tree draws a group's line of overtaken statements, that line is a stop of the
+      // keys as a statement is, so a cell steps through both, in the order they are drawn: from
+      // the cell beside a group's last run to the group's line, and from the cell beside the first
+      // run under an open line back to the line.
+      const container = tree.current;
+      if (container !== null && container.querySelector("[data-spec-line]") !== null) {
+        const stops = [
+          ...container.querySelectorAll<HTMLElement>("[data-node-row], [data-overtaken-line]"),
+        ];
+        const run = (cell.dataset.specStatements ?? "").split(" ");
+        const from = stops.findIndex(
+          (stop) => stop.dataset.nodeId === (step > 0 ? run.at(-1) : run[0])
+        );
+        reportHere("");
+        (stops[from + step] ?? stops[from])?.focus();
+        return;
+      }
       const rows = [...(tree.current?.querySelectorAll<HTMLElement>("[data-node-row]") ?? [])];
       const ids = (cell.dataset.specStatements ?? "").split(" ");
       const first = rows.findIndex((row) => row.dataset.nodeId === ids[0]);

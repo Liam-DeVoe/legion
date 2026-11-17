@@ -20,7 +20,7 @@ const PARTS = {
 /** What takes the focus inside each part, where the part itself does not: the tree's one tab
  *  stop (`dispatch://INFRA-1196/artifact/plan-md#b-t18`). */
 const TAKES_FOCUS: Readonly<Record<keyof typeof PARTS, string | undefined>> = {
-  tree: '[data-node-row][tabindex="0"]',
+  tree: '[data-node-row][tabindex="0"], [data-overtaken-line][tabindex="0"]',
 };
 
 /** How many frames a chord waits for the page to draw what its address opened before it gives

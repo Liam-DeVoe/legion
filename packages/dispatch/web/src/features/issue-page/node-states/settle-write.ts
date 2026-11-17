@@ -6,18 +6,19 @@ import { writeRequest } from "../../../api/client";
 import { primarySpec } from "../../../api/issue-cache";
 import { issueCoverageQuery } from "../../../api/queries";
 import type { IssueDetails } from "../../../api/types";
-import { type IssueRoute, parseNodeReference } from "../../refs/routes";
+import { type IssueRoute, parseIssuePath, parseNodeReference } from "../../refs/routes";
 import { useKeyedWrite } from "../../writes/useKeyedWrite";
 import { type AddressTarget, issueAddress, pathToTarget, presetPath } from "../issue-address";
 import { buildIssueTree, type TreeNode } from "../issue-tree";
 import { CONTROL_LABELS } from "../page-words";
 import { issueTreeQuery } from "../tree-read/tree-read";
+import { withLine } from "./node-states";
 
 /**
  * What the page writes and reads around a node's life: the settle of a proposed node; the words
- * filter's words, by which the outline opens each line of overtaken nodes that holds a match; and
- * what the tree read the page already holds says of the overtaken nodes, for an address the
- * Decisions view draws nowhere.
+ * filter's words, by which the outline opens each line of overtaken nodes that holds a match; the
+ * lines of overtaken nodes the page's address opens in a view; and what the tree read the page
+ * already holds says of the overtaken nodes, for an address the Decisions view draws nowhere.
  */
 
 /** `POST /api/v1/issues/{key}/nodes/{id}/settle`: a person settles the proposed node `reference`
@@ -74,6 +75,34 @@ export function useSettle(key: string, reference: string, landed: () => void) {
 export function useHoldsWords(): boolean {
   const [search] = useSearchParams();
   return (search.get("q") ?? "").trim() !== "";
+}
+
+/**
+ * The lines of overtaken nodes the page's address opens in `root`, a view's own tree: the id of
+ * each node whose line of overtaken children the path to the node the address names runs
+ * through (`pathToTarget`, `withLine`), so that node is drawn as a row, as the outline opens its
+ * own. The address is read as the slots read it (`issueAddress`); an address that opens a view
+ * opens no document, so no spec slug is needed to read it. `target` says which node the address
+ * names, so a view opens them once for each; `lines` is undefined for an address that names no
+ * node and until `root` holds the one it names, and empty where the path runs through no
+ * overtaken node.
+ */
+export function useAddressLines(root: TreeNode): {
+  readonly lines: ReadonlySet<string> | undefined;
+  readonly target: string | undefined;
+} {
+  const { hash, pathname, search } = useLocation();
+  return useMemo(() => {
+    const route = parseIssuePath(pathname, search);
+    const target =
+      route === undefined ? undefined : issueAddress(route, search, hash, undefined).target;
+    const path = pathToTarget(root, target);
+    return {
+      lines:
+        path === undefined ? undefined : (withLine(new Set<string>(), path) ?? new Set<string>()),
+      target: target === undefined ? undefined : JSON.stringify(target),
+    };
+  }, [hash, pathname, root, search]);
 }
 
 /**

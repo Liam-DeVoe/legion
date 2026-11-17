@@ -3,12 +3,19 @@ import type { LensRead, NodeLenses } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { createElement, type ReactNode } from "react";
-import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
+import { createElement, type ReactNode, useMemo } from "react";
+import {
+  MemoryRouter,
+  Route,
+  Routes,
+  useLocation,
+  useNavigate,
+  useSearchParams,
+} from "react-router-dom";
 
 import { api } from "../../../api/client";
 import { artifactBlocksQuery, issueCoverageQuery, issueResultsQuery } from "../../../api/queries";
-import type { CheckBlock, IssueCheckResults } from "../../../api/types";
+import type { CheckBlock, IssueCheckResults, IssueDetails } from "../../../api/types";
 import { MarginProvider } from "../../margin/margin-context";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
 import { parseIssuePath } from "../../refs/routes";
@@ -30,6 +37,7 @@ import {
 } from "../decisions-filter/decisions-fixtures";
 import { FocusedNodeProvider } from "../focused-node";
 import { ContentsList } from "../IssueContents";
+import { IssuePresets } from "../IssuePresets";
 import { IssueTree, type OutlineRequest } from "../IssueTree";
 import { overtakenLineOf } from "../issue-address";
 import { artifactsBySlug } from "../issue-artifacts";
@@ -54,16 +62,18 @@ import {
   NODE_STATE_WORDS,
   type NodeType,
   PLAN_WORDS,
+  type Preset,
   ROW_MARK_WORDS,
   VERIFICATION_WORDS,
 } from "../page-words";
 import { PlanFilterBody } from "../plan-filter/PlanFilterBody";
 import { planOrder } from "../plan-filter/plan-order";
-import { presetView } from "../presets";
+import { type PresetSignal, presetView } from "../presets";
 import { ReferenceNamesProvider } from "../reference-names";
+import { ShortcutHelpOpener } from "../shortcut-help-opener";
 import { SpecFilterBody } from "../spec-filter/SpecFilterBody";
 import { answerNode, coverageRead, issueDetails, statement } from "../spec-filter/spec-fixtures";
-import { type OvertakenRow, pathTo } from "../tree-fold";
+import { pathTo } from "../tree-fold";
 import { statesOfRead } from "../tree-read/tree-nodes";
 import {
   issueTreeKey,
@@ -71,6 +81,7 @@ import {
   type TreeAnswerNode,
   viewKey,
 } from "../tree-read/tree-read";
+import { useIssueKeymap } from "../useIssueKeymap";
 import { VerificationFilterBody } from "../verification-filter/VerificationFilterBody";
 import {
   check,
@@ -87,7 +98,6 @@ import {
   statesByReference,
   withLine,
 } from "./node-states";
-import { OvertakenLine } from "./OvertakenLine";
 import { useOvertakenTarget } from "./settle-write";
 
 /**
@@ -398,46 +408,52 @@ test("a proposed node is marked Proposed with its shape, and a node with no mark
 
 // A parent's overtaken children fold to one line after its other children, which says how
 // many it holds in one text node, takes the focus with `aria-expanded`, and opens and closes in
-// place. It is no line of a deeper branch and holds no Unfold, so nothing that opens every
+// place: in the outline a press opens it, drawing each child as a row, and the next press closes
+// it again. It is no line of a deeper branch and holds no Unfold, so nothing that opens every
 // branch opens it.
 test("a parent's overtaken children fold to one line that a press opens and closes", async () => {
-  const of = node("spec", "document", [
-    node("spec#b-r8", "requirement", [], { life: "overtaken" }),
-    node("spec#b-r9", "requirement", [], { life: "overtaken" }),
-  ]);
-  const pressed: [string, boolean][] = [];
-  const lineOf = (open: boolean) =>
-    createElement(OvertakenLine, {
-      onOvertaken: (id: string, opening: boolean) => pressed.push([id, opening]),
-      row: { held: 2, level: 2, of, open, trail: [KEY] } satisfies OvertakenRow,
-      tabStop: false,
-    });
+  readWide();
   const user = userEvent.setup();
-  const view = render(lineOf(false));
+  const view = renderTree(
+    stamped(
+      node(KEY, "issue", [
+        node("comment-1", "comment"),
+        node("spec#b-r8", "requirement"),
+        node("spec#b-r9", "requirement"),
+      ]),
+      { "spec#b-r8": { life: "overtaken" }, "spec#b-r9": { life: "overtaken" } }
+    )
+  );
   try {
-    const line = view.getByRole("treeitem");
+    await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
+    const line = theLine(view.container);
+    expect(line).toHaveAttribute("role", "treeitem");
     expect(line).toHaveAttribute("aria-expanded", "false");
-    expect(line).toHaveAttribute("aria-level", "2");
-    expect(line).toHaveAttribute("data-overtaken-line", "");
+    // At the level of the children it stands after.
+    expect(line.getAttribute("aria-level")).toBe(
+      rowOf(view.container, "comment-1")?.getAttribute("aria-level") ?? null
+    );
     expect(line).toHaveAttribute("tabindex", "-1");
     const texts: string[] = [];
     const walker = document.createTreeWalker(line, NodeFilter.SHOW_TEXT);
     for (let text = walker.nextNode(); text !== null; text = walker.nextNode()) {
       texts.push(text.textContent ?? "");
     }
-    expect(texts).toEqual(["2 overtaken"]);
+    expect(texts).toEqual([`2 ${CONTROL_LABELS.overtaken_count}`]);
     expect(view.container.querySelector("[data-branch-more]")).toBeNull();
-    expect(view.queryByRole("button")).toBeNull();
+    expect(line.querySelector("button")).toBeNull();
+    expect(rowOf(view.container, "spec#b-r8")).toBeNull();
+    expect(rowOf(view.container, "spec#b-r9")).toBeNull();
 
     await user.click(line);
-    expect(pressed).toEqual([["spec", true]]);
-    view.rerender(lineOf(true));
-    expect(view.getByRole("treeitem")).toHaveAttribute("aria-expanded", "true");
-    await user.click(view.getByRole("treeitem"));
-    expect(pressed).toEqual([
-      ["spec", true],
-      ["spec", false],
-    ]);
+    await waitFor(() => expect(theLine(view.container)).toHaveAttribute("aria-expanded", "true"));
+    expect(rowOf(view.container, "spec#b-r8")).not.toBeNull();
+    expect(rowOf(view.container, "spec#b-r9")).not.toBeNull();
+
+    await user.click(theLine(view.container));
+    await waitFor(() => expect(theLine(view.container)).toHaveAttribute("aria-expanded", "false"));
+    expect(rowOf(view.container, "spec#b-r8")).toBeNull();
+    expect(rowOf(view.container, "spec#b-r9")).toBeNull();
   } finally {
     view.unmount();
   }
@@ -478,8 +494,9 @@ function readWide(): void {
 }
 
 /** `root` drawn by the page's tree, under the page's keymap and the providers it reads, as
- *  `IssueTree.test.tsx`'s `renderTree` draws it: no address, no filter, no document. */
-function renderTree(root: TreeNode) {
+ *  `IssueTree.test.tsx`'s `renderTree` draws it: no address, no filter, no document; with
+ *  `beside` drawn after the tree, under the same providers. */
+function renderTree(root: TreeNode, ...beside: ReactNode[]) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
@@ -512,7 +529,8 @@ function renderTree(root: TreeNode) {
                 reveal: undefined,
                 root,
                 rootRow: true,
-              })
+              }),
+              ...beside
             )
           )
         )
@@ -565,6 +583,76 @@ test("the overtaken line is the tree's tab stop once the reader is on it", async
     await waitFor(() => expect(document.activeElement).toBe(line));
     await waitFor(() => expect(line).toHaveAttribute("tabindex", "0"));
     expect(rowOf(view.container, "comment-1")).toHaveAttribute("tabindex", "-1");
+  } finally {
+    view.unmount();
+  }
+});
+
+/** The page's chords of the view row, under the page's keymap (`useIssueKeymap.ts`). */
+function IssueChords(): ReactNode {
+  useIssueKeymap(KEY);
+  return null;
+}
+
+/** What each control of the view row draws after its name: nothing is counted here. */
+const NO_SIGNALS: Readonly<Record<Preset, PresetSignal>> = {
+  conversation: { count: 0 },
+  decisions: { count: 0 },
+  plan: { count: 0 },
+  spec: { count: 0 },
+  verification: { count: 0 },
+};
+
+/** The outline of a comment and the line its overtaken sibling folds to, drawn with the view
+ *  row, whose Keys hands `opened` the element that holds the focus as the list of keys opens,
+ *  and with the page's chords; and that line, once the reader is on it, holding the tree's one
+ *  tab stop, with the focus back on the page itself. */
+async function lineHoldingTheStop(opened: (Element | null)[]) {
+  const user = userEvent.setup();
+  const view = renderTree(
+    commentAndLine(),
+    createElement(IssueChords),
+    createElement(
+      ShortcutHelpOpener.Provider,
+      { value: () => opened.push(document.activeElement) },
+      createElement(IssuePresets, { active: "conversation", issueKey: KEY, signals: NO_SIGNALS })
+    )
+  );
+  await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
+  const line = theLine(view.container);
+  await user.keyboard("j");
+  await waitFor(() => expect(document.activeElement).toBe(line));
+  act(() => line.blur());
+  expect(document.activeElement).toBe(document.body);
+  expect(line).toHaveAttribute("tabindex", "0");
+  return { line, user, view };
+}
+
+// While the reader's last place in the outline is an overtaken line, the line holds the tree's
+// one tab stop and no row does, so the chord that brings the reader to the outline puts the
+// focus on the line.
+test("the chord to the outline focuses an overtaken line that holds the tab stop", async () => {
+  readWide();
+  const { line, user, view } = await lineHoldingTheStop([]);
+  try {
+    await user.keyboard("tc");
+    await waitFor(() => expect(document.activeElement).toBe(line));
+  } finally {
+    view.unmount();
+  }
+});
+
+// Keys puts the focus on the outline's tab stop before the list of keys opens, so the list
+// offers the outline's keys: that stop is an overtaken line where the line holds it.
+test("Keys focuses an overtaken line that holds the tab stop before the keys list opens", async () => {
+  readWide();
+  const opened: (Element | null)[] = [];
+  const { line, user, view } = await lineHoldingTheStop(opened);
+  try {
+    await user.click(view.getByRole("button", { name: CONTROL_LABELS.keys }));
+    // By identity: a failed deep comparison of two elements walks the whole page.
+    expect(opened).toHaveLength(1);
+    expect(opened[0] === line).toBe(true);
   } finally {
     view.unmount();
   }
@@ -760,8 +848,14 @@ function checkThat(blockId: string, passed: boolean): CheckBlock {
 
 /** The Verification view over `root`, with `checks` as the issue's results read, drawn as its
  *  slot draws it (`VerificationFilterBody.drawn.test.tsx`'s `bodyOf`): under the words `query`,
- *  where a case types any, with the view under no query as `whole`. */
-function drawVerification(root: TreeNode, checks: readonly CheckBlock[], query = "") {
+ *  where a case types any, with the view under no query as `whole`, on the page's `address`,
+ *  which carries the words as the page's own does (`?q=`). */
+function drawVerification(
+  root: TreeNode,
+  checks: readonly CheckBlock[],
+  query = "",
+  address = query === "" ? "/" : `/?q=${encodeURIComponent(query)}`
+) {
   const preset = presetView(root, "verification", query, new Set());
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
@@ -772,7 +866,7 @@ function drawVerification(root: TreeNode, checks: readonly CheckBlock[], query =
       { client },
       createElement(
         MemoryRouter,
-        null,
+        { initialEntries: [address] },
         createElement(
           NoTooltips,
           null,
@@ -1053,6 +1147,56 @@ test("the Verification view draws an overtaken check the words match under an op
   }
 });
 
+/** An issue of one statement whose second check a later one took the place of, and the checks
+ *  the results read answers for it: the live one, then the overtaken one. */
+function statementWithOvertakenCheck() {
+  const passed = checkThat("c-one", true);
+  const replaced = checkThat("c-two", false);
+  const replacedId = checkNode(replaced).id;
+  const root = stamped(
+    node(KEY, "issue", [
+      statementNode("r1", "The page draws the checks.", [checkNode(passed), checkNode(replaced)]),
+    ]),
+    { [replacedId]: { life: "overtaken" } }
+  );
+  return { checks: [passed, replaced], replacedId, root };
+}
+
+// Words of spaces alone narrow nothing: the view trims them, and so does what the body reads the
+// address's words by, so under `?q=%20` the line of overtaken checks is drawn closed, as it is
+// with no words.
+test("the Verification view reads words of spaces as no words and draws its line closed", () => {
+  const { checks, replacedId, root } = statementWithOvertakenCheck();
+  const view = drawVerification(root, checks, " ");
+  try {
+    expect(theLine(view.container)).toHaveAttribute("aria-expanded", "false");
+    expect(rowOf(view.container, replacedId)).toBeNull();
+  } finally {
+    view.unmount();
+  }
+});
+
+// An address that names an overtaken check opens the line that holds it, so the check is drawn
+// as a row under its open line, as the address drew it before the check folded; the reader's
+// press closes that line again, and it stays closed.
+test("the Verification view opens the line of an overtaken check an address names", async () => {
+  const user = userEvent.setup();
+  const { checks, replacedId, root } = statementWithOvertakenCheck();
+  const view = drawVerification(root, checks, "", `/issues/${KEY}/verification#b-c-two`);
+  try {
+    const line = theLine(view.container);
+    await waitFor(() => expect(line).toHaveAttribute("aria-expanded", "true"));
+    const addressed = rowOf(view.container, replacedId);
+    expect(addressed !== null && line.contains(addressed)).toBe(true);
+
+    await user.click(line);
+    await waitFor(() => expect(line).toHaveAttribute("aria-expanded", "false"));
+    expect(rowOf(view.container, replacedId)).toBeNull();
+  } finally {
+    view.unmount();
+  }
+});
+
 // A state chip's count leaves a proposed statement out, and so does what the chip draws: the
 // chip says one number and draws as many statements.
 test("the Verification view's state chip draws no statement its count leaves out", async () => {
@@ -1086,9 +1230,49 @@ test("the Verification view's state chip draws no statement its count leaves out
   }
 });
 
+/** The Spec view of `root` as its slot draws it (`slots/view-spec.tsx`): under the words the
+ *  page's address carries (`?q=`), so a case that moves the address draws the view again. */
+function SpecAtAddress({
+  context,
+  issue,
+  request,
+  reveal,
+  root,
+}: {
+  context: ReadonlySet<string>;
+  issue: IssueDetails;
+  request?: OutlineRequest;
+  reveal?: string;
+  root: TreeNode;
+}): ReactNode {
+  const [search] = useSearchParams();
+  const query = search.get("q") ?? "";
+  const view = useMemo(() => presetView(root, "spec", query, new Set()).root, [query, root]);
+  return createElement(SpecFilterBody, {
+    context,
+    emptyLine: query === "" ? EMPTY_STATE_LINES.spec : EMPTY_STATE_LINES.no_match,
+    holdsEscape: false,
+    issue,
+    reader: "alice",
+    reading: false,
+    ...(request === undefined ? {} : { request }),
+    ...(reveal === undefined ? {} : { reveal }),
+    root,
+    view,
+  });
+}
+
+/** Hands the page's own `navigate` to `take`, so a case moves the address as the reader does. */
+function NavigateProbe({ take }: { take: (navigate: (to: string) => void) => void }): ReactNode {
+  const navigate = useNavigate();
+  take(navigate);
+  return null;
+}
+
 /** The Spec view over `root`, its reads answered with no decision, no result and no block, drawn
- *  under the providers the page draws it under (`SpecFilterBody.drawn.test.tsx`'s `drawBody`).
- *  `unmount` puts the reads back as well. */
+ *  under the providers the page draws it under (`SpecFilterBody.drawn.test.tsx`'s `drawBody`),
+ *  on an address that carries the words `query`. `go` moves the address, and `unmount` puts the
+ *  reads back as well. */
 function drawSpec(
   root: TreeNode,
   {
@@ -1096,7 +1280,7 @@ function drawSpec(
     request,
     reveal,
   }: { query?: string; request?: OutlineRequest; reveal?: string } = {}
-): { container: HTMLElement; unmount: () => void } {
+): { container: HTMLElement; go: (to: string) => void; unmount: () => void } {
   const issue = issueDetails();
   const results: IssueCheckResults = { checks: [], issue: KEY, verification_artifact_id: "" };
   const client = new QueryClient({
@@ -1114,6 +1298,8 @@ function drawSpec(
     spyOn(api, "getIssueCoverage").mockResolvedValue(coverageRead([])),
     spyOn(api, "getIssueResults").mockResolvedValue(results),
   ];
+  // The page's `navigate`, once the address is drawn.
+  let moveTo: (to: string) => void = () => {};
   const view = render(
     createElement(
       QueryClientProvider,
@@ -1124,6 +1310,11 @@ function drawSpec(
         createElement(
           MemoryRouter,
           { initialEntries: [query === "" ? "/" : `/?q=${query}`] },
+          createElement(NavigateProbe, {
+            take: (navigate) => {
+              moveTo = navigate;
+            },
+          }),
           createElement(
             KeymapProvider,
             null,
@@ -1137,17 +1328,12 @@ function drawSpec(
                   FocusedNodeProvider,
                   null,
                   createElement(IssueScope),
-                  createElement(SpecFilterBody, {
+                  createElement(SpecAtAddress, {
                     context: new Set<string>(),
-                    emptyLine: query === "" ? EMPTY_STATE_LINES.spec : EMPTY_STATE_LINES.no_match,
-                    holdsEscape: false,
                     issue,
-                    reader: "alice",
-                    reading: false,
                     ...(request === undefined ? {} : { request }),
                     ...(reveal === undefined ? {} : { reveal }),
                     root,
-                    view: presetView(root, "spec", query, new Set()).root,
                   })
                 )
               )
@@ -1159,6 +1345,7 @@ function drawSpec(
   );
   return {
     container: view.container,
+    go: (to) => act(() => moveTo(to)),
     unmount: () => {
       view.unmount();
       for (const spy of spies) spy.mockRestore();
@@ -1423,6 +1610,72 @@ test("the Spec view draws an overtaken statement the words match under an open l
     await user.click(line);
     await waitFor(() => expect(line).toHaveAttribute("aria-expanded", "false"));
     expect(rowOf(view.container, "spec#b-r2")).toBeNull();
+  } finally {
+    view.unmount();
+  }
+});
+
+/** The decision cell the Spec view draws beside the run that holds the statement `id`. */
+function cellBeside(container: HTMLElement, id: string): HTMLElement {
+  const cell = container.querySelector<HTMLElement>(
+    `[data-spec-cell][data-spec-statements~="${CSS.escape(id)}"]`
+  );
+  if (cell === null) throw new Error(`no cell is drawn beside ${id}`);
+  return cell;
+}
+
+// Under Spec a group's line of overtaken statements is a stop of the keys from a decision cell
+// as it is from a statement: `j` from the cell beside the group's last run goes to the group's
+// line, and, once the line is open, `k` from the cell beside the first run drawn under it goes
+// back to the line.
+test("the keys from a Spec decision cell stop on the overtaken line", async () => {
+  const user = userEvent.setup();
+  const view = drawSpec(statementAndLine());
+  try {
+    const line = theLine(view.container);
+    const besideLive = cellBeside(view.container, "spec#b-r1");
+    act(() => besideLive.focus());
+    await user.keyboard("j");
+    await waitFor(() => expect(document.activeElement).toBe(line));
+
+    await user.click(line);
+    await waitFor(() => expect(line).toHaveAttribute("aria-expanded", "true"));
+    const besideFolded = cellBeside(view.container, "spec#b-r2");
+    act(() => besideFolded.focus());
+    await user.keyboard("k");
+    await waitFor(() => expect(document.activeElement).toBe(line));
+  } finally {
+    view.unmount();
+  }
+});
+
+// Under Spec a line the words drew open closes with no press once the reader clears the words.
+// The statement under it that held the tree's one tab stop is then no row, so the stop goes to
+// the line that now folds it, and not to the first statement drawn.
+test("a Spec line the words drew open takes the tab stop of its statement when the words go", async () => {
+  const view = drawSpec(
+    stamped(
+      node(KEY, "issue", [
+        statement("r1"),
+        statement("r2", { text: "**R2.** The zebrafinch words are drawn." }),
+      ]),
+      { "spec#b-r2": { life: "overtaken" } }
+    ),
+    { query: "zebrafinch" }
+  );
+  try {
+    expect(theLine(view.container)).toHaveAttribute("aria-expanded", "true");
+    act(() => rowOf(view.container, "spec#b-r2")?.focus());
+    await waitFor(() =>
+      expect(rowOf(view.container, "spec#b-r2")).toHaveAttribute("tabindex", "0")
+    );
+
+    view.go("/");
+    await waitFor(() => expect(rowOf(view.container, "spec#b-r1")).not.toBeNull());
+    expect(theLine(view.container)).toHaveAttribute("aria-expanded", "false");
+    expect(rowOf(view.container, "spec#b-r2")).toBeNull();
+    await waitFor(() => expect(theLine(view.container)).toHaveAttribute("tabindex", "0"));
+    expect(rowOf(view.container, "spec#b-r1")).toHaveAttribute("tabindex", "-1");
   } finally {
     view.unmount();
   }
@@ -2080,8 +2333,13 @@ function marksIn(element: Element | null | undefined): (string | undefined)[] {
 
 /** The Decisions view over `root`, with `made` the nodes of the decisions view the page holds on
  *  the issue's node (`TreeNode.views`), drawn as its slot draws it
- *  (`DecisionsFilterBody.drawn.test.tsx`'s `renderBody`): no address and no words. */
-function drawDecisions(root: TreeNode, made: readonly TreeAnswerNode[]) {
+ *  (`DecisionsFilterBody.drawn.test.tsx`'s `renderBody`): no words, and an address that names
+ *  the nodes `named`, which the view keeps whatever it draws. */
+function drawDecisions(
+  root: TreeNode,
+  made: readonly TreeAnswerNode[],
+  named: readonly string[] = []
+) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
@@ -2116,7 +2374,7 @@ function drawDecisions(root: TreeNode, made: readonly TreeAnswerNode[]) {
                 issue,
                 reader: READER,
                 root: { ...root, views: { decisions: held } },
-                view: presetView(root, "decisions", "", new Set()).root,
+                view: presetView(root, "decisions", "", new Set(named)).root,
               })
             )
           )
@@ -2202,6 +2460,45 @@ test("the Decisions view marks a proposed decision and its parent line", () => {
     ]);
     expect(rowOf(view.container, "q-live")).not.toBeNull();
     expect(marksIn(rowOf(view.container, "q-live"))).toEqual([]);
+  } finally {
+    view.unmount();
+  }
+});
+
+// The Decisions view draws no overtaken question or decision, nor any node under one, and the
+// tree its keys walk holds none either: `q` goes past an overtaken open question to the live one
+// after it, and `w` on a statement goes past an overtaken decision that names it to a live one
+// that names it too, rather than to a node the view draws nowhere.
+test("under Decisions `q` and `w` go past an overtaken question and decision", async () => {
+  const user = userEvent.setup();
+  const statementId = specStatement("s1").id;
+  const past = decisionNode("d-past", { chips: [chip(specRef("s1"))] });
+  const live = decisionNode("d-live", { chips: [chip(specRef("s1"))] });
+  const root = stamped(
+    node(KEY, "issue", [specStatement("s1"), openAsk("q-past"), openAsk("q-live"), past, live]),
+    { "q-past": { life: "overtaken" }, [past.id]: { life: "overtaken" } }
+  );
+  const view = drawDecisions(
+    root,
+    [
+      decision("d-past", { links: [shaped(specRef("s1"))] }),
+      decision("d-live", { links: [shaped(specRef("s1"))] }),
+    ],
+    [statementId]
+  );
+  try {
+    expect(rowOf(view.container, "q-past")).toBeNull();
+    expect(rowOf(view.container, past.id)).toBeNull();
+    expect(rowOf(view.container, "q-live")).not.toBeNull();
+    expect(rowOf(view.container, live.id)).not.toBeNull();
+
+    await user.keyboard("q");
+    await waitFor(() => expect(focusedRow(view.container)).toBe("q-live"));
+
+    act(() => rowOf(view.container, statementId)?.focus());
+    expect(focusedRow(view.container)).toBe(statementId);
+    await user.keyboard("w");
+    await waitFor(() => expect(focusedRow(view.container)).toBe(live.id));
   } finally {
     view.unmount();
   }

@@ -47,6 +47,7 @@ import {
   toggledLines,
 } from "../node-states/node-states";
 import { overtakenCount, togglesLine } from "../node-states/OvertakenLine";
+import { useAddressLines, useHoldsWords } from "../node-states/settle-write";
 import { shortDay } from "../node-time";
 import { authorText, pageChrome } from "../page-structure";
 import {
@@ -180,17 +181,30 @@ export function VerificationFilterBody({
   // The lines of overtaken nodes, each by the id of the node whose overtaken children it folds: the
   // issue's, for its overtaken statements and its overtaken checks that serve none, and a
   // statement's, for its overtaken checks. Each is drawn closed until the reader opens it. While
-  // the words filter holds words - which is when the slot hands the view with no query as `whole` -
-  // each is drawn open, since the view then holds only the query's matches and the statements they
-  // stand under, so every line in it holds a match; a line the reader closed under the words stays
-  // closed, as the outline's do (`IssueTree.tsx`'s `linesOpen`). The body reads the view as those
-  // lines leave it (`foldOvertaken`), so a statement's overtaken checks are rows of the tree only
-  // while its line is open, and the issue's overtaken rows are drawn under its own line, after
-  // every other row (`treeRows`). The issue's reading, which the summary and the chips count, is
-  // read from the view as it came, whatever the lines hold.
+  // the words filter holds words, as the page's address carries them (`useHoldsWords`, trimmed as
+  // the view trims them), each is drawn open, since the view then holds only the query's matches
+  // and the statements they stand under, so every line in it holds a match; a line the reader
+  // closed under the words stays closed, as the outline's do (`IssueTree.tsx`'s `linesOpen`). The
+  // body reads the view as those lines leave it (`foldOvertaken`), so a statement's overtaken
+  // checks are rows of the tree only while its line is open, and the issue's overtaken rows are
+  // drawn under its own line, after every other row (`treeRows`). The issue's reading, which the
+  // summary and the chips count, is read from the view as it came, whatever the lines hold.
   const [lines, setLines] = useState<OvertakenLines>(NO_LINES);
-  const holdsWords = whole !== view;
+  const holdsWords = useHoldsWords();
   const unfolded = view;
+  // An address that names an overtaken node, or a node under one, opens each line the path to it
+  // runs through, as the words filter opens the lines that hold its matches: once for each node
+  // an address names, once the view holds it, so a line the reader closes after that stays
+  // closed. The focus stays where it is.
+  const addressed = useAddressLines(unfolded);
+  const [openedFor, setOpenedFor] = useState<string | undefined>(undefined);
+  if (addressed.lines !== undefined && openedFor !== addressed.target) {
+    const named = addressed.lines;
+    setOpenedFor(addressed.target);
+    setLines((held) =>
+      [...named].reduce((into, id) => toggledLines(into, id, true, holdsWords), held)
+    );
+  }
   const fold = useMemo(
     () => foldOvertaken(unfolded, (id) => lineIsOpen(lines, holdsWords, id)),
     [holdsWords, lines, unfolded]

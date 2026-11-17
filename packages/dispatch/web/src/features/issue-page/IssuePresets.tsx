@@ -197,7 +197,7 @@ export function IssuePresets({
   const showKeys = () => {
     document
       .querySelector<HTMLElement>(
-        `[role="tree"][aria-label="${CONTROL_LABELS.tree}"] [data-node-row][tabindex="0"]`
+        `[role="tree"][aria-label="${CONTROL_LABELS.tree}"] :is([data-node-row], [data-overtaken-line])[tabindex="0"]`
       )
       ?.focus({ preventScroll: true });
     openKeys?.();

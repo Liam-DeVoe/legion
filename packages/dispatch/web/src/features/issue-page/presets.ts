@@ -156,6 +156,10 @@ export function presetView(
 ): PresetView {
   const wanted = query.trim().toLowerCase();
   if (!isFilter(preset)) return conversationView(root, wanted, named, memo);
+  // The Decisions view draws no overtaken node and none under one (`TreeNode.closed`): its parts
+  // hold none (`decisions-filter/decisions-parts.ts`), so the tree its keys walk holds none
+  // either, and `q` and `w` never land on a node it draws nowhere.
+  if (preset === "decisions" && holdsClosed(root)) return openDecisionsView(root, wanted, named);
   // Decisions filters the whole tree: `decisions-entries.ts` reads each decision's members.
   if (preset === "decisions") return filterView(root, preset, wanted, named);
   const held = root.views?.[preset];
@@ -263,6 +267,32 @@ function filterView(
     root: { ...root, children: top, held: heldBy(top) },
     rootRow: false,
   };
+}
+
+/** Whether a node at or under `node` is closed: at or under an overtaken node. */
+function holdsClosed(node: TreeNode): boolean {
+  return node.children.some((child) => child.closed === true || holdsClosed(child));
+}
+
+/** `node` with each closed node under it left out, with what stands under that node. */
+function withoutClosed(node: TreeNode): TreeNode {
+  const children = node.children.filter((child) => child.closed !== true).map(withoutClosed);
+  return { ...node, children, held: heldBy(children) };
+}
+
+/**
+ * The Decisions filter over `root` with every closed node left out, with its subtree: an
+ * overtaken ask or decision, and each node under one, is in none of the view's parts and drawn
+ * nowhere, so the view's tree holds none of them. Its count still counts them, as every
+ * filter's control counts its query's own nodes: `matches` is the whole view's, less each
+ * decision restating an answer that only the whole view holds, since `filterSignals` takes
+ * those off by what this view's tree holds (`restatedAnswers`).
+ */
+function openDecisionsView(root: TreeNode, wanted: string, named: ReadonlySet<string>): PresetView {
+  const whole = filterView(root, "decisions", wanted, named);
+  const open = filterView(withoutClosed(root), "decisions", wanted, named);
+  const restatedOnlyInWhole = restatedAnswers(whole.root) - restatedAnswers(open.root);
+  return { ...open, matches: whole.matches - restatedOnlyInWhole };
 }
 
 /**
