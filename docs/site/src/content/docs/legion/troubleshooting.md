@@ -94,7 +94,7 @@ cluster and the image:
   served at the next read, with no restart and no change to the mapping.
   A refusal that reads `the <role> App's installation on <owner>/<repo> could not be read: …;
   Legion reads it again` is GitHub not answering, not a missing App: the daemon reads the mapping
-  again on its own, 30 s doubling to 10 min, and serves the repository once GitHub answers; an
+  again on its own, on the same backoff, and serves the repository once GitHub answers; an
   issue handed to Legion on it, before the boot or after, has nothing said on it, and the daemon
   recovers it from Dispatch's listing once GitHub answers, with nothing to move. A
   `child-release-stalled` notice that names such a repository says which parent to release first:

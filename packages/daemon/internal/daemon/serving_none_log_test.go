@@ -11,10 +11,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
-// servingNoneMessage is the one ERROR line the daemon writes each time it comes to serve no
-// repository, as an operator's log filter names it; its cause attribute says why.
-const servingNoneMessage = "workflow: the daemon serves no repository, so it admits nothing and reads the mapping again"
-
 // servingNoneLogRig is the mapping rig logging to logged, with each of the refresher's reads of
 // its own held until the test ticks clock, so a test sees whether a read of its own logs again.
 func servingNoneLogRig(t *testing.T, installs *installations, opts ...func(*workflowRuntime)) (*workflowRuntime, *mappingDispatch, *installations, *syncBuffer, *recheckWaits) {
@@ -40,10 +36,10 @@ func wantServingNone(t *testing.T, logged *syncBuffer, when string, causes ...st
 	}
 	ok := len(lines) == len(causes)
 	for i := 0; ok && i < len(causes); i++ {
-		ok = strings.Contains(lines[i], `msg="`+servingNoneMessage+`"`) && strings.Contains(lines[i], causes[i]) && strings.Contains(lines[i], "project=LEGION")
+		ok = strings.Contains(lines[i], `msg="`+servingNoneLine+`"`) && strings.Contains(lines[i], causes[i]) && strings.Contains(lines[i], "project=LEGION")
 	}
 	if !ok {
-		t.Fatalf("%s: ERROR lines = %q, want one %q line for each cause of %q", when, lines, servingNoneMessage, causes)
+		t.Fatalf("%s: ERROR lines = %q, want one %q line for each cause of %q", when, lines, servingNoneLine, causes)
 	}
 }
 

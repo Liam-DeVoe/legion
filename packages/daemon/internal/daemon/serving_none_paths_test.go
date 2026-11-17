@@ -42,7 +42,7 @@ func TestTheServingNoneLineIsLoggedWhenTheReadsSubscriptionNarrowingFails(t *tes
 	if served(w, "acme/widgets") || served(w, "zeta/tools") {
 		t.Fatal("a repository is still served once the publication of the empty mapping committed")
 	}
-	testwait.Eventually(t, "the serving-none line", func() bool { return strings.Contains(logged.String(), servingNoneMessage) })
+	wantServingNone(t, logged, "once the publication committed, before its narrowing", api.NoRepositoryMapped("LEGION"))
 	testwait.Eventually(t, "a retry of the read whose narrowing failed", func() bool { return narrowings.Load() > 1 })
 	wantServingNone(t, logged, "while every narrowing is refused", api.NoRepositoryMapped("LEGION"))
 }
@@ -101,13 +101,7 @@ func TestComingToServeNoneWithTheSameRepositoriesMappedStartsTheBackoffAgainAt30
 	}
 	installs.setFailing(errors.New("GitHub answered 502"), "implement acme/widgets")
 	w.requestMappingRead()
-	testwait.Eventually(t, "six waits while acme/widgets is kept on its last answer", func() bool { return len(clock.recorded()) >= 6 })
-	clock.spin.Store(false)
-	testwait.Eventually(t, "the refresher waiting for its next read", func() bool { return clock.ticking.Load() > 0 })
-	before := len(clock.recorded())
-	if got := clock.recorded()[before-1]; got != 10*time.Minute {
-		t.Fatalf("the last wait while acme/widgets is kept on its last answer = %s, want the 10 min cap", got)
-	}
+	before := grownToCap(t, clock, "acme/widgets is kept on its last answer")
 	if !served(w, "acme/widgets") {
 		t.Fatal("acme/widgets not kept on its last answer while its read fails")
 	}
@@ -136,13 +130,7 @@ func TestServingARepositoryAgainKeepsTheBackoffForWhatStillWaits(t *testing.T) {
 	if served(w, "acme/widgets") || served(w, "zeta/tools") {
 		t.Fatal("a repository served at boot while both installation reads fail")
 	}
-	testwait.Eventually(t, "six waits while both are left out for now", func() bool { return len(clock.recorded()) >= 6 })
-	clock.spin.Store(false)
-	testwait.Eventually(t, "the refresher waiting for its next read", func() bool { return clock.ticking.Load() > 0 })
-	before := len(clock.recorded())
-	if got := clock.recorded()[before-1]; got != 10*time.Minute {
-		t.Fatalf("the last wait while both are left out for now = %s, want the 10 min cap", got)
-	}
+	before := grownToCap(t, clock, "both are left out for now")
 	installs.setFailing(nil, "implement acme/widgets")
 	clock.tick <- time.Now()
 	testwait.Eventually(t, "acme/widgets served and the refresher waiting again", func() bool {
@@ -198,7 +186,7 @@ func TestABootWhoseEveryRepositoryStaysRateLimitedLogsTheServingNoneLine(t *test
 		t.Fatal("a repository is served while GitHub rate-limits both")
 	}
 	errorLines := loggedLines(t, logs.String(), `"level":"ERROR"`)
-	if len(errorLines) != 1 || errorLines[0]["msg"] != servingNoneMessage || errorLines[0]["cause"] != noRepositoryServed("LEGION") || errorLines[0]["error"] == nil {
+	if len(errorLines) != 1 || errorLines[0]["msg"] != servingNoneLine || errorLines[0]["cause"] != noRepositoryServed("LEGION") || errorLines[0]["error"] == nil {
 		t.Fatalf("ERROR lines = %v, want one serving-none line, every repository left out, naming the failed read", errorLines)
 	}
 }

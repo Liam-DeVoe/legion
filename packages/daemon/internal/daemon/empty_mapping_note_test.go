@@ -1,15 +1,12 @@
 package daemon
 
 import (
-	"context"
-	"fmt"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
-	"github.com/sjawhar/legion/daemon/internal/intake"
 )
 
 // An issue handed to Legion while its project maps no repository in Dispatch is told why the
@@ -36,33 +33,21 @@ func TestAnIssueHandedToLegionWhileTheProjectMapsNoRepositoryIsToldTheProjectMap
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			ctx := context.Background()
 			w, client, _, _, _ := mappingRigJS(t, &installations{}, func(w *workflowRuntime) {
 				w.dispatch.(*mappingDispatch).set(tc.mapping...)
 				w.recheckAfter = func(time.Duration) <-chan time.Time { return nil }
 			})
-			engine, admission := rigHandlers(w)
-			issue := dispatch.Issue{Key: "LEGION-401", Status: "todo", Title: "handed to Legion", Rank: "A", HandedOver: true, LastSeq: 1}
-			client.mu.Lock()
-			client.issues = map[string]dispatch.Issue{issue.Key: issue}
-			client.mu.Unlock()
-			fact := intake.DispatchIssue{Key: issue.Key, Seq: issue.LastSeq, Status: issue.Status, Title: issue.Title, Rank: issue.Rank, HandedOver: issue.HandedOver}
-			prepared, err := prepareAsDelivered(t, w, fact)
-			if err != nil {
-				t.Fatalf("prepare %s = %v", fact.Key, err)
+			const key = "LEGION-401"
+			deliver(t, w, client, issue(key, "", "todo", true, "", 1))
+			if got := recordedIssue(t, w, key); got != nil {
+				t.Fatalf("%s recorded as %+v, want it not admitted", key, got)
 			}
-			if _, err := intake.ApplyFact(ctx, w.pool, "test", fmt.Sprintf("%s-%d", fact.Key, fact.Seq), prepared, engine, admission); err != nil {
-				t.Fatal(err)
-			}
-			if got := recordedIssue(t, w, issue.Key); got != nil {
-				t.Fatalf("%s recorded as %+v, want it not admitted", issue.Key, got)
-			}
-			notes := repositoryNotes(t, w, issue.Key)
+			notes := repositoryNotes(t, w, key)
 			if len(notes) != 1 || !strings.Contains(notes[0], tc.want) {
-				t.Fatalf("notes on %s = %q, want one saying %q", issue.Key, notes, tc.want)
+				t.Fatalf("notes on %s = %q, want one saying %q", key, notes, tc.want)
 			}
 			if (tc.remedy != "" && !strings.Contains(notes[0], tc.remedy)) || (tc.refused != "" && strings.Contains(notes[0], tc.refused)) {
-				t.Fatalf("the note on %s = %q, want it to say %q and not %q", issue.Key, notes[0], tc.remedy, tc.refused)
+				t.Fatalf("the note on %s = %q, want it to say %q and not %q", key, notes[0], tc.remedy, tc.refused)
 			}
 		})
 	}

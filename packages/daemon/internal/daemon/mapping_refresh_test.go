@@ -1594,6 +1594,50 @@ func (r *recheckWaits) recorded() []time.Duration {
 	return slices.Clone(r.waits)
 }
 
+// grownToCap waits for clock's backoff to reach its 10 min cap while what holds, stops it spinning
+// and waits for the refresher to wait on its next read, and returns how many waits it has
+// recorded: the next one is the one a test reads.
+func grownToCap(t *testing.T, clock *recheckWaits, what string) int {
+	t.Helper()
+	testwait.Eventually(t, "six waits while "+what, func() bool { return len(clock.recorded()) >= 6 })
+	clock.spin.Store(false)
+	testwait.Eventually(t, "the refresher waiting for its next read", func() bool { return clock.ticking.Load() > 0 })
+	waits := len(clock.recorded())
+	if got := clock.recorded()[waits-1]; got != 10*time.Minute {
+		t.Fatalf("the last wait while %s = %s, want the 10 min cap", what, got)
+	}
+	return waits
+}
+
+// servedByTheReadAgain has clock's refresher, reading the mapping of its own with nothing yet to
+// find, record eight waits, 30 s doubling to the 10 min cap; then act makes the change no event
+// tells the daemon of, and repo is served at the refresher's next read of its own and no sooner.
+// Once repo is served, nothing is awaited and the reads of its own stop.
+func servedByTheReadAgain(t *testing.T, w *workflowRuntime, clock *recheckWaits, repo string, act func()) {
+	t.Helper()
+	testwait.Eventually(t, "eight waits", func() bool { return len(clock.recorded()) >= 8 })
+	want := []time.Duration{30 * time.Second, time.Minute, 2 * time.Minute, 4 * time.Minute, 8 * time.Minute, 10 * time.Minute, 10 * time.Minute, 10 * time.Minute}
+	if got := clock.recorded()[:8]; !slices.Equal(got, want) {
+		t.Fatalf("waits = %v, want %v", got, want)
+	}
+	clock.spin.Store(false)
+	testwait.Eventually(t, "the refresher waiting for its next read", func() bool { return clock.ticking.Load() > 0 })
+	act()
+	if served(w, repo) {
+		t.Fatalf("%s served before any read of the mapping found the change", repo)
+	}
+	clock.tick <- time.Now()
+	testwait.Eventually(t, repo+" served by the read again", func() bool { return served(w, repo) })
+	if waiting := w.repositories.awaitingRead(); len(waiting) != 0 {
+		t.Fatalf("awaiting a read = %q once %s is served, want none", waiting, repo)
+	}
+	waits := len(clock.recorded())
+	time.Sleep(100 * time.Millisecond)
+	if got := len(clock.recorded()); got != waits {
+		t.Fatalf("the refresher waited %d more times once %s was served, want its reads of its own to stop", got-waits, repo)
+	}
+}
+
 // A project that maps no repository at boot serves one as soon as Dispatch maps it: Dispatch's
 // settings.repo_project.updated, through the daemon's own Dispatch consumer, has the mapping read
 // again, and the repository is served, GitHub intake hearing it, with no restart. Before that, an
@@ -1607,27 +1651,7 @@ func TestARepositoryMappedAfterAnEmptyBootIsServedOnItsMappingChange(t *testing.
 	if accepted, refused := w.repositories.Accepted(), w.repositories.Refused(); len(accepted) != 0 || len(refused) != 0 {
 		t.Fatalf("the boot serves %v and leaves out %#v, want neither: the project maps no repository", accepted, refused)
 	}
-	engine, admission := rigHandlers(w)
-	// apply delivers issue's todo event as the Dispatch consumer does, Dispatch showing the issue
-	// as the event does, since an admission event is prepared from Dispatch's own view of it.
-	apply := func(issue dispatch.Issue) {
-		t.Helper()
-		client.mu.Lock()
-		if client.issues == nil {
-			client.issues = map[string]dispatch.Issue{}
-		}
-		client.issues[issue.Key] = issue
-		client.mu.Unlock()
-		fact := intake.DispatchIssue{Key: issue.Key, Seq: issue.LastSeq, Status: issue.Status, Title: issue.Title, Rank: issue.Rank, HandedOver: issue.HandedOver, ResolvedRepo: issue.ResolvedRepo}
-		prepared, err := prepareAsDelivered(t, w, fact)
-		if err != nil {
-			t.Fatalf("prepare %s = %v", fact.Key, err)
-		}
-		if _, err := intake.ApplyFact(ctx, w.pool, "test", fmt.Sprintf("%s-%d", fact.Key, fact.Seq), prepared, engine, admission); err != nil {
-			t.Fatal(err)
-		}
-	}
-	apply(dispatch.Issue{Key: "LEGION-301", Status: "todo", Title: "before", Rank: "A", HandedOver: true, LastSeq: 1})
+	deliver(t, w, client, issue("LEGION-301", "", "todo", true, "", 1))
 	if got := recordedIssue(t, w, "LEGION-301"); got != nil {
 		t.Fatalf("LEGION-301 recorded as %+v while the project maps no repository", got)
 	}
@@ -1644,7 +1668,7 @@ func TestARepositoryMappedAfterAnEmptyBootIsServedOnItsMappingChange(t *testing.
 	testwait.Eventually(t, "acme/widgets served and heard on its mapping change", func() bool {
 		return served(w, "acme/widgets") && slices.Contains(githubFilterSubjects(t, stream), "notifications.github.acme.widgets.>")
 	})
-	apply(dispatch.Issue{Key: "LEGION-302", Status: "todo", Title: "after", Rank: "A", HandedOver: true, ResolvedRepo: "acme/widgets", LastSeq: 1})
+	deliver(t, w, client, issue("LEGION-302", "acme/widgets", "todo", true, "", 1))
 	if got := recordedIssue(t, w, "LEGION-302"); got == nil || got.Repo != "acme/widgets" {
 		t.Fatalf("LEGION-302 = %+v, want it admitted on acme/widgets once the mapping serves it", got)
 	}
@@ -1657,27 +1681,9 @@ func TestARepositoryMappedAfterAnEmptyBootIsServedOnItsMappingChange(t *testing.
 func TestARepositoryMappedWithNoEventIsServedByTheReadAgainWhileNoneIsMapped(t *testing.T) {
 	clock := newRecheckWaits()
 	w, client, _, _ := mappingRigWith(t, &installations{}, withNoRepositoryMapped, func(w *workflowRuntime) { w.recheckAfter = clock.after })
-	testwait.Eventually(t, "eight waits", func() bool { return len(clock.recorded()) >= 8 })
-	want := []time.Duration{30 * time.Second, time.Minute, 2 * time.Minute, 4 * time.Minute, 8 * time.Minute, 10 * time.Minute, 10 * time.Minute, 10 * time.Minute}
-	if got := clock.recorded()[:8]; !slices.Equal(got, want) {
-		t.Fatalf("waits = %v, want %v", got, want)
-	}
-	clock.spin.Store(false)
-	testwait.Eventually(t, "the refresher waiting for its next read", func() bool { return clock.ticking.Load() > 0 })
-	client.set(dispatch.RepoProject{Repo: "acme/widgets", Project: "LEGION", Default: true})
-	if served(w, "acme/widgets") {
-		t.Fatal("acme/widgets served before any read of the mapping found it")
-	}
-	clock.tick <- time.Now()
-	testwait.Eventually(t, "acme/widgets served by the read again", func() bool { return served(w, "acme/widgets") })
-	if waiting := w.repositories.awaitingRead(); len(waiting) != 0 {
-		t.Fatalf("awaiting a read = %q once acme/widgets is served, want none", waiting)
-	}
-	waits := len(clock.recorded())
-	time.Sleep(100 * time.Millisecond)
-	if got := len(clock.recorded()); got != waits {
-		t.Fatalf("the refresher waited %d more times once acme/widgets was served, want its reads of its own to stop", got-waits)
-	}
+	servedByTheReadAgain(t, w, clock, "acme/widgets", func() {
+		client.set(dispatch.RepoProject{Repo: "acme/widgets", Project: "LEGION", Default: true})
+	})
 }
 
 // A project whose every mapped repository lacks an App serves none, and the refresher reads the
@@ -1695,27 +1701,7 @@ func TestARepositoryWhoseAppIsInstalledAfterItIsMappedIsServedByTheReadAgain(t *
 	if _, refusal, leftOut, unread := w.repositories.lookup("acme/widgets"); !leftOut || unread || refusal != "the review App is not installed on acme/widgets" {
 		t.Fatalf("acme/widgets refusal = %q (left out %t, unread %t), want it left out for the App it lacks", refusal, leftOut, unread)
 	}
-	testwait.Eventually(t, "eight waits", func() bool { return len(clock.recorded()) >= 8 })
-	want := []time.Duration{30 * time.Second, time.Minute, 2 * time.Minute, 4 * time.Minute, 8 * time.Minute, 10 * time.Minute, 10 * time.Minute, 10 * time.Minute}
-	if got := clock.recorded()[:8]; !slices.Equal(got, want) {
-		t.Fatalf("waits = %v, want %v", got, want)
-	}
-	clock.spin.Store(false)
-	testwait.Eventually(t, "the refresher waiting for its next read", func() bool { return clock.ticking.Load() > 0 })
-	installs.setMissing(false, "review acme/widgets")
-	if served(w, "acme/widgets") {
-		t.Fatal("acme/widgets served before any read of the mapping found its App")
-	}
-	clock.tick <- time.Now()
-	testwait.Eventually(t, "acme/widgets served by the read again", func() bool { return served(w, "acme/widgets") })
-	if waiting := w.repositories.awaitingRead(); len(waiting) != 0 {
-		t.Fatalf("awaiting a read = %q once acme/widgets is served, want none", waiting)
-	}
-	waits := len(clock.recorded())
-	time.Sleep(100 * time.Millisecond)
-	if got := len(clock.recorded()); got != waits {
-		t.Fatalf("the refresher waited %d more times once acme/widgets was served, want its reads of its own to stop", got-waits)
-	}
+	servedByTheReadAgain(t, w, clock, "acme/widgets", func() { installs.setMissing(false, "review acme/widgets") })
 }
 
 // A project that maps a repository boots as it always did: it serves the mapping, logs no ERROR,
