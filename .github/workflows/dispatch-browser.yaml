@@ -384,15 +384,15 @@ jobs:
     # above the sum of the step budgets, as this file's head says a job budget is.
     #
     # The rows behind those seconds were the suite of the head those runs measured. Listed
-    # again at this branch's head, the suite holds 1,605 rows in 218 files, which is two
+    # again at this branch's head, the suite holds 1,623 rows in 220 files, which is two
     # listings rather than one: the six `-alone` projects are out of the default selection
-    # since dispatch://INFRA-1280, so a command that names no project lists 1,546 rows in 211
+    # since dispatch://INFRA-1280, so a command that names no project lists 1,564 rows in 213
     # files and one that names those six lists 59 more, in 8 files. One file is in both:
     # large-documents-long-build.e2e.ts, whose desktop half `chromium` runs and whose phone half
     # is `iphone-long-build-alone`'s; every other file of the second listing is a wall-clock
     # file that project selects whole since sjawhar/legion#2697. The ten projects this job's
-    # shard command names below hold 1,524 rows in 210 files; the four of those the
-    # pull-request lane names hold 1,411 in 208, of which that lane's `@pr` grep selects 286
+    # shard command names below hold 1,542 rows in 212 files; the four of those the
+    # pull-request lane names hold 1,429 in 210, of which that lane's `@pr` grep selects 286
     # in 147 files, 150 of them on the real stack - exactly the 150 of `realStackBudget`
     # (e2e/__tests__/pull-request-lane.test.ts), and the same 286 and 150 as at 1aaa9135:
     # neither the reconnect row this round added to large-documents-reader.e2e.ts nor the three
@@ -409,9 +409,9 @@ jobs:
     # the 3 is large-documents-long-build.e2e.ts on `iphone-long-build-alone`
     # (dispatch://INFRA-341).
     #
-    # Those 1,524 cut five ways, each leg listed at this head with the ten projects named below
-    # and this job's own denominator (`--shard=<i>/5 --list`): 305, 305, 305, 305 and 304 rows,
-    # which sum to the 1,524. Equal row counts are all Playwright's cut promises, and the
+    # Those 1,542 cut five ways, each leg listed at this head with the ten projects named below
+    # and this job's own denominator (`--shard=<i>/5 --list`): 309, 309, 308, 308 and 308 rows,
+    # which sum to the 1,542. Equal row counts are all Playwright's cut promises, and the
     # seconds above are where what a leg costs is read instead.
     timeout-minutes: 13
     strategy:

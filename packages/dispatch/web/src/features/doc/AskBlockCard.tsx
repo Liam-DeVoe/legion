@@ -99,7 +99,7 @@ export function AskBlockCard({
                   // takes the next row where it does not; below 36rem it is a row of its own,
                   // under who asked and when (`BlockAskHeader`).
                   <span
-                    className="flex items-center gap-x-2 @max-[36rem]:order-2 @max-[36rem]:basis-full"
+                    className="flex items-center gap-x-2 @max-ask-block-line:order-2 @max-ask-block-line:basis-full"
                     data-dispatch-ask-answered=""
                   >
                     <span>Answered by {facts.answeredBy}</span>

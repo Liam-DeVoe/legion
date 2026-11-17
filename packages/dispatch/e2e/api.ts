@@ -733,6 +733,16 @@ export function resolveAsk(
   return post("/api/v1/asks/{id}/resolve", { body: input, params: { id } }, options);
 }
 
+/** `POST /api/v1/asks/{id}/decline`: the person closes an open question with no answer, as the
+ *  card's **Decline to answer** does (`web/src/api/client.ts`'s `declineAsk`). */
+export function declineAsk(
+  id: string,
+  input: Body<"/api/v1/asks/{id}/decline", "post">,
+  options: ApiOptions = {}
+) {
+  return post("/api/v1/asks/{id}/decline", { body: input, params: { id } }, options);
+}
+
 export function createComment(
   issue: string,
   input: Body<"/api/v1/issues/{key}/comments", "post">,

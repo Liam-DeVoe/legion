@@ -24,6 +24,20 @@
    `not-refused:hover:` never lights a refused button, and no look has to be stated twice. */
 @custom-variant refused (&:is(:disabled, [aria-disabled="true"]));
 
+/* The three widths an ask header's layout switches at (`features/inbox/AskHeader.tsx`), each a
+   width of the header's own row, which is its `@container`, and never the viewport's. Named
+   here once as container sizes, so every class reads one of them by name (`@max-ask-block-line:`
+   and the like) and `e2e/ask-header-sweep.e2e.ts` reads these same values:
+     - `ask-block-line`: from it a read-only decision block's header is one line; below it, rows;
+     - `ask-card-line`: from it an ask card's row is one line;
+     - `ask-card-two-lines`: from it to `ask-card-line` the card's row is two lines beside the
+       copy control; below it, the phone's layout. */
+@theme {
+  --container-ask-block-line: 36rem;
+  --container-ask-card-line: 27.5rem;
+  --container-ask-card-two-lines: 19.5rem;
+}
+
 /* Dispatch has no theme toggle: every surface follows the OS `prefers-color-scheme`, which is
    exactly Tailwind v4's default `dark:` variant (a `@media (prefers-color-scheme: dark)` query,
    built into `@import "tailwindcss"` with no `@custom-variant` override here). Components import

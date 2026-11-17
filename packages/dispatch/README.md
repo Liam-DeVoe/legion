@@ -684,7 +684,7 @@ engine, viewport, origin and server-process count. The iPhone project uses Chrom
 same projects but the two stubbed ones and the six `-alone` ones, so its `iphone` project also
 runs only the `@phone` tests, and it holds no `-alone` row: that command names no project, and
 the six `-alone` projects are out of the default selection. Listed at this head, a deployed
-run holds 1,410 rows in 180 files, and the other 59 are an `-alone` run of its own, under the
+run holds 1,428 rows in 182 files, and the other 59 are an `-alone` run of its own, under the
 same base URL:
 `bun run build:contracts && PLAYWRIGHT_BASE_URL=… bunx playwright test --config e2e/playwright.config.ts --project=chromium-alone --project=firefox-alone --project=webkit-alone --project=iphone-alone --project=iphone-measure-alone --project=iphone-long-build-alone --workers=1`,
 which is `bun run e2e:clock` less the SPA build that script runs first and a deployed run has
