@@ -45,7 +45,8 @@
 # stack process keeps the lock.
 #
 # prepare_stack runs stack.sh setup (an incremental build of SRC, and of DISPATCH_SRC's
-# envoy-dispatch), start and seed, each of which does nothing when its work is already done, and the
+# envoy-dispatch; a first setup whose environment gives a key no port is refused before any build,
+# stack_ports), start and seed, each of which does nothing when its work is already done, and the
 # migration check: a Dispatch build that lacks a migration the seed holds is refused with exit 1,
 # and one that holds migrations the seed lacks is noted. Then it sets BUILD to `stack.sh build-info`
 # ("<commit> <dirty>"). run-step.sh calls it before a step that is not part of a series;

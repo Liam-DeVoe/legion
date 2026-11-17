@@ -10,9 +10,10 @@
 // Experiments 1 to 6 and 19 to 21 measure Temporal and take its address; experiments 7 to 9
 // measure DBOS, which is a library keeping its state in the application's own
 // PostgreSQL, and take that database's URL instead; experiments 10 to 12 measure
-// Restate, which is a server that calls the application, and take that server's two
-// loopback addresses, the restate-server binary to start, and the binary of the
-// service process the server is to call.
+// Restate, which is a server that calls the application, and take the restate-server
+// binary to start, which serves on unix sockets of its own, and the binary of the
+// service process the server is to call, or else the two loopback addresses of a
+// server the operator runs.
 //
 // Each experiment prints its measured numbers as plain lines and then exactly one last
 // line, `experiment N: PASS` or `experiment N: FAIL`, exiting 0 only on PASS.

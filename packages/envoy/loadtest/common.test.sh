@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # packages/envoy/loadtest/common.test.sh
 #
-# Proves the run lock of common.sh (lock_root) and the ports it derives from LOADTEST_ROOT
-# (stack_ports), without a stack. Each lock taker below sources common.sh and calls lock_root, as
-# run-series.sh, run-step.sh and stack.sh do.
+# Proves the run lock of common.sh (lock_root) and the stack's ports, which the operator gives and
+# common.sh never chooses (stack_ports), without a stack. Each lock taker below sources common.sh and
+# calls lock_root, as run-series.sh, run-step.sh and stack.sh do.
 #
 # The case this covers: a series' run-step.sh that re-opened descriptor 9 lost the lock
 # that it inherited from run-series.sh and went on by the token alone. Killing run-series.sh then

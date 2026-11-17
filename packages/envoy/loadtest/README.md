@@ -96,7 +96,7 @@ same step before and after its change, and compares the two rows.
 | `restart-step.sh` | One step whose listener is killed in the middle of the window, and its report (The listener restart, below) |
 | `common.sh` | What the step scripts share, sourced by each: the `LOADTEST_ROOT`, `LOADTEST_SRC` and `LOADTEST_DISPATCH_SRC` paths, the run lock (One run at a time, below), and the setup, start, seed and migration check before a step. Also the replay's download and verify of the manifest's parts, file artifacts of `LOADTEST_REPLAY_ISSUE` (`replay_fetch_parts`, `replay_get_bundle`), which `stack.sh replay-get` and `cluster/cluster.sh replay-prepare` both call |
 | `*_test.go` | Unit tests. They need no Postgres and no NATS: `cd packages/envoy && go test ./loadtest/` |
-| `run-step.test.sh` | The test of the run lock. It fakes `go` and `uv` and needs no stack: `cd packages/envoy && bash loadtest/run-step.test.sh` |
+| `run-step.test.sh` | The test of the run lock, and of the refusal of a run given no port. It fakes `go` and `uv`, gives the stack's ports as an operator does, and needs no stack: `cd packages/envoy && bash loadtest/run-step.test.sh` |
 | `common.test.sh` | The test of `lock_root`: a series step keeps the lock after its parent dies, a refusal names the live holder, a token without the holder's descriptor is refused, a lock held by a process that this PID namespace cannot see is refused as held (never as free), a caller takes the lock once its holder has ended, two callers waiting at once never name each other as the holder, and a record of another PID namespace whose pid runs here is refused without naming that pid. It needs no stack: `cd packages/envoy && bash loadtest/common.test.sh` |
 | `cluster/cluster.sh` | The load test on a full-size copy in a Kubernetes namespace (Running on a cluster copy, below) |
 | `cluster/manifests/` | The copy's templates: `postgres.yaml`, `dispatch.yaml`, `listener.yaml`, `runner.yaml`, `secrets.yaml.tmpl`, and `nats.yaml`, the committed render of chart `nats/nats` 2.15.1 |
@@ -200,9 +200,15 @@ packages/envoy/loadtest/run-step.sh <name> --events <per s> --sessions <n> --req
 
 A replay step takes `--replay` and the replay's flags instead (The replay, below).
 
+The stack chooses no port of its own (Ports, above). The first run on a `LOADTEST_ROOT` takes the
+stack's ports from the environment: set `LOADTEST_PORT_BASE` (nine ports from it, free on this
+machine), or each `LOADTEST_*_PORT`. Without them its `stack.sh setup` refuses before it builds
+anything, naming the variables to set. A later run keeps the ports that `stack.json` records.
+
 Example, the 1x step of the root report:
 
 ```bash
+export LOADTEST_PORT_BASE=<the first of nine free ports>  # the first run on this root only
 packages/envoy/loadtest/run-step.sh step-1x --events 4 --sessions 400 --requests 60
 ```
 
@@ -240,10 +246,11 @@ Poisson from the RNG seed, so two runs of one step with one seed offer the same 
 `run-step.sh` does these steps in order:
 
 1. `stack.sh setup`: it builds the binaries from the checkout (incremental), so a step always runs
-   the checkout's current code.
-2. `stack.sh start`, then `stack.sh seed`. Each one does nothing when its work is already done. So
-   `run-step.sh` is the one command from a fresh checkout. On the first run, the seed alone takes
-   37 to 50 minutes.
+   the checkout's current code. The first setup on a root records the ports that the operator
+   gives, and refuses before it builds when a key has none (Ports, above).
+2. `stack.sh start`, then `stack.sh seed`. Each one does nothing when its work is already done. So,
+   with the stack's ports given (step 1), `run-step.sh` is the one command from a fresh checkout.
+   On the first run, the seed alone takes 37 to 50 minutes.
 3. The migration check (Before and after across commits, below).
 4. `stack.sh reset`, with Dispatch's log in the step directory (The reset, below).
 5. `loadgen run`. It writes the step's files.
@@ -461,7 +468,8 @@ series directory.
 - With the default window, a step takes about 5 minutes and a series about 30 minutes.
 - `run-series.sh` runs the setup (one build of the checkout), the start, the seed and the migration
   check once, before the series directory exists, and reads the build's commit and dirty flag once
-  (`stack.sh build-info`). It passes them to its steps in `LOADTEST_SERIES_BUILD`. Its steps skip
+  (`stack.sh build-info`). Its first setup on a root needs the stack's ports, as a step's does (Run
+  one step, above). It passes the build to its steps in `LOADTEST_SERIES_BUILD`. Its steps skip
   the setup and record that build in `meta.json`, so every step of a series runs one build, even
   when the checkout changes during the series. A `run-step.sh` that does not hold the series' lock
   ignores `LOADTEST_SERIES_BUILD` and builds the checkout.
@@ -502,7 +510,7 @@ packages/envoy/loadtest/run-step.sh editors-10x-over-0.25x --events 1 --sessions
 
 | Command | What it does |
 | --- | --- |
-| `stack.sh setup` | Builds `envoy-dispatch` (from `LOADTEST_DISPATCH_SRC`, or `LOADTEST_DISPATCH_COMMIT`'s commit), `envoy-listener` and `loadgen` into `$LOADTEST_ROOT/bin`, with `bin/envoy-dispatch.json`, the build's record. Installs `nats-server` at the version that `packages/envoy/go.mod` pins, with `go install`. Installs Postgres with pgvector from the `pgserver` wheel. Runs `initdb`. Writes `stack.json`. Each run does it again, incrementally. |
+| `stack.sh setup` | Builds `envoy-dispatch` (from `LOADTEST_DISPATCH_SRC`, or `LOADTEST_DISPATCH_COMMIT`'s commit), `envoy-listener` and `loadgen` into `$LOADTEST_ROOT/bin`, with `bin/envoy-dispatch.json`, the build's record. Installs `nats-server` at the version that `packages/envoy/go.mod` pins, with `go install`. Installs Postgres with pgvector from the `pgserver` wheel. Runs `initdb`. Writes `stack.json` with the ports that the operator gives (Ports, above): a first setup that gives a key no port is refused before it builds anything, naming the variables to set. Each run does it again, incrementally. |
 | `stack.sh start` | Starts Postgres, the proxy, NATS and the listener. It keeps a process that already runs. It refuses a port that another process holds, and names that process when this PID namespace can see it. Dispatch (and the listener's latency proxy) start only in `seed` and `reset`. |
 | `stack.sh seed [--force] [--min-events N]` | Makes the seed template `dispatch_seed` (The seed, below). It does nothing when `dispatch_seed` and `seed.meta.json` exist. `--force` drops the old seed and seeds again. `--min-events N` extends the event log to N rows (The seed, below); on an existing seed with fewer rows, it extends that seed in place, in seconds, without seeding again. |
 | `stack.sh reset [LOG]` | Resets the stack to the seed and starts Dispatch, with its log in `LOG` (default `$LOADTEST_ROOT/logs/dispatch.log`). `run-step.sh` does this before each step. |

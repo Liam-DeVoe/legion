@@ -2708,8 +2708,9 @@ GATES = [
         (f"{ENVOY}/loadtest/run-step.test.sh", at("envoy-go-checks", LOADTEST_RUN_STEP)),
         (f"{ENVOY}/loadtest/run-step.sh", "packages/envoy/loadtest/run-step.test.sh runs it"),
         (f"{ENVOY}/loadtest/run-series.sh", "packages/envoy/loadtest/run-step.test.sh runs it"),
+        (f"{ENVOY}/loadtest/stack.sh", "packages/envoy/loadtest/common.sh prepare_stack runs its setup, whose port refusal and first build run-step.test.sh watches"),
         (f"{ENVOY}/loadtest/common.test.sh", at("envoy-go-checks", LOADTEST_LOCK)),
-        (f"{ENVOY}/loadtest/common.sh", "packages/envoy/loadtest/common.test.sh sources it; run-step.sh and run-series.sh source it"),
+        (f"{ENVOY}/loadtest/common.sh", "packages/envoy/loadtest/common.test.sh sources it; run-step.sh, run-series.sh, stack.sh, cluster/cluster.sh and vm/vm.sh source it, and cluster.test.sh and vm.test.sh run those two"),
         (NOTICES, f"{at('envoy-go-checks', 'Pack envoy binaries')} runs it"),
         (GO_TARGETS, f"{at('envoy-go-checks', 'Pack envoy binaries')}: jq -r '.envoy[]'"),
         # Each action builds its command with GOWORK=off, so it reads packages/envoy's go.mod and
