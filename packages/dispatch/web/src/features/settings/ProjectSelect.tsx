@@ -3,7 +3,7 @@ import { type ReactNode, useState } from "react";
 import type { Project } from "../../api/types";
 import { MultiSelect } from "../../components/MultiSelect";
 import { dangerText } from "../../theme/classes";
-import { settingsFieldLabel, settingsListTrigger } from "./classes";
+import { settingsFieldLabel, settingsListText, settingsListTrigger } from "./classes";
 
 /** The "Choose a project" field both Settings forms use: its visible `label` over the shared
  *  list's single pick (`MultiSelect`) of the projects, `KEY · name`, whose text box narrows them
@@ -43,6 +43,7 @@ export function ProjectSelect({
         options={projects.map((candidate) => candidate.key)}
         searchLabel="Search projects"
         triggerClassName={settingsListTrigger}
+        triggerTextClassName={settingsListText}
         value={value === "" ? undefined : value}
       >
         {value === "" ? "Choose a project" : undefined}
