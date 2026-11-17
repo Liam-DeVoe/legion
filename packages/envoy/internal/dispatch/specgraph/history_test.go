@@ -62,7 +62,8 @@ func TestFixtureHistoryListsBothPathsOfAMove(t *testing.T) {
 // JSON formatter gives them, and refuses what the strict JSON reader refuses (a field it does not
 // know, one written in other letters or two times, a byte that is not UTF-8, text after the
 // history, a value of another type, named with the form of history.json and its place), a commit
-// with no id and an id on two commits. A path of a tree keeps its own letters.
+// with no id, an id on two commits, a tree with no path and a content label with no character. A
+// path of a tree keeps its own letters.
 func TestReadFixtureHistory(t *testing.T) {
 	t.Parallel()
 	paths, err := filepath.Glob("testdata/scenarios/*/history.json")
@@ -80,16 +81,18 @@ func TestReadFixtureHistory(t *testing.T) {
 		}
 	}
 	for text, want := range map[string]string{
-		`{"commits":[{"id":"c1","files":{},"tree":"x"}]}`:           `member "/commits/0/tree" is not in the format`,
-		`{"commits":[],"branches":[]}`:                              `member "/branches" is not in the format`,
-		`{"commits":[{"ID":"c1","files":{}}]}`:                      `member "/commits/0/ID" is not in the format`,
-		`{"commits":[{"id":"c1","id":"c2","files":{}}]}`:            `member "/commits/0/id" is in one object two times`,
-		`{"commits":[{"id":"c1","files":{"a.md":"1","a.md":"2"}}]}`: `member "/commits/0/files/a.md" is in one object two times`,
-		"{\"commits\":[{\"id\":\"c\xff1\",\"files\":{}}]}":          "it is not UTF-8",
-		`{"commits":[{"id":"c1","files":{}}]} {}`:                   "text after the JSON value",
-		`{"commits":[{"files":{"a":"1"}}]}`:                         "a commit has no id",
-		`{"commits":[{"id":"c1"},{"id":"c1","files":{}}]}`:          `commit "c1" is in the history two times`,
-		`{"commits":"c1"}`:                                          `specgraph: history: it is not in the form {"commits":[{"id":"<commit>","parent":"<commit>","files":{"<repository path>":"<content label>"}}, …]}: the value at "/commits" is of another type`,
+		`{"commits":[{"id":"c1","files":{},"tree":"x"}]}`:                       `member "/commits/0/tree" is not in the format`,
+		`{"commits":[],"branches":[]}`:                                          `member "/branches" is not in the format`,
+		`{"commits":[{"ID":"c1","files":{}}]}`:                                  `member "/commits/0/ID" is not in the format`,
+		`{"commits":[{"id":"c1","id":"c2","files":{}}]}`:                        `member "/commits/0/id" is in one object two times`,
+		`{"commits":[{"id":"c1","files":{"a.md":"1","a.md":"2"}}]}`:             `member "/commits/0/files/a.md" is in one object two times`,
+		"{\"commits\":[{\"id\":\"c\xff1\",\"files\":{}}]}":                      "it is not UTF-8",
+		`{"commits":[{"id":"c1","files":{}}]} {}`:                               "text after the JSON value",
+		`{"commits":[{"files":{"a":"1"}}]}`:                                     "a commit has no id",
+		`{"commits":[{"id":"c1"},{"id":"c1","files":{}}]}`:                      `commit "c1" is in the history two times`,
+		`{"commits":"c1"}`:                                                      `specgraph: history: it is not in the form {"commits":[{"id":"<commit>","parent":"<commit>","files":{"<repository path>":"<content label>"}}, …]}: the value at "/commits" is of another type`,
+		`{"commits":[{"id":"c1","files":{"a.md":"1"}},{"id":"c2","files":{}}]}`: `specgraph: history: commit "c2": its files hold no path, and the tree of a commit holds at least one file`,
+		`{"commits":[{"id":"c1","files":{"a.md":"1","b.md":""}}]}`:              `specgraph: history: commit "c1": the content label of "b.md" is empty, and a label has at least one character`,
 	} {
 		_, err := ReadFixtureHistory(strings.NewReader(text))
 		if err == nil || !strings.Contains(err.Error(), want) {
@@ -102,31 +105,37 @@ func TestReadFixtureHistory(t *testing.T) {
 	}
 }
 
+// runTestGit runs git -C dir with args for the setup of a test, and gives its output with no blank
+// at its ends; the test fails when git exits with an error. No setting of the machine reaches it:
+// no system and no global configuration, no variable GIT_* of the process (GIT_CONFIG_COUNT and
+// its keys give configuration too, and GIT_DIR names another clone), and no hook: core.hooksPath
+// is /dev/null on the command line, which no configuration file and no variable overrides, and with
+// it a wrapper of git on PATH that gives each commit hooks of its own gives none. Author A writes
+// each commit.
+func runTestGit(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", dir, "-c", "core.hooksPath=/dev/null"}, args...)...)
+	cmd.Env = append(slices.DeleteFunc(os.Environ(), func(kv string) bool { return strings.HasPrefix(kv, "GIT_") }),
+		"GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1",
+		"GIT_AUTHOR_NAME=Author A", "GIT_AUTHOR_EMAIL=author-a@example.com",
+		"GIT_COMMITTER_NAME=Author A", "GIT_COMMITTER_EMAIL=author-a@example.com")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
+
 // GitHistory lists both paths of a moved file: git detects the move in this repository as a
 // rename (the control: plain git diff --name-only names only the new path), and a history that
 // gave git's rename view would miss the path that left a tie. A commit that git cannot read gives
 // ok false, and so does a commit id that git would read as an option.
 func TestGitHistoryListsBothPathsOfAMove(t *testing.T) {
-	// t.Setenv, so the git commands of the test and of GitHistory read no configuration of the
-	// machine; a test that calls t.Setenv cannot run in parallel.
-	for name, value := range map[string]string{
-		"GIT_CONFIG_GLOBAL":   "/dev/null",
-		"GIT_CONFIG_NOSYSTEM": "1",
-		"GIT_AUTHOR_NAME":     "Author A",
-		"GIT_AUTHOR_EMAIL":    "author-a@example.com",
-		"GIT_COMMITTER_NAME":  "Author A",
-		"GIT_COMMITTER_EMAIL": "author-a@example.com",
-	} {
-		t.Setenv(name, value)
-	}
+	t.Parallel()
 	dir := t.TempDir()
 	git := func(args ...string) string {
 		t.Helper()
-		out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).CombinedOutput()
-		if err != nil {
-			t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
-		}
-		return strings.TrimSpace(string(out))
+		return runTestGit(t, dir, args...)
 	}
 	write := func(path, content string) {
 		t.Helper()
@@ -177,30 +186,16 @@ func TestGitHistoryListsBothPathsOfAMove(t *testing.T) {
 // change of its tie (R8), and R48 names the case: "a check whose test did not run although code
 // that the check runs changed". Each row: a clone at dir with commits A and B, the row's setting,
 // and the paths that differ between the trees of A and B, or ok false where the clone does not hold
-// A. The git commands of the test read no configuration of the machine (GIT_CONFIG_GLOBAL,
-// GIT_CONFIG_NOSYSTEM), and a row sets its own.
+// A. The git commands of the test read no setting of the machine (runTestGit), and a row sets its
+// own in the clone.
 func TestGitHistoryIsTheSameUnderEachSetting(t *testing.T) {
-	for name, value := range map[string]string{
-		"GIT_CONFIG_GLOBAL":   "/dev/null",
-		"GIT_CONFIG_NOSYSTEM": "1",
-		"GIT_AUTHOR_NAME":     "Author A",
-		"GIT_AUTHOR_EMAIL":    "author-a@example.com",
-		"GIT_COMMITTER_NAME":  "Author A",
-		"GIT_COMMITTER_EMAIL": "author-a@example.com",
-	} {
-		t.Setenv(name, value)
-	}
 	type clone struct {
 		dir string
 		t   *testing.T
 	}
 	git := func(c clone, args ...string) string {
 		c.t.Helper()
-		out, err := exec.Command("git", append([]string{"-C", c.dir}, args...)...).CombinedOutput()
-		if err != nil {
-			c.t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
-		}
-		return strings.TrimSpace(string(out))
+		return runTestGit(c.t, c.dir, args...)
 	}
 	write := func(c clone, path, content string) {
 		c.t.Helper()
@@ -316,6 +311,30 @@ func TestGitHistoryIsTheSameUnderEachSetting(t *testing.T) {
 			write(c, "a.go", "1\n")
 			return a, commit(c, "B"), GitHistory{Dir: c.dir}
 		}, []string{"a.go"}, true},
+		// For a list of names git runs no diff.external, applies no textconv and colours no name, so
+		// Changed passes no flag for them (a probe with git 2.43.0 gave the same bytes with and
+		// without --no-ext-diff, --no-textconv and --no-color, and ran no external program); this row
+		// holds that on the git that runs the test. Its control: a patch of A and B, with the same
+		// settings, is the external program's output, so the settings are live.
+		{"diff.external, a textconv of each file and color always, set together", func(c clone) (string, string, GitHistory) {
+			external := filepath.Join(c.t.TempDir(), "external.sh")
+			if err := os.WriteFile(external, []byte("#!/bin/sh\necho EXTERNAL\n"), 0o700); err != nil {
+				c.t.Fatal(err)
+			}
+			git(c, "config", "diff.external", external)
+			git(c, "config", "diff.same.textconv", "echo same")
+			git(c, "config", "color.ui", "always")
+			git(c, "config", "color.diff", "always")
+			write(c, ".gitattributes", "* diff=same\n")
+			write(c, "a.txt", "1\n")
+			a := commit(c, "A")
+			write(c, "a.txt", "2\n")
+			b := commit(c, "B")
+			if patch := git(c, "diff", a, b); patch != "EXTERNAL" {
+				c.t.Fatalf("control: git diff A B = %q, want the external program's EXTERNAL, so the settings are live", patch)
+			}
+			return a, b, GitHistory{Dir: c.dir}
+		}, []string{"a.txt"}, true},
 		{"GIT_DIR of the process naming another clone", func(c clone) (string, string, GitHistory) {
 			write(c, "a.go", "1\n")
 			a := commit(c, "A")
@@ -332,9 +351,7 @@ func TestGitHistoryIsTheSameUnderEachSetting(t *testing.T) {
 			write(c, "b.go", "1\n")
 			b := commit(c, "B")
 			shallow := filepath.Join(c.t.TempDir(), "shallow")
-			if out, err := exec.Command("git", "clone", "-q", "--depth", "1", "file://"+c.dir, shallow).CombinedOutput(); err != nil {
-				c.t.Fatalf("git clone --depth 1: %v\n%s", err, out)
-			}
+			runTestGit(c.t, c.dir, "clone", "-q", "--depth", "1", "file://"+c.dir, shallow)
 			return a, b, GitHistory{Dir: shallow}
 		}, nil, false},
 	} {

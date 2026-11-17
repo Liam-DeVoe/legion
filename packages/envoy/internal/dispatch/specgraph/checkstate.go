@@ -123,12 +123,16 @@ const (
 //     builds the approved spec from the store, with no reader. A problem that Validate finds in
 //     the files and that refuses C (refusals): unknown, refused, Detail its rule, since the
 //     derivation gives no clean state for a tree that the rules refuse.
-//  2. CI refused C at S.Commit, or at a commit whose results of C count at S (R48): unknown,
-//     uncited, Detail its rule, and no earlier result counts. A commit whose results count at S is
-//     S.Commit, and one from which a candidate of step 3 counts at S by step 4's rule: the commit of
-//     a result of a code check, the TestCommit of a result of a program check of production or the
-//     graph. R48: "At that commit, such a check reads unknown, and no earlier result of it counts",
-//     so no result of that commit also counts at another (R8: "also counts").
+//  2. CI refused C at S.Commit, or at the commit of a candidate of step 3 that counts at S by step
+//     4's rule (R48): unknown, uncited, Detail the least of their rules by its name, so that the
+//     order of the results does not choose it, and no earlier result counts. The commit of a
+//     candidate is the commit of a result of a code check, the TestCommit of a result of a program
+//     check of production or the graph. A refusal counts at its own commit (R48: "At that commit,
+//     such a check reads unknown, and no earlier result of it counts") and cancels the results of
+//     that commit wherever they count, so no result of that commit also counts at another (R8:
+//     "also counts"). A refusal at a commit that holds no candidate counts at that commit as the
+//     subject alone: a refusal about the tree shows in C's text or in its tied files, which stop
+//     the carry by their own rules, and a refusal about one run says nothing about another commit.
 //  3. The candidates are C's results of kind run or failing_example that carry the digest of C's
 //     current text (R7: a result counts "only for the procedure that ran it"), a run of a program
 //     check only when the check's job reported it (R6: "only the reports of that job count"), and
@@ -148,10 +152,13 @@ const (
 //     example (R7: "The procedure is the text of the check and the code that runs it, so a change to
 //     either ends the standing of earlier results"); Input.check refuses a result of such a check
 //     that names no TestCommit, as it refuses one that names no subject of its check's kind. A run of
-//     C's job counts at S at a commit whose results count at S by the same rule, S.Commit among
-//     them, since a fact of a commit counts wherever the results of that commit count. No run
-//     counts: unknown, ci_fault when a run of C's job that counts at S ended (R9), else
-//     subject_moved when C has a run, else no_result. A code check, or a program check of
+//     C's job counts at S at each commit whose results of C would count at S by the same rule,
+//     S.Commit among them, whether or not that commit holds a result of C: it is the newest answer
+//     of its commit (R9: "When a check has no result that counts after a run of its job ends, it
+//     reads unknown, and Dispatch reports a fault of CI"; R7: "silence is not a pass"), unlike a
+//     refusal of step 2. No run counts: unknown, ci_fault when a run of C's job that counts at S
+//     ended (R9), else subject_moved when C has a run, else no_result, since a run of the job that
+//     has not ended is no fault of CI. A code check, or a program check of
 //     production or the graph, with a run of its job that counts at S in a leg with no run that
 //     counts: unknown, ci_fault, Detail the leg, when that run ended (R7: "silence is not a pass";
 //     R12: "Each leg of a matrix reports its own result, and no leg replaces the result of
@@ -346,9 +353,6 @@ func (j *checkJudge) state(c Check) CheckState {
 	if rule, refused := j.refused[c.ID]; refused {
 		return unknownCheck(reasonRefused, rule)
 	}
-	if rule, refused := j.in.Uncited[j.in.Subject.Commit][c.ID]; refused {
-		return unknownCheck(reasonUncited, rule)
-	}
 
 	job := checkJob(c)
 	statement, since := j.newestApproval(c.Serves)
@@ -521,13 +525,17 @@ func (j *checkJudge) carries(check, commit string) bool {
 	return changed.ok && !slices.ContainsFunc(changed.paths, func(path string) bool { return from.Covers(path) || to.Covers(path) })
 }
 
-// refusalWhereItCounts is the rule of the first refusal of c by CI at a commit whose results of c
-// count at the subject (step 2), of the commits of runs and faults, the candidates of c: the commit
-// of a result of a check of the code, the TestCommit of a result of a program check of production or
-// of the graph; and whether there is one.
+// refusalWhereItCounts is the least rule, by its name, of the refusals of c by CI that count at the
+// subject (step 2), and whether there is one: the refusal at S.Commit, and for a check of the code
+// or a program check of production or of the graph, each refusal at a commit whose results of c
+// count at the subject, of the commits of runs and faults, the candidates of c: the commit of a
+// result of a check of the code, the TestCommit of a result of a program check of production or of
+// the graph. The least, so that the order of the results, which says nothing, does not choose the
+// rule that the state names.
 func (j *checkJudge) refusalWhereItCounts(c Check, runs, faults []Result) (string, bool) {
+	rule, refused := j.in.Uncited[j.in.Subject.Commit][c.ID]
 	if readsProduction(c) && c.Procedure != ProcedureProgram {
-		return "", false
+		return rule, refused
 	}
 	for _, results := range [2][]Result{runs, faults} {
 		for _, r := range results {
@@ -535,12 +543,12 @@ func (j *checkJudge) refusalWhereItCounts(c Check, runs, faults []Result) (strin
 			if readsProduction(c) {
 				commit = r.TestCommit
 			}
-			if rule, refused := j.in.Uncited[commit][c.ID]; refused && j.carries(c.ID, commit) {
-				return rule, true
+			if other, at := j.in.Uncited[commit][c.ID]; at && (!refused || other < rule) && j.carries(c.ID, commit) {
+				rule, refused = other, true
 			}
 		}
 	}
-	return "", false
+	return rule, refused
 }
 
 // jobEnded is whether a run of job, in any leg, ended at a commit whose results of c count at the

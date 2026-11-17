@@ -165,6 +165,14 @@ func TestTheDerivationRefusesAnInputThatIsNotWhole(t *testing.T) {
 		{name: "a commit of the history with no files", change: func(in *Input) {
 			in.History = &FixtureHistory{Commits: []FixtureCommit{{ID: "c1"}}}
 		}, want: `specgraph: history: commit "c1": it sets no files`},
+		// A tree with no path, or a content label with no character, would read as a tree, or a
+		// content, that other commits share, so a result would carry between them (R8).
+		{name: "a commit of the history whose tree holds no path", change: func(in *Input) {
+			in.History = &FixtureHistory{Commits: []FixtureCommit{{ID: "c1", Files: map[string]string{}}}}
+		}, want: `specgraph: history: commit "c1": its files hold no path, and the tree of a commit holds at least one file`},
+		{name: "a content label of the history that is empty", change: func(in *Input) {
+			in.History = &FixtureHistory{Commits: []FixtureCommit{{ID: "c1", Files: map[string]string{"go.work": ""}}}}
+		}, want: `specgraph: history: commit "c1": the content label of "go.work" is empty, and a label has at least one character`},
 		// A nil value of each type that implements History, a type of the package or of the caller,
 		// would panic where a result carries, and an Input with no history sets no History.
 		{name: "a nil *FixtureHistory", change: func(in *Input) { in.History = (*FixtureHistory)(nil) },
@@ -198,6 +206,14 @@ func TestTheDerivationRefusesAnInputThatIsNotWhole(t *testing.T) {
 			want: "specgraph: it sets no JobRuns; an Input at a commit where no job ran sets an empty list"},
 		{name: "no map of the checks that CI refused", change: func(in *Input) { in.Uncited = nil },
 			want: "specgraph: it sets no Uncited; an Input in whose history CI refused no check sets an empty map"},
+		// R48: a refusal of CI names the rule that refused the check, and a commit with no refusal
+		// has an empty map, or no key: a map that is nil, or a rule "", names nothing.
+		{name: "control: a commit of Uncited with an empty map", change: func(in *Input) { in.Uncited = map[string]map[string]string{"c2": {}} }},
+		{name: "a commit of Uncited with no map", change: func(in *Input) { in.Uncited = map[string]map[string]string{"c2": nil} },
+			want: `specgraph: uncited: commit "c2": it sets no map of the checks that CI refused there, and a commit where CI refused no check has an empty map or no key`},
+		{name: "a rule of Uncited that is empty", change: func(in *Input) {
+			in.Uncited = map[string]map[string]string{"c2": {checkStateCheck.ID: ""}}
+		}, want: `specgraph: uncited: commit "c2": check "a-restart-loses-no-message": its rule is empty, and a refusal of CI names the rule that refused the check`},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
