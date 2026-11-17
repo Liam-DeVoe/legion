@@ -1,16 +1,120 @@
 import { beforeAll, describe, expect, test } from "bun:test";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import type { FinishedIssue, PlanRecord, ProjectPlans } from "@legion/contracts";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { bearerCredential } from "../../../packages/envoy-client/src/bearer";
+import { executeDispatchTool } from "../../../packages/envoy-client/src/dispatch-execute";
 
 // plan-ratings-read.sh (the read of a deployed issue's plan and ratings after the merge) against a
 // fake `dispatch` on PATH: it logs its arguments, prints FAKE_DISPATCH_OUT as the real command's
-// answer would print, and exits FAKE_DISPATCH_EXIT. The answers below are the lines `dispatch
-// plans` prints (packages/envoy-client/src/dispatch-commands/plans.ts): a header, then one
-// finished issue per line, newest close first.
+// answer would print, and exits FAKE_DISPATCH_EXIT. The whole answer below is what `dispatch plans`
+// (packages/envoy-client/src/dispatch-commands/plans.ts) prints of typed finished issues, rendered
+// by that command itself, so a line the command prints and the script cannot read fails here: a
+// header, then one finished issue per line, newest close first.
 const script = join(import.meta.dir, "..", "plan-ratings-read.sh");
 const dir = temporaryDirectory("plan-ratings-read-test");
-beforeAll(() => {
+
+const project = "INFRA";
+const key = "INFRA-42";
+const defaultSteps = ["planner", "implementer", "tester", "reviewer", "acceptance:owner"];
+const plan = `plan default (1 tasks: ${defaultSteps.join(" ")})`;
+const owner = "plan owner (2 tasks: implementer reviewer)";
+
+/** The plan of issue's first run: its owner's, of these tasks' steps, or the default one. */
+function planOf(issue: string, tasks?: string[][]): PlanRecord {
+  const id = `${issue}-plan`;
+  return tasks === undefined
+    ? {
+        id,
+        issue,
+        generation: 1,
+        source: "default",
+        artifact_id: null,
+        version: null,
+        tasks: [{ id: "default", steps: defaultSteps }],
+      }
+    : {
+        id,
+        issue,
+        generation: 1,
+        source: "owner",
+        artifact_id: `${issue}-plan-document`,
+        version: 2,
+        tasks: tasks.map((steps, place) => ({ id: `task-${place + 1}`, steps })),
+      };
+}
+
+/** A finished issue as Dispatch lists it: what the script reads of it, and the rest made up. */
+function finished(
+  issue: string,
+  closed: string,
+  plan: PlanRecord | null,
+  ratings: [number, string][],
+  seconds: number | null,
+  failed: number
+): FinishedIssue {
+  return {
+    issue,
+    title: `The work of ${issue}`,
+    closed_at: closed,
+    plan,
+    ratings: ratings.map(([rating, reason], place) => ({
+      rating,
+      reason,
+      step_id: `${issue}-retro-${place + 1}`,
+      ended_at: closed,
+    })),
+    started_at: seconds === null ? null : closed,
+    ended_at: seconds === null ? null : closed,
+    duration_seconds: seconds,
+    failed_steps: failed,
+  };
+}
+
+// A whole answer: an issue its owner planned in two tasks, rated once; an issue rated twice whose
+// second reason holds a quotation mark and a line break; the issue rated once; an issue whose
+// owner's plan has a first task with no steps, which `dispatch plans` prints as `-`; and an issue
+// finished before the release that rates each plan, which lists no plan, no rating and no time.
+const answer: ProjectPlans = {
+  project,
+  issues: [
+    finished(
+      "INFRA-44",
+      "2026-11-20T13:00:00Z",
+      planOf("INFRA-44", [["implementer", "reviewer"], ["implementer:docs"]]),
+      [[3, "Two tasks were one too many."]],
+      3720,
+      0
+    ),
+    finished(
+      "INFRA-43",
+      "2026-11-20T12:00:00Z",
+      planOf("INFRA-43"),
+      [
+        [2, "The plan had no test step."],
+        [5, 'It said "ship it"\nand it shipped.'],
+      ],
+      3300,
+      0
+    ),
+    finished(
+      key,
+      "2026-11-20T11:20:00.123456Z",
+      planOf(key),
+      [[4, "The plan fit the work; the review sent it back once."]],
+      8400,
+      1
+    ),
+    finished("INFRA-30", "2026-11-19T10:00:00Z", planOf("INFRA-30", [[]]), [], 300, 0),
+    finished("INFRA-7", "2026-11-01T08:00:00Z", null, [], null, 0),
+  ],
+};
+
+/** The whole answer's lines as `dispatch plans` printed them, and the line of the issue judged. */
+let whole: string[] = [];
+let line42 = "";
+beforeAll(async () => {
   writeFileSync(
     join(dir, "dispatch"),
     `#!/usr/bin/env bash
@@ -20,25 +124,28 @@ exit "\${FAKE_DISPATCH_EXIT:-0}"
 `,
     { mode: 0o755 }
   );
+  const printed = await executeDispatchTool({
+    tool: "dispatch_plans",
+    args: { project },
+    cwd: dir,
+    host: "omp",
+    sessionId: "session-1",
+    config: {
+      enabled: true,
+      url: "http://dispatch.test",
+      credential: bearerCredential("secret"),
+      error: null,
+    },
+    env: {},
+    exec: async (file, argv) => {
+      throw new Error(`unexpected command: ${file} ${argv.join(" ")}`);
+    },
+    fetchImpl: (async () => Response.json(answer)) as unknown as typeof fetch,
+  });
+  whole = printed.text.split("\n");
+  line42 = whole.find((line) => line.startsWith(`${key} `)) ?? "";
 });
 
-const project = "INFRA";
-const key = "INFRA-42";
-const plan = "plan default (1 tasks: planner implementer tester reviewer acceptance:owner)";
-const line42 = `${key} closed 2026-11-20T11:20:00.123456Z ${plan} ratings 4/5 "The plan fit the work; the review sent it back once." time 2h20m failed steps 1`;
-// A whole answer: an issue its owner planned in two tasks, rated once; an issue rated twice whose
-// second reason holds a quotation mark and a line break; the issue rated once; an issue whose
-// owner's plan has a first task with no steps, which `dispatch plans` prints as `-`; and an issue
-// finished before the release that rates each plan, which lists no plan, no rating and no time.
-const owner = "plan owner (2 tasks: implementer reviewer)";
-const whole = [
-  `${project}: 5 finished issues`,
-  `INFRA-44 closed 2026-11-20T13:00:00Z ${owner} ratings 3/5 "Two tasks were one too many." time 1h2m failed steps 0`,
-  `INFRA-43 closed 2026-11-20T12:00:00Z ${plan} ratings 2/5 "The plan had no test step.", 5/5 "It said \\"ship it\\"\\nand it shipped." time 0h55m failed steps 0`,
-  line42,
-  "INFRA-30 closed 2026-11-19T10:00:00Z plan owner (1 tasks: -) ratings none time 0h5m failed steps 0",
-  "INFRA-7 closed 2026-11-01T08:00:00Z plan none ratings none time - failed steps 0",
-];
 // changed is whole with the line that matches pick replaced by its edit.
 function changed(pick: RegExp, edit: (line: string) => string): string {
   return whole.map((line) => (pick.test(line) ? edit(line) : line)).join("\n") + "\n";
