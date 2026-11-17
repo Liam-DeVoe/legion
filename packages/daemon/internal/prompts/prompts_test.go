@@ -944,7 +944,9 @@ func TestTheOwnersPromptListsTheRolesAndTheNewNotices(t *testing.T) {
 				"before release_children",
 				"Give each issue its plan before its work starts. For the root, call register_plan before register_gate: the gate's opening starts the root's first step. For a child, call register_plan before release_children releases it: Legion keeps the plan and starts the child's first step from it.",
 				"An issue whose work started before you gave it a plan runs the task default, the project's default steps. To give it a plan, call stop_task on the task default, then register_plan with a version whose one task replaces it: Legion starts that task at its first step.",
-				"A task you stop stays held until you give a later version of the plan that changes it, and Legion then starts it at its first step. retry_or_escalate refuses that hold, and refuses an issue held before its retro for the issues beneath it.",
+				"A task you stop stays held until you give a later version of the plan that changes it, or, on a root, until a person sets the root `todo`, and Legion then starts it at its first step. retry_or_escalate refuses that hold, a retry and an escalation alike (`TASK_STOPPED`), and refuses an issue held before its retro for the issues beneath it (`HELD_FOR_CHILDREN`).",
+				"It refuses a task the plan does not hold (`TASK_NOT_FOUND`) and one that is done or left the workflow with its issue (`TASK_DONE`), and a stop of a task already stopped changes nothing.",
+				"Legion refuses one that changes or removes the running task (`PLAN_REFUSED`, with the reason `task <id> is running: stop it with stop_task before you change it.`)",
 				"Where another architect of your tree stopped it with `stop_task`, its reason names that architect, the notice carries `stoppedBy`, and no step failed.",
 				"A stop you make yourself sends you no notice: the 200 answer of `stop_task` is the record.",
 			} {

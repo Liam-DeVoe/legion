@@ -51,8 +51,9 @@ parent stood on.
 ## What Legion refuses
 
 `register_plan` answers `409 PLAN_REFUSED` with `reasons: [{task, reason}]`, one reason for each
-cause. A reason that ends `This release of Legion does not carry it out yet.` names a plan a later
-release takes: write the plan again within the rules above. The reasons, with `<…>` filled in:
+cause, its `task` empty for a cause of the whole plan. A reason that ends `This release of Legion
+does not carry it out yet.` names a plan a later release takes: write the plan again within the
+rules above. The reasons, with `<…>` filled in:
 
 - `the plan has <n> tasks (<ids>), and this release runs one task for each issue.`
 - `task <id> needs <ids>.`
@@ -75,8 +76,11 @@ wrote. Legion reads that version and no later one, so a version you do not give 
 
 - **A root:** before `register_gate`, because the gate's opening starts the root's first step.
 - **A child:** before `release_children` releases it. The daemon has not recorded the child yet,
-  so Legion keeps the plan until the release, and the answer says so. The child's first step can
-  start in the same admission pass as its release, so a plan given after it comes too late.
+  so Legion keeps the plan until the release; the answer, as for any plan it takes, is the plan's
+  `version` and each task with its `steps`. A child the daemon has not recorded is refused once
+  its Dispatch status is none of `triage`, `backlog`, `icebox` and `todo`
+  (`ISSUE_ALREADY_RELEASED`). The child's first step can start in the same admission pass as its
+  release, so a plan given after it comes too late.
 - **An issue that already runs** runs the task `default`, the project's default steps. Call
   `stop_task` on the task `default`, then `register_plan` with a version whose one task replaces
   it: Legion starts that task at its first step.
@@ -89,13 +93,17 @@ need from the planner's plan into your task's text.
 
 - `stop_task` (`issue`, `task`) stops a task that is not done. Legion ends its running step, stops
   that step's process and keeps its session, and holds the issue, which keeps its admission slot.
+  It refuses a task the plan does not hold (`404 TASK_NOT_FOUND`, naming the plan's tasks) and one
+  that is done or left the workflow with its issue (`409 TASK_DONE`). A stop of a task already
+  stopped changes nothing.
 - A stopped task stays held until you give a later version of the plan that changes it, or, on a
   root, until a person sets the root `todo`. Legion then starts it at its first step.
-  `retry_or_escalate` refuses the hold (`TASK_STOPPED`).
+  `retry_or_escalate` refuses the hold, a retry and an escalation alike (`409 TASK_STOPPED`), as
+  the daemon refuses an operator's restart of it.
 - A later version may change or remove only a task that waits or is stopped. Legion refuses one
-  that changes or removes the running task: `task <id> is running: stop it with stop_task before
-  you change it.` It takes a version that leaves the running task's block as it is, including one
-  that changes only the text outside the block.
+  that changes or removes the running task with `PLAN_REFUSED` and the reason `task <id> is
+  running: stop it with stop_task before you change it.` It takes a version that leaves the running
+  task's block as it is, including one that changes only the text outside the block.
 - Legion refuses a version at or below the one it holds (`PLAN_VERSION_OLD`), a version above
   Dispatch's latest (`VERSION_NOT_IN_DISPATCH`), and a version of another document than the plan
   in force (`PLAN_DOCUMENT_CHANGED`).
@@ -113,7 +121,8 @@ need from the planner's plan into your task's text.
   in, while issues beneath it are still in the workflow. Legion holds it before its retro, because
   a parent's head proves its children's merged work, and starts the retro when the last one
   leaves. Run each issue it names to done, or park one with `park_child` under the park rule.
-  `retry_or_escalate` refuses that hold (`HELD_FOR_CHILDREN`).
+  `retry_or_escalate` refuses that hold, a retry and an escalation alike (`409 HELD_FOR_CHILDREN`,
+  naming each issue beneath it still in the workflow), and a `todo` on the root leaves it held.
 - **`plan-not-taken`:** an earlier owner of the issue gave it a plan, and Legion did not take it
   at the issue's first step. Its reason names the version, who gave it, and the plan the first
   step runs: yours, or the default steps. To run the earlier plan, `stop_task` the task that runs
