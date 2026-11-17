@@ -96,6 +96,10 @@ describe("operatorDispatch", () => {
   });
 });
 
+/** What a case that starts `bun` or `bash` is given, rather than Bun's 5 s: a process started on a
+ *  loaded machine can take most of that before it runs a line, and these cases start up to three. */
+const SUBPROCESS_MS = 60_000;
+
 // The bearer never reaches stdout, where an agent running the command would put it in its
 // transcript: it goes to a 0600 file whose path the caller passes, and lib/operator-dispatch.sh
 // reads it from there.
@@ -106,55 +110,71 @@ describe("bun lib/operator-dispatch.ts <bearer file>", () => {
       env: { PATH: process.env.PATH ?? "", ...env },
     });
 
-  test("writes the bearer to the file, owner-only, and prints the file and the URL alone", () => {
-    const held = mkdtempSync(join(dir, "held."));
-    const bearer = join(held, "bearer");
-    const run = cli([bearer], { HOME: home });
-    expect(run.exitCode).toBe(0);
-    expect(JSON.parse(run.stdout.toString())).toEqual({
-      file: join(home, ".config", "legion", "envoy.json"),
-      url: "https://dispatch.internal.example",
-    });
-    expect(run.stdout.toString()).not.toContain("neutral-1");
-    expect(readFileSync(bearer, "utf-8")).toBe("neutral-1");
-    expect(statSync(bearer).mode & 0o777).toBe(0o600);
-  });
+  test(
+    "writes the bearer to the file, owner-only, and prints the file and the URL alone",
+    () => {
+      const held = mkdtempSync(join(dir, "held."));
+      const bearer = join(held, "bearer");
+      const run = cli([bearer], { HOME: home });
+      expect(run.exitCode).toBe(0);
+      expect(JSON.parse(run.stdout.toString())).toEqual({
+        file: join(home, ".config", "legion", "envoy.json"),
+        url: "https://dispatch.internal.example",
+      });
+      expect(run.stdout.toString()).not.toContain("neutral-1");
+      expect(readFileSync(bearer, "utf-8")).toBe("neutral-1");
+      expect(statSync(bearer).mode & 0o777).toBe(0o600);
+    },
+    SUBPROCESS_MS
+  );
 
-  test("writes no file when Dispatch is off or refused, and never over one that is there", () => {
-    const held = mkdtempSync(join(dir, "held."));
-    const off = cli([join(held, "off")], { HOME: join(dir, "empty-home") });
-    expect(off.exitCode).toBe(0);
-    expect(JSON.parse(off.stdout.toString())).toMatchObject({ notice: expect.any(String) });
-    const refused = cli([join(held, "refused")], {
-      HOME: home,
-      DISPATCH_URL: "https://other.internal.example",
-    });
-    expect(refused.exitCode).toBe(1);
-    expect(refused.stdout.toString()).not.toContain("neutral-1");
-    expect(readdirSync(held)).toEqual([]);
+  test(
+    "writes no file when Dispatch is off or refused, and never over one that is there",
+    () => {
+      const held = mkdtempSync(join(dir, "held."));
+      const off = cli([join(held, "off")], { HOME: join(dir, "empty-home") });
+      expect(off.exitCode).toBe(0);
+      expect(JSON.parse(off.stdout.toString())).toMatchObject({ notice: expect.any(String) });
+      const refused = cli([join(held, "refused")], {
+        HOME: home,
+        DISPATCH_URL: "https://other.internal.example",
+      });
+      expect(refused.exitCode).toBe(1);
+      expect(refused.stdout.toString()).not.toContain("neutral-1");
+      expect(readdirSync(held)).toEqual([]);
 
-    const planted = join(held, "planted");
-    writeFileSync(planted, "", { mode: 0o644 });
-    const over = cli([planted], { HOME: home });
-    expect(over.exitCode).toBe(1);
-    expect(JSON.parse(over.stdout.toString()).error).toContain(planted);
-    expect(readFileSync(planted, "utf-8")).toBe("");
-  });
+      const planted = join(held, "planted");
+      writeFileSync(planted, "", { mode: 0o644 });
+      const over = cli([planted], { HOME: home });
+      expect(over.exitCode).toBe(1);
+      expect(JSON.parse(over.stdout.toString()).error).toContain(planted);
+      expect(readFileSync(planted, "utf-8")).toBe("");
+    },
+    SUBPROCESS_MS
+  );
 
-  test("writes no file for the secrets broker's credential, naming it in the error", () => {
-    const held = mkdtempSync(join(dir, "held."));
-    const run = cli([join(held, "bearer")], brokerEnv);
-    expect(run.exitCode).toBe(1);
-    expect(JSON.parse(run.stdout.toString()).error).toContain("the secrets broker");
-    expect(readdirSync(held)).toEqual([]);
-  });
+  test(
+    "writes no file for the secrets broker's credential, naming it in the error",
+    () => {
+      const held = mkdtempSync(join(dir, "held."));
+      const run = cli([join(held, "bearer")], brokerEnv);
+      expect(run.exitCode).toBe(1);
+      expect(JSON.parse(run.stdout.toString()).error).toContain("the secrets broker");
+      expect(readdirSync(held)).toEqual([]);
+    },
+    SUBPROCESS_MS
+  );
 
-  test("refuses to run without the file's path", () => {
-    const run = cli([], { HOME: home });
-    expect(run.exitCode).toBe(2);
-    expect(run.stdout.toString()).toBe("");
-    expect(run.stderr.toString()).toContain("usage: bun scripts/e2e/lib/operator-dispatch.ts");
-  });
+  test(
+    "refuses to run without the file's path",
+    () => {
+      const run = cli([], { HOME: home });
+      expect(run.exitCode).toBe(2);
+      expect(run.stdout.toString()).toBe("");
+      expect(run.stderr.toString()).toContain("usage: bun scripts/e2e/lib/operator-dispatch.ts");
+    },
+    SUBPROCESS_MS
+  );
 });
 
 describe("operator_dispatch", () => {
@@ -195,7 +215,7 @@ printf '%s|%s|%s|%s\\n' "$operator_dispatch_file" "$operator_dispatch_url" "$ope
       })
     );
     inOldCheckout = run(oldCheckout);
-  });
+  }, SUBPROCESS_MS);
 
   test("sets the file, URL and bearer the client resolves", () => {
     expect(on?.exitCode).toBe(0);
@@ -225,24 +245,26 @@ printf '%s|%s|%s|%s\\n' "$operator_dispatch_file" "$operator_dispatch_url" "$ope
 });
 
 describe("operator_dispatch_hold_token and production_baseline", () => {
-  test("the held bearer leaves the environment, and the baseline is the newest event id read with it", async () => {
-    const requests: { path: string; auth: string | null }[] = [];
-    const events: Record<string, number> = { "OPS-1": 7, "OPS-2": 12 };
-    const server = Bun.serve({
-      port: 0,
-      fetch(request) {
-        const url = new URL(request.url);
-        requests.push({ path: url.pathname, auth: request.headers.get("authorization") });
-        if (url.pathname === "/api/v1/issues")
-          return Response.json([{ key: "OPS-1" }, { key: "OPS-2" }]);
-        const key = /^\/api\/v1\/issues\/([^/]+)\/events$/.exec(url.pathname)?.[1];
-        return key === undefined
-          ? new Response("", { status: 404 })
-          : Response.json([{ id: events[key] }]);
-      },
-    });
-    const work = mkdtempSync(join(dir, "work."));
-    const script = `fail() { printf 'FAIL %s\\n' "$*"; exit 1; }
+  test(
+    "the held bearer leaves the environment, and the baseline is the newest event id read with it",
+    async () => {
+      const requests: { path: string; auth: string | null }[] = [];
+      const events: Record<string, number> = { "OPS-1": 7, "OPS-2": 12 };
+      const server = Bun.serve({
+        port: 0,
+        fetch(request) {
+          const url = new URL(request.url);
+          requests.push({ path: url.pathname, auth: request.headers.get("authorization") });
+          if (url.pathname === "/api/v1/issues")
+            return Response.json([{ key: "OPS-1" }, { key: "OPS-2" }]);
+          const key = /^\/api\/v1\/issues\/([^/]+)\/events$/.exec(url.pathname)?.[1];
+          return key === undefined
+            ? new Response("", { status: 404 })
+            : Response.json([{ id: events[key] }]);
+        },
+      });
+      const work = mkdtempSync(join(dir, "work."));
+      const script = `fail() { printf 'FAIL %s\\n' "$*"; exit 1; }
 note() { printf 'NOTE %s\\n' "$*"; }
 work=$2
 . "$1"
@@ -250,34 +272,36 @@ operator_dispatch_hold_token
 printf 'held:%s\\n' "\${DISPATCH_TOKEN-unset}"
 production_baseline
 printf '%s|%s|%s\\n' "$prod_dispatch_url" "$prod_baseline" "$(ls -A "$work")"`;
-    try {
-      const shell = Bun.spawn(
-        ["bash", "-c", script, "_", join(import.meta.dir, "operator-dispatch.sh"), work],
-        {
-          cwd,
-          env: {
-            HOME: join(dir, "empty-home"),
-            PATH: process.env.PATH ?? "",
-            DISPATCH_URL: `http://127.0.0.1:${server.port}`,
-            DISPATCH_TOKEN: "operator-bearer",
-          },
-          stdout: "pipe",
-          stderr: "pipe",
-        }
-      );
-      const stdout = await new Response(shell.stdout).text();
-      expect(await shell.exited).toBe(0);
-      expect(stdout).toBe(`held:unset\nhttp://127.0.0.1:${server.port}|12|\n`);
-      expect(requests.map((request) => request.path)).toEqual([
-        "/api/v1/issues",
-        "/api/v1/issues/OPS-1/events",
-        "/api/v1/issues/OPS-2/events",
-      ]);
-      expect(new Set(requests.map((request) => request.auth))).toEqual(
-        new Set(["Bearer operator-bearer"])
-      );
-    } finally {
-      server.stop(true);
-    }
-  });
+      try {
+        const shell = Bun.spawn(
+          ["bash", "-c", script, "_", join(import.meta.dir, "operator-dispatch.sh"), work],
+          {
+            cwd,
+            env: {
+              HOME: join(dir, "empty-home"),
+              PATH: process.env.PATH ?? "",
+              DISPATCH_URL: `http://127.0.0.1:${server.port}`,
+              DISPATCH_TOKEN: "operator-bearer",
+            },
+            stdout: "pipe",
+            stderr: "pipe",
+          }
+        );
+        const stdout = await new Response(shell.stdout).text();
+        expect(await shell.exited).toBe(0);
+        expect(stdout).toBe(`held:unset\nhttp://127.0.0.1:${server.port}|12|\n`);
+        expect(requests.map((request) => request.path)).toEqual([
+          "/api/v1/issues",
+          "/api/v1/issues/OPS-1/events",
+          "/api/v1/issues/OPS-2/events",
+        ]);
+        expect(new Set(requests.map((request) => request.auth))).toEqual(
+          new Set(["Bearer operator-bearer"])
+        );
+      } finally {
+        server.stop(true);
+      }
+    },
+    SUBPROCESS_MS
+  );
 });
