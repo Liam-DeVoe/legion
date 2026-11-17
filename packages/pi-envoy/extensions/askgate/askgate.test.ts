@@ -87,8 +87,8 @@ afterEach(async () => {
 
 /**
  * The store and the session directory of each gate a row binds (`bind`), removed after the row by
- * the maker's afterEach. Kept to the file's end, the 1,098 of a whole run were the work of the
- * suite's one afterAll, under Bun's 5 s hook limit; it took 58 s on a loaded machine.
+ * the maker's afterEach: kept to the file's end, a whole run's of them, over a thousand, would be
+ * the work of the suite's one afterAll, which runs under Bun's 5 s hook limit.
  */
 const bindDirectory = temporaryDirectories("gate-bind", { root: SUITE_TMP });
 
