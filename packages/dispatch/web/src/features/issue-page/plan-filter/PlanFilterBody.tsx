@@ -34,6 +34,12 @@ import { drawnLine, firstLineOf, heldBy, lineWords, type TreeNode } from "../iss
 import { useRowOnScreen } from "../NodeRow";
 import { chipWords } from "../node-row-chip";
 import { NodeMarks } from "../node-states/NodeMarks";
+import {
+  lineIsOpen,
+  NO_LINES,
+  type OvertakenLines,
+  toggledLines,
+} from "../node-states/node-states";
 import { overtakenCount, togglesLine } from "../node-states/OvertakenLine";
 import { useHoldsWords } from "../node-states/settle-write";
 import { authorText, pageChrome } from "../page-structure";
@@ -188,11 +194,12 @@ export function PlanFilterBody({
         : `${pageHairBorder} ${pagePaperBg} ${pageMutedText}`
     }`;
   const empty = root.children.length === 0;
-  // An address naming an overtaken task opens the steps' line that holds it and lands on the
-  // task there: the line hangs under the steps' own root, wherever the outline holds the task, so
-  // the path to it is the root's.
+  // An address naming a task lands on the task where the steps hold it: every task, an overtaken
+  // one in the line after every step included, hangs under the steps' own root, wherever the
+  // outline holds it, so the path to it is the root's. The outline's chain, run through an
+  // overtaken statement the steps draw as no row, would open their line of overtaken tasks.
   const addressed = tree.reveal?.at(-1);
-  if (addressed !== undefined && isOvertaken(addressed)) {
+  if (addressed !== undefined) {
     tree = { ...tree, reveal: [ordered, addressed] };
   }
   return (
@@ -472,10 +479,11 @@ function PlanChart({
   // The line the view's overtaken tasks fold to, after every bar: closed until the reader
   // opens it. While the words filter holds words the view holds only its matches, so the line holds
   // one and is drawn open, less a line the reader closed under them, which stays closed until they
-  // open it again, as the outline's lines do (`IssueTree.tsx`'s `linesOpen`).
+  // open it again, by the one rule of the views that fold their own lines (`OvertakenLines`), as
+  // the outline's lines do (`IssueTree.tsx`'s `linesOpen`).
   const holdsWords = useHoldsWords();
-  const [fold, setFold] = useState({ closed: false, open: false });
-  const lineOpen = fold.open || (holdsWords && !fold.closed);
+  const [lines, setLines] = useState<OvertakenLines>(NO_LINES);
+  const lineOpen = lineIsOpen(lines, holdsWords, OVERTAKEN_KEY);
   // The line, and each task's row it holds open, take the chart's one tab stop as a row does:
   // where the reader last stood on one of them, and on the line where the chart draws no other
   // row. While one of them holds it, no bar or cycle does.
@@ -547,7 +555,8 @@ function PlanChart({
   useEffect(() => {
     if (land === undefined || !overtaken.some((task) => task.id === land)) return;
     if (!lineOpen) {
-      setFold({ closed: false, open: true });
+      // An opening reads no words (`toggledLines`), so the effect waits on none.
+      setLines((held) => toggledLines(held, OVERTAKEN_KEY, true, false));
       return;
     }
     const row = chart.current?.querySelector<HTMLElement>(
@@ -854,7 +863,9 @@ function PlanChart({
             }}
             // A press focuses the line before it toggles it, so the tab stop a task's row held
             // under it is the line's by then.
-            onToggle={() => setFold({ closed: lineOpen && holdsWords, open: !lineOpen })}
+            onToggle={() =>
+              setLines((held) => toggledLines(held, OVERTAKEN_KEY, !lineOpen, holdsWords))
+            }
             open={lineOpen}
             tabStop={lineStop}
             tasks={overtaken}

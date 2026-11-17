@@ -2788,6 +2788,31 @@ test("the Plan view opens the line of an overtaken task an address or the words 
   }
 });
 
+// Under Steps, an address naming a live task that the outline holds under an overtaken statement
+// lands on the task's row and opens no line: the steps hold every task under their own root, so
+// the overtaken statement in the outline's chain is no node of theirs, and the line of overtaken
+// tasks stays closed until the reader opens it.
+test("under Steps an address to a live task under an overtaken statement opens no line", async () => {
+  readWide();
+  const user = userEvent.setup();
+  const root = planWithOvertaken();
+  const live = pathTo(root, T3)?.at(-1);
+  if (live === undefined) throw new Error("the plan holds task 3");
+  // The chain the outline gives the address: the issue, the overtaken statement the task serves,
+  // the task.
+  const reveal = [root, node("spec#b-r8", "requirement", [], { life: "overtaken" }), live];
+  const view = drawPlan(root);
+  try {
+    await user.click(view.getByRole("button", { name: PLAN_WORDS.steps }));
+    view.again({ reveal });
+    await waitFor(() => expect(document.activeElement).toBe(rowOf(view.container, T3)));
+    expect(theLine(view.container)).toHaveAttribute("aria-expanded", "false");
+    expect(rowOf(view.container, T2)).toBeNull();
+  } finally {
+    view.unmount();
+  }
+});
+
 // The Plan chart marks a proposed step after its facts, and names what a step needs and
 // what it serves each with the marks of the node named, after its name, in the compact form. A
 // step with no mark of its own draws none in its facts.
