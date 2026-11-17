@@ -75,10 +75,11 @@ func TestTheArchitectEntryWayBackExtractIsTheGuidesWayBackBlock(t *testing.T) {
 
 // A way back an operator cannot see is none: the rendered guide shows nothing of a fenced block
 // inside an HTML comment, so the reader refuses such a block as hidden even when its lines are
-// the ones a check wants, whether the comment closes after the block or is never closed. A block a
-// reader sees is read, the one after a hidden block that holds the same mark among them, and so is
-// a block after a fenced block that holds a "<!--", which opens no comment there. A text with no
-// block holding the mark is refused as such.
+// the ones a check wants, whether the comment closes after the block or, opened on a line of its
+// own, is never closed. A block a reader sees is read, the one after a hidden block that holds the
+// same mark among them, and so is a block after a fenced block that holds a "<!--", which opens no
+// comment there, or after a "<!--" inside a line that its paragraph never closes, which the page
+// shows as text. A text with no block holding the mark is refused as such.
 func TestAWayBackIsReadOnlyFromAFencedBlockAReaderSees(t *testing.T) {
 	const (
 		heading = "Rolling back a release"
@@ -95,9 +96,12 @@ func TestAWayBackIsReadOnlyFromAFencedBlockAReaderSees(t *testing.T) {
 		{"a block inside a comment",
 			section + "Run this:\n\n<!--\n```sql\nselect 1;\n" + mark + "\n```\n-->\n",
 			"", errHidden},
-		{"a block after a comment never closed",
-			section + "Run this: <!-- a note\n\n```sql\nselect 1;\n" + mark + "\n```\n",
+		{"a block after a comment never closed, opened on a line of its own",
+			section + "Run this:\n<!-- a note\n\n```sql\nselect 1;\n" + mark + "\n```\n",
 			"", errHidden},
+		{"a block after a \"<!--\" inside a line that its paragraph never closes",
+			section + "Run this: <!-- a note\n\n```sql\nselect 1;\n" + mark + "\n```\n",
+			"select 1;\n" + mark, nil},
 		{"a block after a hidden block holding the same mark",
 			section + "<!--\n```sql\nselect 2;\n" + mark + "\n```\n-->\nRun this:\n\n```sql\nselect 1;\n" + mark + "\n```\n",
 			"select 1;\n" + mark, nil},
