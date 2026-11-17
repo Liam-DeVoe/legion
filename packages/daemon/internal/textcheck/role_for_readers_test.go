@@ -49,8 +49,10 @@ type roleForReader struct {
 // (phase.Of), or reads only the phases of a plan's steps, which admitted never is (reportsBefore,
 // and Engine.restartTask, which reads its task's first step: a planner's or an implementer's, as
 // plan.Supported holds every task's steps to today's order with an implementer among them),
-// or never reads admitted at all because a check before it refuses that phase, which is what each
-// named test holds it to.
+// or reads the retro's own phase and the phase of the last step of a parent's task, neither of
+// which is admitted (retroHeldNotice and Engine.startHeldRetro, which run only for a parent held
+// before its retro for the issues beneath it), or never reads admitted at all because a check
+// before it refuses that phase, which is what each named test holds it to.
 //
 // A reader this list does not hold fails the test, so a new one is decided rather than taking
 // whatever RoleFor answers at admitted.
@@ -81,6 +83,8 @@ var roleForReaders = map[roleForSite]roleForReader{
 	{file: "internal/workflow/gate.go", fn: "Engine.tellGateMoved"}:          {calls: 1, test: "TestEveryPhaseHolderAndTheRootArchitectAreToldTheGateClosedAndOpened"},
 	{file: "internal/workflow/review.go", fn: "Engine.tellChecks"}:           {calls: 1, test: "TestASettlementMovesNothingAndTellsTheThreeRoles"},
 	{file: "internal/workflow/resume.go", fn: "Engine.suspendedPhaseOwners"}: {calls: 1, test: "TestTheBootsResumeReadsRoleForAndStartsNoArchitectAtAdmittedOrAccepting"},
+	{file: "internal/workflow/retro_hold.go", fn: "retroHeldNotice"}:         {calls: 1, test: "TestAParentWithNoAcceptanceIsHeldBeforeItsRetro"},
+	{file: "internal/workflow/retro_hold.go", fn: "Engine.startHeldRetro"}:   {calls: 2, test: "TestAParentWithNoAcceptanceIsHeldBeforeItsRetro"},
 	{file: "internal/workflow/steps.go", fn: "Engine.startAgent"}:            {calls: 1, test: "TestAnIssueAtAdmittedRunsNoStep"},
 	{file: "internal/workflow/steps.go", fn: "Engine.upgradedStart"}:         {calls: 1, test: "TestAnIssueAtAdmittedRunsNoStep"},
 	{file: "internal/workflow/steps.go", fn: "endOfTransition"}:              {calls: 1, test: "TestAnIssueAtAdmittedRunsNoStep"},
