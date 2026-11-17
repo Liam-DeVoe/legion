@@ -485,12 +485,26 @@ function putBack(text: string, range: (typeof KEPT)[keyof typeof KEPT]): string 
  * `dispatch read dispatch://CORE-2` keeps its address.
  */
 export function plainWords(markdown: string): string {
+  return plainWordsWith(markdown, addressesAsShortForms);
+}
+
+/** The words of a stored markdown text as `plainWords` reads them, with no address written
+ *  short: its marks, markers, links, images, escapes and code spans read as they read there, and
+ *  a bare address and an autolink's URL stay as written (dispatch://INFRA-1196 decision 140). A
+ *  caller that names each reference itself reads these, since a short form leaves it no address
+ *  to name. */
+export function plainWordsRaw(markdown: string): string {
+  return plainWordsWith(markdown, (words) => words);
+}
+
+/** The words `plainWords` reads, each bare address in them and each autolink's URL written by
+ *  `shorten` where `plainWords` writes it short (`addressesAsShortForms`). */
+function plainWordsWith(markdown: string, shorten: (words: string) => string): string {
   const paragraphs = markdown.split(BLANK_LINE).map((paragraph) => {
     let words = paragraph
       .replace(LITERAL, (written, escaped?: string, _run?: string, code?: string, url?: string) => {
         const range = escaped === undefined ? KEPT.verbatim : KEPT.escaped;
-        const literal =
-          escaped ?? code ?? (url === undefined ? undefined : addressesAsShortForms(url));
+        const literal = escaped ?? code ?? (url === undefined ? undefined : shorten(url));
         return (
           literal?.replace(PUNCTUATION, (character) =>
             String.fromCharCode(range.start + character.charCodeAt(0))
@@ -513,7 +527,7 @@ export function plainWords(markdown: string): string {
     return putBack(words, KEPT.escaped);
   });
   const words = paragraphs.join(" ").replace(/\s+/gu, " ").trim();
-  return putBack(addressesAsShortForms(words), KEPT.verbatim);
+  return putBack(shorten(words), KEPT.verbatim);
 }
 
 /**

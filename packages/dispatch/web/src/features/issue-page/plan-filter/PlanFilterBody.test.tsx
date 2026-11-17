@@ -454,6 +454,15 @@ test("the keys reach the bars in order, and the focused step's facts go to Detai
     expect(focusedRow()).toBe(D("t1"));
     await user.keyboard("{Escape}");
     expect(document.activeElement).toBe(document.body);
+    // Tab from the page itself enters the chart at its one tab stop, the row the reader last
+    // stood on, as Tab enters the outline (`useTreeKeymap.ts`'s `tree-enter`): after Escape the
+    // same Tab goes back to the row under either drawing (dispatch://INFRA-3938 R6 and R7).
+    await user.keyboard("{Tab}");
+    expect(focusedRow()).toBe(D("t1"));
+    await user.keyboard("{End}{Escape}");
+    expect(document.activeElement).toBe(document.body);
+    await user.keyboard("{Tab}");
+    expect(focusedRow()).toBe(D("t3"));
     // A focus inside a row takes that row, as a pointer going down on a statement's link does
     // while another row holds the focus: Details and the one tab stop go with it
     // (dispatch://INFRA-3938 R7).

@@ -82,7 +82,7 @@ import type { PendingState } from "./pending-sync";
 import { createPendingWaiter } from "./pending-waiter";
 import { quoteAnchor } from "./quote-anchor";
 import { refocusWhenSettled } from "./refocus-when-settled";
-import { FRAGMENT_NAME } from "./roots";
+import { type ArtifactWithFragment, carriesFragment, fragmentOf } from "./roots";
 import { DocumentRuntime } from "./runtime";
 import { compiledBlockSchema, compiledSchemaCreatable } from "./schema";
 import { readLineText, useSpecMarks } from "./spec-marks";
@@ -190,7 +190,9 @@ export interface ProofDocumentProps {
     readonly children: ReactNode;
     readonly markId: string | null;
   };
-  artifact: Artifact;
+  /** The document, as the read that listed it answers it: where that answer carries `fragment`,
+   *  the page connects at once; otherwise it waits for its own artifact read. */
+  artifact: ArtifactWithFragment;
   highlight: Highlight | undefined;
   highlightTerm?: string;
   isClosed: boolean;
@@ -333,6 +335,18 @@ export function ProofDocument({
     queryKey: ["artifact", artifact.id],
     queryFn: () => api.getArtifact(artifact.id),
   });
+  // The editor's tree: the fragment of its room an answer about this artifact names. An issue's
+  // room holds one fragment per document, so the page connects only once it knows which: at once
+  // where the artifact it was handed carries `fragment`, else once its own artifact read answers,
+  // taking that answer's (`prosemirror` from a server that names none). Until then nothing
+  // connects, so nothing typed lands in a fragment that is not this document's; a read that
+  // fails is the document's load failure.
+  const fragmentName = carriesFragment(artifact)
+    ? fragmentOf(artifact)
+    : artifactQuery.data === undefined
+      ? undefined
+      : fragmentOf(artifactQuery.data);
+  const fragmentReadError = fragmentName === undefined ? artifactQuery.error : null;
   const liveTextQuery = useQuery(liveTextQueryOptions(artifact.id));
   // The repair replaces this document, so it uploads under the document's own name whatever the
   // picked file is called; a closed issue takes none.
@@ -697,6 +711,14 @@ export function ProofDocument({
       setConnection("failed");
       setLoadError(error instanceof Error ? error.message : String(error));
     };
+    if (fragmentName === undefined) {
+      if (fragmentReadError !== null) {
+        reportLoadFailure(fragmentReadError);
+      }
+      return () => {
+        mounted = false;
+      };
+    }
     const teardown = () => {
       disposeEditorBindings?.();
       editor?.destroy();
@@ -755,7 +777,7 @@ export function ProofDocument({
         });
       }
       const unbindRemoteMarks = bindRemoteMarks(connection.doc, handle);
-      const fragment = connection.doc.getXmlFragment(FRAGMENT_NAME);
+      const fragment = connection.doc.getXmlFragment(fragmentName);
       let searchFrame = 0;
       const refreshSearchHighlights = () => {
         cancelAnimationFrame(searchFrame);
@@ -870,6 +892,7 @@ export function ProofDocument({
           newerReads = 0;
           setAdmission(undefined);
           const connection = connect(artifact.id, {
+            fragment: fragmentName,
             schemaCreatable: compiledSchemaCreatable,
             schemaVersion: compiledBlockSchema.version,
             onAdmission: (readOnly) => {
@@ -986,6 +1009,7 @@ export function ProofDocument({
                 // of the document by it, so the editor refuses one to a block of a type the
                 // pointer's attribute does not allow.
                 documentRef,
+                fragment: fragmentName,
                 ydoc: connection.doc,
               })
                 .then((handle) => {
@@ -1023,6 +1047,8 @@ export function ProofDocument({
     documentRef,
     focusInEditor,
     followBlockHash,
+    fragmentName,
+    fragmentReadError,
     loadTransport,
     page,
     pendingWaiter,

@@ -778,6 +778,7 @@ function drawVerification(root: TreeNode, checks: readonly CheckBlock[]) {
             checks,
             context: preset.context,
             emptyLine: EMPTY_STATE_LINES.verification,
+            reads: { state: "answered" },
             view: preset.root,
           })
         )

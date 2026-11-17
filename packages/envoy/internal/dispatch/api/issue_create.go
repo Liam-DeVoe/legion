@@ -14,6 +14,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/rank"
@@ -249,6 +250,16 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	// yields an empty chain and still gets its own refusal inside the transaction, so no error
 	// changes order.
 	var outcome nearCopyOutcome
+	// nearCopyRecord is this create's near_copy_checks row, holding outcome.Check, the gate's
+	// answer, at each write: at the 409, or once the create has committed (recordNearCopyCheck),
+	// or in the create's transaction where recordInTx says so. A create the gate never ran for
+	// (outcome.Check nil) writes nothing, and a create refused later for another reason writes
+	// nothing either.
+	var nearCopyRecord nearCopyCheckRow
+	// recordInTx is set where the decision is made, for a near copy let in because its refusal's
+	// row could not be confirmed (nearCopyOutcome.unrecorded): its row is written in the create's
+	// transaction, under the id the refusal used, rather than after the commit.
+	recordInTx := false
 	if input.External == "" {
 		ancestors := []string{}
 		if parentKey != "" {
@@ -264,13 +275,26 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 			spec = *input.Spec
 		}
 		outcome = s.runNearCopyGate(r.Context(), input.Project, input.Title, spec, ancestors, input.Force)
+		nearCopyRecord = nearCopyCheckRow{
+			id: s.newNearCopyRowID(), project: input.Project, actor: actor,
+			title: input.Title, spec: spec, parent: parentKey,
+		}
 		if len(outcome.Refuse) > 0 {
-			WriteJSON(w, http.StatusConflict, issueDuplicateError{
-				Candidates: outcome.Refuse,
-				Code:       "POSSIBLE_DUPLICATE",
-				Error:      fmt.Sprintf("possible duplicate of %s: %s", outcome.Refuse[0].Key, outcome.Refuse[0].Title),
-			})
-			return
+			if s.recordNearCopyRefusal(r.Context(), nearCopyRecord, outcome.Check) {
+				WriteJSON(w, http.StatusConflict, issueDuplicateError{
+					Candidates: outcome.Refuse,
+					Code:       "POSSIBLE_DUPLICATE",
+					Error:      fmt.Sprintf("possible duplicate of %s: %s", outcome.Refuse[0].Key, outcome.Refuse[0].Title),
+				})
+				return
+			}
+			// A refusal is answered only once its row is known to be written, so a count of the
+			// gate's refusals from near_copy_checks misses none. Otherwise it is a check not made,
+			// as a read past the gate's bound is: the create goes in, the filer is told what the
+			// gate found, and the create's row is written in its transaction under the same id, so
+			// it replaces the refused row if that insert landed unseen.
+			outcome = outcome.unrecorded()
+			recordInTx = true
 		}
 	}
 
@@ -361,10 +385,24 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	}
 	issueRank := rank.Between(lastRank, "")
 
+	// The issue's node and its spec's node go in before the two rows, in one write that takes
+	// them in the store's order, each in the issue's project, with the spec's part_of the issue
+	// (R16 of dispatch://INFRA-1253); what that write states waits for the issue.created event
+	// below (graphstore.Caused). Each row names its node in the same transaction.
+	createdAt := time.Now().UTC()
+	specRefKey := graphstore.ArtifactRefKey(key, input.Project, "", "spec")
+	issueNodes, err := graphstore.WriteUncaused(r.Context(), tx, []graphstore.Node{
+		graphstore.IssueNode(key, input.Project, actor, createdAt),
+		graphstore.ArtifactNode(specRefKey, input.Project, "", actor, createdAt),
+	}, []graphstore.Tuple{graphstore.ArtifactPartOf(specRefKey, key, actor, createdAt)})
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	if _, err := tx.Exec(r.Context(), `
-		insert into issues (key, project_key, number, title, parent_key, created_by, labels, priority, rank, assignee, repo)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-	`, key, input.Project, number, input.Title, parent, actorJSON, labels, priority, issueRank, assignee, repo); err != nil {
+		insert into issues (key, project_key, number, title, parent_key, created_by, labels, priority, rank, assignee, repo, node_kind, node_address)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $1)
+	`, key, input.Project, number, input.Title, parent, actorJSON, labels, priority, issueRank, assignee, repo, graphstore.KindIssue); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -409,10 +447,10 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 
 	var artifactID string
 	if err := tx.QueryRow(r.Context(), `
-		insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by)
-		values ($1, $2, 'spec', 'spec.md', 'doc', true, $3)
+		insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by, node_kind, node_address)
+		values ($1, $2, 'spec', 'spec.md', 'doc', true, $3, $4, $5)
 		returning id::text
-	`, key, input.Project, actorJSON).Scan(&artifactID); err != nil {
+	`, key, input.Project, actorJSON, graphstore.KindArtifact, specRefKey).Scan(&artifactID); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -437,11 +475,13 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	// from (docs.Ledger.RenderStampOf): a text read of a document still standing there serves the
 	// stored markdown rather than rendering the document again.
 	stamp := ledger.RenderStampOf(artifactID, markdown)
-	if _, err := tx.Exec(r.Context(), docs.RenderStampHead+`
+	var specCreated time.Time
+	if err := tx.QueryRow(r.Context(), docs.RenderStampHead+`
 		insert into artifact_versions (artifact_id, number, markdown, authors, doc_update_version, `+docs.RenderStampColumns+`)
 		values ($1, 1, $2, $3, coalesce((select max(version) from doc_updates where artifact_id = $1), 0),
 			`+docs.RenderStampValues+`, $4, $5)
-	`, artifactID, markdown, authors, stamp.Token, stamp.Renderer); err != nil {
+		returning created_at
+	`, artifactID, markdown, authors, stamp.Token, stamp.Renderer).Scan(&specCreated); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -458,11 +498,21 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	specChanges, err := s.deps.Docs.IndexDocumentReferences(documentCtx, artifactID, 1, markdown)
+	specChanges, specBlocks, err := s.deps.Docs.IndexDocumentReferences(documentCtx, artifactID, 1, markdown)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
+	// The spec's first version is the projection of its version node, written after the spec's
+	// block nodes and caused by the issue's own event with them (docs.WriteVersionNode). The spec's
+	// node was written above as a document's.
+	specVersion, err := docs.WriteVersionNode(r.Context(), tx, graphstore.VersionOwner{RefKey: specRefKey, Project: input.Project},
+		1, actor, specCreated)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	specBlocks = graphstore.Joined(specBlocks, specVersion)
 	issue, err := s.loadIssue(r.Context(), tx, key)
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -491,9 +541,30 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	// What the spec's block index stated waits for the issue's own event: it is the cause every
+	// node and tuple of that pass carries (graphstore.Caused).
+	if err := graphstore.Caused(r.Context(), tx, specBlocks, event.ID); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if err := graphstore.Caused(r.Context(), tx, issueNodes, event.ID); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	advice := s.writeAdvice(
 		r.Context(), tx, "POST /api/v1/issues", key, actor, "", issue.Status, false,
 	)
+	nearCopyRecord.issue = key
+	// A near copy let in because its refusal's row could not be confirmed (recordInTx) writes its
+	// row in this transaction, under the id the refusal used: the create and the row that replaces
+	// a refused row under that id commit together or not at all, so no committed create keeps a
+	// refused row. Every other row is written after the commit.
+	if recordInTx {
+		if err := s.writeNearCopyCheck(r.Context(), tx, nearCopyRecord, outcome.Check); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+	}
 	if err := ledger.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -503,6 +574,9 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	// transaction is durable.
 	s.deps.Docs.ScheduleSettlement(artifactID)
 	s.publish(r.Context(), event)
+	if !recordInTx {
+		s.recordNearCopyCheck(r.Context(), nearCopyRecord, outcome.Check)
+	}
 	if advice != nil && input.Spec != nil && strings.TrimSpace(*input.Spec) != "" {
 		advice.documentBlocks = documentBlocksFor(documentReadBack, markdown)
 	}
@@ -536,9 +610,9 @@ const duplicateGateTimeout = 500 * time.Millisecond
 
 // nearCopyOutcome is everything the near-copy gate decides for one create, settled once by
 // runNearCopyGate and then only copied: the 409 the create is refused with, what the
-// issue.created event records, and what the response tells the filer. The zero value is the
-// create the gate never ran for - an external create - which records nothing and says nothing,
-// so no reader of the event log is told of a check that was never made.
+// issue.created event records, what the response tells the filer, and the near_copy_checks row.
+// The zero value is the create the gate never ran for - an external create - which records
+// nothing and says nothing, so no reader of the event log is told of a check that was never made.
 type nearCopyOutcome struct {
 	// Refuse is what a 409 POSSIBLE_DUPLICATE names, and is empty on every create that goes in:
 	// a create the gate refuses is never written.
@@ -565,6 +639,9 @@ type nearCopyOutcome struct {
 	// NearCopyCheck is advice.suggestions.near_copy_check: why the create went in unchecked,
 	// empty when the gate answered.
 	NearCopyCheck string
+	// Check is the gate's answer as its near_copy_checks row records it (recordNearCopyCheck),
+	// nil for a create the gate never ran for.
+	Check *nearCopyCheck
 }
 
 // runNearCopyGate runs the gate for a create and settles every record of it at once. Only a
@@ -580,26 +657,45 @@ func (s *server) runNearCopyGate(
 ) nearCopyOutcome {
 	gate := s.duplicateGate(ctx, project, title, spec, ancestors)
 	refusals := gate.refusals()
+	check := &nearCopyCheck{force: force, candidates: gate.Candidates}
 	switch {
 	case !gate.answered():
-		outcome := nearCopyOutcome{NearCopyCheck: gate.Unanswered}
+		check.outcome, check.reason = nearCopyNotMade, gate.NotMade
+		outcome := nearCopyOutcome{NearCopyCheck: s.nearCopyNotMadeNote(gate.NotMade), Check: check}
 		if force {
 			outcome.Forced = &model.ForcedCreate{Past: []string{}}
 		}
 		return outcome
 	case len(refusals) == 0:
+		check.outcome = nearCopyPassed
 		if force {
-			return nearCopyOutcome{}
+			return nearCopyOutcome{Check: check}
 		}
-		return nearCopyOutcome{LikelyDuplicate: gate.nudge()}
+		nudge := gate.nudge()
+		if nudge != nil {
+			check.outcome = nearCopyNudged
+		}
+		return nearCopyOutcome{LikelyDuplicate: nudge, Check: check}
 	case !force:
-		return nearCopyOutcome{Refuse: refusals}
+		check.outcome = nearCopyRefused
+		return nearCopyOutcome{Refuse: refusals, Check: check}
 	}
+	check.outcome = nearCopyForced
 	past := make([]string, 0, len(refusals))
 	for _, candidate := range refusals {
 		past = append(past, candidate.Key)
 	}
-	return nearCopyOutcome{Forced: &model.ForcedCreate{Past: past}, TitleMatches: refusals}
+	return nearCopyOutcome{Forced: &model.ForcedCreate{Past: past}, TitleMatches: refusals, Check: check}
+}
+
+// unrecorded is the outcome of a refusal whose near_copy_checks row could not be written: a
+// check not made (reason unrecorded), which lets the create go in, as a read past the gate's
+// bound does. Its row keeps the candidates the refusal read, and the note names the issue the
+// refusal would have named, so the filer can still read it and fold the create into it.
+func (outcome nearCopyOutcome) unrecorded() nearCopyOutcome {
+	check := *outcome.Check
+	check.outcome, check.reason = nearCopyNotMade, nearCopyNotMadeUnrecorded
+	return nearCopyOutcome{NearCopyCheck: nearCopyCheckUnrecorded(outcome.Refuse[0]), Check: &check}
 }
 
 // respondWithExistingExternalIssue answers a create naming a GitHub issue Dispatch already holds

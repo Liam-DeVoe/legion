@@ -31,8 +31,7 @@ import { conversationPath } from "../decisions-filter/decisions-parts";
 import { useSetFocusedNode } from "../focused-node";
 import { focusedNodeOf, IssueTree, useReleaseFocus } from "../IssueTree";
 import { bringOnScreen } from "../identity-block";
-import { documentOfNode } from "../issue-artifacts";
-import { drawnLine, firstLineOf, lineWords, type TreeNode } from "../issue-tree";
+import { drawnLine, firstLineOf, heldBy, lineWords, type TreeNode } from "../issue-tree";
 import { useRowOnScreen } from "../NodeRow";
 import { chipWords } from "../node-row-chip";
 import { authorText, pageChrome } from "../page-structure";
@@ -45,6 +44,8 @@ import {
   type PlanEntry,
   planChart,
   planOrder,
+  taskDocumentIds,
+  writtenOrder,
 } from "./plan-order";
 
 /**
@@ -80,10 +81,11 @@ import {
  *
  * ## What today's reads give, and what waits
  *
- * - **The plan's own order** is the order the tasks are written in, read from the blocks of
- *   the plan document the page already holds (`useIssueTree.ts` reads them under the same key,
- *   so this costs no request): the filter's view hands the tasks over grouped by the statement
- *   each serves, which is the spec's order and not the plan's (the tester's F19).
+ * - **The plan's own order** is the order the tasks are written in (`plan-order.ts`'s
+ *   `writtenOrder`), read from the blocks of the plan document the page already holds
+ *   (`useIssueTree.ts` reads them under the same key, so this costs no request): the filter's
+ *   view hands the tasks over grouped by the statement each serves, which is the spec's order
+ *   and not the plan's (the tester's F19).
  * - **A bar's place** is worked out here from the `needs` the plan document holds. The place
  *   the server's plan read gives each task waits on dispatch://INFRA-1253 (R8, R11).
  * - **A bar's length** is the task's size, and the `plan_task` block declares none today, so
@@ -112,46 +114,20 @@ export function PlanFilterBody({
   const [steps, setSteps] = useState(false);
   const { artifacts } = tree;
   // The documents the plan's tasks are blocks of, and each one's block ids in the order it is
-  // written: every task of the plan, so a words filter changes no task's place (R2).
-  const documentIds = useMemo(
-    () => [
-      ...new Set(
-        plan.flatMap((node) => {
-          const held = documentOfNode(node.id, artifacts);
-          return held === undefined ? [] : [held.artifact.id];
-        })
-      ),
-    ],
-    [artifacts, plan]
-  );
+  // written (`writtenOrder`): every task of the plan, so a words filter changes no task's place
+  // (R2).
+  const documentIds = useMemo(() => taskDocumentIds(plan, artifacts), [artifacts, plan]);
   const written = useQueries({
     combine: blockIdsOf,
     queries: documentIds.map((id) => artifactBlocksQuery(id)),
   });
-  const entries = useMemo(() => {
-    const places = new Map<string, number>();
-    let place = 0;
-    documentIds.forEach((id, rank) => {
-      for (const block of written[rank] ?? []) {
-        places.set(`${id} ${block}`, place);
-        place += 1;
-      }
-    });
-    const placeOf = (node: TreeNode): number => {
-      const held = documentOfNode(node.id, artifacts);
-      const place =
-        held === undefined ? undefined : places.get(`${held.artifact.id} ${held.blockId}`);
-      return place ?? Number.POSITIVE_INFINITY;
-    };
-    // A task the page holds no place for keeps the place the view gave it, after the rest.
-    const tasks = plan
-      .map((node, index) => ({ index, node, place: placeOf(node) }))
-      .sort((one, other) =>
-        one.place === other.place ? one.index - other.index : one.place - other.place
-      )
-      .map((held) => held.node);
-    return planOrder(tasks);
-  }, [artifacts, documentIds, plan, written]);
+  const entries = useMemo(
+    () =>
+      planOrder(
+        writtenOrder(plan, artifacts, new Map(documentIds.map((id, rank) => [id, written[rank]])))
+      ),
+    [artifacts, documentIds, plan, written]
+  );
   // The view's tasks by id, each as the view gives it and once, as the order holds it: the
   // places drawn are those holding one of them (R4).
   const inView = useMemo(() => {
@@ -179,7 +155,7 @@ export function PlanFilterBody({
         const node = inView.get(task.id);
         return node === undefined ? [] : [node];
       });
-    return { ...root, children: rows, held: rows.reduce((held, row) => held + row.held + 1, 0) };
+    return { ...root, children: rows, held: heldBy(rows) };
   }, [entries, inView, root]);
   // The node the address names, and the one the view has put the focus on or the reader went
   // past with a press of the switch: the address's node takes the focus while the two differ.
@@ -386,16 +362,23 @@ interface DrawnPlace {
  * plan, and its curves are drawn to the bars drawn beside it (dispatch://INFRA-3938 R4).
  *
  * It is the outline the page draws under this view, so it is one tree named as the outline is,
- * and its rows are its items: the outline's own keys work it, under the ids and the labels the
- * outline registers them with (`useTreeKeymap.ts`), so `?` names them here too. The arrows and
- * `j`/`k` reach the bars in order and pass over a cycle's row, Home and End the first and the
- * last bar, `f` steps through the focused row's links, Escape gives a row back from its link and
- * leaves the chart from the row, and Enter goes to the row's task in the conversation, where it
- * is edited (dispatch://INFRA-3938 R7). The focus on a row puts its task in Details. A focus
- * anywhere inside a row - the row's own, or a link of it that a pointer went down on - is the
- * focus on that row, as it is on the outline's (`NodeRow.tsx`): the mark, the heavier curves,
- * Details and the Tab stop stand where the focus is, and the keys, which find the row that
- * holds the focus (`at`), move from there.
+ * and its rows are its items: the outline's own keys work it, under the ids the outline
+ * registers them with (`useTreeKeymap.ts`), so `?` names each once. Each takes the outline's
+ * label but `tree-link` and `tree-edit`, whose labels say what they do here ("Move to the next
+ * link on the focused row", "Go to the focused step in the conversation"). Tab from the page
+ * itself enters the chart at its one tab stop, the arrows and `j`/`k` reach the bars in order
+ * and pass over a cycle's row, Home and End the first and the last bar, `f` steps through the
+ * focused row's links, Escape gives a row back from its link and leaves the chart from the row,
+ * and Enter goes to the row's task in the conversation, where it is edited
+ * (dispatch://INFRA-3938 R7). The focus on a row puts its task in Details. A focus anywhere
+ * inside a row - the row's own, or a link of it that a pointer went down on - is the focus on
+ * that row, as it is on the outline's (`NodeRow.tsx`): the row takes the mark, the heavier
+ * curves, Details and the Tab stop, and the keys, which find the row that holds the focus
+ * (`at`), move from there. The chart lets go of its focused row by the outline's own rule (part
+ * I's `useReleaseFocus`, decision 105 of dispatch://INFRA-1196): Details goes back to the
+ * issue's facts when that rule says so, and the row's mark and heavier curves go when it runs
+ * `onLeave`, so the chart keeps or drops its mark exactly as the outline keeps or drops its
+ * row's (dispatch://INFRA-3938 R6).
  *
  * A cycle's row takes the focus too, as a bar's does: a press on it, an address naming one of
  * its tasks, and the Tab stop where the chart draws no bar (decision 2 of dispatch://INFRA-3938's
@@ -473,9 +456,11 @@ function PlanChart({
     },
     [setFocusedNode]
   );
-  // The focus leaving the chart lets go of its focused row, and gives Details back to the
-  // issue's own facts unless it moved into Details, by the outline's rule (`useReleaseFocus`;
-  // dispatch://INFRA-1196 R14). A focus moving within the chart keeps both. The chart edits no
+  // The chart releases its focused row by the outline's own rule (part I's `useReleaseFocus`;
+  // decision 105 and R14 of dispatch://INFRA-1196): Details goes back to the issue's own facts
+  // when that rule says so, and the row's mark and heavier curves go when it runs `onLeave`, so
+  // the chart keeps or drops its mark exactly as the outline keeps or drops its row's
+  // (dispatch://INFRA-3938 R6). A focus moving within the chart is no leave. The chart edits no
   // row (Enter goes to the conversation), so no edit holds the focus.
   const leave = useCallback(() => setFocused(undefined), []);
   const releaseFocus = useReleaseFocus({ editing: false, onLeave: leave });
@@ -603,6 +588,25 @@ function PlanChart({
     held[index]?.focus({ preventScroll: true });
   };
   useKeymap("issue", [
+    {
+      // The chart is one tab stop (R7): Tab from the page itself enters it at that stop, the
+      // row the reader last stood on, as Tab enters the outline (`useTreeKeymap.ts`'s
+      // `tree-enter`), so after Escape the same Tab goes back to the row under either drawing
+      // (R6). Tab from inside the chart is the browser's own, which leaves it, since every row
+      // but that one takes no focus.
+      id: "tree-enter",
+      keys: ["Tab", "Shift+Tab"],
+      label: "Move into the tree",
+      palette: false,
+      run: () => {
+        const held = items();
+        const stop = held.findIndex((row) => row.tabIndex === 0);
+        moveTo(held, stop === -1 ? 0 : stop);
+      },
+      when: () =>
+        (document.activeElement === null || document.activeElement === document.body) &&
+        items().length > 0,
+    },
     {
       id: "tree-next",
       keys: ["j", "ArrowDown"],
@@ -982,22 +986,28 @@ function BarRow({
       >
         {serves.map((one) => {
           const route = one.reference === undefined ? undefined : parseNodeReference(one.reference);
-          const look = `rounded-[5px] border px-1.5 text-xs leading-[18px] font-semibold text-page-statement ${pageHairBorder}`;
+          // The chip's border and padding are drawn on a box of its own, and its link inside it
+          // draws none, as G's `Chip` holds its link (`NodeRow.tsx`): below 1280 px a
+          // `dispatch-inline-link` takes 6 px of padding above and below (`styles.css`), which
+          // an inline link inside the box's 18 px line takes without growing the box. A long
+          // first word wraps inside the column rather than run past it (R5).
+          const look = `min-w-0 rounded-[5px] border px-1.5 text-xs leading-[18px] font-semibold text-page-statement [overflow-wrap:anywhere] ${pageHairBorder}`;
           return route === undefined ? (
             <span className={look} data-plan-serve="" key={one.line} {...authorText}>
               {chipWords(one.line)}
             </span>
           ) : (
-            <Link
-              className={`dispatch-inline-link ${look}`}
-              data-plan-serve=""
-              key={one.reference}
-              tabIndex={-1}
-              to={buildReferencePath(route)}
-              {...authorText}
-            >
-              {chipWords(one.line)}
-            </Link>
+            <span className={look} key={one.reference}>
+              <Link
+                className="dispatch-inline-link"
+                data-plan-serve=""
+                tabIndex={-1}
+                to={buildReferencePath(route)}
+                {...authorText}
+              >
+                {chipWords(one.line)}
+              </Link>
+            </span>
           );
         })}
       </div>

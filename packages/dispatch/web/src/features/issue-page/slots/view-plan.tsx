@@ -13,9 +13,10 @@ import { NoTooltips } from "../NoTooltips";
 import { useOutlineRequest } from "../outline-request";
 import { EMPTY_STATE_LINES } from "../page-words";
 import { PlanFilterBody } from "../plan-filter/PlanFilterBody";
+import { planDocumentIds } from "../plan-filter/plan-order";
 import { presetView } from "../presets";
 import type { SlotProps } from "../slot-props";
-import { useDocumentToolbars } from "../useDocumentToolbars";
+import { useToolbarSink } from "../useDocumentToolbars";
 import { useIssueTree } from "../useIssueTree";
 
 /**
@@ -62,7 +63,10 @@ export function ViewPlanSlot({ issue, route }: SlotProps): ReactNode {
   const plan = whole.root.children;
   const artifacts = useMemo(() => artifactsBySlug(issue), [issue]);
   const request = useOutlineRequest();
-  const { toolbarSink } = useDocumentToolbars();
+  // The sink alone, which never changes, as the outline's body reads it (`slots/body.tsx`): the
+  // toolbars it fills are no part of the view, so each one an editor publishes while a step is
+  // edited draws neither the view nor its tree again.
+  const toolbarSink = useToolbarSink();
   // The document a step is being edited in, whose one editor the view draws for the row to take
   // onto its own stage (`IssuePresetPanels`, `document-stage.tsx`).
   const [editing, setEditing] = useState<string | undefined>(undefined);
@@ -72,27 +76,28 @@ export function ViewPlanSlot({ issue, route }: SlotProps): ReactNode {
       : issue.artifacts?.find((artifact) => artifact.id === editing);
   const isClosed = issue.closed_at !== null;
   // The view is drawn once every blocks read of the documents it draws from holds data: the
-  // issue's primary document, the spec, whose statements the tasks serve, and its plan
-  // documents, whose blocks are the tasks. Before then the plan holds no task, or tasks that
+  // issue's spec, whose statements the tasks serve, and its plan, whose blocks are the tasks,
+  // each the one the issue read names by its id, as the tree chooses them (`planDocumentIds`,
+  // `useIssueTree.ts`'s `treeDocumentIds`). Before then the plan holds no task, or tasks that
   // serve no statement, and the view would say the issue has no task and draw no switch
   // (dispatch://INFRA-3938 R1; root dispatch://INFRA-1196 R26); a first read that failed holds
   // no data either, so the box stays empty rather than say that. The rule reads the blocks held,
   // not the last read's success: a blocks query keeps its data while it reads again, and after a
   // background read fails, which TanStack marks as no success while it keeps the data. So no
   // such read takes the view down, with the reader's press of "Steps" and the focus (R6, R7),
-  // and the view drawn again on a return to Plan draws the blocks held. It is the Plan view's
-  // own reading, over the documents it draws from, of what part F's `IssueTreeView` gives as
-  // `blocksHeld` for every tree document (decision 98 of dispatch://INFRA-1196). The reads are
-  // `useIssueTree`'s, under the same keys, so the view sends no request of its own
-  // (dispatch://INFRA-3938 R2). An issue with no such document has no read to wait for, so its
-  // view is drawn at once and draws its empty line.
+  // and the view drawn again on a return to Plan draws the blocks held. The reads are
+  // `useIssueTree`'s, under the same keys and for the same documents, so the view sends no
+  // request of its own (dispatch://INFRA-3938 R2). An issue with neither document has no read
+  // to wait for, so its view is drawn at once and draws its empty line.
+  //
+  // This reading is the Plan view's stopgap for decision 98 of dispatch://INFRA-1196, under
+  // which a view draws from part F's `IssueTreeView.blocksHeld`, true while every blocks query
+  // of the tree holds data, and keeps no reading of its own. That field does not exist at part
+  // K's base, so `useIssueTree(issue).blocksHeld` replaces this reading once part F's commit
+  // 74b90a32 is under that base.
   const drawn = useQueries({
     combine: (answers) => answers.every((answer) => answer.data !== undefined),
-    queries: (issue.artifacts ?? [])
-      .filter(
-        (artifact) => artifact.kind === "doc" && (artifact.primary || artifact.role === "plan")
-      )
-      .map((artifact) => artifactBlocksQuery(artifact.id)),
+    queries: planDocumentIds(issue).map((id) => artifactBlocksQuery(id)),
   });
   return (
     <NoTooltips>
