@@ -81,7 +81,7 @@ func TextSum(text string) string {
 //     stored texts while the words' sum is unchanged (an ask's, its block's row); ChangedAt is that
 //     version's created_at. A decision whose document owes its block index is walked over the
 //     markdown of the versions the index has not recorded, newest first (walker.changed), and an
-//     ask's words leave out the server's attributes its markdown carries (ownWords).
+//     ask's words are its question and its options alone, no attribute of its block (ownWords).
 //   - Links, one for each spec node a current `shaped` tuple reaches, FromBlock the node's own
 //     block (the decision's, or the ask's). Event is the tuple's
 //     source_event and CreatedAt its at; TextChangedEvent is the event that wrote the version the
@@ -559,8 +559,9 @@ type changedWords struct {
 
 // changed is the walk that answers node's block - a decision, or the ask block of an ask (typ) -
 // as it stands: its own words (ownWords) and the version of its document that last changed them,
-// which a reading written, edited or removed under it, and for an ask a write of the server's
-// attributes alone, never moves (dispatch://INFRA-1150 R2 and R11).
+// which a reading written, edited or removed under it, and for an ask a write of its block's
+// attributes alone - the server's, or the `shaped` pointers - never moves (dispatch://INFRA-1150
+// R2 and R11).
 //
 // It reads the document as the block index left it and as it stands past that index. A document
 // that owes its block index (document_block_versions holds no version) stands at its newest
@@ -707,15 +708,20 @@ func blockWords(tree *pmdoc.Node, typ, blockID string) (string, *pmdoc.Node, boo
 	return words, found, true
 }
 
-// ownWords is a typed block's own words: the block rendered alone with the readings it closes
-// with left out (refs.DecisionWords) and with none of the server's attributes its markdown
-// carries, read off the block schema as docs' storedAskAttributes reads them - an ask block's
-// state, answered_by, answered_at, selected, answer, copied_from and copied_from_document - so a
-// version that writes or drops those alone, as the roll window and the first write on one build
-// do, changes no ask's words. A decision's markdown carries none of its server attributes
-// (decided_by, kept_by and kept_text_sum are `markdown: false`), so its words are
-// refs.DecisionWords' as they stand, the words a Keep sums.
+// ownWords is a typed block's own words. An ask's are its question and its options (plan v17,
+// T8): the blocks of its content rendered alone, with no attribute of the block at all - neither
+// the server's state, answered_by, answered_at, selected, answer, copied_from and
+// copied_from_document, which the roll window and the first write on one build write or drop, nor
+// the `shaped` pointers the conversion gives it, nor its urgency - and none of the readings it
+// closes with. So a version that changes none of those words changes no ask's words. A decision's
+// are the block rendered alone with the readings it closes with left out (refs.DecisionWords); its
+// markdown carries none of its server attributes (decided_by, kept_by and kept_text_sum are
+// `markdown: false`), so they are the words a Keep sums.
 func ownWords(block *pmdoc.Node) (string, error) {
+	if block.Type == askType {
+		content, _ := pmdoc.TypedContent(block)
+		return pmdoc.Render(&pmdoc.Node{Type: "doc", Children: content})
+	}
 	attributes, _ := pmdoc.BlockTypeAttributes(block.Type)
 	own := *block
 	own.Attrs = make(pmdoc.Attrs, len(block.Attrs))

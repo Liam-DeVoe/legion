@@ -11,6 +11,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -21,6 +22,9 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/cmdtest"
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // restoreSession is the agent's session whose writes move the answered asks out of the specs.
@@ -118,8 +122,19 @@ func restoreLine(t *testing.T, out, issue string) string {
 }
 
 // runRestore runs `envoy-dispatch restore-answered-asks --project RST`, and --dry-run where dry,
-// in this process, over databaseURL, and answers what it printed.
+// in this process, over databaseURL, fails unless it exits 0, and answers what it printed.
 func runRestore(t *testing.T, ctx context.Context, databaseURL string, dry bool) string {
+	t.Helper()
+	code, out := runRestoreExit(t, ctx, databaseURL, dry)
+	if code != 0 {
+		t.Fatalf("restore-answered-asks (dry run %t) exited %d:\n%s", dry, code, out)
+	}
+	return out
+}
+
+// runRestoreExit is runRestore's run, answering its exit code and what it printed on either
+// stream, whatever the code.
+func runRestoreExit(t *testing.T, ctx context.Context, databaseURL string, dry bool) (int, string) {
 	t.Helper()
 	args := []string{"--project", "RST"}
 	if dry {
@@ -132,11 +147,39 @@ func runRestore(t *testing.T, ctx context.Context, databaseURL string, dry bool)
 		}
 		return "", false
 	})
-	if code := runSubcommand(ctx, append([]string{"restore-answered-asks"}, args...), env, &out, &errOut); code != 0 {
-		t.Fatalf("restore-answered-asks %v exited %d:\n%s\n%s", args, code, out.String(), errOut.String())
+	code := runSubcommand(ctx, append([]string{"restore-answered-asks"}, args...), env, &out, &errOut)
+	t.Logf("restore-answered-asks %v exited %d and printed:\n%s%s", args, code, out.String(), errOut.String())
+	return code, out.String() + errOut.String()
+}
+
+// databaseWrites is what the test reads to tell a dry run that wrote from one that wrote nothing,
+// beside each document's state: the migrations the database records, the asks no node names yet,
+// and the events and the tuples it holds.
+type databaseWrites struct {
+	migrations, unmarkedAsks, events, tuples int
+}
+
+// readDatabaseWrites reads the database's databaseWrites. A database this build's migrations have
+// not reached yet may hold no graph_tuples table and no asks.node_kind column: it holds no tuple,
+// and each of its asks names no node.
+func readDatabaseWrites(t *testing.T, ctx context.Context, database *pgx.Conn) databaseWrites {
+	t.Helper()
+	var writes databaseWrites
+	var tuples bool
+	if err := database.QueryRow(ctx, `
+		select (select count(*) from schema_migrations),
+		       (select count(*) from asks k where to_jsonb(k) ->> 'node_kind' is null),
+		       (select count(*) from events),
+		       to_regclass('graph_tuples') is not null
+	`).Scan(&writes.migrations, &writes.unmarkedAsks, &writes.events, &tuples); err != nil {
+		t.Fatalf("read what the database holds: %v", err)
 	}
-	t.Logf("restore-answered-asks %v printed:\n%s", args, out.String())
-	return out.String()
+	if tuples {
+		if err := database.QueryRow(ctx, `select count(*) from graph_tuples`).Scan(&writes.tuples); err != nil {
+			t.Fatalf("count the tuples: %v", err)
+		}
+	}
+	return writes
 }
 
 // The restore says what it does to the approval of each document it changes, and carries or
@@ -151,8 +194,7 @@ func runRestore(t *testing.T, ctx context.Context, databaseURL string, dry bool)
 //     server-owned attributes off the third, and the approval carries across that combined
 //     version, naming the version the person approved; the blocks stand in the `## Decisions`
 //     part, in place of the pointer line. The decisions.md's approval is superseded and reported.
-//     The two versions are one transaction's, one authors value and one xmin, and the dry run
-//     rolled it back leaving both documents, both approvals and the ask node as they were.
+//     The two versions are one transaction's, one authors value and one xmin.
 //   - issue B: a spec with no `## Decisions` part; the restore adds the heading, writes the spec
 //     alone, and that version still reads approved.
 //   - issue C: a person approved the spec after its ask left, so the approved bytes never held the
@@ -162,6 +204,18 @@ func runRestore(t *testing.T, ctx context.Context, databaseURL string, dry bool)
 //   - issue E: an ask of the second shape whose question an agent edited in the decisions.md after
 //     the move; the restore returns the edited question, supersedes the approval and reports it
 //     with the ask's id and its node.
+//   - issue F: a person approved the spec while its ask was open, an agent reworded the ask's
+//     question in the spec, which its row took, and another person answered the new words before the
+//     agent removed the block. The restore returns the ask under the block id the approved version
+//     held it under, so the one difference no case carries is the words: the restore supersedes
+//     the approval for them alone (sameAskWording, restoredAskBlocks) and reports it.
+//
+// The dry run writes nothing (`--dry-run`). Over the database the base release left, which has
+// this build's migrations still to apply, it refuses and applies none; once they are applied, the
+// step's first phase still owes every ask row the base release wrote, which it would commit, so
+// it refuses again and states none. Once that phase has run, it restores both asks of A and rolls
+// every issue back, leaving both documents, both approvals, the ask nodes, the events and the
+// tuples as they were.
 func TestTheRestoreCarriesOrSupersedesTheApprovalOfBothDocuments(t *testing.T) {
 	ctx := context.Background()
 	databaseURL := censusDatabase(t)
@@ -257,8 +311,39 @@ func TestTheRestoreCarriesOrSupersedesTheApprovalOfBothDocuments(t *testing.T) {
 	if err := database.QueryRow(ctx, `select question from asks where id = $1::uuid`, edited).Scan(&question); err != nil || question != "Which census reads every move, and when?" {
 		t.Fatalf("the edited ask reads %q (%v), want the question the agent edited in the decisions.md", question, err)
 	}
-	t.Logf("the base release %s wrote the fixture: spec A approved at version %d, its decisions.md at version %d, B at %d, C at %d, D at %d, E at %d",
-		baseCommit, approvedA.version, approvedDecisions.version, approvedB.version, approvedC.version, approvedD.version, approvedE.version)
+
+	// Issue F: approved while its ask was open; an agent rewords the open ask's question in the
+	// spec, which its row takes, another person answers the new words - so the base release's own
+	// carry, which follows the approver's own answer, leaves the approval at the words it approved
+	// - and the agent then removes the answered ask's block.
+	issueF, specF := createCensusIssue(t, previous, "RST", "Reworded before the answer", "# Reworded before the answer\n\n:::requirement{#r-f}\nThe census counts each move.\n:::\n\n"+
+		restoreAsk("q-f", "Which census counts the moves?"))
+	reworded := blockAskOf(t, previous, issueF, "q-f")
+	approvedF := approveAndCapture(t, ctx, previous, database, issueF, specF, "spec F")
+	agentEdits(t, previous, specF, map[string]string{"op": "replace", "find": "Which census counts the moves?", "with": "Which census counts every move?"})
+	settledDocument(t, ctx, previous, database, specF)
+	if err := database.QueryRow(ctx, `select question from asks where id = $1::uuid`, reworded).Scan(&question); err != nil || question != "Which census counts every move?" {
+		t.Fatalf("the reworded ask reads %q (%v), want the question the agent reworded in the spec", question, err)
+	}
+	// The other person answers the words as they read them now: the answer names the ask's edit
+	// revision, which the rewording moved.
+	var revision struct {
+		Ask struct {
+			EditedAt json.RawMessage `json:"edited_at"`
+		} `json:"ask"`
+	}
+	if err := json.Unmarshal(previous.call(t, http.MethodGet, "/api/v1/asks/"+reworded, "", http.StatusOK), &revision); err != nil {
+		t.Fatalf("read the reworded ask: %v", err)
+	}
+	if answered := previous.send(t, http.MethodPost, "/api/v1/asks/"+reworded+"/answer", encodeJSON(t, map[string]any{
+		"selected": []string{"First"}, "text": "The store census.", "expected_edited_at": revision.Ask.EditedAt,
+	}), asUser("restore-approvals-other")); answered.status != http.StatusOK {
+		t.Fatalf("another person's answer of the reworded ask: %s, want 200", answered)
+	}
+	settledDocument(t, ctx, previous, database, specF)
+	agentEdits(t, previous, specF, remove("q-f"))
+	t.Logf("the base release %s wrote the fixture: spec A approved at version %d, its decisions.md at version %d, B at %d, C at %d, D at %d, E at %d, F at %d",
+		baseCommit, approvedA.version, approvedDecisions.version, approvedB.version, approvedC.version, approvedD.version, approvedE.version, approvedF.version)
 	stopProcess(t, previous)
 	for deadline := time.Now().Add(30 * time.Second); ; time.Sleep(500 * time.Millisecond) {
 		var live int
@@ -273,21 +358,53 @@ func TestTheRestoreCarriesOrSupersedesTheApprovalOfBothDocuments(t *testing.T) {
 		}
 	}
 
-	// The dry run: everything, rolled back. A command runs the step's first two phases before the
-	// restore, which state each ask the base release wrote on its node and commit - they write no
-	// document and are no part of the restore - so the state the restore must leave as it found is
-	// read once they have run, by a first dry run, and held to a second.
+	// The dry run writes nothing. Over the database the base release left, this build's migrations
+	// are still to apply: it refuses and applies none.
 	asksOfA := []string{mainAsk, movedAsk, keptAsk}
-	beforeVersions := readDocumentState(t, ctx, database, specA).versions
-	runRestore(t, ctx, databaseURL, true)
+	beforeWrites := readDatabaseWrites(t, ctx, database)
 	beforeSpec := readDocumentState(t, ctx, database, specA, asksOfA...)
-	beforeDecisions := readDocumentState(t, ctx, database, decisionsA)
-	if beforeSpec.versions != beforeVersions {
-		t.Fatalf("after a dry run spec A holds %d versions, want the %d it held", beforeSpec.versions, beforeVersions)
+	if code, printed := runRestoreExit(t, ctx, databaseURL, true); code != 1 || !strings.Contains(printed, "--dry-run writes nothing") || !strings.Contains(printed, "still to apply") {
+		t.Fatalf("the dry run over a database with migrations to apply exited %d and printed:\n%s\nwant exit 1 refusing it", code, printed)
 	}
+	if after := readDatabaseWrites(t, ctx, database); after != beforeWrites {
+		t.Fatalf("after the refused dry run the database reads %+v, want it as it was: %+v", after, beforeWrites)
+	}
+	if after := readDocumentState(t, ctx, database, specA, asksOfA...); after != beforeSpec {
+		t.Fatalf("after the refused dry run spec A reads %+v, want it as it was: %+v", after, beforeSpec)
+	}
+	// Once the migrations are applied, the step's first phase still owes every ask row the base
+	// release wrote, which it would commit: it refuses again and states none.
+	migrated, err := store.Open(ctx, databaseURL)
+	if err != nil {
+		t.Fatalf("open the run's database: %v", err)
+	}
+	defer migrated.Pool.Close()
+	if err := migrated.Migrate(ctx); err != nil {
+		t.Fatalf("apply this build's migrations: %v", err)
+	}
+	beforeWrites = readDatabaseWrites(t, ctx, database)
+	if beforeWrites.unmarkedAsks == 0 {
+		t.Fatal("no ask row the base release wrote waits for the step's first phase")
+	}
+	if code, printed := runRestoreExit(t, ctx, databaseURL, true); code != 1 || !strings.Contains(printed, docs.ErrDryRunOwesBackfill.Error()) {
+		t.Fatalf("the dry run over a database whose first phase is owed exited %d and printed:\n%s\nwant exit 1 refusing it", code, printed)
+	}
+	if after := readDatabaseWrites(t, ctx, database); after != beforeWrites {
+		t.Fatalf("after the dry run the first phase owes, the database reads %+v, want it as it was: %+v", after, beforeWrites)
+	}
+	// Once the first phase has run, the dry run restores both asks of A and rolls every issue back.
+	if _, err := graphcensus.BackfillAsks(ctx, migrated); err != nil {
+		t.Fatalf("run the step's first phase: %v", err)
+	}
+	beforeWrites = readDatabaseWrites(t, ctx, database)
+	beforeSpec = readDocumentState(t, ctx, database, specA, asksOfA...)
+	beforeDecisions := readDocumentState(t, ctx, database, decisionsA)
 	dry := runRestore(t, ctx, databaseURL, true)
 	if line := restoreLine(t, dry, issueA); !strings.Contains(line, "restored=2") || !strings.Contains(line, "dry_run=true") {
 		t.Fatalf("the dry run printed %q for %s, want both asks restored, rolled back", line, issueA)
+	}
+	if after := readDatabaseWrites(t, ctx, database); after != beforeWrites {
+		t.Fatalf("after the dry run the database reads %+v, want it as it was: %+v", after, beforeWrites)
 	}
 	if after := readDocumentState(t, ctx, database, specA, asksOfA...); after != beforeSpec {
 		t.Fatalf("after the dry run spec A reads %+v, want it as it was: %+v", after, beforeSpec)
@@ -295,7 +412,7 @@ func TestTheRestoreCarriesOrSupersedesTheApprovalOfBothDocuments(t *testing.T) {
 	if after := readDocumentState(t, ctx, database, decisionsA); after != beforeDecisions {
 		t.Fatalf("after the dry run the decisions.md of A reads %+v, want it as it was: %+v", after, beforeDecisions)
 	}
-	t.Logf("the dry run rolled back: spec A %+v, its decisions.md %+v", beforeSpec, beforeDecisions)
+	t.Logf("the dry run rolled back: spec A %+v, its decisions.md %+v, the database %+v", beforeSpec, beforeDecisions, beforeWrites)
 
 	specBVersions := readDocumentState(t, ctx, database, specB).versions
 	decisionsBVersions := readDocumentState(t, ctx, database, decisionsB).versions
@@ -396,4 +513,21 @@ func TestTheRestoreCarriesOrSupersedesTheApprovalOfBothDocuments(t *testing.T) {
 		t.Fatalf("spec E reads %+v, want the restore that changed the question's words to supersede its approval", approval)
 	}
 	t.Logf("spec E: %s", lineE)
+
+	// F: the ask returned under the block id the approved version held it under, with the words
+	// the person answered; the approval superseded for those words alone, and reported.
+	lineF := restoreLine(t, out, issueF)
+	if !strings.Contains(lineF, "restored=1 moved=0 new_ids=0") || !strings.Contains(lineF, "spec_approval=superseded") ||
+		!strings.Contains(lineF, "superseded=dispatch://"+issueF+"/spec/review=") || !strings.Contains(lineF, "asks=dispatch://"+issueF+"/ask/"+reworded) ||
+		!strings.Contains(lineF, "/nodes=dispatch://"+issueF+"/spec#b-q-f") || !strings.Contains(lineF, "approved_version="+strconv.Itoa(approvedF.version)) {
+		t.Fatalf("the restore printed %q for %s, want the ask returned under q-f and the spec's approval of version %d superseded for its words, reported with the ask %s", lineF, issueF, approvedF.version, reworded)
+	}
+	_, markdownF := latestMarkdown(t, current, specF)
+	if !strings.Contains(markdownF, "#q-f ") || !strings.Contains(markdownF, "Which census counts every move?") {
+		t.Fatalf("the restored spec F holds no ask q-f asking the reworded question:\n%s", markdownF)
+	}
+	if approval := approvalOf(t, current, specF); approval.approvedLatest() {
+		t.Fatalf("spec F reads %+v, want the restore that returned other words under the approved block id to supersede its approval", approval)
+	}
+	t.Logf("spec F: %s", lineF)
 }

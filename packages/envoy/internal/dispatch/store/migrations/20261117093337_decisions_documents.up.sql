@@ -13,17 +13,25 @@
 -- document holds nothing the step owes, and its retirement cleared its role, so its slug alone
 -- would otherwise find it again. A document a project holds, and a file, is none.
 --
+-- decisions_documents(include_retired => true) answers the retired ones too, found by that slug:
+-- the release before gave the role decisions to an issue's document under that slug alone,
+-- so every decisions document carries that slug, and the retirement leaves it. The census's
+-- dangling-citation counter reads it so (graphcensus.danglingRead): a block address a retired
+-- decisions document held, cited where no moved_to tuple leads from it, still dangles.
+--
 -- Rolling deploy. A new function and nothing else: it writes no row, reads no row while it
 -- applies (a sql function's body is checked against the catalog, not run), and changes no table.
 -- The release before this one names no decisions_documents, so nothing it runs changes. Rolling
 -- back past this migration is an image rollback alone; the function left behind is called by
 -- nothing that release runs. The root's own pull request drops it, one release later, with the
 -- step that calls it (dispatch://INFRA-1150 R11).
-create function decisions_documents() returns table (id uuid, issue_key text, ref_key text)
+-- kept for one release: decisions-documents-fn
+create function decisions_documents(include_retired boolean default false)
+  returns table (id uuid, issue_key text, ref_key text)
   language sql stable
   as $$
     select a.id, a.issue_key, a.ref_key
     from artifacts a
-    where a.issue_key is not null and a.kind = 'doc' and a.retired_at is null
+    where a.issue_key is not null and a.kind = 'doc' and (a.retired_at is null or include_retired)
       and (a.role = 'decisions' or (a.role is null and a.slug = 'decisions-md'))
   $$;

@@ -392,3 +392,202 @@ func TestTheRestoreWritesAClosedIssuesSpec(t *testing.T) {
 		t.Fatalf("the issue reads closed %v (%v) after the restore, want it closed still", closed, err)
 	}
 }
+
+// partOf is the address of the document the current part_of tuple of ask's node names, "" for
+// none.
+func (issue *restoreIssue) partOf(ask string) string {
+	issue.t.Helper()
+	tuples, err := graphstore.CurrentOut(context.Background(), issue.database.Pool, graphstore.KindAsk, ask, []string{graphstore.TuplePartOf})
+	if err != nil {
+		issue.t.Fatalf("read the part_of of ask %s: %v", ask, err)
+	}
+	for _, tuple := range tuples {
+		if tuple.Asserted {
+			return tuple.ToID
+		}
+	}
+	return ""
+}
+
+// restoreWith runs the third phase on DOC-1 alone over work, the finder's read of an earlier
+// moment, as a pass that read its work before the issue's lock does, converting where convert, and
+// answers what it did.
+func (issue *restoreIssue) restoreWith(work []graphcensus.RestoreWork, convert bool) DecisionIssue {
+	t := issue.t
+	t.Helper()
+	step := NewDecisionStep(issue.database, "", nil)
+	step.UseDocuments(issue.service)
+	result, err := step.restoreIssue(context.Background(), "DOC-1", work, convert, false)
+	if err != nil {
+		t.Fatalf("the third phase on DOC-1 answered %v", err)
+	}
+	return result
+}
+
+// An ask block the pass does not move stays where it is with the document that holds it
+// (dispatch://INFRA-1150 R6, R8): the section that holds it is left in place and counted, and the
+// document, which still holds an ask block, is not retired, so no ask block is ever without a
+// parent. So it is of a section holding an open ask, of one holding an answered ask the finder
+// left to a later pass - its answer, which the release before wrote on its row, not yet caught up
+// on its node - and of an ask block outside every section, while the document's other section,
+// which cites no ask, becomes a decision. In each, the ask's row names its block in the decisions
+// document, its node's part_of names that document, the document's newest version holds the
+// block, and the census counts the document, with the sections it still holds.
+func TestAnAskBlockThePassDoesNotMoveKeepsItsDecisionsDocument(t *testing.T) {
+	const spec = "# Spec\n\n:::requirement{#r1}\nThe store holds the corpus.\n:::\n"
+	const plain = "## Files stay out of the corpus\n\nWe write no file beside the database.\n\n"
+	ask := func(id string) string {
+		return ":::ask{#" + id + " urgency=\"low\" multiple=\"false\"}\nWhich region goes first?\n\n- East: The quiet one.\n- West: The busy one.\n:::\n"
+	}
+	for _, test := range []struct {
+		name, markdown, block string
+		// skipped is whether the release before answers the ask, which no catch-up states on its node.
+		skipped bool
+		left    int
+	}{
+		{"a section holding an open ask", "# Decisions\n\n" + plain + "## Which region goes first\n\n" + ask("q-open"), "q-open", false, 1},
+		{"a section holding an answered ask the finder skipped", "# Decisions\n\n" + plain + "## Which region goes first\n\n" + ask("q-skipped"), "q-skipped", true, 1},
+		{"an ask block outside every section", "# Decisions\n\n" + ask("q-loose") + "\n" + plain, "q-loose", false, 0},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := context.Background()
+			issue := newRestoreIssue(t, spec)
+			decisions := issue.document("decisions-md", "decisions.md", false, "decisions", test.markdown)
+			held := blockAskOn(t, issue.service, decisions, test.block).ID
+			if test.skipped {
+				answerAsThePreviousBuild(t, issue.database, "DOC-1", held, "East")
+			}
+			if work, err := graphcensus.ReadRestoreWork(ctx, issue.database.Pool); err != nil || len(work) != 0 {
+				t.Fatalf("the finder reads work %+v (%v), want none: the pass moves no ask", work, err)
+			}
+
+			result := issue.run(true)
+			if result.Retired || result.Left != test.left || result.Decisions != 1 {
+				t.Fatalf("the conversion did %+v, want the document kept, %d section left, the plain one a decision", result, test.left)
+			}
+			var retired bool
+			if err := issue.database.Pool.QueryRow(ctx, `select retired_at is not null from artifacts where id = $1`, decisions).Scan(&retired); err != nil || retired {
+				t.Fatalf("the decisions document reads retired %v (%v), want it standing", retired, err)
+			}
+			if block, document := issue.askRow(held); block != test.block || document != decisions {
+				t.Errorf("the ask's row names block %s of %s, want %s of the decisions document %s", block, document, test.block, decisions)
+			}
+			if part := issue.partOf(held); part != issue.refKey(decisions) {
+				t.Errorf("the ask's node is part_of %q, want the decisions document %s", part, issue.refKey(decisions))
+			}
+			if markdown := issue.latest(decisions); !strings.Contains(markdown, "#"+test.block+" ") {
+				t.Errorf("the decisions document's newest version holds no ask block %s:\n%s", test.block, markdown)
+			}
+			census, err := ReadDecisionsCensus(ctx, issue.database.Pool)
+			if err != nil || census.Documents != 1 || census.UnconvertedSections != int64(test.left) {
+				t.Errorf("the census reads %+v (%v), want the document counted with %d section", census, err, test.left)
+			}
+			if owed, err := countDecisionStepOwed(ctx, issue.database.Pool); err != nil || owed.DecisionsDocuments != 1 {
+				t.Errorf("the step owes %+v (%v), want the decisions document", owed, err)
+			}
+		})
+	}
+}
+
+// The restore replaces the spec's one pointer line to the decisions document (dispatch://INFRA-1150
+// R6, R7): the first paragraph of the `## Decisions` part that cites the document itself. A
+// paragraph of the part that cites a section of the document is the person's prose, which the
+// restore keeps, so the restore that changed nothing else carries the person's approval, which
+// names the restore's case.
+func TestTheRestoreKeepsAParagraphCitingASectionOfTheDecisionsDocument(t *testing.T) {
+	ctx := context.Background()
+	const pointer = "The decisions this spec rests on are in dispatch://DOC-1/artifact/decisions-md."
+	const cite = "We chose the base release because its corpus is the one we measured (dispatch://DOC-1/artifact/decisions-md#b-h1)."
+	const head = "# Spec\n\n:::requirement{#r1}\nThe store holds the corpus.\n:::\n\n"
+	const tail = "## Decisions\n\n" + pointer + "\n\n" + cite + "\n"
+	issue := newRestoreIssue(t, head+":::ask{#q1 urgency=\"med\" multiple=\"false\"}\nWhich build writes the corpus?\n:::\n\n"+tail)
+	issue.answer(issue.spec, "q1", "The base release.")
+	var approved int
+	if err := issue.database.Pool.QueryRow(ctx, `select max(number) from artifact_versions where artifact_id = $1`, issue.spec).Scan(&approved); err != nil {
+		t.Fatalf("read the spec's newest version: %v", err)
+	}
+	approveStoredVersion(t, issue.database, issue.spec, approved, "alice")
+	issue.replace(issue.spec, head+tail)
+	issue.document("decisions-md", "decisions.md", false, "decisions", "# Decisions\n\n## The base release writes the corpus\n\nIts corpus is the one we measured.\n")
+
+	result := issue.run(false)
+	if len(result.Restored) != 1 || result.SpecApproval != "carried" {
+		t.Fatalf("the restore did %+v, want the ask restored and the approval of version %d carried", result, approved)
+	}
+	spec := issue.latest(issue.spec)
+	part := spec[strings.Index(spec, "## Decisions"):]
+	if !strings.Contains(part, cite) || !strings.Contains(part, "#q1 urgency=") || strings.Contains(spec, pointer) {
+		t.Fatalf("the restored spec's Decisions part reads\n%s\nwant the ask in place of the pointer line and the paragraph citing a section kept", part)
+	}
+	if strings.Index(part, "#q1 urgency=") > strings.Index(part, cite) {
+		t.Errorf("the restored ask stands after the kept paragraph, want it in place of the pointer line:\n%s", part)
+	}
+	reason := approvedReasonAt(t, issue.service, issue.spec, result.SpecVersion)
+	if !strings.HasPrefix(reason, "Carried forward from the approval of version ") || !strings.Contains(reason, restoreCase.change) {
+		t.Errorf("the carried approval reads %q, want it naming the restore's case", reason)
+	}
+}
+
+// The restore reads the finder's work again under the issue's lock (dispatch://INFRA-1150 R6):
+// a returning ask whose block a person put back in the spec since the finder read it is left as
+// it stands, and no second block of it is written, so the person's block keeps the ask's row.
+func TestTheRestoreLeavesAReturningAskWhoseBlockItsSpecHoldsAgain(t *testing.T) {
+	const block = ":::ask{#q-back urgency=\"med\" multiple=\"false\"}\nWhich build writes the corpus?\n:::\n"
+	issue := newRestoreIssue(t, "# Spec\n\n"+block)
+	ask := issue.answer(issue.spec, "q-back", "The base release.")
+	issue.replace(issue.spec, "# Spec\n\nThe corpus.\n")
+	work, err := graphcensus.ReadRestoreWork(context.Background(), issue.database.Pool)
+	if err != nil || len(work) != 1 || work[0].Shape != graphcensus.RestoreReturns || work[0].Ask != ask {
+		t.Fatalf("the finder reads %+v (%v), want the returning ask %s", work, err, ask)
+	}
+	issue.replace(issue.spec, "# Spec\n\nThe corpus.\n\n"+block)
+
+	result := issue.restoreWith(work, false)
+	if len(result.Restored) != 0 || result.SpecVersion != 0 {
+		t.Fatalf("the restore over the finder's earlier read did %+v, want nothing: the spec holds the ask's block again", result)
+	}
+	if spec := issue.latest(issue.spec); strings.Count(spec, "urgency=\"med\"") != 1 {
+		t.Fatalf("the spec holds the ask's block %d times, want once:\n%s", strings.Count(spec, "urgency=\"med\""), spec)
+	}
+	if blockID, document := issue.askRow(ask); blockID != "q-back" || document != issue.spec {
+		t.Fatalf("the ask's row names block %s of %s, want q-back of the spec %s", blockID, document, issue.spec)
+	}
+}
+
+// An answered ask the restore moves out of the decisions document moves from the address the
+// finder read (dispatch://INFRA-1150 R6, R8), whether or not the document still holds the block
+// once the issue is locked: a person who took the block out of the document since leaves the
+// ask's row naming it, and the restore writes the ask into the spec, its row, one moved_to from
+// the old address to the new one, and its node's relations, which name the spec.
+func TestTheRestoreMovesAnAskWhoseBlockLeftTheDecisionsDocumentSinceItWasRead(t *testing.T) {
+	issue := newRestoreIssue(t, "# Spec\n\n:::requirement{#r1}\nThe corpus is written once.\n:::\n")
+	decisions := issue.document("decisions-md", "decisions.md", false, "decisions",
+		"# Decisions\n\n## Which line names a moved block\n\n:::ask{#q-doc urgency=\"low\" multiple=\"false\"}\nWhich line names a block that moved?\n:::\n")
+	moved := issue.answer(decisions, "q-doc", "The census names each move.")
+	work, err := graphcensus.ReadRestoreWork(context.Background(), issue.database.Pool)
+	if err != nil || len(work) != 1 || work[0].Shape != graphcensus.RestoreMoves || work[0].Ask != moved {
+		t.Fatalf("the finder reads %+v (%v), want the moving ask %s", work, err, moved)
+	}
+	issue.replace(decisions, "# Decisions\n\n## Which line names a moved block\n\nThe census names each move.\n")
+	if blockID, document := issue.askRow(moved); blockID != "q-doc" || document != decisions {
+		t.Fatalf("after the person took the block out the ask's row names %s of %s, want q-doc of the decisions document", blockID, document)
+	}
+
+	result := issue.restoreWith(work, false)
+	from, to := issue.refKey(decisions)+"#q-doc", issue.refKey(issue.spec)+"#q-doc"
+	if len(result.Restored) != 1 || result.Restored[0].From != from || result.Restored[0].To != to {
+		t.Fatalf("the restore did %+v, want the ask moved from %s to %s", result.Restored, from, to)
+	}
+	if blockID, document := issue.askRow(moved); blockID != "q-doc" || document != issue.spec {
+		t.Errorf("the ask's row names %s of %s, want q-doc of the spec %s", blockID, document, issue.spec)
+	}
+	if moves := issue.movedTo(decisions); moves[from] != to {
+		t.Errorf("the restore stated moves %v, want one from %s to %s", moves, from, to)
+	}
+	if part := issue.partOf(moved); part != issue.refKey(issue.spec) {
+		t.Errorf("the ask's node is part_of %q, want the spec %s", part, issue.refKey(issue.spec))
+	}
+	if spec := issue.latest(issue.spec); !strings.Contains(spec, "#q-doc urgency=") {
+		t.Errorf("the restored spec holds no block of the ask:\n%s", spec)
+	}
+}

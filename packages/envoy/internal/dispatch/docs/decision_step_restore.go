@@ -158,12 +158,24 @@ func (s *DecisionStep) rewriteGatedSteps(ctx context.Context, project string, dr
 	return tx.Commit(ctx)
 }
 
+// ErrDryRunOwesBackfill refuses a dry run of the decisions step (RunByHand) over a database whose
+// rows the step's first phase has still to state (graphcensus.AsksOwed): that phase commits what it
+// states, and a dry run writes nothing.
+var ErrDryRunOwesBackfill = errors.New("docs: the decisions step's first phase owes rows the release before wrote, " +
+	"which it commits, and a dry run writes nothing; run the step without the dry run, or boot a server of this build, first")
+
 // RunByHand is the step as a command runs it (`envoy-dispatch restore-answered-asks` and
-// `convert-decisions`): it waits for the step's lock, so no process's tick runs the step beside
-// it, runs phase 1 where a row stands unmarked and phase 2 once, and then phase 3 over the issues
-// of project (RestoreAndConvert), whatever DISPATCH_TEST_HOLD_DECISIONS_STEP says, since that
-// setting holds a server's boot and tick alone. Phase 3 still waits for a fleet of the step's own
-// build (ErrAnotherBuildLive).
+// `convert-decisions`): it waits for the step's lock, so no process's tick runs the first two
+// phases beside it, runs phase 1 where a row stands unmarked and phase 2 once, then releases that
+// lock and waits for phase 3's (takeRestoreLock), so no tick runs phase 3 beside it and no booting
+// process waits behind it, and runs phase 3 over the issues of project (RestoreAndConvert),
+// whatever DISPATCH_TEST_HOLD_DECISIONS_STEP says, since that setting holds a server's boot and
+// tick alone. Phase 3 still waits for a fleet of the step's own build (ErrAnotherBuildLive).
+//
+// dryRun writes nothing: it refuses a database phase 1 owes a row of (ErrDryRunOwesBackfill), since
+// phase 1 commits, runs no phase 2, which commits each ask it catches up, and runs phase 3 with
+// each of its transactions rolled back. A dry run's phase 3 reads an answer another build wrote
+// since the last catch-up as the node holds it, as a tick's would before its catch-up.
 func (s *DecisionStep) RunByHand(ctx context.Context, project string, convert, dryRun bool) ([]DecisionIssue, []DecisionIssueFailure, error) {
 	conn, err := s.database.Pool.Dedicated(ctx, decisionStepApplication)
 	if err != nil {
@@ -177,15 +189,23 @@ func (s *DecisionStep) RunByHand(ctx context.Context, project string, convert, d
 	if err != nil {
 		return nil, nil, err
 	}
+	if owed && dryRun {
+		return nil, nil, ErrDryRunOwesBackfill
+	}
 	if owed {
 		if err := s.backfill(ctx); err != nil {
 			return nil, nil, err
 		}
 	}
-	if failed, err := s.catchUp(ctx); err != nil {
+	if !dryRun {
+		if failed, err := s.catchUp(ctx); err != nil {
+			return nil, nil, err
+		} else if failed {
+			return nil, nil, errors.New("docs: the decisions step's catch-up failed on an ask; run the command again")
+		}
+	}
+	if _, err := takeRestoreLock(ctx, conn, true); err != nil {
 		return nil, nil, err
-	} else if failed {
-		return nil, nil, errors.New("docs: the decisions step's catch-up failed on an ask; run the command again")
 	}
 	return s.RestoreAndConvert(ctx, project, convert, dryRun)
 }

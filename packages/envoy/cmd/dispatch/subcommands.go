@@ -225,6 +225,47 @@ func openMigrated(ctx context.Context, label, databaseURL string, out io.Writer)
 	return database, true
 }
 
+// openUnmigrated opens the database a dry run works on without writing to it: where this
+// binary's migrations are not all applied (store.Census, which migrates nothing and reads in a
+// read-only transaction), it refuses on out under the subcommand's label, since applying them is a
+// write; otherwise it opens the store and installs its block schema, as openMigrated does after
+// its migration run. The caller closes the returned store's pool.
+func openUnmigrated(ctx context.Context, label, databaseURL string, out io.Writer) (*store.Store, bool) {
+	if strings.TrimSpace(databaseURL) == "" {
+		fmt.Fprintln(out, label+": DATABASE_URL is required")
+		return nil, false
+	}
+	report, err := store.Census(ctx, databaseURL)
+	if err != nil {
+		fmt.Fprintf(out, "%s: read which migrations the database has still to apply: %v\n", label, err)
+		return nil, false
+	}
+	if report.Fresh || len(report.Pending) > 0 {
+		owed := "every migration of this build"
+		if !report.Fresh {
+			names := make([]string, len(report.Pending))
+			for index, entry := range report.Pending {
+				names[index] = entry.Migration.Name
+			}
+			owed = strings.Join(names, ", ")
+		}
+		fmt.Fprintf(out, "%s: --dry-run writes nothing, and the database has %s still to apply; run %s without --dry-run, or boot a server of this build, first\n",
+			label, owed, label)
+		return nil, false
+	}
+	database, err := store.Open(ctx, databaseURL)
+	if err != nil {
+		fmt.Fprintf(out, "%s: open database: %v\n", label, err)
+		return nil, false
+	}
+	if err := schemanodes.InstallFromStore(ctx, database.Pool); err != nil {
+		fmt.Fprintf(out, "%s: install the block schema from the store: %v\n", label, err)
+		database.Pool.Close()
+		return nil, false
+	}
+	return database, true
+}
+
 func backfillBlockIDs(ctx context.Context, databaseURL string, out io.Writer) int {
 	database, ok := openMigrated(ctx, "backfill-block-ids", databaseURL, out)
 	if !ok {
@@ -290,7 +331,11 @@ func backfillGraphStore(ctx context.Context, databaseURL string, out io.Writer) 
 // answered ask that left an issue's spec alone, or, for convert-decisions, the rewrite of the
 // project's gated steps without `decisions`, that restore, and the conversion of each issue's
 // decisions document into the spec, which retires the document once it holds no section.
-// --dry-run does all of it and rolls each issue's transaction back.
+//
+// --dry-run writes nothing: it applies no migration and refuses, with exit 1, a database that
+// has one of this build's migrations still to apply (openUnmigrated), refuses one whose rows the
+// step's first phase has still to state (docs.ErrDryRunOwesBackfill), runs no catch-up, and runs
+// the third phase with the rewrite of the gated steps and each issue's transaction rolled back.
 //
 // It prints one line for each issue it touched (writeDecisionIssue), and one for each issue whose
 // transaction failed, and exits 1 on such a failure, on another build live, or on any other
@@ -299,7 +344,7 @@ func runDecisionsStep(ctx context.Context, name string, convert bool, args []str
 	flags := flag.NewFlagSet(name, flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	project := flags.String("project", "", "the key of the project whose issues the step runs over (required)")
-	dryRun := flags.Bool("dry-run", false, "do all of it, print what it did, and roll each issue's transaction back")
+	dryRun := flags.Bool("dry-run", false, "print what the step would do and write nothing; refused while a migration or the step's first phase is owed")
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
@@ -307,7 +352,11 @@ func runDecisionsStep(ctx context.Context, name string, convert bool, args []str
 		fmt.Fprintf(stderr, "%s: usage: envoy-dispatch %s --project <KEY> [--dry-run]\n", name, name)
 		return 2
 	}
-	database, ok := openMigrated(ctx, name, env.get("DATABASE_URL"), stdout)
+	open := openMigrated
+	if *dryRun {
+		open = openUnmigrated
+	}
+	database, ok := open(ctx, name, env.get("DATABASE_URL"), stdout)
 	if !ok {
 		return 1
 	}

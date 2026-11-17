@@ -47,9 +47,15 @@ type RestoreWork struct {
 // issue_key, ref_key): the catalog function decisions_documents()
 // (20261117093337_decisions_documents.up.sql), the one place a decisions document is spelled, by
 // its role or, for one stored before the role existed, by its slug. A retired document is none of
-// them (artifacts.retired_at): it holds nothing the restore owes, and each block address of it a
-// citation can still name is a moved_to source the conversion wrote, which the moved set reads.
+// them (artifacts.retired_at): it holds nothing the restore owes. The dangling-citation counter
+// reads the retired ones too (decisionsDocumentsEver), since an address one of them held stays
+// cited after the retirement.
+// kept for one release: decisions-documents-fn
 const decisionsDocuments = `decisions_documents()`
+
+// decisionsDocumentsEver is decisionsDocuments with every retired decisions document among them
+// (decisions_documents(include_retired => true)), found by the slug the retirement leaves it.
+const decisionsDocumentsEver = `decisions_documents(include_retired => true)`
 
 // owesBlockIndex is true of the document whose uuid is the SQL expression artifact while it still
 // owes its block index (document_block_versions.version null, as typedNodeOwed reads it): its
@@ -152,12 +158,13 @@ func CollisionsOf(work []RestoreWork) []Collision {
 
 // The two sets of the dangling-citation counter (dispatch://INFRA-1150 R8, E4).
 const (
-	// DanglingMoved is the citations whose target is a moved_to source, or a block address of a
-	// decisions document that stands - the document a move of the second shape and the conversion
-	// empty - and that resolve to no block. It reads zero before the first restore,
-	// while each such block stands where it is, and zero after the last one, while every address
-	// a move left resolves through its tuple: a move that wrote no tuple leaves its citations
-	// dangling in the decisions document, and they count here.
+	// DanglingMoved is the citations whose target is a moved_to source, or a block address a
+	// decisions document held - the document a move of the second shape and the conversion empty,
+	// standing or retired since - and that resolve to no block. It reads zero before the first
+	// restore, while each such block stands where it is, and zero after the last one, while every
+	// address a move left resolves through its tuple: a move that wrote no tuple leaves its
+	// citations dangling in the decisions document, before its retirement and after it, and they
+	// count here.
 	DanglingMoved = "moved"
 	// DanglingReturning is the citations whose target is the old spec address of an ask the
 	// restore writes back (RestoreReturns), and that resolve to no block: it reads their count
@@ -193,17 +200,16 @@ func (r DanglingReport) Count(set string) int64 {
 // addresses of the returns (ReadRestoreWork).
 //
 // A target is a block address: the moved_to sources the store states now, read through
-// graph_tuples_store_only; each block address a decisions document that stands
-// (decisionsDocuments) held at a version the block index recorded (document_block_texts, keyed by
-// the document); and the addresses the returns name. One that resolves, through block_moved_to,
-// to a block a document_blocks row holds is no dangling target, and neither is one in a document
-// that still owes its block index, whose rows are not current. The counter reads no other target:
-// a `#b-` citation in prose is free text nothing validates, and a block of a document past the
-// deferral bound resolves to no block until the index catches up, so a count of every unresolved
-// citation of the instance is non-zero on a healthy one. A decisions document's address its
-// versions never held is such a prose citation too, and so is an address of a retired one that no
-// move left: the conversion wrote a moved_to from each section's heading it took out, which the
-// first part reads.
+// graph_tuples_store_only; each block address a decisions document held at a version the block
+// index recorded (document_block_texts, keyed by the document), whether the document stands or
+// was retired since (decisionsDocumentsEver), since the restore and the conversion retire it in
+// the transaction that moves its blocks out; and the addresses the returns name. One that
+// resolves, through block_moved_to, to a block a document_blocks row holds is no dangling target,
+// and neither is one in a document that still owes its block index, whose rows are not current.
+// The counter reads no other target: a `#b-` citation in prose is free text nothing validates,
+// and a block of a document past the deferral bound resolves to no block until the index catches
+// up, so a count of every unresolved citation of the instance is non-zero on a healthy one. A
+// decisions document's address its versions never held is such a prose citation too.
 //
 // A citation is the node whose text cites a target, read off the five tables a citation of a block
 // is stored in, each through its index on (to_kind, to_id): refs, by its source, and block_refs,
@@ -220,7 +226,7 @@ var danglingRead = `
 		) moved where moved.asserted
 		union
 		select distinct decisions.ref_key || '#' || held.block_id, '` + DanglingMoved + `'
-		from ` + decisionsDocuments + ` decisions join document_block_texts held on held.artifact_id = decisions.id
+		from ` + decisionsDocumentsEver + ` decisions join document_block_texts held on held.artifact_id = decisions.id
 		union
 		select unnest($1::text[]), '` + DanglingReturning + `'
 	),
