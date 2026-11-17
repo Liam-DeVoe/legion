@@ -159,15 +159,29 @@ func (g *Guard) Push(ctx context.Context, req PushRequest) error {
 // Push's passes both read, the third the records of files alone: one per ref name, and for each
 // commit the push would add, one for the author identity, one for the committer identity, one for
 // the message, one for each added or renamed path and one for each added line, each carrying the
-// commit's sha (Record.Commit). A commit reached by two of the push's refs is read once.
+// commit's sha (Record.Commit). A commit reached by two of the push's refs is read once, and a
+// deletion adds no commit.
 func (g *Guard) pushRecords(ctx context.Context, req PushRequest) ([]Record, error) {
 	var records []Record
 	read := map[string]bool{}
+	// held names the remote-tracking refs whose commits the destination is taken to hold, which
+	// are the same for every update: it is read at the first update that adds a commit, and
+	// destinationRefs never answers none.
+	var held []string
 	for _, update := range req.Updates {
 		if ref := update.ref(); ref != "" {
 			records = append(records, RefRecord(ref))
 		}
-		commits, err := g.commits(ctx, req, update)
+		if update.LocalSHA == "" || zeroSHA(update.LocalSHA) {
+			continue
+		}
+		if held == nil {
+			var err error
+			if held, err = g.destinationRefs(ctx, req); err != nil {
+				return nil, err
+			}
+		}
+		commits, err := g.commits(ctx, req.Dir, held, update)
 		if err != nil {
 			return nil, err
 		}
@@ -189,33 +203,61 @@ func (g *Guard) pushRecords(ctx context.Context, req PushRequest) ([]Record, err
 	return records, nil
 }
 
-// commits are the commits one update would add to the destination, oldest first: the commits
-// the local side has, less the ones the destination is taken to hold already. It holds every
-// commit on one of the repository's remote-tracking refs (the named remote's, or every remote's
-// where the push names none): a commit there was fetched from the destination, so the push does
-// not publish it. Where the destination has a commit at the ref and the repository has it too,
-// it also holds that commit and everything before it. The remote-tracking refs count for a ref
-// the destination has as much as for a new one. Without them, a forward merge (the default
-// branch merged onto an older tip of the branch) would read every commit of the default branch
-// since that tip, not only the merge and the branch's own commits. A deletion adds no commit.
-func (g *Guard) commits(ctx context.Context, req PushRequest, update Update) ([]string, error) {
-	if update.LocalSHA == "" || zeroSHA(update.LocalSHA) {
-		return nil, nil
+// destinationRefs are the arguments with which Guard.commits' rev-list names the
+// remote-tracking refs whose commits the push's destination is taken to hold:
+//
+//   - where the push names no remote, every remote's: --remotes;
+//   - where req.Remote is the name of a remote of the repository's configuration, that remote's
+//     own (remoteRefs): --glob=refs/remotes/<remote>/*, after an --exclude of the refs of each
+//     remote named <remote>/<more>, which git writes under refs/remotes/<remote>/ too and which
+//     say nothing of what the destination holds: a commit pushed first to a local bare remote
+//     named origin/rehearsal is still one a push to origin publishes;
+//   - otherwise --remotes=<remote>, as it was before remoteRefs, which git reads as the pattern
+//     refs/remotes/<remote>/*, or as refs/remotes/<remote> where <remote> holds a glob
+//     metacharacter. <remote> is then either a remote's name that holds one, which only a
+//     configuration written by hand holds and remoteRefs counts no remote of, and it reaches the
+//     refs of every remote whose name it matches; or a URL, which git hands the hook for a push
+//     to a URL and which names no remote. A URL with a scheme or a host:path, or an absolute
+//     path, matches no ref, since no ref name holds a ':' or a '//', and nor does a path with a
+//     component that starts with a dot (measured on git 2.47.3), so only the update's remote sha
+//     holds a commit then; a relative path matches the refs under refs/remotes/<path>/, where
+//     only a ref written by hand or a remote named <path>/<more> puts one.
+//
+// A git config that fails is an error.
+func (g *Guard) destinationRefs(ctx context.Context, req PushRequest) ([]string, error) {
+	if req.Remote == "" {
+		return []string{"--remotes"}, nil
 	}
-	argv := []string{"rev-list", "--reverse", update.LocalSHA, "--not"}
-	held, err := g.holds(ctx, req.Dir, update.RemoteSHA)
+	refs, err := g.remoteRefs(ctx, req.Dir, func(name, _ string) bool { return name == req.Remote })
 	if err != nil {
 		return nil, err
 	}
-	if held {
+	if len(refs) == 0 {
+		return []string{"--remotes=" + req.Remote}, nil
+	}
+	return refs, nil
+}
+
+// commits are the commits an update that is no deletion would add to the destination, oldest
+// first: the commits the local side has, less the ones the destination is taken to hold already.
+// It holds every commit on one of the remote-tracking refs held names (destinationRefs: the
+// pushed remote's own, or every remote's where the push names none): a commit there was fetched
+// from the destination, so the push does not publish it. Where the destination has a commit at
+// the ref and the repository has it too, it also holds that commit and everything before it. The
+// remote-tracking refs count for a ref the destination has as much as for a new one. Without
+// them, a forward merge (the default branch merged onto an older tip of the branch) would read
+// every commit of the default branch since that tip, not only the merge and the branch's own
+// commits.
+func (g *Guard) commits(ctx context.Context, dir string, held []string, update Update) ([]string, error) {
+	argv := []string{"rev-list", "--reverse", update.LocalSHA, "--not"}
+	has, err := g.holds(ctx, dir, update.RemoteSHA)
+	if err != nil {
+		return nil, err
+	}
+	if has {
 		argv = append(argv, update.RemoteSHA)
 	}
-	remotes := "--remotes"
-	if req.Remote != "" {
-		remotes += "=" + req.Remote
-	}
-	argv = append(argv, remotes)
-	out, err := g.git(ctx, req.Dir, argv...)
+	out, err := g.git(ctx, dir, append(argv, held...)...)
 	if err != nil {
 		return nil, err
 	}

@@ -11,7 +11,8 @@ body: |-
   to a public repository is refused.
   The gate skips a commit only where a remote-tracking ref of a remote whose URL names the
   destination or the entry's upstream holds it, so a clone that has not fetched its upstream refuses
-  upstream's lines, and the refusal says to fetch it and push again.
+  upstream's lines, and the refusal says to fetch it and push again. The refs of a remote named
+  `<name>/<more>`, which git writes under `<name>`'s own, hold nothing for `<name>`.
   The daemon tells every role of an issue pod and the controller it launches the rows as
   `LEGION_KNIVES_REGISTRIES`; a tmux pane is told nothing, since its push runs no leak guard. The
   new `knives-push-gate` capability row is open while no registry is named, and under tmux, which

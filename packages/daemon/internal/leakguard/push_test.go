@@ -540,6 +540,88 @@ func TestAForwardMergeReadsNoCommitARemoteTrackingRefHolds(t *testing.T) {
 	}
 }
 
+// A remote named after the pushed remote and a slash holds no commit of the pushed remote's: git
+// writes the refs of a remote named origin/rehearsal under refs/remotes/origin/rehearsal/, inside
+// origin's own refs/remotes/origin/, but a commit pushed first to such a local bare remote, as a
+// cut is rehearsed before the real push, is still one a push to origin publishes. The commit here
+// adds a line the rules refuse, and the rehearsal's remote-tracking ref, which a fetch wrote, is
+// the one ref that holds it; origin's own ref is at the commit the destination holds. A push to
+// the rehearsal's remote itself still reads none of what that remote's own ref holds.
+func TestARemoteNamedAfterThePushedRemoteAndASlashHoldsNoCommitForTheRules(t *testing.T) {
+	home, root := t.TempDir(), t.TempDir()
+	remote, rehearsal, repo := filepath.Join(root, "remote.git"), filepath.Join(root, "rehearsal.git"), filepath.Join(root, "repo")
+	fixture := fixturegit.Isolated(t, home)
+	fixture.Run(root, fixturegit.InitBare(remote, "main")...)
+	fixture.Run(root, fixturegit.InitBare(rehearsal, "main")...)
+	fixture.Run(root, fixturegit.InitWorkTree(repo, "main")...)
+	write := func(content string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	commit := func(message string) string {
+		t.Helper()
+		fixture.Run(repo, "git", "add", "-A")
+		fixture.Run(repo, "git", "commit", "--quiet", "-m", message)
+		return fixture.Run(repo, "git", "rev-parse", "HEAD")
+	}
+	write("one\n")
+	base := commit("the commit the destination holds")
+	fixture.Run(repo, "git", "remote", "add", "origin", remote)
+	fixture.Run(repo, "git", "push", "--quiet", "origin", "main")
+	write("one\nthe runner answers at " + theHost + "\n")
+	head := commit("a message of no interest")
+	// The commit goes to the rehearsal by its path, which writes no ref of this repository, and
+	// comes back by a fetch of the remote named origin/rehearsal, which writes its ref.
+	fixture.Run(repo, "git", "push", "--quiet", rehearsal, "HEAD:refs/heads/rehearsal")
+	fixture.Run(repo, "git", "remote", "add", "origin/rehearsal", rehearsal)
+	fixture.Run(repo, "git", "fetch", "--quiet", "origin/rehearsal")
+	if held := fixture.Run(repo, "git", "for-each-ref", "--format=%(refname) %(objectname)", "refs/remotes/"); held != "refs/remotes/origin/main "+base+"\nrefs/remotes/origin/rehearsal/rehearsal "+head {
+		t.Fatalf("the fixture's remote-tracking refs are %q, want origin/main at the base and origin/rehearsal/rehearsal at the commit", held)
+	}
+
+	for _, tc := range []struct {
+		name   string
+		remote string
+		// remoteSHA is the commit the destination holds at refs/heads/main.
+		remoteSHA string
+		// want is the report, and nil where the push passes.
+		want []string
+	}{
+		{
+			name:      "the push to origin",
+			remote:    "origin",
+			remoteSHA: base,
+			want:      []string{"README.md: " + theClass},
+		},
+		{
+			name:      "the push to the rehearsal's own remote",
+			remote:    "origin/rehearsal",
+			remoteSHA: noSHA,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
+			err := guard.Push(bound(t), PushRequest{
+				Dir:     repo,
+				Remote:  tc.remote,
+				URL:     "https://github.com/invented-org/invented-repo.git",
+				Updates: []Update{{LocalRef: "refs/heads/main", LocalSHA: head, RemoteRef: "refs/heads/main", RemoteSHA: tc.remoteSHA}},
+			})
+			if tc.want == nil {
+				if err != nil {
+					t.Fatalf("the push of a commit the pushed remote's own ref holds: %v", err)
+				}
+				return
+			}
+			if refused := refusal(t, err); !slices.Equal(refused.Lines, tc.want) {
+				t.Errorf("the report is %q, want %q", refused.Lines, tc.want)
+			}
+		})
+	}
+}
+
 // ParseUpdates reads git's own pre-push lines, which is how a `legion leak-check` standing in for
 // a pre-push hook reads what the push would move, and refuses a line of another shape rather than
 // guessing at it.

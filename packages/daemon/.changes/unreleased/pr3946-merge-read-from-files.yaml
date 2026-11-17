@@ -4,3 +4,7 @@ body: |-
   is wrong from 33 parents and leaves out a line only the merge adds from 64 parents, so a wide
   merge's own lines were misread or missed. A merge's own lines are now the lines of each file that
   differs from every parent's that no parent's file holds, and its own paths those no parent has.
+  The private-name pass no longer takes a commit as held because a remote named
+  `<remote>/<more>` holds it: git writes that remote's refs under the pushed remote's own, so a
+  commit pushed first to a local bare remote named `origin/rehearsal` was not read at its push
+  to `origin`.
