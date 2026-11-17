@@ -114,22 +114,33 @@ func newRefusedError(status int, code, description string) *RefusedError {
 	}
 }
 
-func (e *RefusedError) Error() string {
-	if e.Description == "" {
-		return fmt.Sprintf("the secrets broker refused this machine's identity: HTTP %d %s", e.Status, e.Code)
+func (e *RefusedError) Error() string { return e.PrintableText() }
+
+// PrintableText is this refusal's sentence, built from fixed words and the answered OAuth error's
+// own status, code and description alone, which is what lets internal/redact print it beside a
+// clean broker URL as it prints that answer (redact.Printable). A caller's words around this
+// error still print nothing there.
+func (e *RefusedError) PrintableText() string {
+	status := 0
+	if e.answer.Response != nil {
+		status = e.answer.Response.StatusCode
 	}
-	return fmt.Sprintf("the secrets broker refused this machine's identity: HTTP %d %s: %s", e.Status, e.Code, e.Description)
+	if e.answer.ErrorDescription == "" {
+		return fmt.Sprintf("the secrets broker refused this machine's identity: HTTP %d %s", status, e.answer.ErrorCode)
+	}
+	return fmt.Sprintf("the secrets broker refused this machine's identity: HTTP %d %s: %s", status, e.answer.ErrorCode, e.answer.ErrorDescription)
 }
 
 // Unwrap is this refusal as the answered OAuth token-endpoint error it is, which is how every
 // caller of this package reads it. A broker failure is printed through internal/redact, whose
 // allow-list prints an error's own text only where it can prove that text carries nothing of
 // the URL the deployment configured, and an answered HTTP refusal is one of the kinds it
-// passes. Without this a refusal read as an unplaceable failure and printed as "the request
-// failed", losing the broker's reason — that the request names no session, that no entry lists
-// this account — which is the only part a person can act on; beside a broker URL that carries
-// a credential, whose text redact prints no part of, the status on this answer is what names
-// the refusal rather than that same "the request failed".
+// passes, with this refusal's sentence over it (PrintableText). Without this a refusal read as
+// an unplaceable failure and printed as "the request failed", losing the broker's reason — that
+// the request names no session, that no entry lists this account — which is the only part a
+// person can act on; beside a broker URL that carries a credential, whose text redact prints no
+// part of, the status on this answer is what names the refusal rather than that same "the
+// request failed".
 func (e *RefusedError) Unwrap() error { return &e.answer }
 
 // Permanent reports whether this refusal is one no retry can cure, which every refusal is but

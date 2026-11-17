@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -463,5 +464,149 @@ func TestErrorPrintsAnOAuthAnswerWholeOnlyWhenItIsTheBrokersOwnWords(t *testing.
 				}
 			})
 		}
+	}
+}
+
+// grantID is a caller's typed id, the kind of value a caller puts in the words it wraps around a
+// failure, and which must never print through Error or Cause.
+type grantID string
+
+// releaseError is a caller's own error type: its text is the caller's message around the failure
+// it wraps.
+type releaseError struct {
+	grant grantID
+	err   error
+}
+
+func (e *releaseError) Error() string {
+	return "release of grant " + string(e.grant) + " failed: " + e.err.Error()
+}
+func (e *releaseError) Unwrap() error { return e.err }
+
+// TestErrorPrintsNoWordsACallerWrappedAroundTheFailure: what Error and Cause print of a failure
+// printable checked is that failure's own text, so a caller that has wrapped words of its own
+// around it - fmt.Errorf with %w, or an error type of the caller's - inside the *url.Error, around
+// it, or with no *url.Error at all, gets none of them printed: Error prints the *url.Error's
+// operation and URL and then the failure's text, and Cause the failure's text alone. The caller's
+// typed id is in neither, and the failure is still the one errors.Is finds. The same failures
+// unwrapped are the error itself (TestErrorLeavesACleanURLsErrorAsItIs, and the broker's own
+// answer in TestErrorPrintsAnOAuthAnswerWholeOnlyWhenItIsTheBrokersOwnWords).
+func TestErrorPrintsNoWordsACallerWrappedAroundTheFailure(t *testing.T) {
+	const (
+		raw  = "http://127.0.0.1:1"
+		call = raw + "/v1/grants/x/values"
+		id   = grantID("grant-7f3c9a-demo-not-a-secret")
+	)
+	refused := &net.OpError{Op: "dial", Net: "tcp", Err: syscall.ECONNREFUSED}
+	answer := &oauth2.RetrieveError{Response: &http.Response{StatusCode: http.StatusBadRequest}, ErrorCode: "invalid_grant", ErrorDescription: "the grant has ended"}
+	wrapped := func(cause error) error { return fmt.Errorf("grant %s: %w", id, cause) }
+	released := func(cause error) error { return &releaseError{grant: id, err: cause} }
+	inCall := func(cause error) error { return &url.Error{Op: "Post", URL: call, Err: cause} }
+	prefix := `Post "` + call + `": `
+	for _, row := range []struct {
+		name  string
+		err   error
+		cause error // the failure: its own text is what prints, and errors.Is must still find it
+		call  bool  // whether the failure came in a *url.Error, whose operation and URL Error prints
+	}{
+		{"a refused dial wrapped with %w inside the call", inCall(wrapped(refused)), refused, true},
+		{"a refused dial in a caller's error type inside the call", inCall(released(refused)), refused, true},
+		{"the call wrapped with %w", wrapped(inCall(refused)), refused, true},
+		{"the call in a caller's error type", released(inCall(refused)), refused, true},
+		{"an EOF wrapped with %w, no call", wrapped(io.EOF), io.EOF, false},
+		{"a reset in a caller's error type, no call", released(syscall.ECONNRESET), syscall.ECONNRESET, false},
+		{"a timeout wrapped with %w inside the call", inCall(wrapped(context.DeadlineExceeded)), context.DeadlineExceeded, true},
+		{"the broker's answer wrapped with %w inside the call", inCall(wrapped(answer)), answer, true},
+		{"the broker's answer in a caller's error type, no call", released(answer), answer, false},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			// The premise: each error's own text carries the caller's id.
+			if !strings.Contains(row.err.Error(), string(id)) {
+				t.Fatalf("the fixture's error %q does not carry the id", row.err)
+			}
+			gotError, gotCause := Error(row.err, raw), Cause(row.err, raw)
+			for what, got := range map[string]error{"Error": gotError, "Cause": gotCause} {
+				if strings.Contains(got.Error(), string(id)) {
+					t.Errorf("%s = %q, which holds the caller's id %q", what, got, id)
+				}
+				if !errors.Is(got, row.cause) {
+					t.Errorf("errors.Is(%s = %q, the failure) = false; the failure must stay reachable", what, got)
+				}
+			}
+			if !errors.Is(gotError, row.err) {
+				t.Errorf("errors.Is(Error = %q, the caller's error) = false; Error must unwrap to what it was given", gotError)
+			}
+			wantError := row.cause.Error()
+			if row.call {
+				wantError = prefix + wantError
+			}
+			if gotError.Error() != wantError {
+				t.Errorf("Error = %q, want %q", gotError, wantError)
+			}
+			if gotCause.Error() != row.cause.Error() {
+				t.Errorf("Cause = %q, want %q", gotCause, row.cause.Error())
+			}
+		})
+	}
+}
+
+// vouched is a Printable of the test's own: its PrintableText is fixed words alone, and its Error
+// names a caller's typed id as well, which must never print.
+type vouched struct {
+	grant grantID
+	err   error
+}
+
+func (v *vouched) Error() string         { return "grant " + string(v.grant) + ": " + v.PrintableText() }
+func (v *vouched) PrintableText() string { return "the stand-in broker refused the grant" }
+func (v *vouched) Unwrap() error         { return v.err }
+
+// TestErrorPrintsAPrintablesTextOnlyDirectlyOverATrustedAnswer: a Printable directly over the
+// broker's trusted answer prints its PrintableText, never its Error, alone, in a call and under a
+// caller's %w, and the id in its Error and in the caller's words prints nowhere. Over an answer
+// that is not trusted (it carries an error_uri) it prints as that answer's class, and over a
+// trusted answer it does not sit directly on it prints as that answer, since what it vouches for
+// is only the answer it unwraps to.
+func TestErrorPrintsAPrintablesTextOnlyDirectlyOverATrustedAnswer(t *testing.T) {
+	const (
+		raw  = "http://127.0.0.1:1"
+		call = raw + "/v1/oauth/token"
+		id   = grantID("grant-2b8e41-demo-not-a-secret")
+		text = "the stand-in broker refused the grant"
+	)
+	status := &http.Response{StatusCode: http.StatusBadRequest}
+	trusted := &oauth2.RetrieveError{Response: status, ErrorCode: "invalid_grant", ErrorDescription: "the grant has ended"}
+	withURI := &oauth2.RetrieveError{Response: status, ErrorCode: "invalid_grant", ErrorURI: "https://docs.example.test/grants"}
+	inCall := func(cause error) error { return &url.Error{Op: "Post", URL: call, Err: cause} }
+	prefix := `Post "` + call + `": `
+	for _, row := range []struct {
+		name             string
+		err              error
+		wantError, cause string
+	}{
+		{"directly over a trusted answer", &vouched{id, trusted}, text, text},
+		{"in a call", inCall(&vouched{id, trusted}), prefix + text, text},
+		{"under a caller's %w in a call", inCall(fmt.Errorf("grant %s: %w", id, &vouched{id, trusted})), prefix + text, text},
+		{"over an answer with an error_uri", &vouched{id, withURI}, "the broker answered HTTP 400", "the broker answered HTTP 400"},
+		{"over a trusted answer under a wrapper of its own", &vouched{id, fmt.Errorf("grant %s: %w", id, trusted)}, trusted.Error(), trusted.Error()},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			gotError, gotCause := Error(row.err, raw), Cause(row.err, raw)
+			if gotError.Error() != row.wantError {
+				t.Errorf("Error = %q, want %q", gotError, row.wantError)
+			}
+			if gotCause.Error() != row.cause {
+				t.Errorf("Cause = %q, want %q", gotCause, row.cause)
+			}
+			for _, got := range []error{gotError, gotCause} {
+				if strings.Contains(got.Error(), string(id)) {
+					t.Errorf("%q holds the caller's id %q", got, id)
+				}
+				var reached *oauth2.RetrieveError
+				if !errors.As(got, &reached) {
+					t.Errorf("errors.As(%q) does not reach the answer", got)
+				}
+			}
+		})
 	}
 }

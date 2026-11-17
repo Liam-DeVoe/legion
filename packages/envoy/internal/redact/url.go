@@ -15,7 +15,11 @@
 // field of an OAuth answer ever prints: an answer that carries an error_uri, or one with no error
 // code (whose text is the response body x/oauth2 kept), prints as the failure's class alone, "the
 // broker answered HTTP <n>", as every answer does where its text may not print; Error puts the
-// *url.Error's operation and URL, through Call, before it.
+// *url.Error's operation and URL, through Call, before it. What prints is always the checked
+// error's own text: words a caller wrapped around the failure or the *url.Error, with
+// fmt.Errorf's %w or an error type of its own, are no part of what was checked, so they never
+// print. The one error type whose words print over a trusted answer is one that vouches for them
+// (Printable): its text is fixed words and that answer's fields alone.
 package redact
 
 import (
@@ -183,105 +187,161 @@ func callClean(base, callURL string) bool {
 }
 
 // Error is err as a message may print it, given raw, the configured URL err's request was built
-// from. It is err itself, so every message reads as before, only when printable passes it: raw is
-// clean, and err's text holds nothing from a URL it may not print but for the error code and
+// from. Where printable passes it, it prints the text printable checked, which is err's own text
+// when no wrapper added words to it, and then it is err itself, so every message reads as before:
+// raw is clean, and that text holds nothing from a URL it may not print but for the error code and
 // error_description of an OAuth answer with an error code and no error_uri, which print whole as
-// the broker wrote them (trustedAnswer). Otherwise no text of err is printed: the error's text
-// names only the class of the failure (a URL that did not parse, failed name resolution, a refused
-// connection, a timeout, a TLS failure, an HTTP status, or a request that failed otherwise), found
-// on err itself, and the *url.Error's operation with its URL through Call. It unwraps to err, so
-// errors.Is and errors.As still classify the failure.
+// the broker wrote them (trustedAnswer). Words a caller wrapped around the failure or around the
+// *url.Error are dropped, since nothing checked them. Otherwise no text of err is printed: the
+// error's text names only the class of the failure (a URL that did not parse, failed name
+// resolution, a refused connection, a timeout, a TLS failure, an HTTP status, or a request that
+// failed otherwise), found on err itself, and the *url.Error's operation with its URL through Call.
+// It unwraps to err, so errors.Is and errors.As still classify the failure.
 func Error(err error, raw string) error {
 	if err == nil {
 		return nil
 	}
-	ue, printable := printable(err, raw)
-	if printable {
-		return err
-	}
+	ue, checked, printable := printable(err, raw)
 	text := class(err)
+	if printable {
+		text = checked
+	}
 	if ue != nil {
 		text = ue.Op + " " + strconv.Quote(Call(raw, ue.URL)) + ": " + text
+	}
+	if printable && text == err.Error() {
+		return err
 	}
 	return &classified{text, err}
 }
 
 // Cause is Error without the *url.Error's own wrapper, for a message that names the call itself:
-// the error the *url.Error wraps when Error would return err unchanged, and the class alone,
-// unwrapping to err, when it would not.
+// the error the *url.Error wraps when that error's text is the text printable checked, and
+// otherwise that text, or the class alone where printable does not pass err, unwrapping to err.
 func Cause(err error, raw string) error {
 	if err == nil {
 		return nil
 	}
-	ue, printable := printable(err, raw)
+	ue, checked, printable := printable(err, raw)
 	switch {
 	case !printable:
 		return &classified{class(err), err}
-	case ue != nil:
+	case ue != nil && ue.Err != nil && ue.Err.Error() == checked:
 		return ue.Err
-	default:
+	case ue == nil && err.Error() == checked:
 		return err
+	default:
+		return &classified{checked, err}
 	}
 }
 
-// printable reports whether err's text may print, given raw (Error), with the *url.Error it
-// holds, if any. All of these must hold:
+// printable answers the *url.Error err holds, if any, the text of the failure under it that may
+// print, given raw (Error), and whether any may. All of these must hold:
 //   - raw is clean;
 //   - the URL the *url.Error names is raw followed by a plain path (callClean): net/http names a
 //     redirect's target there, which can sit on another host or path and carry a query;
 //   - the error the *url.Error wraps (err itself, with none) is one whose text names no URL, or
-//     none but in the words the broker is trusted with: a transport failure class names
+//     none but in the words the broker is trusted with (checked): a transport failure class names
 //     (transport: a dial or other net.OpError, name resolution, a refused connection, a timeout,
 //     TLS), an OAuth error answer with an error code and no error_uri, whose code and description
 //     print whole (trustedAnswer), or text the allow-list passes. A malformed Location header,
 //     say, puts the whole target in its error's text.
-func printable(err error, raw string) (*url.Error, bool) {
-	var ue *url.Error
+//
+// The text it answers is the checked error's own, never a wrapper's: a caller's
+// fmt.Errorf("grant %s: %w", id, cause) is that failure to errors.Is and errors.As, but its words
+// are the caller's, and checking the failure says nothing about them.
+func printable(err error, raw string) (ue *url.Error, text string, ok bool) {
 	if !errors.As(err, &ue) {
 		ue = nil
 	}
 	if raw == "" || !clean(raw) {
-		return ue, false
+		return ue, "", false
 	}
 	inner := err
 	if ue != nil {
-		if !callClean(raw, ue.URL) {
-			return ue, false
+		// A *url.Error that wraps nothing names no failure to check.
+		if !callClean(raw, ue.URL) || ue.Err == nil {
+			return ue, "", false
 		}
 		inner = ue.Err
 	}
-	if inner == nil {
-		return ue, true
-	}
 	// A second *url.Error inside names a URL of its own, unchecked.
 	var nested *url.Error
-	return ue, !errors.As(inner, &nested) && (transport(inner) || trustedAnswer(inner) || clean(inner.Error()))
+	if errors.As(inner, &nested) {
+		return ue, "", false
+	}
+	text, ok = checked(inner)
+	return ue, text, ok
 }
 
-// transport reports whether err is a failure class names from the transport, or a peer that broke
-// the exchange (net/http's fixed ErrSchemeMismatch for an http answer to https, EOF, a reset, a
-// broken pipe: the set the client's peerAnswered reads).
+// Printable is an error that vouches for its own words: an error type whose text is built only
+// from fixed words and the fields of the trusted OAuth answer it unwraps to (trustedAnswer), such
+// as a client's sentence around the broker's refusal. printable passes one at its own level of
+// the chain, as it passes that answer, and prints its PrintableText, never its Error. It passes
+// one only where the error it unwraps to is itself a trusted answer, so the fields it is built
+// from are ones printable would print anyway. A wrapper around it still prints nothing of its
+// own.
+type Printable interface {
+	error
+	// PrintableText is the error's text built from fixed words and its trusted answer's fields
+	// alone.
+	PrintableText() string
+}
+
+// checked answers the text of err that may print and whether there is any: err's whole text where
+// the allow-list passes it, and otherwise the text of the first error down err's chain
+// (errors.Unwrap) that is itself a transport failure or the broker's trusted answer, its own
+// text, or a Printable directly over a trusted answer, its PrintableText. That error's text is
+// the one printed, not the text of err or of any error between the two, so no word a wrapper
+// added prints, whether a caller's fmt.Errorf with %w or an error type of its own. An error that
+// wraps several (errors.Join) ends the walk, since its text is no single error's.
+func checked(err error) (string, bool) {
+	if text := err.Error(); clean(text) {
+		return text, true
+	}
+	for e := err; e != nil; e = errors.Unwrap(e) {
+		if p, ok := e.(Printable); ok && trustedAnswer(errors.Unwrap(e)) {
+			return p.PrintableText(), true
+		}
+		if transport(e) || trustedAnswer(e) {
+			return e.Error(), true
+		}
+	}
+	return "", false
+}
+
+// transport reports whether err itself, not an error it wraps, is a failure class names from the
+// transport, or a peer that broke the exchange (net/http's fixed ErrSchemeMismatch for an http
+// answer to https, EOF, a reset, a broken pipe: the set the client's peerAnswered reads).
 func transport(err error) bool {
-	var op *net.OpError
-	var dns *net.DNSError
-	var timeout interface{ Timeout() bool }
-	return errors.As(err, &op) || errors.As(err, &dns) || errors.Is(err, syscall.ECONNREFUSED) ||
-		errors.Is(err, context.DeadlineExceeded) || errors.As(err, &timeout) && timeout.Timeout() ||
-		tlsFailure(err) || errors.Is(err, http.ErrSchemeMismatch) || errors.Is(err, io.EOF) ||
-		errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.EPIPE)
+	switch e := err.(type) {
+	case *net.OpError, *net.DNSError:
+		return true
+	case interface{ Timeout() bool }:
+		if e.Timeout() {
+			return true
+		}
+	}
+	switch err {
+	case syscall.ECONNREFUSED, context.DeadlineExceeded, http.ErrSchemeMismatch, io.EOF, io.ErrUnexpectedEOF,
+		syscall.ECONNRESET, syscall.EPIPE:
+		return true
+	}
+	return tlsError(err)
 }
 
-// trustedAnswer reports whether err is an OAuth error answer whose text is the broker's error code
-// and error_description alone: an *oauth2.RetrieveError with a nonempty ErrorCode and an empty
-// ErrorURI. printable asks only beside a clean base and a request URL Call prints, and there those
-// two fields print whole, trusted rather than checked, since they are the broker's reason for a
-// refusal and the only part a person can act on. Any other OAuth answer is not one, so it prints
-// as its class alone ("the broker answered HTTP <n>"): an error_uri is a URL by RFC 6749, which
-// may carry a credential or point anywhere, and for an answer with no error code x/oauth2's text
-// is the response body it kept, up to 1 MiB with its line breaks, which can forge a log line.
+// trustedAnswer reports whether err itself, not an error it wraps, is an OAuth error answer whose
+// text is the broker's error code and error_description alone: an *oauth2.RetrieveError with a
+// nonempty ErrorCode and an empty ErrorURI. printable asks only beside a clean base and a request
+// URL Call prints, and there those two fields print whole, trusted rather than checked, since they
+// are the broker's reason for a refusal and the only part a person can act on. Any other OAuth
+// answer is not one, so it prints as its class alone ("the broker answered HTTP <n>"): an
+// error_uri is a URL by RFC 6749, which may carry a credential or point anywhere, and for an
+// answer with no error code x/oauth2's text is the response body it kept, up to 1 MiB with its
+// line breaks, which can forge a log line.
 func trustedAnswer(err error) bool {
-	var re *oauth2.RetrieveError
-	return errors.As(err, &re) && re.ErrorCode != "" && re.ErrorURI == ""
+	re, ok := err.(*oauth2.RetrieveError)
+	return ok && re.ErrorCode != "" && re.ErrorURI == ""
 }
 
 // classified is an error whose text is its class alone.
@@ -317,14 +377,35 @@ func class(err error) string {
 	}
 }
 
-// tlsFailure reports whether err is a TLS record, alert or certificate failure.
+// tlsFailure reports whether err, or an error it wraps, is a TLS record, alert or certificate
+// failure (tlsError).
 func tlsFailure(err error) bool {
-	var record tls.RecordHeaderError
-	var alert tls.AlertError
-	var verify *tls.CertificateVerificationError
-	var authority x509.UnknownAuthorityError
-	var hostname x509.HostnameError
-	var invalid x509.CertificateInvalidError
-	return errors.As(err, &record) || errors.As(err, &alert) || errors.As(err, &verify) ||
-		errors.As(err, &authority) || errors.As(err, &hostname) || errors.As(err, &invalid)
+	if err == nil {
+		return false
+	}
+	if tlsError(err) {
+		return true
+	}
+	switch u := err.(type) {
+	case interface{ Unwrap() error }:
+		return tlsFailure(u.Unwrap())
+	case interface{ Unwrap() []error }:
+		for _, e := range u.Unwrap() {
+			if tlsFailure(e) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// tlsError reports whether err itself, not an error it wraps, is a TLS record, alert or
+// certificate failure.
+func tlsError(err error) bool {
+	switch err.(type) {
+	case tls.RecordHeaderError, tls.AlertError, *tls.CertificateVerificationError,
+		x509.UnknownAuthorityError, x509.HostnameError, x509.CertificateInvalidError:
+		return true
+	}
+	return false
 }
