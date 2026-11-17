@@ -26,9 +26,9 @@ import { useLiveViews, useMountedLiveViews } from "./live-views";
 
 // Through `lazyChunk`, like every chunk a `Suspense` waits on: a reader who opened the live view
 // is in front of a view that cannot draw until this arrives, so a download that fails must spend
-// one of the tab's recovery reloads. Imported bare, as it once was, its failure while a prefetch
-// the shell started at its first paint was still out was read as that prefetch's and reloaded
-// nothing (`features/shell/DeploymentResilience.tsx`, dispatch://INFRA-1109).
+// one of the tab's recovery reloads. Imported bare, its failure while a prefetch the shell
+// started at its first paint is still out would be read as that prefetch's and reload nothing
+// (`features/shell/DeploymentResilience.tsx`, dispatch://INFRA-1109).
 const AgentConversationPage = lazyChunk(() =>
   import("./AgentConversationPage").then((module) => ({
     default: module.AgentConversationPage,

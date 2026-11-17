@@ -417,8 +417,8 @@ export function loadedEngine(): MarkdownEngine | undefined {
  * headless editor and the serializer coming down, so a download that fails must spend one of the
  * tab's recovery reloads. The download itself may be the boot warm's, a prefetch nobody waited
  * on (`features/shell/DeploymentResilience.tsx`); the two are told apart here, at the wait,
- * because the load is shared. Awaited bare, as it once was, its failure while a prefetch was out
- * was read as that prefetch's and reloaded nothing (dispatch://INFRA-1109).
+ * because the load is shared. Awaited bare, its failure while a prefetch is out would be read as
+ * that prefetch's and reload nothing (dispatch://INFRA-1109).
  */
 function withEngine(use: (engine: MarkdownEngine | undefined) => void): () => void {
   if (readyEngine !== undefined) {

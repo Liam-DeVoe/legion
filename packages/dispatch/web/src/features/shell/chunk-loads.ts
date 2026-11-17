@@ -9,14 +9,15 @@ import { type ComponentType, type LazyExoticComponent, lazy } from "react";
 // answer from the chunks started through the functions of this module. A chunk a reader waits
 // for and that was started some other way is invisible to it: it fails, `renderedChunksOut` is
 // still zero, a prefetch of some other chunk happens to be in flight, and the page reloads
-// nothing although the reader is in front of a page that cannot draw. That was the state of it
-// until dispatch://INFRA-1109: the `lazy` routes of `app.tsx`, the machine sign-in route, the
-// live view, the margin, the editor library and Yjs transport a mounting document awaits, the
-// Yjs a past version awaits, the headless Markdown engine a drawn body awaits and the delivery
-// timeline's charting library were all started bare. The shell starts prefetches at a page's
-// first paint - the search bar's, the Markdown engine's warm and, on an address the landing read
-// takes for the Inbox, the Inbox peek's - so a failure of any of those bare chunks in that window
-// reloaded nothing.
+// nothing although the reader is in front of a page that cannot draw. Before
+// dispatch://INFRA-1109 the `lazy` routes of `app.tsx`, the machine sign-in route, the live view,
+// the margin, the editor library and Yjs transport a mounting document awaits, the Yjs a past
+// version awaits, the headless Markdown engine a drawn body awaits and the delivery timeline's
+// charting library were all started bare, and that cost nothing while the shell prefetched no
+// chunk, since the recovery then reloaded, within its budget, for every chunk that failed online.
+// The shell now starts prefetches at a page's first paint - the search bar's, the Markdown
+// engine's warm and, on an address the landing read takes for the Inbox, the Inbox peek's - so a
+// bare chunk that failed in that window would reload nothing.
 //
 // So: a chunk a render waits on goes through `renderChunk`, a chunk nothing waits on through
 // `prefetchChunk`, and nothing imports a chunk through neither. A component a `Suspense` waits

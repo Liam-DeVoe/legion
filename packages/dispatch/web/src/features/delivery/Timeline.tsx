@@ -197,8 +197,8 @@ export function Timeline({
   //
   // The import is under `renderChunk`: the chart draws nothing until the library is in, so a
   // reader on the page is waiting on the download, and a failure must spend one of the tab's
-  // recovery reloads. Imported bare, as it once was, its failure while a prefetch the shell
-  // started at its first paint was still out was read as that prefetch's and reloaded nothing
+  // recovery reloads. Imported bare, its failure while a prefetch the shell started at its first
+  // paint is still out would be read as that prefetch's and reload nothing
   // (`features/shell/DeploymentResilience.tsx`, dispatch://INFRA-1109).
   useEffect(() => {
     let disposed = false;

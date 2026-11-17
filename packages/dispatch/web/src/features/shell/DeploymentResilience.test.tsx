@@ -166,7 +166,7 @@ test("a render-time chunk that fails while a prefetch is out still reloads", asy
 // which the chart draws nothing. A prefetch the shell starts at a first paint - the search bar's,
 // the Markdown engine's warm, the Inbox peek's - can still be out while it downloads, and a
 // reader in front of a chart that cannot draw is waiting on it all the same. Started bare, its
-// failure was read as that prefetch's and reloaded nothing (dispatch://INFRA-1109).
+// failure would be read as that prefetch's and reload nothing (dispatch://INFRA-1109).
 test("a chunk a mounted component imports for itself reloads for its failure while a prefetch is out", () => {
   window.sessionStorage.clear();
   installChunkFailureRecoveryForTest();
