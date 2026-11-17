@@ -174,8 +174,16 @@ export const realStackReasons: Record<string, string> = {
     "the setting is kept under the login the server's sign-in names, and one row signs a second login in on the same context to read that it holds none; one row reads the server's 404 for a key it does not hold",
   "issues-table.e2e.ts":
     "every row writes and then reads its own write: ranks and priorities patched through the API and read back through `getIssue`, plus a refused write kept in the store and an interrupted action finished after a reload",
+  "issues-views-bar.e2e.ts":
+    "the bar, the Board's columns and every key move and drop are read against the server's own listing and board route, each write read back through the API, and a later read of the daemon reaches the Board over the live socket",
+  "issues-views-done.e2e.ts":
+    "Done's reads are the server's own pages and windows of the list route and the items route as the facts consumer and the eval refresher leave them, read request by request with the board over the live socket, and the list route's sort is read straight from the server",
   "issues-views-legion.e2e.ts":
     "the Legion columns, cards, filters and alerts are read against the board route and the items route as the sampler, the facts consumer and the eval refresher leave them, over the live socket; Start next's writes are read back through the API",
+  "issues-views-live.e2e.ts":
+    "every change is another reader's write through the server, which reaches the open pages over the live socket, and the Work time a facts write or a close moves is the facts consumer's row and the items route's",
+  "issues-views-phase-hours.e2e.ts":
+    "Time per phase is read against the board route's hours as the facts consumer writes them from role events, phase observations and an ask, with every board frame of the live socket rewritten in flight",
   "issues-views.e2e.ts":
     "the views' rows, tabs and counts are read against the server's own listing and board route, saved views are read by a second login signed in on the same context and on its own, and the Board's frames come over the live socket",
   "issue.e2e.ts":

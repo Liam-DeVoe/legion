@@ -9,6 +9,8 @@
  *  after a reload, that a count moves with no reload at all, and that two pages agree about one
  *  relation.
  */
+
+import { issueStatusScale } from "../web/src/theme/classes";
 import {
   claimIssue,
   createIssue,
@@ -949,6 +951,527 @@ test("a priority's page offers no versions and no delete, and the parked list sa
     await expect(childRow).toBeVisible();
     await expect(await cellUnder(parkedTable, childRow, "Reason")).toHaveText(
       "Not recorded until INFRA-2934"
+    );
+  } finally {
+    await context.close();
+  }
+});
+
+// The priority pages with less text (dispatch://INFRA-3221, Verification k17, at v64): each read
+// at 1280 and 390 px set beside what the same read gives at the base, the stage A base B
+// (1dc37c1ef909), on this file's seed. The base's reads are written down here as they were read
+// there (Job infra-3221-t16b-p17b-snsk6, 2026-11-17); every read the check lets differ is written
+// with the head's value and its reason.
+
+/** One column's header as the base drew it: its words and its width, in px. */
+type BaseColumn = readonly [string, number];
+
+/** The issue tables' columns at the base in their desktop layout (a box 640 px wide or more),
+ *  in their order, less Epic, which the head draws no more. Project, Advances, Moved there,
+ *  Reason and Updated show only in the tables that open with them. */
+const BASE_DESKTOP: readonly BaseColumn[] = [
+  ["", 44],
+  ["Priority", 140],
+  ["Key", 108],
+  ["Title", 255.19],
+  ["Queue", 124],
+  ["Project", 120],
+  ["Advances", 220],
+  ["Moved there", 220],
+  ["Reason", 240],
+  ["Status", 132],
+  ["Assignee", 180],
+  ["Created by", 200],
+  ["Labels", 200],
+  ["Claimed by", 220],
+  ["Open asks", 148],
+  ["Created", 148],
+  ["Updated", 148],
+  ["", 104],
+];
+
+/** The same in the phone layout (a box under 640 px), where Select, Key and Title are pinned and
+ *  Title takes what is left: 158.69 px of a 342 px box, 350.8 px of a priority page's 568 px. */
+const BASE_PHONE: readonly BaseColumn[] = [
+  ["", 44],
+  ["Key", 88],
+  ["Title", 0],
+  ["Priority", 140],
+  ...BASE_DESKTOP.slice(4),
+];
+const BASE_PHONE_TITLE: Readonly<Record<number, number>> = { 342: 158.69, 568: 350.8 };
+
+/** The priorities table's columns at the base, each under the words the head gives it. */
+const BASE_PRIORITIES: Readonly<Record<number, readonly BaseColumn[]>> = {
+  1280: [
+    ["Order", 88],
+    ["Priority", 420],
+    ["Owner", 200],
+    ["Active", 132],
+    ["Triage, Todo", 132],
+    ["Backlog, icebox", 180],
+    ["Closed, 7 days", 132],
+    ["Newest event", 160],
+  ],
+  390: [
+    ["Order", 88],
+    ["Priority", 202.69],
+    ["Owner", 200],
+    ["Active", 132],
+    ["Triage, Todo", 132],
+    ["Backlog, icebox", 180],
+    ["Closed, 7 days", 132],
+    ["Newest event", 160],
+  ],
+};
+
+/** The head's widths of the priorities table's columns whose base minimum cut their header: the
+ *  width the header, its filter button and, the table being sorted by Order, Order's sort mark
+ *  need. At 390 px the Priority column takes what is left, which the wider Order narrows. */
+const HEAD_PRIORITIES: Readonly<Record<string, number>> = {
+  Order: 118,
+  "Triage, Todo": 152,
+  "Closed, 7 days": 168,
+  "Newest event": 164,
+  "Backlog, icebox": 180,
+};
+const HEAD_PRIORITY_AT_390 = 180;
+
+/** The phone layout's Key at the head: wide enough for its header and its filter button. */
+const HEAD_PHONE_KEY = 100;
+
+/** The issue tables' Group by choices at the base, less Epic, and the priorities table's. */
+const BASE_GROUP_BY = [
+  "Nothing",
+  "Priority",
+  "Status",
+  "Assignee",
+  "Created by",
+  "Claimed by",
+  "Created",
+  "Updated",
+];
+const BASE_PRIORITIES_GROUP_BY = ["Nothing", "Owner", "Newest event"];
+
+/** One table of the page as k17 reads it. */
+interface TableRead {
+  readonly label: string;
+  readonly box: number;
+  readonly headers: readonly { label: string; width: number; left: number; pinned: string }[];
+  readonly rows: readonly string[];
+  readonly groups: readonly string[];
+  readonly strip: readonly { text: string; fill: string; scale: string }[];
+  readonly stripText: string;
+  readonly tabs: number;
+  readonly pager: string;
+  readonly menu: string;
+}
+
+/** Every table of the page: its headers with their widths and pins, its rows and group headings,
+ *  its strip with each status's fill beside the fill `issueStatusScale` gives that status, any
+ *  tab in its section, its pager and its display menu's words. */
+function readTables(page: Page): Promise<TableRead[]> {
+  return page.evaluate((scale: Record<string, string>) => {
+    const text = (node: Element | null | undefined) =>
+      (node?.textContent ?? "").replace(/\s+/g, " ").trim();
+    const words = Object.fromEntries(
+      [
+        ["Triage", "triage"],
+        ["Icebox", "icebox"],
+        ["Backlog", "backlog"],
+        ["Todo", "todo"],
+        ["In progress", "in_progress"],
+        ["Testing", "testing"],
+        ["Needs review", "needs_review"],
+        ["Retro", "retro"],
+        ["Done", "done"],
+      ].map(([name, status]) => [name, status])
+    ) as Record<string, string>;
+    return [...document.querySelectorAll('[data-control="data-table"] table')].map((table) => {
+      const box = table.closest('[data-control="data-table"]') as HTMLElement;
+      const left = box.getBoundingClientRect().left;
+      const scope = box.closest("section[aria-label]") ?? box.parentElement;
+      const strip = scope?.querySelector('[aria-label="Issues by status"]');
+      return {
+        label: table.getAttribute("aria-label") ?? "",
+        box: Math.round(box.getBoundingClientRect().width),
+        headers: [...table.querySelectorAll("thead th")].map((cell) => ({
+          // A column with no sort (Project) has no button: its words are the cell's own.
+          label: (text(cell.querySelector("button")) || text(cell).replace(/Filter$/, ""))
+            .replace(/[▲▼]/g, "")
+            .trim(),
+          width: cell.getBoundingClientRect().width,
+          left: cell.getBoundingClientRect().left - left,
+          pinned: getComputedStyle(cell).left,
+        })),
+        rows: [...table.querySelectorAll("tr[data-issue-row], tr[data-priority-row]")].map(
+          (row) => row.getAttribute("aria-label") ?? ""
+        ),
+        groups: [...table.querySelectorAll("tbody tr td[colspan] button[aria-expanded]")].map(
+          (button) => button.getAttribute("aria-label") ?? ""
+        ),
+        strip: [...(strip?.querySelectorAll("button") ?? [])].map((button) => {
+          const name = text(button).replace(/\s*\d+$/, "");
+          const probe = document.createElement("span");
+          probe.className = scale[words[name] ?? ""] ?? "";
+          document.body.appendChild(probe);
+          const fill = getComputedStyle(probe).backgroundColor;
+          probe.remove();
+          return {
+            text: text(button),
+            fill: getComputedStyle(button).backgroundColor,
+            scale: fill,
+          };
+        }),
+        stripText: text(strip),
+        tabs: scope?.querySelectorAll('[role="tablist"], [role="tab"]').length ?? 0,
+        pager: text(scope?.querySelector('[data-control="pager"]')),
+        menu: text(scope?.querySelector('button[data-control="display-menu"]')),
+      };
+    });
+  }, issueStatusScale);
+}
+
+/** Where an issue table's headers differ from the base's, by its layout: every width the base's
+ *  but the phone layout's Key, at the head as wide as its header and filter button need, and its
+ *  Title, which takes what is left and so ends where the base's Title ends. */
+function issueTableDiffers(read: TableRead, where: string): string[] {
+  const phone = read.box < 640;
+  const base = phone ? BASE_PHONE : BASE_DESKTOP;
+  const drawn = read.headers.map((header) => header.label);
+  const wrong: string[] = [];
+  // The base's order, each header where the base drew it, and no Epic.
+  const places = drawn.map((label, index) =>
+    label === "" ? (index === 0 ? 0 : base.length - 1) : base.findIndex(([own]) => own === label)
+  );
+  if (
+    places.some((place, index) => place === -1 || (index > 0 && place <= (places[index - 1] ?? -1)))
+  )
+    wrong.push(`${where} ${read.label}: the headers are ${drawn.join(", ")}`);
+  for (const [index, header] of read.headers.entries()) {
+    const own = base[places[index] ?? -1];
+    let width = own?.[1] ?? Number.NaN;
+    if (phone && header.label === "Key") width = HEAD_PHONE_KEY;
+    if (phone && header.label === "Title")
+      width = (BASE_PHONE_TITLE[read.box] ?? Number.NaN) + 88 - HEAD_PHONE_KEY;
+    if (Math.abs(header.width - width) > 0.5)
+      wrong.push(
+        `${where} ${read.label}: ${header.label || "(no words)"} is ${header.width} px, ${width} px is wanted`
+      );
+  }
+  // The pins: Select, Priority, Key and Title on a desktop, Select, Key and Title on a phone.
+  const pinned = read.headers
+    .filter((header) => header.pinned !== "auto")
+    .map((header) => header.label);
+  const pins = phone ? ["", "Key", "Title"] : ["", "Priority", "Key", "Title"];
+  if (JSON.stringify(pinned) !== JSON.stringify(pins))
+    wrong.push(`${where} ${read.label}: ${pinned.join(", ")} are pinned`);
+  return wrong;
+}
+
+/** The checks every embedded issue table answers at the head: today's strip and legend in
+ *  `issueStatusScale`'s colours with none of the three numbers, a Queue column, no tab, a pager
+ *  with no total, and a display menu named Group by. */
+function embeddedDiffers(read: TableRead, where: string): string[] {
+  const wrong: string[] = [];
+  const name = `${where} ${read.label}`;
+  if (read.strip.length === 0) wrong.push(`${name}: no strip`);
+  for (const part of read.strip)
+    if (part.fill !== part.scale)
+      wrong.push(`${name}: ${part.text} is ${part.fill}, ${part.scale} is its scale's`);
+  if (/queue|running|epics/i.test(read.stripText))
+    wrong.push(`${name}: the strip reads ${read.stripText}`);
+  if (!read.headers.some((header) => header.label === "Queue"))
+    wrong.push(`${name}: no Queue column`);
+  if (read.tabs !== 0) wrong.push(`${name}: a tab is drawn`);
+  if (
+    !/^Rows \d+–\d+‹ PreviousPage \d+ of \d+Next ›/.test(read.pager) ||
+    /Rows \d+–\d+ of/.test(read.pager)
+  )
+    wrong.push(`${name}: the pager reads ${read.pager}`);
+  if (read.menu !== "Group by") wrong.push(`${name}: the display menu reads ${read.menu}`);
+  return wrong;
+}
+
+/** Opens the display menu or the Columns menu `trigger` names in `scope` and reads its choices,
+ *  each with whether it is taken. */
+async function menuChoices(page: Page, scope: Locator, control: string): Promise<string[]> {
+  const trigger = scope.locator(`button[data-control="${control}"]`).first();
+  await trigger.click();
+  const menu = page.getByRole("dialog").last();
+  await expect(menu).toBeVisible();
+  const choices = await menu
+    .locator("label")
+    .evaluateAll((labels) =>
+      labels.map(
+        (label) =>
+          `${(label.textContent ?? "").replace(/\s+/g, " ").trim()}${label.querySelector("input")?.checked ? " (on)" : ""}`
+      )
+    );
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  return choices;
+}
+
+// SLOW(>=2s): the seed, then /priorities read at two widths with a priority row opened and each
+// table's menus opened.
+test("on /priorities at 1280 and 390 px each heading reads its name and one count, the priorities table reads Active and Triage, Todo with the base's counts, and every other read equals the base's but the widths the check names", async ({
+  browser,
+}) => {
+  test.setTimeout(150_000);
+  const seed = await seedPriorities();
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    for (const [width, height] of [
+      [1280, 900],
+      [390, 844],
+    ] as const) {
+      const where = `at ${width} px`;
+      await page.setViewportSize({ height, width });
+      await page.goto(PRIORITIES_PATH);
+      const priorities = section(page, "Priorities");
+      await expect(priorities.locator("tr[data-priority-row]").first()).toBeVisible();
+      await expect(page.locator("tr[data-issue-row]").first()).toBeVisible();
+
+      // No subtitle; each section heading its name and one count, with nothing under it.
+      const main = page.getByTestId("main-content");
+      const heading = main.getByRole("heading", { level: 1, name: "Priorities" });
+      expect(
+        await heading.evaluate(
+          (node) => node.parentElement?.querySelectorAll(":scope > p").length ?? 0
+        ),
+        `${where}: a subtitle`
+      ).toBe(0);
+      const unplaced = section(page, "Active under no priority");
+      const parked = section(page, "Parked priority work");
+      await expect(unplaced.getByRole("heading", { level: 2 })).toHaveText(
+        "Active under no priority 4"
+      );
+      await expect(parked.getByRole("heading", { level: 2 })).toHaveText("Parked priority work 1");
+      for (const part of [unplaced, parked])
+        expect(await part.locator(":scope > p").count(), `${where}: a line under a heading`).toBe(
+          0
+        );
+      await expect(
+        page.locator('section[aria-label="Priority work in backlog or icebox"]')
+      ).toHaveCount(0);
+      await expect(page.locator('section[aria-label="In flight under no priority"]')).toHaveCount(
+        0
+      );
+
+      // The priorities table: its headers, at most 16 characters, its widths, the counts under
+      // Active and Triage, Todo, and its grouping control.
+      const tables = await readTables(page);
+      const table = tables.find((one) => one.label === "Priorities table");
+      if (table === undefined) throw new Error(`${where}: no priorities table`);
+      const base = BASE_PRIORITIES[width] ?? [];
+      expect(table.headers.map((header) => header.label)).toEqual(base.map(([label]) => label));
+      for (const header of table.headers) {
+        expect(header.label.length, `${where}: ${header.label} is long`).toBeLessThanOrEqual(16);
+        const wanted =
+          header.label === "Priority" && width === 390
+            ? HEAD_PRIORITY_AT_390
+            : (HEAD_PRIORITIES[header.label] ??
+              base.find(([label]) => label === header.label)?.[1]);
+        expect(
+          Math.abs(header.width - (wanted ?? Number.NaN)),
+          `${where}: ${header.label} is ${header.width} px`
+        ).toBeLessThanOrEqual(0.5);
+      }
+      const prioritiesTable = page.getByRole("table", { name: "Priorities table" });
+      // Active counts In progress, Testing, Needs review and Retro, Triage, Todo those two: the
+      // base's In flight and Waiting under each priority, as the seed writes its work.
+      expect(await columnTexts(prioritiesTable, "Active")).toEqual(["1", "1", "1"]);
+      expect(await columnTexts(prioritiesTable, "Triage, Todo")).toEqual(["1", "0", "1"]);
+      expect(await columnTexts(prioritiesTable, "Backlog, icebox")).toEqual(["0", "0", "1"]);
+      expect(table.menu, `${where}: the priorities table's grouping control`).toBe("Group by");
+      expect(await menuChoices(page, priorities, "display-menu")).toEqual([
+        `${BASE_PRIORITIES_GROUP_BY[0]} (on)`,
+        ...BASE_PRIORITIES_GROUP_BY.slice(1),
+      ]);
+      expect(table.pager).toMatch(/^Rows 1–3‹ Previous/);
+
+      // The two fault lists: every read the base's but the widths the check names.
+      for (const name of [NO_PRIORITY_TABLE, PARKED_TABLE]) {
+        const read = tables.find((one) => one.label === name);
+        if (read === undefined) throw new Error(`${where}: no ${name}`);
+        expect([...issueTableDiffers(read, where), ...embeddedDiffers(read, where)]).toEqual([]);
+      }
+      expect(tables.find((one) => one.label === NO_PRIORITY_TABLE)?.rows).toEqual([
+        `${seed.clock} Audit the clock`,
+        expect.stringMatching(/^OPS-2 /),
+        expect.stringMatching(/^WEB-4 /),
+        expect.stringMatching(/^CORE-4 /),
+      ]);
+      const unplacedScope = page.locator(`section[aria-label="Issues active under no priority"]`);
+      expect(await menuChoices(page, unplacedScope, "display-menu")).toEqual([
+        `${BASE_GROUP_BY[0]} (on)`,
+        ...BASE_GROUP_BY.slice(1),
+      ]);
+      const columns = await menuChoices(page, unplacedScope, "columns-menu");
+      expect(columns).not.toContain(expect.stringMatching(/^Epic/));
+      expect(columns.at(-1)).toBe("Closed");
+
+      // No heading or column header names the four statuses In progress or running, and no
+      // label uses Active for anything else.
+      const labels = await main.evaluate((node) =>
+        [...node.querySelectorAll("h1, h2, th, legend, [data-control='chip'], button")].map((one) =>
+          (one.textContent ?? "").replace(/\s+/g, " ").trim()
+        )
+      );
+      for (const label of labels.filter((one) => /\bActive\b/.test(one)))
+        expect(label, `${where}: a label uses Active`).toMatch(
+          /^(?:Active|Active under no priority \d+|Active(?:Filter)?|Filter Active)$/
+        );
+      const headings = await main.locator("h1, h2, th").allTextContents();
+      for (const one of headings)
+        expect(one, `${where}: a heading`).not.toMatch(/running|In progress/);
+
+      // A priority row opened: its work by status, the base's rows and group headings.
+      await page.getByRole("button", { name: `Open P3 ${seed.titles[2]}` }).click();
+      const work = section(page, `Work advancing ${seed.titles[2]}`);
+      await expect(work.locator("tr[data-issue-row]").first()).toBeVisible();
+      const opened = (await readTables(page)).find((one) => one.label === "Priority issues table");
+      if (opened === undefined) throw new Error(`${where}: the opened row draws no work table`);
+      expect([...issueTableDiffers(opened, where), ...embeddedDiffers(opened, where)]).toEqual([]);
+      expect(opened.rows).toEqual([
+        `${seed.child} Ledger client migration`,
+        `${seed.cutover} Ledger cut-over`,
+        `${seed.ledger} Ledger read path`,
+      ]);
+      expect(opened.groups.map((group) => group.replace(/^Collapse /, ""))).toEqual([
+        "Backlog, 1 issue",
+        "Todo, 1 issue",
+        "Needs review, 1 issue",
+      ]);
+    }
+  } finally {
+    await context.close();
+  }
+});
+
+// SLOW(>=2s): the seed, then a priority's page read at two widths, a header dragged and the page
+// reloaded at each.
+test("a priority's own page at 1280 and 390 px has no line of counts or of order, links Open in its project, draws its table in the phone layout as the base does but for Key, and draws a dragged Title where the base draws it after a reload", async ({
+  browser,
+}) => {
+  test.setTimeout(150_000);
+  const seed = await seedPriorities();
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    for (const [width, height] of [
+      [1280, 900],
+      [390, 844],
+    ] as const) {
+      const where = `at ${width} px`;
+      await page.setViewportSize({ height, width });
+      await page.evaluate(() => localStorage.clear()).catch(() => undefined);
+      await page.goto(`/priorities/${seed.ids[2]}`);
+      const table = page.getByRole("table", { name: "Priority issues table" });
+      await expect(table.locator("tr[data-issue-row]").first()).toBeVisible();
+      const header = page.getByTestId("main-content").locator("header").first();
+      await expect(header).not.toContainText(/dragged|·|In flight|waiting/);
+      await expect(page.getByRole("link", { name: "Open in WEB" })).toBeVisible();
+      await expect(page.getByText(/Leave this scope/)).toHaveCount(0);
+      const [read] = await readTables(page);
+      if (read === undefined) throw new Error(`${where}: no work table`);
+      // A priority's page draws its table in a box under 640 px at both widths: the phone layout.
+      expect(read.box, `${where}: the table's box`).toBeLessThan(640);
+      expect([...issueTableDiffers(read, where), ...embeddedDiffers(read, where)]).toEqual([]);
+      expect(read.rows.filter((row) => row !== "")).toEqual([
+        `${seed.child} Ledger client migration`,
+        `${seed.cutover} Ledger cut-over`,
+        `${seed.ledger} Ledger read path`,
+      ]);
+      // The Priority tag of an issue with no priority.
+      await expect(table.locator(`tr[data-issue-row="${seed.child}"]`)).toContainText("Priority");
+
+      // Title dragged 300 px wider and the page reloaded: the phone layout's Title takes what is
+      // left, so it ends where it ended before the drag, as the base's does.
+      const title = table
+        .locator("thead th")
+        .filter({ hasText: /^Title/ })
+        .first();
+      const before = await title.boundingBox();
+      if (before === null) throw new Error("the Title header has no box");
+      const ends = async () =>
+        title.evaluate((node) => {
+          const box = node.closest('[data-control="data-table"]')?.getBoundingClientRect();
+          return node.getBoundingClientRect().right - (box?.left ?? 0);
+        });
+      const end = await ends();
+      await page.mouse.move(before.x + before.width - 2, before.y + before.height / 2);
+      await page.mouse.down();
+      await page.mouse.move(before.x + before.width + 300, before.y + before.height / 2, {
+        steps: 12,
+      });
+      await page.mouse.up();
+      await page.reload();
+      await expect(table.locator("tr[data-issue-row]").first()).toBeVisible();
+      expect(Math.abs((await ends()) - end), `${where}: where Title ends`).toBeLessThanOrEqual(1);
+      // The base's Title ended at its Key's start, 132 px, and its own width on: 291.69 px of a
+      // 342 px box, 483.8 px of a 568 px one.
+      expect(Math.abs(end - (132 + (BASE_PHONE_TITLE[read.box] ?? 0)) - 1)).toBeLessThanOrEqual(1);
+    }
+  } finally {
+    await context.close();
+  }
+});
+
+// SLOW(>=2s): the seed with two Todo issues labelled legion, then Start next pressed twice on a
+// priority's page and the Open asks filter read on both pages.
+test("on the priority pages the Open asks filter picks With open asks or No open asks, and Start next's texts name the Todo issues labelled legion", async ({
+  browser,
+}) => {
+  test.setTimeout(150_000);
+  const seed = await seedPriorities();
+  const context = await asUser(browser, "alice");
+  try {
+    const first = await createIssue({ project: "CORE", title: "Queue the fleet probe" });
+    const second = await createIssue({ project: "CORE", title: "Queue the fleet report" });
+    for (const issue of [first, second])
+      await patchIssue(issue.key, { advances: [seed.ids[0]], labels: ["legion"], status: "todo" });
+    const page = await context.newPage();
+    await priorityPage(page);
+    for (const path of [PRIORITIES_PATH, `/priorities/${seed.ids[0]}`]) {
+      await page.goto(path);
+      await expect(page.locator("tr[data-issue-row]").first()).toBeVisible();
+      const trigger = page
+        .getByRole("button", { name: /^Filter Open asks(?:: \d+ picked)?$/ })
+        .first();
+      await trigger.click();
+      const options = page.getByRole("listbox", { name: "Open asks options" });
+      await expect(options).toBeVisible();
+      expect(
+        (await options.getByRole("option").allTextContents()).map((one) =>
+          one.replace(/\s*\d+$/, "").trim()
+        ),
+        `${path}: the Open asks picks`
+      ).toEqual(["With open asks", "No open asks"]);
+      await page.keyboard.press("Escape");
+    }
+
+    // Start next on the second of the two moves it ahead, in words that name the set.
+    const work = page.getByRole("table", { name: "Priority issues table" });
+    const row = work.getByRole("row", {
+      exact: true,
+      name: `${second.key} Queue the fleet report`,
+    });
+    await row.hover();
+    await row.getByRole("button", { exact: true, name: "Start next" }).click();
+    await expect(page.getByRole("status").filter({ hasText: "starts next" })).toHaveText(
+      `${second.key} “Queue the fleet report” now starts next.`
+    );
+    // A selection with none of them is refused in words that name the set.
+    await work.getByRole("checkbox", { name: `Select ${seed.rollout}` }).check();
+    await page
+      .locator('[data-control="selection-bar"]')
+      .getByRole("button", { exact: true, name: "Start next" })
+      .click();
+    await expect(page.getByRole("alert").filter({ hasText: "Start next" })).toHaveText(
+      "Start next moves only Todo issues labelled legion."
     );
   } finally {
     await context.close();
