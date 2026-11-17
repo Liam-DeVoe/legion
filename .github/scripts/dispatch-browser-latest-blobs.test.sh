@@ -101,8 +101,11 @@ check "the output holds attempt 10's blob" "$(is "$(held "$root" blob-report/rep
 check "says it passed over attempt 9" "$(contains "$out" '^shard-1: attempt 10, passing over attempt(s) 9$')"
 
 echo "case: every leg shape reads"
-# A shard leg's name ends with its number and an alone leg's with its project, so the digits at
-# the end of the artifact name are the attempt in both.
+# A shard leg's name ends with its number, and an alone leg named for its project, as each was
+# while the alone job ran a matrix leg per project, ends with the project, so the digits at the
+# end of the artifact name are the attempt in both. The alone job's one leg is the bare word
+# `alone` now (dispatch-browser.yaml uploads dispatch-browser-blob-alone-<attempt>), which every
+# full run's merge job reads as a leg of its own beside the two shards.
 root=$(fixture leg-shapes)
 leg "$root" shard-3 1 shard-3-blob
 leg "$root" alone-webkit-alone 1 webkit-blob
