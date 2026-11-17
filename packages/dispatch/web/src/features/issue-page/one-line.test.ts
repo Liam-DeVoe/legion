@@ -184,3 +184,22 @@ test("a private-use character the author wrote is drawn as written, never as a r
     "\ue000 marks KEY-2 here, and \ue001 is the next icon."
   );
 });
+
+// R1 and R3 (ruling 1): a line cut inside its sentence draws one ellipsis. A name the page gives
+// a statement is cut by `chipWords` and so can end with its own ellipsis, and a cut that falls
+// at the space right after the name drew a second one. Found by the tester on a running build at
+// 0058727e, where a comment that read "Does it hold, as dispatch://INFRA-1196/spec#b-r-home
+// says? I think so." drew its entry in the Outline sheet as "Does it hold, as R5. A spec node
+// shows the……".
+test("a line cut right after a name that ends with an ellipsis draws one ellipsis", () => {
+  const block = "dispatch://KEY-1/spec#b-r2";
+  const references = referenceStandIns((reference) =>
+    reference === block ? "R2. Every address…" : undefined
+  );
+  // 78 characters, then the name's 18: the space after it is the last one inside the limit.
+  const before = `${"word ".repeat(15)}as `;
+  const text = `${before}${block} says the rest of it, and more words follow on.`;
+  const line = references.named(drawnLine(firstLineOf(references.standIn(text))));
+  expect(line.startsWith(`${before}R2. Every address`), `the line is ${line}`).toBe(true);
+  expect(line, "the line draws two ellipses").not.toContain("……");
+});
