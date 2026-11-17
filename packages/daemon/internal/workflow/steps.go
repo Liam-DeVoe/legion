@@ -330,9 +330,10 @@ func (e *Engine) readAgent(agent claim.Token) StepAgent {
 // endOfTransition is how a transition on trigger ends the step before stands in, moving the issue
 // into to with handoff as the completion's row: endOf's result, the step of to where the work goes
 // back, and the handoff record handoff names when its role is the role of that step's phase. The
-// step is where before stands (record.StandsAt), the step endStep ends, so a held issue's is the
-// step of the phase its hold is from. A phase that runs no step, admitted among them, whose role
-// is the architect's, ends no step and names no report.
+// step is where before stands (record.StandsAt), the step endStep ends, so the two read one
+// position; no row of the table leaves held, so before is never a held issue here (transition
+// returns first). A phase that runs no step, admitted among them, whose role is the architect's,
+// ends no step and names no report.
 func endOfTransition(trigger TriggerKind, before record.Issue, to phase.Phase, handoff record.PhaseRow) StepEnd {
 	from := record.StandsAt(before)
 	result, returns := endOf(trigger)
