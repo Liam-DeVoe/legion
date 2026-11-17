@@ -13917,16 +13917,21 @@ console.log(JSON.stringify(args));
        *  before it removes the directory: a command the code under test failed to stop ends with
        *  its row, whether the row returned or the runner abandoned it at its limit. */
       const workDirectories: string[] = [];
-      // A hang guard, not a bound on the work: the body is a read, a signal and a removal per
-      // directory. Timed round it on this two-CPU pod: 0.34 / 0.64 / 2.47 ms (min / median / max)
-      // over the 81 invocations of 3 idle runs of this describe, and 0.48 / 1.01 / 563.68 ms over
-      // the 81 of 3 runs at 96 busy loops (48 per CPU). A limit does not interrupt a synchronous
-      // body: bun fails the hook after the fact once the body ran past it, and skips the hooks
-      // after it, so this one carries its own rather than bun's 5 s default, which a starved host
-      // passes on charges alone (hooks of this package were charged 11035.86 ms and 15887.94 ms
-      // at 240 busy loops for work of this size). 60_000 is 3.8 times the worst of those charges
-      // and sits well inside the pi-envoy job's `timeout-minutes: 10`.
-      afterEach(() => {
+      /** Each booted row's replies, by its working directory. A command the afterEach kills still
+       *  answers the person once its own promise settles (`runShellCommandTurn` posts `The command
+       *  was killed by SIGKILL.`), and posted after its row ended, that reply would land in the
+       *  next row's replies and fail a correct row. So the afterEach waits for it here. */
+      const shellReplies = new Map<string, readonly unknown[]>();
+      // A hang guard, not a bound on the work: on a green run the body is a read, a signal that
+      // finds the group gone and a removal per directory. Timed round it on this two-CPU pod:
+      // 0.34 / 0.64 / 2.47 ms (min / median / max) over the 81 invocations of 3 idle runs of this
+      // describe, and 0.48 / 1.01 / 563.68 ms over the 81 of 3 runs at 96 busy loops (48 per
+      // CPU). After a row that failed while its command ran, it also waits for that command's
+      // reply, and what can hang then is a reply that never comes. Bun's 5 s default is what a
+      // starved host passes on charges alone (hooks of this package were charged 11035.86 ms and
+      // 15887.94 ms at 240 busy loops for work of this size). 60_000 is 3.8 times the worst of
+      // those charges and sits well inside the pi-envoy job's `timeout-minutes: 10`.
+      afterEach(async () => {
         for (const directory of workDirectories.splice(0)) {
           let pid = 0;
           try {
@@ -13934,11 +13939,19 @@ console.log(JSON.stringify(args));
           } catch {
             // This row's command wrote no pid, or never ran.
           }
+          const replies = shellReplies.get(directory);
+          shellReplies.delete(directory);
           if (Number.isInteger(pid) && pid > 0) {
+            const answered = replies?.length ?? 0;
+            let killed = false;
             try {
               process.kill(-pid, "SIGKILL");
+              killed = true;
             } catch {
               // The expected path: the command's group has already ended.
+            }
+            if (killed && replies !== undefined) {
+              while (replies.length <= answered) await Bun.sleep(10);
             }
           }
           rmSync(directory, { recursive: true, force: true });
@@ -14019,6 +14032,7 @@ console.log(JSON.stringify(args));
         natsState.controls
           .get("agentstream.ses_delivery.control")
           ?.push(JSON.stringify({ type: "watch", v: 1 }));
+        shellReplies.set(work, session.replies);
         return { ...session, work };
       };
 
