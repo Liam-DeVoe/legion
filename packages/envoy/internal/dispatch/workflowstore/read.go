@@ -150,7 +150,7 @@ func ProjectPlans(ctx context.Context, q Queryer, project string, window Window)
 		return nil, fmt.Errorf("read the plans of %s: %w", project, err)
 	}
 
-	var finished []IssuePlan
+	finished := make([]IssuePlan, 0, len(issues))
 	for _, gathered := range issues {
 		issue := gathered.issue
 		slices.SortFunc(gathered.runs, compareRuns)
