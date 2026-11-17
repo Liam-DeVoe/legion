@@ -1809,9 +1809,9 @@ export class DispatchClient {
   }
 
   /** `PATCH /api/v1/comments/{id}`: the author replaces the comment's body whole. A Dispatch of
-   *  this release keeps the body it replaces, which `commentHistory` reads; a person's own
-   *  credential reaches this route on an older build too, which takes the edit and keeps
-   *  nothing. */
+   *  this release keeps the body it replaces, which `commentHistory` reads. On an older build a
+   *  person's own credential can edit that person's own comment here too, and that build keeps
+   *  nothing of the body it replaces (`throughPostCorrections`). */
   async editComment(
     id: string,
     input: { readonly body: string; readonly actor: Actor }

@@ -104,7 +104,7 @@ export function renderSessionAnswerItem(item: SessionAnswer): string {
   const relation = `${phrase}${item.replaced === true ? " (replaces an earlier answer)" : ""}`;
   const head = [item.at, actorActText(`user ${item.author.id}`, item.author.act), relation];
   if (item.edited_at !== undefined) head.push(`edited ${item.edited_at}`);
-  // A deleted post gives no part of its body to any read: the server sends its text empty, and
+  // No read of a deleted post gives any part of its body: the server sends its text empty, and
   // the one mark every read prints stands where the words would, never an empty line.
   if (item.deleted_at !== undefined) head.push(deletedMark(item.deleted_at, item.deleted_by));
   const owner = item.owner === null ? undefined : ownerTitle(item.owner);

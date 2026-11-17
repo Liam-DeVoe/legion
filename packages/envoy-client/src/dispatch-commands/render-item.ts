@@ -217,8 +217,8 @@ function postBodyLines(post: {
 /**
  * What `dispatch read --history` prints: the post's history entries, newest first, each under
  * the time of its write and the actor that made it, and of a standing post with the body an
- * edit replaced. A post nobody edited or deleted lists none. A deleted post gives no part of its
- * body to any read, so its list carries the deleted mark and each entry's time and actor. Dispatch answers one page, so a full page
+ * edit replaced. A post nobody edited or deleted lists none. No read of a deleted post gives any
+ * part of its body, so its list carries the deleted mark and each entry's time and actor. Dispatch answers one page, so a full page
  * (`POST_HISTORY_PAGE_LIMIT` rows, from `@legion/contracts`, which the server's `postHistory`
  * reads its page at as `contracts.PostHistoryPageLimit`) ends with the route that reads the rows
  * before its oldest time, `?before=` that time: this command has no flag that reads them.

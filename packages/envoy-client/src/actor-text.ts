@@ -28,7 +28,7 @@ export function actorText(actor: Actor | WrittenActor): string {
 
 /**
  * How every read names a post its author withdrew, in place of its body: who deleted it and
- * when. A deleted post gives no part of its body to any read, so this line stands wherever the
+ * when. No read of a deleted post gives any part of its body, so this line stands wherever the
  * body would, and never an empty one. The actor is unknown only on an older record that kept
  * the time alone, which reads as `its author`.
  *

@@ -10,8 +10,8 @@ body: |-
   and only where the original would mislead its reader. The four commands need a Dispatch of this
   release: where an older server answers with no route, or with the scope or the `actor` refusal
   its comment edit gives, each says that this Dispatch predates post corrections. Against an older
-  Dispatch, a person's own token that names a session is answered as the person, so a correction
-  of the session's own post is refused NOT_AUTHOR.
+  Dispatch, a person's own token that names a session can be answered as the person, so an edit
+  of that session's own comment can be refused NOT_AUTHOR.
 time: 2026-11-12T12:00:00.000000000Z
 custom:
     Issue: pr3512

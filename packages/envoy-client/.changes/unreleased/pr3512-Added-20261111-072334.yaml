@@ -9,7 +9,9 @@ body: |-
   server answers with no route, or with the scope or the `actor` refusal its comment edit gives,
   each of them says that this Dispatch predates post corrections and that a correction is one more
   post until it is deployed. Against an older Dispatch, a person's own token that names a session
-  is answered as the person, so a correction of the session's own post is refused NOT_AUTHOR. An
+  can be answered as the person, so an edit of that session's own comment can be refused
+  NOT_AUTHOR. A delete says that no read of the post gives its body again and that a reply's own
+  event keeps the preview it quoted. An
   edit an older server does take is reported as the edit that landed and nothing more: what became
   of the body it replaced is the history read's to answer.
 time: 2026-11-11T07:23:34.685796308Z

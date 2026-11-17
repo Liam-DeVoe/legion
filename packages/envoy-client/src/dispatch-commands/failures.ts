@@ -65,18 +65,20 @@ const OLDER_COMMENT_EDIT_ACTOR = 'invalid JSON body: json: unknown field "actor"
  * arrives here is `DispatchNoRouteError`, which a server with the route never answers: a roll
  * puts the route in place within a minute, while a Dispatch that predates post corrections
  * answers that way until it is deployed, and only this sentence tells an agent which to expect.
- * Its comment edit, the one route that was there before, refuses this release's call in one of
- * two ways, by the credential. It first reads the person it acts for (`actingPerson`), which
+ * Its comment edit, the one route that was there before, answers this release's call by the
+ * credential and the build. It first reads the person it acts for (`actingPerson`), which
  * answers a credential without the person scope `403 OAUTH_SCOPE_REQUIRED`; the route at this
  * head names no scope, so only an older build answers that code there. A credential with that
- * scope, a person's own token included, passes, and that build then decodes the body into an
- * input holding only `body`, `base_revision` and `blocks`, refusing an undeclared member; the
- * body this client sends always carries `actor`, so it answers `400 INVALID_JSON` naming the
- * unknown field `actor` before it compares the author. A build from #2461 on ignores an
- * undeclared member, so only one older than that answers it, and a person's own credential
- * reaches the comment edit of a newer build, which takes the edit and keeps no earlier body.
- * Only the comment edit reads either code as the server's age, and only in those exact forms: an
- * `INVALID_JSON` naming any other field is passed through. Without this, an agent is told its
+ * scope, a person's own token included, passes. A build older than #2461 then decodes the body
+ * into an input holding only `body`, `base_revision` and `blocks`, refusing an undeclared
+ * member; the body this client sends always carries `actor`, so it answers `400 INVALID_JSON`
+ * naming the unknown field `actor` before it compares the author. A build from #2461 on ignores
+ * that member and compares the comment's author with the person: it takes the edit of the
+ * person's own comment and keeps no earlier body, and it refuses the edit of a comment a session
+ * the token names wrote `403 NOT_AUTHOR`, which is passed through as it is, since a true
+ * `NOT_AUTHOR` reads the same. Only the comment edit reads either of the first two codes as the
+ * server's age, and only in those exact forms: an `INVALID_JSON` naming any other field is
+ * passed through. Without this, an agent is told its
  * credential lacks a scope, or that its own request was malformed, and goes asking a person for
  * one or rewriting the call.
  *

@@ -13375,7 +13375,7 @@ describe("executeDispatchTool", () => {
   });
 
   // What a graph row says about a post its author withdrew. The server sends such a row no
-  // excerpt, because a deleted post gives no part of its body to any read, so the row would
+  // excerpt, because no read of a deleted post gives any part of its body, so the row would
   // carry a bare time and a reader could not tell it from a row the graph simply has no words
   // for. The mark stands where the excerpt would, in the words every other read of a deleted
   // post prints, and the row beside it, a comment that stands, reads exactly as it did.
@@ -15957,7 +15957,7 @@ test("edits a comment through its reference and claims nothing of the body it re
   ]);
 });
 
-test("deletes a comment by bare id and says no read gives its body again", async () => {
+test("deletes a comment by bare id and says no read of it gives its body again", async () => {
   const { result, requests } = await runCorrection(
     "dispatch_delete_comment",
     { comment: correctedComment },
@@ -15970,7 +15970,7 @@ test("deletes a comment by bare id and says no read gives its body again", async
   );
 
   expect(result).toEqual({
-    text: `Deleted comment ${correctedComment} on DSP-42. No read gives its body again.`,
+    text: `Deleted comment ${correctedComment} on DSP-42. No read of it gives its body again; a reply's own event keeps the preview it quoted.`,
     details: { issue: "DSP-42", comment: correctedComment },
   });
   // A bare id is the comment itself, so nothing is read before the delete.
@@ -16030,7 +16030,7 @@ test("edits an issue message through its reference and claims nothing of the bod
   ]);
 });
 
-test("deletes an issue message by bare id and says no read gives its body again", async () => {
+test("deletes an issue message by bare id and says no read of it gives its body again", async () => {
   const { result, requests } = await runCorrection(
     "dispatch_delete_message",
     { message: correctedMessage },
@@ -16043,7 +16043,7 @@ test("deletes an issue message by bare id and says no read gives its body again"
   );
 
   expect(result).toEqual({
-    text: `Deleted message ${correctedMessage} on DSP-42. No read gives its body again.`,
+    text: `Deleted message ${correctedMessage} on DSP-42. No read of it gives its body again; a reply's own event keeps the preview it quoted.`,
     details: { issue: "DSP-42", message: correctedMessage },
   });
   expect(requests).toEqual([

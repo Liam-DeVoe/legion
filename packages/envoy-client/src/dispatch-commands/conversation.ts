@@ -171,6 +171,12 @@ export async function editCommentCommand(context: CommandContext): Promise<Dispa
   return { text: `Edited comment ${comment.id} on ${label}.`, details };
 }
 
+/** What each delete command says the delete leaves readable: no read of the post gives its body
+ *  again, and a reply's own event keeps the preview of the post it quoted (`reply_block.text` of
+ *  a comment reply, `reply_body` of a message reply), which the delete leaves as it froze. */
+const DELETED_POST_READS =
+  "No read of it gives its body again; a reply's own event keeps the preview it quoted.";
+
 /** `dispatch delete-comment`: the author withdraws their own comment. */
 export async function deleteCommentCommand(context: CommandContext): Promise<DispatchToolResult> {
   const { args, client, actor, input, configUrl } = context;
@@ -184,7 +190,7 @@ export async function deleteCommentCommand(context: CommandContext): Promise<Dis
   );
   const { label, details } = await commentOwnerResult(client, comment, document);
   return {
-    text: `Deleted comment ${comment.id} on ${label}. No read gives its body again.`,
+    text: `Deleted comment ${comment.id} on ${label}. ${DELETED_POST_READS}`,
     details,
   };
 }
@@ -232,7 +238,7 @@ export async function deleteMessageCommand(context: CommandContext): Promise<Dis
   );
   const issue = messageIssueKey(message);
   return {
-    text: `Deleted message ${message.id} on ${issue}. No read gives its body again.`,
+    text: `Deleted message ${message.id} on ${issue}. ${DELETED_POST_READS}`,
     details: { issue, message: message.id },
   };
 }
