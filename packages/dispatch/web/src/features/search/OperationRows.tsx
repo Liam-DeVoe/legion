@@ -21,6 +21,7 @@ import { useWrites } from "../writes/write-store";
 import {
   actionName,
   actionOn,
+  awaitsConfirmation,
   type GoingApproval,
   runGoingWrite,
   runGoingWrites,
@@ -270,7 +271,8 @@ export interface GoingOperations {
  * with no run yet asks at once. An invocation missing one argument asks for it first, and with
  * the person's setting on (`GET /api/v1/me/going/settings`) every write asks first and is sent
  * confirmed; a write Dispatch refused because that setting is on, which this page read before the
- * person turned it on, has the page read it again (`goingWrite`), so the next press asks first.
+ * person turned it on, tells the page the setting is on (`goingWrite`) and keeps its row and Run
+ * button (`awaitsConfirmation`), so the next press, from either or the key, asks first.
  * Each invocation is one write (`runGoingWrite`), and each write one line; a submit pressed again,
  * while the turn's writes are out or once they landed, writes none of them again, and makes again
  * only one Dispatch refused.
@@ -302,10 +304,14 @@ export function useGoingOperations({
   const confirmWrites = settings.isError ? false : settings.data?.confirm_writes;
   const [stage, setStage] = useWordsState<Stage>(words);
   const turn = useTurn(runId);
-  const ran = new Set(turn?.lines.map((line) => line.action) ?? []);
+  // The lines of the turn that count as run: every one but a write Dispatch refused because the
+  // person's setting asks first, which is still theirs to run - their next press asks first
+  // (`goingWrite`) - so its row, its Run button and the bar's run hint stay.
+  const counted = turn?.lines.filter((line) => !awaitsConfirmation(line)) ?? [];
+  const ran = new Set(counted.map((line) => line.action));
   // Each line's own invocation, `action:index`, so an action whose automatic invocations ran
   // still offers the ones the person has to pick.
-  const ranInvocations = new Set(turn?.lines.map((line) => line.key) ?? []);
+  const ranInvocations = new Set(counted.map((line) => line.key));
   // The field a missing argument is asked in takes focus as it appears, so the person types the
   // value where the bar asked for it; a ref of one identity, so a later render moves nothing.
   const focusField = useCallback((field: HTMLInputElement | HTMLSelectElement | null) => {

@@ -511,8 +511,10 @@ var goingUnsendableCalls = []struct {
 // it would have been offered and marked automatic, a submit then running a write that can only be
 // refused. The proposal withholds it instead, as it withholds an upload over a held document:
 // no invocation of it is offered, none is automatic, and the offer's withheld says why in words
-// for the person at the bar, naming neither the argument nor anything else of goingInternals. The
-// same call without that argument is offered.
+// for the person at the bar: it names nothing of goingInternals, and says what of the call the
+// bar cannot send - a picture, a link, a file - rather than giving the argument's name as the
+// reason, which says nothing to a person who did not write the call. The same call without that
+// argument is offered.
 func TestGoingProposalWithholdsACallTheBarCanNeverSend(t *testing.T) {
 	catalogue, err := BuildGoingCatalogue()
 	if err != nil {
@@ -547,7 +549,7 @@ func TestGoingProposalWithholdsACallTheBarCanNeverSend(t *testing.T) {
 			t.Errorf("%s: the call is withheld %q, which names %q, none of which the person at the bar holds", tc.name, why, internals)
 		}
 		if regexp.MustCompile(`\b` + tc.argument + `\b`).MatchString(why) {
-			t.Errorf("%s: the call is withheld %q, which names the argument %s, a word the person at the bar never sees", tc.name, why, tc.argument)
+			t.Errorf("%s: the call is withheld %q, which gives the argument %s as its reason rather than saying what the bar cannot send", tc.name, why, tc.argument)
 		}
 	}
 }
@@ -556,8 +558,8 @@ func TestGoingProposalWithholdsACallTheBarCanNeverSend(t *testing.T) {
 // recorded by a build that offered a call the bar can never send - a comment with a picture file,
 // and one naming its place by a dispatch:// link, each marked automatic - is refused when the
 // person picks it, 400 GOING_ARGUMENTS, with nothing written, and the refusal is the words the
-// proposal now withholds it with: no tool id before it, no argument named, nothing of
-// goingInternals.
+// proposal now withholds it with: no tool id before it, nothing of goingInternals, and what of
+// the call the bar cannot send rather than the argument's name as the reason.
 func TestGoingWriteTheBarCanNeverSendIsRefusedInTheBarsWords(t *testing.T) {
 	rig := newGoingWritesRig(t)
 	issue := createInteractionIssue(t, rig.mux, "DEMO", "Commented on", "The spec.\n").Key
@@ -589,7 +591,7 @@ func TestGoingWriteTheBarCanNeverSendIsRefusedInTheBarsWords(t *testing.T) {
 				t.Errorf("the pick is refused %q, which names %q, none of which the person at the bar holds", refusal.Error, internals)
 			}
 			if regexp.MustCompile(`\b` + tc.argument + `\b`).MatchString(refusal.Error) {
-				t.Errorf("the pick is refused %q, which names the argument %s, a word the person at the bar never sees", refusal.Error, tc.argument)
+				t.Errorf("the pick is refused %q, which gives the argument %s as its reason rather than saying what the bar cannot send", refusal.Error, tc.argument)
 			}
 			start := goingRunStart{actions: catalogue.Actions(), words: "post this on " + issue}
 			written, _ := json.Marshal(map[string][]map[string]any{tc.action: {arguments}})
@@ -602,6 +604,78 @@ func TestGoingWriteTheBarCanNeverSendIsRefusedInTheBarsWords(t *testing.T) {
 				t.Fatalf("%s holds %d comments after the refused pick, want none", issue, count)
 			}
 		})
+	}
+}
+
+// goingEmptyArguments is, by action, each argument goingUnsendable refuses a call for carrying, as
+// an answer may write it empty: a list of no pictures, a link or a file path of no text. Such a
+// call names no picture, no link and no file, and no translator sends the argument on, so the
+// bar sends the call as it would without it.
+var goingEmptyArguments = map[string]map[string]any{
+	"dispatch_comment":  {"images": []any{}, "ref": ""},
+	"dispatch_ask":      {"images": []any{}},
+	"dispatch_message":  {"images": []any{}},
+	"dispatch_suggest":  {"ref": ""},
+	"dispatch_doc_edit": {"ref": ""},
+	"dispatch_artifact": {"path": ""},
+}
+
+// TestGoingCallWithAnEmptyPictureListLinkOrFileIsOfferedAndSent (deep review, Minor finding): an
+// answer that wrote an empty list of pictures, an empty link or an empty file path named no
+// picture, link or file, so no reason the bar can never send the call is true of it. For every row
+// of those actions a person's browser reaches (goingRowCases), the call with each such argument
+// empty is offered, with nothing withheld, and the person's pick of it, every such argument empty
+// at once, is sent and lands.
+func TestGoingCallWithAnEmptyPictureListLinkOrFileIsOfferedAndSent(t *testing.T) {
+	rig := newGoingWritesRig(t)
+	cases := goingRowCases(newGoingRowFixtures(t, rig))
+	catalogue, err := BuildGoingCatalogue()
+	if err != nil {
+		t.Fatal(err)
+	}
+	const words = "do what the answer says"
+	start := goingBrowserStart(t)
+	start.words = words
+	for _, action := range catalogue.Actions() {
+		empties := goingEmptyArguments[action.Action]
+		if len(empties) == 0 {
+			continue
+		}
+		for _, route := range action.Routes {
+			row := action.Action + " " + route.Method + " " + route.Pattern
+			call, held := cases[row]
+			if !held || call.bearer || call.session != "" {
+				continue
+			}
+			t.Run(row, func(t *testing.T) {
+				arguments := maps.Clone(call.arguments)
+				for argument, empty := range empties {
+					one := maps.Clone(call.arguments)
+					one[argument] = empty
+					written, err := json.Marshal(map[string][]map[string]any{action.Action: {one}})
+					if err != nil {
+						t.Fatal(err)
+					}
+					offer := goingPropose(goingDecision{Context: going.ContextNamed, offered: []string{action.Action}},
+						&going.Final{Answer: "Done.", Arguments: string(written)}, start, goingHolds{}).Offers[0]
+					if !offer.Offered || len(offer.Invocations) != 1 || len(offer.Withheld) != 0 {
+						t.Errorf("the call with %s %#v proposed %+v, want it offered with nothing withheld", argument, empty, offer)
+					}
+					arguments[argument] = empty
+				}
+				proposal := goingProposal{Offers: []goingOffer{{Action: action.Action, Offered: true, Invocations: []goingInvocation{
+					{Arguments: arguments, TargetArgument: goingTargetArgument(route)},
+				}}}}
+				run := rig.recorded(t, "alice", false, action.Action, words, proposal)
+				response := rig.write(t, "alice", run, map[string]any{"offer": action.Action, "invocation": 0, "approved": goingApprovedPerson})
+				if response.Code != http.StatusOK {
+					t.Fatalf("the pick of %v answered %d %s, want it sent", arguments, response.Code, response.Body.String())
+				}
+				if line := decodeBody[goingWriteLine](t, response); !line.Outcome.OK {
+					t.Errorf("the pick of %v answered %+v, want it landed", arguments, line.Outcome)
+				}
+			})
+		}
 	}
 }
 

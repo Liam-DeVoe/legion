@@ -548,6 +548,56 @@ test("a write Dispatch refused because the person's setting asks first makes the
   }
 });
 
+test("a write Dispatch refused because the person's setting asks first keeps its Run row and the run hint, and a press of Run asks first before the setting is read again", async () => {
+  const user = userOnFakeClock();
+  const bar = renderBar();
+  // The read of the setting the refusal asks for, held until the end: nothing but the refusal
+  // itself can tell the page the setting is on before the next press.
+  const reread = Promise.withResolvers<{ confirm_writes: boolean }>();
+  try {
+    await ask(user, "astrolabe");
+    stream(decision(true, ["dispatch_issue_update"]), proposal, ended);
+    await screen.findByRole("option", { name: /^Run issue update/ });
+    await waitFor(() => expect(settings).toHaveBeenCalledTimes(1));
+    // The setting was turned on in another tab after this page read it.
+    settings.mockImplementation(() => reread.promise);
+    written.mockImplementation(async (_run, input) => {
+      if (input.approved === "auto") {
+        throw new ApiError(409, {
+          code: "GOING_CONFIRMATION_REQUIRED",
+          error: "your setting asks you to confirm every write of the bar",
+        });
+      }
+      return landedLine(input);
+    });
+
+    await submit(user);
+    await waitFor(() =>
+      expect(
+        screen.getAllByTestId("going-write-line").map((line) => line.getAttribute("data-code"))
+      ).toEqual(["GOING_CONFIRMATION_REQUIRED", "GOING_CONFIRMATION_REQUIRED"])
+    );
+
+    const row = await screen.findByRole("option", {
+      name: /^Run issue update on LEGION-3 and LEGION-4/,
+    });
+    expect(screen.getByText("to run")).toBeInTheDocument();
+    await user.click(within(row).getByRole("button", { name: "Run" }));
+
+    const step = await screen.findByTestId("going-confirm-step");
+    await user.click(within(step).getByRole("button", { name: "Confirm" }));
+    await waitFor(() =>
+      expect(sent().slice(2)).toEqual([
+        { approved: "confirmed", invocation: 0, offer: "dispatch_issue_update" },
+        { approved: "confirmed", invocation: 1, offer: "dispatch_issue_update" },
+      ])
+    );
+  } finally {
+    reread.resolve({ confirm_writes: true });
+    bar.unmount();
+  }
+});
+
 /** The decision's update of LEGION-3, which the words named, beside one of LEGION-4 that only an
  *  item's stored text asked for: the proposal marks it not automatic. */
 const injected: GoingProposalEvent = {

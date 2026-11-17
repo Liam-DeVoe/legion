@@ -1076,9 +1076,9 @@ func goingProposedInvocation(run goingRun, input goingWriteInput) (goingInvocati
 // it on elsewhere, a build of the bar older than the record - so each reason is worded for the
 // person reading it in the bar's panel, on the line naming the write: what happened, and what that
 // person does in the bar - ask again and pick the write, ask again with the change in the words,
-// or submit again, which asks them first once the page has read the setting again
-// (going-turns.ts, goingWrite) - naming no tool, no argument and no value of approved, none of
-// which that person holds.
+// or submit again, with the Run row the bar keeps for that write, which asks them first, since
+// the refusal itself tells the page the setting is on (going-turns.ts, goingWrite) - naming no
+// tool, no argument and no value of approved, none of which that person holds.
 func (s *server) goingAutoRefusal(ctx context.Context, run goingRun, input goingWriteInput, invocation goingInvocation, login string) error {
 	action := input.Offer
 	if goingAlwaysAsk[action] {

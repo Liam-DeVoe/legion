@@ -142,11 +142,20 @@ func (e goingUntranslatable) Error() string { return string(e) }
 // one before its row's translation (prepare), with the same words, which no translator repeats.
 // Each is worded for the person reading the bar's panel - what the bar cannot send, and what that
 // person can do there - and names no tool, no argument, no command line and no flag, none of
-// which that person holds.
+// which that person holds. A picture list, a link or a file path written empty names no picture,
+// link or file, so it counts as absent, as null does (which the action's schema refuses first):
+// no translator sends any of the three on, and the call is sent as it would be without it.
 func goingUnsendable(action string, arguments map[string]any) string {
 	named := func(argument string) bool {
-		_, given := arguments[argument]
-		return given
+		switch value := arguments[argument].(type) {
+		case nil:
+			return false
+		case string:
+			return value != ""
+		case []any:
+			return len(value) > 0
+		}
+		return true
 	}
 	switch action {
 	case "dispatch_comment":

@@ -74,6 +74,15 @@ export interface LastUndo extends TurnUndo {
 
 const TARGET_PREFIX = "going-run:";
 
+/** The code Dispatch refuses a write sent at once with while the person's setting asks first. */
+const CONFIRMATION_REQUIRED = "GOING_CONFIRMATION_REQUIRED";
+
+/** Whether Dispatch refused `line`'s write because the person's setting asks first: the write is
+ *  still the person's to run, and their next press asks first. */
+export function awaitsConfirmation(line: TurnLine): boolean {
+  return line.state === "refused" && line.refusal?.code === CONFIRMATION_REQUIRED;
+}
+
 /**
  * The kind of every write of a turn and of every turn's undo: a plain write that, once it lands,
  * has the bar read its hits again (`["search", …]`, `useTieredSearch`), since a hit shows the
@@ -81,8 +90,10 @@ const TARGET_PREFIX = "going-run:";
  * than patched here. A landing no surface awaits, or one without an answer, reads every query
  * again, as a plain write's does. A write Dispatch refused `GOING_CONFIRMATION_REQUIRED` was sent
  * at once on a copy of the person's setting that no longer holds - they turned it on since this
- * page read it, in Settings or another tab - so the page reads the setting again, and the bar's
- * next press asks first (`goingSettingsQuery`, `useGoingOperations`).
+ * page read it, in Settings or another tab - and the refusal itself says the setting is on: the
+ * page's copy says so at once, so the bar's next press asks first with no window for another
+ * write sent at once, and the setting is read again behind it (`goingSettingsQuery`,
+ * `useGoingOperations`).
  */
 const goingWrite = defineWriteKind<null>({
   kept: (value): value is null => value === null,
@@ -98,9 +109,11 @@ const goingWrite = defineWriteKind<null>({
     if (
       write.status === "refused" &&
       write.refusal instanceof ApiError &&
-      write.refusal.code === "GOING_CONFIRMATION_REQUIRED"
+      write.refusal.code === CONFIRMATION_REQUIRED
     ) {
-      void client.invalidateQueries({ queryKey: goingSettingsQuery().queryKey });
+      const key = goingSettingsQuery().queryKey;
+      client.setQueryData(key, { confirm_writes: true });
+      void client.invalidateQueries({ queryKey: key });
     }
   },
 });

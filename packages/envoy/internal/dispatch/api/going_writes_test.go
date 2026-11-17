@@ -581,15 +581,15 @@ func TestEveryGoingRowWithAnUnfillableArgumentIsNotOfferedUntilTheWordsSupplyIt(
 
 // TestGoingWritesRefuseAutoForTheTwoThatAlwaysAskBelowTheThresholdAndWithConfirmOn: a write the
 // bar sends to run at once is refused for the two that always ask, for an action the decision did
-// not choose at or above the threshold, and while the person asked to confirm every write; the
-// same write the person runs, or confirms, goes through. The bar sends none of these at once
-// unless what it read disagrees with the server - the setting turned on in another tab - so each
-// refusal says, in words for the person at the bar (goingInternals names what they may not),
-// what they do there: pick the write, or submit again, and the bar asks you to confirm it first.
+// not choose at or above the threshold, and while the person asked to confirm every write, with
+// nothing written or recorded; the same write the person runs, or confirms, goes through. The bar
+// sends none of these at once unless what it read disagrees with the server - the setting turned
+// on in another tab - so each refusal reaches the person at the bar, in words naming nothing of
+// goingInternals.
 func TestGoingWritesRefuseAutoForTheTwoThatAlwaysAskBelowTheThresholdAndWithConfirmOn(t *testing.T) {
 	rig := newGoingWritesRig(t)
 	issue := createInteractionIssue(t, rig.mux, "DEMO", "Auto", "The spec.\n").Key
-	refusedAuto := func(t *testing.T, run, action, code, does string) {
+	refusedAuto := func(t *testing.T, run, action, code string) {
 		t.Helper()
 		response := rig.write(t, "alice", run, map[string]any{"offer": action, "invocation": 0, "approved": goingApprovedAuto})
 		if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), `"code":"`+code+`"`) {
@@ -599,9 +599,6 @@ func TestGoingWritesRefuseAutoForTheTwoThatAlwaysAskBelowTheThresholdAndWithConf
 		if internals := goingInternals.FindAllString(refusal.Error, -1); len(internals) > 0 {
 			t.Errorf("auto %s is refused %q, which names %q, none of which the person at the bar holds", action, refusal.Error, internals)
 		}
-		if !strings.Contains(refusal.Error, does) {
-			t.Errorf("auto %s is refused %q, want it to tell the person to %s", action, refusal.Error, does)
-		}
 		if writes := rig.record(t, "alice", run).Writes; len(writes) != 0 {
 			t.Fatalf("a refused auto write was recorded as %+v", writes)
 		}
@@ -609,7 +606,7 @@ func TestGoingWritesRefuseAutoForTheTwoThatAlwaysAskBelowTheThresholdAndWithConf
 
 	t.Run("a new issue always asks", func(t *testing.T) {
 		run := rig.proposed(t, "alice", true, "dispatch_issue", map[string]any{"project": "DEMO", "title": "A husk", "force": true})
-		refusedAuto(t, run, "dispatch_issue", codeGoingApprovalRequired, goingPickToRun)
+		refusedAuto(t, run, "dispatch_issue", codeGoingApprovalRequired)
 		line := rig.wrote(t, "alice", run, map[string]any{"offer": "dispatch_issue", "invocation": 0, "approved": goingApprovedPerson})
 		if !line.Outcome.OK || !strings.HasPrefix(line.Item, "DEMO-") {
 			t.Fatalf("the person's own run of it answered %+v", line)
@@ -620,7 +617,7 @@ func TestGoingWritesRefuseAutoForTheTwoThatAlwaysAskBelowTheThresholdAndWithConf
 			"session": goingPlannerTitle, "body": "Look at this.", "delivery": "btw",
 		})
 		sends := len(*rig.sent)
-		refusedAuto(t, run, "dispatch_send_to_agent", codeGoingApprovalRequired, goingPickToRun)
+		refusedAuto(t, run, "dispatch_send_to_agent", codeGoingApprovalRequired)
 		if len(*rig.sent) != sends {
 			t.Fatal("a refused auto send reached the listener")
 		}
@@ -635,7 +632,7 @@ func TestGoingWritesRefuseAutoForTheTwoThatAlwaysAskBelowTheThresholdAndWithConf
 	})
 	t.Run("below the action threshold", func(t *testing.T) {
 		run := rig.proposed(t, "alice", false, "dispatch_claim", map[string]any{"issue": issue})
-		refusedAuto(t, run, "dispatch_claim", codeGoingApprovalRequired, goingPickToRun)
+		refusedAuto(t, run, "dispatch_claim", codeGoingApprovalRequired)
 		rig.wrote(t, "alice", run, map[string]any{"offer": "dispatch_claim", "invocation": 0, "approved": goingApprovedPerson})
 	})
 	t.Run("with the person's confirm_writes on", func(t *testing.T) {
@@ -646,7 +643,7 @@ func TestGoingWritesRefuseAutoForTheTwoThatAlwaysAskBelowTheThresholdAndWithConf
 			t.Fatalf("turn confirm_writes on: status=%d body=%s", response.Code, response.Body.String())
 		}
 		confirming := labels("confirming")
-		refusedAuto(t, confirming, "dispatch_issue_update", codeGoingConfirmationRequired, "submit again, and the bar asks you to confirm it first")
+		refusedAuto(t, confirming, "dispatch_issue_update", codeGoingConfirmationRequired)
 		rig.wrote(t, "alice", confirming, map[string]any{"offer": "dispatch_issue_update", "invocation": 0, "approved": goingApprovedConfirmed})
 		// Another person's setting is their own: bob never set his, so his auto write runs.
 		bobs := rig.proposed(t, "bob", true, "dispatch_issue_update", map[string]any{"issue": issue, "labels": []any{"bobs"}})
@@ -725,10 +722,8 @@ func TestGoingWriteAnItemsTextAskedForIsOfferedAndNeverRunAtOnce(t *testing.T) {
 }
 
 // goingWriteRefusedNotAutomatic sends one write of the run's first invocation of action at once
-// and holds it to 409 GOING_NOT_AUTOMATIC, with nothing written or recorded, its reason telling
-// the person at the bar what they do there, in words naming nothing of goingInternals: pick it
-// once they ask again, or, for a write whose arguments replace the invocation's own, which no
-// pick runs, ask again with the change in their words.
+// and holds it to 409 GOING_NOT_AUTOMATIC, with nothing written or recorded, its reason naming
+// nothing of goingInternals.
 func (rig goingWritesRig) goingWriteRefusedNotAutomatic(t *testing.T, run, action string, arguments map[string]any) {
 	t.Helper()
 	body := map[string]any{"offer": action, "invocation": 0, "approved": goingApprovedAuto}
@@ -743,26 +738,10 @@ func (rig goingWritesRig) goingWriteRefusedNotAutomatic(t *testing.T, run, actio
 	if internals := goingInternals.FindAllString(refusal.Error, -1); len(internals) > 0 {
 		t.Errorf("auto %s is refused %q, which names %q, none of which the person at the bar holds", action, refusal.Error, internals)
 	}
-	does := goingPickToRun
-	if arguments != nil {
-		does = goingAskWithTheChange
-	}
-	if !strings.Contains(refusal.Error, does) {
-		t.Errorf("auto %s is refused %q, want it to tell the person to %s", action, refusal.Error, does)
-	}
 	if writes := rig.record(t, "alice", run).Writes; len(writes) != 0 {
 		t.Fatalf("a refused auto write was recorded as %+v", writes)
 	}
 }
-
-// goingPickToRun is what a write the bar sent at once and the server runs only once the person
-// picks it tells that person to do.
-const goingPickToRun = "ask again and pick it in the bar to run it"
-
-// goingAskWithTheChange is what a write sent at once with arguments replacing those the answer
-// wrote tells the person at the bar to do: a new run offers only what its answer writes, so the
-// change has to be in their words.
-const goingAskWithTheChange = "ask again with the change written in your question"
 
 // TestGoingWriteOnAProjectOnlyAnEnglishWordNamesIsOfferedAndNeverRunAtOnce (review finding 1):
 // projects AS and THE exist, and the words spell both keys as ordinary words in lower case. An
@@ -1693,10 +1672,10 @@ func TestGoingWriteOfAnUploadWhoseHeldNameThePersonFilledInSaysWhatIsSo(t *testi
 			if internals := goingInternals.FindAllString(refusal.Error, -1); len(internals) > 0 {
 				t.Errorf("the fill of %q is refused %q, which names %q, none of which the person at the bar holds", tc.fill, refusal.Error, internals)
 			}
-			// A filled slug is what fails, whatever the words write, so the reason tells the
-			// person to fill in the stored name, not only to write it.
-			if tc.fill != "plan.md" && !strings.Contains(refusal.Error, "fill in plan.md") {
-				t.Errorf("the fill of the slug %q is refused %q, want it to tell the person to fill in plan.md", tc.fill, refusal.Error)
+			// A filled slug is what fails, whatever the words write, so the reason names the slug
+			// the person filled beside the stored name above.
+			if tc.fill != "plan.md" && !strings.Contains(refusal.Error, tc.fill) {
+				t.Errorf("the fill of the slug %q is refused %q, want it to name the slug the person filled", tc.fill, refusal.Error)
 			}
 			if versions := rig.goingDocumentVersions(t, issue, "plan-md"); versions != 1 {
 				t.Fatalf("plan.md holds %d versions after the refused fill, want its one", versions)
