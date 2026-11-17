@@ -387,10 +387,11 @@ for (const provider of [
       }
     },
     // The row drives three stacks it starts and stops itself: two Postgres starts at once, each
-    // an initdb or a `docker run` and a readiness wait that gives up at 120 s, then the third
-    // start, which stops a postmaster or removes a container, and the stops. On a shared Linux
-    // machine under a load of about 300, on 2026-11-17, the image row read 4.4 to 10.6 s and the
-    // binaries row 2.1 to 3.0 s; 600 s leaves both 120 s waits room under a heavier load.
+    // an initdb or a container's create and start, and a readiness wait that gives up at 120 s,
+    // then the third start, which stops a postmaster or removes a container, and the stops. On a
+    // shared Linux machine under a load of about 300, on 2026-11-17, the image row read 4.4 to
+    // 10.6 s and the binaries row 2.1 to 3.0 s; 600 s leaves both 120 s waits room under a
+    // heavier load.
     600_000
   );
 }
@@ -541,7 +542,7 @@ test.skipIf(skipImage)(
     const tmp = mkdtempSync(join(tmpdir(), "leftover-"));
     const env = childEnv(tmp, { variable: pgImageVariable, value: image });
     // One run name for both stacks, as the pool's pid made it for two pools of one pid: the
-    // second stack's container then has the first's name, so its `docker run` fails.
+    // second stack's container then has the first's name, so its `docker create` fails.
     const run = `leftover-${process.pid}-shared`;
     const dirs: string[] = [];
     let first: StackDatabase | undefined;
@@ -573,9 +574,9 @@ test.skipIf(skipImage)(
       rmSync(tmp, { recursive: true, force: true });
     }
   },
-  // The row drives two starts of the image provider in this process, the first a `docker run`
-  // and a readiness wait that gives up at 120 s, the second a `docker run` refused at once, and
-  // the first's stop; 300 s leaves the wait and a slow Docker daemon room.
+  // The row drives two starts of the image provider in this process, the first a container's
+  // create and start and a readiness wait that gives up at 120 s, the second a `docker create`
+  // refused at once, and the first's stop; 300 s leaves the wait and a slow Docker daemon room.
   300_000
 );
 

@@ -17,10 +17,10 @@
  *  `TMPDIR` of the row's own and a `PATH` that holds no `docker`, so the sweep reads no container
  *  of another run on the machine. They need Linux (`/proc`). A mark another user wrote needs a
  *  second user, which a test run has none of, so the rows of `whyUntrusted` read owners from a
- *  stubbed `lstat`;
- *  the rows with real files plant what one user can: a link, a program, a directory others may
- *  write. A stand-in process is one this file starts and records by its pid and start, and stops
- *  only while `/proc` still names it; a stand-in postmaster is a copy of `sleep` named `postgres`. */
+ *  stubbed `lstat`; the rows with real files plant what one user can: a link, a program, a
+ *  directory others may write. A stand-in process is one this file starts and records by its pid
+ *  and start, and stops only while `/proc` still names it; a stand-in postmaster is a copy of
+ *  `sleep` named `postgres`. */
 
 import { expect, test } from "bun:test";
 import {

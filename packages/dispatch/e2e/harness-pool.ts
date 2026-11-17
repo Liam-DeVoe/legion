@@ -250,9 +250,9 @@ function clearRunDir(keepLogs: boolean): void {
   if (keep) console.error(`${named}: the stacks' logs are in ${root}`);
 }
 
-/** Starts `count` stacks at once - each is an initdb or a `docker run` and a server build away,
- *  and they share nothing - and returns them in index order. A stack that fails to start stops
- *  what started, this run's directory included, and the failure is the caller's to report.
+/** Starts `count` stacks at once - each is an initdb or a container's start and a server build
+ *  away, and they share nothing - and returns them in index order. A stack that fails to start
+ *  stops what started, this run's directory included, and the failure is the caller's to report.
  *
  *  The start is held as one promise while it runs, so a SIGTERM that lands in the middle of it
  *  waits for it rather than ending this process on top of what it has started (`starting`). */
@@ -293,7 +293,7 @@ async function startPool(count: number, options: StackPoolOptions): Promise<read
     if (count > 1 && postgres === undefined) {
       throw new Error(
         `${count} Playwright workers run ${count} stacks, each with a Postgres of its own, so ` +
-          `one of ${pgImageVariable} (a \`docker run\` of that image per stack) and ` +
+          `one of ${pgImageVariable} (a container of that image per stack) and ` +
           `${pgBinVariable} (a directory holding initdb and pg_ctl) must name one.`
       );
     }

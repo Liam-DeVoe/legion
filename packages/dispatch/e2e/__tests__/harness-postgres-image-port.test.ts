@@ -89,8 +89,8 @@ test.skipIf(
       rmSync(dir, { recursive: true, force: true });
     }
   },
-  // The row drives two `docker run`s, the probe's and the provider's, the provider's readiness
-  // wait, one psql and the stop. That wait gives up at 120 s (`readyMs`,
+  // The row drives the probe's `docker run` and the provider's container start, the provider's
+  // readiness wait, one psql and the stop. That wait gives up at 120 s (`readyMs`,
   // e2e/harness-postgres.ts), and the probe on a runner pulls the image too, which the `visual`
   // job's runs have not timed apart; 300 s holds both with room to spare. The row read 5.6 s with
   // the image present, on a shared Linux machine under a load of about 200, on 2026-11-17.

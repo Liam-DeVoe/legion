@@ -4,7 +4,7 @@
  *  database before every row, so two stacks cannot share one: the pool starts a server per stack
  *  and hands it to that stack's Dispatch servers and psql as `DATABASE_URL`.
  *
- *  - `DISPATCH_E2E_PG_IMAGE` is a `docker run` of the image digest the caller names: a
+ *  - `DISPATCH_E2E_PG_IMAGE` is a container of the image digest the caller names: a
  *    developer's path on a machine with Docker and no Postgres binaries, and the `visual` job's
  *    of `.github/workflows/dispatch-browser.yaml`, which runs on the runner with only its
  *    Playwright command in a container, so the binaries of an image it does not run in are no
@@ -54,7 +54,7 @@ import { sqlAt } from "./psql";
 
 const execFileAsync = promisify(execFile);
 
-/** A `docker run` of this image serves one stack. */
+/** A container of this image serves one stack. */
 export const pgImageVariable = "DISPATCH_E2E_PG_IMAGE";
 /** This directory's `initdb` and `pg_ctl` serve every stack. */
 export const pgBinVariable = "DISPATCH_E2E_PG_BIN";
@@ -619,7 +619,7 @@ export function stackPostgres(options: {
   if (image !== "" && bin !== "") {
     throw new Error(
       `${pgImageVariable} and ${pgBinVariable} both name a Postgres for this run's stacks. Set ` +
-        "one of them: the image is a `docker run` per stack, the directory a server per stack " +
+        "one of them: the image is a container per stack, the directory a server per stack " +
         "from its initdb and pg_ctl."
     );
   }

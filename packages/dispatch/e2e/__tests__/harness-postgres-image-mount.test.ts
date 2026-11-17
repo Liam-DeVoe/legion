@@ -1,5 +1,5 @@
 /** The image provider's start in a run directory whose path holds a character that a
- *  `docker run` argument or a Postgres connection string reads as syntax.
+ *  `docker create` argument or a Postgres connection string reads as syntax.
  *
  *  The provider bind-mounts a socket directory under the run directory into its container
  *  (e2e/harness-postgres.ts). A `--volume <path>:/var/run/postgresql` splits at each `:`, so a
@@ -67,7 +67,7 @@ for (const [index, row] of rows.entries()) {
         rmSync(root, { recursive: true, force: true });
       }
     },
-    // The row drives one `docker run` of the image provider's Postgres, its readiness wait, one
+    // The row drives one container start of the image provider's Postgres, its readiness wait, one
     // psql and the stop. That wait gives up at 120 s (`readyMs`, e2e/harness-postgres.ts), and a
     // first row on a runner pulls the image too, which the `visual` job's runs have not timed
     // apart; 300 s holds both with room to spare. The three rows read 2.7, 3.4 and 3.4 s with the
