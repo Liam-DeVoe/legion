@@ -11,12 +11,14 @@ import {
   answerAsk,
   createIssueArtifact,
   createPriority,
+  editArtifact,
   getArtifactText,
   publishAgentStreamFrame,
   requestApproval,
 } from "./api";
 import {
   barAction,
+  blockId,
   composer,
   documentEditor,
   marginCard,
@@ -463,6 +465,45 @@ const DRIVERS: Partial<Record<DispatchWritingBox, Driver>> = {
       const answer = box.getByRole("textbox", { exact: true, name: CONTROL_LABELS.answer });
       await expect(answer).toBeFocused();
       await expectRow(page, answer, "issue-page-composer", "ask-answer");
+    },
+  },
+  // The new issue page's Change, on a waiting decision's own row of the outline
+  // (dispatch://INFRA-1196 R7, part G's `DecisionActions.tsx`), which a reader gets once their
+  // `issue.page` is `outline`. An agent's decision waits for the reader's review once it shapes a
+  // statement of the issue's spec (`inReviewList`), so the host's spec gains one and the decision
+  // cites it; its row then draws Keep and Change, the row's own key presses Change, and the form
+  // opens with the caret in its field.
+  "issue-page-decision-change": {
+    drive: async (page, world) => {
+      await editArtifact(world.spec, {
+        ops: [
+          {
+            after: "end",
+            markdown: ":::requirement{#r-store}\nStore each notice.\n:::",
+            op: "insert",
+          },
+        ],
+        summary: "One statement",
+      });
+      const heading = "## Store notices in a table";
+      const decisions = await createIssueArtifact(
+        world.host,
+        {
+          content: `${heading}\n\nShapes dispatch://${world.host}/spec#b-r-store.\n`,
+          name: "decisions.md",
+        },
+        { actor: { id: SESSION.session_id, kind: "session" }, as: "agent" }
+      );
+      const block = await blockId(decisions.artifact.id, heading);
+      await withIssuePage(page.context(), "alice");
+      await page.goto(`/issues/${world.host}`);
+      await expectIssuePageDrawn(page);
+      await focusRow(page, `${decisions.artifact.slug}#b-${block}`);
+      await page.keyboard.press("Shift+C");
+      const field = page.getByRole("textbox", { exact: true, name: CONTROL_LABELS.your_change });
+      await expect(field).toBeFocused();
+      await walkBox(field, world);
+      await expectRow(page, field, "issue-page-decision-change", "comment");
     },
   },
   "margin-comment-edit": {

@@ -38,6 +38,7 @@ export type DispatchWritingBox =
   | "ask-decline-note"
   | "ask-thread-reply"
   | "decisions-change"
+  | "issue-page-decision-change"
   | "create-issue-spec"
   | "approval-reason"
   | "broadcast"
@@ -537,6 +538,18 @@ const WRITING_BOXES: readonly Omit<DispatchWritingBoxRow, "hint">[] = [
     covered: true,
     delivers: true,
     files: ["packages/dispatch/web/src/features/issue/DecisionsPanel.tsx"],
+    issueRows: true,
+    reach: "Your change",
+    write: "comment",
+  },
+  // The new issue page's Change on a waiting decision's node (dispatch://INFRA-1196 R7, part G's
+  // `DecisionActions.tsx`): the same write as the Decisions panel's, a comment anchored to the
+  // decision it quotes, written from the decision's own row of the outline.
+  {
+    box: "issue-page-decision-change",
+    covered: true,
+    delivers: true,
+    files: ["packages/dispatch/web/src/features/issue-page/DecisionActions.tsx"],
     issueRows: true,
     reach: "Your change",
     write: "comment",

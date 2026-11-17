@@ -1664,9 +1664,38 @@ const NOT_STORED_TEXTS: readonly { file: string; written: string; holds: string 
     written: "live.text",
   },
   {
+    file: `${FEATURES}/inbox/AskCard.tsx`,
+    holds: "a badge's CSS classes: the text colour of the theme's tone, the dashboard's own",
+    written: "tone.text",
+  },
+  {
     file: `${FEATURES}/inbox/useInboxSelection.ts`,
     holds: "the server's own words for why it refused a snooze",
     written: "first.reason",
+  },
+  {
+    file: `${FEATURES}/issue-page/NodeRow.tsx`,
+    holds:
+      "a boolean: whether the reader picked the option, whose label is matched and drawn nowhere",
+    written: "picks.includes(option.label)",
+  },
+  {
+    file: `${FEATURES}/issue-page/contents-frame.tsx`,
+    holds: "a portal's container: `document.body`, the element the outline's sheet is drawn into",
+    written:
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: the call as the file writes it, its template literals included, which is what the walk compares
+      'createPortal( <div aria-label={CONTROL_LABELS.contents} aria-modal="true" className={`fixed inset-x-0 top-14 bottom-0 z-50 flex flex-col rounded-t-[14px] shadow-[0_-10px_30px_rgba(0,0,0,0.2)] ${pagePaneBg} ${pageInkText}`} data-testid="issue-outline-sheet" ref={dialog.containerRef} role="dialog" {...{ [NO_HOVER_PREVIEW_ATTRIBUTE]: "" }} > <div className="flex shrink-0 items-start gap-2 px-3.5 pt-2.5"> <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">{tools}</div> <button className={`rounded-[7px] border px-3 py-[3px] text-sm font-medium ${pageHairBorder} ${pagePaperBg} ${pageMutedText} ${focusVisibleRing}`} onClick={() => setOpen(false)} ref={closeButton} type="button" {...pageChrome} > {CONTROL_LABELS.close} </button> </div> <div className="flex min-h-0 flex-1 flex-col overflow-y-auto"> <ContentsChosen.Provider value={() => setOpen(false)}> <ContentsSlot {...slot} /> </ContentsChosen.Provider> </div> </div>, document.body )',
+  },
+  {
+    file: `${FEATURES}/issue-page/decision-review.ts`,
+    holds:
+      "a decision's words joined to the words of the decisions above it, to match a Change's quote against, drawn nowhere",
+    written: "words",
+  },
+  {
+    file: `${FEATURES}/issue/AssigneeControl.tsx`,
+    holds: "a badge's CSS classes: the text colour of the theme's tone, the dashboard's own",
+    written: "tone.text",
   },
   {
     file: `${FEATURES}/issue/DecisionsPanel.tsx`,
@@ -1674,9 +1703,19 @@ const NOT_STORED_TEXTS: readonly { file: string; written: string; holds: string 
     written: "current.text",
   },
   {
+    file: `${FEATURES}/issue/PriorityControl.tsx`,
+    holds: "a badge's CSS classes: the text colour of the theme's tone, the dashboard's own",
+    written: "tone.text",
+  },
+  {
     file: `${FEATURES}/issue/RelatedItems.tsx`,
     holds: "the server's own words for why no related-item check was made",
     written: "notMadeText(check.reason, title, check.searchQuery)",
+  },
+  {
+    file: `${FEATURES}/issue/RepoControl.tsx`,
+    holds: "a badge's CSS classes: the text colour of the theme's tone, the dashboard's own",
+    written: "tone.text",
   },
   {
     file: `${FEATURES}/issue/event-description.ts`,

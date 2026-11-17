@@ -326,6 +326,7 @@ export function NodeRow({
                 // A child issue's row is one line, as the prototype's `.kr` draws it: its title,
                 // then how it stands, what blocks it and who holds it, small and grey (ruling 5).
                 <p className="break-words">
+                  {/* The child's title: the reading list's `issue-page-child-title`. */}
                   <span {...authorText}>{node.text}</span>
                   <ChildIssueFacts child={node.child} tabStops={tabStops} />
                 </p>
@@ -767,10 +768,14 @@ export function NodeOptions({
               {picked || picks.includes(option.label) ? "●" : "○"}
             </span>
             <span className="min-w-0 break-words">
+              {/* The option's words as the asker wrote them: the reading list's
+                  `issue-page-ask-option`. */}
               <span {...authorText}>{option.label}</span>
               {body && option.description !== undefined ? (
                 <span className={`font-normal ${pageQuietText}`}>
                   <span {...pageChrome}> — </span>
+                  {/* The description as the asker wrote it: the reading list's
+                      `issue-page-ask-option`. */}
                   <span {...authorText}>{option.description}</span>
                 </span>
               ) : null}
@@ -962,6 +967,8 @@ export function AskAnswer({
               key={option}
               {...authorText}
             >
+              {/* Each option as the answer stored it: the reading list's
+                  `issue-page-answer-choice`. */}
               {option}
             </li>
           ))}
@@ -973,6 +980,7 @@ export function AskAnswer({
           data-answer-text=""
           {...authorText}
         >
+          {/* What they wrote, as stored: the reading list's `issue-page-answer-text`. */}
           {answer.text}
         </p>
       )}

@@ -349,6 +349,7 @@ function DrawnText({
           onRendered={link}
           referenceText=""
           source={source}
+          surface="issue-page-row-text"
           tree={tree}
         />
       </TextAskCard.Provider>
