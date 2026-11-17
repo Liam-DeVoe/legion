@@ -79,6 +79,13 @@ It carries:
   The jj wrapper adds one check, and only before a `jj git push`:
   that the git jj would run is that wrapper, by `PATH` and by jj's own `git.executable-path`, refusing in the shared check's own setup-error words where it is not.
   `legion leak-check` is the shell door to `packages/daemon/internal/leakguard`, and the engine the rules run through, gitleaks, is linked into the `legion` binary as a library with this repository's rule file (`private-names.toml`) embedded beside it, so no pod can meet an absent engine or an absent rule file.
+  Where `leak_guard.knives_registries` in `legion.yaml` names a knives registry ([Operator configuration](#operator-configuration)), a push to a repository GitHub reports public has a third pass, after the shared check and the rule file (`Guard.knives`, `internal/leakguard/knives.go`).
+  At every push it reads each row's file with the role's own gh, the first row as the registry and each later row as an overlay that adds forbidden terms to the registry's entries, and it refuses the push when a line or a path a pushed commit adds holds a forbidden term of an entry whose origin or release names the push's destination, matched as `knives audit` matches one (case aside, as a substring); a ref name, an identity and a message are not read, as knives reads none.
+  A registry it cannot read, or one that is not knives' TOML, refuses the push as a setup error, whatever the destination.
+  The refusal names the file, with any path component that holds a term written `<forbidden>`, the line and the term's number in its entry's list, and never the term.
+  The second and third passes read a merge from its files, not from git's combined diff, which is wrong from 33 parents and drops a line only the merge adds from 64:
+  a merge's own lines are the lines of a file that differs from every parent's that no parent's file holds, and its own paths are those no parent has (`mergeFiles`, `internal/leakguard/push.go`).
+  With no row the push has no third pass, and the capability report's `knives-push-gate` row is open ([The deployment's capability report](#the-deployments-capability-report)).
   The build's last step asserts that each wrapper is first on `PATH` with the real binary behind it and that the hook is root's and executable;
 
 - the shared public leak check those wrappers and that hook run, which is not in the image:
@@ -2755,7 +2762,7 @@ advertise_host: <optional: a stable Service name, e.g. legion-daemon-<project>.<
 worker_stream_port: <the port advertise_host or bind serves it on>
 daemon_url: http://<the address pods reach the daemon at>:<the daemon's own port>
 capabilities:                   # optional: the deployment capabilities decided by name, with the reason (The deployment's capability report, below); a gap is reported, never refused
-  decided: { secrets: "<reason>", model-fallback: "<reason>", resource-limits: "<reason>", pool-capacity: "<reason>" }
+  decided: { secrets: "<reason>", model-fallback: "<reason>", resource-limits: "<reason>", pool-capacity: "<reason>", knives-push-gate: "<reason>" }
 ```
 
 Every container of every Legion pod carries a cpu and memory limit and a request no greater than it, and an ephemeral-storage limit, its bound on the node's disk, over a smaller ephemeral-storage request.
@@ -3267,7 +3274,7 @@ Reversed, a daemon holding only the `legion-pane` seed connects as `legion-pane`
 ### The deployment's capability report
 
 `packages/daemon/internal/capabilities` is the one list of what a Legion worker can do (LEGION-578:
-every worker is a full agent), 21 rows, each checked at one site.
+every worker is a full agent), 22 rows, each checked at one site.
 The image rows (`eval-js`, `eval-python`, `browser`, `lsp`, `codegraph`, `skills`, `toolchain`, `claude-code`) are `legion probe-image`'s ([The image is probed before it publishes](#the-image-is-probed-before-it-publishes)), `present` once the probe passed;
 the live rows (`subagents`, `web-search`, `mcp`, `repository-extensions`, `dispatch-envoy-tools`, `github`) are measured by each claimed session while it runs, inside its own Oh My Pi, and reported on a `claims/ready` of its own, and the daemon renders each from what its live sessions reported (LEGION-663, INFRA-927;
 the paragraphs after the deployment rows);
@@ -3275,7 +3282,7 @@ the withheld rows carry the decision that keeps them from every worker (`network
 dispatch://LEGION-5, the pod is the boundary, except a workload a role starts where its deployment's cluster admits it and the Service fronting it ([Running a workload in the cluster from a role](#running-a-workload-in-the-cluster-from-a-role));
 `operator-setup`: dispatch://LEGION-200, Legion owns its dependencies;
 `production-identities`: dispatch://LEGION-551 and dispatch://LEGION-205);
-and the four deployment rows are the daemon's to measure from its own configuration and its own boot, since no image or pod can show them:
+and the five deployment rows are the daemon's to measure from its own configuration and its own boot, since no image or pod can show them:
 
 - `secrets`: `runtime.kubernetes.agent_secrets` is configured and the daemon's broker token login is `issued`.
   Under tmux it is open unless decided: no process is enrolled with the broker.
@@ -3305,9 +3312,14 @@ and the four deployment rows are the daemon's to measure from its own configurat
   The daemon measures it from the probe's own run (`bootprobe.ImageReport.CapacityWaits`), so `legion start --check-config` never prints it.
   Under tmux it is present: no probe pod runs.
 
+- `knives-push-gate`: `leak_guard.knives_registries` names a knives registry, so every push from a role is scanned for the knives forbidden list of the repository it pushes to ([Worker image](#worker-image), the leak guard).
+  Open, the detail reads `leak_guard.knives_registries names no knives registry, so a push from a role is not scanned for a knives forbidden list`.
+  The daemon measures it from the configuration alone, so `legion start --check-config` prints it and the boot logs it.
+  Under tmux it is open unless decided, whatever the rows name: a pane's push runs no leak guard, and the detail reads `the tmux runtime runs no push guard in a pane's git or jj, so a pane's push is not scanned for a knives forbidden list`.
+
 A deployment row is `present` when the deployment satisfies it, `decided` when `legion.yaml`'s `capabilities.decided.<name>: "<reason>"` records a decision on it (the report shows the reason in the gap's place;
 a decision on a satisfied row is moot and the row reads present), and `open` otherwise, carrying the line that records one.
-A name that is not one of the four is refused at load naming them; a blank reason too.
+A name that is not one of the five is refused at load naming them; a blank reason too.
 
 A live row is measured by each claimed session while it runs.
 The Legion extension measures the six inside Oh My Pi (`packages/pi-legion/src/capability-report.ts`) on the 5 s interval that session already runs, under the rule in `packages/pi-legion/src/capability-schedule.ts`: at a tick at which it is idle and no measurement of its own is running, first at the sixth tick for the architect and one tick later for each following role of `LEGION_ROLES` (the merger's is the eleventh, 55 s), so one pod's six roles start their attempts on different ticks;
@@ -6326,6 +6338,20 @@ each issue's pod (every role of it alike) and the image probe's.
   So the enrollment can stay live until the pod is replaced, at the latest when its issue closes, plus one lease (`BROKER_LEASE_SECONDS`).
   To end it at once, anyone signed in to Dispatch revokes the daemon's login on Dispatch's machine-login page (`/credentials/machine`), the row `legion-daemon on <namespace>/<account>` whose **Approved by** reads `No one:` and the daemon's ServiceAccount, which ends every session it enrolled;
   the daemon logs in again with its token under a new credential, which enrolls the pods it launches next, and a pod already running stays without secrets until it is replaced (`docs/site/src/content/docs/broker/guides/revoke-a-session.md`, "End a machine's login").
+
+- **`leak_guard.knives_registries`** names the knives registry files every role's push is scanned against ([Worker image](#worker-image), the leak guard's third pass).
+  Each row is a `repo` (`<owner>/<name>`), a `path` in it and a `ref`, a branch or tag:
+  the first row is the registry, and each later row an overlay that adds forbidden terms to entries the registry already has, as knives' `repos.local.toml` does.
+  The daemon tells every role it launches the rows, in their order, as `LEGION_KNIVES_REGISTRIES`, a JSON list:
+  every role of an issue pod and the controller it launches under `controller: daemon`, each through its generation's start command, so no pod is replaced.
+  The name is the runtime's own, so neither `pod.env` nor a launch may set it.
+  Each file is read at every push with the role's own gh, so every role's GitHub credential must read each repository the rows name, and a change to a file reaches the next push.
+  A change to the rows themselves reaches each role at its next launch: the rows are no part of a role's address record, so a daemon restarted with other rows relaunches nothing for them.
+  A row may name a private repository, so the rows never reach the `settings` of `legion state`.
+  Load refuses a repo that is no `<owner>/<name>`, a path with a leading `/` or a `..` component, an unknown or missing field, and two rows naming one file of one repository.
+  With no row, the default, a push is not scanned for a knives forbidden list, and the capability report's `knives-push-gate` row is open until the rows name a registry or `capabilities.decided.knives-push-gate` records a reason.
+  `legion controller start` reads no `legion.yaml`, so a controller the operator launches is told no registry, and its pushes have no third pass.
+  Under `runtime: tmux` no pane is told the rows, since a pane's push runs no leak guard (`docs/deployment.md`), and the row stays open.
 
 - **`provider_keys`** (top-level) maps each variable Oh My Pi reads to a key of the providers Secret, `legion-<project>-providers`, which the operator creates.
   Every pod mounts the keys `provider_keys` names and no other key of the Secret, each at a file named for its variable, and the shim exports each into Oh My Pi's environment, never its own.

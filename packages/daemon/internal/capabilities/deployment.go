@@ -50,6 +50,12 @@ type Deployment struct {
 	// pod; "" with no wait.
 	ProbeCapacityWaits  int
 	ProbeCapacityReason string
+	// KnivesRegistries is how many rows legion.yaml's leak_guard.knives_registries names: the
+	// knives registry and its overlays, which every role process of a Kubernetes deployment is told
+	// (leakguard.KnivesRegistriesVar) and every push of it is scanned against. Zero names none, and
+	// a push is then not scanned for a knives forbidden list. Under tmux it closes nothing: a pane's
+	// push runs no leak guard.
+	KnivesRegistries int
 	// Sessions is every session the daemon judges live — its claim ready, working or idle, and its
 	// report's incarnation its claim's current Locator's — each with its report of the live rows
 	// (LEGION-663). The daemon filters; Report renders a live row from them.
@@ -328,6 +334,22 @@ func (d Deployment) measure(name Name) (bool, Source, string) {
 			return false, SourceBoot, fmt.Sprintf("the image probe pod was Unschedulable %d time(s) at boot before it scheduled: %s; the pool had no room for its 250m / 1Gi reservation",
 				d.ProbeCapacityWaits, d.ProbeCapacityReason)
 		}
+	case KnivesPushGate:
+		switch {
+		case tmux:
+			return false, SourceConfiguration, "the tmux runtime runs no push guard in a pane's git or jj, so a pane's push is not scanned for a knives forbidden list"
+		case d.KnivesRegistries == 0:
+			return false, SourceConfiguration, "leak_guard.knives_registries names no knives registry, so a push from a role is not scanned for a knives forbidden list"
+		}
+		detail := "every push from a role is scanned for the knives forbidden lists of the registry leak_guard.knives_registries names"
+		switch overlays := d.KnivesRegistries - 1; overlays {
+		case 0:
+		case 1:
+			detail += " and the overlay after it"
+		default:
+			detail += fmt.Sprintf(" and the %d overlays after it", overlays)
+		}
+		return true, SourceConfiguration, detail
 	}
 	// Table names no other deployment row; TestEveryDeploymentRowIsMeasured holds it to this switch.
 	return false, "", "no measurement"

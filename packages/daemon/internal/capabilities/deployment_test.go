@@ -20,9 +20,11 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
-// satisfied is a kubernetes deployment that satisfies every deployment row, with its image probed.
+// satisfied is a kubernetes deployment that satisfies every deployment row, with its image probed
+// and a knives registry and its overlay named.
 var satisfied = Deployment{
 	Runtime: "kubernetes", Probed: true, AgentSecrets: true, SecretsLogin: "issued", ModelFallback: bootprobe.ModelFallbackOn,
+	KnivesRegistries: 2,
 }
 
 // states is a report by capability.
@@ -265,7 +267,7 @@ func TestLiveRowsRenderWhatTheSessionsReported(t *testing.T) {
 // deployment gaps; OpenFromConfiguration never names a live row, since no legion.yaml line
 // decides one, so `legion start --check-config` says nothing of them.
 func TestOpenNamesLiveRowsInTableOrder(t *testing.T) {
-	d := Deployment{Runtime: "tmux", Decided: map[Name]string{ModelFallback: "the host's own", ResourceLimits: "a pane has none"},
+	d := Deployment{Runtime: "tmux", Decided: map[Name]string{ModelFallback: "the host's own", ResourceLimits: "a pane has none", KnivesPushGate: "a pane's push runs no guard"},
 		Sessions: []Session{paneSession("LEGION-663", claim.RoleArchitect, measured, map[Name]string{Subagents: "task agents are disabled", GitHub: "gh: not logged in"})}}
 
 	if got, want := d.Open(), []Name{Subagents, GitHub, Secrets}; !slices.Equal(got, want) {
@@ -360,7 +362,8 @@ func TestImageRowsAreUncheckedUntilAProbeReports(t *testing.T) {
 // when that line is already written. A decision on a satisfied row is moot, so the row stays
 // present.
 func TestDeploymentRowsArePresentDecidedOrOpen(t *testing.T) {
-	decided := map[Name]string{Secrets: "dispatch://LEGION-205 enrolls pods later", ModelFallback: "one model", ResourceLimits: "one tree per node", PoolCapacity: "the pool is sized for the trees, and the probe waits"}
+	decided := map[Name]string{Secrets: "dispatch://LEGION-205 enrolls pods later", ModelFallback: "one model", ResourceLimits: "one tree per node", PoolCapacity: "the pool is sized for the trees, and the probe waits",
+		KnivesPushGate: "no role pushes to a fork"}
 	full := "probe pod legion-probe-legion-1d10089a0000 is Unschedulable: 0/83 nodes are available: 25 Insufficient cpu"
 	for _, tc := range []struct {
 		name       string
@@ -401,6 +404,15 @@ func TestDeploymentRowsArePresentDecidedOrOpen(t *testing.T) {
 			"the image probe pod was Unschedulable 2 time(s) at boot before it scheduled: " + full + "; the pool had no room for its 250m / 1Gi reservation"},
 		{"a decided capacity gap", Deployment{Runtime: "kubernetes", Probed: true, ProbeCapacityWaits: 1, ProbeCapacityReason: full, Decided: decided}, PoolCapacity, StatusDecided,
 			"the image probe pod was Unschedulable 1 time(s) at boot before it scheduled: " + full + "; the pool had no room for its 250m / 1Gi reservation"},
+
+		{"no knives registry under tmux", Deployment{Runtime: "tmux"}, KnivesPushGate, StatusOpen, "the tmux runtime runs no push guard in a pane's git or jj, so a pane's push is not scanned for a knives forbidden list"},
+		{"a knives registry under tmux, where no push runs the guard", Deployment{Runtime: "tmux", KnivesRegistries: 2}, KnivesPushGate, StatusOpen, "the tmux runtime runs no push guard in a pane's git or jj, so a pane's push is not scanned for a knives forbidden list"},
+		{"a decided knives gap under tmux", Deployment{Runtime: "tmux", KnivesRegistries: 2, Decided: decided}, KnivesPushGate, StatusDecided, "the tmux runtime runs no push guard in a pane's git or jj, so a pane's push is not scanned for a knives forbidden list"},
+		{"no knives registry under kubernetes", Deployment{Runtime: "kubernetes"}, KnivesPushGate, StatusOpen, "leak_guard.knives_registries names no knives registry, so a push from a role is not scanned for a knives forbidden list"},
+		{"a knives registry alone", Deployment{Runtime: "kubernetes", KnivesRegistries: 1}, KnivesPushGate, StatusPresent, "every push from a role is scanned for the knives forbidden lists of the registry leak_guard.knives_registries names"},
+		{"a knives registry and its overlay", satisfied, KnivesPushGate, StatusPresent, "every push from a role is scanned for the knives forbidden lists of the registry leak_guard.knives_registries names and the overlay after it"},
+		{"a knives registry and two overlays", Deployment{Runtime: "kubernetes", KnivesRegistries: 3}, KnivesPushGate, StatusPresent, "every push from a role is scanned for the knives forbidden lists of the registry leak_guard.knives_registries names and the 2 overlays after it"},
+		{"a decided knives gap", Deployment{Runtime: "kubernetes", Decided: decided}, KnivesPushGate, StatusDecided, "leak_guard.knives_registries names no knives registry, so a push from a role is not scanned for a knives forbidden list"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := states(tc.deployment.Report())[tc.row]
@@ -425,7 +437,7 @@ func TestDeploymentRowsArePresentDecidedOrOpen(t *testing.T) {
 // the gap and the line that records a decision, as attributes too — and nothing for the rest.
 func TestOpenAndLogNameTheGapsAlone(t *testing.T) {
 	d := Deployment{Runtime: "kubernetes", Probed: true, ModelFallback: bootprobe.ModelFallbackOn, Decided: map[Name]string{Secrets: "dispatch://LEGION-205 enrolls pods later"},
-		UnreservedPods: []Pod{PodIssue}}
+		UnreservedPods: []Pod{PodIssue}, KnivesRegistries: 1}
 
 	if got, want := d.Open(), []Name{ResourceLimits}; !slices.Equal(got, want) {
 		t.Errorf("Open() = %v, want %v", got, want)
@@ -449,15 +461,16 @@ func TestOpenAndLogNameTheGapsAlone(t *testing.T) {
 		}
 	}
 
-	three := Deployment{Runtime: "tmux"}
-	if got, want := three.Open(), []Name{Secrets, ModelFallback, ResourceLimits}; !slices.Equal(got, want) {
+	four := Deployment{Runtime: "tmux"}
+	if got, want := four.Open(), []Name{Secrets, ModelFallback, ResourceLimits, KnivesPushGate}; !slices.Equal(got, want) {
 		t.Errorf("Open() under an undecided tmux deployment = %v, want %v in Table order", got, want)
 	}
 }
 
 // OpenFromConfiguration is what `legion start --check-config` prints: the open rows the file alone
 // decides, each as Report renders it — secrets where no broker is configured, resource-limits where
-// a pod lacks a reservation — and never a configured broker's secrets row, whose login boot
+// a pod lacks a reservation, knives-push-gate where leak_guard.knives_registries names no registry
+// and under tmux whatever it names — and never a configured broker's secrets row, whose login boot
 // measures, nor model fallback, which the probe or the plugin gate reads, nor pool capacity, which
 // the probe's run measures.
 func TestOpenFromConfigurationNamesTheGapsTheFileAloneDecides(t *testing.T) {
@@ -467,17 +480,20 @@ func TestOpenFromConfigurationNamesTheGapsTheFileAloneDecides(t *testing.T) {
 		deployment Deployment
 		want       []Name
 	}{
-		{"no broker, a pod lacking", Deployment{Runtime: "kubernetes", UnreservedPods: lacking}, []Name{Secrets, ResourceLimits}},
-		{"no broker, every pod reserved", Deployment{Runtime: "kubernetes"}, []Name{Secrets}},
-		{"a broker whose login is not issued, a pod lacking", Deployment{Runtime: "kubernetes", AgentSecrets: true, UnreservedPods: lacking}, []Name{ResourceLimits}},
-		{"a broker whose login is not issued, every pod reserved", Deployment{Runtime: "kubernetes", AgentSecrets: true}, nil},
-		{"a broker login failed", Deployment{Runtime: "kubernetes", AgentSecrets: true, SecretsLogin: "failed"}, nil},
-		{"fallback off alone", Deployment{Runtime: "kubernetes", AgentSecrets: true, ModelFallback: bootprobe.ModelFallbackOff}, nil},
-		{"fallback unread alone", Deployment{Runtime: "kubernetes", AgentSecrets: true, ModelFallback: bootprobe.ModelFallbackUnread}, nil},
-		{"fallback never read alone", Deployment{Runtime: "kubernetes", AgentSecrets: true}, nil},
-		{"a probe that waited on capacity alone", Deployment{Runtime: "kubernetes", AgentSecrets: true, Probed: true, ProbeCapacityWaits: 1, ProbeCapacityReason: "the pool is full"}, nil},
-		{"tmux", Deployment{Runtime: "tmux"}, []Name{Secrets, ResourceLimits}},
-		{"tmux, both decided", Deployment{Runtime: "tmux", Decided: map[Name]string{Secrets: "later", ResourceLimits: "one tree per node"}}, nil},
+		{"no broker, a pod lacking", Deployment{Runtime: "kubernetes", UnreservedPods: lacking, KnivesRegistries: 1}, []Name{Secrets, ResourceLimits}},
+		{"no broker, every pod reserved", Deployment{Runtime: "kubernetes", KnivesRegistries: 1}, []Name{Secrets}},
+		{"a broker whose login is not issued, a pod lacking", Deployment{Runtime: "kubernetes", AgentSecrets: true, UnreservedPods: lacking, KnivesRegistries: 1}, []Name{ResourceLimits}},
+		{"a broker whose login is not issued, every pod reserved", Deployment{Runtime: "kubernetes", AgentSecrets: true, KnivesRegistries: 1}, nil},
+		{"a broker login failed", Deployment{Runtime: "kubernetes", AgentSecrets: true, SecretsLogin: "failed", KnivesRegistries: 1}, nil},
+		{"fallback off alone", Deployment{Runtime: "kubernetes", AgentSecrets: true, ModelFallback: bootprobe.ModelFallbackOff, KnivesRegistries: 1}, nil},
+		{"fallback unread alone", Deployment{Runtime: "kubernetes", AgentSecrets: true, ModelFallback: bootprobe.ModelFallbackUnread, KnivesRegistries: 1}, nil},
+		{"fallback never read alone", Deployment{Runtime: "kubernetes", AgentSecrets: true, KnivesRegistries: 1}, nil},
+		{"a probe that waited on capacity alone", Deployment{Runtime: "kubernetes", AgentSecrets: true, Probed: true, ProbeCapacityWaits: 1, ProbeCapacityReason: "the pool is full", KnivesRegistries: 1}, nil},
+		{"no knives registry alone", Deployment{Runtime: "kubernetes", AgentSecrets: true}, []Name{KnivesPushGate}},
+		{"no knives registry, no broker", Deployment{Runtime: "kubernetes"}, []Name{Secrets, KnivesPushGate}},
+		{"tmux", Deployment{Runtime: "tmux"}, []Name{Secrets, ResourceLimits, KnivesPushGate}},
+		{"tmux, a knives registry named, which no pane's push reads", Deployment{Runtime: "tmux", KnivesRegistries: 2}, []Name{Secrets, ResourceLimits, KnivesPushGate}},
+		{"tmux, all three decided", Deployment{Runtime: "tmux", Decided: map[Name]string{Secrets: "later", ResourceLimits: "one tree per node", KnivesPushGate: "no role pushes to a fork"}}, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := tc.deployment.OpenFromConfiguration()

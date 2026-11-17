@@ -397,3 +397,46 @@ func TestAnOctopusMergesOwnLinesAreReadForKnivesTerms(t *testing.T) {
 		})
 	}
 }
+
+// The knives pass reads a commit's added lines and added paths alone, as knives does, and never a
+// ref name, an identity or a message. Every branch a Legion pod pushes to a fork is named
+// legion/<KEY>, and every commit a pod makes carries the Legion-Role and Omp-Session trailers,
+// so a pass over either would refuse every push a tree makes to a fork whose entry lists the
+// word, as the oh-my-pi fork's entry does. The same word on an added line is refused, so the
+// entry's term is in force in both halves.
+func TestAKnivesTermInARefNameOrAMessageIsNotRead(t *testing.T) {
+	const registry = "[repos.invented-repo]\norigin = \"https://github.com/invented-org/invented-repo\"\nforbidden = [\"Legion\"]\n"
+	row := knivesServed{Repo: "invented-org/knives-registry", Path: "repos.toml", Ref: "main", file: registry}
+	for _, tc := range []struct {
+		name, line string
+		want       []string
+	}{
+		{name: "a clean line passes", line: "a line of ordinary prose\n"},
+		{name: "the term on a line is refused", line: "a line about the legion build\n", want: []string{"notes.md:1: forbidden term 1"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture, repo, _, _ := knivesCommit(t, map[string]string{"notes.md": tc.line})
+			fixture.Run(repo, "git", "commit", "--amend", "--quiet", "-m",
+				"docs: a note\n\nLegion-Role: implementer\nOmp-Session: 01a1d194-28c4-75ed-8af2-76ddf59101e7")
+			head := fixture.Run(repo, "git", "rev-parse", "HEAD")
+			path, listed, _ := servingKnives(t, row)
+			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public, path, listed)
+			ref := "refs/heads/legion/INVENT-1"
+			err := guard.Push(bound(t), PushRequest{
+				Dir:     repo,
+				Remote:  "origin",
+				URL:     knivesOrigin,
+				Updates: []Update{{LocalRef: ref, LocalSHA: head, RemoteRef: ref, RemoteSHA: noSHA}},
+			})
+			if tc.want == nil {
+				if err != nil {
+					t.Fatalf("a push of legion/INVENT-1 whose message carries the trailers: %v", err)
+				}
+				return
+			}
+			if refused := knivesRefusal(t, err); !slices.Equal(refused.Lines, tc.want) {
+				t.Errorf("the report is %q, want %q", refused.Lines, tc.want)
+			}
+		})
+	}
+}

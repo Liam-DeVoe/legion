@@ -1,0 +1,6 @@
+kind: Fixed
+body: |-
+  The leak guard reads a pushed merge from its files rather than from git's combined diff, which
+  is wrong from 33 parents and leaves out a line only the merge adds from 64 parents, so a wide
+  merge's own lines were misread or missed. A merge's own lines are now the lines of each file that
+  differs from every parent's that no parent's file holds, and its own paths those no parent has.

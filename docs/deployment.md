@@ -231,6 +231,11 @@ run on the machine the daemon runs on.
 A daemon that resolves none logs one line per launch naming the pane, tells that pane no
 `PUBLIC_LEAK_CHECK`, and every write from it to a public repository is then refused with a setup
 error naming the missing check.
+`leak_guard.knives_registries` scans nothing on a shared box. The knives pass is a pass of a push,
+and a pane's push runs no leak guard (above), so no pane is told the rows a pod's roles are told as
+`LEGION_KNIVES_REGISTRIES` ([Operator configuration](kubernetes.md#operator-configuration)), and
+the capability report's `knives-push-gate` row stays open under tmux whatever the rows name, until
+`capabilities.decided.knives-push-gate` records a reason.
 
 The real gh is a compiled program, so when the first `gh` on the daemon's `PATH`
 is a script (a `gh` wrapper of the box's own, as the devbox's login `PATH` heads with, or asdf's

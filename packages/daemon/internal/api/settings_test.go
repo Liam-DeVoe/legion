@@ -215,6 +215,11 @@ var settingsExcluded = map[string]string{
 	"Hook.Prompt":                     "the words a hook puts in front of its roles, which the deployment writes for its own agents and no pod needs to read from a route that authenticates nobody; `hooks[].prompt_file` carries the path of the file the other form holds them in, as `instructions` carries a path and never its text",
 	"Variant.ConfigFilesField":        "derived: the key an operator wrote the arm's `config_files` under, built by config.Project.ExperimentsDeclared from the project key and the names beside it, which the settings already carry",
 	"Variant.MemoryBlock":             "derived: whether the arm is the `memory` block's rather than the `experiments` key's, set by config.Project.ExperimentsDeclared, which the settings already tell by carrying the block under `memory` and the key under `experiments`",
+	"Config.LeakGuard":                "leak_guard: a knives registry row can name a private repository, and the state is served to callers that may not read it (GET /legion/v1/state authenticates nobody)",
+	"LeakGuard.KnivesRegistries":      "leak_guard.knives_registries: a row can name a private repository, and the state is served to callers that may not read it",
+	"KnivesRegistry.Repo":             "leak_guard.knives_registries[].repo: can name a private repository, which a caller of the state may not read",
+	"KnivesRegistry.Path":             "leak_guard.knives_registries[].path: a file of a repository that can be private",
+	"KnivesRegistry.Ref":              "leak_guard.knives_registries[].ref: a branch or tag of a repository that can be private",
 }
 
 // Every exported field of every struct the walk reaches (settingsConfigTypes) is named in exactly
@@ -583,6 +588,37 @@ func TestSettingsOfLeavesOutTheCommitIssueTrailerRepositories(t *testing.T) {
 	}
 	if bytes.Contains(encoded, []byte(stamped)) {
 		t.Errorf("settings carry the configured repository: %s", encoded)
+	}
+}
+
+// leak_guard reaches no `settings`, at any depth: a knives registry row can name a private
+// repository, and the route that carries the block authenticates nobody (settingsExcluded). The
+// census above only forces the choice; this pins it.
+func TestSettingsOfLeavesOutTheKnivesRegistries(t *testing.T) {
+	const private = "acme/private-registry"
+	cfg := loadSettingsFile(t, settingsFixtureFile+"leak_guard:\n  knives_registries:\n"+
+		"    - {repo: sjawhar/dotfiles, path: knives/repos.toml, ref: main}\n"+
+		"    - {repo: "+private+", path: knives/repos.local.toml, ref: main}\n")
+	if got := cfg.LeakGuard.KnivesRegistries; len(got) != 2 || got[1].Repo != private {
+		t.Fatalf("the fixture carries %v, want two rows, the second in %s: the assertions below would prove nothing", got, private)
+	}
+	encoded, err := json.Marshal(SettingsOf(cfg))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var document any
+	if err := json.Unmarshal(encoded, &document); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	for _, key := range everyKey(document, "settings") {
+		if strings.Contains(key, "leak_guard") || strings.Contains(key, "knives") {
+			t.Errorf("settings carry the key %s: %s", key, encoded)
+		}
+	}
+	for _, word := range []string{private, "repos.local.toml"} {
+		if bytes.Contains(encoded, []byte(word)) {
+			t.Errorf("settings carry %s: %s", word, encoded)
+		}
 	}
 }
 

@@ -1439,6 +1439,7 @@ func TestRuntimeOwnedIsWhatTheWorkerContainerIsToldByTheRuntime(t *testing.T) {
 	opts.DispatchURL, opts.DispatchToken = "https://dispatch.internal", "dispatch-bearer"
 	opts.AgentSecrets = &AgentSecrets{URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpiry: time.Hour}
 	opts.TestPostgres = true
+	opts.KnivesRegistries = testKnivesRegistries
 	r, err := configure(opts)
 	if err != nil {
 		t.Fatal(err)
@@ -1500,6 +1501,49 @@ func TestAPodIsToldTheIssueKeyItStampsItsCommitsWith(t *testing.T) {
 	} {
 		if value, set := envOf(workerOf(t, r, spec))["LEGION_ISSUE_TRAILER"]; set {
 			t.Errorf("%s is told LEGION_ISSUE_TRAILER=%q, want no such variable", name, value)
+		}
+	}
+}
+
+// testKnivesRegistries is a leak_guard.knives_registries value as the daemon writes it
+// (config.LeakGuard.KnivesRegistriesValue): the registry, then its overlay.
+const testKnivesRegistries = `[{"repo":"sjawhar/dotfiles","path":"knives/repos.toml","ref":"main"},` +
+	`{"repo":"acme/private-registry","path":"knives/repos.local.toml","ref":"main"}]`
+
+// Every role this runtime launches — a phase worker, a Claude Code worker and the controller — is
+// told leak_guard.knives_registries as leakguard.KnivesRegistriesVar, the rows in the order the
+// daemon wrote them, so the guard of every push it makes reads them. The value rides the
+// generation's start command and not the pod's template, so a changed list reaches the next launch
+// and replaces no pod. The name is the runtime's own, so no spec or operator's pod env sets it; and
+// a deployment that names no registry tells no role the variable at all, not even empty.
+func TestEveryRoleIsToldTheKnivesRegistries(t *testing.T) {
+	opts := goldenOptions()
+	opts.KnivesRegistries = testKnivesRegistries
+	named, err := configure(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	none, err := configure(goldenOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !runtimeOwned[leakguard.KnivesRegistriesVar] {
+		t.Errorf("runtimeOwned[%s] = false, want true: the runtime sets it on every role", leakguard.KnivesRegistriesVar)
+	}
+	for name, spec := range map[string]runtime.SpawnSpec{
+		"a phase worker":       workerSpec(t),
+		"a Claude Code worker": claudeWorkerSpec(t),
+		"the controller":       controllerSpec(t),
+	} {
+		if got := envOf(workerOf(t, named, spec))[leakguard.KnivesRegistriesVar]; got != testKnivesRegistries {
+			t.Errorf("%s is told %s=%q, want %q", name, leakguard.KnivesRegistriesVar, got, testKnivesRegistries)
+		}
+		l := launchOf(t, named, spec)
+		if value, set := envOf(containerNamed(t, named.podTemplate(l).Spec, l.kind.container()))[leakguard.KnivesRegistriesVar]; set {
+			t.Errorf("%s's pod template carries %s=%q, want it in the start command alone", name, leakguard.KnivesRegistriesVar, value)
+		}
+		if value, set := envOf(workerOf(t, none, spec))[leakguard.KnivesRegistriesVar]; set {
+			t.Errorf("with no registry %s is told %s=%q, want no such variable", name, leakguard.KnivesRegistriesVar, value)
 		}
 	}
 }
@@ -2040,10 +2084,12 @@ func TestLegionsOwnNamesAreWhatItsPodsCarry(t *testing.T) {
 	opts.DispatchURL, opts.DispatchToken = "https://dispatch.internal", "dispatch-bearer"
 	opts.ProviderKeys = map[string]string{"ANTHROPIC_API_KEY": "anthropic"}
 	opts.AgentSecrets = &AgentSecrets{URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpiry: time.Hour}
-	// With every optional piece configured: the pod's own test database is one (testPGVolume), and
-	// the skills marketplace is another (skillsVolume, skillsTempVolume and SkillsDir).
+	// With every optional piece configured: the pod's own test database is one (testPGVolume), the
+	// skills marketplace is another (skillsVolume, skillsTempVolume and SkillsDir), and the knives
+	// registries a third (leakguard.KnivesRegistriesVar).
 	opts.TestPostgres = true
 	opts.SkillsRepository = testSkillsRepository(t)
+	opts.KnivesRegistries = testKnivesRegistries
 	r, err := configure(opts)
 	if err != nil {
 		t.Fatal(err)

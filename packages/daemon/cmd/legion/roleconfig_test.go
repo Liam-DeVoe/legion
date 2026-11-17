@@ -58,7 +58,7 @@ func TestStartCheckConfigRefusesARoleOverlayNoPodMountHolds(t *testing.T) {
 	config := kubernetesCheckConfig(t, pod+"role_config_files: {implementer: [/etc/legion-operator/fallback.yml], merger: [/etc/legion-operator/fallback.yml]}\n")
 	var out, errb bytes.Buffer
 	code := run(context.Background(), []string{"legion", "start", "--check-config", "--config", config}, &out, &errb)
-	if want := demoCheckConfigOK + secretsGap + defaultCacheLine + pluginsGap; code != 0 || out.String() != want || errb.Len() != 0 {
+	if want := demoCheckConfigOK + secretsGap + knivesGap + defaultCacheLine + pluginsGap; code != 0 || out.String() != want || errb.Len() != 0 {
 		t.Fatalf("a mounted overlay: exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
 	}
 

@@ -25,13 +25,13 @@ var bursting = config.Reservation{CPU: "1", CPURequest: "1000m", Memory: "32Gi",
 // against 1Gi): a string compare would read it Burstable, a quantity compare reads it Guaranteed.
 var spelledApart = config.Reservation{CPU: "1", CPURequest: "1000m", Memory: "1Gi", MemoryRequest: "1024Mi"}
 
-// Deployment reads the configuration alone: the decisions, the runtime, whether a broker is
-// configured, the pods that reserve no CPU and memory — a pod lacking either quantity counts, the
-// issue pod first, and the controller's pod only under controller: daemon (a Kubernetes block the
-// loader settled holds both, so only a value built by hand names one) — and the pods that request
-// less than their limit, the controller's pod among them only under controller: daemon. A tmux
-// configuration names no pod: the tmux runtime sets no limits at all, which the report says in its
-// own words.
+// Deployment reads the configuration alone: the decisions, the runtime, how many knives registries
+// leak_guard.knives_registries names, whether a broker is configured, the pods that reserve no CPU
+// and memory — a pod lacking either quantity counts, the issue pod first, and the controller's pod
+// only under controller: daemon (a Kubernetes block the loader settled holds both, so only a value
+// built by hand names one) — and the pods that request less than their limit, the controller's pod
+// among them only under controller: daemon. A tmux configuration names no pod: the tmux runtime
+// sets no limits at all, which the report says in its own words.
 func TestDeploymentReadsTheConfigurationAlone(t *testing.T) {
 	decided := map[capabilities.Name]string{capabilities.Secrets: "dispatch://LEGION-205 enrolls pods later"}
 	kubernetes := func(resources config.PodResources, agentSecrets *config.AgentSecretsConfig, launch config.ControllerLaunch) config.Config {
@@ -48,6 +48,8 @@ func TestDeploymentReadsTheConfigurationAlone(t *testing.T) {
 	}{
 		{"tmux", config.Config{Runtime: config.Runtime{Name: "tmux"}, Capabilities: config.Capabilities{Decided: decided}},
 			capabilities.Deployment{Runtime: "tmux", Decided: decided}},
+		{"tmux, a knives registry and its overlay", config.Config{Runtime: config.Runtime{Name: "tmux"}, LeakGuard: testLeakGuard},
+			capabilities.Deployment{Runtime: "tmux", KnivesRegistries: 2}},
 		{"nothing reserved, no broker", kubernetes(config.PodResources{}, nil, config.ControllerLaunchOperator),
 			capabilities.Deployment{Runtime: "kubernetes", Decided: decided, UnreservedPods: []capabilities.Pod{capabilities.PodIssue}}},
 		{"the issue pod reserved, a broker configured", kubernetes(config.PodResources{Issue: reserved},
@@ -59,6 +61,11 @@ func TestDeploymentReadsTheConfigurationAlone(t *testing.T) {
 			capabilities.Deployment{Runtime: "kubernetes", Decided: decided, BurstablePods: []capabilities.Pod{capabilities.PodIssue, capabilities.PodController}}},
 		{"a Burstable controller the daemon does not launch", kubernetes(config.PodResources{Issue: reserved, Controller: bursting}, nil, config.ControllerLaunchOperator),
 			capabilities.Deployment{Runtime: "kubernetes", Decided: decided}},
+		{"kubernetes, a knives registry and its overlay", func() config.Config {
+			cfg := kubernetes(config.PodResources{Issue: reserved}, nil, config.ControllerLaunchOperator)
+			cfg.LeakGuard = testLeakGuard
+			return cfg
+		}(), capabilities.Deployment{Runtime: "kubernetes", Decided: decided, KnivesRegistries: 2}},
 		{"a request spelled apart from its equal limit", kubernetes(config.PodResources{Issue: spelledApart, Controller: spelledApart}, nil, config.ControllerLaunchDaemon),
 			capabilities.Deployment{Runtime: "kubernetes", Decided: decided}},
 	} {
@@ -72,25 +79,28 @@ func TestDeploymentReadsTheConfigurationAlone(t *testing.T) {
 
 // reportCapabilities logs the open rows once at boot and again only when the set changes, and
 // answers the names each time: the tick carries them while the log stays quiet. Under tmux every
-// deployment row starts open; the model-fallback read closing one changes the set.
+// deployment row but pool-capacity starts open, knives-push-gate whatever knives registry the file
+// names, since a pane's push runs no leak guard; the model-fallback read closing one changes the
+// set.
 func TestReportCapabilitiesLogsAtBootAndOnChangeAlone(t *testing.T) {
 	var logged bytes.Buffer
 	s := &supervision{
-		cfg:         config.Config{Runtime: config.Runtime{Name: "tmux"}},
+		cfg:         config.Config{Runtime: config.Runtime{Name: "tmux"}, LeakGuard: testLeakGuard},
 		log:         slog.New(slog.NewTextHandler(&logged, nil)),
 		refreshGate: supervise.NewRefreshGate(0),
 	}
 	warnings := func() int { return strings.Count(logged.String(), "level=WARN") }
 
-	if got, want := s.reportCapabilities(), []string{"secrets", "model-fallback", "resource-limits"}; !slices.Equal(got, want) {
+	if got, want := s.reportCapabilities(), []string{"secrets", "model-fallback", "resource-limits", "knives-push-gate"}; !slices.Equal(got, want) {
 		t.Fatalf("reportCapabilities at boot = %v, want %v", got, want)
 	}
-	if warnings() != 3 {
-		t.Fatalf("boot logged %d warnings, want one per open row (3):\n%s", warnings(), logged.String())
+	if warnings() != 4 {
+		t.Fatalf("boot logged %d warnings, want one per open row (4):\n%s", warnings(), logged.String())
 	}
 	for _, want := range []string{
 		`msg="capability secrets is open: the tmux runtime enrolls no process with the secrets broker; to record a decision, add to legion.yaml: capabilities.decided.secrets: \"<reason>\""`,
 		`configLine="capabilities.decided.model-fallback: \"<reason>\""`,
+		`msg="capability knives-push-gate is open: the tmux runtime runs no push guard in a pane's git or jj, so a pane's push is not scanned for a knives forbidden list; to record a decision, add to legion.yaml: capabilities.decided.knives-push-gate: \"<reason>\""`,
 	} {
 		if !strings.Contains(logged.String(), want) {
 			t.Errorf("the boot report lacks %s:\n%s", want, logged.String())
@@ -98,16 +108,16 @@ func TestReportCapabilitiesLogsAtBootAndOnChangeAlone(t *testing.T) {
 	}
 
 	s.reportCapabilities()
-	if warnings() != 3 {
+	if warnings() != 4 {
 		t.Fatalf("an unchanged set logged again (%d warnings):\n%s", warnings(), logged.String())
 	}
 
 	s.imageReport.ModelFallback = "on"
-	if got, want := s.reportCapabilities(), []string{"secrets", "resource-limits"}; !slices.Equal(got, want) {
+	if got, want := s.reportCapabilities(), []string{"secrets", "resource-limits", "knives-push-gate"}; !slices.Equal(got, want) {
 		t.Fatalf("reportCapabilities after the read = %v, want %v", got, want)
 	}
-	if warnings() != 5 {
-		t.Fatalf("the changed set logged %d warnings in all, want 3 then 2 (5):\n%s", warnings(), logged.String())
+	if warnings() != 7 {
+		t.Fatalf("the changed set logged %d warnings in all, want 4 then 3 (7):\n%s", warnings(), logged.String())
 	}
 	if strings.Count(logged.String(), "capability model-fallback is open") != 1 {
 		t.Fatalf("model-fallback was logged after it closed:\n%s", logged.String())
@@ -123,6 +133,7 @@ func TestReportCapabilitiesCarriesTheProbesCapacityWaits(t *testing.T) {
 	cfg := config.Config{
 		Runtime:      config.Runtime{Name: "kubernetes", Kubernetes: &config.Kubernetes{Resources: config.DefaultResources()}},
 		Capabilities: config.Capabilities{Decided: decided},
+		LeakGuard:    testLeakGuard,
 	}
 	var logged bytes.Buffer
 	s := &supervision{cfg: cfg, log: slog.New(slog.NewTextHandler(&logged, nil)), probed: true,
