@@ -13,7 +13,7 @@ import {
   useSearchParams,
 } from "react-router-dom";
 
-import { api } from "../../../api/client";
+import { api, type WriteRequest } from "../../../api/client";
 import { artifactBlocksQuery, issueCoverageQuery, issueResultsQuery } from "../../../api/queries";
 import type { CheckBlock, IssueCheckResults, IssueDetails } from "../../../api/types";
 import { MarginProvider } from "../../margin/margin-context";
@@ -2810,6 +2810,71 @@ test("a proposed step carries Settle", async () => {
     expect(rowOf(view.container, T2)?.querySelector('[data-row-act="settle"]')).toBeNull();
     expect(view.container.querySelectorAll('[data-row-act="settle"]')).toHaveLength(0);
   } finally {
+    view.unmount();
+  }
+});
+
+// A lens, a finding, a risk or a constraint the tree read answers proposed is a proposed row like
+// any other (R2, R4): the state route marks any node the store holds proposed, these four kinds
+// among them, and the settle route takes such a node under the issue it stands under by its
+// whole address (`dispatch://lens/<uuid>`, which names no issue of its own). So the focused row
+// offers Settle, and a press sends it under the page's issue.
+test("a proposed lens, finding, risk or constraint carries Settle, sent under the page's issue", async () => {
+  readWide();
+  const user = userEvent.setup();
+  const LENS = "lens/0b8f6e2a-3c1d-4e5f-8a9b-0c1d2e3f4a5b";
+  const RISK = "risk/1c9a7f3b-4d2e-4f60-9bac-1d2e3f4a5b6c";
+  const CONSTRAINT = "constraint/2dab804c-5e3f-4071-acbd-2e3f4a5b6c7d";
+  const FINDING = `${LENS}#b-f1`;
+  const view = renderTree(
+    stamped(
+      node(KEY, "issue", [
+        node(LENS, "lens", [node(FINDING, "finding", [], { reference: `dispatch://${FINDING}` })], {
+          reference: `dispatch://${LENS}`,
+        }),
+        node(RISK, "risk", [], { reference: `dispatch://${RISK}` }),
+        node(CONSTRAINT, "constraint", [], { reference: `dispatch://${CONSTRAINT}` }),
+      ]),
+      {
+        [CONSTRAINT]: { life: "proposed" },
+        [FINDING]: { life: "proposed" },
+        [LENS]: { life: "proposed" },
+        [RISK]: { life: "proposed" },
+      }
+    )
+  );
+  const sent: WriteRequest[] = [];
+  const send = spyOn(api, "send").mockImplementation((async (request: WriteRequest) => {
+    sent.push(request);
+    return { node: {}, previous: "proposed" };
+  }) as typeof api.send);
+  try {
+    for (const id of [LENS, FINDING, RISK, CONSTRAINT]) {
+      await waitFor(() => expect(rowOf(view.container, id), `${id} is a row`).not.toBeNull());
+      act(() => rowOf(view.container, id)?.focus());
+      await waitFor(() =>
+        expect(rowOf(view.container, id)?.querySelector("[data-row-acts]"), id).not.toBeNull()
+      );
+      expect(
+        rowOf(view.container, id)?.querySelector('[data-row-act="settle"]'),
+        `the focused proposed ${id} offers Settle`
+      ).not.toBeNull();
+    }
+    act(() => rowOf(view.container, LENS)?.focus());
+    const settle = await waitFor(() => {
+      const found = rowOf(view.container, LENS)?.querySelector<HTMLElement>(
+        '[data-row-act="settle"]'
+      );
+      expect(found, "the focused proposed lens offers Settle").toBeTruthy();
+      return found as HTMLElement;
+    });
+    await user.click(settle);
+    await waitFor(() => expect(sent).toHaveLength(1));
+    expect(sent[0]?.path).toBe(
+      `/api/v1/issues/${KEY}/nodes/${encodeURIComponent(`dispatch://${LENS}`)}/settle`
+    );
+  } finally {
+    send.mockRestore();
     view.unmount();
   }
 });
