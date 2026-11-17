@@ -136,6 +136,28 @@ test("the Steps tab draws each task's runs as a table, a running run as running"
   }
 });
 
+// "step 1" is one phrase. A narrow Result column (a phone) wraps "stopped, returned to step 1"
+// between its words, and the last break must not fall inside the phrase: at 390 px it left the
+// number alone on the last line.
+test("the Steps tab keeps the step a run returned to whole, with its number", async () => {
+  const tab = renderTab(async () => ({
+    issue: "CORE-1",
+    tasks: [
+      {
+        steps: [record({ id: "docs-1", result: "stopped", returned_to: 1, step: 1 })],
+        task: "docs",
+      },
+    ],
+  }));
+  try {
+    const table = await screen.findByRole("table", { name: "Steps of task docs" });
+    expect(bodyRows(table)[0]?.[8]).toBe("stopped, returned to step 1");
+    expect(within(table).getByText("step 1").className).toContain("whitespace-nowrap");
+  } finally {
+    tab.restore();
+  }
+});
+
 // An issue Legion never ran - or ran before the release that records steps - has no task.
 test("the Steps tab says so when no step of the issue has run in Legion", async () => {
   const tab = renderTab(async () => ({ issue: "CORE-1", tasks: [] }));
