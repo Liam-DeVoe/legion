@@ -321,8 +321,8 @@ func TestAWriteThatMakesANodeNamesItsIdentity(t *testing.T) {
 			if !errors.Is(err, ErrStepInput) {
 				t.Fatalf("a first write with no %s answered %v, want %v", name, err, ErrStepInput)
 			}
-			if !strings.Contains(err.Error(), name) {
-				t.Errorf("the refusal %q does not name the missing %s", err, name)
+			if !strings.Contains(err.Error(), "does not name its "+name+":") {
+				t.Errorf("the refusal %q does not name the missing %s alone", err, name)
 			}
 			if nodes := countNodes(t, pool, id); nodes != 0 {
 				t.Errorf("the refused write left %d nodes, want none", nodes)
