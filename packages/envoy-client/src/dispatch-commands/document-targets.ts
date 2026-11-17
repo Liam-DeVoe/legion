@@ -494,9 +494,10 @@ async function resolveExistingIssue(
 /**
  * How `refuseMissingOfRef` reads the owner a `dispatch://` reference names, on the failing path
  * of a read of its item: the issue by its key, or the project document through `readDocument`,
- * which the caller builds of the document it has already read, so the document is read once for
- * the whole command (dispatch://INFRA-1523). A refusal of either read is what tells a reader
- * that the owner, and not the item, is what Dispatch does not hold.
+ * which the caller builds of the document it has already read or of its own read kept for the
+ * whole command, so the document is read at most once (dispatch://INFRA-1523). A refusal of
+ * either read that answers about the owner tells a reader that the owner, and not the item, is
+ * what Dispatch does not hold; any other failure of it is named as a failure and claims nothing.
  */
 export function readRefOwner(
   client: DispatchClient,

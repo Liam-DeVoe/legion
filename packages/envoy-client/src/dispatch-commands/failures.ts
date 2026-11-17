@@ -160,17 +160,18 @@ function dispatchNotFound(error: unknown): error is DispatchServiceError {
  * The refusal a reference's own read of a post or an ask earns when Dispatch answers
  * `404 NOT_FOUND`: its `not found` names neither the item nor its owner, so a reader cannot tell
  * an item that is not there from an issue or a document that is not (dispatch://INFRA-1523).
- * The owner is read once for the whole command by `readOwner`, which the caller builds of the
- * reference's own owner and of a document it has already read: a reference whose issue Dispatch
- * does not hold is refused in those words, one whose document it does not hold meets that read's
- * own refusal, which names the document and lists the project's, and one whose owner stands
- * names the item that owner holds no row of.
+ * The owner is read on this failing path by `readOwner`, which the caller builds of the
+ * reference's own owner, so a project document is read at most once for the whole command: a
+ * reference whose issue Dispatch does not hold is refused in those words, one whose document it
+ * does not hold meets that read's own refusal, which names the document and lists the project's,
+ * and one whose owner stands names the item that owner holds no row of.
  *
- * Only an answer that says the owner is missing changes what the caller is told. A read that
- * failed for any other reason - a gateway, a 5xx, a transport error - says nothing about the
- * owner, so the item's own refusal stands rather than being replaced by that failure: a reader
- * meeting a gateway error here would be told something other than what is true of the request
- * they made.
+ * A refusal names only what it read. `<owner> holds no <kind> <id>` is an answer about the owner,
+ * so it is written only where the read of the owner answered. Where that read failed instead - a
+ * gateway, a 5xx, a transport error - the refusal names the failed read and its failure and says
+ * nothing of whether the owner holds the item, since nothing was read of the owner. Either arm
+ * can meet such a failure: an issue's own record is read only here, and a document that
+ * `dispatch read` names with a comment's whole id is first read here, since no listing resolves it.
  *
  * The callers are the four correction commands, `dispatch resolve-comment`, and `dispatch read`
  * of a comment, a message or an ask reference. The ask commands (`dispatch edit-ask`,
@@ -188,20 +189,22 @@ export async function refuseMissingOfRef(
   const missingOwner = await readOwner().then(
     () => undefined,
     (caught: unknown) => {
-      if (owner.kind === "issue") {
-        return dispatchAnswered(caught, 404)
-          ? refusalWithCode(error, `this Dispatch holds no issue ${owner.issue}`)
-          : undefined;
+      if (owner.kind === "issue" && dispatchAnswered(caught, 404)) {
+        return refusalWithCode(error, `this Dispatch holds no issue ${owner.issue}`);
       }
       // A document that is not there is refused by its own resolution, which names it and lists
-      // the project's documents (`resolveArtifact`, `documentReferenceProblem`) and is no answer
-      // of Dispatch's. An answer or a failure of Dispatch's own - a gateway, a 5xx, a refusal of
-      // another kind - says nothing about the document, so the item's refusal stands.
-      return caught instanceof DispatchGatewayError ||
+      // the project's documents (`resolveArtifact`, `documentReferenceProblem`): that is an answer
+      // about the document rather than an answer of Dispatch's, so it is what the reader is told.
+      const dispatchFailure =
+        caught instanceof DispatchGatewayError ||
         caught instanceof DispatchServiceError ||
-        caught instanceof DispatchNoRouteError
-        ? undefined
-        : caught;
+        caught instanceof DispatchNoRouteError;
+      if (owner.kind === "project" && !dispatchFailure) return caught;
+      return refusalWithCode(
+        error,
+        `the read of ${ownerName} failed, so this does not say whether ${ownerName} exists or` +
+          ` holds ${kind} ${id}: ${messageFor(caught)}`
+      );
     }
   );
   return missingOwner ?? refusalWithCode(error, `${ownerName} holds no ${kind} ${id}`);

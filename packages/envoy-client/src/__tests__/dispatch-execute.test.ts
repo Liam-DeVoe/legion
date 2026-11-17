@@ -30,7 +30,6 @@ import { bearerCredential } from "../bearer";
 import { cliRefusals } from "../dispatch-cli";
 import type { ExecFn } from "../dispatch-cwd";
 import {
-  checkDispatchCall,
   type DispatchToolResult,
   dispatchRefFromUrl,
   executeDispatchTool,
@@ -16659,41 +16658,60 @@ for (const [name, documents, named] of [
   });
 }
 
-// The read of the owner says whether the owner or the item is missing. A read that fails for
-// another reason says nothing about the owner, so the item's own refusal stands: a caller met a
-// gateway error here where the true answer was that the issue holds no such comment
-// (dispatch://INFRA-1523).
-for (const [name, ownerAnswer] of [
-  ["a gateway", { status: 502, body: "<html>bad gateway</html>", text: true }],
-  ["a server error", { status: 500, body: { code: "INTERNAL", error: "internal" }, text: false }],
+// A refusal names only what it read (dispatch://INFRA-1523). Where the read of a reference's
+// owner fails, the refusal names that failed read and its failure, and says nothing of whether
+// the owner holds the item, since nothing was read of the owner. The document arm is reached by
+// `dispatch read` of a comment by its whole id: no listing resolves that id, so the read of the
+// document on this failing path is the command's first.
+for (const [name, ownerAnswer, failure] of [
+  ["a gateway", { status: 502, body: "<html>bad gateway</html>", text: true }, "answered 502"],
+  [
+    "a server error",
+    { status: 500, body: { code: "INTERNAL", error: "internal" }, text: false },
+    "INTERNAL: internal",
+  ],
 ] as const) {
-  test(`a correction keeps its own refusal when the owner read meets ${name}`, async () => {
-    const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
-      const { pathname } = new URL(String(url));
-      if (/^\/api\/v1\/issues\/[^/]+$/.test(pathname)) {
-        return ownerAnswer.text
-          ? new Response(String(ownerAnswer.body), {
-              status: ownerAnswer.status,
-              headers: { "content-type": "text/html" },
-            })
-          : response(ownerAnswer.body, ownerAnswer.status);
-      }
-      return response({ code: "NOT_FOUND", error: "not found" }, 404);
-    };
-    const error = await runWithFixture(
+  for (const [tool, args, ownerName, ownerPath] of [
+    [
       "dispatch_edit_comment",
       {
         comment: "dispatch://CORE-1/comment/11111111-2222-4333-8444-555555555555",
         body: "corrected text",
       },
-      fetchImpl
-    );
+      "CORE-1",
+      /^\/api\/v1\/issues\/[^/]+$/,
+    ],
+    [
+      "dispatch_read",
+      { ref: "dispatch://CORE/artifact/runbook/comment/11111111-2222-4333-8444-555555555555" },
+      "CORE/runbook",
+      /^\/api\/v1\/projects\/CORE\/artifacts(\/runbook)?$/,
+    ],
+  ] as const) {
+    test(`${tool} names the failed read of ${ownerName} when it meets ${name}`, async () => {
+      const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
+        const { pathname } = new URL(String(url));
+        if (ownerPath.test(pathname)) {
+          return ownerAnswer.text
+            ? new Response(String(ownerAnswer.body), {
+                status: ownerAnswer.status,
+                headers: { "content-type": "text/html" },
+              })
+            : response(ownerAnswer.body, ownerAnswer.status);
+        }
+        return response({ code: "NOT_FOUND", error: "not found" }, 404);
+      };
+      const error = await runWithFixture(tool, args, fetchImpl);
 
-    expect(error).toBeInstanceOf(Error);
-    expect((error as Error).message).toContain(
-      "CORE-1 holds no comment 11111111-2222-4333-8444-555555555555"
-    );
-  });
+      expect(error).toBeInstanceOf(Error);
+      const message = (error as Error).message;
+      expect(message).toContain(`the read of ${ownerName} failed`);
+      expect(message).toContain(failure);
+      expect(message).not.toContain(
+        `${ownerName} holds no comment 11111111-2222-4333-8444-555555555555`
+      );
+    });
+  }
 }
 
 // A refusal names only what it read (dispatch://INFRA-1523). When the read of a reference's
