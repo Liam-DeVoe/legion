@@ -145,6 +145,35 @@ func TestTheEndWriteKeepsTheStart(t *testing.T) {
 	}
 }
 
+// A report that is empty states nothing, as an absent one: the end that carries one is taken
+// with its other fields, the node holds no report and the log no report tuple and no `reports`
+// relation, so the handoff a later write names is the run's report.
+func TestAnEmptyReportStatesNone(t *testing.T) {
+	pool := storetest.Open(t).Pool
+	id, report := uuid.NewString(), uuid.NewString()
+
+	put(t, pool, startOf(implementer(id), minute(0)), minute(0))
+	end := endOf(implementer(id), ResultPassed, minute(1))
+	end.Report = new("")
+	if answered := put(t, pool, end, minute(1)); answered.Result != ResultPassed || answered.Report != "" {
+		t.Fatalf("the end with an empty report holds result %q report %q, want passed and none", answered.Result, answered.Report)
+	}
+	var relations int
+	if err := pool.QueryRow(context.Background(), `
+		select count(*) from workflow_tuples where from_kind = 'step' and from_id = $1 and kind = 'reports'
+	`, id).Scan(&relations); err != nil {
+		t.Fatalf("count the reports tuples: %v", err)
+	}
+	if tuples := valueTuples(t, pool, id, AttributeReport); tuples != 0 || relations != 0 {
+		t.Errorf("the log holds %d report tuples and %d reports relations after an empty report, want none", tuples, relations)
+	}
+	late := implementer(id)
+	late.Report = new(report)
+	if answered := put(t, pool, late, minute(2)); answered.Report != report {
+		t.Errorf("the later write's report is held as %q, want %s", answered.Report, report)
+	}
+}
+
 // An end whose start never arrived — a step that started under the release before, or whose
 // start row is still backing off — makes the node itself, with the start time the daemon holds.
 // The start that arrives after it keeps that start time, fills what the end did not carry, and
@@ -365,27 +394,34 @@ func TestALateReportKeepsTheEndedRunsSession(t *testing.T) {
 }
 
 // A write that makes a node names the step's whole identity: its task, kind, place, role and
-// generation. One that leaves any of them out is refused ErrStepInput and writes nothing; the
-// same write with all of them makes the node, which is the control.
+// generation. One that leaves any of them out, or names a task, a kind or a role that is empty,
+// which states nothing, is refused ErrStepInput and writes nothing; the same write with all of
+// them makes the node, which is the control.
 func TestAWriteThatMakesANodeNamesItsIdentity(t *testing.T) {
 	pool := storetest.Open(t).Pool
-	for name, without := range map[string]func(*StepWrite){
-		"kind":       func(write *StepWrite) { write.Kind = nil },
-		"task":       func(write *StepWrite) { write.Task = nil },
-		"step":       func(write *StepWrite) { write.Place = nil },
-		"role":       func(write *StepWrite) { write.Role = nil },
-		"generation": func(write *StepWrite) { write.Generation = nil },
+	for name, missing := range map[string]struct {
+		field  string
+		change func(*StepWrite)
+	}{
+		"no kind":       {"kind", func(write *StepWrite) { write.Kind = nil }},
+		"no task":       {"task", func(write *StepWrite) { write.Task = nil }},
+		"no step":       {"step", func(write *StepWrite) { write.Place = nil }},
+		"no role":       {"role", func(write *StepWrite) { write.Role = nil }},
+		"no generation": {"generation", func(write *StepWrite) { write.Generation = nil }},
+		"an empty kind": {"kind", func(write *StepWrite) { write.Kind = new("") }},
+		"an empty task": {"task", func(write *StepWrite) { write.Task = new("") }},
+		"an empty role": {"role", func(write *StepWrite) { write.Role = new("") }},
 	} {
-		t.Run("no "+name, func(t *testing.T) {
+		t.Run(name, func(t *testing.T) {
 			id := uuid.NewString()
 			write := startOf(implementer(id), minute(0))
-			without(&write)
+			missing.change(&write)
 			_, err := tryPut(pool, write, minute(0))
 			if !errors.Is(err, ErrStepInput) {
-				t.Fatalf("a first write with no %s answered %v, want %v", name, err, ErrStepInput)
+				t.Fatalf("a first write with %s answered %v, want %v", name, err, ErrStepInput)
 			}
-			if !strings.Contains(err.Error(), "does not name its "+name+":") {
-				t.Errorf("the refusal %q does not name the missing %s alone", err, name)
+			if !strings.Contains(err.Error(), "does not name its "+missing.field+":") {
+				t.Errorf("the refusal %q does not name the missing %s alone", err, missing.field)
 			}
 			if nodes := countNodes(t, pool, id); nodes != 0 {
 				t.Errorf("the refused write left %d nodes, want none", nodes)
