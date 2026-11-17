@@ -48,12 +48,12 @@ descendants. A tree closed inside the window counts at its close.
 
 ```bash
 dispatch issues --project <PROJECT> --label legion --all
-dispatch read --issue <KEY>                          # Referenced by: child_of names its children
+dispatch read --issue <KEY>                          # Referenced by: parent of names its children
 dispatch issues --project <PROJECT> --parent <KEY>   # the same children, one level at a time
 ```
 
 `Links: child_of` on that read gives the issue's own parent, never its children, so walk down
-instead: read the root, take each `child_of` row under `Referenced by:` as a child, and read each
+instead: read the root, take each `parent of` row under `Referenced by:` as a child, and read each
 child the same way until a read names none. `dispatch issues --parent` lists one level in one
 request and is the shorter walk on a wide tree.
 

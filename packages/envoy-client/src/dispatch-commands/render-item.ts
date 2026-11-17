@@ -129,12 +129,13 @@ function askPartEdges(
   return { at, rest: { node: incoming.node, edges: rest } };
 }
 
-/** The edges at one part of an ask, indented under the line naming that part. A part nothing
- *  points at, and one the ask carries no id for, print nothing. */
+/** The edges at one part of an ask, indented under the line naming that part and read from the
+ *  part's side, as the ask's own `Referenced by:` is. A part nothing points at, and one the ask
+ *  carries no id for, print nothing. */
 function partReferenceLines(at: Map<string, GraphEdge[]>, id: string | undefined): string[] {
   const edges = id === undefined ? undefined : at.get(id);
   if (edges === undefined || edges.length === 0) return [];
-  return ["  Referenced by:", ...edges.map((edge) => `  ${edgeLine(edge)}`)];
+  return ["  Referenced by:", ...edges.map((edge) => `  ${edgeLine(edge, "in")}`)];
 }
 
 function openAskAge(ageSeconds: number): string {

@@ -9,7 +9,7 @@ Read this on a `triage` wake, at every start, and when a person hands you an iss
    `dispatch issues --project <PROJECT> --status triage --label legion --all`. `--all` reads every
    match in one request, so no row is missed or repeated while the list changes.
 2. The rows show no parent, so `dispatch read` each one and follow `Links:` up through each
-   `child_of` parent. A `child_of` under `Referenced by:` is a child of this issue, not its parent.
+   `child_of` parent. A `parent of` row under `Referenced by:` names a child of this issue.
 3. Leave a child whose `issues.<KEY>.tree` is a root in `admission.trees`, or that has an ancestor
    that is, because that tree's architect owns it. `admission.trees` is the live trees: a slot is
    one issue the daemon has started, held as [Admission and the `legion` label](https://cybermonklabs.github.io/legion/legion/concepts/#admission-and-the-legion-label) says, so a tree is live whether or not its root holds one.

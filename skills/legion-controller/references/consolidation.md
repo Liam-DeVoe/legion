@@ -43,7 +43,7 @@ dispatch related --project <PROJECT> --title '<its title>' --text-file - \
 
 `--exclude-issue` is repeatable and takes up to 50 issues; the issue itself, its ancestors and its
 descendants all go in one call. The read names both: a `child_of` row under `Links:` is the
-issue's own parent, read again on that parent for the next ancestor up, and each `child_of` row
+issue's own parent, read again on that parent for the next ancestor up, and each `parent of` row
 under `Referenced by:` is a child, read again on each child for the next level down. Ask each
 agent for, per issue, every related item that is an issue with the reason it looks like the same
 work and the records that show it, and nothing else: no comment, no close, no message.
