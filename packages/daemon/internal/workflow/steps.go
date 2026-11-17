@@ -275,6 +275,24 @@ func (e *Engine) startAgent(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	return stepClaim(issue, issue.Key, phase.RoleFor(at))
 }
 
+// startNamedStep writes the start of the step issue stands in under the agent that step names
+// (startAgent), the one place that decides who runs a start no phase worker's entry names: a move
+// into accepting, whose tree architect start skips, or into a merge GitHub has already made, which
+// nobody runs and whose close ends it (transition), and admission's promotion of a member whose
+// worker it does not start (StartStepRecord). A phase that runs no step writes nothing, and
+// neither does a record key that is no issue key, which names no claim (recordsSteps).
+func (e *Engine) startNamedStep(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
+	at := record.StandsAt(issue)
+	if _, _, _, ok := stepOf(at); !ok || !recordsSteps(issue) {
+		return nil
+	}
+	agent, err := e.startAgent(ctx, tx, issue, at)
+	if err != nil {
+		return err
+	}
+	return e.startStep(ctx, tx, issue, agent)
+}
+
 // stepClaim is the claim token of role on key, in issue's project.
 func stepClaim(issue record.Issue, key string, role claim.Role) (claim.Token, error) {
 	project, err := claim.ProjectToken(issue.Project)
@@ -331,15 +349,14 @@ func (e *Engine) EndRunningStep(ctx context.Context, tx pgx.Tx, before record.Is
 }
 
 // StartStepRecord writes the start of the step issue stands in, under the agent that step names
-// (startAgent): admission's promotion of a member whose phase worker it does not start (admit's
+// (startNamedStep): admission's promotion of a member whose phase worker it does not start (admit's
 // startMidPhaseMembers), whose step starts again all the same. A step whose latest run is still
 // open goes on, and nothing is written: a member held from merging, whose merge step the linger
 // left open (beginLinger) and whose retry goes on with it, or a role the promotion found already
 // started for this run (workflow.StartFor). A second start there would open a run while the one
 // before it has no end, and the count would leave that one none.
 func (e *Engine) StartStepRecord(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
-	at := record.StandsAt(issue)
-	place, _, _, ok := stepOf(at)
+	place, _, _, ok := stepOf(record.StandsAt(issue))
 	if !ok || !recordsSteps(issue) {
 		return nil
 	}
@@ -347,9 +364,5 @@ func (e *Engine) StartStepRecord(ctx context.Context, tx pgx.Tx, issue record.Is
 	if err != nil || latest.Run == record.RunOpen {
 		return err
 	}
-	agent, err := e.startAgent(ctx, tx, issue, at)
-	if err != nil {
-		return err
-	}
-	return e.startStep(ctx, tx, issue, agent)
+	return e.startNamedStep(ctx, tx, issue)
 }
