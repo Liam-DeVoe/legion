@@ -2127,6 +2127,84 @@ test("the header's menu gives the focus back to its control on Escape and after 
   });
 });
 
+/** What `focusNow` reads with the focus on the header's "Issue actions", the first place the
+ *  header's keeper puts a focus whose control has gone. */
+const ON_ISSUE_ACTIONS = {
+  inHeader: true,
+  onBody: false,
+  what: `button ${CONTROL_LABELS.issue_actions}`,
+} as const;
+
+// Details gives the focus back to the control it was opened from as it closes, but a write made
+// while it is open can take that control off the header: the labels' count goes once every label
+// fits, and the parent link once the parent is cleared. Details then had nothing to give the
+// focus back to and left it on the page's body, from which the next Tab starts again at the top
+// of the page; the header's keeper had stopped watching once the focus left the header. The
+// keeper now waits for Details to close and places that focus by the header's own fallbacks, the
+// first of which is "Issue actions" (decision 237). The focus is read once, after Details has
+// closed and two frames are drawn, so a focus that only passes through a control is not taken
+// for one that stays there.
+test("Details closed after a write removed the labels' count leaves the focus in the header", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await phase(browser, seedHeader, async (page, seeded) => {
+    await patchIssue(seeded.key, { labels: [...TWENTY_LABELS] });
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectHeaderDrawn(page);
+    const count = labelsLeft(page);
+    await expect(count, "twenty labels draw no labels' count").toBeVisible();
+    await count.focus();
+    await page.keyboard.press("Enter");
+    await expect(details(page), "Enter on the labels' count opened no Details").toBeVisible();
+    await expect
+      .poll(() => details(page).evaluate((drawer) => drawer.contains(document.activeElement)), {
+        message: "Details took no focus as it opened",
+      })
+      .toBe(true);
+    await patchIssue(seeded.key, { labels: ["dispatch"] });
+    await expect(count, "one label still draws the labels' count").toHaveCount(0);
+    await page.keyboard.press("Escape");
+    await expect(details(page), "Escape left Details open").toBeHidden();
+    await framesDrawn(page, 2);
+    expect(
+      await focusNow(page),
+      "Details, closed after its labels' count went, left the focus off Issue actions"
+    ).toEqual(ON_ISSUE_ACTIONS);
+  });
+});
+
+// The same, opened by Shift+M from the header's parent link, which goes once the parent is
+// cleared while Details is open.
+test("Details closed after a write removed the parent link leaves the focus in the header", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await phase(browser, seedHeader, async (page, seeded) => {
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectHeaderDrawn(page);
+    const parent = issueHeader(page).getByRole("link", { exact: true, name: seeded.parentKey });
+    await parent.focus();
+    await expect(parent, "the header's parent link took no focus").toBeFocused();
+    await page.keyboard.press("Shift+M");
+    await expect(details(page), "Shift+M on the parent link opened no Details").toBeVisible();
+    await expect
+      .poll(() => details(page).evaluate((drawer) => drawer.contains(document.activeElement)), {
+        message: "Details took no focus as it opened",
+      })
+      .toBe(true);
+    await patchIssue(seeded.key, { parent: null });
+    await expect(parent, "a cleared parent still draws the parent link").toHaveCount(0);
+    await page.keyboard.press("Escape");
+    await expect(details(page), "Escape left Details open").toBeHidden();
+    await framesDrawn(page, 2);
+    expect(
+      await focusNow(page),
+      "Details, closed after its parent link went, left the focus off Issue actions"
+    ).toEqual(ON_ISSUE_ACTIONS);
+  });
+});
+
 /** The documents the page sends a review of, in the order it sends them: each `POST` of
  *  `/api/v1/artifacts/{id}/reviews`, the write Approve and Request changes make. */
 function reviewsSent(page: Page): string[] {
