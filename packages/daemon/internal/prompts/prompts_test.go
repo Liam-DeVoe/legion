@@ -681,8 +681,9 @@ func TestTheComposedReviewerPromptWritesTheHeadItReviewedInItsFooter(t *testing.
 // it (api's PlanRatingContract, PLAN_RATING_REQUIRED), and a rating it cannot take: one outside 1
 // to 5, one of the two without the other, or a reason that is blank or too long (api's
 // planRatingRefusal, PLAN_RATING_INPUT). The role the daemon starts on the retro (phase.RoleFor)
-// therefore reads, in its composed prompt, the two fields its completion carries, both ends of the
-// scale and both refusals. No other phase worker ends the retro, and the daemon refuses a rating
+// therefore reads, in its composed prompt, which plan it rates (the issue's steps and the role that
+// worked each, never the planner's plan.md), the two fields its completion carries, both ends of
+// the scale and both refusals. No other phase worker ends the retro, and the daemon refuses a rating
 // on its completion (PLAN_RATING_UNEXPECTED), so no other composed prompt teaches one.
 // This shows the text is loaded, never that a role follows it.
 func TestTheComposedRetroRatesThePlanTheIssueRan(t *testing.T) {
@@ -693,7 +694,7 @@ func TestTheComposedRetroRatesThePlanTheIssueRan(t *testing.T) {
 	retro := phase.RoleFor(phase.Retro)
 	text := foldWhitespace(composedText(t, composer, retro, false))
 	for _, phrase := range []string{
-		"The agent that does the retro rates",
+		"The agent that does the retro rates the plan the issue ran in that completion, the issue's steps and the role that worked each, not the planner's `plan.md`",
 		"`plan_rating`, a whole number from 1 (the plan cost the work) to 5 (the plan fit the work)",
 		"`plan_reason`, one sentence of why",
 		"`PLAN_RATING_REQUIRED`",
