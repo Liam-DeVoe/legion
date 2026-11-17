@@ -479,12 +479,14 @@ func TestProjectPlansTakesTheNewestPlanAndEveryRating(t *testing.T) {
 	if plan := read[0].Plan; planText(*plan) != planText(newest) {
 		t.Fatalf("the plan of LEG-1 is\n%s\nwant the owner's plan of generation 10\n%s", planText(*plan), planText(newest))
 	}
-	var ids []string
-	for _, rating := range read[0].Ratings {
-		ids = append(ids, rating.StepID)
-	}
-	if want := []string{first, second}; !slices.Equal(ids, want) {
-		t.Fatalf("the ratings are of %v, want both retros in the order they ran, %v", ids, want)
+	want := IssuePlan{Issue: "LEG-1", Title: "Title of LEG-1", ClosedAt: closed, Plan: &newest,
+		Ratings: []Rating{
+			{Rating: 3, Reason: "The plan was late.", StepID: first, EndedAt: new(minute(22))},
+			{Rating: 2, Reason: "Two tasks were one.", StepID: second, EndedAt: new(minute(121))},
+		},
+		StartedAt: new(minute(20)), EndedAt: new(minute(121))}
+	if got := issuePlanText(read[0]); got != issuePlanText(want) {
+		t.Fatalf("the read lists\n%s\nwant each retro's own rating, reason and end, in the order they ran\n%s", got, issuePlanText(want))
 	}
 }
 
