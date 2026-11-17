@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import type { IssueDetails } from "../../api/types";
 import { pageHeaderControl, pageMenu, pageMenuItem } from "../../theme/classes";
@@ -27,6 +27,15 @@ import { CONTROL_LABELS } from "./page-words";
  * `blockedByControlName`, `repoControlName`, `componentsControlName`, `addPriorityControlName` -
  * so the two sides cannot drift apart, and lists one only while the page draws it: a project
  * that maps no repository offers no repository to set.
+ *
+ * Whether any entry can be reached, which decides whether Add is drawn at all, is read after each
+ * commit of the menu rather than while it renders: during a render the page still holds the
+ * previous commit, so a control renamed in the same commit as the issue's value is not found by
+ * its new name. Read during the render, removing an issue's last label drew no Add: in the render
+ * where the save landed the labels' control was still "Saving labels of CORE-1", that render's
+ * commit renamed it "Add a label to CORE-1", and nothing drew the menu again
+ * (dispatch://INFRA-3945 R5). The open menu's entries are read while it renders, which comes
+ * after a commit, since it opens on a press.
  */
 export function IssueAddMenu({
   isClosed,
@@ -38,6 +47,9 @@ export function IssueAddMenu({
   onOpenField: (field: IssueField) => void;
 }): ReactNode {
   const [open, setOpen] = useState(false);
+  // Whether any entry can be reached, as the layout effect below reads it after a commit: false
+  // until the first one, which that effect corrects before the page is painted.
+  const [reachable, setReachable] = useState(false);
   const drawer = useMarginDrawer();
   const wrapper = useRef<HTMLDivElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
@@ -77,9 +89,15 @@ export function IssueAddMenu({
     };
   }, [open]);
 
-  if (isClosed) return null;
+  // After every commit of the menu, since any of them can draw, rename or remove a control an
+  // entry reaches. The answer is a boolean, so a commit that leaves it as it was sets nothing and
+  // draws the menu no further time.
+  useLayoutEffect(() => {
+    setReachable(emptyFields(issue).some((field) => field.reachable()));
+  });
+
+  if (isClosed || !reachable) return null;
   const fields = emptyFields(issue);
-  if (!fields.some((field) => field.reachable())) return null;
   return (
     <div className="relative flex shrink-0" ref={wrapper}>
       <button
@@ -175,10 +193,12 @@ export function IssueAddMenu({
     }
     if ((details.labels ?? []).length === 0) {
       // Listed only while the issue has no label, so the control is found by the name it has
-      // then: the words it draws and the issue's key.
+      // then: the words it draws and the issue's key ("Add a label to CORE-1"). A save in flight
+      // renames it ("Saving labels of CORE-1"), and the busy control is not reached, so no saving
+      // words are passed.
       fields.push({
         label: PROPERTY_LABELS.labels,
-        ...atControl(labelsControlName([], details.key, CONTROL_LABELS)),
+        ...atControl(labelsControlName([], details.key, CONTROL_LABELS, undefined)),
       });
     }
     if (details.route === null || details.route === "") {
