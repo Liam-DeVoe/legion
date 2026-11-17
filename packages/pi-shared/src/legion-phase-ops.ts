@@ -3,6 +3,7 @@ import {
   LEGION_PHASE_BACKWARD_TARGETS,
   LEGION_PLAN_RATING_LEAST,
   LEGION_PLAN_RATING_MOST,
+  LEGION_PLAN_REASON_MAX,
   LegionHandoffCompleteRequest,
   LegionInstant,
   type LegionIssue,
@@ -108,15 +109,19 @@ const planRating = z
   .min(LEGION_PLAN_RATING_LEAST, { error: PLAN_RATING_REFUSAL })
   .max(LEGION_PLAN_RATING_MOST, { error: PLAN_RATING_REFUSAL });
 
+/** The most characters of a `plan_reason` as this tool's sentences write it: 2,000, the contract's
+ * `LEGION_PLAN_REASON_MAX`. */
+const PLAN_REASON_MOST = LEGION_PLAN_REASON_MAX.toLocaleString("en-US");
+
 /** `handoff_complete`'s `plan_reason`: why the plan earned its rating (`planReason` on the wire). A
- * blank one is refused as missing (requiredString); its bound is the contract's own, at most 2,000
- * characters counted as the daemon counts them, read here so that this tool refuses exactly the
- * reasons the daemon refuses, by the field's name rather than as the request schema's parse
- * failure. */
+ * blank one is refused as missing (requiredString); its bound is the contract's own, at most
+ * `LEGION_PLAN_REASON_MAX` characters counted as the daemon counts them, read here so that this
+ * tool refuses exactly the reasons the daemon refuses, by the field's name rather than as the
+ * request schema's parse failure. */
 const planReason = requiredString("handoff_complete", "plan_reason").refine(
   (value) =>
     value.trim() === "" || LegionHandoffCompleteRequest.shape.planReason.safeParse(value).success,
-  { error: "handoff_complete's plan_reason holds at most 2,000 characters" }
+  { error: `handoff_complete's plan_reason holds at most ${PLAN_REASON_MOST} characters` }
 );
 
 /** The refusal of the fields `refused` that `op` does not take: each named, then once the fields
@@ -340,7 +345,7 @@ export function legionToolDescription(host: {
     "The agent that does the retro rates the plan the issue ran, its steps and the role that worked each (not the planner's `plan.md`), in the " +
     `completion that ends the retro: \`plan_rating\`, a whole number from ${LEGION_PLAN_RATING_LEAST} (the plan cost the work) to ${LEGION_PLAN_RATING_MOST} (the plan fit the work), and ` +
     "`plan_reason`, one sentence of why, the two together. Any other completion that carries them is refused (PLAN_RATING_UNEXPECTED), and so is " +
-    `a rating outside ${LEGION_PLAN_RATING_LEAST} to ${LEGION_PLAN_RATING_MOST} or a reason that is blank or longer than 2,000 characters (PLAN_RATING_INPUT), and the completion that ends the ` +
+    `a rating outside ${LEGION_PLAN_RATING_LEAST} to ${LEGION_PLAN_RATING_MOST} or a reason that is blank or longer than ${PLAN_REASON_MOST} characters (PLAN_RATING_INPUT), and the completion that ends the ` +
     "retro without them (PLAN_RATING_REQUIRED). " +
     "The daemon refuses " +
     "HANDOFF_SESSION_MISMATCH (another session wrote the record), HANDOFF_NOT_NEW (the record is the one you named for your previous phase: " +
