@@ -263,8 +263,11 @@ func parseRatings(text string) ([]printedRating, error) {
 	}
 	var ratings []printedRating
 	for rest := text; ; {
-		if len(rest) < 4 || rest[0] < '1' || rest[0] > '5' || rest[1:4] != "/5 " {
-			return nil, fmt.Errorf("the ratings %q: %q is no `<n>/5 ` rating", text, rest)
+		// The reason is a JSON string, as plans.ts prints it: a `null` in its place, which Decode
+		// would take as an empty reason, is no rating, and neither is a space before the string,
+		// which Decode would skip (plan-ratings-read.sh's ratingsOf refuses both).
+		if len(rest) < 5 || rest[0] < '1' || rest[0] > '5' || rest[1:5] != `/5 "` {
+			return nil, fmt.Errorf("the ratings %q: %q is no `<n>/5 \"<reason>\"` rating", text, rest)
 		}
 		decoder := json.NewDecoder(strings.NewReader(rest[4:]))
 		var reason string
@@ -280,6 +283,24 @@ func parseRatings(text string) ([]printedRating, error) {
 			return nil, fmt.Errorf("the ratings %q: %q follows a rating, want `, ` or the end", text, rest)
 		}
 		rest = rest[2:]
+	}
+}
+
+// The parser of `dispatch plans` reads only what envoy-client's plans.ts prints, as
+// plan-ratings-read.sh's awk does, so the driver and the read script judge the same line alike:
+// a rating is `<n>/5 ` and then its reason as one JSON string, so a `null` in the reason's place
+// or a space before it is no rating.
+func TestThePlansParserReadsOnlyWhatTheCommandPrints(t *testing.T) {
+	out := func(ratings string) string {
+		return "SR1: 1 finished issues\nSR1-1 closed 2026-11-17T00:00:00Z plan default (1 tasks: planner) ratings " + ratings + " time 0h1m failed steps 0"
+	}
+	if parsed, err := parsePlans("SR1", out(`4/5 "x"`)); err != nil || len(parsed) != 1 || len(parsed[0].ratings) != 1 || parsed[0].ratings[0] != (printedRating{rating: 4, reason: "x"}) {
+		t.Fatalf("the line the command prints parsed as %+v, %v; want one rating 4/5 \"x\"", parsed, err)
+	}
+	for _, ratings := range []string{`4/5 null`, `4/5  "x"`} {
+		if parsed, err := parsePlans("SR1", out(ratings)); err == nil {
+			t.Errorf("the ratings %q parsed as %+v, want an error: the command prints each reason as a JSON string right after `<n>/5 `", ratings, parsed)
+		}
 	}
 }
 
