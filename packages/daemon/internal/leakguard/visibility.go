@@ -333,14 +333,20 @@ func VisibilityGraphQLArgs(slug string) []string {
 		"-f", "query=" + visibilityQuery, "-f", "owner=" + owner, "-f", "name=" + name}
 }
 
-// ghReadEnv is what each of the guard's gh reads of slug carries beyond the guard's own names:
-// VisibilityReadVar, which `legion gh` lets exactly these reads through by; GH_HOST, which names
-// the host for a gh that has no configuration of its own to read it from, beside the --hostname
-// the argv already carries; and NO_COLOR=1 with CLICOLOR_FORCE=0, which keep gh's output plain. A
-// caller's CLICOLOR_FORCE=1 makes gh 2.98.0 colour the --include headers and the JSON body, and
-// neither read could then be read.
+// ghPlainEnv is what each of the guard's gh calls carries beyond the guard's own names: GH_HOST,
+// which names the host for a gh that has no configuration of its own to read it from, and
+// NO_COLOR=1 with CLICOLOR_FORCE=0, which keep gh's output plain. A caller's CLICOLOR_FORCE=1 makes
+// gh 2.98.0 colour the --include headers and the JSON body of the two visibility reads, and neither
+// could then be read.
+func ghPlainEnv() []string {
+	return []string{"GH_HOST=github.com", "NO_COLOR=1", "CLICOLOR_FORCE=0"}
+}
+
+// ghReadEnv is what each of the guard's visibility reads of slug carries: VisibilityReadVar, which
+// `legion gh` lets exactly these reads through by, and then ghPlainEnv's names, GH_HOST beside
+// the --hostname the argv already carries.
 func ghReadEnv(slug string) []string {
-	return []string{VisibilityReadVar + "=" + slug, "GH_HOST=github.com", "NO_COLOR=1", "CLICOLOR_FORCE=0"}
+	return append([]string{VisibilityReadVar + "=" + slug}, ghPlainEnv()...)
 }
 
 // ghVisibility is the gh read itself, the guard's answer where a caller named no reader of its

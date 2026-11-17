@@ -292,16 +292,7 @@ func (g *Guard) commitRecords(ctx context.Context, dir, commit string) ([]Record
 }
 
 // diffTree is a diff-tree of a commit of at most one parent: --root for a root commit, whose
-// diff is otherwise empty.
-//
-// A merge is read from its files (mergeFiles), not from its combined diff (-c), which would be
-// its resolution but for a defect: combine-diff.c marks the parent a line was lost from as
-// 1<<parent in an int, so from 33 parents a "-" lands under parent n-32 and a hunk disagrees
-// with its own counts, and from 64 a line only the merge adds is left out (sjawhar/dotfiles
-// 0ab92325). Merges that wide are pushed: cybermonklabs/oh-my-pi's release merges on sami have
-// 51 to 53 parents. On its 7ae9bc731cbc, of 52 parents, measured 2026-11-17, the combined diff
-// read 2946 added lines in 14 files, where the merge's files read none: 14 paths differ from
-// every parent, every line of each is held by some parent, and no path is added.
+// diff is otherwise empty. A merge is read from its files instead (mergeFiles).
 //
 // A git that refuses the diff answers a non-zero status, which Guard.git makes an error of and
 // Guard.Push a setup failure: a diff that could not be read refuses the push, and is never a
@@ -406,21 +397,30 @@ func diffPath(field string) string {
 	return strings.TrimPrefix(field, "b/")
 }
 
-// mergeFiles are the paths a merge adds and the lines it adds, read from its files (diffTree
-// says why not from its combined diff). What a merge publishes of its own is in the files that
-// differ from every parent's: a file one parent has as it is came with that parent, and a parent
-// is either a commit this same push adds — read as records of its own, since Guard.commits lists
-// every commit the destination does not reach — or a commit the destination already holds. Of a
-// file that differs from every parent's, a line that some parent's file at that path holds is
-// text that parent brings, wherever the merge puts it, since the rules read a line's text alone;
-// a line no parent's file holds is the resolution's own, and is read with its number in the
-// merge's file. A path the merge adds is one at which no parent has anything, and it is read as
-// a path too.
+// mergeFiles are the paths a merge adds and the lines it adds, read from its files, not from its
+// combined diff (the last paragraph says why). What a merge publishes of its own is in the files
+// that differ from every parent's: a file one parent has as it is came with that parent, and a
+// parent is either a commit this same push adds — read as records of its own, since Guard.commits
+// lists every commit the destination does not reach — or a commit the destination already holds.
+// Of a file that differs from every parent's, a line that some parent's file at that path holds
+// is text that parent brings, wherever the merge puts it, since the rules read a line's text
+// alone; a line no parent's file holds is the resolution's own, and is read with its number in
+// the merge's file. A path the merge adds is one at which no parent has anything, and it is read
+// as a path too.
 //
 // A file is text as git's own diff tells one where no attribute says otherwise: no zero byte in
 // its first 8000 bytes (xdiff-interface.c's buffer_is_binary). A binary file of the merge's adds
 // no line, as a binary diff adds none, and a parent's file that is binary, absent or a submodule
 // holds none.
+//
+// A merge is not read from its combined diff (-c), which would be its resolution but for a
+// defect: combine-diff.c marks the parent a line was lost from as 1<<parent in an int, so from 33
+// parents a "-" lands under parent n-32 and a hunk disagrees with its own counts, and from 64 a
+// line only the merge adds is left out (sjawhar/dotfiles 0ab92325). Merges that wide are pushed:
+// cybermonklabs/oh-my-pi's release merges on sami have 51 to 53 parents. On its 7ae9bc731cbc, of
+// 52 parents, measured 2026-11-17, the combined diff read 2946 added lines in 14 files, where the
+// merge's files read none: 14 paths differ from every parent, every line of each is held by some
+// parent, and no path is added.
 func (g *Guard) mergeFiles(ctx context.Context, dir, merge string, parents []string) ([]string, []Record, error) {
 	changes, err := g.mergeChanges(ctx, dir, merge, parents)
 	if err != nil {
@@ -483,8 +483,8 @@ type mergeChange struct {
 	// blob is the merge's file there, and "" where the merge has no file there or a submodule,
 	// neither of which has a line to read.
 	blob string
-	// held are the parents' files there, one per parent that has a file there that is no
-	// submodule.
+	// held are the parents' files there, each blob once however many parents have it, of every
+	// parent that has a file there that is no submodule.
 	held []string
 	// added is whether no parent has anything at the path: the diff against each is an A.
 	added bool
@@ -555,7 +555,7 @@ func (g *Guard) mergeChanges(ctx context.Context, dir, merge string, parents []s
 				changes = append(changes, change)
 			}
 			change := &changes[index[path]]
-			if theirs {
+			if theirs && !slices.Contains(change.held, raw[2]) {
 				change.held = append(change.held, raw[2])
 			}
 			change.added = change.added && raw[4] == "A"

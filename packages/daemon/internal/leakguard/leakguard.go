@@ -8,9 +8,7 @@
 //     GitHub reports public.
 //   - For a push to such a destination, the forbidden lists of the knives registry entries that
 //     name it (KnivesRegistriesVar), matched over the files the push adds as `knives audit`
-//     matches them. That audit was a step an agent had to remember before each push to a fork,
-//     and the records of the oh-my-pi fork's pushes on 2026-11-17 show most pushes went out
-//     without it (Guard.Push).
+//     matches them; Guard.Push says why it is a pass of the push.
 //
 // A call site reaches the guard through one of four entry points — Push, GhCall, Text and Rules —
 // and reads one of two answers from a refused write: a *Refusal, which is about the text the write

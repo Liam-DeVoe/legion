@@ -158,11 +158,11 @@ func TestTheControllersPodIsOneLauncherOnAVolumeOfItsOwn(t *testing.T) {
 // The controller's agent runs the way every role's does — its launcher starts the shim on the pod
 // baseline, and the shim Oh My Pi in RPC mode with its prompt — and is told it is the controller,
 // where its gh reads its own credential, how it reaches the secrets broker and the knives
-// registries every push of it is scanned against, like a workflow role's, and the project's Slack
-// channels, and nothing of a tree, an issue or a workspace: of the variables the runtime owns
-// (runtimeOwned), it is told exactly those every agent is told, its own marker, its gh files, the
-// broker's, the knives registries and its channels, so a variable the runtime comes to tell any
-// agent fails here until it is decided for the controller.
+// registries its pushes to a public repository are scanned against, like a workflow role's, and
+// the project's Slack channels, and nothing of a tree, an issue or a workspace: of the variables
+// the runtime owns (runtimeOwned), it is told exactly those every agent is told, its own marker,
+// its gh files, the broker's, the knives registries and its channels, so a variable the runtime
+// comes to tell any agent fails here until it is decided for the controller.
 func TestTheControllersAgentIsToldItIsTheControllerAndNothingOfATree(t *testing.T) {
 	opts := goldenOptions()
 	opts.AgentSecrets = &AgentSecrets{URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpiry: time.Hour}

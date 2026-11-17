@@ -27,8 +27,8 @@ import (
 const KnivesRegistriesVar = "LEGION_KNIVES_REGISTRIES"
 
 // knivesRow is one row of KnivesRegistriesVar: the file at path, at ref, in the GitHub repository
-// repo. The second row in production names a private repository, so no message of this package
-// carries a row's repo, path or ref; a message names a row by its number (knivesRowName).
+// repo. A row can name a private repository, so no message of this package carries a row's repo,
+// path or ref; a message names a row by its number (knivesRowName).
 type knivesRow struct {
 	Repo string `json:"repo"`
 	Path string `json:"path"`
@@ -77,11 +77,12 @@ type knivesOverlayFile struct {
 // matches them (knivesLines). It is the knives audit an agent was asked to run before each push to
 // a fork, made into a pass of the push itself (Guard.Push says why).
 //
-// Every row is read at every push, with nothing kept from one push to the next, and before the
-// destination is matched against the entries: a registry that cannot be read refuses the push,
-// whatever its destination. A push whose destination no entry names passes. A union of every
-// entry's terms would refuse the local bare pushes of this repository's own tests and of knives'
-// ledger rehearsals, which hold those terms by design.
+// Every row is read at every push the pass runs for (Guard.Push: one to a destination GitHub
+// reports public, or to one it cannot name), with nothing kept from one push to the next, and
+// before the destination is matched against the entries: a registry that cannot be read refuses
+// such a push, whether or not an entry names its destination. A push whose destination no entry
+// names passes. A union of every entry's terms would refuse the local bare pushes of this
+// repository's own tests and of knives' ledger rehearsals, which hold those terms by design.
 func (g *Guard) knives(ctx context.Context, what string, req PushRequest, records []Record) error {
 	listed := value(g.base(), KnivesRegistriesVar)
 	if listed == "" {
@@ -206,23 +207,20 @@ func (g *Guard) knivesEntries(ctx context.Context, rows []knivesRow) ([]knivesEn
 //
 //	gh api -H 'Accept: application/vnd.github.raw' repos/<repo>/contents/<path>?ref=<ref>
 //
-// with gh found on the base environment's PATH, as every gh of the guard is (Guard.run). GH_HOST
-// names github.com for a gh with no configuration of its own to read it from, and NO_COLOR=1 with
-// CLICOLOR_FORCE=0 keep what gh prints the file's own bytes (ghReadEnv). A gh that exited non-zero,
-// could not be started or was stopped by the caller's bound is an error, and the error names the
-// row by its number and gh's status alone: gh's standard error is never read, and its standard
-// output is read only as a file it answered with 0, because what gh prints of a failure names the
-// read, and the second row's read names a private repository.
+// with gh found on the base environment's PATH, as every gh of the guard is (Guard.run), and the
+// names ghPlainEnv adds: GH_HOST names github.com for a gh with no configuration of its own to
+// read it from, and NO_COLOR=1 with CLICOLOR_FORCE=0 keep what gh prints the file's own bytes. A
+// gh that exited non-zero, could not be started or was stopped by the caller's bound is an error,
+// and the error names the row by its number and gh's status alone: gh's standard error is never
+// read, and its standard output is read only as a file it answered with 0, because what gh prints
+// of a failure names the read, and a row can name a private repository.
 func (g *Guard) knivesRegistry(ctx context.Context, i int, row knivesRow) (string, error) {
 	// The path and the ref are escaped where they are written into the endpoint, so that a `?`,
 	// `#` or `%` of a file's name, or an `&` or `+` of a ref, reads the file the row names.
-	segments := strings.Split(row.Path, "/")
-	for s, segment := range segments {
-		segments[s] = url.PathEscape(segment)
-	}
+	path := strings.ReplaceAll(url.PathEscape(row.Path), "%2F", "/")
 	status, file, err := g.run(ctx, child{
-		argv:   []string{"gh", "api", "-H", "Accept: application/vnd.github.raw", "repos/" + row.Repo + "/contents/" + strings.Join(segments, "/") + "?ref=" + url.QueryEscape(row.Ref)},
-		env:    []string{"GH_HOST=github.com", "NO_COLOR=1", "CLICOLOR_FORCE=0"},
+		argv:   []string{"gh", "api", "-H", "Accept: application/vnd.github.raw", "repos/" + row.Repo + "/contents/" + path + "?ref=" + url.QueryEscape(row.Ref)},
+		env:    ghPlainEnv(),
 		stderr: io.Discard,
 	})
 	if err != nil {
@@ -280,8 +278,8 @@ func knivesChecked(i int, entry *knivesEntry) error {
 //     that, so its reads answer nothing.
 func (g *Guard) destinationRepos(ctx context.Context, req PushRequest) ([]string, error) {
 	var repos []string
-	add := func(url string) {
-		if repo := RepoFromURL(url); repo != "" {
+	add := func(remote string) {
+		if repo := RepoFromURL(remote); repo != "" {
 			repos = append(repos, repo)
 		}
 	}
@@ -302,8 +300,8 @@ func (g *Guard) destinationRepos(ctx context.Context, req PushRequest) ([]string
 			return nil, err
 		}
 	}
-	for _, url := range urls {
-		add(url)
+	for _, remote := range urls {
+		add(remote)
 	}
 	return repos, nil
 }
@@ -326,8 +324,8 @@ func (g *Guard) remoteURLs(ctx context.Context, dir, remote, key string) ([]stri
 	}
 	var urls []string
 	for line := range strings.Lines(out) {
-		if url := strings.TrimRight(line, "\r\n"); url != "" {
-			urls = append(urls, url)
+		if remote := strings.TrimRight(line, "\r\n"); remote != "" {
+			urls = append(urls, remote)
 		}
 	}
 	return urls, nil
@@ -353,9 +351,10 @@ func knivesApplying(entries []knivesEntry, repos []string) []knivesEntry {
 // a file and each term of an entry's list that the record holds, as knives v4.0.1 src/forbidden.rs
 // scan matches one, the same line once, in record order and then term order. A record of a line
 // is "<file>:<line>: forbidden term <n>", a record of a path "<file>: the path: forbidden term
-// <n>", n the term's 1-based number in its entry's merged list; where two entries apply, each line
-// also names the entry, " of [repos.<name>]". The file is masked (knivesMask), and no line carries
-// a term: a term is private, which is why it is listed.
+// <n>", n the term's 1-based number in its entry's merged list, which holds no blank term
+// (knivesChecked); where two entries apply, each line also names the entry, " of
+// [repos.<name>]". The file is masked (knivesMask), and no line carries a term: a term is
+// private, which is why it is listed.
 //
 // A record holds a term as scan finds one: both lowered, the term a substring of the text. Rust's
 // to_lowercase, which scan lowers with, differs from strings.ToLower in two places: it lowers a
@@ -365,10 +364,11 @@ func knivesLines(entries []knivesEntry, records []Record) []string {
 	terms := make([][]string, len(entries))
 	var every []string
 	for e, entry := range entries {
-		for _, term := range entry.forbidden {
-			terms[e] = append(terms[e], strings.ToLower(term))
-		}
+		terms[e] = knivesTerms(entry.forbidden)
 		every = append(every, terms[e]...)
+	}
+	if len(every) == 0 {
+		return nil
 	}
 	var lines []string
 	seen := map[string]bool{}

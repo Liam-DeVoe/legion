@@ -3312,7 +3312,7 @@ and the five deployment rows are the daemon's to measure from its own configurat
   The daemon measures it from the probe's own run (`bootprobe.ImageReport.CapacityWaits`), so `legion start --check-config` never prints it.
   Under tmux it is present: no probe pod runs.
 
-- `knives-push-gate`: `leak_guard.knives_registries` names a knives registry, so every push from a role is scanned for the knives forbidden list of the repository it pushes to ([Worker image](#worker-image), the leak guard).
+- `knives-push-gate`: `leak_guard.knives_registries` names a knives registry, so a push from a role to a repository GitHub reports public, or to one the leak guard cannot name, is scanned for the knives forbidden list of the repository it pushes to ([Worker image](#worker-image), the leak guard).
   Open, the detail reads `leak_guard.knives_registries names no knives registry, so a push from a role is not scanned for a knives forbidden list`.
   The daemon measures it from the configuration alone, so `legion start --check-config` prints it and the boot logs it.
   Under tmux it is open unless decided, whatever the rows name: a pane's push runs no leak guard, and the detail reads `the tmux runtime runs no push guard in a pane's git or jj, so a pane's push is not scanned for a knives forbidden list`.
@@ -6339,16 +6339,16 @@ each issue's pod (every role of it alike) and the image probe's.
   To end it at once, anyone signed in to Dispatch revokes the daemon's login on Dispatch's machine-login page (`/credentials/machine`), the row `legion-daemon on <namespace>/<account>` whose **Approved by** reads `No one:` and the daemon's ServiceAccount, which ends every session it enrolled;
   the daemon logs in again with its token under a new credential, which enrolls the pods it launches next, and a pod already running stays without secrets until it is replaced (`docs/site/src/content/docs/broker/guides/revoke-a-session.md`, "End a machine's login").
 
-- **`leak_guard.knives_registries`** names the knives registry files every role's push is scanned against ([Worker image](#worker-image), the leak guard's third pass).
+- **`leak_guard.knives_registries`** names the knives registry files a role's push to a repository GitHub reports public is scanned against ([Worker image](#worker-image), the leak guard's third pass).
   Each row is a `repo` (`<owner>/<name>`), a `path` in it and a `ref`, a branch or tag:
   the first row is the registry, and each later row an overlay that adds forbidden terms to entries the registry already has, as knives' `repos.local.toml` does.
   The daemon tells every role it launches the rows, in their order, as `LEGION_KNIVES_REGISTRIES`, a JSON list:
   every role of an issue pod and the controller it launches under `controller: daemon`, each through its generation's start command, so no pod is replaced.
   The name is the runtime's own, so neither `pod.env` nor a launch may set it.
-  Each file is read at every push with the role's own gh, so every role's GitHub credential must read each repository the rows name, and a change to a file reaches the next push.
+  Each file is read at every push to a repository GitHub reports public, with the role's own gh, so every role's GitHub credential must read each repository the rows name, and a change to a file reaches the next such push.
   A change to the rows themselves reaches each role at its next launch: the rows are no part of a role's address record, so a daemon restarted with other rows relaunches nothing for them.
   A row may name a private repository, so the rows never reach the `settings` of `legion state`.
-  Load refuses a repo that is no `<owner>/<name>`, a path with a leading `/` or a `..` component, an unknown or missing field, and two rows naming one file of one repository.
+  Load refuses a repo that is no `<owner>/<name>`, a path with a leading `/` or a `..` component, an unknown or missing field, and two rows naming one file of one repository, under either name of a `repository_renames` pair.
   With no row, the default, a push is not scanned for a knives forbidden list, and the capability report's `knives-push-gate` row is open until the rows name a registry or `capabilities.decided.knives-push-gate` records a reason.
   `legion controller start` reads no `legion.yaml`, so a controller the operator launches is told no registry, and its pushes have no third pass.
   Under `runtime: tmux` no pane is told the rows, since a pane's push runs no leak guard (`docs/deployment.md`), and the row stays open.

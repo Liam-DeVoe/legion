@@ -362,7 +362,8 @@ func sandboxOptions(cfg config.Config, k config.Kubernetes, project, dispatchTok
 		// when they change (sandbox's address record).
 		ControllerSlackChannels: cfg.Projects[cfg.Project].SlackChannels,
 		// Every role this runtime launches, the controller's among them, is told the knives
-		// registries every push of it is scanned against (leakguard.KnivesRegistriesVar).
+		// registries its pushes to a repository GitHub reports public are scanned against
+		// (leakguard.KnivesRegistriesVar).
 		KnivesRegistries:      cfg.LeakGuard.KnivesRegistriesValue(),
 		Tools:                 workerImageTools,
 		Pod:                   sandbox.Pod(k.Pod),

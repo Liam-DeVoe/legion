@@ -56,9 +56,10 @@ func (g LeakGuard) KnivesRegistriesValue() string {
 // readLeakGuard is `leak_guard`: a mapping whose one member, `knives_registries`, is a list of
 // mappings, each exactly a `repo` Parse takes, a `path` and a `ref`. A row that is not a mapping, a
 // field that is not one of the three, a missing or empty field, a repo Parse refuses, a path
-// checkKnivesRegistryPath refuses, and a second row naming a file an
-// earlier row names are each refused naming the row. An absent key, a null one, a null or absent
-// member and an empty list are each no registry.
+// checkKnivesRegistryPath refuses, and a second row naming a file an earlier row names are each
+// refused naming the row. An absent key, a null one, a null or absent member and an empty list are
+// each no registry. Two rows naming one path under the two names of a configured rename are
+// refused once the renames settle (checkKnivesRegistryRenames).
 func readLeakGuard(value *yaml.Node, key string) (LeakGuard, error) {
 	if value.Tag == "!!null" {
 		return LeakGuard{}, nil
@@ -136,6 +137,30 @@ func checkKnivesRegistryPath(path, key string) error {
 	for component := range strings.SplitSeq(path, "/") {
 		if component == ".." {
 			return fmt.Errorf("%s %q has a .. component: name the file itself", key, path)
+		}
+	}
+	return nil
+}
+
+// checkKnivesRegistryRenames refuses two `leak_guard.knives_registries` rows naming one path in two
+// repositories a configured rename makes one repository. readLeakGuard already refuses one file
+// named twice (the repository compared without case), but it reads the block before the renames
+// settle and knows nothing of them, so the pair is caught here, as checkCommitIssueTrailerRenames
+// catches its own. GitHub serves a moved repository under its old name as well, so the guard
+// would read the one file twice, and the second read adds the terms of the first to the same
+// entries again: a term listed twice, which the guard refuses at every push it scans.
+func checkKnivesRegistryRenames(cfg *Config) error {
+	if cfg.RepositoryRenames.IsZero() {
+		return nil
+	}
+	rows := cfg.LeakGuard.KnivesRegistries
+	for index, row := range rows {
+		for earlier, named := range rows[:index] {
+			if named.Path != row.Path || !cfg.RepositoryRenames.Same(named.Repo, row.Repo) {
+				continue
+			}
+			return fmt.Errorf("%s[%d] (%s) and %s[%d] (%s) both name %s in one repository: %s makes %s and %s one repository; each row is one file, named once",
+				knivesRegistriesKey, earlier, named.Repo, knivesRegistriesKey, index, row.Repo, row.Path, repositoryRenamesKey, named.Repo, row.Repo)
 		}
 	}
 	return nil

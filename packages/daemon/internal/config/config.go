@@ -1104,6 +1104,9 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 		return Config{}, err
 	}
 	cfg.LeakGuard = file.LeakGuard
+	if err := checkKnivesRegistryRenames(&cfg); err != nil {
+		return Config{}, err
+	}
 	cfg.Hooks = settleHooks(file.Hooks, configDir)
 	if cfg.Runtime.Name == "kubernetes" {
 		if err := checkPodReachable(cfg); err != nil {

@@ -190,22 +190,25 @@ projects:
 #       path: knives/repos.toml        # GitHub repository, at a branch or tag: the first row is
 #       ref: main                      # the registry, and each later row an overlay that adds
 #     - repo: acme/private-knives      # forbidden terms to entries the registry already has, as
-#       path: knives/repos.local.toml  # knives' repos.local.toml does. A push to a repository
-#       ref: main                      # an entry names is refused when a file it adds holds one
-#                                      # of that entry's terms; the refusal names the file, the
-#                                      # line and the term's number, never the term. Every file
-#                                      # is read at every push with the role's own gh, so every
+#       path: knives/repos.local.toml  # knives' repos.local.toml does. A push to a public
+#       ref: main                      # repository an entry names is refused when a file it
+#                                      # adds holds one of that entry's terms; the refusal names
+#                                      # the file, the line and the term's number, never the
+#                                      # term. Every file is read at every push to a repository
+#                                      # GitHub reports public, with the role's own gh, so every
 #                                      # role's GitHub credential must read it, and a file that
-#                                      # cannot be read refuses the push. A row may name a
+#                                      # cannot be read refuses that push. A row may name a
 #                                      # private repository (the overlay above stands in for
 #                                      # one), which is why the rows never reach legion state's
-#                                      # settings. A change to a file reaches the next push; a
-#                                      # change to the rows reaches each role at its next launch.
-#                                      # With no row a push is not scanned for a knives forbidden
-#                                      # list, and the capability report's knives-push-gate row
-#                                      # is open (capabilities, below). Refused: a repo that is
-#                                      # no <owner>/<name>, a path with a leading / or a ..
-#                                      # component, and two rows naming one file of a repository.
+#                                      # settings. A change to a file reaches the next such push;
+#                                      # a change to the rows reaches each role at its next
+#                                      # launch. With no row a push is not scanned for a knives
+#                                      # forbidden list, and the capability report's
+#                                      # knives-push-gate row is open (capabilities, below).
+#                                      # Refused: a repo that is no <owner>/<name>, a path with
+#                                      # a leading / or a .. component, and two rows naming one
+#                                      # file of a repository, under either name a
+#                                      # repository_renames pair gives it.
 # hooks:                               # optional: the words the daemon puts in front of an
 #   - name: work-back                  # issue's workers when its work keeps going back to an
 #     on: work_back                    # earlier phase. A file that names no hooks key runs this

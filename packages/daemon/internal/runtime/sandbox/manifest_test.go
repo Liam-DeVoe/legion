@@ -1512,10 +1512,11 @@ const testKnivesRegistries = `[{"repo":"sjawhar/dotfiles","path":"knives/repos.t
 
 // Every role this runtime launches — a phase worker, a Claude Code worker and the controller — is
 // told leak_guard.knives_registries as leakguard.KnivesRegistriesVar, the rows in the order the
-// daemon wrote them, so the guard of every push it makes reads them. The value rides the
-// generation's start command and not the pod's template, so a changed list reaches the next launch
-// and replaces no pod. The name is the runtime's own, so no spec or operator's pod env sets it; and
-// a deployment that names no registry tells no role the variable at all, not even empty.
+// daemon wrote them, so the guard of every push it makes to a public repository reads them. The
+// value rides the generation's start command and not the pod's template, so a changed list
+// reaches the next launch and replaces no pod. The name is the runtime's own, so no spec or
+// operator's pod env sets it; and a deployment that names no registry tells no role the variable
+// at all, not even empty.
 func TestEveryRoleIsToldTheKnivesRegistries(t *testing.T) {
 	opts := goldenOptions()
 	opts.KnivesRegistries = testKnivesRegistries

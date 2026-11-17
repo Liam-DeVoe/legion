@@ -1,14 +1,12 @@
 package leakguard
 
 import (
-	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
 	"testing"
 
-	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 )
 
@@ -16,8 +14,8 @@ import (
 // are in knives_refusal_test.go, which says why they are a file of their own.
 
 // knivesOverlayRow is an overlay from a private repository, which adds one term to the entry of
-// theKnivesRegistry: the shape of the second row in production, whose repository, path and terms
-// no message may carry.
+// theKnivesRegistry: a row can name a private repository, whose repository, path and terms no
+// message may carry.
 var knivesOverlayRow = knivesServed{
 	Repo: "invented-org/private-registry",
 	Path: "repos.local.toml",
@@ -311,58 +309,12 @@ func TestAnAddedPathThatHoldsAKnivesTermIsRefusedMasked(t *testing.T) {
 }
 
 // A merge of 52 parents, as cybermonklabs/oh-my-pi's release merges are, is read from its files
-// for the knives pass as for the rules (TestAnOctopusMergeIsReadFromItsFiles): a line of the
-// merge's own resolution that holds a term is refused at its number in the merge's file, and a
-// line that holds one in a parent's file is text the destination holds already, since it holds
-// every parent.
+// for the knives pass as for the rules (TestAnOctopusMergeIsReadFromItsFiles, whose fixture,
+// octopusRepo, this is): a line of the merge's own resolution that holds a term is refused at its
+// number in the merge's file, and a line that holds one in a parent's file is text the
+// destination holds already, since it holds every parent.
 func TestAnOctopusMergesOwnLinesAreReadForKnivesTerms(t *testing.T) {
-	home, root := t.TempDir(), t.TempDir()
-	remote, repo := filepath.Join(root, "remote.git"), filepath.Join(root, "repo")
-	fixture := fixturegit.Isolated(t, home)
-	fixture.Run(root, fixturegit.InitBare(remote, "main")...)
-	fixture.Run(root, fixturegit.InitWorkTree(repo, "main")...)
-	write := func(content string) {
-		t.Helper()
-		if err := os.WriteFile(filepath.Join(repo, "shared.md"), []byte(content), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	tree := func() string {
-		t.Helper()
-		fixture.Run(repo, "git", "add", "-A")
-		return fixture.Run(repo, "git", "write-tree")
-	}
-	const shared, parents = "the shared file\n", 52
-	write(shared)
-	fixture.Run(repo, "git", "add", "-A")
-	fixture.Run(repo, "git", "commit", "--quiet", "-m", "the commit the destination holds")
-	base := fixture.Run(repo, "git", "rev-parse", "HEAD")
-	every := shared
-	var merged []string
-	push := []string{"git", "push", "--quiet", "origin", "main"}
-	for i := range parents {
-		n := strconv.Itoa(i + 1)
-		line := "a line of parent " + n
-		if i == 16 {
-			line = "the build of parent " + n + " is QUILLWORTHY"
-		}
-		write(shared + line + "\n")
-		parent := fixture.Run(repo, "git", "commit-tree", tree(), "-p", base, "-m", "parent "+n)
-		every += line + "\n"
-		merged = append(merged, "-p", parent)
-		push = append(push, parent+":refs/heads/parent-"+n)
-	}
-	fixture.Run(repo, "git", "remote", "add", "origin", remote)
-	fixture.Run(repo, push...)
-	octopus := func(sharedFile string) string {
-		t.Helper()
-		write(sharedFile)
-		head := fixture.Run(repo, append([]string{"git", "commit-tree", tree(), "-m", "the merge"}, merged...)...)
-		if listed := fixture.Run(repo, "git", "rev-list", "--parents", "-n", "1", head); len(strings.Fields(listed)) != parents+1 {
-			t.Fatalf("the fixture's merge is %q, want a commit of %d parents", listed, parents)
-		}
-		return head
-	}
+	repo, base, every, octopus := octopusRepo(t, "the build of parent 17 is QUILLWORTHY")
 
 	for _, tc := range []struct {
 		name string
@@ -372,13 +324,13 @@ func TestAnOctopusMergesOwnLinesAreReadForKnivesTerms(t *testing.T) {
 	}{
 		{
 			name: "the resolution adds a line that holds a term",
-			head: octopus(every + "the resolution names quillwort\n"),
+			head: octopus(every+"the resolution names quillwort\n", ""),
 			// The shared file's first line, each parent's, and then the resolution's.
-			want: []string{"shared.md:" + strconv.Itoa(1+parents+1) + ": forbidden term 2"},
+			want: []string{"shared.md:" + strconv.Itoa(1+octopusParents+1) + ": forbidden term 2"},
 		},
 		{
 			name: "a parent's line holds the term and the merge adds none",
-			head: octopus(every),
+			head: octopus(every, ""),
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

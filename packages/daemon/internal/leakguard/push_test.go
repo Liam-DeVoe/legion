@@ -258,16 +258,24 @@ func TestAMergesOwnResolutionIsRead(t *testing.T) {
 	}
 }
 
-// An octopus merge is read from its files, as every merge is: git's combined diff misreads a
-// merge of 33 parents or more (diffTree's doc), and cybermonklabs/oh-my-pi's release merges have
-// 51 to 53. The merges here have 52 parents, each of which adds a line of its own to one shared
-// file, and each merge's shared file holds every parent's line. One parent's line names a host:
-// the destination holds every parent, through a remote-tracking ref, so that line is text it
-// already has, and the merge is the whole of what each push adds. A merge's commit is written
-// with commit-tree over a tree of the fixture's own, so no octopus strategy resolves 52 heads.
-func TestAnOctopusMergeIsReadFromItsFiles(t *testing.T) {
+// octopusParents is how many parents the merges octopusRepo writes have: as many as
+// cybermonklabs/oh-my-pi's release merges have, which run from 51 to 53.
+const octopusParents = 52
+
+// octopusRepo is the fixture of the octopus merge tests: a repository whose base, which the
+// destination holds, has one file, shared.md, and octopusParents parents on that base, each of
+// which adds a line of its own to shared.md, parent 17's being line17. The destination holds every
+// parent, through a remote-tracking ref, so a merge of them is the whole of what a push of it
+// adds. It answers the repository, the base, every, shared.md as it holds every parent's line,
+// which is what each merge's shared file starts from, and octopus, which writes a merge of every
+// parent whose shared.md is as shared has it, and whose resolution.md is as added has it, where
+// added is not empty: a file no parent has. A merge's commit is written with commit-tree over a
+// tree of the fixture's own, so no octopus strategy resolves 52 heads.
+func octopusRepo(t *testing.T, line17 string) (repo, base, every string, octopus func(shared, added string) string) {
+	t.Helper()
 	home, root := t.TempDir(), t.TempDir()
-	remote, repo := filepath.Join(root, "remote.git"), filepath.Join(root, "repo")
+	remote := filepath.Join(root, "remote.git")
+	repo = filepath.Join(root, "repo")
 	fixture := fixturegit.Isolated(t, home)
 	fixture.Run(root, fixturegit.InitBare(remote, "main")...)
 	fixture.Run(root, fixturegit.InitWorkTree(repo, "main")...)
@@ -283,23 +291,21 @@ func TestAnOctopusMergeIsReadFromItsFiles(t *testing.T) {
 		fixture.Run(repo, "git", "add", "-A")
 		return fixture.Run(repo, "git", "write-tree")
 	}
-	const shared, parents = "the shared file\n", 52
-	write("shared.md", shared)
+	const first = "the shared file\n"
+	write("shared.md", first)
 	fixture.Run(repo, "git", "add", "-A")
 	fixture.Run(repo, "git", "commit", "--quiet", "-m", "the commit the destination holds")
-	base := fixture.Run(repo, "git", "rev-parse", "HEAD")
-	// every is the shared file as it holds every parent's line, which is what each merge's
-	// shared file starts from.
-	every := shared
+	base = fixture.Run(repo, "git", "rev-parse", "HEAD")
+	every = first
 	var merged []string
 	push := []string{"git", "push", "--quiet", "origin", "main"}
-	for i := range parents {
+	for i := range octopusParents {
 		n := strconv.Itoa(i + 1)
 		line := "a line of parent " + n
 		if i == 16 {
-			line = "the runner of parent " + n + " answers at " + theHost
+			line = line17
 		}
-		write("shared.md", shared+line+"\n")
+		write("shared.md", first+line+"\n")
 		parent := fixture.Run(repo, "git", "commit-tree", tree(), "-p", base, "-m", "parent "+n)
 		every += line + "\n"
 		merged = append(merged, "-p", parent)
@@ -307,11 +313,9 @@ func TestAnOctopusMergeIsReadFromItsFiles(t *testing.T) {
 	}
 	fixture.Run(repo, "git", "remote", "add", "origin", remote)
 	fixture.Run(repo, push...)
-	// octopus is a merge of every parent whose shared file is as sharedFile has it, and whose
-	// resolution.md is as added has it, where added is not empty: a file no parent has.
-	octopus := func(sharedFile, added string) string {
+	octopus = func(shared, added string) string {
 		t.Helper()
-		write("shared.md", sharedFile)
+		write("shared.md", shared)
 		if err := os.RemoveAll(filepath.Join(repo, "resolution.md")); err != nil {
 			t.Fatal(err)
 		}
@@ -319,14 +323,24 @@ func TestAnOctopusMergeIsReadFromItsFiles(t *testing.T) {
 			write("resolution.md", added)
 		}
 		head := fixture.Run(repo, append([]string{"git", "commit-tree", tree(), "-m", "the merge"}, merged...)...)
-		if listed := fixture.Run(repo, "git", "rev-list", "--parents", "-n", "1", head); len(strings.Fields(listed)) != parents+1 {
-			t.Fatalf("the fixture's merge is %q, want a commit of %d parents", listed, parents)
+		if listed := fixture.Run(repo, "git", "rev-list", "--parents", "-n", "1", head); len(strings.Fields(listed)) != octopusParents+1 {
+			t.Fatalf("the fixture's merge is %q, want a commit of %d parents", listed, octopusParents)
 		}
 		if adds := fixture.Run(repo, "git", "rev-list", head, "--not", "--remotes=origin"); adds != head {
 			t.Fatalf("a push of the fixture's merge adds %q, want the merge alone", adds)
 		}
 		return head
 	}
+	return repo, base, every, octopus
+}
+
+// An octopus merge is read from its files, as every merge is: git's combined diff misreads a
+// merge of 33 parents or more (mergeFiles' doc). The merges here are octopusRepo's, and each
+// one's shared file holds every parent's line. One parent's line names a host: the destination
+// holds every parent, so that line is text it already has, and the merge is the whole of what
+// each push adds.
+func TestAnOctopusMergeIsReadFromItsFiles(t *testing.T) {
+	repo, base, every, octopus := octopusRepo(t, "the runner of parent 17 answers at "+theHost)
 
 	for _, tc := range []struct {
 		name string

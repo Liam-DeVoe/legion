@@ -695,6 +695,10 @@ const tmuxCapabilityGaps = "capability secrets is open: the tmux runtime enrolls
 // decide the row: it comes last of the capability lines, in the table's order.
 const knivesGap = "capability knives-push-gate is open: leak_guard.knives_registries names no knives registry, so a push from a role is not scanned for a knives forbidden list; to record a decision, add to legion.yaml: capabilities.decided.knives-push-gate: \"<reason>\"\n"
 
+// knivesRegistryBlock is a leak_guard block that names one knives registry, which closes the
+// knives-push-gate row of a Kubernetes configuration and closes nothing under tmux.
+const knivesRegistryBlock = "leak_guard:\n  knives_registries:\n    - {repo: sjawhar/dotfiles, path: knives/repos.toml, ref: main}\n"
+
 // productionCheckTesterLine is the production-check line `legion start --check-config` prints
 // for a project that names no `production_check` and so gets the tester, and deploysIgnoredLine
 // the warning it prints, and boot logs, for one that still sets `deploys`.
@@ -1337,7 +1341,6 @@ func TestStartCheckConfigReportsTheConfigurationsCapabilityGaps(t *testing.T) {
 	const issueSet = "    resources:\n      issue: {cpu: \"4\", memory: 24Gi}\n"
 	const secretsGap = "capability secrets is open: runtime.kubernetes.agent_secrets is not configured; to record a decision, add to legion.yaml: capabilities.decided.secrets: \"<reason>\"\n"
 	const pluginsGap = "plugins: none — set runtime.kubernetes.plugins or run a release build; a daemon that knows none relaunches no process on another plugin contract\n"
-	const registry = "leak_guard:\n  knives_registries:\n    - {repo: sjawhar/dotfiles, path: knives/repos.toml, ref: main}\n"
 	for _, tc := range []struct{ name, extra, want string }{
 		{"no resources block, no broker: both pods at the defaults", "", secretsGap + knivesGap},
 		{"the issue pod with one field set, the other the default", "    resources: {issue: {memory: 12Gi}}\n", secretsGap + knivesGap},
@@ -1346,9 +1349,9 @@ func TestStartCheckConfigReportsTheConfigurationsCapabilityGaps(t *testing.T) {
 		{"the controller at its default under controller: daemon", issueSet + "controller: daemon\n", secretsGap + knivesGap},
 		{"a broker configured, whose login is boot's", issueSet + "    agent_secrets: {url: https://secrets.internal.example, token_file: /var/run/legion/agent-secrets-token/token}\n", knivesGap},
 		{"secrets decided", "capabilities:\n  decided:\n    secrets: \"dispatch://LEGION-205 enrolls pods later\"\n", knivesGap},
-		{"a knives registry named", registry, secretsGap},
+		{"a knives registry named", knivesRegistryBlock, secretsGap},
 		{"the knives push gate decided", "capabilities:\n  decided:\n    knives-push-gate: \"no role pushes to a fork\"\n", secretsGap},
-		{"a broker configured and a knives registry named", issueSet + "    agent_secrets: {url: https://secrets.internal.example, token_file: /var/run/legion/agent-secrets-token/token}\n" + registry, ""},
+		{"a broker configured and a knives registry named", issueSet + "    agent_secrets: {url: https://secrets.internal.example, token_file: /var/run/legion/agent-secrets-token/token}\n" + knivesRegistryBlock, ""},
 		{"the issue pod requesting less memory than its limit", "    resources: {issue: {memory: 32Gi, memory_request: 8Gi}}\n",
 			secretsGap + knivesGap + "resources: Burstable (a request below the limit): the issue pod; every other pod is Guaranteed\n"},
 		{"the controller requesting less cpu than its limit", "    resources: {controller: {cpu: 2, cpu_request: 500m}}\ncontroller: daemon\n",
@@ -1372,7 +1375,7 @@ func TestStartCheckConfigReportsTheConfigurationsCapabilityGaps(t *testing.T) {
 // leak_guard names, until the file decides it.
 func TestStartCheckConfigReportsTheKnivesGapUnderTmuxWhateverTheRows(t *testing.T) {
 	legionState(t)
-	config, _ := workflowConfig(t, 13370, "leak_guard:\n  knives_registries:\n    - {repo: sjawhar/dotfiles, path: knives/repos.toml, ref: main}\n")
+	config, _ := workflowConfig(t, 13370, knivesRegistryBlock)
 	var out, errb bytes.Buffer
 	code := run(context.Background(), []string{"legion", "start", "--check-config", "--config", config}, &out, &errb)
 	if want := demoCheckConfigOK + tmuxCapabilityGaps; code != 0 || out.String() != want || errb.Len() != 0 {

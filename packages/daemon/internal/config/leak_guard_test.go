@@ -74,10 +74,10 @@ func TestLeakGuardIsTheZeroValueWithoutRows(t *testing.T) {
 
 // Every refusal of leak_guard names the key, the row and the value: a block that is no mapping, a
 // member it does not know, a list that is no list, a row that is no mapping, a field it does not
-// know or names twice, a missing or empty field, a repo Parse refuses, a path from the root, with a
-// .. component or a character the guard's read would not keep in the path, a ref with one it would
-// not keep in the ref, and a second row naming a file an earlier row names, case aside in the
-// repository.
+// know or names twice, a missing or empty field, a repo Parse refuses, a path from the root or with
+// a .. component, a second row naming a file an earlier row names, case aside in the repository,
+// and one naming it under the other name of a configured repository_renames pair, which only the
+// settled renames tell (checkKnivesRegistryRenames).
 func TestLeakGuardRefusals(t *testing.T) {
 	const key = "leak_guard.knives_registries"
 	for _, tc := range []struct{ name, body, want string }{
@@ -115,6 +115,11 @@ func TestLeakGuardRefusals(t *testing.T) {
 			key + "[0].ref must not be empty"},
 		{"one file twice", "leak_guard: {knives_registries: [{repo: a/b, path: r.toml, ref: main}, {repo: A/B, path: r.toml, ref: v2}]}\n",
 			key + "[0] and " + key + "[1] both name r.toml in A/B: each row is one file, named once"},
+		{"one file under the two names of a configured rename",
+			"leak_guard: {knives_registries: [{repo: acme/widgets, path: r.toml, ref: main}, {repo: Acme/Gadgets, path: r.toml, ref: main}]}\n" +
+				"repository_renames: [{from: acme/widgets, to: acme/gadgets}]\n",
+			key + "[0] (acme/widgets) and " + key + "[1] (Acme/Gadgets) both name r.toml in one repository: " +
+				"repository_renames makes acme/widgets and Acme/Gadgets one repository; each row is one file, named once"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := Load(writeConfigFile(t, minimalFile+tc.body), noEnv)
@@ -123,10 +128,14 @@ func TestLeakGuardRefusals(t *testing.T) {
 			}
 		})
 	}
-	// Two rows of one repository naming two files, or one path in two repositories, are two files.
+	// Two rows of one repository naming two files, or one path in two repositories, are two files,
+	// with a configured rename too: two paths under its two names, and one path in a repository it
+	// does not name.
 	for _, body := range []string{
 		"leak_guard: {knives_registries: [{repo: a/b, path: r.toml, ref: main}, {repo: a/b, path: R.toml, ref: main}]}\n",
 		"leak_guard: {knives_registries: [{repo: a/b, path: r.toml, ref: main}, {repo: a/c, path: r.toml, ref: main}]}\n",
+		"leak_guard: {knives_registries: [{repo: acme/widgets, path: r.toml, ref: main}, {repo: acme/gadgets, path: R.toml, ref: main}, {repo: acme/other, path: r.toml, ref: main}]}\n" +
+			"repository_renames: [{from: acme/widgets, to: acme/gadgets}]\n",
 	} {
 		if _, err := Load(writeConfigFile(t, minimalFile+body), noEnv); err != nil {
 			t.Errorf("Load(%q): %v, want two files accepted", body, err)
