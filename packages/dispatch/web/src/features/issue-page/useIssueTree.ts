@@ -1,4 +1,4 @@
-import { keepPreviousData, useQueries, useQuery } from "@tanstack/react-query";
+import { keepPreviousData, type QueryStatus, useQueries, useQuery } from "@tanstack/react-query";
 import { useMemo } from "react";
 
 import { api } from "../../api/client";
@@ -34,12 +34,12 @@ export interface IssueTreeView {
    *  (dispatch://INFRA-1196 decision 98). That is the one case where the two differ: both are
    *  false before a document's first answer and after a first read that fails. */
   readonly blocksHeld: boolean;
-  /** Whether the blocks of every document the tree reads (`treeDocumentIds`) have been read.
-   *  Until then a typed block - the spec's summary among them - may be missing from `root`
-   *  because it has not arrived rather than because its document holds none, which is what the
-   *  head waits on before it says a spec has no summary (`IssueThreeThings.tsx`). A read that
-   *  failed has not answered either: the page cannot say what a document it could not read
-   *  holds. */
+  /** Whether every blocks read of the tree's documents (`treeDocumentIds`) has answered with
+   *  success. A read that fails, a first one or a refetch, turns it false, even where a first
+   *  read's blocks are still held. It is what a view reads that must tell "not read yet" from
+   *  "holds none": until it is true a typed block - the spec's summary among them - may be
+   *  missing from `root` because it has not arrived rather than because its document holds
+   *  none. A view that draws from the blocks it holds reads `blocksHeld` instead. */
   readonly blocksRead: boolean;
   readonly root: TreeNode;
 }
@@ -103,6 +103,40 @@ const NO_TARGET_NAMES: ReadonlyMap<string, string> = new Map();
  *  and the same empty set on every render, as `NO_TARGET_NAMES` is the same empty map. */
 const NO_AMBIGUOUS_TARGETS: ReadonlySet<string> = new Set();
 
+/** A read in error is fetched again when the window takes focus, so a read that failed recovers
+ *  on the open page, and a healthy one stays quiet. This is `refetchFailedOnFocus` of
+ *  `features/refs/reference-target.ts`, which keeps it to itself; that file is outside this part
+ *  (dispatch://INFRA-3951), so the rule is copied here rather than exported from there. */
+const refetchFailedOnFocus = (query: { readonly state: { readonly status: QueryStatus } }) =>
+  query.state.status === "error" ? "always" : false;
+
+/**
+ * What every read of the tree takes: it is kept fresh by events, never by its age
+ * (dispatch://INFRA-1196 decision 180). The page's stage mounts the tree's slot again on every
+ * press of a view, so under the app's 30 s `staleTime` (`main.tsx`) a press more than 30 s after
+ * the load would read every one of the tree's reads again, though nothing they hold has changed.
+ * The feed's rules (`api/event-refresh.ts`) refresh each read when an event can change it; among
+ * them, `["comments", key]` on a comment event and on a document's upload or new version;
+ * `["asks", key]` on an ask event, a reply on an ask, a review of a document and a block
+ * repaired or found invalid; `["decisions", key]` on an ask event, a Keep and a document's new
+ * version; `["issue-messages", key]` on a message event; `["issue", key, "coverage"]` on a
+ * document's upload or new version; `["issue", key, "results"]` on those too, on a result
+ * recorded or retracted and on a pull request moved to another issue; and `["artifact", id]`, a
+ * prefix of the document's blocks read (`["artifact", id, "blocks"]`), on its new version, its
+ * rename, removal or review, and an ask or comment in it. No rule there names the names reads
+ * (`["reference-targets", …]`) or `["whoami"]`. A names read's key is the set of addresses it
+ * names, so a tree that comes to hold another set reads again under a key of its own, and the
+ * reader's login does not change while the page is open; but a target whose words change under
+ * an address the tree already names - a cited comment edited, a block of a document's new
+ * version - keeps its old name until the feed's next gap or the page's next load. A gap in the
+ * feed refreshes every read the app holds (`refreshQueries`), these among them, and window focus
+ * fetches again only a read in error (`refetchFailedOnFocus`).
+ */
+const EVENT_FRESH = {
+  refetchOnWindowFocus: refetchFailedOnFocus,
+  staleTime: Number.POSITIVE_INFINITY,
+} as const;
+
 /**
  * The issue's tree, from the page's reads (dispatch://INFRA-1196 R20). This hook is where the
  * reads are; `buildIssueTree` is pure and holds none of them, so the model is testable without a
@@ -134,26 +168,31 @@ const NO_AMBIGUOUS_TARGETS: ReadonlySet<string> = new Set();
  */
 export function useIssueTree(issue: IssueDetails): IssueTreeView {
   const key = issue.key;
-  const coverage = useQuery(issueCoverageQuery(key));
-  const decisions = useQuery(issueDecisionsQuery(key, true));
-  const results = useQuery(issueResultsQuery(key));
+  // Every read here takes `EVENT_FRESH`: events refresh it, and a slot mounted again reads
+  // nothing (decision 180).
+  const coverage = useQuery({ ...issueCoverageQuery(key), ...EVENT_FRESH });
+  const decisions = useQuery({ ...issueDecisionsQuery(key, true), ...EVENT_FRESH });
+  const results = useQuery({ ...issueResultsQuery(key), ...EVENT_FRESH });
   const asks = useQuery({
     queryKey: ["asks", key],
     queryFn: () => api.listIssueAsks(key, "all"),
+    ...EVENT_FRESH,
   });
   // Under the keys the margin, the history and the focused row's facts read too, so a reader
   // opening the panel after the tree finds them answered rather than read a second time.
   const comments = useQuery({
     queryKey: ["comments", key],
     queryFn: () => api.listComments(key),
+    ...EVENT_FRESH,
   });
   const messages = useQuery({
     queryKey: ["issue-messages", key],
     queryFn: () => api.listIssueMessages(key),
+    ...EVENT_FRESH,
   });
   // The reader, whose own turn an open question may be (`IssueTreeReads.viewer`): the shell's
   // one read of who is signed in, so it costs no request of its own.
-  const who = useQuery(whoAmIQuery());
+  const who = useQuery({ ...whoAmIQuery(), ...EVENT_FRESH });
   const viewer = who.data?.login;
   const documentIds = treeDocumentIds(issue);
   // `combine` is what keeps one value for every document's blocks: TanStack holds its answer and
@@ -174,7 +213,7 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
       pending: answers.some((answer) => answer.isPending),
       read: answers.every((answer) => answer.isSuccess),
     }),
-    queries: documentIds.map((id) => artifactBlocksQuery(id)),
+    queries: documentIds.map((id) => ({ ...artifactBlocksQuery(id), ...EVENT_FRESH })),
   });
   // One value, so the model is given the reads and nothing else.
   const reads = useMemo<IssueTreeReads>(
@@ -232,6 +271,7 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
   // one is the whole page's words at once.
   const targets = useQuery({
     ...referenceTargetsQuery(treeRead ? refs : []),
+    ...EVENT_FRESH,
     placeholderData: keepPreviousData,
   });
   const first = useMemo(
@@ -252,6 +292,7 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
   }, [first, firstTree, refs]);
   const more = useQuery({
     ...referenceTargetsQuery(extra),
+    ...EVENT_FRESH,
     placeholderData: keepPreviousData,
   });
   // Both answers, the second's standing for an address both name. Where nothing is left for the

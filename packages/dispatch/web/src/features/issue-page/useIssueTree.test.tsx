@@ -1,13 +1,16 @@
-import { expect, type Mock, spyOn, test } from "bun:test";
+import { expect, type Mock, setSystemTime, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 
 import { api } from "../../api/client";
+import { eventRefreshTargets } from "../../api/event-refresh";
+import { refreshQueries } from "../../api/query-refresh";
 import type {
   Artifact,
   ArtifactBlock,
   Comment,
+  DispatchEvent,
   DisplayTree,
   IssueDetails,
   ReferenceTarget,
@@ -759,6 +762,81 @@ test("blocks a failed refetch leaves in hand stay held while they stop counting 
     view.unmount();
   } finally {
     blocksOut.resolve();
+    for (const stub of stubs) stub.mockRestore();
+  }
+});
+
+// dispatch://INFRA-1196 decision 180: the page's stage mounts the tree's slot again on every
+// press of a view, and under the app's `staleTime` a read is stale 30 s after it answered
+// (`main.tsx`). The tree's reads are kept fresh by events instead: the slot mounted again more
+// than 30 s on draws from what the client holds and sends no read, and a comment event reads the
+// comments again and nothing else.
+test("a tree mounted again past 30 s reads nothing, and a comment event reads the comments", async () => {
+  const stored: Comment[] = [comment];
+  const stubs = stubTreeReads(async (refs) => namedTargets(refs), { comments: stored });
+  const requests = () => stubs.reduce((sent, stub) => sent + stub.mock.calls.length, 0);
+  // The app's client's `staleTime` (`main.tsx`), which a read that sets none of its own takes.
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: 30_000 } },
+  });
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={client}>{children}</QueryClientProvider>
+  );
+  try {
+    const first = renderHook(() => useIssueTree(issue).root, { wrapper });
+    // Every read has answered, the names last of all.
+    await waitFor(() => expect(taskWords(first.result.current)).toBe(TASK_WORDS));
+    await waitFor(() => expect(client.isFetching()).toBe(0));
+    const loaded = requests();
+    first.unmount();
+
+    // A press of another view, more than 30 s after the load, mounts the slot again.
+    setSystemTime(Date.now() + 31_000);
+    const again = renderHook(() => useIssueTree(issue).root, { wrapper });
+    expect(taskWords(again.result.current)).toBe(TASK_WORDS);
+    // Long enough for a read the mount started to have been sent.
+    await act(async () => {
+      const waited = Promise.withResolvers<void>();
+      setTimeout(waited.resolve, 50);
+      await waited.promise;
+    });
+    expect(client.isFetching()).toBe(0);
+    expect(requests(), "no read is sent for a slot mounted again").toBe(loaded);
+
+    // The comment is edited, and the feed refreshes what that event names.
+    const edited: Comment = {
+      ...comment,
+      body: "One more turn, reworded.",
+      edited_at: "2026-11-05T02:00:00Z",
+    };
+    stored[0] = edited;
+    // The page's `Comment` is the read's row and the feed's payload is the contract's, so the
+    // event is cast as the feed's own tests cast theirs (`event-feed.test.ts`).
+    const event = {
+      actor: { id: "alice", kind: "user" },
+      created_at: "2026-11-05T02:00:00Z",
+      id: 2,
+      issue_key: KEY,
+      notify: true,
+      payload: { ...edited, artifact_name: "" },
+      project: "CORE",
+      seq: 2,
+      type: "comment.edited",
+    } as DispatchEvent;
+    await act(async () => {
+      refreshQueries(client, eventRefreshTargets(event, "alice"));
+    });
+    // The tree draws the comment's new words, from the one read the event sent.
+    await waitFor(() => {
+      const turn = nodesInOrder(again.result.current).find((node) => node.id === comment.id);
+      expect(turn?.text).toBe(edited.body);
+    });
+    await waitFor(() => expect(client.isFetching()).toBe(0));
+    expect(api.listComments).toHaveBeenCalledTimes(2);
+    expect(requests(), "the event sends one read, the comments'").toBe(loaded + 1);
+    again.unmount();
+  } finally {
+    setSystemTime();
     for (const stub of stubs) stub.mockRestore();
   }
 });
