@@ -713,6 +713,31 @@ func TestTheComposedRetroRatesThePlanTheIssueRan(t *testing.T) {
 	}
 }
 
+// A claim whose launch installs no plugin (a Claude Code role in a pod) is served on the contract
+// of the plugin its image carries until the update round over its pod (docs/kubernetes.md), so the
+// retro's composed prompt can reach a `legion` tool of the release before the rating, whose strict
+// handoff_complete takes neither plan_rating nor plan_reason. The daemon refuses a retro with no
+// rating only from a plugin at PlanRatingContract or above (api's planRatingRefusal), so the
+// prompt says the refusal comes from a tool that takes the two, and tells an agent whose tool takes
+// neither to complete with the summary alone, rather than to send fields its tool refuses.
+// This shows the text is loaded, never that a role follows it.
+func TestTheComposedRetroCompletesUnratedWhereTheToolTakesNoRating(t *testing.T) {
+	composer, err := New(t.TempDir())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	retro := phase.RoleFor(phase.Retro)
+	text := foldWhitespace(composedText(t, composer, retro, false))
+	for _, phrase := range []string{
+		"The daemon refuses the completion that ends the retro without them from a tool that takes them (`PLAN_RATING_REQUIRED`)",
+		"A `legion` tool whose `handoff_complete` takes neither `plan_rating` nor `plan_reason` is a plugin of the release before the rating: send neither, complete the retro with the summary alone, and the daemon takes that retro with no rating.",
+	} {
+		if !strings.Contains(text, phrase) {
+			t.Errorf("the composed %s prompt, the retro's, omits %q", retro, phrase)
+		}
+	}
+}
+
 // A pod holds every role of one issue in a single container under one memory limit, and its
 // sandbox ends the container rather than the process that filled it, so a heavy run started by
 // any role ends every role's turn. The rule that says so has to reach each role through the
