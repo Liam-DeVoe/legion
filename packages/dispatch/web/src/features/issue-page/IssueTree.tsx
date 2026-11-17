@@ -264,7 +264,7 @@ export function IssueTree({
   const onScreenHold = useRef<AbortController | undefined>(undefined);
   useEffect(() => () => onScreenHold.current?.abort(), []);
   // The open question the page opens on where its row is not drawn yet, whose row is held once
-  // the render that unfolds the path to it has drawn it and given it the focus (`goToNode`). The
+  // the render that unfolds the path to it has drawn it and given it the focus (`unfoldTo`). The
   // reader acting before then lets it go. A question already drawn is landed on as an address's
   // node is (`landOnRow`).
   const holdOnFocus = useRef<string | undefined>(undefined);
@@ -371,16 +371,28 @@ export function IssueTree({
     [rootId]
   );
 
-  // Takes the reader to one node, wherever it is: the path down to it is unfolded, a zoom it
-  // sits outside of is left, and the row takes the focus once this render has drawn it.
-  const goToNode = useCallback(
-    (id: string) => {
+  // Unfolds the path down to one node where the tree stands, zooming nowhere: each branch above
+  // it is opened, and drawn whole past the drawn levels too (`OpenedBranches`'s `deeper`), and
+  // the row takes the focus once this render has drawn it. Answers the ids above the node, the
+  // outermost first.
+  const unfoldTo = useCallback(
+    (id: string): readonly string[] => {
       const above = (pathTo(root, id) ?? []).slice(0, -1).map((node) => node.id);
       setOpened((held) => ({
         branches: new Set([...held.branches, ...above]),
         closed: new Set([...held.closed].filter((one) => !above.includes(one))),
         deeper: new Set([...held.deeper, ...above]),
       }));
+      setWanted(id);
+      return above;
+    },
+    [root]
+  );
+  // Takes the reader to one node, wherever it is: the path down to it is unfolded, a zoom it
+  // sits outside of is left, and the row takes the focus once this render has drawn it.
+  const goToNode = useCallback(
+    (id: string) => {
+      const above = unfoldTo(id);
       // Where the tree is read one node at a time, the only rows are the zoomed node and what
       // it holds (`zoomedRows`), so a key that takes the reader to a node zooms to that node's
       // parent: the node itself is then one of the rows, whatever the zoom was and however
@@ -396,14 +408,13 @@ export function IssueTree({
         zoomed
           ? held === id
             ? held
-            : (above.at(-1) ?? root.id)
+            : (above.at(-1) ?? rootId)
           : held === undefined || held === id || above.includes(held)
             ? held
-            : root.id
+            : rootId
       );
-      setWanted(id);
     },
-    [root, zoomed]
+    [rootId, unfoldTo, zoomed]
   );
   /** The row of `id` where it is drawn already, focused where it stands; else `goToNode`, which
    *  unfolds the path to it and, where the tree is read one node at a time, zooms to it. */
@@ -578,16 +589,17 @@ export function IssueTree({
   // row again under another key - a node sits under the issue until its parent's read answers -
   // takes its old element out of the page, and the browser drops the focus with it: the opening
   // gives it back to the question's new row, as to the first row before it (`openingMayFocus`).
-  // An answer arriving for the question moves nothing: where it folds the branch the
-  // frontier alone opened for the question, which takes the question's row out of the page with
-  // the focus, the opening unfolds the path to it again (`goToNode`). A tree drawn again zoomed
-  // to Focus branch's node (`branchAtMount`) is no page opening on what waits: it opens on the
-  // branch's first row, the node itself, where it stands, since going to a question would leave
-  // the zoom for one outside the branch, drawing every branch while the toggle read on, and
-  // below 1024 px zoom deeper for one inside it. `row` is the row the opening last focused, or
-  // the question's row from when it lands there, whose landing (`landing`, with the focus it
-  // found) tells whose the focus is until its frame comes; `next` is the first row whose focus it
-  // has asked of the next frame and not given yet, and `question` the question it opened on.
+  // An answer arriving for the question moves nothing: where it folds the branch the frontier
+  // alone opened for the question, which takes the question's row out of the page with the
+  // focus, the opening unfolds the path to it again where the tree stands, and zooms nowhere at
+  // any width (`unfoldTo`). A tree drawn again zoomed to Focus branch's node (`branchAtMount`)
+  // is no page opening on what waits: it opens on the branch's first row, the node itself,
+  // where it stands, since going to a question would leave the zoom for one outside the branch,
+  // drawing every branch while the toggle read on, and below 1024 px zoom deeper for one inside
+  // it. `row` is the row the opening last focused, or the question's row from when it lands
+  // there, whose landing (`landing`, with the focus it found) tells whose the focus is until its
+  // frame comes; `next` is the first row whose focus it has asked of the next frame and not
+  // given yet, and `question` the question it opened on.
   const opening = useRef<{
     done: boolean;
     landing?: { readonly from: Element | null; readonly signal: AbortSignal };
@@ -623,7 +635,7 @@ export function IssueTree({
           );
     const active = document.activeElement;
     // The question's row holds the focus the opening gave it, by its landing or in the render
-    // that unfolded the path to it (`goToNode`): it is the row the opening focused.
+    // that unfolded the path to it (`unfoldTo`): it is the row the opening focused.
     if (questionRow?.contains(active) === true) held.row = questionRow;
     // Until its frame, the landing on the question is what tells whether the focus is still the
     // page's (`landOnRow`): nothing holds it, or it is where the landing found it - on the row
@@ -646,14 +658,20 @@ export function IssueTree({
       const openedOn = held.question !== undefined;
       held.question = question;
       if (questionRow === null || questionRow === undefined) {
-        if (openedOn) {
-          // The question's row the opening focused has left the page, its branch folded by an
-          // answer: the path to it is unfolded again, once for that row.
-          if (held.row?.isConnected !== false) return;
-          held.row = undefined;
+        if (!openedOn) {
+          holdOnFocus.current = question;
+          goToNode(question);
+          return;
         }
+        // The question's row the opening focused has left the page, its branch folded by an
+        // answer: the path to it is unfolded again, once for that row, where the tree stands.
+        // Gone to as a key goes to a node (`goToNode`), the tree below 1024 px zoomed to the
+        // question's parent, and on a phone the answer drew the question's thread alone under
+        // a crumb line.
+        if (held.row?.isConnected !== false) return;
+        held.row = undefined;
         holdOnFocus.current = question;
-        goToNode(question);
+        unfoldTo(question);
         return;
       }
       // The question's row holds the focus, or its landing still waits for its frame.
@@ -690,7 +708,7 @@ export function IssueTree({
       openingRow.current = undefined;
     });
     held.next = { frame, row };
-  }, [goToNode, root, rootRow, rows, targetId]);
+  }, [goToNode, root, rootRow, rows, targetId, unfoldTo]);
 
   // A write from the line at the foot takes the reader to what they wrote: their newest
   // node under what the write answered - the reply, the comment, the question - its branch
