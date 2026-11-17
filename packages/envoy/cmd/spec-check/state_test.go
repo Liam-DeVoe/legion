@@ -301,6 +301,37 @@ func TestScenarioRefusals(t *testing.T) {
 	})
 }
 
+// A node of approved.json sets removed and partly_checked: one that sets neither would read as
+// false, so a check that the approved spec removed would be judged, and could make its statement
+// met where it reads unknown, and a statement would lose its "partly checked". Each row takes the
+// member out of the node of carry's check a-restart-loses-no-message (node 5 of the file) and runs
+// state on the scenario, and compare on its files at c2 with its approved.json: each exits 2 with
+// nothing on stdout and one line on stderr that names the file, the form and the place.
+func TestAnApprovedNodeSetsRemovedAndPartlyChecked(t *testing.T) {
+	t.Parallel()
+	binary := cmdtest.Build(t, "spec-check")
+	for _, member := range []string{"removed", "partly_checked"} {
+		t.Run("a node that sets no "+member, func(t *testing.T) {
+			t.Parallel()
+			dir := copyScenario(t, "carry")
+			approved := filepath.Join(dir, "approved.json")
+			var file struct {
+				Nodes []map[string]any `json:"nodes"`
+			}
+			readJSONFile(t, approved, &file)
+			if file.Nodes[4]["id"] != "a-restart-loses-no-message" {
+				t.Fatalf("node 5 of %s is %v, not a-restart-loses-no-message", approved, file.Nodes[4]["id"])
+			}
+			delete(file.Nodes[4], member)
+			writeJSONFile(t, approved, file)
+			want := result{code: 2, stderr: "spec-check: " + approved + ": specgraph: approved spec: it is not in the form " + approvedForm +
+				`: the value at "/nodes/4/` + member + `" is not set` + "\n"}
+			expect(t, runBinary(t, binary, "", "state", "--scenario", dir), want)
+			expect(t, runBinary(t, binary, "", "compare", "--dir", filepath.Join(dir, "files", "c2"), "--approved", approved), want)
+		})
+	}
+}
+
 // The approved side is read by what Dispatch refuses at a change, not by the rules of the files:
 // the person approves a level before the checks of its statements exist, so the approved spec can
 // hold a leaf with no check. The files do not hold it, and it reads not built (R10).
