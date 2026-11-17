@@ -149,7 +149,7 @@ type attribute struct {
 
 // attributes checks every field the write states against its form and answers the write's id in
 // its canonical spelling with the fields it states, in one order whatever order they were given
-// in. A text field that is empty states nothing; ReturnedTo 0 names a return to the retro.
+// in. A text field that is empty states nothing; a ReturnedTo of 0 is place 0 and states it.
 func (write StepWrite) attributes() (string, []attribute, error) {
 	parsed, err := uuid.Parse(write.ID)
 	if err != nil {

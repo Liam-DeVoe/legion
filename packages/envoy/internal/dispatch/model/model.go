@@ -3120,8 +3120,9 @@ type HandoffRecordedEventPayload struct {
 // made), Session the claim's session and Model `<provider>/<model>`, each "" where the daemon
 // knew none. Generation is the issue's run, and Attempt, which no write stores, the place of this
 // run among the issue's runs of the same task, step and kind, from 1. Result is passed, failed or
-// stopped, "" while the run still runs; ReturnedTo is the step a failed or stopped run returned
-// its task to, and Report the handoff its ending role named, each null where the run has none.
+// stopped, "" while the run still runs; ReturnedTo is the place a failed or stopped run returned
+// its task to, 0 being the retro's and the merge's place, and Report the handoff its ending role
+// named, each null where the run has none.
 type StepRecord struct {
 	ID         string     `json:"id"`
 	Issue      string     `json:"issue"`

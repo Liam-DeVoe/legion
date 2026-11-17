@@ -39,7 +39,8 @@ const (
 // stepRecordInput is the body PUT /api/v1/issues/{key}/steps/{id} takes: the writer, and each
 // field of the run the write states. A field the body leaves out, or sends null or "", states
 // nothing, so the write leaves it to the write that knows it. A first write of a run names its
-// task, step, kind, role and generation. returned_to 0 names a return to the retro.
+// task, step, kind, role and generation. returned_to 0 is place 0 and states it
+// (workflowstore.StepWrite).
 type stepRecordInput struct {
 	Actor      *model.Actor `json:"actor"`
 	Task       *string      `json:"task"`
@@ -172,7 +173,7 @@ func (s *server) listIssueSteps(w http.ResponseWriter, r *http.Request) {
 }
 
 // stepRecord is a run as the routes answer it: an absent ReturnedTo and an empty report are a
-// run that has none, which the answer carries as null. A return to the retro carries place 0.
+// run that has none, which the answer carries as null; a return to place 0 carries 0.
 func stepRecord(step workflowstore.StepRead) model.StepRecord {
 	record := model.StepRecord{
 		ID: step.ID, Issue: step.Issue, Task: step.Task, Step: step.Place, Kind: step.Kind,
