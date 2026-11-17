@@ -33,8 +33,9 @@ func cancelledRequest() context.Context {
 }
 
 // heartbeatFailedUnderLoad is the cause api's whileCallerResolves cancels a stream's context with
-// when its heartbeat's re-resolution of the caller finds the pool busy: its own sentinel
-// (errCallerNoLongerResolves, which this stands in for) wrapping the resolution's error.
+// when its heartbeat's re-resolution of the caller has found the pool busy at its ceiling of
+// heartbeats in a row: its own sentinel (errCallerNoLongerResolves, which this stands in for)
+// wrapping the resolution's error.
 var heartbeatFailedUnderLoad = fmt.Errorf("%w: %w", errors.New("the connection's caller did not resolve again on its heartbeat"),
 	fmt.Errorf("read the caller's session: %w", store.ErrPoolBusy))
 

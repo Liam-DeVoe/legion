@@ -135,8 +135,9 @@ type Deps struct {
 	Files            files.Store
 	TestHooksEnabled bool
 	// StreamHeartbeat is how often a document socket and a live socket resolve their caller again
-	// (whileCallerResolves), each closing once the caller no longer resolves, and a live socket
-	// pings its page and sends it a heartbeat frame.
+	// (whileCallerResolves), each closing once the caller no longer resolves - at once for a
+	// refusal, at the third transient failure in a row (heartbeatTransientCeiling) - and a live
+	// socket pings its page and sends it a heartbeat frame. It also bounds each of those checks.
 	StreamHeartbeat time.Duration
 	// Admission admits every table route's request but the test hooks' (register); nil is a
 	// Limiter at admission.DefaultLimits. A test sets a small one to fill it.
@@ -402,6 +403,12 @@ type server struct {
 	// directly has none unless the test sets it (directServer sets context.Background()).
 	lifetime   context.Context
 	routeIndex []routeIndexEntry
+	// outside is the request pool's share admission does not hand out, the places of which the
+	// work outside admission that reads the pool takes before it does (admission.Outside): a DPoP
+	// decision (decideBrokerToken) and a socket's heartbeat check (whileCallerResolves). register
+	// takes it from the limiter every row is admitted by; a server a test builds directly has
+	// none, and a nil Outside limits nothing.
+	outside *admission.Outside
 	// readOnlyRefusal is the message every route the read list does not name answers a read-only
 	// token with (refuseReadOnlyToken): the read list as register found it, in words. register
 	// builds it once, before it wraps the first row, so the rows share one text rather than each
@@ -808,6 +815,7 @@ func register(mux *http.ServeMux, lifetime context.Context, deps Deps) *server {
 	if limiter == nil {
 		limiter = admission.New(admission.DefaultLimits())
 	}
+	s.outside = limiter.Outside()
 	deadline := deps.ReadDeadline
 	if deadline == 0 {
 		deadline = defaultReadDeadline
@@ -865,7 +873,10 @@ const defaultReadDeadline = 20 * time.Second
 // run in reads its body there before it waits for room (admitted), and one admitted at once
 // parks its units at that body's first read, so a body a client trickles holds none of them
 // either way. A test hook is neither admitted nor bounded: it is a test's own; nor is a stream
-// (apiRoute.Streams), which its reader holds open for the run behind it.
+// (apiRoute.Streams), which its reader holds open for the run behind it. The broker token's
+// decision is outside admission too, and writes on the request pool, so it takes a place of that
+// pool's share admission leaves instead, and is refused admission's own 429 where none is free
+// (decideBrokerToken, admission.Outside).
 func (s *server) routeHandler(route apiRoute, limiter *admission.Limiter, deadline time.Duration) http.HandlerFunc {
 	handler := route.Handler
 	if keyedMethod(route.Method) {
@@ -1159,59 +1170,155 @@ func trackTransactions(handler http.HandlerFunc) http.HandlerFunc {
 
 // whileCallerResolves serves a connection that outlives its request, a websocket, only while the
 // credential it was admitted with resolves: on every StreamHeartbeat it asks stillResolves of the
-// request again, and once that refuses (a logout, a membership the sign-in issuer no longer
-// confirms, a revoked token) it cancels the connection's context, on which the document server and
-// the live socket close the socket. stillResolves is the mount's own admission asked again, never
-// a wider one: the live socket's is callerStillResolves, which resolves whichever credential
-// admitted it, and the document socket's is signInStillResolves, the sign-in cookie alone, since
-// that is all the document service admits it by. A check that resolved anything the request
-// carries would let a credential that admitted nothing keep the socket open once the one that did
-// had ended. The check runs beside the handler, which holds pooled connections of its own while it
-// admits the socket, so it marks a context of its own for the pool (store.ErrNestedAcquire), and
-// it resolves on a context detached from the access-log line, which names the caller the socket
-// was admitted as (accesslog.Detached).
+// request again (checkEveryHeartbeat), and once that refuses (a logout, a membership the sign-in
+// issuer no longer confirms, a revoked token) it cancels the connection's context, on which the
+// document server and the live socket close the socket. stillResolves is the mount's own
+// admission asked again, never a wider one: the live socket's is callerStillResolves, which
+// resolves whichever credential admitted it, and the document socket's is signInStillResolves,
+// the sign-in cookie alone, since that is all the document service admits it by. A check that
+// resolved anything the request carries would let a credential that admitted nothing keep the
+// socket open once the one that did had ended. The check runs beside the handler, which holds
+// pooled connections of its own while it admits the socket, so it marks a context of its own for
+// the pool (store.ErrNestedAcquire), and it resolves on a context detached from the access-log
+// line, which names the caller the socket was admitted as (accesslog.Detached).
+//
+// A check that fails for a transient reason keeps the socket and is asked again at the next
+// heartbeat: the pool it read had no connection free within its bound (store.IsPoolBusy), the
+// check's own bound passed (checkCaller), or the request pool's share outside admission had no
+// place for it, so it was never made (errHeartbeatCheckSkipped). None of them says anything of the
+// caller. Only heartbeatTransientCeiling of them in a row close the socket, as a refusal does,
+// with the last of them as the cause, and only a check that resolves the caller ends the run.
+// Before, every failure closed the socket, so under load the pool's bounded acquire closed
+// connected editors' sockets and sent them back into the load: 1,000 editors made 33,499
+// handshakes in INFRA-592's stress step (tester round 38).
 //
 // The cancellation carries errCallerNoLongerResolves as its cause, so a handler can tell it from
 // its client's own going: net/http ends a request's context with the plain context.Canceled when
-// the client leaves, and a resolution can fail while the client is still there - under load, the
-// read of the session or the record of the person finds the pool busy (store.ErrPoolBusy) - and
-// a socket still being admitted must then be refused, not left unanswered as a client gone
-// (docs.Service.ServeHTTP). The cause changes nothing for a reader of the context's Err, which is
-// context.Canceled either way.
+// the client leaves, and the checks can fail while the client is still there - under load, the
+// read of the session or the record of the person finds the pool busy (store.ErrPoolBusy) at the
+// ceiling - and a socket still being admitted must then be refused, not left unanswered as a
+// client gone (docs.Service.ServeHTTP). The cause changes nothing for a reader of the context's
+// Err, which is context.Canceled either way.
 func (s *server) whileCallerResolves(stillResolves func(*http.Request) error, handler http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx, closeConnection := context.WithCancelCause(r.Context())
 		defer closeConnection(nil)
 		check := r.WithContext(store.WithTransactionTracking(accesslog.Detached(ctx)))
-		go func() {
-			heartbeat := time.NewTicker(s.deps.StreamHeartbeat)
-			defer heartbeat.Stop()
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case <-heartbeat.C:
-					// The check resolves the admission's credential from a detached copy of
-					// the request, which for a broker-issued token on the live socket asks the
-					// broker's answer alone rather than the proof the upgrade already spent
-					// (callerStillResolves). A check that failed because the client left finds
-					// the context already ended with the client's own cause, which this cancel
-					// leaves as it is.
-					if err := stillResolves(check); err != nil {
-						closeConnection(fmt.Errorf("%w: %w", errCallerNoLongerResolves, err))
-						return
-					}
-				}
-			}
-		}()
+		go s.checkEveryHeartbeat(ctx, check, stillResolves, closeConnection)
 		handler(w, r.WithContext(ctx))
 	}
 }
 
+// checkEveryHeartbeat is whileCallerResolves' heartbeat: every StreamHeartbeat until ctx, the
+// connection's, ends, it checks the caller with stillResolves (checkCaller) and closes the
+// connection with closeConnection on a refusal, or on heartbeatTransientCeiling transient
+// failures in a row.
+func (s *server) checkEveryHeartbeat(ctx context.Context, check *http.Request, stillResolves func(*http.Request) error, closeConnection context.CancelCauseFunc) {
+	heartbeat := time.NewTicker(s.deps.StreamHeartbeat)
+	defer heartbeat.Stop()
+	failedInARow := 0
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-heartbeat.C:
+		}
+		// The check resolves the admission's credential from a detached copy of the request,
+		// which for a broker-issued token on the live socket asks the broker's answer alone rather
+		// than the proof the upgrade already spent (callerStillResolves).
+		err := s.checkCaller(check, stillResolves)
+		switch {
+		case ctx.Err() != nil:
+			// The connection ended while the check ran - its client left, or its handler
+			// returned - and the cause it ended with stands.
+			return
+		case err == nil:
+			failedInARow = 0
+		case transientCheckFailure(err):
+			heartbeatTransientFailures.Add(1)
+			failedInARow++
+			if failedInARow < heartbeatTransientCeiling {
+				continue
+			}
+			heartbeatClosesAtCeiling.Add(1)
+			closeConnection(fmt.Errorf("%w: %w", errCallerNoLongerResolves, err))
+			return
+		default:
+			closeConnection(fmt.Errorf("%w: %w", errCallerNoLongerResolves, err))
+			return
+		}
+	}
+}
+
+// heartbeatTransientCeiling is how many heartbeat checks in a row may fail for a transient reason
+// (transientCheckFailure) before the socket closes as one whose caller no longer resolves: 3, so a
+// socket outlives two and closes on the third, three heartbeats, about 45 s at the 15 s heartbeat
+// (defaultStreamHeartbeat).
+//
+// It is a ceiling because a check that fails is a check not made, and only a check that is made
+// finds a sign-in revoked, a token revoked or a membership ended meanwhile. So while the database
+// is busy a socket whose sign-in was revoked stays open for up to those 45 s, where a free pool
+// closes it at its next heartbeat, within 15 s: that is a cost to authorization, paid so that a
+// busy minute does not close every connected editor's socket and send them all to reconnect into
+// it. A check the request pool's share outside admission has no place for is not made either, so
+// it counts toward the ceiling as a failure does (errHeartbeatCheckSkipped): were it to leave the
+// count as it stands, a socket would stay open for as long as that share stayed held, unbounded.
+const heartbeatTransientCeiling = 3
+
+// checkCaller asks stillResolves of check once, bounded at a heartbeat, so a check whose pool or
+// database stops answering ends by the time the next is due rather than holding the heartbeat, and
+// what the check holds, for as long as it hangs. A failure once that bound has passed is the
+// bound's (errHeartbeatCheckBound), whatever the check answered.
+func (s *server) checkCaller(check *http.Request, stillResolves func(*http.Request) error) error {
+	ctx, cancel := context.WithTimeoutCause(check.Context(), s.deps.StreamHeartbeat, errHeartbeatCheckBound)
+	defer cancel()
+	err := stillResolves(check.WithContext(ctx))
+	if err != nil && errors.Is(context.Cause(ctx), errHeartbeatCheckBound) {
+		return fmt.Errorf("%w: %w", errHeartbeatCheckBound, err)
+	}
+	return err
+}
+
+// transientCheckFailure reports whether err, a heartbeat check's failure, says nothing of the
+// caller: the pool it read had no connection free within its bound (store.IsPoolBusy), the check's
+// own bound passed (errHeartbeatCheckBound), or the check was never made for want of a place
+// (errHeartbeatCheckSkipped). Every other failure is a refusal - a logout, a revoked or expired
+// token, a membership the sign-in issuer no longer confirms, or any other error - and closes the
+// socket at once.
+func transientCheckFailure(err error) bool {
+	return store.IsPoolBusy(err) || errors.Is(err, errHeartbeatCheckBound) || errors.Is(err, errHeartbeatCheckSkipped)
+}
+
 // errCallerNoLongerResolves is the cause whileCallerResolves ends a connection's context with
-// when a heartbeat's re-resolution of its caller fails (stillResolves), wrapping the resolution's
-// own error.
+// when a heartbeat's re-resolution of its caller is refused, or fails for a transient reason
+// heartbeatTransientCeiling times in a row (stillResolves), wrapping the last check's own error.
 var errCallerNoLongerResolves = errors.New("the connection's caller did not resolve again on its heartbeat")
+
+// errHeartbeatCheckBound is the cause a heartbeat check's context ends with when its bound, a
+// heartbeat, passes (checkCaller), and what that check's failure wraps.
+var errHeartbeatCheckBound = errors.New("the heartbeat's check of its caller ran out its bound")
+
+// errHeartbeatCheckSkipped is a heartbeat check that found every place of the request pool's
+// share outside admission held (admission.Outside) and so read nothing: it was not made, which
+// says nothing of the caller and counts toward the ceiling as a transient failure does.
+var errHeartbeatCheckSkipped = errors.New("the heartbeat's check found the request pool's share outside admission held, and was not made")
+
+// heartbeatTransientFailures counts the heartbeat checks that failed for a transient reason, a
+// skipped one and the one that closes its socket at the ceiling included, and
+// heartbeatClosesAtCeiling the sockets closed at that ceiling (heartbeatTransientCeiling), since
+// the process started. One API server runs in a process (cmd/dispatch), so the counts are the
+// process's.
+var heartbeatTransientFailures, heartbeatClosesAtCeiling atomic.Uint64
+
+// HeartbeatTransientFailures is how many of this process's sockets' heartbeat checks have failed
+// for a transient reason (transientCheckFailure): the
+// dispatch_socket_heartbeat_transient_failures_total counter of the metrics endpoint.
+func HeartbeatTransientFailures() uint64 { return heartbeatTransientFailures.Load() }
+
+// HeartbeatClosesAtCeiling is how many of this process's sockets were closed for
+// heartbeatTransientCeiling transient failures of their heartbeat check in a row: the
+// dispatch_socket_heartbeat_ceiling_closes_total counter of the metrics endpoint.
+func HeartbeatClosesAtCeiling() uint64 { return heartbeatClosesAtCeiling.Load() }
 
 // signInStillResolves answers whether the sign-in cookie a document socket was admitted with
 // still resolves, which is what whileCallerResolves asks on that socket's every heartbeat. The
@@ -1222,10 +1329,18 @@ var errCallerNoLongerResolves = errors.New("the connection's caller did not reso
 // so it keeps nothing open either: resolved here, it would hold the socket open for the token's
 // whole life after the cookie ended, a read-only token's included, which the read list lets read
 // no document at all (readScopeRoutes).
+//
+// The cookie's session is a row the request pool reads outside admission, so the check takes a
+// place of that pool's share outside admission first, and is skipped where none is free
+// (errHeartbeatCheckSkipped), which counts toward the heartbeat's ceiling.
 func (s *server) signInStillResolves(r *http.Request) error {
 	if s.deps.Identity == nil {
 		return errorf(http.StatusInternalServerError, "IDENTITY_ERROR", "identity service unavailable")
 	}
+	if !s.outside.Take(admission.HeartbeatCheck) {
+		return errHeartbeatCheckSkipped
+	}
+	defer s.outside.Release()
 	_, err := s.deps.Identity.Login(r)
 	return err
 }

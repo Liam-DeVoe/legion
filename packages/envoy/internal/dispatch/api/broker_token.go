@@ -18,7 +18,10 @@ import (
 
 	"github.com/sjawhar/envoy/internal/brokertoken"
 	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
+	"github.com/sjawhar/envoy/internal/dispatch/admission"
+	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/ratelimit"
 )
 
@@ -30,22 +33,54 @@ import (
 // carried too, so a caller is told why it was refused rather than told its sound proof was
 // spent.
 //
-// It answers nothing itself: each route refuses a caller that does not resolve in its own way —
-// a JSON error, a closed socket — and reaches this decision through optionalActor as it always
-// has. A request presenting no such token passes straight through and is resolved where it
-// always was. The one layer that reads the decision without resolving anything is the read-only
+// It answers nothing itself but one refusal: each route refuses a caller that does not resolve in
+// its own way — a JSON error, a closed socket — and reaches this decision through optionalActor as
+// it always has. A request presenting no such token passes straight through and is resolved where
+// it always was. The one layer that reads the decision without resolving anything is the read-only
 // gate inside it (refuseReadOnlyToken), which answers a read-only token on every route the read
 // list does not name.
+//
+// The one refusal is for room. The decision is made outside admission, before it
+// (routeHandler, liveSocketHandler), and it writes the proof's single-use row on the request pool
+// (store.DPoPProofs), so it takes a place of the pool's share outside admission first
+// (admission.Outside), and a presentation that finds every place held is answered at once with
+// admission's own refusal for a full queue of the request's class (admission.WriteRefused): the
+// same 429 OVERLOADED, Retry-After and body, so its client cannot tell the two apart and comes back
+// as it would from admission. Nothing of it was decided, so its proof is not spent and the same
+// request may be sent again. Without the place, every such request waited on the pool's acquire
+// queue before admission could refuse it, with nothing bounding how many did. The refusal is
+// written before the drain a write's body is read by (drainBeforeAnswer), which is inside this:
+// net/http reads what is left of a small body before it writes the answer, and closes the
+// connection after it where more is left.
 func (s *server) decideBrokerToken(handler http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if _, presented := brokertoken.Presented(r); !presented {
 			handler(w, r)
 			return
 		}
-		actor, human, err := s.brokerTokenActor(r)
-		decided := resolvedCaller{actor: actor, human: human, err: err}
+		decided, ok := s.decidedBrokerToken(r)
+		if !ok {
+			admission.WriteRefused(w, &admission.Refusal{Class: admission.ClassOf(r.Method), Reason: admission.QueueFull})
+			return
+		}
 		handler(w, r.WithContext(context.WithValue(r.Context(), resolvedCallerKey{}, decided)))
 	}
+}
+
+// decidedBrokerToken is r's DPoP presentation decided (brokerTokenActor) under a place of the
+// request pool's share outside admission, given back once the decision is made, or false, with
+// nothing decided, where every place is held. A deployment with no broker decides nothing that
+// reads the pool (errNoBrokerConfigured), so it takes no place.
+func (s *server) decidedBrokerToken(r *http.Request) (resolvedCaller, bool) {
+	if s.deps.BrokerTokens == nil {
+		return resolvedCaller{err: errNoBrokerConfigured()}, true
+	}
+	if !s.outside.Take(admission.DPoPDecision) {
+		return resolvedCaller{}, false
+	}
+	defer s.outside.Release()
+	actor, human, err := s.brokerTokenActor(r)
+	return resolvedCaller{actor: actor, human: human, err: err}, true
 }
 
 // callerStillResolves answers whether the caller a live socket was admitted as still resolves,
@@ -58,7 +93,19 @@ func (s *server) decideBrokerToken(handler http.HandlerFunc) http.HandlerFunc {
 // replay it looks like and would close a sound socket on its first heartbeat. It authenticated
 // the upgrade, so what is left to ask is whether the broker still holds the token live, which is
 // brokertoken.Verifier.Live. Nothing is admitted through this, only kept.
+//
+// A resolution that reads the request pool (resolutionReadsRequestPool) takes a place of that
+// pool's share outside admission first, and is skipped where none is free
+// (errHeartbeatCheckSkipped). One that reads none - the broker's answer above among them - takes
+// no place, so however full that share is it is made, and a token the broker stopped holding live
+// closes its socket at the first heartbeat that asks.
 func (s *server) callerStillResolves(r *http.Request) error {
+	if s.resolutionReadsRequestPool(r) {
+		if !s.outside.Take(admission.HeartbeatCheck) {
+			return errHeartbeatCheckSkipped
+		}
+		defer s.outside.Release()
+	}
 	if _, presented := brokertoken.Presented(r); presented {
 		if s.deps.BrokerTokens == nil {
 			return errNoBrokerConfigured()
@@ -68,6 +115,24 @@ func (s *server) callerStillResolves(r *http.Request) error {
 	}
 	_, _, err := s.optionalActor(r)
 	return err
+}
+
+// resolutionReadsRequestPool reports whether resolving r's caller again on a heartbeat
+// (callerStillResolves) reads the request pool, by the credential optionalActor would resolve it
+// by, in optionalActor's own order: a personal token's row and a sign-in cookie's session do; a
+// broker-issued token (the broker's answer alone, above), the deployment's shared token (a
+// comparison with the token it holds) and a service-account token (its issuer's keys) do not. A
+// credential kind optionalActor learns later reads the pool here until this learns it too, so it
+// is limited rather than not.
+func (s *server) resolutionReadsRequestPool(r *http.Request) bool {
+	if _, presented := brokertoken.Presented(r); presented {
+		return false
+	}
+	token, present := auth.BearerToken(r)
+	if !present {
+		return true
+	}
+	return !auth.MatchesSharedAgentToken(r, token, s.deps.AgentTokens) && (s.deps.OIDC == nil || !oidc.LooksLikeJWT(token))
 }
 
 // errNoBrokerConfigured is what a DPoP presentation is to a Dispatch with no broker: there is no

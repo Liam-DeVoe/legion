@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/admission"
+	"github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/logging"
@@ -284,6 +285,27 @@ func newDispatchMetrics(sources metricsSources, lag *outboxLag) *metrics.Registr
 	})
 	registry.NewGaugeFunc(metricPrefix+"http_admitted_reserved_read_units", "Admission units of the combined cap writes leave to the reads while a read waits for room.", func() int64 {
 		return int64(sources.Admission.Totals().ReservedReads)
+	})
+	registry.NewGaugeFunc(metricPrefix+"http_outside_admission_in_use", "Places of the request pool's share admission leaves that work outside admission holds now: DPoP decisions, the sockets' heartbeat checks that read the pool, and document sockets' admission reads.", func() int64 {
+		return int64(sources.Admission.Outside().Stats().InUse)
+	})
+	registry.NewGaugeFunc(metricPrefix+"http_outside_admission_limit", "Places of the request pool's share admission leaves: the pool's connections less admission's combined cap.", func() int64 {
+		return int64(sources.Admission.Outside().Stats().Limit)
+	})
+	registry.NewCounterVecFunc(metricPrefix+"http_outside_admission_refused_total", "Work outside admission that found every place of the request pool's share held, by user: a DPoP decision answered 429 OVERLOADED, a heartbeat check skipped, a document socket's admission answered 503.", func() []metrics.Sample {
+		stats := sources.Admission.Outside().Stats()
+		users := admission.OutsideUsers()
+		samples := make([]metrics.Sample, 0, len(users))
+		for _, user := range users {
+			samples = append(samples, metrics.Sample{Labels: [][2]string{{"user", user.String()}}, Value: float64(stats.Refused[user])})
+		}
+		return samples
+	})
+	registry.NewCounterVecFunc(metricPrefix+"socket_heartbeat_transient_failures_total", "Socket heartbeat checks that failed for a transient reason, a busy pool, the check's own bound or no place of the request pool's share outside admission, the one that closed its socket at the ceiling included.", func() []metrics.Sample {
+		return []metrics.Sample{{Value: float64(api.HeartbeatTransientFailures())}}
+	})
+	registry.NewCounterVecFunc(metricPrefix+"socket_heartbeat_ceiling_closes_total", "Sockets closed because their heartbeat check failed for a transient reason three times in a row.", func() []metrics.Sample {
+		return []metrics.Sample{{Value: float64(api.HeartbeatClosesAtCeiling())}}
 	})
 
 	registry.NewGaugeFunc(metricPrefix+"doc_writer_queued", "Writers waiting for a document's writer gate now.", sources.Docs.QueuedDocumentWriters)

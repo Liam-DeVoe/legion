@@ -158,7 +158,10 @@ func (r *RawPool) Ping(ctx context.Context) error {
 // can starve the other, and an acquire here waits at most requestAcquireBound before it is
 // refused with ErrPoolBusy rather than queueing without end. Admission derives the units it may
 // hand out at once from this number, the connections left to the pool's uncounted users taken off
-// (admission.MaxAdmittedUnits), so a change here moves that cap with it.
+// (admission.MaxAdmittedUnits), and three kinds of those users, the DPoP decisions made before
+// admission, the websockets' heartbeat checks and the document sockets' admission reads, hold at
+// most the connections left between them (admission.OutsideLimit), so a change here moves both
+// with it.
 //
 // The database bounds the budget from above. Dispatch's database is the gcp:Dispatch component's
 // Cloud SQL Postgres instance, whose default max_connections follows its tier's memory

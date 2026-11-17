@@ -99,10 +99,10 @@ func (r *Refusal) Error() string {
 // The limits. The request pool (store.SharedPoolSize) holds 48 connections, and an admitted
 // request holds at most one of them at a time, or Weight of them for a route that reads side by
 // side. unadmittedConnections of the 48 are left to the pool's users that admission does not
-// count: the websockets' identity checks (whileCallerResolves), the browsers' durable document
-// appends, the /auth routes and the GitHub proxy, the going run's stream, which its reader holds
-// open while it polls for the frames the run stores, and the work a handler leaves running after
-// it has answered. The other 40 are all admission may hand out at once, whatever the mix of classes:
+// count, which outside.go lists: the DPoP decisions, the sockets' heartbeat checks and the
+// document sockets' admission reads among them take a place of that share before they read the
+// pool (OutsideLimit, Limiter.Outside), so however many of them arrive at once they hold no more
+// of it. The other 40 are all admission may hand out at once, whatever the mix of classes:
 // MaxAdmittedUnits, the pool's own size less those, so a pool that shrinks takes this cap down
 // with it and every unit admission hands out stays one the pool can serve. Under that combined
 // cap writes, which wait on each other at the commit order, hold at most 24 (MaxWriteLimit) and
@@ -170,7 +170,7 @@ const (
 	MaxReadLimit  = 28
 	MaxWriteLimit = 24
 	// unadmittedConnections is how many of the request pool's connections are left to the users
-	// admission does not count, the ones the comment above lists.
+	// admission does not count, the ones outside.go lists, and so OutsideLimit.
 	unadmittedConnections = 8
 	MaxAdmittedUnits      = store.SharedPoolSize - unadmittedConnections
 	ReservedReadUnits     = 22
@@ -283,14 +283,22 @@ type Limiter struct {
 
 	total         int // the combined cap and the read reservation under it, both set once by New
 	reservedReads int
+
+	// outside is the request pool's share admission does not hand out (OutsideLimit), which the
+	// work outside admission takes places of (outside.go).
+	outside Outside
 }
+
+// Outside is the Limiter's places for the request-pool work outside admission: one for each
+// Limiter, as the request pool both share is one for each process.
+func (l *Limiter) Outside() *Outside { return &l.outside }
 
 // New returns a Limiter with limits. A limit below one is one, a Total of zero is Read plus
 // Write (no combined cap beyond the classes' own), a zero wait is its class's default
 // (DefaultReadWait, DefaultWriteWait), and a ReservedReads is kept within zero and the smaller of
 // the read limit and the total, which is all the reads could ever hold.
 func New(limits Limits) *Limiter {
-	l := &Limiter{}
+	l := &Limiter{outside: Outside{limit: OutsideLimit}}
 	waits := [classCount]time.Duration{Read: limits.ReadWait, Write: limits.WriteWait}
 	defaults := [classCount]time.Duration{Read: DefaultReadWait, Write: DefaultWriteWait}
 	for class, limit := range [classCount]int{Read: limits.Read, Write: limits.Write} {

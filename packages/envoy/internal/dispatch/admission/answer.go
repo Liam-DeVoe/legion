@@ -134,9 +134,10 @@ func WriteRefused(w http.ResponseWriter, refusal *Refusal) {
 //     rather than as the 200 a handler that wrote nothing would otherwise be logged as
 //     (accesslog.ClientGone). A context the server cancelled with a cause of its own is no client
 //     gone: the client is still there and is owed an answer. A cause that wraps store.ErrPoolBusy,
-//     as a connection's heartbeat failing to resolve its caller again under load does (api's
-//     whileCallerResolves), is answered as the pool busy, below, and any other cause is left to
-//     the cases after this one, as an error that ended no context is;
+//     as a connection's heartbeat does once its caller has failed to resolve again for a busy pool
+//     at its ceiling of heartbeats in a row (api's whileCallerResolves), is answered as the pool
+//     busy, below, and any other cause is left to the cases after this one, as an error that
+//     ended no context is;
 //   - a bound of the server's own ended the call before the database answered it, and nothing
 //     of it can have committed: no connection of a pool came free within its acquire bound
 //     (store.IsPoolBusy, of err or of ctx's cause), or the database stopped answering on the

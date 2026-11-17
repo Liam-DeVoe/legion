@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 	"github.com/reearth/ygo/crdt"
 
 	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/dispatch/admission"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
@@ -30,12 +32,30 @@ type documentSocketTokenRig struct {
 	// tokens is the rig the broker-token verifier comes from: its stub broker answers what a test
 	// says a token is, and its deps.BrokerTokens is the verifier this server decides tokens with.
 	// Its own server is never sent a request.
-	tokens     *brokerTokenRig
-	sessions   *store.PgSessionStore
+	tokens   *brokerTokenRig
+	sessions *store.PgSessionStore
+	// limiter is what the server admits by, whose share outside admission the heartbeat's
+	// checks take their places of (admission.Outside).
+	limiter *admission.Limiter
+	// checks is the API's identity, the cookie identity the document service reads too, counting
+	// the resolutions the API asks of it: after the setup's requests, the sockets' heartbeat
+	// checks (signInStillResolves).
+	checks     *countingIdentity
 	cookie     *http.Cookie
 	server     *httptest.Server
 	sockets    *servedSockets
 	artifactID string
+}
+
+// countingIdentity is an Identity counting the resolutions it is asked for.
+type countingIdentity struct {
+	identity.Identity
+	asked atomic.Int32
+}
+
+func (i *countingIdentity) Login(r *http.Request) (string, error) {
+	i.asked.Add(1)
+	return i.Identity.Login(r)
 }
 
 // documentSocketPerson is the person signed in on a documentSocketTokenRig.
@@ -49,17 +69,18 @@ const documentSocketPerson = "alice@d.example"
 func newDocumentSocketTokenRig(t *testing.T, heartbeat time.Duration) *documentSocketTokenRig {
 	t.Helper()
 	ctx := context.Background()
-	rig := &documentSocketTokenRig{tokens: newBrokerTokenRig(t)}
+	rig := &documentSocketTokenRig{tokens: newBrokerTokenRig(t), limiter: admission.New(admission.DefaultLimits())}
 	database := rig.tokens.database
 	rig.sessions = store.NewPgSessionStore(database.Pool)
 	person := identity.CookieIdentity{SigningKey: testSigningKey, Sessions: rig.sessions}
+	rig.checks = &countingIdentity{Identity: person}
 	broker := events.NewBroker()
 	documents := docs.New(docs.Deps{Store: database, Events: broker, Identity: person, Settle: time.Hour})
 	t.Cleanup(func() { _ = documents.Shutdown(context.Background()) })
 	deps, err := NewDeps(DepsInput{
-		Store: database, Identity: person, AgentTokens: sharedAgentTokens(t, "agent-token"),
+		Store: database, Identity: rig.checks, AgentTokens: sharedAgentTokens(t, "agent-token"),
 		ServerURL: testServerURL, Docs: documents, Events: broker,
-		BrokerTokens: rig.tokens.deps.BrokerTokens, StreamHeartbeat: heartbeat,
+		BrokerTokens: rig.tokens.deps.BrokerTokens, StreamHeartbeat: heartbeat, Admission: rig.limiter,
 	})
 	if err != nil {
 		t.Fatalf("new API dependencies: %v", err)
@@ -242,5 +263,78 @@ func TestALiveSocketOpenedByABrokerTokenResolvesThatTokenOnEveryHeartbeat(t *tes
 	rig.tokens.broker.Says(token, brokertoken.Introspection{Active: false})
 	if closed := client.closeError(t, brokertoken.AffirmativeCacheTTL+2*heartbeat+time.Second); closed.Code != gws.ClosePolicyViolation {
 		t.Fatalf("the live socket closed with %d %q once the broker stopped holding its token live, want 1008", closed.Code, closed.Text)
+	}
+}
+
+// A logout closes the document socket at the first heartbeat whose check finds the sign-in gone,
+// while the request pool is free: a refusal is no transient failure, so that check closes the
+// socket there and then rather than checking twice more (heartbeatTransientCeiling). A check in
+// flight as the session ends may still find it, so the close comes within two checks of the
+// logout.
+func TestALogoutClosesTheDocumentSocketAtItsNextHeartbeat(t *testing.T) {
+	const heartbeat = 250 * time.Millisecond
+	rig := newDocumentSocketTokenRig(t, heartbeat)
+	peer := rig.openDocument(t, nil)
+	time.Sleep(2 * heartbeat)
+	peer.barrier(t)
+
+	checked := rig.checks.asked.Load()
+	if err := rig.sessions.RevokeSessions(context.Background(), documentSocketPerson); err != nil {
+		t.Fatalf("sign out: %v", err)
+	}
+	select {
+	case <-peer.connection().Ended:
+	case <-time.After(3*heartbeat + 2*time.Second):
+		t.Fatalf("the document socket stayed open after its sign-in ended, %d checks since", rig.checks.asked.Load()-checked)
+	}
+	if checks := rig.checks.asked.Load() - checked; checks > 2 {
+		t.Fatalf("the document socket closed after %d checks of its caller since the logout, want it closed by the first check that found the sign-in gone", checks)
+	}
+}
+
+// A document socket's heartbeat check reads the request pool, for the caller's session, so it
+// takes a place of the pool's share outside admission first (signInStillResolves), and while every
+// place is held the check is skipped and reads nothing: a sign-in that ended meanwhile is not found
+// out, and fewer skips than the heartbeat's ceiling close nothing. The first heartbeat once a place
+// is free checks again, finds the sign-in gone and closes the socket at once. The share is held for
+// a heartbeat and a half, so one or two checks are skipped; three would close the socket at the
+// ceiling (TestAHeartbeatOutlivesTwoTransientFailuresAndClosesOnTheThird).
+func TestADocumentSocketsHeartbeatWaitsForAPlaceOfTheShareOutsideAdmission(t *testing.T) {
+	const heartbeat = 250 * time.Millisecond
+	rig := newDocumentSocketTokenRig(t, heartbeat)
+	peer := rig.openDocument(t, nil)
+	time.Sleep(2 * heartbeat)
+	peer.barrier(t)
+
+	outside := rig.limiter.Outside()
+	release := holdTheShareOutsideAdmission(t, outside)
+	defer release()
+	checked := rig.checks.asked.Load()
+	skipped := outside.Stats().Refused[admission.HeartbeatCheck]
+	if err := rig.sessions.RevokeSessions(context.Background(), documentSocketPerson); err != nil {
+		t.Fatalf("sign out: %v", err)
+	}
+	time.Sleep(heartbeat + heartbeat/2)
+	select {
+	case <-peer.connection().Ended:
+		t.Fatal("the document socket closed while every place of the share outside admission was held: its heartbeat read the request pool beside them")
+	default:
+	}
+	if checks := rig.checks.asked.Load() - checked; checks != 0 {
+		t.Fatalf("the heartbeat checked the caller %d times while every place was held, want none", checks)
+	}
+	if skips := outside.Stats().Refused[admission.HeartbeatCheck] - skipped; skips < 1 {
+		t.Fatalf("%d heartbeat checks skipped in a heartbeat and a half with every place held, want at least 1", skips)
+	}
+
+	checked = rig.checks.asked.Load()
+	release()
+	select {
+	case <-peer.connection().Ended:
+	case <-time.After(2*heartbeat + 2*time.Second):
+		t.Fatal("the document socket stayed open once a place was free and its sign-in had ended")
+	}
+	if checks := rig.checks.asked.Load() - checked; checks != 1 {
+		t.Fatalf("the document socket closed after %d checks once a place was free, want the first", checks)
 	}
 }
