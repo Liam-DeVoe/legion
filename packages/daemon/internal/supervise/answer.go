@@ -1,17 +1,12 @@
 package supervise
 
-import (
-	"context"
-	"time"
-)
+import "context"
 
 // Answer is the model that answered the claim's agent last, as `<provider>/<model>` (or the
-// model alone when the agent's frame named no provider), and when the machine read that answer.
-// The zero Answer is no answer: none since this machine was built, or none in the claim's current
-// session.
+// model alone when the agent's frame named no provider). The zero Answer is no answer: none since
+// this machine was built, or none in the claim's current session.
 type Answer struct {
 	Model string
-	At    time.Time
 }
 
 // sessionAnswer is an answer with the session it was given in.
@@ -26,7 +21,7 @@ type sessionAnswer struct {
 // it found it.
 func answered(m *Machine, _ context.Context, ev Event) error {
 	a := ev.(StreamAnswered)
-	m.answer.Store(&sessionAnswer{Answer: Answer{Model: a.Model, At: m.deps.Clock.Now()}, session: m.claim.Session})
+	m.answer.Store(&sessionAnswer{Answer: Answer{Model: a.Model}, session: m.claim.Session})
 	return nil
 }
 

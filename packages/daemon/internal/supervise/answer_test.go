@@ -5,7 +5,7 @@ import (
 	"time"
 )
 
-// The machine keeps the model that answered last, as the agent's stream names it, and when: the
+// The machine keeps the model that answered last, as the agent's stream names it: the
 // record of a step names the model that served it. A fresh session answers with its own model, so
 // what the session before it answered is no answer of the claim's any more, also when that answer
 // reaches the machine after the fresh session registered. The read never waits on a decision, so
@@ -18,11 +18,9 @@ func TestTheMachineKeepsTheLastAnswer(t *testing.T) {
 	}
 
 	h.must(StreamAnswered{Claim: h.token, Model: "a/1", Generation: h.generation()})
-	h.advance(time.Second)
-	answeredAt := h.clock.Now()
 	h.must(StreamAnswered{Claim: h.token, Model: "b/2", Generation: h.generation()})
-	if got := h.m.LastAnswer(); got.Model != "b/2" || !got.At.Equal(answeredAt) {
-		t.Fatalf("the answer after two = %+v, want b/2 at %s", got, answeredAt)
+	if got := h.m.LastAnswer(); got.Model != "b/2" {
+		t.Fatalf("the answer after two = %+v, want b/2", got)
 	}
 
 	read := make(chan Answer, 1)
