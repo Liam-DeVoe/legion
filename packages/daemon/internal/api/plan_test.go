@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -213,6 +214,31 @@ func TestRegisterPlanReadsEachNeedAsTheTaskItNames(t *testing.T) {
 		PlanReason{Task: "b", Reason: "task b needs x, which names no task of this plan."})
 	if got := facts.recorded(); len(got) != 0 {
 		t.Fatalf("refused registrations recorded %#v, want nothing", got)
+	}
+}
+
+// A plan whose tasks need each other in a cycle is refused, and among its reasons is the cycle's,
+// which names the chain, whatever reasons of this release's come before it. The fault is a cycle
+// answered only as needs this release does not carry out yet; the control is Validate without its
+// check of cycles, whose answer holds no reason naming the chain.
+func TestRegisterPlanRefusesACycleOfNeedsNamingIt(t *testing.T) {
+	h, facts, statuses := planHarness(t)
+	architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
+	statuses.givePlan(planDoc, 1, needing(taskBlock("a", "implementer reviewer"), "dispatch://LEGION-208/artifact/plan-md#b-b"),
+		needing(taskBlock("b", "implementer reviewer"), "dispatch://LEGION-208/artifact/plan-md#b-a"))
+
+	answer := registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 1)
+	if answer.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409; body %s", answer.Code, answer.Body)
+	}
+	var refusal PlanRefusal
+	decodeInto(t, answer, &refusal)
+	cycle := PlanReason{Task: "a", Reason: "task a needs itself: a needs b, b needs a."}
+	if refusal.Code != "PLAN_REFUSED" || !slices.Contains(refusal.Reasons, cycle) || !strings.Contains(refusal.Error, cycle.Reason) {
+		t.Fatalf("refusal = %+v, want PLAN_REFUSED holding the reason %+v", refusal, cycle)
+	}
+	if got := facts.recorded(); len(got) != 0 {
+		t.Fatalf("a refused registration recorded %#v, want nothing", got)
 	}
 }
 

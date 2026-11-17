@@ -85,3 +85,44 @@ func TestANeedThatNamesNoTaskIsRefused(t *testing.T) {
 		})
 	}
 }
+
+// R14: a task that needs itself through other tasks never starts, so Validate refuses each cycle
+// of needs for good, named by its first task in id order with the chain from that task. Each need
+// that lies on a cycle is in a chain of the answer, the shortest cycle through it, so the owner
+// reads every need that closes a cycle at once; a need that closes no cycle is in none. The fault
+// is a cycle that walks for ever or is taken. The control is Validate without the check of
+// cycles, under which the first case answers no refusal.
+func TestATaskThatNeedsItselfIsRefused(t *testing.T) {
+	d := Deployment{Roles: BuiltinRoles()}
+	itself := func(task, chain string) Refusal {
+		return Refusal{Task: task, Reason: "task " + task + " needs itself: " + chain + "."}
+	}
+	for _, tc := range []struct {
+		name string
+		plan Plan
+		want []Refusal
+	}{
+		{name: "a cycle of three tasks", plan: planOf(t, 1, taskNeeding("a", needWord("b")), taskNeeding("b", needWord("c")), taskNeeding("c", needWord("a"))),
+			want: []Refusal{itself("a", "a needs b, b needs c, c needs a")}},
+		{name: "a task that names itself", plan: planOf(t, 1, taskNeeding("a", "a")),
+			want: []Refusal{itself("a", "a needs a")}},
+		{name: "two cycles", plan: planOf(t, 1, taskNeeding("a", "b"), taskNeeding("b", "a"), taskNeeding("c", "d"), taskNeeding("d", "c")),
+			want: []Refusal{itself("a", "a needs b, b needs a"), itself("c", "c needs d, d needs c")}},
+		{name: "a cycle named by its first task in id order, whatever the document's order", plan: planOf(t, 1,
+			taskNeeding("c", needWord("a")), taskNeeding("b", needWord("c")), taskNeeding("a", needWord("b"))),
+			want: []Refusal{itself("a", "a needs b, b needs c, c needs a")}},
+		{name: "two cycles through one task", plan: planOf(t, 1, taskNeeding("a", "c", "b"), taskNeeding("b", "a"), taskNeeding("c", "d"), taskNeeding("d", "a")),
+			want: []Refusal{itself("a", "a needs b, b needs a"), itself("a", "a needs c, c needs d, d needs a")}},
+		{name: "two cycles that share a task", plan: planOf(t, 1, taskNeeding("a", "b"), taskNeeding("b", "a", "c"), taskNeeding("c", "b")),
+			want: []Refusal{itself("a", "a needs b, b needs a"), itself("b", "b needs c, c needs b")}},
+		{name: "a need outside the cycle", plan: planOf(t, 1, taskNeeding("a", "b"), taskNeeding("b", "a"), taskNeeding("e", "a")),
+			want: []Refusal{itself("a", "a needs b, b needs a")}},
+		{name: "the spec's example A to E", plan: exampleAToE(t)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := Validate(ResolveNeeds(tc.plan), d); !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("Validate =\n%+v\nwant\n%+v", got, tc.want)
+			}
+		})
+	}
+}
