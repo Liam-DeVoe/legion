@@ -9,6 +9,12 @@ import { whoAmIQuery } from "../../../api/queries";
 import type { TreeNode } from "../issue-tree";
 import {
   criterionItemOf,
+  type OutlineWriter,
+  OutlineWriterProvider,
+  useOutlineWriter,
+} from "../outline-writer";
+import { ANSWER_LINES } from "../page-words";
+import {
   criterionMarkdown,
   criterionOffered,
   criterionRequest,
@@ -18,9 +24,10 @@ import type { RoomFacts } from "./room-target";
 
 /**
  * A criterion written under a node of the outline (dispatch://INFRA-4066 R2, R6): its markdown,
- * its one request on the tree artifact, and the line's text and answer as the write goes. Each
- * request is answered at `fetch` (`answerRequests`), so the write goes the whole way the page's
- * does: the keyed write, the client, and the refusal the client makes of Dispatch's answer.
+ * its one request on the tree artifact, the line's text and answer as the write goes, and the
+ * box's aim, which no other target ends while the write is out. Each request is answered at
+ * `fetch` (`answerRequests`), so the write goes the whole way the page's does: the keyed write,
+ * the client, and the refusal the client makes of Dispatch's answer.
  */
 
 const KEY = "CORE-1";
@@ -68,19 +75,46 @@ function refusal(status: number, code: string): Response {
   return Response.json({ code, error: `refused with ${code}` }, { status });
 }
 
-/** The criterion line under `PARENT`, on a client of its own signed in as alice, whose
- *  writes carry her login. */
-function renderLine(onLanded: () => void) {
+/** A client of its own signed in as alice, whose writes carry her login. */
+function signedInClient(): QueryClient {
   const client = new QueryClient({
-    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+    defaultOptions: {
+      mutations: { retry: false },
+      queries: { retry: false, staleTime: Number.POSITIVE_INFINITY },
+    },
   });
   client.setQueryData(whoAmIQuery().queryKey, { event_head: "0", kind: "user", login: "alice" });
+  return client;
+}
+
+/** The criterion line under `PARENT`, on a client of its own signed in as alice. It tells
+ *  `onOut` of its write going out and settling, as the box hears of it. */
+function renderLine(onLanded: () => void, onOut: (out: boolean) => void = () => {}) {
+  const client = signedInClient();
   const wrapper = ({ children }: { children: ReactNode }) =>
     createElement(QueryClientProvider, { client }, children);
   return renderHook(
-    () => useCriterionLine({ issueKey: KEY, onLanded, parent: PARENT, tree: TREE }),
+    () => useCriterionLine({ issueKey: KEY, onLanded, onOut, parent: PARENT, tree: TREE }),
     { wrapper }
   );
+}
+
+/** A node of the outline, as the tree read draws it. */
+function treeNode(partial: Partial<TreeNode> & Pick<TreeNode, "id" | "type">): TreeNode {
+  return {
+    alsoUnder: [],
+    children: [],
+    chips: [],
+    facts: [],
+    gaps: [],
+    held: 0,
+    question: false,
+    replaced: false,
+    text: partial.id,
+    transcluded: false,
+    waiting: false,
+    ...partial,
+  };
 }
 
 /** The parent a criterion's opening line names, its character references decoded as both
@@ -154,6 +188,7 @@ const CASES: readonly { readonly typed: string; readonly markdown: string }[] = 
     typed: "Words, then spaces.  \n \n",
     markdown: `:::criterion{parent="${PARENT}"}\nWords, then spaces.\n:::`,
   },
+  { typed: "<details>", markdown: `:::criterion{parent="${PARENT}"}\n\\<details>\n:::` },
 ];
 
 test("the write names the node's address as parent and the text as typed", () => {
@@ -181,7 +216,15 @@ test("the write names the node's address as parent and the text as typed", () =>
 
 test("a refusal keeps the text", async () => {
   const textAtLanding: string[] = [];
-  const line = renderLine(() => textAtLanding.push(line.result.current.text));
+  // What the line told, in order: its write going out, its write settling, and a landing.
+  const told: string[] = [];
+  const line = renderLine(
+    () => {
+      told.push("landed");
+      textAtLanding.push(line.result.current.text);
+    },
+    (out) => told.push(out ? "out" : "settled")
+  );
   try {
     answerEdits(() => refusal(400, "INVALID_JSON"));
     act(() => line.result.current.setText(TEXT));
@@ -189,11 +232,14 @@ test("a refusal keeps the text", async () => {
     await waitFor(() => expect(line.result.current.answer).toBe("criterion_not_written"));
     expect(line.result.current.text).toBe(TEXT);
     expect(line.result.current.pending).toBe(false);
+    // The box held its aim while the write was out, and the refusal lets it go.
+    expect(told).toEqual(["out", "settled"]);
 
     answerEdits(() => refusal(404, "NOT_FOUND"));
     act(() => line.result.current.send());
     await waitFor(() => expect(line.result.current.answer).toBe("criterion_gone"));
     expect(line.result.current.text).toBe(TEXT);
+    expect(told).toEqual(["out", "settled", "out", "settled"]);
 
     // The next change of the text lets the answer go.
     act(() => line.result.current.setText(`${TEXT} Still.`));
@@ -204,28 +250,101 @@ test("a refusal keeps the text", async () => {
     answerEdits(() => answered.promise);
     act(() => line.result.current.send());
     expect(line.result.current.pending).toBe(true);
+    expect(line.result.current.busy).toBe(ANSWER_LINES.saving_criterion);
     expect(line.result.current.answer).toBeUndefined();
     expect(line.result.current.text).toBe(`${TEXT} Still.`);
     expect(textAtLanding).toEqual([]);
+    await waitFor(() => expect(told).toHaveLength(5));
+    expect(told[4]).toBe("out");
     answered.resolve(Response.json(LANDED));
     await waitFor(() => expect(line.result.current.text).toBe(""));
     expect(textAtLanding).toEqual([`${TEXT} Still.`]);
     expect(line.result.current.answer).toBeUndefined();
+    expect(line.result.current.busy).toBeUndefined();
+    // The box lets go of its aim before the landing ends it.
+    expect(told.slice(4)).toEqual(["out", "settled", "landed"]);
   } finally {
     line.unmount();
   }
   // A write Dispatch made and kept no answer for (`409 KEY_COMMITTED`) lands all the same.
   const onLanded = mock(() => {});
-  const unanswered = renderLine(onLanded);
+  const onOut = mock((_out: boolean) => {});
+  const unanswered = renderLine(onLanded, onOut);
   try {
     answerEdits(() => refusal(409, "KEY_COMMITTED"));
     act(() => unanswered.result.current.setText(TEXT));
     act(() => unanswered.result.current.send());
     await waitFor(() => expect(unanswered.result.current.text).toBe(""));
     expect(onLanded).toHaveBeenCalledTimes(1);
+    expect(onOut.mock.calls).toEqual([[true], [false]]);
     expect(unanswered.result.current.answer).toBeUndefined();
   } finally {
     unanswered.unmount();
+  }
+});
+
+// R2: a criterion whose write is out holds the box. A row's Reply, `r` and `a`, another row's
+// Write a criterion, an edit, Write on the issue and `clear` are each refused, as they are while
+// a send of the line's own is out, so the line keeps its text and draws its refusal; once the
+// write settles each takes the line again.
+test("a criterion out holds the box's other targets", () => {
+  const client = signedInClient();
+  client.setQueryData(["asks", KEY], []);
+  for (const read of ["comments", "issue-messages"]) client.setQueryData([read, KEY], []);
+  client.setQueryData(["agents"], []);
+  const wrapper = ({ children }: { children: ReactNode }) =>
+    createElement(
+      QueryClientProvider,
+      { client },
+      createElement(OutlineWriterProvider, { children, issueKey: KEY })
+    );
+  const box = renderHook(() => useOutlineWriter(), { wrapper });
+  const writer = (): OutlineWriter => {
+    const held = box.result.current;
+    if (held === undefined) throw new Error("no writer is drawn");
+    return held;
+  };
+  const comment = treeNode({ id: "comment-1", reference: PARENT, type: "comment" });
+  const other = treeNode({
+    id: "message-1",
+    reference: `dispatch://${KEY}/message/message-1`,
+    type: "message",
+  });
+  const ask = treeNode({
+    id: "ask-1",
+    reference: `dispatch://${KEY}/ask/ask-1`,
+    state: "open",
+    type: "ask",
+  });
+  const reply = {
+    author: { id: "bob", kind: "user" },
+    id: "comment-2",
+    kind: "comment",
+    text: TEXT,
+  } as const;
+  try {
+    act(() => writer().criterionUnder(comment));
+    expect(writer().criterion?.id).toBe("comment-1");
+
+    act(() => writer().holdCriterion(true));
+    act(() => writer().replyTo(reply));
+    act(() => writer().answerNode(ask));
+    act(() => writer().criterionUnder(other));
+    act(() => writer().edit("comment-3", "Words."));
+    act(() => writer().writeOnIssue());
+    act(() => writer().clear());
+    expect(writer().criterion?.id).toBe("comment-1");
+    expect(writer().reply).toBeNull();
+    expect(writer().answer).toBeUndefined();
+    expect(writer().editing).toBeUndefined();
+
+    act(() => writer().holdCriterion(false));
+    act(() => writer().clear());
+    expect(writer().criterion).toBeUndefined();
+    act(() => writer().replyTo(reply));
+    expect(writer().reply?.id).toBe("comment-2");
+  } finally {
+    box.unmount();
   }
 });
 

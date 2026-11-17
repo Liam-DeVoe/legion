@@ -658,6 +658,9 @@ export const ANSWER_LINES = freeze({
   saving_labels: "Saving labels…",
   saving_release: "Releasing…",
   saving_reopen: "Reopening…",
+  /** What the box's criterion line's Send says while its write is out (R2), as the answer's Send
+   *  says it. */
+  saving_criterion: "Sending…",
 } as const);
 
 /**

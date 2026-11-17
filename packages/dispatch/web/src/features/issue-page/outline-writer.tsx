@@ -12,11 +12,7 @@ import { type AgentText, useAgentText } from "../refs/AgentName";
 import { buildIssuePath, parseNodeReference, sessionOfAddress } from "../refs/routes";
 import { wordsOf } from "../refs/tree-fragment";
 import type { TreeNode } from "./issue-tree";
-import {
-  type CriterionItem,
-  criterionItemOf,
-  criterionOffered,
-} from "./model-rows/criterion-write";
+import { criterionOffered } from "./model-rows/criterion-write";
 import { useRoomFacts } from "./model-rows/room-target";
 
 /**
@@ -43,10 +39,11 @@ export interface OutlineWriter {
    *  criterion aimed it at one (`criterionUnder`); undefined otherwise. Like `statement`, it
    *  never stands beside a reply, a statement, an answer or an edit. */
   readonly criterion: CriterionItem | undefined;
-  /** Sets the line to write a criterion under `item` and puts the caret in it
-   *  (dispatch://INFRA-4066 R2): it ends the reply, the statement, the answer and the edit, and
-   *  setting any of them, or `clear`, ends it. */
-  readonly criterionUnder: (item: CriterionItem) => void;
+  /** Sets the line to write a criterion under `node`, an ask, a comment or a message
+   *  (`criterionItemOf`), and puts the caret in it (dispatch://INFRA-4066 R2): it ends the
+   *  reply, the statement, the answer and the edit, and setting any of them, or `clear`, ends
+   *  it. A node that is none of those sets nothing. */
+  readonly criterionUnder: (node: TreeNode) => void;
   /** Asks the outline to take the reader to what a write from the line just landed
    *  (`Landing`), once its read has drawn it. */
   readonly land: (landing: Landing) => void;
@@ -56,6 +53,11 @@ export interface OutlineWriter {
   readonly landing: Landing | undefined;
   /** Puts the caret in the line, once it is drawn. */
   readonly focus: () => void;
+  /** Says the criterion line's write is out (`true`) or settled (`false`). While it is out the
+   *  line keeps its target, as it does while a send of the line's own is out: every other
+   *  target, and `clear`, is refused, so the criterion line keeps its text and draws its
+   *  refusal (dispatch://INFRA-4066 R2). */
+  readonly holdCriterion: (out: boolean) => void;
   /** The issue the page is of: only its own nodes take a criterion (`takesCriterion`), and a row
    *  is edited in the room of its tree read (`useNodeEditing.ts`). */
   readonly issueKey: string;
@@ -166,6 +168,12 @@ const DRAWING_FRAMES = 10;
 /** The line's field, wherever the page draws it (`IssueComposer.tsx`). */
 const COMPOSER_FIELD = '[data-testid="issue-composer"] textarea';
 
+/** The writers whose criterion line has its write out (`OutlineWriter.holdCriterion`), each by
+ *  the name its line's sends are held under (`sendKey`), which every target already reads the
+ *  held sends by: while one is out, that writer's targets and `clear` are refused, as they are
+ *  while a send of the line's own is out (`HeldSends.sendingNow`). */
+const criterionOut = new WeakSet<MutationKey>();
+
 /** Holds the writer for one issue's body. */
 export function OutlineWriterProvider({
   children,
@@ -232,6 +240,8 @@ export function OutlineWriterProvider({
       // the one the line shows until Dispatch decides it, and the redirect below reads only a
       // send that was refused or none (`held-sends.ts`'s `redirectedReplyTarget`).
       if (store.sendingNow(sendKey)) return;
+      // Nor while the criterion line's write is out: the line keeps its text and its refusal.
+      if (criterionOut.has(sendKey)) return;
       // A statement is no entry of the conversation: the line writes a comment on the issue
       // anchored to the statement's whole words, and holds no reply beside it.
       if (item.kind === "statement") {
@@ -263,6 +273,7 @@ export function OutlineWriterProvider({
       // As a Reply is, every press that sets the line to something else is refused while a send
       // of the line's own is out: the reply it was sent with stays the one the line shows.
       if (store.sendingNow(sendKey)) return;
+      if (criterionOut.has(sendKey)) return;
       const target = takesAnswer(node) ? answering(node) : undefined;
       if (target === undefined) return;
       setReply(null);
@@ -277,6 +288,7 @@ export function OutlineWriterProvider({
   const changeAnswer = useCallback(
     (node: TreeNode) => {
       if (store.sendingNow(sendKey)) return;
+      if (criterionOut.has(sendKey)) return;
       const target = answering(node);
       const recorded = (asks.data ?? []).find((ask) => ask.id === target?.askId)?.answer;
       if (target === undefined || recorded === null || recorded === undefined) return;
@@ -297,6 +309,7 @@ export function OutlineWriterProvider({
   const pick = useCallback(
     (node: TreeNode, label: string) => {
       if (store.sendingNow(sendKey)) return;
+      if (criterionOut.has(sendKey)) return;
       const target = takesAnswer(node) ? answering(node) : undefined;
       if (target === undefined) return;
       setReply(null);
@@ -313,6 +326,7 @@ export function OutlineWriterProvider({
   }, []);
   const clear = useCallback(() => {
     if (store.sendingNow(sendKey)) return;
+    if (criterionOut.has(sendKey)) return;
     setReply(null);
     setAnswer(undefined);
     setEditing(undefined);
@@ -321,12 +335,14 @@ export function OutlineWriterProvider({
   }, [sendKey, setReply, store]);
   const writeOnIssue = useCallback(() => {
     if (store.sendingNow(sendKey)) return;
+    if (criterionOut.has(sendKey)) return;
     clear();
     focus();
   }, [clear, focus, sendKey, store]);
   const edit = useCallback(
     (id: string, body: string) => {
       if (store.sendingNow(sendKey)) return;
+      if (criterionOut.has(sendKey)) return;
       setReply(null);
       setAnswer(undefined);
       setStatement(undefined);
@@ -337,9 +353,13 @@ export function OutlineWriterProvider({
     [focus, sendKey, setReply, store]
   );
   const criterionUnder = useCallback(
-    (item: CriterionItem) => {
-      // Refused while a send of the line's own is out, as every other target is.
+    (node: TreeNode) => {
+      // Refused while a send of the line's own is out, and while the criterion's own write is,
+      // as every other target is.
       if (store.sendingNow(sendKey)) return;
+      if (criterionOut.has(sendKey)) return;
+      const item = criterionItemOf(node);
+      if (item === undefined) return;
       setReply(null);
       setAnswer(undefined);
       setEditing(undefined);
@@ -359,6 +379,13 @@ export function OutlineWriterProvider({
     },
     [issueKey, offersCriterion]
   );
+  const holdCriterion = useCallback(
+    (out: boolean) => {
+      if (out) criterionOut.add(sendKey);
+      else criterionOut.delete(sendKey);
+    },
+    [sendKey]
+  );
   const writer = useMemo<OutlineWriter>(
     () => ({
       answer,
@@ -370,6 +397,7 @@ export function OutlineWriterProvider({
       edit,
       editing,
       focus,
+      holdCriterion,
       issueKey,
       kind,
       land: setLanding,
@@ -396,6 +424,7 @@ export function OutlineWriterProvider({
       edit,
       editing,
       focus,
+      holdCriterion,
       issueKey,
       kind,
       landed,
@@ -464,6 +493,45 @@ export interface StatementTarget extends StatementAnchor, StatementItem {
   /** The statement's whole words as the server matches a quote against them: `wordsOf` its
    *  reading (`refs/tree-fragment.ts`), else its stored text where its read sent no reading. */
   readonly quote: string;
+}
+
+/**
+ * The node a criterion is written under (dispatch://INFRA-4066 R2): an ask, a comment or a
+ * message of the outline. Its `id` is the node's own row id, which the line marks
+ * (`data-criterion-under`) and a landing names (`Landing.under`), and `IssueTree.tsx`'s
+ * `landingParent` finds the node by it; `kind` is the conversation item the node is; `address`
+ * is the node's whole `dispatch://` address, which the criterion names as its `parent`; and its
+ * words, its reading and its record are what the line's target line cuts to their first line.
+ */
+export interface CriterionItem extends Pick<TreeNode, "source" | "text" | "tree"> {
+  /** The node's own `dispatch://` address (`TreeNode.reference`): the criterion's `parent`. */
+  readonly address: string;
+  /** The node's row id (`TreeNode.id`). */
+  readonly id: string;
+  /** The item of the conversation the node is, by the kind its address names. */
+  readonly kind: "ask" | "comment" | "message";
+}
+
+/** The node a criterion can be written under, where `node` is one: an item of the conversation
+ *  (`conversationItem`, decision 94), as a row that takes a Reply is, with the address that
+ *  names it. Undefined for every other node - a statement, a check, a decision, the issue
+ *  itself - and for one with no such address. Whether the act is offered on it is the
+ *  writer's (`OutlineWriter.takesCriterion`), which also asks that the address names this
+ *  issue and that the issue takes a criterion (`criterionOffered`). */
+export function criterionItemOf(
+  node: Pick<TreeNode, "id" | "reference" | "source" | "text" | "tree" | "type">
+): CriterionItem | undefined {
+  const item = conversationItem(node);
+  const address = node.reference;
+  if (item === undefined || address === undefined) return undefined;
+  return {
+    address,
+    id: node.id,
+    kind: item.kind,
+    ...(node.source === undefined ? {} : { source: node.source }),
+    text: node.text,
+    ...(node.tree === undefined ? {} : { tree: node.tree }),
+  };
 }
 
 /** The item a row of the outline is, where the row takes a reply (R16): an ask in any state, a

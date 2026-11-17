@@ -42,7 +42,6 @@ import {
   type ParentLine,
   type TreeNode,
 } from "./issue-tree";
-import { criterionItemOf } from "./model-rows/criterion-write";
 import { NodeFacts } from "./NodeFacts";
 import { NodeGlyph } from "./NodeGlyph";
 import { chipWords } from "./node-row-chip";
@@ -883,14 +882,11 @@ export function RowActs({
     });
   }
   if (writer?.takesCriterion(node) === true) {
-    const under = criterionItemOf(node);
-    if (under !== undefined) {
-      acts.push({
-        act: "criterion",
-        label: CONTROL_LABELS.write_criterion,
-        run: () => writer.criterionUnder(under),
-      });
-    }
+    acts.push({
+      act: "criterion",
+      label: CONTROL_LABELS.write_criterion,
+      run: () => writer.criterionUnder(node),
+    });
   }
   const reference = node.reference;
   if (acts.length === 0 && reference === undefined) return null;

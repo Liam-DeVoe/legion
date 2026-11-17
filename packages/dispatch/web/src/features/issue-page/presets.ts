@@ -187,9 +187,15 @@ function filterView(
   // it stood.
   const lift = (node: TreeNode): { readonly drawn: boolean; readonly rows: TreeNode[] } => {
     // Decisions draws an agent decision's readings under it, and none of an answered question
-    // (R3): the question is lifted again without them, so this runs once for it.
-    if (filter === "decisions" && node.type === "ask" && node.children.some(isReading)) {
-      return lift({ ...node, children: node.children.filter((child) => !isReading(child)) });
+    // (R3) but one the address names, which every filter draws (R20): the question is lifted
+    // again without the others, so this runs once for it.
+    if (
+      filter === "decisions" &&
+      node.type === "ask" &&
+      node.children.some((child) => isReading(child) && !named.has(child.id))
+    ) {
+      const kept = node.children.filter((child) => !isReading(child) || named.has(child.id));
+      return lift({ ...node, children: kept });
     }
     if (!everyPlacement && node.transcluded) return { drawn: false, rows: [] };
     const parts = node.children.map(lift);

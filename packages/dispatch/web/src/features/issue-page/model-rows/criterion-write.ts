@@ -1,9 +1,7 @@
 import { useState } from "react";
 
 import { ApiError, writeRequest } from "../../../api/client";
-import { parseNodeReference } from "../../refs/routes";
 import { useKeyedWrite } from "../../writes/useKeyedWrite";
-import type { TreeNode } from "../issue-tree";
 import { ANSWER_LINES, CONTROL_LABELS } from "../page-words";
 import type { RoomFacts } from "./room-target";
 
@@ -38,8 +36,10 @@ export type CriterionAnswer = keyof Pick<
  *  `:`, so no typed line opens a block inside the criterion or closes it); a bullet, its item
  *  empty or not; a fence; a setext underline, `---` among them; a thematic break; a table's
  *  delimiter row that opens with a hyphen, which turns the line above it into a table's header;
- *  and a link or footnote definition, which goldmark takes out of its paragraph. Each is escaped
- *  before its first character, which is ASCII punctuation, so the backslash is drawn as nothing. */
+ *  a link or footnote definition, which goldmark takes out of its paragraph; and a block of HTML
+ *  (any line opening with `<`), which the server refuses, the Proof schema holding none
+ *  (pmdoc's `html_flow.go`). Each is escaped before its first character, which is ASCII
+ *  punctuation, so the backslash is drawn as nothing. */
 const BLOCK_STARTS: readonly RegExp[] = [
   /^[#>|:]/,
   /^[-*+](?:[ \t]|$)/,
@@ -48,6 +48,7 @@ const BLOCK_STARTS: readonly RegExp[] = [
   /^([-*_])(?:[ \t]*\1){2,}[ \t]*$/,
   /^-[-: \t]*\|[-:| \t]*$/,
   /^\[[^\]]+\]:/,
+  /^</,
 ];
 
 /** An ordered list item's digits: it is escaped before the `.` or `)` after them, since a
@@ -120,48 +121,6 @@ export function criterionAnswerLine(answer: CriterionAnswer): string {
   return ANSWER_LINES[answer];
 }
 
-/**
- * The node a criterion is written under (R2): an ask, a comment or a message of the outline. Its
- * `id` is the node's own row id, which the line marks (`data-criterion-under`) and a landing
- * names (`Landing.under`), and `IssueTree.tsx`'s `landingParent` finds the node by it; `kind` is
- * the conversation item the node is; `address` is the node's whole `dispatch://` address, which
- * the criterion names as its `parent`; and its words, its reading and its record are what the
- * line's target line cuts to their first line.
- */
-export interface CriterionItem extends Pick<TreeNode, "source" | "text" | "tree"> {
-  /** The node's own `dispatch://` address (`TreeNode.reference`): the criterion's `parent`. */
-  readonly address: string;
-  /** The node's row id (`TreeNode.id`). */
-  readonly id: string;
-  /** The item of the conversation the node is, by the kind its address names. */
-  readonly kind: "ask" | "comment" | "message";
-}
-
-/** The node a criterion can be written under, where `node` is one: an ask, a comment or a message
- *  whose own address names an item of one of those kinds. Undefined for every other node - a
- *  statement, a check, a decision, the issue itself - and for one with no such address. Whether
- *  the act is offered on it is the writer's (`OutlineWriter.takesCriterion`), which also asks
- *  that the address names this issue and that the issue takes a criterion (`criterionOffered`). */
-export function criterionItemOf(
-  node: Pick<TreeNode, "id" | "reference" | "source" | "text" | "tree" | "type">
-): CriterionItem | undefined {
-  if (node.type !== "ask" && node.type !== "comment" && node.type !== "message") return undefined;
-  const address = node.reference;
-  const route = address === undefined ? undefined : parseNodeReference(address);
-  if (address === undefined || route === undefined || !("id" in route)) return undefined;
-  if (route.kind !== "ask" && route.kind !== "comment" && route.kind !== "message") {
-    return undefined;
-  }
-  return {
-    address,
-    id: node.id,
-    kind: route.kind,
-    ...(node.source === undefined ? {} : { source: node.source }),
-    text: node.text,
-    ...(node.tree === undefined ? {} : { tree: node.tree }),
-  };
-}
-
 /** Whether a node of this issue offers the act that writes a criterion (R2): only where the
  *  issue's tree read answers a `tree` and no `view_of`. No facts - an issue whose tree read the
  *  cache does not hold, which is every issue until part T's read is on the branch - offer none. */
@@ -169,26 +128,37 @@ export function criterionOffered(facts: RoomFacts | undefined): boolean {
   return facts !== undefined && facts.tree !== null && facts.viewOf === null;
 }
 
-/** A criterion's aim, and who hears of its landing: the line, which lands the reader on the new
+/** A criterion's aim, and who hears of its write: the box, which holds the line's aim while the
+ *  write is out (`OutlineWriter.holdCriterion`), and the line, which lands the reader on the new
  *  criterion and then lets its text go. */
 export interface CriterionWriteOptions extends CriterionAim {
   /** Told of a landing: a 200, or `null` for one Dispatch made and kept no answer for. */
   readonly onLanded: () => void;
+  /** Told `true` when a send fires the write, and `false` when the write settles, landed or
+   *  refused; on a landing, before `onLanded`, so the line's own end of its aim (`clear`) is no
+   *  longer held by its write. */
+  readonly onOut: (out: boolean) => void;
 }
 
 /**
  * The criterion's keyed write (the plan's decision "The write"): each `mutate` is one press of
  * the line's markdown, in press order with every other criterion written under the same node
  * of the same tree (`criterion:<tree>:<parent>`), shown by the pending-writes indicator only
- * while it is out, since the line shows its refusal itself. A landing is told to `onLanded`.
- * The landing invalidates no read yet: part T's tree read is not on this branch, and t8 has it
- * refresh `issueTreeKey(issueKey)` here, before `onLanded`.
+ * while it is out, since the line shows its refusal itself. It is told to `onOut` as it fires
+ * and as it settles, and a landing then to `onLanded`. The landing invalidates no read yet:
+ * part T's tree read is not on this branch, and t8 has it refresh `issueTreeKey(issueKey)`
+ * here, before `onLanded`.
  */
-export function useCriterionWrite({ onLanded, parent, tree }: CriterionWriteOptions) {
+export function useCriterionWrite({ onLanded, onOut, parent, tree }: CriterionWriteOptions) {
   return useKeyedWrite({
     inline: true,
     label: () => CONTROL_LABELS.write_criterion,
-    onSuccess: () => onLanded(),
+    onError: () => onOut(false),
+    onMutate: () => onOut(true),
+    onSuccess: () => {
+      onOut(false);
+      onLanded();
+    },
     request: (markdown: string) => criterionRequest(tree, markdown),
     target: () => `criterion:${tree}:${parent}`,
   });
@@ -204,6 +174,10 @@ export interface CriterionLine {
   readonly send: () => void;
   /** Whether the criterion's write is out. */
   readonly pending: boolean;
+  /** What the line's Send says while the write is out (`ANSWER_LINES.saving_criterion`), read
+   *  from part B's list as a refusal's sentence is (`criterionAnswerLine`); undefined while
+   *  none is out. */
+  readonly busy: string | undefined;
   /** The key of `ANSWER_LINES` the last refusal draws, until the next change of the text or the
    *  next send; `undefined` while there is none. */
   readonly answer: CriterionAnswer | undefined;
@@ -212,8 +186,9 @@ export interface CriterionLine {
 /**
  * The state of the box's criterion line (R2, the plan's decision "The line"): its text, which
  * stays while the write is out and after a refusal, and the refusal's answer, which goes at the
- * next change of the text or the next send (a new press clears the write's error). A landing,
- * a 200 or `null`, is told to `onLanded` and then lets the text go.
+ * next change of the text or the next send (a new press clears the write's error). The write's
+ * going out and its settling are told to `onOut`; a landing, a 200 or `null`, is then told to
+ * `onLanded` and lets the text go.
  */
 export function useCriterionLine({ onLanded, ...aim }: CriterionWriteOptions): CriterionLine {
   const [text, setTyped] = useState("");
@@ -227,6 +202,7 @@ export function useCriterionLine({ onLanded, ...aim }: CriterionWriteOptions): C
   const pending = write.isPending;
   return {
     answer: write.error === null ? undefined : criterionAnswer(write.error),
+    busy: pending ? ANSWER_LINES.saving_criterion : undefined,
     pending,
     send: () => {
       if (pending || text.trim() === "") return;

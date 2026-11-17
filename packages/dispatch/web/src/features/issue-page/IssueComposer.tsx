@@ -44,14 +44,11 @@ import { useMediaQuery } from "../shell/useDialog";
 import { FOOT_HEIGHT_PROPERTY, HEADER_SCROLLS_QUERY } from "./identity-block";
 import { firstLineOf } from "./issue-tree";
 import { DETAILS_ATTRIBUTE } from "./margin-slot";
-import {
-  type CriterionItem,
-  criterionAnswerLine,
-  useCriterionLine,
-} from "./model-rows/criterion-write";
+import { criterionAnswerLine, useCriterionLine } from "./model-rows/criterion-write";
 import { useRoomFacts } from "./model-rows/room-target";
 import {
   type AnswerTarget,
+  type CriterionItem,
   type Landing,
   type OutlineWriter,
   useOutlineWriter,
@@ -802,7 +799,9 @@ function CriterionLine({
  * Shift+Enter breaks the line; Escape, from any control of the line, and the target line's
  * control end the aim and take the reader back to the node's row. The text stays in the field
  * while the write is out and after a refusal, whose sentence is drawn under the line; a landing
- * lets the text go and takes the reader to their new criterion under the node.
+ * lets the text go and takes the reader to their new criterion under the node. While the write
+ * is out the box keeps the line's aim (`OutlineWriter.holdCriterion`): no other target, Escape
+ * or the target line's control ends it, so its text and its refusal stay to be read.
  *
  * It is a form of its own beside the answer's, with the line that writes on the issue kept
  * mounted and hidden, so the page keeps one box (part L's R7). Its words go into the issue's own
@@ -825,17 +824,24 @@ function CriterionForm({
   const [pickerOpen, setPickerOpen] = useState(false);
   const under: Landing["under"] = { id: target.id, kind: target.kind };
   const back = () => finish(writer, place, { to: "self", under });
+  const hold = writer.holdCriterion;
   const line = useCriterionLine({
     issueKey,
-    // A write lands whether or not its line is still drawn. One that lands after the reader
-    // took another target while it was out takes them nowhere and ends nothing: the line they
-    // are on now is theirs.
+    // A write lands whether or not its line is still drawn: the box holds the aim while the
+    // write is out, but the page can stop drawing the line. One that lands after its line went
+    // takes the reader nowhere and ends nothing, and lets go of no hold: the line let go of it
+    // as it went, and a later line's own write may hold the box now.
     onLanded: () => {
       if (form.current !== null) finish(writer, place, { to: "newest", under });
+    },
+    onOut: (out) => {
+      if (form.current !== null) hold(out);
     },
     parent: target.address,
     tree,
   });
+  // A line the page stops drawing while its write is out lets go of the box.
+  useEffect(() => () => hold(false), [hold]);
   return (
     <form
       aria-label={CONTROL_LABELS.criterion_target}
@@ -846,7 +852,8 @@ function CriterionForm({
         if (event.key !== "Escape") return;
         event.preventDefault();
         event.stopPropagation();
-        back();
+        // While the write is out the line keeps its aim, as the fieldset holds its ×.
+        if (!line.pending) back();
       }}
       onSubmit={(event) => {
         event.preventDefault();
@@ -882,9 +889,11 @@ function CriterionForm({
           />
           <div className={pageComposer.controls}>
             <RefusableButton
-              busy={line.pending ? "Sending…" : undefined}
+              busy={line.busy}
               look="page-send"
-              refusal={null}
+              // An empty line says why it sends nothing, as the answer's says it by its
+              // placeholder.
+              refusal={line.text.trim() === "" ? CONTROL_LABELS.criterion_placeholder_phone : null}
               type="submit"
             >
               {CONTROL_LABELS.send}

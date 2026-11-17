@@ -259,6 +259,19 @@ test("Decisions draws no reading of an answered ask", () => {
   expect(filterSignals(root, "").decisions).toEqual({ count: 1 });
 });
 
+// R3, R20: a reading of an answered question the address names is drawn under Decisions all the
+// same, as every filter draws a node the address names.
+test("Decisions draws a reading the address names", () => {
+  const root = node("CORE-1", "issue", [
+    node("ask-1", "ask", [node("reading-1", "reading")], { state: "answered" }),
+  ]);
+  const view = presetView(root, "decisions", "", new Set(["reading-1"]));
+  expect(idsOf(treeRows(view.root, everythingOpened(view.root))).slice(1)).toEqual([
+    "ask-1",
+    "reading-1",
+  ]);
+});
+
 // R3: under Decisions an agent decision's readings are rows under it, and no reading is in the
 // count, which holds the asks and the decisions alone.
 test("Decisions draws an agent decision's reading under it", () => {
