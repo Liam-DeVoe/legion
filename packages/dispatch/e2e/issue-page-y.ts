@@ -120,7 +120,7 @@ export interface TreeReadAnswer {
 }
 
 /** One page of the read: `converted`, `tree` and `view_of` are the first page's for the whole
- *  read, as the page's own tree read (`mergeTreePages`) takes them. */
+ *  read. */
 interface TreeReadPage extends TreeReadAnswer {
   /** The next page's cursor, absent or null on the last page. */
   readonly cursor?: string | null;
@@ -143,10 +143,9 @@ async function readAnswer<T>(
 }
 
 /** The gate of this file's rows: every row reads the issue's tree read
- *  (`GET /api/v1/issues/{key}/tree`), which this branch's server does not serve yet. The
- *  server's route index (`GET /api/v1`, public, so read with no sign-in) says whether it is
- *  served, so a row skips, owed, on a server that does not serve it and runs for real on one
- *  that does. */
+ *  (`GET /api/v1/issues/{key}/tree`). The server's route index (`GET /api/v1`, public, so read
+ *  with no sign-in) says whether it is served, so a row skips, owed, on a server that does not
+ *  serve it and runs for real on one that does. */
 export async function treeReadServed(): Promise<boolean> {
   const response = await fetch(new URL("/api/v1", baseUrl));
   if (!response.ok) throw new Error(`GET /api/v1 failed: ${response.status}`);
@@ -301,10 +300,9 @@ export interface ModelNode {
   readonly address: string;
   /** The id the tree read answers for it. */
   readonly id: string;
-  /** The id the outline draws its row under (`data-node-id`): the page's tree read (`treeIdOf`)
-   *  keeps the model's `<slug>#b-<block>` (`blockNodeId`) for a block of one of this issue's
-   *  documents, an ask's block included, and a comment's own id, and gives the tree read's id to
-   *  a node of another issue. */
+  /** The id the outline draws its row under (`data-node-id`): the tree read keeps the model's
+   *  `<slug>#b-<block>` (`blockNodeId`) for a block of one of this issue's documents, an ask's
+   *  block included, and a comment's own id, and gives a node of another issue its read id. */
   readonly row: string;
 }
 

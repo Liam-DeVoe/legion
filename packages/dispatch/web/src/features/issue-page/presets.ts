@@ -200,10 +200,9 @@ function filterView(
   const context = new Set<string>();
   const matched = new Set<string>();
   // Whether Decisions leaves `child` out where it stands under a question: a reading the address
-  // does not name. The one rule picks the question to lift again and what it keeps, so the
-  // second lift finds nothing to leave out.
+  // does not name.
   const hiddenReading = (child: TreeNode): boolean =>
-    filter === "decisions" && child.type === "reading" && !named.has(child.id);
+    child.type === "reading" && !named.has(child.id);
   // The rows `node` gives the view, and whether `node` is itself one of them: either the node
   // with its own rows under it, or, where it is no row, the rows of its branch lifted to where
   // it stood.
@@ -212,7 +211,7 @@ function filterView(
     // the address names, which every filter draws: the question is lifted again without the
     // others, so this runs once for it. A reading stands only under an answered question, since
     // the schema refuses one in an ask with no answer.
-    if (node.type === "ask" && node.children.some(hiddenReading)) {
+    if (filter === "decisions" && node.type === "ask" && node.children.some(hiddenReading)) {
       const kept = node.children.filter((child) => !hiddenReading(child));
       return lift({ ...node, children: kept });
     }

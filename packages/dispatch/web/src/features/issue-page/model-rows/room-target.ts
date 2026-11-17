@@ -53,10 +53,10 @@ const NO_TEXT: RoomTarget = { report: "no_text" };
  * a comment or a message takes no caret, an ask written as a block of a document too: its text
  * is the conversation's, which no fragment holds. A node of a document is edited in that
  * document's fragment. A criterion no document holds and with no address was written into the
- * issue: the page's tree read drafts it with its read id, which is its block id, and writes no
- * address for it (`treeIdOf`, `referenceOf`), so it is edited in the tree artifact's own fragment
- * at its own id. Any other node whose address names a block of this issue was written into the
- * issue too, and is edited there at that block.
+ * issue: the tree read names it by its read id, which is its block id, and gives it no address,
+ * so it is edited in the tree artifact's own fragment at its own id. Any other node whose
+ * address names a block of this issue was written into the issue too, and is edited there at
+ * that block.
  */
 export function roomTarget(
   node: Pick<TreeNode, "id" | "reference" | "type">,
@@ -83,13 +83,12 @@ export function roomTarget(
 
 /**
  * The room facts of an issue's tree read, by the issue's key, read from the query cache with no
- * fetch of its own: the page's tree read (`issueTreeQuery`) is what fetches it, and this answers
- * `undefined` for an issue whose tree read the cache does not hold, so its nodes are edited as
- * `useNodeEditing.ts` edits them without a room.
+ * fetch of its own: it answers `undefined` for an issue whose tree read the cache does not hold,
+ * so its nodes are edited as `useNodeEditing.ts` edits them without a room.
  *
- * This branch has no tree read, so the cache holds no issue's tree read and this answers
- * `undefined` for every issue, whatever key it is given. It takes the cache's client already, so
- * its place among its caller's hooks is fixed before that read lands.
+ * Since the page reads no tree yet, the cache holds none and this answers `undefined` for every
+ * issue, whatever key it is given. It takes the cache's client already, so its place among its
+ * caller's hooks is fixed before the page reads a tree.
  */
 export function useRoomFacts(_issueKey: string | undefined): RoomFacts | undefined {
   useQueryClient();

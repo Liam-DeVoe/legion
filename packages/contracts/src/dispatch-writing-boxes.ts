@@ -352,7 +352,7 @@ const WRITING_BOXES: readonly Omit<DispatchWritingBoxRow, "hint">[] = [
     issueRows: true,
     reach: "[data-issue-composer]",
     reason:
-      "No control reaches it yet: Write a criterion is offered only once the page reads the issue's tree, which this server does not serve yet.",
+      "No control reaches it yet: Write a criterion is offered only once the page reads the issue's tree.",
     write: "criterion",
   },
   // The Inbox's reading column: one reply box, under a comment thread or a message thread.

@@ -88,9 +88,9 @@ function room(converted: boolean, tree: string | null = TREE): RoomFacts {
 const STATEMENT = block(SPEC, "r1", "requirement");
 const CHECK = block(VERIFICATION, "c1", "check");
 
-/** A criterion written into the issue, as the page's tree read drafts it: its bare read id, which
- *  is its block id in the tree artifact, and no address, since the tree read's `referenceOf`
- *  writes none for a node no document holds. */
+/** A criterion written into the issue, as the tree read drafts it: its bare read id, which is its
+ *  block id in the tree artifact, and no address, since the tree read writes no address for a
+ *  node no document holds. */
 const CRITERION = node("k1", "criterion");
 
 /** An ask written as a block of the spec, which the ask read placed: its address is the ask's. */
@@ -109,7 +109,7 @@ const MESSAGE = node("message-1", "message", [], {
   reference: `dispatch://${KEY}/message/message-1`,
 });
 
-/** A result of this issue's check c1, which the page's tree read drafts with no address. */
+/** A result of this issue's check c1, which the tree read drafts with no address. */
 const RESULT = node("result-1", "result");
 
 /** A result of a check of another issue, addressed in that issue. */

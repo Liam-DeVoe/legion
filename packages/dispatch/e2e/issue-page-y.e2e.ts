@@ -311,7 +311,7 @@ test.beforeEach(async () => {
 //
 // Before (1) it loads a bare `seedWholeIssue` issue, a second seed of the row, and counts its first
 // load by route, then counts the seeded issue's the same way: (8) compares the two, so the first
-// assertion that fails at a merge-base that serves the tree read but lacks this change is (1)'s.
+// assertion that fails on a page without the criterion line is (1)'s.
 // SLOW(>=2s): two whole issues seeded and each loaded cold until its reads settle, the second with
 // a decision, two readings, an approval and a child written over it and waited on in the tree
 // read; then four sends from the box, two of them refused, a reload and a load of the child.
@@ -529,10 +529,8 @@ test("a person writes a criterion under the words they are reading @phone", asyn
 // a uuid. At 1440 px. How the child's check stands, which its result gives, is the next row's,
 // owed until the tree read answers it.
 //
-// The steps are asserted in the order (1), (3), (2), (4), so that (3), the borrowed rows, is read
-// wherever the Decisions view, which (2) needs, is not under the head. At a merge-base that serves
-// the tree read but lacks this change, no step drafts a reading, so the row fails there on (1)'s
-// first assertion.
+// The steps are asserted in the order (1), (3), (2), (4). On a page without the reading rows, no
+// step drafts a reading, so the row fails there on (1)'s first assertion.
 // SLOW(>=2s): the whole issue seeded with a decision, two readings, an approval and a child written
 // over it and waited on in the tree read, then loaded and unfolded, and three views turned on.
 test("a reading stands under what it reads and a child's check under the statement it serves", async ({
@@ -695,9 +693,8 @@ test("a reading stands under what it reads, and a child's check draws the standi
 // the tree read after a reload. A comment and an ask take no caret, and a check of the child issue
 // says it is edited on its own issue. At 1440 px.
 // c-editing's (4), an open editor that stays writable when the block schema changes, is not in
-// this row: its helpers (`applySupertagMigration`, `restoreStoreSchema`) are in
-// `e2e/block-schema.ts`, which this branch does not hold. The change that brings that file adds
-// the step and the words "and an open editor survives a schema change" to this title.
+// this row: its helpers (`applySupertagMigration`, `restoreStoreSchema`) are not among the e2e
+// helpers yet; the step and the title's words come with them.
 // SLOW(>=2s): the whole issue seeded with a decision, two readings, an approval and a child written
 // over it and waited on in the tree read, a criterion written and waited on too, then three
 // editors opened and typed in, a reload, and the tree read polled for the stored words.

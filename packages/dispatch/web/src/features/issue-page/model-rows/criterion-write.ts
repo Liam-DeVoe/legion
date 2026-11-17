@@ -116,7 +116,7 @@ export function criterionAnswer(error: unknown): CriterionAnswer {
 
 /** Whether a node of this issue offers the act that writes a criterion: only where the issue's
  *  tree read answers a `tree` and no `view_of`. No facts - an issue whose tree read the cache
- *  does not hold, which is every issue while this branch has no tree read - offer none. */
+ *  does not hold, which is every issue while the page reads no tree - offer none. */
 export function criterionOffered(facts: RoomFacts | undefined): boolean {
   return facts !== undefined && facts.tree !== null && facts.viewOf === null;
 }
@@ -138,9 +138,8 @@ export interface CriterionWriteOptions extends CriterionAim {
  * with every other criterion written under the same node of the same tree
  * (`criterion:<tree>:<parent>`), shown by the pending-writes indicator only while it is out,
  * since the line shows its refusal itself. It is told to `onOut` as it fires and as it settles,
- * and a landing then to `onLanded`. The landing invalidates no read yet: this branch has no tree
- * read, and once the page reads the tree the landing is to refresh `issueTreeKey(issueKey)` here,
- * before `onLanded`.
+ * and a landing then to `onLanded`. The landing refreshes no read: the page reads no tree yet,
+ * and once it does the landing is to refresh the issue's tree read here, before `onLanded`.
  */
 export function useCriterionWrite({ onLanded, onOut, parent, tree }: CriterionWriteOptions) {
   return useKeyedWrite({
