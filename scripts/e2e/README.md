@@ -4896,10 +4896,12 @@ it says `Phase: reviewing.` and names the tester's handoff of that round by its 
 
 The proof's own control: with the call that gives the transition's `task` the reviewed part taken out of `internal/workflow/engine.go`, `round-2-names-the-commit-of-round-1` fails, its task naming test version 2 and no commit.
 With the write of `phases.reviewed_head` taken out of `internal/workflow/review.go` and the step before it left out, `control-no-record-no-commit` fails before its clear, the column reading empty where it should hold the first head.
-What the proof stands in for lies outside the review round:
+What the proof stands in for:
 the broker is a native `nats-server`; GitHub is one REST stand-in (`reviewRangeGitHub`: each repository with default branch `main`, and each issue's branch listing its one open pull request at the head the step last set, which the implementer's completion reads);
 the Apps' tokens are placeholders; Envoy's listener is the package's `noticeListener`;
 and no agent runs.
+The stand-in answers every other route `404`, so the daemon's own read of the pull request, at its start and after each recorded handoff (`readIssuePullRequest` in `internal/daemon/issue_reads.go`), fails and is logged, and the review reaches the daemon only as its webhook.
+The read of the pull request's reviews that applies a review whose webhook never arrived (`readReviews` in `internal/daemon/review_reads.go`) hands the workflow the same review, which records the reviewed commit in the same step (`review` in `internal/workflow/review.go`); this proof does not drive that read.
 `REVIEW_RANGE_EVIDENCE_DIR` (default a fresh directory under `TMPDIR`, kept and printed) keeps the transcript, the `nats-server`'s log, the daemon's own, Dispatch's (`dispatch.log`) and the driver's output.
 
 ## plan-pointer-drive.sh
