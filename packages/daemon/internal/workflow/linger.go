@@ -498,8 +498,9 @@ func (e *Engine) lingerExpired(ctx context.Context, tx pgx.Tx, fact intake.Linge
 	// request is not open) has its merge step open still, which the linger left open for the
 	// merge to end (beginLinger). Its step ends here, stopped, where its pull request is not open:
 	// that merge can no longer land. Where it is open, the merge can still land, and its close in
-	// the lingering tree ends the step passed (closeMerged). A member handed over keeps the step
-	// open for its readmit to end (admit's readmit).
+	// the lingering tree ends the step passed (closeMerged), or the pull request closes unmerged
+	// and that close ends it, stopped (closed's endMergeOfAClosedTree). A member handed over keeps
+	// the step open for its readmit to end (admit's readmit).
 	for _, member := range members {
 		if member.Key == issue.Key || !awaitsMerge(member) || slices.ContainsFunc(handed, func(h record.Issue) bool { return h.Key == member.Key }) {
 			continue

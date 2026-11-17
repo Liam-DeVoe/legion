@@ -658,22 +658,28 @@ func TestAMergeEventEndsAHeldMergeStep(t *testing.T) {
 // A parked tree hands over only an unheld member with an open pull request. The close of its
 // linger retires the other merge workers too, and ends the merge of one whose pull request can no
 // longer land: its record ends rather than staying running. A held merger's open pull request
-// can still land, so its merge stays open until it does, and ends passed (C1's one exception).
+// can still land, so its merge stays open until it does, and ends passed (C1's one exception), or
+// until the pull request closes unmerged, which ends it stopped, once. A member handed over keeps
+// its merge open for its readmit to end, whatever its pull request does.
 func TestALingerCloseEndsAMergeThatItDoesNotHandOver(t *testing.T) {
+	merged := intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 43, HeadSHA: "head-43", MergeSHA: "merge-43"}
+	closed := intake.PullRequestClosed{Repo: "sjawhar/legion", Number: 43, HeadSHA: "head-43"}
 	for _, tc := range []struct {
 		name     string
 		held     bool
 		closedPR bool
 		// wantEnd is the close's end of the merge, stopped; handed is its hand-over.
 		wantEnd, handed bool
-		// merged is the merge of the pull request after the close, and wantAfter the one end
-		// the merge step has then.
-		merged    bool
+		// after is what the pull request does after the close, and wantAfter the result of the
+		// one end the merge step has then ("" for none).
+		after     intake.Fact
 		wantAfter string
 	}{
 		{name: "closed pull request", closedPR: true, wantEnd: true},
-		{name: "held merger", held: true, merged: true, wantAfter: "passed"},
+		{name: "held merger", held: true, after: merged, wantAfter: "passed"},
+		{name: "held merger whose pull request closes after the close", held: true, after: closed, wantAfter: "stopped"},
 		{name: "open merger is handed over", handed: true},
+		{name: "handed-over merger whose pull request closes after the close", handed: true, after: closed},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
@@ -723,15 +729,23 @@ func TestALingerCloseEndsAMergeThatItDoesNotHandOver(t *testing.T) {
 				}
 				return err
 			})
-			if !tc.merged {
+			if tc.after == nil {
 				return
 			}
-			apply("merge-after-close", intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 43, HeadSHA: "head-43", MergeSHA: "merge-43"})
+			// A second delivery of what the pull request did writes no second end.
+			apply("after-close", tc.after)
+			apply("after-close-again", tc.after)
 			var ends []record.StepRecord
 			for _, w := range stepWrites(t, pool, "LEGION-209") {
 				if w.ID == writes[1].ID && isEnd(w) {
 					ends = append(ends, w)
 				}
+			}
+			if tc.wantAfter == "" {
+				if len(ends) != 0 {
+					t.Fatalf("ends of LEGION-209's handed-over merge after the close = %+v, want none: its readmit ends it", ends)
+				}
+				return
 			}
 			if len(ends) != 1 {
 				t.Fatalf("ends of LEGION-209's merge after the close = %+v, want exactly one", ends)
