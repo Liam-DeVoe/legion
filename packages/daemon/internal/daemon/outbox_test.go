@@ -2114,11 +2114,7 @@ func TestAResidentWorkerIsHandedItsNewPhaseNotATaskLeftPendingFromTheLast(t *tes
 			// (workflow's ReviewerSession): its completion arrives after its own review has moved
 			// the issue, and is recorded on its row (workflow's leftItsPhase).
 			const reviewerClaim = "legion-legion-legion-208-reviewer"
-			if _, err := pool.Exec(ctx, `insert into claims (token, project, tree, issue, role, generation, session, session_file,
-				state, launch_failures, prompt_failures, prompt_retires, uncertain_streak)
-				values ($1, 'LEGION', 'LEGION-208', 'LEGION-208', 'reviewer', 1, 'ses-reviewer', '/sessions/ses-reviewer.jsonl', 'working', 0, 0, 0, 0)`, reviewerClaim); err != nil {
-				t.Fatalf("seed the reviewer's claim: %v", err)
-			}
+			seedReviewerSession(t, pool, "LEGION", "LEGION-208", "ses-reviewer")
 			sup, rt := newOutboxSupervisor(t, "legion", t.TempDir())
 			sup.deps.PhaseHolds = (&workflowRuntime{pool: pool, records: records}).phaseHolds // exactly what the daemon wires
 			const reviewApp = "legion-reviewer[bot]"

@@ -124,15 +124,30 @@ func reviewReadRuntime(pool *store.Pool, api string) *workflowRuntime {
 // session on, and the claim each of the reviewer's completions carries.
 const captureReviewClaim claim.Token = "legion-capture-capture-1-reviewer"
 
-// seedCaptureReviewerSession records CAPTURE-1's reviewer claim with session, as the daemon
-// records the claim it starts the reviewer under; a claim already recorded takes the session given,
-// as a registration writes it on the claim the outbox made with none.
-func seedCaptureReviewerSession(t *testing.T, pool *store.Pool, session string) {
+// seedReviewerSession records the reviewer claim of project's issue with session, under the token
+// the daemon starts the reviewer under (workflow's reviewerToken: claim.NewToken of the project's
+// token), as a registration records it: the session and its transcript. A claim already recorded
+// takes the session given, as a registration writes it on the claim the outbox made with none; an
+// empty session is that claim before any registration.
+func seedReviewerSession(t *testing.T, pool *store.Pool, project, issue, session string) {
 	t.Helper()
+	projectToken, err := claim.ProjectToken(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := claim.NewToken(projectToken, issue, claim.RoleReviewer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionFile := ""
+	if session != "" {
+		sessionFile = "/sessions/" + session + ".jsonl"
+	}
 	if _, err := pool.Exec(context.Background(), `insert into claims (token, project, tree, issue, role, generation, session, session_file,
 		state, launch_failures, prompt_failures, prompt_retires, uncertain_streak)
-		values ($1, 'CAPTURE', 'CAPTURE-1', 'CAPTURE-1', 'reviewer', 1, $2, '', 'working', 0, 0, 0, 0)
-		on conflict (token) do update set session = excluded.session`, string(captureReviewClaim), session); err != nil {
+		values ($1, $2, $3, $3, 'reviewer', 1, $4, $5, 'working', 0, 0, 0, 0)
+		on conflict (token) do update set session = excluded.session, session_file = excluded.session_file`,
+		string(token), project, issue, session, sessionFile); err != nil {
 		t.Fatalf("seed the reviewer's claim session: %v", err)
 	}
 }
@@ -207,7 +222,7 @@ func TestAReviewWhoseWebhookNeverArrivedDecidesItsRoundOnTheRead(t *testing.T) {
 			pool := isolatedOutboxPool(t)
 			seedCapture(t, pool, phase.Reviewing, "needs_review", completedReviewer("review-1"))
 			captureHeadAt(t, pool, captureHead)
-			seedCaptureReviewerSession(t, pool, "ses-reviewer")
+			seedReviewerSession(t, pool, "CAPTURE", "CAPTURE-1", "ses-reviewer")
 			if tc.held {
 				holdFromReviewing(t, pool)
 			}
@@ -294,7 +309,7 @@ func TestAReviewDecisionDeliveredTwiceActsOnce(t *testing.T) {
 			ctx := context.Background()
 			seedCapture(t, pool, phase.Reviewing, "needs_review", completedReviewer("review-1"))
 			captureHeadAt(t, pool, captureHead)
-			seedCaptureReviewerSession(t, pool, "ses-reviewer")
+			seedReviewerSession(t, pool, "CAPTURE", "CAPTURE-1", "ses-reviewer")
 			listed := []string{round1}
 			var reads atomic.Int64
 			w := reviewReadRuntime(pool, reviewsStandIn(t, func() string { return "[" + strings.Join(listed, ",") + "]" }, &reads).URL)
@@ -423,7 +438,7 @@ func TestADecidingReviewBetweenRoundsDecidesNoLaterRound(t *testing.T) {
 			ctx := context.Background()
 			seedCapture(t, pool, phase.Reviewing, "needs_review", completedReviewer("review-1"))
 			captureHeadAt(t, pool, captureHead)
-			seedCaptureReviewerSession(t, pool, "ses-reviewer")
+			seedReviewerSession(t, pool, "CAPTURE", "CAPTURE-1", "ses-reviewer")
 			listed := []string{round1}
 			var reads atomic.Int64
 			w := reviewReadRuntime(pool, reviewsStandIn(t, func() string { return "[" + strings.Join(listed, ",") + "]" }, &reads).URL)
@@ -563,7 +578,7 @@ func TestTheReadSetsAsideAReviewAppReviewFromAnotherSession(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	seedCapture(t, pool, phase.Reviewing, "needs_review", completedReviewer("review-1"))
 	captureHeadAt(t, pool, captureHead)
-	seedCaptureReviewerSession(t, pool, "ses-reviewer")
+	seedReviewerSession(t, pool, "CAPTURE", "CAPTURE-1", "ses-reviewer")
 	body := func(session string) string {
 		return "reviewed" + legionFooter(session, captureHead)
 	}
@@ -599,7 +614,7 @@ func TestTheReadSetsAsideAnotherSessionsReviewInTheReviewersFirstRound(t *testin
 	pool := isolatedOutboxPool(t)
 	seedCapture(t, pool, phase.Reviewing, "needs_review", record.PhaseRow{Issue: "CAPTURE-1", Role: claim.RoleReviewer})
 	captureHeadAt(t, pool, captureHead)
-	seedCaptureReviewerSession(t, pool, "ses-reviewer")
+	seedReviewerSession(t, pool, "CAPTURE", "CAPTURE-1", "ses-reviewer")
 	var reads atomic.Int64
 	api := reviewsStandIn(t, func() string {
 		return "[" + listedReviewWithBody(41, reviewReadApp, "APPROVED", captureHead, "2026-10-08T22:15:52Z", "ship it"+legionFooter("ses-controller", captureHead)) + "]"
@@ -643,7 +658,7 @@ func TestTheReadJudgesAReviewThatWaitedForTheReviewersSessionAgain(t *testing.T)
 			seedCapture(t, pool, phase.Reviewing, "needs_review", record.PhaseRow{Issue: "CAPTURE-1", Role: claim.RoleReviewer})
 			captureHeadAt(t, pool, captureHead)
 			if tc.claim == "empty" {
-				seedCaptureReviewerSession(t, pool, "")
+				seedReviewerSession(t, pool, "CAPTURE", "CAPTURE-1", "")
 			}
 			var reads atomic.Int64
 			api := reviewsStandIn(t, func() string {
@@ -661,7 +676,7 @@ func TestTheReadJudgesAReviewThatWaitedForTheReviewersSessionAgain(t *testing.T)
 				t.Fatalf("refused reviews = %v, want review 41 left to be judged again once the reviewer's session is recorded", w.refusedReviews)
 			}
 
-			seedCaptureReviewerSession(t, pool, "ses-reviewer")
+			seedReviewerSession(t, pool, "CAPTURE", "CAPTURE-1", "ses-reviewer")
 			readCapture(t, w)
 			if got, _ := capturePhase(t, pool); got != tc.want {
 				t.Fatalf("once the reviewer's session is recorded the issue is in %s after the read, want %s", got, tc.want)
@@ -700,7 +715,7 @@ func TestAListedApprovalDecidesOnTheHeadItsFooterNamesAcrossAForcePush(t *testin
 			pool := isolatedOutboxPool(t)
 			seedCapture(t, pool, phase.Reviewing, "needs_review", completedReviewer("review-1"))
 			captureHeadAt(t, pool, pushedHead)
-			seedCaptureReviewerSession(t, pool, "ses-reviewer")
+			seedReviewerSession(t, pool, "CAPTURE", "CAPTURE-1", "ses-reviewer")
 			// GitHub shows the branch back at captureHead, its activity holding the push that
 			// took it to pushedHead and the force push that took it back, so the read follows
 			// the move the lost webhooks never brought.
@@ -755,7 +770,7 @@ func TestARefusedListedReviewDoesNotHideTheApprovalBelowIt(t *testing.T) {
 			pool := isolatedOutboxPool(t)
 			seedCapture(t, pool, phase.Reviewing, "needs_review", completedReviewer("review-1"))
 			captureHeadAt(t, pool, captureHead)
-			seedCaptureReviewerSession(t, pool, "ses-reviewer")
+			seedReviewerSession(t, pool, "CAPTURE", "CAPTURE-1", "ses-reviewer")
 			var reads atomic.Int64
 			api := reviewsStandIn(t, func() string {
 				return "[" + legionReview(60, "APPROVED", captureHead, early, captureHead) + "," + tc.newest + "]"
@@ -784,7 +799,7 @@ func TestAReviewRefusedForItsHeadDecidesOnceThatHeadArrives(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	seedCapture(t, pool, phase.Reviewing, "needs_review", completedReviewer("review-1"))
 	captureHeadAt(t, pool, captureHead)
-	seedCaptureReviewerSession(t, pool, "ses-reviewer")
+	seedReviewerSession(t, pool, "CAPTURE", "CAPTURE-1", "ses-reviewer")
 	// GitHub shows the branch where the record holds it, and lists the reviewer's approval of
 	// the head the push is taking the branch to, under the current head as its commit_id.
 	github := &activityGitHub{}
