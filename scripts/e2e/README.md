@@ -5009,7 +5009,7 @@ The issue's own `time -` is no fault either: it is Dispatch knowing no span of t
 
 `scripts/e2e/lib/plan-ratings-read.test.ts` (`bun test scripts/e2e/lib`, in CI's `test` job) runs it against a `dispatch` stand-in on PATH that prints an answer the real command rendered: envoy-client's `dispatch plans` code prints typed finished issues, so a line it prints that this script cannot read fails the test.
 Among its cases: a whole answer passes, an issue rated twice passes, an issue its owner planned passes, an answer holding a plan whose first task has no steps (`(1 tasks: -)`) is read, an empty read is `UNKNOWN`, and each fault above has its row.
-[`plan-ratings.sh`](#plan-ratingssh)'s first step runs it on the output of the real `dispatch plans` over the Dispatch this checkout builds, so a change of the line the command prints that this script cannot read fails that proof.
+[`plan-ratings.sh`](#plan-ratingssh)'s first step runs it on the output of the real `dispatch plans` over the Dispatch this checkout builds, so it also reads finished issues a real Dispatch served rather than ones the test typed.
 
 ## plan-pointer-drive.sh
 
