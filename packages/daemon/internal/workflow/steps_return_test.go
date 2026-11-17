@@ -196,9 +196,12 @@ func TestAFailedStepReturnsAndNoCountStopsATask(t *testing.T) {
 	t.Run("I-2: a plan whose one step is the tester is refused, so it waits for slice 6", func(t *testing.T) {
 		given := plan.Plan{ArtifactID: "plan-artifact", Version: 2, Tasks: []plan.Task{{ID: "a", HasSteps: true, Steps: []plan.Step{{Role: "tester"}}, Text: "Test it."}}}
 		refusals := append(plan.Validate(given, builtinDeployment), plan.Supported(given)...)
-		want := plan.Refusal{Task: "a", Reason: "task a has no step implementer. This release of Legion does not carry it out yet."}
-		if len(refusals) != 1 || refusals[0] != want {
-			t.Fatalf("the plan `tester` is refused with %+v, want the one reason %+v", refusals, want)
+		want := []plan.Refusal{
+			{Task: "a", Reason: "task a has no step implementer. This release of Legion does not carry it out yet."},
+			{Task: "a", Reason: "step 1 of task a names tester, and no step before it names the role implementer, whose pull request tester reads. This release of Legion does not carry it out yet."},
+		}
+		if !reflect.DeepEqual(refusals, want) {
+			t.Fatalf("the plan `tester` is refused with %+v, want the two reasons %+v", refusals, want)
 		}
 	})
 

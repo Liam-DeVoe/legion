@@ -107,8 +107,8 @@ func BuiltinRoles() map[string]RoleDef {
 	return roles
 }
 
-// builtinRoles is BuiltinRoles in the order of today's line, which is the order Supported holds a
-// task's steps to in this release.
+// builtinRoles is BuiltinRoles, listed in the order of today's line. No check reads the order: a
+// task names its steps in any order (Supported).
 var builtinRoles = []RoleDef{
 	{Name: "planner", Type: TypePlanning, Phase: phase.Planning},
 	{Name: "implementer", Type: TypeImplementation, Phase: phase.Implementing},
