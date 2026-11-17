@@ -18,11 +18,12 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// The project of every node (dispatch://INFRA-3862). Each object a project owns - an issue, a
-// document, an ask, a message, a comment and a document's block - is a node of the store whose
-// project is a base attribute its own write states (graphstore.Node), and an object no project
-// owns - a conversation's file, an ask or a comment on one, a message on no issue - names the
-// parties it is between instead. This file is what reads and repairs the two from the rows:
+// The project of every node, which a read limited to a project depends on. Each object a project
+// owns - an issue, a document, an ask, a message, a comment and a document's block - is a node of
+// the store whose project is a base attribute its own write states (graphstore.Node), and an
+// object no project owns - a conversation's file, an ask or a comment on one, a message on no
+// issue - names the parties it is between instead. This file is what reads and repairs the two
+// from the rows:
 // scopedRows, the one statement of what each row's node must carry; the census's three classes
 // over it (ProjectCensus); the read that answers every row not yet complete (ProjectComplete);
 // and the backfill of the rows written before their kind's writer did this
@@ -268,7 +269,7 @@ var objectKinds = []struct{ kind, start, read string }{
 const zeroUUID = "00000000-0000-0000-0000-000000000000"
 
 // backfillObjectNodes writes the node of every issue, document, ask and message written before
-// its kind's writer wrote one, under INFRA-1149's r-view-end contract: it walks only the rows its
+// its kind's writer wrote one, under the backfill's contract: it walks only the rows its
 // marker does not mark - the marker is the node itself, which no row of these kinds names in a
 // column of its own - dates each node at its row's own created_at, made by the row's own author,
 // and writes the marker in the transaction that writes the node, so a second run reads no row the

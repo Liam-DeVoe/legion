@@ -719,7 +719,8 @@ var projectedWrite = regexp.MustCompile(`(?is)\b(insert into|update|delete from)
 // the same use as one. The names are every exported function of graphstore that writes the store
 // or builds the statement that does, the list that test holds as storeWriteFunctions:
 // SessionRecorded writes a session's node through arms of its own, and a pass that wrote the
-// store through it alone would otherwise be read as no writer at all.
+// store through it alone would otherwise be read as no writer at all, and FillScopes is the
+// backfill's fill of the project of a node stored with none.
 var storeWriterCall = regexp.MustCompile(`\bgraphstore\.(Write|WriteUncaused|Caused|Authored|Reached|SessionRecorded|WriteArms|WriteArmsUncaused|EraseNode|FillScopes|Retarget|QueueFrameTuple)\b`)
 
 // projectionRead matches one read of either side of a projection: a projected table or the

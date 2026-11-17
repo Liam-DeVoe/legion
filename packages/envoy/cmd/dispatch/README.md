@@ -2991,7 +2991,7 @@ The kinds are:
   A node whose newest state is `gone` is held to its row at `gone`, as every other kind is.
   A deployment can hold none of these, so zero rows of one refuse nothing.
 
-- The project of every node (dispatch://INFRA-3862): `issue`, `artifact`, `ask`, `message`, `comment` and `block`, the kinds whose node names the project a read of it is limited by (`graphstore.Node`'s `Project`), or, for an object no project owns, the parties it is between (`Parties`).
+- The project of every node: `issue`, `artifact`, `ask`, `message`, `comment` and `block`, the kinds whose node names the project a read of it is limited by (`graphstore.Node`'s `Project`), or, for an object no project owns, the parties it is between (`Parties`).
   Each row of those kinds is held to what its node must carry, by the rule its writer follows (`graphcensus.scopedRows`): an issue's project; a document's project, or its conversation's session for a conversation's file; an ask's and a comment's issue's project, else its document's, else that document's conversation; a message's issue's project, or, on no issue, the parties of its thread's root (`graphstore.ThreadParties`: who wrote the root, and the session it was sent to); a block's document's.
   It prints one line per kind, `census: project kind=<kind> rows=<n> missing=<n> differs=<n> unscoped=<n>`: a row whose node the store does not hold, a row whose node names another project or other parties than the row's, and a row whose node names neither.
   Any count of the three refuses the census, and the first rows of them are named on `census: project incomplete <kind> <id>: <class>` lines (`graphcensus.ProjectComplete`, the same read).
@@ -3078,7 +3078,7 @@ A run an erase removed has neither row nor node, so no pass writes it back.
 Run it after a roll that crossed this release, and after a rollback to the release before and back, then `envoy-dispatch census --store`.
 Migration `20261116205055_interaction_nodes` writes the same of every run recorded before it applies.
 
-It then writes the node of every issue, document, ask and message written before its kind's writer wrote one (dispatch://INFRA-3862), and gives every comment and block node written before a node named its project that project, or its conversation's party.
+It then writes the node of every issue, document, ask and message written before its kind's writer wrote one, and gives every comment and block node written before a node named its project that project, or its conversation's party.
 Each pass walks only the rows its marker does not mark - the node itself for an issue, a document, an ask and a message, whose rows name no node in a column of their own, and the node's own `project_key` and `parties` for a comment and a block - and writes the marker in the transaction that states the facts, so a second run writes nothing.
 A node is dated at its row's own `created_at` and made by its row's own author; a filled project is stated at the node's own `made_at`, by its `made_by`, under its cause (`graphstore.FillScopes`); and the fill of a block's project takes its document's revision fence first, as every writer of a block's node does.
 The report prints a `kind=` line for each of `issue`, `artifact`, `ask`, `message`, `comment_project` and `block_project`; `envoy-dispatch census --store` then reads `missing=0 differs=0 unscoped=0` for every project-owned kind.

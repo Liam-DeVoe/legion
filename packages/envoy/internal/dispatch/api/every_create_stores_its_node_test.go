@@ -15,7 +15,7 @@ import (
 
 // TestEveryCreateStoresItsNode holds every write route to leaving no row of a project-owned kind
 // without its node in the project, or between the parties, the row belongs to
-// (dispatch://INFRA-3862, slice N of its plan, t-a-9). It calls every POST row of writeClasses -
+// (the node a read limited to a project depends on). It calls every POST row of writeClasses -
 // read from the table, so the set is the server's own - on a server seeded with one object of
 // each kind, then asks graphcensus.ProjectComplete, the census's completeness read, which names
 // any row left without a node, with no project, or with another than its row's.
