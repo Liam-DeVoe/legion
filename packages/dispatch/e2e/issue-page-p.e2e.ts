@@ -1,5 +1,5 @@
 import { statusGlyph } from "../web/src/features/issue-page/issue-status";
-import { CONTROL_LABELS } from "../web/src/features/issue-page/page-words";
+import { CONTROL_LABELS, STATE_LINES } from "../web/src/features/issue-page/page-words";
 import {
   createAsk,
   createIssue,
@@ -2049,5 +2049,83 @@ test("a focus that enters the header from below moves no page @phone", async ({ 
         ).toEqual(from.controls.map(({ name }) => `${name}: -${padding}`));
       }
     }
+  });
+});
+
+// The tester's finding at aec3a5b5 (dispatch://INFRA-3943, round 4), decision 162 of
+// dispatch://INFRA-1196/artifact/part-decisions-md, in decision 132's class: the header's ⋯ menu
+// gives the focus back to its own control, 'Issue actions', on Escape and after each action, as
+// the ARIA menu-button pattern does (WCAG 2.4.3). The menu hid the focused action as it closed,
+// and nothing gave the focus back, so the browser left it on the page's body: the next Tab
+// started again from the top of the page. Each focus is read once, after the menu has closed and
+// two frames are drawn, so a focus that only passes through the control is not taken for one
+// that stays there. It reads 1440 px and 390 px, where the menu is drawn as a panel of its own.
+test("the header's menu gives the focus back to its control on Escape and after an action", async ({
+  browser,
+}) => {
+  test.setTimeout(150_000);
+  await phase(browser, seedHeader, async (page, seeded) => {
+    const header = issueHeader(page);
+    const trigger = header.getByRole("button", {
+      exact: true,
+      name: CONTROL_LABELS.issue_actions,
+    });
+    const triggerFocused = () => trigger.evaluate((control) => control === document.activeElement);
+    // Opens the menu from the keyboard and puts the focus on its action `at`, counted from 1.
+    const onAction = async (at: number) => {
+      await trigger.focus();
+      await page.keyboard.press("Enter");
+      await expect(trigger).toHaveAttribute("aria-expanded", "true");
+      for (let step = 0; step < at; step += 1) await page.keyboard.press("Tab");
+      const focused = await page.evaluate(
+        () => (document.activeElement as HTMLElement | null)?.dataset.issueAction ?? null
+      );
+      if (focused === null) throw new Error(`Tab did not reach the menu's action ${at}`);
+      return focused;
+    };
+    for (const width of [DESKTOP.width, IPHONE_13.width]) {
+      await page.setViewportSize(viewportAt(width));
+      await gotoIssue(page, `/issues/${seeded.key}`);
+      await expectHeaderDrawn(page);
+      await leaveFocus(page);
+
+      await onAction(1);
+      await page.keyboard.press("Escape");
+      await expect(trigger).toHaveAttribute("aria-expanded", "false");
+      await framesDrawn(page, 2);
+      expect(
+        await triggerFocused(),
+        `Escape out of the menu left the focus off its control at ${width} px`
+      ).toBe(true);
+
+      for (const words of ["pin", "unpin"]) {
+        const action = await onAction(1);
+        expect(action, `the menu's first action is not the pin at ${width} px`).toBe("pin");
+        const written = page.waitForResponse(
+          (response) =>
+            response.request().method() !== "GET" &&
+            new URL(response.url()).pathname.includes(seeded.key)
+        );
+        await page.keyboard.press("Enter");
+        await written;
+        await expect(trigger).toHaveAttribute("aria-expanded", "false");
+        await framesDrawn(page, 2);
+        expect(
+          await triggerFocused(),
+          `the menu's ${words} by Enter left the focus off its control at ${width} px`
+        ).toBe(true);
+      }
+    }
+
+    // Close issue, last, since it closes the issue.
+    const action = await onAction(2);
+    expect(action, "the menu's second action is not Close issue").toBe("close");
+    await page.keyboard.press("Enter");
+    await expect(header.getByText(STATE_LINES.closed, { exact: true })).toBeVisible();
+    await framesDrawn(page, 2);
+    expect(
+      await triggerFocused(),
+      "the menu's Close issue by Enter left the focus off its control"
+    ).toBe(true);
   });
 });
