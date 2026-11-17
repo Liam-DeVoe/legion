@@ -257,7 +257,7 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
       {open ? (
         <AnchoredPanel
           anchorRef={triggerRef}
-          className={`z-50 max-h-72 w-64 max-w-[calc(100vw-1rem)] overflow-auto rounded-lg border shadow-lg ${card} ${borderDefault}`}
+          className={`max-h-72 w-64 max-w-[calc(100vw-1rem)] overflow-auto rounded-lg border shadow-lg ${card} ${borderDefault}`}
           onDismiss={() => onOpenChange(false)}
         >
           <div className={`sticky top-0 border-b p-2 ${card}`}>

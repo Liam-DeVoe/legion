@@ -18,6 +18,19 @@ import { focusableIn } from "./focus-place";
 /** The panel's widest, before the 8 px margin it keeps from each viewport edge. */
 const PANEL_WIDTH = 256;
 
+/**
+ * The layer every panel stands in, the one place it is set: an open panel is the reader's
+ * topmost layer, over whatever it was opened over - the page, a dialog (`z-40` and `z-50`), the
+ * Inbox drawer, a toast, a reference's hover card (`z-[60]`) and a document's own floating bars,
+ * the selection bar with its Comment and Suggest and the mark popovers `@legion/proof-editor`
+ * draws at z-index 190 to 280 - so a reader with text selected in a document who opens its
+ * Version list presses its options rather than the bar drawn over them. Only the browser's top
+ * layer is above it, a modal `<dialog>` (the picture lightbox), which no panel is opened over. A
+ * panel opened inside another stands in the same layer, after it in the body, so over it. Any
+ * press outside a panel closes it, so nothing it covers is left under it for long.
+ */
+const PANEL_LAYER = 300;
+
 /** Counts `panel`, opened from inside the panel that hands this out, as part of that panel for
  *  as long as it stands open, and of every panel around that one. Answers what stops counting it. */
 type HoldPanel = (panel: HTMLElement) => () => void;
@@ -290,7 +303,7 @@ export function AnchoredPanel({
       <div
         className={className}
         ref={panelRef}
-        style={{ position: "fixed", ...position }}
+        style={{ position: "fixed", zIndex: PANEL_LAYER, ...position }}
         tabIndex={-1}
         {...named}
         {...PANEL_MARK}
