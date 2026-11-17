@@ -1658,9 +1658,12 @@ func main() {
 	// and with the bucket that ends the answer (internal/session/lastseen.go). So a caller told a
 	// session is gone, past the one-hour gone horizon, is no longer told when it last registered,
 	// and /v1/interests/ reports the real last heartbeat (the row's updated_at lags it by up to
-	// store.InterestRefreshAge) of every row the interest reaper still lists only where the
-	// session TTL and that reaper's allowance (store.InterestReapAllowance(store.InterestReapGrace),
-	// 15 minutes) fit in those 20 minutes, as they do at the default 5 minute TTL.
+	// store.InterestRefreshAge) of a row the interest reaper still lists only while that heartbeat
+	// is less than those 20 minutes old. The reaper deletes a dead session's row at its first pass
+	// (every 5 minutes) after both its allowance (store.InterestReapAllowance(store.InterestReapGrace),
+	// 15 minutes after the row's last write) and the session's record (one TTL after its last
+	// write) have run out: at the default 5 minute TTL that is about 20 minutes after the last
+	// heartbeat, and a longer TTL lists the row longer, with no heartbeat.
 	//
 	// The windows every reader of the registry judges a record's age against. Each defaults to
 	// the compiled constant (session.LiveWindow, session.GoneHorizon). The live window's is the

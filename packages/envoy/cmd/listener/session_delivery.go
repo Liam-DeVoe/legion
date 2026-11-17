@@ -343,8 +343,9 @@ func (m *sessionDelivery) close() {
 // 10012: a late state write of the deleted consumer's flusher renames away the o.dat.tmp that the
 // create wrote (testnats.AwaitConsumerStored). repairRegistered, which this call and
 // deleteConsumer both run, does not retry that create. The registration is answered 200 whatever
-// the repair did. The session's relay pauses until the session's next heartbeat, 90 s away
-// (contracts.SessionHeartbeat), creates the consumer again. dispatch://INFRA-4015 owns the server
+// the repair did. The session's relay pauses until the session's next heartbeat creates the
+// consumer again, which comes within one heartbeat interval (contracts.SessionHeartbeat, 90 s,
+// unless the client's ENVOY_HEARTBEAT_MS sets another). dispatch://INFRA-4015 owns the server
 // race and its other outcome, a create that succeeds with the old consumer's state, and its child
 // dispatch://INFRA-4230 gives each creation a fresh consumer name, which removes the same-name
 // create.
