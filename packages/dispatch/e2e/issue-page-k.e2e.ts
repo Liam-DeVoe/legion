@@ -920,10 +920,10 @@ test("the Plan view's chart is reached in order with the keyboard @phone", async
       })
       .toBe(true);
     // A move key that lands on the card already holding the focus brings it back on screen, as
-    // the outline's own keys do (decision 177 of dispatch://INFRA-1196, part I's `moveTo`): End
-    // on the last card and Home on the first, each after the reader scrolled that card off the
-    // screen, move no focus, so the card's own placing never runs and nothing else brings it
-    // back. Under "Steps" the outline's rows come back; the chart's stayed off the screen.
+    // the outline's own move keys do (`useTreeKeymap.ts`'s `moveTo`): End on the last card and
+    // Home on the first, each after the reader scrolled that card off the screen, move no focus,
+    // so the card's own placing never runs unless the key brings the card back itself. Under
+    // "Steps" the outline's rows come back, and the chart's cards must too.
     await page.evaluate(() => window.scrollTo({ behavior: "instant", top: 0 }));
     expect(await onScreen(last), `${T.loose}'s card is on screen before End again`).toBe(false);
     await reach("End", step(T.loose), "End again");
