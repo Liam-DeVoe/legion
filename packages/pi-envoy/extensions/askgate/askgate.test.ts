@@ -3290,6 +3290,38 @@ console.log(JSON.stringify({ argv: process.argv.slice(2), stdin }));
     expect(result.timedOut).toBe(true);
     expect(Date.now() - began).toBeLessThan(2_000);
   });
+  test("the runner answers when the script ends, and a helper the script left running goes with it", async () => {
+    const pidFile = path.join(work, "dry-run-helper.pid");
+    const began = Date.now();
+    // The helper inherits the script's stdout, so a read that waited for the pipe to close would
+    // wait for the helper.
+    const result = await core.spawnDryRun(`sleep 30 & echo $! > '${pidFile}'; echo out`, {
+      cwd: work,
+      env: { PATH: process.env.PATH ?? "", HOME: work },
+      timeoutMs: 5_000,
+    });
+    const helper = Number(fs.readFileSync(pidFile, "utf8").trim());
+    try {
+      expect(result).toMatchObject({ exitCode: 0, stdout: "out\n", timedOut: false });
+      expect(Date.now() - began).toBeLessThan(2_000);
+      // A killed orphan answers `kill(pid, 0)` as a zombie until whatever adopted it reaps it.
+      let alive = true;
+      for (const deadline = Date.now() + 1_000; alive && Date.now() < deadline; Bun.sleepSync(20)) {
+        try {
+          process.kill(helper, 0);
+        } catch {
+          alive = false;
+        }
+      }
+      expect(alive).toBe(false);
+    } finally {
+      try {
+        process.kill(helper, "SIGKILL");
+      } catch {
+        // Gone, as the test expects.
+      }
+    }
+  });
   test("a subagent's dispatch command is never reviewed or recorded, and gets an argv-only marker", async () => {
     const g = bind({ env: STUB, cwd: work, kind: "sub" });
     expect(await g.bash("b1", ASK)).toBeUndefined();

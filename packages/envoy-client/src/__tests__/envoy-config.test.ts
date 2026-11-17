@@ -946,25 +946,26 @@ describe("a ! command in envoy.json", () => {
     });
   });
 
-  /** Whether a timer due 20 ms from now fired while `work` was still under way, and how late it
-   * fired: what a process holding a NATS connection or a delivery timer sees of `work`. A real
-   * timer on purpose: a fake clock fires when told to, and only the real one shows whether the
-   * event loop was free to serve it. */
-  async function timerDuring(work: () => unknown): Promise<{ during: boolean; lateMs: number }> {
-    let finished = false;
-    let during = false;
-    let lateMs = 0;
-    const due = Date.now() + 20;
-    const { promise: fired, resolve } = Promise.withResolvers<void>();
-    setTimeout(() => {
-      during = !finished;
-      lateMs = Date.now() - due;
-      resolve();
-    }, 20);
-    await work();
-    finished = true;
-    await fired;
-    return { during, lateMs };
+  /** The longest gap between the ticks of a 10 ms interval while `work` runs and just after: what
+   * a process holding a NATS connection or a delivery timer sees of `work`, at every moment of it
+   * and not only its first. A real interval on purpose: a fake clock ticks when told to, and only
+   * the real one shows whether the event loop was free to serve it. */
+  async function longestStall(work: () => unknown): Promise<number> {
+    let last = Date.now();
+    let longest = 0;
+    const ticker = setInterval(() => {
+      const now = Date.now();
+      longest = Math.max(longest, now - last);
+      last = now;
+    }, 10);
+    try {
+      await work();
+      // One more tick after the work, so a stall that lasted to its very end is measured too.
+      await Bun.sleep(20);
+    } finally {
+      clearInterval(ticker);
+    }
+    return Math.max(longest, Date.now() - last);
   }
 
   // A read leaves the process serving its timers while its command runs: waiting for the command
@@ -973,10 +974,16 @@ describe("a ! command in envoy.json", () => {
     const home = tempDir();
     const env = commandEnvironment(home);
     const slow = (value: string) => `!sleep 1; echo ${value} # ${home}`;
-    // The control: the same command waited for synchronously holds the timer until it ends.
-    const held = await timerDuring(() => Bun.spawnSync(["/bin/sh", "-c", slow("x").slice(1)]));
-    expect(held.during).toBe(false);
-    expect(held.lateMs).toBeGreaterThanOrEqual(900);
+    const wait = ["/bin/sh", "-c", slow("x").slice(1)];
+    // The controls: the same command waited for synchronously stalls the ticks, at the start of
+    // the work and after its first ticks alike, as a second field's command would.
+    expect(await longestStall(() => Bun.spawnSync(wait))).toBeGreaterThanOrEqual(900);
+    expect(
+      await longestStall(async () => {
+        await Bun.sleep(100);
+        Bun.spawnSync(wait);
+      })
+    ).toBeGreaterThanOrEqual(900);
 
     const dispatchSecret = fixtureSecret("dsp");
     const listenerSecret = fixtureSecret("listener");
@@ -987,24 +994,24 @@ describe("a ! command in envoy.json", () => {
     const config = readEnvoyConfig(file, env, { cwd: tempDir() });
     let dispatch: DispatchWithToken | undefined;
     let envoy: EnvoyWithToken | undefined;
-    const dispatchRead = await timerDuring(async () => {
-      dispatch = await dispatchSettings(env, config);
-    });
-    expect(dispatchRead.during).toBe(true);
-    expect(dispatchRead.lateMs).toBeLessThan(500);
+    expect(
+      await longestStall(async () => {
+        dispatch = await dispatchSettings(env, config);
+      })
+    ).toBeLessThan(500);
     expect(dispatch).toMatchObject({ enabled: true, token: dispatchSecret });
     // Envoy's two fields: its listener's bearer, then its NATS seed, each a slow command.
-    const envoyRead = await timerDuring(async () => {
-      envoy = await envoySettings(env, config);
-    });
-    expect(envoyRead.during).toBe(true);
-    expect(envoyRead.lateMs).toBeLessThan(500);
+    expect(
+      await longestStall(async () => {
+        envoy = await envoySettings(env, config);
+      })
+    ).toBeLessThan(500);
     expect(envoy).toMatchObject({
       enabled: true,
       token: listenerSecret,
       inbound: { natsCredential: { kind: "seed", seed: { value: "SUSEED" } } },
     });
-  }, 20_000);
+  }, 30_000);
 
   // A command relative to a directory, or one a directory configures (a mise or direnv shim), must
   // resolve against the file that names it, never whatever repository the session started in.
@@ -1205,6 +1212,30 @@ describe("a ! command in envoy.json", () => {
     expect(await kept).toContain(
       `${file}: dispatch.token's command has not run in this process yet`
     );
+    expect(readFileSync(runs, "utf-8")).toBe("run\n");
+  });
+
+  // A run that could not even start (here: no temporary directory to keep its output in) keeps no
+  // outcome and leaves no run under way behind it, so the next read runs the command.
+  test("a run that failed to start leaves nothing behind: the next read runs the command", async () => {
+    const home = tempDir();
+    const env = commandEnvironment(home);
+    const runs = path.join(home, "runs");
+    const secret = fixtureSecret("dsp");
+    const file = writeFile(path.join(home, "envoy.json"), {
+      dispatch: { ...dispatchOn, token: `!echo run >> ${runs}; echo ${secret}` },
+    });
+    const config = readEnvoyConfig(file, env, { cwd: tempDir() });
+    const original = process.env.TMPDIR;
+    process.env.TMPDIR = path.join(home, "no-such-directory");
+    try {
+      expect(await dispatchSettings(env, config)).toMatchObject({ enabled: false });
+    } finally {
+      if (original === undefined) delete process.env.TMPDIR;
+      else process.env.TMPDIR = original;
+    }
+    expect(existsSync(runs)).toBe(false);
+    expect(await dispatchSettings(env, config)).toMatchObject({ enabled: true, token: secret });
     expect(readFileSync(runs, "utf-8")).toBe("run\n");
   });
 
