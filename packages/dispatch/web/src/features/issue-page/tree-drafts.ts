@@ -701,17 +701,20 @@ export function askState(ask: Ask): AskState | undefined {
  * list's rule (`inReviewList`), read once every statement has its draft, as the header's count
  * reads it (`waiting.ts`).
  *
- * `asks` names the node each ask of the issue is drawn by, by the ask's id (`askNodeIds`).
+ * `asksOf` answers the node each ask of the issue is drawn by, by the ask's id (`askNodeIds`),
+ * asked only where a decision is drawn here.
  */
 export function addDecisions(
   drafts: Map<string, Draft>,
   reads: IssueTreeReads,
   context: TreeContext,
-  asks: ReadonlyMap<string, string>
+  asksOf: () => ReadonlyMap<string, string>
 ): void {
   const all = reads.decisions?.decisions ?? [];
   const held = decisionNodes(all, reads.tree);
   const rows = all.filter((decision) => !held.has(decision.ref));
+  if (rows.length === 0) return;
+  const asks = asksOf();
   const artifacts = reads.issue.artifacts;
   const placed = decisionChangeComments(
     reads.decisions,
@@ -780,10 +783,7 @@ export function addDecisions(
     // the way every other state is (R21).
     const changed = changes.has(decision.ref);
     draft.state = decisionState(decision, changed);
-    if (decision.kept !== null && !decision.waiting_review) {
-      draft.keptBy = { id: decision.kept.kept_by, kind: "user" };
-    }
-    if (decision.unsure) draft.unsure = true;
+    markKeptAndUnsure(draft, decision);
     // Nothing waits on a reader whose login has not resolved, as `waiting.ts` counts it.
     draft.waiting = context.viewer !== undefined && inReviewList(decision, isStatement, changed);
     made.set(id, draft);
@@ -812,13 +812,31 @@ export function addDecisions(
  * any longer; then a change the reader asked for, which waits on its agent and not on the
  * reader (`decision-review.ts`); then waiting for review; then kept, by the person whose name the
  * row draws after it (`TreeNode.keptBy`). A person's own decision is in none of them: it is
- * theirs, and the row draws no state.
+ * theirs, and the row draws no state. A decision of the decisions read and a decision node of
+ * the tree read (`tree-read/tree-nodes.ts`' `draftDecision`) both stand by it, the node by the
+ * same members, each optional there.
  */
-function decisionState(decision: Decision, changed: boolean): DecisionState | undefined {
+export function decisionState(
+  decision: Partial<Pick<Decision, "kept" | "replaced" | "waiting_review">>,
+  changed: boolean
+): DecisionState | undefined {
   if (decision.replaced) return "replaced";
   if (changed) return "change_requested";
   if (decision.waiting_review) return "waiting_review";
-  return decision.kept === null ? undefined : "kept";
+  return decision.kept == null ? undefined : "kept";
+}
+
+/** Who kept a decision as it reads now, whose name its row draws after its state word, unless it
+ *  waits for review again; and whether its agent marked it unsure. One rule for a decision of the
+ *  decisions read and a decision node, as `decisionState` is. */
+export function markKeptAndUnsure(
+  draft: Draft,
+  decision: Partial<Pick<Decision, "kept" | "unsure" | "waiting_review">>
+): void {
+  if (decision.kept != null && decision.waiting_review !== true) {
+    draft.keptBy = { id: decision.kept.kept_by, kind: "user" };
+  }
+  if (decision.unsure === true) draft.unsure = true;
 }
 
 /**

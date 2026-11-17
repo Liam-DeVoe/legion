@@ -3,11 +3,7 @@ import { type ReactNode, useEffect, useState } from "react";
 
 import type { IssueDetails } from "../../../api/types";
 import type { Preset } from "../page-words";
-import { subscribeTreeFreshness, type TreeFilter, viewKey, viewQuery } from "./tree-read";
-
-/** The filters that read a view of the tree. Decisions reads none: its view is the decisions
- *  read (`issueDecisionsQuery`), which the load reads already. */
-const VIEW_FILTERS: readonly TreeFilter[] = ["spec", "verification", "plan"];
+import { dropViews, subscribeTreeFreshness, TREE_FILTERS, viewQuery } from "./tree-read";
 
 /**
  * The filters' view reads of one load of the issue (dispatch://INFRA-4062 R4, R6), around the
@@ -38,14 +34,12 @@ export function ViewReadProvider({
   // stage mounts would be dropped by that reset and read a second time.
   const [dropped, setDropped] = useState(false);
   useEffect(() => {
-    for (const filter of VIEW_FILTERS) {
-      void queryClient.resetQueries({ exact: true, queryKey: viewKey(key, filter) });
-    }
+    dropViews(queryClient, key);
     setDropped(true);
   }, [key, queryClient]);
   useEffect(() => subscribeTreeFreshness(queryClient, key), [key, queryClient]);
   useQueries({
-    queries: VIEW_FILTERS.map((filter) => ({
+    queries: TREE_FILTERS.map((filter) => ({
       ...viewQuery(key, filter),
       enabled: dropped && preset === filter,
       staleTime: Number.POSITIVE_INFINITY,

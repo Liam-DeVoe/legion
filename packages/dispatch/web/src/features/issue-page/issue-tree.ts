@@ -11,7 +11,6 @@ import type {
   IssueCoverage,
   IssueDecisions,
   IssueDetails,
-  MessageRead,
   ReferenceTarget,
 } from "../../api/types";
 import type { TextSource } from "../refs/text-references";
@@ -27,7 +26,7 @@ import {
   type TreeContext,
   treeContext,
 } from "./tree-drafts";
-import { askNodeIds, treeDraftsFrom } from "./tree-read/tree-nodes";
+import { askNodeIds, type TreeWords, treeDraftsFrom } from "./tree-read/tree-nodes";
 import type { TreeAnswer } from "./tree-read/tree-read";
 
 /**
@@ -277,8 +276,6 @@ export interface IssueTreeReads {
    *  holds no node for is found among (`addDecisions`). */
   readonly comments?: readonly (Comment & Pick<CommentWithTrees, "body_tree">)[];
   readonly issue: IssueDetails;
-  /** The issue's messages with their replies. The tree read answers each as a node. */
-  readonly messages?: readonly MessageRead[];
   /** Each check of the Verification document with the results recorded against it. */
   readonly results?: IssueCheckResults;
   /** What every `dispatch://` address the tree holds points at, in one read. */
@@ -499,6 +496,12 @@ function namingContext(reads: IssueTreeReads): TreeContext {
   return treeContext(reads, chipLine);
 }
 
+/** What the tree's drafts are read by (`treeDraftsFrom`): the reads' names (`namingContext`)
+ *  with the word rules of this module a draft's line and a chip's name are cut by. */
+export function treeWordsOf(reads: IssueTreeReads): TreeWords {
+  return { ...namingContext(reads), chipLine, lineWords };
+}
+
 /**
  * The issue's whole tree, from the reads it was given: the drafts of the tree read
  * (`treeDraftsFrom`), each where the read places it, with F's drafts of each decision of today's
@@ -507,11 +510,12 @@ function namingContext(reads: IssueTreeReads): TreeContext {
  * node the read places under one not yet read would otherwise be drawn in the wrong place.
  */
 export function buildIssueTree(reads: IssueTreeReads): TreeNode {
-  const context = namingContext(reads);
-  if (reads.tree === undefined) return assemble(reads.issue, [], context.chipOf);
-  const drafts = treeDraftsFrom(reads.tree, reads, { ...context, chipLine, lineWords });
-  addDecisions(drafts, reads, context, askNodeIds(drafts, reads.tree, reads));
-  return assemble(reads.issue, [...drafts.values()], context.chipOf);
+  const words = treeWordsOf(reads);
+  const tree = reads.tree;
+  if (tree === undefined) return assemble(reads.issue, [], words.chipOf);
+  const drafts = treeDraftsFrom(tree, reads, words);
+  addDecisions(drafts, reads, words, () => askNodeIds(drafts, tree, reads));
+  return assemble(reads.issue, [...drafts.values()], words.chipOf);
 }
 
 /**

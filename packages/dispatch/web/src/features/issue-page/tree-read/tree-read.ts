@@ -17,7 +17,7 @@ import {
 import { refreshQueries } from "../../../api/query-refresh";
 import type { IssueDetails } from "../../../api/types";
 import { issueDecisionsQuery } from "../../doc/spec-marks";
-import { blocksOfRole, type TreeBlock } from "./tree-nodes";
+import { blocksOfRole, mergeTreePages, type TreeBlock } from "./tree-nodes";
 
 /**
  * The issue's tree read (`GET /api/v1/issues/{key}/tree`, dispatch://INFRA-1253 R8): the one
@@ -33,7 +33,9 @@ export type TreeTuple = IssueTreeTuple;
  *  same role, so the name says which role's blocks a caller asks for as well (`blocksOfRole`). */
 export type TreeFilter = "spec" | "verification" | "plan";
 
-const TREE_FILTERS: readonly TreeFilter[] = ["spec", "verification", "plan"];
+/** The filters that read a view of the tree, in this order. Decisions reads none: its view is
+ *  the decisions read (`issueDecisionsQuery`), which the load reads already. */
+export const TREE_FILTERS: readonly TreeFilter[] = ["spec", "verification", "plan"];
 
 /** The tree read's key. It is not under `["issue", key]`, so a write that invalidates the
  *  issue's key by prefix does not reach it, and `subscribeTreeFreshness` is the one path that
@@ -51,21 +53,12 @@ export function viewKey(
   return ["issue-tree", key, filter];
 }
 
-/**
- * The pages of one read as one answer: every page's nodes and tuples in the order the pages
- * came, so the walk's order holds across them, and what describes the issue rather than a page
- * (`converted`, `tree`, `view_of`, `documents`) from the first. The answer has no next page.
- * One page is its own answer, which is every issue the page size was set above.
- */
-export function mergeTreePages(pages: readonly [TreeAnswer, ...TreeAnswer[]]): TreeAnswer {
-  const [first] = pages;
-  if (pages.length === 1) return first;
-  return {
-    ...first,
-    cursor: null,
-    nodes: pages.flatMap((page) => page.nodes),
-    tuples: pages.flatMap((page) => page.tuples),
-  };
+/** Drops every view of issue `key` the cache holds (`resetQueries`), so a held one is gone and
+ *  the one an observer has enabled is read again. */
+export function dropViews(queryClient: QueryClient, key: string): void {
+  for (const filter of TREE_FILTERS) {
+    void queryClient.resetQueries({ exact: true, queryKey: viewKey(key, filter) });
+  }
 }
 
 /**
@@ -95,8 +88,9 @@ async function readTree(
 
 /**
  * Window focus reads a query again only while its last answer failed, so a read that failed
- * recovers on the open page while a healthy one stays quiet: the rule of `refetchFailedOnFocus`
- * in `features/refs/reference-target.ts`, which that file keeps to itself.
+ * recovers on the open page while a healthy one stays quiet: a local copy of the private
+ * `refetchFailedOnFocus` of `features/refs/reference-target.ts`, until part F's export of it
+ * (F's spec R12) is under T's base, when T imports F's (dispatch://INFRA-1196 decision 94).
  */
 export const refetchFailedOnFocus = (query: {
   readonly state: { readonly status: QueryStatus };
@@ -151,11 +145,14 @@ export interface TreeRead {
    *  on `blocksRead` would blank, since that failure turns it false (dispatch://INFRA-1196
    *  decision 98). Both are false before the first answer and after a first read that fails. */
   readonly blocksHeld: boolean;
-  /** Whether the read answered every page. Until then a typed block may be missing because it
-   *  has not arrived rather than because the issue holds none, and a read that failed has not
-   *  answered either: the page cannot say what a read it could not make holds. */
+  /** Whether the read answered every page. Until then a typed block - the spec's summary among
+   *  them, which the head waits on before it says a spec has none (`IssueThreeThings.tsx`) - may
+   *  be missing because it has not arrived rather than because the issue holds none, and a read
+   *  that failed has not answered either: the page cannot say what a read it could not make
+   *  holds. */
   readonly blocksRead: boolean;
-  /** The typed blocks of the document that plays `role` (`blocksOfRole`), the same value for a
+  /** The typed blocks of the document that plays `role` (`blocksOfRole`, dispatch://INFRA-4062
+   *  R5), so a view reads its blocks here and costs no request of its own; the same value for a
    *  role until the answer or the read's state changes. */
   readonly blocksOf: (role: TreeFilter) => TreeBlocksRead;
   /** Whether the read has neither answered nor failed yet: what holds back a read that waits on
@@ -254,9 +251,7 @@ export function subscribeTreeFreshness(queryClient: QueryClient, key: string): (
         { exact: true, queryKey: issueTreeKey(key) },
         ...(decisionsOwed ? [] : [{ exact: true, queryKey: decisionsKey }]),
       ]);
-      for (const filter of TREE_FILTERS) {
-        void queryClient.resetQueries({ exact: true, queryKey: viewKey(key, filter) });
-      }
+      dropViews(queryClient, key);
     } finally {
       calling = false;
     }

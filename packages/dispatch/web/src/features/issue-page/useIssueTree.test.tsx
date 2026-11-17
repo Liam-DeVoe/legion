@@ -662,9 +662,9 @@ test("once the second read has nothing left to name, the first read's newer name
 });
 
 // The tester's F17 and dispatch://INFRA-4062 R5: one block read for every document of the issue
-// was 25 of a first load's 47 requests, and F's four were still four. The tree read answers
-// every typed block of every role document, so the outline costs that one request, with no
-// page left to ask for, and no document's blocks are read.
+// was 25 of a first load's 47 requests. The tree read answers every typed block of every role
+// document, so the outline costs that one request, with no page left to ask for, and no
+// document's blocks are read.
 test("the tree is read in one request, and no document's blocks are read", async () => {
   const withDocuments: IssueDetails = {
     ...issue,

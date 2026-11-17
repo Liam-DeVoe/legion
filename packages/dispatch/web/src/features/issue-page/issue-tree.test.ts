@@ -420,12 +420,12 @@ function thread(id: string, createdAt: string): MessageRead {
 interface Fixture extends IssueTreeReads {
   /** The blocks of each document of the issue, whose typed blocks the tree read answers. */
   readonly documents?: readonly DocumentBlocks[];
+  /** The issue's messages with their replies, each of which the tree read answers as a node. */
+  readonly messages?: readonly MessageRead[];
   /** Nodes the case adds to the answer as they stand, a decision node among them. */
   readonly nodes?: readonly TreeAnswerNode[];
   /** The parent the read answers for a typed block, by its id, where the case gives it one. */
   readonly parents?: Readonly<Record<string, string>>;
-  /** Tuples the case adds to the answer, beside those its blocks' pointers make. */
-  readonly tuples?: readonly TreeTuple[];
 }
 
 /** One node of the answer, with no words, author or attribute unless the case gives one. */
@@ -458,6 +458,20 @@ interface Written {
   readonly place?: number;
 }
 
+/** The read's order of two siblings: ranked ones by their place, then by id; a ranked one before
+ *  one with no rank; and two with none by when each was made, then by id. */
+function siblingOrder(one: Written, other: Written): number {
+  if (one.place !== undefined && other.place !== undefined) {
+    return one.place - other.place || one.node.id.localeCompare(other.node.id);
+  }
+  if (one.place !== undefined) return -1;
+  if (other.place !== undefined) return 1;
+  return (
+    compareTimestamps(one.node.made_at, other.node.made_at) ||
+    one.node.id.localeCompare(other.node.id)
+  );
+}
+
 /**
  * The case's reads with the answer the tree read gives for its issue (dispatch://INFRA-1253 R1,
  * R8): each typed block of its documents once, with its `document` and the attributes its block
@@ -476,7 +490,7 @@ interface Written {
  * read orders them.
  */
 function answered(fixture: Fixture): IssueTreeReads {
-  const { documents, nodes: added, parents: given, tuples: tied, ...reads } = fixture;
+  const { documents, messages, nodes: added, parents: given, ...reads } = fixture;
   const issue = reads.issue;
   const key = issue.key;
   const { nodeIdOf, slugOf, specSlug } = treeContext({ issue });
@@ -605,7 +619,7 @@ function answered(fixture: Fixture): IssueTreeReads {
     });
   }
   for (const node of added ?? []) written.push({ node });
-  const history = agentsOnlyIds(reads.comments, reads.messages, [...asks.values()]);
+  const history = agentsOnlyIds(reads.comments, messages, [...asks.values()]);
   const blocks = new Map(
     written.flatMap(({ node }) => (node.document === undefined ? [] : [[node.id, node]]))
   );
@@ -626,10 +640,7 @@ function answered(fixture: Fixture): IssueTreeReads {
       }),
     });
   }
-  for (const message of (reads.messages ?? []).flatMap((one) => [
-    one.message,
-    ...(one.replies ?? []),
-  ])) {
+  for (const message of (messages ?? []).flatMap((one) => [one.message, ...(one.replies ?? [])])) {
     if (history.has(message.id)) continue;
     written.push({
       node: answerNode(message.id, "message", message.in_reply_to ?? key, {
@@ -664,16 +675,7 @@ function answered(fixture: Fixture): IssueTreeReads {
   }
   const walk: TreeAnswerNode[] = [answerNode(key, "issue", null, { text: issue.title })];
   const visit = (id: string): void => {
-    const siblings = [...(below.get(id) ?? [])].sort((one, other) =>
-      one.place !== undefined && other.place !== undefined
-        ? one.place - other.place || one.node.id.localeCompare(other.node.id)
-        : one.place !== undefined
-          ? -1
-          : other.place !== undefined
-            ? 1
-            : compareTimestamps(one.node.made_at, other.node.made_at) ||
-              one.node.id.localeCompare(other.node.id)
-    );
+    const siblings = [...(below.get(id) ?? [])].sort(siblingOrder);
     siblings.forEach((one, at) => {
       walk.push({
         ...one.node,
@@ -691,16 +693,13 @@ function answered(fixture: Fixture): IssueTreeReads {
         ("version" in route && route.version !== undefined))
     );
   };
-  const tuples: TreeTuple[] = [
-    ...pointers.flatMap((pointer) =>
-      pointer.refs.map((ref) => ({
-        from: pointer.from,
-        kind: pointer.name,
-        to: (pinned(ref) ? undefined : byId.get(nodeIdOf(ref) ?? "")) ?? ref,
-      }))
-    ),
-    ...(tied ?? []),
-  ];
+  const tuples: TreeTuple[] = pointers.flatMap((pointer) =>
+    pointer.refs.map((ref) => ({
+      from: pointer.from,
+      kind: pointer.name,
+      to: (pinned(ref) ? undefined : byId.get(nodeIdOf(ref) ?? "")) ?? ref,
+    }))
+  );
   const tree: TreeAnswer = {
     converted: false,
     cursor: null,

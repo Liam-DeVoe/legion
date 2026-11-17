@@ -369,7 +369,7 @@ test("the words filter matches the words a node draws, never its stored source",
 function viewNode(
   id: string,
   supertag: string,
-  mark: "context" | "query",
+  mark: NonNullable<TreeAnswerNode["mark"]>,
   extra: Partial<TreeAnswerNode> = {}
 ): TreeAnswerNode {
   return {
