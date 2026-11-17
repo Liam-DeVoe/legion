@@ -174,10 +174,12 @@ func newMergeWaitReadableLive(t *testing.T) *mergeWaitReadableLive {
 }
 
 // seed records the three issues as the daemon would hold them at the moment their reviewers took
-// the work: each a root handed to Legion, in reviewing, holding its tree's admission slot, its
-// lifecycle open under the workflow, on a pull request of its own. The reviewer's row is left
-// unwritten for the two whose reviews the proof publishes, since the review itself writes it; the
-// closed issue's is seeded with the approval that stands at its head, because no review of it is
+// the work, each a root handed to Legion, in reviewing, holding its tree's admission slot, its
+// lifecycle open under the workflow, on a pull request of its own, but for one state the daemon
+// never holds: the two whose reviews the proof publishes have a reviewer claim and no reviewer
+// row, which is left for the review itself to write, where the daemon writes that row when it
+// enters the reviewer (workflow's enter). The closed issue's reviewer row is seeded with the
+// approval that stands at its head, because no review of it is
 // published and that approval is what would make the rule say its round waits, were its pull
 // request open: the rule's own test of the open pull request is what leaves its round waiting on
 // nothing. The reviewer's claim of each of the two whose reviews the proof publishes records
