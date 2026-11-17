@@ -19,6 +19,7 @@ import { textSourceOf } from "../../refs/text-references";
 import { checkFacts, resultFacts } from "../check-facts";
 import { decisionNodeChanges, decisionNodes, inReviewList } from "../decision-review";
 import type { IssueTreeReads, NodeChip, TreeAsk, TreeNode } from "../issue-tree";
+import { lensChips, lensDrafts } from "../lenses/lens-drafts";
 import type { NodeStates } from "../node-states/node-states";
 import {
   blockAttributeLabel,
@@ -153,6 +154,7 @@ export type TreeDraftMark = (
  * a message, a callout and an image, and a child issue.
  */
 export const treeDraftSteps: readonly TreeDraftStep[] = [
+  lensDrafts,
   draftRequirement,
   draftServing,
   draftResult,
@@ -167,6 +169,7 @@ export const treeDraftSteps: readonly TreeDraftStep[] = [
  *  This part adds none: a member of its drafts is its own step's. */
 export const treeDraftMarks: readonly TreeDraftMark[] = [
   // A later part adds its mark here, one line each.
+  lensChips,
 ];
 
 /**

@@ -276,6 +276,7 @@ export function pathToTarget(
     const suffix = `#b-${target.id}`;
     return pathToNode(root, (node) => node.id.endsWith(suffix));
   }
+  if (target.kind === "node") return pathToNode(root, (node) => node.readId === target.id);
   const byId = pathToNode(root, (node) => node.id === target.id);
   if (byId !== undefined) return byId;
   const address = `/${target.id}`;
