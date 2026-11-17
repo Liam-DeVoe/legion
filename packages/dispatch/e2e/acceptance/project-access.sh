@@ -643,6 +643,9 @@ if [ "$priv_private" = 1 ]; then
     probes_read=1
     walk_rows 'select(.method == "GET")'
     note "walked $walked GET rows that name an object and $lists lists, as each unseeing caller"
+    # A walk that compared nothing has not passed: the route index or the Probes held no row.
+    [ "$walked" -gt 0 ] || unrun "the walk compared no GET row that names an object: the route index carol read, or the Probes, held none"
+    [ "$lists" -gt 0 ] || unrun "the walk compared no list: the route index carol read held no GET row that names no object"
   else
     unrun "the Probes could not be read, so no row was walked: go run ./internal/dispatch/api/cmd/routeprobes: $(head -c 300 "$work/probes.err")"
   fi
@@ -742,12 +745,14 @@ if [ "$priv_private" = 1 ]; then
   if [ "$probes_read" = 1 ]; then
     walk_rows 'select(.method != "GET")'
     note "walked $walked write rows that name an object, as each unseeing caller; $refused calls of rows whose object no project owns, each refused to a caller that is not open"
+    [ "$walked" -gt 0 ] || unrun "the write walk compared no write row that names an object: the route index carol read, or the Probes, held none"
   fi
   pass
 fi
 
 begin verdict
 note "$compared pairs of answers compared; by status: $(statuses)"
+[ "$compared" -gt 0 ] || unrun "no pair of answers was compared"
 if [ -s "$work/unrun" ]; then
   fail "$(wc -l <"$work/unrun") things did not run:
 $(<"$work/unrun")
