@@ -112,8 +112,8 @@ func leaveAs(t *testing.T, pool *pgxpool.Pool, engine *Engine, key, status strin
 // leave as done: the root through its linger (beginLinger), the child through its own write
 // (leave). A root and a child parked at backlog in the middle of their first step leave before
 // their task is done: the task is left at that step, and the phase it derives is done, the phase of
-// an issue out of the workflow. The control writes the phase alone, as the old path did, and the
-// check fails.
+// an issue out of the workflow. The control writes issues.phase done and leaves the task's row
+// running at its merge, and the check fails.
 func TestTheTaskPlaceAndThePhaseMoveInOneWrite(t *testing.T) {
 	moves := []struct {
 		trigger TriggerKind

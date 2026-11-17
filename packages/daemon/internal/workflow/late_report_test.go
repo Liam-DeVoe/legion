@@ -65,9 +65,10 @@ const usedTail = " Its handoff record counts as used, so the next run of this st
 // Each refusal moves nothing and writes only the report's handoff record as the role's last one,
 // so the next run of the step cannot complete on it (HANDOFF_NOT_NEW). Neither text names how the
 // run ended: the step record Dispatch holds does (dispatch steps). A report of a task whose issue
-// left the workflow and a report of another run keep main's answers. An issue with no plan rows
-// keeps today's answers (R20): a late reviewer's report is taken and moves nothing, and a held
-// issue's tester is told it runs no phase.
+// left the workflow is refused HANDOFF_NOT_CURRENT_PHASE, and a report of another run
+// HANDOFF_STALE_GENERATION. An issue with no plan rows keeps today's answers (R20): a late
+// reviewer's report is taken and moves nothing, and a held issue's tester is told it runs no
+// phase.
 func TestALateReportIsRefusedAndSaysWhy(t *testing.T) {
 	t.Run("a: a review that requested changes ended the reviewer's step", func(t *testing.T) {
 		pool := migratedPool(t)
@@ -147,9 +148,10 @@ func TestALateReportIsRefusedAndSaysWhy(t *testing.T) {
 			"review-1", before)
 	})
 
-	// Main's answers, kept for an issue with plan rows: a report of a task whose issue left the
-	// workflow is a report of a phase no role works, and a report of another run is stale.
-	t.Run("a task whose issue left the workflow, and another run, keep main's answers", func(t *testing.T) {
+	// An issue with plan rows refuses a report of a task whose issue left the workflow as a report
+	// of a phase no role works (HANDOFF_NOT_CURRENT_PHASE), and a report of another run as stale
+	// (HANDOFF_STALE_GENERATION).
+	t.Run("a task whose issue left the workflow is not current, and another run is stale", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := returnEngine()
 		root := stepRoot(t, pool, phase.Admitted)
