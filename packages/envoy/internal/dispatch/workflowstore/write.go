@@ -54,7 +54,7 @@ func PutStep(ctx context.Context, tx pgx.Tx, write StepWrite, actor model.Actor,
 	}
 
 	made := false
-	if missing := write.missingIdentity(); len(missing) == 0 {
+	if len(write.missingIdentity()) == 0 {
 		var inserted string
 		err := tx.QueryRow(ctx, `
 			insert into workflow_nodes (kind, id, supertag, visibility, state, attributes, made_at, made_by, source_event)
