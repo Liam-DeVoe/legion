@@ -434,9 +434,10 @@ func (p *legionBoardPopulation) readDaemonRead(ctx context.Context, tx pgx.Tx) e
 	return nil
 }
 
-// readCurrent reads the project's legion_current in one statement (legion.ReadCurrent), so the
-// cards and the tree walk answer one snapshot of it. Its Newest are the cards, and the project's
-// own rows under legion.AdmissionKey (observeProject); its Reported is the walk's (treeNode).
+// readCurrent reads the project's legion_current through legion.ReadCurrent inside readSampled's
+// transaction, so the cards and the tree walk answer the snapshot the header does. Its Newest are
+// the cards, and the project's own rows under legion.AdmissionKey (observeProject); its Reported
+// is the walk's (treeNode).
 func (p *legionBoardPopulation) readCurrent(ctx context.Context, tx pgx.Tx) error {
 	current, err := legion.ReadCurrent(ctx, tx, p.project)
 	if err != nil {

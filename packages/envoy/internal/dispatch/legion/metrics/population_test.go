@@ -4,12 +4,8 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"strings"
-	"sync"
 	"testing"
 	"time"
-
-	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -288,70 +284,6 @@ func TestOnlyAnAskOpenedByASessionOfTheIssuesOwnTreeMakesItWaitOnAPerson(t *test
 	}
 }
 
-// committedBetweenSampledReads is a tracer that runs the commit it was armed with, once, the
-// moment the first statement naming legion_observations or legion_current ends, and holds every
-// other statement naming one of them from starting until that commit has returned: a sampler
-// commit landing between Read's two reads of what the sampler writes, whether the two run in turn
-// or side by side, made without timing.
-type committedBetweenSampledReads struct {
-	mu       sync.Mutex
-	commit   func()
-	inFlight bool
-	done     chan struct{}
-	fired    bool
-}
-
-// readsSampledFirst marks the context of the first statement naming a table the sampler writes.
-type readsSampledFirst struct{}
-
-func (c *committedBetweenSampledReads) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
-	if !strings.Contains(data.SQL, "legion_observations") && !strings.Contains(data.SQL, "legion_current") {
-		return ctx
-	}
-	c.mu.Lock()
-	if c.commit == nil {
-		c.mu.Unlock()
-		return ctx
-	}
-	if c.inFlight {
-		done := c.done
-		c.mu.Unlock()
-		<-done
-		return ctx
-	}
-	c.inFlight = true
-	c.mu.Unlock()
-	return context.WithValue(ctx, readsSampledFirst{}, true)
-}
-
-func (c *committedBetweenSampledReads) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, _ pgx.TraceQueryEndData) {
-	if ctx.Value(readsSampledFirst{}) == nil {
-		return
-	}
-	c.mu.Lock()
-	commit, done := c.commit, c.done
-	c.mu.Unlock()
-	commit()
-	c.mu.Lock()
-	c.commit, c.inFlight, c.fired = nil, false, true
-	c.mu.Unlock()
-	close(done)
-}
-
-// arm sets the commit the next statement naming a table the sampler writes ends with.
-func (c *committedBetweenSampledReads) arm(commit func()) {
-	c.mu.Lock()
-	c.commit, c.done, c.fired = commit, make(chan struct{}), false
-	c.mu.Unlock()
-}
-
-// hasFired is whether the armed commit ran.
-func (c *committedBetweenSampledReads) hasFired() bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.fired
-}
-
 // TestReadTakesTheTimelinesAndTheTreesFromOneSnapshot: ReadProject takes the scope's observations
 // and the project's reported set, with its trees, from one snapshot (read, readSampled), so a
 // sampler commit during the read moves both or neither. The commit here lands, on another
@@ -373,7 +305,7 @@ func TestReadTakesTheTimelinesAndTheTreesFromOneSnapshot(t *testing.T) {
 	if err := treeAt("INFRA-1", after(1)); err != nil {
 		t.Fatalf("record INFRA-2's tree: %v", err)
 	}
-	commits := &committedBetweenSampledReads{}
+	commits := storetest.NewCommitBetweenReads("legion_observations", "legion_current")
 	traced := storetest.Traced(t, database.Pool, commits, nil)
 	newest := func(population *Population) (observed, tree string) {
 		issue := population.Issues["INFRA-2"]
@@ -384,7 +316,7 @@ func TestReadTakesTheTimelinesAndTheTreesFromOneSnapshot(t *testing.T) {
 		return legion.JSONString([]byte(marks[len(marks)-1].Value)), issue.Tree
 	}
 
-	commits.arm(func() {
+	commits.Arm(func() {
 		if err := treeAt("INFRA-2", after(11)); err != nil {
 			t.Errorf("commit INFRA-2's new tree during the read: %v", err)
 		}
@@ -393,7 +325,7 @@ func TestReadTakesTheTimelinesAndTheTreesFromOneSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read the population: %v", err)
 	}
-	if !commits.hasFired() {
+	if !commits.Fired() {
 		t.Fatal("no statement of the read named legion_observations or legion_current, so no commit landed during it")
 	}
 	if observed, tree := newest(population); observed != "INFRA-1" || tree != "INFRA-1" {

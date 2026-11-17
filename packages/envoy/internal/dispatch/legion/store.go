@@ -258,9 +258,10 @@ type Queryer interface {
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 }
 
-// Current is what project's legion_current holds as of the newest good read, both halves taken
-// from the one statement of ReadCurrent, so a reader of both reads one snapshot: a sampler commit
-// between two reads would give the Legion board a card of the older read and a tree of the newer.
+// Current is what project's legion_current holds as of the newest good read. A caller that reads
+// it beside another sampler table does so in one repeatable-read transaction (Queryer), which is
+// what makes one answer one snapshot; ReadCurrent is the one statement of which issues the daemon
+// reports.
 type Current struct {
 	// Newest is every field that holds a value: every field of every issue the newest good read
 	// carried, and the project's own under AdmissionKey. The Legion board's cards are these.

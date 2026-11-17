@@ -529,3 +529,49 @@ func TestTheNewestReadsAnswerTheNewestGoodReadAndKeepAnIssueItDropped(t *testing
 		t.Errorf("legion_current holds %v, want the newest row of each field of the history, %v", current, history)
 	}
 }
+
+// TestReportedNamesAnIssuesTreeWhateverOrderItsRowsComeBackIn: ReadCurrent's statement sets no
+// order, and Postgres gives none without one, so Reported must name an issue's tree whichever of
+// the issue's rows the scan meets last. The issue's tree is written by a read before the one that
+// writes its phase and its slot, and ReadCurrent reads the rows in two orders the test sets rather
+// than the one Postgres picks: by field, which puts the `tree` row after the `phase` and `slot`
+// rows, and the reverse, which puts it before them. A reader that let a later row of the issue
+// overwrite the tree an earlier one named fails the second, whatever order Postgres would return.
+func TestReportedNamesAnIssuesTreeWhateverOrderItsRowsComeBackIn(t *testing.T) {
+	database := storetest.Open(t)
+	seedLegionProject(t, database, "INFRA", "http://127.0.0.1:1")
+	at := time.Date(2026, 11, 16, 12, 0, 0, 0, time.UTC)
+	tree := Observation{IssueKey: "INFRA-1", Field: FieldTree, Value: []byte(`"INFRA-1"`)}
+	if _, err := RecordRead(t.Context(), database.Pool, "INFRA", at, 42, []Observation{tree}); err != nil {
+		t.Fatalf("record the read that names the tree: %v", err)
+	}
+	if _, err := RecordRead(t.Context(), database.Pool, "INFRA", at.Add(time.Minute), 42, []Observation{
+		{IssueKey: "INFRA-1", Field: FieldPhase, Value: []byte(`"planning"`)},
+		tree,
+		{IssueKey: "INFRA-1", Field: FieldSlot, Value: []byte(`0`)},
+	}); err != nil {
+		t.Fatalf("record the read that adds the phase and the slot: %v", err)
+	}
+
+	for _, order := range []string{"field", "field desc"} {
+		current, err := ReadCurrent(t.Context(), inOrder{db: database.Pool, order: order}, "INFRA")
+		if err != nil {
+			t.Fatalf("read the current state ordered by %s: %v", order, err)
+		}
+		if want := map[string]string{"INFRA-1": "INFRA-1"}; !maps.Equal(current.Reported, want) {
+			t.Errorf("with the rows ordered by %s, the reported issues are %v, want %v: the tree INFRA-1's own row names",
+				order, current.Reported, want)
+		}
+	}
+}
+
+// inOrder is a Queryer that answers a statement's rows in the order its clause sets, around a
+// statement that sets none.
+type inOrder struct {
+	db    Queryer
+	order string
+}
+
+func (q inOrder) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
+	return q.db.Query(ctx, "select * from ("+sql+") as unordered order by "+q.order, args...)
+}

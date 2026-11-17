@@ -1,7 +1,6 @@
 package api
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"maps"
@@ -12,8 +11,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/legion/metrics"
@@ -533,67 +530,16 @@ func TestTheBoardAndTheMetricsDropWhatTheNewestReadNoLongerCarries(t *testing.T)
 	}
 }
 
-// committedAfterRead is a tracer that runs the commit it was armed with, once, the moment the
-// first statement naming one of its tables ends: a sampler commit landing right after a board's
-// first read of what the sampler writes, made without timing, since the board's next statement
-// starts only once the commit has returned.
-type committedAfterRead struct {
-	tables []string
-	mu     sync.Mutex
-	commit func()
-	fired  bool
-}
-
-// readsSampledTable marks the context of a statement that names one of the tracer's tables.
-type readsSampledTable struct{}
-
-func (c *committedAfterRead) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
-	for _, table := range c.tables {
-		if strings.Contains(data.SQL, table) {
-			return context.WithValue(ctx, readsSampledTable{}, true)
-		}
-	}
-	return ctx
-}
-
-func (c *committedAfterRead) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, _ pgx.TraceQueryEndData) {
-	if ctx.Value(readsSampledTable{}) == nil {
-		return
-	}
-	c.mu.Lock()
-	commit := c.commit
-	c.commit = nil
-	c.fired = c.fired || commit != nil
-	c.mu.Unlock()
-	if commit != nil {
-		commit()
-	}
-}
-
-// arm sets the commit the next statement naming one of the tracer's tables ends with.
-func (c *committedAfterRead) arm(commit func()) {
-	c.mu.Lock()
-	c.commit, c.fired = commit, false
-	c.mu.Unlock()
-}
-
-// hasFired is whether the armed commit ran.
-func (c *committedAfterRead) hasFired() bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.fired
-}
-
 // TestOneBoardAnswerReadsItsCardsAndItsTreesFromOneSnapshot: a board answer takes its cards and
-// the daemon's half of its tree walk from one statement (legion.ReadCurrent), so a sampler commit
-// during the answer moves both or neither. The commit here lands, on another connection, the
-// moment the board's first statement reading legion_current ends: it moves the child from
-// `planning` in INFRA-1's tree to `testing` in a tree of its own. The answer is the first read's
-// whole and the next answer the second read's whole, where a second read of the table would have
-// put the child's `planning` card in the second read's tree.
+// the daemon's half of its tree walk from one repeatable-read transaction (readSampled), so a
+// sampler commit during the answer moves both or neither. The commit here lands, on another
+// connection, the moment the board's first statement reading legion_current ends: it moves the
+// child from `planning` in INFRA-1's tree to `testing` in a tree of its own. The answer is the
+// first read's whole and the next answer the second read's whole, where a read outside that
+// transaction would have put the child's `planning` card in the second read's tree.
 func TestOneBoardAnswerReadsItsCardsAndItsTreesFromOneSnapshot(t *testing.T) {
 	database := storetest.Open(t)
-	commits := &committedAfterRead{tables: []string{"legion_current"}}
+	commits := storetest.NewCommitBetweenReads("legion_current")
 	handler, _, _ := newTestServer(t, testServerOptions{store: storetest.TracedStore(t, database, commits)})
 	seedLegionProjects(t, handler, "INFRA")
 	daemon := newFakeLegionDaemon(t, handler, "INFRA")
@@ -603,13 +549,13 @@ func TestOneBoardAnswerReadsItsCardsAndItsTreesFromOneSnapshot(t *testing.T) {
 		"INFRA-1":{"key":"INFRA-1","phase":"implementing","tree":"INFRA-1"},
 		"INFRA-2":{"key":"INFRA-2","phase":"planning","tree":"INFRA-1"}}}`)
 
-	commits.arm(func() {
+	commits.Arm(func() {
 		daemon.pass(t, database, `{"issues":{
 			"INFRA-1":{"key":"INFRA-1","phase":"implementing","tree":"INFRA-1"},
 			"INFRA-2":{"key":"INFRA-2","phase":"testing","tree":"INFRA-2"}}}`)
 	})
 	board := legionBoardOf(t, handler, "INFRA")
-	if !commits.hasFired() {
+	if !commits.Fired() {
 		t.Fatal("no statement of the board's answer read legion_current, so no commit landed during it")
 	}
 	if got := legionColumnKeys(t, board, legion.ColumnPlanning); !slices.Equal(got, []string{"INFRA-2"}) {
@@ -638,7 +584,7 @@ func TestOneBoardAnswerReadsItsCardsAndItsTreesFromOneSnapshot(t *testing.T) {
 // named the failure over the cards of the read after it.
 func TestOneBoardAnswerReadsItsHeaderAndItsCardsFromOneSnapshot(t *testing.T) {
 	database := storetest.Open(t)
-	commits := &committedAfterRead{tables: []string{"legion_reads", "legion_current"}}
+	commits := storetest.NewCommitBetweenReads("legion_reads", "legion_current")
 	handler, _, _ := newTestServer(t, testServerOptions{store: storetest.TracedStore(t, database, commits)})
 	seedLegionProjects(t, handler, "INFRA")
 	daemon := newFakeLegionDaemon(t, handler, "INFRA")
@@ -646,11 +592,11 @@ func TestOneBoardAnswerReadsItsHeaderAndItsCardsFromOneSnapshot(t *testing.T) {
 	daemon.pass(t, database, `{"issues":{"INFRA-1":{"key":"INFRA-1","phase":"planning","tree":"INFRA-1"}}}`)
 	daemon.pass(t, database, `not json`)
 
-	commits.arm(func() {
+	commits.Arm(func() {
 		daemon.pass(t, database, `{"issues":{"INFRA-1":{"key":"INFRA-1","phase":"testing","tree":"INFRA-1"}}}`)
 	})
 	board := legionBoardOf(t, handler, "INFRA")
-	if !commits.hasFired() {
+	if !commits.Fired() {
 		t.Fatal("no statement of the board's answer read legion_reads or legion_current, so no commit landed during it")
 	}
 	if board.Header.ReadOK || board.Header.ReadError == nil {
