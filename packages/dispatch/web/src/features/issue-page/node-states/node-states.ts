@@ -65,14 +65,14 @@ function carriesMarks(root: TreeNode): boolean {
  * new states alone: a live or settled node has none. A node that is overtaken is `closed`, and so
  * is every node under it in `root` (R5), and no other node is. A proposed node and a closed one
  * draw no gap, the page's own included (R2, R5): a gap says what the issue's work still lacks,
- * and neither is part of that work. A closed node waits on nobody either: a later node took its
- * place, so the page opens on none of them and draws none in the waiting tone, though an open
- * question among them is still a `question`, which `q` reaches (R3, R6). A gap or a wait an
- * earlier stamp took from a node is not given back. Each chip, in `chips` and in `alsoUnder`,
- * carries the marks of the node of `root` whose reference it names, whatever version it pins,
- * and a chip naming no node of `root` keeps its own, so a node is marked wherever it is drawn
- * (R2, R7). Every node's `held` is counted again by `heldBy` over its new children, which counts
- * a parent's overtaken children as the one row that folds them.
+ * and neither is part of that work. No reader is waited on for a closed node either: a later
+ * node took its place, so the page opens on none of them and draws none in the waiting tone,
+ * though an open question among them is still a `question`, which `q` reaches (R3, R6). A gap
+ * or a wait an earlier stamp took from a node is not given back. Each chip, in `chips` and in
+ * `alsoUnder`, carries the marks of the node of `root` whose reference it names, whatever
+ * version it pins, and a chip naming no node of `root` keeps its own, so a node is marked
+ * wherever it is drawn (R2, R7). Every node's `held` is counted again by `heldBy` over its new
+ * children, which counts a parent's overtaken children as the one row that folds them.
  *
  * With no states, over a tree that carries no mark, it answers `root` itself.
  */

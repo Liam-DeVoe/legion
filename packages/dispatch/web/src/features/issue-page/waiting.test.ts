@@ -615,12 +615,13 @@ function countedAndDrawn(tree: TreeAnswer, about: IssueDetails) {
   };
 }
 
-// dispatch://INFRA-4063 R3: an open question at or under an overtaken node waits on nobody, since
-// a later node took its place: the count leaves it out, as the tree draws it in no waiting tone.
+// dispatch://INFRA-4063 R3: no reader is waited on for an open question at or under an overtaken
+// node, since a later node took its place: the count leaves it out, as the tree draws it in no
+// waiting tone.
 // That holds for a question that is itself overtaken, for one the read hangs under an overtaken
 // decision, and for one asked in a block of the spec that is overtaken. The approval request,
 // which is no node of the tree, still waits, and so does each question nothing overtook.
-test("an overtaken ask waits on nobody", () => {
+test("no reader is waited on for an overtaken ask", () => {
   const inSpec: OpenAsk = {
     ...openAsk("in-spec", "question", "alice"),
     block_artifact: { id: spec.id, primary: true, slug: "spec" },
