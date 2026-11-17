@@ -32,7 +32,12 @@ export interface StepTaskRows {
   rows: StepRow[];
 }
 
-const KIND_LABELS: Readonly<Record<string, string>> = { merge: "Merge", retro: "Retro" };
+/** The label of each kind no plan names, keyed by the contract's kinds, so a kind the contract
+ *  adds fails to compile here until it has one. */
+const KIND_LABELS: Readonly<Record<Exclude<StepRecord["kind"], "step">, string>> = {
+  merge: "Merge",
+  retro: "Retro",
+};
 
 function stepState(result: string): StepState {
   switch (result) {
@@ -53,7 +58,8 @@ function stepRow(record: StepRecord): StepRow {
     attempt: record.attempt,
     ended: record.ended_at,
     id: record.id,
-    // A kind this build does not know keeps its own word rather than a step number it lacks.
+    // A kind only a newer Dispatch sends, which this build's contract does not name, keeps its
+    // own word rather than a step number it lacks.
     label: record.kind === "step" ? String(record.step) : (KIND_LABELS[record.kind] ?? record.kind),
     model: record.model,
     result: record.result,
