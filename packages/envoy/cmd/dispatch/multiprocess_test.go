@@ -4035,10 +4035,11 @@ func waitForPassBehind(
 
 // The first statement of each pass this test waits for, as pg_stat_activity shows it: the
 // reference-excerpt pass's write (refs.MarkStaleExcerpts) and the block-index pass's read of the
-// documents owed an index (docs' owedDocuments).
+// documents owed an index (docs' owedDocuments), which reads each of its two partial indexes in a
+// branch of its own and holds this text in both.
 const (
 	referenceExcerptPassStatement = "update refs r set excerpt_version = null"
-	blockIndexPassStatement       = "from document_block_versions b"
+	blockIndexPassStatement       = "select artifact_id from document_block_versions"
 )
 
 // Every leased maintenance loop takes a named lease for the length of its pass, so the second
