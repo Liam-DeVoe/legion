@@ -4222,8 +4222,10 @@ test("inside NoTooltips a copy leaves a focus the reader moved elsewhere where i
 
 // A copy's write to the clipboard is the button's write: inside `NoTooltips` a press while it is
 // out does nothing, so a second Enter makes no second write and draws no "Copied" before the first
-// write lands, and the focus stays on the button. Once the write lands, a press made while "Copied"
-// shows copies again. Outside `NoTooltips` each press writes, as on `main`.
+// write lands, and the focus stays on the button, which says it is refused (`aria-disabled`) until
+// the write lands and no longer after. Once the write lands, a press made while "Copied" shows
+// copies again. Outside `NoTooltips` each press writes and the button is never marked refused, as
+// on `main`.
 test("inside NoTooltips a copy pressed again by Enter while its write is out makes no second write", async () => {
   const user = userEvent.setup();
   const originalClipboard = navigator.clipboard;
@@ -4251,13 +4253,18 @@ test("inside NoTooltips a copy pressed again by Enter while its write is out mak
         if (surface === "inside") {
           expect(scope.queryByText("Copied")).toBeNull();
           expect(document.activeElement).toBe(button);
+          expect(button.getAttribute("aria-disabled")).toBe("true");
+        } else {
+          expect(button.hasAttribute("aria-disabled")).toBe(false);
         }
         for (const write of writes) write.resolve();
         await scope.findByText("Copied");
+        expect(button.hasAttribute("aria-disabled")).toBe(false);
         if (surface === "inside") {
           await user.keyboard("{Enter}");
           await waitFor(() => expect(writes).toHaveLength(2));
           expect(document.activeElement).toBe(button);
+          expect(button.getAttribute("aria-disabled")).toBe("true");
         }
       } finally {
         for (const write of writes) write.resolve();
