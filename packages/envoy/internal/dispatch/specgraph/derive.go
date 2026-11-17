@@ -114,8 +114,8 @@ func (in Input) check(current Tree) error {
 	}
 	for _, id := range slices.Sorted(maps.Keys(in.Approved.Nodes)) {
 		n := in.Approved.Nodes[id]
-		if n.ID != id {
-			return fmt.Errorf("specgraph: approved spec: node %s is under the id %s", quoted(n.ID), quoted(id))
+		if err := n.keyFault(id); err != nil {
+			return err
 		}
 		if err := n.check(); err != nil {
 			return err

@@ -97,8 +97,8 @@ func WriteApproved(w io.Writer, a Approved) error {
 	file := ApprovedFile{Nodes: make([]ApprovedNode, 0, len(a.Nodes))}
 	for _, id := range slices.Sorted(maps.Keys(a.Nodes)) {
 		n := a.Nodes[id]
-		if n.ID != id {
-			return fmt.Errorf("specgraph: approved spec: node %s is under the id %s", quoted(n.ID), quoted(id))
+		if err := n.keyFault(id); err != nil {
+			return err
 		}
 		file.Nodes = append(file.Nodes, n)
 	}
@@ -156,6 +156,16 @@ func (n ApprovedNode) check() error {
 		if fault != "" {
 			return fmt.Errorf("specgraph: approved node %s version %d: %s", quoted(n.ID), v.Version, fault)
 		}
+	}
+	return nil
+}
+
+// keyFault is the refusal of n under the key id of an Approved, which is not its own id, or nil:
+// Current reads a node by its key and would leave such a node out, so WriteApproved and the entry
+// of the derivation (Input.check) refuse it.
+func (n ApprovedNode) keyFault(id string) error {
+	if n.ID != id {
+		return fmt.Errorf("specgraph: approved spec: node %s is under the id %s", quoted(n.ID), quoted(id))
 	}
 	return nil
 }
