@@ -94,8 +94,8 @@ var planCacheModes = []string{"force_custom_plan", "force_generic_plan"}
 // that is edited is explained as edited rather than against a copy of it kept here; it checks
 // each read's answer against a reference that walks the whole log in Go, so an index that
 // answers fewer rows than the log holds fails here rather than passing as a faster plan; and it
-// reads the migration files themselves, so an index moved to a later migration - where an
-// existing deployment would build it on a full table - fails too.
+// reads the migration files and the catalog, so an index moved to a later migration - where an
+// existing deployment would build it on a full table - fails too, and so does a dropped one.
 //
 // Each read is explained under both plan-cache modes (planCacheModes), and each plan of each
 // mode is held to one rule: it reads graph_tuples through one of the five read indexes, that
@@ -116,9 +116,9 @@ var planCacheModes = []string{"force_custom_plan", "force_generic_plan"}
 func TestEveryCurrentStoreReadRunsThroughTheTupleIndexes(t *testing.T) {
 	ctx := context.Background()
 	requireIndexSetOfTheFirstMigration(t)
-
 	database := storetest.Open(t)
 	pool := database.Pool
+	requireIndexSetInTheCatalog(t, ctx, pool)
 	seedTupleLog(t, ctx, pool)
 	writeSupertagIntoTheCrowdedNode(t, ctx, pool)
 	writeProbeTuples(t, ctx, pool)
@@ -1163,7 +1163,7 @@ type requiredGraphIndex struct {
 // requiredGraphIndexes is the whole index set of the node and tuple store: the five read indexes
 // of graph_tuples, its two partial repeat keys, and the primary key and the one index of
 // graph_nodes. The primary key is declared inside the create table rather than as a create
-// index, so it is checked apart (requireIndexSetOfTheFirstMigration).
+// index, so it is checked apart (requireIndexSetOfTheFirstMigration, requireIndexSetInTheCatalog).
 var requiredGraphIndexes = []requiredGraphIndex{
 	{
 		name: "graph_tuples_current", table: "graph_tuples",
@@ -1328,6 +1328,81 @@ func requireIndexSetOfTheFirstMigration(t *testing.T) {
 	t.Logf("the index set of %s: %d indexes read from the migration files in order, over %d files",
 		graphStoreMigration, len(requiredGraphIndexes)+1, len(files))
 }
+
+// requireIndexSetInTheCatalog holds the migrated database to the index set of
+// requiredGraphIndexes, read off its catalog. requireIndexSetOfTheFirstMigration reads the
+// migration files for `create index` alone, so a later migration that drops one of the nine
+// passes it, and the reads that index served then run on whatever is left. Each of the eight
+// must stand on its table under its name, unique where the set says so, with the set's key list
+// and predicate; graph_nodes' primary key must key (kind, id). An index the set does not name,
+// such as graph_tuples' own primary key, is not this check's business.
+//
+// The catalog writes a definition back in its own form: `seq DESC`, and a literal with its type
+// cast (`'value'::text`). The key list is cut out of pg_indexes' indexdef and the predicate is
+// pg_get_expr's pretty form, which writes no parentheses it does not need; both are then brought
+// to the form the set writes them in before they are compared.
+func requireIndexSetInTheCatalog(t *testing.T, ctx context.Context, pool *store.Pool) {
+	t.Helper()
+	rows, err := pool.Query(ctx, `
+		select i.indexname, i.tablename, i.indexdef, x.indisunique, x.indisprimary,
+		       coalesce(pg_get_expr(x.indpred, x.indrelid, true), '')
+		from pg_indexes i
+		join pg_index x on x.indexrelid = format('%I.%I', i.schemaname, i.indexname)::regclass
+		where i.schemaname = current_schema() and i.tablename in ('graph_tuples', 'graph_nodes')
+		order by i.tablename, i.indexname`)
+	if err != nil {
+		t.Fatalf("read the store's indexes out of the catalog: %v", err)
+	}
+	defer rows.Close()
+	standing := map[string]requiredGraphIndex{}
+	nodesPrimaryKey := ""
+	for rows.Next() {
+		var name, table, definition, predicate string
+		var unique, primary bool
+		if err := rows.Scan(&name, &table, &definition, &unique, &primary, &predicate); err != nil {
+			t.Fatalf("read an index of the store out of the catalog: %v", err)
+		}
+		keys := catalogIndexKeys.FindStringSubmatch(definition)
+		if keys == nil {
+			t.Fatalf("read the key list of %s out of the catalog's definition %q", name, definition)
+		}
+		standing[name] = requiredGraphIndex{
+			name: name, table: table, unique: unique,
+			keys: normaliseKeys(keys[1]), predicate: normalise(strings.ReplaceAll(predicate, "::text", "")),
+		}
+		if table == "graph_nodes" && primary {
+			nodesPrimaryKey = normaliseKeys(keys[1])
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read the store's indexes out of the catalog: %v", err)
+	}
+	for _, want := range requiredGraphIndexes {
+		got, held := standing[want.name]
+		switch {
+		case !held:
+			t.Errorf("the migrated database holds no index %s on %s; the store's reads rest on it, so a migration dropped it or never built it",
+				want.name, want.table)
+		case got != want:
+			t.Errorf("the migrated database holds %s as unique=%v on %s (%s)%s, want unique=%v on %s (%s)%s",
+				want.name, got.unique, got.table, got.keys, wherePart(got.predicate),
+				want.unique, want.table, want.keys, wherePart(want.predicate))
+		}
+	}
+	if nodesPrimaryKey != "kind, id" {
+		t.Errorf("the migrated database keys graph_nodes' primary key on (%s), want (kind, id); every read of one node and every foreign key of a projection row rests on it",
+			nodesPrimaryKey)
+	}
+	t.Logf("the migrated database's catalog holds %d indexes on graph_tuples and graph_nodes, read against the %d of the store's index set",
+		len(standing), len(requiredGraphIndexes)+1)
+}
+
+// catalogIndexKeys cuts the key list out of a definition pg_indexes writes, which reads
+// `CREATE [UNIQUE] INDEX name ON schema.table USING method (keys)` with ` WHERE predicate` after
+// it on a partial index. The lazy match stops at the bracket that closes the key list, since a
+// key's own brackets (md5(to_id)) are followed by a comma or by that bracket and never by the end
+// of the definition or ` WHERE`.
+var catalogIndexKeys = regexp.MustCompile(`(?is) using \w+ (\(.*?\))(?: where .*)?$`)
 
 // keysTheFarEnd matches an index key list that mentions to_id anywhere, bare or inside an
 // expression.

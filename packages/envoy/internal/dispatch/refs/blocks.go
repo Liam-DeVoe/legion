@@ -579,15 +579,26 @@ func standsAtVersion(ctx context.Context, tx pgx.Tx, artifactID string, version 
 // derive it from this one text: the tick's own logged figure (docs.ReconcileBlockIndex) and the
 // one `envoy-dispatch census --store --sizing` prints for somebody holding the database and not
 // the log (graphcensus's blockIndexBacklogQuery). Each wraps it in its own aggregate.
-const OwedBlockIndexDebts = `
+const OwedBlockIndexDebts = owedBlockIndexDebtsFrom + `
+		where b.version is null or b.store_owed_at is not null`
+
+// OwedBlockIndexDebtsBeforeTheMark is OwedBlockIndexDebts over a database migration
+// 20261116221539 has not reached yet, which holds no store_owed_at column and so no mark of the
+// backfill's: only a null version is owed there. `census --store --sizing` takes its readings on
+// such a database, before this branch's migrations run (R4), and reads this one there; the tick
+// only ever runs on a migrated database and reads the full text.
+const OwedBlockIndexDebtsBeforeTheMark = owedBlockIndexDebtsFrom + `
+		where b.version is null`
+
+// owedBlockIndexDebtsFrom is the select both owed-debt texts share, so the two date a debt alike.
+const owedBlockIndexDebtsFrom = `
 		select coalesce(
 		         (select v.created_at from artifact_versions v
 		          where v.artifact_id = b.artifact_id and v.markdown is not null
 		          order by v.number desc limit 1),
 		         a.created_at) as owed_at
 		from document_block_versions b
-		left join artifacts a on a.id = b.artifact_id
-		where b.version is null or b.store_owed_at is not null`
+		left join artifacts a on a.id = b.artifact_id`
 
 // OwedTimeText writes a time the block-index backlog is dated by as both of its readers print
 // it - the tick's log line (docs.ReconcileBlockIndex) and the sizing's backlog lines
