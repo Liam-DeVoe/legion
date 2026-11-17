@@ -1958,7 +1958,7 @@ export const dispatchToolSpecs = [
       "--events N lists the last N, and --all-events every one. " +
       "A comment reply chain names the comment each nested reply answers as `Answers: <comment id>`. " +
       "An edited post reads with the time of its edit, and a deleted one with who deleted it and when, in place of its body; " +
-      "--history, with a ref naming that comment or message, lists each body an edit replaced, newest first; a deleted post lists none. " +
+      "--history, with a ref naming that comment or message, lists the post's history newest first: each body an edit replaced, with the actor and the time, and of a deleted post each entry's actor and time with no body. " +
       "Every read ends with `Referenced by:` (what cites or hangs off this node, each with its dispatch:// address, " +
       "an excerpt, and when) and `Links:` (what it cites), so tracing provenance is one call. " +
       "A block read prints `Block:`, `Type:` for a block of a document, `Document:`, every attribute a typed block carries " +
@@ -2014,10 +2014,11 @@ export const dispatchToolSpecs = [
       history: z
         .boolean()
         .describe(
-          "With ref naming one comment or issue message, list the bodies an edit of " +
-            "that post replaced, newest first, each with the actor that replaced it and the " +
-            "time, in place of the post itself. A post nobody edited lists nothing, and a " +
-            "deleted post is marked deleted and lists no body. Name it with ref alone."
+          "With ref naming one comment or issue message, list that post's history in place " +
+            "of the post itself, newest first: each body an edit replaced, with the actor " +
+            "that replaced it and the time. A post nobody edited or deleted lists nothing; a " +
+            "deleted post is marked deleted, and each of its entries gives its actor and " +
+            "time and no body. Name it with ref alone."
         )
         .optional(),
     }),

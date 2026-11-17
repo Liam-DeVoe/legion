@@ -241,8 +241,9 @@ func (f writeAnswersFixture) rowColumns(t *testing.T, rows, columns, id string) 
 // and the delete of a comment and of an issue message, and a comment's resolve, reopen, accept
 // and reject. A write that read the attempts its answer lists after its commit answered 500 for
 // a write that had landed, and a retried delete then met 409 POST_DELETED. Each row reads, before
-// and after the write, columns its write moves in the post's row (a delete's body and deleted_at,
-// not its deleted_by), and wants them equal.
+// and after the write, columns of the post's row that show whether the write landed, and wants
+// them equal: for the edits and the deletes body, edited_at and deleted_at, of which each write
+// moves some.
 func TestAWriteWhoseAnswerCannotBeReadDoesNotLand(t *testing.T) {
 	f := newWriteAnswersFixture(t)
 	issue := createInteractionIssue(t, f.handler, "TEST", "A write whose answer cannot be read", "before")
@@ -291,7 +292,7 @@ func TestAWriteWhoseAnswerCannotBeReadDoesNotLand(t *testing.T) {
 		create         func(t *testing.T) string
 		method, action string
 		body           any
-		// columns are among those the write moves in the post's row.
+		// columns show whether the write landed in the post's row.
 		columns string
 	}{
 		{name: "comment delete", post: comments, create: remark, method: http.MethodDelete, columns: correction},

@@ -5,13 +5,13 @@ body: |-
   the actor and the time; of a deleted post it prints the deleted mark and each entry's time and
   actor, and no body. A read of an edited post prints the time of its edit (above the body of the
   post itself, and after the head of an event line), and a deleted post prints as deleted with no
-  body. The four corrections and the history read need a Dispatch of this release: an older server
-  has no route by which an agent edits or deletes a post or reads the bodies one replaced, and
-  each of them then says that this Dispatch predates post corrections and that a correction is one
-  more post until it is deployed, rather than passing on that server's 404 or the scope its
-  comment edit asks for. An edit such a server does take, which a person's own credential can
-  reach on its comment route, is reported as the edit that landed and nothing more: what became of
-  the body it replaced is the history read's to answer.
+  body. The four corrections and the history read need a Dispatch of this release. Where an older
+  server answers with no route, or with the scope or the `actor` refusal its comment edit gives,
+  each of them says that this Dispatch predates post corrections and that a correction is one more
+  post until it is deployed. Against an older Dispatch, a person's own token that names a session
+  is answered as the person, so a correction of the session's own post is refused NOT_AUTHOR. An
+  edit an older server does take is reported as the edit that landed and nothing more: what became
+  of the body it replaced is the history read's to answer.
 time: 2026-11-11T07:23:34.685796308Z
 custom:
     Issue: pr3512
