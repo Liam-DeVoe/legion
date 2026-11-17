@@ -485,6 +485,8 @@ export function createLiveSocket(queryClient: QueryClient): LiveSocket {
         sub.started = true;
         const afterGap = sub.gap;
         sub.gap = false;
+        if (afterGap)
+          for (const listener of feedBacks.get(queryClient) ?? []) listener(frame.replay_complete);
         return sub.handlers.onStart(frame.since, afterGap, frame.replay_complete);
       }
       case "event":
@@ -809,6 +811,28 @@ export function liveSocketFor(queryClient: QueryClient): LiveSocket {
  *  page puts in the cache (`subscribeTreeFreshness`) - opens nothing. */
 export function liveFeedUp(queryClient: QueryClient): boolean {
   return sockets.get(queryClient)?.eventsUp() === true;
+}
+
+/** Each client's listeners for its live feed coming back (`onLiveFeedBack`). */
+const feedBacks = new WeakMap<QueryClient, Set<(replayComplete: boolean) => void>>();
+
+/** Calls `listener` each time an events subscription of `queryClient`'s socket starts again after
+ *  a gap - Dispatch's `events_start` after the socket was lost, or after Dispatch ended or refused
+ *  the subscription - with whether Dispatch replayed the whole gap (`replay_complete`); not at a
+ *  start that follows no gap, the subscription's first or the one after a 4001
+ *  (`EventsHandlers.onStart`). Answers the listener's removal. It opens no socket, as `liveFeedUp`
+ *  opens none: a reader that listens while the client has no socket hears the feed come back once
+ *  a socket made for it carries one. */
+export function onLiveFeedBack(
+  queryClient: QueryClient,
+  listener: (replayComplete: boolean) => void
+): () => void {
+  const listeners = feedBacks.get(queryClient) ?? new Set<(replayComplete: boolean) => void>();
+  feedBacks.set(queryClient, listeners);
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+  };
 }
 
 /** The live socket's whole state, for the freshness row, which shows the last change time. */

@@ -13,7 +13,7 @@ import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { realClock, tick } from "../../__tests__/fake-clock";
-import { installFakeLiveSockets } from "../../__tests__/live-socket-harness";
+import { type FakeLiveSockets, installFakeLiveSockets } from "../../__tests__/live-socket-harness";
 import { ApiError, api } from "../../api/client";
 import { useEventFeed } from "../../api/event-feed";
 import { eventRefreshTargets } from "../../api/event-refresh";
@@ -3407,9 +3407,10 @@ for (const latency of [200, 1_200]) {
 }
 
 // The same resolve with the live feed down, so no event comes: the write the page put in the
-// cache is a sign of its own then, and reads the tree once before Dispatch answers; the answer's
-// invalidation reads it once more, and the tree read ends holding the resolve.
-test("a resolve from the margin with the live feed down reads the tree once for the write it put in the cache, and ends holding it", async () => {
+// cache is a sign of its own then, as the answer's invalidation is. A tree read made while the
+// write is out would read a tree Dispatch has not changed yet, so the tree is read once, after
+// Dispatch answered, and the tree read ends holding the resolve.
+test("a resolve from the margin with the live feed down reads the tree once, after Dispatch answers, and ends holding it", async () => {
   const stubs = stubTreeReads(async (refs) => namedTargets(refs));
   // What Dispatch holds of the comment: resolved once it takes the write.
   let held: Comment = comment;
@@ -3463,12 +3464,10 @@ test("a resolve from the margin with the live feed down reads the tree once for 
     await act(async () => {
       await Bun.sleep(3_000);
     });
-    const sent = readsAnswered.slice(before);
     expect(
-      sent.filter((read) => !read).length,
-      "the write put in the cache reads the tree once before Dispatch answers"
-    ).toBe(1);
-    expect(sent.length, "and the answer once more at most").toBeLessThanOrEqual(2);
+      readsAnswered.slice(before),
+      "the tree read once for the resolve, once Dispatch answered it"
+    ).toEqual([true]);
     expect(
       client
         .getQueryData<TreeAnswer>(issueTreeKey(KEY))
@@ -3611,6 +3610,165 @@ test("a window switch while the outline's tree holds the focus leaves it there a
     ).toEqual({ focusable: "-1", focused: true });
     view.unmount();
   } finally {
+    for (const stub of stubs) stub.mockRestore();
+    client.clear();
+  }
+});
+
+/** The stage `turnedStage` draws, with the shell's event feed beside the hook, as the app mounts
+ *  it beside every page. */
+function fedStage(client: QueryClient, on: { preset: "conversation" | "plan" | "spec" }) {
+  const Stage = turnedStage(client, on);
+  return ({ children }: { children: ReactNode }) => (
+    <Stage>
+      <ShellEventFeed />
+      {children}
+    </Stage>
+  );
+}
+
+/** Dispatch starting the event feed on the page's latest socket, which it opens first, after
+ *  event 1, with the events of any gap replayed whole or in part. */
+function startFeedOn(sockets: FakeLiveSockets, replayComplete: boolean): void {
+  const socket = sockets.latest();
+  act(() => socket.open());
+  const { sub } = socket.subscribed("events");
+  act(() =>
+    socket.receive({ type: "events_start", sub, since: "1", replay_complete: replayComplete })
+  );
+}
+
+/** Dispatch restarting under the page's socket, and starting the event feed again on the next
+ *  socket the page opens, with the gap replayed whole or in part. */
+async function feedBackAfterRestart(
+  sockets: FakeLiveSockets,
+  replayComplete: boolean
+): Promise<void> {
+  const lost = sockets.latest();
+  act(() => lost.restart());
+  await act(async () => {
+    await Bun.sleep(200);
+  });
+  expect(sockets.latest(), "the page opened its next socket").not.toBe(lost);
+  startFeedOn(sockets, replayComplete);
+}
+
+// The Spec filter's view read is refused, and the reader turns that filter off. The live feed
+// comes back with its gap replayed whole, which asks for the refused view again as a focus with
+// the feed down does: nothing reads it while its filter is off, so it is read when its filter is
+// next on - once: refused again, it is read no more for a press of its filter.
+test("a refused view whose filter is off when the live feed comes back with its gap replayed whole is read once when its filter is next on", async () => {
+  const stubs = stubTreeReads(async (refs) => namedTargets(refs));
+  refuseSpecView();
+  const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  const sockets = installFakeLiveSockets();
+  // Signed in at event head 1, as the app's sign-in gate holds it before the page.
+  client.setQueryData(["whoami"], { event_head: "1", kind: "user", login: "alice" });
+  const on: { preset: "conversation" | "plan" | "spec" } = { preset: "spec" };
+  try {
+    const view = renderHook(() => useIssueTree(issue).root, { wrapper: fedStage(client, on) });
+    startFeedOn(sockets, true);
+    await waitFor(() => expect(client.getQueryState(viewKey(KEY, "spec"))?.status).toBe("error"));
+    expect(treeReadsOf("spec")).toBe(1);
+    on.preset = "conversation";
+    view.rerender();
+    await act(async () => {
+      await Bun.sleep(1_100);
+    });
+
+    await feedBackAfterRestart(sockets, true);
+    await act(async () => {
+      await Bun.sleep(300);
+    });
+    expect(treeReadsOf("spec"), "no view read while its filter is off").toBe(1);
+
+    on.preset = "spec";
+    view.rerender();
+    await waitFor(() => expect(treeReadsOf("spec"), "the filter on reads the view").toBe(2));
+    await waitFor(() => expect(client.getQueryState(viewKey(KEY, "spec"))?.status).toBe("error"));
+    await pressSpecOffAndOn(view, on);
+    expect(treeReadsOf("spec"), "the refused view is read once for the feed coming back").toBe(2);
+    view.unmount();
+  } finally {
+    liveSocketFor(client).close();
+    sockets.restore();
+    for (const stub of stubs) stub.mockRestore();
+    client.clear();
+  }
+});
+
+// A tree read refused, its retries spent, and the live feed comes back on the page's next socket
+// with its gap replayed in part: the event feed refreshes every query the page holds, which reads
+// the refused tree again. That is the one read for the feed coming back: the page's subscription
+// asks for nothing of its own, which would read the tree a second time once the scheduler's
+// second since the first read had passed.
+test("a refused tree read is read once, not twice, when the live feed comes back with its gap replayed in part", async () => {
+  const stubs = stubTreeReads(async (refs) => namedTargets(refs));
+  (api.getIssueTree as Mock<typeof api.getIssueTree>).mockRejectedValue(
+    new ApiError(404, { code: "NOT_FOUND", error: NO_ROUTE_ROLLING_RELEASE_MESSAGE })
+  );
+  const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  const sockets = installFakeLiveSockets();
+  // Signed in at event head 1, as the app's sign-in gate holds it before the page.
+  client.setQueryData(["whoami"], { event_head: "1", kind: "user", login: "alice" });
+  try {
+    const view = renderHook(() => useIssueTree(issue), {
+      wrapper: fedStage(client, { preset: "conversation" }),
+    });
+    startFeedOn(sockets, true);
+    await waitFor(() => expect(client.getQueryState(issueTreeKey(KEY))?.status).toBe("error"));
+    await act(async () => {
+      await Bun.sleep(1_100);
+    });
+    const before = treeReadsOf();
+
+    await feedBackAfterRestart(sockets, false);
+    await act(async () => {
+      await Bun.sleep(2_500);
+    });
+    expect(treeReadsOf() - before, "the feed coming back reads the refused tree once").toBe(1);
+    view.unmount();
+  } finally {
+    liveSocketFor(client).close();
+    sockets.restore();
+    for (const stub of stubs) stub.mockRestore();
+    client.clear();
+  }
+});
+
+// With the live feed down, no event says when a write has reached Dispatch. A change of the
+// issue seen while a write is out - here an invalidation of the issue read that no event raised
+// - would read a tree Dispatch has not changed yet, so the tree is read no more until the write
+// settles, and then once.
+test("with the live feed down, a change seen while a write is out reads the tree only once the write settles, and once", async () => {
+  const stubs = stubTreeReads(async (refs) => namedTargets(refs));
+  const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  const answered = Promise.withResolvers<void>();
+  try {
+    const view = renderHook(() => useIssueTree(issue), { wrapper: stageWrapper(client) });
+    await waitFor(() => expect(client.getQueryState(issueTreeKey(KEY))?.status).toBe("success"));
+    await act(async () => {
+      await Bun.sleep(1_100);
+    });
+    const before = treeReadsOf();
+
+    const write = new MutationObserver(client, { mutationFn: () => answered.promise });
+    const settled = write.mutate();
+    await act(async () => {
+      await client.invalidateQueries({ queryKey: ["issue", KEY] });
+      await Bun.sleep(1_500);
+    });
+    expect(treeReadsOf() - before, "no tree read while the write is out").toBe(0);
+
+    await act(async () => {
+      answered.resolve();
+      await settled;
+      await Bun.sleep(1_500);
+    });
+    expect(treeReadsOf() - before, "one tree read once the write settled").toBe(1);
+    view.unmount();
+  } finally {
+    answered.resolve();
     for (const stub of stubs) stub.mockRestore();
     client.clear();
   }
