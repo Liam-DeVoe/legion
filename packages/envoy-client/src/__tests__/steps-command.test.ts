@@ -104,6 +104,30 @@ const docsReview: StepRecord = {
   rating_reason: null,
 };
 
+/** The implementer's retro of LEG-1, which rated the plan: a retro is the one kind of run that
+ *  holds a rating and its reason. */
+const ratedRetro: StepRecord = {
+  id: "2f6b4d8a-3c7e-5f1b-9d2a-4e6f8a0c2e47",
+  issue: "LEG-1",
+  task: "default",
+  step: 0,
+  kind: "retro",
+  role: "implementer",
+  type: "",
+  agent: "legion-leg-leg-1-implementer",
+  session: "ses-implementer",
+  model: "anthropic/claude-opus-5",
+  generation: 1,
+  attempt: 1,
+  started_at: "2026-11-16T11:30:00Z",
+  ended_at: "2026-11-16T11:45:00Z",
+  result: "passed",
+  returned_to: null,
+  report: null,
+  rating: 4,
+  rating_reason: "The plan fit the work; the review sent it back once.",
+};
+
 const config = {
   enabled: true,
   url: "http://dispatch.test",
@@ -169,6 +193,25 @@ describe("dispatch steps", () => {
     expect(result.text.split("\n")[2]).toBe(
       "default 0 merge merger - attempt 1 - - - 2026-11-16T12:00:00Z passed"
     );
+  });
+
+  // The line keeps its columns and prints no rating; the details a host is handed are the
+  // records as Dispatch answered them, so a retro's rating and its reason reach it.
+  test("a retro's rating and its reason reach the details, and its line keeps the columns", async () => {
+    const answer: IssueSteps = {
+      issue: "LEG-1",
+      tasks: [{ task: "default", steps: [implementer, ratedRetro] }],
+    };
+
+    const result = await readSteps("LEG-1", answering([], answer));
+
+    expect(result.text.split("\n")[2]).toBe(
+      "default 0 retro implementer - attempt 1 legion-leg-leg-1-implementer anthropic/claude-opus-5 2026-11-16T11:30:00Z 2026-11-16T11:45:00Z passed"
+    );
+    expect(result.details).toEqual({
+      issue: "LEG-1",
+      tasks: [{ task: "default", steps: [implementer, ratedRetro] }],
+    });
   });
 
   test("each task's runs print together, in the order the read lists the tasks", async () => {
