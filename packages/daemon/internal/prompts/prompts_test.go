@@ -729,7 +729,7 @@ func TestTheComposedReviewerPromptReadsALaterRoundFromTheCommitItsTaskNames(t *t
 	for _, phrase := range []string{
 		"Last reviewed commit: <sha>",
 		"no entry into a phase clears it",
-		"`reviewedCommit.part` in `packages/daemon/internal/workflow/effects.go` writes it into the task",
+		"`reviewedCommit.part` in `packages/daemon/internal/workflow/reviewed_commit.go` writes it into the task",
 		"Your session is the one the daemon recorded on the claim it started you under, in your first round as in every later one;",
 		"it is recorded when your agent registers, and while that claim records no session, no review of the review App decides the round or sets the commit.",
 		"Your task names the entry of your round as its last sentence, `Review entry: <n>.`: the number of your entry into the round, which the daemon keeps on your phase row (`PhaseRow.Entry` in `packages/daemon/internal/record/record.go`) and raises at each new entry.",
