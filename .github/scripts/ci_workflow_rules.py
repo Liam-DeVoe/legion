@@ -467,15 +467,34 @@ def check_one_merge_group_workflow(problems: list) -> None:
 
 # ------------------------------------------- the report the results step reads
 # The action that reads a job's `go test -json` report and writes one result for each check whose
-# test ran (packages/envoy/cmd/ci-report). Under an explicit -v, go runs the test binary with
-# -test.v=true in place of -test.v=test2json, so its frame lines carry no mark: a test can print a
-# line that reads as its own pass, and a report of `go test -json -v` cannot be told from one of
-# `go test -json` by its content. A -v that GOFLAGS carries reaches no such binary: under -json, go
-# drops v and test.v from the flags it forwards from GOFLAGS (cmd/go/internal/test/testflag.go,
-# go1.27.3, the -json branch of testFlags), so only the command line can carry it.
+# test ran (packages/envoy/cmd/ci-report). go test -json runs the test binary with
+# -test.v=test2json, whose frame lines carry a mark. A -v or -test.v of any other value, false too,
+# replaces it, so the frame lines carry no mark: a test can print a line that reads as its own pass,
+# and the report cannot be told from one of `go test -json` by its content. Before -args go test
+# reads -v and -test.v; after -args or --args the test binary reads -test.v alone, and a -v there
+# is a flag of the test's own, such as the log level that glog and klog register. A -v that GOFLAGS
+# carries reaches no test binary: under -json, go drops v and test.v from the flags it forwards from
+# GOFLAGS (cmd/go/internal/test/testflag.go, go1.27.3, the -json branch of testFlags), so only the
+# command line can carry it.
 RESULTS_ACTION = "./.github/actions/dispatch-results"
-VERBOSE = re.compile(r"--?(?:test\.)?v(?:=.*)?")
+VERBOSE = re.compile(r"--?(test\.)?v(?:=(.*))?")
+TEST_BINARY_ARGUMENTS = {"-args", "--args"}
 SHELL_OPERATOR = re.compile(r"[();<>|&]+")
+
+
+def verbose_flags(arguments: list) -> list:
+    """The arguments of a `go test` command that take the marks off its report's frame lines: a -v
+    or -test.v of go test before -args, and a -test.v of the test binary after it, with one dash or
+    two, bare or with any value but go's own test2json."""
+    found, to_test_binary = [], False
+    for argument in arguments:
+        if argument in TEST_BINARY_ARGUMENTS:
+            to_test_binary = True
+            continue
+        flag = VERBOSE.fullmatch(argument)
+        if flag and (flag[1] or not to_test_binary) and flag[2] != "test2json":
+            found.append(argument)
+    return found
 
 
 def go_test_commands(script: str) -> list:
@@ -509,13 +528,14 @@ def go_test_commands(script: str) -> list:
 
 def check_report_steps(problems: list) -> list:
     """A job of any workflow that runs RESULTS_ACTION makes its report with no -v. Each `go test`
-    command in a run: script of the job is held to no -v in any spelling (-v, -v=<value>,
-    -test.v, -test.v=<value>, with one dash or two, before the packages or after -args), since
-    the report the action reads is one of them; and a job with no `go test` command where this
-    rule reads it is refused too, since the flags of a report made elsewhere are flags this rule
-    cannot see. It reads the job's own steps alone: a report made in another job and handed over
-    as an artifact is refused until this rule follows it there. Returns its one report line,
-    which says how many jobs and commands it read, so a run that read none says so."""
+    command in a run: script of the job is held to no flag that verbose_flags names (a -v or
+    -test.v of go test before -args, and a -test.v of the test binary after it, one dash or two,
+    bare or with any value but test2json), since the report the action reads is one of them; and a
+    job with no `go test` command where this rule reads it is refused too, since the flags of a
+    report made elsewhere are flags this rule cannot see. It reads the job's own steps alone: a
+    report made in another job and handed over as an artifact is refused until this rule follows
+    it there. Returns its one report line, which says how many jobs and commands it read, so a run
+    that read none says so."""
     jobs = commands = 0
     for path, document in directory_workflows().items():
         for job_id, job in ((document or {}).get("jobs") or {}).items():
@@ -534,14 +554,15 @@ def check_report_steps(problems: list) -> list:
                                                     f"cannot read whether its go test passes -v: the job runs "
                                                     f"{RESULTS_ACTION}, which reads the job's go test -json report"))
                         continue
-                    verbose = [a for a in arguments if VERBOSE.fullmatch(a)]
+                    verbose = verbose_flags(arguments)
                     if verbose:
                         problems.append(error(path, f"{where}, which passes {', '.join(f'`{a}`' for a in verbose)}: the "
                                                     f"job runs {RESULTS_ACTION}, which reads the job's go test -json "
-                                                    f"report, and under -v go runs the test binary with -test.v=true, "
-                                                    f"whose frame lines carry no mark, so a test can print a line that "
-                                                    f"reads as its own pass and the report cannot be told from one "
-                                                    f"made without -v. Remove the -v"))
+                                                    f"report, and a -v or -test.v of any value but test2json, false "
+                                                    f"too, replaces the -test.v=test2json that -json passes the test "
+                                                    f"binary, so its frame lines carry no mark, a test can print a "
+                                                    f"line that reads as its own pass and the report cannot be told "
+                                                    f"from one made without -v. Remove the flag"))
             if not found:
                 problems.append(error(path, f"{path} job {job_id} runs {RESULTS_ACTION}, and no run: step of it runs "
                                             f"`go test` where this check reads it: the report the action reads is "

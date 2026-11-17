@@ -322,17 +322,19 @@
 #  20. a job of any workflow of .github/workflows that runs the action
 #      ./.github/actions/dispatch-results, which reads the job's `go test -json` report and
 #      writes one result for each check whose test ran, and that holds a `go test` command
-#      passing -v in any spelling (-v, -v=<value>, -test.v, -test.v=<value>, one dash or two,
-#      before the packages or after -args), naming the file, the job, the step and the line; or
-#      that holds no `go test` command in a run: script of its own, since the flags of a report
-#      made elsewhere, in a script or in another job, are flags this rule cannot read. Under -v,
-#      go runs the test binary with -test.v=true in place of -test.v=test2json, so a frame line
-#      carries no mark, a test can print a line that reads as its own pass, and a report of
-#      `go test -json -v` cannot be told from one of `go test -json` by its content: the reader
-#      cannot refuse it, so the command that makes it must not pass -v. A -v in GOFLAGS (the
-#      variable, or go's own env file) reaches no such binary: under -json, go drops v and test.v
-#      from the flags it forwards from GOFLAGS (cmd/go/internal/test/testflag.go, go1.27.3), so
-#      the rule reads the command line alone.
+#      passing a -v of go test or a -test.v of its test binary (before -args, -v and -test.v;
+#      after -args or --args, -test.v alone; one dash or two, bare or with any value but
+#      test2json, false too), naming the file, the job, the step and the line; or that holds no
+#      `go test` command in a run: script of its own, since the flags of a report made elsewhere,
+#      in a script or in another job, are flags this rule cannot read. go test -json runs the test
+#      binary with -test.v=test2json, and any other value replaces it, so a frame line carries no
+#      mark, a test can print a line that reads as its own pass, and the report cannot be told
+#      from one of `go test -json` by its content: the reader cannot refuse it, so the command
+#      that makes it must not pass such a flag. A -v after -args is a flag of the test's own, such
+#      as the log level of glog and klog, and passes. A -v in GOFLAGS (the variable, or go's own
+#      env file) reaches no test binary: under -json, go drops v and test.v from the flags it
+#      forwards from GOFLAGS (cmd/go/internal/test/testflag.go, go1.27.3), so the rule reads the
+#      command line alone.
 #
 # A claimed go command is reduced only in its simple forms, never parsed further: one line of
 # `go test|vet|build`, or of `go -C <directory>` and one of those three, under a leading run of

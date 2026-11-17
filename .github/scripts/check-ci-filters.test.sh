@@ -2224,10 +2224,12 @@ check "and reads the .yml spelling GitHub reads too" \
   "$(contains "$out" "::error file=.github/workflows/scan.yml::")"
 
 echo "case: a job that runs the results action makes its go test -json report with no -v"
-# Under -v, go runs the test binary with -test.v=true, whose frame lines carry no mark, so a test
-# can print a line that reads as its own pass, and the report the action reads cannot be told
-# from one made without -v. The action's own directory is no part of the rule: it reads the
-# `uses:` of the job's steps.
+# go test -json runs the test binary with -test.v=test2json, whose frame lines carry a mark. A -v
+# or -test.v of any other value, false too, replaces it, so the frame lines carry no mark, a test
+# can print a line that reads as its own pass, and the report the action reads cannot be told from
+# one made without -v. After -args, a -v is a flag of the test's own, such as the log level that
+# glog and klog register, and the marks stay. The action's own directory is no part of the rule:
+# it reads the `uses:` of the job's steps.
 root=$(fixture report-no-verbose)
 cat > "$root/.github/workflows/results.yaml" <<'YAML'
 name: Results
@@ -2257,12 +2259,47 @@ check "naming the file, the job, the step, the line and the flag" \
   "$(contains "$out" "::error file=.github/workflows/results.yaml::.github/workflows/results.yaml job go-checks step \"Run the tests the checks name\" runs \`go test -json -v -count=1 -vet=off -run '^(TestA|TestB)\$' ./mod/... | tee \"\$RUNNER_TEMP/go-test.json\"\`, which passes \`-v\`")"
 check "and why the report cannot carry it" \
   "$(contains "$out" 'a test can print a line that reads as its own pass and the report cannot be told from one made without -v')"
-for spelling in "-v=true" "--v" "-test.v" "-test.v=true" "--test.v=test2json"; do
+check "and that every value but go's own test2json takes the mark away, false too" \
+  "$(contains "$out" 'a -v or -test.v of any value but test2json, false too, replaces the -test.v=test2json that -json passes the test binary')"
+# Each spelling that go test takes before -args: -v and -test.v, with one dash or two, bare or with
+# a value that go reads (strconv.ParseBool's true and false, and test2json).
+for spelling in "-v=true" "--v" "--v=true" "-v=1" "-v=t" "-v=T" "-v=TRUE" "-v=True" \
+  "-v=false" "-v=0" "-v=f" "-v=F" "-v=FALSE" "-v=False" \
+  "-test.v" "--test.v" "-test.v=true" "--test.v=true" "-test.v=1" "-test.v=false"; do
   replace "$root/.github/workflows/results.yaml" "go test -json -v -count=1" "go test -json $spelling -count=1"
   run_check "$root"
   check "fails with $spelling" "$(contains "$out" "which passes \`$spelling\`")"
   replace "$root/.github/workflows/results.yaml" "go test -json $spelling -count=1" "go test -json -v -count=1"
 done
+replace "$root/.github/workflows/results.yaml" "go test -json -v -count=1" "go test -json -count=1"
+# go test reads its flags after the package list too, and the test binary reads -test.v after -args
+# or --args, true and false.
+for after in "-test.v" "--test.v" "-v=true" "-args -test.v" "-args --test.v" "-args -test.v=true" \
+  "-args --test.v=true" "-args -test.v=false" "--args -test.v"; do
+  replace "$root/.github/workflows/results.yaml" "./mod/... |" "./mod/... $after |"
+  run_check "$root"
+  check "fails with $after after the packages" "$(contains "$out" "which passes \`${after##* }\`")"
+  replace "$root/.github/workflows/results.yaml" "./mod/... $after |" "./mod/... |"
+done
+# A job that asks for no verbose output passes: go's own -test.v=test2json, which -json passes
+# itself, before -args and after it; flags of the test's own after -args, a -v among them, as the
+# log level of glog and klog; grep's -v after a pipe; and the -v of another go command.
+for honest in "-v=test2json -count=1 -vet=off -run '^(TestA|TestB)\$' ./mod/... |" \
+  "-test.v=test2json -count=1 -vet=off -run '^(TestA|TestB)\$' ./mod/... |" \
+  "--test.v=test2json -count=1 -vet=off -run '^(TestA|TestB)\$' ./mod/... |" \
+  "-count=1 -vet=off -run '^(TestA|TestB)\$' ./mod/... -args -test.v=test2json |" \
+  "-count=1 -vet=off -run '^(TestA|TestB)\$' ./mod/... -args -v=2 --check |" \
+  "-count=1 -vet=off -run '^(TestA|TestB)\$' ./mod/... 2>&1 | grep -v '^#' |"; do
+  replace "$root/.github/workflows/results.yaml" "-count=1 -vet=off -run '^(TestA|TestB)\$' ./mod/... |" "$honest"
+  run_check "$root"
+  check "passes with go test -json $honest" "$(is "$status" 0)"
+  replace "$root/.github/workflows/results.yaml" "$honest" "-count=1 -vet=off -run '^(TestA|TestB)\$' ./mod/... |"
+done
+replace "$root/.github/workflows/results.yaml" "          set -o pipefail" $'          set -o pipefail\n          go build -v ./mod/... && go vet -v ./mod/...'
+run_check "$root"
+check "passes with the -v of go build and go vet on a line of the step" "$(is "$status" 0)"
+replace "$root/.github/workflows/results.yaml" $'          set -o pipefail\n          go build -v ./mod/... && go vet -v ./mod/...' "          set -o pipefail"
+replace "$root/.github/workflows/results.yaml" "go test -json -count=1" "go test -json -v -count=1"
 replace "$root/.github/workflows/results.yaml" "go test -json -v -count=1 -vet=off -run '^(TestA|TestB)\$' ./mod/..." \
   $'go -C mod test -json -count=1 \\\n            ./... -args -test.v=true'
 run_check "$root"
