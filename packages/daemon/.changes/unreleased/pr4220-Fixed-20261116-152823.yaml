@@ -22,8 +22,9 @@ body: |-
   this one, and logs at Error each claim whose current session records a name held for another
   claim, for none or by no row, suspending each it can; a suspension that fails is logged at Error
   and the boot goes on. Such a claim is contained but not stopped: the daemon revokes the
-  enrollment its process holds at the secrets broker, publishes nothing to its Envoy role, and
-  sends it no task and no compaction, but the process runs on under the session and keeps the
+  enrollment its process holds at the secrets broker, trying again at each observation until the
+  broker answers, publishes nothing to its Envoy role, and sends it no task and no compaction, but
+  the process runs on under the session and keeps the
   Envoy role its session claimed, so a message another session sends to that role still reaches
   it, until an operator suspends it (`legion claims suspend --claim <token>`) once its runtime
   answers, or stops its pod or pane by hand; it takes no `legion claims forget-session` while it is

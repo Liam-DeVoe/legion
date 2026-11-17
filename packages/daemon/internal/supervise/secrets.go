@@ -206,9 +206,7 @@ func (m *Machine) ensureEnrolled(ctx context.Context) error {
 	// daemon from before the hold enrolled under a name another claim holds, or no claim does, is
 	// revoked at the broker, since its process, which the boot could not suspend, keeps that
 	// enrollment's file and renewer across connections and would go on reading what it adopted
-	// (review rounds 12 and 13 of #4220). The claim then has no enrollment, so the next decision
-	// asks the hold again before any new one and waits for the shim's next hello, and an operator's
-	// settle of the name enrolls the process again. The hold is asked once per session when held
+	// (review rounds 12 to 14 of #4220, revokeUnheld). The hold is asked once per session when held
 	// (Machine.heldNames), so a claim holding its session pays nothing here. A store that does not
 	// answer revokes nothing and hands nothing over, and the next observation asks again.
 	if err := m.holdRecorded(ctx, m.claim.Session, m.claim.SessionFile); err != nil {
@@ -218,12 +216,7 @@ func (m *Machine) ensureEnrolled(ctx context.Context) error {
 				"enrollment", m.claim.Enrollment.ID, "error", err)
 			return nil
 		}
-		enrollment := ClearEnrollment(&m.claim)
-		m.revoke(*enrollment)
-		m.enrollmentSent = false
-		m.log.Error("supervise: agent-secrets: revoking the enrollment of a claim that does not hold its session; its process is enrolled again once the claim holds it",
-			"enrollment", enrollment.ID, "incarnation", enrollment.Incarnation, "session", m.claim.Session, "error", err)
-		return m.persist(ctx)
+		return m.revokeUnheld(ctx, err)
 	}
 	if m.enrollmentSent {
 		return nil
@@ -241,6 +234,39 @@ func (m *Machine) ensureEnrolled(ctx context.Context) error {
 	}
 	m.enrollmentSent = true
 	return nil
+}
+
+// revokeUnheld revokes at the broker, while its process lives, the enrollment of a claim that does
+// not hold its session (ensureEnrolled; refused is the hold's refusal), and records the claim
+// enrolled no longer only once the broker has answered. revoke's retries end after revokeAttempts
+// and leave the rest to the lease, which a stopped pod no longer renews; this pod's shim renews it
+// (its startRenewer), so a revocation that fails here keeps the enrollment recorded and handed to
+// no connection, and the next observation tries it again (review round 14 of #4220). The claim
+// then has no enrollment, so the next decision asks the hold again before any new one and waits
+// for the shim's next hello, and an operator's settle of the name enrolls the process again. A
+// broker that refuses the revocation for good is not asked again, since it would refuse again:
+// the enrollment is recorded no longer, and the refusal is logged at Error naming it.
+func (m *Machine) revokeUnheld(ctx context.Context, refused error) error {
+	e := *m.claim.Enrollment
+	revoking, cancel := context.WithTimeout(ctx, m.deps.Timeouts.RPC)
+	err := m.deps.Secrets.Revoke(revoking, e.ID)
+	cancel()
+	var permanent PermanentError
+	switch {
+	case err == nil:
+		m.log.Error("supervise: agent-secrets: revoked the enrollment of a claim that does not hold its session; its process is enrolled again once the claim holds it",
+			"enrollment", e.ID, "incarnation", e.Incarnation, "session", m.claim.Session, "error", refused)
+	case errors.As(err, &permanent) && permanent.Permanent():
+		m.log.Error("supervise: agent-secrets: the broker refused to revoke the enrollment of a claim that does not hold its session; it is recorded no longer, and its lease ends it once its pod stops renewing",
+			"enrollment", e.ID, "incarnation", e.Incarnation, "session", m.claim.Session, "error", refused, "revocation", err)
+	default:
+		m.log.Warn("supervise: agent-secrets: the revocation of the enrollment of a claim that does not hold its session failed; trying again at the next observation",
+			"enrollment", e.ID, "incarnation", e.Incarnation, "session", m.claim.Session, "error", err)
+		return nil
+	}
+	ClearEnrollment(&m.claim)
+	m.enrollmentSent = false
+	return m.persist(ctx)
 }
 
 // ensureRegistered registers the claim's current pod to trade under the claim's session at the
