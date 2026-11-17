@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -368,11 +369,12 @@ func newBacklinkFixture(t *testing.T) backlinkFixture {
 		// a kind and the constraint that is its source, each named by a mention as any node is.
 		{"lens_kind", "pre-mortem"},
 		{"constraint", "5eed0000-1e45-4000-8000-000000000001"},
-		// A lens, a finding of it and a risk under it (writeBacklinkReasoning), each named by a
-		// mention as any node is.
+		// A lens, a finding of it and a risk under it (writeBacklinkReasoning), and a run of the
+		// command bar (its node is written below), each named by a mention as any node is.
 		{"lens", backlinkLens},
 		{"lens_block", backlinkFinding},
 		{"risk", backlinkRisk},
+		{"interaction", "22222222-2222-4222-8222-222222222222"},
 	} {
 		insertReference(t, tx, "comment", citingComment, target[0], target[1])
 	}
@@ -382,10 +384,10 @@ func newBacklinkFixture(t *testing.T) backlinkFixture {
 	// build would leave it: the mention arm's from_kind filter is what keeps it out of a count.
 	insertReference(t, tx, "future", "x#y", "issue", "CORE-1")
 	// graph_tuples, the view's store class: an authored_by out of a lens to the person and out of
-	// an interaction to the session, which the view answers from the tuples alone. The lens is a
-	// kind this build resolves, so its edge counts on the person (authoredByReasoning); the
-	// interaction is not yet, so the view lists its edge and the count, like the list behind it,
-	// counts none of it (the oracle's source filter), until the commit that registers it.
+	// an interaction to the session, which the view answers from the tuples alone. Both are kinds
+	// this build resolves, so each edge counts on its author (authoredByReasoning). The interaction
+	// is written project-visible, as no run is, because the oracle reads the view with no
+	// predicate: a run reserved for its author would be in the view's count and in no reader's.
 	for _, authored := range []struct{ fromKind, fromID, toKind, toID string }{
 		{"lens", backlinkLens, "person", "person-backlink@example.com"},
 		{"interaction", "22222222-2222-4222-8222-222222222222", "session", "session-backlink"},
@@ -407,6 +409,18 @@ func newBacklinkFixture(t *testing.T) backlinkFixture {
 		values ('lens', $1, 'has_kind', 'lens_kind', 'pre-mortem', now(), '{"kind":"user","id":"alice"}', 0)
 	`, backlinkLens)
 	writeBacklinkReasoning(t, tx, specRef, specBlock, commentBlock)
+	// The changed_by_run of what a write made for that run changed: a lens, a finding of it and a
+	// risk under it, each answered from the tuples alone and counted on the run's node
+	// (changedByRun), the finding as the lens_block its own arm writes it as; and one out of the
+	// lens the store holds gone, which neither reading counts.
+	for _, changed := range []struct{ fromKind, fromID string }{
+		{"lens", backlinkLens}, {"block", backlinkFinding}, {"risk", backlinkRisk}, {"lens", backlinkGoneLens},
+	} {
+		execFixture(t, tx, "write the changed_by_run of "+changed.fromKind+" "+changed.fromID, `
+			insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event)
+			values ($1, $2, 'changed_by_run', 'interaction', '22222222-2222-4222-8222-222222222222', now(), '{"kind":"user","id":"alice"}', 0)
+		`, changed.fromKind, changed.fromID)
+	}
 
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("commit fixture: %v", err)
@@ -501,91 +515,6 @@ func scanFixture(t *testing.T, tx pgx.Tx, what, statement string, args ...any) s
 	return id
 }
 
-// backlinkCountOracle is the first arm of the count the release before this change runs over the
-// whole graph_edges view, the reading the arms of this package's count must add up to: the view,
-// filtered and grouped. It is held here as a literal, copied from that release rather than built
-// from this package's helpers, on purpose - built from the helpers, a change to the count's own
-// builders would move the oracle and the count together and the comparison would pass whatever
-// either said. $1 is the target kind, $2 the ids, $3 the node kinds this build reads; $4, when the
-// statement carries backlinkCountOracleExcluded, is the excluded edge kinds.
-const backlinkCountOracle = `select g.to_id from graph_edges g
-where g.to_kind = $1 and g.to_id = any($2)`
-
-// backlinkCountOracleAtItsBlocks is the oracle's second arm for each item kind: an edge at one
-// of the item's current blocks, counted as the item's own, since the item's own read lists it.
-// The block kind and the item's tables are written out per kind for the reason the first arm is.
-var backlinkCountOracleAtItsBlocks = map[string]string{
-	"comment": `select part.comment_id::text from graph_edges g
-	join comment_blocks part on part.node_id = g.to_id and part.position is not null
-	where g.to_kind = 'comment_block' and part.comment_id::text = any($2)`,
-	"message": `select part.message_id::text from graph_edges g
-	join message_blocks part on part.node_id = g.to_id and part.position is not null
-	where g.to_kind = 'message_block' and part.message_id::text = any($2)`,
-	"ask": `select part.ask_id::text from graph_edges g
-	join ask_blocks part on part.node_id = g.to_id and part.position is not null
-	where g.to_kind = 'ask_block' and part.ask_id::text = any($2)`,
-}
-
-// backlinkCountOracleNarrow is what each arm of the oracle carries: the source-kind filter and
-// the probe that keeps an item's own mention out of the count where one of its blocks holds a
-// link of any kind to the same target, written out as the rest of the oracle is.
-const backlinkCountOracleNarrow = `
-  and g.from_kind = any($3)
-  and not (g.kind = 'mentions' and (
-    (g.from_kind = 'artifact' and exists (select 1 from block_refs b where b.to_kind = g.to_kind and b.to_id = g.to_id and b.artifact_id::text = g.from_id))
-    or (g.from_kind = 'comment' and exists (select 1 from comment_block_refs b where b.to_kind = g.to_kind and b.to_id = g.to_id and b.comment_id::text = g.from_id))
-    or (g.from_kind = 'message' and exists (select 1 from message_block_refs b where b.to_kind = g.to_kind and b.to_id = g.to_id and b.message_id::text = g.from_id))
-    or (g.from_kind = 'ask' and exists (select 1 from ask_block_refs b where b.to_kind = g.to_kind and b.to_id = g.to_id and b.ask_id::text = g.from_id))))`
-
-// backlinkCountOracleExcluded is the oracle's exclusion predicate, the one part of the statement
-// a caller's exclusions add.
-const backlinkCountOracleExcluded = `
-  and not (g.kind = any($4))`
-
-// oracleBacklinkCountSQL is the release before this change's whole statement for toKind: the view's own arm, the arm over
-// the item's current blocks where the kind has one, and the group. excluded says whether the
-// caller binds excluded edge kinds as $4. The timing harness measures this text as the before
-// side of the backlink pair, so it is built in one place rather than assembled twice.
-func oracleBacklinkCountSQL(toKind string, excluded bool) string {
-	narrow := backlinkCountOracleNarrow
-	if excluded {
-		narrow += backlinkCountOracleExcluded
-	}
-	arms := backlinkCountOracle + narrow
-	if atBlocks, ok := backlinkCountOracleAtItsBlocks[toKind]; ok {
-		arms += "\nunion all\n" + atBlocks + narrow
-	}
-	return `select id, count(*)::int from (` + arms + `) e (id) group by id`
-}
-
-// oracleBacklinkCounts counts the inbound edges of ids over the whole view (backlinkCountOracle),
-// with the edges at a counted item's own current blocks (backlinkCountOracleAtItsBlocks).
-func oracleBacklinkCounts(t *testing.T, q Queryer, toKind string, ids, excludeKinds []string) map[string]int {
-	t.Helper()
-	args := []any{toKind, ids, nodeKinds}
-	if len(excludeKinds) > 0 {
-		args = append(args, excludeKinds)
-	}
-	rows, err := q.Query(context.Background(), oracleBacklinkCountSQL(toKind, len(excludeKinds) > 0), args...)
-	if err != nil {
-		t.Fatalf("count %s backlinks over the view: %v", toKind, err)
-	}
-	defer rows.Close()
-	counts := map[string]int{}
-	for rows.Next() {
-		var id string
-		var count int
-		if err := rows.Scan(&id, &count); err != nil {
-			t.Fatalf("scan a %s backlink count over the view: %v", toKind, err)
-		}
-		counts[id] = count
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("read the %s backlink counts over the view: %v", toKind, err)
-	}
-	return counts
-}
-
 // viewBacklinkTargets is every node of toKind the view points at, read from the view itself so
 // that each test covers whatever arms the fixture filled without naming an id, plus one address
 // nothing points at, which must be absent from every answer.
@@ -632,7 +561,7 @@ func backlinkExclusionCases(toKind string) [][]string {
 
 // A count read arm by arm is the view's count. For every node kind this build resolves, under no
 // exclusion and under each exclusion the kind's arms carry, BacklinkCounts answers exactly what
-// the whole view answers over the same addresses (backlinkCountOracle).
+// the whole view answers over the same addresses (docstest.ViewBacklinkCountSQL over graph_edges).
 //
 // The fixture's rows make the comparison able to fail rather than merely agree: one node is
 // pointed at through several arms, so a dropped arm shows as a lower count; the issue cited
@@ -680,7 +609,7 @@ func TestBacklinkCountsReadArmByArmAgreeWithTheView(t *testing.T) {
 			if err != nil {
 				t.Fatalf("count %s backlinks excluding %v: %v", toKind, exclusions, err)
 			}
-			want := oracleBacklinkCounts(t, pool, toKind, ids, exclusions)
+			want := docstest.ViewBacklinkCounts(t, pool, "graph_edges", toKind, ids, nodeKinds, exclusions)
 			if !maps.Equal(counts, want) {
 				t.Errorf("%s backlink counts excluding %v = %v; the view says %v", toKind, exclusions, counts, want)
 			}

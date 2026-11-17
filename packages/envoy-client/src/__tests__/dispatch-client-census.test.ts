@@ -149,6 +149,12 @@ const CALLS: Record<ClientMethod, (client: DispatchClient) => Promise<unknown>> 
     client.writeNodeState("DSP-1", "lens/lens-1", { state: "proposed", actor }),
   settleNode: (client) => client.settleNode("DSP-1", "lens/lens-1", { actor }),
   issueProposed: (client) => client.issueProposed("DSP-1"),
+  convertPremortem: (client) =>
+    client.convertPremortem("DSP-1", "premortem-md", {
+      prevented_by: [{ risk: 0, checks: [], reason: "No check covers it." }],
+      dry_run: true,
+      actor,
+    }),
 };
 
 afterEach(forgetKeyedLayerMemory);

@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/processes"
 )
 
 // BacklinkCounts is how many edges point at each of ids, in one grouped query: the number a
@@ -296,6 +297,11 @@ func blockRefCarries(fromKind, alias string) string {
 // holds: this build writes a part_of the view answers only out of a lens, a lens_block, a risk or
 // a constraint. A session's, a page's and a block's placement are part_of tuples no arm renders,
 // and a block's membership of its document stays in_document.
+//
+// The list carries this build's capabilities too (processes.Capabilities): issue_room, which no
+// relation kind spells, is how a reader of the announcements tells a build that serves the issue
+// room of dispatch://INFRA-1253 (decision 7 of its plan). No arm renders a capability, so the
+// view answers nothing under that name.
 func TupleKinds() []string {
 	kinds := append([]string{
 		TupleInDocument, "mentions", graphstore.TupleAnchoredTo, graphstore.TupleOwnedBy,
@@ -304,6 +310,7 @@ func TupleKinds() []string {
 		graphstore.TupleConstrainedBy, graphstore.TuplePreventedBy,
 		graphstore.TuplePartOf, graphstore.TupleAuthoredBy,
 	}, pmdoc.LinkKinds()...)
+	kinds = append(kinds, processes.Capabilities...)
 	slices.Sort(kinds)
 	return slices.Compact(kinds)
 }
@@ -510,6 +517,18 @@ var authoredByReasoning = backlinkArm{kind: graphstore.TupleAuthoredBy, storedFr
 // no tuple is counted by two arms.
 var lensStandsOn = backlinkArm{kind: graphstore.TuplePartOf, storedFrom: []string{graphstore.KindLens}}
 
+// changedByRun is the arm that counts, on a run's interaction node, the changed_by_run tuple of
+// each node a write made for that run created or changed (dispatch://INFRA-1950/spec#b-r-interaction),
+// which the view answers from the tuples alone, out of any node. A node of each kind the store
+// holds and a write made for a run can mark is a source here: an issue, a document, an ask, a
+// comment or a message, a document's block, and a lens, a finding of one, a risk or a constraint.
+// The author's own person or session node is never marked, so neither is a source. The tuple
+// points away from the node that changed, so it raises the count of the run alone.
+var changedByRun = backlinkArm{kind: graphstore.TupleChangedByRun, storedFrom: []string{
+	graphstore.KindArtifact, graphstore.KindAsk, BlockNodeKind, graphstore.KindComment, graphstore.KindConstraint, graphstore.KindIssue,
+	graphstore.KindLens, graphstore.KindLensBlock, graphstore.KindMessage, graphstore.KindRisk,
+}}
+
 // backlinkArms is, for each node kind nodeRegistry resolves, every arm of graph_edges whose edge
 // kind is a literal and whose target is a node of that kind, and each edge kind the view's tuple
 // arm answers into that kind from the store alone, as an arm of that kind (storedFrom).
@@ -549,13 +568,13 @@ var backlinkArms = map[string][]backlinkArm{
 		// comments_anchor_artifact, on the same cast the join makes; the store states the same
 		// fact as a comment's anchored_to, answered while the comment's row carries its node.
 		{kind: "anchored_to", from: `artifacts a join comments c on (c.anchor->>'artifact_id')::uuid = a.id`, toID: `a.ref_key`,
-			fromKind: "comment", fromID: `c.id::text`, projected: `c.node_kind`, tupleKind: "anchored_to", projectedIn: "comments"},
+			fromKind: graphstore.KindComment, fromID: `c.id::text`, projected: `c.node_kind`, tupleKind: graphstore.TupleAnchoredTo, projectedIn: "comments"},
 		// asks_artifact_id, and the ask's owned_by in the store.
 		{kind: "owned_by", from: `artifacts a join asks k on k.artifact_id = a.id`, toID: `a.ref_key`,
 			fromKind: "ask", fromID: `k.id::text`, projected: `k.node_kind`, tupleKind: "owned_by", projectedIn: "asks"},
 		// comments_artifact_id, and the comment's owned_by in the store.
 		{kind: "owned_by", from: `artifacts a join comments c on c.artifact_id = a.id`, toID: `a.ref_key`,
-			fromKind: "comment", fromID: `c.id::text`, projected: `c.node_kind`, tupleKind: "owned_by", projectedIn: "comments"},
+			fromKind: graphstore.KindComment, fromID: `c.id::text`, projected: `c.node_kind`, tupleKind: graphstore.TupleOwnedBy, projectedIn: "comments"},
 		// The document_blocks primary key (artifact_id, block_id). The store states a block's
 		// membership of its document as in_document, which the view renders as this part_of,
 		// answered while the block's own row carries its node.
@@ -649,6 +668,10 @@ var backlinkArms = map[string][]backlinkArm{
 	},
 	graphstore.KindLensBlock: {lensStandsOn},
 	graphstore.KindRisk:      {lensStandsOn},
+	// A run's interaction node is pointed at by the changed_by_run tuple of each node a write made
+	// for the run changed (changedByRun), an arm of the store alone. Its own authored_by points
+	// away from it, at its author, whose count holds it (authoredByReasoning).
+	graphstore.KindInteraction: {changedByRun},
 	// No arm of the view whose edge kind is a literal targets a document's block: such a block
 	// is pointed at by mentions, a reply naming the block of an ask, a comment or a message
 	// instead, and by the tuples of the store alone - a lens invoked on it, and the prevented_by of

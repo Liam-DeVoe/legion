@@ -1,12 +1,16 @@
 //go:build basebuild
 
-// The three tests of this tag are dispatch://INFRA-1149's acceptance runs:
+// Three tests of this tag are dispatch://INFRA-1149's acceptance runs:
 // TestTheStoreCensusReadsZeroDifferences in this file, and TestNoWritePathThisChildChangesGetsSlower
 // (write_cost_test.go) and TestNoReadThisChildChangesGetsSlowerAndNoEventOutrunsItsNode
-// (read_cost_test.go), which share graph_cost_test.go. Each builds the server at the commit this
-// branch forked from (baseBuild) and compares it with this build, so each needs a checkout that
-// holds origin/main, and each takes from 2 to 45 minutes on an issue pod. They carry a build tag
-// of their own and no CI job runs it: they are run on the pod, one at a time and by name, as
+// (read_cost_test.go), which share graph_cost_test.go. The fourth is dispatch://INFRA-1950's
+// TestThePredicateAndTheLensReadsGetNoSlower (predicate_lens_read_cost_test.go), which shares it
+// too and runs only where LEGION_SCALE_TEST=1 is set. Each builds the server at a base commit
+// (baseBuild) and compares it with this build: the commit BASELINE_SHA names, or, where it is
+// unset, the commit this branch forked from, `git merge-base origin/main HEAD`. So each needs a
+// checkout that holds that commit, and origin/main where BASELINE_SHA is unset, and each takes
+// from 2 to 45 minutes on an issue pod. They carry a build tag of their own and no CI job runs
+// it: they are run on the pod, one at a time and by name, as
 //
 //	go test -tags basebuild ./cmd/dispatch/ -run '^TestTheStoreCensusReadsZeroDifferences$' -count=1 -v
 
@@ -54,14 +58,16 @@ import (
 // share refuses to start (processes.Register).
 const censusSigningKey = "store-census-signing-key"
 
-// censusKinds are the kinds this child moves, as the census names them, and the documents and
-// versions dispatch://INFRA-1253 makes nodes of (graphcensus' versionProjections), which the older
-// build's issues, specs and project documents populate and the backfill gives their nodes. Each
-// must carry a population in this run: a census that checked no row of a kind proves nothing about
-// it, so a kind that checks zero rows fails this test with that kind reported. The list is the
-// test's own, so a kind the census stops checking is read by a person before this test agrees with
-// it.
-var censusKinds = []string{"comment", "block", "block_ref", "person", "session", "role", "page", "artifact", "version"}
+// censusKinds are the kinds this child moves, as the census names them, the rank and the text of
+// every block dispatch://INFRA-1253's block index states (graphcensus' block_rank and block_text,
+// which the backfill's drain and the reconciliation after it give every block the older build
+// indexed), and the documents and versions it makes nodes of (graphcensus' versionProjections),
+// which the older build's issues, specs and project documents populate and the backfill gives
+// their nodes. Each must carry a population in this run: a census that checked no row of a kind
+// proves nothing about it, so a kind that checks zero rows fails this test with that kind
+// reported. The list is the test's own, so a kind the census stops checking is read by a person
+// before this test agrees with it.
+var censusKinds = []string{"comment", "block", "block_ref", "block_rank", "block_text", "person", "session", "role", "page", "artifact", "version"}
 
 // censusRole is the role this run addresses, and censusSession the session that writes one of
 // its comments. The role is addressed through this build alone: the older build records the
@@ -282,18 +288,23 @@ func censusConnect(t *testing.T, ctx context.Context, databaseURL string) *pgx.C
 
 // ───── the older build ────────────────────────────────────────────────────
 
-// baseBuild builds `./cmd/dispatch` at the commit this branch forked from and answers the binary.
-// The commit is `git merge-base origin/main HEAD` and the source is that commit's own tree, taken
-// out of the repository with `git archive` into a directory of this test's own, so the build is
-// the fork point's and not this working copy's. The directory and the binary go when the test
-// ends, so every run extracts and builds again, which is about a minute.
+// baselineEnv names the commit baseBuild builds where a run names one: the base build of a check
+// whose branch builds on branches that have not merged yet is a commit holding every such branch,
+// which no merge-base with origin/main is (dispatch://INFRA-1950's c-read-cost).
+const baselineEnv = "BASELINE_SHA"
+
+// baseBuild builds `./cmd/dispatch` at the base commit and answers the binary. The commit is the
+// one BASELINE_SHA names, and where it is unset, the commit this branch forked from, `git
+// merge-base origin/main HEAD` (baseCommit). The source is that commit's own tree, taken out of
+// the repository with `git archive` into a directory of this test's own, so the build is that
+// commit's and not this working copy's. The binary is stamped with that commit as the image build
+// stamps one, `-ldflags "-X main.buildCommit=<commit>"`, so the process registers and reports the
+// build it is (processes.Live reads two unstamped builds as one fleet). The directory and the
+// binary go when the test ends, so every run extracts and builds again, which is about a minute.
 func baseBuild(t *testing.T) string {
 	t.Helper()
 	root := gitOutput(t, ".", "rev-parse", "--show-toplevel")
-	commit := gitOutput(t, root, "merge-base", "origin/main", "HEAD")
-	if len(commit) < 12 {
-		t.Fatalf("git merge-base origin/main HEAD answered %q", commit)
-	}
+	commit, named := baseCommit(t, root)
 	// No socket is bound anywhere under the tree, so the room asked for is the directory the
 	// build runs in rather than the longest path of the archive.
 	source := testtmp.Dir(t, filepath.Join("packages", "envoy"))
@@ -325,10 +336,33 @@ func baseBuild(t *testing.T) string {
 		Name:   "envoy-dispatch-base",
 		Dir:    filepath.Join(source, "packages", "envoy"),
 		Target: "./cmd/dispatch",
+		Flags:  []string{"-ldflags", "-X main.buildCommit=" + commit},
 		Env:    os.Environ(),
 	})
-	t.Logf("the older build is %s, from %s", binary, commit)
+	t.Logf("the older build is %s, from %s, %s, stamped with that commit", binary, commit, named)
 	return binary
+}
+
+// baseCommit is the full sha of the commit baseBuild builds, and how it was named. A
+// BASELINE_SHA that names no commit this repository holds fails the test: a run of a check
+// against a base the run did not mean is no reading of that check.
+func baseCommit(t *testing.T, root string) (string, string) {
+	t.Helper()
+	if named := strings.TrimSpace(os.Getenv(baselineEnv)); named != "" {
+		resolve := exec.Command("git", "-C", root, "rev-parse", "--verify", "--quiet", named+"^{commit}")
+		out, err := resolve.Output()
+		commit := strings.TrimSpace(string(out))
+		if err != nil || commit == "" {
+			t.Fatalf("%s=%q names no commit this repository holds (git rev-parse --verify: %v): fetch that commit, or unset %s to build git merge-base origin/main HEAD",
+				baselineEnv, named, err, baselineEnv)
+		}
+		return commit, fmt.Sprintf("the commit %s=%s names", baselineEnv, named)
+	}
+	commit := gitOutput(t, root, "merge-base", "origin/main", "HEAD")
+	if len(commit) < 12 {
+		t.Fatalf("git merge-base origin/main HEAD answered %q", commit)
+	}
+	return commit, "git merge-base origin/main HEAD, " + baselineEnv + " being unset"
 }
 
 func gitOutput(t *testing.T, dir string, args ...string) string {
@@ -737,9 +771,11 @@ func runBackfill(t *testing.T, databaseURL string) {
 
 // waitForTheBlockIndex waits for the reconciliation to drain the mark the backfill left: a
 // block's parent is the nesting of its rendered version, which no column holds, so the backfill
-// marks each document it touched owed a block index and the reconciliation states the part_of
-// tuple and writes parent_block_id. The census reads a difference on every backfilled block
-// until that mark is drained, so this run waits for it rather than reading it as a difference.
+// marks each document it touched (store_owed_at, a mark of this release's own) and the
+// reconciliation states the part_of tuple, writes parent_block_id and clears the mark. The census
+// reads a difference on every backfilled block until that mark is drained, so this run waits for
+// it, and for every document owed a block index by a null version, rather than reading either as
+// a difference.
 func waitForTheBlockIndex(t *testing.T, ctx context.Context, databaseURL string) {
 	t.Helper()
 	conn := censusConnect(t, ctx, databaseURL)
@@ -748,7 +784,7 @@ func waitForTheBlockIndex(t *testing.T, ctx context.Context, databaseURL string)
 	for {
 		var owed int
 		if err := conn.QueryRow(ctx,
-			`select count(*) from document_block_versions where version is null`).Scan(&owed); err != nil {
+			`select count(*) from document_block_versions where version is null or store_owed_at is not null`).Scan(&owed); err != nil {
 			t.Fatalf("read the documents owed a block index: %v", err)
 		}
 		if owed == 0 {
@@ -1211,14 +1247,18 @@ func censusCommentTuples(t *testing.T, ctx context.Context, conn *pgx.Conn) []pr
 }
 
 // censusBlockTuples is what every block row states: the document it is a block of, and the block
-// or the document that holds it, which document_blocks spells as parent_block_id. A block's node
+// that holds it, which document_blocks spells as parent_block_id, or for a block no block holds
+// its document's top (dispatch://INFRA-1253's refs.DocumentTopSQL, the one statement the block
+// index and the census read it by): the issue for a block of an issue's spec, Verification or plan
+// document, and the document's own node for an upload or a project's document. A block's node
 // address is its document's ref_key, '#' and its block id, as the insert of document_blocks
 // builds it, so the parent's address is built here the same way.
 func censusBlockTuples(t *testing.T, ctx context.Context, conn *pgx.Conn) []projectedTuple {
 	t.Helper()
 	rows, err := conn.Query(ctx, `
 		select d.node_kind, d.node_address, a.ref_key,
-		       case when d.parent_block_id is null then '' else a.ref_key || '#' || d.parent_block_id end
+		       case when d.parent_block_id is null then '' else a.ref_key || '#' || d.parent_block_id end,
+		       `+refs.DocumentTopSQL("a")+`
 		from document_blocks d join artifacts a on a.id = d.artifact_id
 		where d.node_kind is not null and d.node_address is not null
 		order by d.node_address
@@ -1229,8 +1269,8 @@ func censusBlockTuples(t *testing.T, ctx context.Context, conn *pgx.Conn) []proj
 	defer rows.Close()
 	var wanted []projectedTuple
 	for rows.Next() {
-		var nodeKind, address, document, parent string
-		if err := rows.Scan(&nodeKind, &address, &document, &parent); err != nil {
+		var nodeKind, address, document, parent, top string
+		if err := rows.Scan(&nodeKind, &address, &document, &parent, &top); err != nil {
 			t.Fatalf("scan a block row: %v", err)
 		}
 		states := func(kind, toKind, toID string) {
@@ -1241,7 +1281,9 @@ func censusBlockTuples(t *testing.T, ctx context.Context, conn *pgx.Conn) []proj
 		}
 		states(refs.TupleInDocument, "artifact", document)
 		if parent == "" {
-			states(graphstore.TuplePartOf, "artifact", document)
+			// The top is written kind:id, and no node kind holds a ':'.
+			topKind, topID, _ := strings.Cut(top, ":")
+			states(graphstore.TuplePartOf, topKind, topID)
 			continue
 		}
 		states(graphstore.TuplePartOf, refs.BlockNodeKind, parent)
@@ -1287,7 +1329,9 @@ func censusBlockRefTuples(t *testing.T, ctx context.Context, conn *pgx.Conn) []p
 
 // ───── the census ─────────────────────────────────────────────────────────
 
-// kindCensus is one kind's line of the census report.
+// kindCensus is one kind's line of the census report. A kind held triple by triple
+// (dispatch://INFRA-1150's ties) prints the store's side as tuples= and its differences as
+// rows_without_a_tuple= and tuples_without_a_row=, read here into the same fields.
 type kindCensus struct {
 	kind               string
 	nodes, rows        int64
@@ -1308,15 +1352,22 @@ func runStoreCensus(t *testing.T, databaseURL string) []kindCensus {
 	var read []kindCensus
 	for _, line := range strings.Split(out, "\n") {
 		fields := censusFields(line)
-		if fields == nil || fields["kind"] == "" || fields["nodes"] == "" {
+		if fields == nil || fields["kind"] == "" {
+			continue
+		}
+		side, rowsMissing, sideMissing := "nodes", "rows_without_a_node", "nodes_without_a_row"
+		if fields["tuples"] != "" {
+			side, rowsMissing, sideMissing = "tuples", "rows_without_a_tuple", "tuples_without_a_row"
+		}
+		if fields[side] == "" {
 			continue
 		}
 		read = append(read, kindCensus{
 			kind:               fields["kind"],
-			nodes:              censusCount(t, fields["nodes"]),
+			nodes:              censusCount(t, fields[side]),
 			rows:               censusCount(t, fields["rows"]),
-			rowsWithoutANode:   censusCount(t, fields["rows_without_a_node"]),
-			nodesWithoutARow:   censusCount(t, fields["nodes_without_a_row"]),
+			rowsWithoutANode:   censusCount(t, fields[rowsMissing]),
+			nodesWithoutARow:   censusCount(t, fields[sideMissing]),
 			addressesPastBound: censusCount(t, fields["addresses_past_bound"]),
 		})
 	}

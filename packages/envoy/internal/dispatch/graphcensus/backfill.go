@@ -8,6 +8,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
@@ -36,8 +37,10 @@ type KindBackfill struct {
 	// Rows is how many projection rows it gave a node, Nodes and Tuples how many of each it
 	// wrote, and Skipped how many rows it could not do and left as they were.
 	Rows, Nodes, Tuples, Skipped int64
-	// Owed is how many documents it marked owed a block index, for the block kind and the drain
-	// of every stored document's block index (drainBlockIndexes) alone.
+	// Owed is how many documents it marked owed this release's block index (store_owed_at), for
+	// the block kind and the drain of every stored document's block index (drainBlockIndexes)
+	// alone: for the block kind, those whose rows it named the nodes of and those another release
+	// indexed after the store last stated them (markStaleDocuments).
 	Owed int64
 	// Complete is whether every row of the kind the store can hold now names its node, which
 	// is when the arm of graph_edges over that kind's table answers nothing: each of the four
@@ -71,11 +74,15 @@ func oneKind(write func(context.Context, *store.Store) (KindBackfill, error)) ba
 // Backfill writes the nodes and tuples of the comments, document blocks and block references
 // written before the node and tuple store existed: every row of the three projected tables
 // that names no node (migration 20261109022248 added the columns and filled none of them). It
-// then gives every role the store census holds to a node and that has none its node and its page
-// (backfillRoles), since the publisher writes those only for the events it publishes from then on,
-// and every session the census holds to a node and that has none its node (backfillSessions): a
-// session that only asked, followed or was reached before the store existed was recorded by no
-// write of the store, and the followed_by edge to it would otherwise answer no node.
+// then mends what a process of the release before writes of a run of the command bar during a
+// roll or after a rollback (backfillRuns, backfillRunFrames, backfillGoneRuns): a run it recorded
+// with no interaction node, a frame it appended with no frame value, and a run whose row it
+// deleted an hour old, whose node it states gone. It then gives every role the store census holds
+// to a node and that has none its node and its page (backfillRoles), since the publisher writes
+// those only for the events it publishes from then on, and every session the census holds to a
+// node and that has none its node (backfillSessions): a session that only asked, followed or was
+// reached before the store existed was recorded by no write of the store, and the followed_by
+// edge to it would otherwise answer no node.
 //
 // It walks each kind in batches, writing a batch's nodes, its tuples and the projection
 // columns that name them in one transaction, so a row and its node commit together or not at
@@ -89,12 +96,29 @@ func oneKind(write func(context.Context, *store.Store) (KindBackfill, error)) ba
 // it replaces dates and sequences it.
 //
 // A block's parent is the one fact it does not write. The parent is the nesting of the
-// rendered version, which no column of document_blocks holds, so the run marks the document
-// owed a block index instead - document_block_versions.version to null, as refs.RebuildAll
-// marks it - and the reconciliation states the part_of tuple and writes parent_block_id, which
-// is the one writer of that column. The mark is written by the batch that names the document's
-// block nodes, in its transaction, so a run stopped anywhere leaves every document whose batch
-// committed owed, and a second run, which reads no row a batch marked, need not find them again.
+// rendered version, which no column of document_blocks holds, and the version's stored markdown
+// cannot give it either, since a paragraph's id is no part of that text (sizing's
+// replayParents): only the server renders the document whose blocks the ids name. So the run
+// marks the document instead, and the reconciliation's index pass states every block's node,
+// part_of tuple and parent_block_id, which is the one writer of that column, and clears the mark
+// (refs.IndexBlocks). The mark is this release's own, document_block_versions.store_owed_at
+// (migration 20261116221539), and not the null version the release before this one reads too: a
+// pod of that release, during a roll or after a rollback, would drain a null version as a debt of
+// its own, write the rows and state no part_of, and the document would be owed nothing again. The
+// mark is written by the batch that names the document's block nodes, in its transaction, so a
+// run stopped anywhere leaves every document whose batch committed marked, and a second run,
+// which reads no row a batch marked, need not find them again.
+//
+// A row the release before this one deleted - the row of a block its version dropped, or of a
+// link a block no longer holds - is nothing the run reads: no row of it is left to read, and a
+// node stated gone because its row is missing would be a repair. That release deleted it while it
+// indexed a version after the store had stated the document, so the version the store last stated
+// the document's blocks at (store_version, which only this release's index pass writes) is below
+// the version the document's rows stand at. The run marks each such document too
+// (markStaleDocuments), by those two versions and by no row of either side, and the
+// reconciliation's index pass over the latest version then states each such block gone and
+// retracts each such link, from the version's render (refs.IndexBlocks). No release deletes a
+// comment's row (writeCommentBatch).
 //
 // Each pass walks only the rows its marker does not mark, which for the three projected tables is
 // the node column pair the view's old arms test (migration 20261109215947), names their nodes on
@@ -162,11 +186,13 @@ type blockRow struct {
 }
 
 // backfillBlocks writes a node and an in_document tuple for every block row that names none,
-// and marks each document it touched owed a block index (writeBlockBatch). A block whose address
-// is past refs.MaxBlockNodeBytes is no node of the store by design, so it is neither written nor
-// counted as skipped: the writers leave it unprojected too. A row a version write deleted after
-// its batch was read is not written either (writeBlockBatch), and is counted nowhere: it is no
-// row of the database any more.
+// and marks each document it touched owed this release's index pass (writeBlockBatch). It then
+// marks each document another release indexed after the store last stated it
+// (markStaleDocuments), whose rows no longer name every block and link the store holds. A block
+// whose address is past refs.MaxBlockNodeBytes is no node of the store by design, so it is neither
+// written nor counted as skipped: the writers leave it unprojected too. A row a version write
+// deleted after its batch was read is not written either (writeBlockBatch), and is counted
+// nowhere: it is no row of the database any more.
 func backfillBlocks(ctx context.Context, database *store.Store) (KindBackfill, error) {
 	done := KindBackfill{Kind: refs.BlockNodeKind}
 	// The documents the run marked, each once however many of its batches marked it.
@@ -194,6 +220,13 @@ func backfillBlocks(ctx context.Context, database *store.Store) (KindBackfill, e
 		if len(rows) < backfillBatch {
 			break
 		}
+	}
+	stale, err := markStaleDocuments(ctx, database)
+	if err != nil {
+		return done, err
+	}
+	for _, document := range stale {
+		documents[document] = struct{}{}
 	}
 	done.Owed = int64(len(documents))
 	if err := database.Pool.QueryRow(ctx, `
@@ -279,13 +312,18 @@ func readBlockRows(ctx context.Context, database *store.Store, after string) ([]
 // node already, and only the rows left are written: a node written for a deleted row would bring
 // the block back as a live node with an in_document tuple and no projection row.
 //
-// The same transaction marks each document it wrote a block of owed a block index, which is how
-// the block's parent is reached (Backfill). The mark commits with the rows that name their nodes:
-// marked after the whole pass instead, a run stopped by an error in a later batch, or killed,
-// would leave the documents of its committed batches unmarked, and a second run reads no row a
-// committed batch named, so nothing would mark them again. Their document_block_versions rows
-// are the ones lockBlockDocuments already holds, so the mark takes no lock out of the store's
-// order.
+// The same transaction marks each document it wrote a block of, which is how the block's parent
+// is reached (Backfill): store_owed_at, the column migration 20261116221539 adds, which only this
+// release reads and which its index pass clears once it has stated every block of the document
+// (refs' standsAtVersion). The null version the release before this one reads too is left alone,
+// since that release would drain it, write the rows and state nothing. The mark is an update of a
+// row the document already holds: every pass that writes a document's block rows writes that row
+// first, in either release, and it goes only with the artifact, whose delete takes the block rows
+// with it. The mark commits with the rows that name their nodes: marked after the whole pass
+// instead, a run stopped by an error in a later batch, or killed, would leave the documents of its
+// committed batches unmarked, and a second run reads no row a committed batch named, so nothing
+// would mark them again. Their document_block_versions rows are the ones lockBlockDocuments
+// already holds, so the mark takes no lock out of the store's order.
 //
 // The count is this batch's own tuples and the two base attributes graphstore.Write states
 // for each node its insert makes, which this batch does not state itself: every node here is
@@ -351,16 +389,96 @@ func writeBlockBatch(ctx context.Context, database *store.Store, batch []blockRo
 	owed := slices.Clone(artifacts)
 	slices.Sort(owed)
 	if _, err := tx.Exec(ctx, `
-		insert into document_block_versions (artifact_id)
-		select id::uuid from unnest($1::text[]) as document (id)
-		on conflict (artifact_id) do update set version = null
+		update document_block_versions set store_owed_at = now()
+		where artifact_id = any($1::uuid[])
 	`, slices.Compact(owed)); err != nil {
-		return nil, 0, fmt.Errorf("mark the documents of a block batch owed a block index: %w", err)
+		return nil, 0, fmt.Errorf("mark the documents of a block batch owed this release's block index: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, 0, fmt.Errorf("commit a block batch: %w", err)
 	}
 	return held, int64(len(tuples)) + statedOf(nodes), nil
+}
+
+// markStaleDocuments marks, a batch at a time, every document another release indexed after this
+// release's store last stated its blocks and that holds no mark yet, and answers the documents it
+// marked. The release before this one, indexing a version of a document the store has stated,
+// deletes the rows of the blocks and the links that version drops and states no node gone and
+// retracts no tuple; it leaves store_version, which only this release's index pass writes, below
+// the version it wrote (migration 20261116221539). That is the whole of what this reads: the two
+// versions the document's row records, and no row of either side of a projection, so no document
+// is chosen by reading its blocks against its tuples. The reconciliation's index pass over the
+// marked document's latest version then states each such block gone and retracts each such link,
+// as its render decides (refs.IndexBlocks).
+//
+// A document the store has never stated (store_version null) is no document of this pass: the
+// store holds nothing of it for a deletion to strand, and its rows name no node, which the block
+// pass reaches. A document whose version is null is owed an index already, and the pass that
+// indexes it finds the store stale by the same two versions. A second run finds nothing a first
+// one marked, and nothing once the reconciliation has indexed the documents it marked, since that
+// pass sets store_version to the version it indexed.
+func markStaleDocuments(ctx context.Context, database *store.Store) ([]string, error) {
+	var marked []string
+	after := "00000000-0000-0000-0000-000000000000"
+	for {
+		rows, err := database.Pool.Query(ctx, `
+			select artifact_id::text from document_block_versions
+			where store_version < version and store_owed_at is null and artifact_id > $1::uuid
+			order by artifact_id
+			limit $2
+		`, after, backfillBatch)
+		if err != nil {
+			return marked, fmt.Errorf("read the documents another release indexed after the store: %w", err)
+		}
+		batch, err := pgx.CollectRows(rows, pgx.RowTo[string])
+		if err != nil {
+			return marked, fmt.Errorf("read the documents another release indexed after the store: %w", err)
+		}
+		if len(batch) == 0 {
+			return marked, nil
+		}
+		after = batch[len(batch)-1]
+		written, err := markStaleBatch(ctx, database, batch)
+		if err != nil {
+			return marked, err
+		}
+		marked = append(marked, written...)
+		if len(batch) < backfillBatch {
+			return marked, nil
+		}
+	}
+}
+
+// markStaleBatch marks the documents of one batch in one transaction, under the locks a version
+// write holds while it writes a document's blocks (lockBlockDocuments), and only those whose two
+// versions still say so under them: an index pass of this release that reached a document in
+// between has stated its blocks at the version it indexed, and owes it nothing. It answers the
+// documents it marked.
+func markStaleBatch(ctx context.Context, database *store.Store, batch []string) ([]string, error) {
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin the batch of documents another release indexed: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	if err := lockBlockDocuments(ctx, tx, batch); err != nil {
+		return nil, err
+	}
+	rows, err := tx.Query(ctx, `
+		update document_block_versions set store_owed_at = now()
+		where artifact_id = any($1::uuid[]) and store_version < version and store_owed_at is null
+		returning artifact_id::text
+	`, batch)
+	if err != nil {
+		return nil, fmt.Errorf("mark the documents another release indexed after the store: %w", err)
+	}
+	marked, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, fmt.Errorf("mark the documents another release indexed after the store: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit the batch of documents another release indexed: %w", err)
+	}
+	return marked, nil
 }
 
 // lockBlockDocuments takes the rows the fence's writers hold while they write a document's blocks
@@ -1073,7 +1191,7 @@ func backfillSessions(ctx context.Context, database *store.Store) (KindBackfill,
 func readSessionRows(ctx context.Context, database *store.Store) ([]sessionRow, error) {
 	rows, err := database.Pool.Query(ctx, `
 		select recorded.id, coalesce(recorded.event, $1), coalesce(e.created_at, recorded.at)
-		from (`+recordedSessions+`) recorded
+		from (`+recordedSessions(inlineAuthors)+`) recorded
 		left join events e on e.id = recorded.event
 		left join graph_nodes node on node.kind = $2::text and node.id = recorded.id
 		where node.id is null and octet_length(recorded.id) <= $3
@@ -1543,4 +1661,324 @@ func AsksOwed(ctx context.Context, q graphstore.Queryer) (bool, error) {
 		return false, fmt.Errorf("read whether an ask or a follower names no node: %w", err)
 	}
 	return owed, nil
+}
+
+// The backfill's three passes over the runs of the command bar (dispatch://INFRA-1950). A process
+// of the release before this one, during a roll or after a rollback, records a run with no
+// interaction node, appends a frame with no frame value, and deletes a run an hour old, row and
+// frames, leaving its node standing. Each pass finds what it owes by an anti-join of one side
+// against the other, row by row, and not by a marker: going_requests and going_events carry no
+// column naming a node, and a run is history, so nothing about a row says whether its node was
+// written. Each writes in a transaction of its own per run, under the lock order the frame path
+// takes (api's appendGoingEvent), and reads again under its locks whether the run still owes it,
+// so a pass beside a live server, and a second run of the backfill, writes nothing it does not
+// owe. A run an erase removed has neither row nor node, so no pass writes it back.
+//
+// Its input is each row's own content - a run's row and its frames - or, for the third, the
+// absence of the row a node projects, which an older process's delete leaves: the store is never
+// read to decide what a row should say, nor a row to mend the store.
+
+// runFrameHeld is true of a going_events row e whose run's interaction node holds a frame value of
+// e's sequence: the anti-join backfillRunFrames finds an older pod's frames by.
+var runFrameHeld = `exists (
+		select 1 from graph_tuples t
+		where t.from_kind = '` + graphstore.KindInteraction + `' and t.from_id = e.request_id::text
+		  and t.kind = '` + graphstore.AttributeFrame + `' and t.to_kind = '` + graphstore.KindValue + `' and t.asserted
+		  and (t.to_id::jsonb->>'sequence')::integer = e.sequence)`
+
+// runRowHeld is true of an interaction node n whose going_requests row stands. Every writer of an
+// interaction keys it by its run's uuid as Postgres writes it, and an id of any other shape is
+// read as a run with no row rather than cast, so no node can fail the read.
+var runRowHeld = `exists (
+		select 1 from going_requests r
+		where r.id = case when n.id ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then n.id::uuid end)`
+
+// runNodeLock takes a run's interaction node row, $1 the kind and $2 the run's id, the first lock
+// of a frame's transaction (api's goingNodeLock), and of every pass here that writes the node.
+const runNodeLock = `select 1 from graph_nodes where kind = $1 and id = $2 for no key update`
+
+// backfillRuns gives every run going_requests holds and the store holds no interaction node of its
+// node, through the one writer of such a node from its row (writeRun, WriteRun): the node, its
+// author's node and tuples, and a frame value of every frame its row holds, in the shape the going
+// POST and the frame path write them. It reads the runs owed in batches by id, and writes each in
+// a transaction of its own, which takes the run's row first and reads again whether the node is
+// there, so a run the frame path or another backfill gave its node meanwhile is left as it is.
+func backfillRuns(ctx context.Context, database *store.Store) (KindBackfill, error) {
+	done := KindBackfill{Kind: graphstore.KindInteraction}
+	after := uuid.Nil.String()
+	for {
+		owed, err := readOwedRuns(ctx, database, after, backfillBatch)
+		if err != nil {
+			return done, err
+		}
+		for _, id := range owed {
+			written, err := writeOwedRun(ctx, database, id)
+			if err != nil {
+				return done, err
+			}
+			if written.nodes > 0 {
+				done.Rows++
+				done.Nodes += written.nodes
+				done.Tuples += written.tuples
+			}
+		}
+		if len(owed) < backfillBatch {
+			break
+		}
+		after = owed[len(owed)-1]
+	}
+	left, err := readOwedRuns(ctx, database, uuid.Nil.String(), 0)
+	if err != nil {
+		return done, err
+	}
+	done.Remaining = int64(len(left))
+	done.Complete = done.Remaining == 0
+	return done, nil
+}
+
+// readOwedRuns reads the runs past after, in id order, whose row names no interaction node, at
+// most limit of them, or every one where limit is 0.
+func readOwedRuns(ctx context.Context, database *store.Store, after string, limit int) ([]string, error) {
+	rows, err := database.Pool.Query(ctx, `
+		select r.id::text from going_requests r
+		where r.id > $1::uuid
+		  and not exists (select 1 from graph_nodes n where n.kind = $2 and n.id = r.id::text)
+		order by r.id
+		limit nullif($3::integer, 0)
+	`, after, graphstore.KindInteraction, limit)
+	if err != nil {
+		return nil, fmt.Errorf("read the runs the store holds no node of: %w", err)
+	}
+	owed, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, fmt.Errorf("read the runs the store holds no node of: %w", err)
+	}
+	return owed, nil
+}
+
+// writeOwedRun writes the node of one run in a transaction of its own (writeRun).
+func writeOwedRun(ctx context.Context, database *store.Store, id string) (runWritten, error) {
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		return runWritten{}, fmt.Errorf("begin the node of run %s: %w", id, err)
+	}
+	defer tx.Rollback(ctx)
+	written, err := writeRun(ctx, tx, id)
+	if err != nil {
+		return runWritten{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return runWritten{}, fmt.Errorf("commit the node of run %s: %w", id, err)
+	}
+	return written, nil
+}
+
+// backfillRunFrames states a frame value of every going_events row whose run's interaction holds
+// no frame value of that sequence (runFrameHeld): a frame a process of the release before
+// appended to a run this build or the passes before gave a node. Each owed run is written in a
+// transaction of its own (writeRunFrames). Rows counts the frames it stated and Tuples the values,
+// one each, with what writeRun stated of a run that had no node by then.
+func backfillRunFrames(ctx context.Context, database *store.Store) (KindBackfill, error) {
+	done := KindBackfill{Kind: graphstore.AttributeFrame}
+	after := uuid.Nil.String()
+	for {
+		owed, err := readOwedFrameRuns(ctx, database, after, backfillBatch)
+		if err != nil {
+			return done, err
+		}
+		for _, run := range owed {
+			frames, written, err := writeRunFrames(ctx, database, run)
+			if err != nil {
+				return done, err
+			}
+			done.Rows += frames
+			done.Tuples += frames + written.tuples
+			done.Nodes += written.nodes
+		}
+		if len(owed) < backfillBatch {
+			break
+		}
+		after = owed[len(owed)-1]
+	}
+	var left int64
+	if err := database.Pool.QueryRow(ctx, `select count(*) from going_events e where not `+runFrameHeld).Scan(&left); err != nil {
+		return done, fmt.Errorf("count the frames the store holds no value of: %w", err)
+	}
+	done.Remaining = left
+	done.Complete = left == 0
+	return done, nil
+}
+
+// readOwedFrameRuns reads the runs past after, in id order, that hold a frame the store holds no
+// value of, at most limit of them.
+func readOwedFrameRuns(ctx context.Context, database *store.Store, after string, limit int) ([]string, error) {
+	rows, err := database.Pool.Query(ctx, `
+		select distinct e.request_id::text from going_events e
+		where e.request_id > $1::uuid and not `+runFrameHeld+`
+		order by 1
+		limit $2
+	`, after, limit)
+	if err != nil {
+		return nil, fmt.Errorf("read the runs holding a frame the store holds no value of: %w", err)
+	}
+	owed, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, fmt.Errorf("read the runs holding a frame the store holds no value of: %w", err)
+	}
+	return owed, nil
+}
+
+// writeRunFrames states, in one transaction, a frame value of each frame of run the store holds no
+// value of, and answers how many. It takes the run's interaction node row first, as every frame of
+// this build does (api's appendGoingEvent), so a frame this build is appending to the run commits
+// first, value and row together, and the read under the lock no longer counts it owed. A run with
+// no node by then gets it from its row through writeRun, which states every frame the row holds,
+// and which it answers. The values are read off the rows in SQL (graphstore.FrameValueSQL), dated
+// at each row's created_at and stated by graphstore.FrameWriter, exactly as the frame path states
+// them (graphstore.FrameTuple).
+func writeRunFrames(ctx context.Context, database *store.Store, run string) (int64, runWritten, error) {
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		return 0, runWritten{}, fmt.Errorf("begin the frames of run %s: %w", run, err)
+	}
+	defer tx.Rollback(ctx)
+	tag, err := tx.Exec(ctx, runNodeLock, graphstore.KindInteraction, run)
+	if err != nil {
+		return 0, runWritten{}, fmt.Errorf("lock the interaction node of run %s: %w", run, err)
+	}
+	if tag.RowsAffected() == 0 {
+		written, err := writeRun(ctx, tx, run)
+		if err != nil {
+			return 0, runWritten{}, err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return 0, runWritten{}, fmt.Errorf("commit the node of run %s: %w", run, err)
+		}
+		return 0, written, nil
+	}
+	rows, err := tx.Query(ctx, `
+		select `+graphstore.FrameValueSQL("e.sequence", "e.name", "e.data")+`, e.created_at
+		from going_events e
+		where e.request_id = $1::uuid and not `+runFrameHeld+`
+		order by e.sequence
+	`, run)
+	if err != nil {
+		return 0, runWritten{}, fmt.Errorf("read the frames of run %s the store holds no value of: %w", run, err)
+	}
+	frames, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (graphstore.Tuple, error) {
+		var value string
+		var at time.Time
+		if err := row.Scan(&value, &at); err != nil {
+			return graphstore.Tuple{}, err
+		}
+		return graphstore.FrameTuple(run, value, at), nil
+	})
+	if err != nil {
+		return 0, runWritten{}, fmt.Errorf("read the frames of run %s the store holds no value of: %w", run, err)
+	}
+	if len(frames) == 0 {
+		return 0, runWritten{}, nil
+	}
+	if err := graphstore.Write(ctx, tx, nil, frames); err != nil {
+		return 0, runWritten{}, fmt.Errorf("state the frames of run %s: %w", run, err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, runWritten{}, fmt.Errorf("commit the frames of run %s: %w", run, err)
+	}
+	return int64(len(frames)), runWritten{}, nil
+}
+
+// backfillGoneRuns states gone every interaction node, not gone already, whose going_requests row
+// is gone (runRowHeld): a run a process of the release before deleted an hour old, frames with it,
+// whose node it left standing. The store keeps the node, as it keeps every node an erase has not
+// removed, and the census reads a gone node with no row as no difference. A run an erase removed
+// has no node either, so this states nothing of it.
+func backfillGoneRuns(ctx context.Context, database *store.Store) (KindBackfill, error) {
+	done := KindBackfill{Kind: "interaction_gone"}
+	after := ""
+	for {
+		owed, err := readRowlessRuns(ctx, database, after, backfillBatch)
+		if err != nil {
+			return done, err
+		}
+		for _, id := range owed {
+			stated, err := writeGoneRun(ctx, database, id)
+			if err != nil {
+				return done, err
+			}
+			if stated {
+				done.Rows++
+				done.Tuples++
+			}
+		}
+		if len(owed) < backfillBatch {
+			break
+		}
+		after = owed[len(owed)-1]
+	}
+	left, err := readRowlessRuns(ctx, database, "", 0)
+	if err != nil {
+		return done, err
+	}
+	done.Remaining = int64(len(left))
+	done.Complete = done.Remaining == 0
+	return done, nil
+}
+
+// readRowlessRuns reads the interaction nodes past after, in id order, not gone and whose row is
+// gone, at most limit of them, or every one where limit is 0.
+func readRowlessRuns(ctx context.Context, database *store.Store, after string, limit int) ([]string, error) {
+	rows, err := database.Pool.Query(ctx, `
+		select n.id from graph_nodes n
+		where n.kind = $1 and n.id > $2 and n.state <> $3 and not `+runRowHeld+`
+		order by n.id
+		limit nullif($4::integer, 0)
+	`, graphstore.KindInteraction, after, graphstore.StateGone, limit)
+	if err != nil {
+		return nil, fmt.Errorf("read the runs whose row is gone: %w", err)
+	}
+	owed, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, fmt.Errorf("read the runs whose row is gone: %w", err)
+	}
+	return owed, nil
+}
+
+// writeGoneRun states the interaction node id gone where its row is still gone, in a transaction
+// of its own, and answers whether it did. It takes the node's row first, as a frame and an erase
+// of the run do, then reads under that lock the node and whether its row stands: the going POST
+// commits a run's node and its row together, so a node it reads has its row whenever the run has
+// one, and a node an erase removed meanwhile is read as none. The write is the node as the store
+// holds it but for its state, a plain write that moves the row and appends the state tuple, made
+// by the run (backfillActor) now, as api's writeNodeState moves a node's state.
+func writeGoneRun(ctx context.Context, database *store.Store, id string) (bool, error) {
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		return false, fmt.Errorf("begin the end of run %s: %w", id, err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, runNodeLock, graphstore.KindInteraction, id); err != nil {
+		return false, fmt.Errorf("lock the interaction node of run %s: %w", id, err)
+	}
+	node, held, err := graphstore.ReadNode(ctx, tx, graphstore.KindInteraction, id)
+	if err != nil || !held || node.State == graphstore.StateGone {
+		return false, err
+	}
+	var rowHeld bool
+	if err := tx.QueryRow(ctx, `select `+runRowHeld+` from graph_nodes n where n.kind = $1 and n.id = $2`,
+		graphstore.KindInteraction, id).Scan(&rowHeld); err != nil {
+		return false, fmt.Errorf("read whether run %s holds its row: %w", id, err)
+	}
+	if rowHeld {
+		return false, nil
+	}
+	node.State, node.Restates = graphstore.StateGone, false
+	node.MadeAt, node.MadeBy, node.SourceEvent = time.Now().UTC(), backfillActor, graphstore.NoEvent
+	if err := graphstore.Write(ctx, tx, []graphstore.Node{node}, nil); err != nil {
+		return false, fmt.Errorf("state run %s gone: %w", id, err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, fmt.Errorf("commit the end of run %s: %w", id, err)
+	}
+	return true, nil
 }

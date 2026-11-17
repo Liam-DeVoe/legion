@@ -302,20 +302,22 @@ type coldFold struct {
 // it: the rendering of the stored state the store's stamp names now, from the cache, or else from
 // one fold of the history (foldDocument) that every read missing that state at once shares. It
 // returns the rendering, or a nil rendering and the tree when the tree is outside what the
-// rendering takes, or neither for a document with no stored state.
+// rendering takes, or neither for a document with no stored state. room is the room artifactID's
+// document is edited in (roomOf), whose stored history is folded, and fragment the fragment of it
+// the document is held in (fragmentOf): the entry is the document's, at its room's stamp.
 //
 // The fold is the document's: it runs on a context no request's end cancels, bounded by the
 // cache's timeout, so a read whose request ends gets its own context's error at once and leaves
 // the fold to the others. Only the read's own context decides that it ended. A fold that fails
 // fails the room, as a failed room load does, and reaches each read as ErrServiceUnavailable,
 // unless the history does not decode, which is ErrDocumentUnloadable, the state a rebuild repairs.
-func (s *Service) coldRead(ctx context.Context, artifactID string) (*documentRead, *pmdoc.Node, error) {
-	stamp, err := s.persistence.DocumentStamp(ctx, artifactID)
+func (s *Service) coldRead(ctx context.Context, artifactID, room, fragment string) (*documentRead, *pmdoc.Node, error) {
+	stamp, err := s.persistence.DocumentStamp(ctx, room)
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return nil, nil, ctxErr
 		}
-		s.failRoom(artifactID, err)
+		s.failRoom(room, err)
 		return nil, nil, fmt.Errorf("%w: %w", ErrServiceUnavailable, err)
 	}
 	if stamp.Version == 0 {
@@ -326,9 +328,9 @@ func (s *Service) coldRead(ctx context.Context, artifactID string) (*documentRea
 	}
 	key := artifactID + "@" + strconv.FormatInt(stamp.Version, 10) + "/" + stamp.Row
 	flight := s.reads.flights.DoChan(key, func() (any, error) {
-		fold, err := s.foldDocument(ctx, artifactID)
+		fold, err := s.foldDocument(ctx, artifactID, room, fragment)
 		if err != nil {
-			s.failRoom(artifactID, err)
+			s.failRoom(room, err)
 		}
 		return fold, err
 	})
@@ -347,23 +349,23 @@ func (s *Service) coldRead(ctx context.Context, artifactID string) (*documentRea
 	}
 }
 
-// foldDocument loads artifactID's stored history decoded once (LoadDocument), reads its tree and
-// renders it (foldLoaded), storing the rendering under the stamp the load read in its own
-// transaction, never the one read before the miss, so a write between the two cannot store old
-// content under a new stamp.
+// foldDocument loads room's stored history decoded once (LoadDocument), reads the tree of
+// fragment, artifactID's fragment of it, and renders it (foldLoaded), storing the rendering under
+// the stamp the load read in its own transaction, never the one read before the miss, so a write
+// between the two cannot store old content under a new stamp.
 // Its error is the load's, or a panic recovered from any of it: singleflight re-panics an
 // unrecovered panic of a call it has waiters for in a goroutine nothing can recover, where a read
 // panicking on the request's own goroutine would fail that one request.
-func (s *Service) foldDocument(ctx context.Context, artifactID string) (fold coldFold, err error) {
+func (s *Service) foldDocument(ctx context.Context, artifactID, room, fragment string) (fold coldFold, err error) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			err = fmt.Errorf("cold document read panicked: %v\n%s", recovered, debug.Stack())
-			slog.Error("dispatch: cold document read panicked", "room", artifactID, "error", err)
+			slog.Error("dispatch: cold document read panicked", "room", room, "error", err)
 		}
 	}()
 	foldCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), coldReadTimeout)
 	defer cancel()
-	loaded, err := s.persistence.LoadDocument(foldCtx, artifactID)
+	loaded, err := s.persistence.LoadDocument(foldCtx, room)
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) && errors.Is(foldCtx.Err(), context.DeadlineExceeded) {
 			return coldFold{}, fmt.Errorf("cold document read timed out after %s", coldReadTimeout)
@@ -372,24 +374,29 @@ func (s *Service) foldDocument(ctx context.Context, artifactID string) (fold col
 	}
 	// A rendering refused leaves the fold its tree, from which each read computes its own answer
 	// and refusal, as it would without the cache.
-	fold, _ = foldLoaded(artifactID, loaded)
+	fold, _ = foldLoaded(artifactID, fragment, loaded)
 	if fold.read != nil {
 		s.reads.put(fold.read)
 	}
 	return fold, nil
 }
 
-// foldLoaded is the fold of loaded, a document its caller has just decoded and holds alone: its
-// tree read once and validated once (pmdoc.ReadUnshared) and rendered without validating it again
-// (buildDocumentRead). A tree the read refuses is the fold's treeErr, the read's error through
-// documentSchemaError as treeOf gives it; a tree the rendering refuses is the fold's tree without
-// a read, and renderErr is the rendering's refusal. A loaded state without a document is the
-// empty fold.
-func foldLoaded(artifactID string, loaded LoadedDocument) (fold coldFold, renderErr error) {
+// foldLoaded is the fold of fragment of loaded, a document its caller has just decoded and holds
+// alone: its tree read once and validated once (pmdoc.ReadUnshared) and rendered without
+// validating it again (buildDocumentRead), as artifactID's. A tree the read refuses is the fold's
+// treeErr, the read's error through documentSchemaError as treeOf gives it; a tree the rendering
+// refuses is the fold's tree without a read, and renderErr is the rendering's refusal. A loaded
+// state without a document is the empty fold.
+func foldLoaded(artifactID, fragment string, loaded LoadedDocument) (fold coldFold, renderErr error) {
 	if loaded.Doc == nil {
 		return coldFold{}, nil
 	}
-	valid, err := pmdoc.ReadUnshared(loaded.Doc.GetXmlFragment(fragmentName))
+	held := loaded.Doc.GetXmlFragment(fragment)
+	if fragment != fragmentName && held.Len() == 0 {
+		// A converted document whose fragment of its issue room holds nothing has no tree.
+		return coldFold{}, nil
+	}
+	valid, err := pmdoc.ReadUnshared(held)
 	if err != nil {
 		return coldFold{treeErr: documentSchemaError(err)}, nil
 	}

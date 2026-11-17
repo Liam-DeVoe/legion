@@ -52,10 +52,10 @@ var eventRateQuery = fmt.Sprintf(`select type, count(*) / %d.0 as per_day
 	from events where created_at > %s group by type order by 2 desc`, sizingWindowDays, sizingWindow)
 
 // blockIndexBacklogQuery is what the block-index reconciliation still owes documents: how many
-// hold no indexed version (document_block_versions.version null), and when the oldest of those
-// debts was incurred. The server's own tick reads the same two figures and logs them
-// (docs.ReconcileBlockIndex); this is the read for somebody holding the database and not the
-// log.
+// hold no indexed version (document_block_versions.version null) or hold the backfill's mark
+// (store_owed_at), and when the oldest of those debts was incurred. The server's own tick reads
+// the same two figures and logs them (docs.ReconcileBlockIndex); this is the read for somebody
+// holding the database and not the log.
 //
 // Nothing dates a debt, so the rows are dated by the write that owed them, which is what
 // refs.OwedBlockIndexDebts derives; the tick's own read of the same backlog derives it from
@@ -63,6 +63,19 @@ var eventRateQuery = fmt.Sprintf(`select type, count(*) / %d.0 as per_day
 var blockIndexBacklogQuery = `
 	select count(*), min(owed.owed_at) from (` + refs.OwedBlockIndexDebts + `
 	) owed`
+
+// blockIndexBacklogBeforeTheMarkQuery is the same backlog on a database migration
+// 20261116221539 has not reached, where a null version is the only debt
+// (refs.OwedBlockIndexDebtsBeforeTheMark). The sizing takes its readings on such a database too.
+var blockIndexBacklogBeforeTheMarkQuery = `
+	select count(*), min(owed.owed_at) from (` + refs.OwedBlockIndexDebtsBeforeTheMark + `
+	) owed`
+
+// backfillMarkHeldQuery says whether document_block_versions holds the backfill's mark column,
+// which migration 20261116221539 adds.
+const backfillMarkHeldQuery = `select exists (
+	select 1 from pg_attribute
+	where attrelid = to_regclass('document_block_versions') and attname = 'store_owed_at' and not attisdropped)`
 
 // backlogClockQuery is the newest write the database recorded: the created_at of its highest
 // event id, read through events_pkey. It is the clock the oldest debt's age is measured
@@ -98,8 +111,9 @@ func (b BlockIndexBacklog) Age() time.Duration {
 // migration alters a relation that already held rows. graph_nodes, graph_tuples and
 // graph_erasures are created by 20261109013400 and written by 20261109051232, so no existing
 // row is rewritten for them; document_blocks, block_refs and comments are altered by
-// 20261109022248, and server_build_announcements by 20261115051200, and a table that large is a
-// migration that needs another shape, which is what the limit refuses.
+// 20261109022248, server_build_announcements by 20261115051200 and document_block_versions by
+// 20261116221539, and a table that large is a migration that needs another shape, which is what
+// the limit refuses.
 var branchTables = []struct {
 	name    string
 	altered bool
@@ -109,6 +123,7 @@ var branchTables = []struct {
 	{"graph_erasures", false},
 	{"block_refs", true},
 	{"comments", true},
+	{"document_block_versions", true},
 	{"document_blocks", true},
 	{"server_build_announcements", true},
 }
@@ -288,16 +303,16 @@ func storeKinds() []StoreKind {
 // states beside its node, and the document_block_texts rows of the versions written inside it,
 // each with whether the block's row before it held a text (null for the block's first row).
 //
-// A comment's facts are read off its row as their writers read them: its author as commentAuthor
+// A comment's facts are read off its row as their writers read them: its author as authoredLink
 // does (graphstore.AuthorOf), a document it is anchored to or owned by only where the document's
 // address fits the store's bound, and its aliases as graphstore's aliases states them - the owner a
 // session's credential proved, the session a person's credential proved, and the raw id a person
-// was recorded under where that is not their canonical login.
-var sizingWritesWith = `
+// was recorded under where that is not their canonical login. rooms says the database holds the
+// issue rooms' tables (documentTexts).
+func sizingWritesWith(rooms bool) string {
+	return `
 	with sized_comments as (
-		select (case when c.author->>'kind' <> '` + graphstore.KindSession + `'
-		                  or octet_length(coalesce(c.author->>'id', '')) <= ` + addressBound + `
-		             then ` + commentAuthor + ` end) is not null as authored,
+		select (` + authoredLink("c.author") + `) is not null as authored,
 		       coalesce(octet_length(anchor.ref_key) <= ` + addressBound + `, false) as anchored,
 		       coalesce(octet_length(owner.ref_key) <= ` + addressBound + `, false) as owned,
 		       (case when c.author->>'kind' = '` + graphstore.KindSession + `' and coalesce(c.author->>'id', '') <> ''
@@ -323,7 +338,7 @@ var sizingWritesWith = `
 	sized_texts as (
 		select t.text is not null as written, earlier.held as earlier
 		from artifact_versions v
-		join document_block_texts t on t.artifact_id = v.artifact_id and t.version = v.number
+		join document_block_texts t on ` + documentTexts("t", "v.artifact_id", rooms) + ` and t.version = v.number
 		left join lateral (
 			select p.text is not null as held from document_block_texts p
 			where p.artifact_id = t.artifact_id and p.block_id = t.block_id and p.version < t.version
@@ -331,6 +346,7 @@ var sizingWritesWith = `
 		) earlier on true
 		where v.created_at > ` + sizingWindow + `
 	)`
+}
 
 // EventRate is one event type's rate over the sizing window.
 type EventRate struct {
@@ -576,10 +592,16 @@ func readStoreKinds(ctx context.Context, tx pgx.Tx) ([]StoreKind, error) {
 		counts = append(counts, kinds[index].count)
 		targets = append(targets, &kinds[index].Writes)
 	}
-	if err := tx.QueryRow(ctx, sizingWritesWith+"\n\tselect "+strings.Join(counts, ",\n\t\t")).Scan(targets...); err != nil {
+	// The sizing reads a database before this branch's migrations as well, which holds no issue
+	// room's table (documentTexts).
+	var rooms bool
+	if err := tx.QueryRow(ctx, `select to_regclass('issue_room_blocks') is not null`).Scan(&rooms); err != nil {
+		return nil, fmt.Errorf("read whether the database holds issue rooms: %w", err)
+	}
+	if err := tx.QueryRow(ctx, sizingWritesWith(rooms)+"\n\tselect "+strings.Join(counts, ",\n\t\t")).Scan(targets...); err != nil {
 		return nil, fmt.Errorf("read the writes of each kind inside the window: %w", err)
 	}
-	replayed, err := replayParents(ctx, tx)
+	replayed, err := replayParents(ctx, tx, rooms)
 	if err != nil {
 		return nil, err
 	}
@@ -608,7 +630,8 @@ func readStoreKinds(ctx context.Context, tx pgx.Tx) ([]StoreKind, error) {
 // A version's row is dated once, when it is written, and a document's versions are numbered in
 // the order they are written, so the versions inside the window are each document's last ones
 // and the one before the first of them is the one whose next version lies inside it.
-var replayVersionsQuery = `
+func replayVersionsQuery(rooms bool) string {
+	return `
 	with indexed as (
 		select i.artifact_id, i.version, v.created_at > ` + sizingWindow + ` as inside,
 		       coalesce(lead(v.created_at > ` + sizingWindow + `)
@@ -624,7 +647,7 @@ var replayVersionsQuery = `
 	union all
 	select r.artifact_id::text, r.version, 0, null, null, t.block_id, t.text, earlier.text
 	from replayed r
-	join document_block_texts t on t.artifact_id = r.artifact_id and t.version = r.version
+	join document_block_texts t on ` + documentTexts("t", "r.artifact_id", rooms) + ` and t.version = r.version
 	left join lateral (
 		select p.text from document_block_texts p
 		where p.artifact_id = t.artifact_id and p.block_id = t.block_id and p.version < t.version
@@ -632,6 +655,21 @@ var replayVersionsQuery = `
 	) earlier on true
 	where r.inside
 	order by 1, 2, 3, 6`
+}
+
+// documentTexts is true of the document_block_texts row aliased texts while it is a text of a
+// block of the document the uuid expression document names: a row under that document, or, where
+// the database holds issue rooms (rooms), for a document of an issue room, a row under the room's
+// tree artifact, whose rows carry each document's own version numbers, of a block that document
+// holds (refs.BlockDocumentSQL). So a version of a room's document is read with its own blocks'
+// texts alone, and its indexed versions are its own (T12a of dispatch://INFRA-1253's plan).
+func documentTexts(texts, document string, rooms bool) string {
+	if !rooms {
+		return texts + `.artifact_id = ` + document
+	}
+	return `(` + texts + `.artifact_id = any(array[` + document + `, coalesce((select moved.room from document_rooms moved
+		where moved.artifact_id = ` + document + `), ` + document + `)]) and ` + refs.BlockDocumentSQL(texts) + ` = ` + document + `)`
+}
 
 // replayedParents is what replayParents read: how many blocks the windowed versions moved to
 // another parent, over how many version rows, and how many of those rows did not parse.
@@ -650,9 +688,10 @@ type replayedParents struct{ moved, read, unreadable int64 }
 // in the version before and its new text in the later one (blockIdentities). Blocks of one
 // document with equal text are matched in document order, so the count is exact except there. A
 // version that does not parse is counted as read and unreadable, and neither it nor the version
-// after it is compared, as the index wrote no blocks for it.
-func replayParents(ctx context.Context, tx pgx.Tx) (replayedParents, error) {
-	rows, err := tx.Query(ctx, replayVersionsQuery)
+// after it is compared, as the index wrote no blocks for it. rooms says the database holds the
+// issue rooms' tables (documentTexts).
+func replayParents(ctx context.Context, tx pgx.Tx, rooms bool) (replayedParents, error) {
+	rows, err := tx.Query(ctx, replayVersionsQuery(rooms))
 	if err != nil {
 		return replayedParents{}, fmt.Errorf("read the indexed versions of the window: %w", err)
 	}
@@ -815,7 +854,15 @@ func placementOf(identities []blockIdentity, parent int) blockPlacement {
 func readBlockIndexBacklog(ctx context.Context, tx pgx.Tx) (BlockIndexBacklog, error) {
 	var backlog BlockIndexBacklog
 	var oldest *time.Time
-	if err := tx.QueryRow(ctx, blockIndexBacklogQuery).Scan(&backlog.Documents, &oldest); err != nil {
+	var markHeld bool
+	if err := tx.QueryRow(ctx, backfillMarkHeldQuery).Scan(&markHeld); err != nil {
+		return BlockIndexBacklog{}, fmt.Errorf("read whether the backfill's mark exists: %w", err)
+	}
+	query := blockIndexBacklogQuery
+	if !markHeld {
+		query = blockIndexBacklogBeforeTheMarkQuery
+	}
+	if err := tx.QueryRow(ctx, query).Scan(&backlog.Documents, &oldest); err != nil {
 		return BlockIndexBacklog{}, fmt.Errorf("read the documents owed a block index: %w", err)
 	}
 	if oldest != nil {

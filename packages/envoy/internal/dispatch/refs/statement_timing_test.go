@@ -8,6 +8,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/benchtime"
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -29,9 +30,9 @@ import (
 //     under protocol 2.
 //
 //   - The two backlink counts are protocol 1 pairs. The release before this change counts over
-//     the whole graph_edges view (this package holds that read as backlinkCountOracle, with the
-//     arm over a counted item's own current blocks), and that text runs on this release's schema,
-//     so one database holds both sides.
+//     the whole graph_edges view (docstest holds that read as ViewBacklinkCountSQL, with the arm
+//     over a counted item's own current blocks), and that text runs on this release's schema, so
+//     one database holds both sides.
 //     The before side is read with ask_followers_session_id present, the index migration
 //     20261101182419 adds for the followed_by arm, which only helps it, so each pair is the
 //     conservative reading of the head text's own gain.
@@ -54,7 +55,7 @@ func TestStatementTimings(t *testing.T) {
 	}
 	issueIDs := []string{subjects.Issue}
 	runner.Pair(t, "refs.BacklinkCounts over an issue",
-		benchtime.Statement{SQL: oracleBacklinkCountSQL("issue", false), Args: []any{"issue", issueIDs, nodeKinds}},
+		benchtime.Statement{SQL: docstest.ViewBacklinkCountSQL("graph_edges", "issue", false), Args: []any{"issue", issueIDs, nodeKinds}},
 		benchtime.Statement{SQL: issueCount, Args: []any{issueIDs, nodeKinds, VisibilityArg(model.Actor{})}})
 
 	// The ask page's count: every ask of one issue at once, each ask's own clarification thread
@@ -68,7 +69,7 @@ func TestStatementTimings(t *testing.T) {
 		t.Fatal("backlinkArms declares no arm for an ask, so the ask page's count has no statement")
 	}
 	runner.Pair(t, "refs.BacklinkCounts over an issue's asks",
-		benchtime.Statement{SQL: oracleBacklinkCountSQL("ask", true), Args: []any{"ask", askIDs, nodeKinds, AskBacklinkExclusions}},
+		benchtime.Statement{SQL: docstest.ViewBacklinkCountSQL("graph_edges", "ask", true), Args: []any{"ask", askIDs, nodeKinds, AskBacklinkExclusions}},
 		benchtime.Statement{SQL: askCount, Args: []any{askIDs, nodeKinds, VisibilityArg(model.Actor{}), AskBacklinkExclusions}})
 }
 

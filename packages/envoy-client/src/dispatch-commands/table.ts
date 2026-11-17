@@ -42,6 +42,7 @@ import {
   lensCommand,
   lensesCommand,
   pointerCommand,
+  premortemConvertCommand,
   proposedCommand,
   riskCommand,
   settleCommand,
@@ -126,4 +127,5 @@ export const dispatchCommands: Record<DispatchToolName, DispatchCommand> = {
   dispatch_state: acting(stateCommand),
   dispatch_settle: acting(settleCommand),
   dispatch_proposed: acting(proposedCommand),
+  dispatch_premortem_convert: acting(premortemConvertCommand),
 };
