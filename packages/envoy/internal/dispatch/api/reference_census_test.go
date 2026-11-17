@@ -68,7 +68,7 @@ var referenceDispositions = map[string]referenceDisposition{
 	"artifact_versions.artifact_id":             {ownColumn, "the version's document"},
 	"artifacts.issue_key":                       {ownColumn, "the document's issue"},
 	"artifacts.project_key":                     {ownColumn, "the document's project"},
-	"artifacts.session_id":                      {ownColumn, "the conversation a file belongs to (documentClause's parties)"},
+	"artifacts.session_id":                      {ownColumn, "the conversation a file belongs to (access.DocumentClause's parties)"},
 	"ask_block_refs.ask_id":                     {ownColumn, "the ask whose part holds the link"},
 	"ask_block_state.ask_id":                    {internalColumn, "the ask's part index state"},
 	"ask_block_texts.ask_id":                    {ownColumn, "the ask whose part it is"},

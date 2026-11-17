@@ -57,23 +57,12 @@ const (
 // coalesce because model.Artifact carries it as "" when the document plays no role.
 const artifactColumns = `id::text, issue_key, project_key, session_id, ref_key, slug, name, kind, is_primary, coalesce(role, ''), created_by, created_at`
 
-// documentClause passes the artifacts row alias to the viewer bound at viewerParam (refs.VisibilityArg):
-// a document of an issue or of a project by that project (access.ProjectClause), and a file of an
-// agent's conversation, which belongs to no project, by the parties of that conversation, its
-// session (access.PartyClause), the parties graphstore.ArtifactNode states on the document's node.
-// Every read of an artifact binds it in its own where, so a document its reader may not read is a
-// row the read does not find, and answers exactly as an id nobody holds.
-func documentClause(alias, viewerParam string) string {
-	return `(case when ` + alias + `.project_key is not null then ` + access.ProjectClause(alias+`.project_key`, viewerParam) +
-		` else ` + access.PartyClause(`array['`+graphstore.PartySession("")+`' || `+alias+`.session_id]`, viewerParam) + ` end)`
-}
-
-// documentVisible is documentClause over the artifact whose id idExpr names, for a statement that
-// reads a row its document owns - a version, a review, a comment anchored to it - rather than the
-// artifact's own row: the row is read only where its reader may read the document.
+// documentVisible is access.DocumentClause over the artifact whose id idExpr names, for a
+// statement that reads a row its document owns - a version, a review, a comment anchored to it -
+// rather than the artifact's own row: the row is read only where its reader may read the document.
 func documentVisible(idExpr, viewerParam string) string {
 	return `exists (select 1 from artifacts visible_document where visible_document.id = ` + idExpr +
-		` and ` + documentClause("visible_document", viewerParam) + `)`
+		` and ` + access.DocumentClause("visible_document", viewerParam) + `)`
 }
 
 func (s *server) listArtifacts(w http.ResponseWriter, r *http.Request) {
@@ -1509,7 +1498,7 @@ func participantsOrEmpty(participants []model.Actor) []model.Actor {
 // other route calls. An issue its reader does not see lists no artifact, as an issue nobody holds.
 var issueArtifactsStatement = `
 		select ` + artifactColumns + `
-		from artifacts where issue_key = $1 and ` + documentClause("artifacts", "$2") + `
+		from artifacts where issue_key = $1 and ` + access.DocumentClause("artifacts", "$2") + `
 		order by created_at, id
 	`
 
@@ -1720,7 +1709,7 @@ func (s *server) loadDocumentReferences(ctx context.Context, q queryer, who mode
 	}
 	rows, err := q.Query(ctx, `
 		select `+artifactColumns+`
-		from artifacts where `+owner+` and kind = 'doc' and `+documentClause("artifacts", "$2")+`
+		from artifacts where `+owner+` and kind = 'doc' and `+access.DocumentClause("artifacts", "$2")+`
 		order by created_at, id`, value, refs.VisibilityArg(who))
 	if err != nil {
 		return nil, err
@@ -1908,14 +1897,15 @@ func (s *server) loadArtifact(ctx context.Context, q queryer, who model.Actor, i
 func (s *server) loadArtifactByRefKey(ctx context.Context, q queryer, who model.Actor, refKey string) (model.Artifact, error) {
 	return s.loadArtifactRow(ctx, q, who, q.QueryRow(ctx, `
 		select `+artifactColumns+`
-		from artifacts where ref_key = $1 and `+documentClause("artifacts", "$2")+`
+		from artifacts where ref_key = $1 and `+access.DocumentClause("artifacts", "$2")+`
 	`, refKey, refs.VisibilityArg(who)))
 }
 
 // loadArtifactRow reads one artifact from the row a lookup by ref_key or by any other column
 // returns, with the details every artifact read carries - its versions, and its approval when it
 // is a document - in one batch (loadArtifactDetails), so the read costs that lookup and one
-// round trip more. The lookup binds documentClause for who, as every read of an artifact does.
+// round trip more. The lookup binds access.DocumentClause for who, as every read of an artifact
+// does.
 func (s *server) loadArtifactRow(ctx context.Context, q queryer, who model.Actor, row pgx.Row) (model.Artifact, error) {
 	artifact, err := scanArtifactOrNotFound(row)
 	if err != nil {
@@ -1948,7 +1938,7 @@ func scanArtifactOrNotFound(row pgx.Row) (model.Artifact, error) {
 // The id is a whole one: the prefix layer resolved a short one into the path before the handler
 // saw it (resolveIDPrefixes), and parseArtifactID answers the same 404 as a row that is not
 // there for anything that is no uuid. A document who may not read is a row the read does not find
-// (documentClause), so it answers that same 404.
+// (access.DocumentClause), so it answers that same 404.
 func loadArtifactRowByID(ctx context.Context, q queryer, who model.Actor, id string) (model.Artifact, error) {
 	parsed, err := parseArtifactID(id)
 	if err != nil {
@@ -1956,7 +1946,7 @@ func loadArtifactRowByID(ctx context.Context, q queryer, who model.Actor, id str
 	}
 	return scanArtifactOrNotFound(q.QueryRow(ctx, `
 		select `+artifactColumns+`
-		from artifacts where id = $1 and `+documentClause("artifacts", "$2")+`
+		from artifacts where id = $1 and `+access.DocumentClause("artifacts", "$2")+`
 	`, parsed, refs.VisibilityArg(who)))
 }
 

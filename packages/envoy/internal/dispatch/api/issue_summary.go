@@ -99,7 +99,7 @@ func (s *server) getProjectDocumentSummary(w http.ResponseWriter, r *http.Reques
 		var summary documentSummary
 		err := q.QueryRow(ctx, `
 			select a.id::text, coalesce(a.project_key, ''), a.slug, a.name, a.kind, `+summaryLatestVersion+`
-			from artifacts a where `+predicate+` and `+documentClause("a", "$2"), value, viewer).Scan(
+			from artifacts a where `+predicate+` and `+access.DocumentClause("a", "$2"), value, viewer).Scan(
 			&summary.ID, &summary.Project, &summary.Slug, &summary.Name, &summary.Kind, &summary.LatestVersion,
 		)
 		if errors.Is(err, pgx.ErrNoRows) {

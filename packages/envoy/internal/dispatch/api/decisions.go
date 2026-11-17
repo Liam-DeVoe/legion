@@ -138,7 +138,7 @@ func artifactReference(document model.Artifact) string {
 func (s *server) issueSpecDocument(ctx context.Context, who model.Actor, key string) (model.Artifact, bool, error) {
 	artifact, err := s.loadArtifactRow(ctx, s.deps.Store.Pool, who, s.deps.Store.Pool.QueryRow(ctx, `
 		select `+artifactColumns+`
-		from artifacts where issue_key = $1 and is_primary and kind = 'doc' and `+documentClause("artifacts", "$2")+`
+		from artifacts where issue_key = $1 and is_primary and kind = 'doc' and `+access.DocumentClause("artifacts", "$2")+`
 	`, key, refs.VisibilityArg(who)))
 	if err != nil {
 		if artifactMissing(err) {

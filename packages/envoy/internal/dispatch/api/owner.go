@@ -137,7 +137,7 @@ func ownerStatus(ctx context.Context, q queryer, who model.Actor, owner owner, l
 		return &status, open, nil
 	}
 	if err := q.QueryRow(ctx, `
-		select true from artifacts where id = $1 and issue_key is null and `+documentClause("artifacts", "$2")+lock,
+		select true from artifacts where id = $1 and issue_key is null and `+access.DocumentClause("artifacts", "$2")+lock,
 		*owner.ArtifactID, refs.VisibilityArg(who)).Scan(new(bool)); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, false, errorf(http.StatusNotFound, "ARTIFACT_NOT_FOUND", "artifact not found")
