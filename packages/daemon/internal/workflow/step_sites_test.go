@@ -370,10 +370,14 @@ func TestTheEndNamesTheModelThatAnswered(t *testing.T) {
 // The report of a step is the handoff its role's completion named, whichever of that completion
 // and the review event lands first: an event that decides the round first ends the review before
 // the reviewer completes, and the completion then names its handoff on that ended run's record,
-// so one write of the run carries it. The review's handoff is the review's alone: the sign-off that
-// ends accepting passes the reviewer's row, and the record of acceptance names no report.
+// so one write of the run carries it. That write is the run's: its id, its role, its type, its
+// agent and its generation, for a review this release started and counted (count 1) as for one
+// that ran at the upgrade (count 0), whose end the store gave the count. The review's handoff is
+// the review's alone: the sign-off that ends accepting passes the reviewer's row, and the record
+// of acceptance names no report.
 func TestAReviewsReportIsItsCompletionsWhicheverLandsFirst(t *testing.T) {
 	const report = "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b"
+	reviewer := treeRoleToken(t, "LEGION-208", claim.RoleReviewer)
 	for _, tc := range []struct {
 		name          string
 		decision      string
@@ -385,63 +389,91 @@ func TestAReviewsReportIsItsCompletionsWhicheverLandsFirst(t *testing.T) {
 		{name: "approved on a clean head, then the reviewer completes", decision: "approved", want: phase.Accepting},
 		{name: "the reviewer completes, then an approval on a clean head", decision: "approved", completeFirst: true, want: phase.Accepting},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			pool := migratedPool(t)
-			seedReview(t, pool, "green")
-			apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
-			review := func() {
-				apply("review", intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, State: tc.decision, CommitID: headOne, Author: testReviewApp,
-					Body: reviewBody("the review", headOne)})
+		for _, counted := range []bool{true, false} {
+			name := tc.name + ", a review this release counted"
+			if !counted {
+				name = tc.name + ", a review running at the upgrade"
 			}
-			complete := func() {
-				if result := apply("reviewer-handoff", intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleReviewer,
-					Claim: "review-claim", Summary: "reviewed", HandoffRecord: report, HandoffVersion: 1}); result.Refusal != nil {
-					t.Fatalf("the reviewer's completion was refused: %+v", result.Refusal)
+			t.Run(name, func(t *testing.T) {
+				pool := migratedPool(t)
+				seedReview(t, pool, "green")
+				engine := testEngine(config.DesignGateRootIssues, nil)
+				var starts int64
+				if counted {
+					onStored(t, pool, engine, "LEGION-208", engine.StartStepRecord)
+					starts = 1
 				}
-			}
-			if tc.completeFirst {
-				complete()
-				review()
-			} else {
-				review()
-				complete()
-			}
-			if got := issueAt(t, pool, "LEGION-208"); got != tc.want {
-				t.Fatalf("LEGION-208 stands at %s, want %s", got, tc.want)
-			}
-			var reviewWrites []record.StepRecord
-			reports := map[string]int{}
-			for _, w := range stepWrites(t, pool, "LEGION-208") {
-				if w.Kind == "step" && w.Step == 4 {
+				apply := applyFacts(t, pool, engine)
+				review := func() {
+					apply("review", intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, State: tc.decision, CommitID: headOne, Author: testReviewApp,
+						Body: reviewBody("the review", headOne)})
+				}
+				complete := func() {
+					if result := apply("reviewer-handoff", intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleReviewer,
+						Claim: "review-claim", Summary: "reviewed", HandoffRecord: report, HandoffVersion: 1}); result.Refusal != nil {
+						t.Fatalf("the reviewer's completion was refused: %+v", result.Refusal)
+					}
+				}
+				if tc.completeFirst {
+					complete()
+					review()
+				} else {
+					review()
+					complete()
+				}
+				if got := issueAt(t, pool, "LEGION-208"); got != tc.want {
+					t.Fatalf("LEGION-208 stands at %s, want %s", got, tc.want)
+				}
+				run := StepID("LEGION-208", 1, record.StepPlace{Task: "default", Kind: "step", Place: 4}, starts)
+				var reviewWrites, ends, late []record.StepRecord
+				reports := map[string]int{}
+				for _, w := range stepWrites(t, pool, "LEGION-208") {
+					if w.Kind != "step" || w.Step != 4 {
+						continue
+					}
+					if w.ID != run || w.Task != "default" || w.Role != "reviewer" || w.Type != "review" || w.Agent != reviewer || w.Generation != 1 {
+						t.Fatalf("a write of the review = %+v, want the identity of its run: id %s, role reviewer, type review, agent %s, generation 1",
+							w, run, reviewer)
+					}
 					reviewWrites = append(reviewWrites, w)
+					switch {
+					case isEnd(w):
+						ends = append(ends, w)
+					case !isStart(w):
+						late = append(late, w)
+					}
 					if w.Report != nil {
 						reports[*w.Report]++
 					}
 				}
-			}
-			if len(reviewWrites) == 0 || !isEnd(reviewWrites[0]) || len(reports) != 1 || reports[report] != 1 {
-				t.Fatalf("the writes of the review = %+v with reports %v, want its end and one write naming %s", reviewWrites, reports, report)
-			}
-			for _, w := range reviewWrites {
-				if w.ID != reviewWrites[0].ID {
-					t.Fatalf("the review's writes name two runs, %s and %s: %+v", reviewWrites[0].ID, w.ID, reviewWrites)
+				if counted && (len(reviewWrites) == 0 || !isStart(reviewWrites[0])) {
+					t.Fatalf("the writes of the review = %+v, want its counted start first", reviewWrites)
 				}
-			}
-			if tc.want != phase.Accepting {
-				return
-			}
-			apply("sign-off", intake.SignOff{Issue: "LEGION-208"})
-			var ended bool
-			for _, w := range stepWrites(t, pool, "LEGION-208") {
-				if w.Kind == "step" && w.Step == 5 && w.Report != nil {
-					t.Fatalf("a write of the acceptance names report %s, want none: the reviewer's handoff is the review's", *w.Report)
+				if len(ends) != 1 || len(reports) != 1 || reports[report] != 1 {
+					t.Fatalf("the writes of the review = %+v with reports %v, want one end and one write naming %s", reviewWrites, reports, report)
 				}
-				ended = ended || w.Kind == "step" && w.Step == 5 && isEnd(w)
-			}
-			if !ended {
-				t.Fatal("the sign-off wrote no end of the acceptance")
-			}
-		})
+				// A completion that lands first names its handoff on the end; one that lands after
+				// the end writes the report alone, the one write that is neither start nor end.
+				if tc.completeFirst && (ends[0].Report == nil || len(late) != 0) || !tc.completeFirst && (ends[0].Report != nil || len(late) != 1) {
+					t.Fatalf("the review's end = %+v and its later writes %+v, want the report on the end when the completion landed first, else on one write after it",
+						ends[0], late)
+				}
+				if tc.want != phase.Accepting {
+					return
+				}
+				apply("sign-off", intake.SignOff{Issue: "LEGION-208"})
+				var ended bool
+				for _, w := range stepWrites(t, pool, "LEGION-208") {
+					if w.Kind == "step" && w.Step == 5 && w.Report != nil {
+						t.Fatalf("a write of the acceptance names report %s, want none: the reviewer's handoff is the review's", *w.Report)
+					}
+					ended = ended || w.Kind == "step" && w.Step == 5 && isEnd(w)
+				}
+				if !ended {
+					t.Fatal("the sign-off wrote no end of the acceptance")
+				}
+			})
+		}
 	}
 }
 

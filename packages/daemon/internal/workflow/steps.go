@@ -25,13 +25,22 @@ type StepAgent struct {
 	Model   string
 }
 
+// stepRole is the role a step's record names, the worker of the step as Dispatch reads it
+// ("acceptance" for accepting's architect), and stepType the type of its work ("" for a retro or a
+// merge). Each is a type of its own, so no call can give a step's role, its type and its agent,
+// three texts, in another order (stepWrite).
+type (
+	stepRole string
+	stepType string
+)
+
 // stepOf is the step a phase runs as a step of the task default: the place its count of starts is
 // kept under (its place in the task from 1 for a step, 0 for a retro or a merge, which no plan
 // names, so the kind tells those two apart), its role and its type ("" for a retro or a merge).
 // A phase that runs no step — admitted, awaiting a person, held, done — answers ok false; a held
 // issue's step is the step of the phase its hold is from (record.StandsAt), which the caller reads.
-func stepOf(p phase.Phase) (place record.StepPlace, role, typ string, ok bool) {
-	at := func(kind string, step int, role, typ string) (record.StepPlace, string, string, bool) {
+func stepOf(p phase.Phase) (place record.StepPlace, role stepRole, typ stepType, ok bool) {
+	at := func(kind string, step int, role stepRole, typ stepType) (record.StepPlace, stepRole, stepType, bool) {
 		return record.StepPlace{Task: defaultTask, Kind: kind, Place: step}, role, typ, true
 	}
 	switch p {
@@ -304,9 +313,9 @@ func stepClaim(issue record.Issue, key string, role claim.Role) (claim.Token, er
 
 // stepWrite is the identity of one run of a step of issue: the fields every write of its record
 // carries.
-func stepWrite(issue record.Issue, place record.StepPlace, role, typ, agent string, starts int64) record.StepRecord {
+func stepWrite(issue record.Issue, place record.StepPlace, role stepRole, typ stepType, agent string, starts int64) record.StepRecord {
 	return record.StepRecord{ID: StepID(issue.Key, issue.Generation, place, starts), Task: place.Task,
-		Step: place.Place, Kind: place.Kind, Role: role, Type: typ, Agent: agent, Generation: issue.Generation}
+		Step: place.Place, Kind: place.Kind, Role: string(role), Type: string(typ), Agent: agent, Generation: issue.Generation}
 }
 
 // readAgent is what the daemon reads of agent now (Config.StepAgent): nothing for no agent or no

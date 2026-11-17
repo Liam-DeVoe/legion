@@ -15,8 +15,8 @@ import (
 func TestStepOfIsTodaysSequence(t *testing.T) {
 	type step struct {
 		place record.StepPlace
-		role  string
-		typ   string
+		role  stepRole
+		typ   stepType
 	}
 	want := map[phase.Phase]step{
 		phase.Planning:     {record.StepPlace{Task: "default", Kind: "step", Place: 1}, "planner", "planning"},
