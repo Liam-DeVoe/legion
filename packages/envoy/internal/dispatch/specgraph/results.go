@@ -79,9 +79,9 @@ func (r Result) fault(procedure *Check) string {
 	case r.CheckDigest == "":
 		return "it carries no digest of the text of its check"
 	case r.Kind != ResultRun && r.Kind != ResultFailingExample:
-		return fmt.Sprintf("kind %q is not run or failing_example", r.Kind)
+		return fmt.Sprintf("kind %s is not run or failing_example", quoted(string(r.Kind)))
 	case r.Outcome != OutcomePass && r.Outcome != OutcomeFail && r.Outcome != OutcomeCouldNotRun:
-		return fmt.Sprintf("outcome %q is not pass, fail or could_not_run", r.Outcome)
+		return fmt.Sprintf("outcome %s is not pass, fail or could_not_run", quoted(string(r.Outcome)))
 	case len(named) > 1:
 		return fmt.Sprintf("it names the subjects %s; a result reads one subject", strings.Join(named, " and "))
 	case r.At.IsZero():
@@ -114,11 +114,11 @@ func namedSubjects(r Result) []string {
 	return named
 }
 
-// sameRecord is the first pair of results, i before j, of one check at one At and one Seq, which
-// the order of record (byRecord) cannot order, and false when there is none: of such a pass and
+// sameRecordFault is the refusal of the first pair of results of one check at one At and one Seq,
+// which the order of record (byRecord) cannot order, and "" when there is none: of such a pass and
 // such a failure the judge would read the one listed first as the later, so a failure could be
 // hidden. The reader of results.json and the entry of the derivation refuse such a pair.
-func sameRecord(results []Result) (i, j int, found bool) {
+func sameRecordFault(results []Result) string {
 	type record struct {
 		check     string
 		sec, nsec int64
@@ -128,16 +128,11 @@ func sameRecord(results []Result) (i, j int, found bool) {
 	for j, r := range results {
 		key := record{r.Check, r.At.Unix(), int64(r.At.Nanosecond()), r.Seq}
 		if i, seen := first[key]; seen {
-			return i, j, true
+			return fmt.Sprintf("result %d: it has the at and the seq of result %d, so neither of the two is the later", j+1, i+1)
 		}
 		first[key] = j
 	}
-	return 0, 0, false
-}
-
-// sameRecordFault is the refusal of the pair of results i and j that sameRecord gives.
-func sameRecordFault(i, j int) string {
-	return fmt.Sprintf("result %d: it has the at and the seq of result %d, so neither of the two is the later", j+1, i+1)
+	return ""
 }
 
 // JobRun is one run of a CI job at a commit, in one leg of its matrix ("" for none, the form of

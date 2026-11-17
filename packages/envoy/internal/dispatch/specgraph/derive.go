@@ -96,7 +96,7 @@ func Derive(in Input) (State, error) {
 //     suspect");
 //   - each result (Result.fault), with the current text of its check when it carries that text's
 //     digest, so it is judged by what the judge reads of it, and no two results of one check at one
-//     At and one Seq (sameRecord);
+//     At and one Seq (sameRecordFault);
 //   - a FixtureHistory, as ReadFixtureHistory refuses it (FixtureHistory.check): a commit with no
 //     files would be an empty tree, and two of them one tree;
 //   - each known tie, as NewTie refuses it: a known tie with no path covers no change;
@@ -112,22 +112,25 @@ func (in Input) check(current Tree) error {
 			return err
 		}
 	}
-	digests := make(map[string]string, len(current.Checks))
+	type text struct {
+		check  Check
+		digest string
+	}
+	texts := make(map[string]text, len(current.Checks))
 	for _, c := range current.Checks {
-		digests[c.ID] = c.Digest()
+		texts[c.ID] = text{c, c.Digest()}
 	}
 	for i, r := range in.Results {
 		var procedure *Check
-		if digest, held := digests[r.Check]; held && digest == r.CheckDigest {
-			c, _ := current.CheckByID(r.Check)
-			procedure = &c
+		if t, held := texts[r.Check]; held && t.digest == r.CheckDigest {
+			procedure = &t.check
 		}
 		if fault := r.fault(procedure); fault != "" {
 			return fmt.Errorf("specgraph: result %d: %s", i+1, fault)
 		}
 	}
-	if i, j, same := sameRecord(in.Results); same {
-		return errors.New("specgraph: " + sameRecordFault(i, j))
+	if fault := sameRecordFault(in.Results); fault != "" {
+		return errors.New("specgraph: " + fault)
 	}
 	if err := historyFault(in.History); err != nil {
 		return err
@@ -136,7 +139,7 @@ func (in Input) check(current Tree) error {
 		for _, check := range slices.Sorted(maps.Keys(in.Ties[commit])) {
 			if tie := in.Ties[commit][check]; tie.Known {
 				if err := tiePathsFault(tie.Paths); err != nil {
-					return fmt.Errorf("specgraph: ties: commit %q: check %q: %w", commit, check, err)
+					return fmt.Errorf("specgraph: ties: commit %s: check %s: %w", quoted(commit), quoted(check), err)
 				}
 			}
 		}

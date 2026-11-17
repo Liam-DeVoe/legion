@@ -26,7 +26,7 @@ func TestTheDerivationRefusesAnInputThatIsNotWhole(t *testing.T) {
 		change func(in *Input)  // a change of the Input; nil for none
 		want   string           // the error; "" for none
 	}{
-		{name: "control: the case as it is", change: func(in *Input) {}},
+		{name: "control: the case as it is"},
 		{name: "a result with no at", change: func(in *Input) { in.Results[0].At = time.Time{} },
 			want: "specgraph: result 1: it sets no at"},
 		{name: "a failing example with no at", change: func(in *Input) { in.Results[1].At = time.Time{} },

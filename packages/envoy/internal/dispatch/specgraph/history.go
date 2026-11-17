@@ -64,13 +64,13 @@ func (h FixtureHistory) check() error {
 			return errors.New("specgraph: history: a commit has no id")
 		}
 		if seen[c.ID] {
-			return fmt.Errorf("specgraph: history: commit %q is in the history two times", c.ID)
+			return fmt.Errorf("specgraph: history: commit %s is in the history two times", quoted(c.ID))
 		}
 		seen[c.ID] = true
 	}
 	for _, c := range h.Commits {
 		if c.Files == nil {
-			return fmt.Errorf("specgraph: history: commit %q: it sets no files", c.ID)
+			return fmt.Errorf("specgraph: history: commit %s: it sets no files", quoted(c.ID))
 		}
 	}
 	return nil
