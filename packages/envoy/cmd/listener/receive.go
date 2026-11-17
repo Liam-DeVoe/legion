@@ -625,7 +625,7 @@ func (r *durableReceiver) serve(ctx, termCtx context.Context, status leaseStatus
 				r.logger.Info("durable still push-bound by an earlier lease holder; receiving beside it", slog.String("consumer", r.consumer))
 			}
 		}
-		err := r.begin(info.Config.DeliverSubject, hold, status.Term)
+		err := r.begin(termCtx, info.Config.DeliverSubject, hold, status.Term)
 		if err == nil {
 			r.awaitedBinding = false
 			r.succeeded()
@@ -760,8 +760,11 @@ func (r *durableReceiver) awaitUnbound(ctx context.Context) error {
 //
 // The term elects this pod the relayer of its machine's session consumers (sessionRelays.setOwned,
 // cleared by durableReceiver.end): gaining the durable starts the relay of every such session the
-// cache holds for this machine, each restarted at its ack floor.
-func (r *durableReceiver) begin(subject string, hold time.Duration, term uint64) error {
+// cache holds for this machine, each restarted at its ack floor. termCtx is the term's context,
+// and the relays take the term only while it is live, so a term that ended after its prepare and
+// before this begin starts no relay. Each restart of a session's consumer is held to termCtx and
+// to the lease's loss deadline for term (lease.UntilLoss, sessionRelays.termContext).
+func (r *durableReceiver) begin(termCtx context.Context, subject string, hold time.Duration, term uint64) error {
 	t := &receiveTerm{
 		subject:   subject,
 		queue:     make(chan *nats.Msg, receiveQueueCapacity),
@@ -795,7 +798,11 @@ func (r *durableReceiver) begin(subject string, hold time.Duration, term uint64)
 	if flushed && r.lease != nil {
 		r.lease.SetReceiving(term)
 	}
-	r.relays.setOwned(true)
+	relaying := &relayTerm{ctx: termCtx}
+	if r.lease != nil {
+		relaying.untilLoss = func() time.Duration { return r.lease.UntilLoss(term) }
+	}
+	r.relays.setOwned(relaying)
 	go t.handle(r)
 	go t.keepAlive(r.timing.inProgressEvery)
 	return nil

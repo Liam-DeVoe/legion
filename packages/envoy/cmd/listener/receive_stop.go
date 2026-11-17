@@ -28,7 +28,7 @@ func (r *durableReceiver) end(ctx context.Context) {
 	// lease's signal reads this pod's connection alone again (durableReceiver.receiveUp).
 	r.subscribed.Store(nil)
 	r.mu.Unlock()
-	r.relays.setOwned(false)
+	r.relays.setOwned(nil)
 	switch {
 	case ctx.Err() == nil:
 		r.endLost(ctx, t)

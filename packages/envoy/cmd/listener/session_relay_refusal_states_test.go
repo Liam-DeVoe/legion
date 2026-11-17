@@ -136,7 +136,7 @@ func TestARefusalIsReportedOnceWhateverTheSessionsEntrySaid(t *testing.T) {
 			// The relay starts and must reach the later message, which is stored behind the
 			// refused one: the refusal is the fan-out's to report and nothing about it may stop
 			// the session's consumer.
-			rig.relays.setOwned(true)
+			rig.relays.setOwned(endlessTerm())
 			awaitRelayFrame(t, standIn, later, 20*time.Second)
 			reasons := deliveryExceptionsFor(t, exceptions, relayed, 2*time.Second)
 			if len(reasons) != 1 || reasons[0] != "delivery_failed" {

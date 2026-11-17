@@ -76,7 +76,7 @@ func TestASessionRelayRestartWaitsForTheMainConnectionRatherThanFailingOnIt(t *t
 	}
 	t.Cleanup(client.Close)
 	rig := newRelayRigUnownedOn(t, client, url, relayPauseFirst, relayPauseMax)
-	rig.relays.setOwned(true)
+	rig.relays.setOwned(endlessTerm())
 	sessionID := "ses_relay_main_reconnect_" + id.New()
 	agent := contracts.AgentSubject(sessionID)
 	standIn := startSessionStandIn(t, url, sessionID, answerDone)

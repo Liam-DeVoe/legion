@@ -29,6 +29,19 @@ body: |-
     A hard take-over is bounded as before at 15 s, and the slowest message measured that was
     published in the gap a receive-lost cut leaves between one pod's term and the next reached its
     session 1.257 s after the cut.
+    A pod whose receive term ended no longer restarts a session's consumer. Before this change,
+    two short windows let that pod and the next holder restart one consumer at the same time.
+    In the first window, the term ended after the pod prepared the durable and before it started
+    to receive. The pod started its relays all the same. In the second window, the lease ended
+    the term before the receive loop heard it. A session event in that window started a relay
+    that restarted the consumer. Now the relays take a term only while the term's context is
+    live. Each restart checks the term just before it sends `RestartAtFloor`. It sends that call
+    on a context that ends at the first of two events: the end of the term, or the lease's loss
+    deadline. The loss deadline is the end of the holder's validity, 4 s after the start of its
+    last renewal on production timing. A call that the pod sent before that end can still land.
+    The next holder bounds that call. After a release, the next holder waits `relayFormerSettle`
+    (1 s) from its acquisition before it restarts a consumer. After a take-over by force, it
+    takes the record at least `leaseMargin` (1 s) after the loss deadline of the pod before it.
 time: 2026-11-03T09:40:00.000000000Z
 custom:
     Issue: pr2404

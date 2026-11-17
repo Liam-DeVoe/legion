@@ -216,17 +216,23 @@ type sessionRelays struct {
 
 	ctx    context.Context
 	cancel context.CancelCauseFunc
-	owned  atomic.Bool
+	// owned is whether this task serves its machine's receive term (setOwned), for the readers
+	// that take no lock; it is written under eventsMu, with term.
+	owned atomic.Bool
 	// stopChange unregisters the session cache's change callback.
 	stopChange func()
 	// runs counts the relay goroutines; loopDone is closed once the loop has returned.
 	runs     sync.WaitGroup
 	loopDone chan struct{}
 
-	// eventsMu guards events and ownershipChanged, which the loop takes each time wake fires.
+	// eventsMu guards events and ownershipChanged, which the loop takes each time wake fires, and
+	// term, the receive term this task serves, nil while it serves none: setOwned changes it under
+	// eventsMu, and a restart reads it there just before it acts on a session's consumer
+	// (termContext).
 	eventsMu         sync.Mutex
 	events           map[string]relayNotice
 	ownershipChanged bool
+	term             *relayTerm
 	wake             chan struct{}
 
 	// relays is each session's current relay; only the loop reads or writes it.
@@ -247,6 +253,16 @@ type sessionRelays struct {
 	// frames maps the token of every frame awaiting done or nak to it.
 	frames    map[string]*relayFrame
 	nextToken atomic.Uint64
+}
+
+// relayTerm is the receive term a relay set serves (sessionRelays.setOwned), as the receive loop
+// hands it over when the term begins (durableReceiver.begin). ctx ends when the term does, which
+// the receive loop hears from the lease a moment after the lease itself ends the term. untilLoss
+// is how long is left before another pod may hold the machine's lease (lease.UntilLoss), and nil
+// for a listener without a lease, whose term only ctx ends.
+type relayTerm struct {
+	ctx       context.Context
+	untilLoss func() time.Duration
 }
 
 // relayCancelReason is why the loop cancelled a run. It is the cause the cancellation carries
@@ -520,7 +536,7 @@ func (f *relayFrame) envelope() contracts.Envelope {
 }
 
 // startSessionRelays starts the relay of delivery's session consumers and makes it delivery's
-// relay (sessionDelivery.relay). It relays nothing until setOwned(true).
+// relay (sessionDelivery.relay). It relays nothing until a receive term is set (setOwned).
 func startSessionRelays(delivery *sessionDelivery, cfg listenerDeliveryHandlerConfig) (*sessionRelays, error) {
 	inbox := nats.NewInbox()
 	m := &sessionRelays{
@@ -551,17 +567,36 @@ func startSessionRelays(delivery *sessionDelivery, cfg listenerDeliveryHandlerCo
 	return m, nil
 }
 
-// setOwned records whether this task serves its machine's receive term. Gaining it starts the
-// relay of every session the cache holds for this machine, each restarted at its ack floor; losing
-// it stops every relay.
-func (m *sessionRelays) setOwned(owned bool) {
-	if m == nil || m.owned.Swap(owned) == owned {
+// setOwned records which receive term of its machine this task serves: term, or none when term is
+// nil. Gaining one starts the relay of every session the cache holds for this machine, each
+// restarted at its ack floor; losing it stops every relay.
+//
+// A term whose context has already ended is not taken and changes nothing: it ended after the
+// receive loop prepared the durable and before its receiving began (durableReceiver.begin), so
+// this task relays nothing for it and starts no relay. The check is made under eventsMu, where the
+// term is set and where every restart reads it (termContext). A term that ends just after the
+// check is taken all the same: each restart under it finds its context ended and acts on no
+// consumer, and the term's end then stops every relay (durableReceiver.end).
+func (m *sessionRelays) setOwned(term *relayTerm) {
+	if m == nil {
+		return
+	}
+	m.eventsMu.Lock()
+	if term != nil && term.ctx.Err() != nil {
+		m.eventsMu.Unlock()
+		return
+	}
+	m.term = term
+	owned := term != nil
+	changed := m.owned.Swap(owned) != owned
+	if changed {
+		m.ownershipChanged = true
+	}
+	m.eventsMu.Unlock()
+	if !changed {
 		return
 	}
 	m.logger.Info("session relays follow the receive term", slog.Bool("relaying", owned))
-	m.eventsMu.Lock()
-	m.ownershipChanged = true
-	m.eventsMu.Unlock()
 	m.signal()
 }
 
@@ -881,6 +916,13 @@ func (m *sessionRelays) formerSettleWait() time.Duration {
 // its mark (sessionDelivery.mark) first, under the lock, and records it once it succeeds
 // (relayRun.restartedAt).
 //
+// Just before its RestartAtFloor the restart checks that this task's receive term is current, and
+// sends that call and the settle of its filter on a context that ends with the term or at the
+// lease's loss deadline, whichever is first (termContext): a term that ended, or a lease that
+// another pod may hold, leaves the consumer to the pod that takes the lease next. Such a restart
+// sends nothing more, starts no pull, and answers relayRetry, so the relay tries again after its
+// retry wait while the session is still this listener's, and the term's end stops it meanwhile.
+//
 // The first restart of a run the burst of gaining the receive term started has the session's
 // consumer as that burst listed it (relayRun.listed): when the restart would keep it unchanged
 // (bus.SessionConsumers.KeepListed), the relay takes no turn and sends no call before it pulls,
@@ -939,13 +981,28 @@ func (m *sessionRelays) restart(ctx context.Context, run *relayRun) (bus.Session
 		unlock()
 		return bus.SessionConsumerStart{}, nil, relayRetry
 	}
-	start, err := m.delivery.consumers.RestartAtFloor(callCtx, sessionID, filter)
+	restartCtx, stopRestart, current := m.termContext(callCtx)
+	if !current {
+		unlock()
+		m.logger.Info("session relay did not restart the session's consumer: this pod's receive term is over, or another pod may hold the machine's lease; it tries again after its retry wait while the session is still this listener's",
+			slog.String("session_id", sessionID))
+		return bus.SessionConsumerStart{}, nil, relayRetry
+	}
+	start, err := m.delivery.consumers.RestartAtFloor(restartCtx, sessionID, filter)
+	if err != nil && restartCtx.Err() != nil && callCtx.Err() == nil {
+		stopRestart()
+		unlock()
+		m.logger.Info("session relay restart cut off: this pod's receive term ended, or another pod may hold the machine's lease, before the restart was over; a call it had already sent can still land, and it tries again after its retry wait while the session is still this listener's",
+			slog.String("session_id", sessionID), slog.String("error", err.Error()))
+		return bus.SessionConsumerStart{}, nil, relayRetry
+	}
 	// A restart the server answered with a refusal left no filter of this row on the consumer; a
 	// restart whose answer did not come back may have created it on that filter, so it is settled
 	// against the bucket's newest row like one that answered (consumerCallAnswered).
 	if err == nil || !consumerCallAnswered(err) {
-		m.settleFilter(callCtx, sessionID, revision)
+		m.settleFilter(restartCtx, sessionID, revision)
 	}
+	stopRestart()
 	unlock()
 	if err == nil {
 		run.restartedAt.Store(at)
@@ -958,6 +1015,53 @@ func (m *sessionRelays) restart(ctx context.Context, run *relayRun) (bus.Session
 		}
 	}
 	return m.restartFailed(ctx, sessionID, err)
+}
+
+// termContext is ctx bounded by the receive term this task serves (setOwned), for a restart of a
+// session's consumer (restart): it ends when ctx does, when the term's context does, or at the
+// lease's loss deadline (lease.UntilLoss), whichever comes first, so no restart acts once another
+// pod may hold the lease, as each step of a dispatch intake's take-over ends at its hold's loss
+// deadline (heldDurable.retryHeld). The deadline is the lease's at the check, 3 to 4 s ahead on a
+// holder whose renewals land, so it can also come before the restart's call timeout
+// (sessionConsumerCallTimeout). It answers false, and no context, when no term is current: this
+// task serves none, the term's context has ended, or the loss deadline has passed. The lease ends
+// a term (stepDown, a release, a lapse, a give-up) a moment before the receive loop hears it and
+// stops this task's relays (durableReceiver.end), and a session event in that moment starts a
+// relay all the same (apply), which this check stops at its restart. The caller calls the
+// returned stop once the restart is over.
+//
+// What this leaves is a call the restart had already sent when its context ended: the server can
+// still apply it, since the end of a context stops only what is not sent yet. The pod that takes
+// the lease next is what bounds it, by when it may restart the same consumer. A pod that takes a
+// record this pod released (a graceful stop, a give-up, a receive connection lost) finds this
+// boot released in the record's former_boots, and waits relayFormerSettle (1 s) from its own
+// term's start before any of its relays restarts a session's consumer (lease.FormerSettleWait,
+// relay). A pod that takes the record over by force waits for nothing, but it takes the record no
+// earlier than a full ttl after this pod's last landed renewal, which is leaseMargin (1 s) after
+// the loss deadline that cut this restart (lease.poll), while the two pods' clock rates differ by
+// less than 20 %. So a call still in flight lands within about a second of the cut, or races the
+// next holder's restart: no fence holds it, since a consumer call carries no term.
+func (m *sessionRelays) termContext(ctx context.Context) (context.Context, context.CancelFunc, bool) {
+	m.eventsMu.Lock()
+	term := m.term
+	m.eventsMu.Unlock()
+	if term == nil || term.ctx.Err() != nil {
+		return nil, nil, false
+	}
+	var bounded context.Context
+	var cancel context.CancelFunc
+	if term.untilLoss == nil {
+		bounded, cancel = context.WithCancel(ctx)
+	} else if left := term.untilLoss(); left > 0 {
+		bounded, cancel = context.WithTimeout(ctx, left)
+	} else {
+		return nil, nil, false
+	}
+	unwatch := context.AfterFunc(term.ctx, cancel)
+	return bounded, func() {
+		unwatch()
+		cancel()
+	}, true
 }
 
 // storedFilter is the filter of sessionID's consumer for its stored interest topics, with the KV

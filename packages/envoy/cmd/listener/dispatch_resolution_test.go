@@ -159,7 +159,7 @@ func startListenerDelivery(t *testing.T, d *listenerDeps) {
 	})
 	// This listener serves the machine's receive term, which is what makes it relay the sessions
 	// it registered (sessionRelays.setOwned).
-	relays.setOwned(true)
+	relays.setOwned(endlessTerm())
 	d.consumers = delivery
 	rig := startReceiverRig(t, d.client.Conn.ConnectedUrl(), machineID, "pod-a", jetStreamDeliveryHandler(config), testReceiveTiming(), testLeaseTiming())
 	rig.awaitState(t, receiveActive, 10*time.Second)

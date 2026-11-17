@@ -295,6 +295,24 @@ func (l *lease) holdingLocked() bool {
 	return l.held && l.now().Before(l.validUntil)
 }
 
+// UntilLoss is how long is left, on this pod's monotonic clock, before another pod may hold the
+// lease while term is this process's hold: the time to the term's loss deadline, the end of its
+// validity (validUntil: the start of its last landed renewal + ttl - margin). No standby takes the
+// record before it, since a standby takes an unreleased record only once its revision has stood
+// unchanged for a full ttl on its own clock (poll). It is zero once term is no longer held:
+// another pod took the record (stepDown), this process released it (letGo, releaseReceiveLost),
+// its validity ran out (a lapse), or a later term began. A relay bounds each restart of a
+// session's consumer by it (sessionRelays.termContext), as a dispatch intake bounds each step of
+// its take-over by its hold's loss deadline (heldDurable.retryHeld).
+func (l *lease) UntilLoss(term uint64) time.Duration {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if !l.held || l.term != term {
+		return 0
+	}
+	return max(0, l.validUntil.Sub(l.now()))
+}
+
 // Status reads the lease now.
 func (l *lease) Status() leaseStatus {
 	l.mu.Lock()

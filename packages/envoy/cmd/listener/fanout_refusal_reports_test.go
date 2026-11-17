@@ -307,7 +307,7 @@ func TestTheRelaySendsAFollowedTopicTheDurablePathAlsoReads(t *testing.T) {
 		t.Fatalf("the fan-out recorded the message for %s, which it never sent it", relayed)
 	}
 
-	rig.relays.setOwned(true)
+	rig.relays.setOwned(endlessTerm())
 	requireFrames(t, standIn.collect(t, 1, 15*time.Second), item)
 	standIn.none(t, time.Second)
 }
@@ -375,7 +375,7 @@ func TestTheFanoutSkipsAMessageOnAFollowedTopicAsAnEchoOfTheSessionThatPublished
 
 	// The message the fan-out handed to nobody is still the other session's to receive: the
 	// relay of its own consumer is what sends it.
-	rig.relays.setOwned(true)
+	rig.relays.setOwned(endlessTerm())
 	requireFrames(t, standIn.collect(t, 1, 15*time.Second), item)
 	standIn.none(t, time.Second)
 }
