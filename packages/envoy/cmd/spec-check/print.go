@@ -49,6 +49,15 @@ func runPrint(args []string, stdout, stderr io.Writer) int {
 	if !ok {
 		return 2
 	}
+	return printApproved(stdout, stderr, path, a, named, *dirFlag, notes.MaxFileSize)
+}
+
+// printApproved is print once its arguments are read: it writes the current approved document of
+// each node named, from the approved spec a that it read from path, into the spec files of dirArg,
+// with limit as the bound of one file, and answers print's exit status. print passes
+// notes.MaxFileSize; the tests of print pass a smaller bound, so each case of the rule fits in a
+// small directory.
+func printApproved(stdout, stderr io.Writer, path string, a specgraph.Approved, named []string, dirArg string, limit int64) int {
 	refused := false
 	for _, id := range named {
 		switch n, held := a.Nodes[id]; {
@@ -63,7 +72,7 @@ func runPrint(args []string, stdout, stderr io.Writer) int {
 	if refused {
 		return 2
 	}
-	dir, ok := absolute(stderr, *dirFlag)
+	dir, ok := absolute(stderr, dirArg)
 	if !ok {
 		return 2
 	}
@@ -77,7 +86,7 @@ func runPrint(args []string, stdout, stderr io.Writer) int {
 		return cannotJudge(stderr, dir, err)
 	}
 
-	after, wrote, refusals := planPrint(dir, files, a, named, notes.MaxFileSize)
+	after, wrote, refusals := planPrint(dir, files, a, named, limit)
 	if len(refusals) > 0 {
 		for _, line := range refusals {
 			say(stderr, "%s", line)

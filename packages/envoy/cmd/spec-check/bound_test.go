@@ -2,7 +2,9 @@ package main
 
 import (
 	"bytes"
+	"maps"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -21,6 +23,7 @@ func TestTheBoundRefusesTheTreeBeforeAnyFileIsParsed(t *testing.T) {
 	writeFile(t, big, bytes.Repeat([]byte("a"), notes.MaxFileSize+1))
 	writeFile(t, filepath.Join(dir, "unclosed.yaml"), []byte("---\ntype: [\n"))
 	refusal := "spec-check: " + notes.CheckSize(big, notes.MaxFileSize+1).Error() + "\n"
+	before := readDir(t, dir)
 	for _, row := range []struct {
 		args []string
 		want result
@@ -41,5 +44,8 @@ func TestTheBoundRefusesTheTreeBeforeAnyFileIsParsed(t *testing.T) {
 			t.Errorf("%q: exit %d, stdout %q, stderr %q\nwant exit %d, stdout %q, stderr %q",
 				row.args, got.code, got.stdout, got.stderr, row.want.code, row.want.stdout, row.want.stderr)
 		}
+	}
+	if after := readDir(t, dir); !maps.EqualFunc(after, before, bytes.Equal) {
+		t.Errorf("after the refusals the directory holds %v, want only big.yaml and unclosed.yaml as they were", slices.Sorted(maps.Keys(after)))
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"math/rand/v2"
 	"os"
@@ -288,17 +289,18 @@ func TestPrintRefusesANodeHeldTwoTimes(t *testing.T) {
 // The invariant of print: after each run, each file is within the bound, each node stands in
 // exactly one file, no file is empty, the judgment of tree finds no problem, each check that the
 // run wrote is in the block of its statement, and a second run changes no byte; a refused run
-// writes nothing. The test runs the printer over random approved sets: printSeeds seeds, each up
-// to 40 runs of 1 to 5 nodes on one directory, with a new approved version of a node between runs,
-// and a bound of 4,096 bytes. It replays each run with Layout.Place to name the answer that each
-// node got, and requires each answer that print can give to occur: W (written at home), M (moved
-// to the next file of its series) and T (refused, its block over the bound) for each kind of node,
-// new and replaced, and S and P (refused, its statement or its parent not in the files).
+// writes nothing. The test runs print's own path after its arguments (printApproved, with a bound
+// of 4,096 bytes) over random approved sets: printSeeds seeds, each up to 40 runs of 1 to 5 nodes
+// on one directory, with a new approved version of a node between runs. It replays each run with
+// Layout.Place to name the answer that each node got, and requires each answer that print can give
+// to occur: W (written at home), M (moved to the next file of its series) and T (refused, its
+// block over the bound) for each kind of node, new and replaced, and S and P (refused, its
+// statement or its parent not in the files).
 //
 // The proof of the rule itself is TestPlace, a row for each cell of its table; this test proves
-// that print follows the rule through the real command. Over the seeds 1 to 2,000, the last answer
-// to occur first occurs at seed 92 (term replaced T), so the default is five times that, 460 seeds.
-// SPEC_CHECK_PRINT_SEEDS raises the count, for example to 2000 for a longer run.
+// that print follows the rule. Over the seeds 1 to 2,000, the last answer to occur first occurs at
+// seed 92 (term replaced T), so the default is five times that, 460 seeds. SPEC_CHECK_PRINT_SEEDS
+// raises the count, for example to 2000 for a longer run.
 func TestPrintKeepsTheInvariant(t *testing.T) {
 	t.Parallel()
 	const limit = 4096
@@ -385,20 +387,22 @@ func printSeed(t *testing.T, seed uint64, limit int64) map[string]bool {
 				break
 			}
 		}
-		after, _, refusals := planPrint(dir, files, a, ids, limit)
-		if len(refusals) > 0 {
+		var stderr strings.Builder
+		switch code := printApproved(io.Discard, &stderr, "approved.json", a, ids, dir, limit); code {
+		case 2:
 			if got := readDir(t, dir); !maps.EqualFunc(got, files, bytes.Equal) {
-				t.Fatalf("seed %d: a refused run changed the files", seed)
+				t.Fatalf("seed %d: a refused run changed the files: %s", seed, stderr.String())
 			}
 			continue
-		}
-		if err := writeFiles(dir, files, after); err != nil {
-			t.Fatal(err)
+		case 0:
+		default:
+			t.Fatalf("seed %d: print exit %d: %s", seed, code, stderr.String())
 		}
 		holdsTheInvariant(t, seed, dir, limit, printRun(current, ids))
-		again, _, refusals := planPrint(dir, readDir(t, dir), a, ids, limit)
-		if len(refusals) > 0 || !maps.EqualFunc(again, readDir(t, dir), bytes.Equal) {
-			t.Fatalf("seed %d: a second run with the same arguments changes the files: %q", seed, refusals)
+		written := readDir(t, dir)
+		stderr.Reset()
+		if code := printApproved(io.Discard, &stderr, "approved.json", a, ids, dir, limit); code != 0 || !maps.EqualFunc(readDir(t, dir), written, bytes.Equal) {
+			t.Fatalf("seed %d: a second run with the same arguments exits %d or changes the files: %s", seed, code, stderr.String())
 		}
 	}
 	return answers
