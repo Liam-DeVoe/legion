@@ -1898,6 +1898,32 @@ test("q says there is no next question only once the reads the tree is built fro
   await waitFor(() => expect(rowReport(view.container)).toBe(KEY_REPORTS.no_next_question));
 });
 
+test("w says no decision is behind the row only once the reads the tree is built from are held", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const root = node({
+    children: [
+      node({ id: "comment-1", text: "The first words.", type: "comment" }),
+      node({ id: "comment-2", text: "The second words.", type: "comment" }),
+    ],
+    id: KEY,
+    type: "issue",
+  });
+  const view = renderTree(root, { readsHeld: false });
+  await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
+  // `user.keyboard` answers once the render its keys made has been drawn.
+  await user.keyboard("w");
+  expect(focusedRow(view.container), "w moved with no decision to go to").toBe("comment-1");
+  expect(
+    rowReport(view.container),
+    "w said no decision is behind the row before the tree's reads held an answer"
+  ).toBeUndefined();
+
+  view.holdReads();
+  await user.keyboard("w");
+  await waitFor(() => expect(rowReport(view.container)).toBe(KEY_REPORTS.no_decision));
+});
+
 // The reviewer's finding on the Contents pane's asks: an ask is acted on once, whatever draws
 // the tree again in between - a view drawn in its place and turned off mounts a new tree with
 // the page's last ask still in hand (`outline-request.tsx`), and that ask must not move the
