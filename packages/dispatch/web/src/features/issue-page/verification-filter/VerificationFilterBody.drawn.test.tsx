@@ -1,6 +1,6 @@
 import { beforeAll, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, type RenderResult, render, waitFor } from "@testing-library/react";
+import { act, type RenderResult, render, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactElement } from "react";
 import { MemoryRouter } from "react-router-dom";
@@ -13,6 +13,7 @@ import { appKeymap } from "../../shell/keymap";
 import type { TreeNode } from "../issue-tree";
 import { NoTooltips } from "../NoTooltips";
 import {
+  ANSWER_LINES,
   BLOCK_ATTRIBUTE_LABELS,
   CHECK_WHEN_WORDS,
   type CheckState,
@@ -30,7 +31,11 @@ import {
 } from "../page-words";
 import { presetView } from "../presets";
 import { shortCommit } from "./statement-state";
-import { VerificationFilterBody } from "./VerificationFilterBody";
+import {
+  VerificationFilterBody,
+  type VerificationRead,
+  type VerificationReads,
+} from "./VerificationFilterBody";
 import {
   COMMIT,
   check,
@@ -62,12 +67,13 @@ beforeAll(async () => {
 });
 
 /** What a case gives the body beside its statements and its checks: the words the reader typed
- *  (`query`), which the view is filtered by (`presetView`), the nodes an address named, and
- *  `whole` and `answered` where a case gives them. */
+ *  (`query`), which the view is filtered by (`presetView`), the nodes an address named, `whole`
+ *  where a case gives it, and how the three reads stand (`reads`), which is all of them
+ *  answered where a case gives nothing else. */
 interface DrawOptions {
-  readonly answered?: boolean;
   readonly named?: readonly string[];
   readonly query?: string;
+  readonly reads?: VerificationReads;
   readonly whole?: TreeNode;
 }
 
@@ -87,7 +93,7 @@ function testClient(): QueryClient {
 function bodyOf(
   statements: readonly TreeNode[],
   checks: readonly CheckBlock[],
-  { answered, named = [], query = "", whole }: DrawOptions = {},
+  { named = [], query = "", reads = { state: "answered" }, whole }: DrawOptions = {},
   client: QueryClient = testClient()
 ): ReactElement {
   const issue = node({ children: statements, id: ISSUE_KEY, text: "An issue", type: "issue" });
@@ -97,10 +103,10 @@ function bodyOf(
       <MemoryRouter>
         <NoTooltips>
           <VerificationFilterBody
-            {...(answered === undefined ? {} : { answered })}
             checks={checks}
             context={view.context}
             emptyLine={query === "" ? EMPTY_STATE_LINES.verification : EMPTY_STATE_LINES.no_match}
+            reads={reads}
             view={view.root}
             {...(whole === undefined ? {} : { whole })}
           />
@@ -562,7 +568,7 @@ test("a statement that a child's check covers draws one line of the checks drawn
   } finally {
     none.unmount();
   }
-  const waiting = drawBody([partly, childOnly], [own], { answered: false });
+  const waiting = drawBody([partly, childOnly], [own], { reads: { state: "waiting" } });
   try {
     expect(linesOf(waiting)).toEqual([]);
   } finally {
@@ -1101,6 +1107,106 @@ test("a query that matches nothing keeps the summary of the whole issue and says
   }
 });
 
+// The reviewer's finding on pull request #4221 at the check column, and part V's departure 10: a
+// query whose words a result holds, and neither its check's nor its statement's, keeps the result
+// alone, which the filter lifts under the statement with the check as its parent line
+// (`presets.ts`). The body draws that result with its check, read from the issue's reading, under
+// the statement and as a row like any other, so what the query kept is on screen. Where it is an
+// earlier result of its check, the check's earlier results are drawn open: from the row's first
+// drawing, and when the query comes to keep it while the row is already drawn.
+test("a query that keeps only a result draws it with its check under its statement", () => {
+  const failure = "Timed out waiting for the zebra column.";
+  /** Each card the body draws: its statement, and each check under it with its row's id and
+   *  the words of each result it draws, in order. */
+  const cardsOf = (drawn: RenderResult) =>
+    [...drawn.container.querySelectorAll("[data-verification-card]")].map((card) => [
+      card.getAttribute("data-node-id"),
+      [...card.querySelectorAll("[data-verification-check]")].map((row) => [
+        row.getAttribute("data-node-id"),
+        row.getAttribute("data-verification-row"),
+        [...row.querySelectorAll("[data-verification-result] [data-node-words]")].map(
+          (words) => words.textContent
+        ),
+      ]),
+    ]);
+  /** The id of each row of the tree, in the order they stand. */
+  const rowsOf = (drawn: RenderResult) =>
+    [...drawn.container.querySelectorAll("[data-node-row]")].map((row) =>
+      row.getAttribute("data-verification-row")
+    );
+
+  // The query keeps the check's latest result.
+  const latest = check({
+    block_id: "c-one",
+    results: [result({ check_block_id: "c-one", id: "result-latest", observed: failure })],
+  });
+  const statement = statementNode("r1", "The page draws it.", [checkNode(latest)]);
+  const latestRow = `${statement.id} ${checkNode(latest).id}`;
+  const kept = drawBody([statement], [latest], {
+    query: "zebra",
+    whole: verificationView([statement]),
+  });
+  try {
+    expect(cardsOf(kept)).toEqual([[statement.id, [[checkNode(latest).id, latestRow, [failure]]]]]);
+    expect(rowsOf(kept)).toEqual([ISSUE_KEY, statement.id, latestRow]);
+    expect(kept.container.querySelectorAll("[data-verification-loose]")).toHaveLength(0);
+    expect(kept.container.querySelectorAll("[data-verification-none]")).toHaveLength(0);
+  } finally {
+    kept.unmount();
+  }
+
+  // The query keeps an earlier result: the check draws its latest, and its earlier results open.
+  const twice = check({
+    block_id: "c-two",
+    results: [
+      result({
+        check_block_id: "c-two",
+        created_at: "2026-11-13T09:00:00Z",
+        id: "result-earlier",
+        observed: failure,
+      }),
+      result({ check_block_id: "c-two", created_at: "2026-11-14T09:00:00Z", id: "result-newest" }),
+    ],
+  });
+  const served = statementNode("r2", "The page draws it again.", [checkNode(twice)]);
+  const twiceRow = `${served.id} ${checkNode(twice).id}`;
+  const drawnEarlier = [[served.id, [[checkNode(twice).id, twiceRow, ["41 passed", failure]]]]];
+  const earlier = drawBody([served], [twice], {
+    query: "zebra",
+    whole: verificationView([served]),
+  });
+  try {
+    expect(cardsOf(earlier)).toEqual(drawnEarlier);
+    expect(
+      earlier.container.querySelector("[data-verification-earlier]")?.getAttribute("aria-expanded")
+    ).toBe("true");
+  } finally {
+    earlier.unmount();
+  }
+
+  // The reader types the query while the check's row is drawn: the row stays the same element,
+  // and the query that comes to keep its earlier result alone opens its earlier results.
+  const client = testClient();
+  const typing = render(bodyOf([served], [twice], {}, client));
+  try {
+    const row = typing.container.querySelector("[data-verification-check]");
+    const earlierOf = () =>
+      row?.querySelector("[data-verification-earlier]")?.getAttribute("aria-expanded");
+    expect(earlierOf()).toBe("false");
+    expect(cardsOf(typing)).toEqual([
+      [served.id, [[checkNode(twice).id, twiceRow, ["41 passed"]]]],
+    ]);
+    typing.rerender(
+      bodyOf([served], [twice], { query: "zebra", whole: verificationView([served]) }, client)
+    );
+    expect(typing.container.querySelector("[data-verification-check]")).toBe(row);
+    expect(earlierOf()).toBe("true");
+    expect(cardsOf(typing)).toEqual(drawnEarlier);
+  } finally {
+    typing.unmount();
+  }
+});
+
 // R19, R20: a check whose `serves` names no statement is a row of the filter, and so is a node
 // an address named, which outranks the filter. The body draws both, so nothing the filter kept
 // is lost.
@@ -1137,7 +1243,8 @@ test("a check that serves no statement, and a node an address named, are drawn",
 // Part V's R8 and R1: the view keeps one tree, which holds everything it draws. Its first row
 // is the issue's own, holding the summary and the chips, and it is the tree's one tab stop, so
 // `t k` leaves the view's top on screen and the next Tab on the chip All. An issue with nothing
-// to draw draws no row, and until the reads have answered the tree holds nothing at all.
+// to draw draws no row, and while a read is out the tree holds nothing at all and the body
+// nothing but the tree.
 test("the view's tree holds the issue's row first, and only it is a tab stop", () => {
   const met = passing("c-one");
   const loose = passing("c-loose");
@@ -1215,7 +1322,7 @@ test("the view's tree holds the issue's row first, and only it is a tab stop", (
   }
 
   const waiting = drawBody([statementNode("r1", "The page draws it.", [checkNode(met)])], [met], {
-    answered: false,
+    reads: { state: "waiting" },
   });
   try {
     const tree = waiting.container.querySelector('[data-verification-body] > [role="tree"]');
@@ -1223,8 +1330,105 @@ test("the view's tree holds the issue's row first, and only it is a tab stop", (
     expect(tree?.childElementCount).toBe(0);
     expect(textsOf(waiting, "[data-verification-body]")).toEqual([""]);
     expect(waiting.container.querySelectorAll("[data-node-row]")).toHaveLength(0);
+    expect(waiting.container.querySelector("[data-verification-body]")?.childElementCount).toBe(1);
+    expect(waiting.container.querySelectorAll("[data-verification-unreadable]")).toHaveLength(0);
   } finally {
     waiting.unmount();
+  }
+});
+
+// The architect's decisions 117 and 126, and the reviewer's finding on pull request #4221 at the
+// slot's reads: a read refused before it first answers holds nothing to draw from, so the body
+// says so over its tree, one line for each such read in the page's words for it with a Retry
+// that asks that read alone again. It draws no row, since a statement no blocks read placed its
+// check under, or a check no results read says how it stands, would say what is not so, and it
+// keeps its tree with nothing in it, as while a read is out (part V's R8). No line stands inside
+// the tree, whose own structure an alert would break.
+test("a read that fails before it first answers says so with a Retry, for each of the view's three reads", async () => {
+  const user = userEvent.setup();
+  const met = passing("c-one");
+  const statements = [statementNode("r1", "The page draws it.", [checkNode(met)])];
+  // The words decision 126 names: the Spec view's two, and the checks for the blocks read.
+  const words: Readonly<Record<VerificationRead, string>> = {
+    blocks: ANSWER_LINES.checks_unreadable,
+    coverage: ANSWER_LINES.statements_unreadable,
+    results: ANSWER_LINES.results_unreadable,
+  };
+  expect([words.coverage, words.results, words.blocks]).toEqual([
+    "Could not load the statements.",
+    "Could not load the results.",
+    "Could not load the checks.",
+  ]);
+  /** Each failed-read line the body draws, in order: the read it names, its words and the name
+   *  of each of its buttons. */
+  const linesOf = (drawn: RenderResult) =>
+    [...drawn.container.querySelectorAll<HTMLElement>("[data-verification-unreadable]")].map(
+      (line) => [
+        line.getAttribute("data-verification-unreadable"),
+        within(line).getByRole("alert").querySelector("p")?.textContent,
+        within(line)
+          .getAllByRole("button")
+          .map((button) => button.textContent),
+      ]
+    );
+  /** What the body holds beside its lines: how many cards, rows and trees it draws, and its last
+   *  element, under every line, which is its one tree: its role, how many children it holds,
+   *  and whether a line stands inside it. */
+  const treeOf = (drawn: RenderResult) => {
+    const last = drawn.container.querySelector("[data-verification-body]")?.lastElementChild;
+    return {
+      cards: drawn.container.querySelectorAll("[data-verification-card]").length,
+      children: last?.childElementCount,
+      lineInside: last?.querySelector('[role="alert"]') !== null,
+      role: last?.getAttribute("role"),
+      rows: drawn.container.querySelectorAll("[data-node-row]").length,
+      trees: drawn.container.querySelectorAll('[role="tree"]').length,
+    };
+  };
+  const emptyTree = { cards: 0, children: 0, lineInside: false, role: "tree", rows: 0, trees: 1 };
+
+  for (const read of ["coverage", "results", "blocks"] as const) {
+    const retried: VerificationRead[] = [];
+    const view = drawBody(statements, [met], {
+      reads: { failed: [read], onRetry: (again) => retried.push(again), state: "failed" },
+    });
+    try {
+      expect(linesOf(view)).toEqual([[read, words[read], ["Retry"]]]);
+      expect(treeOf(view)).toEqual(emptyTree);
+      await user.click(within(view.container).getByRole("button", { name: "Retry" }));
+      expect(retried).toEqual([read]);
+    } finally {
+      view.unmount();
+    }
+  }
+
+  // All three failed: three lines in the order coverage, results, blocks, whatever order the
+  // reads are given in, and each Retry asks its own read and no other.
+  const retried: VerificationRead[] = [];
+  const all = drawBody(statements, [met], {
+    reads: {
+      failed: ["blocks", "coverage", "results"],
+      onRetry: (again) => retried.push(again),
+      state: "failed",
+    },
+  });
+  try {
+    expect(linesOf(all)).toEqual([
+      ["coverage", words.coverage, ["Retry"]],
+      ["results", words.results, ["Retry"]],
+      ["blocks", words.blocks, ["Retry"]],
+    ]);
+    expect(treeOf(all)).toEqual(emptyTree);
+    // Each line's own Retry, pressed in another order than the lines stand in.
+    const [coverage, results, blocks] = [
+      ...all.container.querySelectorAll<HTMLElement>("[data-verification-unreadable]"),
+    ].map((line) => within(line).getByRole("button", { name: "Retry" }));
+    await user.click(blocks);
+    await user.click(coverage);
+    await user.click(results);
+    expect(retried).toEqual(["blocks", "coverage", "results"]);
+  } finally {
+    all.unmount();
   }
 });
 
@@ -1793,6 +1997,67 @@ test("the view's tree answers the outline's keys, and a check's facts open from 
     }
   } finally {
     stop();
+    view.unmount();
+  }
+});
+
+// Part V's R8, and the reviewer's finding on pull request #4221 at the rows' ids: each row of
+// the tree carries its own id (`data-verification-row`), which the tree's keys and presses read
+// from the row itself, so no id is paired with a row by where it stands among the others. The
+// ids are the tree's rows in reading order, the issue's first and each check under a statement
+// by that placement of it; and a key that moves onto a check that serves no statement, or onto a
+// node an address named, gives the tab stop to that row's own element, where Enter presses that
+// check and no other.
+test("each row of the view's tree carries its own id, and a key gives the tab stop to the row it moves onto", async () => {
+  const user = userEvent.setup();
+  const one = passing("c-one");
+  const loose = passing("c-loose");
+  const served = statementNode("r1", "The page draws it.", [checkNode(one)]);
+  const unserved = statementNode("r2", "Nothing serves this one.", []);
+  const named = node({ id: "comment-1", text: "A comment an address named.", type: "comment" });
+  const view = drawBody([served, unserved, checkNode(loose), named], [one, loose], {
+    named: [named.id],
+  });
+  try {
+    const rows = [...view.container.querySelectorAll<HTMLElement>("[data-node-row]")];
+    expect(rows.map((row) => row.getAttribute("data-verification-row"))).toEqual([
+      ISSUE_KEY,
+      served.id,
+      `${served.id} ${checkNode(one).id}`,
+      unserved.id,
+      checkNode(loose).id,
+      named.id,
+    ]);
+    expect(view.container.querySelectorAll('[role="treeitem"]')).toHaveLength(rows.length);
+    // The loose check's own element, and the named node's.
+    expect(rows[4]?.hasAttribute("data-verification-loose")).toBe(true);
+    expect(rows[5]?.hasAttribute("data-verification-other")).toBe(true);
+    const names = ["issue", "r1", "c-one", "r2", "c-loose", "comment"];
+    /** The row the focus is on, and each row whose own element holds the tree's tab stop, by
+     *  their names. */
+    const standing = () => ({
+      focus: names[rows.indexOf(document.activeElement as HTMLElement)],
+      stops: rows.flatMap((row, at) => (row.getAttribute("tabindex") === "0" ? [names[at]] : [])),
+    });
+
+    act(() => rows[0]?.focus());
+    await user.keyboard("jjj");
+    expect(standing()).toEqual({ focus: "r2", stops: ["r2"] });
+    await user.keyboard("j");
+    expect(standing()).toEqual({ focus: "c-loose", stops: ["c-loose"] });
+    await user.keyboard("j");
+    expect(standing()).toEqual({ focus: "comment", stops: ["comment"] });
+    await user.keyboard("k");
+    expect(standing()).toEqual({ focus: "c-loose", stops: ["c-loose"] });
+    // On the loose check's row the focus drew its facts; Enter shuts them, on that row alone.
+    const opened = () =>
+      [...view.container.querySelectorAll("[data-verification-check]")].map((row) =>
+        row.getAttribute("aria-expanded")
+      );
+    expect(opened()).toEqual(["false", "true"]);
+    await user.keyboard("{Enter}");
+    expect(opened()).toEqual(["false", "false"]);
+  } finally {
     view.unmount();
   }
 });

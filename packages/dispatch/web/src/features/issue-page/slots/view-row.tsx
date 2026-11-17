@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { type ReactNode, useMemo } from "react";
+import { type ReactNode, type RefObject, useLayoutEffect, useMemo, useRef } from "react";
 import { useLocation } from "react-router-dom";
 
 import { primarySpec } from "../../../api/issue-cache";
@@ -9,6 +9,7 @@ import { useMediaQuery } from "../../shell/useDialog";
 import { contentsEntries } from "../contents-entries";
 import { CONTENTS_PANE_QUERY, OutlineSheet, PAGE_INSET } from "../contents-frame";
 import { IssuePresets } from "../IssuePresets";
+import { HEADER_SCROLLS_QUERY } from "../identity-block";
 import { issueAddress } from "../issue-address";
 import { filterSignals, isFilter, presetView } from "../presets";
 import type { SlotProps } from "../slot-props";
@@ -25,7 +26,7 @@ import { useIssueTree } from "../useIssueTree";
  * controls keep the page's inset. At 760 px and below it stays at the top of the screen as the
  * page scrolls; above, it scrolls away with the header. While it stays it stands over the page
  * and under the navigation's backdrop (`z-20`), so an open navigation dims it as it dims the
- * page.
+ * page, and its height is published (`VIEW_ROW_HEIGHT_PROPERTY`).
  */
 export function ViewRowSlot(props: SlotProps): ReactNode {
   const { issue, route } = props;
@@ -48,10 +49,13 @@ export function ViewRowSlot(props: SlotProps): ReactNode {
     [address.filter, root, viewer]
   );
   const paned = useMediaQuery(CONTENTS_PANE_QUERY);
+  const row = useRef<HTMLDivElement | null>(null);
+  useViewRowHeight(row);
   useIssueKeymap(issue.key);
   return (
     <div
       className={`border-b ${PAGE_INSET} ${pageLineBorder} ${pagePaperBg} max-[761px]:sticky max-[761px]:top-0 max-[761px]:z-[19]`}
+      ref={row}
     >
       <IssuePresets
         active={address.preset}
@@ -61,4 +65,44 @@ export function ViewRowSlot(props: SlotProps): ReactNode {
       />
     </div>
   );
+}
+
+/**
+ * How tall the view row is while it stays at the top of the screen, at 760 px and below, and
+ * `0px` while it scrolls away with the header: a custom property on the document element beside
+ * `--issue-identity-height` (`identity-block.ts`). `styles.css` sets the new page's
+ * `scroll-padding-top` from the two, so what a scroll brings into view (`scrollIntoView`) stands
+ * below everything that stays (decision 113 of
+ * dispatch://INFRA-1196/artifact/part-decisions-md). Unset while no view row is drawn.
+ */
+const VIEW_ROW_HEIGHT_PROPERTY = "--issue-view-row-height";
+
+/**
+ * Publishes `VIEW_ROW_HEIGHT_PROPERTY` for `ref`, the view row's own box, as `useIdentityBlock`
+ * publishes the band's height: in a layout effect, so the first frame already carries it, then
+ * again whenever the row's size changes and whenever the width crosses `HEADER_SCROLLS_QUERY`,
+ * where the row starts or stops staying.
+ */
+function useViewRowHeight(ref: RefObject<HTMLElement | null>): void {
+  useLayoutEffect(() => {
+    const row = ref.current;
+    if (row === null) return;
+    const narrow = window.matchMedia(HEADER_SCROLLS_QUERY);
+    const publish = () => {
+      const stays = getComputedStyle(row).position === "sticky";
+      document.documentElement.style.setProperty(
+        VIEW_ROW_HEIGHT_PROPERTY,
+        `${stays ? Math.round(row.getBoundingClientRect().height) : 0}px`
+      );
+    };
+    const sizes = new ResizeObserver(publish);
+    sizes.observe(row);
+    narrow.addEventListener("change", publish);
+    publish();
+    return () => {
+      sizes.disconnect();
+      narrow.removeEventListener("change", publish);
+      document.documentElement.style.removeProperty(VIEW_ROW_HEIGHT_PROPERTY);
+    };
+  }, [ref]);
 }

@@ -1,4 +1,11 @@
-import { type Browser, expect, type Locator, type Page } from "@playwright/test";
+import {
+  type Browser,
+  expect,
+  type Locator,
+  type Page,
+  type TestInfo,
+  test,
+} from "@playwright/test";
 
 import {
   CONTROL_LABELS,
@@ -38,18 +45,27 @@ import { asUser } from "./users";
  *  row that asserts another width sets it itself. */
 const DESKTOP = { height: 900, width: 1440 } as const;
 
+/** The rows that have run a `phase`. The automatic `freshDatabase` fixture (`e2e/test.ts`)
+ *  empties the database before each row, so a row's first `phase` seeds it as that fixture left
+ *  it, and only a later `phase` of the same row empties it again. */
+const phasedRows = new WeakSet<TestInfo>();
+
 /**
- * One seeded issue, read by alice with the new page turned on: the database is reset, `seed`
+ * One seeded issue, read by alice with the new page turned on: the database is empty, `seed`
  * writes what the row reads, alice signs in to a new context, `withIssuePage` turns the page on
  * for her, and a page opens at 1440 by 900. A row that reads two seeds runs a `phase` for each,
- * since the reset ends every session.
+ * and each `phase` after the row's first resets the database, which ends every session.
  */
 export async function phase<T>(
   browser: Browser,
   seed: () => Promise<T>,
   body: (page: Page, seeded: T) => Promise<void>
 ): Promise<void> {
-  await resetDatabase();
+  const row = test.info();
+  if (phasedRows.has(row)) {
+    await resetDatabase();
+  }
+  phasedRows.add(row);
   const seeded = await seed();
   const context = await asUser(browser, "alice");
   try {
