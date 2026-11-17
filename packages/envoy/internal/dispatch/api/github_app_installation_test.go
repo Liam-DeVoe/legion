@@ -2,17 +2,12 @@ package api
 
 import (
 	"context"
-	"crypto/rand"
-	"crypto/rsa"
-	"crypto/x509"
-	"encoding/pem"
 	"fmt"
 	"net/http"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/ratelimit"
 	"github.com/sjawhar/envoy/internal/githubtest"
@@ -67,11 +62,7 @@ func installationSeed(t *testing.T, withKey bool, mapped string) privateSeed {
 	t.Helper()
 	var options testServerOptions
 	if withKey {
-		key, err := rsa.GenerateKey(rand.Reader, 2048)
-		if err != nil {
-			t.Fatalf("generate fixture key: %v", err)
-		}
-		options.app = &auth.AppConfig{ClientID: "Iv1.test", PEM: string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}))}
+		options.app = fakeGitHubAppConfig(t)
 		options.githubAPIBase = githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
 			if r.URL.Path == "/repos/"+mapped+"/installation" {
 				fmt.Fprint(w, `{"id":77,"app_slug":"dispatch-test","permissions":{}}`)
@@ -90,16 +81,8 @@ func installationSeed(t *testing.T, withKey bool, mapped string) privateSeed {
 // lookup with github.
 func appInstallationServer(t *testing.T, github http.HandlerFunc) http.Handler {
 	t.Helper()
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatalf("generate fixture key: %v", err)
-	}
-	pemText := string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}))
 	upstream := githubtest.Server(t, githubtest.Spec{Handle: github})
-	handler, _, _ := newTestServer(t, testServerOptions{
-		app:           &auth.AppConfig{ClientID: "Iv1.test", PEM: pemText},
-		githubAPIBase: upstream,
-	})
+	handler, _, _ := newTestServer(t, testServerOptions{app: fakeGitHubAppConfig(t), githubAPIBase: upstream})
 	return handler
 }
 

@@ -139,10 +139,16 @@ func TestADocumentOfAPrivateProjectAnswersAsMissing(t *testing.T) {
 	for _, caller := range privateCallers {
 		t.Run(string(caller), func(t *testing.T) {
 			sees := documentCallerSees[caller]
+			// What a missing object answers does not turn on the project read beside it, so each
+			// read of one is made once.
+			absents := make([]*httptest.ResponseRecorder, len(documentReads))
+			for index, read := range documentReads {
+				absents[index] = seed.request(t, caller, read.method, read.path(missing), read.body)
+			}
 			for _, project := range []string{seedPublic, seedPrivate} {
-				for _, read := range documentReads {
+				for index, read := range documentReads {
 					hidden := seed.request(t, caller, read.method, read.path(objects[project]), read.body)
-					absent := seed.request(t, caller, read.method, read.path(missing), read.body)
+					absent := absents[index]
 					route := read.method + " " + read.path(objects[project])
 					same := hidden.Code == absent.Code &&
 						normalizedBody(hidden, objects[project]) == normalizedBody(absent, missing)

@@ -183,7 +183,10 @@ func TestTheReadersSessionTitlesReadStopsAtTheNewestTitleItMayRead(t *testing.T)
 		})
 	}
 	// The server's own shape, for the comparison the log carries: the same read under the rule
-	// every event passes.
+	// every event passes. It checks nothing, so it runs only where the log is read (-v).
+	if !testing.Verbose() {
+		return
+	}
 	recorder := &recordingTitlesQuerier{pool: database.Pool}
 	if _, err := delivery.ResolveSessionTitles(context.Background(), recorder, readerTitleSessions, events.EveryEvent); err != nil {
 		t.Fatalf("resolve the titles as the server: %v", err)

@@ -11,7 +11,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -237,9 +236,7 @@ func TestAWarmCommentListReadRunsOnlyItsValidatorsStatement(t *testing.T) {
 	if written := served.listAnswers.answered() - answered; written != 1 {
 		t.Errorf("the cache wrote %d answers over the second read of %s, want the one it kept", written, target)
 	}
-	resolved := slices.IndexFunc(counted, func(statement string) bool {
-		return strings.Contains(statement, access.Marker+"VisibleProjectsSQL */")
-	})
+	resolved := slices.IndexFunc(counted, func(statement string) bool { return strings.Contains(statement, viewerResolution) })
 	validated := slices.IndexFunc(counted, func(statement string) bool { return strings.Contains(statement, "comment_watermarks") })
 	if len(counted) != 2 || resolved < 0 || validated < 0 {
 		t.Fatalf("the warm read ran %d statements, want the caller's viewer resolved and the one its validator is read with:\n%s",
