@@ -10,7 +10,7 @@ import { join } from "node:path";
 // testnats.HubImage (packages/envoy/internal/testnats/nats.go), the hub's nats:2.15.1-alpine. A
 // script or a page that installs a host nats-server with `go install` or `go run` pins a release
 // the floor takes. Both are scans of every tracked file, so a new driver or a new page is held too.
-// What neither scan sees, and nothing in the tree uses: a `docker run` continued over lines, `podman`
+// What neither scan sees, and nothing in the tree uses: a NATS start continued over lines, `podman`
 // or a launcher that is not a shell script; an `export name=` or `${name:-<version>}` assignment;
 // and a version set in another file the script sources.
 
@@ -37,8 +37,20 @@ function gitNames(args: string[], allowed: number[] = [0]): string[] {
     .filter((name) => name !== "" && existsSync(join(root, name)));
 }
 
-/** A line that starts a NATS server: a `docker run` whose arguments end in `-js`, as a JetStream server's do. */
-const natsStart = /\bdocker run\b.*\s-js\b/;
+/** A line that starts a NATS server: a `docker run`, or lib/rig.sh's `start_container` (a `docker
+ *  create` and `docker start` of the run's own), whose arguments end in `-js`, as a JetStream
+ *  server's do. */
+const natsStart = /\b(?:docker run|start_container)\b.*\s-js\b/;
+
+/** The names among `names` whose text holds a line that starts a NATS server. */
+function startingNats(names: readonly string[], read: (name: string) => string): string[] {
+  return names.filter((name) => natsStart.test(read(name)));
+}
+
+/** The drivers of `known` that the scan did not find among `found`. */
+function unfound(known: readonly string[], found: readonly string[]): string[] {
+  return known.filter((driver) => !found.includes(driver));
+}
 
 /**
  * Each problem a driver's text has: a line that starts a NATS server on any image but
@@ -68,10 +80,11 @@ function natsProblems(name: string, text: string): string[] {
  * .github/scripts/check-ci-images.test.sh writes a rig's start line into a fixture tree for
  * check-ci-images.sh to read, inside a heredoc, and starts no server.
  */
-const drivers = gitNames(["ls-files", "-z", "--", "*.sh"]).filter(
-  (name) =>
-    name !== ".github/scripts/check-ci-images.test.sh" &&
-    natsStart.test(readFileSync(join(root, name), "utf8"))
+const drivers = startingNats(
+  gitNames(["ls-files", "-z", "--", "*.sh"]).filter(
+    (name) => name !== ".github/scripts/check-ci-images.test.sh"
+  ),
+  (name) => readFileSync(join(root, name), "utf8")
 );
 
 /** The drivers known to start a NATS server, a floor under the scan: a scan finding none fails. */
@@ -261,8 +274,27 @@ describe("every live proof starts the NATS server the floor takes", () => {
     ]);
   });
 
+  test("a driver starting nats:2.10 through start_container is named", () => {
+    const old = `. "$root/scripts/e2e/lib/nats-image.sh"\nstart_container containers "$nats_container" -p 127.0.0.1::4222 nats:2.10 -js\n`;
+    expect(natsProblems("fixture.sh", old)).toEqual([
+      'fixture.sh:2 starts NATS on an image other than "$nats_image": start_container containers "$nats_container" -p 127.0.0.1::4222 nats:2.10 -js',
+    ]);
+  });
+
+  // The control of the floor below: a known driver that starts NATS in a third form, which the
+  // scan does not read, is named, never passed over.
+  test("a known driver that starts NATS in a form the scan does not read fails the floor", () => {
+    const third = `. "$root/scripts/e2e/lib/nats-image.sh"\ndocker create --name "$nats_container" -p 127.0.0.1::4222 "$nats_image" -js\ndocker start "$nats_container"\n`;
+    expect(
+      unfound(
+        ["fixture.sh"],
+        startingNats(["fixture.sh"], () => third)
+      )
+    ).toEqual(["fixture.sh"]);
+  });
+
   test("the scan finds every driver known to start one", () => {
-    expect(knownDrivers.filter((driver) => !drivers.includes(driver))).toEqual([]);
+    expect(unfound(knownDrivers, drivers)).toEqual([]);
   });
 
   for (const driver of drivers) {
