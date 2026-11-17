@@ -597,6 +597,8 @@ describe("sessionsOnMachine", () => {
     port: 0,
     title: "",
     topics: [],
+    roles: [],
+    capabilities: [],
     self_subscribed: true,
     state: "live" as const,
   });
@@ -624,6 +626,8 @@ describe("sessionsOnMachine", () => {
       port: 0,
       title: "",
       topics: [],
+      roles: [],
+      capabilities: [],
       self_subscribed: true,
       state: "live" as const,
     };
