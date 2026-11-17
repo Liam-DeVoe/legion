@@ -8,7 +8,7 @@
 import { IDEMPOTENCY_KEY_COMMITTED } from "@legion/contracts";
 import type { Locator, Route } from "@playwright/test";
 import { CONTROL } from "../web/src/components/control-names";
-import { plannerSession, reviewerSession, seedAgents, setLiveSessions } from "./agents";
+import { agentRow, plannerSession, reviewerSession, seedAgents, setLiveSessions } from "./agents";
 import {
   createAsk,
   createComment,
@@ -16,6 +16,8 @@ import {
   createIssueArtifact,
   createPriority,
   createProject,
+  editArtifact,
+  getArtifact,
   mintAgentToken,
   patchIssue,
   putArchitectureSource,
@@ -27,6 +29,7 @@ import {
   seedPipelineFixture,
   seedSessionGroupsFixture,
 } from "./delivery-seed";
+import { connectedDot, documentEditor } from "./editor";
 import {
   setCredentialGrants,
   setPendingCredentialRequests,
@@ -153,8 +156,9 @@ test("the Agents page and the Delivery page each draw one row of controls, with 
   });
 });
 
-// SLOW(>=2s): the same two pages, each narrowed and opened at each of this project's widths.
-test("no narrowing or panel on the Agents page or the Delivery page moves the first row @phone", async ({
+// SLOW(>=2s): the same two pages, each narrowed and opened at each of this project's widths, and
+// the Agents page's rows selected.
+test("no narrowing, panel or selection on the Agents page or the Delivery page moves the first row @phone", async ({
   page,
 }, testInfo) => {
   const scene = await seedRealStackSurfaces();
@@ -166,6 +170,41 @@ test("no narrowing or panel on the Agents page or the Delivery page moves the fi
       const where = `${name} at ${size.width}x${size.height}`;
       await resetScroll(page, surface.firstRow);
       const first = await topOf(surface.firstRow);
+
+      // Selecting rows, on the page whose list allows it, before any narrowing, so the top is
+      // held to the first reading itself. The Agents page marks rows for a broadcast: a
+      // checkbox on each row (`Select <name> for broadcast`) and one over the list for every row
+      // the filters match (`Select all matching agents`, `features/agents/AgentsPage.tsx`). A
+      // mark draws the broadcast composer, which follows the list and sticks to the bottom of
+      // the viewport rather than standing above the rows. The Delivery page's list marks no
+      // row: `PRList` hands `useDataTable` no `selection` (`features/delivery/PRList.tsx`), and
+      // a table without one selects nothing (`components/DataTable.tsx`); a press on a row opens
+      // that one pull request's details, which marks nothing for an action.
+      if (name === "Agents page") {
+        const composer = surface.root.getByRole("region", { name: "Broadcast" });
+        for (const [act, box] of [
+          [
+            "one row's checkbox ticked",
+            surface.firstRow.getByRole("checkbox", { name: /^Select .+ for broadcast$/ }),
+          ],
+          [
+            "the select-all checkbox ticked",
+            surface.root.getByRole("checkbox", { exact: true, name: "Select all matching agents" }),
+          ],
+        ] as const) {
+          await box.check();
+          await expect(composer, `${where}: ${act} drew no broadcast composer`).toBeVisible();
+          await resetScroll(page, surface.firstRow);
+          const selected = await topOf(surface.firstRow);
+          expect(
+            selected,
+            `${where}: ${act} moved the first row from ${Math.round(first)}px to ${Math.round(selected)}px`
+          ).toBeCloseTo(first, 0);
+        }
+        // Unmarked again, so the narrowing below is read on the page as it opened.
+        await surface.root.getByRole("button", { exact: true, name: "Clear selection" }).click();
+        await expect(composer, `${where}: Clear selection left the composer drawn`).toHaveCount(0);
+      }
 
       await surface.narrow();
       await expect(surface.firstRow).toBeVisible();
@@ -180,8 +219,8 @@ test("no narrowing or panel on the Agents page or the Delivery page moves the fi
         `${where}: one narrowing moved the first row up, from ${Math.round(first)}px to ${Math.round(narrowed)}px`
       ).toBeGreaterThanOrEqual(first - 0.5);
 
-      // Neither page draws a display menu or allows a selection, so the panel is the one act
-      // left: it is portalled over the page and takes no room in the layout.
+      // Neither page draws a display menu, so the panel is the one act left: it is portalled
+      // over the page and takes no room in the layout.
       if (surface.panel !== undefined) {
         await surface.panel();
         await resetScroll(page, surface.firstRow);
@@ -203,7 +242,11 @@ test("the Agents page and the Delivery page draw every shared control their desi
   await page.setViewportSize({ height: 900, width: 1440 });
   for (const name of REAL_STACK_SURFACES) {
     const surface = await openSurface(page, name, scene);
-    // A chip is drawn only under a narrowing; neither page allows a selection.
+    // A chip is drawn only under a narrowing. The Agents page selects rows, for a broadcast, but
+    // what a mark draws - the select-all header's count and the broadcast composer
+    // (`features/agents/AgentsPage.tsx`) - carries no `data-control` and is no control the design
+    // gives the page, so no row is marked here. The Delivery page's list selects none: `PRList`
+    // hands `useDataTable` no `selection` (`features/delivery/PRList.tsx`).
     await surface.narrow();
     const expected = [...SURFACE_CONTROLS[name]].sort();
     for (const wanted of expected) {
@@ -3479,4 +3522,409 @@ test("a page's single-key shortcuts do not act from inside an open panel @firefo
     top
   );
   await expect(menu, "Inbox: j closed the View menu").toHaveCount(1);
+});
+
+/** What a text box is, in the count R3 reads inside a list's own panel: each kind of field a
+ *  reader types into. */
+const TEXT_BOXES = [
+  "input:not([type])",
+  'input[type="text"]',
+  'input[type="search"]',
+  "textarea",
+  '[role="combobox"]',
+  '[role="searchbox"]',
+  '[role="textbox"]',
+].join(", ");
+
+/** The control named `name` that opens a list: the list's own button. A native select, which is
+ *  what several of these lists were before each held a text box, is found by the same name, so a
+ *  page that still draws one fails on that list by name rather than on a trigger not found. */
+function listTrigger(scope: Locator | Page, name: string): Locator {
+  return scope
+    .getByRole("button", { exact: true, name })
+    .or(scope.getByRole("combobox", { exact: true, name }));
+}
+
+/** The panel a list's trigger names in `aria-controls` while the list stands open: the list is
+ *  portalled out of its host, so it is found from its own trigger and from nothing page-wide, as
+ *  `issueListOf` (`e2e/agents.ts`) finds the composer's. */
+function listOf(trigger: Locator): Locator {
+  return trigger.locator("xpath=id(./@aria-controls)");
+}
+
+/** One list of options R3 holds to a text box, as the row below drives it at one width. */
+interface PickList {
+  /** The list as a failure names it: its page, and its trigger's words. */
+  readonly name: string;
+  /** Brings the page to where the trigger is drawn; absent where the list read before this one
+   *  leaves it drawn. */
+  readonly reach?: () => Promise<void>;
+  readonly trigger: Locator;
+  /** The list's value, where a reader reads it: the trigger's words, or - where a pick takes the
+   *  trigger away - the chip the pick puts in the row. */
+  readonly value: () => Promise<string>;
+  /** A word a reader types into the list's text box, and the options it leaves, in order. */
+  readonly word: string;
+  readonly left: readonly (string | RegExp)[];
+  /** What `value` reads once Enter has picked the option the word left. */
+  readonly picked: RegExp;
+  /** Where the pick leaves the focus, where that is not the trigger: the control the panel
+   *  hands it to when the pick takes the trigger away, or the message the composer's pick hands
+   *  the reader to. */
+  readonly focusAfterPick?: Locator;
+  /** Where Escape leaves the focus, where that is not the trigger: the composer's row. */
+  readonly focusAfterEscape?: Locator;
+}
+
+/** What the lists are read over, as `seedPickLists` made it. */
+interface PickListSeed {
+  /** One question waiting on alice for each width, since a width's pick hands its own on. */
+  readonly asks: readonly string[];
+  /** The one member of the first epic, which the List's selection marks. */
+  readonly member: string;
+  /** The issue whose spec, and whose `notes.md`, are each in two versions. */
+  readonly documented: string;
+}
+
+/** The Agents page's two live sessions and CORE's Keyboard issue and Rollout plan
+ *  (`seedAgents`); a second project, OPS, which carol makes, so the search bar's Project list
+ *  holds two projects and the people a question can be handed to are alice, bob and carol;
+ *  three epics, the first with a member; a spec and a second document of one issue, each in two
+ *  versions; and a question for each width. */
+async function seedPickLists(): Promise<PickListSeed> {
+  await seedAgents();
+  await createProject({ key: "OPS", name: "Ops" }, { login: "carol" });
+  const epics: string[] = [];
+  for (const title of ["Lease epic", "Mirror epic", "Ledger epic"]) {
+    const epic = await createIssue({ project: "CORE", title });
+    await patchIssue(epic.key, { labels: ["epic"] });
+    epics.push(epic.key);
+  }
+  const member = await createIssue({ project: "CORE", parent: epics[0], title: "Handover step" });
+  const documented = await createIssue({
+    project: "CORE",
+    spec: "The lease passes at noon.\n",
+    title: "Lease handover",
+  });
+  const notes = await createIssueArtifact(documented.key, {
+    content: "The ledger keeps three leases.\n",
+    name: "notes.md",
+  });
+  for (const [id, find, replacement] of [
+    [documented.primary_artifact_id, "noon", "midnight"],
+    [notes.artifact.id, "three", "seven"],
+  ] as const) {
+    await editArtifact(id, { ops: [{ find, op: "replace", with: replacement }] }, { as: "agent" });
+    await expect
+      .poll(async () => ((await getArtifact(id)).versions ?? []).length)
+      .toBeGreaterThanOrEqual(2);
+  }
+  const asks: string[] = [];
+  for (const width of [1440, 390]) {
+    const owner = await createIssue({ project: "CORE", title: `Lease question at ${width}` });
+    const ask = await createAsk(
+      owner.key,
+      { question: `Who holds the lease at ${width}?` },
+      SURFACE_SESSION
+    );
+    asks.push(ask.id);
+  }
+  return { asks, documented: documented.key, member: member.key };
+}
+
+/** The ten lists, in the order the row reads them at one width; `step` is the width's place,
+ *  which picks the question it hands on and the issue it addresses. */
+function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
+  const main = page.getByTestId("main-content");
+  const palette = page.getByRole("dialog", { name: "Search" });
+  const filters = page.getByRole("dialog", { name: "Filter" });
+  /** The words a trigger shows. */
+  const shown = (trigger: Locator) => async () =>
+    (await trigger.innerText()).replace(/\s+/g, " ").trim();
+  /** The search bar's chip for one narrowing. */
+  const chip = (narrowing: string) => async () =>
+    (
+      await control(controlRow(palette), CONTROL.chip).evaluateAll((chips) =>
+        chips.map((node) => node.getAttribute("aria-label") ?? "")
+      )
+    )
+      .filter((label) => label.startsWith(`Remove ${narrowing} `))
+      .join("; ");
+  const project = listTrigger(filters, "Project");
+  const status = listTrigger(filters, "Status");
+  const moveTo = listTrigger(page, "Move to epic");
+  const mergeInto = listTrigger(page, "Merge into another epic");
+  const question = seed.asks[step];
+  const handOn = listTrigger(page.getByTestId(`ask-${question}`), "Hand this question to");
+  const agent = agentRow(page, plannerSession.session_id);
+  const issue = listTrigger(agent, "Choose issue");
+  const version = listTrigger(page, "Version");
+  const compare = page.getByRole("region", { name: "Compare versions for notes.md" });
+  const from = listTrigger(compare, "Compare notes.md from");
+  const to = listTrigger(compare, "Compare notes.md to");
+  const notesPage = `/issues/${seed.documented}/artifacts/notes-md`;
+  // A version is typed as the words its option starts with, `Version <n>`, which a summary may
+  // follow; the current text's option, `Current` or `Current version`, holds neither.
+  const versionOne = /^Version 1(?: — .+)?$/;
+  const versionTwo = /^Version 2(?: — .+)?$/;
+  // The issue each width's pick addresses, so the second width's pick is a change whatever the
+  // composer kept of the first.
+  const [issueWord, issueOption, issueKey] =
+    step === 0
+      ? ["rollout", "CORE-2 · Rollout plan", "CORE-2"]
+      : ["keyboard", "CORE-1 · Keyboard issue", "CORE-1"];
+  return [
+    {
+      name: "the search bar's Project",
+      reach: async () => {
+        await page.goto("/");
+        await expect(page.locator("[data-inbox-row]").first()).toBeVisible();
+        await page.locator("body").focus();
+        await page.keyboard.press("Control+k");
+        await expect(palette).toBeVisible();
+        await openFilterPanel(page, palette);
+      },
+      trigger: project,
+      value: chip("Project"),
+      word: "op",
+      left: ["OPS"],
+      picked: /^Remove Project OPS filter$/,
+      // A pick takes the list's control out of the panel, which hands the focus to the control
+      // now at its place, as the shared controls' focus row reads it.
+      focusAfterPick: status,
+    },
+    {
+      name: "the search bar's Status",
+      trigger: status,
+      value: chip("Status"),
+      word: "prog",
+      left: ["In progress"],
+      picked: /^Remove Status In progress filter$/,
+      focusAfterPick: filters.getByRole("searchbox", { name: "Author" }),
+    },
+    {
+      name: "the List's Move to epic",
+      reach: async () => {
+        await openIssuesTab(page, "CORE", "List");
+        await main.getByRole("checkbox", { exact: true, name: `Select ${seed.member}` }).check();
+      },
+      trigger: moveTo,
+      value: shown(moveTo),
+      word: "mirr",
+      left: ["Mirror epic"],
+      picked: /^Mirror epic$/,
+    },
+    {
+      name: "an epic's Merge into another epic",
+      reach: async () => {
+        await page.goto("/projects/CORE/issues?group=epic");
+        await page
+          .getByRole("row")
+          .filter({ has: page.getByRole("button", { name: /Lease epic/ }) })
+          .getByRole("button", { name: "Epic actions ▾" })
+          .click();
+      },
+      trigger: mergeInto,
+      value: shown(mergeInto),
+      word: "ledg",
+      left: ["Ledger epic"],
+      picked: /^Ledger epic$/,
+    },
+    {
+      // Every person's questions, so the question stays listed once it waits on bob. Its list is
+      // on its card: the reading column's, for the row selected, or the row's own where the
+      // Inbox is too narrow for that column.
+      name: "the Inbox's Hand this question to",
+      reach: async () => {
+        await page.goto("/?assignee=everyone");
+        await selectRow(page, question);
+      },
+      trigger: handOn,
+      value: shown(handOn),
+      word: "bo",
+      left: ["bob"],
+      picked: /^Asked of bob$/,
+    },
+    {
+      name: "the Agents composer's Issue",
+      reach: async () => {
+        await page.goto("/agents");
+        const toggle = agent.locator("[data-agent-toggle]");
+        await expect(toggle).toBeVisible();
+        if ((await toggle.getAttribute("aria-expanded")) !== "true") await toggle.click();
+      },
+      trigger: issue,
+      value: shown(issue),
+      word: issueWord,
+      left: [issueOption],
+      picked: new RegExp(`^Issue: ${issueKey}$`),
+      // The architect's ruling: a pick hands the reader to the message it addresses, and Escape
+      // is one level out, to the row.
+      focusAfterPick: agent.getByRole("textbox", { name: "Comment" }),
+      focusAfterEscape: agent,
+    },
+    {
+      name: "the Spec tab's Version",
+      reach: async () => {
+        await page.goto(`/issues/${seed.documented}/spec`);
+      },
+      trigger: version,
+      value: shown(version),
+      word: "version 1",
+      left: [versionOne],
+      picked: versionOne,
+    },
+    {
+      // From starts on the older version and To on the newer, so each word picks the other.
+      name: "a document page's compare From",
+      reach: async () => {
+        await page.goto(notesPage);
+        // The editor draws the document's text after the page has drawn the rest, and that text
+        // is above the compare: in Firefox at 1440 a press made while it was still to come
+        // opened nothing, and the trace's next snapshot held the text the press came before.
+        await expect(documentEditor(page)).toContainText("seven leases");
+        await expect(connectedDot(page)).toHaveText("connected");
+        await compare.getByRole("button", { name: "Show comparison" }).click();
+        await expect(compare.getByRole("button", { name: "Hide comparison" })).toBeVisible();
+      },
+      trigger: from,
+      value: shown(from),
+      word: "version 2",
+      left: [versionTwo],
+      picked: versionTwo,
+    },
+    {
+      name: "a document page's compare To",
+      trigger: to,
+      value: shown(to),
+      word: "version 1",
+      left: [versionOne],
+      picked: versionOne,
+    },
+    {
+      // Last on the page, since its pick leaves the page on a past version.
+      name: "a document page's Version",
+      trigger: version,
+      value: shown(version),
+      word: "version 1",
+      left: [versionOne],
+      picked: versionOne,
+    },
+  ];
+}
+
+// SLOW(>=2s): ten lists on six pages, each list opened twice at each of two widths.
+// R3: "Every list of options a reader picks from holds a text box that narrows the options."
+// Each list a reader picks one value from is the single-pick mode of the shared list
+// (`components/MultiSelect.tsx`): the search bar's Project and Status, the List's Move to epic, an
+// epic's Merge into another epic, the Inbox's Hand this question to (`AskHandOn`), the Agents
+// composer's Issue, the Spec tab's Version (`SpecToolbar`), and a document page's Version
+// (`ArtifactHeader`) and its compare From and To (`ArtifactDetails`). At each width each list is
+// opened from its trigger: exactly one text box is in the list's own panel, a typed word leaves
+// only the options it matches, Escape picks nothing and changes no value, and Enter picks the
+// option the word left - the trigger shows it with the focus back on it, or where the pick
+// takes the trigger away the panel hands the focus on. A list that holds no text box is named
+// and the row goes on, so one run names every such list.
+// `@firefox` and `@webkit`: the keys a text box takes - the typed word, Enter and Escape - as each
+// engine delivers them, the clause of `playwright.config.ts` the composer's Issue list is run
+// under.
+test("every list of options a reader picks from holds a text box that narrows it, at 1440 and 390 @firefox @webkit", async ({
+  page,
+}) => {
+  // Seven page loads at each width, with the lists read between them. Measured in an issue pod
+  // (two cores): the row took 1.2 to 1.5 min in Chromium and 1.9 to 2.6 min in Firefox, and four
+  // minutes keeps that under two thirds of the budget for WebKit, which no pod runs.
+  test.setTimeout(240_000);
+  const seed = await seedPickLists();
+  /** The lists the row could not read: no trigger, a trigger that names no list of its own, or
+   *  a list holding other than one text box. */
+  const missing: string[] = [];
+  /** Opens `list` from its trigger and answers the options of its own panel, once the focus is
+   *  in that panel's one text box; or records why not, and shuts what the press opened. */
+  const open = async (list: PickList, at: string): Promise<Locator | undefined> => {
+    await list.trigger.click();
+    const named = await expect(list.trigger)
+      .toHaveAttribute("aria-controls", /\S/, { timeout: 2_000 })
+      .then(
+        () => true,
+        () => false
+      );
+    if (named) {
+      const panel = listOf(list.trigger);
+      await expect(panel, `${at}: the list its trigger names is not drawn`).toBeVisible();
+      const box = panel.locator(TEXT_BOXES);
+      const boxes = await box.count();
+      if (boxes === 1) {
+        await expect(box, `${at}: the open list left the focus outside its text box`).toBeFocused();
+        return panel.getByRole("option");
+      }
+      missing.push(`${at}: the list its trigger opens holds ${boxes} text boxes, not one`);
+    } else {
+      missing.push(`${at}: its trigger names no list of its own once pressed`);
+    }
+    await page.keyboard.press("Escape");
+    return undefined;
+  };
+
+  for (const [step, size] of [
+    { height: 900, width: 1440 },
+    { height: 664, width: 390 },
+  ].entries()) {
+    await page.setViewportSize(size);
+    for (const list of pickLists(page, seed, step)) {
+      const at = `${list.name} at ${size.width}x${size.height}`;
+      await list.reach?.();
+      const drawn = await expect(list.trigger)
+        .toBeVisible()
+        .then(
+          () => true,
+          () => false
+        );
+      if (!drawn) {
+        missing.push(`${at}: no control opens the list`);
+        continue;
+      }
+      const before = await list.value();
+
+      // The word makes an option other than the value the active one, and Escape picks nothing.
+      const escaped = await open(list, at);
+      if (escaped === undefined) continue;
+      await expect
+        .poll(() => escaped.count(), {
+          message: `${at}: the list holds no option "${list.word}" does not match`,
+        })
+        .toBeGreaterThan(list.left.length);
+      await page.keyboard.type(list.word);
+      await expect(escaped, `${at}: "${list.word}" left other options than its own`).toHaveText(
+        list.left
+      );
+      await page.keyboard.press("Escape");
+      await expect(list.trigger, `${at}: Escape left the list open`).toHaveAttribute(
+        "aria-expanded",
+        "false"
+      );
+      await expect(
+        list.focusAfterEscape ?? list.trigger,
+        `${at}: Escape left the focus elsewhere`
+      ).toBeFocused();
+      expect(await list.value(), `${at}: Escape changed the list's value`).toBe(before);
+
+      // Enter picks the option the word left.
+      const entered = await open(list, at);
+      if (entered === undefined) continue;
+      await page.keyboard.type(list.word);
+      await expect(entered, `${at}: "${list.word}" left other options than its own`).toHaveText(
+        list.left
+      );
+      await page.keyboard.press("Enter");
+      await expect
+        .poll(list.value, { message: `${at}: Enter did not pick the option "${list.word}" left` })
+        .toMatch(list.picked);
+      await expect(
+        list.focusAfterPick ?? list.trigger,
+        `${at}: the pick left the focus elsewhere`
+      ).toBeFocused();
+    }
+  }
+  expect(missing, missing.join("; ")).toEqual([]);
 });
