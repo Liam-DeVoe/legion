@@ -15,24 +15,28 @@ var commandName = []byte("spec-check")
 // compareCall is the comparison in the text that textHits keeps: the command's name, spec-check,
 // under any path ("./cmd/spec-check", "$RUNNER_TEMP/spec-check"), with no suffix or one that
 // starts with another character than a letter, a digit, _, - or a separator (".exe", "@v1", the
-// ").arg" of a builder), then white space (a line break too), commas and opening brackets, as a
-// list of arguments in a script holds them, and the word compare. So spec-checker, spec-check-linux
-// and spec-check's are other words. nameStart holds the name's other end: no letter, digit, _ or -
-// stands right before it in the file, so envoy-spec-check and myspec-check are other words too.
-var compareCall = regexp.MustCompile(regexp.QuoteMeta(string(commandName)) + `(?:[^\w\s,\[(-][^\s,\[(]*)?[\s,\[(]+compare\b`)
+// ").arg" of a builder), then white space (a line break too), commas, ( and [, as a list of
+// arguments in a script holds them, and the word compare, which no letter, digit, _, -, . or /
+// follows. So spec-checker, spec-check-linux and spec-check's are other words, and so are
+// compare-all, compare.sh and the path compare/. nameStart holds the name's other end: no letter,
+// digit, _ or - stands right before it in the file, so envoy-spec-check and myspec-check are other
+// words too.
+var compareCall = regexp.MustCompile(regexp.QuoteMeta(string(commandName)) + `(?:[^\w\s,\[(-][^\s,\[(]*)?[\s,\[(]+compare(?:[^\w./-]|$)`)
 
 // ciFilesThatCompare is "<path>:<line>" for each place of files where the comparison of the spec
 // files with the approved spec is written, sorted by path, then by line, each line once. No CI job
 // compares the files, and R2 gives that comparison at each push to Dispatch. The guard names each
 // place of a CI file where the command's name and then the word compare follow each other with
-// only white space, commas or opening brackets between them, and with quote characters (also a $
-// before one), backslashes, and line breaks with the indentation after them ignored. The name is
-// spec-check, under any path, as a word of its own: a word that only holds it, such as
-// envoy-spec-check or spec-checker, is another name. So it also names a comment or a quoted text
-// that no shell runs, and the author rewords that line. It does not find a command that an
-// expansion, an escape or an alias builds, or one with another word between the two, and it is no
-// defence against an author who hides the command: compare itself refuses to run in a CI job. It
-// reads each file as text (textHits), and knows nothing of shell or of YAML.
+// only white space, commas, ( or [ between them, and with quote characters (also a $ before one),
+// backslashes, and line breaks with the indentation after them ignored. The name is spec-check,
+// under any path, as a word of its own: a word that only holds it, such as envoy-spec-check or
+// spec-checker, is another name. compare is a word of its own too: a letter, a digit, _, -, . or /
+// right after it makes another word or a path, such as compare-all, compare.sh or compare/. So it
+// also names a comment or a quoted text that no shell runs, and the author rewords that line. It
+// does not find a command that an expansion, an escape or an alias builds, or one with another word
+// between the two, and it is no defence against an author who hides the command: compare itself
+// refuses to run in a CI job. It reads each file as text (textHits), and knows nothing of shell or
+// of YAML.
 //
 // The keys are the repository paths of the files that guard reads (ciDirs): every file under
 // .github/workflows/, .github/actions/, .github/scripts/ and scripts/, which hold the workflows

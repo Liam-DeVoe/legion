@@ -284,12 +284,11 @@ func TestCIFilesThatCompareNamesACommentOrAQuotedTextThatNoShellRuns(t *testing.
 	}
 }
 
-// A script in another language runs the command with a list of its arguments, so a comma or an
-// opening bracket stands between the two words once the quotes go. Node's execFileSync and
-// spawnSync, and a Python list with no space after its comma, are named, as Bun's spawn, a Python
-// list with spaces and Go's exec.Command are. A builder that adds the argument by a method call is
-// named too: the word of the command's name runs on through ).arg, and the ( after it is the
-// opening bracket before compare.
+// A script in another language runs the command with a list of its arguments, so a comma, ( or [
+// stands between the two words once the quotes go. Node's execFileSync and spawnSync, and a Python
+// list with no space after its comma, are named, as Bun's spawn, a Python list with spaces and Go's
+// exec.Command are. A builder that adds the argument by a method call is named too: the word of the
+// command's name runs on through ).arg, and the ( after it stands before compare.
 func TestCIFilesThatCompareNamesAListOfArguments(t *testing.T) {
 	t.Parallel()
 	for _, row := range []struct{ name, path, text string }{
@@ -349,6 +348,49 @@ func TestCIFilesThatCompareReadsTheCommandsNameAsAWordOfItsOwn(t *testing.T) {
 			expectScriptAndBlock(t, row.text, row.at)
 		})
 	}
+}
+
+// wordsThatOnlyHoldCompare is each line whose word after the command's name only holds compare, as
+// a job, another subcommand, a script or a path does: none names the command.
+var wordsThatOnlyHoldCompare = []string{
+	"needs: [spec-check, compare-baselines]",
+	"spec-check compare-all",
+	"paths: ['cmd/spec-check', 'compare/**']",
+	"spec-check compare.sh",
+}
+
+// The word compare is a word of its own too: a letter, a digit, _, -, . or / right after it makes
+// it another word or a path, so no line of wordsThatOnlyHoldCompare is named. Each other byte ends
+// the word, so the comparison at the end of a line or of the file, and before a space, a quote, ),
+// ;, | or &, is named.
+func TestCIFilesThatCompareReadsCompareAsAWordOfItsOwn(t *testing.T) {
+	t.Parallel()
+	type row struct {
+		text string
+		at   []int
+	}
+	rows := []row{
+		{"spec-check compare", []int{1}},
+		{"spec-check compare --dir a", []int{1}},
+		{`bash -c "spec-check compare"`, []int{1}},
+		{"(spec-check compare)", []int{1}},
+		{"spec-check compare; echo done", []int{1}},
+		{"spec-check compare| tee out", []int{1}},
+		{"spec-check compare& wait", []int{1}},
+	}
+	for _, text := range wordsThatOnlyHoldCompare {
+		rows = append(rows, row{text, nil})
+	}
+	for _, row := range rows {
+		t.Run(row.text, func(t *testing.T) {
+			t.Parallel()
+			expectScriptAndBlock(t, row.text, row.at)
+		})
+	}
+	t.Run("at the end of the file", func(t *testing.T) {
+		t.Parallel()
+		expectFiles(t, map[string]string{"scripts/a.sh": "spec-check compare"}, []string{"scripts/a.sh:1"})
+	})
 }
 
 // A folded or a plain run: value turns a line break into a space before Bash reads it, so a

@@ -24,6 +24,10 @@ const (
 // ciRefusal is what compare writes, and all it writes, when GITHUB_ACTIONS is true.
 const ciRefusal = "spec-check: compare does not run in a CI job (GITHUB_ACTIONS=true): R2 gives the comparison of the files with the approved spec at each push to Dispatch\n"
 
+// approvedForm is the form of approved.json, as compare and print name it before the place of a
+// value of another type.
+const approvedForm = `{"nodes":[{"id":"<id>","removed":<true or false>,"partly_checked":<true or false>,"versions":[{"version":<whole number from 1>,"at":"<RFC 3339 time>","block":"<block>"}, …]}, …]}`
+
 // testCompare runs compare over each fixture of specgraph's comparison tests (testdata/compare),
 // each the approved spec and the files of one change: a node in a text that the approved spec
 // never held fails the comparison, and the command names it with its file and line; the files
@@ -242,9 +246,9 @@ func testCompare(t *testing.T, binary string) {
 		})
 	})
 	// A heading that names code breaks a rule of form, which tree judges, and leaves every node in
-	// the tree, so compare compares the files and gives its own answer (specgraph.LosesNode). Beside
-	// a line that no block holds, the heading is no reason of the refusal, and only that line is
-	// named.
+	// the tree (specgraph.KeepsEachNode), so compare compares the files and gives its own answer.
+	// Beside a line that no block holds, the heading is no reason of the refusal, and only that line
+	// is named.
 	t.Run("compare compares files whose heading names code", func(t *testing.T) {
 		t.Parallel()
 		dir := copyOf(t, fixture(t, "compare", "approved-text", "spec"))
@@ -264,6 +268,46 @@ func testCompare(t *testing.T, binary string) {
 			stderr: "spec-check: " + filepath.Join(lost, "a.md") + ":3: -: text-outside-block: a spec file holds only blocks, headings and blank lines\n" +
 				"spec-check: " + lost + ": the files do not parse, so no comparison was made\n",
 		})
+	})
+	// compare compares files whose only problems of Parse keep each node (specgraph.KeepsEachNode):
+	// a byte that Dispatch cannot store, a heading that names code, a claim on more than one line and
+	// a claim of more than one sentence. Beside each, a text that the approved spec never held still
+	// fails the comparison (R2), so a compare that passed whenever such a problem stands fails here.
+	t.Run("compare fails on a text never approved beside a problem of Parse that keeps each node", func(t *testing.T) {
+		t.Parallel()
+		approved := fixture(t, "compare", "approved-text", "approved.json")
+		const statement = "ACME keeps each order that a customer sends."
+		const claim = "Claim: The order service reads each stored order after it starts again."
+		for _, row := range []struct {
+			name, old, new, named string
+		}{
+			{"bad-encoding in a heading, one word changed in a statement", "# Orders\n", "# Orders \xff\n", "acme-keeps-each-order: unapproved-text"},
+			{"a heading that names code, one word changed in a statement", "# Orders\n", "# Orders and I/O\n", "acme-keeps-each-order: unapproved-text"},
+			{"a claim on two lines", claim + "\n", claim + "\nIt also deletes each order that it reads.\n", "a-restart-keeps-each-order: unapproved-text"},
+			{"a claim of two sentences", claim, claim + " It then deletes it.", "a-restart-keeps-each-order: unapproved-text"},
+		} {
+			t.Run(row.name, func(t *testing.T) {
+				t.Parallel()
+				dir := copyOf(t, fixture(t, "compare", "approved-text", "spec"))
+				orders := filepath.Join(dir, "orders.md")
+				content, err := os.ReadFile(orders)
+				if err != nil {
+					t.Fatal(err)
+				}
+				planted := bytes.Replace(content, []byte(row.old), []byte(row.new), 1)
+				if strings.HasSuffix(row.name, "in a statement") {
+					planted = bytes.Replace(planted, []byte(statement), []byte("ACME keeps each order that a client sends."), 1)
+				}
+				if bytes.Equal(planted, content) {
+					t.Fatal("the plant changed nothing")
+				}
+				writeFile(t, orders, planted)
+				got := runBinary(t, binary, "", "compare", "--dir", dir, "--approved", approved)
+				if got.code != 1 || !strings.Contains(got.stderr, row.named) {
+					t.Errorf("exit %d, stdout %q, stderr %q; want exit 1 and a line naming %q", got.code, got.stdout, got.stderr, row.named)
+				}
+			})
+		}
 	})
 	t.Run("compare refuses a directory that holds no spec file, and names --allow-empty", func(t *testing.T) {
 		t.Parallel()
@@ -321,6 +365,13 @@ func testCompare(t *testing.T, binary string) {
 			code:   2,
 			stderr: "spec-check: " + bad + `: specgraph: approved node "order": it has no version` + "\n",
 		})
+		// A value of another type than the form needs is named by its place and the form, in the
+		// words of the package, for compare and print alike.
+		wrong := filepath.Join(t.TempDir(), "approved.json")
+		writeFile(t, wrong, []byte(`{"nodes":[{"id":"order","versions":[{"version":"1","at":"2026-11-10T00:00:00Z","block":""}]}]}`))
+		wrongType := "spec-check: " + wrong + ": specgraph: approved spec: it is not in the form " + approvedForm + `: the value at "/nodes/0/versions/0/version" is of another type` + "\n"
+		expect(t, runBinary(t, binary, "", "compare", "--dir", dir, "--approved", wrong), result{code: 2, stderr: wrongType})
+		expect(t, runBinary(t, binary, "", "print", "--approved", wrong, "--id", "order"), result{code: 2, stderr: wrongType})
 	})
 	// Each CI job of this repository is a GitHub Actions job, and GitHub sets GITHUB_ACTIONS=true in
 	// each step. An agent's shell sets CI=true, and an agent's step is no CI job (R12), so CI alone

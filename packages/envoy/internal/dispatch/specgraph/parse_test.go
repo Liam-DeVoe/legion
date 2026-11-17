@@ -1,14 +1,9 @@
 package specgraph
 
 import (
-	"go/ast"
-	"go/parser"
-	"go/token"
 	"os"
 	"path/filepath"
 	"reflect"
-	"slices"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -71,8 +66,8 @@ func TestParseReadsEachBlockKind(t *testing.T) {
 	}
 }
 
-// Parse refuses each line the grammar does not hold with exactly one problem, naming the line
-// and the rule, and goes on reading the file after it.
+// Parse refuses each line the grammar does not hold with exactly one problem, naming the line,
+// the rule and its Effect, and goes on reading the file after it.
 func TestParseRefuses(t *testing.T) {
 	t.Parallel()
 	const term = ":::term{#work-unit name=\"work unit\"}\nA work unit is work that makes one or more statements true.\n:::\n"
@@ -83,117 +78,117 @@ func TestParseRefuses(t *testing.T) {
 		{
 			name: "a block that is not a spec block",
 			text: ":::plan_task{#x}\nA task.\n:::\n",
-			want: Problem{Pos: Position{"x.md", 1}, Node: "x", Rule: "unknown-block", Detail: `unknown-block: "plan_task" is not requirement, check, component or term`},
+			want: Problem{Pos: Position{"x.md", 1}, Node: "x", Rule: "unknown-block", Detail: `unknown-block: "plan_task" is not requirement, check, component or term`, Effect: LosesNode},
 		},
 		{
 			name: "a setting that makes the failing example optional",
 			text: ":::check{#c serves=\"s\" subject=\"code\" procedure=\"agent\" failing_example_optional=\"true\"}\nClaim: The page shows each statement.\nProcedure: An agent reads the page.\n:::\n",
-			want: Problem{Pos: Position{"x.md", 1}, Node: "c", Rule: "unknown-attribute", Detail: `unknown-attribute: check takes no attribute "failing_example_optional"`},
+			want: Problem{Pos: Position{"x.md", 1}, Node: "c", Rule: "unknown-attribute", Detail: `unknown-attribute: check takes no attribute "failing_example_optional"`, Effect: LosesNode},
 		},
 		{
 			name: "a paragraph line outside any block",
 			text: term + "\nA paragraph line.\nIts second line.\n",
-			want: Problem{Pos: Position{"x.md", 5}, Node: "-", Rule: "text-outside-block", Detail: "text-outside-block: a spec file holds only blocks, headings and blank lines"},
+			want: Problem{Pos: Position{"x.md", 5}, Node: "-", Rule: "text-outside-block", Detail: "text-outside-block: a spec file holds only blocks, headings and blank lines", Effect: LosesNode},
 		},
 		{
 			name: "a block with no closing line",
 			text: ":::term{#work-unit name=\"work unit\"}\nA work unit is work.\n",
-			want: Problem{Pos: Position{"x.md", 1}, Node: "work-unit", Rule: "unclosed-block", Detail: "unclosed-block: the block has no closing ::: line"},
+			want: Problem{Pos: Position{"x.md", 1}, Node: "work-unit", Rule: "unclosed-block", Detail: "unclosed-block: the block has no closing ::: line", Effect: LosesNode},
 		},
 		{
 			name: "a block inside a block",
 			text: ":::requirement{#a kind=\"behavior\"}\nA text.\n:::requirement{#b}\n:::\n",
-			want: Problem{Pos: Position{"x.md", 3}, Node: "a", Rule: "nested-block", Detail: "nested-block: a block cannot hold a block"},
+			want: Problem{Pos: Position{"x.md", 3}, Node: "a", Rule: "nested-block", Detail: "nested-block: a block cannot hold a block", Effect: LosesNode},
 		},
 		{
 			name: "an id the shortcut ends at a dot",
 			text: ":::requirement{#a.b kind=\"behavior\"}\nA text.\n:::\n",
-			want: Problem{Pos: Position{"x.md", 1}, Node: "-", Rule: "bad-block-line", Detail: "bad-block-line: the line opens no block"},
+			want: Problem{Pos: Position{"x.md", 1}, Node: "-", Rule: "bad-block-line", Detail: "bad-block-line: the line opens no block", Effect: LosesNode},
 		},
 		{
 			name: "a class, which no spec block takes",
 			text: ":::requirement{#a .b kind=\"behavior\"}\nA text.\n:::\n",
-			want: Problem{Pos: Position{"x.md", 1}, Node: "a", Rule: "unknown-attribute", Detail: `unknown-attribute: requirement takes no attribute "class"`},
+			want: Problem{Pos: Position{"x.md", 1}, Node: "a", Rule: "unknown-attribute", Detail: `unknown-attribute: requirement takes no attribute "class"`, Effect: LosesNode},
 		},
 		{
 			name: "an attribute written twice",
 			text: ":::check{#c serves=\"s\" subject=\"code\" subject=\"code\" procedure=\"agent\"}\nClaim: The page shows each statement.\n:::\n",
-			want: Problem{Pos: Position{"x.md", 1}, Node: "-", Rule: "bad-block-line", Detail: "bad-block-line: the line opens no block"},
+			want: Problem{Pos: Position{"x.md", 1}, Node: "-", Rule: "bad-block-line", Detail: "bad-block-line: the line opens no block", Effect: LosesNode},
 		},
 		{
 			name: "a closing line outside any block",
 			text: term + ":::\n",
-			want: Problem{Pos: Position{"x.md", 4}, Node: "-", Rule: "bad-block-line", Detail: "bad-block-line: the line opens no block"},
+			want: Problem{Pos: Position{"x.md", 4}, Node: "-", Rule: "bad-block-line", Detail: "bad-block-line: the line opens no block", Effect: LosesNode},
 		},
 		{
 			name: "an opening line of four colons",
 			text: "::::term{#work-unit name=\"work unit\"}\nA work unit is work.\n:::\n",
-			want: Problem{Pos: Position{"x.md", 1}, Node: "-", Rule: "bad-block-line", Detail: "bad-block-line: the line opens no block"},
+			want: Problem{Pos: Position{"x.md", 1}, Node: "-", Rule: "bad-block-line", Detail: "bad-block-line: the line opens no block", Effect: LosesNode},
 		},
 		{
 			name: "a body line that opens no block",
 			text: ":::term{#work-unit name=\"work unit\"}\n::: no\n:::\n",
-			want: Problem{Pos: Position{"x.md", 2}, Node: "work-unit", Rule: "bad-block-line", Detail: "bad-block-line: the line opens no block"},
+			want: Problem{Pos: Position{"x.md", 2}, Node: "work-unit", Rule: "bad-block-line", Detail: "bad-block-line: the line opens no block", Effect: LosesNode},
 		},
 		{
 			name: "a check that holds its claim twice",
 			text: ":::check{#c serves=\"s\" subject=\"code\" procedure=\"agent\"}\nClaim: The page shows each statement.\nClaim: The page shows each check.\nProcedure: An agent reads the page.\n:::\n",
-			want: Problem{Pos: Position{"x.md", 3}, Node: "c", Rule: "bad-field", Detail: "bad-field: a check holds one Claim, one Procedure and one Failing example line, in that order"},
+			want: Problem{Pos: Position{"x.md", 3}, Node: "c", Rule: "bad-field", Detail: "bad-field: a check holds one Claim, one Procedure and one Failing example line, in that order", Effect: LosesNode},
 		},
 		{
 			name: "a check that holds its fields out of order",
 			text: ":::check{#c serves=\"s\" subject=\"code\" procedure=\"agent\"}\nProcedure: An agent reads the page.\nClaim: The page shows each statement.\n:::\n",
-			want: Problem{Pos: Position{"x.md", 3}, Node: "c", Rule: "bad-field", Detail: "bad-field: a check holds one Claim, one Procedure and one Failing example line, in that order"},
+			want: Problem{Pos: Position{"x.md", 3}, Node: "c", Rule: "bad-field", Detail: "bad-field: a check holds one Claim, one Procedure and one Failing example line, in that order", Effect: LosesNode},
 		},
 		{
 			name: "a check with text before its first field",
 			text: ":::check{#c serves=\"s\" subject=\"code\" procedure=\"agent\"}\nThe page.\nClaim: The page shows each statement.\n:::\n",
-			want: Problem{Pos: Position{"x.md", 2}, Node: "c", Rule: "bad-field", Detail: "bad-field: a check holds one Claim, one Procedure and one Failing example line, in that order"},
+			want: Problem{Pos: Position{"x.md", 2}, Node: "c", Rule: "bad-field", Detail: "bad-field: a check holds one Claim, one Procedure and one Failing example line, in that order", Effect: LosesNode},
 		},
 		{
 			name: "a claim of two lines",
 			text: ":::check{#c serves=\"s\" subject=\"code\" procedure=\"agent\"}\nClaim: The page shows each statement.\nIt shows each check.\nProcedure: An agent reads the page.\n:::\n",
-			want: Problem{Pos: Position{"x.md", 3}, Node: "c", Rule: "bad-field", Detail: "bad-field: a claim is one line"},
+			want: Problem{Pos: Position{"x.md", 3}, Node: "c", Rule: "bad-field", Detail: "bad-field: a claim is one line", Effect: KeepsEachNode},
 		},
 		{
 			name: "a component kind that is not interface",
 			text: ":::component{#envoy name=\"Envoy\" kind=\"service\"}\nIt delivers messages.\n:::\n",
-			want: Problem{Pos: Position{"x.md", 1}, Node: "envoy", Rule: "bad-component", Detail: `bad-component: kind is "interface" or absent, not "service"`},
+			want: Problem{Pos: Position{"x.md", 1}, Node: "envoy", Rule: "bad-component", Detail: `bad-component: kind is "interface" or absent, not "service"`, Effect: LosesNode},
 		},
 		{
 			name: "a time limit that is not a Go duration",
 			text: ":::check{#c serves=\"s\" subject=\"code\" procedure=\"agent\" time_limit=\"a day\"}\nClaim: The page shows each statement.\n:::\n",
-			want: Problem{Pos: Position{"x.md", 1}, Node: "c", Rule: "bad-time-limit", Detail: `bad-time-limit: "a day" is not a positive Go duration`},
+			want: Problem{Pos: Position{"x.md", 1}, Node: "c", Rule: "bad-time-limit", Detail: `bad-time-limit: "a day" is not a positive Go duration`, Effect: LosesNode},
 		},
 		{
 			name: "a definition that is not UTF-8",
 			text: ":::term{#cafe-term name=\"cafe\"}\nA caf\xe9 is a place where a session waits.\n:::\n",
-			want: Problem{Pos: Position{"x.md", 2}, Node: "-", Rule: "bad-encoding", Detail: "bad-encoding: a spec file is UTF-8 text with no NUL byte"},
+			want: Problem{Pos: Position{"x.md", 2}, Node: "-", Rule: "bad-encoding", Detail: "bad-encoding: a spec file is UTF-8 text with no NUL byte", Effect: KeepsEachNode},
 		},
 		{
 			name: "a name that is not UTF-8",
 			text: ":::term{#cafe-term name=\"caf\xe9\"}\nA cafe is a place where a session waits.\n:::\n",
-			want: Problem{Pos: Position{"x.md", 1}, Node: "-", Rule: "bad-encoding", Detail: "bad-encoding: a spec file is UTF-8 text with no NUL byte"},
+			want: Problem{Pos: Position{"x.md", 1}, Node: "-", Rule: "bad-encoding", Detail: "bad-encoding: a spec file is UTF-8 text with no NUL byte", Effect: KeepsEachNode},
 		},
 		{
 			name: "a NUL byte",
 			text: ":::term{#nul-term name=\"nul term\"}\nA nul term is a word.\n\nIt holds a nul\x00byte.\n:::\n",
-			want: Problem{Pos: Position{"x.md", 4}, Node: "-", Rule: "bad-encoding", Detail: "bad-encoding: a spec file is UTF-8 text with no NUL byte"},
+			want: Problem{Pos: Position{"x.md", 4}, Node: "-", Rule: "bad-encoding", Detail: "bad-encoding: a spec file is UTF-8 text with no NUL byte", Effect: KeepsEachNode},
 		},
 		{
 			name: "two lines that are not text, named once at the first",
 			text: ":::term{#cafe-term name=\"cafe\"}\nA caf\xe9 is a place.\nA caf\xe9 is a room.\n:::\n",
-			want: Problem{Pos: Position{"x.md", 2}, Node: "-", Rule: "bad-encoding", Detail: "bad-encoding: a spec file is UTF-8 text with no NUL byte"},
+			want: Problem{Pos: Position{"x.md", 2}, Node: "-", Rule: "bad-encoding", Detail: "bad-encoding: a spec file is UTF-8 text with no NUL byte", Effect: KeepsEachNode},
 		},
 		{
 			name: "a claim of two sentences on one line",
 			text: ":::check{#c serves=\"s\" subject=\"code\" procedure=\"agent\"}\nClaim: The daemon reads the claim. It deletes no claim.\nProcedure: An agent reads the claims.\n:::\n",
-			want: Problem{Pos: Position{"x.md", 2}, Node: "c", Rule: "bad-field", Detail: "bad-field: a claim is one sentence"},
+			want: Problem{Pos: Position{"x.md", 2}, Node: "c", Rule: "bad-field", Detail: "bad-field: a claim is one sentence", Effect: KeepsEachNode},
 		},
 		{
 			name: "a heading that names code",
 			text: "# The internal/dispatch/store package\n\n" + term,
-			want: Problem{Pos: Position{"x.md", 1}, Node: "-", Rule: "code-in-text", Detail: "code-in-text: heading names code: internal/dispatch/store"},
+			want: Problem{Pos: Position{"x.md", 1}, Node: "-", Rule: "code-in-text", Detail: "code-in-text: heading names code: internal/dispatch/store", Effect: KeepsEachNode},
 		},
 	} {
 		t.Run(row.name, func(t *testing.T) {
@@ -270,58 +265,51 @@ func TestParseReadsATimeLimit(t *testing.T) {
 	}
 }
 
-// parseRule is one kind of problem of Parse, by the text that parse.go writes for its Detail (a
-// constant, or the format of fmt.Sprintf), and a file that gives it.
+// parseRule is one kind of problem of Parse, by its Detail for a file that gives it.
 type parseRule struct{ detail, file string }
 
 // Each kind of problem of Parse is in one of two columns: it can lose a node of the files or change
-// one, so a comparison of the tree misses that text, or it leaves each node as the files write it.
-// LosesNode gives each the answer of its column, for a file that gives it. The test reads parse.go
-// for the Detail of each problem that it writes, so a new kind of problem fails the test until it
-// is in a column, and a problem that parse.go writes without the reader's problem method fails it
-// too.
+// one, so a comparison of the tree misses that text (LosesNode), or it leaves each node as the files
+// write it (KeepsEachNode). Parse gives each kind the Effect of its column, for a file that gives
+// it. Every problem that Parse gives for those files has one of the two Effects: a problem made with
+// no Effect fails, so no kind reads as one that keeps each node by default.
 func TestEachProblemOfParseSaysWhetherItLosesANode(t *testing.T) {
 	t.Parallel()
 	check := func(attributes, body string) string {
 		return ":::check{#a-restart-keeps-the-claim serves=\"a-claim-survives-a-restart\" subject=\"code\" procedure=\"program\"" + attributes + "}\n" + body + ":::\n"
 	}
-	losesOrChanges := []parseRule{
-		{detailTextOutsideBlock, "A line outside a block.\n"},
-		{detailUnclosedBlock, ":::term{#order name=\"order\"}\nAn order is a request.\n"},
-		{detailNestedBlock, ":::term{#order name=\"order\"}\nAn order is a request.\n:::term{#bill name=\"bill\"}\nA bill is a request for money.\n:::\n:::\n"},
-		{detailBadBlockLine, ":::\n"},
-		{`unknown-block: %q is not requirement, check, component or term`, ":::note{#a-note}\nA note.\n:::\n"},
-		{`unknown-attribute: %s takes no attribute %q`, ":::term{#order name=\"order\" colour=\"red\"}\nAn order is a request.\n:::\n"},
-		{`bad-component: kind is "interface" or absent, not %q`, ":::component{#orders name=\"Orders\" kind=\"service\"}\nIt keeps the orders.\n:::\n"},
-		{`bad-time-limit: %q is not a positive Go duration`, check(` time_limit="soon"`, "Claim: The daemon reads the claim after it starts again.\n")},
-		{detailBadField, check("", "Procedure: The program starts the daemon again.\nClaim: The daemon reads the claim after it starts again.\n")},
+	columns := map[Effect][]parseRule{
+		LosesNode: {
+			{detailTextOutsideBlock, "A line outside a block.\n"},
+			{detailUnclosedBlock, ":::term{#order name=\"order\"}\nAn order is a request.\n"},
+			{detailNestedBlock, ":::term{#order name=\"order\"}\nAn order is a request.\n:::term{#bill name=\"bill\"}\nA bill is a request for money.\n:::\n:::\n"},
+			{detailBadBlockLine, ":::\n"},
+			{`unknown-block: "note" is not requirement, check, component or term`, ":::note{#a-note}\nA note.\n:::\n"},
+			{`unknown-attribute: term takes no attribute "colour"`, ":::term{#order name=\"order\" colour=\"red\"}\nAn order is a request.\n:::\n"},
+			{`bad-component: kind is "interface" or absent, not "service"`, ":::component{#orders name=\"Orders\" kind=\"service\"}\nIt keeps the orders.\n:::\n"},
+			{`bad-time-limit: "soon" is not a positive Go duration`, check(` time_limit="soon"`, "Claim: The daemon reads the claim after it starts again.\n")},
+			{detailBadField, check("", "Procedure: The program starts the daemon again.\nClaim: The daemon reads the claim after it starts again.\n")},
+		},
+		KeepsEachNode: {
+			{detailBadEncoding, ":::term{#cafe name=\"cafe\"}\nA caf\xe9 is a place where a session waits.\n:::\n"},
+			{"code-in-text: heading names code: I/O", "# Orders and I/O\n"},
+			{detailClaimOneLine, check("", "Claim: The daemon reads the claim\nafter it starts again.\n")},
+			{detailClaimOneSentence, check("", "Claim: The daemon starts again. It reads the claim.\n")},
+		},
 	}
-	keepsNodes := []parseRule{
-		{detailBadEncoding, ":::term{#cafe name=\"cafe\"}\nA caf\xe9 is a place where a session waits.\n:::\n"},
-		{detailHeadingNamesCode, "# Orders and I/O\n"},
-		{detailClaimOneLine, check("", "Claim: The daemon reads the claim\nafter it starts again.\n")},
-		{detailClaimOneSentence, check("", "Claim: The daemon starts again. It reads the claim.\n")},
-	}
-
-	written := problemDetails(t)
-	column := map[string]bool{}
-	for losesNode, rules := range map[bool][]parseRule{true: losesOrChanges, false: keepsNodes} {
+	name := map[Effect]string{LosesNode: "LosesNode", KeepsEachNode: "KeepsEachNode"}
+	for effect, rules := range columns {
 		for _, rule := range rules {
-			if _, twice := column[rule.detail]; twice {
-				t.Errorf("%q is in both columns", rule.detail)
-			}
-			column[rule.detail] = losesNode
-			if !slices.Contains(written, rule.detail) {
-				t.Errorf("%q is in a column, and parse.go writes no such problem", rule.detail)
-			}
-			start, _, _ := strings.Cut(rule.detail, "%")
 			_, problems := Parse(map[string][]byte{"spec.md": []byte(rule.file)})
 			given := 0
 			for _, p := range problems {
-				if strings.HasPrefix(p.Detail, start) {
+				if _, ok := name[p.Effect]; !ok {
+					t.Errorf("Parse(%q) gives %+v, which has no Effect", rule.file, p)
+				}
+				if p.Detail == rule.detail {
 					given++
-					if LosesNode(p) != losesNode {
-						t.Errorf("LosesNode(%+v) = %t, want %t", p, !losesNode, losesNode)
+					if p.Effect != effect {
+						t.Errorf("Parse(%q) gives %q the Effect %s, want %s", rule.file, p.Detail, name[p.Effect], name[effect])
 					}
 				}
 			}
@@ -330,84 +318,6 @@ func TestEachProblemOfParseSaysWhetherItLosesANode(t *testing.T) {
 			}
 		}
 	}
-	for _, detail := range written {
-		if _, ok := column[detail]; !ok {
-			t.Errorf("parse.go writes the problem %q, which is in neither column: say whether it can lose a node or change one", detail)
-		}
-	}
-}
-
-// problemDetails is the Detail of each problem that parse.go writes with the reader's problem
-// method: the value of a constant, a string, the string before a +, or the format of fmt.Sprintf.
-// It fails the test for a Detail that it cannot read so, and for a Problem that parse.go makes
-// outside that method.
-func problemDetails(t *testing.T) []string {
-	t.Helper()
-	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, "parse.go", nil, parser.SkipObjectResolution)
-	if err != nil {
-		t.Fatal(err)
-	}
-	constants := map[string]string{}
-	for _, decl := range file.Decls {
-		if gen, ok := decl.(*ast.GenDecl); ok && gen.Tok == token.CONST {
-			for _, spec := range gen.Specs {
-				value := spec.(*ast.ValueSpec)
-				for i, name := range value.Names {
-					if lit, ok := value.Values[i].(*ast.BasicLit); ok && lit.Kind == token.STRING {
-						constants[name.Name], _ = strconv.Unquote(lit.Value)
-					}
-				}
-			}
-		}
-	}
-	var text func(e ast.Expr) (string, bool)
-	text = func(e ast.Expr) (string, bool) {
-		switch e := e.(type) {
-		case *ast.BasicLit:
-			s, err := strconv.Unquote(e.Value)
-			return s, e.Kind == token.STRING && err == nil
-		case *ast.Ident:
-			s, ok := constants[e.Name]
-			return s, ok
-		case *ast.BinaryExpr:
-			return text(e.X)
-		case *ast.CallExpr:
-			if fun, ok := e.Fun.(*ast.SelectorExpr); ok && fun.Sel.Name == "Sprintf" && len(e.Args) > 0 {
-				return text(e.Args[0])
-			}
-		}
-		return "", false
-	}
-	var details []string
-	for _, decl := range file.Decls {
-		fn, ok := decl.(*ast.FuncDecl)
-		if !ok {
-			continue
-		}
-		ast.Inspect(fn, func(n ast.Node) bool {
-			switch n := n.(type) {
-			case *ast.CallExpr:
-				if sel, ok := n.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "problem" && len(n.Args) == 3 {
-					detail, ok := text(n.Args[2])
-					if !ok {
-						t.Errorf("%s: cannot read the Detail of this problem", fset.Position(n.Pos()))
-					}
-					details = append(details, detail)
-				}
-			case *ast.CompositeLit:
-				if name, ok := n.Type.(*ast.Ident); ok && name.Name == "Problem" && fn.Name.Name != "problem" {
-					t.Errorf("%s: %s makes a Problem outside the reader's problem method", fset.Position(n.Pos()), fn.Name.Name)
-				}
-			}
-			return true
-		})
-	}
-	if len(details) == 0 {
-		t.Fatal("UNKNOWN: parse.go holds no call of the reader's problem method, so no kind of problem was read")
-	}
-	slices.Sort(details)
-	return slices.Compact(details)
 }
 
 // readFiles reads every file directly in dir, by name, as the parser takes them.
