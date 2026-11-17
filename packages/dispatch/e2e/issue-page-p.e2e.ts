@@ -2519,6 +2519,111 @@ test("a change request sent from the header leaves the focus in the header", asy
   });
 });
 
+// Approve pressed by Enter on the header's chip is disabled while its review is written, which
+// drops the focus to the page's body, and the approval then takes it away. The focus goes to the
+// chip of the document the reader approved, not to another control of the header, both while the
+// review is written and once the approval lands. The review's write is held open with a route so
+// the row can read the focus while Approve is disabled: once the write lands, Approve takes the
+// focus back and the chip's own restore puts it on the chip, wherever the header had put it.
+test("Approve by Enter on the header's chip leaves the focus on the approved chip", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await phase(browser, seedHeader, async (page, seeded) => {
+    await requestApproval(seeded.specArtifactId, { summary: "Read it." });
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectHeaderDrawn(page);
+    const header = issueHeader(page);
+    const approve = header.getByRole("button", { exact: true, name: "Approve" });
+    await expect(approve, "the chip carries no Approve while its request waits").toBeVisible();
+    const chip = approvalChip(page, seeded.specArtifactId);
+
+    const reviews = `**/api/v1/artifacts/${seeded.specArtifactId}/reviews`;
+    const held: (() => void)[] = [];
+    await page.route(reviews, async (route) => {
+      if (route.request().method() !== "POST") {
+        await route.continue();
+        return;
+      }
+      const { promise, resolve } = Promise.withResolvers<void>();
+      held.push(resolve);
+      await promise;
+      await route.continue();
+    });
+
+    await approve.focus();
+    await expect(approve).toBeFocused();
+    await page.keyboard.press("Enter");
+    await expect.poll(() => held.length, { message: "Approve by Enter sent no review" }).toBe(1);
+    await expect(approve, "Approve is not disabled while its review is written").toBeDisabled();
+    await framesDrawn(page, 2);
+    const written = await focusNow(page);
+    await expect(
+      chip,
+      `while the review was written the focus was on ${written.what}, not on the spec's chip`
+    ).toBeFocused();
+
+    for (const release of held) release();
+    await expect
+      .poll(async () => (await getArtifact(seeded.specArtifactId)).approval?.state, {
+        message: "Approve by Enter recorded no approval",
+      })
+      .toBe("approved");
+    // The route goes once the server holds the approval, so after its handler let the write on:
+    // a route removed while its handler still holds a write is handed on without it, and the
+    // handler's own `continue` then throws.
+    await page.unroute(reviews);
+    await expect(reviewActions(header), "the header still draws an action").toHaveCount(0);
+    await framesDrawn(page, 2);
+    const focus = await focusNow(page);
+    await expect(
+      chip,
+      `Approve by Enter left the focus on ${focus.what}, not on the spec's chip`
+    ).toBeFocused();
+  });
+});
+
+// A change request sent by Enter from the header's Request changes answers the request, so the
+// header draws neither action any more, and the dialog gives the focus back to Request changes,
+// which the header then removes. The focus goes to the chip of the document the reader reviewed.
+test("a change request sent from the header's Request changes leaves the focus on its chip", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await phase(browser, seedHeader, async (page, seeded) => {
+    await requestApproval(seeded.specArtifactId, { summary: "Read it." });
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectHeaderDrawn(page);
+    const header = issueHeader(page);
+    const requestChanges = header.getByRole("button", { exact: true, name: "Request changes" });
+    await expect(
+      requestChanges,
+      "the chip carries no Request changes while its request waits"
+    ).toBeVisible();
+    await requestChanges.focus();
+    await expect(requestChanges).toBeFocused();
+    await page.keyboard.press("Enter");
+    const dialog = page.getByRole("dialog", { name: "Request changes" });
+    await expect(dialog, "Enter on Request changes opened no dialog").toBeVisible();
+    await page.keyboard.type("One change.");
+    await dialog.getByRole("button", { exact: true, name: "Request changes" }).focus();
+    await page.keyboard.press("Enter");
+    await expect(dialog, "the change request left its dialog open").toHaveCount(0);
+    await expect
+      .poll(async () => (await getArtifact(seeded.specArtifactId)).approval?.state, {
+        message: "the change request was not recorded",
+      })
+      .toBe("changes_requested");
+    await expect(reviewActions(header), "the header still draws an action").toHaveCount(0);
+    await framesDrawn(page, 2);
+    const focus = await focusNow(page);
+    await expect(
+      approvalChip(page, seeded.specArtifactId),
+      `the change request left the focus on ${focus.what}, not on the spec's chip`
+    ).toBeFocused();
+  });
+});
+
 // A write the server refuses draws its line under the header with Retry: the pin's, from the
 // menu, and the issue's, from the title. Retry by Enter keeps the focus while the write runs
 // again, and once the write lands and the line goes, the focus is still in the header.

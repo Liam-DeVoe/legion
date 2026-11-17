@@ -21,19 +21,25 @@ import { IssueTitleRow } from "./IssueTitleRow";
 import { useIdentityBlock } from "./identity-block";
 import { pageChrome } from "./page-structure";
 import { ANSWER_LINES, CONTROL_LABELS, STATE_LINES } from "./page-words";
+import { chipOfLostAction } from "./useHeaderKeys";
 import { type IssueHeaderWrites, statusPickOnly } from "./useIssueHeaderWrites";
 import { useIssuePalette } from "./useIssuePalette";
 
 /**
  * Where the header's keeper puts the focus once a write takes away the control that held it -
  * a close that disables the status, an answered request that removes Approve, a refusal line
- * that goes once its write lands - in this order (decision 216). "Issue actions" comes first:
- * the header draws it in every state and no write disables it, so it can always take the focus,
- * and it opens the actions a reader goes on with. The title's heading comes next: it is the field
- * the issue's refusal line stands for, and it takes the focus should the menu's control not.
+ * that goes once its write lands - in this order (decision 216). When the lost control is one of
+ * an approval chip's two actions, that chip comes first (`chipOfLostAction`): Approve is
+ * disabled while its review is written, and both actions go once the request is answered, so
+ * the reader stays on the document they just reviewed rather than being sent to the top of the
+ * header. "Issue actions" comes next: the header draws it in every state and no write disables
+ * it, so it can always take the focus, and it opens the actions a reader goes on with. The
+ * title's heading comes last: it is the field the issue's refusal line stands for, and it takes
+ * the focus should the menu's control not.
  * One array at module level, so every render hands the keeper the same one.
  */
 const HEADER_FOCUS_FALLBACKS: readonly FocusFallback[] = [
+  chipOfLostAction,
   ({ root }) =>
     root.querySelector<HTMLElement>(`button[aria-label="${CONTROL_LABELS.issue_actions}"]`),
   ({ root }) => root.querySelector<HTMLElement>("h1"),
