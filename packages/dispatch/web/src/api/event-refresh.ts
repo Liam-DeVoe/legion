@@ -628,7 +628,9 @@ function changesReferenceGraph(event: DispatchEvent): boolean {
       const changes = issueChanges(event);
       return (
         changes === undefined ||
-        ["parent", "blocked_by", "components", "title"].some((field) => changes.has(field))
+        ["parent", "needs", "blocked_by", "duplicate_of", "filed_from", "components", "title"].some(
+          (field) => changes.has(field)
+        )
       );
     }
     default:
@@ -747,29 +749,51 @@ function issueWriteTargets(
     targets.push({ queryKey: ["priorities"] }, { queryKey: ["issues", "advances"] });
   }
 
-  // A `child_of` edge into the parent and a `blocked_by` edge into each blocker are rows of their
-  // backlink panels: the new parent and blockers are the payload's, the old ones are the panels
-  // that still list an edge from this issue.
-  if (moved("parent") || moved("blocked_by")) {
+  // A `child_of` edge into the parent, a `needs` edge into each issue it waits on, a
+  // `duplicate_of` edge into the issue it repeats and a `filed_from` edge into the item it was
+  // filed out of are rows of their backlink panels: the new far ends are the payload's, the old
+  // ones are the panels that still list an edge from this issue. A Dispatch of the release before
+  // writes `blocked_by` alone, which is read where the payload holds no `needs`, and names the
+  // edge blocked_by.
+  if (
+    moved("parent") ||
+    moved("needs") ||
+    moved("blocked_by") ||
+    moved("duplicate_of") ||
+    moved("filed_from")
+  ) {
     const parent = payloadString(event, "parent");
-    const blockers = payloadStrings(event, "blocked_by") ?? [];
+    const waits = payloadStrings(event, "needs") ?? payloadStrings(event, "blocked_by") ?? [];
+    const duplicate = payloadString(event, "duplicate_of");
+    const filed = payloadString(event, "filed_from")?.split("/").pop();
     targets.push(
       referencePanels(
         ({ edges, node }) =>
-          node.kind === "issue" &&
-          (node.id === parent ||
-            blockers.includes(node.id) ||
-            (edges ?? []).some(
-              (edge) =>
-                edge.node.kind === "issue" &&
-                edge.node.id === key &&
-                (edge.kind === "child_of" || edge.kind === "blocked_by")
-            ))
+          (node.kind === "issue" &&
+            (node.id === parent || node.id === duplicate || waits.includes(node.id))) ||
+          (filed !== undefined && node.id === filed) ||
+          (edges ?? []).some(
+            (edge) =>
+              edge.node.kind === "issue" &&
+              edge.node.id === key &&
+              ISSUE_RELATION_KINDS[edge.kind] === true
+          )
       )
     );
   }
   return targets;
 }
+
+/** The kinds of edge an issue states out of its own node: its parent, its waits under both the
+ *  spelling this Dispatch answers and the one a Dispatch of the release before answers, the
+ *  issue it repeats and the item it was filed out of. */
+const ISSUE_RELATION_KINDS: Partial<Record<string, true>> = {
+  child_of: true,
+  needs: true,
+  blocked_by: true,
+  duplicate_of: true,
+  filed_from: true,
+};
 
 /**
  * What one write of priority `id` changes, by which of the three writes it was. Every one moves

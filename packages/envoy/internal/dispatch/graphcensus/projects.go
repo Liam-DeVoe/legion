@@ -229,7 +229,10 @@ func ProjectComplete(ctx context.Context, q graphstore.Queryer) ([]string, error
 // session, root author, root target, issue). session is a conversation's, for a document or an ask
 // on one; the root columns are a message's on no issue alone: the author and the target of its
 // thread's root, its parties (graphstore.ThreadParties); issue is the issue that owns a document,
-// which its part_of names (graphstore.ArtifactPartOf).
+// which its part_of names (graphstore.ArtifactPartOf), and an issue's parent, which its child_of
+// names (graphstore.IssueChildOf, dispatch://INFRA-1253 R9): an issue's marker is its node and its
+// child_of together, since graph_edges answers its parent from the store once its row names its
+// node.
 //
 // An issue's and a document's marker is the node pair its row names (node_kind and node_address,
 // migration 20261116092210), so a row whose node an INFRA-3862 build wrote with no part_of, and
@@ -237,7 +240,7 @@ func ProjectComplete(ctx context.Context, q graphstore.Queryer) ([]string, error
 // theirs names in a column of its own.
 var objectKinds = []struct{ kind, start, read string }{
 	{graphstore.KindIssue, "", `
-		select i.key, i.created_at, i.created_by, i.project_key, null::text, null::jsonb, null::text, null::text
+		select i.key, i.created_at, i.created_by, i.project_key, null::text, null::jsonb, null::text, i.parent_key
 		from issues i
 		where i.key > $1 and i.node_kind is null
 		order by i.key limit $2`},
@@ -283,8 +286,9 @@ const zeroUUID = "00000000-0000-0000-0000-000000000000"
 // row's own author, and writes the marker in the transaction that writes the node, so a second run
 // reads no row the first one wrote. Beside a document's node it states what its kind's writer
 // states (R16 of dispatch://INFRA-1253): its part_of the issue that owns it, at the node's time,
-// and an image's or a file's newest bytes (writeObjectBatch). It appends no event, and every fact
-// it states carries the sentinel.
+// and an image's or a file's newest bytes (writeObjectBatch); beside an issue's, its child_of to
+// the parent its row names (R9), so graph_edges answers that parent from the store once the row
+// names its node. It appends no event, and every fact it states carries the sentinel.
 func backfillObjectNodes(ctx context.Context, database *store.Store) ([]KindBackfill, error) {
 	var done []KindBackfill
 	for _, kind := range objectKinds {
@@ -336,7 +340,8 @@ func statedOf(nodes []graphstore.Node) int64 {
 
 // readObjectNodes reads one batch of a kind's rows its marker does not mark, and answers the node
 // its kind's writer writes for each (graphstore.IssueNode and its siblings), with the part_of to
-// its issue of each document an issue owns (graphstore.ArtifactPartOf), dated as its node.
+// its issue of each document an issue owns (graphstore.ArtifactPartOf) and the child_of to its
+// parent of each issue that has one (graphstore.IssueChildOf), each dated as its node.
 func readObjectNodes(ctx context.Context, database *store.Store, kind, read, after string, limit int) ([]graphstore.Node, []graphstore.Tuple, error) {
 	rows, err := database.Pool.Query(ctx, read, after, limit)
 	if err != nil {
@@ -364,6 +369,9 @@ func readObjectNodes(ctx context.Context, database *store.Store, kind, read, aft
 		switch kind {
 		case graphstore.KindIssue:
 			nodes = append(nodes, graphstore.IssueNode(id, derefText(project), author, createdAt))
+			if issue != nil {
+				tuples = append(tuples, graphstore.IssueChildOf(id, *issue, author, createdAt))
+			}
 		case graphstore.KindArtifact:
 			nodes = append(nodes, graphstore.ArtifactNode(id, derefText(project), derefText(session), author, createdAt))
 			if issue != nil {

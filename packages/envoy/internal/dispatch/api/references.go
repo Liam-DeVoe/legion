@@ -161,6 +161,7 @@ func (s *server) getReferences(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	answerIssueWaitsAsNeeds(edges)
 	if query.Direction == "in" {
 		if err := s.documentMentionExcerpts(r.Context(), who, query, edges); err != nil {
 			s.writeHandlerError(w, err)
@@ -576,7 +577,16 @@ func parseReferencesQuery(r *http.Request, serverURL string) (refs.Query, text.R
 				continue
 			}
 			query.Kinds = append(query.Kinds, kind)
+			// An issue's wait on an issue is blocked_by in graph_edges through this release, the
+			// kind a process of the release before reads it by, and needs in this read's answer
+			// (answerIssueWaitsAsNeeds), so needs reads that edge as well as a plan node's needs,
+			// and blocked_by reads it too (R10 of dispatch://INFRA-1253).
+			if kind == model.EdgeKindNeeds {
+				query.Kinds = append(query.Kinds, blockedByMember)
+			}
 		}
+		slices.Sort(query.Kinds)
+		query.Kinds = slices.Compact(query.Kinds)
 	}
 	// An ask's inbound `replies_to` edges are its own clarification thread, which every ask
 	// surface renders inline, and its parts are each part_of it: "what references this ask" means
@@ -601,6 +611,18 @@ func parseReferencesQuery(r *http.Request, serverURL string) (refs.Query, text.R
 		query.Since = &value
 	}
 	return query, ref, unknownKinds, nil
+}
+
+// answerIssueWaitsAsNeeds names each edge of an issue's wait on an issue needs, the one relation an
+// issue and a plan node wait by (R10 of dispatch://INFRA-1253): graph_edges names it blocked_by in
+// both its arms through this release, which a process of the release before reads, and this
+// build's references read answers it as the store states it.
+func answerIssueWaitsAsNeeds(edges []model.GraphEdge) {
+	for index := range edges {
+		if edges[index].Kind == blockedByMember {
+			edges[index].Kind = model.EdgeKindNeeds
+		}
+	}
 }
 
 // documentMentionExcerpts replaces the excerpt of every mention written by a document with the

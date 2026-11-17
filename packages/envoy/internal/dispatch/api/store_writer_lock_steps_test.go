@@ -63,7 +63,7 @@ func TestEveryApiStoreWriterTakesTheStoreLockOrder(t *testing.T) {
 		rig.commentCreate("createCommentFor on a project document", "/api/v1/artifacts/"+rig.document+"/comments",
 			ownerRowStep(documentOwnerStatement, "artifacts", `select 1 from artifacts where id = $1::uuid for no key update`, rig.document)),
 		rig.mentionReply(), rig.commentDeliverySettle(), rig.messageDeliverySettle(),
-		rig.goingRecord(), rig.goingFrame(), rig.issuePatchForRun(),
+		rig.goingRecord(), rig.goingFrame(), rig.issuePatchForRun(), rig.issuePatchRelations(),
 	} {
 		t.Run(writer.name, func(t *testing.T) {
 			requireTheWrittenOrderAdmits(t, writer)
@@ -533,6 +533,69 @@ func (r *storeWriterRig) issuePatchForRun() storeWriter {
 				write: func() error {
 					response := requestForRun(t, r.call, http.MethodPatch, "/api/v1/issues/"+r.issue,
 						map[string]any{"labels": labels}, login, run.ID)
+					if response.Code != http.StatusOK {
+						return fmt.Errorf("status=%d body=%s", response.Code, response.Body.String())
+					}
+					return nil
+				},
+			}
+		},
+	}
+}
+
+// issuePatchRelations is an issue's PATCH that states a relation of the issue (patchIssue,
+// dispatch://INFRA-1253 R10), through its route: a PATCH of the issue's needs. It takes the issue's
+// row as its owner row (lockPatchRows), updates that row, writes the issue_links rows the new set
+// projects (writeIssueNeeds), writes the issue's node (graphstore.WriteUncaused), so that
+// graph_edges answers the relation out of a node the store holds, appends issue.updated, and then
+// states the needs that event causes in one statement of the store's arms (stateIssueRelations).
+// The issue's node exists from its create, so the node step is held as the table it is written to,
+// and so are the rows, which the write holds itself from its owner step. Each run names a target
+// no run has named, an issue it creates first, so every run retracts one wait and states another.
+// The event's step takes the issue's project row `for key share`, as issuePatchForRun says.
+func (r *storeWriterRig) issuePatchRelations() storeWriter {
+	event := eventAppendStep()
+	event.takes = append(event.takes, tableLock{"projects", rowShareMode})
+	return storeWriter{
+		name: "patchIssue stating its needs",
+		steps: []storeStep{
+			r.issueOwnerStep(patchOwnerStatement),
+			{
+				name: "the issue's row", order: projectionStep,
+				hold: holdTableWrites("issues"), at: patchRowStatement,
+				takes: []tableLock{{"issues", rowExclusiveMode}},
+			},
+			{
+				name: "the issue's issue_links rows", order: projectionStep,
+				hold: holdTableWrites("issue_links"), at: "delete from issue_links where issue_key = $1",
+				takes: []tableLock{{"issue_links", rowExclusiveMode}},
+			},
+			{
+				name: "the issue's node", order: nodeStep,
+				hold: holdTableWrites("graph_nodes"), at: nodeWriteStatement,
+				takes: []tableLock{{"graph_nodes", rowExclusiveMode}},
+			},
+			event,
+			{
+				name: "the relations the event causes", order: tupleStep, caused: true,
+				hold: holdTableWrites("graph_tuples"), at: "with graph_relations_appended as (",
+				takes: []tableLock{{"graph_tuples", rowExclusiveMode}},
+			},
+		},
+		locksOwnProject: true,
+		ready: func(t *testing.T, ctx context.Context) storeWriterRun {
+			created := dispatchRequest(t, r.handler, http.MethodPost, "/api/v1/issues", map[string]any{
+				"project": "LOCK", "title": r.fresh("A wait the lock steps hold"), "force": true,
+			}, "alice")
+			if created.Code != http.StatusCreated {
+				t.Fatalf("create the run's target: status=%d body=%s", created.Code, created.Body.String())
+			}
+			target := decodeBody[model.Issue](t, created).Key
+			return storeWriterRun{
+				made: graphstore.Node{Kind: graphstore.KindIssue, ID: r.issue},
+				write: func() error {
+					response := dispatchRequest(t, r.call, http.MethodPatch, "/api/v1/issues/"+r.issue,
+						map[string]any{"needs": []string{target}}, "alice")
 					if response.Code != http.StatusOK {
 						return fmt.Errorf("status=%d body=%s", response.Code, response.Body.String())
 					}

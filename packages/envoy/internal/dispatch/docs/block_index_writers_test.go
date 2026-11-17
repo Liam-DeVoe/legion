@@ -522,6 +522,13 @@ var indexPasses = map[string]string{
 	// issue's row it locked, and caused by the issue's own event, so the run's change of the issue
 	// is named (changed_by_run). It reads no row of either side to decide what the other says.
 	"api/issue_patch.go#patchIssue": "the PATCH's own body, the issue's row it locked and the issue's own event",
+	// An issue's relations its create and its PATCH state (dispatch://INFRA-1253 R9, R10): the
+	// claims and tuples the request names, read against the issue's own row, the issue_links rows
+	// it holds and the tuples its node states only to state what moved, and the node of the item
+	// its filed_from names where the store held none, from that item's own row, as the backfill
+	// writes it. Neither reads one side of a projection to mend the other.
+	"api/issue_relations.go#stateIssueRelations": "the request's relations and the issue's own event",
+	"api/issue_relations.go#stateFiledFromNode":  "the row of the item the request's filed_from names",
 	// A run of the command bar: its interaction node, its author's node and their tuples, written
 	// from the POST alone before the going_requests row that projects them, and each frame's value,
 	// written from the frame its writer hands it before the going_events row that projects it.
@@ -608,6 +615,10 @@ var indexPasses = map[string]string{
 	// found by an anti-join on graph_nodes since the row names no node, and its document's row,
 	// which give the node its address, its project and whether it is a query's version.
 	"graphcensus/census_versions.go#writeVersionBatch": "the artifact_versions rows no version node stands for, and their documents' rows",
+	// The backfill of the waits a process of the release before wrote: each issue_links row naming
+	// no node, its own content, read again under its issue's row, and that issue's own row, whose
+	// node the object pass wrote first.
+	"graphcensus/census_issues.go#writeIssueLinkBatch": "each pre-store issue_links row's own content and its issue's row",
 	// The erase (R5), the one statement of the tree that removes bytes. Its input is the node
 	// the operator named and what the store itself holds about it, which is neither side of a
 	// projection read to mend the other: it deletes both sides together, the store's through

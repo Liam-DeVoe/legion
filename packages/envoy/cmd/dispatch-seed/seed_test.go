@@ -172,7 +172,10 @@ func TestSeedCommentsOnTheSchemaBeforeAnswers(t *testing.T) {
 // migration (20261116092210), the release before this one's, which the measurement protocol seeds
 // with --no-migrate, the rows are written without the columns that schema lacks and nothing of the
 // tree is written, as that release's server writes none, so the backfill this release runs over the
-// data set is what writes it.
+// data set is what writes it. On that schema graph_edges is as 20261116091932 states it, the newest
+// migration before the markers that states the view, and it reads neither column. The view of this
+// release reads issues' and artifacts' node_kind, so the test states the older view again before it
+// drops them, and the seed's report reads graph_edges through it.
 func TestSeedWritesTheIssueTreeMarkersWhereTheSchemaCarriesThem(t *testing.T) {
 	ctx := context.Background()
 	for _, schema := range []struct {
@@ -182,7 +185,11 @@ func TestSeedWritesTheIssueTreeMarkersWhereTheSchemaCarriesThem(t *testing.T) {
 		t.Run(schema.name, func(t *testing.T) {
 			database := storetest.Open(t)
 			if schema.before {
-				if _, err := database.Pool.Exec(ctx, `
+				view, err := os.ReadFile("../../internal/dispatch/store/migrations/20261116091932_graph_edges_store_tuples.up.sql")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := database.Pool.Exec(ctx, string(view)+`
 					alter table issues drop column node_kind, drop column node_address;
 					alter table artifacts drop column node_kind, drop column node_address;
 				`); err != nil {
@@ -787,11 +794,13 @@ func assertStoreCensusAgrees(t *testing.T, database *store.Store) {
 // 20261116091932_graph_edges_store_tuples and 20261116094101_graph_edges_asks each keep that list
 // arm for arm and widen only what the tuple arm answers, 20261116160000_graph_edges_findings adds
 // one arm over the same tuples, answering the relations out of a finding of a lens as a lens_block
-// (armOfAFinding), and 20261116184707_issue_tree_graph_edges_both_arms, the last migration to
-// restate graph_edges, states all three over the same list. Each of the arms over a kind the store
-// now writes answers only the rows of its table that name no node, and the seed names the node of
-// every row it writes, so those arms answer nothing here (armGatedPerRow).
-const graphArmCount = 29
+// (armOfAFinding), 20261116184707_issue_tree_graph_edges_both_arms states all three over the same
+// list, and 20261117140000_issue_tree_relations, the last migration to restate graph_edges, adds
+// one arm over the artifacts that carry their node, answering each one's attached_to from its
+// part_of tuple. Each of the arms over a kind the store now writes answers only the rows of its
+// table that name no node, and the seed names the node of every row it writes, so those arms answer
+// nothing here (armGatedPerRow).
+const graphArmCount = 30
 
 var (
 	armKindLiteral   = regexp.MustCompile(`'([a-z_]+)'::text AS kind`)
@@ -823,7 +832,7 @@ func assertEveryGraphArmHoldsRows(t *testing.T, database *store.Store) {
 	}
 	arms := strings.Split(definition, "UNION ALL")
 	if len(arms) != graphArmCount {
-		t.Fatalf("graph_edges has %d arms, not the %d migrations 20261109215947 to 20261116184707 restate it with; read the view and update the test",
+		t.Fatalf("graph_edges has %d arms, not the %d migrations 20261109215947 to 20261117140000 restate it with; read the view and update the test",
 			len(arms), graphArmCount)
 	}
 	pairs := map[[2]string]bool{}

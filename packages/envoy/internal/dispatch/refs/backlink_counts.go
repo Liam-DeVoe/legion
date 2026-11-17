@@ -255,15 +255,22 @@ func rowNamesNoNode(column string) string { return column + ` is null` }
 // release before this one deletes a row and appends no retraction, so the tuple outlives the row,
 // and only the row can say the edge still stands; that build may also write the row again with
 // no node, which its table's arm then answers alone. graph_edges' tuple arm makes the same join
-// (migrations 20261109215947 and 20261116094101). An ask holds a follower row per session, so the
-// follower row that carries a followed_by is the one of the session the tuple reaches.
+// (migrations 20261109215947, 20261116094101 and 20261117140000). An ask holds a follower row per
+// session, so the follower row that carries a followed_by is the one of the session the tuple
+// reaches; an issue's row carries its child_of while it names that parent, and an issue_links row
+// the needs of its own pair.
 func projectionCarries(table, fromKind, alias string) string {
-	session := ""
-	if table == "ask_followers" {
-		session = ` and projected.session_id = ` + alias + `.to_id`
+	pair := ""
+	switch table {
+	case "ask_followers":
+		pair = ` and projected.session_id = ` + alias + `.to_id`
+	case "issues":
+		pair = ` and projected.key = ` + alias + `.from_id and projected.parent_key = ` + alias + `.to_id`
+	case "issue_links":
+		pair = ` and projected.issue_key = ` + alias + `.from_id and projected.kind = 'blocked_by' and projected.target_key = ` + alias + `.to_id`
 	}
 	return `exists (select 1 from ` + table + ` projected
-		where projected.node_kind = '` + fromKind + `' and projected.node_address = ` + alias + `.from_id` + session + `)`
+		where projected.node_kind = '` + fromKind + `' and projected.node_address = ` + alias + `.from_id` + pair + `)`
 }
 
 // blockRefCarries is projectionCarries for a link, whose projection row is the block_refs row of
@@ -285,18 +292,22 @@ func blockRefCarries(fromKind, alias string) string {
 // and the kinds the view answers from the tuples alone, with no projection row behind them (its
 // store class, migration 20261116091932): changed_by_run, has_kind, triggered_by, constrained_by
 // and prevented_by out of any node, and part_of and authored_by out of a node of the kinds
-// dispatch://INFRA-1950 adds (graphstore.KindInteraction and the three beside it). It is the list
-// the view's tuple arm renders (migrations 20261109215947, 20261116091932, 20261116094101,
-// 20261116160000 and 20261116184707, which states the view with both children's arms) and the
-// list the announcer writes into server_build_announcements.tuple_kinds (startup.Deps), which is
-// how the release that deletes an old arm of the view reads whether the release a rollback would
-// reach writes that arm's kinds as tuples too. A child that moves another relation into the store
-// adds its kinds here, so the arm and the announcement read one list.
+// dispatch://INFRA-1950 adds (graphstore.KindInteraction and the three beside it); and an issue's
+// relations, child_of and needs, which issues and issue_links project, and duplicate_of and
+// filed_from, which no row does, beside a document's attached_to, the part_of to its issue the
+// view answers by that name (dispatch://INFRA-1253, migration 20261117140000). It is the list the
+// view's tuple arms render (migrations 20261109215947, 20261116091932, 20261116094101,
+// 20261116160000, 20261116184707 and 20261117140000) and the list the announcer writes into
+// server_build_announcements.tuple_kinds (startup.Deps), which is how the release that deletes an
+// old arm of the view reads whether the release a rollback would reach writes that arm's kinds as
+// tuples too. A child that moves another relation into the store adds its kinds here, so the arm
+// and the announcement read one list.
 //
 // The announcement names a kind alone, and part_of in it is no claim about every part_of the store
 // holds: this build writes a part_of the view answers only out of a lens, a lens_block, a risk or
-// a constraint. A session's, a page's and a block's placement are part_of tuples no arm renders,
-// and a block's membership of its document stays in_document.
+// a constraint, and a document's to its issue as attached_to. A session's, a page's and a block's
+// placement are part_of tuples no arm renders, and a block's membership of its document stays
+// in_document.
 //
 // The list carries this build's capabilities too (processes.Capabilities): issue_room, which no
 // relation kind spells, is how a reader of the announcements tells a build that serves the issue
@@ -309,11 +320,28 @@ func TupleKinds() []string {
 		graphstore.TupleChangedByRun, graphstore.TupleHasKind, graphstore.TupleTriggeredBy,
 		graphstore.TupleConstrainedBy, graphstore.TuplePreventedBy,
 		graphstore.TuplePartOf, graphstore.TupleAuthoredBy,
+		graphstore.TupleChildOf, graphstore.TupleNeeds, graphstore.TupleDuplicateOf, graphstore.TupleFiledFrom,
+		TupleAttachedTo,
 	}, pmdoc.LinkKinds()...)
 	kinds = append(kinds, processes.Capabilities...)
 	slices.Sort(kinds)
 	return slices.Compact(kinds)
 }
+
+// TupleAttachedTo is the kind graph_edges answers a document's part_of its issue by, in its arm
+// over the artifacts that carry their node as in its arm over those that carry none.
+const TupleAttachedTo = "attached_to"
+
+// attachedArtifactStands is the test the view's arm over the artifacts that carry their node makes
+// of the artifacts row aliased a: its node is not gone and its part_of to the issue the row names
+// is the newest tuple of that relation and asserts it (migration 20261117140000).
+const attachedArtifactStands = `a.node_kind is not null
+			and exists (select 1 from graph_nodes live where live.kind = a.node_kind and live.id = a.node_address and live.state <> 'gone')
+			and exists (select 1 from (
+				select t.asserted from graph_tuples t
+				where t.from_kind = a.node_kind and t.from_id = a.node_address and t.kind = 'part_of'
+				  and t.to_kind = 'issue' and t.to_id = a.issue_key
+				order by t.seq desc limit 1) newest where newest.asserted)`
 
 // currentTuple is the test that the row alias names is the fact the store holds now: the newest
 // tuple of its (from, kind, to), kept only while that newest one asserts, which is how the store
@@ -529,6 +557,10 @@ var changedByRun = backlinkArm{kind: graphstore.TupleChangedByRun, storedFrom: [
 	graphstore.KindLens, graphstore.KindLensBlock, graphstore.KindMessage, graphstore.KindRisk,
 }}
 
+// filedFrom is the arm that counts, on an ask, a comment or a message, the filed_from tuple of each
+// issue filed out of it, which the view answers from the store alone (dispatch://INFRA-1253 R9).
+var filedFrom = backlinkArm{kind: graphstore.TupleFiledFrom, storedFrom: []string{graphstore.KindIssue}}
+
 // backlinkArms is, for each node kind nodeRegistry resolves, every arm of graph_edges whose edge
 // kind is a literal and whose target is a node of that kind, and each edge kind the view's tuple
 // arm answers into that kind from the store alone, as an arm of that kind (storedFrom).
@@ -545,18 +577,29 @@ var changedByRun = backlinkArm{kind: graphstore.TupleChangedByRun, storedFrom: [
 // those joins finds exactly one row.
 var backlinkArms = map[string][]backlinkArm{
 	"issue": {
-		// issues_parent_key, partial on parent_key is not null.
-		{kind: "child_of", from: `issues i`, where: `i.parent_key is not null`, toID: `i.parent_key`,
-			fromKind: "issue", fromID: `i.key`},
-		// issue_links_target (target_key, kind).
+		// issues_parent_key, partial on parent_key is not null, over the rows that name no node;
+		// the store states the same fact as the issue's child_of, answered while the issue's row
+		// carries its node and names that parent (migration 20261117140000).
+		{kind: graphstore.TupleChildOf, from: `issues i`, where: `i.parent_key is not null`, toID: `i.parent_key`,
+			fromKind: "issue", fromID: `i.key`, projected: `i.node_kind`, tupleKind: graphstore.TupleChildOf, projectedIn: "issues"},
+		// issue_links_target (target_key, kind), over the rows that name no node; the store
+		// states the wait as the issue's needs, which the view names blocked_by through this
+		// release, answered while the issue_links row of the pair carries its node.
 		{kind: "blocked_by", from: `issue_links l`, where: `l.kind = 'blocked_by'`, toID: `l.target_key`,
-			fromKind: "issue", fromID: `l.issue_key`},
-		// artifacts_issue_key, partial on issue_key is not null.
-		{kind: "attached_to", from: `artifacts a`, where: `a.issue_key is not null`, toID: `a.issue_key`,
+			fromKind: "issue", fromID: `l.issue_key`, projected: `l.node_kind`, tupleKind: graphstore.TupleNeeds, projectedIn: "issue_links"},
+		// artifacts_issue_key, partial on issue_key is not null, over the rows that name no node.
+		{kind: TupleAttachedTo, from: `artifacts a`, where: `a.issue_key is not null`, toID: `a.issue_key`,
+			fromKind: "artifact", fromID: `a.ref_key`, projected: `a.node_kind`},
+		// The same index, over the rows that carry their node while its part_of to that issue
+		// stands: the view's arm of its own for them, which names the artifact by its uuid.
+		{kind: TupleAttachedTo, from: `artifacts a`, where: `a.issue_key is not null and ` + attachedArtifactStands, toID: `a.issue_key`,
 			fromKind: "artifact", fromID: `a.ref_key`},
 		// graph_tuples_inbound: a lens invoked on the issue, and a constraint written under it,
 		// each placed there by its part_of tuple (lensStandsOn).
 		{kind: graphstore.TuplePartOf, storedFrom: []string{graphstore.KindConstraint, graphstore.KindLens}},
+		// graph_tuples_inbound: an issue's duplicate_of the issue it repeats, which the store
+		// holds alone.
+		{kind: graphstore.TupleDuplicateOf, storedFrom: []string{graphstore.KindIssue}},
 	},
 	// The view addresses an artifact by artifacts.ref_key, so each arm starts at artifacts
 	// through the unique artifacts_ref_key_key and joins the table that points at it.
@@ -593,6 +636,7 @@ var backlinkArms = map[string][]backlinkArm{
 		{kind: "part_of", from: `ask_blocks b`, where: `b.position is not null`, toID: `b.ask_id::text`,
 			fromKind: "ask_block", fromID: `b.node_id`},
 		lensStandsOn,
+		filedFrom,
 	},
 	"comment": {
 		// comments_reply_to_text.
@@ -606,6 +650,7 @@ var backlinkArms = map[string][]backlinkArm{
 		{kind: "part_of", from: `comment_blocks b`, where: `b.position is not null`, toID: `b.comment_id::text`,
 			fromKind: "comment_block", fromID: `b.node_id`},
 		lensStandsOn,
+		filedFrom,
 	},
 	"message": {
 		// messages_in_reply_to_text.
@@ -615,6 +660,7 @@ var backlinkArms = map[string][]backlinkArm{
 		{kind: "part_of", from: `message_blocks b`, where: `b.position is not null`, toID: `b.message_id::text`,
 			fromKind: "message_block", fromID: `b.node_id`},
 		lensStandsOn,
+		filedFrom,
 	},
 	"component": {
 		// components_parent_node, on the same expression the arm selects.

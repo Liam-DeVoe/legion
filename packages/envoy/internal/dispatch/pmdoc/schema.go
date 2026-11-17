@@ -33,7 +33,8 @@ var blockSchemaJSON []byte
 
 // LinkKinds is the edge kinds the manifest's `block[]` attributes make, sorted: each such
 // attribute's name, once however many types declare it. None is a structural edge kind
-// (model.GraphEdgeKinds).
+// (model.GraphEdgeKinds) but needs (model.EdgeKindNeeds), the one relation an issue and a plan
+// node both wait by (dispatch://INFRA-1253 R10).
 func LinkKinds() []string {
 	return slices.Clone(active.Load().linkKinds)
 }
@@ -233,8 +234,9 @@ func validateAttributeSchema(typeName, name string, attr BlockAttributeSchema) e
 		if !linkKindPattern.MatchString(name) {
 			return fmt.Errorf("type %q attribute %q is a block[] attribute, whose name is the kind of the links it makes and must match %s", typeName, name, linkKindPattern)
 		}
-		if slices.Contains(model.GraphEdgeKinds, name) {
-			return fmt.Errorf("type %q attribute %q is a block[] attribute named after a structural edge kind (%s)", typeName, name, strings.Join(model.GraphEdgeKinds, ", "))
+		if name != model.EdgeKindNeeds && slices.Contains(model.GraphEdgeKinds, name) {
+			return fmt.Errorf("type %q attribute %q is a block[] attribute named after a structural edge kind (%s; %s alone is both)",
+				typeName, name, strings.Join(model.GraphEdgeKinds, ", "), model.EdgeKindNeeds)
 		}
 	} else if attr.Targets != nil {
 		return fmt.Errorf("type %q attribute %q has targets, which only a block[] attribute may carry", typeName, name)

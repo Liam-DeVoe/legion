@@ -535,16 +535,27 @@ type IssueAdvance struct {
 
 // Issue is the complete native issue record.
 type Issue struct {
-	Key       string   `json:"key"`
-	Project   string   `json:"project"`
-	Number    int      `json:"number"`
-	Title     string   `json:"title"`
-	Status    string   `json:"status"`
-	Priority  *int     `json:"priority"`
-	Rank      string   `json:"rank"`
-	Labels    []string `json:"labels"`
-	Parent    *string  `json:"parent"`
+	Key      string   `json:"key"`
+	Project  string   `json:"project"`
+	Number   int      `json:"number"`
+	Title    string   `json:"title"`
+	Status   string   `json:"status"`
+	Priority *int     `json:"priority"`
+	Rank     string   `json:"rank"`
+	Labels   []string `json:"labels"`
+	Parent   *string  `json:"parent"`
+	// BlockedBy and Needs are the issue keys this issue waits on, of any project, sorted: one
+	// relation, the needs tuples of the issue (dispatch://INFRA-1253 R10), answered by the
+	// issue_links rows that project them, under both spellings through this release, since a
+	// reader of the release before reads blocked_by.
 	BlockedBy []string `json:"blocked_by"`
+	Needs     []string `json:"needs" required:"false"`
+	// DuplicateOf is the key of the issue of this issue's project it repeats, and FiledFrom the
+	// canonical reference of the ask, comment or message it was filed out of
+	// (dispatch://INFRA-1253 R9), each the far end of the issue's duplicate_of or filed_from tuple
+	// and null where it holds none.
+	DuplicateOf *string `json:"duplicate_of" required:"false"`
+	FiledFrom   *string `json:"filed_from" required:"false"`
 	// Advances is the priorities this issue advances, its own relations and the ones it
 	// inherits, and AdvancesRevision the seq of the newest tuple the store holds for its own
 	// `advances` relations, 0 when it holds none. A whole-set write carries the revision the
@@ -642,14 +653,16 @@ type IssueClaimLiveness struct {
 
 // IssueSummary is the lightweight issue listing representation.
 type IssueSummary struct {
-	Key       string   `json:"key"`
-	Title     string   `json:"title"`
-	Status    string   `json:"status"`
-	Priority  *int     `json:"priority"`
-	Rank      string   `json:"rank"`
-	Labels    []string `json:"labels"`
-	Parent    *string  `json:"parent"`
+	Key      string   `json:"key"`
+	Title    string   `json:"title"`
+	Status   string   `json:"status"`
+	Priority *int     `json:"priority"`
+	Rank     string   `json:"rank"`
+	Labels   []string `json:"labels"`
+	Parent   *string  `json:"parent"`
+	// BlockedBy and Needs are Issue's: one relation under both spellings.
 	BlockedBy []string `json:"blocked_by"`
+	Needs     []string `json:"needs" required:"false"`
 	// Advances and AdvancesRevision are Issue's: every listing row answers the same entries and
 	// the same revision the issue's own read answers.
 	Advances         []IssueAdvance `json:"advances"`
@@ -1990,7 +2003,8 @@ type AskAnsweredEventPayload struct {
 // issue.created, issue.updated and issue.closed also say what the write changed, read in its own
 // transaction: Changed names each field whose value the write moved (title, status, closed_at
 // for a close or a reopen, rank, priority, assignee, parent, labels, route, repo, components,
-// blocked_by, external_links; for issue.created every field the new issue holds a value in),
+// advances, blocked_by and needs together, duplicate_of, filed_from, external_links; for
+// issue.created every field the new issue holds a value in),
 // Ancestors the issue's parent chain,
 // parent first up to the root ([] for a root), and ThreadLogins, only when the status or the
 // assignee moved, whose Inbox rows the write can move (api.issueWriteThreadLogins): for a close
@@ -3302,15 +3316,26 @@ type GraphExcerpt struct {
 	Text    string `json:"text"`
 }
 
-// GraphEdgeKinds is every structural edge kind graph_edges emits: the kinds its arms over the
-// projections write, and the six the node and tuple store states with no projection row behind
-// them (graphstore.TupleChangedByRun and the four beside it, and graphstore.TupleAuthoredBy of
-// the kinds dispatch://INFRA-1950 adds), which the view answers from the tuples alone. A typed
-// block's `block[]` attribute makes edges of a kind named by the attribute (pmdoc.LinkKinds),
-// which is never one of these: a schema name equal to one would merge silently with it in every
-// reader.
+// GraphEdgeKinds is every structural edge kind the reference graph answers: the kinds graph_edges'
+// arms over the projections write, the six the node and tuple store states with no projection row
+// behind them (graphstore.TupleChangedByRun and the four beside it, and graphstore.TupleAuthoredBy
+// of the kinds dispatch://INFRA-1950 adds), which the view answers from the tuples alone, and an
+// issue's duplicate_of and filed_from, which the store holds alone too (dispatch://INFRA-1253 R9).
+// blocked_by is the kind graph_edges names an issue's wait on an issue by through this release, in
+// its old arm and its tuple arm alike, the kind a process of the release before reads that wait
+// by; this build's references read answers the same wait as needs (EdgeKindNeeds) and takes
+// either spelling in its kind filter (R10). A typed block's `block[]` attribute makes edges of a
+// kind named by the attribute (pmdoc.LinkKinds), which is none of these but needs: a schema name
+// equal to one would merge silently with it in every reader, and needs is the one relation the
+// two families share, since an issue and a plan node wait by one relation.
 var GraphEdgeKinds = []string{"mentions", "child_of", "blocked_by", "attached_to", "anchored_to", "owned_by", "replies_to", "answers", "followed_by", "part_of", "depends_on", "affects",
-	"changed_by_run", "has_kind", "triggered_by", "constrained_by", "prevented_by", "authored_by"}
+	"changed_by_run", "has_kind", "triggered_by", "constrained_by", "prevented_by", "authored_by",
+	EdgeKindNeeds, "duplicate_of", "filed_from"}
+
+// EdgeKindNeeds is the kind of a wait, an issue's on an issue and a plan node's on a plan node
+// alike (dispatch://INFRA-1253 R10): a structural kind of GraphEdgeKinds and the name of the
+// plan_task's `block[]` attribute, the one name both families of edge hold.
+const EdgeKindNeeds = "needs"
 
 // GraphEdge is one typed, timestamped edge of graph_edges seen from the queried node: Node is
 // the other end, Direction is "in" for edges pointing at the queried node and "out" for edges

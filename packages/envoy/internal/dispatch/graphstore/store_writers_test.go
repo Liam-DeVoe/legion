@@ -116,6 +116,16 @@ var storeWriteCallSites = []string{
 	// states with its changed_by_run under that event through Caused. api's
 	// TestEveryApiStoreWriterTakesTheStoreLockOrder holds it to those steps.
 	"api/issue_patch.go#patchIssue",
+	// An issue's relations (dispatch://INFRA-1253 R9, R10), which its create and its PATCH state:
+	// after the issue's owner row, its row and its issue_links rows, the node of the item its
+	// filed_from names where the store held none, through Write, with a comment's row named after
+	// it (stateFiledFromNode), then the issue's own node through WriteUncaused (createIssue's and
+	// patchIssue's), the issue's event, and last the relations that event causes, its child_of,
+	// needs, duplicate_of and filed_from and the part_of it no longer hangs from, in one statement
+	// of the store's arms (stateIssueRelations). api's TestEveryApiStoreWriterTakesTheStoreLockOrder
+	// holds a PATCH that states them to those steps.
+	"api/issue_relations.go#stateFiledFromNode",
+	"api/issue_relations.go#stateIssueRelations",
 	// A run of the command bar (api/going.go), which takes no owner row: its record writes the
 	// interaction node, its author's node and their tuples in one Write before the going_requests
 	// row, and each frame, in a transaction of its own, takes the run's interaction node row
@@ -217,6 +227,11 @@ var storeWriteCallSites = []string{
 	// rows read again under them, then the version nodes and their facts, in one graphstore.Write
 	// per batch (graphcensus' TestTheVersionBatchTakesTheStoreLockOrder).
 	"graphcensus/census_versions.go#writeVersionBatch",
+	// The backfill's pass over the waits a process of the release before wrote with no node
+	// (dispatch://INFRA-1253): the issue rows the batch's links stand under first, then the links
+	// read again under them, then their needs tuples through Write, then the rows naming the issue's
+	// node (graphcensus' TestTheIssueLinkBatchTakesTheStoreLockOrder).
+	"graphcensus/census_issues.go#writeIssueLinkBatch",
 	// The erase, the one writer that deletes from the store, through EraseNode: the tuples on both
 	// sides of the node, then the node's row. It takes the owner rows it writes under before that
 	// row, and its projection rows after it (grapherase's TestTheEraseTakesTheStoreLockOrder).

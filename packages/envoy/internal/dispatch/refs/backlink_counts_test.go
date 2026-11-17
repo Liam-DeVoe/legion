@@ -803,6 +803,9 @@ var graphViewArms = []graphViewArm{
 	{table: "issues", fromKind: "issue", kind: "child_of", toKind: "issue"},
 	{table: "issue_links", fromKind: "issue", kind: "blocked_by", toKind: "issue"},
 	{table: "artifacts", fromKind: "artifact", kind: "attached_to", toKind: "issue"},
+	// The arm over the artifacts that carry their node, answering each one's attached_to from its
+	// part_of tuple (migration 20261117140000).
+	{table: "artifacts", fromKind: "artifact", kind: "attached_to", toKind: "issue"},
 	{table: "asks", fromKind: "ask", kind: "anchored_to", toKind: "artifact"},
 	{table: "comments", fromKind: "comment", kind: "anchored_to", toKind: "artifact"},
 	{table: "asks", fromKind: "ask", kind: "owned_by", toKind: "artifact"},

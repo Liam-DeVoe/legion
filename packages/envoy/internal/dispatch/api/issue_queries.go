@@ -760,6 +760,8 @@ func (r *issueSummaryRow) resolve() (model.IssueSummary, error) {
 	}
 	issue.Claim = claim
 	issue.Advances = r.advances.resolve()
+	// One read of the issue_links rows answers both spellings of the issue's waits (Issue.Needs).
+	issue.Needs = issue.BlockedBy
 	issue.AdvancesRevision = r.advances.revision
 	issue.Progress = r.progress.resolve()
 	issue.Components = r.components.resolve(issue.Key)
@@ -1030,6 +1032,8 @@ var issueRowStatement = `
 		` + refs.IssueRepoTerms + `
 		select i.key, i.project_key, i.number, i.title, i.status, i.priority, i.rank, i.labels, i.parent_key,
 		       coalesce((select array_agg(l.target_key order by l.target_key) from issue_links l where l.issue_key = i.key and l.kind = 'blocked_by'), '{}'),
+		       ` + issueDuplicateOfColumn + `,
+		       ` + issueFiledFromColumn + `,
 		       ` + issueAdvancesColumns + `,
 		       i.assignee, i.route, i.created_by, i.created_at, i.updated_at, i.closed_at,
 		       coalesce((select a.id::text from artifacts a where a.issue_key = i.key and a.is_primary), ''),
@@ -1065,7 +1069,7 @@ func scanIssueRow(row pgx.Row) (model.Issue, model.IssueProgress, error) {
 	var advances advancesScan
 	targets := []any{
 		&issue.Key, &issue.Project, &issue.Number, &issue.Title, &issue.Status, &issue.Priority, &issue.Rank, &issue.Labels,
-		&issue.Parent, &issue.BlockedBy,
+		&issue.Parent, &issue.BlockedBy, &issue.DuplicateOf, &issue.FiledFrom,
 	}
 	targets = append(targets, advances.targets()...)
 	targets = append(targets,
@@ -1083,6 +1087,9 @@ func scanIssueRow(row pgx.Row) (model.Issue, model.IssueProgress, error) {
 		return model.Issue{}, model.IssueProgress{}, err
 	}
 	issue.Repo, issue.ResolvedRepo = own, resolvedRepo
+	// The issue_links rows project the issue's needs tuples, written in the transaction that
+	// appends them, so one read of them answers both spellings of its waits.
+	issue.Needs = issue.BlockedBy
 	issue.Advances = advances.resolve()
 	issue.AdvancesRevision = advances.revision
 	issue.Components = components.resolve(issue.Key)

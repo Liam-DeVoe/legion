@@ -57,9 +57,10 @@ const askArmsDeletedBy = "dispatch://INFRA-1098"
 // takes each.
 var graphEdgesArms = []graphEdgesArm{
 	{relation: "refs", fate: "a mention of any node from an item; no child has moved it"},
-	{relation: "issues", fate: "child_of; dispatch://INFRA-1156 makes an issue's relations typed edges"},
-	{relation: "issue_links", fate: "blocked_by; dispatch://INFRA-1156 makes an issue's relations typed edges"},
-	{relation: "artifacts", fate: "attached_to; no child has moved it"},
+	{relation: "issues", fate: "child_of over the rows that name no node; the store answers the rest (dispatch://INFRA-1253), and dispatch://INFRA-1098 deletes this arm"},
+	{relation: "issue_links", fate: "blocked_by over the rows that name no node; the store answers the rest as needs (dispatch://INFRA-1253), and dispatch://INFRA-1098 deletes this arm"},
+	{relation: "artifacts", fate: "attached_to over the rows that name no node; dispatch://INFRA-1098 deletes this arm"},
+	{relation: "artifacts", fate: "attached_to of the artifacts that carry their node, from each one's part_of tuple (dispatch://INFRA-1253); it stays"},
 	{relation: "asks", projects: "ask", renders: "anchored_to", fate: "an ask's anchored_to; the store answers it for a row that carries its node (dispatch://INFRA-1150), and " + askArmsDeletedBy + " deletes this arm"},
 	{relation: "comments", projects: "comment", renders: "anchored_to", fate: "a comment's anchored_to; the store answers it for a row that carries its node, and " + movedArmsDeletedBy + " deletes this arm"},
 	{relation: "asks", projects: "ask", renders: "owned_by", fate: "an ask's owned_by; the store answers it for a row that carries its node (dispatch://INFRA-1150), and " + askArmsDeletedBy + " deletes this arm"},
@@ -233,8 +234,12 @@ func TestGraphEdgesLosesEveryArmOverAMovedKind(t *testing.T) {
 		}
 	}
 	// followed_by is an ask's, which TestTheAsksArmsAnswerEachRowOnce writes; from_ask and
-	// decided_by are a decision block's, which the typed-node pass writes.
-	requireTheTupleArmRendersTheList(t, after.tuple, graphstore.TupleFollowedBy, "from_ask", graphstore.TupleDecidedBy)
+	// decided_by are a decision block's, which the typed-node pass writes; an issue's child_of,
+	// duplicate_of and filed_from are its create's and its PATCH's, which api's
+	// TestGraphEdgesKeepsEveryRelationAcrossARollback writes; and attached_to is answered by the arm
+	// over the artifacts that carry their node, not by the tuple arm.
+	requireTheTupleArmRendersTheList(t, after.tuple, graphstore.TupleFollowedBy, "from_ask", graphstore.TupleDecidedBy,
+		graphstore.TupleChildOf, graphstore.TupleDuplicateOf, graphstore.TupleFiledFrom, refs.TupleAttachedTo)
 
 	// Pods of the previous release write beside this one, during a roll or after a rollback.
 	written := writeAsThePreviousRelease(t, database, fixture)
@@ -588,8 +593,13 @@ func requireTheTupleArmRendersTheList(t *testing.T, rows []graphEdgeRow, unwritt
 	answered := map[string]int{}
 	for _, row := range rows {
 		kind := row.kind
-		if row.fromKind == refs.BlockNodeKind && kind == "part_of" && row.toKind == "artifact" {
+		switch {
+		case row.fromKind == refs.BlockNodeKind && kind == "part_of" && row.toKind == "artifact":
 			kind = refs.TupleInDocument
+		case row.fromKind == graphstore.KindIssue && kind == "blocked_by" && row.toKind == graphstore.KindIssue:
+			// An issue's wait is its needs tuple, which the view names blocked_by through this
+			// release (migration 20261117140000).
+			kind = graphstore.TupleNeeds
 		}
 		answered[kind]++
 		if !slices.Contains(list, kind) {

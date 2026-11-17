@@ -66,7 +66,7 @@ func (c *HTTPClient) ListIssues(ctx context.Context, project string, statuses []
 			HandedOver:   CarriesLegionLabel(issue.Labels),
 			LastSeq:      issue.LastSeq,
 			ResolvedRepo: deref(issue.ResolvedRepo),
-			BlockedBy:    issue.BlockedBy,
+			BlockedBy:    WaitsOf(issue.Needs, issue.BlockedBy),
 			ClaimedBy:    issue.Claim.holder(),
 			ClaimUnread:  issue.Claim.unread(),
 		})
@@ -533,8 +533,20 @@ type issueSummaryResponse struct {
 	Labels       []string       `json:"labels"`
 	LastSeq      int64          `json:"last_seq"`
 	ResolvedRepo *string        `json:"resolved_repo"`
+	Needs        *[]string      `json:"needs"`
 	BlockedBy    []string       `json:"blocked_by"`
 	Claim        *claimResponse `json:"claim"`
+}
+
+// WaitsOf is the issues an issue answer says the issue waits on: its needs, which a Dispatch of
+// dispatch://INFRA-1253's release on answers, and else its blocked_by, which the Dispatch of the
+// release before answers alone, since a new daemon can meet an old Dispatch. An answer holding
+// needs is read by it, whatever blocked_by holds beside it.
+func WaitsOf(needs *[]string, blockedBy []string) []string {
+	if needs != nil {
+		return *needs
+	}
+	return blockedBy
 }
 
 type issueResponse struct {
@@ -548,6 +560,7 @@ type issueResponse struct {
 	PrimaryArtifactID string         `json:"primary_artifact_id"`
 	LastSeq           int64          `json:"last_seq"`
 	ResolvedRepo      *string        `json:"resolved_repo"`
+	Needs             *[]string      `json:"needs"`
 	BlockedBy         []string       `json:"blocked_by"`
 	Claim             *claimResponse `json:"claim"`
 }
@@ -566,7 +579,7 @@ func (r issueResponse) issue() Issue {
 		PrimaryArtifactID: r.PrimaryArtifactID,
 		LastSeq:           r.LastSeq,
 		ResolvedRepo:      deref(r.ResolvedRepo),
-		BlockedBy:         r.BlockedBy,
+		BlockedBy:         WaitsOf(r.Needs, r.BlockedBy),
 		Claim:             r.Claim.claim(),
 		ClaimUnread:       r.Claim.unread(),
 	}

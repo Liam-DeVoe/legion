@@ -1333,7 +1333,7 @@ export interface paths {
     /** @description List issues; filters project, status (repeatable: the issues standing in any of those statuses; a blank value names none, and a value is matched as written, so a status the lifecycle does not hold matches no issue: alone it answers none, and beside another status it adds nothing), parent, label, priority (repeatable: 0-3, or none for unset), advances (repeatable: a priority id, none for the work that advances no live priority or any for the work that advances one, own or inherited; several are a union), open, updated_since, closed_since and closed_before (RFC3339; the issues closed at or after closed_since and before closed_before, so an open issue matches neither), route_status (live, no_holder or unknown; open issues only); ?pinned=true needs the person scope, since the pins are one person's. A malformed updated_since, closed_since or closed_before is 400 INVALID_UPDATED_SINCE, INVALID_CLOSED_SINCE or INVALID_CLOSED_BEFORE, and a closed_before at or before closed_since 400 INVALID_CLOSED_WINDOW. Each issue carries closed_at, when it was closed or null while it is open, and progress: {tasks, children}, its spec's task-list items and its direct children as {done, total}, each null when it has none. ?moved=true adds moved_at and moved_by to each issue standing in backlog or icebox: when it was moved there and who moved it, read from its newest issue.updated event that set one of the two statuses, as GET /api/v1/priorities' parked work reads them; an issue standing elsewhere, or whose events do not reach back to the move, carries neither, and a listing without moved=true carries neither on any issue. Pages with limit (1-250) and offset (0 or more; alone it pages 50): a paged answer is {issues, total, limit, offset}, total counting every issue the filters match; without either it is every matching issue as an array. cursor is 400 INVALID_QUERY. */
     get: operations["getApiV1Issues"];
     put?: never;
-    /** @description Create an issue (native, or from a GitHub owner/repo#n ref); assignee defaults to the creating person, the personal token's owner, the parent's assignee, or the project's default assignee. A title over 1000 characters is 400 CAP_EXCEEDED. After the write commits, a related-item check searches the project by meaning and by its rarest words and waits at most 5 seconds; the response's advice.suggestions says whether it found related items (outcome found, none or not_made with the reason in missing), how it searched (search, search_note), the three items most like the new issue, one per owner, with each ask item's answer state, words to search with by hand (search_query), and under force the near copies forced past (title_matches), or the likely duplicate an unforced create was told (likely_duplicate). */
+    /** @description Create an issue (native, or from a GitHub owner/repo#n ref); assignee defaults to the creating person, the personal token's owner, the parent's assignee, or the project's default assignee. A title over 1000 characters is 400 CAP_EXCEEDED. needs is the issues the issue waits on, of any project, sorted; blocked_by is the same list under the spelling a client of the release before sends, and a body naming both names the same issues in each, else 400 NEEDS_INPUT naming both. A list refused for its count or its keys is 400 NEEDS_INPUT, or BLOCKED_BY_INPUT where the body named blocked_by alone; a wait that closes a ring through waits and parents is 409 DEPENDENCY_CYCLE; and a credential that names one project is refused a target outside it with 403 PROJECT_SCOPE. duplicate_of is the key of another issue of the issue's project, else 400 DUPLICATE_OF_INPUT; filed_from is the canonical reference of a public ask, comment or message of the issue's project, dispatch://<KEY>/<ask|comment|message>/<uuid> or dispatch://<PROJECT>/artifact/<slug>/<ask|comment>/<uuid>, else 400 FILED_FROM_INPUT, one text for an item of another project, one no row holds and one reserved for its author; a refused relation writes nothing. After the write commits, a related-item check searches the project by meaning and by its rarest words and waits at most 5 seconds; the response's advice.suggestions says whether it found related items (outcome found, none or not_made with the reason in missing), how it searched (search, search_note), the three items most like the new issue, one per owner, with each ask item's answer state, words to search with by hand (search_query), and under force the near copies forced past (title_matches), or the likely duplicate an unforced create was told (likely_duplicate). */
     post: operations["postApiV1Issues"];
     delete?: never;
     options?: never;
@@ -1372,7 +1372,7 @@ export interface paths {
     delete?: never;
     options?: never;
     head?: never;
-    /** @description Update title (over 1000 characters is 400 CAP_EXCEEDED), status, priority, labels (or labels_add, which adds to the labels the issue holds when the write commits rather than replacing them; not with labels), route, parent, rank, assignee (the email of a person who has signed in, or null; anyone may reassign), or components ({mode: inherit|explicit|none, ids, reason}; allowed on a closed issue). Closing the issue (status done) withdraws every open ask it holds, each recorded resolved with resolution kind withdrawn naming the closer; reopening it opens exactly those asks again. expected_sequence makes the write conditional: 409 ISSUE_CHANGED when the issue's last event is no longer that sequence. */
+    /** @description Update title (over 1000 characters is 400 CAP_EXCEEDED), status, priority, labels (or labels_add, which adds to the labels the issue holds when the write commits rather than replacing them; not with labels), route, parent, rank, assignee (the email of a person who has signed in, or null; anyone may reassign), needs ([] clears it), duplicate_of and filed_from (null clears either), or components ({mode: inherit|explicit|none, ids, reason}; allowed on a closed issue). needs is the issues the issue waits on, of any project, sorted; blocked_by is the same list under the spelling a client of the release before sends, and a body naming both names the same issues in each, else 400 NEEDS_INPUT naming both. A list refused for its count or its keys is 400 NEEDS_INPUT, or BLOCKED_BY_INPUT where the body named blocked_by alone; a wait that closes a ring through waits and parents is 409 DEPENDENCY_CYCLE; and a credential that names one project is refused a target outside it with 403 PROJECT_SCOPE. duplicate_of is the key of another issue of the issue's project, else 400 DUPLICATE_OF_INPUT; filed_from is the canonical reference of a public ask, comment or message of the issue's project, dispatch://<KEY>/<ask|comment|message>/<uuid> or dispatch://<PROJECT>/artifact/<slug>/<ask|comment>/<uuid>, else 400 FILED_FROM_INPUT, one text for an item of another project, one no row holds and one reserved for its author; a refused relation writes nothing. Closing the issue (status done) withdraws every open ask it holds, each recorded resolved with resolution kind withdrawn naming the closer; reopening it opens exactly those asks again. expected_sequence makes the write conditional: 409 ISSUE_CHANGED when the issue's last event is no longer that sequence. */
     patch: operations["patchApiV1IssuesByKey"];
     trace?: never;
   };
@@ -2828,7 +2828,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Edges of one node in the reference graph: ?to=<dispatch ref> backlinks or ?from= links; ?kind=, ?since=<events.id> (mentions only, read up to the event log's safe horizon: every mention committed before the read, unless an open transaction holds the horizon back past 1 s, when the read answers the mentions at or below it and a later read the rest). A caller with no cursor starts from since=0, which lists every mention committed before the read that carries a source_seq, and after that reads again from the highest source_seq an answer showed it. A mention written with no event (a rebuild, a backfill, an older build) carries no source_seq until a later write of its source stamps it with that write's event, and until then only a read without since lists it. A signed-in page may start from GET /auth/whoami's event_head instead, which takes a cookie or a trusted header and not a bearer, so a bearer caller starts from 0. Never take a since from max(events.id) read straight from the database: event ids are not commit order, and an id taken that way can stand above an edge that commits later. An empty answer is not proof that nothing is new, so the caller reads again with the id it holds. A ?to= reference whose item id or block id is written short (8 characters or more, never a whole uuid) names the one item of the owner the reference names that carries it: the issue of dispatch://<KEY>/ask/<prefix>, the document of a #b-<prefix>; the node answered carries the whole id, a prefix two of them carry is 409 ID_AMBIGUOUS listing both, and one nothing carries is the 404 the reference as written always gave. A whole id is read whatever owner the reference names, as it always was. */
+    /** @description Edges of one node in the reference graph: ?to=<dispatch ref> backlinks or ?from= links; ?kind= (an issue's wait on an issue is answered as needs, which ?kind=needs and ?kind=blocked_by both read; an issue's child_of, duplicate_of and filed_from are kinds of their own, a filed_from's node the item's canonical reference), ?since=<events.id> (mentions only, read up to the event log's safe horizon: every mention committed before the read, unless an open transaction holds the horizon back past 1 s, when the read answers the mentions at or below it and a later read the rest). A caller with no cursor starts from since=0, which lists every mention committed before the read that carries a source_seq, and after that reads again from the highest source_seq an answer showed it. A mention written with no event (a rebuild, a backfill, an older build) carries no source_seq until a later write of its source stamps it with that write's event, and until then only a read without since lists it. A signed-in page may start from GET /auth/whoami's event_head instead, which takes a cookie or a trusted header and not a bearer, so a bearer caller starts from 0. Never take a since from max(events.id) read straight from the database: event ids are not commit order, and an id taken that way can stand above an edge that commits later. An empty answer is not proof that nothing is new, so the caller reads again with the id it holds. A ?to= reference whose item id or block id is written short (8 characters or more, never a whole uuid) names the one item of the owner the reference names that carries it: the issue of dispatch://<KEY>/ask/<prefix>, the document of a #b-<prefix>; the node answered carries the whole id, a prefix two of them carry is 409 ID_AMBIGUOUS listing both, and one nothing carries is the 404 the reference as written always gave. A whole id is read whatever owner the reference names, as it always was. */
     get: operations["getApiV1References"];
     put?: never;
     post?: never;
@@ -4086,11 +4086,14 @@ export interface components {
       created_at: string;
       created_by: components["schemas"]["Actor"] | null;
       decisions_artifact_id: string;
+      duplicate_of?: null | string;
       external_links: components["schemas"]["ExternalLink"][] | null;
+      filed_from?: null | string;
       key: string;
       labels: string[] | null;
       last_seq: number;
       legion_managed_status?: boolean;
+      needs?: string[] | null;
       number: number;
       parent: null | string;
       plan_artifact_id: string;
@@ -4329,9 +4332,12 @@ export interface components {
       assignee?: string | null;
       blocked_by?: string[] | null;
       components?: components["schemas"]["IssueComponentsInput"] | null;
+      duplicate_of?: string | null;
       external?: string;
+      filed_from?: string | null;
       force?: boolean;
       labels?: string[] | null;
+      needs?: string[] | null;
       parent?: null | string;
       priority?: number | null;
       project?: string;
@@ -5246,10 +5252,13 @@ export interface components {
       created_at: string;
       created_by: components["schemas"]["Actor"] | null;
       decisions_artifact_id: string;
+      duplicate_of?: null | string;
       external_links: components["schemas"]["ExternalLink"][] | null;
+      filed_from?: null | string;
       key: string;
       labels: string[] | null;
       last_seq: number;
+      needs?: string[] | null;
       number: number;
       parent: null | string;
       plan_artifact_id: string;
@@ -5425,13 +5434,16 @@ export interface components {
       created_by: components["schemas"]["Actor"] | null;
       decisions_artifact_id: string;
       design_gates: components["schemas"]["IssueDesignGate"][] | null;
+      duplicate_of?: null | string;
       external_links: components["schemas"]["ExternalLink"][] | null;
+      filed_from?: null | string;
       holder_state: null | string;
       key: string;
       labels: string[] | null;
       /** Format: date-time */
       last_seen: null | string;
       last_seq: number;
+      needs?: string[] | null;
       number: number;
       open_asks: components["schemas"]["IssueOpenAsk"][] | null;
       parent: null | string;
@@ -5555,6 +5567,7 @@ export interface components {
       /** Format: date-time */
       moved_at?: string;
       moved_by?: components["schemas"]["Actor"];
+      needs?: string[] | null;
       open_asks: number;
       parent: null | string;
       primary_artifact_id: string;
@@ -6743,10 +6756,13 @@ export interface components {
       assignee?: string | null;
       blocked_by?: null | string[];
       components?: components["schemas"]["IssueComponentsInput"] | null;
+      duplicate_of?: string | null;
       expected_sequence?: null | number;
       external_links?: null | components["schemas"]["ExternalLink"][];
+      filed_from?: string | null;
       labels?: null | string[];
       labels_add?: null | string[];
+      needs?: null | string[];
       parent?: string | null;
       priority?: number | null;
       rank?: components["schemas"]["IssueRankInput"] | null;

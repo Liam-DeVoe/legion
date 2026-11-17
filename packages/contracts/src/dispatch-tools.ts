@@ -243,8 +243,12 @@ const commentValidation: NonNullable<DispatchToolSpec["validation"]> = {
   refusal: (value) => commentProblem(value) ?? `${commentOwner.message} ${COMMENT_TURN_RULE}`,
 };
 
+/** What Dispatch refuses as a filed_from: the field's own words on both issue tools. */
+const ISSUE_FILED_FROM_REFUSAL =
+  "An issue key, a block reference, a pinned reference, a document, an item of another project, an item no row holds and an item reserved for its author are each refused with 400 FILED_FROM_INPUT, the last three in one text.";
+
 const ISSUE_UPDATE_FIELDS_RULE =
-  "Issue update requires at least one field besides issue: status, title, labels, priority, assignee, external_links, route, parent, blocked_by, advances, components, repo, before, or after.";
+  "Issue update requires at least one field besides issue: status, title, labels, priority, assignee, external_links, route, parent, blocked_by, duplicate_of, filed_from, advances, components, repo, before, or after.";
 const ISSUE_UPDATE_DONE_RULE =
   "status done requires reason, a non-empty note saying why the issue is closing, posted on the issue before it closes so the close carries its note";
 const ISSUE_UPDATE_REASON_RULE = "reason goes only with status done";
@@ -266,6 +270,8 @@ function issueUpdateProblem(value: unknown): string | undefined {
     readonly route?: unknown;
     readonly parent?: unknown;
     readonly blocked_by?: unknown;
+    readonly duplicate_of?: unknown;
+    readonly filed_from?: unknown;
     readonly advances?: unknown;
     readonly components?: unknown;
     readonly repo?: unknown;
@@ -293,6 +299,8 @@ function issueUpdateProblem(value: unknown): string | undefined {
     typeof input.route === "string" ||
     typeof input.parent === "string" ||
     Array.isArray(input.blocked_by) ||
+    typeof input.duplicate_of === "string" ||
+    typeof input.filed_from === "string" ||
     Array.isArray(input.advances) ||
     (typeof input.components === "object" && input.components !== null) ||
     typeof input.repo === "string" ||
@@ -742,6 +750,18 @@ export const dispatchToolSpecs = [
           "Issue keys this issue waits on; a key of any project, so work tracked elsewhere can be named. Dispatch refuses a dependency cycle."
         )
         .optional(),
+      duplicate_of: z
+        .string()
+        .describe(
+          "The key of an issue of the same project this issue repeats; any other value is refused with 400 DUPLICATE_OF_INPUT."
+        )
+        .optional(),
+      filed_from: z
+        .string()
+        .describe(
+          `The conversation item this issue was filed out of: the canonical reference of a public ask, comment or message of the same project, dispatch://<KEY>/<ask|comment|message>/<uuid> or dispatch://<PROJECT>/artifact/<slug>/<ask|comment>/<uuid>. ${ISSUE_FILED_FROM_REFUSAL}`
+        )
+        .optional(),
       advances: z
         .array(z.string({ min: 1 }), { max: MAX_ISSUE_ADVANCES })
         .describe(
@@ -879,6 +899,18 @@ export const dispatchToolSpecs = [
         .array(z.string({ min: 1 }), { max: MAX_ISSUE_BLOCKERS })
         .describe(
           "Replacement list of issue keys this issue waits on, of any project; [] clears it. Dispatch refuses a dependency cycle."
+        )
+        .optional(),
+      duplicate_of: z
+        .string()
+        .describe(
+          "The key of an issue of the same project this issue repeats; an empty string clears it. Any other value is refused with 400 DUPLICATE_OF_INPUT."
+        )
+        .optional(),
+      filed_from: z
+        .string()
+        .describe(
+          `The conversation item this issue was filed out of: the canonical reference of a public ask, comment or message of the same project, dispatch://<KEY>/<ask|comment|message>/<uuid> or dispatch://<PROJECT>/artifact/<slug>/<ask|comment>/<uuid>; an empty string clears it. ${ISSUE_FILED_FROM_REFUSAL}`
         )
         .optional(),
       advances: z

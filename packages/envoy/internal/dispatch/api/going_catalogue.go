@@ -100,12 +100,12 @@ type goingToolRoute struct {
 var goingToolRoutes = map[string][]goingToolRoute{
 	"dispatch_issue": {{
 		Method: http.MethodPost, Pattern: "/api/v1/issues", Path: map[string]string{},
-		Relations: []string{"child_of", "blocked_by", "affects", "mentions"},
+		Relations: []string{"child_of", model.EdgeKindNeeds, "duplicate_of", "filed_from", "affects", "mentions"},
 	}},
 	"dispatch_issue_update": {{
 		Method: http.MethodPatch, Pattern: "/api/v1/issues/{key}",
 		Path:      map[string]string{"key": "issue"},
-		Relations: []string{"child_of", "blocked_by", "affects"},
+		Relations: []string{"child_of", model.EdgeKindNeeds, "duplicate_of", "filed_from", "affects"},
 	}},
 	"dispatch_claim": {
 		{
@@ -371,11 +371,14 @@ func mutatingRoutes(routes []apiRoute) map[string]bool {
 	return mutating
 }
 
-// edgeFamilies is every relation name a catalogue entry may declare: the global relation names
-// and the `block[]` attributes of the typed blocks, which are the two families of edge the graph
-// holds and the two GET /api/v1/references?kind= accepts (references.go).
+// edgeFamilies is every relation name a catalogue entry may declare, each once: the global
+// relation names and the `block[]` attributes of the typed blocks, which are the two families of
+// edge the graph holds and the two GET /api/v1/references?kind= accepts (references.go). needs is
+// in both (model.EdgeKindNeeds), since an issue and a plan node wait by one relation.
 func edgeFamilies() []string {
-	return append(slices.Clone(model.GraphEdgeKinds), pmdoc.LinkKinds()...)
+	families := append(slices.Clone(model.GraphEdgeKinds), pmdoc.LinkKinds()...)
+	slices.Sort(families)
+	return slices.Compact(families)
 }
 
 // goingPlaceholders is the placeholders of a pattern, in the order it spells them.
