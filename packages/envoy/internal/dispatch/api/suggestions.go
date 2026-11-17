@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -57,16 +58,11 @@ const (
 	// whose write is a question offers (Suggestions.OtherProjects). Two: they stand beside the
 	// project's own items, which keep their three places.
 	suggestionOtherProjectCount = 2
-	// crossProjectGrace is how long the meaning stage waits for the cross-project query after
-	// the one-project query has answered. The check's own bound is five seconds
-	// (relatedCheckAllowance) and its recorded median is 1,615 ms, so a grace of this size
-	// cannot push a median check into its allowance.
+	// crossProjectGrace is how long the check waits for the cross-project query once the
+	// meaning stage has answered (awaitCrossProject); the meaning deadline cuts it shorter. The
+	// check's own bound is five seconds (relatedCheckAllowance) and its recorded median is
+	// 1,615 ms, so a grace of this size cannot push a median check into its allowance.
 	crossProjectGrace = 300 * time.Millisecond
-	// crossProjectGraceMargin ends the grace that much before the meaning deadline. It keeps the
-	// stage's own answer ahead of the backstop in runRelatedCheck, which watches the same
-	// deadline. A timer wakes a goroutine in microseconds, so 25 ms is far more than the margin
-	// needs, and it shortens the grace only in the last 25 ms of a three-second allowance.
-	crossProjectGraceMargin = 25 * time.Millisecond
 	// suggestionSearchDepth widens the search past suggestionRelatedCount so that three distinct
 	// owners remain once an issue and its document collapse into one item.
 	suggestionSearchDepth = 10
@@ -316,10 +312,14 @@ type relatedStage struct {
 	response model.SearchResponse
 	err      error
 	reason   string // stage 2's reason for keywords only when it did not answer
-	// otherProjects is what stage 2's cross-project leg found: the answered questions of the
-	// other projects (relatedOtherProjects), empty for every check whose write is not a
-	// question and for a leg that failed, overran its grace or found nothing. It never decides
-	// whether the stage answered: response stands whatever this holds.
+	// cross is where stage 2's cross-project leg hands over what it found, nil where no leg
+	// runs. The stage answers without waiting for it; the check waits for it, through its grace
+	// (awaitCrossProject).
+	cross <-chan []model.SearchResult
+	// otherProjects is what that wait got: the answered questions of the other projects
+	// (relatedOtherProjects), empty for every check whose write is not a question and for a leg
+	// that failed, overran its grace or found nothing. It never decides whether the stage
+	// answered: response stands whatever this holds.
 	otherProjects []model.SearchResult
 	took          time.Duration
 }
@@ -476,24 +476,30 @@ func (s *server) runRelatedCheck(
 	}()
 
 	// Stage 2 runs on a context of its own ending at relatedMeaningAllowance from the check's
-	// start, so the embedding and the meaning query both stop there and leave the rest of the
-	// allowance to stage 1.
-	meaningAllowance := min(relatedMeaningAllowance, allowance)
+	// start (server.meaningBound in a test), so the embedding and the meaning query both stop
+	// there and leave the rest of the allowance to stage 1. A question's cross-project leg runs
+	// on that context too, so the wait for it below never outlives it either.
+	meaningAllowance := min(cmp.Or(s.meaningBound, relatedMeaningAllowance), allowance)
 	var meaning chan relatedStage
-	var meaningDone <-chan struct{}
-	var endMeaning context.CancelFunc
-	// Stage 2's goroutine holds a request-pool connection for its query, so the check ends its
-	// context and waits for the stage before it returns, whichever return that is: its allowance
-	// running out, the request going away, stage 1 failing. Left running, it would still hold
-	// that connection while the edit's next decision-block check ran, which is admitted for its
-	// own three connections and not for these as well (decisionBlockChecks). A stage already taken
-	// off the channel leaves nothing to wait for.
+	var meaningCtx context.Context
+	endMeaning := context.CancelFunc(func() {})
+	// leg is a question's cross-project leg, which stage 2 starts (relatedMeaningStage); nil for
+	// every other check, and for a question whose leg the pool refused a mark.
+	var leg *crossProjectLeg
+	// Stage 2's goroutine holds a request-pool connection for its query, and its cross-project
+	// leg one for its read, so the check ends their context and waits for both before it
+	// returns, whichever return that is: its allowance running out, the request going away,
+	// stage 1 failing. Left running, either would still hold that connection while the edit's
+	// next decision-block check ran, which is admitted for its own three connections and not for
+	// these as well (decisionBlockChecks). A stage already taken off the channel leaves nothing
+	// to wait for. The leg is waited for whatever the stage did, since the stage answers without
+	// it (crossProjectLeg.release).
 	defer func() {
-		if meaning == nil {
-			return
-		}
 		endMeaning()
-		<-meaning
+		if meaning != nil {
+			<-meaning
+		}
+		leg.release()
 	}()
 	reason := ""
 	switch {
@@ -502,10 +508,10 @@ func (s *server) runRelatedCheck(
 	case s.deps.Embedder == nil:
 		reason = relatedReasonNoEmbedder
 	default:
-		meaningCtx, cancelMeaning := context.WithDeadline(bounded, started.Add(meaningAllowance))
+		meaningCtx, endMeaning = context.WithDeadline(bounded, started.Add(meaningAllowance))
+		defer endMeaning()
 		meaningRead, err := store.ForConcurrentRead(meaningCtx)
 		if err != nil {
-			cancelMeaning()
 			reason = relatedReasonMeaningFailed
 			break
 		}
@@ -535,13 +541,17 @@ func (s *server) runRelatedCheck(
 					"reason", "the store refused a connection for the leg", "error", crossErr)
 			}
 			// ForConcurrentRead returns a nil context with its error (store/pool.go), so a
-			// refusal leaves crossRead nil and relatedMeaningStage does not run the leg.
+			// refusal leaves crossRead nil, and the check holds no leg.
 			crossRead = read
 		}
-		meaningDone, endMeaning = meaningCtx.Done(), cancelMeaning
+		if crossRead != nil {
+			leg = &crossProjectLeg{read: crossRead, ended: make(chan struct{})}
+		}
+		// relatedMeaningStage hands the leg's answer over on the stage it answers
+		// (relatedStage.cross), and the leg runs on until the check's wait for it is over.
 		meaning = make(chan relatedStage, 1)
 		go func() {
-			stage := s.relatedMeaningStage(meaningRead, crossRead, project, input.text, pick, excluded, input.trees != nil)
+			stage := s.relatedMeaningStage(meaningRead, leg, project, input.text, pick, excluded, input.trees != nil)
 			stage.took = time.Since(stagesStarted)
 			meaning <- stage
 		}()
@@ -572,13 +582,13 @@ func (s *server) runRelatedCheck(
 		case stage = <-meaning:
 			meaning = nil
 			got = true
-		case <-meaningDone:
+		case <-meaningCtx.Done():
 			// Both channels can be ready at once, and Go then picks between them at random,
 			// which would have one check answer meaning_and_keywords and the next fall back to
 			// keywords. So read the stage's channel once without blocking first and use an
-			// answer that is already there. The stage keeps its own answer ahead of this
-			// deadline (crossProjectGraceMargin), which makes this a safety net rather than the
-			// rule.
+			// answer that is already there. The stage answers as soon as its own query has,
+			// and the wait for the cross-project leg is the check's own (below), so the leg
+			// never holds the stage's answer back from this deadline.
 			select {
 			case stage = <-meaning:
 				meaning = nil
@@ -597,6 +607,18 @@ func (s *server) runRelatedCheck(
 			}
 		}
 	}
+	// The check holds the stage's answer while it waits for the leg, so a grace that runs to
+	// the meaning deadline costs it nothing (INFRA-2337 D1, R3). meaning_ms holds the whole
+	// meaning stage, that wait with it (D7).
+	if answered && answer.cross != nil {
+		answer.otherProjects = s.awaitCrossProject(meaningCtx, answer.cross)
+		record.meaningMS = milliseconds(time.Since(stagesStarted))
+	}
+	// The check needs nothing more of the meaning context: what still runs on it is a
+	// cross-project leg the grace left behind, or the leg of a stage that did not answer, which
+	// gives its pool connection back now rather than at the meaning deadline (D6), and which the
+	// check waits for before it returns (the wait above).
+	endMeaning()
 	// A meaning stage cut short by the request going away did not time out, and the keyword
 	// stage's answer is waited for by nobody but the wait above.
 	if callerGone() {
@@ -648,17 +670,20 @@ func (s *server) runRelatedCheck(
 // reason is empty when it answered and names why it did not otherwise; ctx ends at the meaning
 // allowance.
 //
-// crossRead is the second connection mark runRelatedCheck took for the cross-project leg, which
-// it takes only where the check's own write is a question (relatedInput.question), and nil
-// where it took none or the pool refused it. With a mark in hand this stage also reads the
-// answered questions of the other projects (relatedOtherProjects). That leg starts as soon as
-// the embedding is in hand, before the wait on pick.ready, because it needs the vector alone
-// and starting it there gives it the most time. It reuses this stage's own embedding, so the
-// check calls the embedding service no more often than it does without it.
+// leg is the cross-project leg runRelatedCheck holds, with the second connection mark it took
+// for it (crossProjectLeg.read), which it takes only where the check's own write is a question
+// (relatedInput.question); it is nil where it took none or the pool refused it. With a leg in
+// hand this stage also reads the answered questions of the other projects
+// (relatedOtherProjects). That leg starts as soon as the embedding is in hand, before the wait
+// on pick.ready, because it needs the vector alone and starting it there gives it the most time.
+// It reuses this stage's own embedding, so the check calls the embedding service no more often
+// than it does without it.
 //
-// The one-project response is the stage's answer whenever it has one. A cross-project leg that
-// failed, that overran its grace or that found nothing leaves that response whole, with no
-// reason recorded and no cross-project item.
+// The one-project response is the stage's answer whenever it has one, and the stage answers as
+// soon as it has it: it hands the leg's answer over unread (relatedStage.cross), and the check
+// waits for it (awaitCrossProject). A cross-project leg that failed, that overran its grace or
+// that found nothing leaves that response whole, with no reason recorded and no cross-project
+// item.
 //
 // A meaning search this stage's own context ended, and one the server ended itself at
 // searchMeaningScan's statement bound, are the same thing to the caller: the meaning search did
@@ -671,12 +696,14 @@ func (s *server) runRelatedCheck(
 //
 // trees says the check's caller asked for the display trees (relatedInput.trees). The leg makes
 // a reader of its own from it rather than registering with the caller's: it runs on a goroutine
-// this stage may abandon at the grace, and a reader the caller resolves while an abandoned leg
+// the check may abandon at the grace, and a reader the caller resolves while an abandoned leg
 // still registers with it is a data race. Its own reader is written by that one goroutine
 // alone, and resolved there before the results are handed over, so an answer that reaches the
-// check carries its trees filled and one the grace left behind is read by nobody.
+// check carries its trees filled and one the grace left behind is read by nobody. The check
+// abandons the leg's answer only: it does not return before the leg's read has given its
+// request-pool connection back (crossProjectLeg.release).
 func (s *server) relatedMeaningStage(
-	ctx, crossRead context.Context, project, text string, pick *relatedPick, excluded []string, trees bool,
+	ctx context.Context, leg *crossProjectLeg, project, text string, pick *relatedPick, excluded []string, trees bool,
 ) relatedStage {
 	failed := func(reason string, err error) relatedStage {
 		if ctx.Err() != nil || meaningStatementEnded(err) {
@@ -692,33 +719,17 @@ func (s *server) relatedMeaningStage(
 		return failed(relatedReasonEmbedFailed, err)
 	}
 	var cross chan []model.SearchResult
-	// received says the stage took the leg's value at the grace below, so the await the leg's
-	// start arms has nothing left to take.
-	received := false
-	if crossRead != nil {
-		// The leg runs on a context of its own, cancelled when this function returns, which is
-		// where the grace below ends: an overrunning query then gives its pool connection back
-		// at the grace rather than at the meaning deadline.
-		crossCtx, cancelCross := context.WithCancel(crossRead)
+	if leg != nil {
+		// The leg runs on leg.read, a mark of the meaning context, which the check ends once
+		// its wait for the leg is over: an overrunning query then gives its pool connection
+		// back at the grace rather than at the meaning deadline. The stage hands the leg over
+		// unread, so the check, not this stage, waits for that connection
+		// (crossProjectLeg.release); ended says when the leg has given it back.
 		cross = make(chan []model.SearchResult, 1)
-		// Every return from here on ends the leg and then waits for it, as the check waits for
-		// each of its two stages (runRelatedCheck): the grace running out, a meaning search
-		// that failed, this stage's context ending, the terms failing, and the grace already
-		// gone. The wait is not for the result - a leg that overran its grace contributes no
-		// otherProjects, and the value taken here is dropped - but for the request-pool
-		// connection the leg's read holds, which it gives back on its way out. Left running,
-		// it would still hold that connection while the next decision-block check of the same
-		// edit ran, which is admitted for its own three and not for this one as well
-		// (decisionBlockChecks).
-		defer func() {
-			cancelCross()
-			if !received {
-				<-cross
-			}
-		}()
 		go func() {
-			reader := s.readDisplayTrees(crossCtx, trees)
-			results, err := s.relatedOtherProjects(crossCtx, vector, project, s.deps.Embedder.Identity(), reader)
+			defer close(leg.ended)
+			reader := s.readDisplayTrees(leg.read, trees)
+			results, err := s.relatedOtherProjects(leg, vector, project, s.deps.Embedder.Identity(), reader)
 			if err != nil {
 				slog.Warn("dispatch: the related-item check offers no answered question of another project", "error", err)
 			}
@@ -741,31 +752,58 @@ func (s *server) relatedMeaningStage(
 	if err != nil {
 		return failed(relatedReasonMeaningFailed, err)
 	}
-	stage := relatedStage{response: response}
-	if cross == nil {
-		return stage
-	}
-	// The grace ends at the earlier of crossProjectGrace from now and crossProjectGraceMargin
-	// before the meaning deadline. Where that second moment has passed, there is no grace at
-	// all and the stage answers at once with no cross-project item.
-	grace := time.Now().Add(crossProjectGrace)
-	if deadline, ok := ctx.Deadline(); ok {
-		if margin := deadline.Add(-crossProjectGraceMargin); margin.Before(grace) {
-			grace = margin
-		}
-	}
-	left := time.Until(grace)
-	if left <= 0 {
-		return stage
-	}
-	timer := time.NewTimer(left)
-	defer timer.Stop()
+	return relatedStage{response: response, cross: cross}
+}
+
+// awaitCrossProject is the check's wait for its cross-project leg once the meaning stage has
+// answered: what the leg found when it answers within the grace, nothing otherwise. The grace
+// ends at the earlier of crossProjectGrace from now and the meaning deadline (meaningCtx's), so
+// it never holds the check past the meaning allowance (INFRA-2337 D1). The leg runs on the
+// meaning context too, so it ends by that deadline itself, but the wait does not depend on the
+// leg seeing that.
+//
+// The leg's answer and the end of the grace can be ready together, and Go then picks between
+// them at random; an answer that is already there when the grace ends is taken, as
+// runRelatedCheck takes the stage's own.
+func (s *server) awaitCrossProject(meaningCtx context.Context, cross <-chan []model.SearchResult) []model.SearchResult {
+	grace, endGrace := context.WithTimeout(meaningCtx, cmp.Or(s.crossProjectWait, crossProjectGrace))
+	defer endGrace()
 	select {
-	case stage.otherProjects = <-cross:
-		received = true
-	case <-timer.C:
+	case results := <-cross:
+		return results
+	case <-grace.Done():
 	}
-	return stage
+	select {
+	case results := <-cross:
+		return results
+	default:
+		return nil
+	}
+}
+
+// crossProjectLeg is a question's cross-project leg as runRelatedCheck holds it: read, the
+// connection mark the leg reads under, a mark of the meaning context; reading, set once the leg
+// has come to its read, past the test seam where it holds nothing (relatedOtherProjects,
+// server.beforeCrossProjectRead); and ended, closed once the leg's goroutine has returned, every
+// connection it took given back.
+type crossProjectLeg struct {
+	read    context.Context
+	reading atomic.Bool
+	ended   chan struct{}
+}
+
+// release waits, once the check has ended the meaning context, until the leg holds no
+// request-pool connection, so a check that has answered holds none: the next check of the same
+// edit is admitted for its own reads, not for this one as well (decisionBlockChecks). The wait is
+// for the connection, never for the leg's answer, which the grace has already given up on
+// (awaitCrossProject). A leg that has come to its read is waited for until it returns, which a
+// read whose context has ended does at once; one that has not, or never started, holds no
+// connection and can take none on its ended context, so it is not waited for. A nil leg, a check
+// that ran none, is released at once.
+func (l *crossProjectLeg) release() {
+	if l != nil && l.reading.Load() {
+		<-l.ended
+	}
 }
 
 // relatedMeaningSearch runs the check's meaning statement in a read transaction of its own

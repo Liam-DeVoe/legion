@@ -848,7 +848,8 @@ type errRow struct {
 func (r errRow) Scan(...any) error { return r.err }
 
 // errBatchResults carries a refusal through the batch surface, which has no error return of
-// its own: every result the caller reads is the refusal.
+// its own: every result the caller reads is the refusal, and the refused batch begins no
+// transaction.
 type errBatchResults struct {
 	err error
 }
@@ -857,6 +858,7 @@ func (b errBatchResults) Exec() (pgconn.CommandTag, error) { return pgconn.Comma
 func (b errBatchResults) Query() (pgx.Rows, error)         { return nil, b.err }
 func (b errBatchResults) QueryRow() pgx.Row                { return errRow{err: b.err} }
 func (b errBatchResults) Close() error                     { return b.err }
+func (b errBatchResults) Tx() pgx.Tx                       { return nil }
 
 // busyRow maps a deferred acquire error to ErrPoolBusy when the row is scanned, and gives back the
 // pinned connection the row was read on, if any, once it is. The call it carries the error of is

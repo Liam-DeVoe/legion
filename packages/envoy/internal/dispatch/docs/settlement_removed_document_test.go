@@ -31,10 +31,10 @@ var removalClears = []string{
 //
 // Such a pass has nothing to settle, and ends quietly: it reads no version of a document that is
 // not there, counts no failure against the room and says nothing in the log, as the room's own
-// close says nothing (documentRemoved). Without the re-read lockArtifactOwner makes under the
-// lock, the pass went on with an owner it had read before the removal and failed on the version
-// that had gone with it - `read latest document version: no rows in result set`, logged ERROR by
-// the retry (retrySettle).
+// close says nothing (Service.documentRemoved). Without the re-read lockArtifactOwner makes
+// under the lock, the pass went on with an owner it had read before the removal and failed on the
+// version that had gone with it - `read latest document version: no rows in result set`, logged
+// ERROR by the retry (retrySettle).
 func TestASettlementThatWaitedBehindARemovalEndsQuietly(t *testing.T) {
 	ctx := context.Background()
 	database := storetest.Open(t)
@@ -105,5 +105,70 @@ func TestASettlementThatWaitedBehindARemovalEndsQuietly(t *testing.T) {
 	// settles nothing of it.
 	if err := service.Evict(ctx, artifactID); err != nil {
 		t.Fatalf("close the room of the removed document: %v", err)
+	}
+}
+
+// A settlement of a document removed before it began - its room cold, so the warm-up's load finds
+// no row and the settlement stops short there - ends as the removal left it: it reads that the
+// document has gone (settlement.documentRemoved), retries nothing, counts no failure and says
+// nothing, so no retry warms a room over a row that has gone. That read is settlement work, so it
+// runs on the settlements pool the settlement opened, as every other read of it does: the
+// settlement takes no connection of the request pool, which admission hands out to requests.
+func TestASettlementOfARemovedColdDocumentEndsQuietlyOffTheRequestPool(t *testing.T) {
+	ctx := context.Background()
+	database := storetest.Open(t)
+	service, artifactID := newTestServiceWithDocument(t, database)
+	service.settle = time.Hour
+	// The seed writes the text cold (TestAColdWriteLoadsNoRoom): the settlement below has to warm
+	// the room before it reads anything, and the removal leaves that load nothing to read.
+	seedServiceText(t, service, artifactID, "# First\n\nA paragraph nobody has settled.\n")
+	if service.srv.GetDoc(artifactID) != nil {
+		t.Fatal("the document holds a room; the settlement must find it cold")
+	}
+	removal, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the removal: %v", err)
+	}
+	defer removal.Rollback(context.Background())
+	if _, _, err := lockArtifactOwner(ctx, removal, artifactID); err != nil {
+		t.Fatalf("lock the document's owner row for the removal: %v", err)
+	}
+	if err := LockDocumentRoom(ctx, removal, artifactID); err != nil {
+		t.Fatalf("lock the document's room for the removal: %v", err)
+	}
+	for _, statement := range removalClears {
+		if _, err := removal.Exec(ctx, statement, artifactID); err != nil {
+			t.Fatalf("run the removal's statement %q: %v", statement, err)
+		}
+	}
+	if err := removal.Commit(ctx); err != nil {
+		t.Fatalf("commit the removal: %v", err)
+	}
+
+	state := service.room(artifactID)
+	state.mu.Lock()
+	generation := state.roomGeneration
+	state.mu.Unlock()
+	logs := captureLogs(t)
+	before := service.store.Pool.Stat().AcquireCount()
+	outcome := service.settleRoomWithin(ctx, artifactID, generation, false)
+	took := service.store.Pool.Stat().AcquireCount() - before
+	service.followUpSettlement(artifactID, outcome)
+
+	if outcome != (settleOutcome{}) {
+		t.Fatalf("the settlement of the removed document ended next=%d error=%v, want it ended with nothing owed: a load that finds no row is a removal, not a fault to retry",
+			outcome.next, outcome.err)
+	}
+	if took != 0 {
+		t.Fatalf("the settlement took %d request-pool connection(s), want none: it reads that its document has gone through the settlements pool", took)
+	}
+	if said := logs.Lines(artifactID); said != "" {
+		t.Fatalf("the settlement of the removed document logged %q, want nothing said of a document that has gone", said)
+	}
+	state.mu.Lock()
+	failures, armed := state.settleFailures, service.isSettleTimerArmed(state.settle)
+	state.mu.Unlock()
+	if failures != 0 || armed {
+		t.Fatalf("the room counts %d settlement failure(s) with a retry armed %t, want neither", failures, armed)
 	}
 }

@@ -792,8 +792,32 @@ func TestWriteAdviceOnIdempotentExternalIssueCreate(t *testing.T) {
 	}
 }
 
+// A session's write on an issue with a long event history still answers its advice, with the full
+// count of the session's writes. The advice's queries run under adviceAllowance, the 500 ms bound
+// writeAdvice puts on the request's context, and a count that runs past that bound is cancelled and
+// costs the write its advice, so a count that is answered ran inside the bound. The hook reads that
+// the bound stood on the context the count runs on. The write's wall-clock time depends on the
+// machine and is not checked.
 func TestWriteAdviceStaysBoundedOnLongIssueHistory(t *testing.T) {
-	handler, database := newTestHandlerWithStore(t)
+	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
+	// left is how long the count's context had left when the hook ran, and set whether it had a
+	// deadline at all.
+	type countBound struct {
+		left time.Duration
+		set  bool
+	}
+	bound := make(chan countBound, 1)
+	served.adviceQueryHook = func(ctx context.Context, _ queryer, query string) error {
+		if query != "session_writes_since_human" {
+			return nil
+		}
+		deadline, set := ctx.Deadline()
+		select {
+		case bound <- countBound{left: time.Until(deadline), set: set}:
+		default:
+		}
+		return nil
+	}
 	createAdviceProject(t, handler, "PERF")
 	spec := "# Performance\n"
 	issue := createAdviceIssue(t, handler, "PERF", "Long event history", &spec)
@@ -827,32 +851,43 @@ func TestWriteAdviceStaysBoundedOnLongIssueHistory(t *testing.T) {
 		t.Fatalf("commit event seed: %v", err)
 	}
 
-	started := time.Now()
 	response := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/messages", map[string]any{
 		"body": "bounded advice", "actor": adviceSessionActor("session-performance"),
 	})
-	elapsed := time.Since(started)
 	advice := adviceFromResponse(t, response.Code, response.Body.String())
 	if advice.SessionWritesSinceHuman != seededEvents+1 {
 		t.Fatalf("session write count = %d, want %d", advice.SessionWritesSinceHuman, seededEvents+1)
 	}
-	if elapsed >= 2*time.Second {
-		t.Fatalf("advice round trip took %s, want under 2s", elapsed)
+	select {
+	case counted := <-bound:
+		if !counted.set || counted.left <= 0 || counted.left > adviceAllowance {
+			t.Fatalf("the advice counted the session's writes with %s left of its context (deadline set: %t), want the %s writeAdvice sets",
+				counted.left, counted.set, adviceAllowance)
+		}
+	default:
+		t.Fatal("the advice answered without running its count of the session's writes")
 	}
 }
 
+// A session's write whose advice query cannot finish still commits, without its advice. The
+// failing query sleeps for two seconds, and adviceAllowance, the 500 ms bound writeAdvice puts on
+// the request's context, ends it: the query is cancelled at that bound, and the server logs the
+// advice as omitted for that reason (errAdviceAllowanceEnded), so the write did not wait out the
+// two seconds. The write's wall-clock time depends on the machine and is not checked.
 func TestWriteAdviceFailureDoesNotAbortWrite(t *testing.T) {
 	handler, database := newFailingAdviceHandler(t, "session_writes_since_human", 0)
 	createAdviceProject(t, handler, "FAIL")
 	spec := "# Failure isolation\n"
 	issue := createAdviceIssue(t, handler, "FAIL", "Advice failure", &spec)
 
-	started := time.Now()
+	logs := captureLogs(t)
 	response := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/messages", map[string]any{
 		"body": "must still commit", "actor": adviceSessionActor("session-failure"),
 	})
-	if elapsed := time.Since(started); elapsed >= 2*time.Second {
-		t.Fatalf("timed-out advice query held the write for %s, want under 2s", elapsed)
+	omitted := logs.Lines(`msg="dispatch: write advice omitted"`)
+	if !strings.Contains(omitted, "query=session_writes_since_human") ||
+		!strings.Contains(omitted, errAdviceAllowanceEnded.Error()) {
+		t.Fatalf("the failing advice query was not ended by the advice's allowance; the server logged:\n%s", logs.String())
 	}
 	if response.Code != http.StatusCreated {
 		t.Fatalf("message with failed advice: status=%d body=%s", response.Code, response.Body.String())

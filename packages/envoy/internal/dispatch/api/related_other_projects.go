@@ -100,20 +100,27 @@ select b.issue_key, b.issue_title, b.issue_status, b.owner_artifact_id::text, b.
 // own state and answer, so this leg reads no ask state a second time (attachAskStates).
 //
 // reader is the display tree reader each answer's text is registered with, which is the leg's
-// own and never the request's: this runs on a goroutine the stage may abandon at its grace, and
+// own and never the request's: this runs on a goroutine the check may abandon at its grace, and
 // the goroutine that made the reader resolves it before it hands these results over
 // (relatedMeaningStage). It is nil where the caller asked for no tree, which leaves every
 // answer's text_tree out, as a nil reader does on every other route.
+//
+// leg is the leg this read is, whose mark (crossProjectLeg.read) it reads under. Past the test
+// seam it marks the leg reading before it takes its connection, so the check, which abandons the
+// leg's answer at the grace, still waits for that connection before it answers
+// (crossProjectLeg.release).
 func (s *server) relatedOtherProjects(
-	ctx context.Context, vector []float32, project, identity string, reader *displayTreeReader,
+	leg *crossProjectLeg, vector []float32, project, identity string, reader *displayTreeReader,
 ) ([]model.SearchResult, error) {
+	ctx := leg.read
 	// The test seam: a case holds this leg past its grace, or makes it fail, here (server
-	// beforeCrossProjectRead). Nothing but a test sets it.
+	// beforeCrossProjectRead), where it holds no connection. Nothing but a test sets it.
 	if s.beforeCrossProjectRead != nil {
 		if err := s.beforeCrossProjectRead(ctx); err != nil {
 			return nil, err
 		}
 	}
+	leg.reading.Store(true)
 	tx, err := s.beginMeaningScan(ctx)
 	if err != nil {
 		return nil, err
