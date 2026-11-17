@@ -10,10 +10,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // testLeakCheckTag is the pin a fake launcher's hello names when a test gives it one.
@@ -260,15 +262,32 @@ func TestARefusedLeakCheckStartsNothingAndLeavesTheSavedBundle(t *testing.T) {
 
 // The push has its own bound under the start's: a launcher that takes the check and answers
 // nothing within it refuses the start with the sentence that names the bound, and no start is
-// sent.
+// sent. The bound runs on the runtime's clock (withClock), which the row moves past it only once
+// the first slice has reached the launcher and the hop's bound is armed on that clock, so a
+// loaded machine that is slow to carry the slice ends no hop the row did not end.
 func TestALeakCheckHopThatRunsPastItsBoundRefusesTheStart(t *testing.T) {
+	fake := clocktest.New(rigNow)
 	g := newRig(t, nil, withLeakCheckHello(testLeakCheckTag, false), withSilentLeakCheck(),
-		withOptions(func(o *Options) { o.LeakCheck = servedLeakCheck() }))
+		withOptions(func(o *Options) { o.LeakCheck = servedLeakCheck() }), withClock(fake))
 	const bound = 50 * time.Millisecond
 	g.r.launchers.leakCheckHop = bound
 	spec := workerSpec(t)
 	g.launcher(spec.Claim)
-	_, err := g.r.Spawn(g.ctx, spec)
+	launched := make(chan error, 1)
+	go func() {
+		_, err := g.r.Spawn(g.ctx, spec)
+		launched <- err
+	}()
+	testwait.Eventually(t, "the first slice of the leak check to reach the launcher", func() bool {
+		return countOf(g.sent(spec.Claim), shimwire.TypeLauncherLeakCheck) > 0
+	})
+	// The hop arms its bound before it sends the first slice, and nothing moves the fake but this
+	// row, so the bound stands at its whole length from where the fake stands.
+	if hopEnds, armed := fake.Now().Add(bound), fake.Armed(); !slices.Contains(armed, hopEnds) {
+		t.Fatalf("with a slice of the check at the launcher the runtime's clock holds %v armed, want the hop's %s bound at %v", armed, bound, hopEnds)
+	}
+	fake.Advance(bound)
+	err := testwait.Receive(t, "the launch to end once the hop ran past its bound", launched)
 	want := leakguard.Cause("the pod's launcher did not answer the install of "+testLeakCheckTag+" within 50ms", nil)
 	if cause := runtime.LeakCheckCause(err); cause != want {
 		t.Fatalf("the launch failed with %v carrying the cause %q, want %q", err, cause, want)

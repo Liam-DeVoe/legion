@@ -400,8 +400,9 @@ func configureProber(opts Options) (*Runtime, error) {
 	}
 	// The launchers carry the shared public leak check and one pod's saved workspace bundle to it
 	// before any of its roles start, take its memory guard's kill reports, and log what they could
-	// not carry or record, so they are built once the runtime's log is settled.
-	r.launchers = newLaunchers(opts.LeakCheck, opts.SavedWorkspaceBundle, opts.WorkspaceBundleRestored, opts.MemoryGuardKilled, r.log)
+	// not carry or record, so they are built once the runtime's log is settled. The check's push is
+	// bounded on the runtime's clock, as its other bounded waits are.
+	r.launchers = newLaunchers(opts.LeakCheck, opts.SavedWorkspaceBundle, opts.WorkspaceBundleRestored, opts.MemoryGuardKilled, r.timers(), r.log)
 	// Last, after the logger a failed encoding is reported through: every input is settled above
 	// and none is written again, so each kind's shape is encoded here and only read afterwards.
 	r.podShapes = map[podKind]string{issuePod{}: podShape(r, issuePod{}), controllerPod{}: podShape(r, controllerPod{})}

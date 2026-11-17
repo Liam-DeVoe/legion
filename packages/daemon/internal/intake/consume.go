@@ -105,16 +105,17 @@ type ConsumerSpec struct {
 	// bounds, ApplyFact's advisory-lock wait and its transaction, and never answers below
 	// defaultHandlerLimit. Production sets none, so the daemon's worker_rpc_timeout_seconds,
 	// which it passes as AckWait, decides it; tests set a short one. There is no legion.yaml key
-	// for it. The cut cancels the handling's context, and keepInProgress runs on that context,
-	// so intake stops reporting the message in progress at the limit. The handler returns once
-	// its running step honours the cancelled context, which every step today, a pgx call or a
-	// bounded HTTP read, does at once. Only then does consumeMessage write the cut warning and
-	// nak the message with NakDelay. Nothing reaches this consumer while the handler runs,
-	// because the fetch batch is one (the first bullet below), so JetStream sends the message
-	// again, and its delivered count rises, no sooner than that return: one NakDelay after the
-	// nak, or at the consumer's next pull where the step held the handler past about one AckWait
-	// after the limit, whichever the server takes first. A step that ignored its context would
-	// hold the message, and the warning, for the whole of its own run.
+	// for it. The limit runs on Clock, which a test moves past it. The cut cancels the handling's
+	// context, and keepInProgress runs on that context, so intake stops reporting the message in
+	// progress at the limit. The handler returns once its running step honours the cancelled
+	// context, which every step today, a pgx call or a bounded HTTP read, does at once. Only then
+	// does consumeMessage write the cut warning and nak the message with NakDelay. Nothing
+	// reaches this consumer while the handler runs, because the fetch batch is one (the first
+	// bullet below), so JetStream sends the message again, and its delivered count rises, no
+	// sooner than that return: one NakDelay after the nak, or at the consumer's next pull where
+	// the step held the handler past about one AckWait after the limit, whichever the server
+	// takes first. A step that ignored its context would hold the message, and the warning, for
+	// the whole of its own run.
 	//
 	// This comment is where the delivery mechanism is written whole, in the four parts
 	// measured for dispatch://INFRA-1113. Every other site in this package that states the
@@ -159,8 +160,9 @@ type ConsumerSpec struct {
 	HandlerLimit time.Duration
 	Logger       *slog.Logger
 	// Clock is the clock Consumers reads when it records a consumer opened or a message handled,
-	// and when Lag measures a stall and the oldest waiting message's age, and the one Lag's reads
-	// are bounded on (consumerLagBound, consumerOldestBound); nil is clock.Real.
+	// when a message reaches its consumer (lagWatch), and when Lag measures a stall and the oldest
+	// waiting message's age, and the one Lag's reads are bounded on (consumerLagBound,
+	// consumerOldestBound) and one message's handling is cut on (HandlerLimit); nil is clock.Real.
 	Clock Clock
 	// ReviewPermission answers whether review's author has write access or higher to its
 	// repository, which is what lets a review decide a review round
@@ -453,8 +455,9 @@ func positionOf(info *jetstream.ConsumerInfo) DispatchConsumerPosition {
 	}
 }
 
-// Clock is the time Consumers reads and the bounds Lag's reads run under (ConsumerSpec.Clock): a
-// narrowing of clock.Clock, clock.Real unless a test names a clocktest.Fake.
+// Clock is the time Consumers reads and the bounds Lag's reads and a handling run under
+// (ConsumerSpec.Clock): a narrowing of clock.Clock, clock.Real unless a test names a
+// clocktest.Fake.
 type Clock interface {
 	Now() time.Time
 	WithTimeout(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc)
@@ -650,9 +653,10 @@ func (c *Consumers) Run(ctx context.Context, handlers ...Handler) error {
 // consumeConsumer works through one durable consumer's messages, asking JetStream for
 // consumerFetchBatch of them at a time (jetstream.PullMaxMessages), which is what leaves each
 // message's acknowledgement window to that message's own work; the constant says why. Each
-// message handled is recorded in progress at spec.Clock's time.
+// message handled is recorded in progress at spec.Clock's time, and lagWatch reads that clock
+// too.
 func (c *Consumers) consumeConsumer(ctx context.Context, consumer jetstream.Consumer, progress *consumerProgress, handlers []Handler) error {
-	lag := &lagWatch{consumer: consumer.CachedInfo().Name, logger: c.spec.Logger, now: time.Now}
+	lag := &lagWatch{consumer: consumer.CachedInfo().Name, logger: c.spec.Logger, now: c.spec.Clock.Now}
 	consuming, err := consumer.Consume(func(message jetstream.Msg) {
 		lag.observe(message)
 		if consumeMessage(ctx, message, c.spec, c.repositories(), c.pool, handlers) {
@@ -723,11 +727,11 @@ func (l *lagWatch) observe(message jetstream.Msg) {
 //
 // The order the work is done in is the point. A poison message is decoded and terminated before
 // anything else starts, so it pays for neither a goroutine nor a ticker. Everything after it runs
-// under work, a context of spec.HandlerLimit, with keepInProgress reporting the message in
-// progress every third of AckWait for as long as that work runs (the delivery mechanism:
-// ConsumerSpec.HandlerLimit's comment). The work ends the message in no way: it returns a
-// messageOutcome, stop() ends the keeper, and only then does the one acknowledgement or nak that
-// outcome asks for follow.
+// under work, a context of spec.HandlerLimit on spec.Clock, with keepInProgress reporting the
+// message in progress every third of AckWait for as long as that work runs (the delivery
+// mechanism: ConsumerSpec.HandlerLimit's comment). The work ends the message in no way: it
+// returns a messageOutcome, stop() ends the keeper, and only then does the one acknowledgement or
+// nak that outcome asks for follow.
 //
 // The keeper has to stop before that one call rather than in a defer after it. A progress signal
 // that reached the server after a nak would stretch the retry the nak asked for: nats-server's
@@ -772,7 +776,7 @@ func consumeMessage(ctx context.Context, message jetstream.Msg, spec ConsumerSpe
 	// two their first connection, while a mark per message refuses only the handling that already
 	// holds one (store.ErrNestedAcquire). A consumer delivers its messages one at a time, so this
 	// mark covers one handling and is gone with it.
-	work, cancel := context.WithTimeout(store.ForConcurrentWorker(ctx), spec.HandlerLimit)
+	work, cancel := spec.Clock.WithTimeout(store.ForConcurrentWorker(ctx), spec.HandlerLimit)
 	defer cancel()
 	stop := keepInProgress(work, message, spec.AckWait/3, spec.Logger)
 	started := time.Now()

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -16,6 +17,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
+	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -656,17 +658,21 @@ func TestTheProgressSignalStopsBeforeTheNakThatKeepsItsDelay(t *testing.T) {
 // and it is all this row proves. While the handler holds the message the daemon has no pull
 // request open (the comment above the first row of this file), so even a daemon that reported
 // nothing in progress would not have this message delivered again before the cut: what the row
-// measures is the cut itself, the redelivery the nak after it brings, and the attributes of the
-// warn line that names the cut. It says nothing about the keeper.
+// asserts is the cut itself — the limit armed on the consumers' clock, the handling held until
+// that clock reaches it and its context ended by the deadline there — the redelivery the nak
+// after it brings, which reaches the handler only once that clock has passed the limit, and the
+// attributes of the warn line that names the cut. It says nothing about the keeper.
 func TestTheProgressSignalsHandlerIsCutAtItsLimit(t *testing.T) {
 	pool := migratedPool(t)
 	js, _ := testJetStream(t)
 	logs := &lockedBuffer{}
 	spec := consumerSpec(logs)
-	// Three times the acknowledgement window, so the redelivery this row measures cannot be read
-	// as the window's own, and a small fraction of the row's patience (testwait.Eventually waits a
-	// minute), so a limit that never cuts fails the row instead of holding it.
+	// Three times the acknowledgement window, so the redelivery this row sees cannot be read as
+	// the window's own. It runs on the consumers' clock, a fake the row moves past it once the
+	// first delivery is held.
 	spec.HandlerLimit = 600 * time.Millisecond
+	fake := clocktest.New(time.Now())
+	spec.Clock = fake
 	consumers, err := OpenConsumers(context.Background(), js, pool, spec)
 	if err != nil {
 		t.Fatalf("OpenConsumers: %v", err)
@@ -675,10 +681,14 @@ func TestTheProgressSignalsHandlerIsCutAtItsLimit(t *testing.T) {
 
 	held := newHeldOnce()
 	var mu sync.Mutex
-	var entered []time.Time
+	// handlings is the context each delivery was handled under, and enteredAt where the
+	// consumers' clock stood as each reached the handler, in the order they came.
+	var handlings []context.Context
+	var enteredAt []time.Time
 	stop := runConsumers(t, consumers, handlerFunc(func(ctx context.Context, _ pgx.Tx, _ Fact) (Result, error) {
 		mu.Lock()
-		entered = append(entered, time.Now())
+		handlings = append(handlings, ctx)
+		enteredAt = append(enteredAt, fake.Now())
 		mu.Unlock()
 		// The first delivery waits on the context consumeMessage passes and nothing releases it,
 		// so it ends when and only when the limit cuts it; a handler sleeping on the clock would
@@ -688,21 +698,40 @@ func TestTheProgressSignalsHandlerIsCutAtItsLimit(t *testing.T) {
 	}))
 	defer stop()
 
+	testwait.Receive(t, "the first delivery held on its handling's context", held.entered)
+	mu.Lock()
+	first := handlings[0]
+	mu.Unlock()
+	// consumeMessage arms the limit before the handling starts, and nothing but this row moves the
+	// fake, so the deadline stands at the whole limit from where the fake stands.
+	limit := fake.Now().Add(spec.HandlerLimit)
+	if armed := fake.Armed(); !slices.Contains(armed, limit) {
+		t.Fatalf("with the first delivery held the consumers' clock holds %v armed, want the handling's %s limit at %v: consumeMessage runs every handling under spec.Clock.WithTimeout(ctx, spec.HandlerLimit)",
+			armed, spec.HandlerLimit, limit)
+	}
+	if err := first.Err(); err != nil {
+		t.Fatalf("the held handling's context had ended with %v before the clock reached its %s limit: the limit is the only thing that ends this handling", err, spec.HandlerLimit)
+	}
+	fake.Advance(spec.HandlerLimit)
+	if err := first.Err(); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("the held handling's context is ended with %v once the clock reached its %s limit, want %v", err, spec.HandlerLimit, context.DeadlineExceeded)
+	}
+
 	testwait.Eventually(t, "the cut fact delivered again", func() bool {
 		mu.Lock()
 		defer mu.Unlock()
-		return len(entered) >= 2
+		return len(enteredAt) >= 2
 	})
 	// The consumers stop on the second delivery, so the row ends there rather than working the
 	// fact again.
 	stop()
 
 	mu.Lock()
-	cut := entered[1].Sub(entered[0])
+	again := enteredAt[1]
 	mu.Unlock()
-	if cut < spec.HandlerLimit/2 || cut > 2*spec.HandlerLimit {
-		t.Errorf("the handler that never ends was cut and its fact delivered again %s after its first delivery, want about its %s handler limit plus the %s the nak after the cut asks for: the limit is the only thing that ends this handling",
-			cut, spec.HandlerLimit, spec.NakDelay)
+	if again.Before(limit) {
+		t.Errorf("the cut fact was delivered again at %v on the consumers' clock, before its handling's %s limit at %v: the limit is the only thing that ends this handling",
+			again, spec.HandlerLimit, limit)
 	}
 	line := logLine(logs.String(), "an intake handler outran its limit and was cut")
 	if line == "" {

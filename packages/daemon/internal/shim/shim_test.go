@@ -1136,7 +1136,13 @@ func TestAdoptWorkingCopyRunsTheSharedMetaeditAndAnswersTheDaemon(t *testing.T) 
 
 			p.send(t, tc.request)
 			if tc.mode == "hang" {
-				// The budget runs on the shim's clock: the jj hangs until the test spends it.
+				// The budget runs on the shim's clock: the jj hangs until the test spends it. The
+				// test spends it once the jj has recorded how it was run, its last act before it
+				// hangs, so the budget ends a jj that is running rather than one still starting.
+				testwait.Until(t, "the hanging jj to record how it was run", func() (string, bool) {
+					invocation, err := os.ReadFile(record)
+					return string(invocation), err == nil && strings.Contains(string(invocation), "JJ_EMAIL="+tc.request.JJEmail+"\n")
+				})
 				clock.spendBudget(t, time.Duration(tc.request.TimeoutMs)*time.Millisecond)
 			}
 			got, ok := p.next(t).(shimwire.AdoptWorkingCopyResult)

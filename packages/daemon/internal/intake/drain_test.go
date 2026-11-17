@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/admit"
 	"github.com/sjawhar/legion/daemon/internal/blockers"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/intake"
@@ -120,9 +121,14 @@ func TestABacklogOfOtherPullRequestsDrainsAndAppliesEveryLegionEvent(t *testing.
 	// GitHub answers that the approver can write to the repository; the count is every review the
 	// consumer asked GitHub about.
 	var asked atomic.Int64
+	// The consumers' clock is the row's: it stands where the row sets it below and nothing moves it,
+	// so no bound of Lag's reads and no handling's limit runs out on a slow machine, and the
+	// consumer-lag warning (lagWatch) reads this clock against the time the stream stored each
+	// message.
+	consumersClock := clocktest.New(time.Now())
 	consumers, err := intake.OpenConsumers(ctx, js, pool, intake.ConsumerSpec{
 		Project: drainProject, Repositories: []ghrepo.Repository{repository},
-		AckWait: 30 * time.Second, NakDelay: time.Second, Logger: log,
+		AckWait: 30 * time.Second, NakDelay: time.Second, Logger: log, Clock: consumersClock,
 		ReviewPermission: func(context.Context, intake.PullRequestReview) (bool, error) {
 			asked.Add(1)
 			return true, nil
@@ -135,14 +141,27 @@ func TestABacklogOfOtherPullRequestsDrainsAndAppliesEveryLegionEvent(t *testing.
 
 	backlog := drainBacklog()
 	started := time.Now()
-	var last uint64
-	for _, event := range backlog {
+	var first, last uint64
+	for i, event := range backlog {
 		ack, err := js.Publish(ctx, event.subject, event.data)
 		if err != nil {
 			t.Fatalf("publish %s: %v", event.subject, err)
 		}
+		if i == 0 {
+			first = ack.Sequence
+		}
 		last = ack.Sequence
 	}
+	// The consumers' clock stands at the moment the stream stored the backlog's first message, so
+	// by that clock every message reaches its consumer no later than it was stored, however long
+	// the machine takes over the drain. How long the drain took is this row's log line and no
+	// verdict of it: the bound on the work is its count, below, and a consumer-lag warning about a
+	// message no older than the consumer's clock says is a defect the warn check below still fails.
+	stored, err := stream.GetMsg(ctx, first)
+	if err != nil {
+		t.Fatalf("read the backlog's first message back: %v", err)
+	}
+	consumersClock.Set(stored.Time)
 	// The consumer has not been started, so nothing takes a message off the backlog, and its
 	// waiting count can only rise to the backlog's size and stay there. A publish's ack says the
 	// stream holds the message; the consumer's waiting count is the server's own computed state,
