@@ -117,8 +117,8 @@ type agentRoute struct {
 // ending its own step, and the architect's retry of an issue its own failure held in accepting
 // and its gate registration on a root in accepting. So the record of a step an agent's request
 // ends names the model whose answer its stream read ahead of the request. The routes are read
-// from the server's own table (routes), so a route added later fails here by name until it is
-// put in this one.
+// off what the server mounted (mountedPatterns), not off its table, so a route added later, in the
+// table or beside it, fails here by name until it is put in this one.
 func TestEveryAgentRouteWaitsForItsStreamWhereTheRecordNamesItTheAgentOfARun(t *testing.T) {
 	noFact := "it applies no fact"
 	noRequester := "the operator's bearer redeems no grant, so no requester is noted and a fact it applies waits for nothing (TestAFactNoAgentRequestedWaitsForNothing)"
@@ -226,15 +226,10 @@ func TestEveryAgentRouteWaitsForItsStreamWhereTheRecordNamesItTheAgentOfARun(t *
 		"/": {none: "the catch-all answers no route; " + noFact},
 	}
 
-	served := (&server{}).routes()
-	if len(served) == 0 {
-		t.Fatal("the server's table holds no route: the test read nothing")
-	}
-	patterns := make([]string, 0, len(served))
-	for _, route := range served {
-		patterns = append(patterns, route.pattern)
-		if _, listed := table[route.pattern]; !listed {
-			t.Errorf("route %s is not in this test's table: give the request of an agent whose fact names an issue the agent runs a step of, or say why it applies no such fact", route.pattern)
+	patterns := mountedPatterns(t, newAwaitRig(t).h.handler)
+	for _, pattern := range patterns {
+		if _, listed := table[pattern]; !listed {
+			t.Errorf("route %s is not in this test's table: give the request of an agent whose fact names an issue the agent runs a step of, or say why it applies no such fact", pattern)
 		}
 	}
 	for pattern := range table {
