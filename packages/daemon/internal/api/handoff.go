@@ -450,17 +450,18 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 //   - PLAN_RATING_INPUT: a rating outside 1 to 5, one of the two without the other, or a reason
 //     that is blank or holds more than planReasonMax characters, counted as Unicode code points.
 func planRatingRefusal(req HandoffCompleteRequest, endsRetro bool, pluginContract int, issue, what string) *intake.Refusal {
-	named := req.PlanRating != nil || req.PlanReason != nil
-	switch {
-	case !endsRetro && named:
-		return &intake.Refusal{Status: http.StatusBadRequest, Code: "PLAN_RATING_UNEXPECTED", Message: fmt.Sprintf(
-			"%s names planRating or planReason, and only the completion that ends the retro rates the plan; send it again without both, and nothing was recorded", what)}
-	case !named && endsRetro && pluginContract >= PlanRatingContract:
-		return &intake.Refusal{Status: http.StatusBadRequest, Code: "PLAN_RATING_REQUIRED", Message: fmt.Sprintf(
-			"this completion ends the retro of %s and carries no rating of the plan: rate the plan the issue ran from %d (the plan cost the work) to %d (the plan fit the work) in planRating, say why in planReason, and send it again; nothing was recorded", issue, planRatingLeast, planRatingMost)}
-	case !named:
+	if req.PlanRating == nil && req.PlanReason == nil {
+		if endsRetro && pluginContract >= PlanRatingContract {
+			return &intake.Refusal{Status: http.StatusBadRequest, Code: "PLAN_RATING_REQUIRED", Message: fmt.Sprintf(
+				"this completion ends the retro of %s and carries no rating of the plan: rate the plan the issue ran from %d (the plan cost the work) to %d (the plan fit the work) in planRating, say why in planReason, and send it again; nothing was recorded", issue, planRatingLeast, planRatingMost)}
+		}
 		return nil
 	}
+	if !endsRetro {
+		return &intake.Refusal{Status: http.StatusBadRequest, Code: "PLAN_RATING_UNEXPECTED", Message: fmt.Sprintf(
+			"%s names planRating or planReason, and only the completion that ends the retro rates the plan; send it again without both, and nothing was recorded", what)}
+	}
+	// A rating named on the completion that ends the retro, held to the scale and the pair.
 	reason := ""
 	if req.PlanReason != nil {
 		reason = *req.PlanReason
