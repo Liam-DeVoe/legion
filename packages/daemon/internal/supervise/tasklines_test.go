@@ -6,11 +6,13 @@ package supervise
 // message an operator and the cost reading search for is pinned.
 
 import (
+	"context"
 	"log/slog"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
 // The task lines as an operator, the production check and the cost reading read them: whole, and
@@ -172,6 +174,49 @@ func TestTaskValueLogOfTheSilenceRepairNamesOriginSilence(t *testing.T) {
 			wantAttr(t, repair, "finished", "true")
 		})
 	}
+}
+
+// A take the daemon failed to decide had no answer, so no take line is written for it: its own
+// Warn line names the task, the revision it was asked at and the failure. The write that then
+// gives its worker a newer revision to ask at names the cause it is, take-failed, and not a hold's
+// end, since no hold refused it.
+func TestTaskValueLogOfATakeTheDaemonFailedToDecideNamesTakeFailed(t *testing.T) {
+	const undecidedLine = "supervise: a take could not be decided or recorded; it is refused at its revision, and the value is written again under its number once the task is free to take"
+	failing := true
+	h := waitsHarness(t, func(d *Deps) {
+		d.PhaseHolds = func(context.Context, string, phase.Phase, uint64) (bool, error) {
+			if failing {
+				return false, errBoom
+			}
+			return true, nil
+		}
+	})
+	h.manualTakes()
+	h.reach(StateReady)
+	h.must(RequestDeliver{Claim: h.token, Task: "implement the plan", Phase: phase.Implementing, Generation: 7})
+	asked := h.seen()
+	if answer, err := h.takeValue(asked); answer.Outcome != "" || err == nil {
+		t.Fatalf("take while the phase read fails = %+v, %v; want no answer and the read's failure", answer, err)
+	}
+	if answers := h.records.of(answeredLine); len(answers) != 0 {
+		t.Fatalf("logged %d answers to the take, want none: the worker was answered the failure", len(answers))
+	}
+	failed := h.records.of(undecidedLine)
+	if len(failed) != 1 || failed[0].level != slog.LevelWarn {
+		t.Fatalf("logged %+v, want the undecided take named once at WARN", failed)
+	}
+	wantAttr(t, failed[0], "task", slog.Uint64Value(asked.Number).String())
+	wantAttr(t, failed[0], "revision", slog.Uint64Value(asked.Revision).String())
+	wantAttr(t, failed[0], "error", "read the phase of "+string(h.token)+": "+errBoom.Error())
+
+	failing = false
+	h.observe(runtime.Alive)
+	writes := h.records.of(writtenLine)
+	if len(writes) != 2 {
+		t.Fatalf("logged %d value writes, want the queue's and the one after the failed take", len(writes))
+	}
+	wantAttr(t, writes[1], "task", slog.Uint64Value(asked.Number).String())
+	wantAttr(t, writes[1], "cause", TaskValueTakeFailed)
 }
 
 // The messages an operator, the production check and the cost reading search for are the ones the

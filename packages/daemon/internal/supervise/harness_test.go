@@ -902,12 +902,15 @@ func (h *harness) mustReport(providerError *ProviderError) {
 	}
 }
 
-// workerAsks is the worker's own reading of its value: seen once per revision while its agent is
-// registered, and taken once per revision while its host is idle. A process that registered anew
-// asks afresh, since its memory went with the process it replaced. A seen report or a take the
-// daemon answered with nothing but a failure — a store a test is failing — is sent again after the
-// next event, as the plugin sends a request again that had no answer (departure 7 of
-// dispatch://INFRA-2811).
+// workerAsks is the worker's own reading of its value, as pi-shared's task-take reads it: seen
+// once per revision while its agent is registered, and taken once per revision while its host is
+// idle. A process that registered anew asks afresh, since its memory went with the process it
+// replaced. Each revision is marked seen and asked before the request goes, as the plugin marks
+// it, so a seen report or a take the daemon answered with nothing but a failure — a store a test
+// is failing — is not sent again: every failure the daemon answers carries a code, and the plugin
+// sends the same request again only where no daemon answered at all (departure 7 of
+// dispatch://INFRA-2811), which a harness calling the machine itself never meets. The worker asks
+// again at a newer revision, which is the daemon's to write (undecided, offerPending).
 func (h *harness) workerAsks() {
 	w := h.worker
 	if w.manual || w.relayDown {
@@ -920,19 +923,15 @@ func (h *harness) workerAsks() {
 		return
 	}
 	if !w.seen[value] {
-		if err := h.m.Handle(h.ctx, RequestTaskSeen{Claim: h.token, Generation: c.Generation, Session: c.Session,
-			Number: value.Number, Epoch: value.Epoch, Revision: value.Revision}); err != nil {
-			return
-		}
 		w.seen[value] = true
+		_ = h.m.Handle(h.ctx, RequestTaskSeen{Claim: h.token, Generation: c.Generation, Session: c.Session,
+			Number: value.Number, Epoch: value.Epoch, Revision: value.Revision})
 	}
 	if (c.State != StateReady && c.State != StateIdle) || w.asked[value] {
 		return
 	}
-	if answer, err := h.takeValue(value); err != nil && answer.Outcome == "" {
-		return
-	}
 	w.asked[value] = true
+	_, _ = h.takeValue(value)
 }
 
 // takeValue is a take of value's number at its revision, recorded as the worker's. An answer the

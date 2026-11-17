@@ -258,13 +258,15 @@ const (
 // The causes a write of the claim's value is logged under (valueWrittenLine), beside TaskValueBoot
 // and TaskValueRepair: the task's first queue (queue), the end of a hold that refused a take
 // (offerPending), a task taken back in this same process that can be taken again (offerPending,
-// Machine.retaken), and the first bound passing over a value nobody reported seeing
-// (takeBoundOver).
+// Machine.retaken), a task whose take this same process failed to decide or record, once the task
+// is free to take again (offerPending, Machine.failedTake), and the first bound passing over a
+// value nobody reported seeing (takeBoundOver).
 const (
-	TaskValueQueued    = "queued"
-	TaskValueHoldEnded = "hold-ended"
-	TaskValueRetake    = "retake"
-	TaskValueUnseen    = "unseen"
+	TaskValueQueued     = "queued"
+	TaskValueHoldEnded  = "hold-ended"
+	TaskValueRetake     = "retake"
+	TaskValueTakeFailed = "take-failed"
+	TaskValueUnseen     = "unseen"
 )
 
 // What finished a task, as its line names it (taskFinishedLine), which the cost reading counts
@@ -393,7 +395,8 @@ func sameTake(a, b RequestTake) bool {
 // answered, and the failure is the rest of the decision's — a retirement the refused adoption's
 // charge made that the tree lifecycle refused, a claim write the store did not take. That failure
 // is logged here, since the caller answers the worker and has nothing of its own to do with it.
-// One that fails before any answer returns the zero answer.
+// One that fails before any answer returns the zero answer, and leaves the take refused at its
+// revision, so the value is written again for the worker to ask at (undecided).
 func (m *Machine) answerTake(ctx context.Context, request RequestTake) (TakeAnswer, error) {
 	if err := m.Handle(ctx, request); err != nil {
 		return m.answeredBeside(request, err)
@@ -454,7 +457,7 @@ func (m *Machine) answerAs(take RequestTake, answer TakeAnswer, repeat bool) {
 
 // refuseTake answers a take refused by hold, recording the refusal at the take's revision.
 func (m *Machine) refuseTake(ctx context.Context, take RequestTake, hold string) error {
-	if m.recordTake(take, TakeRefused) {
+	if m.claim.recordTake(take, TakeRefused) {
 		if err := m.persist(ctx); err != nil {
 			return err
 		}
@@ -463,12 +466,45 @@ func (m *Machine) refuseTake(ctx context.Context, take RequestTake, hold string)
 	return nil
 }
 
+// undecided is a take row's failure before any answer: a read or a write of the record that the
+// holds, the drops and the root's narrowing make (takeable), the write of an accepted take
+// (accept), the write of the worker's word that a claim a restart restored working is idle
+// (takeInTurn). The take route answers such a take with a coded failure (internal/api's
+// taskRefusal, CLAIM_WRITE_FAILED), and no worker sends a take again after an answer that carries
+// a code: the plugin and the bridge ask again only at a newer revision of the value (departure 7
+// of dispatch://INFRA-2811). The record still owes the task, so the take is recorded refused at
+// its revision, as a hold's refusal is, and the write a refused take waits on (offerPending)
+// writes the value again under its number where the task is free to take: at the claim's next
+// chance, the sweep's observation at the latest, once the store answers the reads takeable makes.
+// That newer revision is the worker's signal to ask again. Neither of R5's waits charges the
+// worker meanwhile: the first waits only on a revision no take came at (firstWaitNow), and no
+// take stands accepted for the second (secondWaitNow).
+//
+// A row that answered before it failed is no such take (answeredBeside), and neither is a take
+// of a number the claim no longer holds pending and untaken, nor one at a revision the worker has
+// since replaced (recordTake). A refusal records itself before its write (refuseTake), so a
+// failure there leaves the take refused already, and the hold's end writes the value. The
+// machine remembers the number (Machine.failedTake), so the write is logged under the cause it is
+// (TaskValueTakeFailed).
+func (m *Machine) undecided(ctx context.Context, request RequestTake, err error) error {
+	if err == nil || m.decided.answer.Outcome != "" || m.decided.adopt != nil {
+		return err
+	}
+	p := m.claim.Pending
+	if p == nil || p.Number != request.Number || p.taken() || !m.claim.recordTake(request, TakeRefused) {
+		return err
+	}
+	m.failedTake = p.Number
+	m.log.Warn("supervise: a take could not be decided or recorded; it is refused at its revision, and the value is written again under its number once the task is free to take",
+		"task", p.Number, "revision", request.Revision, "error", err)
+	return errors.Join(err, m.persist(ctx))
+}
+
 // recordTake records what came of a take at its revision (Claim.TaskTakeState), and reports
 // whether it changed the claim. A take at a revision newer than the one the worker last reported
 // seeing is the worker's word that it saw that one, so it is recorded as seen too; one at an older
 // revision of the same epoch is an ask the worker has since replaced, and records nothing.
-func (m *Machine) recordTake(take RequestTake, state TakeState) bool {
-	c := &m.claim
+func (c *Claim) recordTake(take RequestTake, state TakeState) bool {
 	switch {
 	case take.Epoch != c.TaskSeenEpoch || take.Revision > c.TaskSeenRevision:
 		c.TaskSeenEpoch, c.TaskSeenRevision = take.Epoch, take.Revision
@@ -498,7 +534,7 @@ func take(m *Machine, ctx context.Context, ev Event) error {
 	if m.answeredFromRecord(request) {
 		return nil
 	}
-	return m.takePending(ctx, request)
+	return m.undecided(ctx, request, m.takePending(ctx, request))
 }
 
 // answeredFromRecord answers the three takes the record alone decides (take), and reports whether
@@ -522,13 +558,13 @@ func (m *Machine) answeredFromRecord(request RequestTake) bool {
 // a drop answers it here, an adoption sends it back to Machine.Take, and anything else accepts
 // it.
 func (m *Machine) takePending(ctx context.Context, request RequestTake) error {
-	m.recordTake(request, TakeMade)
+	m.claim.recordTake(request, TakeMade)
 	hold, dropped, err := m.takeable(ctx)
 	switch {
 	case err != nil:
 		return err
 	case dropped:
-		m.recordTake(request, TakeRefused)
+		m.claim.recordTake(request, TakeRefused)
 		if err := m.persist(ctx); err != nil {
 			return err
 		}
@@ -567,10 +603,11 @@ func takeInTurn(m *Machine, ctx context.Context, ev Event) error {
 		"task", request.Number)
 	m.claim.State = StateIdle
 	m.askFirst = false
-	if err := m.persist(ctx); err != nil {
-		return err
+	err := m.persist(ctx)
+	if err == nil {
+		err = m.takePending(ctx, request)
 	}
-	return m.takePending(ctx, request)
+	return m.undecided(ctx, request, err)
 }
 
 // takeNotReady is a take reaching a claim whose agent has not said it is ready: refused
@@ -605,7 +642,7 @@ func adopted(m *Machine, ctx context.Context, ev Event) error {
 	if hold := m.claimHold(); hold != "" {
 		return m.refuseTake(ctx, request, hold)
 	}
-	return m.accept(ctx, request)
+	return m.undecided(ctx, request, m.accept(ctx, request))
 }
 
 // adoptedTooLate is an adoption's outcome reaching a claim that is no longer ready or idle: the
@@ -650,7 +687,7 @@ func (m *Machine) refusedAdoption(ctx context.Context, request RequestTake, err 
 		m.log.Warn("supervise: the failed adoption was not recorded on the delivery; settle writes it again and the charge goes on",
 			"task", p.Number, "error", err)
 	}
-	m.recordTake(request, TakeRefused)
+	m.claim.recordTake(request, TakeRefused)
 	m.answer(request, TakeAnswer{Outcome: TakeOutcomeRefused, Hold: HoldAdoption})
 	switch {
 	case errors.Is(err, runtime.ErrAdoptRefused):
@@ -695,28 +732,57 @@ func (m *Machine) refusedAdoption(ctx context.Context, request RequestTake, err 
 // that entry's work. The same write carries it, since the claim is half of it.
 //
 // The prompt budgets are not cleared here: a take resets no count (R5), and they go to zero at
-// the start of this take's turn, as at any turn's start or end (turnStarted). A write that fails
-// tells no one and is owed: the take stands in memory, and a take sent again is answered from it.
+// the start of this take's turn, as at any turn's start or end (turnStarted).
+//
+// None of it is the claim's until the store holds it. The take is composed on a copy of the
+// claim and one of its delivery, which memory takes only once the write lands, as queue's write
+// is, and everything else the take does follows that: its lines, the workflow told
+// (Deps.TaskConfirmed), the answer. So a write that fails leaves memory holding no part of the
+// take: no ConfirmedAt or TakenText, hence no second wait armed (secondWaitNow) and no other role
+// held behind it (Claim.InTurn), no telling, no handshake's confirmation, no number taken. The
+// worker is answered the failure and never sends that take again, so the take is refused at its
+// revision instead (undecided) and the value written again for the worker to ask at. The one
+// thing done before the write that no write undoes is the adoption of the working copy a phase
+// task made first (adopted): it is the shim's, and harmless to leave, since it hands the working
+// copy the identity this same role adopts again at its next take of the task. A write whose
+// answer was lost may have committed, so the failure leaves the marks a failed
+// putClaimAndPendingOwed leaves: the delivery unsaved, and the claim write owed where the write's
+// fate is unknown (owes). The next decision writes both rows from memory over whatever it
+// committed, and the store's write of an unconfirmed delivery over a confirmed one holds again
+// the decisions that confirmation told (internal/store's putBackARetakenConfirmation).
 func (m *Machine) accept(ctx context.Context, request RequestTake) error {
 	p := m.claim.Pending
 	text, told := p.message(m.claim)
-	p.ConfirmedAt, p.TakenText = m.deps.Clock.Now(), text
-	p.SendFailures, p.LastSendFailureAt, p.LastSendError = 0, time.Time{}, ""
-	m.claim.Handshake = m.claim.Handshake.confirmed(*p)
-	if a := &m.claim.Abandoned; told.abandoned && a.Tells() {
-		a.Told, a.ToldBy = true, p.ID
+	taken := *p
+	taken.ConfirmedAt, taken.TakenText = m.deps.Clock.Now(), text
+	taken.SendFailures, taken.LastSendFailureAt, taken.LastSendError = 0, time.Time{}, ""
+	c := m.stored()
+	c.Handshake = c.Handshake.confirmed(taken)
+	toldAbandoned := told.abandoned && c.Abandoned.Tells()
+	if toldAbandoned {
+		c.Abandoned.Told, c.Abandoned.ToldBy = true, taken.ID
+	}
+	toldEnded := told.ended && c.EndedWork.Tells()
+	if toldEnded {
+		c.EndedWork.Told, c.EndedWork.ToldBy = true, taken.ID
+	}
+	c.TaskTaken = taken.Number
+	c.recordTake(request, TakeAccepted)
+	if err := m.putClaimAndDelivery(ctx, c, taken); err != nil {
+		m.unsaved = true
+		return m.owes("PutClaimAndDelivery", err)
+	}
+	*p = taken
+	c.Pending = p
+	m.claim, m.unsaved = c, false
+	m.settleOwedWrite("PutClaimAndDelivery")
+	if toldAbandoned {
 		m.log.Info("supervise: an accepted take told the agent of the session its claim abandoned",
-			"task", p.Number, "delivery", p.ID, "session", a.Session)
+			"task", p.Number, "delivery", p.ID, "session", c.Abandoned.Session)
 	}
-	if e := &m.claim.EndedWork; told.ended && e.Tells() {
-		e.Told, e.ToldBy = true, p.ID
+	if toldEnded {
 		m.log.Info("supervise: an accepted take told the agent what its relaunch ended",
-			"task", p.Number, "delivery", p.ID, "cause", e.Cause, "ended", e.Generation)
-	}
-	m.claim.TaskTaken = p.Number
-	m.recordTake(request, TakeAccepted)
-	if err := m.putClaimAndPendingOwed(ctx); err != nil {
-		return err
+			"task", p.Number, "delivery", p.ID, "cause", c.EndedWork.Cause, "ended", c.EndedWork.Generation)
 	}
 	if m.deps.TaskConfirmed != nil {
 		m.deps.TaskConfirmed(m.current())
@@ -855,22 +921,24 @@ func (m *Machine) claimHold() string {
 
 // offerPending writes the claim's value again under its pending task's number where the worker
 // asked at the latest revision the daemon wrote and the task is free to take now: the worker
-// asks once per revision, so a value its take was refused at — or one whose take a provider
-// error, a compaction or a death took back — says nothing new until it is written again. It is
-// the end of every hold that refused a take, and runs at each point one can end: the agent's
-// ready, the shim's hello, the sweep's observation, the end of a turn on this claim or another of
-// its issue, a start's arrival, the end of a provider error's wait and of a compaction, the end of
-// an update round. Which hold ended is not asked: takeable says whether any still stands, and the
-// value is written only where none does, so a hold that still stands costs the worker nothing and
-// the sweep never writes for one.
+// asks once per revision, so a value its take was refused at — by a hold, or because the daemon
+// failed to decide or record the take (undecided) — or one whose take a provider error, a
+// compaction or a death took back says nothing new until it is written again. It is the end of
+// every hold that refused a take, and runs at each point one can end: the agent's ready, the
+// shim's hello, the sweep's observation, the end of a turn on this claim or another of its issue,
+// a start's arrival, the end of a provider error's wait and of a compaction, the end of an update
+// round. Which hold ended is not asked: takeable says whether any still stands, and the value is
+// written only where none does, so a hold that still stands costs the worker nothing and the
+// sweep never writes for one.
 //
 // A value the worker has not reported seeing at that revision is left alone: the worker has not
 // asked at it. A write the bucket refused is made here at the next chance, whatever the worker
 // asked (valueUnwritten).
 //
-// The write's cause is TaskValueRetake where the task was taken back in this same process and
-// can be taken again now — after a provider error's wait, a compaction, the second wait
-// (Machine.retaken) — and TaskValueHoldEnded for every other write here.
+// The write's cause is TaskValueTakeFailed where this same process failed to decide or record
+// the take at that revision (Machine.failedTake), TaskValueRetake where the task was taken back
+// in this same process and can be taken again now — after a provider error's wait, a compaction,
+// the second wait (Machine.retaken) — and TaskValueHoldEnded for every other write here.
 func (m *Machine) offerPending(ctx context.Context) error {
 	p := m.claim.Pending
 	if p == nil || p.taken() {
@@ -886,7 +954,10 @@ func (m *Machine) offerPending(ctx context.Context) error {
 		return err
 	}
 	cause := TaskValueHoldEnded
-	if m.retaken == p.Number {
+	switch p.Number {
+	case m.failedTake:
+		cause = TaskValueTakeFailed
+	case m.retaken:
 		cause = TaskValueRetake
 	}
 	return m.writeValue(ctx, cause)
@@ -930,7 +1001,7 @@ func (m *Machine) putValue(ctx context.Context, d Delivery, cause string) (strin
 			"task", d.Number, "origin", d.Origin, "cause", cause, "error", err)
 		return "", 0, false
 	}
-	m.valueUnwritten, m.valueWrittenAt, m.retaken = false, m.deps.Clock.Now(), 0
+	m.valueUnwritten, m.valueWrittenAt, m.retaken, m.failedTake = false, m.deps.Clock.Now(), 0, 0
 	m.log.Info(valueWrittenLine, "task", d.Number, "origin", d.Origin, "finished", finished,
 		"session", m.claim.Session, "epoch", epoch, "revision", revision, "cause", cause)
 	return epoch, revision, true

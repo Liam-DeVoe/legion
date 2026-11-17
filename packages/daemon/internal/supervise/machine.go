@@ -138,8 +138,9 @@ func (s SuspendSource) RetiresPhaseTask() bool {
 
 // TakeState is what came of a take at the revision of a claim's value its worker last reported
 // seeing (Claim.TaskTakeState): "" while no take came at that revision, TakeMade once one did,
-// and TakeAccepted or TakeRefused by the daemon's answer to it. The store holds these four and
-// no other (the check on claims.task_take_state).
+// and TakeAccepted or TakeRefused by the daemon's answer to it; a take the daemon failed to decide
+// or record is refused (undecided), since its worker asks again only at a newer revision. The
+// store holds these four and no other (the check on claims.task_take_state).
 type TakeState string
 
 const (
@@ -1287,6 +1288,11 @@ type Machine struct {
 	// a hold's end, and any write clears it (putValue). letGo clears it with the process, and it
 	// is memory only: a restart's own writes are its boot's (valueRead).
 	retaken uint64
+	// failedTake is the number of the pending task a take of which this process failed to decide
+	// or record (undecided), until the value of it is written again: that write is logged as
+	// such (TaskValueTakeFailed, offerPending) rather than as a hold's end. It is kept, cleared
+	// and lost as retaken is.
+	failedTake uint64
 	// cutTurnOf is the delivery id of the pending task the decision that lets the claim's process
 	// go takes back from its turn (interrupted), and "" while no decision has taken one back from
 	// it. interrupted sets it where it takes back a take whose turn was running. The take-back
@@ -3072,7 +3078,7 @@ func (m *Machine) letGo(ctx context.Context, cause string) {
 	m.askFirst = false
 	m.held = nil
 	m.staleRelaunch = nil
-	m.turnsTask, m.reportedAhead, m.retaken = 0, 0, 0
+	m.turnsTask, m.reportedAhead, m.retaken, m.failedTake = 0, 0, 0, 0
 	m.cutTurnOf = ""
 	m.compacting, m.lostCompaction = nil, nil
 	m.processGone, m.goneOutOfMemory, m.goneCause, m.claim.DeathCharged = false, false, "", false
@@ -3353,10 +3359,13 @@ func (m *Machine) putDelivery(ctx context.Context, d Delivery) error {
 // row appended and whose delivery is not the claim's pending one until the store has taken both
 // — what it writes is ahead of memory rather than equal to it, so neither the delivery's mark nor
 // the claim write the machine may owe can be read off this write, and queue writes memory itself
-// once the store has answered — interrupted, whose delivery is the task taken back, which becomes
-// the claim's only once the store has taken it, beside a claim whose telling or handshake the
-// take-back gave back (giveBackTake); and putClaimAndPending, which passes memory's own claim with
-// memory's own pending delivery and is the call that settles both.
+// once the store has answered — accept, whose claim and delivery carry an accepted take memory
+// takes only once the store has taken both, and which then settles what putClaimAndPending
+// settles, since the rows it wrote are then memory's own — interrupted, whose delivery is the
+// task taken back, which becomes the claim's only once the store has taken it, beside a claim
+// whose telling or handshake the take-back gave back (giveBackTake); and putClaimAndPending,
+// which passes memory's own claim with memory's own pending delivery and is the call that settles
+// both.
 func (m *Machine) putClaimAndDelivery(ctx context.Context, c Claim, d Delivery) error {
 	return m.write(ctx, func(ctx context.Context) error { return m.deps.Store.PutClaimAndDelivery(ctx, c, d) })
 }
@@ -3370,8 +3379,8 @@ func (m *Machine) putClaimAndDelivery(ctx context.Context, c Claim, d Delivery) 
 // settles. It marks nothing owed: the callers that owe their claim write say so themselves
 // (putClaimAndPendingOwed, repair).
 //
-// Its callers are the decisions that write both of memory's own rows: an accepted take (accept),
-// the start of its turn (startTakesTurn), a take-back that gave back a telling or a handshake's
+// Its callers are the decisions that write both of memory's own rows: the start of an accepted
+// take's turn (startTakesTurn), a take-back that gave back a telling or a handshake's
 // confirmation with the take (takeBack, giveBackTake), a retirement that takes back a take whose
 // turn has not started (retire), settle's write of a delivery an earlier write left unsaved, and
 // repair's branch for a claim that holds a pending delivery. Each has a pending delivery by the

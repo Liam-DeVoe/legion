@@ -1291,11 +1291,21 @@ So a role sets no `user.name`, no `user.email`, none of the overlay's three temp
   deleted`** at Info are a task's way through its claim: each write of the claim's value, with the
   `task` number, its `origin`, whether the claim had `finished` the last task written to it in its
   `session`, the bucket's `epoch` and `revision`, and the `cause` (`queued`, `hold-ended`,
-  `retake`, `unseen`, `repair`, `boot`); each answer to the worker's take, with its `outcome`
-  (`accepted`, `refused` with the `hold` that refused it, or `dropped`); each take-back with its
-  `cause`; and each finish with what finished it (`by=report` or `by=end-frame`).
+  `retake`, `take-failed`, `unseen`, `repair`, `boot`); each answer to the worker's take, with its
+  `outcome` (`accepted`, `refused` with the `hold` that refused it, or `dropped`); each take-back
+  with its `cause`; and each finish with what finished it (`by=report` or `by=end-frame`).
   [Task delivery cost](/legion/legion/task-delivery-cost/) reads all of them but the delete for a
   window of the log.
+- **`supervise: a take could not be decided or recorded; it is refused at its revision, and the
+  value is written again under its number once the task is free to take`** at Warn, with the
+  `task`, the `revision` the worker asked at and the `error`, is a take the daemon could not
+  answer because a read or a write of the database failed under it. The worker was answered
+  `500 CLAIM_WRITE_FAILED` and does not send that take again; it asks again only at a newer
+  revision. The daemon writes one once the database answers and no hold stands, at the latest at
+  the sweep after that, as `supervise: a task value was written` with `cause=take-failed`, and
+  charges the worker nothing for the wait. A line with no such write after it while the claim's
+  agent is up means the database is still away, or a hold stands over the task: look for
+  `supervise: a claim write the database did not take`.
 - **`supervise: prompt failure`** and **`supervise: retired after prompt failures`** at Warn
   carry `wait=` — `take` (a task the worker saw and did not ask to take within
   `worker_take_timeout_seconds`), `turn-start` (an accepted take whose turn did not start within

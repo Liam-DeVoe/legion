@@ -1456,8 +1456,10 @@ func TestPodUpdateAnUnansweredClaimRelaunchedIntoAnotherPodIsAskedNothingMore(t 
 // value deleted, because takeable drops every `update:` task: the words name a round whose pod is
 // gone, and no session of this claim will ever answer it. A drop whose write failed — which
 // leaves the store holding the dead pod's ask, exactly as a daemon that died between the two
-// writes does — is made again at the next take, after a restart too, and the claim's next task is
-// taken behind it.
+// writes does — fails the take it was made in, which its worker never sends again, so the take is
+// recorded refused at its revision (undecided) and the sweep's observation makes the drop again
+// where it asks takeable as the take did (offerPending), after a restart too. The claim's next
+// task is taken behind it.
 func TestTakeOfAnAskOfARoundTheClaimLeftIsDroppedAndItsValueDeleted(t *testing.T) {
 	const task = "review the pull request"
 	h := updateHarness(t, PodUpdateContract)
@@ -1484,7 +1486,9 @@ func TestTakeOfAnAskOfARoundTheClaimLeftIsDroppedAndItsValueDeleted(t *testing.T
 	if p := h.claim().Pending; p != nil {
 		t.Fatalf("pending = %+v, want the dead pod's ask dropped in the new pod", p)
 	}
-	h.wantDropped()
+	if d, held := h.store.delivery(h.token); held {
+		t.Fatalf("the store holds %+v, want the dead pod's ask dropped by the sweep", d)
+	}
 	if _, held := h.values.value(h.token); held {
 		t.Error("the bucket still holds the dropped ask's value")
 	}
