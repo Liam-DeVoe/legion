@@ -107,8 +107,8 @@ func TestARatingWriteRefusesAValueOutsideItsForm(t *testing.T) {
 	}
 }
 
-// A rating is judged against the kind the record holds, not the kind the write names: a record
-// made as a step refuses a write that calls it a retro and rates it, and keeps no rating.
+// A rating is judged against the kind the record holds as well as the kind the write names: a
+// record made as a step refuses a write that calls it a retro and rates it, and keeps no rating.
 func TestARatingOnARecordHeldAsAStepIsRefused(t *testing.T) {
 	pool := storetest.Open(t).Pool
 	id := uuid.NewString()

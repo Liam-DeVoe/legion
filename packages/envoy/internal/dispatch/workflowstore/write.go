@@ -41,8 +41,9 @@ var (
 // generation), or it is refused ErrStepInput and writes nothing. A write that names a type for a
 // node of kind retro or merge is refused ErrStepInput too, since neither has one. The write that
 // sets the report states the `reports` relation to that handoff. A type and a rating are judged
-// against the kind the node holds, not the one the write names, so a run made as a step never
-// takes a rating.
+// against the kind the write names and against the kind the node holds (typeOfKind,
+// ratingOfKind), so a run made as a step never takes a rating, whatever kind a later write calls
+// it.
 func PutStep(ctx context.Context, tx pgx.Tx, write StepWrite, actor model.Actor, at time.Time) (Step, error) {
 	id, stated, err := write.attributes()
 	if err != nil {
