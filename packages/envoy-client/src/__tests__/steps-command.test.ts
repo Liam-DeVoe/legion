@@ -103,6 +103,28 @@ const docsReview: StepRecord = {
   report: null,
 };
 
+/** A merger's run that failed and sent its task back to place 0, the retro, with the report its
+ *  completion named: a destination of 0 is a place, not the absence of one. */
+const mergeSentBack: StepRecord = {
+  id: "9d4b2f6a-3c8e-5f1b-a7d9-2e4c6a8b0d47",
+  issue: "LEG-1",
+  task: "default",
+  step: 0,
+  kind: "merge",
+  role: "merger",
+  type: "",
+  agent: "legion-leg-leg-1-merger",
+  session: "ses-merger",
+  model: "anthropic/claude-opus-5",
+  generation: 1,
+  attempt: 1,
+  started_at: "2026-11-16T12:00:00Z",
+  ended_at: "2026-11-16T12:10:00Z",
+  result: "failed",
+  returned_to: 0,
+  report: "2c4e6a8b-0d1f-4a3c-9e5b-7d9f1b3d5f79",
+};
+
 const config = {
   enabled: true,
   url: "http://dispatch.test",
@@ -188,6 +210,22 @@ describe("dispatch steps", () => {
         "docs 2 step reviewer review attempt 2 legion-leg-leg-1-reviewer openai/gpt-6.1-sol 2026-11-16T11:00:00Z 2026-11-16T11:20:00Z failed",
       ].join("\n")
     );
+  });
+
+  // The text leaves out where a run sent its task back and the report it named; the details hold
+  // every field of every record as Dispatch answered it.
+  test("the details hold each record whole, a destination of 0 and a report, and neither", async () => {
+    const answer: IssueSteps = {
+      issue: "LEG-1",
+      tasks: [
+        { task: "default", steps: [tester, mergeSentBack] },
+        { task: "docs", steps: [docsReview] },
+      ],
+    };
+
+    const { result } = await readSteps(answer);
+
+    expect(result.details).toEqual({ issue: "LEG-1", tasks: answer.tasks });
   });
 
   // Dispatch answers an issue it does not hold, and one no step ran on, with no task; the
