@@ -1693,6 +1693,23 @@ describe("push_guard", () => {
     expect(lines.filter((line) => line.startsWith("PUBLIC_LEAK_CHECK="))).toEqual([]);
   });
 
+  // Catches: a run stopped by `set -u` where the caller's shell exports no USER, as an issue
+  // pod's did on 2026-11-17 (`rig.sh: line 1005: USER: unbound variable`, before any agent).
+  test("a caller with no USER: the pane names the caller's own user, by id", () => {
+    const dir = freshDir("push-guard");
+    const R = path.join(dir, "run");
+    const { code, stderr } = bash(
+      [fn("fail"), fn("push_guard"), fn("base_env"), "R=$1 I=$2 profile=legion", "base_env"].join(
+        "\n"
+      ),
+      [R, profileDir()],
+      { PATH: `/usr/bin:/bin:${childEnv.PATH}`, USER: undefined, PUBLIC_LEAK_CHECK: undefined }
+    );
+    expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
+    const user = Bun.spawnSync(["id", "-un"]).stdout.toString().trim();
+    expect(readFileSync(path.join(R, "pane.env"), "utf8").split("\n")).toContain(`USER=${user}`);
+  });
+
   // Catches: a fix that gets the run's pushes through by getting around the guard. Under
   // Legion's own wrappers and the caller's check, a push from the run's pane passes the guard,
   // and the same push carrying a credential the shared check refuses is refused by it. The key

@@ -1002,7 +1002,9 @@ base_env() {
   cp -a "$I/home" "$R/home"
   {
     echo "HOME=$R/home"
-    echo "USER=$USER"
+    # A pod's shell need not export USER (the issue pods of 2026-11-17 did not), and `set -u`
+    # stops the run on an unset one: the user a run's agent is is the caller's own, by id.
+    echo "USER=${USER:-$(id -un)}"
     echo "TERM=xterm-256color"
     echo "TMPDIR=$R/tmp"
     echo "MISE_DATA_DIR=${MISE_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/mise}"
