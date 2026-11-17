@@ -52,18 +52,22 @@ type knivesEntry struct {
 	// origin and release are the fork's two remotes as the registry writes them, release empty
 	// where the entry names none.
 	origin, release string
+	// upstream is the repository the fork is of, as the registry writes it, empty where the entry
+	// names none. A commit a remote-tracking ref of its remote holds is not read (Guard.knives).
+	upstream string
 	// forbidden is the merged list, the first registry's terms first, each as written.
 	forbidden []string
 }
 
 // knivesRegistryFile is what this pass reads of the first registry: each entry's origin, its
-// release and its forbidden list. Every other field knives writes (upstream, base, consumers, a
-// [trust] table) is passed over, where knives itself refuses a field it does not know: this pass
-// reads three fields of the file and needs no opinion on the rest.
+// release, its upstream and its forbidden list. Every other field knives writes (base, consumers,
+// a [trust] table) is passed over, where knives itself refuses a field it does not know: this pass
+// reads four fields of the file and needs no opinion on the rest.
 type knivesRegistryFile struct {
 	Repos map[string]struct {
 		Origin    string   `toml:"origin"`
 		Release   string   `toml:"release"`
+		Upstream  string   `toml:"upstream"`
 		Forbidden []string `toml:"forbidden"`
 	} `toml:"repos"`
 }
@@ -93,15 +97,23 @@ type knivesOverlayFile struct {
 // entry's terms would refuse the local bare pushes of this repository's own tests and of knives'
 // ledger rehearsals, which hold those terms by design.
 //
-// Of the push's commits, the pass reads none that a remote-tracking ref of the repository holds
-// (remoteHeld), any remote's, where the rule pass leaves out only the pushed remote's
-// (Guard.commits). A commit an upstream's ref holds is upstream's text, not the fork's: `knives
-// audit` reads none of it either, since its base for a branch is its fork point with upstream's
-// trunk, and a mirror sync of a fork's main, a release cut over a newer upstream base and a
-// member rebased onto one all push such commits. A clone that has not fetched its upstream holds
-// no ref of it, so it reads upstream's lines and refuses those that hold a term, and the refusal
-// says to fetch it (knivesAdvice). Only a push the pass would otherwise refuse asks git which of
-// its commits are held, so a push that adds no term runs no git for it.
+// Of the push's commits, the pass reads none that the fork or the upstream of an entry that
+// applies holds already (remoteHeld): a commit a remote-tracking ref reaches of a remote whose URL
+// names one of the push's destination repositories (destinationRepos) or such an upstream, each
+// read with RepoFromURL and compared case aside, as the destination is matched against an entry.
+// The rule pass leaves out only the pushed remote's (Guard.commits). A commit the fork's ref holds
+// is the fork's own history, and one an upstream's ref holds is upstream's text, not the fork's:
+// `knives audit` reads none of it either, since its base for a branch is its fork point with
+// upstream's trunk, and a mirror sync of a fork's main, a release cut over a newer upstream base
+// and a member rebased onto one all push such commits. A ref of any other remote says nothing of
+// either repository, nor does a ref of a remote no configuration names: a cut rehearsed on a local
+// bare remote, or a ref written under refs/remotes/ by hand, would otherwise leave the real push
+// to the fork unread (the architect's rule of 2026-11-17). The limit it accepts is a ref written
+// by hand under such a remote's own refs/remotes/<name>/, which a remote named <name>/<more>
+// shares as well: that ref still holds its commit. A clone that has not fetched its upstream
+// holds no ref of it, so it reads upstream's lines and refuses those that hold a term, and the
+// refusal says to fetch it (knivesAdvice). Only a push the pass would otherwise refuse asks git
+// which of its commits are held, so a push that adds no term runs no git for it.
 func (g *Guard) knives(ctx context.Context, what string, req PushRequest, records []Record) error {
 	listed := value(g.base(), KnivesRegistriesVar)
 	if listed == "" {
@@ -149,7 +161,15 @@ func (g *Guard) knives(ctx context.Context, what string, req PushRequest, record
 	if len(lines) == 0 {
 		return nil
 	}
-	tracked, err := g.remoteHeld(ctx, req.Dir, records)
+	// A remote's refs hold a commit where its URL names the destination, or the upstream of an
+	// entry that applies.
+	holders := repos
+	for _, entry := range applying {
+		if upstream := RepoFromURL(entry.upstream); upstream != "" {
+			holders = append(holders, upstream)
+		}
+	}
+	tracked, err := g.remoteHeld(ctx, req.Dir, holders, records)
 	if err != nil {
 		return &SetupFailure{What: what, Why: "the commits the repository's remote-tracking refs hold could not be read", Err: err}
 	}
@@ -163,25 +183,30 @@ func (g *Guard) knives(ctx context.Context, what string, req PushRequest, record
 }
 
 // knivesAdvice is what a refusal of the knives pass says after its report (Refusal.Advice). The
-// pass reads no commit a remote-tracking ref holds (Guard.knives), so where a refused line is one
-// an upstream wrote, the clone has not fetched that upstream. It names no repository and no term.
-const knivesAdvice = "A commit any remote-tracking ref holds is not read, so where a refused line is an upstream's own, " +
-	"fetch the upstream remote (git fetch upstream, after git remote add upstream <url> where the clone has none) and push again."
+// pass reads no commit a remote-tracking ref holds of a remote whose URL names the destination or
+// the entry's upstream (Guard.knives), so where a refused line is one an upstream wrote, the clone
+// has not fetched that upstream from a remote whose URL names it. It names no repository and no
+// term.
+const knivesAdvice = "A commit is not read where a remote-tracking ref of a remote whose URL names the destination or the registry entry's upstream holds it, " +
+	"so where a refused line is an upstream's own, fetch the upstream remote (git fetch upstream, after git remote add upstream <url> where the clone has none) and push again."
 
 // remoteHeld are the commits of records of files that a remote-tracking ref of the repository at
-// dir reaches, a ref reaching its own commit: the commits the knives pass does not read
-// (Guard.knives). One rev-list answers for all of them, fed them one a line on its standard input:
+// dir reaches, a ref reaching its own commit, where the ref's remote has a URL that names one of
+// repos (holdingRemotes): the commits the knives pass does not read (Guard.knives). One rev-list
+// answers for all of them, fed them one a line on its standard input, with one --glob for each
+// such remote:
 //
-//	git rev-list --no-walk --stdin --not --remotes
+//	git rev-list --no-walk --stdin --not --glob=refs/remotes/<name>/*
 //
-// It prints every fed commit that no remote-tracking ref reaches, with any ancestor of one that
-// none reaches either, so a fed commit it does not print is held. git documents that --no-walk
-// has no effect where a range is given, and a remote-tracking ref after --not makes one, so
-// rev-list walks from the fed commits down to the refs; it is there for a repository with no
-// remote-tracking ref at all, where rev-list would otherwise print every ancestor of the fed
-// commits, and with it prints the fed commits alone. No git runs where no record of a file names
-// a commit. A rev-list that fails is an error, never a commit read as held.
-func (g *Guard) remoteHeld(ctx context.Context, dir string, records []Record) (map[string]bool, error) {
+// It prints every fed commit that no such ref reaches, with any ancestor of one that none reaches
+// either, so a fed commit it does not print is held. git documents that --no-walk has no effect
+// where a range is given, and a ref after --not makes one, so rev-list walks from the fed commits
+// down to the refs; it is there for remotes that have no remote-tracking ref at all, where
+// rev-list would otherwise print every ancestor of the fed commits, and with it prints the fed
+// commits alone. No git runs where no record of a file names a commit, and no rev-list where no
+// remote has a URL that names one of repos: nothing is held then. A git that fails is an error,
+// never a commit read as held.
+func (g *Guard) remoteHeld(ctx context.Context, dir string, repos []string, records []Record) (map[string]bool, error) {
 	// held is every commit asked about, until rev-list names the ones no ref reaches.
 	held := map[string]bool{}
 	var fed strings.Builder
@@ -196,7 +221,18 @@ func (g *Guard) remoteHeld(ctx context.Context, dir string, records []Record) (m
 	if len(held) == 0 {
 		return nil, nil
 	}
-	out, err := g.gitFed(ctx, dir, fed.String(), "rev-list", "--no-walk", "--stdin", "--not", "--remotes")
+	remotes, err := g.holdingRemotes(ctx, dir, repos)
+	if err != nil {
+		return nil, err
+	}
+	if len(remotes) == 0 {
+		return nil, nil
+	}
+	args := []string{"rev-list", "--no-walk", "--stdin", "--not"}
+	for _, remote := range remotes {
+		args = append(args, "--glob=refs/remotes/"+remote+"/*")
+	}
+	out, err := g.gitFed(ctx, dir, fed.String(), args...)
 	if err != nil {
 		return nil, err
 	}
@@ -204,6 +240,49 @@ func (g *Guard) remoteHeld(ctx context.Context, dir string, records []Record) (m
 		delete(held, unheld)
 	}
 	return held, nil
+}
+
+// holdingRemotes are the remotes of dir's configuration that have a URL that names one of repos
+// (namesOneOf): the remotes whose remote-tracking refs hold a commit for the knives pass
+// (remoteHeld). One git config reads every remote's URLs:
+//
+//	git config --get-regexp '^remote\..*\.url$'
+//
+// It prints a line "remote.<name>.url <value>" for each URL, the name being all that lies
+// between, dots included, and answers 1 where no remote has a URL. Any other status is an error.
+func (g *Guard) holdingRemotes(ctx context.Context, dir string, repos []string) ([]string, error) {
+	var stderr strings.Builder
+	status, out, err := g.run(ctx, child{argv: gitArgv("config", "--get-regexp", `^remote\..*\.url$`), dir: dir, stderr: &stderr})
+	if err != nil {
+		return nil, err
+	}
+	switch status {
+	case 0:
+	case 1:
+		return nil, nil
+	default:
+		return nil, fmt.Errorf("git config exited %d: %s", status, strings.TrimSpace(stderr.String()))
+	}
+	var remotes []string
+	for line := range strings.Lines(out) {
+		key, value, _ := strings.Cut(strings.TrimRight(line, "\r\n"), " ")
+		name, ok := strings.CutPrefix(key, "remote.")
+		if !ok {
+			continue
+		}
+		name, ok = strings.CutSuffix(name, ".url")
+		// A name that holds a glob metacharacter is never selected: remoteHeld's --glob would read
+		// it as a pattern, which could reach the refs of remotes whose URL names none of repos.
+		// git remote add refuses such a name, since no ref name holds one, but a configuration
+		// written by hand can hold it.
+		if !ok || strings.ContainsAny(name, `*?[\`) || slices.Contains(remotes, name) {
+			continue
+		}
+		if namesOneOf(value, repos) {
+			remotes = append(remotes, name)
+		}
+	}
+	return remotes, nil
 }
 
 // knivesKeptFor is how long the pass matches pushes against its kept list without reading a
@@ -230,6 +309,7 @@ type knivesKeptEntry struct {
 	Name      string   `json:"name"`
 	Origin    string   `json:"origin"`
 	Release   string   `json:"release"`
+	Upstream  string   `json:"upstream"`
 	Forbidden []string `json:"forbidden"`
 }
 
@@ -237,7 +317,7 @@ type knivesKeptEntry struct {
 func (k knivesKept) entries() []knivesEntry {
 	entries := make([]knivesEntry, 0, len(k.Entries))
 	for _, entry := range k.Entries {
-		entries = append(entries, knivesEntry{name: entry.Name, origin: entry.Origin, release: entry.Release, forbidden: entry.Forbidden})
+		entries = append(entries, knivesEntry{name: entry.Name, origin: entry.Origin, release: entry.Release, upstream: entry.Upstream, forbidden: entry.Forbidden})
 	}
 	return entries
 }
@@ -278,7 +358,7 @@ func (g *Guard) keepKnives(listed string, readAt time.Time, entries []knivesEntr
 	}
 	kept := knivesKept{ReadAt: readAt.UTC(), Entries: make([]knivesKeptEntry, 0, len(entries))}
 	for _, entry := range entries {
-		kept.Entries = append(kept.Entries, knivesKeptEntry{Name: entry.name, Origin: entry.origin, Release: entry.release, Forbidden: entry.forbidden})
+		kept.Entries = append(kept.Entries, knivesKeptEntry{Name: entry.name, Origin: entry.origin, Release: entry.release, Upstream: entry.upstream, Forbidden: entry.forbidden})
 	}
 	encoded, err := json.Marshal(kept)
 	if err != nil {
@@ -361,7 +441,7 @@ func (g *Guard) knivesEntries(ctx context.Context, rows []knivesRow) ([]knivesEn
 			}
 			for _, name := range slices.Sorted(maps.Keys(registry.Repos)) {
 				read := registry.Repos[name]
-				entry := &knivesEntry{name: name, origin: read.Origin, release: read.Release, forbidden: read.Forbidden}
+				entry := &knivesEntry{name: name, origin: read.Origin, release: read.Release, upstream: read.Upstream, forbidden: read.Forbidden}
 				if entry.origin == "" {
 					return nil, fmt.Errorf("%s: %s names no origin", knivesRowName(i), knivesEntryName(name, knivesTerms(entry.forbidden)))
 				}
@@ -523,20 +603,23 @@ func (g *Guard) remoteURLs(ctx context.Context, dir, remote, key string) ([]stri
 	return urls, nil
 }
 
-// knivesApplying are the entries whose origin or release, read with RepoFromURL, is one of repos,
-// case aside.
+// knivesApplying are the entries whose origin or release names one of repos (namesOneOf).
 func knivesApplying(entries []knivesEntry, repos []string) []knivesEntry {
-	named := func(remote string) bool {
-		repo := RepoFromURL(remote)
-		return repo != "" && slices.ContainsFunc(repos, func(destination string) bool { return strings.EqualFold(destination, repo) })
-	}
 	var applying []knivesEntry
 	for _, entry := range entries {
-		if named(entry.origin) || named(entry.release) {
+		if namesOneOf(entry.origin, repos) || namesOneOf(entry.release, repos) {
 			applying = append(applying, entry)
 		}
 	}
 	return applying
+}
+
+// namesOneOf is whether remote, a URL read with RepoFromURL, names one of repos, case aside: how
+// the knives pass matches an entry against the destination (knivesApplying) and a remote against
+// the destination and the upstream (holdingRemotes).
+func namesOneOf(remote string, repos []string) bool {
+	repo := RepoFromURL(remote)
+	return repo != "" && slices.ContainsFunc(repos, func(named string) bool { return strings.EqualFold(named, repo) })
 }
 
 // knivesLines is the knives pass's report of records against entries: one line for each record of

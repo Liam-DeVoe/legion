@@ -110,9 +110,10 @@ func PushName(remote string) string {
 // the repository as its working directory. Then, for a destination GitHub reports public, two
 // passes read the push's records (pushRecords): this repository's own private-name rules, and,
 // over the records of the files the push adds, the forbidden lists of the knives registry entries
-// that name the push's destination (Guard.knives), which reads no commit a remote-tracking ref of
-// the repository holds, an upstream's included: a clone that has not fetched its upstream refuses
-// upstream's lines. A refusal of the rules is the answer before any registry is read.
+// that name the push's destination (Guard.knives), which reads no commit a remote-tracking ref
+// holds of a remote whose URL names the destination or the entry's upstream: a clone that has not
+// fetched its upstream refuses upstream's lines. A refusal of the rules is the answer before any
+// registry is read.
 //
 // The third pass is the check knives makes before a push to a fork, `knives audit`, which was a
 // step an agent had to remember to run: the records of the oh-my-pi fork's pushes on 2026-11-17

@@ -222,13 +222,19 @@ func (g *Guard) keptVisibility(slug string) (Visibility, bool) {
 }
 
 // readPrivateState is the content of the file at path, a file of the guard's state that only
-// this user may have written: its directory opened without following a link, owned by the
-// current user and readable by no one else, and the file opened in it without following a link,
-// regular and readable by no one else. Anything else is no content. A kept answer may only spare
-// the guard a read, so one another user could have planted is never read (keptVisibility,
+// this user may have written: its directory opened without following a link, a directory owned
+// by the current user and readable by no one else, and the file opened in it without following a
+// link, regular and readable by no one else. Anything else is no content. A kept answer may only
+// spare the guard a read, so one another user could have planted is never read (keptVisibility,
 // keptKnives).
+//
+// The directory is opened with O_NOFOLLOW and without O_DIRECTORY, and found to be a directory
+// after: under the gVisor kernel of an issue pod (4.19.0-gvisor, measured 2026-11-17), an open
+// with both follows a link to a directory, fstat then answering a directory, where O_NOFOLLOW
+// alone refuses the link (ELOOP). Linux refuses the link either way. O_NONBLOCK keeps a FIFO at
+// the path from blocking the open until a writer comes.
 func readPrivateState(path string) ([]byte, bool) {
-	dir, err := os.OpenFile(filepath.Dir(path), os.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+	dir, err := os.OpenFile(filepath.Dir(path), os.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, false
 	}
