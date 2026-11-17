@@ -99,7 +99,8 @@ const NOTHING = (): void => {};
  * A read that says which entries there are and was refused before it first answered - the
  * decisions, the asks - draws one line in the page's words over the list, with a Retry that
  * asks that read alone again, in place of the entries it would give. A Retry takes the focus
- * the tree is given only where the list draws no row, which is how `t d` reaches it; where
+ * the tree is given, or holds as the Retry's line is drawn, only where the list draws no row,
+ * which is how `t d` reaches it whether the read is refused before the chord or after; where
  * rows are drawn the tab stop takes it, and Shift+Tab from a row goes up to the Retry. A Retry
  * pressed from the keyboard whose line then goes leaves the focus in the list, never on the
  * page.
@@ -402,6 +403,21 @@ export function DecisionsFilterBody({
     else if (retry != null) focusOn(retry);
     else if (lost) tree.current?.focus();
     retried.current = document.activeElement === tree.current ? "tree" : undefined;
+  });
+  // `t d` focuses the tree as the view opens, and the view asks a refused read again as it
+  // mounts, so on a list that draws no row the tree can hold the focus before the refusal comes
+  // back. The tree passes on only a focus it is given (`passFocus`), so once a refused read's
+  // line is drawn the focus the tree still holds goes to the first Retry, as it would have gone
+  // had the line been there first, and is brought on screen a frame later (`focusOn`). Where a
+  // tab-stop row is drawn the focus stays with the rows, and a focus anywhere but on the tree
+  // itself is where the reader put it. The line is the view's own copy of the page's shared
+  // refused-read line, kept until that shared line exists. Any render can draw the line, so
+  // this looks after every one.
+  useLayoutEffect(() => {
+    if (document.activeElement !== tree.current) return;
+    if (body.current?.querySelector(STOP_ROW) != null) return;
+    const retry = body.current?.querySelector<HTMLElement>(UNREADABLE_RETRY);
+    if (retry != null) focusOn(retry);
   });
   // A page opened on a list that holds only the foot has no row for the stage to focus
   // (`slots/stage.tsx`), so the tree takes the focus once, on the stage's own terms: no address

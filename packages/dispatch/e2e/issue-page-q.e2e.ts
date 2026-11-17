@@ -771,8 +771,19 @@ test("under Decisions a row draws the outline's layout, short names and the six-
       if (size.width === DESKTOP.width) {
         // Ruling 1 on a question: the long one a person answered is cut, with more than 20
         // words held back, and the long one that waits on the reader is drawn whole.
-        const cutOf = async (question: string) =>
-          (await rowLayouts(page)).find((row) => row.id === question);
+        // The page measures a row's cut once the row stands within a screen of the viewport, in
+        // the frame after it comes there, and draws a far row whole until then, so each cut read
+        // here is of a row brought into view and read two frames later: a row read as drawn
+        // whole is then one the page has measured, not one it has not reached yet.
+        const cutOf = async (question: string) => {
+          await nodeRow(page, question).first().scrollIntoViewIfNeeded();
+          await page.evaluate(() => {
+            const frames = Promise.withResolvers<void>();
+            requestAnimationFrame(() => requestAnimationFrame(() => frames.resolve()));
+            return frames.promise;
+          });
+          return (await rowLayouts(page)).find((row) => row.id === question);
+        };
         // The control that opens a cut text, in the page's own words: "more · N words".
         const more = new RegExp(
           `^${CONTROL_LABELS.read_more} · ([\\d,]+) ${CONTROL_LABELS.read_more_words}$`,
