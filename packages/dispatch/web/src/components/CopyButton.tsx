@@ -48,17 +48,27 @@ export function CopyButton({
     children === undefined
       ? "min-w-11 justify-center md:min-w-8"
       : "max-w-full gap-1 px-1 font-mono text-xs font-medium select-text";
+  // Inside `NoTooltips` what the button draws can be a value (an ask card's tmux target), and so
+  // is what a failed copy prints: each breaks anywhere, and a button that draws one narrows to
+  // its line rather than keep its width (dispatch://INFRA-3935 R6, decision 104 of
+  // dispatch://INFRA-1196/artifact/part-decisions-md). A button that draws only its icon holds
+  // no value and keeps its size.
+  const width = tooltips || children === undefined ? "shrink-0" : "min-w-0";
 
   return (
     <>
       <button
         aria-label={name}
-        className={`inline-flex min-h-11 shrink-0 items-center rounded-lg md:min-h-8 ${shape} ${look} ${className ?? ""}`}
+        className={`inline-flex min-h-11 ${width} items-center rounded-lg md:min-h-8 ${shape} ${look} ${className ?? ""}`}
         onClick={(event) => copy(typeof value === "string" ? value : value(event))}
         title={tooltips ? name : undefined}
         type="button"
       >
-        {children === undefined ? null : <span>{children}</span>}
+        {children === undefined ? null : (
+          <span className={tooltips ? undefined : "min-w-0 max-w-full [overflow-wrap:anywhere]"}>
+            {children}
+          </span>
+        )}
         <svg
           aria-hidden="true"
           className={children === undefined ? "size-4 shrink-0" : "size-3 shrink-0"}
@@ -92,7 +102,12 @@ export function CopyButton({
             "Copy failed - select the text"
           ) : (
             <>
-              Copy failed - <code className="select-all font-mono">{status.failed}</code>
+              Copy failed -{" "}
+              <code
+                className={`select-all font-mono${tooltips ? "" : " max-w-full [overflow-wrap:anywhere]"}`}
+              >
+                {status.failed}
+              </code>
             </>
           )}
         </span>
