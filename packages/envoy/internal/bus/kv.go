@@ -599,8 +599,13 @@ func watchOverhead(bucket string) int {
 	return len("$JS.API.CONSUMER.CREATE.KV_..00000000") + len(bucket) + putOverhead(bucket)
 }
 
-// check refuses key when the subject a call puts overhead bytes around it would be refused.
+// check refuses key when the subject a call puts overhead bytes around it would be refused, and
+// refuses BarrierKey, which only ReadLatest writes (ErrReservedKey): every get, write, delete,
+// purge and watch through a KeyValue runs it, so no store reads or writes a record under that key.
 func (kv KeyValue) check(key string, overhead int) error {
+	if key == BarrierKey {
+		return fmt.Errorf("%w: key %q", ErrReservedKey, key)
+	}
 	if limit := maxSubjectBytes - overhead; len(key) > limit {
 		return fmt.Errorf("%w: a key of %d bytes, past %d", ErrTooLarge, len(key), limit)
 	}
@@ -707,8 +712,11 @@ func natsKeyValid(key string) bool {
 }
 
 // GetRevision gets key by revision, which names the revision rather than the key in its subject, so
-// only nats.go's alphabet check refuses a key here.
+// only nats.go's alphabet check and the reserved BarrierKey refuse a key here.
 func (kv KeyValue) GetRevision(key string, revision uint64) (nats.KeyValueEntry, error) {
+	if key == BarrierKey {
+		return nil, fmt.Errorf("%w: key %q", ErrReservedKey, key)
+	}
 	entry, err := kv.legacy.GetRevision(key, revision)
 	return entry, invalidKey(key, err)
 }

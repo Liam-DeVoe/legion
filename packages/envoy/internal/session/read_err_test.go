@@ -13,7 +13,6 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/kvwatch"
-	"github.com/sjawhar/envoy/internal/testnats"
 )
 
 // The registry's ReadErr is its watcher's: once every read of the session bucket for longer than
@@ -39,12 +38,10 @@ func TestReadErrReportsSessionReadsThatCannotReadTheirUnseenKeys(t *testing.T) {
 	}
 	sessionCache{reg}.Apply(kvwatch.Entry{Key: "ses_held_by_the_copy", Value: value, Revision: 1, Created: time.Now(), Op: kvwatch.OpPut}, kvwatch.Read{})
 
-	// The registry's watcher is replaced by one whose leader-answered key reads fail, on a clock
-	// the test moves, which counts the re-reads its failed reads arm.
+	// The registry's watcher is replaced by one whose read barriers fail, on a clock the test
+	// moves, which counts the re-reads its failed reads arm.
 	kv := reg.watcher.KV()
 	reg.watcher.Stop()
-	closed := testnats.Connect(t, testnats.URL(t))
-	closed.Close()
 	var (
 		clockMu sync.Mutex
 		now     = time.Now()
@@ -55,7 +52,7 @@ func TestReadErrReportsSessionReadsThatCannotReadTheirUnseenKeys(t *testing.T) {
 		defer clockMu.Unlock()
 		return now
 	}
-	handle := bus.NewKeyValue(kv.Legacy(), kv.WatchHandle(), closedLeaderReads{JetStream: kv.Streams(), closed: closed})
+	handle := bus.NewKeyValue(kv.Legacy(), kv.WatchHandle(), failedBarriers{JetStream: kv.Streams()})
 	replacement := kvwatch.New("session registry", handle, sessionCache{reg}, kvwatch.WithNow(clock), kvwatch.WithStreamProbeInterval(0),
 		kvwatch.WithAfterFunc(func(d time.Duration, _ func()) kvwatch.Timer {
 			if d == 5*time.Second {
@@ -86,15 +83,16 @@ func TestReadErrReportsSessionReadsThatCannotReadTheirUnseenKeys(t *testing.T) {
 	}
 }
 
-// closedLeaderReads is a bucket's jetstream context whose connection is closed, so the
-// leader-answered read of a key, which builds its request on that connection, fails, while every
-// stream read and watch goes on as usual.
-type closedLeaderReads struct {
+// failedBarriers is a bucket's jetstream context whose publishes fail as a closed connection's do:
+// the read barrier of a read of unseen keys (bus.KeyValue.ReadLatest) is the one publish through
+// it, so that read fails, while every stream read and watch goes on as usual.
+type failedBarriers struct {
 	jetstream.JetStream
-	closed *natsgo.Conn
 }
 
-func (s closedLeaderReads) Conn() *natsgo.Conn { return s.closed }
+func (failedBarriers) PublishMsg(context.Context, *natsgo.Msg, ...jetstream.PublishOpt) (*jetstream.PubAck, error) {
+	return nil, natsgo.ErrConnectionClosed
+}
 
 // heldTimer is a wait that never fires.
 type heldTimer struct{}

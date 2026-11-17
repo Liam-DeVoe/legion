@@ -138,12 +138,12 @@ func TestAReadRemovesAScannedKeyTheBucketDeletedInItsWindow(t *testing.T) {
 	}
 }
 
-// A run of reads that cannot read their unseen keys from the bucket - its leader does not answer
-// them - is read again less and less often: 5, 10, 20 and 40 s apart, then once a minute. Nothing is
-// removed and no read completes meanwhile.
+// A run of reads that cannot read their unseen keys from the bucket - their barrier is never
+// written - is read again less and less often: 5, 10, 20 and 40 s apart, then once a minute. Nothing
+// is removed and no read completes meanwhile.
 func TestReadsWhoseUnseenKeysCannotBeReadAreReadAgainLessOften(t *testing.T) {
 	const heldByTheCopy = "held-by-the-copy"
-	w, into, timers, _ := failingLeaderWatcher(t, heldByTheCopy, nil)
+	w, into, timers, _ := failingBarrierWatcher(t, heldByTheCopy, nil)
 	w.Start()
 
 	fired := map[*pendingWait]bool{}
@@ -172,7 +172,7 @@ func TestReadsWhoseUnseenKeysCannotBeReadAreReadAgainLessOften(t *testing.T) {
 func TestReadErrReportsAReadFailureThatOutlastsTheStaleBound(t *testing.T) {
 	const heldByTheCopy = "held-by-the-copy"
 	clock := newClock()
-	w, into, timers, failing := failingLeaderWatcher(t, heldByTheCopy, clock)
+	w, into, timers, failing := failingBarrierWatcher(t, heldByTheCopy, clock)
 	w.Start()
 	eventually(t, "the first re-read to be armed", func() bool { return len(timers.armed(5*time.Second)) == 1 })
 
@@ -191,26 +191,24 @@ func TestReadErrReportsAReadFailureThatOutlastsTheStaleBound(t *testing.T) {
 
 	failing.Store(false)
 	timers.last(t, 5*time.Second).fire()
-	eventually(t, "the read after the leader answers to complete", func() bool { return len(into.completions()) == 1 })
+	eventually(t, "the read after the barrier is written to complete", func() bool { return len(into.completions()) == 1 })
 	if err := w.ReadErr(); err != nil || into.has(heldByTheCopy) {
 		t.Fatalf("after a read completed: ReadErr %v, the copy holds %v; want nil and %s removed", err, into.keyList(), heldByTheCopy)
 	}
 }
 
-// failingLeaderWatcher is a watcher, not yet started, on a bucket whose leader-answered key reads
-// fail while the returned flag is set (it is at first), over a copy that holds held, a key the
-// bucket does not, so every read has a key to read. clock is the watcher's clock when not nil. Its
-// waits are the returned pending's, its scans' idle wait a long one no other wait has, and its
-// stream probe off.
-func failingLeaderWatcher(t *testing.T, held string, clock *clock) (*kvwatch.Watcher, *seen, *pending, *atomic.Bool) {
+// failingBarrierWatcher is a watcher, not yet started, on a bucket whose read barriers
+// (bus.KeyValue.ReadLatest) fail while the returned flag is set (it is at first), over a copy that
+// holds held, a key the bucket does not, so every read has a key to read. clock is the watcher's
+// clock when not nil. Its waits are the returned pending's, its scans' idle wait a long one no other
+// wait has, and its stream probe off.
+func failingBarrierWatcher(t *testing.T, held string, clock *clock) (*kvwatch.Watcher, *seen, *pending, *atomic.Bool) {
 	t.Helper()
 	uri := testnats.URL(t)
 	_, kv := bucket(t, uri)
-	closed := testnats.Connect(t, uri)
-	closed.Close()
 	failing := &atomic.Bool{}
 	failing.Store(true)
-	handle := bus.NewKeyValue(kv.Legacy(), kv.WatchHandle(), failingLeaderReads{JetStream: kv.Streams(), closed: closed, failing: failing})
+	handle := bus.NewKeyValue(kv.Legacy(), kv.WatchHandle(), failingBarriers{JetStream: kv.Streams(), failing: failing})
 	into := newSeen()
 	into.hold(held)
 	timers := &pending{}

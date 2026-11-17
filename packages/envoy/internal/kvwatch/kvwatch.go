@@ -53,7 +53,6 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
-	"golang.org/x/sync/errgroup"
 
 	"github.com/sjawhar/envoy/internal/bus"
 )
@@ -78,8 +77,9 @@ type Cache interface {
 	// Unseen names the keys the read must read from the bucket itself before it completes
 	// (Copy.Unseen), asked once its scan has ended: those whose entry the scan did not deliver, and
 	// those a write site touched while a watch was in flight. The watcher reads each one from the
-	// stream's leader and applies each record found through Apply, so CompleteRead removes only
-	// what the bucket does not hold (readUnseen). A cache that keeps no copy names none.
+	// bucket past a barrier it commits (bus.KeyValue.ReadLatest) and applies the answer for each
+	// through Apply, so CompleteRead removes only what the bucket does not hold (readUnseen). A
+	// cache that keeps no copy names none.
 	Unseen(read Read) []string
 }
 
@@ -620,8 +620,15 @@ func (w *Watcher) consume(sub *subscription, generation uint64, read Read, start
 		}
 		entry := JetStreamEntry(delivered)
 		if scanning {
-			scan.count(entry)
 			last = w.now()
+		}
+		// A read barrier (bus.BarrierKey) is no record of the bucket's: no cache sees it, and no
+		// scan counts it.
+		if bus.IsBarrier(entry.Key) {
+			continue
+		}
+		if scanning {
+			scan.count(entry)
 		}
 		w.applyCurrent(entry, generation, read)
 	}
@@ -738,21 +745,16 @@ func (w *Watcher) clearIdleArm() {
 	w.idleTimer = nil
 }
 
-// unseenReads is how many keys readUnseen reads from the bucket at once.
-const unseenReads = 16
-
 // readUnseen reads from the bucket each key the cache names for generation's read, whose scan has
-// ended (Cache.Unseen), and applies each record the bucket holds to the cache as a delivered record
-// (Cache.Apply): the copy takes the bucket's value and revision through its fence, and the key is
-// marked, so CompleteRead keeps it. A key the bucket holds no record of (nats.ErrKeyNotFound, which
-// a newest message that is a delete or purge marker reads as), or one NATS refuses to name, so
-// that no record can be held under it (bus.ErrRefused), is left for CompleteRead to remove. Each
-// key is read from the stream's leader (bus.KeyValue.GetFromLeader): a direct get can be answered
-// by a copy of the stream that has not applied a write a moment old, and its not-found would remove
-// a row the bucket holds. At most unseenReads are in flight, each bounded by bus.RequestTimeout; any
-// other failure ends the rest, and is returned with nothing applied, for the caller to remove
-// nothing and read the bucket again. A generation replaced or stopped meanwhile sends no further
-// read and applies nothing.
+// ended (Cache.Unseen), and applies the bucket's answer for each to the cache as a delivered record
+// (Cache.Apply). A key whose latest record is a put takes that record's value and revision through
+// the copy's fence, and is marked, so CompleteRead keeps it. Every other key - no record, a delete
+// or purge marker as its latest, or a key no call can name (bus.ErrRefused) - is answered OpAbsent,
+// which CompleteRead removes unless the copy took a write of it since. The keys are read through
+// bus.KeyValue.ReadLatest: past a barrier the bucket committed, from a store that has applied it,
+// so an answer never comes from a member behind the bucket or cut off from the others. A read that
+// fails is returned with nothing applied, for the caller to remove nothing and read the bucket
+// again. A generation replaced or stopped meanwhile applies nothing.
 func (w *Watcher) readUnseen(generation uint64, read Read) error {
 	w.applyMu.Lock()
 	w.mu.RLock()
@@ -767,27 +769,8 @@ func (w *Watcher) readUnseen(generation uint64, read Read) error {
 	if len(keys) == 0 {
 		return nil
 	}
-	answers := make([]Entry, len(keys))
-	reads, ctx := errgroup.WithContext(context.Background())
-	reads.SetLimit(unseenReads)
-	for i, key := range keys {
-		reads.Go(func() error {
-			if !w.current(generation) {
-				return nil
-			}
-			entry, err := kv.GetFromLeader(ctx, key)
-			switch {
-			case err == nil:
-				answers[i] = LegacyEntry(entry)
-			case errors.Is(err, nats.ErrKeyNotFound), errors.Is(err, bus.ErrRefused):
-				answers[i] = Entry{Key: key, Op: OpAbsent}
-			default:
-				return err
-			}
-			return nil
-		})
-	}
-	if err := reads.Wait(); err != nil {
+	latest, err := kv.ReadLatest(context.Background(), keys)
+	if err != nil {
 		return err
 	}
 	w.applyMu.Lock()
@@ -795,9 +778,11 @@ func (w *Watcher) readUnseen(generation uint64, read Read) error {
 	if !w.current(generation) {
 		return nil
 	}
-	for _, answer := range answers {
-		if answer.Key != "" {
-			w.cache.Apply(answer, read)
+	for _, key := range keys {
+		if entry, held := latest[key]; held {
+			w.cache.Apply(JetStreamEntry(entry), read)
+		} else {
+			w.cache.Apply(Entry{Key: key, Op: OpAbsent}, read)
 		}
 	}
 	return nil

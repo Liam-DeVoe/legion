@@ -17,13 +17,12 @@ import (
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
-	"github.com/sjawhar/envoy/internal/testnats"
 )
 
-// A cache whose every read could not read the keys its scan did not deliver - its bucket's leader
-// does not answer them - for longer than the copy's stale bound is unhealthy on /healthz: 503,
+// A cache whose every read could not read the keys its scan did not deliver - its bucket's read
+// barrier is not written - for longer than the copy's stale bound is unhealthy on /healthz: 503,
 // naming that cache's KV read and the error. Within the bound the listener is still healthy, since
-// its copy is still served (kvwatch.Watcher.Servable) and a blip of the leader repairs itself.
+// its copy is still served (kvwatch.Watcher.Servable) and a blip of the bucket repairs itself.
 func TestHealthzIsUnhealthyOnceACachesReadsCannotReadTheirUnseenKeysPastTheBound(t *testing.T) {
 	const consumer = "listener-healthz-unverified-read"
 	client := setupTestNATS(t)
@@ -47,9 +46,9 @@ func TestHealthzIsUnhealthyOnceACachesReadsCannotReadTheirUnseenKeysPastTheBound
 		t.Fatalf("wait for the session cache: %v", err)
 	}
 
-	// The session cache's reads cannot read their unseen keys: a watcher on a bucket whose
-	// leader-answered key reads go through a closed connection, over a copy that names one key
-	// to read, on a clock the test moves.
+	// The session cache's reads cannot read their unseen keys: a watcher on a bucket whose read
+	// barriers are never written, over a copy that names one key to read, on a clock the test
+	// moves.
 	clock := &listenerClock{now: time.Now()}
 	waits := &heldWaits{}
 	unverified := unverifiedReadWatcher(t, client.Conn, clock.Now, waits)
@@ -100,10 +99,10 @@ type unverifiedReads struct {
 
 func (c unverifiedReads) ReadErr() error { return c.watcher.ReadErr() }
 
-// unverifiedReadWatcher is a watcher, not yet started, over a bucket of its own on conn whose
-// leader-answered key reads (bus.KeyValue.GetFromLeader) go through a closed connection, so every
-// read of the copy's unseen keys fails, with a copy that always names one key to read. It measures
-// on now and arms its waits through waits.
+// unverifiedReadWatcher is a watcher, not yet started, over a bucket of its own on conn whose read
+// barriers (bus.KeyValue.ReadLatest) fail as a closed connection's publishes do, so every read of
+// the copy's unseen keys fails, with a copy that always names one key to read. It measures on now
+// and arms its waits through waits.
 func unverifiedReadWatcher(t *testing.T, conn *natsgo.Conn, now func() time.Time, waits *heldWaits) *kvwatch.Watcher {
 	t.Helper()
 	js, err := conn.JetStream()
@@ -114,24 +113,23 @@ func unverifiedReadWatcher(t *testing.T, conn *natsgo.Conn, now func() time.Time
 	if err != nil {
 		t.Fatalf("open the bucket: %v", err)
 	}
-	closed := testnats.Connect(t, testnats.URL(t))
-	closed.Close()
-	handle := bus.NewKeyValue(kv.Legacy(), kv.WatchHandle(), closedLeaderReads{JetStream: kv.Streams(), closed: closed})
+	handle := bus.NewKeyValue(kv.Legacy(), kv.WatchHandle(), failedBarriers{JetStream: kv.Streams()})
 	w := kvwatch.New("session registry", handle, namesOneUnseenKey{}, kvwatch.WithNow(now), kvwatch.WithAfterFunc(waits.after),
 		kvwatch.WithStreamProbeInterval(0))
 	t.Cleanup(w.Stop)
 	return w
 }
 
-// closedLeaderReads is a bucket's jetstream context whose connection is closed, so the
-// leader-answered read of a key, which builds its request on that connection, fails, while every
-// stream read and watch goes on as usual.
-type closedLeaderReads struct {
+// failedBarriers is a bucket's jetstream context whose publishes fail as a closed connection's do:
+// the read barrier is the one publish through it, so a read of unseen keys fails, while every stream
+// read and watch goes on as usual.
+type failedBarriers struct {
 	jetstream.JetStream
-	closed *natsgo.Conn
 }
 
-func (s closedLeaderReads) Conn() *natsgo.Conn { return s.closed }
+func (failedBarriers) PublishMsg(context.Context, *natsgo.Msg, ...jetstream.PublishOpt) (*jetstream.PubAck, error) {
+	return nil, natsgo.ErrConnectionClosed
+}
 
 // namesOneUnseenKey is a kvwatch.Cache that keeps nothing and names one key for every read to read
 // from the bucket before it completes.

@@ -521,16 +521,14 @@ func TestAReadWhoseUnseenKeysCannotBeReadRemovesNothing(t *testing.T) {
 		inTheBucket    = "in-the-bucket"
 		heldByTheCopy  = "held-by-the-copy"
 		rereadAfter    = 5 * time.Second
-		readsFailUntil = "the leader reads fail until the test lets them"
+		readsFailUntil = "the barrier writes fail until the test lets them"
 	)
 	uri := testnats.URL(t)
 	_, kv := bucket(t, uri)
 	putKeys(t, kv, inTheBucket)
-	closed := testnats.Connect(t, uri)
-	closed.Close()
 	failing := &atomic.Bool{}
 	failing.Store(true)
-	handle := bus.NewKeyValue(kv.Legacy(), kv.WatchHandle(), failingLeaderReads{JetStream: kv.Streams(), closed: closed, failing: failing})
+	handle := bus.NewKeyValue(kv.Legacy(), kv.WatchHandle(), failingBarriers{JetStream: kv.Streams(), failing: failing})
 	into := newSeen()
 	into.hold(heldByTheCopy)
 	timers := &pending{}
@@ -542,15 +540,15 @@ func TestAReadWhoseUnseenKeysCannotBeReadRemovesNothing(t *testing.T) {
 		return len(into.completions()) > 0 || len(timers.armed(rereadAfter)) > 0
 	})
 	if done := len(into.completions()); done != 0 || w.Following() || !into.has(heldByTheCopy) || !into.has(inTheBucket) {
-		t.Fatalf("after the leader read failed (%s): %d reads completed, Following %v, copy %v; want none completed, not following, and both keys kept",
+		t.Fatalf("after the barrier write failed (%s): %d reads completed, Following %v, copy %v; want none completed, not following, and both keys kept",
 			readsFailUntil, done, w.Following(), into.keyList())
 	}
 
 	failing.Store(false)
 	timers.last(t, rereadAfter).fire()
-	eventually(t, "the read after the leader answers to complete", func() bool { return len(into.completions()) == 1 })
+	eventually(t, "the read after the barrier is written to complete", func() bool { return len(into.completions()) == 1 })
 	if into.has(heldByTheCopy) || !into.has(inTheBucket) {
-		t.Fatalf("after the leader answered, the copy holds %v, want only %s", into.keyList(), inTheBucket)
+		t.Fatalf("after the barrier was written, the copy holds %v, want only %s", into.keyList(), inTheBucket)
 	}
 }
 
@@ -801,20 +799,20 @@ func (s createdStream) CachedInfo() *jetstream.StreamInfo {
 	return &info
 }
 
-// failingLeaderReads is a bucket's jetstream context whose connection, while failing is set, is
-// closed: the leader-answered read of a key (bus.KeyValue.GetFromLeader) builds its request on that
-// connection, so it fails, while every stream read and watch goes on as usual.
-type failingLeaderReads struct {
+// failingBarriers is a bucket's jetstream context whose publishes, while failing is set, fail as a
+// closed connection's do: the read barrier of a read of unseen keys (bus.KeyValue.ReadLatest) is
+// the one publish through it, so that read fails, while every stream read and watch goes on as
+// usual.
+type failingBarriers struct {
 	jetstream.JetStream
-	closed  *natsgo.Conn
 	failing *atomic.Bool
 }
 
-func (s failingLeaderReads) Conn() *natsgo.Conn {
+func (s failingBarriers) PublishMsg(ctx context.Context, msg *natsgo.Msg, opts ...jetstream.PublishOpt) (*jetstream.PubAck, error) {
 	if s.failing.Load() {
-		return s.closed
+		return nil, natsgo.ErrConnectionClosed
 	}
-	return s.JetStream.Conn()
+	return s.JetStream.PublishMsg(ctx, msg, opts...)
 }
 
 // purgeKey removes every record of key from the test bucket's stream and leaves no marker in

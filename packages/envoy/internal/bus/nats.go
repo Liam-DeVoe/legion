@@ -1634,8 +1634,8 @@ func (c *Client) ReachesNoSession(topic string) bool {
 
 // ErrRefused is returned for an envelope that is refused the same way however often it is
 // published, or a KV key refused however often a call names it, so a caller answers it as a
-// refusal rather than a failure to retry. It is ErrTooLarge, ErrInvalidSubject, ErrInvalidKey or
-// ErrNoForwardMsgID.
+// refusal rather than a failure to retry. It is ErrTooLarge, ErrInvalidSubject, ErrInvalidKey,
+// ErrReservedKey or ErrNoForwardMsgID.
 var ErrRefused = errors.New("refused")
 
 // refusal is a kind of ErrRefused. Its text names only the kind, since every line and answer that
@@ -1664,6 +1664,12 @@ var ErrInvalidSubject error = refusal("not a subject NATS accepts")
 // came from: no build writes one, but a direct bucket write can store one, and a stored claim can
 // name one as its holder. Its error names the key, and still matches nats.ErrInvalidKey.
 var ErrInvalidKey error = refusal("not a key nats.go accepts")
+
+// ErrReservedKey is the ErrRefused of BarrierKey, the key ReadLatest writes its read barrier to:
+// every call through a KeyValue refuses it before sending anything (KeyValue.check), so no store
+// writes, deletes or reads a record under it. A registration naming it is refused as any other
+// refused key is.
+var ErrReservedKey error = refusal("a key kvwatch reserves for its read barrier")
 
 // ErrStreamFull is wrapped by the error of a JetStream publish the stream did not store because it
 // holds its byte limit (WithStreamMaxBytes): a full stream refuses new messages rather than drop
