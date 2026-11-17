@@ -5830,9 +5830,13 @@ const LONG_TITLE =
 /** What is wrong with how a list's trigger draws a value longer than it: the element the value's
  *  text is in has to be the box that cuts it (its `scrollWidth` past its `clientWidth`) and end
  *  it in an ellipsis, and the trigger's chevron has to be drawn whole, 16 px wide, at the end of
- *  the trigger's content box. A value that fits is named, since then the read shows nothing. */
+ *  the trigger's content box. A value that fits is named, since then the read shows nothing. The
+ *  chevron turns back over `transition-transform` as the list closes, and a box read while it
+ *  turns is wider than the chevron (CI read 17.5 to 21 px), so the read waits for the trigger's
+ *  own animations to end first. */
 function longValueDrawing(trigger: Locator): Promise<string[]> {
-  return trigger.evaluate((node) => {
+  return trigger.evaluate(async (node) => {
+    await Promise.all(node.getAnimations({ subtree: true }).map((animation) => animation.finished));
     const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
     let text = walker.nextNode();
     while (text !== null && (text.textContent ?? "").trim() === "") text = walker.nextNode();
