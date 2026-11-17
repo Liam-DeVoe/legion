@@ -61,10 +61,10 @@ export function viewKey(
 }
 
 /** Drops every view of issue `key` the cache holds (`resetQueries`), so a held one is gone and
- *  the one an observer has enabled is read again. A new load of the issue calls it, and so does a
- *  write of the page that refreshes the tree by its key itself, so neither draws a view older
- *  than its tree. `subscribeTreeFreshness` drops none: it refreshes each held view through
- *  `refreshQueries`, and the view keeps what it draws until its new answer lands. */
+ *  the one a filter watches is read again. It is for any caller after which a held view could be
+ *  older than the tree the page draws, so that no view is drawn older than its tree.
+ *  `subscribeTreeFreshness` drops none: it refreshes each held view through `refreshQueries`,
+ *  and the view keeps what it draws until its new answer lands. */
 export function dropViews(queryClient: QueryClient, key: string): void {
   for (const filter of TREE_FILTERS) {
     void queryClient.resetQueries({ exact: true, queryKey: viewKey(key, filter) });
