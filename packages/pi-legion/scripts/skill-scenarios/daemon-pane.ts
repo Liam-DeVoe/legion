@@ -183,10 +183,11 @@ export function workerPane(
 /**
  * Compiles daemon-pane.go once in each of `modules`, with the very `go run` `runDaemonPane` makes,
  * so the Go build cache holds the program before a batch's first run: each run's daemon stand-in
- * asks it for the role's phase under a 30 s start bound, and on a machine whose build cache is cold
- * that first compile of the daemon's packages outlasts the bound, which failed every run of a world
- * on a fresh pod (2026-11-16, world `j` of the batch at 9b92d0ec). Go caches the executable `go run`
- * builds, so a later run with the same inputs links nothing again.
+ * asks it for the role's phase under a 90 s start bound (rig.sh, boot_worker). On a machine whose
+ * build cache is cold that first compile of the daemon's packages outlasted the bound when it was
+ * 30 s, which failed every run of a world on a fresh pod (2026-11-16, world `j` of the batch at
+ * 9b92d0ec). Go caches the executable `go run` builds, so a later run with the same inputs links
+ * nothing again.
  */
 export function warmDaemonPane(modules: readonly string[]): void {
   for (const module of modules) runDaemonPane(module, ["phase", "tester"], "");

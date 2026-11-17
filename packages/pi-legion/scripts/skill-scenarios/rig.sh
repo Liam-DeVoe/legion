@@ -111,20 +111,21 @@
 #                   it at `run_attempt` 2 already spent; `f` the title check red, its output naming
 #                   the pull request's own title; `g` an aggregate check red over `a`'s failing
 #                   lane; `h` `a` with the read of the failing attempt's log answering an error;
-#                   `i` `a` and `j` `b` with the reviewer in place of the tester; `k` `a` with a
-#                   second failing run of that same check name at the commit, a by-hand
-#                   `workflow_dispatch` run's, which the counted set does not hold; `l` `a` with a
-#                   counted set that has not reported the check when the role first reads it. The
-#                   world is in the run's name, trial-<world>-<label>-<n> (run_prefix), so each
-#                   world's batch keeps its own runs. Each world's facts, among them its role, its
-#                   phase and its turns, are written once (red_world), and red_fixture writes them
-#                   and the world to <run>/world.json, where the run and the score read them. A
-#                   world that expects a re-run takes two turns: the architect's assignment, then,
-#                   once the re-run has reached calls.jsonl, --continue on the settlement the
-#                   re-run's own route published; `d`, `e` and `f` expect no re-run and take one
-#                   turn, and `l` takes its second turn on the rig's own report of the check
-#                   (red_report) rather than on a re-run. Scored by redAtTheHead, which reads
-#                   <run>/world.json.
+#                   `i` `a` and `j` `b` with the reviewer in place of the tester, and beside the
+#                   failing lane the aggregate check the base requires, red over the lane and
+#                   settled by the re-run as the lane is; `k` `a` with a second failing run of that
+#                   same check name at the commit, a by-hand `workflow_dispatch` run's, which the
+#                   counted set does not hold; `l` `a` with a counted set that has not reported the
+#                   check when the role first reads it. The world is in the run's name,
+#                   trial-<world>-<label>-<n> (run_prefix), so each world's batch keeps its own
+#                   runs. Each world's facts, among them its role, its phase and its turns, are
+#                   written once (red_world), and red_fixture writes them and the world to
+#                   <run>/world.json, where the run and the score read them. A world that expects
+#                   a re-run takes two turns: the architect's assignment, then, once the re-run has
+#                   reached calls.jsonl, --continue on the settlement the re-run's own route
+#                   published; `d`, `e` and `f` expect no re-run and take one turn, and `l` takes
+#                   its second turn on the rig's own report of the check (red_report) rather than
+#                   on a re-run. Scored by redAtTheHead, which reads <run>/world.json.
 #
 # A scenario measures its rule only if a label whose skills lack the rule scores lower than one
 # whose skills state it. So every comparison carries an ablate label: a checkout of the head with
@@ -579,7 +580,7 @@ cmd_profile() {
 given_omp() { [ -n "${SKILL_SCENARIOS_OMP:-}" ]; }
 
 # warm_daemon_panes MODULE... compiles daemon-pane.go in each daemon module once, before a batch's
-# first run: each run's daemon stand-in compiles it at its start under a 30 s bound (boot_worker),
+# first run: each run's daemon stand-in compiles it at its start under a 90 s bound (boot_worker),
 # and each run's worker pane compiles it again in its label's checkout, so a cold Go build cache
 # would cost the first runs their start (daemon-pane.ts, warmDaemonPane).
 warm_daemon_panes() {
@@ -863,7 +864,7 @@ services_postgres=$work/services/postgres-url
 # The Dispatch server binary services_up builds from this checkout before any run starts, which
 # each run's start_dispatch hands run-server.sh to execute (DISPATCH_E2E_SERVER_BIN): run-server.sh
 # builds the server itself when it is given none, and the first runs of a batch, all compiling at
-# once, overran the daemon stand-in's 30 s start bound while that build ran.
+# once, overran the daemon stand-in's start bound, then 30 s, while that build ran.
 services_dispatch=$work/services/dispatch-server
 
 # start_listener serves the Envoy listener on a port the kernel chose, held from that choice until
@@ -1727,7 +1728,16 @@ boot_worker() {
   printf '[user]\nname = "Rig Worker"\nemail = "rig@example.invalid"\n[ui]\npaginate = "never"\n' >"$R/jj.toml"
   # Port 0: the kernel assigns the stand-in's port, which it prints, so concurrent runs never race.
   start_process daemon bun "$here/daemon-standin.ts" 0 "$R/daemon.log" "$state/secrets/boot" "$project" "$worker_key" "$role"
-  await_start daemon "$daemon_pid" 30 "the daemon stand-in to listen" grep -q '^listening on ' "$R/logs/daemon.log"
+  # The bound on the daemon stand-in's start. Measured on 2026-11-17 in an issue pod with two
+  # CPUs: with the pod quiet, five starts of `bun daemon-standin.ts` at this head listened 8.1 to
+  # 9.3 s after they started, with a warm Go build cache. In the tester's round-5 batch (170 runs,
+  # two at a time, 2026-11-17), the 30 s bound stopped 10 runs. 161 starts listened, at a median
+  # of 15.6 s and a 95th percentile of 28.4 s; the slowest of them listened at 38.5 s, after the
+  # bound had already stopped that run (trial-j-ablate-1), and the other 9 had not listened when
+  # the bound stopped them. Ninety seconds is about ten times the slower quiet start and more than
+  # twice the slowest loaded one, so a loaded pod still starts its runs, and a stand-in that hangs
+  # still fails its run in under two minutes.
+  await_start daemon "$daemon_pid" 90 "the daemon stand-in to listen" grep -q '^listening on ' "$R/logs/daemon.log"
   port=$(sed -n 's|^listening on http://127\.0\.0\.1:||p' "$R/logs/daemon.log")
   base_env
   standins
@@ -1868,18 +1878,21 @@ red_worlds() {
 # calls (gh-standin.ts, `follows`), so the head reads red however many times a role reads it
 # before the re-run, and the world's own answer from the moment the re-run is pressed, and
 # `gh pr checks` exits 1 while a check it reports is red and 0 when none is, as the real command
-# does. `gh pr checks --required` answers the checks the base requires alone, as GitHub does: no
-# fixture of this rig names a required set, so the base requires the one aggregate check `ci`,
-# which world `g`'s head alone reports, and at every other head that read answers gh's `no
-# required checks reported on the '<branch>' branch` and exits 1. In a world that stays red both
-# answers are red, and nothing of it moves; in a world that presses no re-run (`d`, `e`, `f`) the
-# head reads red for the whole run. World `l`'s counted reads answer three states, the first of
-# them reporting no red at all, and each route that answers them carries the mark `unreported`:
-# red_report drops that first state of each marked route between the two turns, which is the rig
-# reporting the check. The head's check-runs route goes in front of worker_fixture's generic
-# check-runs route, which is left answering the same red to a `status` read. The re-run's route
-# carries the settlement the head's checks would raise later, as the envelope the gh stand-in
-# publishes the moment the role presses the re-run.
+# does. The base requires the one aggregate check `ci`, and every read of its required set says
+# so: `gh pr checks --required` answers the checks the base requires alone, as GitHub does, and
+# the rules of the base's rulesets and its branch protection, the two reads the reviewer's prompt
+# gives for that set, each name `ci` in the shape GitHub answers them in, as do the protection
+# endpoint of the branch and the repository's one ruleset. The heads of worlds `g`, `i` and `j`
+# report `ci`, and at every other head the `--required` read answers gh's `no required checks
+# reported on the '<branch>' branch` and exits 1. In a world that stays red both answers are red,
+# and nothing of it moves; in a world that presses no re-run (`d`, `e`, `f`) the head reads red
+# for the whole run. World `l`'s counted reads answer three states, the first of them reporting
+# no red at all, and each route that answers them carries the mark `unreported`: red_report drops
+# that first state of each marked route between the two turns, which is the rig reporting the
+# check. The head's check-runs route goes in front of worker_fixture's generic check-runs route,
+# which is left answering the same red to a `status` read. The re-run's route carries the
+# settlement the head's checks would raise later, as the envelope the gh stand-in publishes the
+# moment the role presses the re-run.
 # The twelve worlds, each the same change under a different red:
 #   a  a failing test of packages/notify, a package the change does not touch; green on the re-run
 #   b  that test, red again on the re-run
@@ -1896,7 +1909,11 @@ red_worlds() {
 #      the check's own
 #   g  an aggregate check, ci, red over a's failing lane, which the run's jobs name
 #   h  a, with the read of the failing attempt's log answering an error
-#   i  a with a reviewer, j  b with a reviewer: the same reds, another role's phase
+#   i  a with a reviewer, and beside the failing lane, in the same run, the aggregate check ci red
+#      over it, as on cybermonklabs/legion's own base, which requires the aggregate ci-ok over its
+#      test lanes: the red the reviewer meets is one the base requires. The re-run settles the
+#      aggregate as it settles the lane, green
+#   j  b with a reviewer and i's aggregate: the re-run leaves the lane and the aggregate red again
 #   k  a, with a second failing run of that same check name at the commit, a by-hand
 #      `workflow_dispatch` run's, which neither the counted set nor the head's `pull_request`
 #      runs hold: a role that judges the head's one re-run as spent from the commit endpoint
@@ -1906,13 +1923,17 @@ red_worlds() {
 #      checks event, and the rig reports the check between the two turns (red_report)
 red_fixture() {
   local world=$1 facts pr head branch check job step summary log log_err test_name world_log
-  local run_id job_id red_id
+  local run_id job_id red_id lanes aggregate
   facts=$(red_world "$world") || fail "red_fixture: '$world' is no world of red-at-the-head"
   read -r pr head branch < <(jq -r '"\(.pr) \(.head) \(.branch)"' "$R/world.json")
   run_id=$((7000000 + pr))
   job_id=$((8000000 + pr))
   red_id=$((9000000 + pr))
   log_err=''
+  aggregate=''
+  # The words of an aggregate check with one failed lane under it: world `g`'s red check, and the
+  # aggregate beside the red lane of `i` and `j`.
+  lanes='1 of 6 lanes failed: test (notify).'
   # The worlds whose red is not a's. Every other world red_world knows carries a's red, the
   # failing test of packages/notify, and red_world has already refused a world it does not know,
   # so the catalogue of worlds is red_world's alone.
@@ -1946,7 +1967,7 @@ red_fixture() {
     job='test (notify)'
     test_name='notify > retries a refused send'
     step='Run bun test packages/notify'
-    summary='1 of 6 lanes failed: test (notify).'
+    summary=$lanes
     log='(fail) notify > retries a refused send [3.00ms]'
     ;;
   *)
@@ -1959,6 +1980,11 @@ red_fixture() {
     [ "$world" != h ] || log_err='failed to get run log: HTTP 410: Gone (https://api.github.com/repos/example/widgets/actions/runs)'
     ;;
   esac
+  # Worlds `i` and `j` carry a's red and, beside it, the aggregate the base requires, red over it
+  # (the jq below).
+  case $world in
+  i | j) aggregate=$lanes ;;
+  esac
   # The failing line this world's log read answers, as the world knows it: a world whose read
   # answers an error (h) leaves none, since the role reads no line there.
   world_log=$log
@@ -1966,6 +1992,7 @@ red_fixture() {
   jq --arg head "$head" --argjson pr "$pr" --arg repo "$worker_repo" --arg branch "$branch" \
     --arg world "$world" --arg check "$check" --arg job "$job" --arg step "$step" \
     --arg summary "$summary" --arg log "$log" --arg log_err "$log_err" --argjson facts "$facts" \
+    --arg aggregate "$aggregate" \
     --argjson run_id "$run_id" --argjson job_id "$job_id" --argjson red_id "$red_id" '
     def entry($id; $name; $conclusion; $output; $at):
       {id:$id, name:$name, status:"completed", conclusion:$conclusion, started_at:$at,
@@ -2019,6 +2046,13 @@ red_fixture() {
          payload:($settled|tojson)};
     ("https://api.github.com/repos/" + $repo) as $api
     | run_url as $run_url
+    # The checks the base requires: the one aggregate check `ci`, which every read of the required
+    # set of the base answers, `gh pr checks --required`, the rulesets of the base and its branch
+    # protection, so the base reads the same through each of them.
+    | "ci" as $required
+    # The base of the pull request, as the `gh pr view` of the world answers `baseRefName`.
+    | (first(.routes[] | select(.match == "^gh pr view") | .stdout.baseRefName)
+       // error("red_fixture: no `gh pr view` route answers the base")) as $base
     | "2026-03-04T10:00:00Z" as $t0
     | "2026-03-04T10:15:00Z" as $t_hand
     | "2026-03-04T10:31:08Z" as $t1
@@ -2032,16 +2066,31 @@ red_fixture() {
           entry($red_id - 3; "e2e"; "success";
                 {title:"e2e", summary:"The re-run of the e2e lane passed."}; $t0)]
        else [] end) as $earlier
+    # The aggregate check of worlds `i` and `j`, the check the base requires, red over the failing
+    # lane, in the same run as that lane and in the words of world `g` ($aggregate). It is the
+    # shape of the base of cybermonklabs/legion itself, which requires the aggregate `ci-ok` over
+    # its test lanes, so the red the reviewer meets there is a red the base requires. Its ids come
+    # after the id of the by-hand run of world `k`, so no two checks of one head share an id.
+    | (if $aggregate == "" then []
+       else [entry($red_id + 3; $required; "failure"; {title:$required, summary:$aggregate}; $t0)]
+       end) as $aggregates
     | ([entry($red_id - 2; "lint"; "success"; {title:"lint", summary:"No lint error."}; $t0),
         entry($red_id - 1; "typecheck"; "success"; {title:"typecheck", summary:"No type error."}; $t0)]
        + $earlier
-       + [entry($red_id; $check; "failure"; {title:$check, summary:$summary}; $t0)]) as $red_checks
-    # The attempt the re-run makes, which `filter=all` lists beside the attempt it replaces.
-    | ($red_checks + [entry($red_id + 1; $check;
-        (if $facts.after == "green" then "success" else "failure" end);
-        {title:$check,
-         summary:(if $facts.after == "green" then "The re-run of " + $check + " passed." else $summary end)};
-        $t1)]) as $settled_checks
+       + [entry($red_id; $check; "failure"; {title:$check, summary:$summary}; $t0)]
+       + $aggregates) as $red_checks
+    # The attempt the re-run makes of each check it re-runs, which `filter=all` lists beside the
+    # attempt it replaces: a pass where the world settles green, the same failure where it stays
+    # red. It re-runs the red, and in `i` and `j` the aggregate as well, which failed with its lane
+    # in the one run whose failed jobs the re-run runs again, so it settles as the lane settles.
+    | def attempt($id; $name; $failed):
+        entry($id; $name; (if $facts.after == "green" then "success" else "failure" end);
+              {title:$name,
+               summary:(if $facts.after == "green" then "The re-run of " + $name + " passed."
+                        else $failed end)};
+              $t1);
+      ($red_checks + [attempt($red_id + 1; $check; $summary)]
+       + ($aggregates | map(attempt(.id + 1; .name; .output.summary)))) as $settled_checks
     | ($settled_checks | group_by(.name) | map(max_by(.id))) as $latest
     | (($red_checks | group_by(.name) | map(max_by(.id)))) as $shown
     # The run at that head the pull request counts no check of: the by-hand `workflow_dispatch`
@@ -2098,7 +2147,53 @@ red_fixture() {
     # the first of its replies however many times a role reads it before the re-run, and the one
     # after it from the moment the re-run is pressed.
     | "^gh run rerun" as $rerun
-    | [{match:("^gh api .*commits/" + $head + "/check-runs"), follows:$rerun,
+    # The required set of the base, through five reads that agree with `gh pr checks --required`
+    # that the base requires `ci` ($required) alone: the rules GitHub applies to the base, through
+    # its rulesets (`rules/branches/<base>`), which the prompt of the reviewer reads (packages/
+    # daemon/internal/prompts/go/reviewer.md, "CI is yours to read"); the rulesets of the
+    # repository, their list and the one ruleset, which applies to the default branch and holds
+    # that same rule; the base branch, read for its protection, which the prompt reads too; and
+    # the protection of the base on its own endpoint, the same required checks in the shape that
+    # endpoint answers them in. Each answers unfiltered, since the stand-in applies the `--jq` of a
+    # call itself, and the branch answers its name and its protection alone. They come ahead of
+    # every other route: in the batch of 2026-11-17 the `--jq` text of the two reads of the prompt
+    # held `required_status_checks`, so the generic `(check-runs|status)` route took both and each
+    # filter, run over a check-runs answer, exited 1, and the rules read without its `--jq`
+    # (trial-i-head-3), the protection read (trial-i-head-1) and the rulesets list
+    # (trial-i-head-5) each fell to the 404, so every reviewer read the base as requiring nothing.
+    # Each match names the repository and ends where its own path ends, so none takes the path of
+    # another: the branch route never takes the `/protection` below it, nor the rulesets list the
+    # one ruleset, and the rules path has its `rules/` between the repository and `branches/`.
+    | ($api + "/branches/" + $base + "/protection") as $protection_url
+    | {contexts:[$required], checks:[{context:$required, app_id:null}]} as $status_checks
+    | {id:1, name:"Require ci", target:"branch", source_type:"Repository", source:$repo,
+       enforcement:"active"} as $ruleset
+    | {type:"required_status_checks",
+       parameters:{strict_required_status_checks_policy:false,
+                   required_status_checks:[{context:$required}]}} as $rule
+    | [{match:("^gh api .*repos/" + $repo + "/rules/branches/" + $base + "([?\\s]|$)"),
+        stdout:[$rule + {ruleset_source_type:$ruleset.source_type, ruleset_source:$ruleset.source,
+                         ruleset_id:$ruleset.id}]},
+       {match:("^gh api .*repos/" + $repo + "/rulesets([?\\s]|$)"), stdout:[$ruleset]},
+       {match:("^gh api .*repos/" + $repo + "/rulesets/" + ($ruleset.id|tostring) + "([?\\s]|$)"),
+        stdout:($ruleset + {bypass_actors:[],
+                            conditions:{ref_name:{include:["~DEFAULT_BRANCH"], exclude:[]}},
+                            rules:[$rule]})},
+       {match:("^gh api .*repos/" + $repo + "/branches/" + $base + "([?\\s]|$)"),
+        stdout:{name:$base, protected:true,
+                protection:{enabled:true,
+                            required_status_checks:({enforcement_level:"non_admins"}
+                                                    + $status_checks)},
+                protection_url:$protection_url}},
+       {match:("^gh api .*repos/" + $repo + "/branches/" + $base + "/protection([?\\s]|$)"),
+        stdout:{url:$protection_url,
+                required_status_checks:({url:($protection_url + "/required_status_checks"),
+                                         strict:false,
+                                         contexts_url:($protection_url
+                                                       + "/required_status_checks/contexts")}
+                                        + $status_checks),
+                enforce_admins:{url:($protection_url + "/enforce_admins"), enabled:false}}},
+       {match:("^gh api .*commits/" + $head + "/check-runs"), follows:$rerun,
         replies:[{stdout:{total_count:(($red_checks + $uncounted)|length),
                           check_runs:($red_checks + $uncounted)}},
                  {stdout:{total_count:(($settled_checks + $uncounted)|length),
@@ -2139,19 +2234,19 @@ red_fixture() {
         elif .match == "^gh pr checks"
         # `gh pr checks --required` answers the checks the base requires and no other, as GitHub
         # does, from a route of its own ahead of the one that answers every check. The base
-        # requires the one aggregate check `ci`, which the head of world `g` alone reports: every
-        # other head reports no check the base requires, which gh answers on stderr, exiting 1
-        # (\u0027 is the quote gh puts around the branch: this program is in single quotes).
+        # requires the one aggregate check `ci` ($required), which the heads of worlds `g`, `i`
+        # and `j` report: every other head reports no check the base requires, which gh answers on
+        # stderr, exiting 1 (\u0027 is the quote gh puts around the branch: this program is in
+        # single quotes).
         then (def answer($checks):
                 {stdout:rows($checks), exit:(if (failing($checks)|length) > 0 then 1 else 0 end)};
-              "ci" as $required
-              | ({match:"^gh pr checks\\b.*\\s--required\\b", follows:$rerun}
-                 + counted(map(select(.name == $required))
-                   | if . == []
-                     then {stderr:("no required checks reported on the \u0027" + $branch
-                                   + "\u0027 branch\n"), exit:1}
-                     else answer(.) end)),
-                (. + counted(answer(.)) | .follows = $rerun | del(.stdout)))
+              ({match:"^gh pr checks\\b.*\\s--required\\b", follows:$rerun}
+               + counted(map(select(.name == $required))
+                 | if . == []
+                   then {stderr:("no required checks reported on the \u0027" + $branch
+                                 + "\u0027 branch\n"), exit:1}
+                   else answer(.) end)),
+              (. + counted(answer(.)) | .follows = $rerun | del(.stdout)))
         elif .match == "^gh api .*(check-runs|status)"
         then .stdout = {total_count:($red_checks|length), check_runs:$red_checks}
         else . end)

@@ -1426,8 +1426,8 @@ describe("pinned_command", () => {
 // batch was given, the listener, and run-server.sh, whose environment the row reads.
 describe("the batch's Dispatch server build", () => {
   // Catches: a run whose Dispatch start compiles the server, as run-server.sh does when it is given
-  // no binary: the first runs of a batch, compiling at once, overran the daemon stand-in's 30 s
-  // start bound (trial-a-head-1 left an empty daemon.log).
+  // no binary: the first runs of a batch, compiling at once, overran the daemon stand-in's start
+  // bound, then 30 s (trial-a-head-1 left an empty daemon.log).
   test("services_up builds the Dispatch server once, and each run's start_dispatch runs that build", () => {
     const work = freshDir("dispatch-build-work");
     const bin = freshDir("dispatch-build-bin");
@@ -1602,8 +1602,13 @@ describe.skipIf(withoutPython || withoutLibpq)(
 const RED_WORLDS = ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l"] as const;
 type RedWorld = (typeof RED_WORLDS)[number];
 /** Each world's red check, the job that carries it, and what the head settles at once the re-run
- * is pressed (red_fixture). The reviewer holds the phase in i and j, the tester in the rest. */
-const RED_WORLD: Record<RedWorld, { check: string; job: string; after: "green" | "red" }> = {
+ * is pressed (red_fixture). The reviewer holds the phase in i and j, the tester in the rest. In i
+ * and j the head also carries `aggregate`, the aggregate check the base requires, red over the
+ * failing lane and settled with it; world.json's `check` stays the lane. */
+const RED_WORLD: Record<
+  RedWorld,
+  { check: string; job: string; after: "green" | "red"; aggregate?: string }
+> = {
   a: { check: "test (notify)", job: "test (notify)", after: "green" },
   b: { check: "test (notify)", job: "test (notify)", after: "red" },
   c: { check: "build", job: "build (linux-x64)", after: "green" },
@@ -1612,8 +1617,8 @@ const RED_WORLD: Record<RedWorld, { check: string; job: string; after: "green" |
   f: { check: "title", job: "title", after: "red" },
   g: { check: "ci", job: "test (notify)", after: "green" },
   h: { check: "test (notify)", job: "test (notify)", after: "green" },
-  i: { check: "test (notify)", job: "test (notify)", after: "green" },
-  j: { check: "test (notify)", job: "test (notify)", after: "red" },
+  i: { check: "test (notify)", job: "test (notify)", after: "green", aggregate: "ci" },
+  j: { check: "test (notify)", job: "test (notify)", after: "red", aggregate: "ci" },
   k: { check: "test (notify)", job: "test (notify)", after: "green" },
   l: { check: "test (notify)", job: "test (notify)", after: "green" },
 };
@@ -1629,13 +1634,15 @@ const RED_RUN_ID = 7_000_000 + RED_PR;
 const RED_JOB_ID = 8_000_000 + RED_PR;
 const RED_ID = { lint: 9_000_000 + RED_PR - 2, typecheck: 9_000_000 + RED_PR - 1 };
 const RED_RED_ID = 9_000_000 + RED_PR;
+/** The aggregate check of worlds i and j; the attempt the re-run makes of it is the next id. */
+const RED_CI_ID = RED_RED_ID + 3;
 const RED_RUN_URL = `https://github.com/${RED_REPO}/actions/runs/${RED_RUN_ID}`;
 const ghStandin = path.join(import.meta.dir, "gh-standin.ts");
 
-/** worker_fixture's green head as red_fixture reads it: the `gh pr view` answer with its rollup,
- * the `gh pr checks` rows and the generic check-runs read, which red_fixture rewrites, and the
- * catch-all past them, which it leaves alone. The repository it also builds, and the handoff it
- * writes, are no part of what red_fixture reads. */
+/** worker_fixture's green head as red_fixture reads it: the `gh pr view` answer with its rollup
+ * and its base, the `gh pr checks` rows and the generic check-runs read, which red_fixture
+ * rewrites, and the catch-all past them, which it leaves alone. The repository it also builds,
+ * and the handoff it writes, are no part of what red_fixture reads. */
 function greenRun(name: string): string {
   const run = freshDir(name);
   const url = `https://github.com/${RED_REPO}/pull/${RED_PR}`;
@@ -1646,6 +1653,7 @@ function greenRun(name: string): string {
     state: "OPEN",
     headRefName: `legion/${RED_KEY}`,
     headRefOid: RED_HEAD,
+    baseRefName: "main",
     body: `Dispatch: ${RED_KEY}`,
     head: { sha: RED_HEAD, ref: `legion/${RED_KEY}` },
     base: { ref: "main" },
@@ -1798,13 +1806,19 @@ async function readHead(run: string) {
     checkRunRows: outputLines(runs.stdout),
   };
 }
-/** The verdict the head carries under each check, before the re-run and after it. */
+/** The verdict the head carries under each check, before the re-run and after it. The aggregate
+ * of worlds i and j carries the verdict of the lane under it, since the re-run settles both. */
 function headIs(world: RedWorld, when: "before" | "after"): Record<string, string> {
-  const { check, after } = RED_WORLD[world];
+  const { check, after, aggregate } = RED_WORLD[world];
   const other: Record<string, string> = { lint: "pass", typecheck: "pass" };
   // The spent head's e2e check: an earlier run of it failed, and the one that replaced it passed.
   if (world === "e") other.e2e = "pass";
-  return { ...other, [check]: when === "after" && after === "green" ? "pass" : "fail" };
+  const verdict = when === "after" && after === "green" ? "pass" : "fail";
+  return {
+    ...other,
+    [check]: verdict,
+    ...(aggregate === undefined ? {} : { [aggregate]: verdict }),
+  };
 }
 /** What the commit's check runs answer, which is headIs but for world `k`: the by-hand run's
  * failure of the same check name is the latest run of it there, before the re-run and after it,
@@ -1815,13 +1829,15 @@ function runsAre(world: RedWorld, when: "before" | "after"): Record<string, stri
 }
 /** The settlement the Envoy listener renders for a state of the head, as red_fixture writes it
  * for the re-run to publish and for the rig's own report of the check: `notify` is the id of the
- * run of `test (notify)` that state holds, the red's own or the attempt the re-run made. */
-const settlement = (notify: number, passed: string[], failed: string[]) => ({
+ * run of `test (notify)` that state holds, the red's own or the attempt the re-run made, and `ci`
+ * the id of the run of the aggregate that state holds, in worlds i and j alone. */
+const settlement = (notify: number, passed: string[], failed: string[], ci?: number) => ({
   kind: "checks",
   repo: RED_REPO,
   number: String(RED_PR),
   sha: RED_HEAD,
   check_runs: [
+    ...(ci === undefined ? [] : [{ name: "ci", id: ci }]),
     { name: "lint", id: RED_ID.lint },
     { name: "test (notify)", id: notify },
     { name: "typecheck", id: RED_ID.typecheck },
@@ -1837,7 +1853,7 @@ const settlement = (notify: number, passed: string[], failed: string[]) => ({
   failing_checks: failed.map((name) => ({ name, url: RED_RUN_URL })),
 });
 /** That settlement as the envelope a listener receives it in. */
-const envelope = (notify: number, passed: string[], failed: string[]) => ({
+const envelope = (notify: number, passed: string[], failed: string[], ci?: number) => ({
   authorization: "Bearer rig-envoy-token",
   url: "/v1/messages/publish",
   body: {
@@ -1846,7 +1862,7 @@ const envelope = (notify: number, passed: string[], failed: string[]) => ({
     message:
       `checks settled on ${RED_REPO}#${RED_PR} @ ${RED_HEAD.slice(0, 7)}: ` +
       `${passed.length} passed, ${failed.length} failed, 0 cancelled, 0 skipped`,
-    payload: JSON.stringify(settlement(notify, passed, failed)),
+    payload: JSON.stringify(settlement(notify, passed, failed, ci)),
   },
 });
 
@@ -2258,9 +2274,9 @@ describe("red_fixture", () => {
   // Catches: a `--required` read answered by the route for every check, which hands a role every
   // lane where GitHub hands it the required set alone (the review of red-at-the-head.md:86), a
   // required read that stays red after a green re-run, and a read without the flag that lost a
-  // check to the new route. No fixture names a required set, so the base requires the one
-  // aggregate check `ci` (red_fixture), which world `g` alone reports; every other head answers
-  // gh's own `no required checks reported` and exits 1.
+  // check to the new route. The base requires the one aggregate check `ci` (red_fixture), which
+  // the heads of worlds `g`, `i` and `j` report; every other head answers gh's own `no required
+  // checks reported` and exits 1.
   test("gh pr checks --required answers the required check alone, and a read without it every check", async () => {
     const requiredRoute = "^gh pr checks\\b.*\\s--required\\b";
     const none = {
@@ -2268,6 +2284,9 @@ describe("red_fixture", () => {
       stderr: `no required checks reported on the 'legion/${RED_KEY}' branch\n`,
       exit: 1,
     };
+    /** The id of the check run of `ci` a head first reports, in the worlds whose head reports
+     * one: world g's red, and the aggregate over the red lane of i and j. */
+    const ciId: Partial<Record<RedWorld, number>> = { g: RED_RED_ID, i: RED_CI_ID, j: RED_CI_ID };
     const seen: unknown[] = [];
     for (const world of RED_WORLDS) {
       const run = redFixture(world);
@@ -2290,30 +2309,257 @@ describe("red_fixture", () => {
       });
     }
     expect(seen).toEqual(
+      RED_WORLDS.map((world) => {
+        const ci = ciId[world];
+        const url = `https://github.com/${RED_REPO}/runs`;
+        // The attempt the re-run made of `ci`, which settles as the world settles.
+        const settled = headIs(world, "after").ci;
+        return {
+          world,
+          before:
+            ci === undefined
+              ? none
+              : { stdout: `ci\tfail\t20s\t${url}/${ci}\n`, stderr: "", exit: 1 },
+          // World `l`'s counted set has not reported its red at the first read.
+          every:
+            world === "l" ? [{ lint: "pass", typecheck: "pass" }, 0] : [headIs(world, "before"), 1],
+          after:
+            ci === undefined
+              ? none
+              : {
+                  stdout: `ci\t${settled}\t20s\t${url}/${ci + 1}\n`,
+                  stderr: "",
+                  exit: settled === "fail" ? 1 : 0,
+                },
+          routes: [requiredRoute, "^gh pr checks", "^gh run rerun", requiredRoute],
+        };
+      })
+    );
+  });
+
+  // Catches: a read of the base's required set that another route takes, or that falls to the
+  // 404, in any world: the two the reviewer's prompt gives (packages/daemon/internal/prompts/go/
+  // reviewer.md, "CI is yours to read"), and the protection endpoint, the rulesets list and the
+  // one ruleset. In the batch of 2026-11-17 the prompt's two reads, with their `--jq`, took
+  // worker_fixture's generic check-runs route, whose match their `required_status_checks` text
+  // holds, and exited 1, and the rules read without its `--jq` (trial-i-head-3), the protection
+  // read (trial-i-head-1) and the rulesets list (trial-i-head-5) answered the 404, so every
+  // reviewer read the base as requiring nothing while `gh pr checks --required` named `ci`. Also
+  // a route that takes another's path (the branch route the `/protection` below it, the rulesets
+  // list the one ruleset, the branch route the rules path or the reverse), and an answer in a
+  // shape GitHub does not give, which the prompt's `--jq` reads as nothing.
+  test("the base's rules, rulesets, branch and protection each answer the required ci, in every world", async () => {
+    const rules = `repos/${RED_REPO}/rules/branches/main`;
+    const branch = `repos/${RED_REPO}/branches/main`;
+    const routeOf = (endpoint: string) => `^gh api .*repos/${RED_REPO}/${endpoint}([?\\s]|$)`;
+    const seen: unknown[] = [];
+    for (const world of RED_WORLDS) {
+      const run = redFixture(world);
+      // The prompt's two reads, word for word but for `<o>/<r>` and `<base>`, then each raw, then
+      // the protection endpoint, the rulesets list and the one ruleset.
+      const reads = [
+        await gh(run, [
+          "api",
+          "--paginate",
+          rules,
+          "--jq",
+          '.[] | select(.type=="required_status_checks") | .parameters.required_status_checks[].context',
+        ]),
+        await gh(run, [
+          "api",
+          branch,
+          "--jq",
+          ".protection.required_status_checks.checks[].context",
+        ]),
+        await gh(run, ["api", rules]),
+        await gh(run, ["api", branch]),
+        await gh(run, ["api", `${branch}/protection`]),
+        await gh(run, ["api", `repos/${RED_REPO}/rulesets`]),
+        await gh(run, ["api", `repos/${RED_REPO}/rulesets/1`]),
+      ];
+      seen.push({
+        world,
+        reads: reads.map(({ stdout, stderr, exit }, index) => ({
+          stdout: index < 2 || stdout === "" ? stdout : JSON.parse(stdout),
+          stderr,
+          exit,
+        })),
+        routes: ghCalls(run).map((call) => call.route),
+      });
+    }
+    const answer = (stdout: unknown) => ({ stdout, stderr: "", exit: 0 });
+    const protection = `https://api.github.com/repos/${RED_REPO}/branches/main/protection`;
+    const rule = {
+      type: "required_status_checks",
+      parameters: {
+        strict_required_status_checks_policy: false,
+        required_status_checks: [{ context: "ci" }],
+      },
+    };
+    const ruleset = {
+      id: 1,
+      name: "Require ci",
+      target: "branch",
+      source_type: "Repository",
+      source: RED_REPO,
+      enforcement: "active",
+    };
+    expect(seen).toEqual(
       RED_WORLDS.map((world) => ({
         world,
-        before:
-          world === "g"
-            ? {
-                stdout: `ci\tfail\t20s\thttps://github.com/${RED_REPO}/runs/${RED_RED_ID}\n`,
-                stderr: "",
-                exit: 1,
-              }
-            : none,
-        // World `l`'s counted set has not reported its red at the first read.
-        every:
-          world === "l" ? [{ lint: "pass", typecheck: "pass" }, 0] : [headIs(world, "before"), 1],
-        after:
-          world === "g"
-            ? {
-                stdout: `ci\tpass\t20s\thttps://github.com/${RED_REPO}/runs/${RED_RED_ID + 1}\n`,
-                stderr: "",
-                exit: 0,
-              }
-            : none,
-        routes: [requiredRoute, "^gh pr checks", "^gh run rerun", requiredRoute],
+        reads: [
+          answer("ci\n"),
+          answer("ci\n"),
+          answer([
+            { ...rule, ruleset_source_type: "Repository", ruleset_source: RED_REPO, ruleset_id: 1 },
+          ]),
+          answer({
+            name: "main",
+            protected: true,
+            protection: {
+              enabled: true,
+              required_status_checks: {
+                enforcement_level: "non_admins",
+                contexts: ["ci"],
+                checks: [{ context: "ci", app_id: null }],
+              },
+            },
+            protection_url: protection,
+          }),
+          answer({
+            url: protection,
+            required_status_checks: {
+              url: `${protection}/required_status_checks`,
+              strict: false,
+              contexts: ["ci"],
+              contexts_url: `${protection}/required_status_checks/contexts`,
+              checks: [{ context: "ci", app_id: null }],
+            },
+            enforce_admins: { url: `${protection}/enforce_admins`, enabled: false },
+          }),
+          answer([ruleset]),
+          answer({
+            ...ruleset,
+            bypass_actors: [],
+            conditions: { ref_name: { include: ["~DEFAULT_BRANCH"], exclude: [] } },
+            rules: [rule],
+          }),
+        ],
+        routes: [
+          routeOf("rules/branches/main"),
+          routeOf("branches/main"),
+          routeOf("rules/branches/main"),
+          routeOf("branches/main"),
+          routeOf("branches/main/protection"),
+          routeOf("rulesets"),
+          routeOf("rulesets/1"),
+        ],
       }))
     );
+  });
+
+  // Catches: a world i or j whose counted set loses the aggregate the base requires, in any read
+  // of it or in the settlement the re-run publishes; an aggregate in another run than its lane's,
+  // which the re-run of the lane's run would not reach; and an aggregate that does not settle
+  // with its lane, left red by i's green re-run or cleared by j's red one. world.json keeps the
+  // lane as the world's check and job, which is what the scorer judges a role's record against.
+  test("worlds i and j: the required aggregate ci stands over the lane in every read, and settles with it", async () => {
+    const received: { authorization: string | null; url: string; body: unknown }[] = [];
+    const server = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      fetch: async (request) => {
+        received.push({
+          authorization: request.headers.get("authorization"),
+          url: new URL(request.url).pathname,
+          body: await request.json(),
+        });
+        return Response.json({ ok: true });
+      },
+    });
+    const seen: unknown[] = [];
+    try {
+      for (const world of ["i", "j"] as const) {
+        const run = redFixture(world);
+        const token = path.join(run, "envoy-token");
+        writeFileSync(token, "rig-envoy-token\n");
+        /** `ci` beside the lane under it, as each read of the head answers the two, with the run
+         * each counted check names and every run of `ci` at the commit. */
+        const reads = async () => {
+          const head = await readHead(run);
+          const pair = (verdicts: Record<string, string>) => [
+            verdicts.ci,
+            verdicts["test (notify)"],
+          ];
+          const required = await gh(run, ["pr", "checks", String(RED_PR), "--required"]);
+          const runOf = await rollupRead(
+            run,
+            ".data.repository.object.statusCheckRollup.contexts.nodes[] " +
+              "| [.name, .checkSuite.workflowRun.databaseId] | @tsv"
+          );
+          const ci = await gh(run, [
+            "api",
+            `repos/${RED_REPO}/commits/${RED_HEAD}/check-runs?filter=all`,
+            "--jq",
+            '.check_runs[] | select(.name == "ci") | [.id, .conclusion, .output.summary] | @tsv',
+          ]);
+          return {
+            rollup: pair(head.rollup),
+            graphql: pair(head.graphql),
+            checks: pair(head.checks),
+            runs: pair(head.checkRuns),
+            required: outputLines(required.stdout).map((line) => line.split("\t").slice(0, 2)),
+            runOf: outputLines(runOf.stdout),
+            ci: outputLines(ci.stdout),
+          };
+        };
+        const before = await reads();
+        await gh(run, ["run", "rerun", String(RED_RUN_ID), "--failed"], {
+          ENVOY_URL: `http://127.0.0.1:${server.port}`,
+          ENVOY_TOKEN_FILE: token,
+        });
+        const after = await reads();
+        const { check, job } = JSON.parse(readFileSync(path.join(run, "world.json"), "utf8"));
+        seen.push({ world, before, after, check, job });
+      }
+    } finally {
+      server.stop(true);
+    }
+    const lanes = "1 of 6 lanes failed: test (notify).";
+    const runOf = ["ci", "lint", "test (notify)", "typecheck"].map(
+      (name) => `${name}\t${RED_RUN_ID}`
+    );
+    const both = (verdict: string) => ({
+      rollup: [verdict, verdict],
+      graphql: [verdict, verdict],
+      checks: [verdict, verdict],
+      runs: [verdict, verdict],
+      required: [["ci", verdict]],
+      runOf,
+    });
+    const red = `${RED_CI_ID}\tfailure\t${lanes}`;
+    const lane = { check: "test (notify)", job: "test (notify)" };
+    expect(seen).toEqual([
+      {
+        world: "i",
+        before: { ...both("fail"), ci: [red] },
+        after: {
+          ...both("pass"),
+          ci: [red, `${RED_CI_ID + 1}\tsuccess\tThe re-run of ci passed.`],
+        },
+        ...lane,
+      },
+      {
+        world: "j",
+        before: { ...both("fail"), ci: [red] },
+        after: { ...both("fail"), ci: [red, `${RED_CI_ID + 1}\tfailure\t${lanes}`] },
+        ...lane,
+      },
+    ]);
+    expect(received).toEqual([
+      envelope(RED_RED_ID + 1, ["ci", "lint", "test (notify)", "typecheck"], [], RED_CI_ID + 1),
+      envelope(RED_RED_ID + 1, ["lint", "typecheck"], ["ci", "test (notify)"], RED_CI_ID + 1),
+    ]);
   });
 
   // Catches: a re-run that publishes nothing, which leaves a waiting role asleep, and a
