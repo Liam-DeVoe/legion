@@ -35,7 +35,12 @@
 # whose box reads busy and then quiet waits, says so, and starts, naming both readings, which
 # loadgen run gets; (n) a step whose box stays busy past LOADTEST_QUIET_WAIT is refused before its
 # reset, and its not-run record carries every reading, the bar and the wait; (o) the bar follows
-# LOADTEST_MAX_BUSY_BEFORE and the wait LOADTEST_QUIET_WAIT (0: one reading, then the refusal).
+# LOADTEST_MAX_BUSY_BEFORE and the wait LOADTEST_QUIET_WAIT (0: one reading, then the refusal); (p)
+# a step and a series whose generator list, with the server list, asks for more CPUs than the pod's
+# CPU quota are refused before their build, naming the quota, both lists and the list auto gives,
+# and the step's not-run record carries that refusal; on the faked stack, (q) a step beside
+# LOADTEST_SERVER_CPUS under a CPU quota whose generator list is unset, and one whose list is auto,
+# run loadgen run on the list auto gives, while with no quota an unset list stays unset.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -84,6 +89,14 @@ export PATH="${fake_bin_dir}:${PATH}"
 export LOADTEST_SRC="$src"
 export LOADTEST_TEST_CALLS="$calls_file"
 export LOADTEST_TEST_RELEASE="$release_fifo"
+# A cgroup root with no file: a pod with no CPU quota, whatever the box this test runs on
+# (common.sh, CGROUP_ROOT), so every step's generator list is the one it gives. quota2 is a pod of
+# CPUs 0 and 1 under a CPU quota of 2.
+readonly no_cgroup="${temporary_dir}/no-cgroup" quota2="${temporary_dir}/cgroup-quota2"
+mkdir -p "$no_cgroup" "$quota2"
+printf '200000 100000\n' >"${quota2}/cpu.max"
+printf '0-1\n' >"${quota2}/cpuset.cpus.effective"
+export LOADTEST_CGROUP_ROOT="$no_cgroup"
 
 step_args=(--events 0 --sessions 1 --requests 0)
 
@@ -226,6 +239,14 @@ expect_refused_before_build "a --replay step whose --gomaxprocs is not the serve
 expect_refused_before_build "a series whose LOADTEST_GOMAXPROCS is not the server list's CPU count" \
   "LOADTEST_GOMAXPROCS=2 (run-step.sh --gomaxprocs) differs from LOADTEST_SERVER_CPUS='0', 1 CPU" \
   env LOADTEST_SERVER_CPUS=0 LOADTEST_GOMAXPROCS=2 bash "$run_series"
+expect_refused_before_build "a step whose generator list is too wide for the pod's CPU quota" \
+  "LOADTEST_GENERATOR_CPUS='1-3', 3 CPUs, and LOADTEST_SERVER_CPUS='0', 1 CPU, ask for 4 CPUs, more than the pod's CPU quota of 2 CPUs ('200000 100000' under ${quota2})" \
+  env LOADTEST_CGROUP_ROOT="$quota2" LOADTEST_SERVER_CPUS=0 LOADTEST_GENERATOR_CPUS=1-3 bash "$run_step" cpu-step "${step_args[@]}"
+expect_record "a step whose generator list is too wide for the pod's CPU quota" "${temporary_dir}/root-c/runs/cpu-step.not-run.json" 1 \
+  "the pinned server side with them, since taskset reserves no CPU inside it. Set LOADTEST_GENERATOR_CPUS=auto, which is '1' here"
+expect_refused_before_build "a series whose generator list is too wide for the pod's CPU quota" \
+  "ask for 4 CPUs, more than the pod's CPU quota of 2 CPUs" \
+  env LOADTEST_CGROUP_ROOT="$quota2" LOADTEST_SERVER_CPUS=0 LOADTEST_GENERATOR_CPUS=1-3 bash "$run_series"
 
 # A step refused at a flag check leaves its not-run record beside its step directory, also when the
 # --out that names that directory comes after the refused flag.
@@ -253,7 +274,8 @@ expect_record "a step refused at a flag check before its --out" "${temporary_dir
 # creates end-window in the root (10 s at most); LOADTEST_TEST_BUSY names a file of readings, the
 # Nth `loadgen box-busy` printing its Nth line, and 0 past its end or without it, as an idle box
 # reads. Each `loadgen box-busy` is counted in box-busy-calls in the root, and each `loadgen run`
-# writes its arguments, one a line, to loadgen-run-args there.
+# writes its arguments, one a line, to loadgen-run-args there, and the LOADTEST_GENERATOR_CPUS it
+# got ("unset" for none) to loadgen-run-generator-cpus.
 readonly relay_dir="${temporary_dir}/relay"
 readonly relay_root="${temporary_dir}/root-d"
 mkdir -p "$relay_dir" "${relay_root}/replay" "${relay_root}/logs"
@@ -282,6 +304,7 @@ case "$1" in
       run)
         shift 2
         printf '%s\n' "$@" >"${LOADTEST_ROOT}/loadgen-run-args"
+        printf '%s\n' "${LOADTEST_GENERATOR_CPUS-unset}" >"${LOADTEST_ROOT}/loadgen-run-generator-cpus"
         while [ "$1" != -out ]; do shift; done
         case ${LOADTEST_TEST_LOADGEN:-gomaxprocs} in
           gomaxprocs)
@@ -500,3 +523,46 @@ jq -e '.box_busy_gate_readings == [0.42] and .box_busy_gate_max == 0.1 and .box_
   gate_fail "the not-run record of a step refused under LOADTEST_QUIET_WAIT=0 lacks its one reading or the wait"
 }
 printf 'PASS: the gate'"'"'s bar follows LOADTEST_MAX_BUSY_BEFORE and its wait LOADTEST_QUIET_WAIT\n'
+
+# (q) The generator's list on the faked stack, beside LOADTEST_SERVER_CPUS=0. The pin's check takes
+# a verdict kept for the test's own boot, so it times no loop. generator_step STEP CGROUP_ROOT
+# [NAME=VALUE...]: a --replay step on the cgroup root CGROUP_ROOT, its loadgen run opening a window
+# at once, under the NAME=VALUE variables. Sets rc, out (what the step wrote) and gen (the
+# LOADTEST_GENERATOR_CPUS loadgen run got: "unset" for none, "none" when loadgen run did not run).
+readonly boot_file="${temporary_dir}/boot_id" boot_id=0f1e2d3c-0000-4000-8000-0000000000aa
+printf '%s\n' "$boot_id" >"$boot_file"
+printf '{"boot_id":"%s","at":"2026-11-17T00:00:00Z","cpu":0,"unpinned_s":1.00,"pinned_s":2.10,"ratio":2.1,"tries":[]}\n' \
+  "$boot_id" >"${relay_root}/affinity.json"
+generator_step() {
+  local step=$1 root=$2
+  shift 2
+  rm -f "${relay_root}/loadgen-run-generator-cpus"
+  : >"${relay_root}/end-window"
+  rc=0
+  "${relay_env[@]}" LOADTEST_CGROUP_ROOT="$root" LOADTEST_SERVER_CPUS=0 LOADTEST_BOOT_ID_FILE="$boot_file" \
+    LOADTEST_TEST_LOADGEN=window "$@" bash "${relay_dir}/run-step.sh" "$step" --replay >"${temporary_dir}/generator-output" 2>&1 || rc=$?
+  out=$(<"${temporary_dir}/generator-output")
+  gen=$(cat "${relay_root}/loadgen-run-generator-cpus" 2>/dev/null || echo none)
+}
+
+# generator_fail WHAT: the row WHAT failed: print what the step wrote, and stop.
+generator_fail() {
+  printf '%s\n' "$out" >&2
+  printf 'FAIL: %s (exit %d, loadgen run got LOADTEST_GENERATOR_CPUS %s)\n' "$1" "$rc" "$gen" >&2
+  exit 1
+}
+
+# Under a quota of 2 on a pod of 0-1, the list unset and the list auto are CPU 1 alone, the CPU the
+# quota leaves beside the server's 0, which check_cpu_lists exported; with no quota, unset pins
+# nothing.
+generator_step gen-unset "$quota2"
+((rc == 0)) && [[ $gen == 1 &&
+  $out == *"LOADTEST_GENERATOR_CPUS is unset, which beside LOADTEST_SERVER_CPUS under a CPU quota is auto: the generator runs on 1, 1 CPU of the pod outside LOADTEST_SERVER_CPUS='0'"* ]] ||
+  generator_fail "a step beside LOADTEST_SERVER_CPUS=0 under a quota of 2, its generator list unset, did not run loadgen run on auto's CPU 1"
+generator_step gen-auto "$quota2" LOADTEST_GENERATOR_CPUS=auto
+((rc == 0)) && [[ $gen == 1 ]] ||
+  generator_fail "a step with LOADTEST_GENERATOR_CPUS=auto under a quota of 2 did not run loadgen run on CPU 1"
+generator_step gen-no-quota "$no_cgroup"
+((rc == 0)) && [[ $gen == unset ]] ||
+  generator_fail "a step beside LOADTEST_SERVER_CPUS=0 with no CPU quota pinned its generator"
+printf 'PASS: beside the server list under a CPU quota, an unset or auto generator list is the list auto gives, and loadgen run gets it; with no quota an unset list stays unset\n'

@@ -107,11 +107,17 @@ type runConfig struct {
 	buildCommit string
 	buildDirty  bool
 	// serverCPUs and generatorCPUs are LOADTEST_SERVER_CPUS and LOADTEST_GENERATOR_CPUS, the CPU
-	// lists stack.sh pinned the stack and this loadgen to, recorded in summary.json; "" unpinned.
+	// lists stack.sh pinned the stack and this loadgen to (the generator's as common.sh's
+	// check_cpu_lists settled it), recorded in summary.json and meta.json; "" unpinned.
 	// serverCPUCount is the server list's CPU count (serverCPUCountOf), 0 unpinned: the GOMAXPROCS
 	// Dispatch must run with (gomaxprocsRefusal).
 	serverCPUs, generatorCPUs string
 	serverCPUCount            int
+	// cgroupRoot is where the pod's cgroup files are read: cpu.max or cgroup v1's quota files for
+	// meta.json's cpu_quota (podCPUQuota), cpu.stat at the window's start and end for the
+	// throttling summary.json records (readCPUThrottle). runLoad sets cgroupCPURoot; a test points
+	// it at files of its own.
+	cgroupRoot string
 	// boxBusyBefore is the box's busy fraction read before Dispatch started (run-step.sh reads it
 	// with `loadgen box-busy` before its reset); negative means collectMeta reads it itself.
 	boxBusyBefore float64
@@ -445,6 +451,7 @@ func runLoad(args []string) error {
 		loopListeners: loopEndpoints, driverTopics: *driverTopics, receiptDeadline: *receiptDeadline,
 		buildCommit: *buildCommit, buildDirty: *buildDirty, boxBusyBefore: *boxBusyBefore, busyGate: gate,
 		serverCPUs: serverCPUs, serverCPUCount: serverCPUCount, generatorCPUs: os.Getenv("LOADTEST_GENERATOR_CPUS"),
+		cgroupRoot: cgroupCPURoot,
 		// Fewer editors than documents edit only as many documents as there are editors.
 		editors:  editorConfig{editors: *editors, rate: *editorRate, docs: min(*editorDocs, max(*editors, 1))},
 		args:     recordedArgs(fs),
@@ -759,6 +766,16 @@ type metaFile struct {
 	GOMAXPROCSError string `json:"gomaxprocs_error,omitempty"`
 	ServerCPUs      string `json:"server_cpus"`
 	ServerCPUCount  *int   `json:"server_cpu_count"`
+	// GeneratorCPUs is the CPU list this loadgen ran on (LOADTEST_GENERATOR_CPUS as common.sh's
+	// check_cpu_lists settled it: `auto`, or an unset list beside the server list under a CPU
+	// quota, is the list it stands for), "" unpinned. CPUQuota is the pod's CPU quota as its cgroup
+	// gives it (podCPUQuota): cgroup v2's cpu.max text, "max 100000" for none, else cgroup v1's
+	// cpu.cfs_quota_us and cpu.cfs_period_us as "<quota> <period>", "-1 100000" for none; null when
+	// neither can be read. QuotaCPUs is that quota in whole CPUs, rounded down, as common.sh's
+	// quota_cpus sizes the generator's list by; null without a quota.
+	GeneratorCPUs string  `json:"generator_cpus"`
+	CPUQuota      *string `json:"cpu_quota"`
+	QuotaCPUs     *int    `json:"quota_cpus"`
 	// PostgresVersion is select version() on -pg, "" when it could not be read, and then
 	// PostgresVersionError is why.
 	PostgresVersion      string `json:"postgres_version"`
@@ -1351,8 +1368,8 @@ func (st *step) requestPath(p *population, r *rand.Rand) (*route, string) {
 }
 
 // probes are the 5 s sampler, the lock probe (1 s), the ungranted-lock sampler (1 s), the
-// accept-backlog sampler (1 s), the transaction-id probe, the profiles, the rooms' window readings
-// and, in a step with editors, the room sampler (100 ms).
+// accept-backlog sampler (1 s), the transaction-id probe, the profiles, the rooms' and the pod's
+// cpu.stat window readings and, in a step with editors, the room sampler (100 ms).
 type probes struct {
 	smp      *sampler
 	smpDone  chan struct{} // closed when the sampler, which runs until ctx ends, has returned
@@ -1366,6 +1383,9 @@ type probes struct {
 	roomsStart, roomsEnd windowReading
 	rs                   *roomSampler
 	wg                   sync.WaitGroup // every probe but the sampler
+	// throttleStart and throttleEnd are the pod's cgroup cpu.stat at the window's start and end
+	// (readCPUThrottle), whose difference summary.json records (throttledOver).
+	throttleStart, throttleEnd cpuThrottle
 }
 
 // startProbes starts the probes. The two lock samplers run from 20 s into the window to its end,
@@ -1395,10 +1415,14 @@ func (st *step) startProbes(ctx context.Context, pulls *pullSpy) *probes {
 		if !sleepUntil(ctx, st.winStart) {
 			return
 		}
+		// cpu.stat first: a file read, at the window's edge, where the rooms' read goes to the
+		// database.
+		p.throttleStart = readCPUThrottle(st.cfg.cgroupRoot)
 		p.roomsStart = readWindow(ctx, st.cfg.ep)
 		if !sleepUntil(ctx, st.winEnd) {
 			return
 		}
+		p.throttleEnd = readCPUThrottle(st.cfg.cgroupRoot)
 		p.roomsEnd = readWindow(ctx, st.cfg.ep)
 	})
 	if st.cfg.editors.editors > 0 {
@@ -1573,6 +1597,7 @@ func (st *step) buildSummary(ns *natsSessions, lp *loopSessions, reg *registrar,
 	sum.Resources = summarizeResources(ss, sum.Events.Committed+sum.Requests.Sent, durS)
 	if sum.Resources != nil {
 		sum.Resources.XIDsPerS = pr.xidsPerS
+		sum.Resources.CPUThrottledPeriods, sum.Resources.CPUThrottledMs = throttledOver(pr.throttleStart, pr.throttleEnd)
 		if pr.xidErr != nil {
 			sum.Resources.XIDReadError = pr.xidErr.Error()
 		}
@@ -1868,7 +1893,7 @@ func collectMeta(ctx context.Context, cfg runConfig, lg *log.Logger) metaFile {
 	m := metaFile{
 		Step: cfg.name, Args: cfg.args, Nproc: runtime.NumCPU(), BuildCommit: cfg.buildCommit, BuildDirty: cfg.buildDirty,
 		Stack: cfg.ep.stack, PGDirect: cfg.ep.pgDirect, EnvoyRTT: cfg.ep.envoyRTT, AllowForeign: cfg.allowForeign, PIDs: cfg.ep.pids,
-		ServerCPUs: cfg.serverCPUs,
+		ServerCPUs: cfg.serverCPUs, GeneratorCPUs: cfg.generatorCPUs,
 	}
 	if b, err := os.ReadFile("/proc/cpuinfo"); err == nil {
 		for line := range strings.SplitSeq(string(b), "\n") {
@@ -1905,6 +1930,9 @@ func collectMeta(ctx context.Context, cfg runConfig, lg *log.Logger) metaFile {
 		lg.Printf("meta: quiet-box gate: the step started on a box %.0f%% busy, at or under its bar of %.0f%% (LOADTEST_MAX_BUSY_BEFORE); its readings %s",
 			100*start, 100*bar, strings.Join(read, ", "))
 	}
+	// The quota the pod's processes share, beside how busy the box was before the step: a pinned
+	// server is throttled with the rest of the pod once they together pass it.
+	m.CPUQuota, m.QuotaCPUs = podCPUQuota(cfg.cgroupRoot)
 	m.GOMAXPROCS, m.GOMAXPROCSError = readDispatchGOMAXPROCS(cfg.ep.pids["dispatch"])
 	if cfg.serverCPUs != "" {
 		m.ServerCPUCount = &cfg.serverCPUCount
@@ -1993,6 +2021,83 @@ func serverCPUCountOf(list, count string) (int, error) {
 		return 0, fmt.Errorf("LOADTEST_SERVER_CPUS='%s' is set without its CPU count (LOADTEST_SERVER_CPU_COUNT='%s'): stack.sh loadgen sets the two together, so run loadgen run through it", list, count)
 	}
 	return n, nil
+}
+
+// podCPUQuota is meta.json's cpu_quota and quota_cpus, read under root (readCgroupCPUQuota): the
+// text cgroup v2's cpu.max holds, else cgroup v1's quota and period as "<quota> <period>", nil
+// when neither can be read; and the quota in whole CPUs, rounded down, as common.sh's quota_cpus
+// counts it, nil without a quota.
+func podCPUQuota(root string) (text *string, cpus *int) {
+	q, cpuMax, ok := readCgroupCPUQuota(root)
+	switch {
+	case cpuMax != "":
+		text = &cpuMax
+	case ok:
+		v1 := fmt.Sprintf("%d %d", q.QuotaUS, q.PeriodUS)
+		text = &v1
+	}
+	if ok && q.QuotaUS > 0 {
+		n := int(q.QuotaUS / q.PeriodUS)
+		cpus = &n
+	}
+	return text, cpus
+}
+
+// cpuThrottle is one read of the pod's cgroup cpu.stat (readCPUThrottle): periods is nr_throttled,
+// the CFS periods in which the pod's processes used up its quota and were stopped until the next,
+// and throttledNs how long they were stopped in all; ok is false when cpu.stat was not read.
+type cpuThrottle struct {
+	ok                   bool
+	periods, throttledNs int64
+}
+
+// readCPUThrottle reads the pod's cpu.stat under root: cgroup v2's cpu.stat, whose nr_throttled
+// and throttled_usec it takes, else cgroup v1's cpu/cpu.stat, whose nr_throttled and
+// throttled_time (nanoseconds) it takes. Not ok when the file it reads lacks either counter, as a
+// cgroup v2 cpu.stat does when the cpu controller is off.
+func readCPUThrottle(root string) cpuThrottle {
+	for _, f := range []struct {
+		path, throttled string
+		ns              int64 // nanoseconds in one unit of the throttled counter
+	}{
+		{filepath.Join(root, "cpu.stat"), "throttled_usec", 1000},
+		{filepath.Join(root, "cpu", "cpu.stat"), "throttled_time", 1},
+	} {
+		b, err := os.ReadFile(f.path)
+		if err != nil {
+			continue
+		}
+		var t cpuThrottle
+		var periods, throttled bool
+		for line := range strings.SplitSeq(string(b), "\n") {
+			k, v, _ := strings.Cut(line, " ")
+			n, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64)
+			if err != nil {
+				continue
+			}
+			switch k {
+			case "nr_throttled":
+				t.periods, periods = n, true
+			case f.throttled:
+				t.throttledNs, throttled = n*f.ns, true
+			}
+		}
+		t.ok = periods && throttled
+		return t
+	}
+	return cpuThrottle{}
+}
+
+// throttledOver is the pod's throttling over the window, from its cpu.stat reads at the window's
+// start and end: the periods throttled and the milliseconds stopped, summary.json's
+// resources.cpu_throttled_periods and resources.cpu_throttled_ms. Both are nil when either read
+// failed: a step that read no cpu.stat records null, never 0.
+func throttledOver(start, end cpuThrottle) (periods *int64, ms *float64) {
+	if !start.ok || !end.ok {
+		return nil, nil
+	}
+	p, m := end.periods-start.periods, float64(end.throttledNs-start.throttledNs)/1e6
+	return &p, &m
 }
 
 // dispatchBuild is $LOADTEST_ROOT/bin/envoy-dispatch.json, stack.sh's record of the Dispatch binary

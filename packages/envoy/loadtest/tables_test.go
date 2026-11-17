@@ -31,8 +31,9 @@ func TestTablesMarkAStepWhoseStackProcessExited(t *testing.T) {
 	if !strings.Contains(md, "| box busy | box busy before / gate |") || !strings.Contains(md, "| 0% | 42% / - |") {
 		t.Fatalf("the Resources table lacks box busy before 42%% beside no gate reading:\n%s", md)
 	}
-	// The killed step has no resources: its row keeps the box busy before column, empty here.
-	if !strings.Contains(section(md, "Resources"), "| killed (dispatch exited) | - | - | - | - | - | - | - | - | - | - | - | - | - | - | - |\n") {
+	// The killed step has no resources: its row keeps the box busy before column, empty here, and
+	// its throttling column reads - for a cpu.stat not read.
+	if !strings.Contains(section(md, "Resources"), "| killed (dispatch exited) | - | - | - | - | - | - | - | - | - | - | - | - | - | - | - | - |\n") {
 		t.Fatalf("the killed step's Resources row is not all -:\n%s", md)
 	}
 	checkRowWidths(t, md)
@@ -78,6 +79,36 @@ func TestTablesNameTheQuietGatesReadingBesideBoxBusyBefore(t *testing.T) {
 	if b, err = json.Marshal(summary{}); err != nil || !strings.Contains(string(b), `"box_busy_before":null,"box_busy_gate":null`) {
 		t.Errorf("a summary.json without the readings does not carry them as null (%v):\n%s", err, b)
 	}
+}
+
+// TestTablesShowThePodsThrottlingInTheResourcesTable: the Resources table's last column is how often
+// and how long CFS stopped the pod's processes over the window (summary.json
+// resources.cpu_throttled_periods and resources.cpu_throttled_ms), 0 / 0 for a step never
+// throttled and "-" for one that read no cpu.stat, and a note under the table says what it holds.
+func TestTablesShowThePodsThrottlingInTheResourcesTable(t *testing.T) {
+	periods, ms, noPeriods, noMs := int64(1234), 5678.4, int64(0), 0.0
+	step := func(name string, r resourcesSummary) stepData {
+		return stepData{name: name, sum: summary{Config: summaryConfig{Step: name}, Resources: &r}}
+	}
+	md := renderTables([]stepData{
+		step("throttled", resourcesSummary{CPUThrottledPeriods: &periods, CPUThrottledMs: &ms}),
+		step("never-throttled", resourcesSummary{CPUThrottledPeriods: &noPeriods, CPUThrottledMs: &noMs}),
+		step("cpu-stat-unread", resourcesSummary{}),
+	})
+	text := section(md, "Resources")
+	if !strings.Contains(text, "| Dispatch CPU-s per operation | "+podThrottledH+" |\n") {
+		t.Fatalf("the Resources header does not end on the throttling column:\n%s", text)
+	}
+	const throttled = 16
+	for name, want := range map[string]string{"throttled": "1,234 / 5,678", "never-throttled": "0 / 0", "cpu-stat-unread": "-"} {
+		if c := rowCells(text, name); c == nil || c[throttled] != want {
+			t.Errorf("%s: the throttling cell of %q, want %q:\n%s", name, c, want, text)
+		}
+	}
+	if !strings.Contains(text, "\n"+podThrottledH+": ") {
+		t.Errorf("no note says what the throttling cell holds:\n%s", text)
+	}
+	checkRowWidths(t, md)
 }
 
 // section is the text of the markdown section that title opens, up to the next section.

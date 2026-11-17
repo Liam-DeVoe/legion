@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"flag"
+	"fmt"
 	"io"
 	"log"
 	"maps"
@@ -377,6 +378,93 @@ func TestMetaKeepsTheQuietGatesReadingsBesideBoxBusyBefore(t *testing.T) {
 	} {
 		if _, err := parseBusyGate(c.readings, c.bar, c.barGiven); err == nil || !strings.Contains(err.Error(), c.want) {
 			t.Errorf("-box-busy-gate %q -box-busy-gate-max %g (given %t): refusal %v, want one with %q", c.readings, c.bar, c.barGiven, err, c.want)
+		}
+	}
+}
+
+// cgroupFiles is a cgroup root of the test's own: each file of files, its name a path under the
+// root, holding its text.
+func cgroupFiles(t *testing.T, files map[string]string) string {
+	t.Helper()
+	root := t.TempDir()
+	for name, text := range files {
+		path := filepath.Join(root, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(text), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return root
+}
+
+// TestMetaRecordsThePodsCPUQuotaBesideTheTwoLists: meta.json records the CPU quota the pod's
+// processes share as its cgroup gives it (cgroup v2's cpu.max text, else cgroup v1's quota and
+// period), that quota in whole CPUs, rounded down, as common.sh's quota_cpus counts them, and the
+// generator's list beside the server's: a pinned server is throttled with the rest of the pod once
+// they together pass the quota. No quota is null CPUs; a pod whose cgroup files cannot be read
+// records null for both.
+func TestMetaRecordsThePodsCPUQuotaBesideTheTwoLists(t *testing.T) {
+	t.Setenv("LOADTEST_ROOT", t.TempDir())
+	for _, c := range []struct {
+		name  string
+		files map[string]string
+		want  string
+	}{
+		{"cgroup v2, a quota of 8", map[string]string{"cpu.max": "800000 100000\n"}, `"cpu_quota":"800000 100000","quota_cpus":8`},
+		{"cgroup v2, 2.5 CPUs", map[string]string{"cpu.max": "250000 100000\n"}, `"cpu_quota":"250000 100000","quota_cpus":2`},
+		{"cgroup v2, no quota", map[string]string{"cpu.max": "max 100000\n"}, `"cpu_quota":"max 100000","quota_cpus":null`},
+		{"cgroup v1, a quota of 3", map[string]string{"cpu/cpu.cfs_quota_us": "300000\n", "cpu/cpu.cfs_period_us": "100000\n"},
+			`"cpu_quota":"300000 100000","quota_cpus":3`},
+		{"cgroup v1, no quota", map[string]string{"cpu/cpu.cfs_quota_us": "-1\n", "cpu/cpu.cfs_period_us": "100000\n"},
+			`"cpu_quota":"-1 100000","quota_cpus":null`},
+		{"no cgroup file", nil, `"cpu_quota":null,"quota_cpus":null`},
+	} {
+		cfg := runConfig{boxBusyBefore: 0, serverCPUs: "0,1", serverCPUCount: 2, generatorCPUs: "2,3,4,5,6,7",
+			cgroupRoot: cgroupFiles(t, c.files), ep: endpoints{pg: unreachablePG, pids: map[string]int{}}}
+		b, err := json.Marshal(collectMeta(context.Background(), cfg, log.New(io.Discard, "", 0)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := `"server_cpus":"0,1","server_cpu_count":2,"generator_cpus":"2,3,4,5,6,7",` + c.want; !strings.Contains(string(b), want) {
+			t.Errorf("%s: meta.json lacks %s:\n%s", c.name, want, b)
+		}
+	}
+}
+
+// TestSummaryCarriesThePodsThrottlingOverTheWindow: the pod's cgroup cpu.stat, read at the
+// window's start and at its end, gives summary.json how often and how long CFS stopped the pod's
+// processes over the window: cgroup v2's nr_throttled and throttled_usec, cgroup v1's nr_throttled
+// and throttled_time in nanoseconds. A cpu.stat not read at either end, or one without those
+// counters (the cpu controller off), leaves both null, never 0.
+func TestSummaryCarriesThePodsThrottlingOverTheWindow(t *testing.T) {
+	v2 := func(periods, usec int64) string {
+		return cgroupFiles(t, map[string]string{"cpu.stat": fmt.Sprintf(
+			"usage_usec 9000000\nuser_usec 6000000\nsystem_usec 3000000\nnr_periods 900\nnr_throttled %d\nthrottled_usec %d\nnr_bursts 0\nburst_usec 0\n", periods, usec)})
+	}
+	v1 := func(periods, ns int64) string {
+		return cgroupFiles(t, map[string]string{"cpu/cpu.stat": fmt.Sprintf("nr_periods 900\nnr_throttled %d\nthrottled_time %d\n", periods, ns)})
+	}
+	const unread = `"cpu_throttled_periods":null,"cpu_throttled_ms":null`
+	for _, c := range []struct {
+		name, start, end, want string
+	}{
+		{"cgroup v2", v2(40, 1_250_000), v2(52, 1_590_500), `"cpu_throttled_periods":12,"cpu_throttled_ms":340.5`},
+		{"cgroup v1", v1(7, 2_000_000_000), v1(9, 2_150_000_000), `"cpu_throttled_periods":2,"cpu_throttled_ms":150`},
+		{"never throttled", v2(0, 0), v2(0, 0), `"cpu_throttled_periods":0,"cpu_throttled_ms":0`},
+		{"no cpu.stat at the start", cgroupFiles(t, nil), v2(52, 1_590_500), unread},
+		{"no cpu.stat at the end", v2(40, 1_250_000), cgroupFiles(t, nil), unread},
+		{"the cpu controller off", cgroupFiles(t, map[string]string{"cpu.stat": "usage_usec 9000000\n"}), v2(52, 1_590_500), unread},
+	} {
+		var r resourcesSummary
+		r.CPUThrottledPeriods, r.CPUThrottledMs = throttledOver(readCPUThrottle(c.start), readCPUThrottle(c.end))
+		b, err := json.Marshal(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(b), c.want) {
+			t.Errorf("%s: summary.json's resources lack %s:\n%s", c.name, c.want, b)
 		}
 	}
 }

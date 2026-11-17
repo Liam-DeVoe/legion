@@ -854,6 +854,13 @@ type resourcesSummary struct {
 	// end (xidRate); null when a read failed, and then XIDReadError is why.
 	XIDsPerS     *float64 `json:"xids_per_s"`
 	XIDReadError string   `json:"xid_read_error,omitempty"`
+	// CPUThrottledPeriods and CPUThrottledMs are how often and how long CFS stopped the pod's
+	// processes over the window for passing its CPU quota, a pinned server among them: the
+	// differences of the pod's cgroup cpu.stat nr_throttled and throttled_usec (cgroup v1:
+	// throttled_time) between the window's start and its end (throttledOver). Null when either
+	// read failed, never 0 for a read not taken.
+	CPUThrottledPeriods *int64   `json:"cpu_throttled_periods"`
+	CPUThrottledMs      *float64 `json:"cpu_throttled_ms"`
 	// PGReadErrors counts the in-window samples whose pg_stat_activity read failed, a failed
 	// connect included; PprofReadErrors the in-window reads of Dispatch's goroutine and heap
 	// profiles that failed (a heap read by when it ended, sample.HeapInWindow); NATSReadErrors the

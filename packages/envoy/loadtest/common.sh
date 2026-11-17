@@ -35,7 +35,10 @@
 # stack.sh starts each server-side process (Postgres, the latency proxies, NATS, the listener and
 # Dispatch) under `taskset -c LOADTEST_SERVER_CPUS` and every loadgen under `taskset -c
 # LOADTEST_GENERATOR_CPUS` (pin_words). check_cpu_lists refuses a list taskset refuses and two
-# lists that share a CPU, naming both; gomaxprocs gives Dispatch's GOMAXPROCS, the server list's
+# lists that share a CPU, naming both, and settles the generator's list (generator_cpus): under the
+# server list and the pod's CPU quota (quota_cpus), `auto` and an unset list take the pod's CPUs
+# the quota leaves the generator, and a list too wide for the quota is refused, since taskset
+# reserves nothing inside a quota; gomaxprocs gives Dispatch's GOMAXPROCS, the server list's
 # CPU count when it is set (server_cpu_count), and refuses a LOADTEST_GOMAXPROCS that differs from
 # that count; check_cpu_affinity refuses a runtime that does not enforce the pin (gVisor sets the
 # mask and ignores it), timing two busy loops pinned to one CPU against the same two unpinned
@@ -247,6 +250,11 @@ BOOT_ID_FILE=${LOADTEST_BOOT_ID_FILE:-/proc/sys/kernel/random/boot_id}
 # LOADTEST_PROC_VERSION_FILE at a file of its own.
 PROC_VERSION_FILE=${LOADTEST_PROC_VERSION_FILE:-/proc/version}
 
+# CGROUP_ROOT is where the pod's cgroup files are read from: cgroup v2's cpu.max and
+# cpuset.cpus.effective, or cgroup v1's cpu/cpu.cfs_quota_us and cpu/cpu.cfs_period_us (cpu_quota,
+# pod_cpus). A test points LOADTEST_CGROUP_ROOT at a directory of its own.
+CGROUP_ROOT=${LOADTEST_CGROUP_ROOT:-/sys/fs/cgroup}
+
 # cpu_list_cpus LIST: each CPU of LIST, one a line, from its comma-separated N, N-M and N-M:S
 # items as taskset -c reads them; status 1 for an item of another form.
 cpu_list_cpus() {
@@ -265,20 +273,43 @@ cpu_list_cpus() {
   done
 }
 
-# check_cpu_lists: die when LOADTEST_SERVER_CPUS or LOADTEST_GENERATOR_CPUS is a list taskset
-# refuses (a CPU this box lacks, or no list at all), naming the variable, the list and taskset's
-# own words, and when the two lists share a CPU, naming both lists and the CPUs they share: the
-# generator is pinned so it runs on CPU the server side does not.
+# cpu_count LIST: the number of distinct CPUs in LIST, read as cpu_list_cpus reads it; status 1 for
+# a list it cannot read.
+cpu_count() {
+  local cpus cpu
+  local -A distinct=()
+  cpus=$(cpu_list_cpus "$1") || return 1
+  for cpu in $cpus; do distinct[$cpu]=1; done
+  printf '%s\n' "${#distinct[@]}"
+}
+
+# cpus_text N: "N CPU" or "N CPUs".
+cpus_text() { if [ "$1" = 1 ]; then printf '1 CPU\n'; else printf '%s CPUs\n' "$1"; fi; }
+
+# check_cpu_list VAR: die when the list VAR holds is one taskset refuses (a CPU this box lacks, or
+# no list at all), naming VAR, the list and taskset's own words, or one cpu_list_cpus cannot read;
+# nothing for an unset VAR.
+check_cpu_list() {
+  local var=$1 list=${!1:-} err
+  [ -n "$list" ] || return 0
+  command -v taskset >/dev/null || die "$var='$list' is set, and taskset (util-linux) is required to pin to it"
+  err=$(taskset -c "$list" true 2>&1) || die "$var='$list' is a CPU list taskset refuses: ${err:-taskset exited non-zero}"
+  cpu_list_cpus "$list" >/dev/null ||
+    die "$var='$list' is a list taskset takes but this script cannot read; write it as N, N-M or N-M:S items separated by commas"
+}
+
+# check_cpu_lists: check_cpu_list over LOADTEST_SERVER_CPUS, then LOADTEST_GENERATOR_CPUS becomes
+# the list generator_cpus settles (`auto`, or an unset list under the server list and a CPU quota,
+# becomes the list it stands for) and is exported, so every stack.sh and loadgen this shell starts
+# runs on it and `loadgen run` records it; then check_cpu_list over that list, and die when the two
+# lists share a CPU, naming both lists and the CPUs they share: the generator is pinned so it runs
+# on CPU the server side does not.
 check_cpu_lists() {
-  local var list err
-  for var in LOADTEST_SERVER_CPUS LOADTEST_GENERATOR_CPUS; do
-    list=${!var:-}
-    [ -n "$list" ] || continue
-    command -v taskset >/dev/null || die "$var='$list' is set, and taskset (util-linux) is required to pin to it"
-    err=$(taskset -c "$list" true 2>&1) || die "$var='$list' is a CPU list taskset refuses: ${err:-taskset exited non-zero}"
-    cpu_list_cpus "$list" >/dev/null ||
-      die "$var='$list' is a list taskset takes but this script cannot read; write it as N, N-M or N-M:S items separated by commas"
-  done
+  local list
+  check_cpu_list LOADTEST_SERVER_CPUS
+  list=$(generator_cpus) || exit 1
+  [ "$list" = "${LOADTEST_GENERATOR_CPUS:-}" ] || export LOADTEST_GENERATOR_CPUS=$list
+  check_cpu_list LOADTEST_GENERATOR_CPUS
   [ -n "${LOADTEST_SERVER_CPUS:-}" ] && [ -n "${LOADTEST_GENERATOR_CPUS:-}" ] || return 0
   local shared
   shared=$(comm -12 <(cpu_list_cpus "$LOADTEST_SERVER_CPUS" | sort -u) <(cpu_list_cpus "$LOADTEST_GENERATOR_CPUS" | sort -u) |
@@ -287,15 +318,112 @@ check_cpu_lists() {
     die "LOADTEST_SERVER_CPUS='$LOADTEST_SERVER_CPUS' and LOADTEST_GENERATOR_CPUS='$LOADTEST_GENERATOR_CPUS' overlap on CPU $shared: the generator must have CPUs of its own, apart from the server side's"
 }
 
-# server_cpu_count: the number of distinct CPUs in LOADTEST_SERVER_CPUS, read as cpu_list_cpus
-# reads it; nothing when the list is unset, status 1 for a list it cannot read.
+# server_cpu_count: the number of distinct CPUs in LOADTEST_SERVER_CPUS (cpu_count); nothing when
+# the list is unset, status 1 for a list it cannot read.
 server_cpu_count() {
   [ -n "${LOADTEST_SERVER_CPUS:-}" ] || return 0
-  local cpus cpu
-  local -A distinct=()
-  cpus=$(cpu_list_cpus "$LOADTEST_SERVER_CPUS") || return 1
-  for cpu in $cpus; do distinct[$cpu]=1; done
-  printf '%s\n' "${#distinct[@]}"
+  cpu_count "$LOADTEST_SERVER_CPUS"
+}
+
+# cpu_quota: the pod's CPU quota as "QUOTA PERIOD", in microseconds: cgroup v2's cpu.max under
+# CGROUP_ROOT as it reads ("max PERIOD" is no quota), else cgroup v1's cpu/cpu.cfs_quota_us and
+# cpu/cpu.cfs_period_us in that shape (QUOTA -1 is no quota); nothing when neither can be read or
+# holds a quota and a period. meta.json's cpu_quota is the same text, which loadgen run reads.
+cpu_quota() {
+  local q="" p="" rest=""
+  if [ -e "$CGROUP_ROOT/cpu.max" ]; then
+    { read -r q p rest <"$CGROUP_ROOT/cpu.max"; } 2>/dev/null || true
+  else
+    { read -r q <"$CGROUP_ROOT/cpu/cpu.cfs_quota_us"; } 2>/dev/null || true
+    { read -r p <"$CGROUP_ROOT/cpu/cpu.cfs_period_us"; } 2>/dev/null || true
+  fi
+  [[ $q =~ ^(max|-1|[1-9][0-9]*)$ && $p =~ ^[1-9][0-9]*$ && -z $rest ]] || return 0
+  printf '%s %s\n' "$q" "$p"
+}
+
+# quota_cpus: the pod's CPU quota (cpu_quota) in whole CPUs, rounded down; nothing when the pod has
+# no quota. meta.json records it as quota_cpus.
+quota_cpus() {
+  local q p
+  read -r q p <<<"$(cpu_quota)"
+  [[ $q =~ ^[1-9][0-9]*$ ]] || return 0
+  printf '%s\n' "$((q / p))"
+}
+
+# pod_cpus: the CPUs the pod may run on, one a line: cgroup v2's cpuset.cpus.effective under
+# CGROUP_ROOT, else this shell's own affinity list (taskset -cp).
+pod_cpus() {
+  local list=""
+  { read -r list <"$CGROUP_ROOT/cpuset.cpus.effective"; } 2>/dev/null || true
+  [ -n "$list" ] || list=$(taskset -cp $$ 2>/dev/null) || return 1
+  cpu_list_cpus "${list##*: }"
+}
+
+# auto_generator_cpus [COUNT]: the pod's CPUs (pod_cpus) outside LOADTEST_SERVER_CPUS, lowest
+# first, comma separated: the first COUNT of them, or every one without COUNT. Status 1 when there
+# is none.
+auto_generator_cpus() {
+  local want=${1:-} cpu out="" n=0
+  local -A server=()
+  for cpu in $(cpu_list_cpus "$LOADTEST_SERVER_CPUS"); do server[$cpu]=1; done
+  for cpu in $(pod_cpus | sort -nu); do
+    [ -z "${server[$cpu]:-}" ] || continue
+    out+="${out:+,}$cpu"
+    n=$((n + 1))
+    [ -z "$want" ] || ((n < want)) || break
+  done
+  [ -n "$out" ] || return 1
+  printf '%s\n' "$out"
+}
+
+# generator_cpus: the list the generator runs on, which check_cpu_lists makes
+# LOADTEST_GENERATOR_CPUS (README.md, CPU pinning). taskset reserves nothing inside a CPU quota:
+# CFS throttles every process of the pod once together they pass it, the pinned server side with
+# them. So under LOADTEST_SERVER_CPUS and a quota (quota_cpus), `auto` and an unset list are the
+# first quota_cpus less the server list's count of the pod's CPUs outside the server list, at
+# least one (auto_generator_cpus), which it names; and a given list of more CPUs than that count is
+# refused, naming the quota, both lists and the list `auto` gives. Without a quota an unset or
+# given list stands, and `auto` is every CPU of the pod outside the server list; `auto` without the
+# server list is refused. It prints nothing for a list that stays unset.
+generator_cpus() {
+  local gen=${LOADTEST_GENERATOR_CPUS:-} server=${LOADTEST_SERVER_CPUS:-} quota servers room="" auto limit n what
+  if [ -z "$server" ]; then
+    [ "$gen" != auto ] ||
+      die "LOADTEST_GENERATOR_CPUS=auto gives the generator the pod's CPUs outside LOADTEST_SERVER_CPUS, which is unset: set the server list too, or give the generator a list of its own"
+    [ -z "$gen" ] || printf '%s\n' "$gen"
+    return 0
+  fi
+  quota=$(quota_cpus)
+  if [ -z "$quota" ] && [ "$gen" != auto ]; then
+    [ -z "$gen" ] || printf '%s\n' "$gen"
+    return 0
+  fi
+  servers=$(server_cpu_count)
+  if [ -n "$quota" ]; then
+    room=$((quota - servers))
+    ((room >= 1)) || room=1
+    limit="the pod's CPU quota of $(cpus_text "$quota") ('$(cpu_quota)' under $CGROUP_ROOT)"
+  fi
+  auto=$(auto_generator_cpus "$room") || auto=""
+  if [ -n "$gen" ] && [ "$gen" != auto ]; then
+    # A list this script cannot read is check_cpu_list's to refuse.
+    n=$(cpu_count "$gen") || { printf '%s\n' "$gen" && return 0; }
+    ((n <= room)) ||
+      die "LOADTEST_GENERATOR_CPUS='$gen', $(cpus_text "$n"), and LOADTEST_SERVER_CPUS='$server', $(cpus_text "$servers"), ask for $((n + servers)) CPUs, more than $limit: CFS throttles every process of the pod once together they pass the quota, the pinned server side with them, since taskset reserves no CPU inside it. Set LOADTEST_GENERATOR_CPUS=auto, which is '${auto}' here, or leave it unset"
+    printf '%s\n' "$gen"
+    return 0
+  fi
+  [ -n "$auto" ] ||
+    die "the pod's CPUs ($(pod_cpus | paste -sd, -)) hold none outside LOADTEST_SERVER_CPUS='$server', so the generator would have no CPU of its own"
+  n=$(cpu_count "$auto")
+  what="LOADTEST_GENERATOR_CPUS=auto"
+  [ -n "$gen" ] || what="LOADTEST_GENERATOR_CPUS is unset, which beside LOADTEST_SERVER_CPUS under a CPU quota is auto"
+  if [ -n "$quota" ]; then
+    note "$what: the generator runs on $auto, $(cpus_text "$n") of the pod outside LOADTEST_SERVER_CPUS='$server', $(cpus_text "$servers"), so the two lists ask for $((n + servers)) CPUs against $limit"
+  else
+    note "$what: the generator runs on $auto, every CPU of the pod outside LOADTEST_SERVER_CPUS='$server'; the pod has no CPU quota (under $CGROUP_ROOT)"
+  fi
+  printf '%s\n' "$auto"
 }
 
 # gomaxprocs: Dispatch's GOMAXPROCS. With LOADTEST_SERVER_CPUS set it is the number of CPUs in

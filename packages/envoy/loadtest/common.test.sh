@@ -48,7 +48,15 @@
 # box is busier, starting on a quiet reading and naming the ones before it, refuses once its pauses
 # reach LOADTEST_QUIET_WAIT (900 s: 31 readings), naming every reading, the bar and the wait,
 # follows both variables (75 s: pauses of 30, 30 and 15 s; 0: one reading), and refuses a bar, a
-# wait or a reading that is not one.
+# wait or a reading that is not one; (q) the pod's CPU quota is read from cgroup v2's cpu.max, else
+# cgroup v1's cpu.cfs_quota_us and cpu.cfs_period_us, as their text and in whole CPUs rounded down
+# (quota_cpus), and `max`, -1 and a root with neither file are no quota; (r) beside the server list
+# under a CPU quota, LOADTEST_GENERATOR_CPUS=auto and an unset list are the first CPUs of the pod
+# outside the server list that the quota leaves, at least one (a quota of 8 beside 0,1 on a pod of
+# 0-13: six CPUs, none of 0,1), and a given list too wide for the quota is refused naming the quota,
+# both lists and auto's list, while one that fits stands; without a quota an unset or given list
+# stands as it is and auto is every CPU of the pod outside the server list; auto without the server
+# list is refused.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -59,6 +67,9 @@ readonly locker="${temporary_dir}/locker.sh"
 readonly slow_bin="${temporary_dir}/slow-bin"
 readonly elsewhere="${temporary_dir}/elsewhere.sh"
 readonly slow_flock="${temporary_dir}/slow-flock"
+# A cgroup root with no file: a pod with no CPU quota, whose CPUs are this shell's own.
+readonly no_cgroup="${temporary_dir}/no-cgroup"
+mkdir -p "$no_cgroup"
 # A PID namespace that no process has: a record that names it was written in another namespace.
 readonly foreign_pidns="pid:[0]"
 
@@ -562,7 +573,8 @@ case_ephemeral_ports() {
 }
 
 # in_common [NAME=VALUE...] -- CMD...: CMD in a shell that sourced common.sh, without the two CPU
-# lists and LOADTEST_GOMAXPROCS but the ones given. Sets out to what it printed and rc to its status.
+# lists and LOADTEST_GOMAXPROCS but the ones given, and on a cgroup root with no file (no CPU quota)
+# unless LOADTEST_CGROUP_ROOT is given. Sets out to what it printed and rc to its status.
 in_common() {
   local envs=()
   while [ "$1" != -- ]; do
@@ -571,7 +583,7 @@ in_common() {
   done
   shift
   rc=0
-  out=$(env -u LOADTEST_SERVER_CPUS -u LOADTEST_GENERATOR_CPUS -u LOADTEST_GOMAXPROCS "${envs[@]}" \
+  out=$(env -u LOADTEST_SERVER_CPUS -u LOADTEST_GENERATOR_CPUS -u LOADTEST_GOMAXPROCS LOADTEST_CGROUP_ROOT="$no_cgroup" "${envs[@]}" \
     bash -c 'source "$1"; shift; "$@"' common "$helper" "$@" 2>&1) || rc=$?
 }
 
@@ -596,6 +608,109 @@ case_cpu_lists() {
     { fail "(k) two lists sharing CPU 0 were not refused naming both"; return; }
   out=""
   printf 'PASS: a CPU list taskset refuses, and two lists that overlap, are refused naming them\n'
+}
+
+# cgroup_root NAME [FILE=TEXT...]: a cgroup root of the test's own under NAME, each FILE (a path
+# under it) holding the line TEXT. Prints the root.
+cgroup_root() {
+  local root="${temporary_dir}/cgroup-$1" spec
+  shift
+  rm -rf "$root"
+  mkdir -p "$root"
+  for spec in "$@"; do
+    mkdir -p "$(dirname "$root/${spec%%=*}")"
+    printf '%s\n' "${spec#*=}" >"$root/${spec%%=*}"
+  done
+  printf '%s\n' "$root"
+}
+
+# quota_of ROOT: cpu_quota and quota_cpus on the cgroup root ROOT, into the caller's quota and
+# cpus.
+quota_of() {
+  in_common LOADTEST_CGROUP_ROOT="$1" -- cpu_quota
+  quota=$out
+  in_common LOADTEST_CGROUP_ROOT="$1" -- quota_cpus
+  cpus=$out
+}
+
+# case_cpu_quota: the pod's CPU quota is cgroup v2's cpu.max, else cgroup v1's cpu.cfs_quota_us and
+# cpu.cfs_period_us, as their text and in whole CPUs rounded down; `max` and -1 are no quota, and so
+# is a root with neither file.
+case_cpu_quota() {
+  local quota cpus
+  quota_of "$(cgroup_root v2-8 'cpu.max=800000 100000')"
+  [[ $quota == "800000 100000" && $cpus == 8 ]] ||
+    { out="" fail "(q) cgroup v2's cpu.max 800000 100000 read as '$quota', '$cpus' CPUs; want 8"; return; }
+  quota_of "$(cgroup_root v2-2.5 'cpu.max=250000 100000')"
+  [[ $quota == "250000 100000" && $cpus == 2 ]] ||
+    { out="" fail "(q) cgroup v2's cpu.max 250000 100000 read as '$quota', '$cpus' CPUs; want 2, rounded down"; return; }
+  quota_of "$(cgroup_root v2-max 'cpu.max=max 100000')"
+  [[ $quota == "max 100000" && -z $cpus ]] ||
+    { out="" fail "(q) cgroup v2's cpu.max max 100000 read as '$quota', '$cpus' CPUs; want no quota"; return; }
+  quota_of "$(cgroup_root v1-3 cpu/cpu.cfs_quota_us=300000 cpu/cpu.cfs_period_us=100000)"
+  [[ $quota == "300000 100000" && $cpus == 3 ]] ||
+    { out="" fail "(q) cgroup v1's quota 300000 per 100000 read as '$quota', '$cpus' CPUs; want 3"; return; }
+  quota_of "$(cgroup_root v1-none cpu/cpu.cfs_quota_us=-1 cpu/cpu.cfs_period_us=100000)"
+  [[ $quota == "-1 100000" && -z $cpus ]] ||
+    { out="" fail "(q) cgroup v1's quota -1 read as '$quota', '$cpus' CPUs; want no quota"; return; }
+  quota_of "$no_cgroup"
+  [[ -z $quota && -z $cpus ]] || { out="" fail "(q) a root with no cgroup file read as quota '$quota', '$cpus' CPUs"; return; }
+  out=""
+  printf 'PASS: the CPU quota is read from cgroup v2, else cgroup v1, in whole CPUs rounded down, and max, -1 and no file are none\n'
+}
+
+# case_generator_cpus: beside the server list under a CPU quota, auto and an unset generator list
+# are the first CPUs of the pod outside the server list that the quota leaves, at least one, and a
+# given list too wide for the quota is refused, naming the quota, both lists and auto's list; when
+# the server list alone fills the quota auto gives one CPU, and that list passes again as given, as
+# a stack.sh does with the list run-step.sh exported. Without a quota an unset or given list stands
+# as it is, and auto is every CPU of the pod outside the server list; auto without a server list is
+# refused.
+case_generator_cpus() {
+  local q8 q1 none
+  q8=$(cgroup_root q8 'cpu.max=800000 100000' cpuset.cpus.effective=0-13)
+  q1=$(cgroup_root q1 'cpu.max=150000 100000' cpuset.cpus.effective=0-3)
+  none=$(cgroup_root none 'cpu.max=max 100000' cpuset.cpus.effective=0-3)
+
+  in_common LOADTEST_CGROUP_ROOT="$q8" LOADTEST_SERVER_CPUS=0,1 LOADTEST_GENERATOR_CPUS=auto -- generator_cpus
+  ((rc == 0)) && [ "$(tail -n 1 <<<"$out")" = 2,3,4,5,6,7 ] &&
+    [[ $out == *"LOADTEST_GENERATOR_CPUS=auto: the generator runs on 2,3,4,5,6,7, 6 CPUs of the pod outside LOADTEST_SERVER_CPUS='0,1', 2 CPUs, so the two lists ask for 8 CPUs against the pod's CPU quota of 8 CPUs ('800000 100000' under ${q8})"* ]] ||
+    { fail "(r) auto under a quota of 8 beside 0,1 did not give and name 2,3,4,5,6,7 (rc $rc)"; return; }
+  in_common LOADTEST_CGROUP_ROOT="$q8" LOADTEST_SERVER_CPUS=0,1 -- generator_cpus
+  ((rc == 0)) && [ "$(tail -n 1 <<<"$out")" = 2,3,4,5,6,7 ] &&
+    [[ $out == *"LOADTEST_GENERATOR_CPUS is unset, which beside LOADTEST_SERVER_CPUS under a CPU quota is auto: the generator runs on 2,3,4,5,6,7"* ]] ||
+    { fail "(r) an unset list under a quota of 8 beside 0,1 was not auto's 2,3,4,5,6,7 (rc $rc)"; return; }
+  in_common LOADTEST_CGROUP_ROOT="$q8" LOADTEST_SERVER_CPUS=0,1 LOADTEST_GENERATOR_CPUS=2-13 -- generator_cpus
+  ((rc != 0)) &&
+    [[ $out == *"LOADTEST_GENERATOR_CPUS='2-13', 12 CPUs, and LOADTEST_SERVER_CPUS='0,1', 2 CPUs, ask for 14 CPUs, more than the pod's CPU quota of 8 CPUs ('800000 100000' under ${q8}): CFS throttles every process of the pod once together they pass the quota, the pinned server side with them"*"Set LOADTEST_GENERATOR_CPUS=auto, which is '2,3,4,5,6,7' here"* ]] ||
+    { fail "(r) the list 2-13 beside 0,1 under a quota of 8 was not refused naming the quota, both lists and auto's (rc $rc)"; return; }
+  in_common LOADTEST_CGROUP_ROOT="$q8" LOADTEST_SERVER_CPUS=0,1 LOADTEST_GENERATOR_CPUS=8-13 -- generator_cpus
+  ((rc == 0)) && [ "$out" = 8-13 ] || { fail "(r) the list 8-13, six CPUs beside 0,1 under a quota of 8, did not stand (rc $rc)"; return; }
+
+  in_common LOADTEST_CGROUP_ROOT="$q1" LOADTEST_SERVER_CPUS=0 LOADTEST_GENERATOR_CPUS=auto -- generator_cpus
+  ((rc == 0)) && [ "$(tail -n 1 <<<"$out")" = 1 ] || { fail "(r) auto beside a server list that fills a quota of 1 did not give one CPU (rc $rc)"; return; }
+  in_common LOADTEST_CGROUP_ROOT="$q1" LOADTEST_SERVER_CPUS=0 LOADTEST_GENERATOR_CPUS=1 -- generator_cpus
+  ((rc == 0)) && [ "$out" = 1 ] || { fail "(r) auto's one CPU, given again as the list, was refused (rc $rc)"; return; }
+  in_common LOADTEST_CGROUP_ROOT="$q1" LOADTEST_SERVER_CPUS=0 LOADTEST_GENERATOR_CPUS=1-2 -- generator_cpus
+  ((rc != 0)) && [[ $out == *"LOADTEST_GENERATOR_CPUS='1-2', 2 CPUs, and LOADTEST_SERVER_CPUS='0', 1 CPU, ask for 3 CPUs, more than the pod's CPU quota of 1 CPU"* ]] ||
+    { fail "(r) the list 1-2 beside 0 under a quota of 1 was not refused (rc $rc)"; return; }
+
+  local root
+  for root in "$none" "$no_cgroup"; do
+    in_common LOADTEST_CGROUP_ROOT="$root" LOADTEST_SERVER_CPUS=0,1 -- generator_cpus
+    ((rc == 0)) && [ -z "$out" ] || { fail "(r) without a quota ($root) an unset list did not stay unset (rc $rc)"; return; }
+    in_common LOADTEST_CGROUP_ROOT="$root" LOADTEST_SERVER_CPUS=0,1 LOADTEST_GENERATOR_CPUS=2-13 -- generator_cpus
+    ((rc == 0)) && [ "$out" = 2-13 ] || { fail "(r) without a quota ($root) the list 2-13 did not stand as given (rc $rc)"; return; }
+  done
+  in_common LOADTEST_CGROUP_ROOT="$none" LOADTEST_SERVER_CPUS=0,1 LOADTEST_GENERATOR_CPUS=auto -- generator_cpus
+  ((rc == 0)) && [ "$(tail -n 1 <<<"$out")" = 2,3 ] &&
+    [[ $out == *"LOADTEST_GENERATOR_CPUS=auto: the generator runs on 2,3, every CPU of the pod outside LOADTEST_SERVER_CPUS='0,1'; the pod has no CPU quota"* ]] ||
+    { fail "(r) without a quota auto beside 0,1 on a pod of 0-3 was not 2,3 (rc $rc)"; return; }
+  in_common LOADTEST_CGROUP_ROOT="$q8" LOADTEST_GENERATOR_CPUS=auto -- generator_cpus
+  ((rc != 0)) && [[ $out == *"LOADTEST_GENERATOR_CPUS=auto gives the generator the pod's CPUs outside LOADTEST_SERVER_CPUS, which is unset"* ]] ||
+    { fail "(r) auto without a server list was not refused (rc $rc)"; return; }
+  out=""
+  printf 'PASS: beside the server list, auto and an unset list fit the CPU quota, a list too wide for it is refused, and no quota changes nothing\n'
 }
 
 # case_cpu_affinity: the decision of whether a pin binds is affinity_verdict over two durations, so
@@ -940,7 +1055,9 @@ case_affinity_kept_verdict || failed=$((failed + 1))
 case_gomaxprocs || failed=$((failed + 1))
 case_wait_for_window || failed=$((failed + 1))
 case_quiet_box || failed=$((failed + 1))
+case_cpu_quota || failed=$((failed + 1))
+case_generator_cpus || failed=$((failed + 1))
 if ((failed > 0)); then
-  printf 'FAIL: %d of 17 cases failed\n' "$failed" >&2
+  printf 'FAIL: %d of 19 cases failed\n' "$failed" >&2
   exit 1
 fi

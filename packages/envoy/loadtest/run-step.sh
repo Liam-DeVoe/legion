@@ -88,8 +88,11 @@
 #
 # LOADTEST_SERVER_CPUS and LOADTEST_GENERATOR_CPUS (common.sh, CPU pinning) pin the stack and
 # loadgen to two CPU lists. Before anything starts, a list taskset refuses, two lists that overlap,
-# a LOADTEST_GOMAXPROCS (--gomaxprocs) other than the server list's CPU count and a runtime that
-# does not enforce the pin (gVisor) are refused. Dispatch's GOMAXPROCS is the server list's CPU
+# a generator list that with the server list asks for more CPUs than the pod's CPU quota, a
+# LOADTEST_GOMAXPROCS (--gomaxprocs) other than the server list's CPU count and a runtime that
+# does not enforce the pin (gVisor) are refused; beside the server list under a quota, a generator
+# list that is unset or `auto` becomes the CPUs the quota leaves it, which this script names and
+# exports (common.sh generator_cpus). Dispatch's GOMAXPROCS is the server list's CPU
 # count when the list is set (common.sh gomaxprocs); meta.json records the GOMAXPROCS the running
 # Dispatch was started with, read back from its environment, and a step where it is not the list's
 # count is refused before its window opens (loadgen run), which this script says first.

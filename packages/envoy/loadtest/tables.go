@@ -458,7 +458,7 @@ func resourcesTable(md *markdown, steps []stepData) {
 	}
 	md.header(append(columns, "heap live MiB p50 / max", "goroutines p50 / max",
 		"goroutines waiting for a pool connection p50 / max", "Postgres connections max", "connections waiting on a lock p50",
-		"Dispatch CPU-s per operation")...)
+		"Dispatch CPU-s per operation", podThrottledH)...)
 	marked, unread, cgFailed, cgUnmeasured, memStats := false, false, false, false, false
 	for _, s := range steps {
 		unread = unread || s.sum.Events.commitsUnread()
@@ -467,7 +467,7 @@ func resourcesTable(md *markdown, steps []stepData) {
 		// With no sampler window every cell is "-" but box busy before / gate, which are meta.json's
 		// readings, not the sampler's, and the cells that cgroup.json gives.
 		dispatch, pgCores, listener, nats, loadgen, proxy, busy, rss := "-", "-", "-", "-", "-", "-", "-", "-"
-		heap, goroutines, pool, pgMax, lockWait, perOp := "-", "-", "-", "-", "-", "-"
+		heap, goroutines, pool, pgMax, lockWait, perOp, throttled := "-", "-", "-", "-", "-", "-", "-"
 		r := s.sum.Resources
 		if r != nil {
 			marked = marked || r.failedReads() > 0
@@ -502,6 +502,9 @@ func resourcesTable(md *markdown, steps []stepData) {
 			if r.PGConnsTotal.N > 0 {
 				pgMax = num(r.PGConnsTotal.Max, 0)
 			}
+			if r.CPUThrottledPeriods != nil && r.CPUThrottledMs != nil {
+				throttled = num(float64(*r.CPUThrottledPeriods), 0) + " / " + num(*r.CPUThrottledMs, 0)
+			}
 		}
 		workingSet := "-"
 		if s.cgroup != nil {
@@ -523,18 +526,22 @@ func resourcesTable(md *markdown, steps []stepData) {
 		if withCgroup {
 			cells = append(cells, workingSet)
 		}
-		md.row(append(cells, heap, goroutines, pool, pgMax, lockWait, perOp)...)
+		md.row(append(cells, heap, goroutines, pool, pgMax, lockWait, perOp, throttled)...)
 	}
 	failedReadsNote(md, marked, "the 5 s sampler's reads of pg_stat_activity (a failed connect included) and of Dispatch's goroutine and heap profiles",
 		"`resources.pg_read_errors` and `resources.pprof_read_errors`")
 	md.line("\nheap live: the in-use bytes of Dispatch's heap profile (`/debug/pprof/heap`), read every 15 s by a run given -heap-samples, and `-` in a run without it: a sampled estimate of the live heap, not runtime.MemStats HeapInuse.")
 	md.line("\nbox busy before / gate: the box's busy share over 5 s just before the step (`meta.json` `box_busy_before`), then the reading of run-step.sh's quiet-box gate the step started on, at or under `LOADTEST_MAX_BUSY_BEFORE` (`box_busy_gate`); `-` for a reading not taken, as by a step run without the gate.")
+	md.line("\n%s: how often and how long CFS stopped the pod's processes over the window for passing its CPU quota, from the pod's `cpu.stat` at the window's start and end (`resources.cpu_throttled_periods`, `resources.cpu_throttled_ms`); a pinned server is stopped with the rest of the pod, so a step whose cell is not 0 / 0 ran throttled, and `-` is a step that read no `cpu.stat`.", podThrottledH)
 	if memStats {
 		md.line("\n%s: the step ran before the sampler read the heap profile, so its heap cell is runtime.MemStats HeapInuse from `/debug/pprof/heap?debug=1` (summary.json `resources.heap_inuse_mib`), a different metric that is not comparable with a heap live cell.", memStatsHeapMark)
 	}
 	commitsUnreadNote(md, unread, "the Dispatch CPU-s per operation (its operations count the committed writes)", "shows")
 	cgroupNotes(md, withCgroup, cgFailed, cgUnmeasured)
 }
+
+// podThrottledH is the Resources table's column of the pod's CFS throttling over the window.
+const podThrottledH = "pod CPU throttled periods / ms"
 
 // boxBusyBeforeCell is the Resources table's box busy before / gate cell: meta.json's
 // box_busy_before, then box_busy_gate, the quiet-box gate's reading the step started on, each "-"

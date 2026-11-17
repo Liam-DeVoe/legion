@@ -106,9 +106,10 @@
 # by default: every stack process starts under `taskset -c LOADTEST_SERVER_CPUS` (spawn), which
 # refuses a list other than the one the processes still running started on, and every loadgen
 # runs under `taskset -c LOADTEST_GENERATOR_CPUS`; every command but stop, status and build-info
-# refuses a list taskset refuses and two lists that overlap, and every command that starts
-# Dispatch refuses a LOADTEST_GOMAXPROCS other than the server list's CPU count, before it stops
-# anything.
+# refuses a list taskset refuses, two lists that overlap and a generator list too wide for the
+# pod's CPU quota, and settles an unset or `auto` generator list beside the server list
+# (common.sh check_cpu_lists, generator_cpus), and every command that starts Dispatch refuses a
+# LOADTEST_GOMAXPROCS other than the server list's CPU count, before it stops anything.
 #
 # Every stack process starts under `env -i` with an explicit environment, so this shell's
 # DISPATCH_URL, ENVOY_URL, ENVOY_NATS_URL, AWS_*, HOME and XDG_* never reach it, and every process is
@@ -166,10 +167,10 @@ base_env=(
 
 # loadgen_env adds what loadgen needs: the root, the go toolchain for `loadgen tables`
 # (`go tool pprof`), this script's path and the run's lock token, for `loadgen run -restart-at`'s
-# `stack.sh restart-dispatch`, LOADTEST_NO_RESUME when it is set, and the two CPU lists, which
-# `loadgen run` records and its restart-dispatch pins Dispatch to, with the server list's CPU
-# count (LOADTEST_SERVER_CPU_COUNT, server_cpu_count), which `loadgen run` holds Dispatch's
-# GOMAXPROCS to.
+# `stack.sh restart-dispatch`, LOADTEST_NO_RESUME when it is set, and the two CPU lists, the
+# generator's as check_cpu_lists settled it, which `loadgen run` records and its restart-dispatch
+# pins Dispatch to, with the server list's CPU count (LOADTEST_SERVER_CPU_COUNT, server_cpu_count),
+# which `loadgen run` holds Dispatch's GOMAXPROCS to.
 loadgen_env() {
   local gobin
   gobin=$(command -v go || true)
