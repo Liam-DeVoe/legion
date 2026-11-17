@@ -17,6 +17,7 @@ import { textSourceOf } from "../../refs/text-references";
 import { checkFacts, resultFacts } from "../check-facts";
 import { inReviewList } from "../decision-review";
 import type { IssueTreeReads, NodeChip, TreeAsk, TreeNode } from "../issue-tree";
+import { lensChips, lensDrafts } from "../lenses/lens-drafts";
 import {
   blockAttributeLabel,
   type DecisionState,
@@ -150,6 +151,7 @@ export type TreeDraftMark = (
  * a message, a callout and an image, and a child issue.
  */
 export const treeDraftSteps: readonly TreeDraftStep[] = [
+  lensDrafts,
   draftRequirement,
   draftServing,
   draftResult,
@@ -162,7 +164,7 @@ export const treeDraftSteps: readonly TreeDraftStep[] = [
 
 /** The marks run on every draft, each in turn, once every node has been offered to the steps.
  *  This part adds none: a member of its drafts is its own step's. */
-export const treeDraftMarks: readonly TreeDraftMark[] = [];
+export const treeDraftMarks: readonly TreeDraftMark[] = [lensChips];
 
 /**
  * Every draft the answer holds, by its tree id. Each node is offered to `treeDraftSteps` in the
