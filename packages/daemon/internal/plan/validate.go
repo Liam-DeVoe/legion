@@ -54,7 +54,7 @@ func Validate(p Plan, d Deployment) []Refusal {
 }
 
 // Supported is what this release does not carry out yet (C6): more than one task, a role block,
-// and, for each task, `needs`, `owner`, `part_of` and `merges`, each key but the owner's on
+// and, for each task, `needs`, `owner` and `part_of`, each key but the owner's on
 // acceptance, acceptance with no key, a role named at two steps, steps in another order than
 // today's, and no implementer. A task that names no steps runs the project's default steps,
 // which the configuration loader holds to these same checks, so none of its step causes apply.
@@ -90,9 +90,6 @@ func taskReasons(t Task) []string {
 	}
 	if t.PartOf != "" {
 		reasons = append(reasons, fmt.Sprintf("task %s names part_of.", t.ID))
-	}
-	if t.Merges {
-		reasons = append(reasons, fmt.Sprintf("task %s names merges.", t.ID))
 	}
 	if t.HasSteps {
 		reasons = append(reasons, stepReasons(t)...)

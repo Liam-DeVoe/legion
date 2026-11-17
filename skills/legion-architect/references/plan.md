@@ -63,7 +63,7 @@ rules above. The reasons, with `<…>` filled in:
 - `step <i> of task <id> names acceptance with no key, which asks for a fresh agent of the role acceptance.`
 - `step <i> of task <id> names the key <key>.` (each key but `acceptance:owner`)
 - `the plan defines the role <role>.` (a `plan_role` block)
-- `task <id> names merges.`, `task <id> names owner.`, `task <id> names part_of.`
+- `task <id> names owner.`, `task <id> names part_of.`
 
 Two reasons end with no "yet", because no release takes such a plan:
 `step <i> of task <id> names the role <role>, which neither the deployment nor the plan defines.`

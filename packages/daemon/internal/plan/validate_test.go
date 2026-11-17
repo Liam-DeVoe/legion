@@ -75,6 +75,24 @@ func TestValidateRefusesAPlanWithNoTask(t *testing.T) {
 	}
 }
 
+// A plan of one task whose block says whether its work merges is taken, either way: `merges`
+// on the task of a one-task plan asks for what this release does, a retro and a merge of that
+// task, so Supported has no cause in it. The block's word is read as taskOf reads it.
+func TestAOneTaskPlanThatSaysWhetherItMergesIsTaken(t *testing.T) {
+	for _, tc := range []struct {
+		value string
+		want  bool
+	}{{"true", true}, {"false", false}} {
+		p, err := FromBlocks("plan-md", 1, []Block{{ID: "a", Type: TaskBlockType, Attributes: map[string]string{"merges": tc.value, "steps": "implementer"}, Text: "Do it."}})
+		if err != nil || len(p.Tasks) != 1 || p.Tasks[0].ID != "a" || p.Tasks[0].Merges != tc.want {
+			t.Fatalf("FromBlocks(merges=%q) = %+v, %v; want task a with Merges %v", tc.value, p.Tasks, err, tc.want)
+		}
+		if r := Supported(p); r != nil {
+			t.Fatalf("Supported(merges=%q) = %+v, want none", tc.value, r)
+		}
+	}
+}
+
 // C6: each row of "What slice 4 refuses", with its exact text and its task. Each cause gets one
 // reason, so a plan with two causes gets two. The taken plans are the subsets of today's line
 // that keep the implementer, with the owner's acceptance.
@@ -109,8 +127,6 @@ func TestSupportedRefusesWhatThisReleaseDoesNotCarryOut(t *testing.T) {
 			want: []Refusal{{Task: "a", Reason: "step 2 of task a names the key r." + yet}}},
 		{name: "a role block", plan: func() Plan { p := oneTask("a", "implementer"); p.RoleBlocks = []string{"prober"}; return p }(),
 			want: []Refusal{{Task: "", Reason: "the plan defines the role prober." + yet}}},
-		{name: "merges", plan: withTask(Task{ID: "a", Merges: true, HasSteps: true, Steps: implementer}),
-			want: []Refusal{{Task: "a", Reason: "task a names merges." + yet}}},
 		{name: "owner", plan: withTask(Task{ID: "f", Owner: "architect"}),
 			want: []Refusal{{Task: "f", Reason: "task f names owner." + yet}}},
 		{name: "part_of", plan: withTask(Task{ID: "f1", PartOf: "f", HasSteps: true, Steps: implementer}),
