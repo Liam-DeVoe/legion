@@ -354,7 +354,25 @@ no_difference
 note "every caller's project answer is the same at both builds"
 pass
 
+# event_log_reaches BUILD ID: BUILD's event log, as carol reads it, holds an event at ID or above.
+event_log_reaches() {
+  send "$1" carol GET "/api/v1/events/log?after=$(($2 - 1))&limit=1"
+  [ "$status" = 200 ] && jq -e --argjson id "$2" 'any(.[]; .id >= $id)' "$work/body" >/dev/null
+}
+
 begin reads
+# A build pages its event log only up to its safe horizon (listEventLog, sinceHorizon), and a
+# build can answer a read before that horizon has passed what the seed wrote: one run read [] from
+# the merge base's log where this build listed the seed's events. So each build is read only once
+# its log, as carol reads it, holds the newest event its database holds after the projects above,
+# the project.created of a public project.
+for build in base head; do
+  url_var=${build}_database_url
+  newest=$(psql "${!url_var}" -X -tAc 'select coalesce(max(id), 0) from events') ||
+    fail "$build: could not read the newest event of its database"
+  [ "$newest" -gt 0 ] || fail "$build: its database holds no event after the seed"
+  until_true 120 "the $build build's event log to reach its newest event, $newest" event_log_reaches "$build" "$newest"
+done
 for caller in "${callers[@]}"; do
   for path in "${reads[@]}"; do
     compare "$caller" GET "$path"
