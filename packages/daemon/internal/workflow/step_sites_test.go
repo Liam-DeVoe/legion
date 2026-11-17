@@ -19,12 +19,13 @@ import (
 // stamped with it.
 var stepClock = time.Date(2026, 11, 17, 1, 0, 0, 0, time.UTC)
 
-// stepEngine is the engine the step record tests drive: no design gate, a fixed clock, and
-// agent as the daemon's read of a step's agent (nil reads none).
+// stepEngine is the engine the step record tests drive: testEngine with no design gate, the fixed
+// clock stepClock, and agent as the daemon's read of a step's agent (nil reads none).
 func stepEngine(agent func(claim.Token) StepAgent) *Engine {
-	return New(record.NewStore(), Config{Project: "LEGION", Steps: config.DesignGateOff.Steps(), ReviewRoundCap: 3, Linger: time.Hour,
-		ProductionCheckRole: claim.RoleTester, ReviewAppLogin: testReviewApp, Repositories: testRepositories,
-		Clock: func() time.Time { return stepClock }, StepAgent: agent}, nil)
+	engine := testEngine(config.DesignGateOff, nil)
+	engine.cfg.Clock = func() time.Time { return stepClock }
+	engine.cfg.StepAgent = agent
+	return engine
 }
 
 // stepRoot is the root LEGION-208 standing at at, generation 1, with its open pull request #42.
