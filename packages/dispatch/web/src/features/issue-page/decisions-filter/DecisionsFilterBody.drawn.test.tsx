@@ -637,6 +637,50 @@ test("a part that holds nothing is not drawn, and an empty issue says so once", 
   }
 });
 
+// R8: `t d` gives the view's tree the focus as the view opens, and on a running page that is
+// before a refused read says so: the view asks the read again as it mounts, and the refusal
+// comes back a second or so later. Where the list draws no row, the focus the tree holds then
+// goes to that read's Retry once its line is drawn, for each of the two reads, so Enter on it
+// asks again; it is never left on a tree that holds nothing.
+test("a read refused after the tree took the focus gives that focus to its Retry", async () => {
+  for (const read of ["decisions", "asks"] as const) {
+    const answer = Promise.withResolvers<never>();
+    const spy =
+      read === "decisions"
+        ? spyOn(api, "getIssueDecisions").mockReturnValue(answer.promise)
+        : spyOn(api, "listIssueAsks").mockReturnValue(answer.promise);
+    try {
+      const view =
+        read === "decisions"
+          ? renderBody({ children: [statement("s1")], made: null })
+          : renderBody({ asks: null, children: [statement("s1")] });
+      const tree = view.getByRole("tree", { name: CONTROL_LABELS.tree });
+      await act(async () => tree.focus());
+      expect(document.activeElement).toBe(tree);
+      await act(async () => {
+        answer.reject(
+          new ApiError(503, { code: "UNAVAILABLE", error: "the store is not reachable" })
+        );
+        await answer.promise.catch(() => undefined);
+      });
+      // Where the focus is, by name: a Retry by the read its line is for.
+      const focusIs = () => {
+        const active = document.activeElement;
+        const line = active?.closest("[data-decisions-unreadable]");
+        if (line != null) return `the ${line.getAttribute("data-decisions-unreadable")} Retry`;
+        return active === tree ? "the tree" : (active?.tagName ?? "nothing");
+      };
+      await waitFor(() =>
+        expect(view.container.querySelector(`[data-decisions-unreadable="${read}"]`)).not.toBeNull()
+      );
+      await waitFor(() => expect(focusIs()).toBe(`the ${read} Retry`));
+      view.unmount();
+    } finally {
+      spy.mockRestore();
+    }
+  }
+});
+
 // R2: wherever a decision is drawn, one waiting for a person's review reads "Waiting for
 // review", one a person kept "Kept by" with their name, and a replaced one "Replaced", each by
 // a word and a shape (R6).
