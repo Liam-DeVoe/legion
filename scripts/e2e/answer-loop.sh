@@ -1482,8 +1482,11 @@ envoy_ask_text() {
 
 # ask_and_expect NAME KIND TARGET QUESTION_ID: the Envoy half every answering criterion shares: a 200
 # instead of a 404, then a reply on the asker's topic within four minutes holding the answer key.
+# It leaves asked_question set to the question the reply answers (its legion-answer marker), ""
+# where no reply came, so a check judges that answer's own log lines and no later one's.
 ask_and_expect() {
   local label=$1 kind=$2 target=$3 id=$4 sent code event reply missing
+  asked_question=
   sent=$(envoy_ask "$kind" "$target" "$id")
   code=${sent%% *}
   event=${sent#* }
@@ -1491,6 +1494,7 @@ ask_and_expect() {
   [ "$code" = 200 ] || return 1
   soft_wait 240 "the answer to $id on the asker's topic" inbox_reply "$event" || return 1
   reply=$(inbox_reply "$event")
+  asked_question=$(answer_question_id "$reply")
   note "$label: reply: $(head -c 400 <<<"$reply" | tr '\n' ' ')"
   if missing=$(answer_holds "$id" "$reply"); then
     return 0
@@ -1763,7 +1767,7 @@ check_passed_on() {
     return 0
   fi
   reply=$(inbox_reply "$event")
-  line=$(boot_log | jq -c 'select(.msg == "answers: answered")' | tail -1)
+  line=$(answered_line "$(answer_question_id "$reply")") || line=
   kind=$(jq -r .kind <<<"$line")
   note "reply: $(head -c 300 <<<"$reply" | tr '\n' ' ')"
   note "answered line: $line"
@@ -2281,13 +2285,14 @@ check_a12() {
     sent=$(envoy_ask session "${agent[$store:planner.session]}" repository-file "a12-$fault-$run_tag")
     event=${sent#* }
     passed_on() { fault_passed_on "$fault"; }
+    reply=
     if soft_wait 300 "the $fault fault to be passed on" passed_on && soft_wait 60 "the daemon's reply" inbox_reply "$event"; then
       reply=$(inbox_reply "$event")
       note "$fault: $(head -c 300 <<<"$reply" | tr '\n' ' ')"
       grep -qF 'not the reply form' <<<"$reply" || passed=$((passed + 1))
     fi
     if [ "$fault" = model_calls ]; then
-      answered=$(boot_log | jq -c 'select(.msg == "answers: answered")' | tail -1)
+      answered=$(answered_line "$(answer_question_id "$reply")") || answered=
       note "the model_calls leg's answered line: ${answered:-none}"
       answered_fault_is "$answered" model_calls 1 && ok_calls=1
     fi
@@ -2325,23 +2330,23 @@ check_a14() {
 # one the loop may answer with no call at all — so the matrix runs this check before them.
 check_a15() {
   criterion A15 "an answer read from the repository with gh, the log naming App and owner, the call in the conversation; the same for the Claude Code worker" || return 0
-  local gh_line ok_omp=0 ok_claude=0 unread=
+  local ok_omp=0 ok_claude=0 unread= lines
   if ask_and_expect "planner, repository file" session "${agent[$store:planner.session]}" repository-file; then
-    gh_line=$(boot_log | jq -c 'select(.msg == "answers: gh" and .role == "planner")' | tail -1)
-    note "gh line: $gh_line"
-    [ -n "$gh_line" ] || unread="$unread the planner"
-    gh_line_is "$gh_line" review sjawhar any && conversation_holds planner 'stage4b-fixture' && ok_omp=1
+    lines=$(question_gh_lines "$asked_question") || lines='[]'
+    note "the gh lines of the planner's answer ${asked_question:-none}: $lines"
+    [ "$lines" != "[]" ] || unread="$unread the planner"
+    first_line_where "$lines" gh_line_is review sjawhar 0 >/dev/null && conversation_holds planner 'stage4b-fixture' && ok_omp=1
   fi
   if ask_and_expect "Claude Code reviewer, repository file" session "${agent[$store:pre_change.session]}" repository-file; then
-    gh_line=$(boot_log | jq -c 'select(.msg == "answers: gh" and .role == "reviewer")' | tail -1)
-    note "gh line: $gh_line"
-    [ -n "$gh_line" ] || unread="$unread the Claude Code reviewer"
-    gh_line_is "$gh_line" review sjawhar any && conversation_holds pre_change 'stage4b-fixture' && ok_claude=1
+    lines=$(question_gh_lines "$asked_question") || lines='[]'
+    note "the gh lines of the Claude Code reviewer's answer ${asked_question:-none}: $lines"
+    [ "$lines" != "[]" ] || unread="$unread the Claude Code reviewer"
+    first_line_where "$lines" gh_line_is review sjawhar 0 >/dev/null && conversation_holds pre_change 'stage4b-fixture' && ok_claude=1
   fi
   if [ "$ok_omp$ok_claude" = 11 ]; then
     record_result A15 PASS "both answered from go.mod with gh as the review App on sjawhar; each conversation holds the call"
   else
-    record_result A15 FAIL "Oh My Pi planner $ok_omp, Claude Code reviewer $ok_claude (1 = answered with the call in the log and the conversation)${unread:+; the loop made no gh call this boot for:$unread}"
+    record_result A15 FAIL "Oh My Pi planner $ok_omp, Claude Code reviewer $ok_claude (1 = answered with the call in the log and the conversation)${unread:+; no gh call is logged for the answer of:$unread}"
   fi
 }
 
@@ -2405,7 +2410,7 @@ comment_request() {
 
 check_a17() {
   criterion A17 "the stopped implementer comments on its pull request as the implement App (the control); a comment the shared leak check refuses is never written and the agent carries the check's own reason back; the reviewer's write to another owner is refused" second-owner || return 0
-  local marker=answer-loop-a17-$run_tag-$store sent event comments gh_line reply refusal listing refused_comments refusal_line
+  local marker=answer-loop-a17-$run_tag-$store sent event comments reply refusal listing refused_comments lines
   local ok_impl=0 ok_leak=0 ok_review=0 id
   implementer_with_pull_request || {
     record_result A17 FAIL "no implementer with a pull request could be made"
@@ -2420,13 +2425,13 @@ check_a17() {
   if soft_wait 300 "the implementer's reply" inbox_reply "$event"; then
     comments=$(pr_comments "${agent[$store:implementer.pr]}" "$marker")
     for id in $(jq -r '.[].id' <<<"$comments"); do github_writes+=("comment:$id"); done
-    gh_line=$(boot_log | jq -c 'select(.msg == "answers: gh" and .role == "implementer")' | tail -1)
     reply=$(inbox_reply "$event")
+    lines=$(question_gh_lines "$(answer_question_id "$reply")") || lines='[]'
     note "comments: $(jq -c 'map({id, user, footer: (.body | [capture("legion: (?<f>\\{[^}]*\\})").f] | first // null)})' <<<"$comments")"
-    note "gh line: $gh_line"
+    note "the implementer's answer's gh lines: $lines"
     note "reply: $(head -c 300 <<<"$reply" | tr '\n' ' ')"
     one_comment_by "$comments" "$implement_app_login" "${agent[$store:implementer.session]}" &&
-      gh_line_is "$gh_line" implement sjawhar 0 && ok_impl=1
+      first_line_where "$lines" gh_line_is implement sjawhar 0 >/dev/null && ok_impl=1
   fi
   # The same implementer and the same pull request, asked for a comment whose body is the run's
   # refusal marker, which the stand-in shared check refuses (install_leak_check). Both halves are
@@ -2448,12 +2453,12 @@ check_a17() {
       '(if type == "array" then . else [] end) | [.[] | select((.body // "") | contains($m)) | {id, user: .user.login}]' <<<"$listing")
     for id in $(jq -r '.[].id' <<<"$refused_comments"); do github_writes+=("comment:$id"); done
     reply=$(inbox_reply "$event")
-    refusal_line=$(leak_refusal_line implementer)
+    lines=$(question_leak_refusals "$(answer_question_id "$reply")") || lines='[]'
     note "comments on #${agent[$store:implementer.pr]}: $(jq -r 'if type == "array" then length | tostring else "no listing at all" end' <<<"$listing"); holding $marker: $(jq -c --arg m "$marker" '(if type == "array" then . else [] end) | [.[] | select((.body // "") | contains($m)) | .id]' <<<"$listing"); holding $leak_marker: $refused_comments"
-    note "the guard's refusal line: $refusal_line"
+    note "the guard's refusals of the implementer's answer: $lines"
     note "reply: $(head -c 300 <<<"$reply" | tr '\n' ' ')"
     refused_write_absent "$listing" "$marker" "$leak_marker" && leak_reason_quoted "$reply" "$leak_reason" &&
-      leak_refusal_is "$refusal_line" "${agent[$store:implementer.issue]}" implementer "$repo" "$leak_reason" && ok_leak=1
+      first_line_where "$lines" leak_refusal_is "${agent[$store:implementer.issue]}" implementer "$repo" "$leak_reason" >/dev/null && ok_leak=1
   fi
   sent=$(envoy_ask_text session "${agent[$store:pre_change.session]}" \
     "Using your gh tool, create the file answer-loop-$marker.md on the default branch of $second_repo (gh api -X PUT repos/$second_repo/contents/answer-loop-$marker.md -f message=proof -f content=cHJvb2YK). Then tell me exactly what GitHub answered." \
@@ -2461,11 +2466,11 @@ check_a17() {
   event=${sent#* }
   if soft_wait 300 "the reviewer's reply" inbox_reply "$event"; then
     reply=$(inbox_reply "$event")
-    gh_line=$(boot_log | jq -c --arg owner "${second_repo%%/*}" 'select(.msg == "answers: gh" and .role == "reviewer" and .owner == $owner)' | tail -1)
-    note "reviewer's gh line: $gh_line"
+    lines=$(question_gh_lines "$(answer_question_id "$reply")") || lines='[]'
+    note "the reviewer's answer's gh lines: $lines"
     note "reviewer's reply: $(head -c 300 <<<"$reply" | tr '\n' ' ')"
     refusal_mentioned "$reply" && refusal=yes || refusal=no
-    gh_line_is "$gh_line" review "${second_repo%%/*}" nonzero && [ "$refusal" = yes ] && ok_review=1
+    first_line_where "$lines" gh_line_is review "${second_repo%%/*}" nonzero >/dev/null && [ "$refusal" = yes ] && ok_review=1
   fi
   if [ "$ok_impl$ok_leak$ok_review" = 111 ]; then
     record_result A17 PASS "the clean-marker comment is the implement App's one comment with its session's footer, logged with App and owner (the control: a check refusing everything, and a path writing nothing, fail this leg); the pull request's listing holds that comment and no comment naming $leak_marker, and the implementer's reply carries the check's own reason, with the daemon's refusal line naming the issue, the role, the repository and that reason; the reviewer's write to the second owner was refused and it said so"

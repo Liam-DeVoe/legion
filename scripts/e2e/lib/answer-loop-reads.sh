@@ -151,13 +151,41 @@ bad_cost_lines() {
 # cache_read_tokens LINE: the tokens an `answers: answered` LINE read from the provider's cache, 0
 # for a line that reports none and for no line at all.
 cache_read_tokens() { jq -r '.cacheReadTokens // 0' <<<"${1:-null}" 2>/dev/null || printf '0\n'; }
-# answered_line QUESTION prints this boot's `answers: answered` line for QUESTION, the id every
-# answer the loop posts carries in its marker (answer_question_id), and nothing for a question this
-# boot answered nothing of. A check asking one agent several questions reads each one's own line
-# this way, where the session's last line is whichever answer was logged last.
-answered_line() {
-  boot_log | jq -s -c --arg q "$1" '[.[] | select(.msg == "answers: answered" and .question == $q)] | (last // empty)'
+# question_log_lines MSG QUESTION prints this boot's lines of QUESTION that carry MSG, an array
+# in the order they were logged, `[]` for a question with none. QUESTION is the id every answer
+# the loop posts carries in its marker (answer_question_id). A reply that never came names no
+# question, and that is no line rather than the lines of some answer logged with no id, so an
+# empty id reads no log at all.
+question_log_lines() {
+  [ -n "$2" ] || {
+    printf '[]\n'
+    return 0
+  }
+  boot_log | jq -s -c --arg m "$1" --arg q "$2" '[.[] | select(.msg == $m and .question == $q)]'
 }
+# first_line_where LINES TEST ARG... prints the first element of the JSON array LINES that TEST
+# passes, called as `TEST <element> ARG...`, and fails when none does. A check judges the lines of
+# the answer it reads (question_gh_lines, question_leak_refusals) and passes when one of them is
+# the line it needs: the model may make another call after that one, and another answer may log
+# its own after both. In proof run 44163479734 the Claude Code reviewer's answer read go.mod with
+# two good calls, then made a third gh call with no arguments, which the tool refused; the last gh
+# line of the role was that refusal, owner "" and exit -1, and A15 read the answer as made with
+# no read.
+first_line_where() {
+  local lines=$1 predicate=$2 line
+  shift 2
+  while IFS= read -r line; do
+    if "$predicate" "$line" "$@"; then
+      printf '%s\n' "$line"
+      return 0
+    fi
+  done < <(jq -c '.[]' <<<"${lines:-[]}" 2>/dev/null)
+  return 1
+}
+# answered_line QUESTION prints this boot's `answers: answered` line for QUESTION, and nothing
+# for a question this boot answered nothing of. A check asking one agent several questions reads
+# each one's own line this way, where the session's last line is whichever answer was logged last.
+answered_line() { question_log_lines "answers: answered" "$1" | jq -c 'last // empty'; }
 # gh_line_is LINE APP OWNER EXIT: the `answers: gh` LINE is a call of APP on OWNER that ended as
 # EXIT says — `0`, `nonzero` for a refused call, or `any`. No line at all is no such call.
 gh_line_is() {
@@ -170,14 +198,14 @@ gh_line_is() {
   esac
   jq -e --arg app "$2" --arg owner "$3" ".app == \$app and .owner == \$owner and ($exit_test)" <<<"${1:-null}" >/dev/null 2>&1
 }
-# leak_refusal_line ROLE prints the last line of this boot's daemon log where the shared leak
-# guard refused a gh call of ROLE's, and nothing where it refused none: the loop writes one
-# `answers: gh call refused by the leak guard` line before it refuses the call, carrying the
-# question, the seq, the issue, the role, the repository and the reason (internal/ghtool's Run).
-leak_refusal_line() {
-  boot_log | jq -s -c --arg r "$1" \
-    '[.[] | select(.msg == "answers: gh call refused by the leak guard" and .role == $r)] | (last // empty)'
-}
+# question_gh_lines QUESTION prints this boot's `answers: gh` lines of QUESTION
+# (question_log_lines).
+question_gh_lines() { question_log_lines "answers: gh" "$1"; }
+# question_leak_refusals QUESTION prints this boot's lines of QUESTION where the shared leak
+# guard refused a gh call (question_log_lines): the loop writes one `answers: gh call refused by
+# the leak guard` line before it refuses the call, carrying the question, the seq, the issue, the
+# role, the repository and the reason (internal/ghtool's Run).
+question_leak_refusals() { question_log_lines "answers: gh call refused by the leak guard" "$1"; }
 # leak_refusal_is LINE ISSUE ROLE REPOSITORY REASON: the refusal LINE is a call of ROLE's on
 # ISSUE to REPOSITORY refused for REASON — the report the shared check printed itself, which the
 # refusal carries back word for word (leakguard's Refusal). The reason is read and not the line

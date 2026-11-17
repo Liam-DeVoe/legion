@@ -129,6 +129,7 @@ empty_log=${shq(emptyLog)}
 quiet_log=${shq(join(data, "daemon-no-answers-quiet.log.txt"))}
 loud_log=${shq(join(data, "daemon-no-answers-loud.log.txt"))}
 review_log=${shq(join(data, "daemon-review-round.log.txt"))}
+gh_lines_log=${shq(join(data, "daemon-gh-lines.log.txt"))}
 boot_offset=${bootOffset}
 whole_run=0
 store=files
@@ -321,22 +322,89 @@ describe("the daemon's log, boot by boot", () => {
     expect(run('gh_line_is "" review sjawhar any').code).toBe(1);
   });
 
-  test("leak_refusal_line and leak_refusal_is read the guard's refusal of a gh call", () => {
-    const reason = "the answer loop proof stand-in refuses this call";
-    const line = `line=$(leak_refusal_line implementer)`;
-    expect(read("leak_refusal_line implementer | jq -r .question").text).toBe("q-ten");
-    // The role is read: another role's refusal is not this one's, and a role the guard refused
-    // nothing of prints nothing rather than ending the read.
-    expect(read("leak_refusal_line planner | jq -r .question").text).toBe("q-nine");
-    expect(read("leak_refusal_line reviewer")).toEqual({ code: 0, text: "" });
-    expect(read("daemon_log=$empty_log; leak_refusal_line implementer")).toEqual({
-      code: 0,
-      text: "",
-    });
+  // Proof run 44163479734: the Claude Code reviewer read go.mod with two good gh calls, made a
+  // third with no arguments, which the tool refused, and answered. The fixture holds that answer
+  // (q-read), an implementer's comment followed by a read that failed (q-write), a later answer
+  // of the same reviewer whose one call another owner's repository refused (q-later), an answer
+  // the leak guard refused twice (q-leak), and one line of each kind logged with an empty id.
+  const ghLinesLog = 'daemon_log="$gh_lines_log"; boot_offset=0';
+  const ghLine = (question: string, call: string) =>
+    `first_line_where "$(question_gh_lines ${question})" gh_line_is ${call}`;
+  const leakRefusal = (question: string, refusal: string) =>
+    `first_line_where "$(question_leak_refusals ${question})" leak_refusal_is ${refusal}`;
+
+  test("an answer's own gh calls are judged, whichever it made last", () => {
+    const log = ghLinesLog;
+    const lastOfRole = (role: string) =>
+      `line=$(boot_log | jq -c 'select(.msg == "answers: gh" and .role == "${role}")' | tail -1)`;
+    expect(read(`${log}; question_gh_lines q-read | jq -c 'map(.seq)'`).text).toBe("[1,2,3]");
+    expect(read(`${log}; question_gh_lines q-none`)).toEqual({ code: 0, text: "[]" });
+
+    // The read A15 needs is the first of the answer's three calls.
+    expect(read(`${log}; ${ghLine("q-read", "review sjawhar 0")} | jq -r .seq`).text).toBe("1");
+    // Control: the answer's own last call is the refusal, and the role's last call is a later
+    // answer's, so a read of either last line finds no read of the repository.
     expect(
-      run(`${line}; leak_refusal_is "$line" ALX-4 implementer sjawhar/legion-smoke '${reason}'`)
-        .code
-    ).toBe(0);
+      run(`${log}; gh_line_is "$(question_gh_lines q-read | jq -c last)" review sjawhar 0`).code
+    ).toBe(1);
+    expect(run(`${log}; ${lastOfRole("reviewer")}; gh_line_is "$line" review sjawhar 0`).code).toBe(
+      1
+    );
+
+    // A17's two reads: the implementer's comment, a later failed read after it, and the refusal
+    // on another owner, which the role's last line also happens to be here.
+    expect(read(`${log}; ${ghLine("q-write", "implement sjawhar 0")} | jq -r .seq`).text).toBe("1");
+    expect(
+      run(`${log}; ${lastOfRole("implementer")}; gh_line_is "$line" implement sjawhar 0`).code
+    ).toBe(1);
+    expect(run(`${log}; ${ghLine("q-later", "review another-owner nonzero")}`).code).toBe(0);
+
+    // An answer is never judged by another answer's call, nor by a call that ended another way.
+    expect(read(`${log}; ${ghLine("q-later", "review sjawhar 0")}`)).toEqual({ code: 1, text: "" });
+    expect(run(`${log}; ${ghLine("q-read", "review another-owner nonzero")}`).code).toBe(1);
+    expect(run(`${log}; ${ghLine("q-read", "implement sjawhar 0")}`).code).toBe(1);
+    expect(run(`${log}; ${ghLine("q-none", "review sjawhar any")}`).code).toBe(1);
+
+    // A4, A5 and A12's model_calls leg read the answered line the same way: the reply's own
+    // question's, where the log's last answered line is a later answer's.
+    expect(read(`${log}; answered_line q-read | jq -r .kind`).text).toBe("answered");
+    expect(
+      read(`${log}; boot_log | jq -c 'select(.msg == "answers: answered")' | tail -1 | jq -r .kind`)
+        .text
+    ).toBe("not_answered");
+  });
+
+  // A reply that never came names no question. The fixture holds a gh call, a refusal and an
+  // answered line logged with an empty id, each one a check would pass on, so a read that took
+  // the empty id for a question would find them.
+  test("no question is no line, whatever the log holds under an empty id", () => {
+    const log = ghLinesLog;
+    const smoke = "ALX-4 implementer sjawhar/legion-smoke 'the answer loop proof stand-in'";
+    expect(
+      read(`${log}; boot_log | jq -s -c '[.[] | select(.question == "") | .msg] | length'`).text
+    ).toBe("3");
+    expect(read(`${log}; question_gh_lines ""`)).toEqual({ code: 0, text: "[]" });
+    expect(read(`${log}; ${ghLine('""', "review sjawhar 0")}`)).toEqual({ code: 1, text: "" });
+    expect(read(`${log}; question_leak_refusals ""`)).toEqual({ code: 0, text: "[]" });
+    expect(read(`${log}; ${leakRefusal('""', smoke)}`)).toEqual({ code: 1, text: "" });
+    expect(read(`${log}; answered_line ""`)).toEqual({ code: 0, text: "" });
+  });
+
+  test("the guard's refusal of an answer's gh call is read by its question", () => {
+    const reason = "the answer loop proof stand-in refuses this call";
+    const smoke = `ALX-4 implementer sjawhar/legion-smoke '${reason}'`;
+    expect(read("question_leak_refusals q-ten | jq -c 'map(.seq)'").text).toBe("[2]");
+    expect(read(`${leakRefusal("q-ten", smoke)} | jq -r .question`).text).toBe("q-ten");
+    // The question is read: another answer's refusal is not this one's, and an answer the guard
+    // refused nothing of has none rather than ending the read.
+    expect(run(leakRefusal("q-nine", smoke)).code).toBe(1);
+    expect(read("question_leak_refusals q-six")).toEqual({ code: 0, text: "[]" });
+    expect(read("daemon_log=$empty_log; question_leak_refusals q-ten")).toEqual({
+      code: 0,
+      text: "[]",
+    });
+    const line = "line=$(question_leak_refusals q-ten | jq -c first)";
+    expect(run(`${line}; leak_refusal_is "$line" ${smoke}`).code).toBe(0);
     expect(
       run(`${line}; leak_refusal_is "$line" ALX-2 implementer sjawhar/legion-smoke '${reason}'`)
         .code
@@ -350,17 +418,20 @@ describe("the daemon's log, boot by boot", () => {
     ).toBe(1);
     // Another check's report is not this check's, and the setup failure of a guard wired to no
     // check at all — which refuses every call and writes this same line — is no refusal by one.
-    const planner = `line=$(leak_refusal_line planner)`;
-    expect(
-      run(`${planner}; leak_refusal_is "$line" ALX-2 planner sjawhar/legion-other '${reason}'`).code
-    ).toBe(1);
-    const unwired = `{"issue":"ALX-4","role":"implementer","repository":"sjawhar/legion-smoke","why":"LEAK CHECK SETUP ERROR: the gh call: the shared public leak check could not be found"}`;
-    expect(
-      run(`leak_refusal_is '${unwired}' ALX-4 implementer sjawhar/legion-smoke '${reason}'`).code
-    ).toBe(1);
-    expect(run(`leak_refusal_is "" ALX-4 implementer sjawhar/legion-smoke '${reason}'`).code).toBe(
+    expect(run(leakRefusal("q-nine", `ALX-2 planner sjawhar/legion-other '${reason}'`)).code).toBe(
       1
     );
+    const unwired = `{"issue":"ALX-4","role":"implementer","repository":"sjawhar/legion-smoke","why":"LEAK CHECK SETUP ERROR: the gh call: the shared public leak check could not be found"}`;
+    expect(run(`leak_refusal_is '${unwired}' ${smoke}`).code).toBe(1);
+    expect(run(`leak_refusal_is "" ${smoke}`).code).toBe(1);
+
+    // An answer the guard refused twice, the second time on another repository the model tried
+    // next: the refusal A17 needs is the first, and the last line alone (the control) is not it.
+    const log = ghLinesLog;
+    expect(read(`${log}; ${leakRefusal("q-leak", smoke)} | jq -r .seq`).text).toBe("1");
+    expect(
+      run(`${log}; leak_refusal_is "$(question_leak_refusals q-leak | jq -c last)" ${smoke}`).code
+    ).toBe(1);
   });
 
   test("review_refused reads the reason the workflow set a review of an issue aside for", () => {
