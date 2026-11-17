@@ -237,14 +237,18 @@ func waitForLane(t *testing.T, limiter *Limiter, lane Lane, queued int) {
 }
 
 // A lane is one request wide a processor, so the three-processor box the width was measured on
-// keeps three and a sixteen-processor server is not held to that box's three, and it stops at the
-// read class's cap over the four lanes, so the heavy reads together never exceed the reads a
-// process admits.
+// keeps three and a sixteen-processor server is not held to that box's three; it is never
+// narrower than three, the width below which that measurement refused requests the box would
+// serve, so a one- or two-processor server keeps three too; and it stops at the read class's cap
+// over the four lanes, so the heavy reads together never exceed the reads a process admits.
 func TestALaneIsOneRequestWideAProcessorUpToTheReadClassesShare(t *testing.T) {
-	for _, c := range []struct{ procs, want int }{{1, 1}, {3, 3}, {7, 7}, {16, MaxHeavyReadLane}} {
+	for _, c := range []struct{ procs, want int }{{1, 3}, {2, 3}, {3, 3}, {4, 4}, {7, 7}, {16, MaxHeavyReadLane}} {
 		if got := heavyReadLaneLimit(c.procs); got != c.want {
 			t.Errorf("heavyReadLaneLimit(%d) = %d, want %d", c.procs, got, c.want)
 		}
+	}
+	if lanes := len(HeavyReadLanes()); lanes*MinHeavyReadLane*2 > readLimit(2) {
+		t.Errorf("%d lanes of %d requests weighing 2 hold more than the %d read units two processors admit", lanes, MinHeavyReadLane, readLimit(2))
 	}
 	if lanes := len(HeavyReadLanes()); lanes*MaxHeavyReadLane > MaxReadLimit {
 		t.Errorf("%d lanes of %d hold more than the read class's %d", lanes, MaxHeavyReadLane, MaxReadLimit)

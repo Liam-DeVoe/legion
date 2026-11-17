@@ -46,7 +46,8 @@ func (l Lane) String() string {
 func HeavyReadLanes() []Lane { return []Lane{Search, References, IssueArtifacts, IssueList} }
 
 // heavyReadLaneLimit is how many requests of one heavy read route may run at once in a process
-// of procs processors: heavyReadsPerCPU a processor, at most MaxHeavyReadLane.
+// of procs processors: heavyReadsPerCPU a processor, at least MinHeavyReadLane and at most
+// MaxHeavyReadLane.
 //
 // The width per processor is measured rather than chosen. On the load test's recovery step
 // (packages/envoy/loadtest, 0.5x:60s,10x:60s,0.5x:120s) the windows that fail the recovery
@@ -87,12 +88,24 @@ func HeavyReadLanes() []Lane { return []Lane{Search, References, IssueArtifacts,
 // on those refusals alone (INFRA-592, cluster run lt-20261105t223939-4a7a). MaxHeavyReadLane is
 // the read class's own cap shared among the four lanes, so the heavy reads together can never hold
 // more than the reads a process admits at all (MaxReadLimit).
+//
+// It never falls below MinHeavyReadLane, three, the width that measurement found below which a
+// lane refuses requests the box would serve. One a processor alone gave a two-processor server
+// lanes of two, and on the load test's two-processor bed at 2x those refused 16 heavy reads
+// (15 of an issue's references, 1 of the issue list) that main, with no lanes, served with a p99
+// of 540 and 368 ms (INFRA-592, tester round 38, steps s-head-2x and s-main-2x). Four lanes of
+// three, each request weighing 2, hold 24 read units, within the 28 the read class admits on two
+// processors, so the floor narrows no other read.
 func heavyReadLaneLimit(procs int) int {
-	return perCPULimit(procs, heavyReadsPerCPU, MaxHeavyReadLane)
+	return max(MinHeavyReadLane, perCPULimit(procs, heavyReadsPerCPU, MaxHeavyReadLane))
 }
 
 // heavyReadsPerCPU is each heavy read lane's width per processor (heavyReadLaneLimit).
 const heavyReadsPerCPU = 1
+
+// MinHeavyReadLane is the narrowest a heavy read lane is, whatever the processors
+// (heavyReadLaneLimit says why).
+const MinHeavyReadLane = 3
 
 // MaxHeavyReadLane is the widest a heavy read lane grows: the read class's cap over the four lanes.
 const MaxHeavyReadLane = MaxReadLimit / int(laneCount-1)
