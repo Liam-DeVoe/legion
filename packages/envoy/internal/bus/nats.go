@@ -1938,7 +1938,9 @@ type StoredAck struct {
 // holds. Its refusals are publishJetStream's (ErrTooLarge, ErrRefused, ErrPublishDenied,
 // ErrStreamFull), and ErrDuplicateInProcess while a clustered stream is still storing an earlier
 // publish under the same id; subject must be one the stream captures, or nothing answers the
-// publish.
+// publish. It is sent once (publishJetStreamOn), so an answer the connection's loss took is
+// ErrConnectionLost: the keep publishes again itself once the connection is back and reads the
+// copy a duplicate names, which is then its own.
 func (c *Client) PublishStoredAck(ctx context.Context, subject string, item contracts.Envelope, msgID string) (StoredAck, error) {
 	ack, err := c.publishJetStreamOn(ctx, subject, item, msgID, true)
 	if err != nil {
@@ -2009,10 +2011,11 @@ func (c *Client) publishJetStream(ctx context.Context, item contracts.Envelope, 
 //
 // verdict says the caller reads the acknowledgement's duplicate verdict. A publish under a message
 // id whose caller does is sent once (sendStored): a second send of one that landed is stored once
-// but answered as a duplicate, which that caller would read as another writer's copy - the send
-// route hands it to Dispatch as no envelope, the keep reads that copy instead of its own, the wake
-// logs it as already stored. One whose caller reads no verdict is sent again, since the stream
-// settles all it is asked: it stores the message once.
+// but answered as a duplicate of the first send's copy, which that caller would read as another
+// writer's copy - the send route hands it to Dispatch as no envelope, the wake logs it as already
+// stored. A caller that reads the copy a duplicate names, as the keep does (PublishStoredAck),
+// sends it again itself after the loss. One whose caller reads no verdict is sent again here,
+// since the stream settles all it is asked: it stores the message once.
 func (c *Client) publishJetStreamOn(ctx context.Context, subject string, item contracts.Envelope, msgID string, verdict bool) (*nats.PubAck, error) {
 	if err := checkSubject(subject); err != nil {
 		return nil, err

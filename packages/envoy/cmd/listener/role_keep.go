@@ -505,8 +505,13 @@ func keepRoleMessage(cfg listenerDeliveryHandlerConfig, role string, item contra
 // as many links as it takes: every listener makes the same chain, because each link is named by
 // the sequence the stream gave. A clustered stream's refusal of an id still in process under
 // another publish (bus.ErrDuplicateInProcess) is published again roleKeepInProcessPause later,
-// since the next answer names the copy that publish stored. Every other failure, of a publish or
-// of a read, and a chain that runs out of ctx, is a keep that failed.
+// since the next answer names the copy that publish stored. A publish whose answer the
+// connection's loss took (bus.ErrConnectionLost) may have stored the copy, and the bus sends it
+// once (PublishStoredAck): it is published again under the same id once the connection is back,
+// within ctx (bus.Reconnected), and the stream's answer is read as any is, so a copy the first
+// send stored comes back a duplicate naming it and is judged by heldKeptRoleCopy as the keep's
+// own. Every other failure, of a publish or of a read, and a chain that runs out of ctx, is a keep
+// that failed.
 //
 // A new copy's hour counts from its store time, read back at its acknowledged sequence, which is
 // what the walk measures its age against. A read that fails counts it from the listener's clock
@@ -523,6 +528,9 @@ func storeKeptRoleCopy(ctx context.Context, cfg listenerDeliveryHandlerConfig, r
 			if waitErr := waitUnlessDone(ctx, roleKeepInProcessPause); waitErr != nil {
 				return keptRoleCopy{}, fmt.Errorf("keep the role %s message under %s: %w (after %w)", role, msgID, waitErr, err)
 			}
+			continue
+		}
+		if bus.Reconnected(ctx, err) {
 			continue
 		}
 		if err != nil {
