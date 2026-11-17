@@ -68,11 +68,12 @@ function publish(property: FootInsetProperty): void {
  * moves it, and adds how far up from the screen's bottom edge it reaches to `property`, which
  * holds the largest of the elements published into it; a composer's by default. It counts only
  * while the element is fixed (`position: fixed`) and has a box.
- * A sticky element held at the foot counts too - one whose `bottom` is set, as the new issue
- * page's box is, which `sticky bottom-0` holds at the foot of its column while the outline
- * scrolls under it - while its box ends at the screen's bottom edge, within 1 px, and counts
- * nothing once the page has moved it off that edge. A sticky element held at the top (`top` set,
- * `bottom` left `auto`, as today's docked composer is) counts nothing wherever it stands.
+ * A sticky element held at the foot counts too - one whose `bottom` is set and whose `top` is
+ * not, as the new issue page's box, which `sticky bottom-0` holds at the foot of its column while
+ * the outline scrolls under it - while its box ends at the screen's bottom edge, within 1 px, and
+ * counts nothing once the page has moved it off that edge. A sticky element held at the top
+ * counts nothing wherever it stands, whatever its `bottom` says: today's docked composer is
+ * `bottom-16` at every width and `sm:sticky sm:top-0` from 640 px up.
  */
 export function useFootInset(
   ref: RefObject<HTMLElement | null>,
@@ -92,14 +93,18 @@ export function useFootInset(
         control.reach = fixed ? Math.max(0, window.innerHeight - box.top) : 0;
         // A sticky element reaches up from the foot only while it is held there: one the page has
         // scrolled away from the bottom edge sits in the page, under nothing of the shell's, and
-        // one held at the top (its `bottom` is unset) is no box at the foot, even where a short
-        // window puts its bottom edge on the screen's. An unset `bottom` computes to `auto` in a
-        // browser and to the empty string under happy-dom. The box is read before the style, so
-        // a fixed element's style is read once.
+        // one held at the top (its `top` is set) is no box at the foot, even where a short window
+        // puts its bottom edge on the screen's and its `bottom` is set too, as today's docked
+        // composer's is. An unset `top` or `bottom` computes to `auto` in a browser and to the
+        // empty string under happy-dom. The box is read before the style, so a fixed element's
+        // style is read once.
         const atEdge = !fixed && box.height > 0 && Math.abs(window.innerHeight - box.bottom) <= 1;
         const style = atEdge ? getComputedStyle(element) : undefined;
         const stuck =
-          style?.position === "sticky" && style.bottom !== "auto" && style.bottom !== "";
+          style?.position === "sticky" &&
+          style.bottom !== "auto" &&
+          style.bottom !== "" &&
+          (style.top === "auto" || style.top === "");
         if (stuck) control.reach = Math.max(0, window.innerHeight - box.top);
         publish(property);
       },
