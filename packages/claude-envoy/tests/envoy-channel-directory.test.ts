@@ -11,7 +11,7 @@ const session: ChannelSession = {
   delivery: { enqueue: async () => true, inbox: () => [] },
   topics: () => [],
   follow: async () => ({ added: [], warnings: [] }),
-  unfollow: async () => [],
+  unfollow: async () => ({ removed: [] }),
   rememberRole: async () => undefined,
   onRoleRegained: () => undefined,
   capabilitiesChanged: () => undefined,

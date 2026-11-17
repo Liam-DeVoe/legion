@@ -5,10 +5,15 @@ import {
   uncapturedTopicWarning,
 } from "@legion/contracts"
 import { EnvoyApiError, type EnvoyClient } from "@legion/envoy-client/transport"
-import { executeEnvoyTool, startChannelSession } from "../src/envoy-channel-server"
+import {
+  type ChannelSession,
+  executeEnvoyTool,
+  startChannelSession,
+} from "../src/envoy-channel-server"
 import { SessionIdentity, sessionHandoffFile, writeSessionHandoff } from "../src/session-identity"
 import {
   directSubject,
+  type FakeClient,
   FakeNats,
   noInterest,
   recordingClient,
@@ -156,7 +161,7 @@ test("a registration in flight when a topic is unsubscribed cannot write it back
     const unfollowing = session.unfollow([dropped])
     await settled()
     release.resolve()
-    expect(await unfollowing).toEqual([dropped])
+    expect(await unfollowing).toEqual({ removed: [dropped] })
     await following
     expect([...entry].sort()).toEqual([directSubject, kept])
   } finally {
@@ -740,6 +745,158 @@ test("registers a topic no compiled stream subject captures, however it was foll
       added: ["notifications.w.v", "notifications.w.v.>"],
       warnings: [uncapturedTopicWarning("notifications.lxspec.probe", "ses_claude")],
     })
+  } finally {
+    await session.shutdown()
+  }
+})
+
+/** The tools' runtime over `session`, as `runEnvoyChannelServer` builds it. */
+function toolRuntime(identity: SessionIdentity, client: FakeClient, session: ChannelSession) {
+  return { identity, client: client as unknown as EnvoyClient, session, clientInstanceID: "x" }
+}
+
+// pi-envoy's `envoy_subscribe` answers a registration that failed as a success that names the
+// error, and records the follow (`packages/pi-envoy/extensions/envoy.ts`, the subscribe case). A
+// tool that throws there records nothing, so a restart forgets the topic.
+test("a subscribe whose registration fails answers its error, and a restart follows the topic again", async () => {
+  const stateDirectory = scratchState()
+  let refusing = false
+  const client = recordingClient([], {
+    subscribe: async (input) => {
+      if (refusing) throw new Error("the listener is down")
+      return noInterest(input.sessionID)
+    },
+  })
+  const identity = new SessionIdentity("ses_claude", "/tmp")
+  const start = () => startChannelSession(sessionOptions(identity, stateDirectory, { client }))
+  const topic = "notifications.dispatch.issue.DSP-4.>"
+
+  const first = await start()
+  try {
+    refusing = true
+    const answer = await executeEnvoyTool(toolRuntime(identity, client, first), "envoy_subscribe", {
+      topics: [topic],
+    })
+    expect(answer).toEqual({
+      added: ["notifications.dispatch.issue.DSP-4", topic],
+      registrationError: "the listener is down",
+    })
+    expect(first.topics()).toContain(topic)
+  } finally {
+    await first.shutdown()
+  }
+
+  refusing = false
+  const second = await start()
+  try {
+    expect(second.topics()).toContain(topic)
+  } finally {
+    await second.shutdown()
+  }
+})
+
+// pi-envoy's `envoy_unsubscribe` sends the listener no role's topic: the listener's release of one
+// frees this process's role claim, and the role claim holds that topic, not the follow. The topic
+// still leaves the follows, and the answer has pi-envoy's shape, `kept` included.
+test("an unsubscribe of a role's topic drops the follow and sends the listener no release of it", async () => {
+  const stateDirectory = scratchState()
+  const releases: Array<readonly string[]> = []
+  const client = recordingClient([], {
+    unsubscribe: async (input) => {
+      releases.push(input.topics)
+    },
+  })
+  const identity = new SessionIdentity("ses_claude", "/tmp")
+  const session = await startChannelSession(sessionOptions(identity, stateDirectory, { client }))
+  const runtime = toolRuntime(identity, client, session)
+  const roleTopic = "notifications.role.reviewer"
+  const issueTopic = "notifications.dispatch.issue.DSP-6"
+
+  try {
+    await session.follow([roleTopic, issueTopic])
+    const named = await executeEnvoyTool(runtime, "envoy_unsubscribe", { topics: [roleTopic] })
+    expect(releases).toEqual([])
+    expect(named).toEqual({ removed: [roleTopic], kept: [] })
+    expect(session.topics()).not.toContain(roleTopic)
+
+    // Every other topic is still released, and the role's topic is never in the release.
+    await session.follow([roleTopic])
+    const all = await executeEnvoyTool(runtime, "envoy_unsubscribe", {})
+    expect(releases).toEqual([[issueTopic]])
+    expect(all).toEqual({ removed: [issueTopic, roleTopic], kept: [] })
+  } finally {
+    await session.shutdown()
+  }
+})
+
+// pi-envoy's `envoy_unsubscribe` answers a release that failed as a success that names the error.
+// The topics stay unfollowed and recorded, and the heartbeat's interest reconciliation takes them
+// out of the entry.
+test("an unsubscribe whose release fails answers its error, and a restart does not follow the topic again", async () => {
+  const stateDirectory = scratchState()
+  let refusing = false
+  const client = recordingClient([], {
+    unsubscribe: async () => {
+      if (refusing) throw new Error("the listener is down")
+    },
+  })
+  const identity = new SessionIdentity("ses_claude", "/tmp")
+  const start = () => startChannelSession(sessionOptions(identity, stateDirectory, { client }))
+  const topic = "notifications.dispatch.issue.DSP-8"
+
+  const first = await start()
+  try {
+    await first.follow([topic])
+    refusing = true
+    const answer = await executeEnvoyTool(
+      toolRuntime(identity, client, first),
+      "envoy_unsubscribe",
+      { topics: [topic] },
+    )
+    expect(answer).toEqual({
+      removed: [topic],
+      kept: [],
+      registrationError: "the listener is down",
+    })
+    expect(first.topics()).not.toContain(topic)
+  } finally {
+    await first.shutdown()
+  }
+
+  const second = await start()
+  try {
+    expect(second.topics()).not.toContain(topic)
+  } finally {
+    await second.shutdown()
+  }
+})
+
+// pi-envoy's `envoy_unsubscribe` reads an explicit empty `topics` as no topic named, so it removes
+// nothing, and an absent `topics` as every topic the session follows (`topicsFor`).
+test("an unsubscribe of an explicit empty topic list removes nothing, and one with no list removes every followed topic", async () => {
+  const stateDirectory = scratchState()
+  const releases: Array<readonly string[]> = []
+  const client = recordingClient([], {
+    unsubscribe: async (input) => {
+      releases.push(input.topics)
+    },
+  })
+  const identity = new SessionIdentity("ses_claude", "/tmp")
+  const session = await startChannelSession(sessionOptions(identity, stateDirectory, { client }))
+  const runtime = toolRuntime(identity, client, session)
+  const followed = ["notifications.dispatch.issue.DSP-2", "notifications.team.deploy"]
+
+  try {
+    await session.follow(followed)
+    const none = await executeEnvoyTool(runtime, "envoy_unsubscribe", { topics: [] })
+    expect(none).toEqual({ removed: [], kept: [] })
+    expect(releases).toEqual([])
+    expect(session.topics()).toEqual([directSubject, ...followed])
+
+    const all = await executeEnvoyTool(runtime, "envoy_unsubscribe", {})
+    expect(all).toEqual({ removed: followed, kept: [] })
+    expect(releases).toEqual([followed])
+    expect(session.topics()).toEqual([directSubject])
   } finally {
     await session.shutdown()
   }

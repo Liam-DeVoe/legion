@@ -87,6 +87,25 @@ named `X.>` adds, and every other topic the session follows (`warningsForNamedTo
 registers even when it adds no topic, so a caller that names a followed topic again is shown its
 warning again.
 
+When the registration of `follow` fails, `follow` does not throw.
+It records the follow in the ledger, and the heartbeat registers the topic again.
+The tool then returns `added` and `registrationError`, the error of that registration,
+and it reads no interest from the listener.
+`unfollow`, which is the `envoy_unsubscribe` tool's call,
+removes each topic it names from the followed topics and from the ledger.
+As in pi-envoy, a call with no `topics` removes every topic the session follows,
+and a call with an empty `topics` list removes no topic.
+It sends each topic it removes to the listener's unsubscribe, but not a role's topic (`notifications.role.`).
+The listener's release of a role's topic frees the role claim of this process,
+and the role claim holds that topic, not the follow.
+When no topic is left to send, `unfollow` sends no unsubscribe.
+When the unsubscribe fails, `unfollow` does not throw,
+and the heartbeat's interest reconciliation removes the topics from the entry.
+As pi-envoy's `envoy_unsubscribe` does, the tool returns `removed`, `kept`,
+and `registrationError` when the unsubscribe failed.
+pi-envoy keeps a subject that another plugin opened while the session holds its role.
+Nothing in this server opens such a subject, so `kept` is always empty here.
+
 `runEnvoyChannelServer` dials NATS with the shared options of
 `@legion/envoy-client/nats-connection` (`natsConnectionOptions`): a ping every 10 s and the
 connection dropped on the tick that finds two pings unanswered, so a path that freezes without

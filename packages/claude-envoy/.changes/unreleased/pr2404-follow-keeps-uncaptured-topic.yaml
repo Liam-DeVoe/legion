@@ -21,6 +21,14 @@ body: |-
   (`packages/envoy/cmd/listener/api.go:1477-1497` at that tag). A listener from #2603
   (`legion-envoy-v30.8.0`) to `legion-envoy-v30.36.0` leaves the topic out with its own warning
   and stores the other topics (`api.go:2683-2685` at `legion-envoy-v30.8.0`).
+
+  `envoy_subscribe` now answers success with `registrationError` when its registration fails,
+  and it records the follow, so a restart follows the topic again. `envoy_unsubscribe` no longer
+  sends a role's topic (`notifications.role.`) to the listener, because the listener then frees
+  the role claim of this channel server. `envoy_unsubscribe` now answers success with
+  `registrationError` when the unsubscribe of the listener fails, and its result always has
+  `kept`, which is empty in this plugin. `envoy_unsubscribe` with an empty `topics` list now
+  removes no topic. Without `topics`, it still removes every topic that the session follows.
 time: 2026-11-17T02:00:03.000000000Z
 custom:
     Issue: pr2404

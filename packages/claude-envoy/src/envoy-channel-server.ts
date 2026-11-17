@@ -293,6 +293,22 @@ export interface FollowResult {
    * uncaptured-topic warning of each topic the caller did not name (`warningsForNamedTopics`).
    */
   readonly warnings: readonly string[]
+  /**
+   * Why the registration this call sent failed, when it did. The topics are followed and recorded
+   * all the same, and the heartbeat registers them again.
+   */
+  readonly registrationError?: string
+}
+
+/** What `ChannelSession.unfollow` answers. */
+export interface UnfollowResult {
+  /** The concrete subjects this call stopped following. */
+  readonly removed: readonly string[]
+  /**
+   * Why the listener's unsubscribe failed, when it did. The topics are unfollowed and recorded all
+   * the same, and the heartbeat's interest reconciliation takes them out of the entry.
+   */
+  readonly registrationError?: string
 }
 
 export interface ChannelSession {
@@ -300,12 +316,18 @@ export interface ChannelSession {
   /** Every subject this session follows, direct route included. */
   topics(): readonly string[]
   /**
-   * Follow Envoy topics and refresh the registry interest. Answers the topics that were new and
-   * the listener's warnings for that registration (`FollowResult.warnings`).
+   * Follow Envoy topics and refresh the registry interest. Answers the topics that were new, the
+   * listener's warnings for that registration (`FollowResult.warnings`), and why it failed when it
+   * did (`FollowResult.registrationError`).
    */
   follow(topics: readonly string[]): Promise<FollowResult>
-  /** Stop following user-selected topics while retaining the direct session route. */
-  unfollow(topics: readonly string[]): Promise<readonly string[]>
+  /**
+   * Stop following the named user-selected topics, or every one when `topics` is undefined, while
+   * retaining the direct session route. An empty list names no topic, so it stops following
+   * nothing, as pi-envoy's `envoy_unsubscribe` does. Answers the topics it dropped, and why the
+   * listener's unsubscribe failed when it did.
+   */
+  unfollow(topics: readonly string[] | undefined): Promise<UnfollowResult>
   /** Persist the role held by an explicit envoy_role_set call, or by the Legion claim. */
   rememberRole(role: string): Promise<void>
   /**
@@ -1020,14 +1042,19 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
   }
 
   /**
-   * Drops `topics` from the followed set and the registry entry — the two steps every removal
-   * here takes once a caller has already taken them out of `userTopics`. The followed set is cut
-   * first, synchronously, so no registration queued behind the registry write advertises a
-   * dropped topic again, and the relay stops taking them at once. Both callers here —
-   * `unfollowRemovedTopics`, a removal's best-effort drop, and the public `unfollow` below —
-   * take these same two steps in this order; only whether they wait for them differs.
+   * Drops `topics` from the followed set and `unregistered`, all of them unless the caller names
+   * fewer, from the registry entry — the two steps every removal here takes once a caller has
+   * already taken them out of `userTopics`. The followed set is cut first, synchronously, so no
+   * registration queued behind the registry write advertises a dropped topic again, and the relay
+   * stops taking them at once. Both callers here — `unfollowRemovedTopics`, a removal's
+   * best-effort drop, and the public `unfollow` below — take these same two steps in this order;
+   * only whether they wait for them differs, and which topics `unfollow` sends: no role's topic.
+   * No registry write is made when nothing is left to send.
    */
-  function dropFromTopicsAndRegistry(topics: readonly string[]): Promise<void> {
+  function dropFromTopicsAndRegistry(
+    topics: readonly string[],
+    unregistered: readonly string[] = topics,
+  ): Promise<void> {
     followedTopics.unfollow(topics)
     // The relay takes the topics the session follows now, before a registration carries them:
     // the same set the registration will carry (`registrationTopics`).
@@ -1040,13 +1067,14 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
         ),
       )
     }
+    if (unregistered.length === 0) return Promise.resolve()
     // The release names this process, so the listener frees the role claim of this process
     // alone where one of these topics is a role's: a second process that resumed this session
     // id keeps the role it holds.
     return serialized(() =>
       options.client.unsubscribe({
         sessionID: identity.id,
-        topics,
+        topics: unregistered,
         clientInstanceID: options.clientInstanceID,
       }),
     )
@@ -1739,7 +1767,9 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       // the uncaptured-topic warning of a topic the caller did not name in this call: the base an
       // `X.>` adds, or another topic the session follows. The listener still logs each of them.
       // The call registers even when it adds no topic, so a caller that names a followed topic
-      // again is shown its warning again, as pi-envoy's `envoy_subscribe` shows it.
+      // again is shown its warning again, as pi-envoy's `envoy_subscribe` shows it. A registration
+      // that fails is answered, as it is there, rather than thrown: the topics stay followed and
+      // are recorded, so a restart follows them again, and the heartbeat registers them.
       if (shuttingDown) return { added: [], warnings: [] }
       const fresh: string[] = []
       for (const topic of expandSubscriptionTopics(topics)) {
@@ -1748,24 +1778,40 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
         followedTopics.follow(topic)
         fresh.push(topic)
       }
-      await options.connection.flush()
-      const registered = await serialized(register)
+      let warnings: readonly string[] = []
+      let registrationError: string | undefined
+      try {
+        await options.connection.flush()
+        warnings = warningsForNamedTopics(await serialized(register), topics)
+      } catch (error) {
+        registrationError = messageFor(error)
+      }
       if (fresh.length > 0) {
         // Recorded at once, so a restart follows the topic again; the relay takes frames stored
         // from this follow on, never the stream's older ones (`setFollowed`).
         await ledger.followedChanged()
       }
-      return { added: fresh, warnings: warningsForNamedTopics(registered, topics) }
+      return registrationError === undefined
+        ? { added: fresh, warnings }
+        : { added: fresh, warnings, registrationError }
     },
     async unfollow(topics) {
-      const requested = topics.length === 0 ? [...userTopics] : expandSubscriptionTopics(topics)
+      const requested = topics === undefined ? [...userTopics] : expandSubscriptionTopics(topics)
       const removed = requested.filter((topic) => userTopics.delete(topic))
-      if (removed.length === 0) return []
-      const unsubscribing = dropFromTopicsAndRegistry(removed)
+      if (removed.length === 0) return { removed }
+      // A role's topic leaves the followed set and the record but is never sent to the listener,
+      // whose release of it frees this process's role claim: the role claim holds that topic, not
+      // this follow, as pi-envoy's `envoy_unsubscribe` has it. A release that fails is answered
+      // rather than thrown, as it is there: the topics stay unfollowed, and the heartbeat's
+      // interest reconciliation takes them out of the entry.
+      const unsubscribing = dropFromTopicsAndRegistry(
+        removed,
+        removed.filter((topic) => !topic.startsWith(ROLE_TOPIC_PREFIX)),
+      ).then(() => undefined, messageFor)
       // Recorded at once, so a restart does not follow the topics again from the delivery state.
       await ledger.followedChanged()
-      await unsubscribing
-      return removed
+      const registrationError = await unsubscribing
+      return registrationError === undefined ? { removed } : { removed, registrationError }
     },
     onRoleRegained(hook) {
       regained = hook
@@ -1886,7 +1932,11 @@ export async function executeEnvoyTool(
     }
     case EnvoyToolOperation.subscribe: {
       const args = parseArguments(spec, input)
-      const { warnings } = await runtime.session.follow(args.topics)
+      const { added, warnings, registrationError } = await runtime.session.follow(args.topics)
+      // A registration that failed is a success that names its error, as pi-envoy's
+      // `envoy_subscribe` answers it: the topics are followed and recorded, and the heartbeat
+      // registers them. No interest is read, since the listener's entry may not hold them.
+      if (registrationError !== undefined) return { added, registrationError }
       const interest = await runtime.client.getInterest(identity.id)
       // The listener's warnings, as pi-envoy's `envoy_subscribe` shows them: each topic it left
       // out of the row, and each topic the caller named that no stream subject captures yet.
@@ -1894,7 +1944,15 @@ export async function executeEnvoyTool(
     }
     case EnvoyToolOperation.unsubscribe: {
       const args = parseArguments(spec, input)
-      return { removed: await runtime.session.unfollow(args.topics ?? []) }
+      const { removed, registrationError } = await runtime.session.unfollow(args.topics)
+      // pi-envoy's answer, in the one shape both hosts give. `kept` names each subject another
+      // plugin opened while this session holds its role, which the tool keeps followed. It is
+      // always empty here: nothing in this server opens a subject while it holds a role.
+      return {
+        removed,
+        kept: [],
+        ...(registrationError === undefined ? {} : { registrationError }),
+      }
     }
     case EnvoyToolOperation.listInterests: {
       parseArguments(spec, input)

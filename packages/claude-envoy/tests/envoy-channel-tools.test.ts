@@ -35,7 +35,7 @@ function sessionWith(followed: string[]): ChannelSession {
       followed.push(...fresh)
       return { added: fresh, warnings: [] }
     },
-    unfollow: async () => [],
+    unfollow: async () => ({ removed: [] }),
     rememberRole: async () => undefined,
     onRoleRegained: () => undefined,
     capabilitiesChanged: () => undefined,
