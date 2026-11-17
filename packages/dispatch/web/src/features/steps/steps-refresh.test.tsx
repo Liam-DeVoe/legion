@@ -1,11 +1,12 @@
 import { expect, spyOn, test } from "bun:test";
-import { focusManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { focusManager, QueryClientProvider } from "@tanstack/react-query";
 import { act, screen } from "@testing-library/react";
 
 import { onFakeClock, tick } from "../../__tests__/fake-clock";
 import { renderWithQueries } from "../../__tests__/query-provider";
-import { api } from "../../api/client";
+import { ApiError, api } from "../../api/client";
 import { eventRefreshTargets } from "../../api/event-refresh";
+import { DispatchQueryClient, queryRetry, queryRetryDelay } from "../../api/query-client";
 import { refreshQueries } from "../../api/query-refresh";
 import type { DispatchEvent, IssueSteps } from "../../api/types";
 import { StepsTab } from "./StepsTab";
@@ -45,14 +46,17 @@ const released: DispatchEvent = {
 };
 
 /** The Steps tab of CORE-1, shown or not, reading through `read`; `fetchedAt` holds the fake
- *  clock's time at each read. */
+ *  clock's time at each read. The client is the page's own, with its retry policy: a failed read
+ *  is asked again twice, 500 ms apart, where nothing stops it (`main.tsx`). */
 function renderLiveTab(read: () => IssueSteps, shown = true) {
   const fetchedAt: number[] = [];
   const listSteps = spyOn(api, "listSteps").mockImplementation(async () => {
     fetchedAt.push(Date.now());
     return read();
   });
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const client = new DispatchQueryClient({
+    defaultOptions: { queries: { retry: queryRetry, retryDelay: queryRetryDelay } },
+  });
   const tab = (active: boolean) => <StepsTab active={active} issueKey="CORE-1" />;
   const view = renderWithQueries(tab(shown), {
     wrapper: ({ children }) => (
@@ -185,6 +189,37 @@ test("a tab not shown and a hidden page read nothing and hold no timer, and each
     } finally {
       tab.restore();
       focusManager.setFocused(undefined);
+    }
+  });
+});
+
+// The tab's reads are its catch-up's and Retry's alone: a read that failed is asked again by the
+// catch-up's next read, never by the query on its own, so a tab the reader left - still mounted,
+// as the issue page keeps it - has no request left to make.
+test("a tab left after a failed read reads nothing more, and reads at once when shown again", async () => {
+  await onFakeClock(async () => {
+    let failing = true;
+    const tab = renderLiveTab(() => {
+      if (failing) {
+        throw new ApiError(503, { code: "DATABASE_BUSY", error: "the database is busy" });
+      }
+      return NO_STEPS;
+    });
+    try {
+      await tick(0);
+      expect(tab.listSteps).toHaveBeenCalledTimes(1);
+      await tick(100);
+      tab.show(false);
+      await tick(600_000, 1_000);
+      expect(tab.listSteps).toHaveBeenCalledTimes(1);
+
+      failing = false;
+      tab.show(true);
+      await tick(0);
+      expect(tab.listSteps).toHaveBeenCalledTimes(2);
+      expect(screen.getByRole("region", { name: "Steps empty state" })).toBeDefined();
+    } finally {
+      tab.restore();
     }
   });
 });

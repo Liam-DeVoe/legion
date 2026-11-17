@@ -267,10 +267,12 @@ function useCatchUp(
  * The steps Legion ran on the issue (`GET /issues/{key}/steps`): one table per task, in the order
  * of each task's first step, and one row per run of a step - its role, type, agent, model,
  * attempt, start, end and result. The records are the Legion daemon's; this tab only reads them,
- * and only through its catch-up (`useCatchUp`), so the query fetches nothing on its own.
+ * and only through its catch-up (`useCatchUp`) and Retry, so the query fetches nothing on its
+ * own: it is never enabled, and a read that failed is asked again by the catch-up's next read,
+ * not by the app's retry policy, whose retries no cleanup of the tab could stop.
  */
 export function StepsTab({ active, issueKey }: { active: boolean; issueKey: string }): ReactNode {
-  const query = useQuery({ ...issueStepsQuery(issueKey), enabled: false });
+  const query = useQuery({ ...issueStepsQuery(issueKey), enabled: false, retry: false });
   useCatchUp(issueKey, active, query.refetch);
   if (query.isPending) {
     return <p className={textMutedOnCanvas}>Loading steps…</p>;
