@@ -16,8 +16,8 @@ import { forgetKeyedLayerMemory } from "../dispatch-http";
 // `dispatch steps --issue <KEY>`: the steps that ran on an issue, as Dispatch's
 // `GET /api/v1/issues/{key}/steps` answers them, one header line and one line per run. The
 // format cases drive `executeDispatchTool` over the shared fake Dispatch (`test/fake-dispatch.ts`)
-// as a fetch, so each reads the text and the details a host is handed; the last case drives the
-// real CLI against that fake on a loopback port.
+// as a fetch, so each reads the text and the details a host is handed; the command-line cases
+// drive the real CLI against that fake on a loopback port, and read its exit code and output.
 
 /** The implementer's run of LEG-1's step 2: ended, with its model and its report. */
 const implementer: StepRecord = {
@@ -282,6 +282,74 @@ describe("dispatch steps on the command line", () => {
           "default 3 step tester testing attempt 1 legion-leg-leg-1-tester - 2026-11-16T10:00:00Z running running",
         ].join("\n")
       );
+    }
+  });
+
+  // Only Dispatch's 200 reads as an issue with no step. Its own refusal of the read, and a page
+  // something in its place answered, are the read's failure: each exits 1 with the refusal.
+  test("an issue with no step exits 0 and prints 0 steps in 0 tasks", async () => {
+    const server = dispatchServing({ routes: { [STEPS_PATH]: { issue: "LEG-1", tasks: [] } } });
+
+    const { code, stdout } = await run(server, ["steps", "--issue", "LEG-1"]);
+
+    expect(code).toBe(0);
+    expect(stdout).toContain("LEG-1: 0 steps in 0 tasks");
+  });
+
+  test("a refusal of the read exits 1 with the refusal, and prints no steps", async () => {
+    const refusals: readonly {
+      readonly status: string;
+      readonly answer: () => Response;
+      readonly printed: (url: string) => string;
+    }[] = [
+      {
+        status: "403",
+        answer: () =>
+          Response.json(
+            { code: "PROJECT_SCOPE", error: "project is outside this credential's scope" },
+            { status: 403 }
+          ),
+        printed: () => "PROJECT_SCOPE: project is outside this credential's scope",
+      },
+      {
+        status: "404",
+        answer: () =>
+          Response.json({ code: "ISSUE_NOT_FOUND", error: "no issue LEG-1" }, { status: 404 }),
+        printed: () => "ISSUE_NOT_FOUND: no issue LEG-1",
+      },
+      {
+        status: "500",
+        answer: () =>
+          Response.json({ code: "INTERNAL", error: "internal server error" }, { status: 500 }),
+        printed: () => "INTERNAL: internal server error",
+      },
+      {
+        status: "502 page",
+        answer: () =>
+          new Response("<html><body><h1>502 Bad Gateway</h1></body></html>", {
+            status: 502,
+            statusText: "Bad Gateway",
+            headers: { "Content-Type": "text/html" },
+          }),
+        printed: (url) =>
+          `HTTP_502: GET ${url}${STEPS_PATH} answered 502 Bad Gateway with a body that is not ` +
+          `Dispatch's error JSON ("502 Bad Gateway"), which looks like a proxy or gateway page ` +
+          "rather than Dispatch's own answer, so a retry may succeed.",
+      },
+    ];
+    for (const { status, answer, printed } of refusals) {
+      const server = dispatchServing({ handler: answer });
+
+      const { code, stdout } = await run(server, ["steps", "--issue", "LEG-1"]);
+
+      expect(code, status).toBe(1);
+      // The one request was the steps read, and the refusal is its answer.
+      expect(
+        server.reads.map((url) => url.pathname),
+        status
+      ).toEqual([STEPS_PATH]);
+      expect(stdout, status).toContain(printed(server.url));
+      expect(stdout, status).not.toContain("steps in");
     }
   });
 });
