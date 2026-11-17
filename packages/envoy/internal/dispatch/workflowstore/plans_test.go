@@ -225,6 +225,25 @@ func TestAPlanIDOfAnotherIssueIsRefused(t *testing.T) {
 	}
 }
 
+// A plan is part of its issue as each step record is, and the read of the issue's steps lists the
+// records alone: the plan of each of its two runs is no step.
+func TestTheStepsOfAnIssueListNoPlan(t *testing.T) {
+	pool := storetest.Open(t).Pool
+	putPlan(t, pool, defaultPlan(uuid.NewString(), "LEG-1", 1), minute(0))
+	planner := stepRun(t, pool, "LEG-1", StepKindStep, "planner", 1, 1, new(minute(0)), new(minute(5)), ResultPassed)
+	putPlan(t, pool, defaultPlan(uuid.NewString(), "LEG-1", 2), minute(10))
+	reviewer := stepRun(t, pool, "LEG-1", StepKindStep, "reviewer", 4, 2, new(minute(10)), nil, "")
+
+	steps := issueSteps(t, pool, "LEG-1")
+	listed := make([]string, len(steps))
+	for index, step := range steps {
+		listed[index] = step.Kind + " " + step.Role + " " + step.ID
+	}
+	if want := []string{"step planner " + planner, "step reviewer " + reviewer}; !slices.Equal(listed, want) {
+		t.Fatalf("the steps of LEG-1 are %v, want the two step records alone, %v", listed, want)
+	}
+}
+
 // seedIssues writes project and its issues straight into the tables, each with its status and, for
 // one that is closed, the moment it closed.
 func seedIssues(t *testing.T, pool *store.Pool, project string, issues ...seededIssue) {
