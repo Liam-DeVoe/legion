@@ -8,6 +8,7 @@ import {
   UNNAMED_TARGETS,
 } from "@legion/test-fixtures/redirect-servers";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { rowLimit, runBounded } from "./bounded-subprocess";
 
 // The e2e client's `request` (e2e/api.ts) as a row or a script calls it: in a `bun` process of its
 // own, since the module reads its server, `PLAYWRIGHT_BASE_URL` here, and its bearer when it loads.
@@ -31,6 +32,9 @@ const CALLS = [
   },
 ] as const;
 
+/** The sign-in call of the client: a comment as alice, whose session cookie it mints first. */
+const [, SIGNED_IN] = CALLS;
+
 /** The two servers: the first answers the dev sign-in itself and redirects every API call. */
 function dispatchRedirects(): RedirectServers {
   return redirectServers({
@@ -44,34 +48,60 @@ function dispatchRedirects(): RedirectServers {
   });
 }
 
+/** The two servers, the first answering the dev sign-in, and every other request, with what
+ * `signIn` makes of the other server's origin. */
+function signInAnswers(signIn: (elsewhere: string) => Response): RedirectServers {
+  let elsewhere = "";
+  const servers = redirectServers({ redirects: () => false, direct: () => signIn(elsewhere) });
+  elsewhere = servers.elsewhere;
+  return servers;
+}
+
 /** The message of the error that `call` of the client, against the first of `servers`, ended its
- * `bun` process with, as Bun prints it (the whole stderr when it printed none), and the exit. */
+ * `bun` process with, as Bun prints it (the whole stderr when it printed none), and the exit. The
+ * process is a bounded child under the short bound. */
 async function run(
   servers: RedirectServers,
   call: string
 ): Promise<{ exit: number; died: string }> {
-  const child = Bun.spawn(
-    ["bun", "-e", `import * as api from ${JSON.stringify(api)};\nawait api.${call};`],
-    {
-      cwd: scratch,
-      env: {
-        PATH: process.env.PATH ?? "",
-        HOME: scratch,
-        PLAYWRIGHT_BASE_URL: servers.origin,
-        E2E_AGENT_TOKEN: "made-up-agent-token",
-      },
-      stdout: "pipe",
-      stderr: "pipe",
-    }
-  );
-  const [exit, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()]);
+  const { code, stderr } = await runBounded({
+    argv: ["bun", "-e", `import * as api from ${JSON.stringify(api)};\nawait api.${call};`],
+    bound: "short",
+    cwd: scratch,
+    env: {
+      PATH: process.env.PATH ?? "",
+      HOME: scratch,
+      PLAYWRIGHT_BASE_URL: servers.origin,
+      E2E_AGENT_TOKEN: "made-up-agent-token",
+    },
+    from: import.meta.url,
+  });
   const line = stderr.split("\n").find((one) => one.startsWith("error: "));
-  return { exit, died: line === undefined ? stderr : line.slice("error: ".length) };
+  return { exit: code, died: line === undefined ? stderr : line.slice("error: ".length) };
+}
+
+/** What a refusal says to correct: for another path of the same address, that the client's path
+ * is its own; for any other target, the setting that names Dispatch. */
+function fix(sameAddress: boolean): string {
+  return sameAddress
+    ? "the client builds that path itself, so the server at that address, or a proxy in front of it, chose the other one: check what answers there"
+    : "PLAYWRIGHT_BASE_URL, or DISPATCH_E2E_PORT where it is unset, must name Dispatch's own address";
 }
 
 /** The line `request` refuses a redirect of `route` with. */
-function refusal(route: string, status: number, where: string, carries: string): string {
-  return `POST ${route} failed: ${status}, ${where}, and the e2e client follows no redirect, since it carries ${carries}: PLAYWRIGHT_BASE_URL, or DISPATCH_E2E_PORT where it is unset, must name Dispatch's own address`;
+function refusal(
+  route: string,
+  status: number,
+  where: string,
+  carries: string,
+  sameAddress = false
+): string {
+  return `POST ${route} failed: ${status}, ${where}, and the e2e client follows no redirect, since it carries ${carries}: ${fix(sameAddress)}`;
+}
+
+/** The line the dev sign-in as alice refuses a redirect with. */
+function signInRefusal(status: number, where: string, sameAddress = false): string {
+  return `dev sign-in as alice failed: ${status}, ${where}, with no session cookie, and the e2e client follows no redirect: ${fix(sameAddress)}`;
 }
 
 // fetch would send a 307's or 308's body on to the origin a redirect names, a key in a handoff
@@ -97,11 +127,8 @@ for (const code of REDIRECT_CODES) {
         servers.stop();
       }
     },
-    {
-      // A hang guard over the two `bun` client processes this case starts and waits on itself,
-      // which no bound of bounded-subprocess.ts covers.
-      timeout: 30_000,
-    }
+    // The two client processes of CALLS, one after the other.
+    rowLimit("short", "short")
   );
 }
 
@@ -122,16 +149,13 @@ test(
       servers.stop();
     }
   },
-  {
-    // The bound of the wait on a body that never ends: a client that read the body before the
-    // status would hang until this stops it, and one that refuses ends at once.
-    timeout: 10_000,
-  }
+  rowLimit("short")
 );
 
-// A redirect within Dispatch's own address, or one that names nowhere, is not named as the
-// address the client already has, and a host longer than any host name is never printed. The
-// client's paths are its own whatever the URL's, so each says to name Dispatch's own address.
+// A redirect within Dispatch's own address names no address the client lacks, and the client
+// builds each route's path itself, whatever path the URL holds: its refusal says what to check.
+// One that names nowhere is not named as Dispatch's own address, and a host longer than any host
+// name is never printed.
 test(
   "a redirect to another path of the same address, to no target, or to an overlong host is refused saying so",
   async () => {
@@ -143,14 +167,69 @@ test(
         servers.location = location;
         said.push((await run(servers, call)).died);
       }
-      expect(said).toEqual(UNNAMED_TARGETS.map(({ where }) => refusal(route, 307, where, carries)));
+      expect(said).toEqual(
+        UNNAMED_TARGETS.map(({ where, sameAddress }) =>
+          refusal(route, 307, where, carries, sameAddress)
+        )
+      );
     } finally {
       servers.stop();
     }
   },
-  {
-    // A hang guard over the `bun` client processes this row starts one after another, one for
-    // each unnamed target, which no bound of bounded-subprocess.ts covers.
-    timeout: 30_000,
-  }
+  // One client process for each unnamed target, one after the other.
+  rowLimit(...UNNAMED_TARGETS.map(() => "short" as const))
+);
+
+// The dev sign-in answers 302 with the session cookie. Any other 3xx, or a 302 with no cookie, is
+// refused from its status, naming where it points, before any of its body is read: a body the
+// answer chose is never printed, and one that never ends holds nothing up. One case for each code.
+for (const code of REDIRECT_CODES) {
+  test(
+    `a dev sign-in redirected with no session cookie is refused naming its status, and none of its body is printed (${code})`,
+    async () => {
+      const servers = signInAnswers(
+        (elsewhere) =>
+          new Response("made-up-signin-body", {
+            status: code,
+            headers: { Location: `${elsewhere}/` },
+          })
+      );
+      try {
+        expect(await run(servers, SIGNED_IN.call)).toEqual({
+          exit: 1,
+          died: signInRefusal(code, `redirecting to ${servers.elsewhere}`),
+        });
+        expect(servers.received, `the other origin after a ${code}`).toEqual([]);
+      } finally {
+        servers.stop();
+      }
+    },
+    rowLimit("short")
+  );
+}
+
+test(
+  "a dev sign-in redirected within its own address, with a body that never ends, is refused saying what to check",
+  async () => {
+    const servers = signInAnswers(
+      () =>
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode("made-up-signin-body that "));
+            },
+          }),
+          { status: 302, headers: { Location: "/" } }
+        )
+    );
+    try {
+      expect(await run(servers, SIGNED_IN.call)).toEqual({
+        exit: 1,
+        died: signInRefusal(302, "redirecting to another path of the same address", true),
+      });
+    } finally {
+      servers.stop();
+    }
+  },
+  rowLimit("short")
 );

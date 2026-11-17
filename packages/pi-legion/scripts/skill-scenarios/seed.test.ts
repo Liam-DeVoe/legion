@@ -1287,8 +1287,10 @@ test("a redirect whose body never ends is refused naming its status, before any 
   }
 }, 20_000);
 
-// A redirect within the scratch Dispatch's own address, or one that names nowhere, is not named
-// as the address the seed already has, and a host longer than any host name is never printed.
+// A redirect within the scratch Dispatch's own address names no address the seed lacks, and the
+// seed builds each route's path itself, so its refusal says what to check. One that names nowhere
+// is not named as the address the seed already has, and a host longer than any host name is never
+// printed.
 test("a redirect to another path of the same address, to no target, or to an overlong host is refused saying so", async () => {
   const { servers, redirect } = seedRedirects();
   const run = seedRuns(servers, "redirected-unnamed");
@@ -1300,8 +1302,13 @@ test("a redirect to another path of the same address, to no target, or to an ove
       servers.location = location;
       said.push((await run(mode)).died);
     }
+    const ownPath =
+      "seed.ts follows no redirect, since it carries the agent bearer: the client builds that path itself, so the server at that address, or a proxy in front of it, chose the other one: check what answers there";
     expect(said).toEqual(
-      UNNAMED_TARGETS.map(({ where }) => `${method} ${route} failed: 307, ${where}, and ${SEED}`)
+      UNNAMED_TARGETS.map(
+        ({ where, sameAddress }) =>
+          `${method} ${route} failed: 307, ${where}, and ${sameAddress ? ownPath : SEED}`
+      )
     );
   } finally {
     servers.stop();

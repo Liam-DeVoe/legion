@@ -2448,6 +2448,7 @@ GATES = [
         ("README.md", "packages/pi-legion/src/skills-guard.test.ts:199-203, a root of the list at :196"),
         ("scripts/e2e/lib/**", "packages/pi-legion/scripts/skill-scenarios/rig.test.ts:6 imports scripts/e2e/lib/script-functions; rig.sh:275 sources scripts/e2e/lib/rig.sh"),
         ("scripts/checks/redirect-refusals.ts", f"{at('pi-legion', 'Check that no request carrying a credential follows a redirect')} runs it, and it runs the rows of packages/pi-legion, packages/pi-shared, packages/envoy-client, packages/claude-envoy and packages/dispatch/e2e, and imports packages/test-fixtures/src/redirect-servers.ts"),
+        ("scripts/checks/redirect-refusals.test.ts", f"{at('pi-legion', 'Test that the redirect check refuses a list of sites it cannot count')} runs it, and it imports scripts/checks/redirect-refusals.ts"),
         (".omp-pin", "packages/pi-legion/scripts/skill-scenarios/rig.test.ts:1168-1170 copies .omp-pin"),
         ("packages/pi-legion/scripts/skill-scenarios/daemon-pane.ts", "writes the overlay and runs go run (:29-30)"),
     ) + envoy_client_dep("packages/pi-legion/tsconfig.json paths @legion/envoy-client/*; scripts/skill-scenarios/*.ts "

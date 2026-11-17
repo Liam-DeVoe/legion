@@ -652,3 +652,76 @@ test("a redirect to another path of the same address, to no target, or to an ove
     servers.stop();
   }
 });
+
+// The --key-file route's address is Anthropic's own, which no setting of the script names, so a
+// redirect of it names no setting to correct: the line says so, and what to check. The model's
+// address is the first server's here, through the call's own fetch; a call that followed the
+// redirect would reach the second server. One case for each code.
+for (const code of REDIRECT_CODES) {
+  test(`a redirect of the --key-file route's model call is refused naming Anthropic's own address and what to check (${code})`, async () => {
+    const servers = gatewayRedirects();
+    servers.code = code;
+    try {
+      const anthropic = "https://api.anthropic.com";
+      const out = path.join(dir(`direct-${code}`), "labels");
+      const run = io((url, init) =>
+        fetch(
+          url.startsWith(anthropic) ? `${servers.origin}${url.slice(anthropic.length)}` : url,
+          init
+        )
+      );
+      const exit = await main(
+        ["--since", SINCE, "--until", UNTIL, "--out", out, "--key-file", keyFile()],
+        {
+          ...run.io,
+          env: { HOME: scratch, DISPATCH_URL: servers.origin, DISPATCH_TOKEN: "made-up-bearer" },
+        }
+      );
+      expect(servers.received, `the other origin after a ${code}`).toEqual([]);
+      expect({ exit, stderr: run.stderr }).toEqual({
+        exit: 1,
+        stderr: refusedRun(
+          `the model at ${anthropic} answered ${code}, redirecting to ${servers.elsewhere}, and a model call follows no redirect, since it carries the key: the --key-file route goes to Anthropic's own address, which no setting changes: check for a proxy between this machine and Anthropic`,
+          path.join(out, "labels.jsonl")
+        ),
+      });
+    } finally {
+      servers.stop();
+    }
+  });
+}
+
+// A --gateway URL may carry a user and a password. The refusal of one with a scheme that is not
+// http(s) names it with neither, and the refusal of one that does not parse names no part of it,
+// since no parser says which part is the password: only its length. The password is made for this
+// run.
+test("a --gateway refused for its scheme or for not parsing names no user and no password of it", async () => {
+  const password = crypto.randomUUID();
+  const command = path.join(dir("refused-gateway"), "key-command");
+  writeFileSync(command, "#!/bin/sh\necho made-up-model-key\n");
+  chmodSync(command, 0o700);
+  const out = path.join(dir("refused-gateway"), "labels");
+  const said: string[][] = [];
+  const unparsed = `https://made-up-user:${password}@bad host/anthropic`;
+  for (const gateway of [`ftp://made-up-user:${password}@gateway.example/anthropic`, unparsed]) {
+    const { fetch, sent } = world();
+    const run = io(fetch);
+    expect(
+      await main(
+        [
+          ...["--since", SINCE, "--until", UNTIL, "--out", out],
+          ...["--gateway", gateway, "--key-command", command],
+        ],
+        run.io
+      )
+    ).toBe(2);
+    expect(sent).toEqual([]);
+    said.push(run.stderr);
+  }
+  expect(said).toEqual([
+    ["label-comments: --gateway ftp://gateway.example/anthropic is not an http or https URL"],
+    [
+      `label-comments: --gateway does not parse as a URL: its value is ${unparsed.length} characters long`,
+    ],
+  ]);
+});

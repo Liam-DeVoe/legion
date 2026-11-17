@@ -1,6 +1,6 @@
 import { afterAll, expect, test } from "bun:test"
 import { writeFileSync } from "node:fs"
-import { createServer, type Server } from "node:net"
+import { createServer, type Server, type Socket } from "node:net"
 import { join, resolve } from "node:path"
 import {
   REDIRECT_CODES,
@@ -213,9 +213,9 @@ test("a redirect whose body never ends is refused naming its status, before any 
   }
 }, 10_000)
 
-// A redirect within the listener's own address, or one that names nowhere, is not named as the
-// address the send already has, and a host longer than any host name is never printed. The send's
-// path is its own whatever the URL's, so each says to set the URL to the listener's.
+// A redirect within the listener's own address names no address the send lacks, and the send's
+// path is its own whatever the URL's, so its refusal says what to check. One that names nowhere is
+// not named as the listener's own address, and a host longer than any host name is never printed.
 test("a redirect to another path of the same address, to no target, or to an overlong host is refused saying so", async () => {
   const servers = redirectServers()
   try {
@@ -226,8 +226,8 @@ test("a redirect to another path of the same address, to no target, or to an ove
     }
     expect(said).toEqual(
       UNNAMED_TARGETS.map(
-        ({ where }) =>
-          `POST ${servers.origin}/v1/messages/send answered 307, ${where}, and a send follows no redirect: ${FIX}`,
+        ({ where, sameAddress }) =>
+          `POST ${servers.origin}/v1/messages/send answered 307, ${where}, and a send follows no redirect: ${sameAddress ? "the client builds that path itself, so the server at that address, or a proxy in front of it, chose the other one: check what answers there" : FIX}`,
       ),
     )
   } finally {
@@ -358,3 +358,114 @@ test("envoy-send prints no user and no password of its Envoy URL, whatever the l
     dropping.close()
   }
 }, 30_000)
+
+/** A listener that takes every connection and never answers it, and the port it holds. */
+async function silentListener(): Promise<{ readonly port: number; readonly stop: () => void }> {
+  const held: Socket[] = []
+  const server = createServer((socket) => {
+    held.push(socket)
+  })
+  const listening = Promise.withResolvers<void>()
+  server.listen(0, "127.0.0.1", listening.resolve)
+  await listening.promise
+  const address = server.address()
+  if (address === null || typeof address === "string") throw new Error("no port")
+  return {
+    port: address.port,
+    stop: () => {
+      for (const socket of held) socket.destroy()
+      server.close()
+    },
+  }
+}
+
+// A send whose listener never answers ends at its own deadline or at its caller's signal, and the
+// line it fails with is that end's own: the send's catch hands on an error it did not make as it
+// was thrown, and a `DOMException`'s message cannot be written.
+test("a send its caller aborts ends with the abort's own error", async () => {
+  const listener = await silentListener()
+  try {
+    const caller = new AbortController()
+    const send = sendEnvoyMessage({
+      baseUrl: `http://127.0.0.1:${listener.port}`,
+      credential: undefined,
+      targetSession: "ses_receiver",
+      message: "never answered",
+      signal: caller.signal,
+    }).then(
+      () => undefined,
+      (error: unknown) => error,
+    )
+    caller.abort()
+    expect(await send).toBe(caller.signal.reason)
+  } finally {
+    listener.stop()
+  }
+})
+
+// The send's own 5 s deadline, through the command a person runs: the line names the timeout. The
+// limit is a hang guard over the command's start and that deadline, with room for a loaded
+// machine.
+test("envoy-send to a listener that never answers exits 1 saying the send timed out", async () => {
+  const listener = await silentListener()
+  const file = join(scratch, "silent-envoy.json")
+  writeFileSync(
+    file,
+    JSON.stringify({
+      envoy: { enabled: true, url: `http://127.0.0.1:${listener.port}`, token: "made-up-bearer" },
+    }),
+  )
+  try {
+    const send = Bun.spawn(
+      ["bun", resolve(import.meta.dir, "../bin/envoy-send.ts"), "ses_receiver", "unanswered"],
+      {
+        cwd: scratch,
+        env: { PATH: process.env["PATH"] ?? "", HOME: scratch, ENVOY_CONFIG_FILE: file },
+        stdout: "pipe",
+        stderr: "pipe",
+      },
+    )
+    const [exit, stdout, stderr] = await Promise.all([
+      send.exited,
+      new Response(send.stdout).text(),
+      new Response(send.stderr).text(),
+    ])
+    expect({ exit, stdout, stderr }).toEqual({
+      exit: 1,
+      stdout: "",
+      stderr: "Claude Envoy send failed: The operation timed out.\n",
+    })
+  } finally {
+    listener.stop()
+  }
+}, 30_000)
+
+// The line that names the URL is the send's own error, made where the URL is cleaned of its user
+// and password, and the error it replaces is its cause.
+test("a send refused by its listener names the URL with no user and no password, and keeps the refusal as its cause", async () => {
+  const password = crypto.randomUUID()
+  const refusing = Bun.serve({
+    port: 0,
+    hostname: "127.0.0.1",
+    fetch: () => new Response("no", { status: 401 }),
+  })
+  try {
+    const error = await sendEnvoyMessage({
+      baseUrl: `http://made-up-user:${password}@127.0.0.1:${refusing.port}`,
+      credential: undefined,
+      targetSession: "ses_receiver",
+      message: "refused",
+    }).then(
+      () => undefined,
+      (thrown: unknown) => thrown,
+    )
+    expect(error).toBeInstanceOf(Error)
+    expect((error as Error).message).toBe(
+      `Request failed with status code 401 Unauthorized: POST http://127.0.0.1:${refusing.port}/v1/messages/send`,
+    )
+    expect((error as Error).cause).toBeInstanceOf(Error)
+    expect(((error as Error).cause as Error).name).toBe("HTTPError")
+  } finally {
+    refusing.stop(true)
+  }
+})

@@ -99,3 +99,63 @@ test("an endless body sends its first chunk and then nothing, until the server s
   started.push(plain);
   expect(await (await fetch(`${plain.origin}/asked`, { redirect: "manual" })).text()).toBe("");
 });
+
+// The other server records a request as it arrives, before its body, so a client that stops in
+// the middle of sending one is still seen to have reached it; the body joins the record once it
+// ends. With a server that records a request only after its body, the record never comes and the
+// answer ends first: Bun's server drops a request whose body is idle for 10 s. The limit is a hang
+// guard over that wait.
+test("the other server records a request whose body has not ended, and its body once it ends", async () => {
+  const servers = redirectServers();
+  started.push(servers);
+  const sending = Promise.withResolvers<ReadableStreamDefaultController<Uint8Array>>();
+  // Made for this run, so no line of the test holds a key.
+  const key = `made-up-key-${crypto.randomUUID()}`;
+  const answer = fetch(`${servers.elsewhere}/sent`, {
+    method: "POST",
+    headers: { "x-api-key": key },
+    body: new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("the first part of a body"));
+        sending.resolve(controller);
+      },
+    }),
+  });
+  const first = await Promise.race([
+    servers.until(() => servers.received.length > 0).then(() => "recorded"),
+    answer.then(
+      () => "answered",
+      () => "dropped"
+    ),
+  ]);
+  expect(first, "the other server recorded nothing while the body was still being sent").toBe(
+    "recorded"
+  );
+  expect(
+    servers.received.map(({ method, path, headers, body }) => ({
+      method,
+      path,
+      key: headers["x-api-key"],
+      body,
+    }))
+  ).toEqual([{ method: "POST", path: "/sent", key, body: "" }]);
+  (await sending.promise).close();
+  expect((await answer).status).toBe(200);
+  expect(servers.received.map(({ body }) => body)).toEqual(["the first part of a body"]);
+}, 30_000);
+
+// A client that refuses a redirect cancels the body it does not read, so a body that never ends
+// holds no connection; `cancelledBodies` counts each such cancel the first server saw. The limit
+// is a hang guard over the wait for the count, which a body that is never cancelled never meets.
+test("an endless body that its client cancels is counted, and one it leaves is not", async () => {
+  const servers = redirectServers();
+  started.push(servers);
+  servers.endlessBody = true;
+  const kept = await fetch(`${servers.origin}/kept`, { redirect: "manual" });
+  const cancelled = await fetch(`${servers.origin}/cancelled`, { redirect: "manual" });
+  expect([kept.status, cancelled.status]).toEqual([307, 307]);
+  await cancelled.body?.cancel();
+  await servers.until(() => servers.cancelledBodies > 0);
+  expect(servers.cancelledBodies).toBe(1);
+  expect(kept.bodyUsed).toBe(false);
+}, 30_000);

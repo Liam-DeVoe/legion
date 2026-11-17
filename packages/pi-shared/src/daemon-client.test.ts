@@ -652,10 +652,11 @@ test("a 502 refusal keeps its stable code through a key no schema names, and is 
   expect(waits).toEqual([]);
 });
 
-/** The two calls whose bodies carry a credential, each to the daemon at `origin`, with made-up
- * credentials: the registration's boot token, and the exit's claim token and secret. */
-function credentialedCalls(origin: string) {
-  const client = createLegionDaemonClient(origin);
+/** The two calls whose bodies carry a credential, each to the daemon at `origin` through
+ * `fetchFn`, with made-up credentials: the registration's boot token, and the exit's claim token
+ * and secret. */
+function credentialedCalls(origin: string, fetchFn: typeof fetch = fetch) {
+  const client = createLegionDaemonClient(origin, fetchFn);
   return [
     [
       "/legion/v1/claims/register",
@@ -737,6 +738,32 @@ test("a redirect whose body never ends is refused naming its status, before any 
           `POST ${route} failed with 307: redirecting to ${servers.elsewhere}, and a call to the daemon follows no redirect: ${FIX}`
       )
     );
+  } finally {
+    servers.stop();
+  }
+}, 10_000);
+
+// The client lives as long as its pane, so a refusal that left a redirect's endless body open
+// would hold one connection to the server for each refusal. Each refusal cancels that body, even
+// while its answer is still held, as by the fetch here, which keeps each answer it hands on
+// (Bun cancels the body of an answer nothing holds by itself, a second later); the first server
+// sees each cancel. The limit is a hang guard over the wait for the two cancels, which a client
+// that leaves the bodies open never meets.
+test("a refused redirect's body is cancelled, so a body that never ends holds no connection", async () => {
+  const servers = daemonRedirects();
+  servers.endlessBody = true;
+  const held: Response[] = [];
+  const holding = (async (input, init) => {
+    const response = await fetch(input, init);
+    held.push(response);
+    return response;
+  }) as typeof fetch;
+  try {
+    for (const [route, call] of credentialedCalls(servers.origin, holding)) {
+      expect(await refusalOf(call), route).toBeInstanceOf(LegionDaemonApiError);
+    }
+    await servers.until(() => servers.cancelledBodies === 2);
+    expect(held.map(({ status }) => status)).toEqual([307, 307]);
   } finally {
     servers.stop();
   }

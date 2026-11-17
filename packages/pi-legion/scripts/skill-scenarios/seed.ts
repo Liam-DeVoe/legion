@@ -87,7 +87,7 @@ import type {
   Handoff,
   HandoffSummary,
 } from "@legion/contracts";
-import { redirectedTo, redirectTarget } from "@legion/envoy-client/redirect";
+import { OWN_PATH_CHECK, redirectedTo, redirectTarget } from "@legion/envoy-client/redirect";
 import { z } from "zod";
 import {
   answerAsk,
@@ -673,8 +673,12 @@ async function agentFetch(
   });
   const target = redirectTarget(response, url.href);
   if (target !== undefined) {
+    const fix =
+      target.kind === "the same origin"
+        ? OWN_PATH_CHECK
+        : "DISPATCH_E2E_PORT must name the port of rig.sh's scratch Dispatch itself";
     throw new Error(
-      `${method} ${route} failed: ${response.status}, ${redirectedTo(target)}, and seed.ts follows no redirect, since it carries the agent bearer: DISPATCH_E2E_PORT must name the port of rig.sh's scratch Dispatch itself`
+      `${method} ${route} failed: ${response.status}, ${redirectedTo(target)}, and seed.ts follows no redirect, since it carries the agent bearer: ${fix}`
     );
   }
   if (response.ok) return response;

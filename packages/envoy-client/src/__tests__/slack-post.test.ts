@@ -450,6 +450,27 @@ describe("postSlackReply", () => {
         expect(said).toContain(want);
       });
     }
+
+    // A token whose shape is a Slack channel id's passes the poster's check of the channel, so
+    // the cut of the token from the poster's line is the one guard left: the reply's channel
+    // reaches the session as `[redacted]`. The token is made for this run.
+    test("as the posted channel, in a channel id's shape, which only the cut keeps back", async () => {
+      const shaped = `C${crypto.randomUUID().replaceAll("-", "").toUpperCase().slice(0, 24)}`;
+      const slack = reflectingSlack((authorization) =>
+        Response.json({ ok: true, channel: authorization.split(" ")[1], ts: "1700000000.000200" })
+      );
+      const { env } = brokerEnvironment("granted", slack.url, shaped);
+
+      const said = await outcome(env);
+
+      expect(slack.posts()).toBe(1);
+      expect(said).not.toContain(shaped);
+      expect(JSON.parse(said)).toEqual({
+        channel: "[redacted]",
+        threadTs: "1700000000.000100",
+        ts: "1700000000.000200",
+      });
+    });
   });
 
   // The 30 s limit is a hang guard, not a budget: the row stands a fake Slack and a broker
@@ -534,6 +555,16 @@ describe("postSlackReply", () => {
     );
     expect(await outcome(env)).toBe(
       "SLACK_POST_API_URL must be an https URL, or http on a loopback host (got http://slack.example/api); nothing was posted"
+    );
+  });
+
+  // An override that does not parse has no part a parser can tell for a password or a token, so
+  // its refusal names its length alone. The value is made for this run.
+  test("a Slack API override that does not parse is named by its length alone", async () => {
+    const value = `made-up value ${crypto.randomUUID()}`;
+    const { env } = brokerEnvironment("granted", value);
+    expect(await outcome(env)).toBe(
+      `SLACK_POST_API_URL does not parse as a URL: its value is ${value.length} characters long; nothing was posted`
     );
   });
 });

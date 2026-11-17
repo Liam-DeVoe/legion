@@ -334,8 +334,12 @@ export async function postSlackReply(
   }
   const override = env[SLACK_POST_API_URL_VARIABLE];
   if (override !== undefined && override !== "" && !allowedAPIURL(override)) {
+    // The override may carry a user and a password, so the refusal names it with neither; one
+    // that does not parse has no part a parser can tell for a secret, so it is named by its length.
     throw new Error(
-      `${SLACK_POST_API_URL_VARIABLE} must be an https URL, or http on a loopback host (got ${withoutUserinfo(override)}); nothing was posted`
+      URL.canParse(override)
+        ? `${SLACK_POST_API_URL_VARIABLE} must be an https URL, or http on a loopback host (got ${withoutUserinfo(override)}); nothing was posted`
+        : `${SLACK_POST_API_URL_VARIABLE} does not parse as a URL: its value is ${override.length} characters long; nothing was posted`
     );
   }
   const { PATH: searchPath = "" } = env;

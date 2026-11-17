@@ -302,13 +302,15 @@ async function label(
     // body, which a redirect need never finish, and it is not asked again.
     const target = redirectTarget(response, `${route.url}/v1/messages`);
     if (target !== undefined) {
+      // The --key-file route's address is Anthropic's own, which no setting names: the line says
+      // what to check instead.
       const fix = !route.gateway
-        ? ""
+        ? "the --key-file route goes to Anthropic's own address, which no setting changes: check for a proxy between this machine and Anthropic"
         : target.kind === "the same origin"
-          ? `: correct the path of --gateway; ${SAME_ADDRESS_CAUSE}`
-          : ": give --gateway the gateway's own address";
+          ? `correct the path of --gateway; ${SAME_ADDRESS_CAUSE}`
+          : "give --gateway the gateway's own address";
       throw new Error(
-        `the model at ${withoutUserinfo(route.url)} answered ${response.status}, ${redirectedTo(target)}, and a model call follows no redirect, since it carries the key${fix}`
+        `the model at ${withoutUserinfo(route.url)} answered ${response.status}, ${redirectedTo(target)}, and a model call follows no redirect, since it carries the key: ${fix}`
       );
     }
     let text: string;
@@ -494,14 +496,16 @@ function modelRoute(args: Arguments): ModelRoute | string {
     return { url: ANTHROPIC_URL, key: () => readKeyFile(keyFile), gateway: false };
   }
   if (gateway === undefined || keyCommand === undefined) return refusal;
+  // The URL may carry a user and a password, so a refusal names it with neither; one that does not
+  // parse has no part a parser can tell for the password, so its refusal names only its length.
   let url: URL;
   try {
     url = new URL(gateway);
   } catch {
-    return `--gateway ${gateway} is not a URL`;
+    return `--gateway does not parse as a URL: its value is ${gateway.length} characters long`;
   }
   if (url.protocol !== "https:" && url.protocol !== "http:") {
-    return `--gateway ${gateway} is not an http or https URL`;
+    return `--gateway ${withoutUserinfo(gateway)} is not an http or https URL`;
   }
   return {
     url: gateway.replace(/\/+$/, ""),

@@ -72,6 +72,13 @@ export interface RedirectServers {
   /** Whether each redirect's body is one chunk followed by nothing, never ending, as from a
    * server that stalls in the middle of its answer; false, until a test sets it, for no body. */
   endlessBody: boolean;
+  /** How many of those endless bodies the first server saw cancelled: a client that refuses a
+   * redirect cancels the body it does not read, so a body that never ends holds no connection. */
+  readonly cancelledBodies: number;
+  /** Resolves once `holds` does, read again each time the other server records a request and each
+   * time the first server sees a body cancelled: what a row awaits in place of a guessed wait. A
+   * state that never comes leaves it pending, and the row's own limit fails the row. */
+  until(holds: () => boolean): Promise<void>;
   stop(): void;
 }
 
@@ -95,6 +102,15 @@ export function redirectServers(
   } = {}
 ): RedirectServers {
   const received: ReceivedRequest[] = [];
+  const waiters = new Set<{ readonly holds: () => boolean; readonly resolve: () => void }>();
+  const changed = () => {
+    for (const waiter of waiters) {
+      if (waiter.holds()) {
+        waiters.delete(waiter);
+        waiter.resolve();
+      }
+    }
+  };
   const atElsewhere = options.atElsewhere ?? (() => Response.json({}));
   const other = Bun.serve({
     port: 0,
@@ -110,6 +126,7 @@ export function redirectServers(
         body: "",
       };
       received.push(record);
+      changed();
       record.body = await request.text();
       return atElsewhere(request);
     },
@@ -120,9 +137,13 @@ export function redirectServers(
   let code: RedirectCode = 307;
   let location: string | null | undefined;
   let endlessBody = false;
+  let cancelledBodies = 0;
   const first = Bun.serve({
     port: 0,
     hostname: "127.0.0.1",
+    // No idle limit: Bun's own closes a connection 10 s after its last byte, and so would end an
+    // endless body that no client cancelled, as a cancel would.
+    idleTimeout: 0,
     fetch(request) {
       const url = new URL(request.url);
       if (!redirects(url.pathname)) return direct(request);
@@ -131,6 +152,10 @@ export function redirectServers(
         ? new ReadableStream<Uint8Array>({
             start(controller) {
               controller.enqueue(new TextEncoder().encode("the first chunk of a body that "));
+            },
+            cancel() {
+              cancelledBodies += 1;
+              changed();
             },
           })
         : null;
@@ -161,6 +186,15 @@ export function redirectServers(
     },
     set endlessBody(value) {
       endlessBody = value;
+    },
+    get cancelledBodies() {
+      return cancelledBodies;
+    },
+    until(holds) {
+      if (holds()) return Promise.resolve();
+      const { promise, resolve } = Promise.withResolvers<void>();
+      waiters.add({ holds, resolve });
+      return promise;
     },
     stop() {
       first.stop(true);

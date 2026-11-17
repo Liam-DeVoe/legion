@@ -15,7 +15,9 @@
  * no row cannot pass, and neither can one site's row run in place of another's. --rows names a
  * JSON file that holds the rows to run in place of the list's own, each `{site, directory, file}`:
  * the negative controls point it at an empty list, and at one site's row once for each listed
- * site.
+ * site. The list itself is what makes a site listed, so before any row runs the check says
+ * UNKNOWN and exits 1 for a list that names no site, and fails a list whose length is not the
+ * count written beside it (`run`).
  */
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -33,7 +35,7 @@ interface RowPlace {
 }
 
 /** Each listed site, a client that sends a credential, by its file and symbol, with its row. */
-const SITES: Readonly<Record<string, RowPlace>> = {
+export const SITES: Readonly<Record<string, RowPlace>> = {
   "packages/claude-envoy/src/envoy-client.ts sendEnvoyMessage": {
     directory: "packages/claude-envoy",
     file: "tests/envoy-client.test.ts",
@@ -64,12 +66,16 @@ const SITES: Readonly<Record<string, RowPlace>> = {
   },
 };
 
+/** How many sites SITES lists, written a second time. The list alone says which sites are listed,
+ * so a site an edit drops from it is checked by no row, and a list an edit leaves empty checks
+ * nothing, and either run would still pass; with this count beside it, a list that lost or gained
+ * a site fails until the count moves with it, in the same diff. */
+export const LISTED_SITES = 7;
+
 /** One site's row, as the list gives it or `--rows` names it. */
 interface Row extends RowPlace {
   readonly site: string;
 }
-
-const ROWS: readonly Row[] = Object.entries(SITES).map(([site, place]) => ({ site, ...place }));
 
 const ROOT = path.resolve(import.meta.dir, "../..");
 
@@ -161,9 +167,14 @@ function runRow(row: Row, scratch: string, index: number): Outcome {
   };
 }
 
-/** The rows `--rows <file>` names, or ROWS. Throws naming a bad argument or file. */
-function rowsOf(argv: readonly string[]): readonly Row[] {
-  if (argv.length === 0) return ROWS;
+/** The rows `--rows <file>` names, or each of `sites`' own. Throws naming a bad argument or file. */
+function rowsOf(
+  argv: readonly string[],
+  sites: Readonly<Record<string, RowPlace>>
+): readonly Row[] {
+  if (argv.length === 0) {
+    return Object.entries(sites).map(([site, place]) => ({ site, ...place }));
+  }
   const [flag, file] = argv;
   if (flag !== "--rows" || file === undefined || argv.length !== 2) {
     throw new Error("usage: redirect-refusals.ts [--rows <file>]");
@@ -180,57 +191,82 @@ function rowsOf(argv: readonly string[]): readonly Row[] {
   return rows;
 }
 
-const rows = rowsOf(Bun.argv.slice(2));
-const scratch = mkdtempSync(path.join(tmpdir(), "redirect-refusals-"));
-const passed = new Set<string>();
-const named = new Set<string>();
-let cases = 0;
-let failed = 0;
-let refused = 0;
-try {
-  for (const [index, row] of rows.entries()) {
-    const shown = `${row.site}: ${row.directory}/${row.file}`;
-    const place = Object.hasOwn(SITES, row.site) ? SITES[row.site] : undefined;
-    if (place === undefined) {
-      refused += 1;
-      console.log(`NAMES NO LISTED SITE ${shown}`);
-      continue;
-    }
-    if (place.directory !== row.directory || place.file !== row.file) {
-      refused += 1;
-      console.log(`NOT THE ROW BESIDE ITS SITE ${shown}`);
-      continue;
-    }
-    if (named.has(row.site)) {
-      refused += 1;
-      console.log(`A SECOND ROW OF ITS SITE ${shown}`);
-      continue;
-    }
-    named.add(row.site);
-    const outcome = runRow(row, scratch, index);
-    cases += outcome.ran;
-    failed += outcome.failed;
-    const verdict = outcome.why === "" ? "PASS" : outcome.ran === 0 ? "DID NOT RUN" : "FAIL";
-    if (verdict === "PASS") passed.add(row.site);
-    console.log(`${verdict} ${shown}: ${outcome.ran} of ${REDIRECT_CODES.length} cases ran`);
-    if (outcome.why !== "") console.log(outcome.why.replace(/^/gm, "    "));
+/** The check of `sites`, whose length the list holds as `count`, with the rows `argv` names: each
+ * line it prints goes to `log`, and it answers the exit status. A list that names no site is
+ * UNKNOWN and one whose length is not `count` fails, each before any row runs. */
+export function run(
+  argv: readonly string[],
+  sites: Readonly<Record<string, RowPlace>>,
+  count: number,
+  log: (line: string) => void
+): number {
+  const listed = Object.keys(sites);
+  if (listed.length === 0) {
+    log(
+      "UNKNOWN 0 listed sites: the list of sites of scripts/checks/redirect-refusals.ts (SITES) names none, so no row ran and nothing was checked"
+    );
+    return 1;
   }
-} finally {
-  rmSync(scratch, { recursive: true, force: true });
+  if (listed.length !== count) {
+    log(
+      `FAIL the list of sites (SITES) names ${listed.length} sites, and the count beside it (LISTED_SITES) says ${count}: a site the list lost or gained is checked only once the count moves with it`
+    );
+    return 1;
+  }
+  const rows = rowsOf(argv, sites);
+  const scratch = mkdtempSync(path.join(tmpdir(), "redirect-refusals-"));
+  const passed = new Set<string>();
+  const named = new Set<string>();
+  let cases = 0;
+  let failed = 0;
+  let refused = 0;
+  try {
+    for (const [index, row] of rows.entries()) {
+      const shown = `${row.site}: ${row.directory}/${row.file}`;
+      const place = Object.hasOwn(sites, row.site) ? sites[row.site] : undefined;
+      if (place === undefined) {
+        refused += 1;
+        log(`NAMES NO LISTED SITE ${shown}`);
+        continue;
+      }
+      if (place.directory !== row.directory || place.file !== row.file) {
+        refused += 1;
+        log(`NOT THE ROW BESIDE ITS SITE ${shown}`);
+        continue;
+      }
+      if (named.has(row.site)) {
+        refused += 1;
+        log(`A SECOND ROW OF ITS SITE ${shown}`);
+        continue;
+      }
+      named.add(row.site);
+      const outcome = runRow(row, scratch, index);
+      cases += outcome.ran;
+      failed += outcome.failed;
+      const verdict = outcome.why === "" ? "PASS" : outcome.ran === 0 ? "DID NOT RUN" : "FAIL";
+      if (verdict === "PASS") passed.add(row.site);
+      log(`${verdict} ${shown}: ${outcome.ran} of ${REDIRECT_CODES.length} cases ran`);
+      if (outcome.why !== "") log(outcome.why.replace(/^/gm, "    "));
+    }
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+
+  const uncovered = listed.filter((site) => !named.has(site));
+  for (const site of uncovered) log(`NO ROW ${site}`);
+  const summary = `${passed.size} of ${listed.length} listed sites have a row whose ${REDIRECT_CODES.length} cases ran and passed; ${cases} cases ran, ${failed} failed`;
+  if (passed.size < listed.length || refused > 0) {
+    const why = [
+      uncovered.length === 0 ? "" : `${uncovered.length} listed sites have no row`,
+      refused === 0
+        ? ""
+        : `${refused} rows name no listed site, are not the row beside their site, or name a site another row names`,
+    ].filter((part) => part !== "");
+    log(`FAIL ${summary}${why.length === 0 ? "" : `: ${why.join("; ")}`}`);
+    return 1;
+  }
+  log(`PASS ${summary}`);
+  return 0;
 }
 
-const listed = Object.keys(SITES);
-const uncovered = listed.filter((site) => !named.has(site));
-for (const site of uncovered) console.log(`NO ROW ${site}`);
-const summary = `${passed.size} of ${listed.length} listed sites have a row whose ${REDIRECT_CODES.length} cases ran and passed; ${cases} cases ran, ${failed} failed`;
-if (passed.size < listed.length || refused > 0) {
-  const why = [
-    uncovered.length === 0 ? "" : `${uncovered.length} listed sites have no row`,
-    refused === 0
-      ? ""
-      : `${refused} rows name no listed site, are not the row beside their site, or name a site another row names`,
-  ].filter((part) => part !== "");
-  console.log(`FAIL ${summary}${why.length === 0 ? "" : `: ${why.join("; ")}`}`);
-  process.exit(1);
-}
-console.log(`PASS ${summary}`);
+if (import.meta.main) process.exit(run(Bun.argv.slice(2), SITES, LISTED_SITES, console.log));

@@ -1,6 +1,6 @@
 import type { RequestCredential } from "@legion/envoy-client/bearer"
 import { withoutUserinfo } from "@legion/envoy-client/errors"
-import { redirectedTo, redirectTarget } from "@legion/envoy-client/redirect"
+import { OWN_PATH_CHECK, redirectedTo, redirectTarget } from "@legion/envoy-client/redirect"
 import ky from "ky"
 
 /** How long one send may take, the credential's trade included. */
@@ -52,14 +52,22 @@ export async function sendEnvoyMessage(options: SendEnvoyMessageOptions): Promis
       throwHttpErrors: (status) => status < 300 || status > 399,
     })
   } catch (error) {
-    // ky's HTTPError names the request by its URL, user and password included.
-    if (error instanceof Error) error.message = error.message.replaceAll(url.href, shown)
-    throw error
+    // ky's HTTPError names the request by its URL, user and password included: such an error
+    // becomes one of the send's own, the URL cleaned, with it as the cause. Every other error, a
+    // timeout's or an abort's `DOMException` among them, goes on as it was thrown.
+    if (!(error instanceof Error)) throw error
+    const cleaned = error.message.replaceAll(url.href, shown)
+    if (cleaned === error.message) throw error
+    throw new Error(cleaned, { cause: error })
   }
   const target = redirectTarget(response, url.href)
   if (target !== undefined) {
+    const fix =
+      target.kind === "the same origin"
+        ? OWN_PATH_CHECK
+        : "set the Envoy URL (ENVOY_URL, or envoy.json's envoy.url) to the listener's own address"
     throw new Error(
-      `POST ${shown} answered ${response.status}, ${redirectedTo(target)}, and a send follows no redirect: set the Envoy URL (ENVOY_URL, or envoy.json's envoy.url) to the listener's own address`,
+      `POST ${shown} answered ${response.status}, ${redirectedTo(target)}, and a send follows no redirect: ${fix}`,
     )
   }
 }

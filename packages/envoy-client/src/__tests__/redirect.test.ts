@@ -74,6 +74,29 @@ test("an answer that is no 3xx names no target, whatever its Location", () => {
   }
 });
 
+// No caller reads a 3xx's body, so the read of where it points cancels that body: one that never
+// ends holds no connection. An answer that is no 3xx keeps its body for the caller to read. A
+// body that is never cancelled leaves the wait below pending, and the test's limit fails it.
+test("a 3xx's body is cancelled as its target is read, and any other answer keeps its body", async () => {
+  const cancelled = Promise.withResolvers<void>();
+  const redirected = new Response(
+    new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("the first chunk of a body that "));
+      },
+      cancel() {
+        cancelled.resolve();
+      },
+    }),
+    { status: 307, headers: { Location: "/elsewhere" } }
+  );
+  expect(redirectTarget(redirected, "http://dispatch.test/")).toEqual({ kind: "the same origin" });
+  await cancelled.promise;
+  const plain = new Response("a body to read", { status: 200, headers: { Location: "/x" } });
+  expect(redirectTarget(plain, "http://dispatch.test/")).toBeUndefined();
+  expect(await plain.text()).toBe("a body to read");
+});
+
 // A host name holds at most 253 characters, so an origin longer than `https://`, such a name and
 // `:65535` names no host a person meant; it prints as another address, with its length.
 test("an origin longer than any host name allows prints as another address of its length", () => {

@@ -19,11 +19,13 @@ export type RedirectTarget =
  * that is no 3xx, which the caller goes on to read. Another origin is its scheme and host, with a
  * port that is not the scheme's own: never the path, query, fragment or user of the `Location`,
  * any of which can carry a secret. A `Location` that is missing, empty, unreadable or not http(s)
- * is no target. The Slack poster runs this function's own source in the process that holds the
- * token (`slack-post.ts`), so it names nothing outside its own body.
+ * is no target. The caller refuses a 3xx and reads none of its body, so this cancels that body: a
+ * body that never ends then holds no connection. The Slack poster runs this function's own source
+ * in the process that holds the token (`slack-post.ts`), so it names nothing outside its own body.
  */
 export function redirectTarget(response: Response, url: string): RedirectTarget | undefined {
   if (response.status < 300 || response.status > 399) return undefined;
+  response.body?.cancel().catch(() => {});
   const location = response.headers.get("Location")?.trim() ?? "";
   if (location === "") return { kind: "no target" };
   try {
@@ -56,5 +58,11 @@ export function redirectedTo(target: RedirectTarget): string {
 }
 
 /** Why a server redirects a request to another path of its own address, for the line that says to
- * correct the path of the URL the client was given. */
+ * correct the path of the URL the client was given, which the client puts before its own. */
 export const SAME_ADDRESS_CAUSE = 'a missing or an extra "/" is the usual cause';
+
+/** What to check when a server redirects a request to another path of its own address, and the
+ * client builds that path itself, whatever path the URL it was given holds: no setting of the
+ * client chose the other path, for the line that refuses the redirect. */
+export const OWN_PATH_CHECK =
+  "the client builds that path itself, so the server at that address, or a proxy in front of it, chose the other one: check what answers there";
