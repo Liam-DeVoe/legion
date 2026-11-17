@@ -1052,11 +1052,15 @@ export async function seedRows(): Promise<RowSeed> {
       `when="before_merge"}\nEach node is one row.\n:::\n`,
     name: "verification.md",
   });
+  // A pass of a before_merge check names the negative control that would have caught its
+  // failure: a server that holds that rule refuses one with none `400 NEGATIVE_CONTROL_REQUIRED`,
+  // and one that does not stores it as it is given.
   const recorded = await recordCheckResult(
     key,
     {
       check: "c1",
       commit: "a".repeat(40),
+      negative_control: "Drew one node as two rows and the run failed.",
       observed: "One row per node.",
       role: "tester",
       verdict: "pass",
