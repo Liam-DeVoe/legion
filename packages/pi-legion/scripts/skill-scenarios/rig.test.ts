@@ -1,6 +1,7 @@
 import { beforeAll, describe, expect, test } from "bun:test";
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { scriptFunctions } from "../../../../scripts/e2e/lib/script-functions";
@@ -42,6 +43,7 @@ const miseData =
     ? undefined
     : path.join(process.env.XDG_DATA_HOME, "mise"));
 const childEnv = {
+  ...bunCacheOff,
   PATH: process.env.PATH ?? "",
   HOME: operatorHome,
   ...(miseData === undefined ? {} : { MISE_DATA_DIR: miseData }),
@@ -934,13 +936,13 @@ exit "$(cat "$PWD/exit-status" 2>/dev/null || echo 0)"
     expect(judged(result)).toEqual(judgedCleanly);
   }, 240_000);
 
-  // Each row below that runs a judge holds that judge's docker run, which took 27,176 ms on a dev
-  // box at a 1-minute load of 1,245 (2026-11-17, INFRA-3904's lanes,
-  // dispatch://INFRA-3149/comment/062ca07f-e3e4-4d0c-9927-8e54d4d3f134), past the command's
-  // 15,000 ms. So those rows have a guard of their own, the pull hook's 240,000 ms for now: it waits
-  // for the dev box's readings of completed runs, and once they come it is at least twice their
-  // slowest.
-  const judgeRow = 240_000;
+  // Each row below that runs a judge holds that judge's docker run, past the command's 15,000 ms on
+  // a loaded dev box, a machine that runs this suite. So those rows have a guard of their own, at
+  // least twice the slowest of five dev-box runs at 70978a40 with no row limit, each started at a
+  // 1-minute load of 1,011 to 3,003 (INFRA-3904's lanes, 2026-11-17 21:56-22:00Z, logs under
+  // /mnt/scratch/sami/TriageBunLoopStall.lJ5iY6/runs/judge-load.aWJXXI/ on the dev box): the
+  // gateway row, 31,374.69 ms, in run 1 at a load of 3,003 to 2,405.
+  const judgeRow = 90_000;
 
   // Catches: a judge session with the label's plugins, the operator's skills or the default model,
   // run outside its own directory, or with no record of its model.
