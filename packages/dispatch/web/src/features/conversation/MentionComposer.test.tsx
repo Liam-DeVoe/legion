@@ -41,7 +41,8 @@ import {
   SendStoppedError,
 } from "../writes/keyed-write";
 import type { ComposerOwner, ReplyTarget } from "./composer-model";
-import { MentionComposer, type OutlineLook } from "./MentionComposer";
+import type { OutlineLook } from "./MentionComposer";
+import { MentionComposer } from "./MentionComposer";
 import { KEYED_SEND_LATE_TEXT } from "./send-request";
 
 /** What each attempt of a send is held to, beside the request it carries: its deadline and the
