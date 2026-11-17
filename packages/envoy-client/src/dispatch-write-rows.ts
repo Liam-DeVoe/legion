@@ -1,8 +1,9 @@
 /**
  * The row of each keyed write of `DispatchClient` (each POST and PATCH): what the method's callers
  * read of its 2xx answer, which `#writtenRow` checks before any caller reads it. Dispatch answers a
- * write's 2xx only after the write committed, so an answer that is not this row is a landing whose
- * answer was lost (`ANSWER_LOST`), never a failure of the call.
+ * write's 2xx only after the write committed, so a 2xx that names the call's key back and is not
+ * this row is a landing whose answer was lost (`ANSWER_LOST`), never a failure of the call. A 2xx
+ * that names no key back is no answer of the call's, whatever it holds.
  *
  * A row names only members a caller reads, and each in the form the route answers it in the
  * OpenAPI document the server generates (`packages/contracts/schemas/dispatch-openapi.json`):
@@ -167,10 +168,12 @@ const uploadedDocument = {
 /** The person or session a review or a retraction names, as `actorText` reads it. */
 const actor = InboundActorSchema;
 
-/** The rows of the POSTs that store nothing, which the route table says of each
- *  (`packages/envoy/internal/dispatch/api/routes_table.go`): Dispatch's parse and render of a
- *  text (`POST /api/v1/markdown/round-trip`, "The route writes nothing and reads no row") and the
- *  related-item check (`POST /api/v1/projects/{key}/related`, "writing nothing"). */
+/** The rows of the POSTs that store nothing, `markdownRoundTrip` and `related`, side by side in
+ *  `WRITE_ROWS`: Dispatch's parse and render of a text (`POST /api/v1/markdown/round-trip`: its
+ *  handler, `postMarkdownRoundTrip`, parses and renders the text and answers it, and calls no
+ *  store) and the related-item check (`POST /api/v1/projects/{key}/related`: its handler's
+ *  `answerRelated` runs `relatedCheck` with `record` unset, so no related_checks record is
+ *  written). */
 const STORE_NOTHING = new WeakSet<z.ZodType>();
 
 /** `row`, marked as the row of a route that stores nothing (`rowStores`). */

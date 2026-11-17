@@ -1,7 +1,10 @@
 // `keyedLayer` puts a test's stand-in of Dispatch behind Dispatch's keyed layer, so each answer the
 // layer judged (each 2xx, unless the test says more) names the keyed write's key back, as Dispatch's
-// own answers do. Every stand-in of a keyed write in this repository's tests answers through it;
-// the other packages' tests take it as `@legion/envoy-client/test/keyed-layer`.
+// own answers do. Every stand-in of a keyed write in this repository's tests answers through it, but
+// two kinds, each of which says so: a stand-in on a raw socket, which no fetch-shaped layer wraps,
+// names the key back itself, and a row whose answer names no key or another request's key on
+// purpose is about such an answer. The other packages' tests take it as
+// `@legion/envoy-client/test/keyed-layer`.
 import { IDEMPOTENCY_KEY_HEADER } from "@legion/contracts";
 
 /** How a stand-in's answers pass Dispatch's keyed layer (`keyedLayer`). */

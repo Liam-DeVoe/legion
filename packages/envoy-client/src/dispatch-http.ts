@@ -324,18 +324,29 @@ export class DispatchAnswerMissingError extends Error {
   }
 }
 
+/** Whether a value of a URL path names nothing: empty, only white space, or `.` or `..`, a step of
+ *  the path, which the URL parser drops (`/api/v1/agents/../answers` is `/api/v1/answers`). */
+function namesNothing(segment: string): boolean {
+  return segment.trim() === "" || segment === "." || segment === "..";
+}
+
 /**
- * A call whose path holds a value that is empty (`DispatchClient.#url`), refused before any
- * request: sent, `POST /api/v1/comments//resolve` names no comment, and Dispatch's router answers
- * it with a redirect to another path. The message names the place of the empty value in the route.
+ * A call whose path holds a value that names nothing (`namesNothing`, `DispatchClient.#url`),
+ * refused before any request: sent, `POST /api/v1/comments//resolve` names no comment, and
+ * Dispatch's router answers it with a redirect to another path, and `GET /api/v1/agents/../answers`
+ * asks another route. The message names the place of that value in the route.
  */
 export class DispatchEmptyPathError extends Error {
   override readonly name = "DispatchEmptyPathError";
 
   constructor(path: readonly string[]) {
-    const route = path.map((segment) => (segment === "" ? "{empty}" : segment)).join("/");
+    const route = path
+      .map((segment) =>
+        segment === "" ? "{empty}" : namesNothing(segment) ? `{${JSON.stringify(segment)}}` : segment
+      )
+      .join("/");
     super(
-      `/${route} holds an empty value where the call names what it is about, so nothing was sent: a variable that gives it may be empty or unset`
+      `/${route} holds a value that names nothing where the call names what it is about (empty, only white space, or a step of a path, which the URL drops), so nothing was sent: a variable that gives it may be empty or unset`
     );
   }
 }
@@ -2747,10 +2758,10 @@ export class DispatchClient {
     throw refusal;
   }
 
-  /** The URL of `path` under the base URL, with `query`. A path value that is empty is refused
-   *  here, before any request, for every call (`DispatchEmptyPathError`). */
+  /** The URL of `path` under the base URL, with `query`. A path value that names nothing is refused
+   *  here, before any request, for every call (`namesNothing`, `DispatchEmptyPathError`). */
   #url(path: readonly string[], query?: object): string {
-    if (path.includes("")) throw new DispatchEmptyPathError(path);
+    if (path.some(namesNothing)) throw new DispatchEmptyPathError(path);
     const url = new URL(
       `${path.map((segment) => encodeURIComponent(segment)).join("/")}`,
       `${this.#baseUrl}/`

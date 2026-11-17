@@ -1694,10 +1694,10 @@ jobs:
               - 'packages/envoy-client/test/route-answers.ts'
               - 'packages/envoy-client/test/keyed-layer.ts'
               - 'scripts/dispatch/**'
-              # scripts/dispatch/__tests__/moved-approval-production-check.test.ts:3-4 and
-              # scripts/e2e/lib/dispatch-keyed-comment.test.ts:5 serve each write's answer through
-              # envoy-client's routeAnswer, which reads the OpenAPI document, and the first through
-              # its keyedLayer.
+              # scripts/dispatch/__tests__/moved-approval-production-check.test.ts and
+              # scripts/e2e/lib/dispatch-keyed-comment.test.ts serve each write's answer through
+              # envoy-client's routeAnswer, which reads the OpenAPI document, and through its
+              # keyedLayer.
               - 'packages/contracts/schemas/dispatch-openapi.json'
               - 'scripts/github-apps/**'
               - 'scripts/sessions/**'
@@ -2436,8 +2436,8 @@ jobs:
               # And @legion/broker-client with it (ci_job_reads.py's envoy_client_dep).
               - 'packages/broker-client/**'
               - 'packages/envoy-client/test/**'
-              # e2e/read-token-live.ts:37 imports @legion/envoy-client/broker-credential, whose
-              # src/broker-credential.ts:21-34 imports @legion/broker-client/*, so the dashboard's
+              # packages/dispatch/e2e/read-token-live.ts imports @legion/envoy-client/broker-credential,
+              # whose imports name @legion/broker-client/*, so the dashboard's
               # tsc program compiles broker-client's sources too (ci_job_reads.py's dispatch_ui).
               - 'packages/broker-client/**'
             # The browser suite (dispatch-browser), which .github/workflows/dispatch-browser.yaml
@@ -3370,7 +3370,7 @@ jobs:
               # an edit of the list alone must start both jobs, or the side it disagrees with
               # stays green.
               - 'packages/contracts/fixtures/go-unicode-isspace.json'
-              # test/route-answers.ts:29-31 reads the OpenAPI document: every
+              # test/route-answers.ts's `document` reads the OpenAPI document: every
               # keyed write of the client is driven against each 2xx answer it declares, and each
               # test's stub of a keyed write serves its route's answer.
               - 'packages/contracts/schemas/dispatch-openapi.json'
@@ -3380,7 +3380,7 @@ jobs:
               # src/__tests__/dispatch-advice.test.ts:683-690 holds every skill section a notice
               # cites to a heading of that skill's SKILL.md.
               - 'skills/**'
-              # src/__tests__/dispatch-asked-of.test.ts:377-385 reads every package's AGENTS.md,
+              # src/__tests__/dispatch-asked-of.test.ts's scannedTexts reads every package's AGENTS.md,
               # and its ALLOWED names lines of four of them, so rewording one of those lines
               # fails that test and this job has to run for it.
               - 'packages/*/AGENTS.md'
@@ -3394,8 +3394,8 @@ jobs:
               - 'packages/dispatch/e2e/**'
               - 'docs/site/src/**'
               - '**/AGENTS.md'
-              # src/__tests__/dispatch-who-waits.test.ts:785,793 reads the CLI guide's sentence on
-              # an assignee move, which must name the project's default assignee.
+              # src/__tests__/dispatch-who-waits.test.ts's rows `states the rule` read the CLI guide's
+              # sentence on an assignee move, which must name the project's default assignee.
               - 'packages/envoy/cmd/dispatch/README.md'
               # The one corpus both clients read: packages/broker-client/src/__tests__/wire.test.ts:23-29
               # reads the Go package's own testdata by relative path, that file itself and never a

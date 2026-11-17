@@ -54,6 +54,7 @@ The listener's client refuses a redirect the same way.
 An `EnvoyApiError` of a 3xx names the method, the URL without its user and password, the status and the origin (`transport.ts`).
 It names nothing of the body.
 The pool identity of `@legion/broker-client` names a 3xx of the security token service by its status alone, as `HTTP <status>`.
+The GitHub Actions identity, of `@legion/broker-client` and of the Go broker client, follows no redirect of the runner's OIDC token endpoint either, since that request carries the runner's bearer, and names a 3xx by its status alone.
 
 ## A path value that names nothing
 
@@ -136,36 +137,16 @@ It then says to read back what it made with `dispatch read` or the matching list
 
 Two routes store nothing: the round trip of a text and the related-item check.
 An answer of either that is not its answer made nothing, so it is never a landing.
-That holds for a 2xx with no row, a replay whose first answer Dispatch did not keep, and a `409 KEY_COMMITTED`.
+That holds for a 2xx with no row, a 2xx that names no key back, a replay whose first answer Dispatch did not keep, and a `409 KEY_COMMITTED`.
 Each is a `DispatchAnswerMissingError` (`ANSWER_LOST`), which says that nothing was made and that asking again is safe.
 
 ## A 2xx that names no key back
 
-A Dispatch older than the keyed layer names no key back, and this client still writes to it.
-A 2xx that names no key back is that Dispatch's answer only when it gives the row and holds what this call sent (`rowHolds`).
-Each row declares the values that its answer names back (`Held`, read by `heldBy`):
-
-- A CI job's result (`dispatch result --project`): the project that its path names, and the check, the verdict and the commit that it sent.
-
-- An issue's result (`dispatch result --issue`): the issue that its path names, and the verdict and the commit that it sent.
-
-- Each other write: the key or the id that its path names.
-  Examples are an issue's key, a project's key, and the id of a document, an ask, a comment or a message.
-  A review's version, a handoff's phase and a delivery's attempt in the path count too.
-  So do a new issue's project, a new project's key and an approved plan's version from the body.
-
-The answer must hold each such value as the call sent it, up to the white space around it that Dispatch trims.
-The client does not compare a value that the call did not set: one that is absent, null or empty.
-The client compares no text, because Dispatch rewrites a text that it stores: it trims it, and it folds the line ends of a body.
-Six rows declare no value, and a 2xx with no key that gives one of those rows is the answer.
-They are the round trip and the related-item check, an agent's message, a delivery's reply, a named version, and a document edit.
-
-Any other 2xx is no answer that the client can take as Dispatch's to this call.
-Such a 2xx names another request's key back.
-Or it names no key and gives no row, or it names no key and holds another call's values.
-A proxy's page, a server that is not Dispatch, or a proxy or cache that answers one write with another's gives such an answer.
-So does a Dispatch that stored the write and answered without the key and without the row.
-That is a build older than the key's echo, or one behind a proxy that drops the header.
+Dispatch's keyed layer runs on every `POST` and `PATCH` route.
+So a 2xx that names no key back, or another request's key, is never this call's answer, whatever it holds.
+The client compares nothing of it with what the call sent, because an equal value does not tell this call's write from another call's.
+A proxy's page, a server that is not Dispatch, a proxy or cache that answers one write with another's, and a proxy that drops the header give such an answer.
+A Dispatch older than the keyed layer names no key back either, so each of its 2xx is such an answer.
 A `409 KEY_COMMITTED` that names no key back, or another request's key, is no such answer either.
 The write may have reached Dispatch behind what answered it, so its outcome is unknown, a `DispatchWriteUnsettledError`.
 Check whether it took effect before you send it again.

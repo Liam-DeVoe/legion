@@ -403,34 +403,34 @@ describe("DispatchClient's writes", () => {
     }
   });
 
-  // A yes, from an echo or from /healthz, holds for KEYED_LAYER_MEMORY_MS from the answer that
+  // A yes, from an echo or from /healthz, holds for KEYED_LAYER_MEMORY_MS from the last answer that
   // showed it; past that a failure that says nothing asks /healthz again, so a rollback to a
-  // Dispatch without the layer is noticed within that bound. The first Dispatch's answers name no
-  // key back, so what the process learns of the layer is /healthz's alone.
+  // Dispatch without the layer is noticed within that bound. Here each call's gateway failure
+  // names no key back, and its keyed 201 after the 1 s pause does: the first yes is /healthz's, and
+  // each 201 that follows moves it on.
   test("remember a yes for five minutes, then ask /healthz again", async () => {
-    const probed = scripted(
-      [
-        page(502, "Bad Gateway"),
-        json(posted, 201),
-        page(502, "Bad Gateway"),
-        json(posted, 201),
-        page(502, "Bad Gateway"),
-        json(posted, 201),
-      ],
-      { noKeyedLayer: true }
-    );
+    const probed = scripted([
+      page(502, "Bad Gateway"),
+      json(posted, 201),
+      page(502, "Bad Gateway"),
+      json(posted, 201),
+      page(502, "Bad Gateway"),
+      json(posted, 201),
+    ]);
     const { retry, advance } = pacing();
     // A client lives at most its 60 s deadline, so each call five minutes apart has its own; what
     // the process learned of the layer outlives them.
     const dispatch = () => client(probed.fetchImpl, retry);
 
-    // The probe answers at 0 s, before the 1 s pause.
+    // The probe answers at 0 s, before the 1 s pause; the 201 names the key back at 1 s.
     await expect(dispatch().comment("DSP-1", comment)).resolves.toEqual(posted);
     expect(probed.probes).toHaveLength(1);
-    advance(KEYED_LAYER_MEMORY_MS - 2_000);
+    // Five minutes and more after the probe, and less after the 201: the 201's yes holds.
+    advance(KEYED_LAYER_MEMORY_MS - 1);
     await expect(dispatch().comment("DSP-1", comment)).resolves.toEqual(posted);
     expect(probed.probes).toHaveLength(1);
-    advance(1);
+    // Five minutes after that call's own 201.
+    advance(KEYED_LAYER_MEMORY_MS);
     await expect(dispatch().comment("DSP-1", comment)).resolves.toEqual(posted);
     expect(probed.probes).toHaveLength(2);
     expect(probed.sent).toHaveLength(6);
@@ -1246,7 +1246,8 @@ function answerOn(socket: Socket, status: number, body: unknown, key?: string): 
  * A Dispatch on a real socket, so a request's body goes out at the pace the connection takes it.
  * Each write's connection takes its body as the next of `intakes` says - at once, in a fixed number
  * of paced steps, or nothing past the first of it - and answers 201 carrying back its key once it
- * holds all of it. `GET /healthz` answers that the keyed layer runs.
+ * holds all of it: it names the key itself, since `keyedLayer` wraps a fetch-shaped answer and a
+ * socket gives none. `GET /healthz` answers that the keyed layer runs.
  */
 async function socketDispatch(intakes: readonly Intake[]) {
   const writes: Taken[] = [];

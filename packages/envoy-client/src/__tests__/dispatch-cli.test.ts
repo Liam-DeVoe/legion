@@ -838,6 +838,22 @@ describe("the dispatch CLI", () => {
     expect(requests).toEqual([]);
   });
 
+  // A session id comes from the environment, past every flag's check, and goes into the path of
+  // `dispatch answers`. `..` is a step of a path, which the URL parser drops: sent, it asked
+  // `GET /api/v1/answers`, another route. The client refuses that path before any request
+  // (`DispatchEmptyPathError`), and the command exits 2 on it, as on a refusal of its arguments.
+  test("a session id that is a step of a path is refused by the client before any request, exit 2", async () => {
+    const { code, stdout } = await run(["answers"], {
+      DISPATCH_HOST: "omp",
+      DISPATCH_SESSION_ID: "..",
+    });
+    expect({ code, line: stdout.split("\n")[0] }).toEqual({
+      code: 2,
+      line: expect.stringContaining('/api/v1/agents/{".."}/answers holds a value that names nothing'),
+    });
+    expect(requests).toEqual([]);
+  });
+
   // The CLI asks a route no build answered three more times, 1, 2 and 4 s apart (jittered), before
   // it says so: the test waits those seconds.
   test("answers against a Dispatch without the route says its build is older than the answers route, exit 1", async () => {
@@ -2469,7 +2485,8 @@ describe("dispatch result --project, as a CI job writes it", () => {
   // connection closes or goes silent. The stall is ended by the command's own bound, on the fake
   // clock (`onFakeClock`), moved once the 201's headers came, since that bound is what the row tests.
   const bodyStart = '{"id":"00000000-0000-4000-8000-';
-  /** The `Idempotency-Key` a raw request carries, which a stand-in of Dispatch names back. */
+  /** The `Idempotency-Key` a raw request carries, which a stand-in of Dispatch on a raw socket names
+   *  back itself: `keyedLayer` wraps a fetch-shaped answer, and a socket gives none. */
   const keyOf = (request: Buffer): string =>
     /\r\nidempotency-key: *([^\r\n]*)/i.exec(request.toString("latin1"))?.[1]?.trim() ?? "";
   for (const [name, length, close] of [
@@ -2526,8 +2543,9 @@ describe("dispatch result --project, as a CI job writes it", () => {
   }
 
   /** A stand-in Dispatch on a raw socket that answers every POST with `status`, `type` and the
-   *  whole of `body`, naming back the request's key as Dispatch does (`this`), none, or another
-   *  request's (`other`), counting the posts. */
+   *  whole of `body`, naming back the request's key itself (`keyOf`, since no fetch-shaped layer
+   *  wraps a socket) as Dispatch does (`this`), none, or another request's (`other`), counting the
+   *  posts. */
   function answeringWhole(
     status: string,
     type: string,

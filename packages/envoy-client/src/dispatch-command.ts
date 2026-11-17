@@ -560,11 +560,23 @@ export function parseCommand(
   // sent, an empty issue key reaches a route that is no route (`PATCH /api/v1/issues/`), which a
   // rolling release also answers, and an empty search project or `--at` widens the read with no
   // line. So it is refused here, naming the flag that gave it: an empty variable in a job's step
-  // is how one is written.
-  for (const { field, noun, tools } of IDENTIFIER_FIELDS) {
-    if (args[field] === "" && (tools === undefined || tools.includes(tool))) {
+  // is how one is written. The value is read trimmed, since Dispatch trims a query's value, and
+  // `.` or `..` in a path is a step of the path, which the URL drops (`dispatch read --issue ..`
+  // asked `GET /api/v1/`).
+  for (const { field, noun, tools, path } of IDENTIFIER_FIELDS) {
+    const value = args[field];
+    if (typeof value !== "string" || (tools !== undefined && !tools.includes(tool))) continue;
+    const flag = setBy.get(field);
+    const named = value.trim();
+    if (value === "") {
       problems.push(
-        `${setBy.get(field)} is empty, so the call names no ${noun}: a variable that gives it may be empty or unset`
+        `${flag} is empty, so the call names no ${noun}: a variable that gives it may be empty or unset`
+      );
+    } else if (named === "") {
+      problems.push(`${flag} is only white space, so the call names no ${noun}`);
+    } else if (path === true && (named === "." || named === "..")) {
+      problems.push(
+        `${flag} is "${named}", a step of a URL path, which the URL drops, so the call names no ${noun}`
       );
     }
   }
@@ -604,24 +616,28 @@ const ISSUE_KEY = /^[A-Z][A-Z0-9]*-\d+$/;
 
 /**
  * The fields that name what a call is about, or narrow what a read answers, each a key, an id, a
- * commit or a filter that is never empty, with the noun its refusal names: every command's field
- * of the name, or the listed commands' alone where another command gives the empty value a
- * meaning (`dispatch issue-update --parent ""` clears the parent). A value the call puts in a URL
- * path is refused there too, for every caller (`DispatchEmptyPathError`).
+ * commit or a filter that is never empty or only white space, with the noun its refusal names:
+ * every command's field of the name, or the listed commands' alone where another command gives
+ * the empty value a meaning (`dispatch issue-update --parent ""` clears the parent). `path` marks
+ * a field whose value goes into a URL path in some command, where `.` and `..` name nothing
+ * either. A value the call puts in a URL path is refused there too, for every caller
+ * (`DispatchEmptyPathError`).
  */
 const IDENTIFIER_FIELDS: readonly {
   readonly field: string;
   readonly noun: string;
   readonly tools?: readonly string[];
+  readonly path?: true;
 }[] = [
-  { field: "issue", noun: "issue" },
-  { field: "project", noun: "project" },
+  { field: "issue", noun: "issue", path: true },
+  { field: "project", noun: "project", path: true },
   { field: "check", noun: "check" },
   { field: "commit", noun: "commit" },
   { field: "at", noun: "commit" },
-  { field: "retract", noun: "result" },
-  { field: "comment", noun: "comment" },
-  { field: "parent", noun: "parent", tools: ["dispatch_issues"] },
+  { field: "retract", noun: "result", path: true },
+  { field: "comment", noun: "comment", path: true },
+  { field: "session", noun: "session", path: true },
+  { field: "parent", noun: "parent", tools: ["dispatch_issues", "dispatch_issue"] },
 ];
 
 /** A shell word: bare when it needs no quoting, otherwise POSIX single-quoted. */

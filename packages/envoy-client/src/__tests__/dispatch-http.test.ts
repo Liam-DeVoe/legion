@@ -1973,6 +1973,38 @@ describe("a path value that is empty", () => {
     }
     expect(asked).toEqual([]);
   });
+
+  // A value of only white space names nothing either, and `.` or `..` is a step of the path, which
+  // the URL parser drops: sent, `POST /api/v1/comments/./resolve` asks `POST
+  // /api/v1/comments/resolve` and `GET /api/v1/agents/../answers` asks `GET /api/v1/answers`.
+  test("a value of only white space, . or .. is refused the same way", async () => {
+    const asked: string[] = [];
+    const fetchImpl = (async (input: RequestInfo | URL) => {
+      asked.push(String(input));
+      return jsonResponse({});
+    }) as typeof fetch;
+    const client = new DispatchClient(
+      "http://dispatch.test",
+      bearerCredential("secret"),
+      fetchImpl
+    );
+    for (const [call, place] of [
+      [() => client.resolveComment(".", actor), '/api/v1/comments/{"."}/resolve'],
+      [
+        () => client.retractResult("..", { actor, reason: "Wrong commit." }),
+        '/api/v1/results/{".."}/retract',
+      ],
+      [() => client.sessionAnswers(" \t"), '/api/v1/agents/{" \\t"}/answers'],
+    ] as const) {
+      const refusal = await call().then(
+        () => undefined,
+        (error: unknown) => error
+      );
+      expect(refusal, place).toBeInstanceOf(DispatchEmptyPathError);
+      expect((refusal as Error).message, place).toContain(place);
+    }
+    expect(asked).toEqual([]);
+  });
 });
 
 // fetch sends a DPoP proof on to another origin a redirect names (it drops `Authorization` alone),

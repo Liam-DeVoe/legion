@@ -616,9 +616,9 @@ five minutes after the answer that showed it.
 [`docs/write-answers.md`](docs/write-answers.md) says what each answer of Dispatch becomes, and
 what the `dispatch` command prints for each. It covers Dispatch's refusal, a gateway's page, a
 refused redirect, a path value that names nothing, and a write whose outcome is unknown. It also
-covers a landing whose answer is gone, and the 2xx of a Dispatch with no keyed layer. A landing
-needs the key that Dispatch names back. The line of a refused redirect names the target's origin
-and nothing of the body.
+covers a landing whose answer is gone, and a 2xx that names no key back, which is never the call's
+answer. A landing needs the key that Dispatch names back. The line of a refused redirect names the
+target's origin and nothing of the body.
 
 Successful write responses may include `advice`. The executor preserves that object as
 `details.advice` and appends short pointers after the subscription/follow suffix: a primary spec
