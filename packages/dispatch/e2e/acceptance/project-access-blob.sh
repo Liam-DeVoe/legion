@@ -328,11 +328,16 @@ compare() {
     printf '%s %s %s: this build answered no "%s": %s\n' "$caller" "$method" "$path" "$declared_header" \
       "$(grep -i '^dispatch-private-projects:' "$work/answers/head.headers" || echo 'the header is absent')" >>"$work/differences"
   fi
-  grep -vx "$declared_header" "$work/answers/head.headers" >"$work/answers/head.headers.compared" || true
-  if ! cmp -s "$work/answers/base.headers" "$work/answers/head.headers.compared"; then
+  # The declared line is dropped from both builds' headers before they are compared: a base that
+  # already holds this change sends it too, and only the exact `: 0` line is dropped, so a base or a
+  # build that sends `: 1` still differs.
+  for build in base head; do
+    grep -vx "$declared_header" "$work/answers/$build.headers" >"$work/answers/$build.headers.compared" || true
+  done
+  if ! cmp -s "$work/answers/base.headers.compared" "$work/answers/head.headers.compared"; then
     differed=$((differed + 1))
     printf '%s %s %s: the headers differ:\n%s\n' "$caller" "$method" "$path" \
-      "$(diff "$work/answers/base.headers" "$work/answers/head.headers.compared" | grep -E '^[<>]' | sed 's/^</   base:/; s/^>/   this build:/')" >>"$work/differences"
+      "$(diff "$work/answers/base.headers.compared" "$work/answers/head.headers.compared" | grep -E '^[<>]' | sed 's/^</   base:/; s/^>/   this build:/')" >>"$work/differences"
   fi
 }
 
