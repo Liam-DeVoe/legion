@@ -47,19 +47,19 @@ var secretForms []secretForm
 func init() {
 	// Register after variable initialization: the handlers use commands for help.
 	secretForms = []secretForm{
-		{command{"secret list", "agent-secrets secret list [--json] [--profile P]",
+		{command{"secret list", "agent-secrets secret list [--json]",
 			"List every agent secret, under the environment's cloud credential: its name, owner, tier, kind,\nshape, max grant, default grant, whether it has a value, and its deletion once it is deleted,\nwith the earliest purge beside it on Secrets Manager; --json also prints each one's store,\nsecret name, github-owners, requesters, scopes and admin mark, and its created and\nlast-changed times where the store gives them. Name the store the rows are in."}, cmdSecretList},
-		{command{"secret show", "agent-secrets secret show NAME [--json] [--profile P]",
+		{command{"secret show", "agent-secrets secret show NAME [--json]",
 			"Print an agent secret's name, store, secret name, owner, tier, kind, github-owners,\nrequesters, scopes, admin mark, shape, max grant, default grant, its created and\nlast-changed times, its deletion once it is deleted, with the earliest purge beside\nit on Secrets Manager, and its versions; --json prints those and whether it has a value.\nNever print its value."}, cmdSecretShow},
-		{command{"secret create", "agent-secrets secret create NAME --owner me|shared|EMAIL --tier agent|human [--kind " + strings.Join(policy.Kinds, "|") + "|none] [--github-owners LOGINS] [--requesters LIST] [--scopes LIST] [--admin true] [--shape " + strings.Join(policy.Shapes, "|") + "] [--max-grant DURATION] [--default-grant session] [--profile P]",
+		{command{"secret create", "agent-secrets secret create NAME --owner me|shared|EMAIL --tier agent|human [--kind " + strings.Join(policy.Kinds, "|") + "|none] [--github-owners LOGINS] [--requesters LIST] [--scopes LIST] [--admin true] [--shape " + strings.Join(policy.Shapes, "|") + "] [--max-grant DURATION] [--default-grant session]",
 			"Create an agent secret under the environment's cloud credential, then ask the broker to serve it.\n--owner me is the email of the person that credential names, and is refused where it names\nnone; --owner EMAIL names the owning person by email. Read its value from standard input, or\ntype it at a prompt with echo off."}, cmdSecretCreate},
-		{command{"secret set", "agent-secrets secret set NAME [--profile P]",
+		{command{"secret set", "agent-secrets secret set NAME",
 			"Set a new agent-secret value under the environment's cloud credential. Then ask the broker to\nserve it. Read the value from standard input, or type it at a prompt with echo off."}, cmdSecretSet},
-		{command{"secret retag", "agent-secrets secret retag NAME [--owner me|shared|EMAIL] [--tier agent|human] [--kind " + strings.Join(policy.Kinds, "|") + "|none] [--github-owners LOGINS|none] [--requesters LIST|none] [--scopes LIST|none] [--admin true|none] [--shape " + strings.Join(policy.Shapes, "|") + "|none] [--max-grant DURATION|none] [--default-grant session|none] [--profile P]",
+		{command{"secret retag", "agent-secrets secret retag NAME [--owner me|shared|EMAIL] [--tier agent|human] [--kind " + strings.Join(policy.Kinds, "|") + "|none] [--github-owners LOGINS|none] [--requesters LIST|none] [--scopes LIST|none] [--admin true|none] [--shape " + strings.Join(policy.Shapes, "|") + "|none] [--max-grant DURATION|none] [--default-grant session|none]",
 			"Change an agent secret's owner, tier, kind, GitHub owners, requesters, scopes, admin mark,\nshape, max grant or default grant under the environment's cloud credential. Then ask the broker\nto reread it. none removes a kind, GitHub owners, requesters, scopes, the admin mark, a shape, a\nmax grant or a default grant, in a retag of its own. An administrator changes a shared secret's\nowner and tier. This CLI cannot tell whether a requesters entry naming a service is one the\ndeployment registers: it holds no list of them, so the broker's answer to the reread is what\ncatches an unregistered name, printing its refusal and its reason, and the retag exits 1 with\nthe tag written."}, cmdSecretRetag},
-		{command{"secret delete", "agent-secrets secret delete NAME [--profile P]",
+		{command{"secret delete", "agent-secrets secret delete NAME",
 			"Schedule the agent secret NAME's deletion, restorable for 30 days, under the environment's\ncloud credential, then ask the broker to stop serving it at once."}, cmdSecretDelete},
-		{command{"secret restore", "agent-secrets secret restore NAME [--profile P]",
+		{command{"secret restore", "agent-secrets secret restore NAME",
 			"Cancel the agent secret NAME's scheduled deletion under the environment's cloud credential,\nthen ask the broker to serve it again at once."}, cmdSecretRestore},
 	}
 	execForm := commands[len(commands)-1]
@@ -105,6 +105,16 @@ func cmdSecret(args []string, stdout, stderr io.Writer) int {
 			writeCommandHelp(stderr, form.help)
 		}
 		return 0
+	}
+	// --profile was a flag of the AWS backend (cybermonklabs/legion#1833) until #4130; the
+	// tool now reads the store credential from the environment, as the cloud's own tools do, so a
+	// form given --profile is a usage error naming the variables to use instead, and those that
+	// outrank them.
+	for _, a := range args[1:] {
+		if a == "--profile" || strings.HasPrefix(a, "--profile=") {
+			fmt.Fprintln(stderr, "agent-secrets secret: --profile is not a flag: agent-secrets reads the store credential from the environment, as the cloud's own tools do. On Google Cloud set CLOUDSDK_ACTIVE_CONFIG_NAME (a gcloud configuration) or CLOUDSDK_CORE_ACCOUNT (a gcloud account), which CLOUDSDK_AUTH_ACCESS_TOKEN and GOOGLE_APPLICATION_CREDENTIALS outrank when set; on AWS set AWS_PROFILE, which access keys in AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY, and AWS_WEB_IDENTITY_TOKEN_FILE, outrank when set, as in the AWS CLI.")
+			return exitUsageError
+		}
 	}
 	for _, form := range secretForms {
 		if form.help.name == "secret "+args[0] {
@@ -161,14 +171,12 @@ func secretFail(stderr io.Writer, form string, err error) int {
 }
 
 // secretFlagValues are the secret forms' flags that take a value.
-var secretFlagValues = map[string]bool{"owner": true, "tier": true, "kind": true, "github-owners": true, "requesters": true, "scopes": true, "admin": true, "shape": true, "max-grant": true, "default-grant": true, "profile": true}
+var secretFlagValues = map[string]bool{"owner": true, "tier": true, "kind": true, "github-owners": true, "requesters": true, "scopes": true, "admin": true, "shape": true, "max-grant": true, "default-grant": true}
 
-// secretFlags is form's flag set with --profile, which every secret form takes but only the AWS
-// backend uses (GCP uses your Google sign-in instead, gcpBackend; a non-empty --profile there is a
-// usage error, openSecretBackend).
-func secretFlags(form string, stderr io.Writer) (*flag.FlagSet, *string) {
-	flags := newFlagSet(form, stderr)
-	return flags, flags.String("profile", "", "the AWS profile to sign in with (AWS only; default: AWS_PROFILE, else the AWS SDK's default credential chain)")
+// secretFlags is form's flag set. The store credential comes from the environment, never a flag
+// (cmdSecret refuses --profile), so no form registers one for it.
+func secretFlags(form string, stderr io.Writer) *flag.FlagSet {
+	return newFlagSet(form, stderr)
 }
 
 // secretName is the one NAME a form takes, and its slug: the secret's name under the prefix.
@@ -204,8 +212,16 @@ var disableCoreDumps = sync.OnceValue(preventCoreDumps)
 // replace it. It calls prompt to show the label once it holds the terminal with echo
 // off, so a prompt started in the background shows nothing over the shell's own line.
 // The reader drains bracketed pastes through their end, and input following an
-// unbracketed line through a bounded quiet window.
+// unbracketed line through a bounded quiet window. deadline, when it is not the zero
+// time, is when the read gives up with errValueTimedOut; the zero time sets no bound.
 var readHidden = readHiddenAtTerminal
+
+// onSignalDeath, while set, runs once just before a hang-up, an interrupt, a quit or a termination
+// ends the form by that signal (endBySignal). Create sets it from before it asks the store to make
+// the secret until that secret holds its value or the discard has run (pendingCreate.watch,
+// pendingCreate.interrupted), so a signal in that stretch deletes the empty secret rather than
+// leaving it, and says what the create left; nil otherwise.
+var onSignalDeath func()
 
 // errMoreThanOneLine is readHidden's answer when more input followed the first line at the prompt,
 // as a paste of a value of more than one line does: the prompt reads one line, and the rest would
@@ -225,6 +241,59 @@ var errValueCutShort = errors.New("the terminal hung up before the value ended")
 // how much. The entire entry must be refused, even when the reader had already received a prefix.
 var errPromptStopped = errors.New("the terminal stopped while reading the value")
 
+// errValueTimedOut is readSecretValue's answer, from either arm, when no whole value came before
+// its deadline.
+var errValueTimedOut = errors.New("no value came in time")
+
+// valueDeadlineNotice is the reason the value prompt hands onDiscard when the value deadline passes
+// with an entry under way (it is errValueTimedOut): whether a bracketed paste was open then, inside
+// which a signal key is pasted text, and the byte of the interrupt key that ends the process by
+// SIGINT, 0 where no key does (none set, SIGINT inherited as ignored, or a terminal that is not
+// this process's controlling one). The notice names only what ends the entry from there.
+type valueDeadlineNotice struct {
+	inPaste   bool
+	interrupt byte
+}
+
+func (valueDeadlineNotice) Error() string { return errValueTimedOut.Error() }
+
+func (valueDeadlineNotice) Is(target error) bool { return target == errValueTimedOut }
+
+// ends says how the entry under way ends, and so when a create deletes the empty secret it made:
+// a paste must end before Enter can end the entry; the interrupt key, where it ends the process,
+// deletes it at once; and where it does not, ending the process does.
+func (n valueDeadlineNotice) ends() string {
+	switch {
+	case n.inPaste:
+		return "this entry ends: finish the paste, then press Enter, and the create deletes it then"
+	case n.interrupt != 0:
+		return "you press Enter to end this entry, and the create deletes it then; " + keyName(n.interrupt) + " deletes it now"
+	}
+	return "you press Enter to end this entry, or end this process (close this terminal, or send it SIGTERM), and the create deletes it then"
+}
+
+// keyName is what a person calls the key that sends c: a control byte by its own name or its
+// Ctrl- chord (promptControlByteError.name, "Ctrl-C" for 0x03), a printable character as that key
+// ("the Z key", the space bar), and any other byte by its number.
+func keyName(c byte) string {
+	switch {
+	case c < 0x20 || c == 0x7f:
+		return promptControlByteError{c: c}.name()
+	case c == ' ':
+		return "the space bar"
+	case c < 0x7f:
+		return fmt.Sprintf("the %c key", c)
+	}
+	return fmt.Sprintf("the key that sends byte 0x%02x", c)
+}
+
+// valueReadWindow is how long `secret create` reads the value of the secret it made before it
+// gives up and discards that secret: policy.PendingValueWindow, the time the broker holds such a
+// secret as waiting for its value (pending-value), so the create ends its read when the broker
+// stops waiting. The create counts it from before the store made the secret, so its read never
+// outlasts the broker's window, and hands readSecretValue the moment it ends. Tests shorten it.
+var valueReadWindow = policy.PendingValueWindow
+
 // errNoForeground is readHidden's answer when its process group is orphaned while it waits in the
 // background (the shell that started it has gone): no shell can ever hand it the terminal, so it
 // refuses before showing anything rather than waiting forever.
@@ -234,15 +303,61 @@ var errNoForeground = errors.New("no shell can bring the value prompt to the for
 // (secret_prompt_other.go): the value must be piped in.
 var errNoValuePrompt = errors.New("no value prompt is available on this platform")
 
-// promptControlByteError is an unhandled control byte typed at the prompt. Its byte lets the form
-// turn the reader error into a usage error that names the invisible input.
-type promptControlByteError byte
-
-func (e promptControlByteError) Error() string {
-	return fmt.Sprintf("the control byte 0x%02x cannot be typed at the prompt", byte(e))
+// promptControlByteError is an unhandled control byte typed or pasted at the prompt: c, the first
+// one the line held, and whether the value held text before it (textBefore) and after it
+// (textAfter), which say where it came. Its parts let the form turn the reader error into a usage
+// error that names the invisible input and where it is, so a person can tell a Tab a paste added
+// at an end from one inside the value.
+type promptControlByteError struct {
+	c                     byte
+	textBefore, textAfter bool
 }
 
-func (e promptControlByteError) ControlByte() byte { return byte(e) }
+// Error names the byte by its number and its name, and where it came, with the note, for a Tab at
+// one end, that a paste often adds one there.
+func (e promptControlByteError) Error() string {
+	name := e.name()
+	article := "a"
+	if strings.ContainsRune("AEIOU", rune(name[0])) {
+		article = "an"
+	}
+	where := "inside the value"
+	switch {
+	case !e.textBefore && !e.textAfter:
+		where = "as the whole value"
+	case !e.textAfter:
+		where = "at the end of the value"
+	case !e.textBefore:
+		where = "at the start of the value"
+	}
+	note := ""
+	if e.c == '\t' && e.textBefore != e.textAfter {
+		note = ", where a paste often adds one"
+	}
+	return fmt.Sprintf("the control byte 0x%02x cannot be typed at the prompt: %s %s %s%s", e.c, article, name, where, note)
+}
+
+// name is what a person calls the byte: the key that sends it where it has a name of its own, and
+// the Ctrl- chord that types it otherwise.
+func (e promptControlByteError) name() string {
+	switch e.c {
+	case 0x00:
+		return "NUL"
+	case '\b':
+		return "Backspace"
+	case '\t':
+		return "Tab"
+	case '\v':
+		return "vertical tab"
+	case '\f':
+		return "form feed"
+	case 0x1b:
+		return "Escape"
+	case 0x7f:
+		return "Delete"
+	}
+	return "Ctrl-" + string(rune('@'+e.c))
+}
 
 // shellUnsafe is any character outside the set a POSIX shell reads literally in a bare word.
 var shellUnsafe = regexp.MustCompile(`[^A-Za-z0-9_./:@-]`)
@@ -257,12 +372,8 @@ func shellWord(s string) string {
 }
 
 // pipeCommand is the command line a form names for piping a value in: prefix (the backend's
-// signInPrefix), agent-secrets, then words, then --profile as the person gave it, each
-// shell-quoted, so running it signs in the same way.
-func pipeCommand(prefix, profile string, words ...string) string {
-	if profile != "" {
-		words = append(words, "--profile", profile)
-	}
+// signInPrefix), agent-secrets, then words, each shell-quoted, so running it signs in the same way.
+func pipeCommand(prefix string, words ...string) string {
 	quoted := make([]string, len(words))
 	for i, w := range words {
 		quoted[i] = shellWord(w)
@@ -271,8 +382,10 @@ func pipeCommand(prefix, profile string, words ...string) string {
 }
 
 // readSecretValue reads the value of the secret name for a form, to be stored under shape, the
-// secret's shape tag (policy.TagShape), which is "" for a secret carrying none. At a terminal it
-// prompts on stderr, once it holds the terminal with echo off, and reads one line (readHidden),
+// secret's shape tag (policy.TagShape), which is "" for a secret carrying none, giving up with
+// errValueTimedOut at deadline, or never where deadline is the zero time; a value read whole only
+// after deadline is refused the same way. At a terminal it prompts on stderr, once it holds the
+// terminal with echo off, naming deadline where there is one, and reads one line (readHidden),
 // as `gh secret set` does, so the value never shows on the screen; a value of more than one line
 // is refused there, naming pipeTo, the form's own command line (pipeCommand) with the value piped
 // in. Otherwise it reads all of secretStdin.
@@ -286,7 +399,7 @@ func pipeCommand(prefix, profile string, words ...string) string {
 // this reader has always removed, so `echo` and a file ending in a newline give the value without
 // one. A line typed at the prompt carries no ending at all, so the terminal arm meets the
 // fallback and nothing else. An empty value is a usage error either way, in its own arm's words.
-func readSecretValue(name, pipeTo, shape string, stderr io.Writer) (string, error) {
+func readSecretValue(name, pipeTo, shape string, deadline time.Time, stderr io.Writer) (string, error) {
 	if err := disableCoreDumps(); err != nil {
 		return "", err
 	}
@@ -294,10 +407,21 @@ func readSecretValue(name, pipeTo, shape string, stderr io.Writer) (string, erro
 	var value, empty string
 	if fd, ok := stdinTerminal(secretStdin); ok {
 		prompted := false
-		line, err := readHidden(fd, func() {
+		line, err := readHidden(fd, deadline, func() {
 			prompted = true
+			if !deadline.IsZero() {
+				fmt.Fprintf(stderr, "Enter the value by %s, %s after the create, or nothing is stored.\n", deadline.Format("15:04:05 MST"), valueWindowText())
+			}
 			fmt.Fprintf(stderr, "Value for %s: ", name)
-		}, func() {
+		}, func(reason error) {
+			// Only a create's read has a deadline, and only where it made the secret first (GCP):
+			// the prompt reads on until this entry ends, and the create deletes that empty secret
+			// only then, or at once on a signal that ends the process (pendingCreate.interrupted).
+			var timedOut valueDeadlineNotice
+			if errors.As(reason, &timedOut) {
+				fmt.Fprintf(stderr, "\nThe value deadline passed with an entry under way: no value came within %s of the create, so none is stored. The empty secret %s stays in the store until %s. Then run %s again and type the whole value.\n", valueWindowText(), name, timedOut.ends(), pipeTo)
+				return
+			}
 			fmt.Fprintf(stderr, "\nNothing was stored. Press Enter to finish discarding this entry, then run %s again and type the whole value.\n", pipeTo)
 		})
 		if prompted {
@@ -313,20 +437,32 @@ func readSecretValue(name, pipeTo, shape string, stderr io.Writer) (string, erro
 		if errors.Is(err, errNoForeground) || errors.Is(err, errNoValuePrompt) {
 			return "", usageErr{fmt.Errorf("%w; pipe the value in: %s < FILE", err, pipeTo)}
 		}
-		var control interface{ ControlByte() byte }
+		var control promptControlByteError
 		if errors.As(err, &control) {
-			return "", usageErr{fmt.Errorf("the control byte 0x%02x cannot be typed at the prompt; pipe the value in: %s < FILE", control.ControlByte(), pipeTo)}
+			return "", usageErr{fmt.Errorf("%w. Nothing was stored, and the value was not trimmed: enter it again without the %s, or, if the %s is part of it, pipe the value in: %s < FILE", control, control.name(), control.name(), pipeTo)}
+		}
+		if errors.Is(err, errValueTimedOut) {
+			return "", valueTimedOut(pipeTo)
 		}
 		if err != nil {
 			return "", fmt.Errorf("read the value at the terminal: %w", err)
 		}
 		value, empty = string(line), "no value was entered at the prompt"
 	} else {
-		data, err := io.ReadAll(secretStdin)
+		data, err := readAllBy(secretStdin, deadline)
+		if errors.Is(err, errValueTimedOut) {
+			return "", valueTimedOut(pipeTo)
+		}
 		if err != nil {
 			return "", fmt.Errorf("read the value from standard input: %w", err)
 		}
 		value, empty = string(data), "the value is read from standard input, which was empty"
+	}
+	// The prompt reads on through a paste, and through what follows the line, however long that
+	// takes, so a value can come whole only after the deadline: it did not come in time, and a
+	// create stores no value once the broker has stopped holding its secret as waiting for one.
+	if !deadline.IsZero() && !time.Now().Before(deadline) {
+		return "", valueTimedOut(pipeTo)
 	}
 	if !utf8.ValidString(value) {
 		return "", usageErr{errors.New("the value must be valid UTF-8")}
@@ -339,6 +475,69 @@ func readSecretValue(name, pipeTo, shape string, stderr io.Writer) (string, erro
 		return "", usageErr{errors.New(empty)}
 	}
 	return stored, nil
+}
+
+// valueTimedOut is the error a create's read of its value ends with at its deadline: nothing was
+// stored, how long the read lasted, and the command to run again. It is no usage error: the
+// command was right, and the person or the pipe was too slow.
+func valueTimedOut(pipeTo string) error {
+	return fmt.Errorf("nothing was stored: %w, within %s of the create, as long as the broker holds a new secret waiting for its value, so the create gave up; run %s again", errValueTimedOut, valueWindowText(), pipeTo)
+}
+
+// valueWindowText is valueReadWindow as a line says it: whole minutes as such ("10 minutes"), any
+// other length as Go writes it.
+func valueWindowText() string {
+	if valueReadWindow >= time.Minute && valueReadWindow%time.Minute == 0 {
+		return fmt.Sprintf("%d minutes", valueReadWindow/time.Minute)
+	}
+	return valueReadWindow.String()
+}
+
+// readAllBy reads all of r, or answers errValueTimedOut at deadline when r has not ended by then;
+// the zero deadline reads with no bound. A read it gives up on stays blocked, which costs nothing:
+// the form ends at once.
+func readAllBy(r io.Reader, deadline time.Time) ([]byte, error) {
+	if deadline.IsZero() {
+		return io.ReadAll(r)
+	}
+	type read struct {
+		data []byte
+		err  error
+	}
+	done := make(chan read, 1)
+	go func() {
+		data, err := io.ReadAll(r)
+		done <- read{data, err}
+	}()
+	timer := time.NewTimer(time.Until(deadline))
+	defer timer.Stop()
+	select {
+	case got := <-done:
+		return got.data, got.err
+	case <-timer.C:
+		return nil, errValueTimedOut
+	}
+}
+
+// noteEdgeSpaces prints, once a form has stored value as name's value, one line on stderr when
+// value starts or ends with a space: a space can be part of a secret, so the form stores the value
+// as given, neither trimmed nor refused, but one at an end is more often a paste's or a typing
+// slip than the secret's own, and nothing else shows it. The line names the secret and the end,
+// never the value.
+func noteEdgeSpaces(stderr io.Writer, form, name, value string) {
+	starts, ends := strings.HasPrefix(value, " "), strings.HasSuffix(value, " ")
+	var where string
+	switch {
+	case starts && ends:
+		where = "starts and ends"
+	case starts:
+		where = "starts"
+	case ends:
+		where = "ends"
+	default:
+		return
+	}
+	fmt.Fprintf(stderr, "agent-secrets %s: the value of %s %s with a space; it was stored as given, the space included\n", form, name, where)
 }
 
 // checkValueFor refuses value, which a secret of kind (a policy.Kinds entry) holds or is about to
@@ -417,20 +616,32 @@ type secretBackend interface {
 	// token without an email scope - which reads and writes all the same: the store's IAM, not
 	// this CLI, decides what any sign-in may do.
 	personEmail(ctx context.Context) (string, error)
-	// identity names the sign-in for a refusal of the store's (secretSession.refusedAs): AWS's
-	// ARN, or which Google credential the backend took and what it is.
+	// identity names the sign-in, as `<source>: <principal>`, for the line every form prints
+	// before its first store call (openSession) and a refusal of the store's
+	// (secretSession.refusedAs): the source the backend took the credential from (a
+	// variable, a file, gcloud, the machine) and who it acts as - AWS's ARN, a Google account's
+	// email - or that the principal is unknown.
 	identity() string
+	// chooseAnother is how a refusal of the store's tells the caller to sign in with another
+	// credential, as one clause that starts "choose another": built from the source that signed
+	// in, it names the variables that can choose another from there - never one that source
+	// outranks without saying so - and on Google Cloud the gcloud configurations
+	// CLOUDSDK_ACTIVE_CONFIG_NAME can name.
+	chooseAnother() string
 	// signInPrefix is the shell assignments a command line the form prints for running again
 	// (pipeCommand) needs to sign in as this one did when the sign-in came from a variable that
-	// may have been set for this command alone: GCP's GOOGLE_APPLICATION_CREDENTIALS when set, and
-	// CLOUDSDK_CORE_ACCOUNT when it chose the gcloud login; else "". It ends in a space when it is
-	// not empty.
+	// may have been set for this command alone: GCP's GOOGLE_APPLICATION_CREDENTIALS when that
+	// chose the source, and CLOUDSDK_ACTIVE_CONFIG_NAME and CLOUDSDK_CORE_ACCOUNT when they chose
+	// the gcloud login; AWS's AWS_PROFILE or AWS_DEFAULT_PROFILE when that profile signed in, and
+	// AWS_WEB_IDENTITY_TOKEN_FILE and AWS_ROLE_ARN for a web identity; else "", and never a key or
+	// a token. It ends in a space when it is not empty.
 	signInPrefix() string
 
 	list(ctx context.Context) ([]secretView, error)
 	show(ctx context.Context, slug string) (secretView, error)
-	// create makes the secret holding value with tags, which always hold owner and tier.
-	create(ctx context.Context, slug string, tags map[string]string, value string) error
+	// prepareCreate builds the create's state without writing. begin makes the value-free store
+	// call, where the backend has one, after the form has installed its signal cleanup.
+	prepareCreate(slug string, tags map[string]string) newSecret
 	set(ctx context.Context, slug, value string) error
 	// currentTags answers the secret's tags as one read holds them (AWS tags, or Secret Manager
 	// annotations with that read's etag), from which retag builds the tags the secret will hold once
@@ -467,6 +678,26 @@ type secretBackend interface {
 	close() error
 }
 
+// newSecret is a prepared secret create. begin makes any value-free store call before the value
+// is read; on failure it answers what its recovery left, so the form can reread after a deletion.
+// store writes the first value. discard, called when no value will be stored, checks creation
+// identity and versions before deleting an empty GCP secret; AWS makes nothing until store and
+// discards nothing. Its error names what stays and the command that clears or settles it, and is
+// nil when nothing stays. Each store call of begin, store and discard runs under
+// storeCallDeadline. unsettled names, for a form that ends without waiting on the call in flight,
+// what the store may be left holding and the command that clears or settles it; a second signal
+// calls it while begin, store or discard may be running, so it reads only what is safe then.
+// madeBeforeValue reports whether begin makes a secret that waits in the store for its value (GCP),
+// which the broker holds as pending for policy.PendingValueWindow, so the form's read of the value
+// ends with that window; AWS makes nothing before the value, and its read has no bound.
+type newSecret interface {
+	begin(ctx context.Context) (discardOutcome, error)
+	store(ctx context.Context, value string) error
+	discard(ctx context.Context) (discardOutcome, error)
+	unsettled() string
+	madeBeforeValue() bool
+}
+
 // secretSession is one secret form's connection: the broker and the backend (requireAccount)
 // opened for it, and src, the store those reads and writes go to, which every answer and every
 // refusal of the form names (source.go).
@@ -486,12 +717,13 @@ func (s *secretSession) Close() error { return s.backend.close() }
 func (s *secretSession) storeName() string { return s.src.storeName() }
 
 // refusedAs is err, and where err is the store's own access-denied refusal, the sign-in the form
-// called the store as (backend.identity) beside it, so a refusal of IAM's names whom IAM refused.
+// called the store as (backend.identity) beside it, so a refusal of IAM's names whom IAM refused,
+// and how to choose another (backend.chooseAnother).
 func (s *secretSession) refusedAs(err error) error {
 	if !s.backend.isAccessDenied(err) {
 		return err
 	}
-	return fmt.Errorf("%w; the store refused %s", err, s.backend.identity())
+	return fmt.Errorf("%w; the store refused %s; %s", err, s.backend.identity(), s.backend.chooseAnother())
 }
 
 // ownerTag is the owner tag --owner names, as checkOwnerTier answered it: shared, a person's
@@ -525,8 +757,9 @@ func secretFailIn(stderr io.Writer, form string, s *secretSession, err error) in
 // field names (openSecretBackend) and, on AWS, refuses a sign-in in another account
 // (backend.requireAccount), whose secrets are not the agent secrets; GCP needs no equivalent. It
 // refuses no sign-in for the kind of identity it is, a read's or a write's: the store's IAM
-// decides what it may do.
-func openSession(ctx context.Context, profile string) (*secretSession, error) {
+// decides what it may do. Once the backend is open, and before any store call, it prints on
+// stderr the one line that names the sign-in form's calls run under (backend.identity).
+func openSession(ctx context.Context, stderr io.Writer, form string) (*secretSession, error) {
 	base := brokerBaseURL()
 	if base == "" {
 		return nil, usageErr{fmt.Errorf("%s is required: it names the secrets broker whose store these forms read and write", brokerURLVar)}
@@ -539,7 +772,7 @@ func openSession(ctx context.Context, profile string) (*secretSession, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read the settings of %s: %w", brokerSource(base), err)
 	}
-	backend, err := openSecretBackend(ctx, profile, settings)
+	backend, err := openSecretBackend(ctx, settings)
 	if err != nil {
 		return nil, err
 	}
@@ -548,6 +781,7 @@ func openSession(ctx context.Context, profile string) (*secretSession, error) {
 		s.Close()
 		return nil, err
 	}
+	fmt.Fprintf(stderr, "agent-secrets %s: using %s\n", form, backend.identity())
 	return s, nil
 }
 
@@ -555,22 +789,20 @@ func openSession(ctx context.Context, profile string) (*secretSession, error) {
 // key ARN's own account and region (checkSettingsKeyARN), for "" or secrets.StoreAWS - a
 // broker that predates `store` names neither - or GCP Secret Manager, pinned to the project
 // secrets_prefix and kms_key_name's own shape agree on (checkSettingsKMSKeyName), for
-// secrets.StoreGCP. Any other value is refused before any cloud call.
-func openSecretBackend(ctx context.Context, profile string, settings Settings) (secretBackend, error) {
+// secrets.StoreGCP. The store credential comes from the environment, not a flag. Any other store
+// is refused before any cloud call.
+func openSecretBackend(ctx context.Context, settings Settings) (secretBackend, error) {
 	switch settings.Store {
 	case "", secrets.StoreAWS:
 		if err := checkSettingsKeyARN(settings); err != nil {
 			return nil, err
 		}
-		sm, st, err := awsClients(ctx, profile, settings.AWSRegion)
+		sm, st, sources, err := awsClients(ctx, settings.AWSRegion)
 		if err != nil {
 			return nil, err
 		}
-		return &awsBackend{settings: settings, sm: sm, st: st}, nil
+		return &awsBackend{settings: settings, sm: sm, st: st, source: awsSourceOf(sources)}, nil
 	case secrets.StoreGCP:
-		if profile != "" {
-			return nil, usageErr{fmt.Errorf("--profile names an AWS profile; this broker's store is %s, which signs in with CLOUDSDK_AUTH_ACCESS_TOKEN, your Application Default Credentials or your gcloud login, not --profile", settings.Store)}
-		}
 		if err := checkSettingsKMSKeyName(settings); err != nil {
 			return nil, err
 		}
@@ -711,7 +943,7 @@ func writeIndentedJSON(w io.Writer, v any) error {
 func cmdSecretList(args []string, stdout, stderr io.Writer) int {
 	const form = "secret list"
 	flagArgs, positional := splitArgs(args, secretFlagValues)
-	flags, profile := secretFlags(form, stderr)
+	flags := secretFlags(form, stderr)
 	asJSON := flags.Bool("json", false, "print the secrets as JSON")
 	if err := flags.Parse(flagArgs); err != nil {
 		return exitUsage(err)
@@ -719,7 +951,7 @@ func cmdSecretList(args []string, stdout, stderr io.Writer) int {
 	if len(positional) > 0 {
 		return secretFail(stderr, form, usageErr{fmt.Errorf("unexpected argument %q", positional[0])})
 	}
-	s, err := openSession(context.Background(), *profile)
+	s, err := openSession(context.Background(), stderr, form)
 	if err != nil {
 		return secretFail(stderr, form, err)
 	}
@@ -772,7 +1004,7 @@ func cmdSecretList(args []string, stdout, stderr io.Writer) int {
 func cmdSecretShow(args []string, stdout, stderr io.Writer) int {
 	const form = "secret show"
 	flagArgs, positional := splitArgs(args, secretFlagValues)
-	flags, profile := secretFlags(form, stderr)
+	flags := secretFlags(form, stderr)
 	asJSON := flags.Bool("json", false, "print the secret as JSON")
 	if err := flags.Parse(flagArgs); err != nil {
 		return exitUsage(err)
@@ -781,7 +1013,7 @@ func cmdSecretShow(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return secretFail(stderr, form, err)
 	}
-	s, err := openSession(context.Background(), *profile)
+	s, err := openSession(context.Background(), stderr, form)
 	if err != nil {
 		return secretFail(stderr, form, err)
 	}
@@ -828,7 +1060,7 @@ func cmdSecretShow(args []string, stdout, stderr io.Writer) int {
 func cmdSecretCreate(args []string, stdout, stderr io.Writer) int {
 	const form = "secret create"
 	flagArgs, positional := splitArgs(args, secretFlagValues)
-	flags, profile := secretFlags(form, stderr)
+	flags := secretFlags(form, stderr)
 	owner := flags.String("owner", "", "me (the email of the person your AWS or Google sign-in names), shared, or a person's email")
 	tier := flags.String("tier", "", "agent (its owner's agents use it without asking) or human (a person approves each use)")
 	kind := flags.String("kind", "", strings.Join(policy.Kinds, ", ")+" or none (the default)")
@@ -879,7 +1111,7 @@ func cmdSecretCreate(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return secretFail(stderr, form, err)
 	}
-	s, err := openSession(context.Background(), *profile)
+	s, err := openSession(context.Background(), stderr, form)
 	if err != nil {
 		return secretFail(stderr, form, err)
 	}
@@ -931,18 +1163,16 @@ func cmdSecretCreate(args []string, stdout, stderr io.Writer) int {
 	if *defaultGrant != "" {
 		command = append(command, "--default-grant", *defaultGrant)
 	}
-	value, err := readSecretValue(name, pipeCommand(s.backend.signInPrefix(), *profile, command...), *shape, stderr)
-	if err == nil && policy.ValidKind(*kind) {
-		err = checkValueFor(*kind, *shape, value)
-	}
-	if err != nil {
-		return secretFailIn(stderr, form, s, err)
-	}
-	if err := s.backend.create(s.ctx, slug, tags, value); err != nil {
-		return secretFailIn(stderr, form, s, err)
-	}
-	fmt.Fprintf(stdout, "created %s in %s (owner=%s, tier=%s)\n", name, s.storeName(), ownerValue, *tier)
-	return rereadAfter(s, stdout, stderr, form, name, true, nil)
+	// Install cleanup before the first store call: a signal can arrive after the store has
+	// created the empty secret but before its answer reaches the form.
+	pending := &pendingCreate{s: s, form: form, name: name, owner: ownerValue, tier: *tier, stdout: stdout, stderr: stderr, created: s.backend.prepareCreate(slug, tags)}
+	return runCreate(pending, func(deadline time.Time) (string, error) {
+		value, err := readSecretValue(name, pipeCommand(s.backend.signInPrefix(), command...), *shape, deadline, stderr)
+		if err == nil && policy.ValidKind(*kind) {
+			err = checkValueFor(*kind, *shape, value)
+		}
+		return value, err
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -952,7 +1182,7 @@ func cmdSecretCreate(args []string, stdout, stderr io.Writer) int {
 func cmdSecretSet(args []string, stdout, stderr io.Writer) int {
 	const form = "secret set"
 	flagArgs, positional := splitArgs(args, secretFlagValues)
-	flags, profile := secretFlags(form, stderr)
+	flags := secretFlags(form, stderr)
 	if err := flags.Parse(flagArgs); err != nil {
 		return exitUsage(err)
 	}
@@ -960,7 +1190,7 @@ func cmdSecretSet(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return secretFail(stderr, form, err)
 	}
-	s, err := openSession(context.Background(), *profile)
+	s, err := openSession(context.Background(), stderr, form)
 	if err != nil {
 		return secretFail(stderr, form, err)
 	}
@@ -979,7 +1209,7 @@ func cmdSecretSet(args []string, stdout, stderr io.Writer) int {
 	if kind != "" && !policy.ValidKind(kind) {
 		return secretFailIn(stderr, form, s, usageErr{fmt.Errorf("%s's kind tag %q names no kind the broker mints, and it refuses the secret as %s: retag it --kind %s or %s before setting its value", name, kind, policy.ReasonKindUnknown, strings.Join(policy.Kinds, ", "), tagNone)})
 	}
-	value, err := readSecretValue(name, pipeCommand(s.backend.signInPrefix(), *profile, "secret", "set", name), shape, stderr)
+	value, err := readSecretValue(name, pipeCommand(s.backend.signInPrefix(), "secret", "set", name), shape, time.Time{}, stderr)
 	if err == nil && kind != "" {
 		err = checkValueFor(kind, shape, value)
 	}
@@ -990,6 +1220,7 @@ func cmdSecretSet(args []string, stdout, stderr io.Writer) int {
 		return secretFailIn(stderr, form, s, err)
 	}
 	fmt.Fprintf(stdout, "set a new value of %s in %s\n", name, s.storeName())
+	noteEdgeSpaces(stderr, form, name, value)
 	return rereadAfter(s, stdout, stderr, form, name, true, nil)
 }
 
@@ -1003,7 +1234,7 @@ func cmdSecretSet(args []string, stdout, stderr io.Writer) int {
 func cmdSecretDelete(args []string, stdout, stderr io.Writer) int {
 	const form = "secret delete"
 	flagArgs, positional := splitArgs(args, secretFlagValues)
-	flags, profile := secretFlags(form, stderr)
+	flags := secretFlags(form, stderr)
 	if err := flags.Parse(flagArgs); err != nil {
 		return exitUsage(err)
 	}
@@ -1011,7 +1242,7 @@ func cmdSecretDelete(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return secretFail(stderr, form, err)
 	}
-	s, err := openSession(context.Background(), *profile)
+	s, err := openSession(context.Background(), stderr, form)
 	if err != nil {
 		return secretFail(stderr, form, err)
 	}
@@ -1027,7 +1258,7 @@ func cmdSecretDelete(args []string, stdout, stderr io.Writer) int {
 func cmdSecretRestore(args []string, stdout, stderr io.Writer) int {
 	const form = "secret restore"
 	flagArgs, positional := splitArgs(args, secretFlagValues)
-	flags, profile := secretFlags(form, stderr)
+	flags := secretFlags(form, stderr)
 	if err := flags.Parse(flagArgs); err != nil {
 		return exitUsage(err)
 	}
@@ -1035,7 +1266,7 @@ func cmdSecretRestore(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return secretFail(stderr, form, err)
 	}
-	s, err := openSession(context.Background(), *profile)
+	s, err := openSession(context.Background(), stderr, form)
 	if err != nil {
 		return secretFail(stderr, form, err)
 	}

@@ -133,10 +133,10 @@ finding asks roles opened on their own issues while the report issue was missing
    `Finding from ` is a role's own-issue ask: ask it again on the report issue with the same
    question, options and `--ref`, then reply `Moved dispatch://<REPORT KEY>/ask/<new id>` under the
    old ask. Resolve the old ask once it carries a `Moved` or `Filed` reply.
-3. List the answered asks still waiting on you, which no `dispatch` command lists:
+3. List the answered asks still waiting on you, which no `dispatch` command lists, in bash:
 
    ```text
-   asks=$(curl -sS --fail-with-body -H "Authorization: Bearer $(cat "$DISPATCH_TOKEN_FILE")" "$DISPATCH_URL/api/v1/issues/<ISSUE KEY>/asks?state=answered&thread=1") || { echo "Dispatch read failed" >&2; exit 1; }
+   asks=$(curl -sS --fail-with-body -H @<(printf 'Authorization: Bearer %s' "$(< "$DISPATCH_TOKEN_FILE")") "$DISPATCH_URL/api/v1/issues/<ISSUE KEY>/asks?state=answered&thread=1") || { echo "Dispatch read failed" >&2; exit 1; }
    printf '%s' "$asks" | jq -cn 'input | if type == "array" then [.[] | select(any(.options[]; .label == "Do not file" or .label == "Admit it" or .label == "Park it" or .label == "Leave it admitted" or .label == "Defer it" or .label == "Let it run")) | .answer.at as $t | select([.thread.replies[]? | select(.author.kind == "session" and .created_at > $t and (.body | test("^(Filed dispatch://|Handed dispatch://|Admitted dispatch://|Not filed:|Not admitted:|Parked dispatch://|Not parked dispatch://|Left admitted dispatch://|Deferred dispatch://|Not deferred dispatch://|Let run dispatch://)")))] | length == 0) | {id, question, answer}] else error("Dispatch did not answer the list") end'
    ```
 
@@ -156,10 +156,10 @@ finding asks roles opened on their own issues while the report issue was missing
 4. List the clear defects nobody took yet: each evidence comment on the report issue whose first
    line starts `Clear defect from `, with no session reply under it that starts
    `Filed dispatch://` or `Not filed:` (or `Handed dispatch://` or `Asked dispatch://`, which
-   earlier rules wrote):
+   earlier rules wrote), in bash:
 
    ```text
-   notes=$(curl -sS --fail-with-body -H "Authorization: Bearer $(cat "$DISPATCH_TOKEN_FILE")" "$DISPATCH_URL/api/v1/issues/<REPORT KEY>/comments") || { echo "Dispatch read failed" >&2; exit 1; }
+   notes=$(curl -sS --fail-with-body -H @<(printf 'Authorization: Bearer %s' "$(< "$DISPATCH_TOKEN_FILE")") "$DISPATCH_URL/api/v1/issues/<REPORT KEY>/comments") || { echo "Dispatch read failed" >&2; exit 1; }
    printf '%s' "$notes" | jq -cn 'input | if type == "array" then (. as $all | [.[] | select(.reply_to == null and (.body | startswith("Clear defect from "))) | .id as $id | select([$all[] | select(.reply_to == $id and .author.kind == "session" and (.body | test("^(Handed dispatch://|Filed dispatch://|Not filed:|Asked dispatch://)")))] | length == 0) | {id, body}]) else error("Dispatch did not answer the list") end'
    ```
 

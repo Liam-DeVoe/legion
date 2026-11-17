@@ -1,4 +1,4 @@
 kind: Changed
 body: |-
-  The plugin speaks daemon API contract 150, the contract of the controller's four claim
+  The plugin speaks daemon API contract 156, the contract of the controller's four claim
   operations.

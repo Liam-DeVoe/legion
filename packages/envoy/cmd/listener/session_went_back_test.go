@@ -54,11 +54,11 @@ func TestASessionThatDeregisteredBeforeAWholeLossComesBackAtTheStreamsFirstSeque
 	rig := newSessionConsumerRigOn(t, client, url)
 	ctx := context.Background()
 	const sessionID = "ses_went_back_registered"
-	agent := contracts.AgentSubject(sessionID)
+	agent := contracts.LegacyAgentSubject(sessionID)
 
 	// Another session's messages, so the session's own are above the stream's first sequence.
 	for range 5 {
-		rig.store(t, contracts.AgentSubject("ses_went_back_registered_bystander"))
+		rig.store(t, contracts.LegacyAgentSubject("ses_went_back_registered_bystander"))
 	}
 	streamID := rig.streamID(t)
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
@@ -89,6 +89,13 @@ func TestASessionThatDeregisteredBeforeAWholeLossComesBackAtTheStreamsFirstSeque
 
 	rig.deregister(t, sessionID, "")
 	rig.awaitNoConsumer(t, sessionID)
+	// The deregistration deletes the consumer off its own goroutine (deleteAfterAnswer), which
+	// holds the session's lock until the delete's reply comes. The server can drop the consumer
+	// before that reply has reached the listener, and the cut below stops the server: a reply lost
+	// to it keeps the lock for the delete's whole budget (sessionConsumerCallTimeout), and the
+	// second registration, waiting on that lock inside its own shorter budget, answers 503. So the
+	// cut waits for the listener's own delete to end, not only for the server to drop the consumer.
+	rig.deps.consumers.deletes.Wait()
 	if floor, err := resumeRecordFloor(client, sessionID); err != nil || floor != resume {
 		t.Fatalf("the session's resume record after its deregistration holds floor %d, %v; want %d, the last message it acked", floor, err, resume)
 	}

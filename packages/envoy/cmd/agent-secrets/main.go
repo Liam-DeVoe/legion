@@ -64,13 +64,14 @@
 // that hold a launcher's proof-signing key). One runtime enrols itself: a Kubernetes pod an
 // operator launches by hand (`enroll --pod`, pod.go). It holds no credential a person installed;
 // the projected service-account token its own kubelet mounts is what the broker trusts instead,
-// so it needs no helper, no launcher and no approval. The secret forms
-// read AWS_PROFILE (or --profile) for the person's AWS sign-in against an AWS broker, or their
-// Google sign-in (their Application Default Credentials, or their gcloud login) against a GCP
-// one, and need no session identity at all. The machine and grant forms act under this machine's
-// login: the helper signs each call with its launcher credential (sign-launcher) for a process
-// it can show is outside every registered session's process tree, the operator's own shell, and
-// only for the broker's four operator routes.
+// so it needs no helper, no launcher and no approval. The secret forms sign in to the store with
+// the cloud credential the environment gives them, as the cloud's own tools read it - against an
+// AWS broker the AWS SDK's own chain (access keys, a web identity token file, AWS_PROFILE,
+// AWS_DEFAULT_PROFILE, the rest of its default chain), against a GCP one the first Google source
+// present (newGCPBackend) - and need no session identity at all. The machine and grant forms act
+// under this machine's login: the helper signs each call with its launcher credential
+// (sign-launcher) for a process it can show is outside every registered session's process tree,
+// the operator's own shell, and only for the broker's four operator routes.
 package main
 
 import (
@@ -167,7 +168,7 @@ var commands = []command{
 	{"sign", "agent-secrets sign --method M --url U [--enrollment E]",
 		"Print the proof this session would sign for one broker call, without making the call."},
 	{"", "agent-secrets NAME... [--reason TEXT] [--wait DURATION] [--ttl DURATION] [--github-owner LOGIN [--github-repo NAME]... [--github-read-only]] [--github-token] -- <command> [args...]",
-		"Request secrets, wait up to --wait (default 30m) for a person to decide, and run <command>\nwith each granted secret in its environment under its NAME; nothing runs unless all are\ngranted. One line on stderr names those secrets and the broker and store they came from,\nnever a value. A name a person must approve needs --reason; with none the\nwhole request is denied. The grant lasts --ttl, or 15 minutes when any secret is human tier and 12 hours otherwise (until this session ends when every secret is tagged default-grant=session). --github-owner narrows each\nGitHub App token the grant releases to that account's installation, and --github-repo and\n--github-read-only narrow it further, to those repositories and to read access; a token\nnarrowed to repositories alone keeps every permission the App holds, so a machine that must\nonly read needs --github-read-only too. <command> runs only once the broker answers that it\napplied the narrowing. Each GitHub App secret's NAME holds the JSON object of installations\nthe release makes; with --github-token it holds that one installation's token alone, which is\nthe form a command that sends the token to GitHub needs. --github-token needs --github-owner,\nand nothing runs when a release holds other than one installation, or when the grant releases\nno GitHub App token at all."},
+		"Request secrets, wait up to --wait (default 30m) for a person to decide, and run <command>\nwith each granted secret in its environment under its NAME; nothing runs unless all are\ngranted. One line on stderr names those secrets and the broker and store they came from,\nnever a value. A name a person must approve needs --reason; with none the\nwhole request is denied. The grant lasts --ttl, or 15 minutes when any secret is human tier and 12 hours otherwise (until this session ends when every secret is tagged default-grant=session). The release\nnames <command>'s first 32 arguments, each cut to 256 bytes, and this call's --reason to the\nbroker, which logs them with the reason of the request the grant came of, each value of 8 bytes\nor more the release hands out and each credential of a known shape replaced by [redacted]. Any\nother secret on the command line, a shorter value among them, is logged as typed: pass secrets\nin the environment, never as arguments.\n--github-owner narrows each\nGitHub App token the grant releases to that account's installation, and --github-repo and\n--github-read-only narrow it further, to those repositories and to read access; a token\nnarrowed to repositories alone keeps every permission the App holds, so a machine that must\nonly read needs --github-read-only too. <command> runs only once the broker answers that it\napplied the narrowing. Each GitHub App secret's NAME holds the JSON object of installations\nthe release makes; with --github-token it holds that one installation's token alone, which is\nthe form a command that sends the token to GitHub needs. --github-token needs --github-owner,\nand nothing runs when a release holds other than one installation, or when the grant releases\nno GitHub App token at all."},
 }
 
 // usageEnvironment closes usage: the variables every form reads, and the exit codes.
@@ -214,13 +215,26 @@ environment:
   AGENT_SECRETS_POOL_ACCOUNT the managed identity generateIdToken is called on
   AGENT_SECRETS_SESSION      the session name a trade writes under, where the deployment's entry
                              fixes none
-  AWS_PROFILE                the AWS profile the secret forms sign in with when --profile names
-                             none (else the AWS SDK's default credential chain); every secret
-                             form needs a sign-in in the broker's account, and the store's IAM
-                             decides what it may do there
+  AWS_PROFILE                the AWS profile the secret forms sign in with, against a broker on
+                             AWS; access keys in AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY, and
+                             AWS_WEB_IDENTITY_TOKEN_FILE, outrank it, as in the AWS CLI, and
+                             without it the AWS SDK's default credential chain signs in; every
+                             secret form needs a sign-in in the broker's account, and the
+                             store's IAM decides what it may do there
+  AWS_DEFAULT_PROFILE        the AWS profile the secret forms sign in with where AWS_PROFILE is
+                             unset; a profile either names that the AWS config does not hold
+                             stops the command
   CLOUDSDK_AUTH_ACCESS_TOKEN a Google access token the secret forms sign in with against a broker
-                             on Google Cloud, before the Application Default Credentials and the
-                             gcloud login; the store's IAM decides what it may do
+                             on Google Cloud; it outranks every other Google source
+  GOOGLE_APPLICATION_CREDENTIALS
+                             a Google credentials file the secret forms sign in with where no
+                             token is lent; it outranks the gcloud variables below
+  CLOUDSDK_ACTIVE_CONFIG_NAME
+                             the gcloud configuration whose login the secret forms sign in with,
+                             before the well-known credentials file, the active gcloud account
+                             and the metadata server
+  CLOUDSDK_CORE_ACCOUNT      the gcloud login the secret forms sign in with, at the same place in
+                             that order; the store's IAM decides what each may do
 
 exit codes: 0 done, 1 failed, 2 usage error, 75 still waiting for approval, 76 permanent renewal refusal, 77 denied;
 register --exec exits 127 when COMMAND is not found and 126 when it cannot run;
@@ -930,7 +944,9 @@ func cmdRequest(args []string, stdout, stderr io.Writer) int {
 	}
 	ctx := context.Background()
 	c := newClient(base)
-	result, raw, err := c.CreateRequest(ctx, signer, names, *reason, ttl, requestSessionID())
+	// `request` has no narrowing flags: it asks for the request alone, and the release that
+	// narrows is a later run's.
+	result, raw, err := c.CreateRequest(ctx, signer, names, *reason, ttl, requestSessionID(), nil)
 	if err != nil {
 		refuse(stderr, "agent-secrets request", c.source(ctx), err)
 		return 1
@@ -1165,6 +1181,13 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "agent-secrets: at least one secret NAME is required")
 		return exitUsageError
 	}
+	// The command is looked up before the broker is asked anything: a command that is not on
+	// PATH could never run, and a request for it would wait on an approver all the same.
+	path, err := exec.LookPath(command[0])
+	if err != nil {
+		fmt.Fprintf(stderr, "agent-secrets: %v\n", err)
+		return 1
+	}
 
 	base, _, signer, err := sessionContext()
 	if err != nil {
@@ -1177,7 +1200,7 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 	// all of them: the injection line, and each refusal, whether the request is refused, waits
 	// out its decision, or releases no value.
 	src := sync.OnceValue(func() source { return c.source(ctx) })
-	result, _, err := c.CreateRequest(ctx, signer, names, *reason, ttl, requestSessionID())
+	result, _, err := c.CreateRequest(ctx, signer, names, *reason, ttl, requestSessionID(), narrowing)
 	if err != nil {
 		refuse(stderr, "agent-secrets", src(), err)
 		return 1
@@ -1227,7 +1250,7 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	values, err := c.GrantValues(ctx, signer, *grantID, narrowing)
+	values, err := c.GrantValues(ctx, signer, *grantID, narrowing, releaseCall{Command: record.ClipCommand(command), Reason: *reason})
 	if err != nil {
 		refuse(stderr, "agent-secrets", src(), err)
 		return 1
@@ -1286,11 +1309,6 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	path, err := exec.LookPath(command[0])
-	if err != nil {
-		fmt.Fprintf(stderr, "agent-secrets: %v\n", err)
-		return 1
-	}
 	// The one line the injected command's own output is preceded by: which names this process
 	// puts in its environment, and that this CLI's broker and a store of which kind gave them,
 	// never a value. A reader of the command's log can tell these values from another secrets

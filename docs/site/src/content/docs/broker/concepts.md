@@ -49,6 +49,19 @@ makes there, so one person signed in on two machines holds a login on each, and 
 in on one machine hold one each. Revoking a sign-in on Dispatch ends its machine login with it:
 every session it enrolled ends, and the box signs in again to work on.
 
+A Kubernetes pod trades its own projected ServiceAccount token at the same exchange for a Dispatch
+access token alone: that trade mints no machine login and enrols nothing. The entry that lists the
+pod's account decides what the token is. An entry of `BROKER_EXCHANGE_ACCOUNTS` gives it a person
+and the one Dispatch project it may write, or no project for an entry that names none
+(`<service account>==<person>`). A read entry, of `BROKER_EXCHANGE_READ_ACCOUNTS`, gives it a
+service and a fixed session instead, and no person and no project: the token holds the OAuth scope
+`read` alone. Dispatch serves such a token on the routes its read list names and refuses it on every
+other route with `403 READ_ONLY_TOKEN`, and the Envoy listener refuses it with `401`
+([Operate](/legion/broker/operate/#what-to-run)). That token reads the whole answer of
+`GET /api/v1/projects/{key}/architecture` for every project that has an architecture source: each
+source, each component, and every issue of the project, closed and iceboxed ones included. No
+setting holds a read entry to some projects.
+
 An enrollment is leased for `BROKER_LEASE_SECONDS` and renewed while its session runs: the helper
 renews the sessions it registered, `agent-secrets renew` renews a box, and Legion's pod shim renews
 a pod. A pod's renewal carries the pod's current projected token, and the broker refuses it
@@ -464,7 +477,9 @@ The broker evaluates every name
 (`packages/envoy/internal/broker/requests/machine_state.go`):
 
 - A name the policy does not serve, even after the reread above, refuses the whole request with
-  `UNKNOWN_SECRET`, and nothing is recorded.
+  `UNKNOWN_SECRET`, and nothing is recorded. A secret `agent-secrets secret create` made and has not
+  yet filled, in the ten minutes it waits for its value, refuses the request with `PENDING_VALUE`
+  instead, which is not final: ask again once its owner has stored the value.
 - A name the policy denies denies the whole request; nothing is ever half-granted. Only a service's
   secret, asked for by anyone but that service, is denied.
 - A request that reaches a person needs a reason. Where a name's answer would be an approval —
@@ -475,6 +490,12 @@ The broker evaluates every name
   `was denied: `, and the command exits 77. A request every name of which is granted at once
   reaches nobody, so it needs no reason, and a machine login, which is always signed with an
   empty reason, never passes this way.
+- On a broker that signs nobody in, `BROKER_SIGNIN=off`
+  ([Operate](/legion/broker/operate/#a-broker-that-signs-nobody-in)), nobody could approve such a
+  name, so it is denied at once, with a reason or without one, and one such name denies the whole
+  request: the session reads `<NAME>: a person must approve it, and this broker signs nobody in
+  (BROKER_SIGNIN=off)` after `was denied: `, and the command exits 77. What the policy grants at
+  once is granted there as everywhere.
 - Names that need approval must all need the same approver, else the request is refused
   `MIXED_APPROVERS`; request them separately.
 - A **kind secret** has `kind=github-app`, `kind=google-login` or `kind=google-service-account`,
@@ -491,18 +512,42 @@ The broker evaluates every name
   to an account the tag does not list is refused `NARROWING_OWNER_NOT_LISTED`, and one GitHub
   refuses, such as a repository the installation does not reach, `NARROWING_REFUSED`; the broker
   releases a narrowed token only once GitHub's answer shows it holds no more. It narrows that
-  release alone; the grant's next release is owner-wide unless it narrows too. A narrowing and
-  the airlock do not go together: a release of a grant any of whose names is behind the airlock
-  ([The airlock](#the-airlock)) is refused `NARROWING_BEHIND_AIRLOCK`, naming that name, because
-  the proxy spends such a grant's values itself and mints them owner-wide for the life of the
-  grant, so no narrowing of one release could hold for them. A github-app secret the rules do
-  not name narrows as it always has: ask for it in a grant that holds no name behind the
-  airlock. The exec form's `--github-token` narrows nothing: the release holds the same JSON
-  object of installations, and the flag decides what the exec form puts in the command's
-  environment. With it the name holds that one installation's token alone, which is what a
-  command sends to GitHub, and without it the name holds the whole object. `--github-token`
-  needs `--github-owner`, and nothing runs where the release holds other than one installation
-  or where no name of the grant released a github-app value. A Google login
+  release alone; the grant's next release is owner-wide unless it narrows too. A request that
+  asks for a narrowing carries that same `github_app` body (`POST /v1/requests`). Where a person
+  must approve that request, the broker decides the narrowing before the approval request, so a
+  narrowing it cannot serve costs nobody an approval. It refuses the request then, and nobody is
+  asked, for each of five causes: a request that holds no github-app secret
+  (`NARROWING_NOT_APPLICABLE`), an account the secret's `github-owners` tag does not list
+  (`NARROWING_OWNER_NOT_LISTED`), a name behind the airlock (`NARROWING_BEHIND_AIRLOCK`), an App
+  with no installation on the account (`422 NARROWING_REFUSED` on the request, whose message
+  says `has no installation on`, where the release of a grant answers it `502 MINT_FAILED`), and
+  a narrowing GitHub refuses (`NARROWING_REFUSED`). For a narrowing that names repositories or
+  read access, it mints the token the release would mint and revokes it at once. It checks a
+  narrowing to an account alone from the App's list of
+  installations and mints no token for it: such a narrowing sends GitHub no repositories and no
+  permissions, so GitHub's answer to its token request can refuse the App but not the narrowing.
+  Where it reaches no verdict, the request waits for its approver as before and the release makes
+  the refusal. GitHub gives no verdict when it is out of reach, when it answers a 5xx or a rate
+  limit, and when it refuses the App itself with a `401`, `403` or `404`. The broker reaches no
+  verdict when it cannot read the stored value or mint from it, when the check passes its own
+  bounds (ten seconds for the whole check, five for one mint) or its caller goes away, when the
+  enrollment has used its checks (five at once, one more every twelve seconds), and when it
+  cannot read the requester or has no GitHub App minter. The narrowing is unsigned and narrows
+  nothing by itself, so the grant, its record and the approval page are the same, and a release
+  that asks for no narrowing is owner-wide whatever the request carried.
+  A narrowing and the airlock do not go together: where a person decides the request, the broker
+  refuses the request `NARROWING_BEHIND_AIRLOCK` before the approval request, naming that
+  secret, when any of its names is behind the airlock ([The airlock](#the-airlock)); where the
+  policy grants every name at once, the same refusal comes at the release of the grant. The
+  reason is that the proxy spends such a grant's values itself and mints them owner-wide for the
+  life of the grant, so no narrowing of one release could hold for them. A github-app secret
+  the rules do not name narrows as it always has: ask for it in a grant that holds no name
+  behind the airlock. The exec form's `--github-token` narrows nothing: the release holds the
+  same JSON object of installations, and the flag decides what the exec form puts in the
+  command's environment. With it the name holds that one installation's token alone, which is
+  what a command sends to GitHub, and without it the name holds the whole object.
+  `--github-token` needs `--github-owner`, and nothing runs where the release holds other than
+  one installation or where no name of the grant released a github-app value. A Google login
   value holds an `authorized_user` refresh-token credential. Its release returns a bare access
   token. A Google service-account value names one account,
   `{"service_account": "<id>@<project>.iam.gserviceaccount.com"}`, and its release returns a bare
@@ -720,10 +765,17 @@ The proxy reads the grant behind the password on every connection, and the entry
 request (`packages/envoy/internal/broker/airlockproxy`). A host no entry of that grant binds is
 tunnelled unread, to a public address alone. A bound host is read with a certificate of the
 proxy's own authority, and the request must name that same host in its TLS name and in its `Host`
-header; then the entry's hosts, headers, methods and paths decide whether the swap happens. A
-refusal is an HTTP error from the proxy naming the rule that refused it, such as `host not bound`
-or `not allowed by rule`, and ending with its answer id. The broker logs one line for each call to
-a bound host, never with a value. A call it carried, or could not carry, writes
+header; then the entry's hosts, headers, methods and paths decide whether the swap happens. That
+connection speaks HTTP/1.1 to a client that offers it, and HTTP/2 to a client that offers nothing
+else, which is how every gRPC client connects. Each HTTP/2 stream is decided on its own, as one
+request, with its `:authority` as its `Host`, so one connection carries no request for another
+host. A `CONNECT` or an upgrade to `h2c` inside that connection is refused
+(`PROTOCOL_SWITCH_REFUSED`), because what crosses after its answer is no request the proxy reads.
+How a stream becomes the request the entry decides is tested, not proved: the Lean model of the
+decision has no wire format. A refusal is an HTTP error from the proxy naming the rule that
+refused it, such as `host not bound` or `not allowed by rule`, and ending with its answer id. The
+broker logs one line for each call to a bound host, never with a value. A call it carried, or
+could not carry, writes
 `airlock proxy: a call to a bound host` with the enrollment, the grant, the secret, the host, the
 method, the path and the answer's status. A call it refused writes its refusal record,
 `broker: answer refused`, with the grant and enrollment as its caller, the secret, the host, the
@@ -749,10 +801,11 @@ What the airlock does not stop is as much of the design as what it does:
 - The placeholder works as the proxy password for its grant's bound hosts until the grant ends,
   from wherever the proxy port is reachable.
 
-- Once the grant ends, every call through the proxy gets `407`, to any host, and a WebSocket the
-  proxy had joined to a bound host is closed with the grant rather than running to the idle
-  limit. A tunnel to a host no entry binds carries no value, so the idle limit is the whole of
-  what bounds one.
+- Once the grant ends, every call through the proxy gets `407`, to any host. A call still running
+  at that moment, such as a WebSocket the proxy joined to a bound host, a gRPC call whose answers
+  stream or a long poll, is ended with the grant within 15 seconds rather than running to the
+  idle limit. A call whose service has not answered yet gets the `407` itself. A tunnel to a host
+  no entry binds carries no value, so the idle limit is the whole of what bounds one.
 
 - A `407` is the grant's own answer. A read of the grant that failed — the broker's store did
   not answer — is `503` with a fixed sentence that names nothing of that failure, and the call
@@ -784,6 +837,13 @@ all N shown** decides every request printed. A decision is posted to the broker'
 is bound to that sign-in and to the requests the page printed, so a page on another origin,
 Dispatch's among them, cannot make one, and no route a service calls decides a secret request: the
 broker refuses it `DECIDE_ON_BROKER_PAGE`, naming the page.
+
+A broker that signs nobody in, `BROKER_SIGNIN=off`
+([Operate](/legion/broker/operate/#a-broker-that-signs-nobody-in)), serves no such page, so no
+request waits on it: every request that would reach a person is denied at once
+([Requests and grants](#requests-and-grants)), and one a broker with sign-in on left pending is
+ended by the broker's next sweep: expired, as a rule, if its deadline has passed, and otherwise
+denied.
 
 The broker checks the signed-in person against the record's approver: anyone else gets a page
 saying who may decide it, with a link to sign in as someone else, and no buttons. A request for a
@@ -922,7 +982,14 @@ approved record behind it releases nothing.
 Beside the records, the broker keeps an append-only `audit` table with one row per event:
 `enrollment.created`, `enrollment.revoked`, `enrollment.expired`, `request.created`,
 `request.granted`, `request.denied`, `request.cancelled`, `request.expired`, `grant.used` (each time
-a session reads a grant, naming the secrets released), `grant.revoked` (naming, under `withheld`,
+a session or the airlock's proxy reads a grant, naming the secrets released and the reason the
+grant's request gave, and, for a session's read, the reason its own call gave where that differs
+and the command it said the release starts, with each secret the broker can name replaced by
+`[redacted]`: the values of 8 bytes or more the release handed out, the strings of 8 bytes or more
+of a stored JSON value, and every credential of a well-known shape; any other secret a session
+typed into its command, a shorter value among them, is kept as typed, and `GET /v1/grant-log`
+answers this row to the accounts that read the grant log),
+`grant.revoked` (naming, under `withheld`,
 the secrets an operator's revoke withheld from the session, and, on each other grant of the session
 that revoke ended, the withheld secrets that grant held), `grant.withheld` (an operator's revoke of
 a grant already revoked, naming under `withheld` the secrets it withheld from the session),

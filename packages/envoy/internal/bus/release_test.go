@@ -1,6 +1,7 @@
 package bus_test
 
 import (
+	"context"
 	"errors"
 	"sync"
 	"sync/atomic"
@@ -104,7 +105,7 @@ func TestADrainedSubscriptionIsNotBoundAgainByAReconnect(t *testing.T) {
 			defer client.Close()
 			consumer := releaseDurable(t, client, "released")
 			hooked := make(chan struct{}, 8)
-			client.AddReconnectHook(func(*natsgo.Conn) error {
+			client.AddReconnectHook(func(context.Context, *natsgo.Conn) error {
 				hooked <- struct{}{}
 				return nil
 			})
@@ -167,7 +168,7 @@ func TestDrainSubscriptionEndsWhatARestoreBoundAfterTheSubscriptionEnded(t *test
 	defer client.Close()
 	consumer := releaseDurable(t, client, "released")
 	hooked := make(chan struct{}, 8)
-	client.AddReconnectHook(func(*natsgo.Conn) error {
+	client.AddReconnectHook(func(context.Context, *natsgo.Conn) error {
 		hooked <- struct{}{}
 		return nil
 	})
@@ -226,7 +227,7 @@ func TestDrainSubscriptionWhileTheConnectionIsDownLeavesNoPushBindingBehind(t *t
 	defer direct.Close()
 	consumer := releaseDurable(t, direct, "released")
 	hooked := make(chan struct{}, 8)
-	client.AddReconnectHook(func(*natsgo.Conn) error {
+	client.AddReconnectHook(func(context.Context, *natsgo.Conn) error {
 		hooked <- struct{}{}
 		return nil
 	})
@@ -305,7 +306,7 @@ func TestDrainSubscriptionWhileTheDrainIsInFlightLeavesNoPushBindingBehind(t *te
 	defer direct.Close()
 	consumer := releaseDurable(t, direct, "released")
 	hooked := make(chan struct{}, 8)
-	client.AddReconnectHook(func(*natsgo.Conn) error {
+	client.AddReconnectHook(func(context.Context, *natsgo.Conn) error {
 		hooked <- struct{}{}
 		return nil
 	})
@@ -353,6 +354,12 @@ func TestDrainSubscriptionWhileTheDrainIsInFlightLeavesNoPushBindingBehind(t *te
 	relay.refuse.Store(true)
 	relay.drop()
 	waitFor(t, 10*time.Second, "the client to start reconnecting", client.Conn.IsReconnecting)
+	// The client sees its socket close before the server lets the durable go: a message published
+	// while the server still holds it bound is delivered down the dead link, and its redelivery
+	// waits out the durable's ack wait, the server's default 30 s (releaseDurable sets none), past
+	// the 10 s the second client is given below. So the probe goes out once the server reads the
+	// durable unbound; the check this test exists for, after the reconnect's resend, is unchanged.
+	awaitPushBound(t, direct, consumer, false, "the server to let the durable go once the link dropped")
 	publishReleaseProbe(t, direct, "notifications.github.test.released")
 
 	relay.refuse.Store(false)
@@ -490,7 +497,7 @@ func TestAFailedSubscriptionReleasedIsNotBoundByAReconnect(t *testing.T) {
 			}
 			defer client.Close()
 			hooked := make(chan struct{}, 8)
-			client.AddReconnectHook(func(*natsgo.Conn) error {
+			client.AddReconnectHook(func(context.Context, *natsgo.Conn) error {
 				hooked <- struct{}{}
 				return nil
 			})
@@ -546,7 +553,7 @@ func TestReleaseFailedUnsubscribesWhatARestoreBound(t *testing.T) {
 	}
 	defer client.Close()
 	hooked := make(chan struct{}, 8)
-	client.AddReconnectHook(func(*natsgo.Conn) error {
+	client.AddReconnectHook(func(context.Context, *natsgo.Conn) error {
 		hooked <- struct{}{}
 		return nil
 	})
@@ -635,7 +642,7 @@ func TestDrainSubscriptionDrainsTheHandleARestoreBound(t *testing.T) {
 	defer client.Close()
 	consumer := releaseDurable(t, client, "drained")
 	hooked := make(chan struct{}, 8)
-	client.AddReconnectHook(func(*natsgo.Conn) error {
+	client.AddReconnectHook(func(context.Context, *natsgo.Conn) error {
 		hooked <- struct{}{}
 		return nil
 	})

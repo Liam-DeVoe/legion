@@ -93,7 +93,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Download one version of an agent's conversation's file or image, as the issue form serves it (Cache-Control: private, max-age=31536000, immutable). */
+    /** @description Download one version of an agent's conversation's file or image, as the issue form serves it: its bytes under its own content type, with Content-Disposition: attachment naming the file's name, -v<number> before the extension for an older version (report-v2.pdf), and Cache-Control: private, max-age=31536000, immutable. With ?download=true the answer carries Content-Disposition: attachment with that name and Cache-Control: private, no-cache. A conversation holds no document, so no version here answers Markdown. */
     get: operations["getApiV1AgentsBySessionIdArtifactsBySlugVersionsByNumber"];
     put?: never;
     post?: never;
@@ -287,7 +287,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Open an approval ask for a document's latest version, with an optional summary, and with include_verification for the issue's Verification document beside it (409 NO_VERIFICATION_DOCUMENT when it has none), each at its own current version; the answer reviews every document the ask names. include_verification is for the issue's spec alone: on any other document, the Verification document itself included, it is 409 NOT_SPEC_DOCUMENT. A document a human approved before carries that approval on the ask (approval.approved: version, at, by). An open ask follows later versions of any document it names and waits on its agent until this route hands the same row back to a human. Every answer carries coverage, one line per requirement of the issue's spec with no check, or the single line `the spec marks no requirements` for a spec that marks none (GET /api/v1/issues/{key}/coverage), and none at all for a spec every requirement of which has a check; it is empty for a document that is not a spec, never names a missing plan task, and a gap refuses nothing. A coverage read that fails answers coverage_unread true and records the request all the same. */
+    /** @description Open an approval ask for a document's latest version, with an optional summary, and with include_verification for the issue's Verification document beside it (409 NO_VERIFICATION_DOCUMENT when it has none), each at its own current version; the answer reviews every document the ask names. include_verification is for the issue's spec alone: on any other document, the Verification document itself included, it is 409 NOT_SPEC_DOCUMENT. A document a human approved before carries that approval on the ask (approval.approved: version, at, by). An open ask follows later versions of any document it names and waits on its agent until this route hands the same row back to a human, save that an ask waiting on the human keeps its turn, quietly, over a version a settlement writes that holds byte for byte the text the ask names; a version a route writes (a named version, an upload, an edit) moves it to its agent whatever text it holds. Every answer carries coverage, one line per requirement of the issue's spec with no check, or the single line `the spec marks no requirements` for a spec that marks none (GET /api/v1/issues/{key}/coverage), and none at all for a spec every requirement of which has a check; it is empty for a document that is not a spec, never names a missing plan task, and a gap refuses nothing. A coverage read that fails answers coverage_unread true and records the request all the same. */
     post: operations["postApiV1ArtifactsByIdApprovalRequests"];
     delete?: never;
     options?: never;
@@ -560,7 +560,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description One named or settled document version. */
+    /** @description One version of a document, a file or an image. A named or settled document version answers as JSON; a file or an image version answers its bytes under its own content type, with Content-Disposition: attachment naming the artifact's name, -v<number> before the extension for an older version (report-v2.pdf), and Cache-Control: private, max-age=31536000, immutable. With ?download=true every kind answers Content-Disposition: attachment with that name and Cache-Control: private, no-cache, and a document answers its Markdown as text/markdown, its name ending in .md when the stored name has no Markdown extension. */
     get: operations["getApiV1ArtifactsByIdVersionsByNumber"];
     put?: never;
     post?: never;
@@ -1469,7 +1469,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description One version of an issue document, by slug or unambiguous filename. */
+    /** @description One version of an issue's document, file or image, by slug or unambiguous filename, as GET /api/v1/artifacts/{id}/versions/{number} answers it: a document as JSON, a file or an image as its bytes with Content-Disposition: attachment naming the artifact's name, -v<number> before the extension for an older version. With ?download=true every kind answers Content-Disposition: attachment with that name and Cache-Control: private, no-cache, and a document answers its Markdown as text/markdown. */
     get: operations["getApiV1IssuesByKeyArtifactsBySlugVersionsByNumber"];
     put?: never;
     post?: never;
@@ -2202,6 +2202,40 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/near-copy-checks": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description List one project's near-copy gate answers, one row for each create the gate answered (an external create runs no gate and has none), recorded when the create was refused or once it was written: the rows of ?project= (required; 400 INVALID_PROJECT when it is not a key) within [from, to) (RFC3339, each optional; 400 INVALID_QUERY when from is not before to), oldest first, at most ?limit= (1 to 1000, default 1000), after the row whose id ?after= names (400 INVALID_QUERY when it is no row of the project). A window should end some time before now: a row written in its create's transaction holds that transaction's start as created_at and is seen only once the transaction commits, so a reader that pages up to now and resumes with ?after= can miss it. {project, from, to} echo the query (null when absent), checks are the rows, and next_after is the id to pass as ?after= for the next page, null on the last. A row is {id, created_at, project, actor_kind, actor_id, outcome, reason, force, title, spec_sha256, parent, issue, candidates, refuse_score, nudge_score, build_commit}, with no spec: GET /api/v1/near-copy-checks/{id} reads one row with it. outcome is refused (the gate refused it and nothing was written; every 409 POSSIBLE_DUPLICATE has this row, written before the answer), forced (written past a refusal with force), nudged (written, its closest open issue named as a likely duplicate), passed (written with nothing named) or not_made (no check that could stop the create was made, and it went in unchecked); reason is bound, failed or unrecorded for not_made and null otherwise; force is whether the create asked for it; spec_sha256 is the sha256 of the spec as sent, on every row; issue is the key written, null for a refusal; candidates are the issues the gate read at or above nudge_score, at most 5, best first, each {key, title, score}; refuse_score and nudge_score are the build's bars and build_commit the commit it was built from, null for an unstamped build. A refusal is answered only once its row is known to be written: otherwise it refuses nothing, and the create goes in as not_made, reason unrecorded, writing its row in its own transaction. The row of every other create that went in is written after the commit, on a context of its own bounded to 1s, and tried once more in the background for up to 30s when a timeout or a lock stopped it, so one whose row still could not be written has none and is otherwise unchanged. */
+    get: operations["getApiV1NearCopyChecks"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/near-copy-checks/{id}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description One near-copy gate answer by id: the row GET /api/v1/near-copy-checks lists, with spec, the spec as sent, on a refused row alone (absent on every other, whose issue holds it; empty for a refused create that sent none); 404 NEAR_COPY_CHECK_NOT_FOUND when there is none, 400 NEAR_COPY_CHECK_ID_INPUT for an id that is not a uuid. */
+    get: operations["getApiV1NearCopyChecksById"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/priorities": {
     parameters: {
       query?: never;
@@ -2520,7 +2554,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description One version of a project document, by slug or unambiguous filename. */
+    /** @description One version of a project's document, file or image, by slug or unambiguous filename, as GET /api/v1/artifacts/{id}/versions/{number} answers it: a document as JSON, a file or an image as its bytes with Content-Disposition: attachment naming the artifact's name, -v<number> before the extension for an older version. With ?download=true every kind answers Content-Disposition: attachment with that name and Cache-Control: private, no-cache, and a document answers its Markdown as text/markdown. */
     get: operations["getApiV1ProjectsByKeyArtifactsBySlugVersionsByNumber"];
     put?: never;
     post?: never;
@@ -5447,6 +5481,45 @@ export interface components {
       id: string;
       name: string;
     };
+    NearCopyCheck: {
+      actor_id: string;
+      actor_kind: string;
+      build_commit: null | string;
+      candidates: components["schemas"]["NearCopyCheckCandidate"][] | null;
+      /** Format: date-time */
+      created_at: string;
+      force: boolean;
+      id: string;
+      issue: null | string;
+      /** Format: double */
+      nudge_score: number;
+      /** @enum {string} */
+      outcome: "refused" | "forced" | "nudged" | "passed" | "not_made";
+      parent: null | string;
+      project: string;
+      /** @enum {null|string} */
+      reason: "bound" | "failed" | "unrecorded" | null;
+      /** Format: double */
+      refuse_score: number;
+      spec?: string;
+      spec_sha256: string;
+      title: string;
+    };
+    NearCopyCheckCandidate: {
+      key: string;
+      /** Format: double */
+      score: number;
+      title: string;
+    };
+    NearCopyChecksPage: {
+      checks: components["schemas"]["NearCopyCheck"][] | null;
+      /** Format: date-time */
+      from: null | string;
+      next_after: null | string;
+      project: string;
+      /** Format: date-time */
+      to: null | string;
+    };
     NewIssueSettings: {
       label: string;
       session: string;
@@ -6394,6 +6467,7 @@ export interface operations {
   getApiV1AgentsBySessionIdArtifactsBySlugVersionsByNumber: {
     parameters: {
       query?: {
+        download?: boolean;
         /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
         session?: string;
       };
@@ -6407,7 +6481,7 @@ export interface operations {
     };
     requestBody?: never;
     responses: {
-      /** @description a conversation holds files and images alone, so a version download is that file's bytes under its own content type (serveFileVersion) */
+      /** @description a conversation holds files and images alone, so a version is that file's bytes under its own content type, named by Content-Disposition with the file's name (serveFileVersion) */
       200: {
         headers: {
           [name: string]: unknown;
@@ -7667,6 +7741,7 @@ export interface operations {
   getApiV1ArtifactsByIdVersionsByNumber: {
     parameters: {
       query?: {
+        download?: boolean;
         /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
         session?: string;
       };
@@ -7679,7 +7754,7 @@ export interface operations {
     };
     requestBody?: never;
     responses: {
-      /** @description a file version answers that file's bytes under its own content type (serveFileVersion); only a document version carries the JSON above */
+      /** @description a file version answers that file's bytes under its own content type, named by Content-Disposition (serveFileVersion); with download=true a document version answers its Markdown as text/markdown; only a document version read without that parameter carries the JSON above */
       200: {
         headers: {
           [name: string]: unknown;
@@ -7687,6 +7762,7 @@ export interface operations {
         content: {
           "application/json": components["schemas"]["ArtifactVersionText"];
           "application/octet-stream": unknown;
+          "text/markdown": unknown;
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -9925,6 +10001,7 @@ export interface operations {
   getApiV1IssuesByKeyArtifactsBySlugVersionsByNumber: {
     parameters: {
       query?: {
+        download?: boolean;
         /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
         session?: string;
       };
@@ -9938,7 +10015,7 @@ export interface operations {
     };
     requestBody?: never;
     responses: {
-      /** @description a file version answers that file's bytes under its own content type (serveFileVersion); only a document version carries the JSON above */
+      /** @description a file version answers that file's bytes under its own content type, named by Content-Disposition (serveFileVersion); with download=true a document version answers its Markdown as text/markdown; only a document version read without that parameter carries the JSON above */
       200: {
         headers: {
           [name: string]: unknown;
@@ -9946,6 +10023,7 @@ export interface operations {
         content: {
           "application/json": components["schemas"]["ArtifactVersionText"];
           "application/octet-stream": unknown;
+          "text/markdown": unknown;
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -11819,6 +11897,77 @@ export interface operations {
       };
     };
   };
+  getApiV1NearCopyChecks: {
+    parameters: {
+      query?: {
+        project?: string;
+        from?: string;
+        to?: string;
+        after?: string;
+        limit?: number;
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["NearCopyChecksPage"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  getApiV1NearCopyChecksById: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["NearCopyCheck"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
   getApiV1Priorities: {
     parameters: {
       query?: {
@@ -12673,6 +12822,7 @@ export interface operations {
   getApiV1ProjectsByKeyArtifactsBySlugVersionsByNumber: {
     parameters: {
       query?: {
+        download?: boolean;
         /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
         session?: string;
       };
@@ -12686,7 +12836,7 @@ export interface operations {
     };
     requestBody?: never;
     responses: {
-      /** @description a file version answers that file's bytes under its own content type (serveFileVersion); only a document version carries the JSON above */
+      /** @description a file version answers that file's bytes under its own content type, named by Content-Disposition (serveFileVersion); with download=true a document version answers its Markdown as text/markdown; only a document version read without that parameter carries the JSON above */
       200: {
         headers: {
           [name: string]: unknown;
@@ -12694,6 +12844,7 @@ export interface operations {
         content: {
           "application/json": components["schemas"]["ArtifactVersionText"];
           "application/octet-stream": unknown;
+          "text/markdown": unknown;
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -13881,6 +14032,9 @@ export type MyRepliesResponse = components["schemas"]["MyRepliesResponse"];
 export type MyReplyReply = components["schemas"]["MyReplyReply"];
 export type MyReplyRow = components["schemas"]["MyReplyRow"];
 export type MyReplySession = components["schemas"]["MyReplySession"];
+export type NearCopyCheck = components["schemas"]["NearCopyCheck"];
+export type NearCopyCheckCandidate = components["schemas"]["NearCopyCheckCandidate"];
+export type NearCopyChecksPage = components["schemas"]["NearCopyChecksPage"];
 export type NewIssueSettings = components["schemas"]["NewIssueSettings"];
 export type NewIssueSettingsInput = components["schemas"]["NewIssueSettingsInput"];
 export type OpenAsk = components["schemas"]["OpenAsk"];

@@ -6,7 +6,9 @@ The secrets broker's client. An agent session runs it to use a secret:
 agent-secrets DEMO_API_KEY --reason "Deploy the example service" -- ./deploy.sh
 ```
 
-It asks the broker for the named secrets, waits while a person approves them on the broker's own
+It looks the command up on `PATH` first, and refuses one it does not find (exit 1) before it asks
+the broker anything, so no request waits on an approver for a command that could not run. It then
+asks the broker for the named secrets, waits while a person approves them on the broker's own
 approval page if the secret's owner and tier require it, and runs the command with each granted
 value in its
 environment, writing one line to standard error first: the names it injected, that the broker
@@ -37,7 +39,18 @@ session's grants (`agent-secrets self`). People and agents manage the agent secr
 store (AWS Secrets Manager or GCP Secret Manager) under whatever cloud credential its environment
 gives it - the store's own IAM decides what that credential may do - and then asks the broker to
 reread each secret written, so the change
-is served at once; those forms need no helper and no session. From their own shell on a machine
+is served at once; those forms need no helper and no session. On GCP, `secret create` makes the
+secret, empty and with its tags, before it asks for the value, so a store that refuses the create
+asks for none; until the value is added, a failure or a hang-up, interrupt, quit or termination
+deletes that empty secret again, and a secret that may hold the value, where the store's answer to
+the add leaves that open, is kept. Each store call from the create until the value is stored or
+the empty secret deleted has a deadline of 60 seconds, Secret Manager's Go client's own default
+for those calls, which AWS's `CreateSecret` takes too, its SDK setting none. That bound is per
+call, not per signal: a signal waits out the call in flight, and then its cleanup makes its own
+calls, each with the same deadline, so a first signal against a store that answers nothing can
+take a few minutes. A second signal ends the command at once, by that signal, naming what the
+store may be left holding and the command that clears or checks it. From their own shell on a
+machine
 that runs the helper, people list and end their own machines' logins and their live grants with
 `agent-secrets machine list|revoke` and `agent-secrets grant list|revoke`, under that machine's
 login; a service's login is revoked on Dispatch's machine-login page. The helper refuses these
@@ -267,13 +280,20 @@ agent-secrets-helper sessions
 `machine list` shows your machines' logins, `grant list` the live grants of your sessions and
 those you approved, and `agent-secrets-helper sessions` the sessions this machine's helper holds.
 
-Owners manage the secrets themselves, with no helper, under whatever cloud credential the
-environment gives the command: on AWS, `--profile`, else `AWS_PROFILE`, else the SDK's default
-chain, in the broker's account; on Google Cloud, `CLOUDSDK_AUTH_ACCESS_TOKEN`, else the
-Application Default Credentials, else the gcloud login. The store's IAM decides what each may
-do. `--owner me` is the email of the person that credential names, and is refused where it names
-none (a machine's role, a service account, a token without an email scope); `--owner <email>`
-names the owning person outright:
+Owners manage the secrets themselves, with no helper, under the credential of the first source
+the command finds: on AWS, the AWS SDK's own order, in the broker's account (access keys in
+`AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`, then `AWS_WEB_IDENTITY_TOKEN_FILE`, then
+`AWS_PROFILE`, then `AWS_DEFAULT_PROFILE`, then the rest of the SDK's default chain); on Google
+Cloud, `CLOUDSDK_AUTH_ACCESS_TOKEN`, else the credentials file `GOOGLE_APPLICATION_CREDENTIALS`
+names, else the gcloud configuration or login `CLOUDSDK_ACTIVE_CONFIG_NAME` or
+`CLOUDSDK_CORE_ACCOUNT` names, else the well-known credentials file, else the active gcloud
+account, else the metadata server. A source that is present but broken stops the command, and so
+does a profile variable that names a profile the AWS config does not hold; every form prints the
+source it used (`using …`) before its first store call, and a store refusal names it and how to
+choose another from that source. The store's IAM decides what each may do. `--owner me` is the
+email of the person that credential names, and is refused where it names none (a machine's role,
+a service account, a token without an email scope); `--owner <email>` names the owning person
+outright:
 
 ```sh
 agent-secrets secret list

@@ -149,7 +149,9 @@ const RoleTopicPrefix = "notifications.role."
 // (admit.Admission.wakeController and its callers say when; the tick alone carries
 // `openCapabilities`, the deployment capabilities with no decision,
 // admit.Admission.ReportCapabilities); a tree of the project that has stopped (`tree-stalled`,
-// admit's tellStalledTrees, once for each stall); a person's decision on a tree Legion is not
+// admit's tellStalledTrees, once for each stall); a root whose own architect is not taking the
+// work the daemon states it is owed (`architect-stalled`, admit's wakeStalledArchitects, once for
+// each arm and run of its tree); a person's decision on a tree Legion is not
 // running (`parked-decision`, the outbox's parkDecision and workflow's relayParkedDecision); a
 // hold the tree's architect escalated (`held` with reason `escalated`, workflow's retryOrEscalate);
 // a tree architect's own failed claim while its root is not done (`worker-died`, workflow's

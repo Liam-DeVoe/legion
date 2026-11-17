@@ -84,7 +84,7 @@ const schemas: Record<string, z.ZodType> = {
   "issue-status.json": LegionEmptyResponse,
   "fresh-session.json": LegionFreshSessionResponse,
   "compact.json": LegionCompactResponse,
-  // The four claim operations of the controller and of an architect (contract 150): the claim as
+  // The four claim operations of the controller and of an architect (contract 156): the claim as
   // each left it, and who holds a suspension over it.
   "claim-stop.json": LegionClaimOperationResponse,
   "claim-retry.json": LegionClaimOperationResponse,
@@ -1938,7 +1938,7 @@ const operatorSchemas: Record<string, true> = {
 /** The one session-facing exception: the four claim operations of the controller and of an
  * architect (`POST /legion/v1/claims/stop|retry|suspend|resume`) answer who holds a suspension,
  * because those routes are where the caller reads whether its own resume lifts it. The reason the
- * guard exists does not reach them: they arrived with contract 150, so only a plugin at that
+ * guard exists does not reach them: they arrived with contract 156, so only a plugin at that
  * contract or later calls them, and no reader of these bodies predates the key. The schema and the
  * four fixtures it pins are named here, and nothing else; a new session-facing body that names a
  * suspender still fails the walk below. */
@@ -1983,7 +1983,7 @@ function schemaKeys(
 // session reads whatever this daemon serves with the schema of its own contract, so a key no
 // older contract knows refuses the whole body at a plugin whose answer side predates INFRA-1048,
 // and is dropped at every plugin after it, which loses the field rather than the body.
-// `suspendedBy` is served to the operator's bearer and, from contract 150, to the four claim
+// `suspendedBy` is served to the operator's bearer and, from contract 156, to the four claim
 // operations of the controller and of an architect (claimOperationSchemas), and nowhere else; this
 // holds that for every schema the module exports, present and future.
 test("no session-facing response carries suspendedBy", () => {
@@ -2011,7 +2011,7 @@ test("no session-facing response carries suspendedBy", () => {
   }
 });
 
-// An architect's suspension is a source of its own (contract 150, dispatch://INFRA-2709 t41): the
+// An architect's suspension is a source of its own (contract 156, dispatch://INFRA-2709 t41): the
 // claim operations' answer names it, landed or held, while the state, which the walk above holds
 // to no suspender at all, still names none.
 test("the claim operations name an architect's suspension", () => {
@@ -2069,12 +2069,12 @@ test("the state golden shows a claim's capability report beside its locator", ()
   expect(LegionStateResponse.safeParse(blank.document).success).toBeFalse();
 });
 
-// The claims nothing will wake (contract 23): the golden names LEGION-210's failed implementer,
-// whose issue is held, LEGION-211's released one, whose wake never brought its pod back, and
-// LEGION-212's retired tester, which a close or a stop retired while its tree runs, so only a
-// start of the phase it owns — one no rule the daemon runs queues — would relaunch it (contract
-// 56) — three keys each, neither the released nor the retired one wider than the failed one —
-// and a state with none carries an empty list rather than none.
+// The claims nothing will wake (contract 23): the golden's list is written by hand, one entry for
+// each claim state the rule can name (internal/api's state_golden_test.go says so): LEGION-210's
+// failed implementer, whose issue is held, LEGION-211's suspended one, and LEGION-212's retired
+// tester, which only a start of the phase it owns — one no rule the daemon runs queues — would
+// relaunch (contract 56) — three keys each, neither the suspended nor the retired one wider than
+// the failed one — and a state with none carries an empty list rather than none.
 test("the state golden names the claims nothing will wake, and the list cannot be dropped", () => {
   const state = LegionStateResponse.parse(fixture("state.json"));
   expect(state.strandedClaims).toEqual([

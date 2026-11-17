@@ -20,7 +20,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/registry"
-	"github.com/sjawhar/legion/daemon/internal/testnats"
+	"github.com/sjawhar/legion/daemon/internal/testnkeys"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -31,12 +31,25 @@ import (
 const testMainEnv = "LEGION_CMD_TEST_MAIN"
 
 func TestMain(m *testing.M) {
+	// An operator's NATS nkey seed, or either seed's _FILE pointer, reaches no test here and no
+	// run of this binary as `legion`: a test that means to hand one over sets it itself. They are
+	// cleared before anything else, so the snapshot below records NATS_NKEY_SEED_FILE as absent
+	// (environment_test.go).
+	for _, name := range []string{"NATS_NKEY_SEED", "NATS_NKEY_SEED_FILE", "NATS_DAEMON_NKEY_SEED", "NATS_DAEMON_NKEY_SEED_FILE"} {
+		os.Unsetenv(name)
+	}
 	if os.Getenv(testMainEnv) == "1" {
+		// A test's stand-in shared check is no copy of the pinned one, so the test names the
+		// public_leak_check.py its stand-in carries as the one the read rule was proven against
+		// (ghCheckAt). Only this test binary reads the variable; the legion binary has none.
+		if proven := os.Getenv(testProvenCheckEnv); proven != "" {
+			ghReadsProvenCheck.sha256 = proven
+		}
 		main()
 	}
 	// environment_test.go reads these variables again once every test before it has run, so the
-	// snapshot is taken here, ahead of MustGuard, the first thing that changes this binary's own
-	// environment.
+	// snapshot is taken here, ahead of MustGuard, the first thing after the clearing above that
+	// changes this binary's own environment.
 	snapshotStartupEnvironment()
 	// The tests run real git and jj, in-process and as children (fixtureenv.MustGuard).
 	// LEGION_GH_PATH is kept: it names the real gh a capture test runs, a binary and no credential.
@@ -1088,7 +1101,7 @@ func rewrite(t *testing.T, path, old, replacement string) {
 // naming the seed's public key and never the seed.
 func TestStartCheckConfigReadsTheLaunchSecretsAsBootDoes(t *testing.T) {
 	legionState(t)
-	seed, public := testnats.User(t)
+	seed, public := testnkeys.User(t)
 	const seedKey, envoyKey = "nats_nkey_seed_file", "envoy_token_file"
 	for _, tc := range []struct {
 		name     string
@@ -1156,8 +1169,8 @@ func TestStartCheckConfigReadsTheLaunchSecretsAsBootDoes(t *testing.T) {
 // words, or an OK line naming both users by public key, never either seed.
 func TestStartCheckConfigReadsTheDaemonNATSSeedAsBootDoes(t *testing.T) {
 	legionState(t)
-	paneSeed, paneUser := testnats.User(t)
-	daemonSeed, daemonUser := testnats.User(t)
+	paneSeed, paneUser := testnkeys.User(t)
+	daemonSeed, daemonUser := testnkeys.User(t)
 	for _, tc := range []struct {
 		name     string
 		contents string
@@ -1939,10 +1952,15 @@ func TestPlainStateNamesTheRootsWaitingOnAPerson(t *testing.T) {
 // serves no place. 0 is the true answer for a caller that cannot see the line.
 //
 // The operator's guide prints this line as its sample and says what the count is, so the sample
-// is built here from the state the guide describes and read back out of the guide. That the
-// guide also names the words of the wait itself is one rule held in one place, workflow's
-// TestTheShippedWordsNameTheWaitingLineBand, which reads each out of the source that declares
-// it. (INFRA-1100.)
+// is built here from the state the guide describes and read back out of awaiting_summary_extract.txt,
+// the copy of those lines committed beside this package. It is read there and never in the guide
+// itself: a test that reads the guide puts the guide in this job's filter — a declared read
+// applies to every compiled source file of a run — and a documentation edit would then start the
+// whole daemon Go lane. What holds the copy to the guide is internal/textcheck's
+// TestTheAwaitingSummaryExtractIsTheGuidesWaitingLineSample, in the job whose subject is a
+// file's words (INFRA-1413). That the guide also names the words of the wait itself is one rule
+// held in one place, workflow's TestTheShippedWordsNameTheWaitingLineBand, which reads each
+// out of the source that declares it. (INFRA-1100.)
 func TestTheShippedWordsNameTheWaitingLineCount(t *testing.T) {
 	answered := time.Date(2026, 10, 25, 12, 0, 0, 0, time.UTC)
 	const (
@@ -1977,22 +1995,40 @@ func TestTheShippedWordsNameTheWaitingLineCount(t *testing.T) {
 		})
 	}
 
-	guide := filepath.Join("..", "..", "..", "..", "docs", "site", "src", "content", "docs", "legion", "running-legion.md")
-	body, err := os.ReadFile(guide)
+	const extract = "awaiting_summary_extract.txt"
+	body, err := os.ReadFile(extract)
 	if err != nil {
-		t.Fatalf("read %s: %v", guide, err)
+		t.Fatalf("read %s: %v", extract, err)
 	}
+	// The header is the run of `#` lines the copy opens with; what stands under it is the guide's
+	// own bytes, indentation included.
+	quoted := string(body)
+	for strings.HasPrefix(quoted, "#") {
+		_, quoted, _ = strings.Cut(quoted, "\n")
+	}
+	quoted = strings.TrimLeft(quoted, "\n")
 	sample := awaitingSummary(map[string]api.Issue{"WIDGETS-9": {WaitingOn: &api.WaitingOnView{Kind: "ask", Ask: "7f3c2a10"}}})
-	if !strings.Contains(string(body), sample) {
-		t.Errorf("running-legion.md does not carry %q", sample)
+	if !strings.Contains(quoted, sample) {
+		t.Errorf("%s does not carry %q, the line the guide's `legion state` sample prints for a "+
+			"state with one unanswered root", extract, sample)
 	}
 }
 
 // The operator's guide prints the waiting-line block as its sample, so the block is built here
-// from the state the guide describes and read back out of the guide: the header with the count,
+// from the state the guide describes and read back out of waiting_line_block_extract.txt, the
+// copy of the guide's two passages committed beside this package: the header with the count,
 // one member of each part with its key, its place, its part and the daemon's sentence, and the
 // two lines the block takes instead — nothing waiting, and a daemon that served this caller no
 // sentence at all. A reader of the guide meets all four.
+//
+// They are read there and never in the guide itself: a test that reads the guide puts the guide
+// in this job's filter — a declared read applies to every compiled source file of a run — and a
+// documentation edit would then start the whole daemon Go lane. What holds the copy to the
+// guide is internal/textcheck's TestTheWaitingLineBlockExtractIsTheGuidesWaitingLineBlock, in
+// the job whose subject is a file's words (INFRA-1413). That copy is its own file rather than
+// more lines of awaiting_summary_extract.txt, which quotes the same sample, because the guide
+// keeps these two passages thirty lines apart and one quotation of one contiguous passage
+// cannot hold both; its header says the rest.
 //
 // The sentences are written here rather than read from the render, which is another package's
 // and unexported (projection's waitingLineReason, held to R5's words by that package's own
@@ -2012,18 +2048,24 @@ func TestTheShippedWordsNameTheWaitingLineBlock(t *testing.T) {
 		"WIDGETS-14": waitingMember("WIDGETS-14", 1, len(waiting), "returned", returned),
 		"WIDGETS-15": waitingMember("WIDGETS-15", 2, len(waiting), "starting", starting),
 	}
-	guide := filepath.Join("..", "..", "..", "..", "docs", "site", "src", "content", "docs", "legion", "running-legion.md")
-	body, err := os.ReadFile(guide)
+	const extract = "waiting_line_block_extract.txt"
+	body, err := os.ReadFile(extract)
 	if err != nil {
-		t.Fatalf("read %s: %v", guide, err)
+		t.Fatalf("read %s: %v", extract, err)
+	}
+	// The header is the run of `#` lines the copy opens with; what stands under it is the
+	// guide's own bytes, each passage under the `# <path>` line that names it.
+	quoted := string(body)
+	for strings.HasPrefix(quoted, "#") {
+		_, quoted, _ = strings.Cut(quoted, "\n")
 	}
 	// A member of `waiting` whose issue carries no view at all, which is the body a daemon below
 	// the contract that added the sentence serves: the block says so on one line.
 	noReasons := waitingLineLines(waiting[:1], map[string]api.Issue{})
 	printed := append(waitingLineLines(waiting, issues), append(waitingLineLines(nil, nil), noReasons...)...)
 	for _, line := range printed {
-		if !strings.Contains(string(body), line) {
-			t.Errorf("running-legion.md does not carry %q", line)
+		if !strings.Contains(quoted, line) {
+			t.Errorf("%s does not carry %q, a line the guide's waiting-line block prints", extract, line)
 		}
 	}
 }
