@@ -18,12 +18,12 @@ import (
 // referenceTargetsMax is how many references one batched read may name. Its value is
 // contracts.ReferenceTargetsMax, the literal REFERENCE_TARGETS_MAX in packages/contracts, which
 // the client batches by too, and whose comment gives the measurement it is set above: the 247
-// distinct references that dispatch://INFRA-1196 and its four largest documents name. So the
-// count of references splits no such load into a second request, and a set at the cap costs one
-// statement per node kind (refs.TargetNames), not one per reference. The ids that the set writes
-// short cost one statement per kind of item (refs.ResolvePrefixes), except the blocks of a
-// document, which cost two: one for the blocks of the latest version of each document, and one
-// for the blocks of the versions that the references pin.
+// distinct references that the issue the new issue page was designed on and its four largest
+// documents name. So the count of references splits no such load into a second request, and a
+// set at the cap costs one statement per node kind (refs.TargetNames), not one per reference.
+// The ids that the set writes short cost one statement per kind of item (refs.ResolvePrefixes),
+// except the blocks of a document, which cost two: one for the blocks of the latest version of
+// each document, and one for the blocks of the versions that the references pin.
 //
 // The other bound on a batch is the request line itself, which this server sets no limit of its
 // own on. A proxy in front of the server can set one; 16 KB is one known such limit, an AWS load

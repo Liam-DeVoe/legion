@@ -51,7 +51,7 @@ func referenceTargets(t *testing.T, handler http.Handler, references []string) (
 // uuid into the reference's ID, where a document's reference holds its slug. The graph keys a
 // document by its slug (text.TargetID), so TargetNames finds nothing under that uuid and the
 // member is answered gone. GET /api/v1/references reads such a reference the same way
-// (wholeReference), as INFRA-1196's architect ruled.
+// (wholeReference), as the design of the new issue page decided.
 func TestReferenceTargetsResolveABatchInOneRequest(t *testing.T) {
 	handler, _ := blockIndexHandler(t)
 	createReferenceAPIProject(t, handler, "CORE")
