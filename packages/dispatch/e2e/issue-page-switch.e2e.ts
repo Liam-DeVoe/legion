@@ -95,8 +95,7 @@ function newPageHeading(page: Page): Locator {
 }
 
 /** The new page as the parts so far draw it: the title as the page's one `h1`, no tab, the
- *  header that part P fills, which draws the key and the title, the view row that part D fills,
- *  and nothing else. */
+ *  header, which draws the key and the title, the view row, and nothing else. */
 async function expectNewPageAlone(page: Page, issue: Seeded): Promise<void> {
   const newPage = page.locator("[data-issue-page]");
   await expect(newPageHeading(page)).toHaveText(issue.title);
@@ -104,9 +103,9 @@ async function expectNewPageAlone(page: Page, issue: Seeded): Promise<void> {
   // Reads the whole page: a chooser that drew both pages fails here (R4: in place of today's page).
   await expect(page.getByRole("tab", { exact: true, name: "Spec" })).toHaveCount(0);
   await expect(newPage.getByRole("tab")).toHaveCount(0);
-  // The part that fills a slot changes these two: part P fills the header
-  // (`[data-issue-header]`), part D the view row (`[data-filter-row]`), and each other slot
-  // drawn so far adds no text or control.
+  // The part that fills a slot changes these two: the header (`[data-issue-header]`) and the view
+  // row (`[data-filter-row]`) are filled, and each other slot drawn so far adds no text or
+  // control.
   const header = newPage.locator("[data-issue-header]");
   const row = newPage.locator("[data-filter-row]");
   await expect(header).toHaveCount(1);

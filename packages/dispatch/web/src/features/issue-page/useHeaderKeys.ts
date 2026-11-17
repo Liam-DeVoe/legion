@@ -52,9 +52,8 @@ const ACTION_WORDS = {
  * of the header and on neither of a chip's two actions, when the chip draws no such action - no
  * request of its document waits on the reader, or the document is approved, which draws no
  * Approve - or when the action refuses a press while its review is written: Approve is `disabled`
- * then, and Request changes `aria-disabled` (decision 162 of
- * dispatch://INFRA-1196/artifact/part-decisions-md). Like `usableControl`, the one fact a key's
- * `run` and its `when` both read.
+ * then, and Request changes `aria-disabled`. Like `usableControl`, the one fact a key's `run` and
+ * its `when` both read.
  *
  * The chip's box is the nearest box around the focus that holds a chip of its own, so the action
  * found is always the focused document's, never the one of another entry on the line.
@@ -118,11 +117,10 @@ function outsideInputsAndAskCards(): boolean {
 }
 
 /**
- * The header's keys (dispatch://INFRA-1196 R11), the ones today's header binds, each with its
- * target on the new header: `s` focuses the status and `p` the priority, `0` to `3` set the
- * priority, `e` puts the caret in the title, `Shift+P` pins and unpins, `a` approves and
- * `Shift+R` opens Request changes on the focused approval chip or entry, and Escape leaves a
- * focused status or priority.
+ * The header's keys, the ones today's header binds, each with its target on the new header: `s`
+ * focuses the status and `p` the priority, `0` to `3` set the priority, `e` puts the caret in the
+ * title, `Shift+P` pins and unpins, `a` approves and `Shift+R` opens Request changes on the
+ * focused approval chip or entry, and Escape leaves a focused status or priority.
  *
  * They register into the `issue` scope the view row pushes (`useIssueKeymap.ts`); this hook
  * pushes none. The digits go through the header's one priority write, the one its picker and the
@@ -169,10 +167,9 @@ export function useHeaderKeys(priorityWrite: IssuePriorityWrite): void {
       run: () => usableControl(PIN_TOGGLE)?.click(),
       when: () => usableControl(PIN_TOGGLE) !== null && outsideInputsAndAskCards(),
     },
-    // Decision 164 of dispatch://INFRA-1196/artifact/part-decisions-md: one key does one act on
-    // both issue pages. Today's header takes `a` and `Shift+R` from anywhere but a turn, an ask
-    // card or a text field (dispatch://INFRA-2160); on this page `a` answers and `r` replies on
-    // the focused row, so here the two keys are the approval's only while the focus is on the
+    // One key does one act on both issue pages. Today's header takes `a` and `Shift+R` from
+    // anywhere but a turn, an ask card or a text field; on this page `a` answers and `r` replies
+    // on the focused row, so here the two keys are the approval's only while the focus is on the
     // chip or entry of a document whose request waits on the reader, or on one of its two
     // actions, and anywhere else they are left to the row. Each presses the action that chip
     // draws, so a key is taken exactly while that action would take a click.

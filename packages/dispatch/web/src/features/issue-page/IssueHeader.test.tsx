@@ -29,7 +29,7 @@ import { appKeymap, useKeymapScope } from "../shell/keymap";
 import { HeaderSlot } from "./slots/header";
 
 /**
- * The header's cases of `features/issue/IssuePage.test.tsx` at INFRA-1196's checkpoint, each
+ * The header's cases of `features/issue/IssuePage.test.tsx` at the new page's checkpoint, each
  * mounting the header's slot alone (`slots/header.tsx`), as the new page's root mounts it: from
  * the issue's own read, with the address parsed.
  */
@@ -121,7 +121,7 @@ const openIssueAsk: Ask = {
 };
 
 /** An open approval request on the issue's spec whose turn is a person's: it waits on the
- *  reader, so the header's approval control carries Approve and Request changes (R31). */
+ *  reader, so the header's approval control carries Approve and Request changes. */
 function approvalAsk(): NonNullable<IssueDetails["open_asks"]>[number] {
   return {
     ...openIssueAsk,
@@ -225,7 +225,7 @@ function renderHeader(path = "/issues/CORE-1", queryClient = headerClient(), iss
 }
 
 /** Opens the header's one actions control, which is where the pin, close, reopen and the control
- *  that sets the parent live (R13: row one holds the actions, never a property). */
+ *  that sets the parent live (row one holds the actions, never a property). */
 async function openIssueActions(): Promise<void> {
   const user = userEvent.setup();
   const control = await screen.findByRole("button", { name: "Issue actions" });
@@ -247,7 +247,7 @@ test("the header updates whose turn when a human clarification is latest", async
 
   try {
     // The marker's words are the page's and the count beside them is the issue's, each marked
-    // as what it is (dispatch://INFRA-1196 R21), so the marker is read whole.
+    // as what it is, so the marker is read whole.
     expect((await screen.findByTestId("issue-whose-turn")).textContent).toBe("Waiting on you (1)");
     queryClient.setQueryData<IssueDetails>(["issue", "CORE-1"], {
       ...waitingIssue,
@@ -288,7 +288,7 @@ test("the header hides whose turn when the server sent open asks without waiting
 });
 
 test("the header keeps state actions available while approval awaits", async () => {
-  // The request waits on the reader, so its chip carries Approve in the header (R31).
+  // The request waits on the reader, so its chip carries Approve in the header.
   const restore = stubHeader({
     ...issue,
     artifacts: [
@@ -303,7 +303,7 @@ test("the header keeps state actions available while approval awaits", async () 
 
   try {
     await screen.findByRole("heading", { level: 1, name: issue.title });
-    // The pin is one of the overflow menu's actions (dispatch://INFRA-1196 R13).
+    // The pin is one of the overflow menu's actions.
     await openIssueActions();
     const pin = screen.getByRole("button", { name: "Pin issue" });
     expect(pin).toHaveAttribute("aria-pressed", "false");
@@ -593,11 +593,10 @@ test("the header lets a human move a Todo issue to In progress", async () => {
   }
 });
 
-// Decision 164 of dispatch://INFRA-1196/artifact/part-decisions-md: `a` and Shift+R are the
-// approval's only with the focus on the chip of a document whose request waits on the reader, or
-// on one of its two actions, and only while the action each presses takes a press. A stale
-// approval's Approve says its version; while the review is written Approve is disabled and
-// Request changes refuses a press, so neither key applies then.
+// `a` and Shift+R are the approval's only with the focus on the chip of a document whose request
+// waits on the reader, or on one of its two actions, and only while the action each presses takes
+// a press. A stale approval's Approve says its version; while the review is written Approve is
+// disabled and Request changes refuses a press, so neither key applies then.
 test("the approval chip's keys press its own actions, and only while those take a press", async () => {
   const user = userEvent.setup();
   const restore = stubHeader({

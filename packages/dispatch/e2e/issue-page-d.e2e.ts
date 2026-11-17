@@ -358,7 +358,7 @@ test("the frame draws an icon rail, Details over the page and the Contents pane 
     await page.setViewportSize(viewportAt(390));
     await gotoIssue(page, `/issues/${key}`);
     await expect(iconRail(page), "the phone draws the rail").toHaveCount(0);
-    // The header's own "Open navigation" (part P) is the frame's; one outside the header is
+    // The header's own "Open navigation" is the frame's; one outside the header is
     // today's compact bar's.
     const openNavigation = { exact: true, name: "Open navigation" };
     await expect(

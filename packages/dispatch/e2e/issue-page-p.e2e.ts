@@ -62,11 +62,11 @@ import { assertPageFits, assertWhole } from "./unclipped";
 import { asUser } from "./users";
 
 /**
- * The new issue page's header (dispatch://INFRA-3943, part P of dispatch://INFRA-1196): R13's
- * list and its limits, the approval control, the typeface's fallback, the count of what waits,
- * the title's editor, the keys, and what stays as the page scrolls. Each row turns the new page
- * on (`phase`), first waits for the header's properties line (`expectHeaderDrawn`), and reads
- * the header alone: no row waits for a row of the outline.
+ * The new issue page's header: the list of what it draws and its limits, the approval control,
+ * the typeface's fallback, the count of what waits, the title's editor, the keys, and what stays
+ * as the page scrolls. Each row turns the new page on (`phase`), first waits for the header's
+ * properties line (`expectHeaderDrawn`), and reads the header alone: no row waits for a row of
+ * the outline.
  */
 
 /** The person the server resolves the ask `askId` to (`waiting_on_person`): whoever it was handed
@@ -146,11 +146,11 @@ async function pressOutOfTheEdit(
 
 // c-header (1): the header's half of the checkpoint's "every property with a value is visible at
 // every width @phone" (`e2e/issue-layout.e2e.ts:2988`), on the measured title and 20 labels.
-// On the phone it reads what the 390 px viewport decides (R1 of "Phone acceptance" in
-// `packages/dispatch/AGENTS.md`): R3's limit there, the 24 px targets, the page no wider than
-// the window, the navigation's control first on row one and the dialog it opens, and the 44 px
-// buttons and 16 px type of the dialog a header control opens.
-test("the header holds R13's list and its limits at every width @phone", async ({ browser }) => {
+// On the phone it reads what the 390 px viewport decides, a layout claim "Phone acceptance" in
+// `packages/dispatch/AGENTS.md` tags `@phone` for: the header's height limit there, the 24 px
+// targets, the page no wider than the window, the navigation's control first on row one and the
+// dialog it opens, and the 44 px buttons and 16 px type of the dialog a header control opens.
+test("the header holds its list and its limits at every width @phone", async ({ browser }) => {
   test.setTimeout(300_000);
   await phase(browser, seedHeader, async (page, seeded) => {
     await patchIssue(seeded.key, { labels: [...TWENTY_LABELS], title: MEASURED_TITLE });
@@ -170,8 +170,8 @@ test("the header holds R13's list and its limits at every width @phone", async (
 
     // An approval request that waits on the reader.
     await requestApproval(seeded.specArtifactId, { summary: "Read it back." });
-    // R13's list, each part of the header by what it is: nothing else may be drawn there. Its one
-    // link is the parent's, named exactly. The words it draws outside a control are R1's too:
+    // The header's list, each part of the header by what it is: nothing else may be drawn there.
+    // Its one link is the parent's, named exactly. The words it draws outside a control are in it:
     // the project, the crumbs' separators, the key, the status's mark, the priority and the
     // assignee each drawn under its select, and the one chip's "Not requested".
     const named = [
@@ -251,7 +251,7 @@ test("the header holds R13's list and its limits at every width @phone", async (
         await assertWhole(at);
       }
       // Each count of the children's progress draws no "done" and carries it in its name, the
-      // whole sentence a reader hears (decision 86).
+      // whole sentence a reader hears.
       for (const [name, at, heard] of [
         [
           "the children's progress",
@@ -269,7 +269,7 @@ test("the header holds R13's list and its limits at every width @phone", async (
         );
       }
       // The first label, or, where no chip fits whole on the line, the labels' count alone,
-      // which then names every label (R2, decision 96).
+      // which then names every label.
       if ((await headerLabels(page).count()) === 0) {
         await expect(
           labelsLeft(page),
@@ -313,11 +313,11 @@ test("the header holds R13's list and its limits at every width @phone", async (
         `Approve is not drawn in the ink at ${width} px`
       ).toEqual(["rgb(28, 25, 23)", "rgb(255, 255, 255)"]);
 
-      // The header draws R13's list and nothing else, in R1's order on its line.
+      // The header draws its list and nothing else, in the list's order on its line.
       const parts = await headerParts(page);
       expect(
         parts.filter((part) => !named.some((pattern) => pattern.test(part))),
-        `the header draws parts R13 does not name at ${width} px`
+        `the header draws parts its list does not name at ${width} px`
       ).toEqual([]);
       // The list holds the words the header draws as text, so a property drawn that way is in it.
       expect(
@@ -334,7 +334,7 @@ test("the header holds R13's list and its limits at every width @phone", async (
       ];
       expect(
         parts.filter((part) => order.includes(part)),
-        `the properties line is out of R1's order at ${width} px`
+        `the properties line is out of the list's order at ${width} px`
       ).toEqual(order);
       // The approval control stands after the count and before the labels.
       expect(
@@ -415,7 +415,7 @@ test("the header holds R13's list and its limits at every width @phone", async (
       ).toEqual([]);
       expect(
         await shortControls(page, seeded.key),
-        `a control R3 holds to 24 px is shorter at ${width} px`
+        `a control held to 24 px is shorter at ${width} px`
       ).toEqual([]);
       await assertPageFits(page);
       if (width === IPHONE_13.width) {
@@ -461,7 +461,7 @@ test("the header holds R13's list and its limits at every width @phone", async (
         `the actions menu opens over its own control at ${width} px`
       ).toBeGreaterThanOrEqual(-0.5);
       // From 761 px to 1279 px each action of the open menu keeps `main`'s 44 px floor, as a
-      // menu a header control opens does (decision 58).
+      // menu a header control opens does.
       if (width === 1024) {
         const actionHeights = await header
           .getByRole("button", { exact: true, name: CONTROL_LABELS.issue_actions })
@@ -512,7 +512,7 @@ test("the header holds R13's list and its limits at every width @phone", async (
       await expect(headerLabels(page)).toHaveCount(drawnAtDesktop);
 
       // Labels that fit on the line only while no count is drawn are all drawn, and no count
-      // (R2): those labels alone, then with one more as wide as the room they leave less 4 px,
+      // is drawn: those labels alone, then with one more as wide as the room they leave less 4 px,
       // which the count and its gap would take.
       await patchIssue(seeded.key, { labels: TWENTY_LABELS.slice(0, drawnAtDesktop) });
       await gotoIssue(page, `/issues/${seeded.key}`);
@@ -615,7 +615,7 @@ test("the approval entries stay in the header and read the document each step ap
       (await getArtifactVersion(root.primary_artifact_id ?? "", pinned)).markdown,
       "the document version the approval pins does not resolve to the spec's own text"
     ).toContain("The plan.");
-    // The request waits on the reader, so the spec's entry carries Approve in the header (R31),
+    // The request waits on the reader, so the spec's entry carries Approve in the header,
     // and the approval it records reads back.
     await entry("spec").getByRole("button", { exact: true, name: "Approve" }).click();
     await expect
@@ -630,9 +630,9 @@ test("the approval entries stay in the header and read the document each step ap
     ).toHaveCount(0);
 
     // A request of the Verification document waits on the reader: its own entry carries Approve
-    // and Request changes, and the spec's, whose request was answered, carries neither
-    // (decision 58). The count's press puts the focus on the entry of the document that waits,
-    // and its Approve answers that document's request.
+    // and Request changes, and the spec's, whose request was answered, carries neither. The
+    // count's press puts the focus on the entry of the document that waits, and its Approve
+    // answers that document's request.
     const verification = await createIssueArtifact(root.key, {
       content: "# Verification\n\nOne check.\n",
       name: "verification.md",
@@ -760,9 +760,10 @@ test("the approval entries stay in the header and read the document each step ap
 });
 
 // c-header (3): the checkpoint's "the header holds its rule when the typeface does not load
-// @phone" (`e2e/issue-layout.e2e.ts:5714`), less part B's readings of the file and its licence.
-// On the phone it reads what the 390 px viewport decides in the fallback, as row (1) reads it in
-// the face (R1 of "Phone acceptance" in `packages/dispatch/AGENTS.md`): R3's limit and the 24 px
+// @phone" (`e2e/issue-layout.e2e.ts:5714`), less its readings of the typeface's file and its
+// licence, which are not the header's. On the phone it reads what the 390 px viewport decides in
+// the fallback, as row (1) reads it in the face, a layout claim "Phone acceptance" in
+// `packages/dispatch/AGENTS.md` tags `@phone` for: the header's height limit and the 24 px
 // targets at 390 px, and the page no wider than the window at 390 and 320 px.
 test("the header holds its limits when the typeface does not load @phone", async ({ browser }) => {
   test.setTimeout(240_000);
@@ -832,7 +833,7 @@ test("the header holds its limits when the typeface does not load @phone", async
             ).toEqual([]);
             expect(
               await shortControls(without, seeded.key),
-              `a control R3 holds to 24 px is shorter at ${width} px in the fallback`
+              `a control held to 24 px is shorter at ${width} px in the fallback`
             ).toEqual([]);
           }
           const fit = await without.evaluate(() => ({
@@ -856,9 +857,10 @@ test("the header holds its limits when the typeface does not load @phone", async
 
 // c-header (4): the count's half of the checkpoint's "the count of what waits on the reader
 // opens the first thing that waits @phone" (`e2e/issue-layout.e2e.ts:3275`). The node the press
-// reaches is parts I's and Q's. On the phone every press of the count is a tap of the touch
-// screen (R2 of "Phone acceptance" in `packages/dispatch/AGENTS.md`), and each opens what the
-// mouse's click opens on `chromium`.
+// reaches is drawn outside the header, and other rows read it. On the phone every press of the
+// count is a tap of the touch screen, a touch claim "Phone acceptance" in
+// `packages/dispatch/AGENTS.md` tags `@phone` for, and each opens what the mouse's click opens on
+// `chromium`.
 test("the count of what waits is a control that opens the Decisions address @phone", async ({
   browser,
 }) => {
@@ -933,8 +935,8 @@ test("the count of what waits is a control that opens the Decisions address @pho
 
     // The spec approved and the Verification document's request alone waiting: the header draws
     // the spec's chip and no chip of the Verification document, so the press puts the focus on
-    // no chip rather than on the spec's (decision 58). The press's handler moves the focus as it
-    // runs, so the focus is read once the press is done.
+    // no chip rather than on the spec's. The press's handler moves the focus as it runs, so the
+    // focus is read once the press is done.
     const verifying = await createIssue({
       force: true,
       project: HEADER_PROJECT,
@@ -1003,9 +1005,8 @@ test("the count of what waits is a control that opens the Decisions address @pho
 });
 
 // c-header (5): the checkpoint's "the count of what waits holds only what waits on the reader"
-// (`e2e/issue-layout.e2e.ts:3368`), finding F4 of
-// dispatch://INFRA-1196/artifact/tester-findings-md. A question waits on the person the server
-// resolves it to - whoever it was handed to, else the issue's assignee.
+// (`e2e/issue-layout.e2e.ts:3368`). A question waits on the person the server resolves it to -
+// whoever it was handed to, else the issue's assignee.
 test("the count of what waits holds only what waits on the reader", async ({ browser }) => {
   test.setTimeout(120_000);
   await phase(browser, seedHeader, async (alice) => {
@@ -1062,8 +1063,7 @@ test("the count of what waits holds only what waits on the reader", async ({ bro
 });
 
 // c-header (6): the checkpoint's "a press on the status straight out of the title's editor lands
-// on the status" (`e2e/issue-layout.e2e.ts:3416`), finding F5 of
-// dispatch://INFRA-1196/artifact/tester-findings-md.
+// on the status" (`e2e/issue-layout.e2e.ts:3416`).
 test("a press on the status straight out of the title's editor lands on the status", async ({
   browser,
 }) => {
@@ -1100,8 +1100,8 @@ test("a press on the status straight out of the title's editor lands on the stat
       })
       .toBe("todo");
 
-    // A status picked while the title's write is still out waits behind it in the issue's line
-    // (decision 47): the select draws the pick at once, and it is written once, after the title.
+    // A status picked while the title's write is still out waits behind it in the issue's line:
+    // the select draws the pick at once, and it is written once, after the title.
     // The issue is at `todo` already, so the pick is `testing`, which the select reads only if
     // the pick was drawn.
     let statusWrites = 0;
@@ -1170,9 +1170,10 @@ test("a press on the status straight out of the title's editor lands on the stat
 // c-header (7): `e2e/issue.e2e.ts:1016` at 750e2716, "issue header delivers the click that ends
 // a title edit to the control under the pointer @phone": ending the edit of a title of two or
 // three lines must not move the control under it between the mousedown and the mouseup. On the
-// phone the press is a tap of the touch screen (R2 of "Phone acceptance" in
-// `packages/dispatch/AGENTS.md`), whose mouse events come after its touch events: the order
-// `IssueTitleRow.tsx` holds the title's height by until the press is delivered, at 390 px.
+// phone the press is a tap of the touch screen, a touch claim "Phone acceptance" in
+// `packages/dispatch/AGENTS.md` tags `@phone` for. A tap's mouse events come after its touch
+// events: the order `IssueTitleRow.tsx` holds the title's height by until the press is
+// delivered, at 390 px.
 test("the press that ends a title edit reaches the control under it @phone", async ({
   browser,
 }) => {
@@ -1477,9 +1478,10 @@ async function openScrollingPage(page: Page, key: string, width: number): Promis
 
 // c-header (9): the header's half of the checkpoint's "the identity and the title stay when the
 // page scrolls, and on a phone the filter control @phone" (`e2e/issue-layout.e2e.ts:3472`). On
-// the phone it reads what the 390 px viewport decides (R1 of "Phone acceptance" in
-// `packages/dispatch/AGENTS.md`): the title's 20 px type and its 362 px words with no clamp, and
-// the whole header scrolling off the screen with the page, where the band stays from 761 px up.
+// the phone it reads what the 390 px viewport decides, a layout claim "Phone acceptance" in
+// `packages/dispatch/AGENTS.md` tags `@phone` for: the title's 20 px type and its 362 px words
+// with no clamp, and the whole header scrolling off the screen with the page, where the band
+// stays from 761 px up.
 test("the band stays when the page scrolls, and on a phone the header goes @phone", async ({
   browser,
 }) => {
@@ -1591,13 +1593,12 @@ function drawnWords(control: Locator): Promise<string> {
   });
 }
 
-// The tester's finding on the first round's head (dispatch://INFRA-3943, c-use): R2's count reads
-// "+1 label" or "+N labels" and R7's reads "Waiting on you (N)", and a reader reads the words the
-// screen draws, not the text the element holds. At 6164ec0f the labels' count drew "+1label"
-// (its space is a flex container's collapsed item) and the count of what waits drew
-// "Waiting on you ( 2 )" (its flex gap opens between the brackets and the number), while every
-// row's `toHaveText` read the right words in the text content. On the phone it reads the same at
-// 390 px.
+// The labels' count reads "+1 label" or "+N labels" and the count of what waits reads
+// "Waiting on you (N)", and a reader reads the words the screen draws, not the text the element
+// holds. The labels' count once drew "+1label" (its space is a flex container's collapsed item)
+// and the count of what waits drew "Waiting on you ( 2 )" (its flex gap opens between the
+// brackets and the number), while every row's `toHaveText` read the right words in the text
+// content. On the phone it reads the same at 390 px.
 test("the header draws the words of its two counts as a reader reads them @phone", async ({
   browser,
 }) => {
@@ -1630,25 +1631,22 @@ test("the header draws the words of its two counts as a reader reads them @phone
   });
 });
 
-/** A reader whose login is as long as INFRA-1196's assignee's: 16 characters. */
+/** A reader whose login is as long as the measured root's assignee's: 16 characters. */
 const LONG_LOGIN = "dana@example.dev";
 
-// The tester's finding on the first round's head (dispatch://INFRA-3943, c-use): R3 holds the
-// header to its limits with 20 labels and the measured title, and the measured title is
-// INFRA-1196's own. On a preview of 6164ec0f holding INFRA-1196 as copied from production -
-// a root of a project that gates its spec, 24 children with 3 done, assigned to a 16-character
-// login - with 20 labels and the spec's approval request waiting on the reader, the header took
-// 4 lines and 127 px at 1440 px and 11 lines and 327 px at 390 px. Row (1)'s seed is a child
-// with one chip and 3 children, so no row read this issue's shape. This row seeds that shape and
-// reads R3's limits with no request waiting and with one; on the phone it reads 390 px.
-test("the header holds its limits on a gated root shaped like INFRA-1196 @phone", async ({
-  browser,
-}) => {
+// The header holds its limits with 20 labels and the measured title, which is a real root's
+// own. On a copy of that root - a root of a project that gates its spec, 24 children with 3 done,
+// assigned to a 16-character login - with 20 labels and the spec's approval request waiting on
+// the reader, the header once took 4 lines and 127 px at 1440 px and 11 lines and 327 px at
+// 390 px. Row (1)'s seed is a child with one chip and 3 children, so no row read this issue's
+// shape. This row seeds that shape and reads the header's limits with no request waiting and
+// with one; on the phone it reads 390 px.
+test("the header holds its limits on a large gated root @phone", async ({ browser }) => {
   test.setTimeout(240_000);
   await phase(
     browser,
     async () => {
-      await createProject({ key: "LIKE", name: "Like INFRA" });
+      await createProject({ key: "LIKE", name: "Large root" });
       await setGatedSteps("LIKE", ["spec"]);
       const root = await createIssue({
         force: true,
@@ -1715,11 +1713,10 @@ function framesDrawn(page: Page, frames: number): Promise<void> {
   }, frames);
 }
 
-// The tester's reading of review 5924443889's finding on `IssuePropertiesRow.tsx:414`, round 2
-// (dispatch://INFRA-3943): the labels' count names every label the line leaves out, at every
-// width of the line, R2's "a count of the rest". Row (1) reads the count at four widths, where
-// the band of a few pixels the finding names may not fall, so a count read at a width other
-// than the one drawn passed it: with the count's held width taken out, row (1) still passed.
+// The labels' count names every label the line leaves out, at every width of the line: it is a
+// count of the rest. Row (1) reads the count at four widths, where a band of a few pixels in
+// which the count was wrong may not fall, so a count read at a width other than the one drawn
+// passed it: with the count's held width taken out, row (1) still passed.
 // This row narrows the line pixel by pixel and reads, at each width, that the chips drawn whole
 // and the count's number add up to every label, and that no chip is drawn cut.
 test("the labels' count names every label the line leaves out, at every width of the line", async ({
@@ -1781,13 +1778,12 @@ test("the labels' count names every label the line leaves out, at every width of
   });
 });
 
-// The tester's reading of review 5924443889's finding on `IssueTitleRow.tsx:96`, round 2
-// (dispatch://INFRA-3943): a focus alone opens no title editor, so a key typed after the page
-// or the browser gives the heading the focus back is no part of the title. Row (8) reads that
-// through Details, whose drawer gives the focus back again in the frames after it closes: with
-// the heading's old `onFocus` put back, the editor that focus opened was closed again by that
-// second focus, and row (8) passed. Here the page gives the heading its focus back once, as a
-// return to the window does, and nothing focuses it again.
+// A focus alone opens no title editor, so a key typed after the page or the browser gives the
+// heading the focus back is no part of the title. Row (8) reads that through Details, whose
+// drawer gives the focus back again in the frames after it closes: with the heading's old
+// `onFocus` put back, the editor that focus opened was closed again by that second focus, and
+// row (8) passed. Here the page gives the heading its focus back once, as a return to the window
+// does, and nothing focuses it again.
 test("a focus given back to the title's heading opens no editor", async ({ browser }) => {
   test.setTimeout(120_000);
   await phase(browser, seedHeader, async (page, seeded) => {
@@ -1821,15 +1817,13 @@ test("a focus given back to the title's heading opens no editor", async ({ brows
   });
 });
 
-// The tester's finding at 2e10926e (dispatch://INFRA-3943, round 3), decision 132 of
-// dispatch://INFRA-1196/artifact/part-decisions-md: on the new page a keyboard pick of the
-// status keeps the focus on the status (WCAG 2.4.3). The select was disabled while its own write
-// saved, and the browser moves the focus off a disabled control, so after `s` and one arrow key
-// the focus was on the page's body: a second arrow key did nothing, Tab started from the top,
-// and an Escape pressed before the select was disabled was not taken. Each focus is read once,
-// after the pick is drawn, because a retrying read passes in the frame before the pick disables
-// the select. The status's writes are held open with a route, so the save stays in flight while
-// the row reads it.
+// On the new page a keyboard pick of the status keeps the focus on the status (WCAG 2.4.3). The
+// select was disabled while its own write saved, and the browser moves the focus off a disabled
+// control, so after `s` and one arrow key the focus was on the page's body: a second arrow key
+// did nothing, Tab started from the top, and an Escape pressed before the select was disabled
+// was not taken. Each focus is read once, after the pick is drawn, because a retrying read
+// passes in the frame before the pick disables the select. The status's writes are held open
+// with a route, so the save stays in flight while the row reads it.
 test("a keyboard pick of the status keeps the focus on the status while it saves", async ({
   browser,
 }) => {
@@ -1956,18 +1950,17 @@ function tabWalk(part: Locator, focusNext = false): Promise<TabWalk> {
   }, focusNext);
 }
 
-// Decision 113 of dispatch://INFRA-1196/artifact/part-decisions-md, amended: a focus that enters
-// the header from below moves no page. The page keeps the band at its top clear of what a focus
-// brings into view (`scroll-padding-top` in `web/src/styles.css`), so without a top scroll margin
-// of minus that band a focus on a header control lying in it scrolls the page up, and a control
-// of what stays does not move with it. At 1440 px the identity block is stuck: Shift+Tab from the
-// properties line under it walks back through every control of the block to its first and the
-// page does not move, each control of the block takes minus the padding, and each control of the
-// properties line takes none, so a focus there under the block still scrolls it out from under
-// it. At 390 px the whole header scrolls away and the padding is the view row's height: Shift+Tab
-// from below onto the header's last control, while that control lies 10 px below the top of the
-// window, does not move the page, and each control of the header takes minus the padding. On the
-// phone it reads 390 px.
+// A focus that enters the header from below moves no page. The page keeps the band at its top
+// clear of what a focus brings into view (`scroll-padding-top` in `web/src/styles.css`), so
+// without a top scroll margin of minus that band a focus on a header control lying in it scrolls
+// the page up, and a control of what stays does not move with it. At 1440 px the identity block
+// is stuck: Shift+Tab from the properties line under it walks back through every control of the
+// block to its first and the page does not move, each control of the block takes minus the
+// padding, and each control of the properties line takes none, so a focus there under the block
+// still scrolls it out from under it. At 390 px the whole header scrolls away and the padding is
+// the view row's height: Shift+Tab from below onto the header's last control, while that control
+// lies 10 px below the top of the window, does not move the page, and each control of the header
+// takes minus the padding. On the phone it reads 390 px.
 test("a focus that enters the header from below moves no page @phone", async ({ browser }) => {
   test.setTimeout(150_000);
   await phase(browser, seedHeader, async (page, seeded) => {
@@ -2052,14 +2045,13 @@ test("a focus that enters the header from below moves no page @phone", async ({ 
   });
 });
 
-// The tester's finding at aec3a5b5 (dispatch://INFRA-3943, round 4), decision 162 of
-// dispatch://INFRA-1196/artifact/part-decisions-md, in decision 132's class: the header's ⋯ menu
-// gives the focus back to its own control, 'Issue actions', on Escape and after each action, as
-// the ARIA menu-button pattern does (WCAG 2.4.3). The menu hid the focused action as it closed,
-// and nothing gave the focus back, so the browser left it on the page's body: the next Tab
-// started again from the top of the page. Each focus is read once, after the menu has closed and
-// two frames are drawn, so a focus that only passes through the control is not taken for one
-// that stays there. It reads 1440 px and 390 px, where the menu is drawn as a panel of its own.
+// The header's ⋯ menu gives the focus back to its own control, 'Issue actions', on Escape and
+// after each action, as the ARIA menu-button pattern does (WCAG 2.4.3). The menu hid the focused
+// action as it closed, and nothing gave the focus back, so the browser left it on the page's
+// body: the next Tab started again from the top of the page. Each focus is read once, after the
+// menu has closed and two frames are drawn, so a focus that only passes through the control is
+// not taken for one that stays there. It reads 1440 px and 390 px, where the menu is drawn as a
+// panel of its own.
 test("the header's menu gives the focus back to its control on Escape and after an action", async ({
   browser,
 }) => {
@@ -2151,12 +2143,11 @@ function reviewsSent(page: Page): string[] {
   return sent;
 }
 
-// Decision 164 of dispatch://INFRA-1196/artifact/part-decisions-md, R6 of dispatch://INFRA-3943's
-// spec version 6: with the focus on the approval chip of a document whose request waits on the
-// reader, `a` presses its Approve and the approval is recorded, and the focus stays on the chip.
-// With the focus on another of the header's controls, the title's heading, `a` is not the
-// approval's: it sends no review and the request still waits. Nor is it on the chip once the
-// document is approved, which draws no Approve.
+// With the focus on the approval chip of a document whose request waits on the reader, `a`
+// presses its Approve and the approval is recorded, and the focus stays on the chip. With the
+// focus on another of the header's controls, the title's heading, `a` is not the approval's: it
+// sends no review and the request still waits. Nor is it on the chip once the document is
+// approved, which draws no Approve.
 test("the approval chip's a approves the document whose request waits, and a elsewhere approves nothing", async ({
   browser,
 }) => {
@@ -2208,9 +2199,9 @@ test("the approval chip's a approves the document whose request waits, and a els
   });
 });
 
-// Decision 164, R6: with the focus on the chip whose request waits, or on its Approve, Shift+R
-// presses its Request changes, which opens part E's Request changes dialog, and Escape closes the
-// dialog and gives the focus back. With the focus on the title's heading it opens nothing.
+// With the focus on the chip whose request waits, or on its Approve, Shift+R presses its Request
+// changes, which opens the Request changes dialog, and Escape closes the dialog and gives the
+// focus back. With the focus on the title's heading it opens nothing.
 test("the approval chip's Shift+R opens Request changes, from the chip and from its Approve", async ({
   browser,
 }) => {
@@ -2251,10 +2242,10 @@ test("the approval chip's Shift+R opens Request changes, from the chip and from 
   });
 });
 
-// Decision 164, R6, on a gated root, whose header draws an entry per step: with the requests of
-// the spec and of the Verification document both waiting on the reader, each entry carries its
-// own Approve and Request changes, and `a` on the Verification document's entry approves that
-// document alone. The spec's request still waits, and its entry still carries its actions.
+// On a gated root, whose header draws an entry per step: with the requests of the spec and of
+// the Verification document both waiting on the reader, each entry carries its own Approve and
+// Request changes, and `a` on the Verification document's entry approves that document alone.
+// The spec's request still waits, and its entry still carries its actions.
 test("an approval entry's a approves that entry's document and no other", async ({ browser }) => {
   test.setTimeout(120_000);
   await phase(
@@ -2313,10 +2304,9 @@ test("an approval entry's a approves that entry's document and no other", async 
   );
 });
 
-// Decision 164, R6, and the architect's "the key card's lines": the key card lists the two keys
-// with their lines, applying while the focus is on the chip whose request waits and greyed with
-// it anywhere else; the palette offers the two as rows on that same focus alone, and its Request
-// changes row opens the dialog the key does.
+// The key card lists the two keys with their lines, applying while the focus is on the chip
+// whose request waits and greyed with it anywhere else; the palette offers the two as rows on
+// that same focus alone, and its Request changes row opens the dialog the key does.
 test("the key card and the palette offer the approval chip's two keys while the focus is on it", async ({
   browser,
 }) => {
