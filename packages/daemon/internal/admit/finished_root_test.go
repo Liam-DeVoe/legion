@@ -268,14 +268,7 @@ func TestAHandedOverChildCarriesItsPhaseGateAndPullRequest(t *testing.T) {
 				}
 			}
 			if tc.reviewed != "" {
-				var row record.PhaseRow
-				inTx(t, pool, func(tx pgx.Tx) {
-					rows, err := record.NewStore().Phases(context.Background(), tx, child)
-					if err != nil {
-						t.Fatalf("read the phases rows of %s: %v", child, err)
-					}
-					row = record.PhaseRowOf(rows, claim.RoleReviewer)
-				})
+				row := phaseRow(t, pool, child, claim.RoleReviewer)
 				if row.ReviewedHead != tc.reviewed {
 					t.Errorf("the carried reviewer's row reads the reviewed commit %q, want %s: the carry keeps the phase rows", row.ReviewedHead, tc.reviewed)
 				}
