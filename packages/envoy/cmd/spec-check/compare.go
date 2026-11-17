@@ -21,8 +21,10 @@ const ciVariable = "GITHUB_ACTIONS"
 // text that they hold, 1 when it did not, and 2 for files with a problem of Parse that can lose a
 // node or change one (its Effect is specgraph.LosesNode), a directory or a file it cannot read, a
 // directory that holds no spec file without --allow-empty, or arguments it does not take. A problem
-// of Parse that leaves each node as the files write it (specgraph.KeepsEachNode), such as a heading
-// that names code, is tree's to judge, and compare compares those files.
+// of Parse that keeps each node (specgraph.KeepsEachNode), such as a heading that names code, is
+// tree's to judge, and compare compares those files: each node holds the text that the files
+// write, except a raw 0xA0 or 0x85 byte where its opening line's attributes take white space (after
+// {, between two attributes or before }), which it drops as white space.
 //
 // It answers 2, before it reads an argument, in a CI job: R2 gives the comparison at each push to
 // Dispatch, and no CI job compares the files. No route of the Dispatch server calls
@@ -57,7 +59,7 @@ func runCompare(args []string, stdout, stderr io.Writer) int {
 	}
 	j, err := read(stderr, dir)
 	what, empty := noSpecFile(j, err)
-	lost := slices.DeleteFunc(j.problems, func(p specgraph.Problem) bool { return p.Effect == specgraph.KeepsEachNode })
+	lost := refusedProblems(j.problems)
 	switch {
 	case empty:
 		// An instrument that read no file has not passed: every text of no file is approved. But
@@ -109,6 +111,13 @@ func runCompare(args []string, stdout, stderr io.Writer) int {
 		say(stdout, "%s", line)
 	}
 	return 0
+}
+
+// refusedProblems is each problem of Parse in problems for which compare refuses the files: each
+// one whose Effect is not specgraph.KeepsEachNode. So a problem with no Effect is refused, as one
+// that loses a node is, and no problem reads as one that keeps each node by default.
+func refusedProblems(problems []specgraph.Problem) []specgraph.Problem {
+	return slices.DeleteFunc(problems, func(p specgraph.Problem) bool { return p.Effect == specgraph.KeepsEachNode })
 }
 
 // notCurrentLines is one line for each node of current, the current approved spec, that the files

@@ -84,10 +84,9 @@ func TestCIFilesThatCompareNamesEachComparisonThatBashRuns(t *testing.T) {
 		t.Skipf("bash is not on PATH, so no script can run in it: %v", err)
 	}
 	began := time.Now()
-	type file struct{ kind, raw, script string }
-	var files []file
+	var files []bashFile
 	for _, script := range bashScripts() {
-		files = append(files, file{"script", script, script})
+		files = append(files, bashFile{"script", script, script})
 		for _, style := range []string{"|", ">"} {
 			raw := workflowSteps + "      - run: " + style + "\n          " + strings.ReplaceAll(script, "\n", "\n          ") + "\n"
 			var workflow struct {
@@ -96,9 +95,105 @@ func TestCIFilesThatCompareNamesEachComparisonThatBashRuns(t *testing.T) {
 			if err := yaml.Unmarshal([]byte(raw), &workflow); err != nil {
 				t.Fatalf("YAML cannot read %q: %v", raw, err)
 			}
-			files = append(files, file{"run: " + style, raw, workflow.Jobs["spec"].Steps[0].Run})
+			files = append(files, bashFile{"run: " + style, raw, workflow.Jobs["spec"].Steps[0].Run})
 		}
 	}
+	expectEachComparisonNamed(t, bash, files, began)
+}
+
+// bashEarlierParts and bashEarlierForms are the pieces of the scripts that the Bash test of the
+// round-6 reader (6823f4702b) built, whose comparisons each head of the text rule names too: a
+// part is a text before the command, and a form writes the command, with {w} the subcommand and
+// {h} and {t} its two halves. The forms that only that reader named are left out, since they are
+// outside the text rule's claim (TestCIFilesThatCompareLeavesAFormOutsideTheClaim): a $ and an
+// ANSI-C escape that a line continuation splits, and a redirection or a here-document between the
+// two words.
+var (
+	bashEarlierParts = []string{
+		": x; ", ": 'say \"x\"'; ", ": \"it's\"; ", ": $'it\\'s \"x\"'; ", ": a \\\nb; ", ": a\\\nb; ",
+		": 'a\\\n\"b'; ", ": \"a\\\n'b\nc\"; ", ": $'a\\\n\"b'; ", ": 'a\"\nb\nc'; ", ": \"a'\nb\"; ",
+		": $'a\"\nb\nc'; ", "# a\n", "# it's\n", "# a \\\n", "# \" \\\n",
+		": <<END\nspec-check compare --dir \"it's\" \\\nx\nEND\n",
+		": <<'END\\'\nspec-check compare --dir \" \\\nEND\\\n",
+		": <<-\"END\"\n\tspec-check compare --dir 'it\\'s\n\tEND\n",
+	}
+	bashEarlierForms = []string{
+		"spec-check {w} --dir a\n", "spec-check \\\n{w} --dir a\n", "spec-check $\\\n\"{w}\" --dir a\n",
+		"spec-check \"{h}\\\n{t}\" --dir a\n", "spec-check '{h}\\\n{t}' --dir a\n", "spec-check $'{h}\\\n{t}' --dir a\n",
+		"spec-check \\ {w} --dir a\n", "spec-check \\\t{w} --dir a\n", "spec-check \\\"{w}\\\" --dir a\n",
+		": \\#'\n'; spec-check {w} --dir a\n", "spec-check {w} --dir a \\", ": '\nspec-check {w} --dir a\n'\n",
+		": \"\nspec-check {w} --dir a\n\"\n", ": $'\nspec-check {w} --dir a\n'\n", "spec-check {w} --dir a # it's \\\n",
+		"spec-check {w} --dir a <<'END'\nit's\nEND\n", "spec-check {h}\\\n{t} --dir a\n",
+	}
+)
+
+// bashEarlierScripts is each form of bashEarlierForms after no part and after each part of
+// bashEarlierParts, and the last form, a line continuation inside the word, after each sequence of
+// two parts and of three parts, each for compare and for tree; then the forms and the sequences of
+// two parts again inside each of bashWrappings, as the round-6 test gave them to nested shells.
+func bashEarlierScripts() []string {
+	var scripts, wrapped []string
+	for _, word := range []string{"compare", "tree"} {
+		head, tail := "com", "pare"
+		if word == "tree" {
+			head, tail = "tr", "ee"
+		}
+		command := func(form string) string {
+			return strings.NewReplacer("{w}", word, "{h}", head, "{t}", tail).Replace(form)
+		}
+		last := command(bashEarlierForms[len(bashEarlierForms)-1])
+		for _, form := range bashEarlierForms {
+			wrapped = append(wrapped, command(form))
+			for _, p := range bashEarlierParts {
+				wrapped = append(wrapped, p+command(form))
+			}
+		}
+		for _, p := range bashEarlierParts {
+			for _, q := range bashEarlierParts {
+				wrapped = append(wrapped, p+q+last)
+				for _, r := range bashEarlierParts {
+					scripts = append(scripts, p+q+r+last)
+				}
+			}
+		}
+	}
+	scripts = append(scripts, wrapped...)
+	for _, wrap := range bashWrappings {
+		for _, s := range wrapped {
+			scripts = append(scripts, wrap(s))
+		}
+	}
+	return scripts
+}
+
+// The scripts of the round-6 reader's Bash test, which the text rule names too, run in bash as
+// scripts, as that test ran them: whenever Bash runs the comparison, directly or in a nested shell,
+// the guard names the file. So no comparison that a head of the text rule named in that corpus is
+// lost.
+func TestCIFilesThatCompareNamesEachComparisonOfTheEarlierBashCorpus(t *testing.T) {
+	t.Parallel()
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skipf("bash is not on PATH, so no script can run in it: %v", err)
+	}
+	began := time.Now()
+	var files []bashFile
+	for _, script := range bashEarlierScripts() {
+		files = append(files, bashFile{"script", script, script})
+	}
+	expectEachComparisonNamed(t, bash, files, began)
+}
+
+// bashFile is one file of a Bash test: its kind, its text as the guard reads it, and the script
+// that Bash runs from it.
+type bashFile struct{ kind, raw, script string }
+
+// expectEachComparisonNamed runs the script of each of files in bash and fails the test for each
+// file where Bash runs the comparison and the guard names no line. It logs how many files the guard
+// names where no shell runs the comparison, and it does not pass when Bash ran the comparison in
+// none of the files or in all of them.
+func expectEachComparisonNamed(t *testing.T, bash string, files []bashFile, began time.Time) {
+	t.Helper()
 	scripts := make([]string, len(files))
 	for n, f := range files {
 		scripts[n] = f.script

@@ -199,8 +199,8 @@ func testGuard(t *testing.T, binary string) {
 		expect(t, runBinary(t, binary, "", "guard", "--root", root), named(root, workflow, 5, 6, 7, 8, 9, 10, 11))
 	})
 	// A double-quoted YAML value, and a string of JavaScript or Python, turn \n and \t into a line
-	// break and a tab, so the shell runs the comparison: a letter right after a backslash ends an
-	// escape before the command's name, and a \n after compare ends the word.
+	// break and a tab, so the shell runs the comparison: after a backslash, n stands for white space,
+	// before the command's name and after compare.
 	t.Run("guard names the comparison beside an escape in a quoted text", func(t *testing.T) {
 		t.Parallel()
 		root, workflow := workflowTree(t, `      - run: "set -e\nspec-check compare --dir .dispatch/spec --approved a.json"`+"\n"+
@@ -214,6 +214,27 @@ func testGuard(t *testing.T, binary string) {
 			code:   1,
 			stdout: "spec-check: " + root + ": 3 lines of CI files name the command that compares the files\n",
 			stderr: "spec-check: " + workflow + ":5" + guardHit + "spec-check: " + workflow + ":6" + guardHit + "spec-check: " + script + ":1" + guardHit,
+		})
+	})
+	// The two bounds read the file's own bytes, so the review's two Python lines, which split() turns
+	// into a list, are named: the quote after compare ends the word, and the . after the quote makes
+	// no other word of it. After compare, the byte after a backslash takes its place, so the audit's
+	// escaped space in a double-quoted YAML value ends the word, and so does \r.
+	t.Run("guard names compare before a quote, an escaped space or \\r", func(t *testing.T) {
+		t.Parallel()
+		root, workflow := workflowTree(t, `      - run: "env -u GITHUB_ACTIONS spec-check compare\ --dir .dispatch/spec --approved approved.json"`+"\n"+
+			`      - run: "spec-check compare\r--dir .dispatch/spec --approved a.json"`+"\n")
+		if err := os.MkdirAll(filepath.Join(root, ".github", "scripts"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		script := filepath.Join(root, ".github", "scripts", "a.py")
+		writeFile(t, script, []byte(`cmd = "spec-check compare".split() + ["--dir", d, "--approved", a]`+"\n"+
+			`subprocess.run('spec-check compare'.split() + args)`+"\n"))
+		expect(t, runBinary(t, binary, "", "guard", "--root", root), result{
+			code:   1,
+			stdout: "spec-check: " + root + ": 4 lines of CI files name the command that compares the files\n",
+			stderr: "spec-check: " + script + ":1" + guardHit + "spec-check: " + script + ":2" + guardHit +
+				"spec-check: " + workflow + ":5" + guardHit + "spec-check: " + workflow + ":6" + guardHit,
 		})
 	})
 	// The guard names a line only when the command's name and compare stand next to each other. Each
