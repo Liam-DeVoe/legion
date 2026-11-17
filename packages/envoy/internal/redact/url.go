@@ -297,13 +297,18 @@ func (c *classified) Error() string { return c.text }
 func (c *classified) Unwrap() error { return c.err }
 
 // class names the kind of failure err is, in fixed text; server is who answered an HTTP status,
-// "the broker" for Error and Cause and "the server" for Class.
+// "the broker" for Error and Cause and "the server" for Class. A failure Class or Masked already
+// put in words keeps those words: they name the server that answered, which another server's
+// answer under them would otherwise lend the broker's name.
 func class(err error, server string) string {
 	var ue *url.Error
 	var dns *net.DNSError
 	var timeout interface{ Timeout() bool }
 	var re *oauth2.RetrieveError
+	var worded *classified
 	switch {
+	case errors.As(err, &worded):
+		return worded.text
 	case errors.As(err, &ue) && ue.Op == "parse":
 		return "not a valid URL"
 	case errors.As(err, &dns):

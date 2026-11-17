@@ -52,8 +52,13 @@ func TestAnAnswerUnderClassIsNotTheBrokersOwn(t *testing.T) {
 				t.Errorf("BrokerAnswer found %q under %s, want no answer of the broker's", re, name)
 			}
 			for what, printed := range map[string]error{"Error": addr.Error(err), "Cause": addr.Cause(err)} {
-				if text := printed.Error(); strings.Contains(text, answerSecret) || strings.Contains(text, "tokuser9f3") {
+				text := printed.Error()
+				if strings.Contains(text, answerSecret) || strings.Contains(text, "tokuser9f3") {
 					t.Errorf("%s = %q, which holds the credential", what, text)
+				}
+				// The answer is another server's, so the class names the server and not the broker.
+				if strings.Contains(text, "the broker answered") || !strings.Contains(text, "the server answered HTTP 400") {
+					t.Errorf("%s = %q, want the class %s already gave it, naming the server", what, text, name)
 				}
 			}
 		})
