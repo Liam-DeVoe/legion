@@ -241,6 +241,22 @@ runs without a word, and it names each one it leaves, one line per kind. A
 removal that fails is one line, and the start goes on. The logs of a killed run
 stay in its directory.
 
+Two starts at once on one dead stack act on each of its parts once. A
+directory, and the postmaster that serves from a data directory, are claimed by
+a rename to `<path>.removing-<pid>-<start>`, the claimer's pid and start; a
+container is claimed by Docker's own removal, which removes it for one
+`docker rm` and refuses it, or finds it gone, for the other. The start that
+holds the claim removes the part and says "removed"; the other says that
+another start removed it first. A start that finds a claim whose claimer still
+runs says so on one line and waits for it, for at most 140 s: twice the
+claimer's longest stop of a postmaster (60 s after SIGQUIT, as `pg_ctl` waits,
+and 10 s after SIGKILL), so the removal of the directory after the stop has as
+long again; the removal of a data directory of 20,000 files took under a second
+on a shared Linux machine on 2026-11-17. At the bound the start leaves that
+part and its mark, names the claim on one line, and goes on, and a later start
+removes it. A claim whose claimer died before its removal the next start claims
+again.
+
 What a start leaves and names, and what you do to remove it by hand:
 
 - A mark of another boot: this machine before it restarted, or another

@@ -615,9 +615,11 @@ type Removal = "removed" | "absent" | "lost";
 
 /** What a claimed name holds between the name of the part and the claimer's pid and start. */
 const claimInfix = ".removing-";
-/** How long a start waits for a claim another start holds and still runs: as long as that
- *  start's stop of a postmaster may take (`postmasterQuitMs` and `postmasterKillMs`), and as long
- *  again for its removal of the directory. */
+/** How long a start waits for a claim another start holds and still runs: twice the longest stop
+ *  of a postmaster that start may make under its claim (`postmasterQuitMs` and `postmasterKillMs`),
+ *  so its removal of the directory after the stop has as long again. The removal of a data
+ *  directory of 20,000 files took under a second on a shared Linux machine on 2026-11-17. At the
+ *  bound the start leaves the part and its mark for a later start, and names the claim. */
 const claimWaitMs = 2 * (postmasterQuitMs + postmasterKillMs);
 /** How often a start reads a claim another start holds while it waits for it. */
 const claimPollMs = 100;

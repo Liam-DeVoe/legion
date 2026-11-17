@@ -776,6 +776,61 @@ function leaveContainerMark(
   return mark;
 }
 
+/** A container an image provider's stack left, as `leaveContainer` makes one, but with no label
+ *  that Docker lists: its mark is a line of `docker ps`'s listing (`listing`) that the stand-in
+ *  `docker` of `soleListing` gives the starts under test alone, so no other start of the machine
+ *  removes it first. `made` collects the id Docker made it under, for the row's removal. */
+function leaveUnlistedContainer(
+  image: string,
+  made: string[],
+  run: string,
+  index: number,
+  owner: Owner | null
+) {
+  const name = plantedName(run, index);
+  const sockets = mkdtempSync(join(run, `pg-${index}-`));
+  const id = docker("create", "--name", name, image).trim();
+  made.push(id);
+  const mark = { owner, run, identity: identityOf(run), sockets, container: name };
+  return {
+    name,
+    id: id.slice(0, 12),
+    fullId: id,
+    sockets,
+    listing: `${id} ${name} ${JSON.stringify(mark)}`,
+  };
+}
+
+/** A directory in `tmp` with a stand-in `docker` for the starts under test, answered as `bin`: a
+ *  listing of the marks is the real one with each line of `listings` added
+ *  (`leaveUnlistedContainer`), and every other call runs the lines of bash `staged` gives for the
+ *  real `docker`'s path, with which a row stages a call, and then the real `docker`. */
+function soleListing(
+  tmp: string,
+  listings: readonly string[],
+  staged: (real: string) => readonly string[] = () => []
+): { readonly bin: string } {
+  const real = Bun.which("docker");
+  if (real === null) throw new Error("no docker on PATH");
+  const bin = mkdtempSync(join(tmp, "bin-"));
+  writeFileSync(join(bin, "listed"), `${listings.join("\n")}\n`);
+  writeFileSync(
+    join(bin, "docker"),
+    [
+      "#!/usr/bin/env bash",
+      `if [ "$1" = ps ] && [[ " $* " == *" label=${markLabel} "* ]]; then`,
+      `  ${JSON.stringify(real)} "$@" || exit`,
+      `  exec cat ${JSON.stringify(join(bin, "listed"))}`,
+      "fi",
+      ...staged(real),
+      `exec ${JSON.stringify(real)} "$@"`,
+      "",
+    ].join("\n")
+  );
+  chmodSync(join(bin, "docker"), 0o755);
+  return { bin };
+}
+
 /** A socket directory that no start can remove: it holds a directory of mode 0500 with a file in
  *  it, which its owner cannot unlink. The row gives the mode back before it removes its files. */
 function heldSockets(parent: string, index: number): string {
@@ -1205,52 +1260,26 @@ test.skipIf(skipImage)(
     const tmp = mkdtempSync(join(tmpdir(), "leftover-"));
     const run = mkdtempSync(join(tmp, runDirectoryPrefix));
     const made: string[] = [];
-    const real = Bun.which("docker");
-    if (real === null) throw new Error("no docker on PATH");
     try {
       // The row's two dead containers carry no label that Docker lists: the stand-in `docker`
-      // below adds their marks to the listing of the start under test alone, so no other start
-      // of the machine removes them before that start meets the removals the row stages.
-      const listed: string[] = [];
-      const plant = (index: number) => {
-        const name = plantedName(run, index);
-        const sockets = mkdtempSync(join(run, `pg-${index}-`));
-        const id = docker("create", "--name", name, image).trim();
-        made.push(id);
-        const mark = { owner: who.gone, run, identity: identityOf(run), sockets, container: name };
-        listed.push(`${id} ${name} ${JSON.stringify(mark)}`);
-        return { name, id: id.slice(0, 12) };
-      };
-      const inProgress = plant(0);
-      const goneFirst = plant(1);
-      const [inProgressId = "", goneFirstId = ""] = made;
+      // adds their marks to the listing of the start under test alone, so no other start of the
+      // machine removes them before that start meets the removals the row stages.
+      const inProgress = leaveUnlistedContainer(image, made, run, 0, who.gone);
+      const goneFirst = leaveUnlistedContainer(image, made, run, 1, who.gone);
       // Another start's removal, as the start under test meets it: its `docker` removes the first
       // container a second after it answers Docker's refusal of a removal in progress, and
       // removes the second itself just before the real `docker rm` of it, which then finds it
       // gone. Every other call is the real `docker`'s.
-      const bin = mkdtempSync(join(tmp, "bin-"));
-      writeFileSync(join(bin, "listed"), `${listed.join("\n")}\n`);
-      writeFileSync(
-        join(bin, "docker"),
-        [
-          "#!/usr/bin/env bash",
-          `if [ "$1" = ps ] && [[ " $* " == *" label=${markLabel} "* ]]; then`,
-          `  ${JSON.stringify(real)} "$@" || exit`,
-          `  exec cat ${JSON.stringify(join(bin, "listed"))}`,
-          "fi",
-          `if [ "$1" = rm ] && [[ " $* " == *" ${inProgressId} "* ]]; then`,
-          `  ( sleep 1; exec ${JSON.stringify(real)} rm --force --volumes ${inProgressId} >/dev/null 2>&1 ) &`,
-          `  echo "Error response from daemon: removal of container ${inProgressId} is already in progress" >&2`,
-          "  exit 1",
-          "fi",
-          `if [ "$1" = rm ] && [[ " $* " == *" ${goneFirstId} "* ]]; then`,
-          `  ${JSON.stringify(real)} rm --force --volumes ${goneFirstId} >/dev/null`,
-          "fi",
-          `exec ${JSON.stringify(real)} "$@"`,
-          "",
-        ].join("\n")
-      );
-      chmodSync(join(bin, "docker"), 0o755);
+      const { bin } = soleListing(tmp, [inProgress.listing, goneFirst.listing], (real) => [
+        `if [ "$1" = rm ] && [[ " $* " == *" ${inProgress.fullId} "* ]]; then`,
+        `  ( sleep 1; exec ${JSON.stringify(real)} rm --force --volumes ${inProgress.fullId} >/dev/null 2>&1 ) &`,
+        `  echo "Error response from daemon: removal of container ${inProgress.fullId} is already in progress" >&2`,
+        "  exit 1",
+        "fi",
+        `if [ "$1" = rm ] && [[ " $* " == *" ${goneFirst.fullId} "* ]]; then`,
+        `  ${JSON.stringify(real)} rm --force --volumes ${goneFirst.fullId} >/dev/null`,
+        "fi",
+      ]);
       const env = childEnv(tmp, { variable: pgImageVariable, value: image });
       env.PATH = `${bin}:${env.PATH ?? ""}`;
 
@@ -1283,6 +1312,44 @@ test.skipIf(skipImage)(
   // The row drives two `docker create`s, one start of the pool, waited for at most `childMs`,
   // whose wait for the first container's removal takes a second, and the removals; 900 s holds the
   // start at its bound and a slow Docker daemon.
+  900_000
+);
+
+// Docker's own removal is the claim of a container: of two `docker rm`s of one container, Docker
+// answers one with the removal and the other with a refusal while it is in progress or with no id
+// once it is gone, and the start reads that answer (`removeContainer` of
+// e2e/harness-postgres-marks.ts).
+test.skipIf(skipImage)(
+  "image provider: of two starts at once on one dead container, one says it removed it and the other that another start removed it first",
+  async () => {
+    const { value: image } = requirePostgres([pgImageVariable]);
+    const tmp = mkdtempSync(join(tmpdir(), "leftover-"));
+    const run = mkdtempSync(join(tmp, runDirectoryPrefix));
+    const made: string[] = [];
+    try {
+      // The dead container carries no label Docker lists: the stand-in `docker` lists its mark to
+      // the two starts under test alone, so no other start of the machine removes it first.
+      const gone = leaveUnlistedContainer(image, made, run, 0, owners().gone);
+      const env = childEnv(tmp, { variable: pgImageVariable, value: image });
+      env.PATH = `${soleListing(tmp, [gone.listing]).bin}:${env.PATH ?? ""}`;
+
+      const starts = await Promise.all([startPool(env), startPool(env)]);
+
+      expect([containerExists(gone.name), existsSync(gone.sockets)]).toEqual([false, false]);
+      const lines = starts.flatMap((start) => removalLines(start.stderr, gone.id));
+      expect(lines.filter((line) => line.includes(`: removed container ${gone.id}`))).toHaveLength(
+        1
+      );
+      expect(lines.filter((line) => line.includes("another start removed first"))).toHaveLength(1);
+    } finally {
+      await removeAll(
+        () => removeIds(made),
+        () => rmSync(tmp, { recursive: true, force: true })
+      );
+    }
+  },
+  // The row drives one `docker create` and two starts of the pool at once, each waited for at most
+  // `childMs`, and the removal; 900 s holds the two starts at their bound and a slow Docker daemon.
   900_000
 );
 
