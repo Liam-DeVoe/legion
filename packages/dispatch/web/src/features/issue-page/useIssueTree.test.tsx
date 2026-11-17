@@ -2806,3 +2806,65 @@ test("a surface that starts reading a refused tree read sends no read while the 
     client.clear();
   }
 });
+
+// A keyboard reader presses Retry on the line of a refused tree read, and the read answers an
+// issue that holds nothing yet: the line goes, and the outline draws its line for an empty issue
+// and no row, so there is no tab-stop row to hand the focus to. The focus still goes somewhere
+// the reader can act from, never to the page's body.
+test("a Retry whose tree read answers an issue that holds nothing keeps the focus off the page's body", async () => {
+  const stubs = stubTreeReads(async (refs) => namedTargets(refs));
+  const empty: IssueDetails = { ...issue, artifacts: [], plan_artifact_id: "" };
+  const nothing: TreeAnswer = {
+    ...treeAnswer([]),
+    nodes: [answerNode(KEY, "issue", { parent: null })],
+  };
+  const again = Promise.withResolvers<TreeAnswer>();
+  let reads = 0;
+  (api.getIssueTree as Mock<typeof api.getIssueTree>).mockImplementation(async () => {
+    reads += 1;
+    if (reads === 1) throw new Error("the tree read was refused");
+    return again.promise;
+  });
+  const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  const route = { key: KEY, kind: "issue" } as const;
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <MemoryRouter>
+      <QueryClientProvider client={client}>
+        <KeymapProvider>
+          <MarginProvider>
+            <ProvidersSlot issue={empty} route={route}>
+              <BodySlot issue={empty} route={route} />
+              {children}
+            </ProvidersSlot>
+          </MarginProvider>
+        </KeymapProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  try {
+    const view = renderHook(() => useIssueTree(empty), { wrapper });
+    const retry = await failedTreeRetry();
+    act(() => retry.focus());
+    await pressByKeyboard(retry);
+    await waitFor(() => expect(reads).toBe(2));
+
+    await act(async () => {
+      again.resolve(nothing);
+    });
+    await waitFor(() => expect(view.result.current.blocksHeld).toBe(true));
+    expect(failedTreeLine(), "no failed line once the read holds data").toBeNull();
+    await act(async () => {
+      await Bun.sleep(100);
+    });
+    const focused = document.activeElement;
+    expect(
+      focused !== null && focused !== document.body && focused.isConnected,
+      "the focus stays off the page's body once the read answers an empty issue"
+    ).toBe(true);
+    view.unmount();
+  } finally {
+    again.resolve(nothing);
+    for (const stub of stubs) stub.mockRestore();
+    client.clear();
+  }
+});
