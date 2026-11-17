@@ -3,13 +3,9 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { useCallback } from "react";
 
+import { layOutScrollBox, type ScrollBox } from "../__tests__/scroll-box";
 import { scrollFadeTrailing } from "../theme/classes";
 import { useScrollFadeTrailing } from "./useScrollFadeTrailing";
-
-interface Box {
-  client: number;
-  scroll: number;
-}
 
 // happy-dom lays nothing out and its `ResizeObserver` never calls back, so each strip here is
 // sized by its test, and the stub below is the box changing: what the strip observes, and what a
@@ -48,31 +44,14 @@ function resize(): void {
   });
 }
 
-/** `element` gets a box `client` px wide around `scroll` px of content, and a `scrollLeft` that
- *  stops at both ends of its scroll, as a browser's does. */
-function layOut(element: HTMLElement, box: Box): void {
-  let left = 0;
-  Object.defineProperties(element, {
-    clientWidth: { configurable: true, get: () => box.client },
-    scrollLeft: {
-      configurable: true,
-      get: () => left,
-      set: (value: number) => {
-        left = Math.min(Math.max(value, 0), Math.max(box.scroll - box.client, 0));
-      },
-    },
-    scrollWidth: { configurable: true, get: () => box.scroll },
-  });
-}
-
 /** A strip laid out before the hook first measures it, as a browser lays out before the layout
  *  effect runs. */
-function Strip({ box }: { box: Box }) {
+function Strip({ box }: { box: ScrollBox }) {
   const { fade, ref } = useScrollFadeTrailing();
   const sized = useCallback(
     (element: HTMLDivElement | null) => {
       if (element !== null) {
-        layOut(element, box);
+        layOutScrollBox(element, box);
       }
       ref(element);
     },

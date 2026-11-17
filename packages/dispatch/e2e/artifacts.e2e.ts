@@ -3,6 +3,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 
 import { RECONNECT_SPREAD_MS } from "../web/src/api/live-socket";
 import { QUERY_RETRY_DELAY_MS } from "../web/src/api/query-client";
+import { scrollFadeTrailingPx } from "../web/src/theme/classes";
 
 import {
   createAsk,
@@ -271,8 +272,8 @@ test("the artifacts tab filter narrows rows by name and kind", async ({ page }, 
   await expect(page.getByTestId("artifact-notes-md")).toBeVisible();
 });
 
-// SLOW(>=2s): a real upload the live feed counts into the tab, and the keyboard tour of five
-// tabs with each tab's box measured, at 390 px and back.
+// SLOW(>=2s): a real upload the live feed counts into the tab, and the keyboard tour of ten
+// tabs with each tab's box and the tablist's fade measured, at 390 px and back.
 test("an uploaded document is linked from the Activity tab and counted on its own tab", async ({
   page,
 }, testInfo) => {
@@ -306,7 +307,22 @@ test("an uploaded document is linked from the Activity tab and counted on its ow
   // Ten tabs, one of them counted, no longer fit a 390 px viewport: the tablist scrolls
   // sideways there (as it already did at 360 px). No label is shortened to buy the room, every
   // tab is reachable from the keyboard, each is scrolled fully into view as it takes focus, and
-  // each keeps its 44 px touch target.
+  // each keeps its 44 px touch target. While tabs lie past its trailing edge the tablist wears
+  // the trailing fade, which says the cut is a scroll, and a tab taking focus stops clear of it;
+  // at the end of the scroll the fade is off, since it would hide the last tab.
+  const masked = () => tablist.evaluate((node) => getComputedStyle(node).maskImage !== "none");
+  const clearOfFade = (tab: Locator) =>
+    expect
+      .poll(async () => {
+        const [faded, listBox, box] = await Promise.all([
+          masked(),
+          tablist.boundingBox(),
+          tab.boundingBox(),
+        ]);
+        const listRight = (listBox?.x ?? 0) + (listBox?.width ?? 0);
+        return !faded || (box?.x ?? 0) + (box?.width ?? 0) <= listRight - scrollFadeTrailingPx + 1;
+      })
+      .toBe(true);
   const viewport = page.viewportSize();
   await page.setViewportSize({ height: viewport?.height ?? 800, width: 390 });
   await expect(tabs).toHaveText([
@@ -323,6 +339,7 @@ test("an uploaded document is linked from the Activity tab and counted on its ow
   ]);
   expect(await tablist.evaluate((node) => node.scrollWidth > node.clientWidth + 0.5)).toBe(true);
   await page.getByRole("tab", { name: "Spec" }).focus();
+  await expect.poll(masked).toBe(true);
   for (const label of [
     "Verification",
     "Plan",
@@ -338,6 +355,7 @@ test("an uploaded document is linked from the Activity tab and counted on its ow
     const tab = page.getByRole("tab", { exact: true, name: label });
     await expect(tab).toBeFocused();
     await insideTablist(tab);
+    await clearOfFade(tab);
     expect((await tab.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(44);
   }
   await page.keyboard.press("Home");
@@ -345,6 +363,10 @@ test("an uploaded document is linked from the Activity tab and counted on its ow
   await expect(specTab).toBeFocused();
   await insideTablist(specTab);
   expect((await specTab.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(44);
+  await expect.poll(masked).toBe(true);
+  await page.keyboard.press("End");
+  await expect(page.getByRole("tab", { exact: true, name: "Collaborators" })).toBeFocused();
+  await expect.poll(masked).toBe(false);
   await page.setViewportSize({ height: viewport?.height ?? 800, width: viewport?.width ?? 1280 });
 
   await page.getByRole("tab", { name: "Activity" }).click();

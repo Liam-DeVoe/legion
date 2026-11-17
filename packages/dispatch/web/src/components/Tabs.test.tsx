@@ -4,6 +4,7 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 
+import { layOutScrollBox } from "../__tests__/scroll-box";
 import { scrollFadeTrailing, scrollFadeTrailingPx } from "../theme/classes";
 import { Tabs } from "./Tabs";
 
@@ -90,23 +91,6 @@ function rect(left: number, right: number): DOMRect {
   };
 }
 
-/** happy-dom lays nothing out: `tablist` gets a box `client` px wide around `scroll` px of tabs,
- *  and a `scrollLeft` that stops at both ends of its scroll, as a browser's does. */
-function layOut(tablist: HTMLElement, box: { client: number; scroll: number }): void {
-  let left = 0;
-  Object.defineProperties(tablist, {
-    clientWidth: { configurable: true, get: () => box.client },
-    scrollLeft: {
-      configurable: true,
-      get: () => left,
-      set: (value: number) => {
-        left = Math.min(Math.max(value, 0), Math.max(box.scroll - box.client, 0));
-      },
-    },
-    scrollWidth: { configurable: true, get: () => box.scroll },
-  });
-}
-
 test("a tab reached from the keyboard is scrolled into the tablist, without moving the page", async () => {
   const user = userEvent.setup();
   const view = render(<TabsHarness />);
@@ -116,7 +100,7 @@ test("a tab reached from the keyboard is scrolled into the tablist, without movi
     const documents = screen.getByRole("tab", { name: "Documents" });
     // A 300 px tablist whose second and last tab overhangs its right edge by 60 px; the tab's
     // rect follows the tablist's scroll like a real layout would.
-    layOut(tablist, { client: 300, scroll: 360 });
+    layOutScrollBox(tablist, { client: 300, scroll: 360 });
     tablist.getBoundingClientRect = () => rect(0, 300);
     documents.getBoundingClientRect = () =>
       rect(200 - tablist.scrollLeft, 360 - tablist.scrollLeft);
@@ -145,7 +129,7 @@ test("a tablist with tabs past its trailing edge wears the trailing fade, and on
   try {
     const tablist = screen.getByRole("tablist", { name: "Project" });
     const box = { client: 300, scroll: 300 };
-    layOut(tablist, box);
+    layOutScrollBox(tablist, box);
     fireEvent.scroll(tablist);
     expect(tablist).not.toHaveClass(scrollFadeTrailing);
 
@@ -187,7 +171,7 @@ test("a tab reached from the keyboard stops clear of the trailing fade while tab
     const documents = screen.getByRole("tab", { name: "Documents" });
     // Documents ends 10 px inside a 300 px tablist, under the fade's last 32 px, and Settings
     // runs on past the edge.
-    layOut(tablist, { client: 300, scroll: 420 });
+    layOutScrollBox(tablist, { client: 300, scroll: 420 });
     tablist.getBoundingClientRect = () => rect(0, 300);
     documents.getBoundingClientRect = () =>
       rect(180 - tablist.scrollLeft, 290 - tablist.scrollLeft);

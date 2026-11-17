@@ -29,9 +29,8 @@ export function tabButtonId(idPrefix: string, id: string): string {
  *  the page, undoing the per-tab scroll position IssuePage restores when a panel comes back.
  *
  *  While tabs lie past its trailing edge, the tablist's last `scrollFadeTrailingPx` wear the
- *  trailing fade, so a tab is whole only clear of it: the tab stops that far inside the edge. Near
- *  the end of the scroll the browser stops the scroll short of that, at the end, where the fade
- *  is off. */
+ *  trailing fade, so a tab is whole only clear of it: the tab stops that far inside the edge. A
+ *  tab too near the end of the scroll for that stops at the end instead, where the fade is off. */
 function revealTab(node: HTMLElement | null | undefined): void {
   const list = node?.parentElement;
   if (node === null || node === undefined || list === null || list === undefined) {
