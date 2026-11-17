@@ -49,6 +49,7 @@ type connectOpts struct {
 	beforeRequestFlush          func()
 	background                  bool
 	silentCutDetection          bool
+	lossAtOnce                  bool
 }
 
 // connectionSettings is what every connection of a client applies after envoy's own options
@@ -117,6 +118,14 @@ func WithReplicas(n int) ConnectOption {
 // client read the deployed subjects again without waiting a minute.
 func withStreamSubjectsRefresh(every time.Duration) ConnectOption {
 	return clientOption(func(o *connectOpts) { o.streamSubjectsRefresh = every })
+}
+
+// withLossAtOnce has the client answer a request made while nats.go reconnects its connection with
+// ErrConnectionLost at once rather than waiting for the reconnect (connForRequest), and not send a
+// stored publish again after a loss (sendStored): for a client every caller of which retries a
+// lost request itself, releasing what it holds while it waits (ConnectSessionConsumers).
+func withLossAtOnce() ConnectOption {
+	return clientOption(func(o *connectOpts) { o.lossAtOnce = true })
 }
 
 // WithStreamMaxBytes sets the deployment's byte limit, StreamMaxBytesEnvVar, for the stream
@@ -274,7 +283,10 @@ type Client struct {
 	// export_test.go) to hold the flush until the connection it would flush is gone, the
 	// interleaving a flush begun after the connection turned reconnecting has.
 	beforeRequestFlush func()
-	mu                 sync.Mutex
+	// lossAtOnce is withLossAtOnce's: a request made while the connection is reconnecting answers
+	// ErrConnectionLost without waiting for it (connForRequest).
+	lossAtOnce bool
+	mu         sync.Mutex
 
 	// deniedPublishes holds, under mu, the server's refusals of publishes per subject it refused a
 	// publish to, as the connection reported them (recordPublishDenial), queued in arrival order
@@ -481,6 +493,7 @@ func newClient(urls []string, ownsStream bool, opts connectOpts) (*Client, error
 		reconnectErrClock:           opts.reconnectErrClock,
 		reconnectWaitTick:           opts.reconnectWaitTick,
 		beforeRequestFlush:          opts.beforeRequestFlush,
+		lossAtOnce:                  opts.lossAtOnce,
 		stopCh:                      make(chan struct{}),
 	}
 	stream := opts.streamConfig()
@@ -1961,7 +1974,7 @@ func (c *Client) sendStored(ctx context.Context, subject string, data []byte, op
 		}
 		sentAt = time.Now()
 		ack, err = c.JS().Publish(subject, data, options...)
-	case Reconnected(ctx, err):
+	case !c.lossAtOnce && Reconnected(ctx, err):
 		sentAt = time.Now()
 		ack, err = c.JS().Publish(subject, data, options...)
 	}
@@ -2020,7 +2033,7 @@ func (c *Client) publishStoredRaw(ctx context.Context, subject string, data []by
 	}
 	ctx, cancel := c.publishAcknowledgementClock.WithTimeout(ctx, publishBound)
 	defer cancel()
-	if err := c.ensureConnWithContext(ctx); err != nil {
+	if err := c.connForRequest(ctx); err != nil {
 		return nil, err
 	}
 	if extra == nil {

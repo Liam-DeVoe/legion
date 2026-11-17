@@ -128,7 +128,7 @@ func (s *SessionConsumers) Pull(ctx context.Context, sessionID string) (*Session
 	if err != nil {
 		return nil, err
 	}
-	if err := s.client.ensureConnWithContext(ctx); err != nil {
+	if err := s.client.connForRequest(ctx); err != nil {
 		return nil, err
 	}
 	request, err := json.Marshal(struct {

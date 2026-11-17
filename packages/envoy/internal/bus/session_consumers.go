@@ -209,8 +209,14 @@ type SessionConsumers struct {
 // do, and it never sets the default instead (store.WithLogger says why). It is a parameter for
 // the reason inactiveThreshold is: no create or record runs before the logger is set, and
 // nothing writes the field while either reads it.
+//
+// Its client answers a request made while nats.go reconnects its connection with ErrConnectionLost
+// at once, rather than waiting for the reconnect first (withLossAtOnce, connForRequest): every
+// caller of a SessionConsumers call that holds something - a session's lock, the shared stream
+// read, a relay's restart turn - retries the loss itself, releasing what it holds while it waits
+// (Reconnected), and a wait made before the request would be made with all of it held.
 func ConnectSessionConsumers(urls []string, inactiveThreshold time.Duration, logger *slog.Logger, options ...ConnectOption) (*SessionConsumers, error) {
-	client, err := Connect(urls, append([]ConnectOption{WithName("envoy-session-consumers")}, options...)...)
+	client, err := Connect(urls, append([]ConnectOption{WithName("envoy-session-consumers"), withLossAtOnce()}, options...)...)
 	if err != nil {
 		return nil, err
 	}

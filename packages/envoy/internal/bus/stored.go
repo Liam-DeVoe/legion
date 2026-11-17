@@ -267,14 +267,17 @@ func (c *Client) storedMessage(ctx context.Context, request any) (StoredMessage,
 // callback. One publishConfirmed cannot confirm for another reason still waits for its reply, and
 // returns that reason if ctx ends first. A no-responders status reply is nats.ErrNoResponders. The
 // request is bound to the life of the connection it is sent on (Request), so one the connection's
-// loss cut off answers ErrConnectionLost the moment nats.go reports the loss.
+// loss cut off answers ErrConnectionLost the moment nats.go reports the loss. One made while the
+// connection is down waits for it first on a client whose callers hold nothing, and answers
+// ErrConnectionLost at once on the session consumers' client, whose callers release what they hold
+// before they wait (connForRequest).
 func (c *Client) requestConfirmed(ctx context.Context, subject string, data []byte) (*nats.Msg, error) {
 	if _, ok := ctx.Deadline(); !ok {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, storedMessageWait)
 		defer cancel()
 	}
-	if err := c.ensureConnWithContext(ctx); err != nil {
+	if err := c.connForRequest(ctx); err != nil {
 		return nil, err
 	}
 	return Request(ctx, c, func(ctx context.Context) (*nats.Msg, error) {

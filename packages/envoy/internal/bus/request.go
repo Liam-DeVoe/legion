@@ -61,6 +61,25 @@ func Reconnected(ctx context.Context, err error) bool {
 	return lost.client.ensureConnWithContext(ctx) == nil
 }
 
+// connForRequest is the wait a request on c makes for a connection before it is sent:
+// ensureConnWithContext's, except on a client every caller of which retries a lost request itself
+// (withLossAtOnce), where a request made while nats.go reconnects its connection answers
+// ErrConnectionLost at once. Such a caller holds a session's lock, the shared stream read or a
+// relay's restart turn, and releases it before it waits (Reconnected); a wait made here would be
+// made with it held. A closed connection is still replaced, a client still awaiting its first
+// connection still waits for it, and a stopped client still answers as ensureConnWithContext does.
+func (c *Client) connForRequest(ctx context.Context) error {
+	if c.lossAtOnce && !c.stopped() {
+		c.mu.Lock()
+		conn, awaiting := c.Conn, c.awaitingConnection
+		c.mu.Unlock()
+		if conn != nil && !awaiting && !conn.IsClosed() && !conn.IsConnected() {
+			return &connectionLost{client: c}
+		}
+	}
+	return c.ensureConnWithContext(ctx)
+}
+
 // Request sends one request on c's connection through send and returns its answer. send is handed
 // a context that ends with ctx and also the moment that connection is lost, and passes it on to
 // the nats.go call it makes (RequestWithContext, NextMsgWithContext, a JetStream call's
