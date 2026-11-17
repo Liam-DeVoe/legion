@@ -12,7 +12,8 @@
 // with whatever locks the server's own code holds at that point, until the test releases it. So
 // a test forces an order the server's scheduling would only sometimes produce: a consumer's
 // state write held while a consumer of the same name is deleted and created again, a JetStream
-// API request held across a restart, a committed entry held before one server stores it.
+// API request held while its server shuts down, released before Stop returns, a committed entry
+// held before one server stores it.
 //
 // The hook is the process's: one test of a binary hooks it at a time, and a test that hooks it
 // must not run in parallel with one that does. A server's shutdown releases every hold that parks

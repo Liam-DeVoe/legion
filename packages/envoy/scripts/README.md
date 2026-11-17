@@ -362,8 +362,8 @@ Runs the forced-order tests of each package named, every `TestForcedOrder…` te
 nats-server whose own code carries hold points: places where a test parks the server's goroutine
 (`internal/testnats/hooks.go`, `testnats.Hook`) to force an order its scheduling would only
 sometimes produce — a consumer's state write held while a consumer of the same name is deleted
-and created again, a JetStream API request held across a restart, a committed stream entry held
-before one server stores it.
+and created again, a JetStream API request held while its server shuts down, released before
+`Stop` returns, a committed stream entry held before one server stores it.
 
 ```bash
 packages/envoy/scripts/forced-order.sh ./internal/testnats/hooktest/
