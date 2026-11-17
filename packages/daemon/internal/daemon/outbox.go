@@ -183,7 +183,7 @@ func newOutbox(pool *store.Pool, records record.Store, client dispatch.Client, p
 		log = slog.Default()
 	}
 	return &outbox{
-		pool: pool, records: records, dispatch: client, notices: publisher, supervisor: supervisor, trees: trees, tokens: tokens,
+		pool: pool, records: records, dispatch: client, notices: heldRoles(publisher, supervisor, log), supervisor: supervisor, trees: trees, tokens: tokens,
 		handlers: handlers, gatedSteps: gatedSteps,
 		project: project, dispatchProject: dispatchProject, stateDir: stateDir, githubAPI: githubAPI, repositories: repositories,
 		log: log, now: time.Now, clock: supervise.RealClock{},
@@ -204,6 +204,50 @@ func newOutbox(pool *store.Pool, records record.Store, client dispatch.Client, p
 			return workspace.CheckedOut(ctx, workspace.NewRunner(workspace.CommandTimeout, tools), working)
 		},
 	}
+}
+
+// heldRolePublisher is the outbox's Envoy publisher. A publish to the role topic of a claim this
+// daemon supervises is made only while that claim holds the session it records
+// (supervise.Machine.HoldsItsSession, plan E's t-e-54): a claim the boot could not suspend keeps
+// its process, and that process keeps the Envoy role its session claimed, so a notice, a role
+// message, a phase's end, a hook's prompt, an update ask or a merge-queue removal would reach a
+// process working under another claim's session, or one no claim holds (review round 13 of
+// #4220). Such a publish is not made and answers notify.ErrNoHolder, which every role executor
+// already answers its own way — a notice is held for its architect, a merge-queue removal waits,
+// a role message, a phase's end, a hook's prompt and an update ask finish undelivered — so an
+// operator's settle of the name lets the next attempt through. A store that does not answer
+// publishes nothing and fails the attempt, which the row's backoff retries. A topic of no claim
+// this daemon supervises, and every other topic, is published as made.
+type heldRolePublisher struct {
+	notify.Publisher
+	supervisor *supervisor
+	log        *slog.Logger
+}
+
+// heldRoles is publisher held to the claims supervisor supervises (heldRolePublisher), or nil for
+// an outbox with no publisher, whose executors refuse their rows for that.
+func heldRoles(publisher notify.Publisher, supervisor *supervisor, log *slog.Logger) notify.Publisher {
+	if publisher == nil || supervisor == nil {
+		return publisher
+	}
+	return heldRolePublisher{Publisher: publisher, supervisor: supervisor, log: log}
+}
+
+func (p heldRolePublisher) Publish(ctx context.Context, topic, message string, payload any, dedupeKey string) error {
+	if token, isRole := strings.CutPrefix(topic, notify.RoleTopicPrefix); isRole {
+		if m, ok := p.supervisor.Machine(claim.Token(token)); ok {
+			if err := m.HoldsItsSession(ctx); err != nil {
+				var refusal claim.Refusal
+				if !errors.As(err, &refusal) {
+					return fmt.Errorf("ask whether %s holds its session before publishing to its role: %w", token, err)
+				}
+				p.log.Warn("outbox: not publishing to a role whose claim records a session it does not hold",
+					"topic", topic, "key", dedupeKey, "error", err)
+				return fmt.Errorf("%w: %s records a session it does not hold, so nothing is published to its role: %w", notify.ErrNoHolder, token, err)
+			}
+		}
+	}
+	return p.Publisher.Publish(ctx, topic, message, payload, dedupeKey)
 }
 
 // RunOnce drains every row of the project due now, in the order the lanes would run them within

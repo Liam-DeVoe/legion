@@ -351,6 +351,20 @@ func (m *Machine) holdRecorded(ctx context.Context, session, sessionFile string)
 	return nil
 }
 
+// HoldsItsSession is nil when every name of the session the claim records is held to it, or it
+// records none, and otherwise the hold's refusal (a claim.Refusal) or the store's error
+// (holdRecorded). The daemon's outbox asks it before it publishes to the claim's Envoy role topic:
+// a claim the boot could not suspend keeps its process, and that process keeps the role its
+// session claimed, so a message to the role would reach a process working under another claim's
+// session, or one no claim holds (review round 13 of #4220). It is answered under the machine's
+// lock, as Claim is, and asks the store nothing for a claim holding its session
+// (Machine.heldNames).
+func (m *Machine) HoldsItsSession(ctx context.Context) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.holdRecorded(ctx, m.claim.Session, m.claim.SessionFile)
+}
+
 // warnRefusal writes a refused hold's Warn line unless it is the line this machine wrote last
 // (Machine.refusalLogged). A claim that does not hold its session is asked again at every decision
 // that would send its process anything, sendPending at every sweep among them, and each such line

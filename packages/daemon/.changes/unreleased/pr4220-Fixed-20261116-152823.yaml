@@ -21,14 +21,22 @@ body: |-
   statement, each name a claim records that no row holds, as after a rollback to a release before
   this one, and logs at Error each claim whose current session records a name held for another
   claim, for none or by no row, suspending each it can; a suspension that fails is logged at Error
-  and the boot goes on. For each such claim that is not the rightful holder,
+  and the boot goes on. Such a claim is contained but not stopped: the daemon revokes the
+  enrollment its process holds at the secrets broker, publishes nothing to its Envoy role, and
+  sends it no task and no compaction, but the process runs on under the session and keeps the
+  Envoy role its session claimed, so a message another session sends to that role still reaches
+  it, until an operator suspends it (`legion claims suspend --claim <token>`) once its runtime
+  answers, or stops its pod or pane by hand; it takes no `legion claims forget-session` while it is
+  live. Dispatch's role holders name a live claim's session only while the claim holds it. For
+  each claim the boot names that is not the rightful holder,
   an operator runs `legion claims forget-session` as its state allows, then resumes a suspended
   one, retries a failed one and leaves a retired one as it is, and for a name held for none records
   the rightful holder (`update claim_sessions set claim = '<token>' where project = '<project>' and
   kind = '<kind>' and name = '<name>' and claim = ''`, which moves no name a claim already holds);
   docs/kubernetes.md gives the steps whole. A name only an
   abandoned session records is logged at Warn and suspends nothing. A hold the store does not
-  answer at a relaunch is tried again at the probe interval, charging nothing.
+  answer at a relaunch is tried again at the probe interval, charging nothing. A refusal asked
+  again at every sweep is logged at Warn once.
 time: 2026-11-16T15:28:23Z
 custom:
     Issue: pr4220

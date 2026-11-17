@@ -47,11 +47,15 @@ import (
 // The table decides (a *supervise.RefusedError), so a state it later lets a suspension reach is
 // suspended here with no change to this list. A suspension that fails for any other reason — a
 // stop the runtime refuses, a write the store refuses — is logged at Error naming the claim, and
-// the boot goes on: the claim is left as it was, its process may still run, and its hold refuses
-// every relaunch, resume and new enrollment of it before anything starts, revokes the enrollment
-// that process already holds, and sends it no task and no compaction (holdRecorded,
-// ensureEnrolled, sendPending, compactStart). The next boot asks again, and the operator's steps
-// above need a daemon that serves (review rounds 11 to 13 of #4220). A statement that makes such a
+// the boot goes on. The claim is then contained but not stopped: its hold refuses every relaunch,
+// resume and new enrollment of it before anything starts, the daemon revokes the enrollment its
+// process holds at the broker, publishes nothing to its Envoy role, and sends that process no task
+// and no compaction (holdRecorded, ensureEnrolled, heldRolePublisher, sendPending, compactStart).
+// The process runs on under the session until it is stopped, and keeps the Envoy role its session
+// claimed, so a message another session sends to that role still reaches it; it takes no forget
+// while it is live, so the operator suspends it (`legion claims suspend`) once its runtime answers,
+// or stops its pod or pane by hand, before the steps above. The next boot asks again, and those
+// steps need a daemon that serves (review rounds 11 to 13 of #4220). A statement that makes such a
 // claim the holder of its session writes no claim, and the publication of an issue's role holders
 // follows claim writes, so Dispatch is shown that claim as its role's holder at the next boot, or
 // once the claim is suspended and resumed. A boot whose budget runs out on the suspensions still
@@ -131,7 +135,7 @@ func (s *supervision) suspendSessionConflicts(ctx context.Context) error {
 			case ctx.Err() != nil:
 				return fmt.Errorf("suspend %s, which records the %s %s it does not hold: %w", token, c.Hold.Kind, c.Hold.Name, err)
 			default:
-				s.log.Error("supervise: the suspension of a claim recording a session name it does not hold failed; it is left as it is, its hold refuses every relaunch, resume and new enrollment of it, revokes the enrollment its process holds and sends that process no task and no compaction, and the next boot asks again",
+				s.log.Error("supervise: the suspension of a claim recording a session name it does not hold failed; it is left as it is, contained but not stopped: its hold refuses every relaunch, resume and new enrollment of it, the daemon revokes its process's enrollment, publishes nothing to its role and sends it no task and no compaction, but the process runs on and keeps its Envoy role until it is stopped (legion claims suspend, or a stop of its pod or pane by hand); the next boot asks again",
 					"claim", token, "kind", c.Hold.Kind, "name", c.Hold.Name, "error", err)
 			}
 		}
