@@ -194,6 +194,36 @@ export interface TreeContext {
 }
 
 /**
+ * How `issue` addresses a node: the node a `dispatch://` reference names, as the tree's node ids
+ * write it - the spec, a document, a block of either, an ask, a comment, a message, the issue
+ * itself - and undefined for a reference to another issue or to anything else. It reads only the
+ * issue's key and its spec's slug (`primarySpec`), so a caller that needs a node id and no chip
+ * calls it without building a whole `treeContext` (dispatch://INFRA-1196 decision 183), and
+ * `treeContext` addresses nodes by it too, so the two never differ.
+ */
+export function nodeIdOf(
+  issue: Pick<IssueTreeReads["issue"], "artifacts" | "key" | "primary_artifact_id">
+): (reference: string) => string | undefined {
+  const key = issue.key;
+  const specSlug = primarySpec(issue)?.slug ?? "";
+  return (reference: string): string | undefined => {
+    const route = parseNodeReference(reference);
+    if (route === undefined || !("key" in route) || route.key !== key) return undefined;
+    const block = "block" in route ? route.block : undefined;
+    if (route.kind === "spec") {
+      return block === undefined ? specSlug : blockNodeId(specSlug, block.id);
+    }
+    if (route.kind === "artifact") {
+      return block === undefined ? route.slug : blockNodeId(route.slug, block.id);
+    }
+    if (route.kind === "ask" || route.kind === "comment" || route.kind === "message") {
+      return route.id;
+    }
+    return route.kind === "issue" ? key : undefined;
+  };
+}
+
+/**
  * The reads as every builder reads them. `lineOf` is the one line a place that draws one line
  * for a node draws, from the server's reading of the node's words: `buildIssueTree` and
  * `targetNames` give R1's rule over the words of the reading's first block (`chipLine`, which
@@ -247,21 +277,7 @@ export function treeContext(
       }
     }
   }
-  const nodeIdOf = (reference: string): string | undefined => {
-    const route = parseNodeReference(reference);
-    if (route === undefined || !("key" in route) || route.key !== key) return undefined;
-    const block = "block" in route ? route.block : undefined;
-    if (route.kind === "spec") {
-      return block === undefined ? specSlug : blockNodeId(specSlug, block.id);
-    }
-    if (route.kind === "artifact") {
-      return block === undefined ? route.slug : blockNodeId(route.slug, block.id);
-    }
-    if (route.kind === "ask" || route.kind === "comment" || route.kind === "message") {
-      return route.id;
-    }
-    return route.kind === "issue" ? key : undefined;
-  };
+  const nodeIdOfReference = nodeIdOf(reads.issue);
   const nameOf = (reference: string, target: ReferenceTarget | undefined): string => {
     const route = parseNodeReference(reference);
     const block = route !== undefined && "block" in route ? route.block : undefined;
@@ -269,7 +285,7 @@ export function treeContext(
       const reading = target?.text_tree;
       const line = reading === undefined ? "" : lineOf(reading);
       if (line !== "" || target === undefined) return line;
-      const kind = kinds.get(nodeIdOf(reference) ?? "");
+      const kind = kinds.get(nodeIdOfReference(reference) ?? "");
       return kind === undefined ? "" : NODE_TYPE_NAMES[kind];
     }
     // Another issue's document is named by no role of this issue's.
@@ -310,7 +326,7 @@ export function treeContext(
       return target === undefined || target.gone ? "" : blockWords(target.name);
     },
     key,
-    nodeIdOf,
+    nodeIdOf: nodeIdOfReference,
     specSlug,
     slugOf: (artifactId: string) => slugs.get(artifactId),
     treeOf: (reference: string) => names.get(reference)?.text_tree,

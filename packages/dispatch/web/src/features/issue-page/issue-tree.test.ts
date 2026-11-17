@@ -43,8 +43,10 @@ import {
   addressesAsShortForms,
   blockNodeId,
   checkStanding,
+  nodeIdOf,
   plainWords,
   plainWordsRaw,
+  treeContext,
 } from "./tree-drafts";
 import { treeRows } from "./tree-fold";
 import { nodesInOrder } from "./tree-keys";
@@ -3190,4 +3192,39 @@ test("a node's raw line keeps each bare address as written, from a reading and f
     expect(node === undefined ? "" : lineWords(node), row.block_id).toBe(line);
     expect(lineWordsRaw({ text: row.text, tree: row.text_tree }), row.block_id).toBe(raw);
   }
+});
+
+// A caller that needs a node id and no chip reads it from the issue alone (decision 183), and the
+// tree addresses nodes by the same rule, so the two never differ: the spec and its blocks by the
+// spec's slug, another document and its blocks by the document's, an ask, a comment and a message
+// by their ids, the issue by its key, and a reference to another issue by nothing.
+test("an issue addresses a node as its tree does, from the issue alone", () => {
+  const issue = issueDetails([artifact("a-spec", SPEC, "spec.md", true)]);
+  const references = [
+    `dispatch://${KEY}`,
+    `dispatch://${KEY}/spec`,
+    `dispatch://${KEY}/spec#b-r1`,
+    `dispatch://${KEY}/artifact/plan-md`,
+    `dispatch://${KEY}/artifact/plan-md#b-t1`,
+    `dispatch://${KEY}/ask/a1`,
+    `dispatch://${KEY}/comment/c1`,
+    `dispatch://${KEY}/message/m1`,
+    "dispatch://CORE-2/spec#b-r1",
+    "not a reference",
+  ];
+  const alone = nodeIdOf(issue);
+  expect(references.map(alone)).toEqual([
+    KEY,
+    SPEC,
+    blockNodeId(SPEC, "r1"),
+    "plan-md",
+    blockNodeId("plan-md", "t1"),
+    "a1",
+    "c1",
+    "m1",
+    undefined,
+    undefined,
+  ]);
+  const context = treeContext({ issue }, () => "");
+  expect(references.map(context.nodeIdOf)).toEqual(references.map(alone));
 });

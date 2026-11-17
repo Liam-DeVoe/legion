@@ -1,4 +1,4 @@
-import { keepPreviousData, type QueryStatus, useQueries, useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQueries, useQuery } from "@tanstack/react-query";
 import { useMemo } from "react";
 
 import { api } from "../../api/client";
@@ -12,6 +12,7 @@ import {
 } from "../../api/queries";
 import type { IssueDetails } from "../../api/types";
 import { issueDecisionsQuery } from "../doc/spec-marks";
+import { refetchFailedOnFocus } from "../refs/reference-target";
 import {
   ambiguousTargets,
   buildIssueTree,
@@ -102,13 +103,6 @@ const NO_TARGET_NAMES: ReadonlyMap<string, string> = new Map();
 /** The references the page publishes as ambiguous until the batched name read answers: none,
  *  and the same empty set on every render, as `NO_TARGET_NAMES` is the same empty map. */
 const NO_AMBIGUOUS_TARGETS: ReadonlySet<string> = new Set();
-
-/** A read in error is fetched again when the window takes focus, so a read that failed recovers
- *  on the open page, and a healthy one stays quiet. This is `refetchFailedOnFocus` of
- *  `features/refs/reference-target.ts`, which keeps it to itself; that file is outside this part
- *  (dispatch://INFRA-3951), so the rule is copied here rather than exported from there. */
-const refetchFailedOnFocus = (query: { readonly state: { readonly status: QueryStatus } }) =>
-  query.state.status === "error" ? "always" : false;
 
 /**
  * What every read of the tree takes: it is kept fresh by events, never by its age
