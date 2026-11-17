@@ -1552,8 +1552,8 @@ kv_replicas_add() {
 }
 
 # nats_purge: ENVOY_NOTIFICATIONS, every KV bucket and the fixture's marker stream
-# (internal/bustest's ENVOY_TEST_FIXTURE) removed, so the reset's nats_provision makes the buckets
-# again: fixturebuckets leaves a server that holds the marker as it is.
+# (internal/bus/bustest's ENVOY_TEST_FIXTURE) removed, so the reset's nats_provision makes the
+# buckets again: fixturebuckets leaves a server that holds the marker as it is.
 nats_purge() {
   local streams s
   streams=$(nats_box stream ls --names) || die "nats stream ls failed through nats-box"

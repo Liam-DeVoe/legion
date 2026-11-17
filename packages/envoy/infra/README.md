@@ -82,8 +82,8 @@ and needs no listener stopped. The pull request that removes the listener users'
 the cutover deletes the flag.
 
 A test or a dev rig that starts a listener on a NATS server of its own provisions that server
-first, with the one fixture helper: `internal/bustest` in Go (`Provision`, or a connection marked
-with `Connect`/`Fixture` for a store opened in the test's own process), and the
+first, with the one fixture helper: `internal/bus/bustest` in Go (`Provision` or `ProvisionURL`, or
+a connection marked with `Connect`/`Fixture` for a store opened in the test's own process), and the
 `internal/testnats/cmd/fixturebuckets` command in a script, which refuses a server that is not on
 loopback. Provisioning marks the server (`ENVOY_TEST_FIXTURE`), and refillrig's commands that create
 or recreate a copied bucket refuse a server without that mark.
@@ -2673,7 +2673,7 @@ name the check does not know, a writer that starts between the final scan and th
 restore after `check` that nothing holds. So before every run, stop every listener of the
 deployment (and every envoy-dispatch, for `envoy_ci_state`) and confirm on each host that it has
 ended; the check confirms what you did, and does not replace it. The coming server-side hold
-(t-10) will exclude writers at the server instead: while it holds, the auth callout refuses every
+will exclude writers at the server instead: while it holds, the auth callout refuses every
 connection but the operator's, every other connection is kicked, every server's connz shows the
 operator alone, and a server it cannot reach stops the hold. Four tests (`TestBestEffort...`)
 assert today's outcome of each way, and must be inverted when the hold leaves no writer a
@@ -2701,7 +2701,7 @@ may not subscribe; only `create --break-glass` runs as one
 - subscribe `_INBOX_envoy_buckets.>` alone, the prefix its replies take: a user that subscribes
   `_INBOX.>` receives every other client's replies, sessions' push deliveries among them.
 
-This static user lasts until the cutover to the auth service's auth callout, which replaces it.
+This static user lasts until the cutover to the auth service's callout, which replaces it.
 
 `create` creates every copied bucket that is missing (or each `--bucket`), with its configuration
 (file storage, `--replicas` copies or else `ENVOY_NATS_REPLICAS`, each 1 to 5 and refused with exit
