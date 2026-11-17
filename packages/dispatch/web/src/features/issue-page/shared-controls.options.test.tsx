@@ -2250,6 +2250,57 @@ test("the default shapes keep main's class strings", async () => {
   expect(read).toEqual(want);
 });
 
+// dispatch://INFRA-3935 R1 and decision 104 of dispatch://INFRA-1196/artifact/part-decisions-md:
+// a value that wraps inside `NoTooltips` keeps `main`'s classes outside it, the two the table
+// above does not read among them: a labelled CopyButton's words carry no class, and a route
+// marker that names its route, as today's issue header draws it, truncates that name.
+test("outside NoTooltips a labelled CopyButton's words and a route marker's route keep main's classes", () => {
+  const view = draw(
+    <>
+      <div data-case="copy">
+        <CopyButton value="session-1" what="session ID">
+          session-1
+        </CopyButton>
+      </div>
+      <div data-case="route">
+        <UnresponsiveRouteMarker
+          issue={{
+            route: "role:reviewer",
+            route_holder: STALLED_SESSION,
+            route_status: "holder_unresponsive",
+            route_status_reason: null,
+          }}
+          showRoute
+        />
+        <UnreachableRouteMarker
+          issue={{
+            route: "role:architect",
+            route_holder: null,
+            route_status: "no_holder",
+            route_status_reason: null,
+          }}
+          showRoute
+        />
+      </div>
+    </>,
+    "outside"
+  );
+  try {
+    const words = within(caseOf(view, "copy")).getByText("session-1");
+    expect(words.tagName).toBe("SPAN");
+    expect(words.getAttribute("class")).toBeNull();
+    const routes = [...caseOf(view, "route").querySelectorAll("span")].filter((span) =>
+      /^role:(reviewer|architect):$/.test(span.textContent ?? "")
+    );
+    expect(routes.map((span) => span.getAttribute("class"))).toEqual([
+      "min-w-0 truncate",
+      "min-w-0 truncate",
+    ]);
+  } finally {
+    undraw(view);
+  }
+});
+
 // ---------------------------------------------------------------------------------------------
 // The focus and Escape in the controls' own forms
 // ---------------------------------------------------------------------------------------------

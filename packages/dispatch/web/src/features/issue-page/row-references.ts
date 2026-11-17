@@ -30,7 +30,8 @@ const TITLE_MAX = 60;
  * row links exactly what the server indexed for the same words. An issue key links only where
  * the batched read answered that its issue exists: `UTF-16` and `SHA-256` are read as keys by
  * the grammar the web shares with the server, name no issue, and are drawn as the words they
- * are.
+ * are. A short reference the read answered ambiguous links nothing either and is drawn as
+ * written (`useKnownAmbiguousReferences`, dispatch://INFRA-1196 decision 62).
  */
 
 /** One reference in a text, where it stands and what it names. */
@@ -81,15 +82,28 @@ export function knownIssueKeys(names: ReadonlyMap<string, string>): string[] {
   return keys;
 }
 
+/** No reference read as ambiguous: what a caller that hands no set of them reads by. */
+const NO_AMBIGUOUS: ReadonlySet<string> = new Set();
+
 /** The references of `text` a row links, in the order it holds them: every address that names
  *  something, and each bare key among `issues`. A `#id` is left as written: its question map is
- *  a read of its own, one per document, which a row does not make. */
-export function rowReferences(text: string, issues: readonly string[]): RowReference[] {
+ *  a read of its own, one per document, which a row does not make. A reference in `ambiguous` -
+ *  one the batched read answered that two or more targets carry the short id of, which the page
+ *  publishes (`useKnownAmbiguousReferences`) - is left out too, so the row draws it as the text
+ *  it is and links nothing, as the tree's chip draws it (`NodeChip.ambiguous`,
+ *  dispatch://INFRA-1196 decision 62): a link would draw it as its short form, which names no
+ *  one target. */
+export function rowReferences(
+  text: string,
+  issues: readonly string[],
+  ambiguous: ReadonlySet<string> = NO_AMBIGUOUS
+): RowReference[] {
   if (text === "") return [];
   const found: RowReference[] = [];
   for (const one of readTextReferences(text, { issues }).references) {
     if (one.form === "question" || one.reference === undefined || one.route === undefined) continue;
     if (one.route.kind === "person") continue;
+    if (ambiguous.has(one.reference)) continue;
     found.push({ end: one.end, reference: one.reference, route: one.route, start: one.start });
   }
   return found;
@@ -117,6 +131,10 @@ export function rowReferenceWords(
 /** The mark a row's own link carries: the reference it names, by which a later pass gives it
  *  the name the batched read has brought since. */
 const ROW_REFERENCE = "data-row-reference";
+
+/** The words a row's own link was made over, as the text wrote them, which a later pass puts
+ *  back where the reference is read as ambiguous since (`linkRowReferences`). */
+const ROW_WRITTEN = "data-row-written";
 
 /** A link in a node's words that are drawn as stored: the words' own ink over the bullets'
  *  grey, as `styles.css` draws one in a drawn text (ruling 5). */
@@ -147,13 +165,24 @@ function nameAnchor(
 /**
  * The row's own link pass over words a reading painted into `root` (`RowText.tsx`): every
  * reference its text holds outside a link and outside code becomes a link to its target, named
- * from `names`, and a link an earlier pass made takes the name the read has brought since. Out
- * of the tab order, as everything inside a row is (R9). Run again after every paint and
- * whenever `names` changes; it finds nothing to do twice.
+ * from `names`, and a link an earlier pass made takes the name the read has brought since. A
+ * reference in `ambiguous` links nothing (`rowReferences`), and a link an earlier pass made for
+ * one the read has answered ambiguous since is put back as the words it was made over, so it is
+ * drawn as written (dispatch://INFRA-1196 decision 62). Out of the tab order, as everything
+ * inside a row is (R9). Run again after every paint and whenever `names` or `ambiguous` changes;
+ * it finds nothing to do twice.
  */
-export function linkRowReferences(root: HTMLElement, names: ReadonlyMap<string, string>): void {
+export function linkRowReferences(
+  root: HTMLElement,
+  names: ReadonlyMap<string, string>,
+  ambiguous: ReadonlySet<string> = NO_AMBIGUOUS
+): void {
   for (const anchor of root.querySelectorAll<HTMLAnchorElement>(`a[${ROW_REFERENCE}]`)) {
     const reference = anchor.getAttribute(ROW_REFERENCE) ?? "";
+    if (ambiguous.has(reference)) {
+      anchor.replaceWith(anchor.getAttribute(ROW_WRITTEN) ?? reference);
+      continue;
+    }
     const route = parseNodeReference(reference);
     if (route !== undefined && route.kind !== "person")
       nameAnchor(anchor, { reference, route }, names);
@@ -168,7 +197,7 @@ export function linkRowReferences(root: HTMLElement, names: ReadonlyMap<string, 
   }
   for (const text of texts) {
     const value = text.data;
-    const found = rowReferences(value, issues);
+    const found = rowReferences(value, issues, ambiguous);
     if (found.length === 0) continue;
     const pieces: (HTMLAnchorElement | string)[] = [];
     let at = 0;
@@ -177,6 +206,7 @@ export function linkRowReferences(root: HTMLElement, names: ReadonlyMap<string, 
       const anchor = document.createElement("a");
       anchor.setAttribute("href", buildReferencePath(one.route));
       anchor.setAttribute(ROW_REFERENCE, one.reference);
+      anchor.setAttribute(ROW_WRITTEN, value.slice(one.start, one.end));
       anchor.tabIndex = -1;
       nameAnchor(anchor, one, names);
       pieces.push(anchor);
