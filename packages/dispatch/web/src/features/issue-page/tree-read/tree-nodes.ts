@@ -426,16 +426,16 @@ function draftResult(
 
 /**
  * A decision node, with the review state the read answers on it as the decisions read answered
- * it for a decision (`model.Decision`'s members, dispatch://INFRA-1253 R8): its state in the
+ * it for a decision (`model.Decision`'s members): its state in the
  * page's words (`reviewState`), who kept it, whether it was replaced, and its `shaped` tuples as
  * chips, each stale where its link to that node is. Its time is its words' last change
- * (`changed_at`), as F draws a decision. A person's Change the read hangs under it says it waits
- * on its agent (`decisionNodeChanges`).
+ * (`changed_at`), as the page dates every decision. A person's Change the read hangs under it
+ * says it waits on its agent (`decisionNodeChanges`).
  *
  * Whether its agent was unsure and whether it waits on the reader are read off the decision as
  * every other reader of a decision reads it (`decisionNodes`), so the row, the header's count
  * (`waiting.ts`) and Keep and Change cannot disagree: unsure where the read says so or the
- * conversion wrote its uncertainty as high, and waiting by F's review list rule (`inReviewList`),
+ * conversion wrote its uncertainty as high, and waiting by the review list's rule (`inReviewList`),
  * where a link ties it to a statement the coverage read holds. A decision node no document holds
  * is no decision of `decisionNodes` - it has no address, and no document a Keep could be written
  * against - so it waits on nobody, and is unsure only where the read says so.
@@ -710,7 +710,7 @@ function namesAny(node: TreeAnswerNode, kind: string, context: TreeDraftContext)
 
 /**
  * How a decision node stands with the reader, in the states the page draws
- * (`NODE_STATE_WORDS.decision`, R2), from the review state the read answers on the node:
+ * (`NODE_STATE_WORDS.decision`), from the review state the read answers on the node:
  * replaced by a later one first, since nothing waits on it any longer; then a change the reader
  * asked for, which waits on its agent and not on the reader (`decision-review.ts`); then waiting
  * for review; then kept, by the person whose name the row draws after it (`TreeNode.keptBy`).

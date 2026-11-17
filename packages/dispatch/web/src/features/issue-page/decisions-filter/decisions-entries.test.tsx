@@ -31,8 +31,8 @@ import {
 import type { DecisionsAsk, DecisionsParts } from "./decisions-parts";
 
 /**
- * The seam between the page's reads and the Decisions view (dispatch://INFRA-3937 R8,
- * dispatch://INFRA-4097's plan, task t5). Each case holds the decisions view on the tree's root,
+ * The seam between the page's reads and the Decisions view.
+ * Each case holds the decisions view on the tree's root,
  * as `useIssueTree.ts` sets it there (`TreeNode.views`), and puts the tree read, the asks and the
  * comments in the cache under the keys the page's tree reads them by, as the cache holds them
  * once the tree is drawn, and no query reads again on mount, so any request the seam made would
@@ -111,13 +111,13 @@ function idsOf(parts: DecisionsParts): Record<keyof DecisionsParts, string[]> {
 
 const D = (block: string) => decisionNode(block).id;
 
-// R8: the seam gives the view's four parts from the reads the page's tree already made and the
+// The seam gives the view's four parts from the reads the page's tree already made and the
 // decisions view the page holds. Bob's answers stand under the reader's decisions, newest first
 // among the reader's own. Two answers of one moment stand in the order their nodes first stand
 // in the tree, read depth first: Bob's is under the statement at the tree's top and the reader's
 // is the issue's last ask, so Bob's stands first, which neither the reader's entries first nor a
-// walk level by level gives. The tree read places a Change (dispatch://INFRA-4097's plan, choice
-// 1): two decisions that wait open with the same words, and the read hangs the reader's Change
+// walk level by level gives. The tree read places a Change:
+// two decisions that wait open with the same words, and the read hangs the reader's Change
 // under the second, so the second leaves the review list for her decisions and the first still
 // waits. No quote is matched for it, which would have put the Change on the first.
 test("the seam gives four parts from today's reads and makes no request", async () => {
@@ -232,7 +232,7 @@ test("the seam gives four parts from today's reads and makes no request", async 
   }
 });
 
-// R8: a decisions view that holds no decision gives no decision and no error, and the view draws
+// A decisions view that holds no decision gives no decision and no error, and the view draws
 // the questions alone; so does a view that has not answered yet over a tree read that holds no
 // decision node, which is the read the page's tree is built from.
 test("an empty decisions member gives the questions alone and no error", async () => {

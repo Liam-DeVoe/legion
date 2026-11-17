@@ -13,14 +13,14 @@ import { issueTreeQuery, type TreeAnswer } from "../tree-read/tree-read";
 import { type DecisionsEntry, type DecisionsParts, decisionsParts } from "./decisions-parts";
 
 /**
- * The one seam between the page's reads and the Decisions view (dispatch://INFRA-3937 R8): it
+ * The one seam between the page's reads and the Decisions view: it
  * turns the decisions view, the tree read and the issue's asks into the view's
  * parts, so no other file of the view names a read. The part that draws the model's own entries
- * (dispatch://INFRA-1150's `entries`) replaces this module and leaves the view as it is.
+ * (`entries`) replaces this module and leaves the view as it is.
  *
  * The decisions are the decision nodes of the decisions view (`?view=decisions`), the issue's
  * decisions wherever they are written, which the page holds on the issue's node
- * (`TreeNode.views`, dispatch://INFRA-4097's plan, choice 6), each read as every reader of a
+ * (`TreeNode.views`), each read as every reader of a
  * decision reads it (`decisionNodes`). A decision's Change is the comment the tree read hangs
  * under its node (`decision-review.ts`' `decisionNodeChanges`), so no quote is matched for it. A
  * view that holds no decision gives none, and no error. Until the view has answered - it is read

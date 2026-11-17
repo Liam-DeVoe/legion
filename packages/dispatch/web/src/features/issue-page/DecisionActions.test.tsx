@@ -24,7 +24,7 @@ import {
  * this file reads is what the controls themselves do, which is what both a pointer and those
  * keys get. Each case holds the reads the page holds, the tree read's answer and the asks read,
  * under the keys the page reads them by, and the node finds its decision there
- * (dispatch://INFRA-4097's plan, task t8).
+ * without a request of its own.
  */
 
 const KEY = "CORE-1";
@@ -46,7 +46,7 @@ const document_: Artifact = {
 };
 
 /**
- * A decision node of `document_`, as the tree read answers one (dispatch://INFRA-1253 R8): an
+ * A decision node of `document_`, as the tree read answers one: an
  * agent's decision that waits for review, unless `extra` says otherwise. Its first paragraph is
  * the heading every accessible name reads and the words a Change is anchored to, so a decision
  * with one is a decision whose Change control is drawn.
@@ -358,9 +358,9 @@ test("Change anchors to the node's document and quotes its first paragraph", asy
   }
 });
 
-// Choice 7 of dispatch://INFRA-4097's plan: Keep is written against the decision node's own
+// Keep is written against the decision node's own
 // document, block and sum, as the tree read answers them on the node, whatever document the row
-// that draws it stands in. Kept, the tree is read again (choice 4).
+// that draws it stands in. Kept, the tree is read again.
 test("Keep posts the node's document, block id and sum", async () => {
   const keep = spyOn(api, "keepDecision").mockResolvedValue({
     artifact_id: document_.id,
@@ -390,7 +390,7 @@ test("Keep posts the node's document, block id and sum", async () => {
   }
 });
 
-// Choices 4 and 5: Dispatch refuses a Keep of words the agent changed since the node was drawn
+// Dispatch refuses a Keep of words the agent changed since the node was drawn
 // (`409 DECISION_CHANGED`). The decision still waits, so Keep stays drawn, with the alert that
 // says why; and the tree is read again and the Decisions view dropped, so the page draws the
 // decision in its new words.
@@ -489,7 +489,7 @@ test("Keep leaves a tree read in flight to finish and reads the tree again after
   }
 });
 
-// Choice 7: the node finds its decision in the reads the page already holds, through observers
+// The node finds its decision in the reads the page already holds, through observers
 // that are never enabled, so drawing Keep and Change sends no request, though neither held answer
 // is fresh and an enabled observer would read it again as it mounts.
 test("the node sends no request of its own to draw Keep and Change", async () => {

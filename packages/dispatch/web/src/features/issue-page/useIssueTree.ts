@@ -99,11 +99,11 @@ const NO_AMBIGUOUS_TARGETS: ReadonlySet<string> = new Set();
  * and the reader's login, which says which open questions wait on the reader
  * (`IssueTreeReads.viewer`).
  *
- * Each filter's view read (`viewQuery`), the decisions view among them (dispatch://INFRA-4097's
- * plan, choice 6), is watched here and never sent: `ViewReadProvider`
+ * Each filter's view read (`viewQuery`), the decisions view among them,
+ * is watched here and never sent: `ViewReadProvider`
  * (`tree-read/view-read.tsx`) reads a view the first time its filter is on, and whatever it holds
  * is set on the issue's node (`TreeNode.views`), which `presetView` and `filterSignals` draw a
- * filter from (R4), and the Decisions filter its decisions (`decisions-entries.ts`). The root
+ * filter from, and the Decisions filter its decisions (`decisions-entries.ts`). The root
  * keeps its identity while neither the tree nor a held view changes.
  *
  * The names come last and all at once: the tree is built, every address it holds is read in one

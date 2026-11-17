@@ -20,23 +20,25 @@ import {
 import type { ApiRequests } from "./traffic";
 
 /**
- * What part U of dispatch://INFRA-1196 (dispatch://INFRA-4097) reads of the new issue page beside
- * what D, G, I, P, Q and T already read: part U's own helper file (decision 2 of
- * dispatch://INFRA-1196/artifact/part-decisions-md), which reuses their readers and copies none.
+ * What the decision rows (`e2e/issue-page-u.e2e.ts`) read of the new issue page beside what the
+ * other rows' helpers already read (`e2e/issue-page.ts` and `e2e/issue-page-{g,i,p,q,t}.ts`):
+ * the rows' own helper file, which reuses those readers and copies none.
  *
  * - **The server's answer.** `decisionSum` is the `text_sha256` the tree read
  *   (`GET /api/v1/issues/{key}/tree`) answers on one decision node, every page its cursor names
  *   read as alice; `decisionNodeOf` is that node, and `viewNodesOf` the nodes one view of the
- *   tree answers (`?view=`). `heldDecisionsRead` is the decisions read G5 is read over.
- * - **How a row names a node.** `decisionRowId` is the id a decision node's row carries (F's
+ *   tree answers (`?view=`). `heldDecisionsRead` is the decisions read that the gate on the seeds
+ *   written as decision nodes (`decisionNodesGate`) reads.
+ * - **How a row names a node.** `decisionRowId` is the id a decision node's row carries (the
  *   `<slug>#b-<block id>`), `askRowId` an ask's (its block's node where the asks read names its
  *   block, as `tree-read/tree-nodes.ts` names it), and `askOfNode` the asks read's row of an ask
  *   node; `idReadsOf` is the issue read and the asks read `treeIdOf` names nodes by.
  * - **What the page draws.** `reviewWordOf` is the state word a decision's row draws from its
  *   node; `specColumn` is, for each statement the Spec view draws, what stands beside it - the
- *   decision cell whose bracket spans it (J's `[data-spec-cell]`) and the links of its line
+ *   decision cell whose bracket spans it (`[data-spec-cell]`) and the links of its line
  *   (`[data-spec-because]`) - and `statementsBeside` the statements a decision stands beside.
- *   `readFilter` and `releaseFilter` press one filter on and off as T's rows do.
+ *   `readFilter` and `releaseFilter` press one filter on and off as the rows of
+ *   `e2e/issue-page-t.e2e.ts` do.
  * - **What the page sends and receives.** `watchWrites` keeps every request under `/api/` that is
  *   no read, with its body; `holdTreeReads` holds every tree read the page sends until released.
  * - **Row 2's third decision.** `writeThirdDecision` writes, through the spec's edit route, a
@@ -113,10 +115,10 @@ export async function viewNodesOf(key: string, view: TreeView): Promise<IssueTre
 }
 
 /**
- * The decisions read G5 (`decisionNodesGate`) is read over: the one the page received
- * (`decisionsReadOf`), and where it received none - part U's page sends its view read only once
- * Decisions is pressed - the read of the Decisions view the row sends itself, so the gate reads
- * what the server holds and not whether the page asked.
+ * The decisions read that the gate on the seeds written as decision nodes (`decisionNodesGate`)
+ * reads: the one the page received (`decisionsReadOf`), and where it received none - the page
+ * sends its view read only once Decisions is pressed - the read of the Decisions view the row
+ * sends itself, so the gate reads what the server holds and not whether the page asked.
  */
 export async function heldDecisionsRead(
   key: string,
@@ -131,7 +133,7 @@ export async function idReadsOf(key: string): Promise<TreeIdReads> {
   return { asks, issue };
 }
 
-/** The id the row of a decision node carries: F's `<slug>#b-<block id>` for a block of a
+/** The id the row of a decision node carries: `<slug>#b-<block id>` for a block of a
  *  document, which every decision node is. */
 export function decisionRowId(node: IssueTreeNode): string {
   return node.document === undefined ? node.id : blockNode(node.document.slug, node.id);
@@ -234,7 +236,7 @@ export interface FilterReading {
   readonly rows: readonly RowReading[];
 }
 
-/** Turns `filter` on, as I's `pickPreset` presses it, and reads it once it holds still. */
+/** Turns `filter` on, as `pickPreset` presses it, and reads it once it holds still. */
 export async function readFilter(
   page: Page,
   traffic: ApiRequests,

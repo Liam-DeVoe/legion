@@ -12,7 +12,7 @@ import type { TreeAnswer, TreeAnswerNode } from "./tree-read/tree-read";
  * (`decisions-filter/decisions-parts.ts`) and the header's count of what waits on the reader
  * (`waiting.ts`) read one rule each and cannot disagree.
  *
- * A decision is a node of the tree read (dispatch://INFRA-1253 R8), which the read places, and
+ * A decision is a node of the tree read, which the read places, and
  * it places its Change too: a comment anchored inside the decision's words hangs under its node.
  * So a decision's Changes are the comments a person wrote that the read hangs under it, made
  * since it last changed and was last kept, and the newest is the change it waits on

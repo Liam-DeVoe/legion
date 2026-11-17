@@ -19,7 +19,7 @@ import { waitingOnReader } from "./waiting";
  * (`waitingOnReader`) and the tree's own `waiting` on each node (dispatch://INFRA-1196 R7, R13,
  * R35). The two must agree, or the count puts the focus on a node that does not wait, or counts
  * one it can never reach. Both read the tree read's answer, which each case writes as the
- * contract gives it (dispatch://INFRA-1253 R8), and its decisions are that answer's decision
+ * contract gives it, and its decisions are that answer's decision
  * nodes (`decisionNodes`).
  */
 
@@ -368,7 +368,7 @@ test("what waits on the reader is their open questions, the review list and thei
   expect(waitingIn(buildIssueTree({ coverage, issue, tree }))).toEqual([]);
 });
 
-// R7, R13, R35: a decision the count counts is a decision node of the tree read, by the review
+// A decision the count counts is a decision node of the tree read, by the review
 // state the read answers on it: one that waits for a person's review and that a link ties to a
 // statement. One kept as it reads now, one replaced, and one that waits but is tied to nothing
 // do not count, and the tree marks the same one waiting. Before the tree read answers there is
@@ -399,7 +399,7 @@ test("waitingOnReader counts a waiting decision node", () => {
   expect(waitingOnReader(quiet, "alice", [], isStatement, undefined).decisions).toBe(0);
 });
 
-// R3, R13: a Change is the comment the tree read hangs under its decision, which is where the
+// A Change is the comment the tree read hangs under its decision, which is where the
 // read hangs a comment anchored inside the decision's words. A person's comment anchored to the
 // second decision's words that the read hangs elsewhere - under the issue, or under the first
 // decision, whose words hold the same sentence - is no Change of it, and the second decision
@@ -431,7 +431,7 @@ test("a Change is only the comment under its decision", () => {
   expect(hungUnder("d2")).toEqual({ drawnUnder: ["spec#b-d2"], waits: [0, []] });
 });
 
-// R3 and choice 1 of dispatch://INFRA-4097's plan: a person's comment under a decision is a
+// A person's comment under a decision is a
 // Change only while it is newer than the decision's words and than the Keep the read answers on
 // it. One made before the words last changed asked for a change they have since had, and one
 // made before that Keep was answered by it, so the decision waits on the reader again; one newer
@@ -489,7 +489,7 @@ test("a tie to a requirement the coverage read does not hold puts no decision on
   expect(waits(tree, undefined, planned)).toEqual([0, []]);
 });
 
-// R13: a decision node no document holds has no address and no document a Keep could be written
+// A decision node no document holds has no address and no document a Keep could be written
 // against, so it is no decision of the page's (`decisionNodes`): though the read answers it
 // waiting and tied to a statement, the count does not count it and the tree does not mark it
 // waiting.

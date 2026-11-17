@@ -11,10 +11,10 @@ import {
 } from "./decision-nodes";
 
 /**
- * The decisions of a tree read's answer (`dispatch://INFRA-4097/artifact/plan-md#b-t3`). Each
- * case writes the answer as the contract describes it (dispatch://INFRA-1253 R8): every node with
+ * The decisions of a tree read's answer. Each
+ * case writes the answer as the tree read's contract describes it: every node with
  * its `parent`, in the read's walk order, a typed block with the `document` it is written in, a
- * decision node with the members INFRA-1150's decisions read answers for it, and the tuples
+ * decision node with the members the decisions read answers for it, and the tuples
  * between them, `shaped` and `decided_by` among them, with the person a `decided_by` names held
  * as context.
  */
@@ -76,7 +76,7 @@ function block(
 }
 
 /** A decision block of the spec, with the members the read answers on it: an agent's decision
- *  that waits for review, as INFRA-1150's decisions read answers one, unless the case says
+ *  that waits for review, as the decisions read answers one, unless the case says
  *  otherwise. */
 function decision(id: string, extra: Partial<TreeAnswerNode> = {}): TreeAnswerNode {
   return block(id, "decision", SPEC, 1, {
@@ -171,7 +171,7 @@ function question(id: string, extra: Partial<Ask> = {}): Ask {
 /** What every case reads beside the answer: the issue's key, and no asks. */
 const READS: DecisionReads = { issue: { key: KEY } };
 
-// R-nodes: a decision node answers the members INFRA-1150's decisions read answers, by the same
+// A decision node answers the members the decisions read answers, by the same
 // names and values, so every reader of a `Decision` - the Decisions filter's parts, the review
 // list, the Spec filter's column, Keep and Change - reads it with no change; with the document it
 // is a block of, which Keep and a Change's anchor are written against, who decided it, and the
@@ -224,7 +224,7 @@ test("a decision node answers the shape decisionsParts reads", () => {
   ]);
 });
 
-// R-views, root R35: a decision's `shaped` ties are its links, which the read answers on the node
+// A decision's `shaped` ties are its links, which the read answers on the node
 // with each link's `stale`, and which the review list and each statement's decisions are read
 // from alone.
 test("a decision's links are its shaped ties", () => {
@@ -246,7 +246,7 @@ test("a decision's links are its shaped ties", () => {
   ]);
 });
 
-// R-keep: a decision's review state is the one the read answers on it, never one worked out
+// A decision's review state is the one the read answers on it, never one worked out
 // here: waiting for review, kept with who kept it and when, replaced; and a decision kept at
 // words it no longer reads waits again with its old Keep still answered.
 test("its review state is the read's", () => {
@@ -289,7 +289,7 @@ test("its review state is the read's", () => {
   ]);
 });
 
-// R-nodes, INFRA-1150 R1: a person's decision is the question they answered, where it carries
+// A person's decision is the question they answered, where it carries
 // `shaped` ties. It is a decision as today's decisions read answers a person's: of the kind
 // `person`, naming the ask it is, with its ties as links that are not stale, waiting for nobody's
 // review, never kept nor replaced, and made when it was answered. An ask block is that ask by the
@@ -392,7 +392,7 @@ test("a person's decision is its answered ask", () => {
   ]);
 });
 
-// R-keep, R-change: a decision is addressed in the document its `document` member names, and
+// A decision is addressed in the document its `document` member names, and
 // Keep and a Change's anchor go to that document: the spec's, the decisions document's, and a
 // document of the issue the read marks the node with.
 test("a decision of another document names that document", () => {
@@ -418,7 +418,7 @@ test("a decision of another document names that document", () => {
   ]);
 });
 
-// R-nodes, INFRA-1150 T11: a decision is unsure where its agent wrote its uncertainty as high -
+// A decision is unsure where its agent wrote its uncertainty as high -
 // the attribute the conversion writes for an `Unsure:` paragraph - or where the read says so; a
 // medium uncertainty, and none, leave it sure.
 test("an unsure decision is one whose uncertainty is high", () => {
@@ -439,7 +439,7 @@ test("an unsure decision is one whose uncertainty is high", () => {
   ]);
 });
 
-// R-change: a Change quotes the words of the decision's first paragraph, cut as the server reads
+// A Change quotes the words of the decision's first paragraph, cut as the server reads
 // a quote: a hard break as one space, a list's items one space apart, a heading passed over, and
 // the stored first paragraph where the read sent no reading. A converted decision's first
 // paragraph is its old heading, which its heading is read from too.

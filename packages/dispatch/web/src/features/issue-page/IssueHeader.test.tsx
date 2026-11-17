@@ -280,7 +280,7 @@ function treeNode(id: string, supertag: string, extra: Partial<TreeAnswerNode>):
   };
 }
 
-// R13: the count of what waits on the reader counts each decision of the review list, which the
+// The count of what waits on the reader counts each decision of the review list, which the
 // header reads off the tree read's decision nodes: an agent's decision that waits for review,
 // tied to a statement the coverage read holds, counts beside the open question whose turn is the
 // reader's.

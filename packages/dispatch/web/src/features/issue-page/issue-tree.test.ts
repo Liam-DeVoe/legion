@@ -287,7 +287,7 @@ function decision(
 }
 
 /**
- * The decisions `made` as the tree read answers them (dispatch://INFRA-1253 R8): each one a
+ * The decisions `made` as the tree read answers them: each one a
  * decision block of `document`, the decisions document unless the case names another, in the
  * order given, under the issue unless `parents` gives it another parent by its block id, with the
  * members the decisions read answered for it and its words; and a `shaped` tuple from it to the
@@ -1882,7 +1882,7 @@ test("a block whose text cites a document carries a chip that opens it", () => {
   expect(chipsOf("r3")).toEqual([]);
 });
 
-// R4: a decision sits under the ask it answers, where the tree read places it: under the issue's
+// A decision sits under the ask it answers, where the tree read places it: under the issue's
 // own question, under the question a document's block is, by that block's node, and under the
 // issue where it answers none. The ask that places a decision is its spine, so no chip names it.
 test("a decision sits under the ask it answers, and one that answers none under the issue", () => {
@@ -2089,12 +2089,12 @@ test("an open question waits on the reader only where its turn is theirs", () =>
   expect(waiting(undefined)).toEqual([]);
 });
 
-// The tester's F6: a Change is a comment a person anchored to a decision's words. The fixture is
+// A Change is a comment a person anchored to a decision's words. The fixture is
 // the shape the Change control (`DecisionActions.tsx`) stored on a running build of the
-// checkpoint (preview of 29111db16c41, dispatch://INFRA-3951/artifact/f6-reads-json), read with
+// checkpoint (preview of 29111db16c41), read with
 // `Dispatch-Trees: 1`: the Change is anchored with the decisions document's id
 // (`api/anchors.go`'s `resolveAnchor`) inside the decision's paragraph, so the tree read hangs it
-// under the decision's node (dispatch://INFRA-1253 R8), which the read answers with the members
+// under the decision's node, which the read answers with the members
 // the decisions read stored for it. A Change newer than the decision's words makes the decision
 // read Change requested and wait on its agent, not on the reader; one older than its words still
 // stands under it and is no Change, and the decision waits for the reader's review.
@@ -2397,7 +2397,7 @@ test("a Change is drawn under its decision, which then waits on its agent", () =
   expect(nodeOf(older, id)).toMatchObject({ state: "waiting_review", waiting: true });
 });
 
-// R3, R7: a person may ask two changes of one decision before its agent edits it. The read hangs
+// A person may ask two changes of one decision before its agent edits it. The read hangs
 // each comment anchored in the decision's own block under the decision, and each change newer
 // than the decision's words is drawn there, not only the newest, so neither sits at the
 // outline's foot with nothing tying it to what it changes; a comment older than the decision's

@@ -171,7 +171,7 @@ export function SpecFilterBody({
   // architect's decision 98 on dispatch://INFRA-1196).
   // The decisions are the decision nodes of the Spec view read (`?view=spec`), which the page
   // holds on the issue's node (`TreeNode.views`), so the body costs no request of its own
-  // (R20): each decision the view holds, and each question a person answered that carries
+  // to draw them: each decision the view holds, and each question a person answered that carries
   // `shaped` ties, which the asks read says is answered (`decisionNodes`). The view read and the
   // asks read are watched by observers that are never enabled, under the keys the page reads
   // them by (`ViewReadProvider`, `useIssueTree.ts`). A view read again after a change of the
@@ -943,7 +943,7 @@ function GroupHeading({ parent }: { parent: SpecParent }): ReactNode {
  * The decision that shaped a run of statements, in the left column: the words it came from,
  * where they came from and when, and a link to the whole of it (R5). The bracket at its
  * trailing edge spans the statements it shaped, in the decisions' violet, dashed where an agent
- * decided; a run no decision shaped says so in words (R35), once the Spec view read the
+ * decided; a run no decision shaped says so in words, once the Spec view read the
  * decisions come from has answered, and says nothing before that or where that read failed
  * with none, since it does not know.
  *

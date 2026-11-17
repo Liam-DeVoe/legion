@@ -64,7 +64,7 @@ const decisionsDocument: Artifact = {
   versions: [],
 };
 
-/** The issue's one decision as the tree read answers its node (dispatch://INFRA-1253 R8): an
+/** The issue's one decision as the tree read answers its node: an
  *  agent's decision of the decisions document that waits for review, whose first paragraph is the
  *  words a Change is anchored to. */
 const decision: TreeAnswerNode = {

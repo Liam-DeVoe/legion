@@ -6,14 +6,14 @@ import { blockNodeId } from "../tree-drafts";
 import type { TreeAnswer, TreeAnswerNode, TreeTuple } from "../tree-read/tree-read";
 
 /**
- * The decisions of a tree read's answer, or of one of its views, in the shape INFRA-1150's
+ * The decisions of a tree read's answer, or of one of its views, in the shape the
  * decisions read answers them (`Decision`), so every reader of that read - the Decisions filter's
  * parts, the review list, the Spec filter's column, the header's count, Keep and Change - reads
- * them with no change of its own (dispatch://INFRA-4097/artifact/plan-md#b-t3).
+ * them with no change of its own.
  *
  * A decision is a node of supertag `decision`, whose members the read answers on the node by the
- * decisions read's names and values (dispatch://INFRA-1253 R8), or a person's: a question they
- * answered that carries `shaped` ties (dispatch://INFRA-1150 R1), whose members are the ones
+ * decisions read's names and values, or a person's: a question they
+ * answered that carries `shaped` ties, whose members are the ones
  * today's decisions read gives a person's decision (`api/decisions.go`'s `readDecisions`). Who
  * decided is no member of either: it is the person a `decided_by` tuple names, whom the read
  * answers as context.
@@ -173,7 +173,7 @@ function wordsAndAuthor(
   return {
     author: authorOf(node, lookup),
     block_id: node.id,
-    // A converted decision's old `##` heading is its first paragraph (INFRA-1150 T11), so the
+    // A converted decision's old `##` heading is its first paragraph, so the
     // heading every accessible name reads ("Keep <heading>") is that paragraph's words.
     heading: decisionQuote(node) ?? "",
     node,

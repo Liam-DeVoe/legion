@@ -475,7 +475,7 @@ test("each statement carries one line naming the decision that shaped it, with a
   }
 });
 
-// R5 with dispatch://INFRA-1150 R1: a person's decision is the question they answered, which
+// A person's decision is the question they answered, which
 // carries `shaped` ties in the Spec view's context, and no decision node restates it. It stands
 // beside each statement a tie names, in their own words, and a statement no tie names stands
 // with none.
@@ -538,9 +538,10 @@ test("a person's decision stands beside each statement its shaped tie names", ()
   }
 });
 
-// R35's sentence waits for the asks read too: a person's decision is a question they answered,
-// which only that read says, so while it is out the column says nothing of a statement such a
-// decision shaped - nor of any other - and once it answers the decision stands beside each.
+// The words that say no decision shaped a statement wait for the asks read too: a person's
+// decision is a question they answered, which only that read says, so while it is out the column
+// says nothing of a statement such a decision shaped - nor of any other - and once it answers the
+// decision stands beside each.
 test("while the asks read is out, no statement a person's decision shaped reads that none did", async () => {
   const words = "Put the decisions beside the statements. Please.";
   const { client, read, view } = drawBody(
@@ -612,9 +613,9 @@ test("several statements no decision shaped say so in words that agree with thei
   }
 });
 
-// R35's sentence is true only once the Spec view read the decisions come from has answered:
-// while it is out the column says nothing of a statement, and a read that failed says so in the
-// page's own line.
+// The words that say no decision shaped a statement are true only once the Spec view read the
+// decisions come from has answered: while it is out the column says nothing of a statement, and a
+// read that failed says so in the page's own line.
 test("the column says no decision shaped a statement only once the decisions are read", async () => {
   const out = drawBody(issueTree([statement("r1")]), [], { specView: "out" });
   try {

@@ -96,7 +96,7 @@ export function ChangeDraftsProvider({ children }: { children: ReactNode }): Rea
  * comment anchored to the words of the decision's first block (`decisionQuote`). The decision is
  * the node of the tree read the page already holds (`issueTreeKey`), found by its address among
  * that answer's decisions (`decisionNodes`), so the node makes no read of its own
- * (dispatch://INFRA-4097's plan, choice 7).
+ * to draw its controls.
  */
 export function DecisionActions({
   document,
@@ -187,7 +187,7 @@ function DecisionControls({
     // it now stands: kept, or in its new words with Keep to press again. The tree is refreshed as
     // the page refreshes it on an event (`subscribeTreeFreshness`'s `refreshQueries`), so a walk
     // of its pages already in flight is waited for rather than cut off. A refusal is said below,
-    // on the decision, until the next press (dispatch://INFRA-4097's plan, choices 4 and 5).
+    // on the decision, until the next press.
     onSettled: () => {
       refreshQueries(queryClient, [{ exact: true, queryKey: issueTreeKey(issueKey) }]);
       void queryClient.resetQueries({ exact: true, queryKey: viewKey(issueKey, "decisions") });

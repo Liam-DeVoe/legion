@@ -1355,7 +1355,7 @@ test("each press of the count of what waits goes to the next thing that waits", 
   await waitFor(() => expect(focusedRow(early)).toBe(D("first")));
 });
 
-// The tester's F6: a Change sent on a decision is a comment anchored to its words. Once the tree
+// A Change sent on a decision is a comment anchored to its words. Once the tree
 // read hangs it under the decision - the send reads the issue's comments again, and the page
 // reads its tree again after them (`subscribeTreeFreshness`) - the decision says a change was
 // asked for, leaves the review list for the reader's own decisions, draws no Keep or Change, and

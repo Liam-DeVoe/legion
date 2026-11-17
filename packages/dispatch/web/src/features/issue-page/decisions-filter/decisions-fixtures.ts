@@ -225,8 +225,8 @@ export function shaped(ref: string, stale = false): DecisionLink {
   };
 }
 
-/** One decision block of the spec as the tree read answers it (dispatch://INFRA-1253 R8), with
- *  the members INFRA-1150's decisions read answers for that decision, by the same names: an
+/** One decision block of the spec as the tree read answers it, with
+ *  the members the decisions read answers for that decision, by the same names: an
  *  agent's, which waits for review unless the case says otherwise. */
 export function decision(block: string, partial: Partial<TreeAnswerNode> = {}): TreeAnswerNode {
   return {

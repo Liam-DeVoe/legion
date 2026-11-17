@@ -67,14 +67,16 @@ import { type Browser, expect, type Page, test } from "./test";
 import { type ApiRequest, expectLoadSettled, watchApiRequests } from "./traffic";
 
 /**
- * Part U's rows of the new issue page (dispatch://INFRA-4097, part U of dispatch://INFRA-1196):
+ * The decision rows of the new issue page:
  * every decision the page draws is a node of the issue's tree read (`GET /api/v1/issues/{key}/tree`)
  * and its views (`?view=`), with the review state the model answers on it, and Keep and Change
  * write against that node, read on the real stack. Each row turns the new page on for alice with
- * D's `phase` (1440 by 900), seeds part I's issues (`e2e/issue-layout-seed.ts`), opens them with
- * D's `gotoIssue`, and reads them through G's `nodeRow`, `rowOf`, `drawnRows`, `parentOfRow` and
- * `unfoldEveryBranch`, I's `pickPreset`, P's `waitingCount`, Q's readers of the Decisions view,
- * `watchApiRequests` (`e2e/traffic.ts`), T's helpers (`e2e/issue-page-t.ts`) and part U's own
+ * `phase` (1440 by 900), seeds the issues of `e2e/issue-layout-seed.ts`, opens them with
+ * `gotoIssue` (`e2e/issue-page.ts` holds both), and reads them through `nodeRow`, `rowOf`,
+ * `drawnRows`, `parentOfRow` and `unfoldEveryBranch` (`e2e/issue-page-g.ts`), `pickPreset`
+ * (`e2e/issue-page-i.ts`), `waitingCount` (`e2e/issue-page-p.ts`), the readers of the Decisions
+ * view (`e2e/issue-page-q.ts`), `watchApiRequests` (`e2e/traffic.ts`), the helpers of
+ * `e2e/issue-page-t.ts` and the rows' own
  * (`e2e/issue-page-u.ts`).
  *
  * The rows are the two of the Verification document's browser checks, by their titles:
@@ -83,16 +85,14 @@ import { type ApiRequest, expectLoadSettled, watchApiRequests } from "./traffic"
  *    holds", on `seedDecisionsFilter` and `seedReviewList`.
  * 2. `c-keep-change`: "Keep and Change act on the decision node", on `seedReviewList`.
  *
- * Each row checks its gates first, each with T's `owedUnless`, and skips where one is not on the
+ * Each row checks its gates first, each with `owedUnless`, and skips where one is not on the
  * base, with an `owed` annotation naming the gate and the decisions that make it owed; it never
- * passes then (INFRA-1196 decisions 127, 135, 141 and 170). The gates are G1, the tree read
- * (INFRA-1253's t16a, `treeReadGate`), G3, an issue born converted (INFRA-1253's T12b,
- * `convertedGate`), and G5, the seeds' decisions being nodes of the tree read (INFRA-1150's T7, T8,
- * T11 and T12 and part U's seed commit, `decisionNodesGate` over the decisions read
- * `decisionsReadOf` keeps). G1 and G3 are read before anything else once the page is open; G5
- * once the page has received its decisions read, which part U's page sends only once Decisions is
- * pressed. On this branch's base the server serves no tree read, so both rows are tagged `@owed`
- * and skip on G1.
+ * passes then. The gates are the server's tree read (`treeReadGate`), an issue whose documents
+ * are nodes of its tree (`convertedGate`), and the seeds written as decision nodes of the tree
+ * read (`decisionNodesGate`, over the decisions read `decisionsReadOf` keeps). The first two are
+ * read before anything else once the page is open, the third once the page has received its
+ * decisions read, which the page sends only once Decisions is pressed. On this branch's base the
+ * server serves no tree read, so both rows are tagged `@owed` and skip on the first gate.
  */
 
 /** How long row 1 may take: two seeded issues, each read through all four filters. */
@@ -101,7 +101,7 @@ const ROW_ONE_MS = 480_000;
 /** How long row 2 may take. */
 const ROW_TWO_MS = 240_000;
 
-/** The four parts of the Decisions view, in the order it draws them (Q's `data-decisions-part`). */
+/** The four parts of the Decisions view, in the order it draws them (`data-decisions-part`). */
 const DECISIONS_PARTS = ["open_questions", "review", "yours", "agents"] as const;
 type DecisionsPart = (typeof DECISIONS_PARTS)[number];
 
@@ -166,7 +166,7 @@ function asksWaitingOnAlice(issue: IssueDetails): number {
   ).length;
 }
 
-/** The row of node `id`'s state word, as G's `drawnRows` reads it. */
+/** The row of node `id`'s state word, as `drawnRows` reads it. */
 async function stateWordOf(page: Page, id: string): Promise<string | null> {
   return rowOf(await drawnRows(page), id)?.stateWord ?? null;
 }
@@ -183,7 +183,7 @@ interface RowNames {
   readonly openAsks: readonly string[];
 }
 
-/** One decision of J's column as departure 3 names it: the names its cell and its links go by,
+/** One decision of the Spec column as row 1 expects it: the names its cell and its links go by,
  *  and the statements it stands beside. */
 interface ColumnEntry {
   readonly decision: string;
@@ -195,8 +195,9 @@ interface ColumnEntry {
 interface RowOneWanted {
   /** The declined ask's row, which reads "Declined"; null on a seed that declines none. */
   readonly declined: string | null;
-  /** The values departure 3 of the plan names for the seed's four parts and J's column; null on
-   *  a seed it names none for. */
+  /** What the seed's four parts count and its Spec column holds, as the Decisions view's row and
+   *  the Spec column's row assert them on the same decisions (`issue-page-q.e2e.ts`,
+   *  `issue-page-j.e2e.ts`); null on a seed no such row asserts them for. */
   readonly departure: {
     readonly column: readonly ColumnEntry[];
     readonly counts: Readonly<Record<DecisionsPart, string>>;
@@ -221,8 +222,8 @@ function decisionsSent(requests: readonly ApiRequest[], key: string) {
 }
 
 /** Every `shaped` tie of the tree read from a decision of this issue to a statement of it: from a
- *  decision node that was not replaced, which stands beside no statement (J's column, departure 3
- *  of the plan), or from an ask the asks read says is answered, which is a person's decision. */
+ *  decision node that was not replaced, since a replaced one stands beside no statement in the
+ *  Spec column, or from an ask the asks read says is answered, which is a person's decision. */
 function tiesToStatements(
   answer: IssueTreeAnswer,
   reads: TreeIdReads
@@ -284,8 +285,8 @@ function decisionsWaitingOnAlice(answer: IssueTreeAnswer): number {
   ).length;
 }
 
-/** Each filter as T's fixture records it: the keys of its rows (`seedKeys`, `keyedRows`) and its
- *  control's count. */
+/** Each filter as the rows fixture (`fixtureSeed`) records it: the keys of its rows (`seedKeys`,
+ *  `keyedRows`) and its control's count. */
 function recordedFilters(
   filters: Readonly<Record<TreeView, FilterReading>>,
   keys: ReadonlyMap<string, string>
@@ -342,7 +343,7 @@ async function readRowOne(
     pressed: { decisions: [], views: 1 },
   });
 
-  // (2) The four parts hold the seed's decisions in root R2's order, each reading its state from
+  // (2) The four parts hold the seed's decisions in the view's order, each reading its state from
   // its node in the Decisions view's read, with the foot unfolded so every decision is drawn.
   const reads = await idReadsOf(key);
   const idOf = treeIdOf(answer, reads);
@@ -436,8 +437,9 @@ async function readRowOne(
     })
     .toBe(waitingWords(asks + decisionsWaitingOnAlice(answer)));
 
-  // (5) Each filter's row ids and count are T's fixture's for the seed, and the four parts, J's
-  // column and P's count the values departure 3 of the plan names.
+  // (5) Each filter's row ids and count are the rows fixture's for the seed, the four parts and
+  // the Spec column are the values row 1 expects of the seed, and the header's count is alice's
+  // open questions and the review part's entries.
   const slugs = (reads.issue.artifacts ?? []).map((artifact) => artifact.slug);
   expect(
     recordedFilters(
@@ -449,7 +451,7 @@ async function readRowOne(
       },
       seedKeys(seeded, slugs)
     ),
-    "each filter's row ids and count equal T's fixture for the seed"
+    "each filter's row ids and count equal the rows fixture for the seed"
   ).toEqual(fixtureSeed(name).filters);
   const { departure } = wanted;
   if (departure === null) return;
@@ -459,7 +461,7 @@ async function readRowOne(
       part,
       rows: partOrder(part, rows),
     })),
-    "the four parts equal the values departure 3 names"
+    "the four parts equal the values row 1 expects"
   ).toEqual(
     DECISIONS_PARTS.map((part) => ({
       count: departure.counts[part],
@@ -472,16 +474,16 @@ async function readRowOne(
       decision,
       statements: statementsBeside(column, names),
     })),
-    "J's column equals the values departure 3 names"
+    "the Spec column equals the values row 1 expects"
   ).toEqual(departure.column.map(({ decision, statements }) => ({ decision, statements })));
   const review = parts.find((part) => part.part === "review")?.rows.length ?? 0;
   expect(
     await waitingOnYou(page),
-    "P's count equals the open questions that wait on alice and the review part's entries"
+    "the header's count equals the open questions that wait on alice and the review part's entries"
   ).toBe(waitingWords(asks + review));
 }
 
-/** Row 1 on one seed, by the name T's fixture records it under. */
+/** Row 1 on one seed, by the name the rows fixture records it under. */
 function rowOneSeed<S extends SeededIssue>(
   name: string,
   seed: () => Promise<S>,
@@ -493,9 +495,10 @@ function rowOneSeed<S extends SeededIssue>(
     );
 }
 
-/** Row 1's two seeds. On `seedDecisionsFilter` the parts are Q's row 1's (review `[D(5), D(0)]`,
- *  yours `[D(4), declined, optioned, answered]`) and J's column the one J's column row reads
- *  (departure 3); on `seedReviewList` the parts are Q's review-list row's. */
+/** Row 1's two seeds. On `seedDecisionsFilter` the parts are the ones the Decisions view's first
+ *  row asserts (review `[D(5), D(0)]`, yours `[D(4), declined, optioned, answered]`), and the
+ *  Spec column is the one the Spec column's row asserts on the same decisions; on `seedReviewList`
+ *  the parts are the ones the Decisions view's review-list row asserts. */
 const ROW_ONE_SEEDS = [
   rowOneSeed("seedDecisionsFilter", seedDecisionsFilter, (seeded, names) => {
     const block = (index: number) => seeded.decisions[index] ?? "";
@@ -541,11 +544,10 @@ const ROW_ONE_SEEDS = [
 ];
 
 // c-decisions, owed: on this branch's base the server serves no tree read, so the row skips on
-// G1, INFRA-1253's t16a (`treeReadGate`). It waits on G3 too, INFRA-1253's T12b, an issue born
-// converted (`convertedGate`), and on G5, INFRA-1150's T7, T8, T11 and T12 and part U's seed
-// commit, the seeds' decisions as nodes of the tree read (`decisionNodesGate`, read once Decisions
-// is pressed). The check holds it owed until INFRA-1150's T7, T8 and T11 and INFRA-1253's t12b,
-// t13, t16a to t16c and t17b are on the base (INFRA-1196 decisions 127, 135, 141 and 170).
+// the gate of the server's tree read (`treeReadGate`). It waits too on an issue whose documents
+// are nodes of its tree (`convertedGate`), and on the seeds written as decision nodes of the tree
+// read (`decisionNodesGate`, read once Decisions is pressed). The check holds it owed until the
+// server on the base meets all three gates.
 // SLOW(>=2s): two seeded issues, each load waited out, and the four filters each pressed, read
 // until it holds still, and released.
 test("every decision the page draws is a node with the review state the model holds @owed", async ({
@@ -588,12 +590,12 @@ function commentsOf(writes: readonly SentWrite[], key: string): SentWrite[] {
 }
 
 // c-keep-change, owed: on this branch's base the server serves no tree read, so the row skips on
-// G1, INFRA-1253's t16a (`treeReadGate`). It waits on G3 too, INFRA-1253's T12b (`convertedGate`),
-// and on G5, INFRA-1150's T7 and part U's seed commit, the seeds' decisions as nodes of the tree
+// the gate of the server's tree read (`treeReadGate`). It waits too on an issue whose documents
+// are nodes of its tree (`convertedGate`), and on the seeds written as decision nodes of the tree
 // read (`decisionNodesGate`, read once Decisions is pressed). Its Change clause asserts
-// `anchor.block_id` on the captured comment request, which the page sends once INFRA-1253's
-// contract carries `AnchorInput.block_id` (t17b): the check holds it owed until INFRA-1150's T7
-// and INFRA-1253's t16a and t17b are on the base (INFRA-1196 decisions 127, 135, 141 and 170).
+// `anchor.block_id` on the captured comment request, which the page sends once the API
+// contract's anchor carries `AnchorInput.block_id`: the check holds it owed until the server on
+// the base meets those three gates and accepts that anchor block id.
 // SLOW(>=2s): a seeded issue with a third decision written, a Keep and a Change each waited on
 // until the server's reads redraw the list, a reload, and a refused Keep under held tree reads.
 test("Keep and Change act on the decision node @owed", async ({ browser }) => {
@@ -723,7 +725,7 @@ test("Keep and Change act on the decision node @owed", async ({ browser }) => {
 
     // (3) With the page's next tree reads held, the third decision's words change through the
     // API and its Keep sends the sum of the words the page drew: Dispatch refuses it, the row
-    // still waits with G's alert, and once the held reads go on the row draws the new words.
+    // still waits with its alert, and once the held reads go on the row draws the new words.
     await readFilter(page, traffic, "decisions");
     const thirdRow = nodeRow(page, ids.third).first();
     const thirdKeep = thirdRow.locator(KEEP);
@@ -750,7 +752,7 @@ test("Keep and Change act on the decision node @owed", async ({ browser }) => {
     const refusal = fieldOf(await refused.json(), "error");
     await expect(
       thirdRow.getByRole("alert"),
-      "the refused Keep draws G's alert, in Dispatch's words"
+      "the refused Keep draws its alert, in Dispatch's words"
     ).toHaveText(String(refusal));
     expect(
       await stateWordOf(page, ids.third),
