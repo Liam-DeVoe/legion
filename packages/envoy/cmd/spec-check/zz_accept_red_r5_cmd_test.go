@@ -1,11 +1,12 @@
 package main
 
-// Red test of the fresh acceptance of #4191 at 7956f421eb (not a file of the branch; laid over a
-// git archive with go test -overlay). R7: "Of several results that count, the latest counts, and a
-// later failure cancels an earlier pass." The order of record is at, then seq. The reader refuses a
-// result with no at, and two results of one check at one at and one seq, but takes a result with no
-// seq as seq 0: a failure at the at of a pass, recorded with no seq, sorts before the pass, so a
-// check of production reads true with a failure on record at its deploy.
+// Red test of the fresh acceptance of #4191 at 7956f421eb, a file of the branch whose body is as its
+// tester wrote it. R7: "Of several results that count, the latest counts, and a later failure
+// cancels an earlier pass." The order of record is at, then seq. At 7956f421eb the reader refused a
+// result with no at, and two results of one check at one at and one seq, but took a result with no
+// seq as seq 0: a failure at the at of a pass, recorded with no seq, sorted before the pass, so a
+// check of production read true with a failure on record at its deploy. The reader now refuses a
+// result with no seq, and the first row takes that refusal.
 
 import (
 	"path/filepath"
