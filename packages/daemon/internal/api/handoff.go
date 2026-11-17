@@ -387,6 +387,11 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	// child's completion refused before (while the tree lingered, or while the old gate was closed)
 	// would otherwise take the new generation's key.
 	//
+	// For an issue with plan rows the pass is its running task's (completionPosition), and the
+	// task is in the key before it, so a new task at pass 0 takes no key an earlier task of the
+	// issue used. An issue with no plan rows keeps today's key, so a completion retried across the
+	// upgrade keeps its key.
+	//
 	// The step a fail names its task's return to (returnTo) ends the key when the completion
 	// names one, for the reason the verdict is in it: the workflow commits its refusal of a step it
 	// may not name (RETURN_REFUSED) as processed, so the same fail naming another step must be a
@@ -395,7 +400,11 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	if recordBacked {
 		reported, received = req.HandoffID, fmt.Sprintf("naming handoff record %s (%s version %d)", req.HandoffID, word, req.HandoffVersion)
 	}
-	eventID := fmt.Sprintf("handoff:%s:%d:%d:%d:%s:%s:%d:%s:%s", grant.Issue, treeGeneration, issue.Generation, serving, grant.Role, issue.Phase, pass, reported, req.Verdict)
+	counted := fmt.Sprint(pass)
+	if position.task != "" {
+		counted = position.task + ":" + counted
+	}
+	eventID := fmt.Sprintf("handoff:%s:%d:%d:%d:%s:%s:%s:%s:%s", grant.Issue, treeGeneration, issue.Generation, serving, grant.Role, issue.Phase, counted, reported, req.Verdict)
 	returnTo := 0
 	if req.ReturnTo != nil {
 		returnTo = *req.ReturnTo
@@ -1041,17 +1050,21 @@ func (s *server) checkReport(w http.ResponseWriter, r *http.Request, grant crede
 }
 
 // completionPosition is where issue key stands as the completion route reads it, in one repeatable-read
-// snapshot: the issue record, its tree's generation (the root's) and whether the tree lingers, its
-// pass — the implementer's count of returns to an earlier phase, which tells each implementing,
-// testing, and reviewing pass from the last — the handoff record the implementer last named for a
-// file-backed phase (record.PhaseRow.LastHandoff), the phase entry the completing role's current
-// phase is on (record.PhaseRow.Entry, 0 on a row no start has stamped) and whether the start
-// that raised it moved the issue back (record.PhaseRow.EntryMovedBack), its pull request record,
-// nil while none is recorded, and its production check, nil while none was ever opened.
+// snapshot: the issue record, its tree's generation (the root's) and whether the tree lingers, the
+// task the issue runs (runningTask; "" for an issue with no plan rows at its generation, which
+// walks today's line), its pass — that task's count of returns to an earlier step
+// (record.Postgres.ReturnCounts), the implementer's row's for an issue with no plan rows, which
+// tells each implementing, testing, and reviewing pass from the last — the handoff record the
+// implementer last named for a file-backed phase (record.PhaseRow.LastHandoff), the phase entry
+// the completing role's current phase is on (record.PhaseRow.Entry, 0 on a row no start has
+// stamped) and whether the start that raised it moved the issue back
+// (record.PhaseRow.EntryMovedBack), its pull request record, nil while none is recorded, and its
+// production check, nil while none was ever opened.
 type completionPosition struct {
 	issue          *record.Issue
 	treeGeneration uint64
 	lingers        bool
+	task           string
 	pass           int
 	entry          int64
 	entryMovedBack bool
@@ -1089,6 +1102,21 @@ func (s *server) handoffPosition(ctx context.Context, key string, role claim.Rol
 	implementer := record.PhaseRowOf(rows, claim.RoleImplementer)
 	completing := record.PhaseRowOf(rows, role)
 	pass, lastHandoff := implementer.Pass, implementer.LastHandoff
+	stored, err := s.records.Plan(ctx, tx, key, issue.Generation)
+	if err != nil {
+		return completionPosition{}, err
+	}
+	var task string
+	if stored != nil {
+		if task, err = runningTask(stored); err != nil {
+			return completionPosition{}, err
+		}
+		counts, err := s.records.ReturnCounts(ctx, tx, key, issue.Generation, task)
+		if err != nil {
+			return completionPosition{}, err
+		}
+		pass = counts.Pass
+	}
 	pr, err := s.records.PullRequest(ctx, tx, key)
 	if err != nil {
 		return completionPosition{}, err
@@ -1097,7 +1125,24 @@ func (s *server) handoffPosition(ctx context.Context, key string, role claim.Rol
 	if err != nil {
 		return completionPosition{}, err
 	}
-	return completionPosition{issue: issue, treeGeneration: root.Generation, lingers: root.Lingers(), pass: pass,
+	return completionPosition{issue: issue, treeGeneration: root.Generation, lingers: root.Lingers(), task: task, pass: pass,
 		lastHandoff: lastHandoff, entry: completing.Entry, entryMovedBack: completing.EntryMovedBack,
 		pullRequest: pr, check: check}, tx.Commit(ctx)
+}
+
+// runningTask is the task of stored its issue runs: the task whose state is running, and the
+// plan's only task while none runs (a task its owner stopped). A plan of several tasks none of
+// which runs names no task a completion could be of, which is an error: this release's plans hold
+// one task (plan.Supported), and the workflow walks no other (workflow's Engine.walk).
+func runningTask(stored *record.StoredPlan) (string, error) {
+	for _, task := range stored.Tasks {
+		if task.State == record.TaskRunning {
+			return task.Task, nil
+		}
+	}
+	if len(stored.Tasks) == 1 {
+		return stored.Tasks[0].Task, nil
+	}
+	v := stored.Version
+	return "", fmt.Errorf("the plan of %s at generation %d holds %d tasks and none of them runs, so no task is the one a completion is of", v.Issue, v.Generation, len(stored.Tasks))
 }
