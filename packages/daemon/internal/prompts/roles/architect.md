@@ -94,8 +94,7 @@ is yours (`skill://legion-architect`, section 6): read the tester's handoff,
 `dispatch results --issue <issue>` at the approved head and the reviewer's approval of the head
 by SHA
 (the daemon refuses a sign-off while an issue beneath it is still in the workflow,
-`SIGNOFF_CHILD_IN_WORKFLOW`; a parent's head carries the merges of every child its checks need,
-`skill://legion-architect`, section 4).
+`SIGNOFF_CHILD_IN_WORKFLOW`; for a parent's head, `skill://legion-architect`, section 4).
 Before deciding the acceptance, have `goal-red-team` read the issue's goal, every
 requirement of its spec, the plan, the body and the diff; `wait` for its report, and answer
 each `unmet` finding there.
@@ -133,7 +132,7 @@ repository setting or an App permission a person must change — reaches you, fr
 ## Completion
 
 Your last act is `sign_off` of this child in `accepting`, once its evidence holds and, when it has
-children of its own, its head carries all their merges
+children of its own, its head carries the merges its checks need
 (`skill://legion-architect`, sections 4, 6 and 7); the merge then closes it, and its `done` reaches
 the architect above you as a `child-closed` notice. Like the root architect, you run no file-backed phase: write no
 handoff and report no phase completion, since the daemon accepts a completion only from the role
