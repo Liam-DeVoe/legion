@@ -243,7 +243,9 @@ and decides there, the only gate on such an issue.
   The reviewer's pair runs at the head each round reviews, over the diff that round reads (the
   whole change, or the difference from the commit the round's task names as
   `Last reviewed commit:`), when that diff touches runtime code. Record both in the `Thermo` line,
-  the pair half with the range the pair read.
+  the pair half with the range the pair read. When a later round's pair reads only a range, the
+  pair half of each earlier round stays in the line beside the new one, because a range is read
+  on top of the round that read the code up to its start.
 - **No deferrals** is the body's rule (*PR body, review, and the merge gate* in
   `skill://legion-worker`): a wording nit, and any clear fix in a file this pull request touches,
   is made in the running round: a later round costs a CI pass and another review. A requirement on the `Not proven / risk:` line is unmet, not declared away, unless only
