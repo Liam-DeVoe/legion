@@ -511,80 +511,93 @@ def version_step(doc, spec):
                     f"runs other code first or reads the run: another way (`bash --rcfile x -i {{0}}` sources x)", path)
 
 
-def identity(reader):
-    """How a message and the match below name a Reader: its id:, its name: or its position."""
+# A selector names what holds an if: in a job, as a Reader does: ("job",) for the job's own if:,
+# else ("id", id), ("name", name) or ("position", n), by id: first, then name:, then position.
+def reader_selector(reader):
+    if reader.position == 0:
+        return ("job",)
     if reader.id is not None:
-        return f"the step with id {reader.id}"
+        return ("id", reader.id)
     if reader.name is not None:
-        return f"the step `{reader.name}`"
-    return "the job's own if:" if reader.position == 0 else f"step {reader.position}"
+        return ("name", reader.name)
+    return ("position", reader.position)
+
+
+def step_selector(step, n):
+    if isinstance(step.get("id"), str):
+        return ("id", step["id"])
+    if isinstance(step.get("name"), str):
+        return ("name", step["name"])
+    return ("position", n)
+
+
+def described(selector):
+    """A selector as a message names it."""
+    kind = selector[0]
+    if kind == "job":
+        return "the job's own if:"
+    if kind == "id":
+        return f"the step with id {selector[1]}"
+    if kind == "name":
+        return f"the step `{selector[1]}`"
+    return f"step {selector[1]}"
 
 
 def decision_readers(path, doc):
-    """Rule 3's readers for the workflow `path`: every if: that reads a checked version step's
-    decision - its job's version or skip output through needs.<job>.outputs anywhere in the
-    workflow, the step's own outputs within its job, or the outcome or outputs of an earlier step
-    of the same job that is itself such a reader - is the one DECISION_READERS names for it, and
-    every reader DECISION_READERS names holds that if:."""
+    """Rule 3's readers for the workflow `path`: an if: that reads a checked version step's decision
+    - its job's version or skip output through needs.<job>.outputs anywhere in the workflow, the
+    step's own outputs within its job, or the outcome or outputs of an earlier step of the same job
+    that is itself such a reader - is the one DECISION_READERS names for it, and each reader
+    DECISION_READERS names holds that if:."""
     jobs = doc.get("jobs") if isinstance(doc, dict) else None
     jobs = jobs if isinstance(jobs, dict) else {}
     specs = [spec for spec in plan.VERSION_STEPS if spec.workflow == path]
     anywhere = [re.compile(rf"\bneeds\.{re.escape(s.job)}\.outputs\.(?:{'|'.join(map(re.escape, s.outputs))})\b")
                 for s in specs if s.outputs]
-    found = {}  # (job, identity) -> the if: it holds
+    held = {}   # (job, selector) -> the if: it holds, for the job itself and each of its steps
+    found = {}  # (job, selector) -> the if: of each reader the traversal finds
     for job_name, job in jobs.items():
         if not isinstance(job, dict):
             continue
         own = [re.compile(rf"\bsteps\.{re.escape(s.step_id)}\.outputs\.") for s in specs if s.job == job_name]
         checked = {s.step_id for s in specs if s.job == job_name}
         cond = job.get("if")
+        held[(job_name, ("job",))] = cond
         if isinstance(cond, str) and any(r.search(cond) for r in anywhere):
-            found[(job_name, identity(plan.Reader(cond, position=0)))] = cond
+            found[(job_name, ("job",))] = cond
         ids = set()
         for n, step in enumerate(job.get("steps") if isinstance(job.get("steps"), list) else [], 1):
-            if not isinstance(step, dict) or step.get("id") in checked:
-                continue  # a checked version step's if: is version_step's to hold
+            if not isinstance(step, dict):
+                continue
             cond = step.get("if")
+            held[(job_name, step_selector(step, n))] = cond
+            if step.get("id") in checked:
+                continue  # a checked version step's if: is version_step's to hold
             text = cond if isinstance(cond, str) else ""
             if not (any(r.search(text) for r in anywhere + own)
                     or any(re.search(rf"\bsteps\.{re.escape(i)}\.", text) for i in ids)):
                 continue
             if isinstance(step.get("id"), str):
                 ids.add(step["id"])
-            reader = plan.Reader(text, id=step.get("id"), name=step.get("name"), position=n)
-            found[(job_name, identity(reader))] = text
-    listed = {(job, identity(reader)): reader.if_ for (workflow, job), readers in plan.DECISION_READERS.items()
+            found[(job_name, step_selector(step, n))] = text
+    listed = {(job, reader_selector(reader)): reader.if_ for (workflow, job), readers in plan.DECISION_READERS.items()
               if workflow == path for reader in readers}
-
-    def holder(job_name, name):
-        """The if: the job's step, or the job itself, named `name` holds, and whether it is there."""
-        job = jobs.get(job_name)
-        if not isinstance(job, dict):
-            return None, False
-        if name == "the job's own if:":
-            return job.get("if"), True
-        for n, step in enumerate(job.get("steps") if isinstance(job.get("steps"), list) else [], 1):
-            reader = plan.Reader("", id=step.get("id") if isinstance(step, dict) else None,
-                                 name=step.get("name") if isinstance(step, dict) else None, position=n)
-            if isinstance(step, dict) and identity(reader) == name:
-                return step.get("if"), True
-        return None, False
 
     why = ("it reads a checked version step's decision, and an if: that skips it throws the decision away as "
            "a job output `skip: \"true\"` does")
-    for (job_name, name), want in sorted(listed.items()):
-        have, there = holder(job_name, name)
-        if not there:
+    for (job_name, selector), want in sorted(listed.items()):
+        name = described(selector)
+        if (job_name, selector) not in held:
             problem(f"in {path}'s job {job_name}, {name}, which {PLAN}'s DECISION_READERS names with the if: `{want}`, "
                     f"is not there: {why}; a step that moved or was renamed needs its entry changed too", path)
-        elif have != want:
-            problem(f"{name} of {job_name} has the if: {rendered(have)}, where {PLAN}'s DECISION_READERS names "
-                    f"`{want}` for it: {why}", path)
-    for (job_name, name), have in sorted(found.items()):
-        if (job_name, name) not in listed:
-            problem(f"{name} of {job_name} has the if: `{have}`, which reads a checked version step's decision, and "
-                    f"{PLAN}'s DECISION_READERS names no such reader: a new step or job that reads the decision is "
-                    f"an entry there, so that no edit of its if: can throw the decision away unseen", path)
+        elif held[(job_name, selector)] != want:
+            problem(f"{name} of {job_name} has the if: {rendered(held[(job_name, selector)])}, where {PLAN}'s "
+                    f"DECISION_READERS names `{want}` for it: {why}", path)
+    for (job_name, selector), have in sorted(found.items()):
+        if (job_name, selector) not in listed:
+            problem(f"{described(selector)} of {job_name} has the if: `{have}`, which reads a checked version step's "
+                    f"decision, and {PLAN}'s DECISION_READERS names no such reader: a new step or job that reads the "
+                    f"decision is an entry there, so that no edit of its if: can throw the decision away unseen", path)
 
 
 def version_steps(path, doc):
