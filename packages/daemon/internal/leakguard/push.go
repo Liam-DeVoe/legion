@@ -120,8 +120,9 @@ func PushName(remote string) string {
 
 // Push checks a push before it is made, in three passes, and the first that refuses it is the
 // answer. The shared check runs in its pre-push shape — the update lines on its standard input,
-// the repository as its working directory. Then, for a destination GitHub reports public, two
-// passes read the push's records (pushRecords): this repository's own private-name rules, and,
+// the repository as its working directory. Then, for a destination GitHub reports public, or one
+// the guard cannot name, such as a local path (scanThrough), two passes read the push's records
+// (pushRecords): this repository's own private-name rules, and,
 // over the records of the files the push adds, the forbidden lists of the knives registry entries
 // that name the push's destination (Guard.knives). A refusal of the rules is the answer before any
 // registry is read.

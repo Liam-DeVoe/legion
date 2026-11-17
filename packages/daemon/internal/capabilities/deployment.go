@@ -336,11 +336,15 @@ func (d Deployment) measure(name Name) (bool, Source, string) {
 				d.ProbeCapacityWaits, d.ProbeCapacityReason)
 		}
 	case KnivesPushGate:
+		// A role is told the rows in its start command alone (sandbox's mainEnvironment), and
+		// nothing relaunches a running role when they change, so each detail under Kubernetes says
+		// so: a change of the rows, to none included, reaches a role at its next launch.
+		const nextLaunch = "; a role reads the rows from its next launch, so a role launched before they changed scans by the rows it was launched with, or by none"
 		switch {
 		case tmux:
 			return false, SourceConfiguration, "the tmux runtime runs no push guard in a pane's git or jj, so a pane's push is not scanned for a knives forbidden list"
 		case d.KnivesRegistries == 0:
-			return false, SourceConfiguration, "leak_guard.knives_registries names no knives registry, so a push from a role is not scanned for a knives forbidden list"
+			return false, SourceConfiguration, "leak_guard.knives_registries names no knives registry, so a push from a role is not scanned for a knives forbidden list" + nextLaunch
 		}
 		detail := "every push from a role to a repository GitHub reports public, or to one the leak guard cannot name, is scanned for the knives forbidden lists of the registry leak_guard.knives_registries names"
 		switch overlays := d.KnivesRegistries - 1; overlays {
@@ -350,7 +354,7 @@ func (d Deployment) measure(name Name) (bool, Source, string) {
 		default:
 			detail += fmt.Sprintf(" and the %d overlays after it", overlays)
 		}
-		return true, SourceConfiguration, detail
+		return true, SourceConfiguration, detail + nextLaunch
 	}
 	// Table names no other deployment row; TestEveryDeploymentRowIsMeasured holds it to this switch.
 	return false, "", "no measurement"

@@ -700,7 +700,7 @@ const tmuxCapabilityGaps = "capability secrets is open: the tmux runtime enrolls
 // knivesGap is the line `legion start --check-config` prints after Config OK for a Kubernetes
 // configuration whose leak_guard.knives_registries names no knives registry and that does not
 // decide the row: it comes last of the capability lines, in the table's order.
-const knivesGap = "capability knives-push-gate is open: leak_guard.knives_registries names no knives registry, so a push from a role is not scanned for a knives forbidden list; to record a decision, add to legion.yaml: capabilities.decided.knives-push-gate: \"<reason>\"\n"
+const knivesGap = "capability knives-push-gate is open: leak_guard.knives_registries names no knives registry, so a push from a role is not scanned for a knives forbidden list; a role reads the rows from its next launch, so a role launched before they changed scans by the rows it was launched with, or by none; to record a decision, add to legion.yaml: capabilities.decided.knives-push-gate: \"<reason>\"\n"
 
 // knivesRegistryBlock is a leak_guard block that names one knives registry, which closes the
 // knives-push-gate row of a Kubernetes configuration and closes nothing under tmux.

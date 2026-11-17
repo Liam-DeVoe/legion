@@ -769,7 +769,7 @@
     {
       "name": "knives-push-gate",
       "status": "present",
-      "detail": "every push from a role to a repository GitHub reports public, or to one the leak guard cannot name, is scanned for the knives forbidden lists of the registry leak_guard.knives_registries names and the overlay after it",
+      "detail": "every push from a role to a repository GitHub reports public, or to one the leak guard cannot name, is scanned for the knives forbidden lists of the registry leak_guard.knives_registries names and the overlay after it; a role reads the rows from its next launch, so a role launched before they changed scans by the rows it was launched with, or by none",
       "source": "configuration"
     },
     {

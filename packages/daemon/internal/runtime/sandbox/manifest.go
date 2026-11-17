@@ -1580,9 +1580,10 @@ func (r *Runtime) mainEnvironment(l launch) []corev1.EnvVar {
 	// is the installer's own constant, so the path a role is told and the path the install writes
 	// are one string and cannot drift (TestEveryRoleIsToldTheLeakCheckItsPodInstalls).
 	add(leakguard.CheckVar, leakguard.InstalledCheck)
-	// The knives registries this role's pushes to a repository GitHub reports public are scanned
-	// against (Options.KnivesRegistries), where legion.yaml names any: the guard of every `git
-	// push` the role runs reads the variable and the files its rows name at each push it scans.
+	// The knives registries this role's pushes to a repository GitHub reports public, or to one the
+	// leak guard cannot name, such as a local path, are scanned against (Options.KnivesRegistries),
+	// where legion.yaml names any: the guard of every `git push` the role runs reads the variable
+	// and the files its rows name at each push it scans.
 	// The name is the runtime's (runtimeOwned), so neither a spec nor an operator's pod env can
 	// point the guard at other files or none.
 	if r.knivesRegistries != "" {

@@ -5,7 +5,7 @@
 //     (Resolve) and run in the shape the write has: a push, a gh call, or a piece of text.
 //   - This repository's own private-name rules, the embedded private-names.toml, run in process
 //     over the records the write is made of, and only when the destination repository is one
-//     GitHub reports public.
+//     GitHub reports public, or one the guard cannot name, such as a local path (scanThrough).
 //   - For a push to such a destination, the forbidden lists of the knives registry entries that
 //     name it (KnivesRegistriesVar), matched over the files the push adds as `knives audit`
 //     matches them; Guard.Push says why it is a pass of the push.

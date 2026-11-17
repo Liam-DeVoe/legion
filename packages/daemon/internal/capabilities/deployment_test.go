@@ -365,6 +365,9 @@ func TestDeploymentRowsArePresentDecidedOrOpen(t *testing.T) {
 	decided := map[Name]string{Secrets: "dispatch://LEGION-205 enrolls pods later", ModelFallback: "one model", ResourceLimits: "one tree per node", PoolCapacity: "the pool is sized for the trees, and the probe waits",
 		KnivesPushGate: "no role pushes to a fork"}
 	full := "probe pod legion-probe-legion-1d10089a0000 is Unschedulable: 0/83 nodes are available: 25 Insufficient cpu"
+	// A knives row under Kubernetes says that a running role keeps the rows it was launched with: the rows
+	// reach a role only at its launch, and nothing relaunches it when they change.
+	knivesNextLaunch := "; a role reads the rows from its next launch, so a role launched before they changed scans by the rows it was launched with, or by none"
 	for _, tc := range []struct {
 		name       string
 		deployment Deployment
@@ -408,11 +411,11 @@ func TestDeploymentRowsArePresentDecidedOrOpen(t *testing.T) {
 		{"no knives registry under tmux", Deployment{Runtime: "tmux"}, KnivesPushGate, StatusOpen, "the tmux runtime runs no push guard in a pane's git or jj, so a pane's push is not scanned for a knives forbidden list"},
 		{"a knives registry under tmux, where no push runs the guard", Deployment{Runtime: "tmux", KnivesRegistries: 2}, KnivesPushGate, StatusOpen, "the tmux runtime runs no push guard in a pane's git or jj, so a pane's push is not scanned for a knives forbidden list"},
 		{"a decided knives gap under tmux", Deployment{Runtime: "tmux", KnivesRegistries: 2, Decided: decided}, KnivesPushGate, StatusDecided, "the tmux runtime runs no push guard in a pane's git or jj, so a pane's push is not scanned for a knives forbidden list"},
-		{"no knives registry under kubernetes", Deployment{Runtime: "kubernetes"}, KnivesPushGate, StatusOpen, "leak_guard.knives_registries names no knives registry, so a push from a role is not scanned for a knives forbidden list"},
-		{"a knives registry alone", Deployment{Runtime: "kubernetes", KnivesRegistries: 1}, KnivesPushGate, StatusPresent, "every push from a role to a repository GitHub reports public, or to one the leak guard cannot name, is scanned for the knives forbidden lists of the registry leak_guard.knives_registries names"},
-		{"a knives registry and its overlay", satisfied, KnivesPushGate, StatusPresent, "every push from a role to a repository GitHub reports public, or to one the leak guard cannot name, is scanned for the knives forbidden lists of the registry leak_guard.knives_registries names and the overlay after it"},
-		{"a knives registry and two overlays", Deployment{Runtime: "kubernetes", KnivesRegistries: 3}, KnivesPushGate, StatusPresent, "every push from a role to a repository GitHub reports public, or to one the leak guard cannot name, is scanned for the knives forbidden lists of the registry leak_guard.knives_registries names and the 2 overlays after it"},
-		{"a decided knives gap", Deployment{Runtime: "kubernetes", Decided: decided}, KnivesPushGate, StatusDecided, "leak_guard.knives_registries names no knives registry, so a push from a role is not scanned for a knives forbidden list"},
+		{"no knives registry under kubernetes", Deployment{Runtime: "kubernetes"}, KnivesPushGate, StatusOpen, "leak_guard.knives_registries names no knives registry, so a push from a role is not scanned for a knives forbidden list" + knivesNextLaunch},
+		{"a knives registry alone", Deployment{Runtime: "kubernetes", KnivesRegistries: 1}, KnivesPushGate, StatusPresent, "every push from a role to a repository GitHub reports public, or to one the leak guard cannot name, is scanned for the knives forbidden lists of the registry leak_guard.knives_registries names" + knivesNextLaunch},
+		{"a knives registry and its overlay", satisfied, KnivesPushGate, StatusPresent, "every push from a role to a repository GitHub reports public, or to one the leak guard cannot name, is scanned for the knives forbidden lists of the registry leak_guard.knives_registries names and the overlay after it" + knivesNextLaunch},
+		{"a knives registry and two overlays", Deployment{Runtime: "kubernetes", KnivesRegistries: 3}, KnivesPushGate, StatusPresent, "every push from a role to a repository GitHub reports public, or to one the leak guard cannot name, is scanned for the knives forbidden lists of the registry leak_guard.knives_registries names and the 2 overlays after it" + knivesNextLaunch},
+		{"a decided knives gap", Deployment{Runtime: "kubernetes", Decided: decided}, KnivesPushGate, StatusDecided, "leak_guard.knives_registries names no knives registry, so a push from a role is not scanned for a knives forbidden list" + knivesNextLaunch},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := states(tc.deployment.Report())[tc.row]

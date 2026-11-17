@@ -1,14 +1,15 @@
 kind: Added
 body: |-
-  A push from a pod's role to a public repository now has a third pass, the knives push gate: it
-  reads the knives registry files `leak_guard.knives_registries` in `legion.yaml` names (the first
-  row the registry, each later row an overlay, each a `repo`, `path` and `ref` read with the role's
-  own gh) and refuses the push when a file it adds holds a forbidden term of the entry for its
+  A push from a pod's role to a repository GitHub reports public, or to one the leak guard cannot
+  name, such as a local path, now has a third pass, the knives push gate: it reads the knives
+  registry files `leak_guard.knives_registries` in `legion.yaml` names (the first row the
+  registry, each later row an overlay, each a `repo`, `path` and `ref` read with the role's own
+  gh) and refuses the push when a file it adds holds a forbidden term of the entry for its
   destination, naming the file, the line and the term's number but never the term. A role keeps
   the list of its last good read for 10 minutes, in a file only its user can read, and reads no
   file in that time; a read that fails refuses a push whose destination the kept list names and
   lets any other through with a notice on standard error, and with no good read kept every push
-  to a public repository is refused.
+  the gate runs on is refused, a push to a local bare repository included.
   The gate skips a commit only where a branch or a tag of the destination or of the entry's
   upstream reaches it, as one `git ls-remote` of each reads them at the push, and where the clone
   has the commit that ref is at; it reads the upstream only for a push it would otherwise refuse.

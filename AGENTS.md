@@ -707,6 +707,7 @@ Each item below names a task and where its code is, then notes on it.
 
   The one guard every Legion write passes before it writes:
   the shared public leak check, resolved again at each call, and this repository's own four private-name rules in `private-names.toml`, which the `legion` binary embeds and the gitleaks engine linked into it reads in process.
+  A push from a role in a pod has a third pass, the knives pass (`packages/daemon/internal/leakguard/knives.go`): it reads the knives registry files `leak_guard.knives_registries` in `legion.yaml` names, which the daemon tells each role as `LEGION_KNIVES_REGISTRIES`, and refuses a push to a repository GitHub reports public, or to one the guard cannot name, when a file the push adds holds a forbidden term of the registry entry for its destination.
   Its call sites are the worker image's `git` and `jj` wrappers through the pre-push hook and `legion leak-check` (`packages/daemon/docker/`), `legion gh`, the daemon's branch create, and the release lane's six writes (`.github/scripts/release-push.sh`).
   See `docs/kubernetes.md`;
   the live proof of the image's half is `scripts/e2e/leak-guard-image-job.sh`

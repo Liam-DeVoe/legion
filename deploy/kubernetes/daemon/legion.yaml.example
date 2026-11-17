@@ -195,15 +195,17 @@ projects:
 #                                      # adds holds one of that entry's terms; the refusal names
 #                                      # the file, the line and the term's number, never the
 #                                      # term. Every file is read with the role's own gh at a
-#                                      # push to a repository GitHub reports public, so every
-#                                      # role's GitHub credential must read it. A role keeps the
-#                                      # list of its last good read for 10 minutes and reads no
-#                                      # file in that time, so a change to a file reaches every
-#                                      # role's pushes within 10 minutes. A file that cannot be
-#                                      # read refuses a push whose destination the kept list
-#                                      # names and lets any other go on with a notice; with no
-#                                      # good read kept, every push to a public repository is
-#                                      # refused. A row may name a private repository (the
+#                                      # push to a repository GitHub reports public, or to one
+#                                      # the leak guard cannot name, such as a local path, so
+#                                      # every role's GitHub credential must read it. A role
+#                                      # keeps the list of its last good read for 10 minutes
+#                                      # and reads no file in that time, so a change to a file
+#                                      # reaches every role's pushes within 10 minutes. A file
+#                                      # that cannot be read refuses a push whose destination
+#                                      # the kept list names and lets any other go on with a
+#                                      # notice; with no good read kept, every push the gate
+#                                      # runs on is refused, a push to a local bare repository
+#                                      # included. A row may name a private repository (the
 #                                      # overlay above stands in for one), which is why the rows
 #                                      # never reach legion state's settings. A change to the
 #                                      # rows reaches each role at its next launch. With no row a
