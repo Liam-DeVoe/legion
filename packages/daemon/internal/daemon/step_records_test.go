@@ -71,20 +71,8 @@ func TestTheReadOfAnIssueListsEachStepThatRan(t *testing.T) {
 	r.accept()
 	r.retro()
 	r.merge()
-	want := []stepWant{
-		{kind: "step", step: 1, attempt: 1, role: "planner", typ: "planning", result: "passed"},
-		{kind: "step", step: 2, attempt: 1, role: "implementer", typ: "implementation", result: "passed"},
-		{kind: "step", step: 2, attempt: 2, role: "implementer", typ: "implementation", result: "passed"},
-		{kind: "step", step: 3, attempt: 1, role: "tester", typ: "testing", result: "passed"},
-		{kind: "step", step: 3, attempt: 2, role: "tester", typ: "testing", result: "passed"},
-		{kind: "step", step: 4, attempt: 1, role: "reviewer", typ: "review", result: "failed", returnedTo: new(2)},
-		{kind: "step", step: 4, attempt: 2, role: "reviewer", typ: "review", result: "passed"},
-		{kind: "step", step: 5, attempt: 1, role: "acceptance", typ: "review", result: "passed"},
-		{kind: "retro", step: 0, attempt: 1, role: "implementer", result: "passed"},
-		{kind: "merge", step: 0, attempt: 1, role: "merger", result: "passed"},
-	}
 	var read stepRecordsRead
-	r.waitSteps("the ten records of the walk", func(got stepRecordsRead) error { read = got; return stepsHold(got, want) })
+	r.waitSteps("the ten records of the walk", func(got stepRecordsRead) error { read = got; return stepsHold(got, stepRecordsTen) })
 	failed := read.find("step", 4, 1)
 
 	t.Run("control", func(t *testing.T) {
@@ -93,7 +81,7 @@ func TestTheReadOfAnIssueListsEachStepThatRan(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read the issue's steps after the delete: %v", err)
 		}
-		err = stepsHold(read, want)
+		err = stepsHold(read, stepRecordsTen)
 		if err == nil || !strings.Contains(err.Error(), "step 4 attempt 1") {
 			t.Fatalf("the assertion over a read without the failed review's record = %v, want an error naming step 4 attempt 1", err)
 		}
@@ -128,15 +116,7 @@ func TestAPhaseNeverWaitsForDispatch(t *testing.T) {
 	})
 
 	r.dispatch.start()
-	want := []stepWant{
-		{kind: "step", step: 1, attempt: 1, role: "planner", typ: "planning", result: "passed"},
-		{kind: "step", step: 2, attempt: 1, role: "implementer", typ: "implementation", result: "passed"},
-		{kind: "step", step: 3, attempt: 1, role: "tester", typ: "testing", result: "passed"},
-		{kind: "step", step: 4, attempt: 1, role: "reviewer", typ: "review", result: "passed"},
-		{kind: "step", step: 5, attempt: 1, role: "acceptance", typ: "review", result: "passed"},
-		{kind: "retro", step: 0, attempt: 1, role: "implementer", result: "passed"},
-		{kind: "merge", step: 0, attempt: 1, role: "merger", result: "passed"},
-	}
+	want := stepRecordsSeven
 	// A row Dispatch refused while it was stopped waits out its backoff, at most retryBackoff's
 	// cap, before it runs again, and the sweep finds a lease that lapsed within one more lease.
 	within := retryBackoff(6) + outboxLease
@@ -175,20 +155,36 @@ func TestTheDaemonRestartsInTheMiddleOfAStep(t *testing.T) {
 	r.accept()
 	r.retro()
 	r.merge()
-	want := []stepWant{
-		{kind: "step", step: 1, attempt: 1, role: "planner", typ: "planning", result: "passed"},
-		{kind: "step", step: 2, attempt: 1, role: "implementer", typ: "implementation", result: "passed"},
-		{kind: "step", step: 3, attempt: 1, role: "tester", typ: "testing", result: "passed"},
-		{kind: "step", step: 4, attempt: 1, role: "reviewer", typ: "review", result: "passed"},
-		{kind: "step", step: 5, attempt: 1, role: "acceptance", typ: "review", result: "passed"},
-		{kind: "retro", step: 0, attempt: 1, role: "implementer", result: "passed"},
-		{kind: "merge", step: 0, attempt: 1, role: "merger", result: "passed"},
-	}
 	var read stepRecordsRead
-	r.waitSteps("the seven records of the walk across the restart", func(got stepRecordsRead) error { read = got; return stepsHold(got, want) })
+	r.waitSteps("the seven records of the walk across the restart", func(got stepRecordsRead) error { read = got; return stepsHold(got, stepRecordsSeven) })
 	if before, after := started.find("step", 3, 1), read.find("step", 3, 1); before.ID != after.ID {
 		t.Fatalf("the testing record read after the restart is %s, want the one its start wrote before it, %s", after.ID, before.ID)
 	}
+}
+
+// stepRecordsTen is the ten records of a walk whose first review requests changes.
+var stepRecordsTen = []stepWant{
+	{kind: "step", step: 1, attempt: 1, role: "planner", typ: "planning", result: "passed"},
+	{kind: "step", step: 2, attempt: 1, role: "implementer", typ: "implementation", result: "passed"},
+	{kind: "step", step: 2, attempt: 2, role: "implementer", typ: "implementation", result: "passed"},
+	{kind: "step", step: 3, attempt: 1, role: "tester", typ: "testing", result: "passed"},
+	{kind: "step", step: 3, attempt: 2, role: "tester", typ: "testing", result: "passed"},
+	{kind: "step", step: 4, attempt: 1, role: "reviewer", typ: "review", result: "failed", returnedTo: new(2)},
+	{kind: "step", step: 4, attempt: 2, role: "reviewer", typ: "review", result: "passed"},
+	{kind: "step", step: 5, attempt: 1, role: "acceptance", typ: "review", result: "passed"},
+	{kind: "retro", step: 0, attempt: 1, role: "implementer", result: "passed"},
+	{kind: "merge", step: 0, attempt: 1, role: "merger", result: "passed"},
+}
+
+// stepRecordsSeven is the seven records of a walk whose first review approves.
+var stepRecordsSeven = []stepWant{
+	{kind: "step", step: 1, attempt: 1, role: "planner", typ: "planning", result: "passed"},
+	{kind: "step", step: 2, attempt: 1, role: "implementer", typ: "implementation", result: "passed"},
+	{kind: "step", step: 3, attempt: 1, role: "tester", typ: "testing", result: "passed"},
+	{kind: "step", step: 4, attempt: 1, role: "reviewer", typ: "review", result: "passed"},
+	{kind: "step", step: 5, attempt: 1, role: "acceptance", typ: "review", result: "passed"},
+	{kind: "retro", step: 0, attempt: 1, role: "implementer", result: "passed"},
+	{kind: "merge", step: 0, attempt: 1, role: "merger", result: "passed"},
 }
 
 // stepRecordsRig is one walk: the booted daemon over the real Dispatch, the stand-ins it reads,
@@ -206,26 +202,12 @@ type stepRecordsRig struct {
 	claims   map[claim.Token]*stepClaimant
 	// reviews counts the reviews published, which numbers each.
 	reviews int
-	// pluginBefore is stepRecordsRun's: the role whose pane runs the plugin of the release before
-	// api.PlanRatingContract, "" for none.
-	pluginBefore claim.Role
 }
 
 // walkIssue is one issue of the run and the number of its pull request.
 type walkIssue struct {
 	key    string
 	number int
-}
-
-// stepRecordsRun is what a run's rig is made with: how many issues of the run's project it walks,
-// and pluginBefore, the role whose pane runs the plugin of the release before
-// api.PlanRatingContract, which registers at the contract below it. A daemon refuses that
-// registration and relaunches the pane onto its own plugin, unless it relaunches onto no plugin
-// at all (supervise.Deps.PluginRelaunchable false, the degraded Kubernetes mode), which serves
-// every claim on the contract it registered; a rig that names pluginBefore boots that daemon.
-type stepRecordsRun struct {
-	issues       int
-	pluginBefore claim.Role
 }
 
 // newStepRecordsRig is newStepRecordsRigOn over the package's broker and a Dispatch of this
@@ -240,15 +222,15 @@ func newStepRecordsRig(t *testing.T) *stepRecordsRig {
 // Dispatch its script names.
 func newStepRecordsRigOn(t *testing.T, proof liveProof, dispatch *scratchDispatch) *stepRecordsRig {
 	t.Helper()
-	return newStepRecordsRigWith(t, proof, dispatch, stepRecordsRun{issues: 1})
+	return newStepRecordsRigWith(t, proof, dispatch, 1)
 }
 
 // newStepRecordsRigWith sets up dispatch, a running Dispatch, with the run's project, its
-// repository mapping and run.issues issues, seeds the daemon's store of proof with each issue at
+// repository mapping and issues issues, seeds the daemon's store of proof with each issue at
 // admitted, its gate approved, on an open pull request of its own GitHub reports clean, boots the
 // daemon at Dispatch and registers each tree's architect. The admission pass then starts planning,
 // the first step of each walk. The walk's steps act on the first issue until on moves them.
-func newStepRecordsRigWith(t *testing.T, proof liveProof, dispatch *scratchDispatch, run stepRecordsRun) *stepRecordsRig {
+func newStepRecordsRigWith(t *testing.T, proof liveProof, dispatch *scratchDispatch, issues int) *stepRecordsRig {
 	t.Helper()
 	// A Dispatch project key is at most ten characters, and the daemon's project is its Dispatch
 	// project, so the run's project is a short one of its own.
@@ -263,21 +245,20 @@ func newStepRecordsRigWith(t *testing.T, proof liveProof, dispatch *scratchDispa
 	if err != nil {
 		t.Fatal(err)
 	}
-	r := &stepRecordsRig{liveProof: proof, dispatch: dispatch, github: newStepRecordsGitHub(t), claims: map[claim.Token]*stepClaimant{},
-		pluginBefore: run.pluginBefore}
+	r := &stepRecordsRig{liveProof: proof, dispatch: dispatch, github: newStepRecordsGitHub(t), claims: map[claim.Token]*stepClaimant{}}
 	if err := os.WriteFile(r.cfg.DispatchTokenFile, []byte(r.dispatch.token+"\n"), 0o600); err != nil {
 		t.Fatalf("write the Dispatch token file: %v", err)
 	}
 	r.cfg.DispatchURL = r.dispatch.base
 	r.person(http.MethodPost, "/api/v1/projects", map[string]string{"key": r.cfg.Project, "name": "Step records"}, http.StatusCreated, nil)
 	r.person(http.MethodPut, "/api/v1/settings/repo-projects/"+liveRepo, map[string]any{"project": r.cfg.Project, "default": true}, http.StatusOK, nil)
-	for place := range run.issues {
+	for place := range issues {
 		var created struct {
 			Key     string `json:"key"`
 			Rank    string `json:"rank"`
 			LastSeq int64  `json:"last_seq"`
 		}
-		r.person(http.MethodPost, "/api/v1/issues", map[string]string{"project": r.cfg.Project, "title": "One issue walks to done"}, http.StatusCreated, &created)
+		r.person(http.MethodPost, "/api/v1/issues", map[string]string{"project": r.cfg.Project, "title": walkTitles[place]}, http.StatusCreated, &created)
 		r.person(http.MethodPatch, "/api/v1/issues/"+created.Key, map[string]any{"status": "in_progress", "labels": []string{"legion"}}, http.StatusOK, &created)
 		r.issues = append(r.issues, walkIssue{key: created.Key, number: int(number) + 1 + place})
 		r.on(created.Key)
@@ -294,6 +275,10 @@ func newStepRecordsRigWith(t *testing.T, proof liveProof, dispatch *scratchDispa
 	r.on(r.issues[0].key)
 	return r
 }
+
+// walkTitles is the title of each issue of a run, in order. Dispatch refuses a new issue whose
+// title is a near copy of an open one's (POSSIBLE_DUPLICATE), so no two share a word that counts.
+var walkTitles = []string{"One issue walks to done", "A second change rates its plan", "Third piece merges after its retro"}
 
 // on moves the walk's steps to issue key of the run.
 func (r *stepRecordsRig) on(key string) {
@@ -360,9 +345,6 @@ func (r *stepRecordsRig) boot() {
 	o := fakeRuntime(r.rt, r.built)
 	o.workflowTokens = &workflowTokenRecorder{}
 	o.githubAPI = r.github.url
-	if r.pluginBefore != "" {
-		o.pluginRelaunchable = new(false)
-	}
 	r.d = startDaemonWithin(r.t, r.cfg, o, r.log(), stepRecordsWait)
 }
 
@@ -410,7 +392,7 @@ func (r *stepRecordsRig) retro() {
 // rate is the implementer's retro, whose completion names no record, the head it leaves, as each
 // completion of the implementer's does, and the rating of the plan with its reason, which a pane
 // at api.PlanRatingContract or later must give (PLAN_RATING_REQUIRED). A rating of 0 is a retro
-// with none, a pane's of the plugin before that contract (stepRecordsRun.pluginBefore).
+// with none, a pane's of the plugin before that contract.
 func (r *stepRecordsRig) rate(rating int, reason string) {
 	r.t.Helper()
 	r.work(claim.RoleImplementer, "", r.retroCompletion(rating, reason), phase.Merging)
@@ -626,25 +608,31 @@ func (r *stepRecordsRig) send(request *http.Request) (int, []byte) {
 // readSteps is GET /api/v1/issues/{key}/steps as a person of the project reads it, or the error
 // that the read met.
 func (r *stepRecordsRig) readSteps() (stepRecordsRead, error) {
-	request, err := http.NewRequest(http.MethodGet, r.dispatch.base+"/api/v1/issues/"+r.key+"/steps", nil)
-	if err != nil {
+	var read stepRecordsRead
+	if err := r.personRead("/api/v1/issues/"+r.key+"/steps", &read); err != nil {
 		return stepRecordsRead{}, err
+	}
+	return read, nil
+}
+
+// personRead is GET path on Dispatch as a person of the project reads it, decoded into into, or
+// the error that the read met.
+func (r *stepRecordsRig) personRead(path string, into any) error {
+	request, err := http.NewRequest(http.MethodGet, r.dispatch.base+path, nil)
+	if err != nil {
+		return err
 	}
 	request.Header.Set("X-Dispatch-User", "step-records")
 	response, err := (&http.Client{Timeout: 10 * time.Second}).Do(request)
 	if err != nil {
-		return stepRecordsRead{}, err
+		return err
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
 		answer, _ := io.ReadAll(response.Body)
-		return stepRecordsRead{}, fmt.Errorf("GET steps = %d %s", response.StatusCode, answer)
+		return fmt.Errorf("GET %s = %d %s", path, response.StatusCode, answer)
 	}
-	var read stepRecordsRead
-	if err := json.NewDecoder(response.Body).Decode(&read); err != nil {
-		return stepRecordsRead{}, err
-	}
-	return read, nil
+	return json.NewDecoder(response.Body).Decode(into)
 }
 
 // waitSteps waits for the issue's read to satisfy hold, and fails with hold's last answer.
@@ -811,13 +799,9 @@ func (r *stepRecordsRig) worker(role claim.Role) *stepClaimant {
 	r.built.mu.Unlock()
 	c := &stepClaimant{r: r, token: token, issue: r.key, role: role, session: "ses_" + string(role) + "_" + randomSuffix(t)[:6],
 		bootToken: launch.BootToken, sh: dialShim(t, address, launch.BootToken), prompts: make(chan shimwire.Prompt, 8)}
-	contract := api.DaemonAPIVersion
-	if role == r.pluginBefore {
-		contract = api.PlanRatingContract - 1
-	}
 	status, body := r.d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
 		BootToken: launch.BootToken, SessionID: c.session, OmpSessionFile: "/sessions/" + c.session + ".jsonl",
-		AgentID: c.session, PluginContract: contract,
+		AgentID: c.session, PluginContract: api.DaemonAPIVersion,
 	}, false)
 	if status != http.StatusOK {
 		t.Fatalf("register %s = %d %s, want 200", token, status, body)

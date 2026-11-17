@@ -101,20 +101,6 @@ func TestStepRecordsLive(t *testing.T) {
 	l.step("a-write-that-names-another-session-is-refused", l.writerRefused)
 }
 
-// stepRecordsTen is the walk's ten records, as TestTheReadOfAnIssueListsEachStepThatRan holds them.
-var stepRecordsTen = []stepWant{
-	{kind: "step", step: 1, attempt: 1, role: "planner", typ: "planning", result: "passed"},
-	{kind: "step", step: 2, attempt: 1, role: "implementer", typ: "implementation", result: "passed"},
-	{kind: "step", step: 2, attempt: 2, role: "implementer", typ: "implementation", result: "passed"},
-	{kind: "step", step: 3, attempt: 1, role: "tester", typ: "testing", result: "passed"},
-	{kind: "step", step: 3, attempt: 2, role: "tester", typ: "testing", result: "passed"},
-	{kind: "step", step: 4, attempt: 1, role: "reviewer", typ: "review", result: "failed"},
-	{kind: "step", step: 4, attempt: 2, role: "reviewer", typ: "review", result: "passed"},
-	{kind: "step", step: 5, attempt: 1, role: "acceptance", typ: "review", result: "passed"},
-	{kind: "retro", step: 0, attempt: 1, role: "implementer", result: "passed"},
-	{kind: "merge", step: 0, attempt: 1, role: "merger", result: "passed"},
-}
-
 // walkToTheSecondReview walks the issue with Dispatch up through the rounds whose completions read
 // their handoff record from Dispatch: planning, implementing and testing, the first review
 // requesting changes, then implementing and testing again, to the second review.
