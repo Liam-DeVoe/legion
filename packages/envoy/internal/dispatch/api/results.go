@@ -104,6 +104,12 @@ func (s *server) recordCheckResult(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, r, err)
 		return
 	}
+	s.recordCheckResultFrom(w, r, input)
+}
+
+// recordCheckResultFrom is the record both versions of POST results make of the body each has
+// read.
+func (s *server) recordCheckResultFrom(w http.ResponseWriter, r *http.Request, input checkResultInput) {
 	actor, ok := s.requireActor(w, r, input.Actor)
 	if !ok {
 		return
@@ -313,30 +319,40 @@ func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, r, err)
 		return
 	}
-	artifact, held, err := s.verificationDocument(r.Context(), s.deps.Store.Pool, issueKey, "")
+	body, _, err := s.readIssueChecks(r.Context(), issueKey, at)
 	if err != nil {
 		s.writeHandlerError(w, r, err)
 		return
+	}
+	answerCompatibilityCurrency(body.Checks, at)
+	WriteJSON(w, http.StatusOK, body)
+}
+
+// readIssueChecks is the checks of the issue key's Verification document with their results,
+// each compared with what its `when` names, or with the one commit at names, as both versions of
+// the read answer them, and the reader that compared them, which GET /api/v2/issues/{key}/checks
+// asks which kind of nothing a check that compared with nothing met (comparisonReader.repositoryOf).
+// An issue with no Verification document answers no check and a nil reader.
+func (s *server) readIssueChecks(ctx context.Context, issueKey, at string) (issueCheckResults, *comparisonReader, error) {
+	artifact, held, err := s.verificationDocument(ctx, s.deps.Store.Pool, issueKey, "")
+	if err != nil {
+		return issueCheckResults{}, nil, err
 	}
 	body := issueCheckResults{Checks: []model.CheckBlock{}, Issue: issueKey, VerificationArtifactID: artifact.ID}
 	if !held {
-		WriteJSON(w, http.StatusOK, body)
-		return
+		return body, nil, nil
 	}
-	checks, err := s.checkBlocksOf(r.Context(), s.deps.Store.Pool, artifact)
+	checks, err := s.checkBlocksOf(ctx, s.deps.Store.Pool, artifact)
 	if err != nil {
-		s.writeHandlerError(w, r, err)
-		return
+		return issueCheckResults{}, nil, err
 	}
-	recorded, err := loadCheckResults(r.Context(), s.deps.Store.Pool, artifact.ID)
+	recorded, err := loadCheckResults(ctx, s.deps.Store.Pool, artifact.ID)
 	if err != nil {
-		s.writeHandlerError(w, r, err)
-		return
+		return issueCheckResults{}, nil, err
 	}
-	retracted, err := loadCheckResultRetractions(r.Context(), s.deps.Store.Pool, artifact.ID)
+	retracted, err := loadCheckResultRetractions(ctx, s.deps.Store.Pool, artifact.ID)
 	if err != nil {
-		s.writeHandlerError(w, r, err)
-		return
+		return issueCheckResults{}, nil, err
 	}
 	for index := range checks {
 		results := recorded[checks[index].BlockID]
@@ -350,21 +366,19 @@ func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 		}
 		checks[index].Results = results
 	}
-	if err := s.deriveCIResults(r.Context(), issueKey, checks); err != nil {
-		s.writeHandlerError(w, r, err)
-		return
+	if err := s.deriveCIResults(ctx, issueKey, checks); err != nil {
+		return issueCheckResults{}, nil, err
 	}
 	// Every head GitHub has to be asked for is learned before the first check is answered, so
 	// two `before_merge` checks of one issue name one list of bases and not two
 	// (comparisonReader.learn).
 	reader := newComparisonReader(s, at)
-	reader.learn(r.Context(), checks)
+	reader.learn(ctx, checks)
 	for index := range checks {
-		reader.answer(r.Context(), &checks[index])
+		reader.answer(ctx, &checks[index])
 	}
-	answerCompatibilityCurrency(checks, at)
 	body.Checks = checks
-	WriteJSON(w, http.StatusOK, body)
+	return body, reader, nil
 }
 
 // refusal is every refusal a result's own fields earn, before anything is read.
@@ -731,18 +745,16 @@ func (s *server) checkBlocksOf(ctx context.Context, q queryer, artifact model.Ar
 }
 
 // blockWords is a block's text as a reader sees it: every text node under it, joined by single
-// blanks, with the text of a link and every dispatch:// reference dropped, so the pull-request
-// body line the result implies carries no link and no Dispatch host.
+// blanks. A markdown link keeps its text and loses only its target, which is a mark's attribute
+// and no text at all, so `[the link text](https://example.com)` reads `the link text`; a word
+// holding `://` - a bare URL, an autolink, a dispatch:// reference - is dropped wherever it stands,
+// so a check's text and a requirement's carry no link target and no Dispatch host
+// (dispatch://INFRA-2946/spec R9.2, R10 of dispatch://INFRA-4071/spec).
 func blockWords(node *pmdoc.Node) string {
 	var words []string
 	pmdoc.Walk(node, func(child *pmdoc.Node) bool {
 		if child.Type != "text" || child.Text == "" {
 			return true
-		}
-		for _, mark := range child.Marks {
-			if mark.Type == "link" {
-				return true
-			}
 		}
 		for _, word := range strings.Fields(child.Text) {
 			if strings.Contains(word, "://") {

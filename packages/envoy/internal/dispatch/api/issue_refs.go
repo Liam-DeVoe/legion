@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -34,36 +35,8 @@ func (s *server) resolveIssue(w http.ResponseWriter, r *http.Request) {
 // resolveIssueRef resolves an existing native key or external GitHub link.
 // Creating a missing external issue is the responsibility of POST /issues.
 func (s *server) resolveIssueRef(ctx context.Context, ref string) (string, error) {
-	ref = strings.TrimSpace(ref)
-	if issueKeyPattern.MatchString(ref) {
-		var key string
-		err := s.deps.Store.Pool.QueryRow(ctx, `select key from issues where key = $1`, ref).Scan(&key)
-		if err != nil {
-			return "", err
-		}
-		return key, nil
-	}
-	repo, number, err := externalRef(ref)
+	keys, err := s.issueRefKeys(ctx, ref)
 	if err != nil {
-		return "", err
-	}
-	rows, err := s.deps.Store.Pool.Query(ctx, `
-		select distinct issue_key from issue_external_links where url = any($1) order by issue_key
-	`, externalURLs(repo, number))
-	if err != nil {
-		return "", err
-	}
-	defer rows.Close()
-
-	var keys []string
-	for rows.Next() {
-		var key string
-		if err := rows.Scan(&key); err != nil {
-			return "", err
-		}
-		keys = append(keys, key)
-	}
-	if err := rows.Err(); err != nil {
 		return "", err
 	}
 	switch len(keys) {
@@ -75,10 +48,54 @@ func (s *server) resolveIssueRef(ctx context.Context, ref string) (string, error
 		return "", errorf(
 			apicode.AmbiguousIssueRef,
 			"external issue reference %q is linked to multiple Dispatch issues: %s",
-			ref,
+			strings.TrimSpace(ref),
 			strings.Join(keys, ", "),
 		)
 	}
+}
+
+// issueRefKeys is every issue an issue reference names, in key order: the issue a native key
+// names, and each issue that links the GitHub issue or pull request an owner/repo#n names. A
+// reference that names none answers none, and one that is neither is 400 INVALID_ISSUE_REF. GET
+// /api/v1/issues/resolve answers the one key it names (resolveIssueRef), and GET
+// /api/v2/issues?ref= lists each of them.
+func (s *server) issueRefKeys(ctx context.Context, ref string) ([]string, error) {
+	ref = strings.TrimSpace(ref)
+	if issueKeyPattern.MatchString(ref) {
+		var key string
+		err := s.deps.Store.Pool.QueryRow(ctx, `select key from issues where key = $1`, ref).Scan(&key)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return []string{}, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		return []string{key}, nil
+	}
+	repo, number, err := externalRef(ref)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.deps.Store.Pool.Query(ctx, `
+		select distinct issue_key from issue_external_links where url = any($1) order by issue_key
+	`, externalURLs(repo, number))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	keys := []string{}
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			return nil, err
+		}
+		keys = append(keys, key)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return keys, nil
 }
 
 func validateExternalURL(raw string) error {

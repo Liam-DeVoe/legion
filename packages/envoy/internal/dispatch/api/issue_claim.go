@@ -647,6 +647,14 @@ func (s *server) claimIssue(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, r, err)
 		return
 	}
+	s.claimIssueAs(w, r, input)
+}
+
+// claimIssueAs is the claim both versions make of the body each has read: POST
+// /api/v1/issues/{key}/claim and PUT /api/v2/issues/{key}/claim. A claim its holder sends again
+// keeps the claim as it stands and writes nothing, which is the no-op rule of the /api/v2 PUT
+// (decision 8: a claim's holder is its setter).
+func (s *server) claimIssueAs(w http.ResponseWriter, r *http.Request, input claimIssueInput) {
 	actor, ok := s.requireActor(w, r, input.Actor)
 	if !ok {
 		return
@@ -734,6 +742,12 @@ func (s *server) releaseIssueClaim(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	s.releaseIssueClaimAs(w, r, actor)
+}
+
+// releaseIssueClaimAs is the release both versions make for actor, the caller each has resolved:
+// DELETE /api/v1/issues/{key}/claim and DELETE /api/v2/issues/{key}/claim.
+func (s *server) releaseIssueClaimAs(w http.ResponseWriter, r *http.Request, actor model.Actor) {
 	key := r.PathValue("key")
 	// Releasing a claim is the person's to do, whichever credential of theirs makes it, and this
 	// route has no force to point a refused caller at. The scope is read from the request's own

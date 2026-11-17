@@ -58,6 +58,16 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, r, err)
 		return
 	}
+	s.patchIssueAs(w, r, input, nil)
+}
+
+// patchIssueAs is the write both versions of PATCH issues make of the body each has read. gates,
+// where it is not nil, is the whole set of the issue's design gates, already held to
+// validDesignGates, which PATCH /api/v2/issues/{key} takes as its design_gates member (the route
+// map's row 102): it is stored in the patch's own transaction, appends no event of its own and
+// is taken on a closed issue as PUT /api/v1/issues/{key}/design-gates takes it, so a patch that
+// names nothing else answers the issue as it stands, as a patch that changes nothing does.
+func (s *server) patchIssueAs(w http.ResponseWriter, r *http.Request, input updateIssueInput, gates []issueDesignGate) {
 	actor, ok := s.requireActor(w, r, input.Actor)
 	if !ok {
 		return
@@ -235,7 +245,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if input.ExpectedSeq != nil && *input.ExpectedSeq != int64(before.LastSeq) {
-		writeError(w, r, apicode.IssueChanged, "issue changed since the hand-over read")
+		writeError(w, r, apicode.IssueChanged, "the issue changed since the sequence you read")
 		return
 	}
 	if parentProvided && parent != nil {
@@ -256,7 +266,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		// waits for a reopen.
 		addsLink := input.ExternalLinks != nil && !isExternalLinksSubset(*input.ExternalLinks, before.ExternalLinks)
 		others := input.Title != nil || input.Labels != nil || input.LabelsAdd != nil || priorityProvided || input.Route != nil || addsLink || assigneeProvided || parentProvided || input.BlockedBy != nil || input.Advances != nil || repoProvided
-		if others || (input.Status != nil && !reopening) || (input.Status == nil && input.Rank == nil && !componentsProvided && input.ExternalLinks == nil) {
+		if others || (input.Status != nil && !reopening) || (input.Status == nil && input.Rank == nil && !componentsProvided && input.ExternalLinks == nil && gates == nil) {
 			writeError(w, r, apicode.IssueClosed, "issue is closed")
 			return
 		}
@@ -426,6 +436,14 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		changed = true
+	}
+	if gates != nil {
+		// The issue's row is held already (lock above), which is the row design_gates' key
+		// shares, so the set is written against the issue this patch read.
+		if err := writeDesignGates(r.Context(), tx, key, gates); err != nil {
+			s.writeHandlerError(w, r, err)
+			return
+		}
 	}
 	if !changed {
 		advice := s.writeAdvice(

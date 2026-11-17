@@ -79,6 +79,11 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, r, err)
 		return
 	}
+	s.createIssueFrom(w, r, input)
+}
+
+// createIssueFrom is the create both versions of POST issues make of the body each has read.
+func (s *server) createIssueFrom(w http.ResponseWriter, r *http.Request, input createIssueInput) {
 	actor, ok := s.requireActor(w, r, input.Actor)
 	if !ok {
 		return

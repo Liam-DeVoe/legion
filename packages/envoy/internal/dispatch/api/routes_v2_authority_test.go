@@ -17,9 +17,10 @@ import (
 // runs. A session token that holds no person scope - alice's personal token holding no scope,
 // acting for tourSession - resolves a comment and an ask, and changes a project's gated steps, but
 // is refused 403 OAUTH_SCOPE_REQUIRED naming person for a comment's accept, an ask's answer, an
-// ask's asked_of, waiting_on=me and a project's default assignee; a person's token without approve
-// is refused an approval naming approve; a broker token for one session cannot change another
-// session's agent mark. Each case runs once its route is mounted, and skips naming it until then.
+// ask's asked_of, waiting_on=me, pinned=true, a claim's force and a project's default assignee; a
+// person's token without approve is refused an approval naming approve; a broker token for one
+// session cannot change another session's agent mark. Each case runs once its route is mounted, and
+// skips naming it until then.
 //
 // Its negative control: a scratch build whose gateV2Authorities skips the state rules lets the
 // session token accept the comment and answer the ask, and this test fails on both.
@@ -79,6 +80,23 @@ func TestV2DeclaredAuthority(t *testing.T) {
 		route := tour.requireMounted(t, http.MethodGet, "/asks")
 		assertScopeRefused(t, "the session token reading waiting_on=me", tour.send(t, route, tourRequest{
 			Query: url.Values{"waiting_on": {"me"}, "session": {tourSession}}, As: scopeless,
+		}, ""), model.ScopePerson)
+	})
+
+	t.Run("the issues pinned by me", func(t *testing.T) {
+		route := tour.requireMounted(t, http.MethodGet, "/issues")
+		assertScopeRefused(t, "the session token reading pinned=true", tour.send(t, route, tourRequest{
+			Query: url.Values{"pinned": {"true"}, "session": {tourSession}}, As: scopeless,
+		}, ""), model.ScopePerson)
+	})
+
+	t.Run("a claim taken by force", func(t *testing.T) {
+		// The holder's force is a check on the data the handler makes (plan t4 step 3), and it
+		// answers the gate's refusal.
+		route := tour.requireMounted(t, http.MethodPut, "/issues/{key}/claim")
+		assertScopeRefused(t, "the session token forcing a claim", tour.send(t, route, tourRequest{
+			Path: map[string]string{"key": tour.issue(t).Key}, Query: asSession,
+			Body: map[string]any{"force": true, "actor": map[string]any{"kind": "session", "id": tourSession}}, As: scopeless,
 		}, ""), model.ScopePerson)
 	})
 

@@ -621,37 +621,10 @@ func (s *server) getIssueReferences(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	issue, err := s.loadIssue(r.Context(), s.deps.Store.Pool, r.PathValue("key"))
+	issue, members, truncated, err := s.issueReferenceMembers(r.Context(), r.PathValue("key"), latestOnly)
 	if err != nil {
 		s.writeHandlerError(w, r, err)
 		return
-	}
-	closure, truncated, err := refs.Closure(r.Context(), s.deps.Store.Pool, issue.Key)
-	if err != nil {
-		s.writeHandlerError(w, r, err)
-		return
-	}
-	refKeys := make([]string, len(closure))
-	for index, member := range closure {
-		refKeys[index] = member.RefKey
-	}
-	artifacts, err := s.loadArtifactsByRefKey(r.Context(), s.deps.Store.Pool, refKeys, latestOnly)
-	if err != nil {
-		s.writeHandlerError(w, r, err)
-		return
-	}
-	members := make([]model.ReferenceMember, 0, len(closure))
-	for _, closureMember := range closure {
-		artifact, ok := artifacts[closureMember.RefKey]
-		if !ok {
-			s.writeHandlerError(w, r, fmt.Errorf("reference target %q disappeared while loading closure", closureMember.RefKey))
-			return
-		}
-		members = append(members, model.ReferenceMember{
-			Artifact: *artifact,
-			Depth:    closureMember.Depth,
-			Via:      closureMember.Via,
-		})
 	}
 	etag := referencesETag(issue.LastSeq, members, truncated, latestOnly)
 	w.Header().Set("ETag", etag)
@@ -660,6 +633,44 @@ func (s *server) getIssueReferences(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	WriteJSON(w, http.StatusOK, model.IssueReferences{Members: members, Truncated: truncated})
+}
+
+// issueReferenceMembers is the issue key and its reference closure as both versions of GET
+// references answer it: each document in the closure with its depth and the node it was reached
+// via, every version of each or with latestOnly its latest alone, and whether the closure was cut
+// at its bound. A key no issue carries answers loadIssue's refusal.
+func (s *server) issueReferenceMembers(
+	ctx context.Context, key string, latestOnly bool,
+) (model.Issue, []model.ReferenceMember, bool, error) {
+	issue, err := s.loadIssue(ctx, s.deps.Store.Pool, key)
+	if err != nil {
+		return model.Issue{}, nil, false, err
+	}
+	closure, truncated, err := refs.Closure(ctx, s.deps.Store.Pool, issue.Key)
+	if err != nil {
+		return model.Issue{}, nil, false, err
+	}
+	refKeys := make([]string, len(closure))
+	for index, member := range closure {
+		refKeys[index] = member.RefKey
+	}
+	artifacts, err := s.loadArtifactsByRefKey(ctx, s.deps.Store.Pool, refKeys, latestOnly)
+	if err != nil {
+		return model.Issue{}, nil, false, err
+	}
+	members := make([]model.ReferenceMember, 0, len(closure))
+	for _, closureMember := range closure {
+		artifact, ok := artifacts[closureMember.RefKey]
+		if !ok {
+			return model.Issue{}, nil, false, fmt.Errorf("reference target %q disappeared while loading closure", closureMember.RefKey)
+		}
+		members = append(members, model.ReferenceMember{
+			Artifact: *artifact,
+			Depth:    closureMember.Depth,
+			Via:      closureMember.Via,
+		})
+	}
+	return issue, members, truncated, nil
 }
 
 func (s *server) getArtifactReferences(w http.ResponseWriter, r *http.Request) {

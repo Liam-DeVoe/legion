@@ -167,6 +167,19 @@ func TestV2Retries(t *testing.T) {
 				As:   recipient,
 			}, recipient
 		}},
+		{"a decision's keep by the person who kept it", "/issues/{key}/decisions/{block_id}/state", func(t *testing.T) (tourRequest, tourCaller) {
+			issue := tour.issue(t)
+			block, sum := tour.decision(t, issue)
+			return tourRequest{
+				Path: map[string]string{"key": issue.Key, "block_id": block}, Body: map[string]any{"state": "kept", "text_sha256": sum}, As: alice,
+			}, alice
+		}},
+		{"a result's retraction by the caller who retracted it", "/results/{id}/state", func(t *testing.T) (tourRequest, tourCaller) {
+			return tourRequest{
+				Path: map[string]string{"id": tour.result(t, tour.issue(t))},
+				Body: map[string]any{"state": "retracted", "reason": "Recorded at the wrong commit."}, As: alice,
+			}, alice
+		}},
 	} {
 		t.Run(put.name, func(t *testing.T) {
 			route := tour.requireMounted(t, http.MethodPut, put.pattern)

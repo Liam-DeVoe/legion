@@ -98,28 +98,39 @@ func (s *server) getIssueDecisions(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	document, found, err := s.issueDecisionsDocument(r.Context(), key)
+	answer.Document, answer.Decisions, err = s.issueDecisionsOf(r.Context(), key, spec, specFound, reader)
 	if err != nil {
-		s.writeHandlerError(w, r, err)
-		return
-	}
-	if !found {
-		reader.resolve()
-		WriteJSON(w, http.StatusOK, answer)
-		return
-	}
-	reference := artifactReference(document)
-	answer.Document = &reference
-	specID := ""
-	if specFound {
-		specID = spec.ID
-	}
-	if answer.Decisions, err = s.readDecisions(r.Context(), document, reference, specID, reader); err != nil {
 		s.writeHandlerError(w, r, err)
 		return
 	}
 	reader.resolve()
 	WriteJSON(w, http.StatusOK, answer)
+}
+
+// issueDecisionsOf is the issue's decisions document, its dispatch:// address or nil where the
+// issue has none, and each decision it holds in document order, as both versions of GET
+// decisions read them: an issue with no decisions.md answers nil and no decision. spec is the
+// issue's spec where specFound, which the decisions' links point into.
+func (s *server) issueDecisionsOf(
+	ctx context.Context, key string, spec model.Artifact, specFound bool, reader *displayTreeReader,
+) (*string, []model.Decision, error) {
+	document, found, err := s.issueDecisionsDocument(ctx, key)
+	if err != nil {
+		return nil, nil, err
+	}
+	if !found {
+		return nil, []model.Decision{}, nil
+	}
+	reference := artifactReference(document)
+	specID := ""
+	if specFound {
+		specID = spec.ID
+	}
+	decisions, err := s.readDecisions(ctx, document, reference, specID, reader)
+	if err != nil {
+		return nil, nil, err
+	}
+	return &reference, decisions, nil
 }
 
 // artifactReference is a document's own dispatch:// address.
@@ -795,14 +806,29 @@ func (s *server) keepDecision(w http.ResponseWriter, r *http.Request) {
 			"the decision changed since it was read; read it again and keep what it says now")
 		return
 	}
-	tx, err := s.begin(r.Context())
+	keep, err := s.writeDecisionKeep(r.Context(), actor, document, blockID, decision)
 	if err != nil {
 		s.writeHandlerError(w, r, err)
 		return
 	}
-	defer tx.Rollback(r.Context())
+	WriteJSON(w, http.StatusOK, keep)
+}
+
+// writeDecisionKeep records that actor keeps decision, which keptDecision found blockID opens in
+// document, as its text stands: the one keep row of that decision, moved to actor and to now on
+// a repeat, and decision.kept appended on the document's issue and published once the write
+// commits. Both versions' keeps write it, POST /api/v1/artifacts/{id}/blocks/{block_id}/keep and
+// PUT /api/v2/issues/{key}/decisions/{block_id}/state.
+func (s *server) writeDecisionKeep(
+	ctx context.Context, actor model.Actor, document model.Artifact, blockID string, decision model.Decision,
+) (model.DecisionKeep, error) {
+	tx, err := s.begin(ctx)
+	if err != nil {
+		return model.DecisionKeep{}, err
+	}
+	defer tx.Rollback(ctx)
 	keep := model.DecisionKeep{ArtifactID: document.ID}
-	if err := tx.QueryRow(r.Context(), `
+	if err := tx.QueryRow(ctx, `
 		insert into decision_keeps (artifact_id, block_id, text_sha256, changed_version, kept_by)
 		values ($1::uuid, $2, $3, $4, $5)
 		on conflict (artifact_id, block_id) do update
@@ -812,32 +838,31 @@ func (s *server) keepDecision(w http.ResponseWriter, r *http.Request) {
 	`, document.ID, blockID, decisionTextSum(decision.Text), decision.ChangedVersion,
 		model.CanonicalLogin(actor.ID)).
 		Scan(&keep.BlockID, &keep.TextSHA256, &keep.ChangedVersion, &keep.KeptBy, &keep.KeptAt); err != nil {
-		s.writeHandlerError(w, r, err)
-		return
+		return model.DecisionKeep{}, err
 	}
-	event, err := s.appendEvent(r.Context(), tx, issueOwner(*document.IssueKey).event("decision.kept", actor, map[string]any{
+	event, err := s.appendEvent(ctx, tx, issueOwner(*document.IssueKey).event("decision.kept", actor, map[string]any{
 		"artifact_id":     document.ID,
 		"block_id":        blockID,
 		"changed_version": keep.ChangedVersion,
 	}))
 	if err != nil {
-		s.writeHandlerError(w, r, err)
-		return
+		return model.DecisionKeep{}, err
 	}
-	if err := tx.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, r, err)
-		return
+	if err := tx.Commit(ctx); err != nil {
+		return model.DecisionKeep{}, err
 	}
-	s.publish(r.Context(), event)
-	WriteJSON(w, http.StatusOK, keep)
+	s.publish(ctx, event)
+	return keep, nil
 }
 
 // keptDecision is the decision blockID opens in document, refused unless document is the
 // decisions.md of its issue - resolved as the view resolves it, by slug and then by filename, so
 // Keep and the view never disagree about which document holds the decisions - and that block is
-// the heading of a decision outside `## Replaced`.
+// the heading of a decision outside `## Replaced`. Any other block is the block the path names
+// that holds no decision: 404 BLOCK_NOT_FOUND under /api/v2, which /api/v1 names TARGET_NOT_FOUND
+// (decision 11).
 func (s *server) keptDecision(ctx context.Context, document model.Artifact, blockID string) (model.Decision, error) {
-	notFound := errorf(apicode.TargetNotFound, "no decision %q in %s", blockID, document.Name)
+	notFound := errorf(apicode.BlockNotFound, "no decision %q in %s", blockID, document.Name)
 	if document.IssueKey == nil {
 		return model.Decision{}, notFound
 	}
