@@ -20,8 +20,8 @@ export interface KeyedLayerOptions {
   /**
    * Which of the stand-in's answers to a keyed request name no key back: each one (`true`), or
    * each one this picks by its number (from 1, among the requests that carry a key). Dispatch's
-   * own answers to a keyed write always name the key back, so such an answer is something in
-   * Dispatch's place, and a row about one says so here; no other stand-in leaves the key out.
+   * keyed layer names the key back on each answer it judges, so a row about an answer that names
+   * none says so here; no other stand-in leaves the key out.
    */
   readonly namesNoKey?: true | ((request: number) => boolean);
 }

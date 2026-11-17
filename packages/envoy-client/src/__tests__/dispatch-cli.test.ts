@@ -1821,7 +1821,8 @@ describe("dispatch result --project, as a CI job writes it", () => {
    *  request with a 503. */
   let runnerHold: Promise<boolean> = Promise.resolve(true);
   let dispatchAnswer: () => Response | Promise<Response>;
-  /** Whether the stand-in Dispatch answers the write now as no keyed layer does: naming no key. */
+  /** Whether the stand-in answers the write naming no key back, as something in Dispatch's place
+   *  does: Dispatch's own answer to a keyed write always names it. */
   let unkeyed = false;
   /** The result Dispatch stores for the job's write, as the route answers it. */
   const result = storedSpecResult(43, "pass", "", 1);

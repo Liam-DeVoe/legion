@@ -1,16 +1,14 @@
-// Red test of t-ci-1-final2's D-2 (acceptance of cybermonklabs/legion#4184 at 7735fa52b4).
+// Red test of t-ci-1-final2's D-2 (acceptance of cybermonklabs/legion#4184 at 7735fa52b4), now a
+// file of this package's suite.
 //
-// The coordinator's rule: a 2xx that names no key back counts as stored only when the answer holds
-// what this call sent; each other answer prints write_outcome_unknown. A cache or a front that
-// answers a write by its URL with another call's stored answer, naming no key, is the case the
-// rule is for. The head compares only what `rowHolds` declares, and for most writes that is the
-// key of the URL's own path, or for `dispatch issue` the project alone, which another call to the
-// same URL always holds. So the command prints another call's write as this call's: "Created
-// ACME-7: Another call's title" and "Posted comment <another call's id>", exit 0, while nothing of
-// this call was stored.
+// The rule it holds: a 2xx that names no key back, or another request's key, is never the call's
+// answer, whatever it holds, so the command prints that the write may or may not have taken
+// effect, and exits 1. A cache or a front that answers a write by its URL with another call's
+// stored answer, naming no key, is the case it is about: at 7735fa52b4 the command printed such
+// an answer as this call's write ("Created ACME-7: Another call's title", "Posted comment
+// <another call's id>", exit 0) while nothing of this call was stored, and both rows failed.
 //
-// Run it: copy this file to packages/envoy-client/src/__tests__/ and, from packages/envoy-client,
-// `bun test src/__tests__/acceptance-tci1-final2-red.test.ts`.
+// Run it from packages/envoy-client: `bun test src/__tests__/acceptance-tci1-final2-red.test.ts`.
 import { afterAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -36,7 +34,6 @@ const dispatch = Bun.serve({
     await request.arrayBuffer();
     const url = new URL(request.url);
     const route = `${request.method} ${url.pathname}`;
-    if (url.pathname === "/healthz") return Response.json({ ok: true, idempotency_keys: true });
     let answer: { status: number; body: unknown } | undefined;
     try {
       answer = leastAnswerFor(request.method, url.pathname);

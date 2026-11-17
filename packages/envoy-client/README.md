@@ -790,27 +790,33 @@ for such a list), and `--<field>-json` for any other object. Only one flag of a 
 stdin. For a string or enum field, the command refuses `--<field> -` and `--<field>=-` with exit 2,
 and its refusal names `--<field>-file`. The one exception is `dispatch artifact --path`, whose value
 names a local file. The command refuses an empty value of each flag that names what a call is
-about or narrows a read, before any request. These flags are `--issue`, `--project`, `--check`,
+about or narrows a read, before any request, and of each item of such a flag's list
+(`dispatch priorities --project`). These flags are `--issue`, `--project`, `--artifact`, `--check`,
 `--commit`, `--at`, `--retract`, `--comment`, `--session` of `dispatch send-to-agent`, and
 `--parent` of `dispatch issues` and `dispatch issue` (`IDENTIFIER_FIELDS` in
-`dispatch-command.ts`). An empty variable gives such a value. The command reads the value trimmed,
-so a value of only white space is refused too, and it refuses `.` and `..` for `--issue`,
-`--project`, `--retract`, `--comment` and `--session`, whose value goes into a URL path. The
-refusal names the flag, and the command exits 2. Sent, such a value named nothing. In a path it
-reached no route, a redirect of Dispatch's router, or another route: the URL drops `.` and `..`
-as steps of the path, so `dispatch read --issue ..` asked `GET /api/v1/`. A read that it narrowed
-came back wider: `dispatch search --project ""` answered every project's rows, and
-`dispatch issues --project ""` or `" "` every project's issues. `dispatch issues --parent ""`
-answered every issue of its project, and `dispatch results --at ""` as with no `--at`. An empty
-`--check` of `dispatch results --project` answered the results of every check at the commit.
-`dispatch issue --parent ""` made the issue under no parent. Dispatch refused at once
-`dispatch open-asks --project ""`, an empty `--commit` of `dispatch results`, and an empty
-`--check` or `--commit` of `dispatch result`. To search every project, leave `--project` out.
+`dispatch-command.ts`). An empty variable gives such a value. The command reads the value trimmed
+by Go's white space, the set Dispatch trims a value by (`go-space.ts`), so a value of only white
+space is refused too, U+0085 among it. For a flag whose value goes into a URL path in some command,
+which is `--issue`, `--project`, `--artifact`, `--retract`, `--comment` and `--session`, it
+refuses a value of only dots and slashes too, such as `.`, `..` or `./`. The other flags send `.`
+and `..` as they are. The refusal names the flag, and the command exits 2. Sent, such a value
+named nothing. In a path it reached no route, a redirect of Dispatch's router, or another route:
+the URL drops `.` and `..` as steps of the path, so `dispatch read --issue ..` asked
+`GET /api/v1/`. A read that it narrowed came back wider: `dispatch search --project ""` answered
+every project's rows, and `dispatch issues --project ""` or `" "` every project's issues.
+`dispatch issues --parent ""` answered every issue of its project, and `dispatch results --at ""`
+as with no `--at`. An empty `--check` of `dispatch results --project` answered the results of
+every check at the commit. `dispatch issue --parent ""` made the issue under no parent. Dispatch
+refused at once `dispatch open-asks --project ""`, an empty `--commit` of `dispatch results`, and
+an empty `--check` or `--commit` of `dispatch result`. To search every project, leave `--project`
+out.
 `dispatch issue-update --parent ""` clears the parent, as its help says, so it is not refused. No
-URL path of this client holds a value that names nothing either: empty, only white space, `.` or
-`..`. `DispatchClient` refuses one before any request, for every caller (`DispatchEmptyPathError`),
-which a model's tool call can reach; no argument of the command reaches it, since the command
-refuses each such value of a flag first.
+URL path of this client holds a value that names nothing either: empty, only Go's white space, or
+only dots and slashes (`pathNamesNothingPattern`). `DispatchClient` refuses one before any request,
+for every caller (`DispatchEmptyPathError`), which a model's tool call can reach. No argument of
+the command reaches it, since the command refuses each such value of a path flag first: a program
+that ran every command in each of its forms (of an issue, of a project, and of a project's
+document) with 14 such values in each string flag found no run that did.
 `dispatch --help` lists the commands, `dispatch <command> --help` its flags and
 an example, and `--dry-run` runs the call's own argument check (`checkDispatchCall`: the owner, the
 strict schema, the cross-field checks and the picture files), refusing the arguments the call would
