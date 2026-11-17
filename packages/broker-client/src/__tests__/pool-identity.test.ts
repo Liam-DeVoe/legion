@@ -10,8 +10,10 @@
 // broker is asked anything.
 
 import { afterEach, expect, test } from "bun:test";
+import { randomBytes } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { URL_NOT_PRINTED } from "@legion/contracts/log-text";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { signedIn, stubIssuer } from "../../test/sign-ins";
 import { importDpopKey } from "../dpop";
@@ -114,7 +116,7 @@ async function externalCredential(): Promise<string> {
 /** The pool source over the two stand-ins, federating this machine's projected token. */
 async function poolAt(sts: string, iam: string) {
   return poolIdentity({
-    subject: projectedToken(await externalCredential()),
+    subject: projectedToken(await externalCredential(), "AGENT_SECRETS_MACHINE_TOKEN_FILE"),
     audience: POOL_AUDIENCE,
     serviceAccount: SERVICE_ACCOUNT,
     tokenAudience: CLIENT_ID,
@@ -230,12 +232,53 @@ test("an answer that is not JSON is named without its text, which could be a tok
   expect(refusal?.message).not.toContain(FEDERATED_TOKEN);
 });
 
+// Each service is named as every client names a URL (`urlForText`): a plain URL by itself, the
+// mint as the request built on IAM Credentials' plain base (`requestForText`), and a URL that
+// carries user info by its fixed phrase alone, no part of it.
+test("the security token service and IAM Credentials are named only where their URL is plain", async () => {
+  const password = `canary-pw-${crypto.randomUUID()}`;
+  const withUser = (url: string) => url.replace("http://", `http://operator:${password}@`);
+  const unanswering = stubService(() => ({ body: { token_type: "Bearer", expires_in: 3600 } }));
+  const sts = stubService(federating);
+  const iam = stubService(() => ({ status: 403, body: '{"error":{"code":403}}' }));
+  const empty = stubService(() => ({ body: {} }));
+  const refusals = [
+    await refusalOf(async () => (await poolAt(withUser(unanswering.url), iam.url)).read()),
+    await refusalOf(async () => (await poolAt(sts.url, withUser(iam.url))).read()),
+    await refusalOf(async () => (await poolAt(sts.url, withUser(empty.url))).read()),
+  ];
+  expect(refusals.map((refusal) => refusal?.message)).toEqual([
+    `the security token service securityTokenServiceUrl ${URL_NOT_PRINTED} answered no access_token`,
+    `mint this machine's identity token at iamCredentialsUrl ${URL_NOT_PRINTED}: HTTP 403: {"error":{"code":403}}`,
+    `generateIdToken at iamCredentialsUrl ${URL_NOT_PRINTED} answered no token`,
+  ]);
+  for (const refusal of refusals) expect(Bun.inspect(refusal)).not.toContain(password);
+});
+
+// A request that got no answer is named by its error's class, since the runtime's message repeats
+// the host it was handed, and no error keeps another as its cause.
+test("a service that does not answer is named by the class of the failure, with no cause", async () => {
+  const host = `${randomBytes(9).toString("hex")}.invalid`;
+  const iam = stubService(minting);
+  const refusal = await refusalOf(async () => (await poolAt(`http://${host}`, iam.url)).read());
+  expect(refusal?.message).toBe(
+    `trade this machine's credential at the security token service http://${host}/v1/token: no answer: getaddrinfo ENOTFOUND`
+  );
+  expect(refusal?.cause).toBeUndefined();
+  const sts = stubService(federating);
+  const lost = await refusalOf(async () => (await poolAt(sts.url, "http://127.0.0.1:1")).read());
+  expect(lost?.message).toBe(
+    `mint this machine's identity token at http://127.0.0.1:1/v1/projects/-/serviceAccounts/${SERVICE_ACCOUNT}:generateIdToken: no answer: ECONNREFUSED`
+  );
+  expect(lost?.cause).toBeUndefined();
+});
+
 test("an external credential that cannot be read stops the pool before either service is asked", async () => {
   const sts = stubService(federating);
   const iam = stubService(minting);
   const missing = join(makeDirectory(), "absent");
   const source = poolIdentity({
-    subject: projectedToken(missing),
+    subject: projectedToken(missing, "AGENT_SECRETS_MACHINE_TOKEN_FILE"),
     audience: POOL_AUDIENCE,
     serviceAccount: SERVICE_ACCOUNT,
     tokenAudience: CLIENT_ID,
@@ -243,9 +286,10 @@ test("an external credential that cannot be read stops the pool before either se
     iamCredentialsUrl: iam.url,
   });
   const refusal = await refusalOf(() => source.read());
-  expect(refusal?.message).toStartWith(
-    `read the credential the workload identity pool federates: read the projected service-account token ${missing}: `
+  expect(refusal?.message).toBe(
+    "read the credential the workload identity pool federates: read the projected service-account token AGENT_SECRETS_MACHINE_TOKEN_FILE names: ENOENT"
   );
+  expect(refusal?.message).not.toContain(missing);
   expect(sts.posted).toHaveLength(0);
   expect(iam.posted).toHaveLength(0);
 });

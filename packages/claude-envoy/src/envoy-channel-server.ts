@@ -43,12 +43,11 @@ import {
   REGISTRATION_SETTLE_MS,
   SHUTDOWN_SETTLE_MS,
 } from "@legion/envoy-client/envoy-settings"
-import { LoggableError, messageFor } from "@legion/envoy-client/errors"
+import { LoggableError, messageFor, natsFailureReason } from "@legion/envoy-client/errors"
 import { machineID } from "@legion/envoy-client/machine"
 import {
   natsConnectionOptions,
   natsDialFailure,
-  natsFailureReason,
   natsServersForLog,
 } from "@legion/envoy-client/nats-connection"
 import {
@@ -659,11 +658,12 @@ const CREDENTIAL_NAMES: Record<NatsCredential["kind"], string> = {
  * Opens the session's NATS connection with the credential `inbound` resolved. A broker token is
  * signed into the CONNECT itself, so a live one is taken before the dial; and the connection is
  * then kept on a token the auth service admits (`keepNatsCredential`, warnings through `warn`),
- * until `stop` or the connection closing. A dial that fails throws naming the servers and the
- * credential it presented beside why it failed, as a log may print both (`natsDialFailure`: a
- * server is named only where nats.js dials the host and port it reads as, and the reason is
- * nats.js's code or the server's own text, never text derived from what the servers were set
- * to). The error keeps no cause: nats.js's own error still carries them. `dial` is nats.js's
+ * until `stop` or the connection closing. A dial that fails throws naming the servers by their
+ * setting and the credential it presented beside why it failed, as a log may print both
+ * (`natsDialFailure`: no part of a server's text, and the reason nats.js's code or the server's
+ * fixed refusal, never text derived from what the servers were set to or what the client sent).
+ * The error keeps no cause: nats.js's own error still carries them. A token that cannot be taken
+ * fails with the credential's own line (`BrokerNatsCredential.ready`). `dial` is nats.js's
  * `connect`, or a test's.
  *
  * `signal` aborting (the process is stopping) ends the wait for the token and for the dial at once,
@@ -671,7 +671,11 @@ const CREDENTIAL_NAMES: Record<NatsCredential["kind"], string> = {
  * this session's token, and a connection the dial still makes is closed.
  */
 export async function dialChannelNats(
-  inbound: { readonly natsUrls: readonly string[]; readonly natsCredential: NatsCredential },
+  inbound: {
+    readonly natsUrls: readonly string[]
+    readonly natsServersSetting: string
+    readonly natsCredential: NatsCredential
+  },
   name: string,
   warn: (text: string) => void,
   dial: (options: ConnectionOptions) => Promise<NatsConnection> = connect,
@@ -713,7 +717,7 @@ export async function dialChannelNats(
       }
       throw new Error(
         natsDialFailure(
-          natsServersForLog(inbound.natsUrls),
+          natsServersForLog(inbound.natsServersSetting, inbound.natsUrls.length),
           error,
           CREDENTIAL_NAMES[natsCredential.kind],
         ),
@@ -761,13 +765,14 @@ async function flushThroughRedials(
   const watch = setInterval(check, REDIAL_FLUSH_RETRY_MS)
   signal?.addEventListener("abort", check)
   // A stop is its own reason; a closed connection is named with the flush error that showed it,
-  // as a log may print it (`natsFailureReason`).
+  // as a log may print it (`natsFailureReason`), and keeps no cause, which an error printed whole
+  // would print with it.
   const failure = (why: "stopping" | "closed", error?: unknown): Error =>
     why === "stopping"
       ? new Error(START_STOPPING)
       : error === undefined
         ? new Error(START_CLOSED)
-        : new Error(`${START_CLOSED}: ${natsFailureReason(error)}`, { cause: error })
+        : new Error(`${START_CLOSED}: ${natsFailureReason(error)}`)
   try {
     for (;;) {
       check()

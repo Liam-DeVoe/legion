@@ -7,6 +7,7 @@ import {
   type Sleep,
   sleep,
 } from "@legion/contracts";
+import { URL_NOT_PRINTED } from "@legion/contracts/log-text";
 import { bearerCredential, type RequestCredential } from "../bearer";
 import {
   DISPATCH_WRITE_RETRY,
@@ -863,9 +864,10 @@ describe("DispatchClient", () => {
 
   // A Dispatch URL may carry a user and a password: the config accepts such a URL, and the
   // requests go to it as configured. Every message that names the request or the Dispatch names
-  // the URL without them: a gateway's answer, a refused listing, a write whose answer was lost, a
+  // no part of the URL, only its fixed phrase, since the URL parser can split such a URL otherwise
+  // than its writer meant: a gateway's answer, a refused listing, a write whose answer was lost, a
   // review route the build lacks, and a write whose attempt heard nothing.
-  test("names the Dispatch URL without its user and password in every refusal that names it", async () => {
+  test("names a Dispatch URL with user info by its fixed phrase in every refusal that names it", async () => {
     const user = "user-7f2a";
     const secret = "pw-4c7e19";
     const configured = `https://${user}:${secret}@host.example`;
@@ -926,26 +928,21 @@ describe("DispatchClient", () => {
       `${configured}/api/v1/issues/DSP-1/messages`,
       `${configured}/api/v1/artifacts/a-1/versions/2/reviews`,
     ]);
-    expect(messages[0]).toStartWith(
-      "GET https://host.example/api/v1/issues/DSP-1 answered 502 Bad Gateway with a body"
-    );
-    expect(messages[1]).toStartWith(
-      "GET https://host.example/api/v1/issues?limit=2&offset=0 asked for a page"
-    );
+    const shown = `the configured Dispatch URL ${URL_NOT_PRINTED}`;
+    expect(messages[0]).toStartWith(`GET ${shown} answered 502 Bad Gateway with a body`);
+    expect(messages[1]).toStartWith(`GET ${shown} asked for a page`);
     expect(messages[2]).toBe(
-      "GET https://host.example/api/v1/issues asked for the unpaged listing and got a page, so " +
+      `GET ${shown} asked for the unpaged listing and got a page, so ` +
         "this Dispatch pages a request that carries no limit and no offset."
     );
-    expect(messages[3]).toStartWith(
-      "POST https://host.example/api/v1/issues/DSP-1/messages was made, but its answer was lost"
-    );
+    expect(messages[3]).toStartWith(`POST ${shown} was made, but its answer was lost`);
     expect(messages[4]).toStartWith(
-      "Dispatch at https://host.example answered no route for " +
+      `Dispatch at ${shown} answered no route for ` +
         "POST /api/v1/artifacts/a-1/versions/2/reviews each time the review was sent"
     );
-    expect(messages[4]).toContain("GET https://host.example/healthz names the commit");
+    expect(messages[4]).toContain("GET /healthz on that server names the commit");
     expect(messages[5]).toBe(
-      "POST https://host.example/api/v1/issues/DSP-1/messages made no progress for 0.02 s, so it " +
+      `POST ${shown} made no progress for 0.02 s, so it ` +
         "was cut off (its only attempt), and an attempt of the write may have reached Dispatch, " +
         "so it may or may not have taken effect: check whether it did before retrying it."
     );

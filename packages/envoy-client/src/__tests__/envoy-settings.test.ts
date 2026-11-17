@@ -67,6 +67,7 @@ describe("envoySettings", () => {
       token: "file-token",
       inbound: {
         natsUrls: ["nats://nats.internal.example:4222"],
+        natsServersSetting: `envoy.natsUrls in ${config.path}`,
         natsCredential: {
           kind: "seed",
           seed: { value: "SUFILESEED", source: `envoy.natsSeed in ${config.path}` },
@@ -100,6 +101,7 @@ describe("envoySettings", () => {
       token: "environment-token",
       inbound: {
         natsUrls: ["nats://one.internal.example:4222", "nats://two.internal.example:4222"],
+        natsServersSetting: "ENVOY_NATS_URL",
         natsCredential: { kind: "seed", seed: { value: "SUENVSEED", source: "NATS_NKEY_SEED" } },
       },
       heartbeatMs: 25,
@@ -125,7 +127,7 @@ describe("envoySettings", () => {
       inbound: {
         natsCredential: {
           kind: "seed",
-          seed: { value: "SUPOINTERSEED", source: `NATS_NKEY_SEED_FILE (${seedFile})` },
+          seed: { value: "SUPOINTERSEED", source: "the file NATS_NKEY_SEED_FILE names" },
         },
       },
     });
@@ -290,6 +292,7 @@ describe("envoySettings", () => {
       token: undefined,
       inbound: {
         natsUrls: ["nats://nats.internal.example:4222"],
+        natsServersSetting: "ENVOY_NATS_URL",
         natsCredential: { kind: "none" },
       },
       heartbeatMs: 90_000,
@@ -433,9 +436,9 @@ describe("envoySettings", () => {
     const cases: [Record<string, string>, string][] = [
       [
         { ENVOY_TOKEN_FILE: missing, ENVOY_TOKEN: "plain-token" },
-        `ENVOY_TOKEN_FILE names ${missing}, which could not be read: ENOENT`,
+        "ENVOY_TOKEN_FILE names a file that could not be read (ENOENT)",
       ],
-      [{ ENVOY_TOKEN_FILE: blank }, `ENVOY_TOKEN_FILE names ${blank}, which is empty`],
+      [{ ENVOY_TOKEN_FILE: blank }, "ENVOY_TOKEN_FILE names a file that is empty"],
     ];
     for (const [env, message] of cases) {
       const settings = envoySettings(env, config);
@@ -443,6 +446,7 @@ describe("envoySettings", () => {
       if (settings.enabled) throw new Error(`accepted ${JSON.stringify(env)}`);
       expect(settings.error).toContain(message);
       expect(settings.error).not.toContain("plain-token");
+      expect(settings.error).not.toContain(dir);
     }
   });
 
@@ -452,7 +456,7 @@ describe("envoySettings", () => {
     for (const [env, message] of [
       [
         { NATS_NKEY_SEED_FILE: missing, NATS_NKEY_SEED: "SUENVSEED" },
-        `NATS_NKEY_SEED_FILE names ${missing}, which could not be read`,
+        "NATS_NKEY_SEED_FILE names a file that could not be read (ENOENT)",
       ],
       [{ NATS_NKEY_SEED: "  " }, "NATS_NKEY_SEED is set but empty"],
     ] as const) {
@@ -528,6 +532,7 @@ describe("the NATS seed in envoy.json", () => {
       enabled: true,
       inbound: {
         natsUrls: ["nats://one.internal.example:4222"],
+        natsServersSetting: `envoy.natsUrls in ${config.path}`,
         natsCredential: {
           kind: "seed",
           seed: { value: "SUFILESEED", source: `envoy.natsSeed in ${config.path}` },
@@ -635,9 +640,10 @@ describe("the NATS seed in envoy.json", () => {
       enabled: true,
       inbound: {
         natsUrls: ["nats://elsewhere.internal.example:4222"],
+        natsServersSetting: "ENVOY_NATS_URL",
         natsCredential: {
           kind: "seed",
-          seed: { value: "SUPOINTERSEED", source: `NATS_NKEY_SEED_FILE (${seedFile})` },
+          seed: { value: "SUPOINTERSEED", source: "the file NATS_NKEY_SEED_FILE names" },
         },
       },
     });

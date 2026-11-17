@@ -167,17 +167,21 @@ within 52 s when that redial also hangs on nats.js's 20 s dial timeout and the 2
 default 120 s interval left a frozen path for up to 6 minutes. A failed connect is logged as
 `natsDialFailure(named, error, presenting)`: `could not connect to NATS at <servers> presenting
 <credential>: <reason>`, built once for every caller (pi-envoy, the channel server, the e2e bridge,
-`nats-stream` and `dispatch-user-turns`). A server is named (`natsServerForLog`) by scheme, host
-and port alone, and only where nats.js dials that host and that port (`natsDialedAddress`, nats.js's
-own `hostPort`, which takes the port from the first `:<digits>`, a password's included, ends the
-host at a `\`, takes the last of a comma list in one entry, percent-decodes and writes a Unicode
-name in punycode) and the host is an IP literal or a name written in one case; any other server is
-`a server address that does not read as a host`. The reason (`natsFailureReason`) is an allowlist,
-since nats.js passes the runtime's own errors on and those quote what they were handed: the server's
-own `-ERR` text for its refusals (`'Authorization Violation'`), nats.js's code for its other errors
-(`CONNECTION_REFUSED`, `TIMEOUT`), the syscall and code of a runtime error (`getaddrinfo EAI_AGAIN`,
-`ERR_SOCKET_BAD_PORT`, `ERR_INVALID_URL`), the message of a `LoggableError` (`./errors`, this
-package's own reasons and a caller's), and for anything else its type and `(message withheld)`.
+`nats-stream` and `dispatch-user-turns`). The servers are named by the setting that holds them
+(`natsServersForLog(setting, count)`: `the server ENVOY_NATS_URL names`, `the 2 servers
+envoy.natsUrls in <file> names`), never by any part of their text: a server's text can be a
+credential, and every rule that tried to tell a host from a secret by its spelling missed one. The
+reason (`natsFailureReason`, `./errors`) is an allowlist, since nats.js passes the runtime's own
+errors on and those quote what they were handed, and keeps a server's `-ERR` text whole, which a
+peer that is no nats-server can fill with the CONNECT it was sent: nats-server's fixed words for its
+refusals (`Authorization Violation`, `User Authentication Expired`, `Account Authentication
+Expired`, `Authentication Timeout`) and otherwise that the server's text is withheld, nats.js's code
+for its other errors (`CONNECTION_REFUSED`, `TIMEOUT`), the syscall and code of a runtime error
+(`getaddrinfo EAI_AGAIN`, `ERR_SOCKET_BAD_PORT`, `ERR_INVALID_URL`), the message of a
+`LoggableError` (this package's own reasons and a caller's; it keeps no cause), and for anything
+else its type and `(message withheld)`. `natsDialedAddress(server)` is the host and port nats.js
+itself dials (its own `hostPort`), which a caller that checks where a server leads reads, never a
+log.
 
 A session's NATS credential (`@legion/envoy-client/nats-credential`) is one of three: the nkey user
 a seed names, the session's broker token, or none. The broker token is the session's own, the one

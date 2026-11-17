@@ -126,7 +126,7 @@ describe("natsAuthOptions", () => {
     expect(asked).toEqual(["server-nonce"]);
   });
 
-  test("refuses an unusable seed naming its variable and path, never falling back", () => {
+  test("refuses an unusable seed naming its variable, never its path, never falling back", () => {
     const dir = makeDirectory();
     const missing = path.join(dir, "missing");
     const blank = seedFile(" \n");
@@ -135,17 +135,17 @@ describe("natsAuthOptions", () => {
     const cases: [NodeJS.ProcessEnv, string][] = [
       [
         { NATS_NKEY_SEED_FILE: missing, NATS_NKEY_SEED: user.seed },
-        `NATS_NKEY_SEED_FILE names ${missing}, which could not be read`,
+        "NATS_NKEY_SEED_FILE names a file that could not be read (ENOENT)",
       ],
-      [{ NATS_NKEY_SEED_FILE: blank }, `NATS_NKEY_SEED_FILE names ${blank}, which is empty`],
+      [{ NATS_NKEY_SEED_FILE: blank }, "NATS_NKEY_SEED_FILE names a file that is empty"],
       [{ NATS_NKEY_SEED_FILE: "" }, "NATS_NKEY_SEED_FILE is set but empty"],
       [
         { NATS_NKEY_SEED_FILE: notASeed },
-        `NATS_NKEY_SEED_FILE (${notASeed}) does not hold a valid nkey seed`,
+        "the file NATS_NKEY_SEED_FILE names does not hold a valid nkey seed",
       ],
       [
         { NATS_NKEY_SEED_FILE: account },
-        `NATS_NKEY_SEED_FILE (${account}) holds an nkey seed that is not a user's`,
+        "the file NATS_NKEY_SEED_FILE names holds an nkey seed that is not a user's",
       ],
       [{ NATS_NKEY_SEED: "  " }, "NATS_NKEY_SEED is set but empty"],
       [{ NATS_NKEY_SEED: "hunter2" }, "NATS_NKEY_SEED does not hold a valid nkey seed"],
@@ -162,6 +162,7 @@ describe("natsAuthOptions", () => {
       expect(text).toContain(message);
       expect(text).not.toContain(user.seed);
       expect(text).not.toContain("hunter2");
+      expect(text).not.toContain(dir);
     }
   });
 });

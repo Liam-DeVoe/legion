@@ -323,6 +323,44 @@ describe("Dispatch from a harness's envoy.json", () => {
     }
   });
 
+  // Every link the dispatch command prints is built on DISPATCH_PUBLIC_URL, else the Dispatch URL;
+  // where that base is not a plain http(s) URL, links print as dispatch:// references, and the
+  // resolution carries the notice a session's start prints, naming the setting and never a part
+  // of its value.
+  test("names the setting that makes links print as references, and only where one does", () => {
+    const secret = "pw-4c7e19";
+    const env = { HOME: tempDir(), DISPATCH_TOKEN: "token" };
+    const at = (extra: Record<string, string>) =>
+      dispatchFor({ ...env, ...extra }, { ...command, cwd: tempDir() });
+    const notice = (setting: string) =>
+      `${setting} is not a plain http(s) URL (it carries user info, a query, a fragment, '%' or '\\'), so the links Dispatch commands print are dispatch:// references; set DISPATCH_PUBLIC_URL to a plain https URL for dashboard links`;
+
+    expect(at({ DISPATCH_URL: "https://dispatch.example" })).not.toHaveProperty("linkNotice");
+    expect(at({ DISPATCH_URL: `https://user:${secret}@dispatch.example` })).toMatchObject({
+      linkNotice: notice("DISPATCH_URL"),
+    });
+    // A plain public URL is the base links are built on, whatever the Dispatch URL holds.
+    expect(
+      at({
+        DISPATCH_URL: `https://user:${secret}@dispatch.example`,
+        DISPATCH_PUBLIC_URL: "https://dispatch.example.org",
+      })
+    ).not.toHaveProperty("linkNotice");
+    expect(
+      at({
+        DISPATCH_URL: "https://dispatch.example",
+        DISPATCH_PUBLIC_URL: `https://dispatch.example.org/?token=${secret}`,
+      })
+    ).toMatchObject({ linkNotice: notice("DISPATCH_PUBLIC_URL") });
+    const home = tempDir();
+    const file = writeUserConfig(home, {
+      dispatch: { serverUrl: `https://user:${secret}@dispatch.example`, token: "file-token" },
+    });
+    const fromFile = dispatchFor({ HOME: home }, { ...command, cwd: tempDir() });
+    expect(fromFile).toMatchObject({ linkNotice: notice(`dispatch.serverUrl in ${file}`) });
+    expect(String((fromFile as { linkNotice?: string }).linkNotice)).not.toContain(secret);
+  });
+
   // A plugin passes its whole environment, the dispatch command drops empty variables: both read
   // an empty one as unset, so the command reads what its plugin read.
   test("an empty DISPATCH_URL, DISPATCH_TOKEN or DISPATCH_TOKEN_FILE reads as unset", () => {
@@ -485,7 +523,7 @@ describe("Dispatch from a harness's envoy.json", () => {
     ).toEqual({ enabled: true, url: "http://override.test", token: "pointer-token" });
   });
 
-  test("disables Dispatch naming DISPATCH_TOKEN_FILE and its path when the file is unreadable or empty, without falling back", () => {
+  test("disables Dispatch naming DISPATCH_TOKEN_FILE, never its path, when the file is unreadable or empty, without falling back", () => {
     const home = tempDir();
     writeUserConfig(home, {
       dispatch: { enabled: true, serverUrl: "http://file.test", token: "file-token" },
@@ -498,7 +536,7 @@ describe("Dispatch from a harness's envoy.json", () => {
     expect(unreadable).toMatchObject({
       enabled: false,
       error: expect.stringContaining(
-        `DISPATCH_TOKEN_FILE names ${missing}, which could not be read`
+        "DISPATCH_TOKEN_FILE names a file that could not be read (ENOENT)"
       ),
     });
 
@@ -509,7 +547,7 @@ describe("Dispatch from a harness's envoy.json", () => {
     ).toEqual({
       enabled: false,
       notice: null,
-      error: `DISPATCH_TOKEN_FILE names ${empty}, which is empty`,
+      error: "DISPATCH_TOKEN_FILE names a file that is empty",
     });
   });
 

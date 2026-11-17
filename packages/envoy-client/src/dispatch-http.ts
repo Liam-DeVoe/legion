@@ -90,11 +90,15 @@ import {
   type Sleep,
   sleep,
 } from "@legion/contracts";
+import { isCleanUrl, requestForText, urlForText } from "@legion/contracts/log-text";
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
-
 import { textHead } from "./ask-answer";
 import type { RequestCredential } from "./bearer";
-import { withoutUserinfo } from "./errors";
+
+/** What names the Dispatch URL in a text where the URL does not parse (`urlForText`,
+ *  `requestForText`). The configuration refuses such a URL before a client is made
+ *  (`dispatch-config.ts`). */
+const DISPATCH_URL_SETTING = "the configured Dispatch URL";
 
 export type {
   CredentialPendingResponse,
@@ -233,13 +237,14 @@ export class DispatchWriteLandedError extends Error {
     /** The status Dispatch answered with: the 409, or the first answer's own 2xx. */
     readonly status: number,
     method: string,
-    url: string
+    /** The request's URL as a text names it (`requestForText`). */
+    shownUrl: string
   ) {
     const lost =
       code === IDEMPOTENCY_ANSWER_NOT_KEPT
         ? "Dispatch kept no copy of its answer, which was too large"
         : "its answer was lost on the way back";
-    const request = `${method} ${withoutUserinfo(url)}`;
+    const request = `${method} ${shownUrl}`;
     super(
       `${request} was made, but ${lost} (${code}), so this command cannot print what it ` +
         "made: read it back with `dispatch read`, or with the matching list for something it created."
@@ -297,7 +302,9 @@ function reviewNoRouteRefusal(
   route: string,
   version: number
 ): DispatchServiceError {
-  const shown = withoutUserinfo(baseUrl);
+  const shown = urlForText(baseUrl, DISPATCH_URL_SETTING);
+  // Its health route, by the URL where that prints, and by its path on that server otherwise.
+  const health = isCleanUrl(baseUrl) ? `${baseUrl}/healthz` : "/healthz on that server";
   return new DispatchServiceError(
     "NOT_FOUND",
     404,
@@ -305,7 +312,7 @@ function reviewNoRouteRefusal(
       "answer of no route records no review. This build is older than that route. No other review " +
       "route was asked: the review route an older build serves takes no version, and it " +
       `would record the review at a version that build chooses, which may not be version ${version}. ` +
-      `The no-route answer does not name the build; GET ${shown}/healthz names the commit of the ` +
+      `The no-route answer does not name the build; GET ${health} names the commit of the ` +
       "build that answers it, when that build was stamped with one."
   );
 }
@@ -929,7 +936,7 @@ export class DispatchClient {
     const answer: unknown = await this.#json("GET", path, undefined, query);
     const refusal = whyNotAPage(answer);
     if (refusal === undefined) return answer as IssueSummaryPage;
-    const url = withoutUserinfo(this.#url(path, query));
+    const url = requestForText(this.#baseUrl, this.#url(path, query), DISPATCH_URL_SETTING);
     throw new Error(
       `GET ${url} asked for a page ({issues, total, limit, offset}) and got ${refusal}`
     );
@@ -949,7 +956,7 @@ export class DispatchClient {
     const query = { ...options };
     const answer: unknown = await this.#json("GET", path, undefined, query);
     if (Array.isArray(answer)) return answer as IssueSummary[];
-    const url = withoutUserinfo(this.#url(path, query));
+    const url = requestForText(this.#baseUrl, this.#url(path, query), DISPATCH_URL_SETTING);
     throw new Error(`GET ${url} asked for the unpaged listing and got ${whyNotAnArray(answer)}.`);
   }
 
@@ -2022,7 +2029,7 @@ export class DispatchClient {
     headers[IDEMPOTENCY_KEY_HEADER] = key;
     const { pausesMs, withinMs, silenceMs, inFlightPauseMs, inFlightWithinMs } = this.writeRetry;
     const pause = this.writeRetry.pause ?? pauseFor;
-    const request = `${method} ${withoutUserinfo(url)}`;
+    const request = `${method} ${requestForText(this.#baseUrl, url, DISPATCH_URL_SETTING)}`;
     const started = this.#now();
     // An upload, a body of `STREAMED_BODY_MIN` or more that goes out as a stream (`attemptBody`),
     // sends that whole body again on every repeat, so it keeps the schedule alone and never enters
@@ -2319,7 +2326,7 @@ export class DispatchClient {
             IDEMPOTENCY_KEY_COMMITTED,
             response.status,
             method,
-            url
+            requestForText(this.#baseUrl, url, DISPATCH_URL_SETTING)
           );
         }
         throw new DispatchServiceError(
@@ -2345,7 +2352,7 @@ export class DispatchClient {
       }
       const reasonPhrase = excerpt(response.statusText, this.token);
       const reason = reasonPhrase === "" ? "" : ` ${reasonPhrase}`;
-      const request = `${method} ${withoutUserinfo(url)}`;
+      const request = `${method} ${requestForText(this.#baseUrl, url, DISPATCH_URL_SETTING)}`;
       throw new DispatchGatewayError(
         response.status,
         `${request} answered ${response.status}${reason} with ${body}, ${GATEWAY_PAGE}`,
@@ -2354,7 +2361,12 @@ export class DispatchClient {
     }
     const replayed = response.headers.get(IDEMPOTENCY_REPLAYED_HEADER)?.trim() === "?1";
     if (answerNotKept(response.status, replayed, payload)) {
-      throw new DispatchWriteLandedError(IDEMPOTENCY_ANSWER_NOT_KEPT, response.status, method, url);
+      throw new DispatchWriteLandedError(
+        IDEMPOTENCY_ANSWER_NOT_KEPT,
+        response.status,
+        method,
+        requestForText(this.#baseUrl, url, DISPATCH_URL_SETTING)
+      );
     }
     return payload as T;
   }

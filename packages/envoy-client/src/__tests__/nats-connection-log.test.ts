@@ -1,19 +1,14 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { randomBytes } from "node:crypto";
 import { connect, ErrorCode, NatsError, nkeys } from "nats";
-import { LoggableError } from "../errors";
-import {
-  natsDialedAddress,
-  natsDialFailure,
-  natsFailureReason,
-  natsServerForLog,
-  UNNAMED_NATS_SERVER,
-} from "../nats-connection";
+import { LoggableError, natsFailureReason } from "../errors";
+import { natsDialedAddress, natsDialFailure, natsServersForLog } from "../nats-connection";
 
-// What a log prints of a failed NATS dial: the server as a log names it (natsServerForLog) and why
-// it failed (natsFailureReason), an allowlist: nats.js's code, the server's own `-ERR` text, or a
-// message this package composed, never the text nats.js or the runtime derived from what the
-// servers were set to.
+// What a log prints of a failed NATS dial: the servers by the setting that named them
+// (natsServersForLog), never by their text, and why the dial failed (natsFailureReason), an
+// allowlist: nats.js's code, nats-server's fixed refusal, or a message this package composed,
+// never the text nats.js, the runtime or a peer derived from what the servers were set to or from
+// what the client sent.
 //
 // Each URL's user info is joined here, so the source holds no credential-bearing URL for the push
 // leak check to find.
@@ -33,13 +28,26 @@ async function realFailure(server: string, timeout = 5_000): Promise<unknown> {
   throw new Error(`${server} connected, which this row needs it not to`);
 }
 
-const textOf = (error: unknown) => (error instanceof Error ? error.message : String(error));
+/** Everything nats.js's own error carries that an uncaught one prints: its message and Bun's
+ *  `input`, lowercased, as a resolver lowercases the host it names. */
+const carried = (error: unknown) =>
+  `${error instanceof Error ? error.message : String(error)} ${String((error as { input?: unknown }).input ?? "")}`.toLowerCase();
 
-// Every spelling a red team found where nats.js dials, and its error then names, something other
-// than what a nats: URL parse reads (four rounds of them). Each row runs real nats.js, holds first
-// that nats.js's own text carries the secret (so the row can fail for the leak), and then that the
-// failure line carries none of it and names no server.
-describe("a failed dial's line carries nothing nats.js derived from the server", () => {
+/** The line every caller prints for a failed dial at the servers ENVOY_NATS_URL names. */
+const failureLine = (error: unknown) =>
+  natsDialFailure(natsServersForLog("ENVOY_NATS_URL", 1), error, "no credential");
+
+/** A reason a log may print for a dial that failed at the transport: one code, or a syscall and
+ *  its code. Nothing in it is any part of what the server was set to. */
+const CODE_REASON = /^(?:[a-z]+ )?[A-Za-z][A-Za-z0-9_]*$/;
+
+// Every spelling a red team found where nats.js dials, and its error then names, something a
+// rule on the server's spelling let through (five rounds of them: `/ ? #`, `\`, commas, percent
+// escapes, Unicode, mixed case, digits read as the port, hyphens, special schemes, one-case
+// secrets). Each row runs real nats.js and holds first that nats.js's own error carries the
+// secret, so it can fail for the leak. The line it prints is then the fixed form, the setting's
+// name and a code, and holds none of the secret.
+describe("a failed dial's line holds no part of the server", () => {
   const seed = new TextDecoder().decode(nkeys.createUser().getSeed());
   const tokens = {
     backslash: canary(),
@@ -47,6 +55,10 @@ describe("a failed dial's line carries nothing nats.js derived from the server",
     percent: canary(),
     unicode: canary(),
     slash: canary(),
+    special: `Xk3pQ9vT2mL8wR5n${randomBytes(3).toString("hex")}`,
+    specialHyphen: `Xk3pQ9vT-2mL8wR5n${randomBytes(3).toString("hex")}`,
+    lower: `ahth4eiquaiv8ohg${randomBytes(2).toString("hex")}`,
+    split: `k7wq2m9x${randomBytes(2).toString("hex")}`,
   };
   const digits = {
     ipv4: sixDigits(),
@@ -56,6 +68,11 @@ describe("a failed dial's line carries nothing nats.js derived from the server",
   };
   const mixed = `Xk3pQ9vT2mL8wR5n${randomBytes(3).toString("hex")}`;
   const hyphenated = `Xk3pQ9vT-2mL8wR5n${randomBytes(3).toString("hex")}`;
+  const unicodeHost = (scheme: string) => `${scheme}Grüße${tokens.unicode}Secret:4222`;
+  const unicodeSecrets = [
+    `grüße${tokens.unicode}secret`,
+    new URL(`http://Grüße${tokens.unicode}Secret`).hostname,
+  ];
   const rows: [label: string, server: string, secrets: readonly string[]][] = [
     [
       "a backslash in the user info",
@@ -77,11 +94,7 @@ describe("a failed dial's line carries nothing nats.js derived from the server",
       `nats://${userinfo(`${tokens.percent}%41/x`)}127.0.0.1:4222`,
       [tokens.percent],
     ],
-    [
-      "a Unicode name",
-      `nats://Grüße${tokens.unicode}Secret:4222`,
-      [`grüße${tokens.unicode}secret`, new URL(`http://Grüße${tokens.unicode}Secret`).hostname],
-    ],
+    ["a Unicode name", unicodeHost("nats://"), unicodeSecrets],
     [
       "a token holding an unencoded /",
       `nats://${userinfo(`${tokens.slash}/def+gh==`)}127.0.0.1:4222`,
@@ -89,14 +102,11 @@ describe("a failed dial's line carries nothing nats.js derived from the server",
     ],
     ["an nkey seed pasted as the server", `nats://${seed}:4222`, [seed]],
     ["a mixed-case token pasted as the server", `nats://${mixed}:4222`, [mixed]],
-    // P2: a hyphen is a host label's character, so the label read as a host name.
     [
       "a hyphenated mixed-case token pasted as the server",
       `nats://${hyphenated}:4222`,
       [hyphenated],
     ],
-    // P1: nats.js takes the port from the first `:<digits>`, a password's included, and Bun's
-    // refusal of a port of 65536 or more prints the number.
     [
       "a password's six digits on an IP host",
       `nats://${userinfo("user", `${digits.ipv4}abc`)}10.0.0.5:4222`,
@@ -117,16 +127,39 @@ describe("a failed dial's line carries nothing nats.js derived from the server",
       `nats://${userinfo("user", `pw]:${digits.ipv6}`)}[2001:db8::1]:4222`,
       [digits.ipv6],
     ],
+    // B1: a special scheme lowercases and punycodes the host before any rule on its case reads it.
+    ["a token under ws://", `ws://${tokens.special}:4222`, [tokens.special]],
+    ["a token under wss://", `wss://${tokens.special}:4222`, [tokens.special]],
+    ["a token under http://", `http://${tokens.special}:4222`, [tokens.special]],
+    ["a token under https://", `https://${tokens.special}:4222`, [tokens.special]],
+    ["a token under WS://", `WS://${tokens.special}:4222`, [tokens.special]],
+    ["a token under ws:// with no port", `ws://${tokens.special}`, [tokens.special]],
+    [
+      "a hyphenated token under wss://",
+      `wss://${tokens.specialHyphen}:4222`,
+      [tokens.specialHyphen],
+    ],
+    ["a Unicode name under ws://", unicodeHost("ws://"), unicodeSecrets],
+    // F6 and F5: a secret in one case, and the first half of a token split at its comma.
+    ["a one-case token pasted as the server", `nats://${tokens.lower}:4222`, [tokens.lower]],
+    [
+      "the first half of a token ENVOY_NATS_URL split at its comma",
+      `nats://${tokens.split}`,
+      [tokens.split],
+    ],
   ];
   test.each(rows)(
     "%s",
     async (_, server, secrets) => {
       const error = await realFailure(server);
-      const text = textOf(error).toLowerCase();
-      expect(secrets.some((secret) => text.includes(secret.toLowerCase()))).toBe(true);
-      expect(natsServerForLog(server)).toBe(UNNAMED_NATS_SERVER);
-      const line = natsDialFailure(natsServerForLog(server), error, "no credential").toLowerCase();
-      for (const secret of secrets) expect(line).not.toContain(secret.toLowerCase());
+      expect(secrets.some((secret) => carried(error).includes(secret.toLowerCase()))).toBe(true);
+      const reason = natsFailureReason(error);
+      expect(reason).toMatch(CODE_REASON);
+      const line = failureLine(error);
+      expect(line).toBe(
+        `could not connect to NATS at the server ENVOY_NATS_URL names presenting no credential: ${reason}`
+      );
+      for (const secret of secrets) expect(line.toLowerCase()).not.toContain(secret.toLowerCase());
     },
     30_000
   );
@@ -134,60 +167,135 @@ describe("a failed dial's line carries nothing nats.js derived from the server",
 
 // A server that takes the connection and never sends its INFO, for a dial that times out.
 const mute = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
-afterAll(() => mute.stop(true));
+
+/** A peer that speaks enough of NATS to send a nonce, and answers the CONNECT with the `-ERR`
+ *  `answer` makes of the CONNECT's own text. */
+function refusingPeer(answer: (connect: string) => string) {
+  return Bun.listen({
+    hostname: "127.0.0.1",
+    port: 0,
+    socket: {
+      open(socket) {
+        socket.write(
+          'INFO {"server_id":"x","version":"2.10.0","proto":1,"nonce":"abc","max_payload":1048576}\r\n'
+        );
+      },
+      data(socket, data) {
+        const sent = String(data).match(/CONNECT (\{.*\})/);
+        if (sent?.[1] !== undefined) socket.write(`-ERR ${answer(sent[1])}\r\n`);
+      },
+    },
+  });
+}
+const peers: { stop(closeActive?: boolean): void }[] = [mute];
+afterAll(() => {
+  for (const peer of peers) peer.stop(true);
+});
+
+/** What real nats.js throws when the peer `answer` makes refuses a CONNECT presenting `token`. */
+async function refusedBy(answer: (connect: string) => string, token: string): Promise<unknown> {
+  const peer = refusingPeer(answer);
+  peers.push(peer);
+  try {
+    const connection = await connect({
+      servers: `nats://127.0.0.1:${peer.port}`,
+      reconnect: false,
+      timeout: 3_000,
+      authenticator: () => ({ auth_token: token, sig: "x" }),
+    });
+    await connection.close();
+  } catch (error) {
+    return error;
+  }
+  throw new Error("the peer admitted the connection, which this row needs it not to");
+}
 
 // What an operator still reads: each error nats.js and the runtime give a failed dial, as the line
 // prints it.
 describe("a failed dial's line says why it failed", () => {
   test("a server that refuses the connection: CONNECTION_REFUSED", async () => {
     const error = await realFailure("nats://127.0.0.1:1");
-    expect(natsDialFailure(natsServerForLog("nats://127.0.0.1:1"), error)).toBe(
-      "could not connect to NATS at nats://127.0.0.1:1: CONNECTION_REFUSED"
+    expect(failureLine(error)).toBe(
+      "could not connect to NATS at the server ENVOY_NATS_URL names presenting no credential: CONNECTION_REFUSED"
     );
   }, 30_000);
 
   test("a server that never answers: TIMEOUT", async () => {
-    const server = `nats://127.0.0.1:${mute.port}`;
-    const error = await realFailure(server, 500);
-    expect(natsDialFailure(natsServerForLog(server), error)).toBe(
-      `could not connect to NATS at ${server}: TIMEOUT`
-    );
+    const error = await realFailure(`nats://127.0.0.1:${mute.port}`, 500);
+    expect(natsFailureReason(error)).toBe("TIMEOUT");
   }, 30_000);
 
   test("a server that does not parse: ERR_INVALID_URL, and its URL is not quoted", async () => {
-    const server = `nats://${userinfo("user", "canary-pw")}canary-host:99999`;
-    const error = await realFailure(server);
+    const error = await realFailure(`nats://${userinfo("user", "canary-pw")}canary-host:99999`);
     // Bun keeps the URL it could not parse in the error's `input`, which an uncaught error prints.
-    expect(String((error as { input?: unknown }).input)).toContain("canary-pw");
+    expect(carried(error)).toContain("canary-pw");
     expect(natsFailureReason(error)).toBe("ERR_INVALID_URL");
-    expect(natsDialFailure(natsServerForLog(server), error)).toBe(
-      `could not connect to NATS at ${UNNAMED_NATS_SERVER}: ERR_INVALID_URL`
-    );
+    expect(failureLine(error)).not.toContain("canary");
   }, 30_000);
 
   test("a port the socket refuses: ERR_SOCKET_BAD_PORT, and not its number", async () => {
-    const digits = sixDigits();
-    const error = await realFailure(`nats://${userinfo("user", digits)}127.0.0.1:4222`);
+    const error = await realFailure(`nats://${userinfo("user", sixDigits())}127.0.0.1:4222`);
     expect(natsFailureReason(error)).toMatch(/^(?:[a-z]+ )?ERR_SOCKET_BAD_PORT$/);
   }, 30_000);
 
   test("a name the resolver cannot find: getaddrinfo and its code, and not the name", async () => {
     const name = `${canary()}.invalid`;
     const error = await realFailure(`nats://${name}:4222`);
-    expect(textOf(error).toLowerCase()).toContain(name);
+    expect(carried(error)).toContain(name);
     expect(natsFailureReason(error)).toMatch(/^getaddrinfo (?:ENOTFOUND|EAI_AGAIN|EAI_NONAME)$/);
   }, 30_000);
 
-  test("the server's own refusal: its text, which names nothing the client was set with", () => {
-    // As nats.js builds it from the server's `-ERR` (protocol.js `toError`).
-    const refused = new NatsError("'Authorization Violation'", ErrorCode.AuthorizationViolation);
-    expect(natsFailureReason(refused)).toBe("'Authorization Violation'");
+  test("nats-server's own refusal: its fixed words", async () => {
+    for (const fixed of [
+      "Authorization Violation",
+      "User Authentication Expired",
+      "Account Authentication Expired",
+    ]) {
+      const error = await refusedBy(() => `'${fixed}'`, canary());
+      expect(natsFailureReason(error)).toBe(fixed);
+    }
+    // nats.js ends a dial that saw this one with its own TIMEOUT, so it is built here as
+    // protocol.js `toError` builds it on an established connection.
+    const timedOut = new NatsError("'Authentication Timeout'", ErrorCode.AuthenticationTimeout);
+    expect(natsFailureReason(timedOut)).toBe("Authentication Timeout");
+  }, 30_000);
+
+  // S1: a peer that is no nats-server can fill the refusal with the CONNECT it was sent, the
+  // broker token included; nats.js keeps any `-ERR` text that holds the refusal's words.
+  test("a refusal that echoes the CONNECT: its text withheld, and no token in the line", async () => {
+    const token = `CANARYTOKEN${randomBytes(6).toString("hex")}`;
+    const error = await refusedBy((sent) => `'Authorization Violation ${sent}'`, token);
+    expect(carried(error)).toContain(token.toLowerCase());
+    expect(natsFailureReason(error)).toBe(
+      "the server refused the connection (its text is withheld)"
+    );
+    const line = natsDialFailure(
+      natsServersForLog("ENVOY_NATS_URL", 1),
+      error,
+      "the session's broker token"
+    );
+    expect(line).not.toContain(token);
+  }, 30_000);
+
+  test("any other text a server sent: withheld, under each code nats.js gives it", () => {
+    const echoed = canary();
+    for (const code of [
+      ErrorCode.AuthorizationViolation,
+      ErrorCode.AuthenticationExpired,
+      ErrorCode.AccountExpired,
+      ErrorCode.AuthenticationTimeout,
+      ErrorCode.ProtocolError,
+    ]) {
+      expect(natsFailureReason(new NatsError(`'${echoed}'`, code))).toBe(
+        "the server refused the connection (its text is withheld)"
+      );
+    }
     const denied = new NatsError(
-      `Permissions Violation for Subscription to "notifications.envoy.deliver.ses_other"`,
+      `Permissions Violation for Subscription to "${echoed}"`,
       ErrorCode.PermissionsViolation
     );
     expect(natsFailureReason(denied)).toBe(
-      `Permissions Violation for Subscription to "notifications.envoy.deliver.ses_other"`
+      "the server refused a permission (its text is withheld)"
     );
   });
 
@@ -197,11 +305,12 @@ describe("a failed dial's line says why it failed", () => {
     expect(natsFailureReason(tls)).toBe("TLS");
   });
 
-  test("this package's own reason: its message whole", () => {
+  test("this package's own reason: its message whole, and no cause kept", () => {
     const own = new LoggableError("NATS_AUTH is broker, but the NATS server sent no nonce to sign");
     expect(natsFailureReason(own)).toBe(
       "NATS_AUTH is broker, but the NATS server sent no nonce to sign"
     );
+    expect(own.cause).toBeUndefined();
   });
 
   test("an error of no kind it knows: its type, and its message withheld", () => {
@@ -213,48 +322,26 @@ describe("a failed dial's line says why it failed", () => {
   });
 });
 
-describe("natsServerForLog", () => {
-  test("names a server where nats.js dials the host and port written", () => {
-    expect(natsServerForLog(`nats://${userinfo("u", "p")}nats.example:4222`)).toBe(
-      "nats://nats.example:4222"
+describe("natsServersForLog", () => {
+  test("names the servers by their setting and how many it named", () => {
+    expect(natsServersForLog("ENVOY_NATS_URL", 1)).toBe("the server ENVOY_NATS_URL names");
+    expect(natsServersForLog("envoy.natsUrls in /home/u/envoy.json", 2)).toBe(
+      "the 2 servers envoy.natsUrls in /home/u/envoy.json names"
     );
-    expect(natsServerForLog("nats://nats.example")).toBe("nats://nats.example");
-    expect(natsServerForLog("127.0.0.1:4223")).toBe("127.0.0.1:4223");
-    expect(natsServerForLog("nats://[::1]:4222")).toBe("nats://[::1]:4222");
-    expect(natsServerForLog("tls://nats.example:4443")).toBe("tls://nats.example:4443");
-    expect(natsServerForLog("nats://nats-hub-0123456789ab.example:4222")).toBe(
-      "nats://nats-hub-0123456789ab.example:4222"
-    );
-    expect(natsServerForLog("NATS-HUB-0123456789AB.EXAMPLE:4222")).toBe(
-      "NATS-HUB-0123456789AB.EXAMPLE:4222"
-    );
-    expect(natsServerForLog("nats://deadbeef.example:4222")).toBe("nats://deadbeef.example:4222");
   });
+});
 
-  test("names none where the port nats.js dials is a password's digits", () => {
-    // Five digits, below 65536: the socket dials them, and a log naming 4222 would name a server
-    // the dial never reached.
-    expect(natsServerForLog(`nats://${userinfo("u", "12345")}nats.example:4222`)).toBe(
-      UNNAMED_NATS_SERVER
-    );
+// The host nats.js dials, which the e2e bridge checks its upstream against.
+describe("natsDialedAddress", () => {
+  test("is the host and port nats.js itself dials", () => {
     expect(natsDialedAddress(`nats://${userinfo("u", "12345")}nats.example:4222`)).toEqual({
       host: "nats.example",
       port: 12345,
     });
-  });
-
-  test("names none whose host mixes cases, or is a long hexadecimal label", () => {
-    expect(natsServerForLog(`nats://${userinfo("u", "p")}Host.Example:4222`)).toBe(
-      UNNAMED_NATS_SERVER
-    );
-    expect(natsServerForLog("nats://0123456789abcdef0123456789abcdef:4222")).toBe(
-      UNNAMED_NATS_SERVER
-    );
-    expect(natsServerForLog("0123456789abcdef:4222")).toBe(UNNAMED_NATS_SERVER);
-  });
-
-  test("names none nats.js cannot read", () => {
+    expect(natsDialedAddress("nats://Host.Example:4222")).toEqual({
+      host: "host.example",
+      port: 4222,
+    });
     expect(natsDialedAddress("nats://host:99999")).toBeUndefined();
-    expect(natsServerForLog("nats://host:99999")).toBe(UNNAMED_NATS_SERVER);
   });
 });

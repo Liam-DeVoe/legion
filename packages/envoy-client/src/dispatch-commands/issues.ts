@@ -43,6 +43,7 @@ import {
   stringArg,
 } from "./context";
 import { dispatchAnswered, refusalWithCode, withAccount, writeMayHaveLanded } from "./failures";
+import { linkFor } from "./links";
 import { claimText, holdsSession, liveAgents, progressText, routeText } from "./render-issue";
 import { notSubscribed } from "./results";
 
@@ -188,7 +189,7 @@ export async function issueCommand(context: CommandContext): Promise<DispatchToo
         ...(componentGuidance === undefined ? [] : [componentGuidance]),
       ];
     });
-    const href = new URL(`/issues/${encodeURIComponent(created.key)}`, linkBase).toString();
+    const href = linkFor(`/issues/${encodeURIComponent(created.key)}`, linkBase);
     // Dispatch picks the assignee when the call names none (the creating person, the personal
     // token's owner, the parent's, or the project's default), so the line says whom it
     // answered.
@@ -211,7 +212,7 @@ export async function issueCommand(context: CommandContext): Promise<DispatchToo
           ? relatedCheckLines(created.advice?.suggestions, {
               project: created.project,
               text: title,
-              configUrl: linkBase,
+              linkBase,
             })
           : []),
         ...adviceLines,
@@ -230,7 +231,7 @@ export async function issueCommand(context: CommandContext): Promise<DispatchToo
       text: [
         `Not created: "${title}" is a near copy of an open issue.`,
         ...candidates.map((candidate) => {
-          const href = new URL(candidate.href, linkBase).toString();
+          const href = linkFor(candidate.href, linkBase);
           return `${candidate.key} [${candidate.status}] ${candidate.title} → ${href}`;
         }),
         "Read each issue above. If one is the same work, fold this into it by the duplicate rule of skill://dispatch-first.",
@@ -551,7 +552,7 @@ export async function relatedCommand(context: CommandContext): Promise<DispatchT
     text: relatedCheckLines(suggestions, {
       project,
       text: [title, text].filter((part) => part !== undefined).join("\n"),
-      configUrl: linkBase,
+      linkBase,
     }).join("\n"),
     details: { project, suggestions },
   };

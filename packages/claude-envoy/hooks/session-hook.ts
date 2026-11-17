@@ -88,7 +88,8 @@
 
 import { appendFileSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
-import { formatOpenAsksSummary } from "@legion/envoy-client/dispatch-execute"
+import { urlForText } from "@legion/contracts/log-text"
+import { formatOpenAsksSummary, linkBaseOf } from "@legion/envoy-client/dispatch-execute"
 import {
   dispatchFirstSkillFile,
   readDispatchFirstContext,
@@ -96,7 +97,7 @@ import {
 import { DispatchClient } from "@legion/envoy-client/dispatch-http"
 import { sessionDirectory, writeAtomically } from "@legion/envoy-client/dispatch-session-directory"
 import { offWithError } from "@legion/envoy-client/envoy-config"
-import { hasErrnoCode, messageFor, withoutUserinfo } from "@legion/envoy-client/errors"
+import { hasErrnoCode, messageFor } from "@legion/envoy-client/errors"
 import {
   readSessionAnswers,
   SESSION_ANSWERS_DEADLINE_MS,
@@ -311,7 +312,7 @@ async function openAsks(raw: unknown): Promise<void> {
         signal: AbortSignal.timeout(OPEN_ASKS_TIMEOUT_MS),
       }).openAsks(input.session_id)
       process.stdout.write(
-        `Dispatch authored-ask summary:\n${formatOpenAsksSummary(snapshot, dispatch.publicUrl ?? dispatch.url)}\n`,
+        `Dispatch authored-ask summary:\n${formatOpenAsksSummary(snapshot, linkBaseOf(dispatch.publicUrl ?? dispatch.url))}\n`,
       )
     } catch (error) {
       process.stdout.write(`Dispatch authored-ask summary unavailable: ${messageFor(error)}\n`)
@@ -452,9 +453,11 @@ async function refreshedAnswers(
         return { text: outcome.text ?? undefined, notice: outcome.notice ?? undefined }
       }
       // Compared whole above; the reason reaches the session's context, so it names the URL
-      // without the user and password it may carry.
+      // without the user, password, query and fragment it may carry (`urlForText`).
       const read =
-        outcome.dispatch_url === null ? "no Dispatch" : withoutUserinfo(outcome.dispatch_url)
+        outcome.dispatch_url === null
+          ? "no Dispatch"
+          : urlForText(outcome.dispatch_url, "the Dispatch URL the refresher read")
       return {
         reason: `the refresher read ${read}, not the Dispatch envoy.json names now`,
       }

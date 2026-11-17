@@ -1753,14 +1753,22 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       body: { bootToken: pane.bootToken },
     });
   });
-  test("exits the phase worker naming LEGION_BOOT_TOKEN_FILE and its path when the file is unreadable, never falling back to LEGION_BOOT_TOKEN", async () => {
+  // The variable is named and the path is not: a token pasted where the path goes would be the
+  // path, and the error is printed (envoy-client's readSecretFile).
+  test("exits the phase worker naming LEGION_BOOT_TOKEN_FILE, never its path, when the file is unreadable, never falling back to LEGION_BOOT_TOKEN", async () => {
     const pane = await claimPane({ role: "tester" });
     process.env.LEGION_BOOT_TOKEN = "decoy";
     process.env.LEGION_BOOT_TOKEN_FILE = "/nonexistent/legion-secrets/tester";
 
-    await expect(pane.start()).rejects.toThrow(
-      "LEGION_BOOT_TOKEN_FILE names /nonexistent/legion-secrets/tester, which could not be read"
+    const refusal = await pane.start().then(
+      () => undefined,
+      (error: unknown) => error
     );
+    expect(refusal).toBeInstanceOf(Error);
+    expect((refusal as Error).message).toContain(
+      "LEGION_BOOT_TOKEN_FILE names a file that could not be read (ENOENT)"
+    );
+    expect(Bun.inspect(refusal)).not.toContain("/nonexistent/legion-secrets/tester");
     expect(daemonRequests(pane.requests)).toEqual([]);
   });
   test("registers the legion tool, and only it, once a sub-architect's claim boots", async () => {

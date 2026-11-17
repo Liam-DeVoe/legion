@@ -163,15 +163,16 @@ describe("the bridge's output lines", () => {
   const userinfo = (...parts: string[]) => `${parts.join(":")}@`;
   const canary = () => `canary${randomBytes(4).toString("hex")}`;
 
-  test("the readiness line names the rig's server without its credential", () => {
+  test("the readiness line names both servers by their variables alone", () => {
     const config = bridgeConfigFromEnvironment({
       SMOKE_REPO: "a/b",
       SMOKE_RIG_NATS: `nats://${userinfo("rig", "canary-rig-pw")}172.30.0.1:31000`,
       SMOKE_UPSTREAM_NATS: "nats://envoy-nats.tailnet.example:4222",
     });
     const line = bridgeReadyLine(config);
-    expect(line).toContain("upstream=SMOKE_UPSTREAM_NATS downstream=nats://172.30.0.1:31000");
+    expect(line).toContain("upstream=SMOKE_UPSTREAM_NATS downstream=SMOKE_RIG_NATS");
     expect(line.toLowerCase()).not.toContain("canary");
+    expect(line).not.toContain("172.30.0.1");
   });
 
   // Each row holds first that nats.js's own error carries the secret, so it can fail for the leak.

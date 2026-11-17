@@ -234,21 +234,44 @@ test("a sign-in client is both variables or neither", async () => {
   ).toBe("http://127.0.0.1:5556");
 });
 
-test("a secret file that cannot be read is refused naming the variable, never the secret", async () => {
+test("a secret file that cannot be read is refused naming the variable, never its path or the secret", async () => {
   const dir = makeDirectory();
   // The variable names the directory the secret is in rather than the file: no read of it
-  // answers anything, and no refusal may carry what the directory holds.
+  // answers anything, and no refusal may carry what the directory holds. Nor may it carry the
+  // path, which is what a secret pasted into the variable would be.
   await writeFile(join(dir, "client-secret"), "example-client-not-a-secret\n", { mode: 0o600 });
-  for (const unreadable of [dir, join(dir, "missing")]) {
+  for (const [unreadable, code] of [
+    [dir, "EISDIR"],
+    [join(dir, "missing"), "ENOENT"],
+    ["canary-pasted-secret-in-place-of-a-path", "ENOENT"],
+  ] as const) {
     const refusal = await refusalOf(() =>
       signInFlow({
         [SIGNIN_CLIENT_ID_VAR]: "example-client",
         [SIGNIN_CLIENT_SECRET_FILE_VAR]: unreadable,
       })
     );
-    expect(refusal?.message).toStartWith(
-      `read the sign-in client's secret (${SIGNIN_CLIENT_SECRET_FILE_VAR}): `
+    expect(refusal?.message).toBe(
+      `read the sign-in client's secret: ${SIGNIN_CLIENT_SECRET_FILE_VAR} names a file that could not be read (${code})`
     );
-    expect(refusal?.message).not.toContain("example-client-not-a-secret");
+    expect(Bun.inspect(refusal)).not.toContain(unreadable);
+    expect(Bun.inspect(refusal)).not.toContain("example-client-not-a-secret");
+  }
+});
+
+test("an issuer that is no http or https URL is refused naming the variable alone", async () => {
+  const secretFile = join(makeDirectory(), "client-secret");
+  await writeFile(secretFile, "example-client-not-a-secret\n", { mode: 0o600 });
+  const pw = "canary-pw-7c1e";
+  for (const pasted of ["canary-pasted-issuer", `https://u:${pw}@accounts.example:99999`]) {
+    const refusal = await refusalOf(() =>
+      signInFlow({
+        [SIGNIN_CLIENT_ID_VAR]: "example-client",
+        [SIGNIN_CLIENT_SECRET_FILE_VAR]: secretFile,
+        [SIGNIN_ISSUER_VAR]: pasted,
+      })
+    );
+    expect(refusal?.message).toBe(`${SIGNIN_ISSUER_VAR} is not an http or https URL`);
+    expect(Bun.inspect(refusal)).not.toContain(pasted);
   }
 });

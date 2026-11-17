@@ -42,8 +42,9 @@ export function requiredEnvironment(env: NodeJS.ProcessEnv, key: string): string
 
 /** `<key>_FILE` (trimmed file contents) ahead of `<key>`: the daemon hands every pane secret over
  * as a 0600 file pointer, never as a tmux `-e` argv value. A set pointer is authoritative — a
- * missing, unreadable, or blank file throws naming both the variable and the path, never falling
- * back to `<key>`. */
+ * missing, unreadable, or blank file throws naming the variable and the read error's code, never
+ * the path, which is what a secret pasted into the variable would be (`readSecretFile`), and never
+ * falls back to `<key>`. */
 export function requiredSecret(env: NodeJS.ProcessEnv, key: string): string {
   const fileKey = `${key}_FILE`;
   const file = env[fileKey];

@@ -7,6 +7,7 @@
 // (pool-identity.test.ts, person-identity.test.ts).
 
 import { afterAll, expect, test } from "bun:test";
+import { randomBytes } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
@@ -57,7 +58,7 @@ function stubMetadata(token: string): { host: string; asked: MetadataRequest[] }
 
 test("a projected token is read from its file at every read, trimmed", async () => {
   const path = await tokenFile("first.projected.token\n");
-  const source = projectedToken(path);
+  const source = projectedToken(path, "AGENT_SECRETS_MACHINE_TOKEN_FILE");
   expect(await source.read()).toEqual({
     token: "first.projected.token",
     tokenType: SUBJECT_TOKEN_TYPE_KUBERNETES,
@@ -65,14 +66,35 @@ test("a projected token is read from its file at every read, trimmed", async () 
   // The kubelet rewrites the file in place, so a renewal must see the new token.
   await writeFile(path, "second.projected.token\n");
   expect((await source.read()).token).toBe("second.projected.token");
-  expect(source.describe()).toBe(`the projected service-account token ${path}`);
+  expect(source.describe()).toBe(
+    "the projected service-account token AGENT_SECRETS_MACHINE_TOKEN_FILE names"
+  );
 });
 
-test("a projected token file that is missing or empty is an error naming it, never an empty token", async () => {
+test("a projected token file that is missing or empty is an error naming its variable, never an empty token", async () => {
   const missing = join(makeDirectory(), "absent");
-  expect(projectedToken(missing).read()).rejects.toThrow(missing);
+  const variable = "AGENT_SECRETS_MACHINE_TOKEN_FILE";
+  expect(projectedToken(missing, variable).read()).rejects.toThrow(
+    `read the projected service-account token ${variable} names: ENOENT`
+  );
   const blank = await tokenFile("  \n");
-  expect(projectedToken(blank).read()).rejects.toThrow(`${blank} is empty`);
+  expect(projectedToken(blank, variable).read()).rejects.toThrow(
+    `the projected service-account token ${variable} names is empty`
+  );
+});
+
+test("a token pasted into the token file's variable is named in no error", async () => {
+  // The variable should name a path; a token pasted there is the path every read error would quote.
+  const pasted = `eyJhbGciOiJSUzI1NiJ9.${randomBytes(12).toString("hex")}.sig`;
+  const source = projectedToken(pasted, "AGENT_SECRETS_MACHINE_TOKEN_FILE");
+  const refusal = await source.read().then(
+    () => undefined,
+    (error: unknown) => (error instanceof Error ? error.message : String(error))
+  );
+  expect(refusal).toBe(
+    "read the projected service-account token AGENT_SECRETS_MACHINE_TOKEN_FILE names: ENOENT"
+  );
+  expect(source.describe()).not.toContain(pasted);
 });
 
 test("a machine's identity token is asked for with format=full, the audience and the header", async () => {
@@ -93,7 +115,7 @@ test("a machine's identity token is asked for with format=full, the audience and
   ]);
 });
 
-test("a metadata server that refuses is an error naming the URL it was asked", async () => {
+test("a metadata server that refuses is an error naming the variable that names it", async () => {
   const server = Bun.serve({
     port: 0,
     hostname: "127.0.0.1",
@@ -103,8 +125,30 @@ test("a metadata server that refuses is an error naming the URL it was asked", a
   const source = metadataIdentity("example-audience", {
     [METADATA_HOST_VAR]: `127.0.0.1:${server.port}`,
   } as NodeJS.ProcessEnv);
-  expect(source.read()).rejects.toThrow(`127.0.0.1:${server.port}`);
-  expect(source.read()).rejects.toThrow("HTTP 403");
+  expect(source.read()).rejects.toThrow(
+    `the metadata server ${METADATA_HOST_VAR} names answered HTTP 403`
+  );
+});
+
+// GCE_METADATA_HOST is a host, like a NATS server's setting, and a host's text cannot be told from
+// a secret pasted there, so a text names the server by the variable and the failure by its class.
+test.each([
+  `${randomBytes(9).toString("hex")}.invalid`,
+  `operator:${randomBytes(9).toString("hex")}@127.0.0.1:1`,
+])("a metadata host of %p is named in no error", async (pasted) => {
+  const source = metadataIdentity("example-audience", {
+    [METADATA_HOST_VAR]: pasted,
+  } as NodeJS.ProcessEnv);
+  const refusal = await source.read().then(
+    () => undefined,
+    (error: unknown) => error
+  );
+  if (!(refusal instanceof Error)) throw new Error("the metadata server answered");
+  expect(refusal.message).toStartWith(
+    `the metadata server ${METADATA_HOST_VAR} names could not be reached: `
+  );
+  expect(Bun.inspect(refusal)).not.toContain(pasted);
+  expect(Bun.inspect(refusal).toLowerCase()).not.toContain(pasted.split(/[.@]/)[0]?.toLowerCase());
 });
 
 test("no proxy variable can take the identity token", async () => {

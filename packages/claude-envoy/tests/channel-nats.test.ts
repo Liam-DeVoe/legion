@@ -95,7 +95,11 @@ test("dialChannelNats keeps the broker token renewed until it is stopped", async
   const fake = fakeDial()
   const warnings: string[] = []
   const opened = await dialChannelNats(
-    { natsUrls: ["nats://nats.test:4222"], natsCredential: { kind: "broker", broker: credential } },
+    {
+      natsUrls: ["nats://nats.test:4222"],
+      natsServersSetting: "ENVOY_NATS_URL",
+      natsCredential: { kind: "broker", broker: credential },
+    },
     "claude-envoy-channel-ses_channel",
     (text) => warnings.push(text),
     fake.dial,
@@ -119,7 +123,11 @@ test("dialChannelNats keeps the broker token renewed until it is stopped", async
 test("dialChannelNats runs no keeper and no follow for a connection with no broker token", async () => {
   const fake = fakeDial()
   const opened = await dialChannelNats(
-    { natsUrls: ["nats://nats.test:4222"], natsCredential: { kind: "none" } },
+    {
+      natsUrls: ["nats://nats.test:4222"],
+      natsServersSetting: "ENVOY_NATS_URL",
+      natsCredential: { kind: "none" },
+    },
     "claude-envoy-channel-ses_plain",
     () => {},
     fake.dial,
@@ -131,7 +139,7 @@ test("dialChannelNats runs no keeper and no follow for a connection with no brok
   opened.stop()
 })
 
-test("a failed dial names each server by scheme, host and port, never a credential its URL holds", async () => {
+test("a failed dial names its servers by their setting, never by any part of them", async () => {
   const refused = async (): Promise<NatsConnection> => {
     throw NatsError.errorForCode(ErrorCode.ConnectionRefused)
   }
@@ -147,7 +155,7 @@ test("a failed dial names each server by scheme, host and port, never a credenti
     "E2_SENTINEL_MALFORMED nats address",
   ]
   const failure = await dialChannelNats(
-    { natsUrls: servers, natsCredential: { kind: "none" } },
+    { natsUrls: servers, natsServersSetting: "ENVOY_NATS_URL", natsCredential: { kind: "none" } },
     "claude-envoy-channel-ses_redact",
     () => {},
     refused,
@@ -156,7 +164,7 @@ test("a failed dial names each server by scheme, host and port, never a credenti
     (error: unknown) => (error instanceof Error ? error.message : String(error)),
   )
   expect(failure).toBe(
-    "could not connect to NATS at nats://127.0.0.1:4222, tls://nats.example:4443, 127.0.0.1:4223, localhost:4224, a server address that does not read as a host presenting no credential: CONNECTION_REFUSED",
+    "could not connect to NATS at the 5 servers ENVOY_NATS_URL names presenting no credential: CONNECTION_REFUSED",
   )
   expect(failure).not.toContain("E2_SENTINEL")
 })
@@ -175,6 +183,7 @@ test("a credential pasted as a bare server address is never named", async () => 
   const failure = await dialChannelNats(
     {
       natsUrls: [seed, `nats://${seed}`, segments.join("."), "nats.example:4222"],
+      natsServersSetting: "envoy.natsUrls in /home/u/.claude/envoy.json",
       natsCredential: { kind: "none" },
     },
     "claude-envoy-channel-ses_seed",
@@ -187,7 +196,7 @@ test("a credential pasted as a bare server address is never named", async () => 
   expect(failure.toLowerCase()).not.toContain(seed.toLowerCase())
   for (const segment of segments) expect(failure.toLowerCase()).not.toContain(segment.toLowerCase())
   expect(failure).toBe(
-    "could not connect to NATS at a server address that does not read as a host, a server address that does not read as a host, a server address that does not read as a host, nats.example:4222 presenting no credential: getaddrinfo EAI_AGAIN",
+    "could not connect to NATS at the 4 servers envoy.natsUrls in /home/u/.claude/envoy.json names presenting no credential: getaddrinfo EAI_AGAIN",
   )
 })
 
@@ -201,6 +210,7 @@ test("a token holding an unencoded / is named by none of its segments", async ()
   const failure = await dialChannelNats(
     {
       natsUrls: [`nats://${userinfo("e2sentineltok/def+gh==")}127.0.0.1:4222`],
+      natsServersSetting: "ENVOY_NATS_URL",
       natsCredential: { kind: "none" },
     },
     "claude-envoy-channel-ses_slash",
@@ -211,7 +221,7 @@ test("a token holding an unencoded / is named by none of its segments", async ()
     (error: unknown) => (error instanceof Error ? error.message : String(error)),
   )
   expect(failure).toBe(
-    "could not connect to NATS at a server address that does not read as a host presenting no credential: getaddrinfo EAI_AGAIN",
+    "could not connect to NATS at the server ENVOY_NATS_URL names presenting no credential: getaddrinfo EAI_AGAIN",
   )
 })
 
@@ -227,7 +237,11 @@ test("a stop ends the wait for the token and for the dial, and closes a connecti
   } as unknown as NatsConnection
   const stopping = new AbortController()
   const dialing = dialChannelNats(
-    { natsUrls: ["nats://nats.test:4222"], natsCredential: { kind: "none" } },
+    {
+      natsUrls: ["nats://nats.test:4222"],
+      natsServersSetting: "ENVOY_NATS_URL",
+      natsCredential: { kind: "none" },
+    },
     "claude-envoy-channel-ses_stop",
     () => {},
     // The stop lands once the dial has begun.
@@ -252,7 +266,11 @@ test("a stop ends the wait for the token and for the dial, and closes a connecti
     ready: () => new Promise<void>(() => undefined),
   } as unknown as BrokerNatsCredential
   const trading = dialChannelNats(
-    { natsUrls: ["nats://nats.test:4222"], natsCredential: { kind: "broker", broker } },
+    {
+      natsUrls: ["nats://nats.test:4222"],
+      natsServersSetting: "ENVOY_NATS_URL",
+      natsCredential: { kind: "broker", broker },
+    },
     "claude-envoy-channel-ses_trade",
     () => {},
     async () => {

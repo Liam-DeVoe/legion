@@ -155,7 +155,7 @@ export function natsSeedFromEnvironment(env: EnvoyEnvironment): NatsSeed | undef
     if (file === "") throw new Error("NATS_NKEY_SEED_FILE is set but empty");
     return {
       value: readSecretFile("NATS_NKEY_SEED_FILE", file),
-      source: `NATS_NKEY_SEED_FILE (${file})`,
+      source: "the file NATS_NKEY_SEED_FILE names",
     };
   }
   if (plain === undefined) return undefined;
@@ -172,9 +172,15 @@ const NO_NATS_CONNECTION = "this session opens no NATS connection";
 
 /** How a session takes inbound messages: over `natsUrls` (never empty) with `natsCredential`, the
  * nkey user a seed names, the session's broker token, or none for a server that asks for no
- * credential; or not at all, `off` saying why. */
+ * credential; or not at all, `off` saying why. `natsServersSetting` names the setting the servers
+ * came from (`ENVOY_NATS_URL`, or `envoy.natsUrls in <file>`), which a log names them by
+ * (`natsServersForLog`), never by their text. */
 export type EnvoyInbound =
-  | { readonly natsUrls: readonly string[]; readonly natsCredential: NatsCredential }
+  | {
+      readonly natsUrls: readonly string[];
+      readonly natsServersSetting: string;
+      readonly natsCredential: NatsCredential;
+    }
   | { readonly off: string };
 
 /** An Envoy a session uses: every value resolved, credentials included. */
@@ -427,6 +433,8 @@ export function envoySettings(
     try {
       inbound = {
         natsUrls,
+        natsServersSetting:
+          namedNatsUrls.length > 0 ? "ENVOY_NATS_URL" : `envoy.natsUrls in ${config.path}`,
         natsCredential: natsCredential(env, section, namedNatsUrls, config.path, options.session),
       };
     } catch (error) {

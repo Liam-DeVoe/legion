@@ -22,11 +22,13 @@ import {
   DISPATCH_EVENT_BODY_MAX,
   DISPATCH_ITEM_BLOCKS,
 } from "@legion/contracts/dispatch-tools";
+import { URL_NOT_PRINTED } from "@legion/contracts/log-text";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { z } from "zod";
 import goUnicodeIsSpace from "../../../contracts/fixtures/go-unicode-isspace.json";
 import { bearerCredential } from "../bearer";
 import { cliRefusals } from "../dispatch-cli";
+import { linkFor } from "../dispatch-commands/links";
 import type { ExecFn } from "../dispatch-cwd";
 import {
   type DispatchToolResult,
@@ -34,6 +36,7 @@ import {
   executeDispatchTool,
   formatOpenAsksSummary,
   goBlankPattern,
+  linkBaseOf,
   positionText,
   resolveIssueDocumentId,
 } from "../dispatch-execute";
@@ -513,13 +516,18 @@ describe("executeDispatchTool", () => {
   });
 
   // A configured Dispatch URL may carry a user and a password. The requests go to it as
-  // configured; what the session reads names it without them, in an error and in ordinary
-  // output alike: the unreachable server, a build without the answers route, an issue's page link
-  // when no public URL is set, and an open-asks summary given the configured URL as its base.
-  test("names a Dispatch URL that carries a user and a password without either, in errors and links", async () => {
-    const user = "user-7f2a";
-    const secret = "pw-4c7e19";
-    const withUserinfo = { ...config, url: `https://${user}:${secret}@host.example` };
+  // configured; what the session reads names no part of it, in an error and in ordinary output
+  // alike, since the URL parser can split such a URL otherwise than its writer meant
+  // (`https://user:p@ssw0rd` names no host, and the parser reads `ssw0rd` as one): the unreachable
+  // server and a build without the answers route name the URL by its fixed phrase, and an issue's
+  // page link and an open-asks summary print each link as its dispatch:// reference.
+  const user = "user-7f2a";
+  const pw = "pw-4c7e19";
+  test.each([
+    ["a user and a password", `https://${user}:${pw}@host.example`, pw],
+    ["a password holding an '@' and no host", `https://${user}:p@ssw0rdTAIL7c`, "ssw0rdtail7c"],
+  ])("names a Dispatch URL that carries %s by no part of it, in errors and links", async (_, url, secret) => {
+    const withUserinfo = { ...config, url };
     const requested: string[] = [];
     const issueRead = async (url: RequestInfo | URL): Promise<Response> => {
       requested.push(String(url));
@@ -550,8 +558,9 @@ describe("executeDispatchTool", () => {
         { code: "NOT_FOUND", error: `no route for GET ${new URL(String(url)).pathname}` },
         404
       );
+    // As Bun's fetch fails, a code beside a message that can repeat the host it dialed.
     const unreachable = (() => {
-      throw new TypeError("Unable to connect. Is the computer able to access the url?");
+      throw Object.assign(new TypeError(`getaddrinfo ENOTFOUND ${secret}`), { code: "ENOTFOUND" });
     }) as unknown as typeof fetch;
     const run = (tool: string, args: Record<string, unknown>, fetchImpl: typeof fetch) =>
       executeDispatchTool({
@@ -594,22 +603,36 @@ describe("executeDispatchTool", () => {
           },
         ],
       } as unknown as Parameters<typeof formatOpenAsksSummary>[0],
-      withUserinfo.url
+      linkBaseOf(withUserinfo.url)
     );
+    const notPrinted = `the configured Dispatch URL ${URL_NOT_PRINTED}`;
 
-    expect(requested[0]).toStartWith(`${withUserinfo.url}/api/v1/`);
-    expect(read).toContain("\nLink: https://host.example/issues/DSP-42\n");
+    expect(requested[0]?.toLowerCase()).toStartWith(`${withUserinfo.url}/api/v1/`.toLowerCase());
+    expect(read).toContain("\nLink: dispatch://DSP-42\n");
     expect(answers).toBe(
-      "This Dispatch (https://host.example) has no answers route yet: its build is older than the answers route."
+      `This Dispatch (${notPrinted}) has no answers route yet: its build is older than the answers route.`
     );
-    expect(offline).toContain("Dispatch at https://host.example is unreachable: ");
-    expect(summary).toEndWith(
-      " · https://host.example/issues/LEGION-1/asks/ask-1\n\nWaiting on agent (0):"
-    );
+    expect(offline).toContain(`Dispatch at ${notPrinted} is unreachable: ENOTFOUND.`);
+    expect(summary).toEndWith(" · dispatch://LEGION-1/ask/ask-1\n\nWaiting on agent (0):");
     for (const text of [read, answers, offline, summary]) {
-      expect(text).not.toContain(user);
-      expect(text).not.toContain(secret);
+      expect(text).not.toContain("user-7f2a");
+      expect(text.toLowerCase()).not.toContain(secret.toLowerCase());
     }
+  });
+
+  // A plain Dispatch URL prints whole, and every link is built on it; DISPATCH_PUBLIC_URL, where
+  // set, is the base links are built on.
+  test("builds every link on a plain link base, the public URL where one is set", () => {
+    expect(linkBaseOf("https://host.example")).toBe("https://host.example");
+    expect(linkFor("/issues/LEGION-1/asks/ask-1", "https://host.example")).toBe(
+      "https://host.example/issues/LEGION-1/asks/ask-1"
+    );
+    expect(linkFor("/issues/LEGION-1/asks/ask-1", undefined)).toBe("dispatch://LEGION-1/ask/ask-1");
+    expect(linkFor("/projects/CORE/documents/handbook-md?ask=a1", undefined)).toBe(
+      "dispatch://CORE/artifact/handbook-md/ask/a1"
+    );
+    // A path no reference names prints as the server sent it, and names no configured value.
+    expect(linkFor("/projects/CORE", undefined)).toBe("/projects/CORE");
   });
 
   test("does not duplicate an ask ref already in the question", async () => {
@@ -5316,11 +5339,13 @@ describe("executeDispatchTool", () => {
       1,
     ],
     [
+      // As Bun's fetch fails: a code beside a message, and the message is not named, since the
+      // runtime's can repeat the host it was handed (`errorClass`).
       (): Response => {
-        throw new TypeError("fetch failed");
+        throw Object.assign(new TypeError("fetch failed"), { code: "ECONNREFUSED" });
       },
       (_request: string) =>
-        "Dispatch at http://dispatch.test is unreachable: fetch failed. If the Dispatch URL " +
+        "Dispatch at http://dispatch.test is unreachable: ECONNREFUSED. If the Dispatch URL " +
         "changed, restart this agent process so it picks up the new configuration.",
       5,
     ],

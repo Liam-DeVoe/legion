@@ -173,7 +173,7 @@ async function corpusSource(spec: CorpusToken): Promise<TokenSource> {
     case "kubernetes-projected-file": {
       const path = join(makeDirectory(), "token");
       await writeFile(path, `${spec.token}\n`, { mode: 0o600 });
-      return projectedToken(path);
+      return projectedToken(path, "AGENT_SECRETS_MACHINE_TOKEN_FILE");
     }
     case "google-metadata":
       return metadataSource(spec.token);

@@ -220,9 +220,12 @@ printf 'status %s: %s\\n' "$status" "$found"`;
       // owned by root, so its own user can no longer read its environment. The stand-in writes its
       // ready file only once prctl succeeded and PR_GET_DUMPABLE reads 0, and keeps its stderr; the
       // run asserts it is still running, not a zombie, on both sides of the check.
+      // The interpreter is the one python3 names itself (sys.executable), not what PATH names:
+      // a version manager's shim (mise, pyenv) finds no version under env -i and exits.
       const r = run(`
 ready=$scratch/ready err=$scratch/stderr
-env -i ${rig.join(" ")} CLAUDE_CODE_OAUTH_TOKEN=dummy "$(command -v python3)" -c '
+python=$(python3 -c 'import sys; print(sys.executable)')
+env -i ${rig.join(" ")} CLAUDE_CODE_OAUTH_TOKEN=dummy "$python" -c '
 import ctypes, os, sys, time
 libc = ctypes.CDLL(None, use_errno=True)
 if libc.prctl(4, 0, 0, 0, 0) != 0:

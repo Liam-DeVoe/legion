@@ -1,21 +1,21 @@
 kind: Added
 body: |-
   `natsDialFailure(named, error, presenting)` (`nats-connection`) is the one line a failed NATS
-  dial is logged with: the servers as a log names them and why it failed, with nothing nats.js or
-  the runtime derived from what the servers were set to. `natsServerForLog(server)` names a server
-  by scheme, host and port alone, and only where nats.js dials that host and that port
-  (`natsDialedAddress`, nats.js's own `hostPort`, which takes the port from the first `:<digits>`,
-  a password's included, and reads the host as an http: URL) and the host is an IP literal or a
-  name written in one case, so a pasted nkey seed or token, and a password's digits, are never
-  named. `natsFailureReason(error)` is an allowlist: the server's own `-ERR` text for its
-  refusals, nats.js's code for its other errors, a runtime error's syscall and code
-  (`getaddrinfo EAI_AGAIN`, `ERR_SOCKET_BAD_PORT`), the message of a `LoggableError` (`errors`,
-  this package's own reasons and a caller's), and for anything else its type and
-  `(message withheld)`. A broker token's `ready` waits at most 20 s, nats.js's own dial timeout,
-  for the secrets broker to answer the trade, and then fails naming the setting that chose the
-  broker token, rather than holding a session's start in silence. `followNatsCredential`
-  reconnects again when a redial that was in flight comes back with the old token, rather than
-  waiting out its 15 s.
-time: 2026-11-16T19:51:09Z
+  dial is logged with: the servers by the setting that holds them (`natsServersForLog(setting,
+  count)`, such as `the server ENVOY_NATS_URL names`), never by any part of their text, and why it
+  failed by `natsFailureReason(error)` (`errors`), an allowlist: nats-server's fixed words for its
+  refusals and otherwise that the server's text is withheld, nats.js's code for its other errors, a
+  runtime error's syscall and code (`getaddrinfo EAI_AGAIN`, `ERR_SOCKET_BAD_PORT`), the message of
+  a `LoggableError` (this package's own reasons and a caller's, which keeps no cause), and for
+  anything else its type and `(message withheld)`. `envoySettings`'s inbound settings name the
+  setting their servers came from (`natsServersSetting`). `natsDialedAddress(server)` is the host
+  and port nats.js itself dials, from its own `hostPort`. A broker token's `ready` waits at most
+  20 s, nats.js's own dial timeout, for the secrets broker to answer the trade, and then fails
+  naming the setting that chose the broker token, rather than holding a session's start in
+  silence; a trade's failure (`tradeFailureReason`) is the broker's status, OAuth error code and
+  description, or the allowlist, never the identity's path or the broker's URL.
+  `followNatsCredential` reconnects again when a redial that was in flight comes back with the old
+  token, rather than waiting out its 15 s.
+time: 2026-11-16T22:46:51Z
 custom:
     Issue: pr4140

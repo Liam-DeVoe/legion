@@ -9,6 +9,6 @@ body: |-
   `listIssuePage` and `listAllIssues`, `DispatchWriteLandedError`, `DispatchWriteUnsettledError`,
   the missing-review-route refusal, the unreachable-server and missing-answers-route errors of the
   `dispatch` command, the missing-answers-route notice, every printed link and
-  `formatOpenAsksSummary` name the URL without them (`withoutUserinfo` in `errors.ts`). The Envoy
-  listener client's errors and `EnvoyApiError.details.url` leave out a listener URL's user and
-  password the same way.
+  `formatOpenAsksSummary` name the URL without them (`urlForText` and `requestForText`,
+  `@legion/contracts/log-text`). The Envoy listener client's errors and
+  `EnvoyApiError.details.url` leave out a listener URL's user and password the same way.

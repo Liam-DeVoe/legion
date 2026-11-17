@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { ISSUE_CLAIM_UNRESPONSIVE_GRACE_MS, MINTED_DEDUPE_KEY_PATTERN } from "@legion/contracts";
+import { URL_NOT_PRINTED } from "@legion/contracts/log-text";
 import { consumerDelivery } from "../../test/subscribe-answer";
 import { bearerCredential, type RequestCredential } from "../bearer";
 import { machineID } from "../machine";
@@ -1447,9 +1448,12 @@ describe("EnvoyClient", () => {
       attempts: 2,
       resendSafe: true,
     });
+    // The attempt that got no answer is named by the request and the failure's class: the
+    // runtime's own message can repeat the host it dialed.
     expect((error as Error).message).toBe(
       "The send to ses_target is not confirmed delivered: the listener did not answer " +
-        "(The operation timed out.) on the last of 2 attempts. It may or may not have arrived. " +
+        "(POST http://listener/v1/messages/send got no answer: TimeoutError (message withheld)) " +
+        "on the last of 2 attempts. It may or may not have arrived. " +
         `Sending it again with idempotency_key ${key} within 72 hours is the safe resend: ` +
         "Envoy drops it as a repeat if the first copy arrived (a recipient that restarted in " +
         "between can rarely see it twice)."
@@ -1857,12 +1861,16 @@ describe("EnvoyClient", () => {
     ).rejects.toThrow("the secrets broker did not answer");
   });
 
-  // A listener URL may carry a user and a password. The request goes to it as configured, and
-  // the error a refused or unauthorised call throws names it without them.
-  test("names the listener URL without its user and password in the errors it throws", async () => {
-    const user = "user-7f2a";
-    const secret = "pw-4c7e19";
-    const baseUrl = `http://${user}:${secret}@listener`;
+  // A listener URL may carry a user and a password. The request goes to it as configured, and the
+  // error a refused, unauthorised or unanswered call throws names the URL by its fixed phrase
+  // alone, since the URL parser can split such a URL otherwise than its writer meant: a password
+  // holding an '@' and no host reads as a host of its tail, which a resolver's error repeats.
+  const user = "user-7f2a";
+  const pw = "pw-4c7e19";
+  test.each([
+    ["a user and a password", `http://${user}:${pw}@listener`, pw],
+    ["a password holding an '@' and no host", `http://${user}:p@ssw0rdTAIL7c`, "ssw0rdtail7c"],
+  ])("names a listener URL that carries %s by its fixed phrase in the errors it throws", async (_, baseUrl, secret) => {
     const unmintable: RequestCredential = {
       scheme: "DPoP",
       headers: () => Promise.reject(new Error("the secrets broker did not answer")),
@@ -1870,10 +1878,22 @@ describe("EnvoyClient", () => {
     };
     const refused = recordFetch([new Response("no such route", { status: 404 })]);
     const closed = recordFetch([new Response(null, { status: 401 })]);
+    const lost = (async () => {
+      throw Object.assign(new TypeError(`getaddrinfo ENOTFOUND ${secret}`), {
+        code: "ENOTFOUND",
+        syscall: "getaddrinfo",
+      });
+    }) as unknown as typeof fetch;
+    // Each error's message and the messages of its cause chain: what a log of it prints, without
+    // the source lines Bun.inspect quotes from this file beside a stack.
     const failure = (call: Promise<unknown>) =>
       call.then(
         () => "",
-        (error: Error) => error.message
+        (error: unknown) => {
+          const texts: string[] = [];
+          for (let at: unknown = error; at instanceof Error; at = at.cause) texts.push(at.message);
+          return texts.join(" <- ");
+        }
       );
 
     const messages = [
@@ -1888,17 +1908,24 @@ describe("EnvoyClient", () => {
           retry: false,
         }).getInterest("ses_sender")
       ),
+      await failure(
+        createEnvoyClient({ baseUrl, fetch: lost, retry: false }).getInterest("ses_sender")
+      ),
     ];
 
-    expect(refused.requests[0]?.url).toBe(`${baseUrl}/v1/interests/ses_sender`);
-    expect(messages).toEqual([
-      "GET http://listener/v1/interests/ses_sender failed with 404: no such route",
-      "GET http://listener/v1/interests/ses_sender answered 401, and this machine's Envoy " +
-        "credential could not be minted: the secrets broker did not answer",
-    ]);
+    const shown = `the configured Envoy URL ${URL_NOT_PRINTED}`;
+    expect(refused.requests[0]?.url.toLowerCase()).toBe(
+      `${baseUrl}/v1/interests/ses_sender`.toLowerCase()
+    );
+    expect(messages[0]).toContain(`GET ${shown} failed with 404: no such route`);
+    expect(messages[1]).toContain(
+      `GET ${shown} answered 401, and this machine's Envoy credential could not be minted: ` +
+        "the secrets broker did not answer"
+    );
+    expect(messages[2]).toContain(`GET ${shown} got no answer: getaddrinfo ENOTFOUND`);
     for (const message of messages) {
-      expect(message).not.toContain(user);
-      expect(message).not.toContain(secret);
+      expect(message).not.toContain("user-7f2a");
+      expect(message.toLowerCase()).not.toContain(secret.toLowerCase());
     }
   });
 

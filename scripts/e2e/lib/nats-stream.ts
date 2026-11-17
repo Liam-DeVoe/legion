@@ -18,7 +18,7 @@ import { messageFor } from "../../../packages/envoy-client/src/errors";
 import { natsAuthOptions } from "../../../packages/envoy-client/src/nats-auth";
 import {
   natsDialFailure,
-  natsServerForLog,
+  natsServersForLog,
 } from "../../../packages/envoy-client/src/nats-connection";
 import { operatorNatsSeed } from "./operator-nats-seed";
 
@@ -109,8 +109,8 @@ async function main(): Promise<void> {
     refuse(messageFor(error));
   }
   // A failed connect is named, and nats.js's own error left uncaught would print the URL it was
-  // given, a credential in it included (a malformed URL's `input`): the line names the server and
-  // the reason as a log may (natsDialFailure), and the error goes no further.
+  // given, a credential in it included (a malformed URL's `input`): the line names the server by
+  // its argument and the reason as a log may (natsDialFailure), and the error goes no further.
   let nc: NatsConnection;
   try {
     nc = await connect({
@@ -120,7 +120,9 @@ async function main(): Promise<void> {
       ...natsAuthOptions(seed === undefined ? { kind: "none" } : { kind: "seed", seed }),
     });
   } catch (error) {
-    process.stderr.write(`nats-stream: ${natsDialFailure(natsServerForLog(url), error)}\n`);
+    process.stderr.write(
+      `nats-stream: ${natsDialFailure(natsServersForLog("<nats-url>", 1), error)}\n`
+    );
     process.exit(1);
   }
   try {

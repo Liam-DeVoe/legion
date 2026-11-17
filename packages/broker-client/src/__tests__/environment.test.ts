@@ -45,7 +45,7 @@ test("each identity is read from its own variables", () => {
     [MACHINE_TOKEN_FILE_VAR]: "/var/run/secrets/exchange/token",
   });
   expect(pod?.describe()).toBe(
-    "the projected service-account token /var/run/secrets/exchange/token"
+    "the projected service-account token AGENT_SECRETS_MACHINE_TOKEN_FILE names"
   );
   const machine = machineIdentity({
     [IDENTITY_VAR]: "metadata",
@@ -66,9 +66,40 @@ test("an identity named with its variables missing is refused naming them", () =
   expect(() => machineIdentity({ [IDENTITY_VAR]: "pool" })).toThrow(
     `${MACHINE_TOKEN_FILE_VAR} is required by ${IDENTITY_VAR}=pool`
   );
-  expect(() => machineIdentity({ [IDENTITY_VAR]: "ec2" })).toThrow(
-    'AGENT_SECRETS_MACHINE_IDENTITY="ec2" names no identity this machine can prove; it takes kubernetes, metadata or pool'
+  // Its value is not quoted, which a secret pasted into the wrong variable would be.
+  const pasted = "canary-pasted-identity-secret";
+  let refused = "";
+  try {
+    machineIdentity({ [IDENTITY_VAR]: pasted });
+  } catch (error) {
+    refused = error instanceof Error ? error.message : String(error);
+  }
+  expect(refused).toBe(
+    "AGENT_SECRETS_MACHINE_IDENTITY names no identity this machine can prove; it takes kubernetes, metadata or pool"
   );
+  expect(refused).not.toContain(pasted);
+});
+
+// AGENT_SECRETS_URL is where every trade goes, and every trade's error names it; a value that is
+// no http or https URL is refused naming the variable, since it may be a token pasted there.
+const CANARY_PW = "canary-pw-7c1e";
+test.each([
+  "canary-pasted-into-the-broker-url",
+  "nats://broker.example:4222",
+  `https://u:${CANARY_PW}@broker.example:99999`,
+])("an AGENT_SECRETS_URL of %p is refused naming the variable alone", async (pasted) => {
+  const refusal = await brokerTokenClient({
+    [BROKER_URL_VAR]: pasted,
+    [IDENTITY_VAR]: "kubernetes",
+    [MACHINE_TOKEN_FILE_VAR]: "/var/run/secrets/exchange/token",
+    AGENT_SECRETS_SIGNIN_DIR: join(makeDirectory(), "signins"),
+  }).then(
+    () => undefined,
+    (error: unknown) => error
+  );
+  if (!(refusal instanceof Error)) throw new Error("the factory made a client");
+  expect(refusal.message).toBe(`${BROKER_URL_VAR} is not an http or https URL`);
+  expect(Bun.inspect(refusal)).not.toContain(pasted);
 });
 
 test("a client is built for the broker, the identity and the session the variables name", async () => {
@@ -83,7 +114,7 @@ test("a client is built for the broker, the identity and the session the variabl
   });
   const client = made?.client;
   expect(client?.describe()).toBe(
-    "the projected service-account token /var/run/secrets/exchange/token"
+    "the projected service-account token AGENT_SECRETS_MACHINE_TOKEN_FILE names"
   );
   // The key is this process's own, made once with the client, and only its public half exists
   // outside the signer.

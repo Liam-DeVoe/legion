@@ -223,8 +223,10 @@ test("a DISPATCH_TOKEN_BROKER that is neither 1 nor unset is refused", () => {
   const resolution = dispatchSettings(env, noFile(env));
   expect(resolution.enabled).toBe(false);
   expect(resolution.enabled === false && resolution.error).toContain(
-    'DISPATCH_TOKEN_BROKER is "true" and takes 1'
+    "DISPATCH_TOKEN_BROKER takes 1"
   );
+  // Its value is not quoted, which a token pasted into the wrong variable would be.
+  expect(resolution.enabled === false && resolution.error).not.toContain('"true"');
 });
 
 test("with no bearer at all, the session's credential is its own identity traded at the broker", async () => {

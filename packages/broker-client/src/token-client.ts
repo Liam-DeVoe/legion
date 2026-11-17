@@ -20,6 +20,7 @@
 // that no longer honours a person's sign-in. So a caller that writes only with what `token()`
 // gave it never writes with no identity, nor with one that has been ended.
 
+import { errorClass, isHttpUrl, urlForText } from "@legion/contracts/log-text";
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import {
   allowInsecureRequests,
@@ -83,6 +84,10 @@ const INVALID_DPOP_PROOF = "invalid_dpop_proof";
  *  already retries once with the nonce the answer carried. */
 const USE_DPOP_NONCE = "use_dpop_nonce";
 
+/** What names the broker's URL in a text where it does not parse (`urlForText`); the constructor
+ *  refuses such a URL, and `brokerTokenClient` names AGENT_SECRETS_URL in its refusal. */
+const BROKER_URL_SETTING = "the broker URL";
+
 /**
  * A trade the broker refused: a plain error naming what was traded and what the broker said.
  * Almost every refusal is one no retry can cure — an identity no entry lists, a sign-in a person
@@ -140,17 +145,16 @@ export class BrokerRefusedError extends Error {
  * `invalid_grant`, because the person revoked the grant at Google or it expired. It mirrors the
  * Go client's `ErrSignInEnded` (`packages/envoy/internal/brokerclient/device.go`), and like a
  * broker's permanent refusal it is final ({@link isFinalRefusal}): no retry and no other caller
- * cures it, only a new {@link SIGNIN_COMMAND}.
+ * cures it, only a new {@link SIGNIN_COMMAND}. `issuer` is the issuer as a text names it
+ * (`urlForText`), and it keeps no cause: the library's error holds the issuer's answer.
  */
 export class SignInEndedError extends Error {
   constructor(
     readonly issuer: string,
-    readonly person: string,
-    options?: ErrorOptions
+    readonly person: string
   ) {
     super(
-      `${issuer} no longer honours ${person}'s sign-in on this machine; run: ${SIGNIN_COMMAND}`,
-      options
+      `${issuer} no longer honours ${person}'s sign-in on this machine; run: ${SIGNIN_COMMAND}`
     );
     this.name = "SignInEndedError";
   }
@@ -280,6 +284,9 @@ export class BrokerTokenClient {
   constructor(options: BrokerTokenClientOptions) {
     const brokerUrl = withoutTrailingSlashes(options.brokerUrl.trim());
     if (brokerUrl === "") throw new Error("broker client: no broker URL");
+    // Not quoted: a value that is no URL may be a token pasted where the URL goes.
+    if (!isHttpUrl(brokerUrl))
+      throw new Error("broker client: the broker URL is not an http or https URL");
     this.#brokerUrl = brokerUrl;
     this.#key = options.key;
     this.#subject = options.subject;
@@ -410,7 +417,8 @@ export class BrokerTokenClient {
     } catch (error) {
       throw this.#refusal(endpoint, error);
     }
-    return this.#read(endpoint, answered, raw.body);
+    // Named as every text of a trade names the broker (`urlForText`).
+    return this.#read(urlForText(endpoint, BROKER_URL_SETTING), answered, raw.body);
   }
 
   /**
@@ -430,11 +438,14 @@ export class BrokerTokenClient {
       );
     }
     const status = statusOf(error);
-    const message = messageOf(error);
-    const said = status === 0 ? message : `HTTP ${status}: ${message}`;
-    return new Error(`trade ${this.#subject.describe()} at ${endpoint}: ${said}`, {
-      cause: error,
-    });
+    const said = status === 0 ? errorClass(error) : `HTTP ${status}: ${errorClass(error)}`;
+    // The broker as `urlForText` names it, and the failure by its class: the library's or the
+    // runtime's message can repeat the URL it was handed. No `cause`: an answer the library
+    // refused hangs off its error (oauth4webapi's `cause` is the body it read), and that answer can
+    // hold the minted token, which no log of this error may carry.
+    return new Error(
+      `trade ${this.#subject.describe()} at ${urlForText(endpoint, BROKER_URL_SETTING)}: ${said}`
+    );
   }
 
   /**

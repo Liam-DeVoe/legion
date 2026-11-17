@@ -1,3 +1,5 @@
+import { errorClass } from "@legion/contracts/log-text";
+
 /**
  * The code of the refusal `error` carries, or undefined for an error carrying none.
  *
@@ -38,33 +40,76 @@ export function hasErrnoCode(error: unknown, code: string): boolean {
 
 /**
  * An error whose message its writer composed from nothing a NATS server setting holds, so a log
- * prints it whole (`natsFailureReason`, `./nats-connection`), where it prints only the code of
- * nats.js's and the runtime's own errors: this package's own reasons (a hub with no auth service,
- * a trade unanswered, a switch not followed) and a caller's. Here rather than beside that function,
- * since `./nats-credential`, which every bundle reading `envoySettings` imports, throws it and
- * imports nats.js's types alone.
+ * prints it whole (`natsFailureReason`, below), where it prints only the code of nats.js's and
+ * the runtime's own errors: this package's own reasons (a hub with no auth service, a trade
+ * unanswered, a switch not followed) and a caller's. It takes no cause: a cause is printed with
+ * the error wherever the error is printed whole (`console.warn(text, error)`, an uncaught error),
+ * and the error it would hold is the one whose text the message leaves out (a token answer, a URL
+ * with its user info). Both live here, beside `messageFor`, since `./nats-credential`, which every
+ * bundle reading `envoySettings` imports, uses them and imports nats.js's types alone.
  */
-export class LoggableError extends Error {}
+export class LoggableError extends Error {
+  constructor(message: string) {
+    super(message);
+  }
+}
+
+/** The refusals nats-server sends in its own fixed words (server/errors.go), which nats.js keeps
+ *  as an `-ERR`'s whole text (protocol.js `toError`). A text that equals one of them, quotes
+ *  aside, is printed as written here; any other text a server sent, under any code, may be a
+ *  peer's echo of what the client sent it, its token included, and is withheld. */
+const SERVER_REFUSALS: readonly string[] = [
+  "Authorization Violation",
+  "User Authentication Expired",
+  "Account Authentication Expired",
+  "Authentication Timeout",
+];
+/** The codes nats.js gives an `-ERR` the server itself sent (core.js `ErrorCode`). */
+const SERVER_ERROR_CODES: Record<string, true> = {
+  AUTHORIZATION_VIOLATION: true,
+  AUTHENTICATION_EXPIRED: true,
+  AUTHENTICATION_TIMEOUT: true,
+  ACCOUNT_EXPIRED: true,
+  PERMISSIONS_VIOLATION: true,
+  NATS_PROTOCOL_ERR: true,
+};
+
+/** What a log says of a server's `-ERR` text: nats-server's own fixed words where the text is
+ *  one of them, and otherwise that the text is withheld. */
+function serverText(code: string, text: string): string {
+  const said = text
+    .trim()
+    .replace(/^'(.*)'$/s, "$1")
+    .trim()
+    .toLowerCase();
+  const refusal = SERVER_REFUSALS.find((fixed) => fixed.toLowerCase() === said);
+  if (refusal !== undefined) return refusal;
+  return code === "PERMISSIONS_VIOLATION"
+    ? "the server refused a permission (its text is withheld)"
+    : "the server refused the connection (its text is withheld)";
+}
 
 /**
- * `url` with no user and no password, for any text that names it: an error, a log line, a notice
- * or a link. A configured Dispatch or Envoy URL may carry both, since the config accepts such a
- * URL, and a user alone can be a token, so both go; requests still go to the URL as configured. A
- * URL that carries neither comes back as written. One that carries them comes back as the URL
- * parser writes it: its scheme and host lower-cased and a default port dropped, still naming the
- * same server, and no `/` added after a bare origin. A string the URL parser refuses comes back as
- * what follows its last `@`, since what precedes it may be a password.
+ * Why a NATS call failed, as a log may print it. An allowlist: nothing nats.js, the runtime or a
+ * peer derives from the configured servers, or from what the client sent, reaches it. nats.js
+ * passes the runtime's own errors on unchanged, and those quote what they were handed (a
+ * resolver's error names the host it looked up, a socket's the port, a URL parser's the whole
+ * URL), and it keeps a server's `-ERR` text whole, which a peer that is no nats-server can fill
+ * with the CONNECT it was sent:
+ *  - a `LoggableError` (this package's or a caller's own message): its message;
+ *  - nats.js's error for a server's `-ERR`: nats-server's fixed words for its refusal
+ *    (`Authorization Violation`, `User Authentication Expired`, …), else that the text is
+ *    withheld;
+ *  - any other nats.js error: its code (`CONNECTION_REFUSED`, `TIMEOUT`, `TLS`, …);
+ *  - anything else: its class (`errorClass`): a runtime error's syscall and code
+ *    (`getaddrinfo EAI_AGAIN`, `ERR_SOCKET_BAD_PORT`), else its type, `(message withheld)`.
  */
-export function withoutUserinfo(url: string): string {
-  let parsed: URL;
-  try {
-    parsed = new URL(url);
-  } catch {
-    return url.slice(url.lastIndexOf("@") + 1);
+export function natsFailureReason(error: unknown): string {
+  if (error instanceof LoggableError) return error.message;
+  if (error instanceof Error && error.name === "NatsError") {
+    const { code } = error as { code?: unknown };
+    if (typeof code === "string" && code !== "")
+      return SERVER_ERROR_CODES[code] === true ? serverText(code, error.message) : code;
   }
-  if (parsed.username === "" && parsed.password === "") return url;
-  parsed.username = "";
-  parsed.password = "";
-  const shown = parsed.toString();
-  return shown.endsWith("/") && !url.endsWith("/") ? shown.slice(0, -1) : shown;
+  return errorClass(error);
 }

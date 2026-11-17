@@ -6,6 +6,7 @@
 // that has been ended, and trades afresh when a caller is told the token in hand is dead.
 
 import { expect, test } from "bun:test";
+import { URL_NOT_PRINTED } from "@legion/contracts/log-text";
 import { signedIn, stubIssuer } from "../../test/sign-ins";
 import { newDpopKey } from "../dpop";
 import { personIdentity } from "../person-identity";
@@ -109,6 +110,77 @@ test("a broker that does not answer leaves the token in hand working until it la
   } finally {
     broker.stop();
   }
+});
+
+// A failed trade's text names the broker and what went wrong, and a caller prints it: a plain
+// broker URL by itself, and one that carries user info (AGENT_SECRETS_URL can) by its fixed phrase
+// alone, no part of it; and an answer the library refused hangs off its error as the cause, which
+// an error printed whole prints with it.
+test.each([
+  // The library refuses a 200 with no token_type, and hangs the body it read off its error.
+  ["the library refuses", (token: string) => ({ access_token: token, expires_in: 600 })],
+  // This client refuses a token_type that is not DPoP, naming the broker it asked.
+  [
+    "this client refuses",
+    (token: string) => ({
+      access_token: token,
+      issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
+      token_type: "Bearer",
+      expires_in: 600,
+    }),
+  ],
+] as const)("an answer %s names the broker only where its URL is plain, and keeps no cause", async (_, body) => {
+  const password = `canary-pw-${crypto.randomUUID()}`;
+  const leaked = `canary-token-${crypto.randomUUID()}`;
+  const broker = stubBroker(() => ({ body: body(leaked) }));
+  const withUser = broker.url.replace("http://", `http://operator:${password}@`);
+  try {
+    for (const [url, named] of [
+      [broker.url, `${broker.url}/`],
+      [withUser, `the broker URL ${URL_NOT_PRINTED}`],
+    ] as const) {
+      const client = await clientAt(url, { now: Date.now() }, countingSource());
+      const refusal = await client.token().then(
+        () => undefined,
+        (error: unknown) => error
+      );
+      if (!(refusal instanceof Error)) throw new Error("the trade was answered");
+      expect(refusal.message).toContain(named);
+      expect(refusal.cause).toBeUndefined();
+      expect(Bun.inspect(refusal)).not.toContain(leaked);
+      expect(Bun.inspect(refusal)).not.toContain(password);
+    }
+  } finally {
+    broker.stop();
+  }
+});
+
+// A broker URL that is no http or https URL may be a token pasted where the URL goes, so the
+// client refuses it before any trade and names no part of it.
+test("a token pasted as the broker's URL is refused, and named in no part", async () => {
+  const pasted = `ya29.canary-pasted-${crypto.randomUUID()}`;
+  const refusal = await clientAt(pasted, { now: Date.now() }, countingSource()).then(
+    () => undefined,
+    (error: unknown) => error
+  );
+  if (!(refusal instanceof Error)) throw new Error("the client was made");
+  expect(refusal.message).toBe("broker client: the broker URL is not an http or https URL");
+  expect(Bun.inspect(refusal)).not.toContain(pasted);
+});
+
+// A trade that got no answer is named by the failure's class: the runtime's message repeats the
+// host it was handed, and the broker is named by `urlForText` already.
+test("a trade that got no answer names the failure by its class", async () => {
+  const client = await clientAt("http://127.0.0.1:1", { now: Date.now() }, countingSource());
+  const refusal = await client.token().then(
+    () => undefined,
+    (error: unknown) => error
+  );
+  if (!(refusal instanceof Error)) throw new Error("the trade was answered");
+  expect(refusal.message).toBe(
+    "trade a scripted identity at http://127.0.0.1:1/v1/oauth/token: ECONNREFUSED"
+  );
+  expect(refusal.cause).toBeUndefined();
 });
 
 test("a refusal of the identity stops at once, whatever is in hand", async () => {

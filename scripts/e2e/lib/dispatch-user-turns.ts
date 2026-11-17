@@ -48,7 +48,7 @@ import { createRequire } from "node:module";
 import { connect, type NatsConnection } from "nats";
 import {
   natsDialFailure,
-  natsServerForLog,
+  natsServersForLog,
 } from "../../../packages/envoy-client/src/nats-connection";
 
 import { readAgentReplay } from "./agent-replay";
@@ -62,13 +62,15 @@ function refuse(message: string): never {
 
 /** The bare bus client of `url`. A failed connect is named and exits 1; nats.js's own error left
  *  uncaught would print the URL it was given, a credential in it included (a malformed URL's
- *  `input`), so the line names the server and the reason as a log may (natsDialFailure) and the
- *  error goes no further. */
+ *  `input`), so the line names the server by its argument and the reason as a log may
+ *  (natsDialFailure) and the error goes no further. */
 async function busClient(url: string): Promise<NatsConnection> {
   try {
     return await connect({ name: "legion-e2e-user-turns", servers: url, timeout: 10_000 });
   } catch (error) {
-    process.stderr.write(`dispatch-user-turns: ${natsDialFailure(natsServerForLog(url), error)}\n`);
+    process.stderr.write(
+      `dispatch-user-turns: ${natsDialFailure(natsServersForLog("<nats-url>", 1), error)}\n`
+    );
     process.exit(1);
   }
 }

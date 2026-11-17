@@ -9,13 +9,18 @@ import {
   LISTENER_CALL_TIMEOUT_MS,
   MINTED_DEDUPE_KEY_PATTERN,
 } from "@legion/contracts";
+import { errorClass, requestForText } from "@legion/contracts/log-text";
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import { z } from "zod";
 import type { RequestCredential } from "./bearer";
-import { messageFor, withoutUserinfo } from "./errors";
+import { messageFor } from "./errors";
 import { machineID } from "./machine";
 import { streamDeliversNothing } from "./stream-topics";
 import type { TmuxPlace } from "./tmux-place";
+
+/** What names the listener's URL in a text where the URL does not parse (`requestForText`). The
+ *  configuration refuses such a URL before a client is made (`envoy-config.ts`). */
+const ENVOY_URL_SETTING = "the configured Envoy URL";
 
 /**
  * A session's state, which the listener computes from that session's last registration and from
@@ -889,6 +894,15 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
 
   const credential = config.credential;
 
+  /** `url` as a text names it: on a clean base, as built, and otherwise the base's phrase. */
+  const shown = (url: string): string => requestForText(baseUrl, url, ENVOY_URL_SETTING);
+
+  /** A call that got no answer, as our own error: the runtime's own error repeats the host it
+   *  dialed, which an unclean base names (`https://user:p@ssword` dials `ssword`), so it is named
+   *  by its class and kept as no cause. */
+  const noAnswer = (method: string | undefined, url: string, error: unknown): Error =>
+    new Error(`${method ?? "GET"} ${shown(url)} got no answer: ${errorClass(error)}`);
+
   const attemptOnce = async (
     url: string,
     init: RequestInit,
@@ -921,7 +935,7 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
         signal: AbortSignal.timeout(deadlineMs),
       });
     } catch (error) {
-      return { unanswered: error };
+      return { unanswered: noAnswer(init.method, url, error) };
     }
     if (unminted !== undefined && (response.status === 401 || response.status === 403)) {
       // The listener wanted the credential this machine could not mint. That is no answer about
@@ -929,7 +943,7 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
       // come back — and the error names both halves.
       return {
         unanswered: new Error(
-          `${init.method ?? "GET"} ${withoutUserinfo(url)} answered ${response.status}, and this machine's Envoy credential could not be minted: ${messageFor(unminted)}`,
+          `${init.method ?? "GET"} ${shown(url)} answered ${response.status}, and this machine's Envoy credential could not be minted: ${messageFor(unminted)}`,
           { cause: unminted }
         ),
       };
@@ -940,9 +954,9 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
       return { response, body: await response.text() };
     } catch (error) {
       if (response.status >= 400 && response.status < 500) {
-        return { response, body: `(its body did not arrive: ${String(error)})` };
+        return { response, body: `(its body did not arrive: ${errorClass(error)})` };
       }
-      return { unanswered: error };
+      return { unanswered: noAnswer(init.method, url, error) };
     }
   };
 
@@ -973,7 +987,7 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
 
       const error = new EnvoyApiError({
         method: init.method ?? "GET",
-        url: withoutUserinfo(url),
+        url: shown(url),
         status: response.status,
         responseBody: body,
       });

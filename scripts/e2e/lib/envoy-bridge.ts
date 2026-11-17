@@ -8,13 +8,12 @@
 import { type ConnectionOptions, connect, type NatsConnection, type Subscription } from "nats";
 import { EnvelopeSchema } from "../../../packages/contracts/src/envelope";
 import { githubSubject } from "../../../packages/contracts/src/subject";
-import { LoggableError } from "../../../packages/envoy-client/src/errors";
+import { LoggableError, natsFailureReason } from "../../../packages/envoy-client/src/errors";
 import { natsAuthOptions } from "../../../packages/envoy-client/src/nats-auth";
 import {
   natsDialedAddress,
   natsDialFailure,
-  natsFailureReason,
-  natsServerForLog,
+  natsServersForLog,
 } from "../../../packages/envoy-client/src/nats-connection";
 import { operatorNatsSeed } from "./operator-nats-seed";
 
@@ -101,10 +100,10 @@ function dialsCheckedHost(upstreamUrl: string): boolean {
   return host !== undefined && natsDialedAddress(upstreamUrl)?.host === host.toLowerCase();
 }
 
-/** The line the bridge prints once both connections answer. The rig's server is named as a log
- *  names a NATS server (natsServerForLog): SMOKE_RIG_NATS may hold a credential too. */
+/** The line the bridge prints once both connections answer. Each server is named by its variable
+ *  alone: either may hold a credential, and the upstream names production infrastructure. */
 export function bridgeReadyLine(config: BridgeConfig): string {
-  return `BRIDGE READY subjects=${config.subjects.join(",")} upstream=SMOKE_UPSTREAM_NATS downstream=${natsServerForLog(config.downstreamUrl)}`;
+  return `BRIDGE READY subjects=${config.subjects.join(",")} upstream=SMOKE_UPSTREAM_NATS downstream=SMOKE_RIG_NATS`;
 }
 
 /** The line the bridge prints when it stops on `error`: why, as a log may print it
@@ -185,8 +184,8 @@ async function forwardMessages(
   }
 }
 
-/** nats.js's `connect` with `options`, whose failure is the bridge's own line naming the server as
- *  `named` (natsDialFailure): the upstream by its variable, the rig as a log names it. */
+/** nats.js's `connect` with `options`, whose failure is the bridge's own line naming the server by
+ *  its variable (natsDialFailure, natsServersForLog). */
 async function dial(options: ConnectionOptions, named: string): Promise<NatsConnection> {
   try {
     return await connect(options);
@@ -213,7 +212,7 @@ export async function runBridge(config: BridgeConfig): Promise<void> {
       maxReconnectAttempts: -1,
       reconnectTimeWait: 2_000,
     },
-    "SMOKE_UPSTREAM_NATS"
+    natsServersForLog("SMOKE_UPSTREAM_NATS", 1)
   );
   let downstream: NatsConnection | undefined;
   try {
@@ -225,7 +224,7 @@ export async function runBridge(config: BridgeConfig): Promise<void> {
         maxReconnectAttempts: -1,
         reconnectTimeWait: 2_000,
       },
-      natsServerForLog(config.downstreamUrl)
+      natsServersForLog("SMOKE_RIG_NATS", 1)
     );
     const activeDownstream = downstream;
     const subscriptions = config.subjects.map((subject) => upstream.subscribe(subject));

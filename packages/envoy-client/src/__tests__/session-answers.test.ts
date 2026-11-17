@@ -10,6 +10,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import type { SessionAnswer } from "@legion/contracts";
+import { URL_NOT_PRINTED } from "@legion/contracts/log-text";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { type FakeDispatchCall, fakeDispatchFetch } from "../../test/fake-dispatch";
 import { bearerCredential } from "../bearer";
@@ -788,8 +789,9 @@ describe("readSessionAnswers", () => {
   });
 
   // The notice is a line the host shows the session, so it names a Dispatch URL that carries a
-  // user and a password without them; the read itself goes to the URL as configured.
-  test("the no-route notice names the Dispatch URL without its user and password", async () => {
+  // user and a password by its fixed phrase alone, no part of it; the read itself goes to the URL
+  // as configured.
+  test("the no-route notice names a Dispatch URL with user info by its fixed phrase", async () => {
     const user = "user-7f2a";
     const secret = "pw-4c7e19";
     const { calls, fetchImpl } = fakeDispatchFetch({ handler: noRoute });
@@ -805,7 +807,7 @@ describe("readSessionAnswers", () => {
       now: () => NOW,
     });
     expect(calls.map((call) => call.url.username)).toEqual([user]);
-    expect(read.notice).toBe(noRouteNotice(`http://answers-userinfo-${dispatchCount}.test`));
+    expect(read.notice).toBe(noRouteNotice(`the configured Dispatch URL ${URL_NOT_PRINTED}`));
     expect(read.notice).not.toContain(user);
     expect(read.notice).not.toContain(secret);
   });

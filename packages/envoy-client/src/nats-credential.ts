@@ -14,13 +14,14 @@
 // before then (`keepNatsCredential`).
 
 import type { BrokerEnvironment } from "@legion/broker-client/environment";
+import { SIGNIN_COMMAND } from "@legion/broker-client/signins";
 import { BrokerRefusedError, SignInEndedError } from "@legion/broker-client/token-client";
 // Types alone: `envoySettings` imports this module, and every bundle of it — the `dispatch`
 // command's, each hook's — would otherwise carry nats.js whole.
 import type { Auth, Events, NatsConnection, Status } from "nats";
 import { type BrokerSessionName, brokerTokenFor, type TradedToken } from "./broker-credential";
 import type { NatsSeed } from "./envoy-settings";
-import { LoggableError, messageFor } from "./errors";
+import { LoggableError, natsFailureReason } from "./errors";
 
 /** The variable that names which credential a session's NATS connection presents: `broker` or
  *  `none`. `envoy.natsAuth` names it in the file, and the variable overrides that field. */
@@ -84,6 +85,29 @@ function tradeUnanswered(source: string, deadlineMs: number): string {
   return `${source} is broker, but the secrets broker did not answer the trade for the session's token within ${deadlineMs / 1000} s`;
 }
 
+/** An OAuth error code as RFC 6749 writes them (`invalid_grant`), never a peer's free text. */
+const OAUTH_ERROR_CODE = /^[a-z][a-z0-9_]{0,63}$/;
+
+/**
+ * Why a trade for the session's token failed, as a log may print it. broker-client's own texts
+ * name the configured identity (a token file's path, which can be a token pasted into the wrong
+ * setting) and the broker's URL (which can hold user info), so neither is printed: a refusal is
+ * the broker's HTTP status, OAuth error code and its own description of the refusal (which the
+ * Go broker writes in fixed words, and names no token: `wire.json`), an ended sign-in its
+ * remedy, and any other failure goes by `natsFailureReason`'s allowlist, since its text is the
+ * runtime's or the transport's, which quotes what it was handed.
+ */
+export function tradeFailureReason(error: unknown): string {
+  if (error instanceof BrokerRefusedError) {
+    const code = OAUTH_ERROR_CODE.test(error.code) ? ` ${error.code}` : "";
+    const said = error.description === "" ? "" : `: ${error.description}`;
+    return `the secrets broker refused the identity traded: HTTP ${error.status}${code}${said}`;
+  }
+  if (error instanceof SignInEndedError)
+    return `the issuer no longer honours the sign-in on this machine; run: ${SIGNIN_COMMAND}`;
+  return natsFailureReason(error);
+}
+
 /**
  * The broker token of `env`'s machine, or of a person signed in on it, for the session `session`
  * names, as a NATS connection presents it, chosen by the setting `source` names (`NATS_AUTH` by
@@ -129,9 +153,8 @@ export function brokerNatsCredential(
   };
   return {
     // The trade itself goes on past the deadline, for the keeper and the next `ready`: only this
-    // wait for it ends. A refusal the broker or the issuer gave names what was traded and what
-    // it said, which a failure line prints whole (`LoggableError`); any other failure is printed
-    // by its code alone (`natsFailureReason`).
+    // wait for it ends. Its failure is this package's own line, naming the setting that chose the
+    // broker token and why as a log may print it (`tradeFailureReason`).
     ready: () => {
       if (live()) return Promise.resolve();
       let timer: ReturnType<typeof setTimeout> | undefined;
@@ -143,9 +166,9 @@ export function brokerNatsCredential(
         timer.unref?.();
       });
       const traded = renew().catch((error: unknown) => {
-        if (error instanceof BrokerRefusedError || error instanceof SignInEndedError)
-          throw new LoggableError(messageFor(error), { cause: error });
-        throw error;
+        throw new LoggableError(
+          `${source} is broker, but the trade for the session's token failed: ${tradeFailureReason(error)}`
+        );
       });
       return Promise.race([traded, deadline]).finally(() => clearTimeout(timer));
     },
@@ -254,7 +277,7 @@ export function keepNatsCredential(
       if (stopped) return;
       if (credential.needsReconnect()) await connection.reconnect();
     } catch (error) {
-      warnOnce(`could not be renewed (${messageFor(error)})`);
+      warnOnce(`could not be renewed (${tradeFailureReason(error)})`);
       retry();
       return;
     }

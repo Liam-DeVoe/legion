@@ -19024,8 +19024,9 @@ console.log(JSON.stringify(args));
     await fixture.handlers.get("session_start")?.({}, context);
 
     expect(notifications).toEqual([
-      `envoy: Envoy's inbound messages are off: NATS_NKEY_SEED_FILE names ${missing}, which could not be read: ENOENT: no such file or directory, open '${missing}'; the Envoy tools still work`,
+      "envoy: Envoy's inbound messages are off: NATS_NKEY_SEED_FILE names a file that could not be read (ENOENT); the Envoy tools still work",
     ]);
+    expect(notifications.join("\n")).not.toContain(missing);
     expect(natsState.connectedNames.length).toBe(0);
     expect(intervals.length).toBe(0);
     expect(fixture.tools.map((tool) => tool.name)).toContain("envoy_send");
@@ -19127,7 +19128,7 @@ console.log(JSON.stringify(args));
       configure: () => {
         const missing = join(configDirectory, "missing-seed");
         process.env.NATS_NKEY_SEED_FILE = missing;
-        return `NATS_NKEY_SEED_FILE names ${missing}, which could not be read: ENOENT: no such file or directory, open '${missing}'`;
+        return "NATS_NKEY_SEED_FILE names a file that could not be read (ENOENT)";
       },
     },
     {

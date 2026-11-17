@@ -1,0 +1,16 @@
+kind: Added
+body: |-
+    `@legion/contracts/log-text` holds the one rule every client of this workspace names a
+    configured value by in an error, log line, notice or link: the Dispatch client and its
+    commands, the Envoy client and its listener calls, Claude Code's session hook, and the broker
+    client's trades. `urlForText(url, setting)` names a configured URL without its user, password,
+    query and fragment, and a value that does not parse as a URL by its setting alone
+    (`<setting> (not a URL)`), never by any part of it. `requestForText(url, setting)` names a
+    request URL a client built the same way, keeping the query the client wrote. `errorClass(error)`
+    names an error a library or the runtime threw by its class (`getaddrinfo ENOTFOUND`,
+    `ECONNREFUSED`, `TypeError (message withheld)`), never by its message, which repeats what it
+    was handed. `isHttpUrl(value)` is the check a client makes of a configured server address.
+    `withoutUserinfo` (`@legion/envoy-client/errors`) and broker-client's `urlForText` are gone.
+time: 2026-11-16T23:27:25Z
+custom:
+    Issue: pr4140

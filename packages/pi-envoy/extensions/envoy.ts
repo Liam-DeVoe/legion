@@ -93,9 +93,9 @@ import {
   REGISTRATION_SETTLE_MS,
   SHUTDOWN_SETTLE_MS,
 } from "@legion/envoy-client/envoy-settings";
-import { LoggableError, messageFor } from "@legion/envoy-client/errors";
+import { LoggableError, messageFor, natsFailureReason } from "@legion/envoy-client/errors";
 import { machineID } from "@legion/envoy-client/machine";
-import { natsConnectionOptions, natsFailureReason } from "@legion/envoy-client/nats-connection";
+import { natsConnectionOptions } from "@legion/envoy-client/nats-connection";
 import {
   type BrokerNatsCredential,
   followNatsCredential,

@@ -239,6 +239,25 @@ describe("sessionSettings", () => {
     expect(sessionSettings({ path: empty, error: null }, {}, { cwd: tempDir() }).notice).toBeNull();
   });
 
+  // Where the link base cannot print, the session says so once, at its start, by the setting's
+  // name: why every link its Dispatch commands print is a dispatch:// reference.
+  test("says once at the start which setting makes links print as references", () => {
+    const file = writeFile(path.join(tempDir(), "envoy.json"), { envoy: envoyOn });
+    const secret = "pw-4c7e19";
+    const at = (url: string) =>
+      sessionSettings(
+        { path: file, error: null },
+        { DISPATCH_URL: url, DISPATCH_TOKEN: "token" },
+        { cwd: tempDir() }
+      ).notice;
+    expect(at("https://dispatch.example")).toBeNull();
+    const notice = at(`https://user:${secret}@dispatch.example`);
+    expect(notice).toBe(
+      "DISPATCH_URL is not a plain http(s) URL (it carries user info, a query, a fragment, '%' or '\\'), so the links Dispatch commands print are dispatch:// references; set DISPATCH_PUBLIC_URL to a plain https URL for dashboard links"
+    );
+    expect(notice).not.toContain(secret);
+  });
+
   test("a file that cannot be read turns both off with one error", () => {
     const file = writeFile(path.join(tempDir(), "envoy.json"), "{");
     const settings = sessionSettings({ path: file, error: null }, {}, { cwd: tempDir() });

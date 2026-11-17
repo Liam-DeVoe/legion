@@ -5,6 +5,7 @@
 // honours it.
 
 import { afterEach, expect, test } from "bun:test";
+import { URL_NOT_PRINTED } from "@legion/contracts/log-text";
 import { type IssuerAnswer, signedIn, stubIssuer } from "../../test/sign-ins";
 import { personIdentity } from "../person-identity";
 import { SIGNIN_COMMAND, type SignInFlow } from "../signins";
@@ -95,6 +96,27 @@ test("a refresh token the issuer no longer honours ends the sign-in, naming agen
   expect(isFinalRefusal(refusal)).toBe(true);
   expect(refusal?.message).not.toContain(record.refresh_token);
   expect(refusal?.message).not.toContain(CLIENT_SECRET);
+  // No cause: the issuer's answer hangs off the library's error, printed with an error printed
+  // whole.
+  expect(refusal?.cause).toBeUndefined();
+});
+
+// The issuer is named as every client names a URL (`urlForText`): one that carries user info by
+// its variable's fixed phrase alone, no part of it. No error keeps the library's as its cause:
+// openid-client's error for an issuer that is not the one asked for holds the issuer as it was
+// configured, its user info included.
+test("an issuer with user info is named by its variable alone, in its text and its cause", async () => {
+  const issuer = await issuerFor();
+  const password = `canary-pw-${crypto.randomUUID()}`;
+  const withUser = issuer.url.replace("http://", `http://operator:${password}@`);
+  const refusal = await refusalOf(async () =>
+    personIdentity(await signedIn(PERSON), flowAt(withUser)).read()
+  );
+  expect(refusal?.message).toStartWith(
+    `read the sign-in issuer AGENT_SECRETS_SIGNIN_ISSUER ${URL_NOT_PRINTED}: `
+  );
+  expect(refusal?.cause).toBeUndefined();
+  expect(Bun.inspect(refusal)).not.toContain(password);
 });
 
 test("an issuer that is down is an ordinary error, and the next read asks again", async () => {
@@ -117,16 +139,21 @@ test("an issuer that is down is an ordinary error, and the next read asks again"
 test("a discovery that failed is not kept: the next read asks the issuer again", async () => {
   const issuer = await issuerFor();
   let calls = 0;
+  // As Bun's fetch fails: a code beside a message, which can repeat the host it was handed.
   const flaky = (async (input: string | URL | Request, init?: RequestInit) => {
     calls += 1;
-    if (calls === 1) throw new Error("connection refused");
+    if (calls === 1)
+      throw Object.assign(new TypeError("connect to canary-host.invalid refused"), {
+        code: "ECONNREFUSED",
+      });
     return await fetch(input, init);
   }) as typeof fetch;
   const source = personIdentity(await signedIn(PERSON), flowAt(issuer.url), { fetch: flaky });
   const refusal = await refusalOf(() => source.read());
   expect(refusal?.message).toStartWith(`read the sign-in issuer ${issuer.url}: `);
-  // The reason the request got no answer, which the library hangs off its own error.
-  expect(refusal?.message).toContain("connection refused");
+  // The reason the request got no answer, which the library hangs off its own error, by its class.
+  expect(refusal?.message).toContain("ECONNREFUSED");
+  expect(refusal?.message).not.toContain("canary-host");
   expect((await source.read()).tokenType).toBe(SUBJECT_TOKEN_TYPE_PERSON);
   expect(issuer.requests.map((request) => request.path)).toEqual([
     "/.well-known/openid-configuration",

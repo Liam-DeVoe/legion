@@ -4,8 +4,9 @@ import { nkeys } from "nats";
 
 // The operator's NATS helpers given a server URL that holds a credential, and a connect that
 // fails: each names the failure and exits 1, and the credential reaches its output neither in the
-// server it names nor in nats.js's own error text. No server runs: port 99999 does not parse,
-// nothing listens on 127.0.0.1:1, and the other hosts do not resolve.
+// server it names (a log names a server by the setting or argument that holds it, never by its
+// text) nor in nats.js's own error text. No server runs: port 99999 does not parse, nothing
+// listens on 127.0.0.1:1, and the other hosts do not resolve.
 //
 // nats.js's text carries a credential in two of these forms, which are the rows that fail when
 // the helper prints that text unredacted: an nkey seed pasted as the host, which its resolver
@@ -13,32 +14,32 @@ import { nkeys } from "nats";
 // the host. Each URL's user info is joined here, so the source holds no credential-bearing URL
 // for the push leak check to find.
 const userinfo = (...parts: string[]) => `${parts.join(":")}@`;
-const UNNAMED = "a server address that does not read as a host";
+const NAMED = "the server <nats-url> names";
 const seed = new TextDecoder().decode(nkeys.createUser().getSeed());
 const cases = [
   [
     "a URL that does not parse",
     `nats://${userinfo("user", "canary-pw-7f3a")}127.0.0.1:99999`,
-    UNNAMED,
+    NAMED,
     "canary-pw-7f3a",
   ],
   [
     "a server that refuses a user and password",
     `nats://${userinfo("user", "canary-pw-7f3a")}127.0.0.1:1`,
-    "nats://127.0.0.1:1",
+    NAMED,
     "canary-pw-7f3a",
   ],
   [
     "a server that refuses a token",
     `nats://${userinfo("canary-token-7f3a")}127.0.0.1:1`,
-    "nats://127.0.0.1:1",
+    NAMED,
     "canary-token-7f3a",
   ],
-  ["an nkey seed pasted as the server", `nats://${seed}:4222`, UNNAMED, seed],
+  ["an nkey seed pasted as the server", `nats://${seed}:4222`, NAMED, seed],
   [
     "a token holding an unencoded /",
     `nats://${userinfo("canarytok/def+gh==")}127.0.0.1:4222`,
-    UNNAMED,
+    NAMED,
     "canarytok",
   ],
 ] as const;
