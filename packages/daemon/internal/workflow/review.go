@@ -582,7 +582,22 @@ func (e *Engine) review(ctx context.Context, tx pgx.Tx, fact intake.PullRequestR
 	// review is the reviewer's, and the cost of leaving the commit is only a next round that reads
 	// the whole change. A person's review decides the round as before and leaves that commit where
 	// it stands, since the reviewer never read the commit the person did.
-	if head := reviewer.Decision.Head; head != "" && reviewerSession != "" && e.byReviewer(fact, reviewerSession) {
+	//
+	// And only a review of the round that stands moves it. The reviewer's row holds the task of an
+	// entry, which a new generation's clear empties until the promotion raises the entry again
+	// (record.Store.ClearTreeGeneration, StartPromotedWorker), and the review was submitted after
+	// that entry was raised (record.PhaseRow.EntryRaisedAt). So a review submitted before a
+	// re-admission and applied after it, however late, leaves the cleared commit cleared, and the
+	// first review of the new generation reads the whole change. A review with no submission time
+	// moves nothing. There is no allowance for the skew of GitHub's clock against the daemon's: a
+	// review comes minutes after its round's entry. Where either test fails, the commit stays where
+	// it stands, and the cost is a next round that reads more. A carried hand-over's promotion
+	// raises a new entry in the middle of the round, so a review submitted before that entry and
+	// applied after it moves nothing. A row that the entry upgrade filled
+	// (20261111225552_phase_entry) can hold no task, or an entry time later than the reviews of its
+	// round, and a review of that round moves nothing.
+	if head := reviewer.Decision.Head; head != "" && reviewerSession != "" && e.byReviewer(fact, reviewerSession) &&
+		reviewer.EntryTask != "" && fact.SubmittedAt.After(reviewer.EntryRaisedAt) {
 		reviewer.ReviewedHead = head
 	}
 	if err := e.store.PutPhase(ctx, tx, reviewer); err != nil {

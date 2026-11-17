@@ -53,7 +53,8 @@ func TestTheReviewEventDecidesAndTheCompletionRecordsItsFindings(t *testing.T) {
 			review := func() {
 				t.Helper()
 				if _, err := intake.ApplyFact(ctx, pool, "github", "review", intake.PullRequestReview{
-					Repo: "sjawhar/legion", Number: 42, State: tc.decision, CommitID: headOne, Author: testReviewApp, Body: reviewBody("the review", headOne)}, engine); err != nil {
+					Repo: "sjawhar/legion", Number: 42, State: tc.decision, CommitID: headOne, Author: testReviewApp, Body: reviewBody("the review", headOne),
+					SubmittedAt: reviewTestedAt}, engine); err != nil {
 					t.Fatalf("apply the review: %v", err)
 				}
 			}
@@ -1037,7 +1038,8 @@ func TestAReviewWhileHeldFromReviewingDecidesTheRound(t *testing.T) {
 			engine := testEngine(config.DesignGateRootIssues, nil)
 			for i, fact := range []intake.Fact{
 				intake.ClaimFailed{Issue: "LEGION-208", Role: claim.RoleReviewer},
-				intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, ID: 11, State: tc.state, CommitID: headOne, Author: testReviewApp, Body: reviewBody("the review", headOne)},
+				intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, ID: 11, State: tc.state, CommitID: headOne, Author: testReviewApp, Body: reviewBody("the review", headOne),
+					SubmittedAt: reviewTestedAt},
 				intake.RetryOrEscalate{Issue: "LEGION-208", Decision: intake.RetryDecision},
 				intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: reviewClaim, Summary: "reviewed", HandoffRecord: "review-1", HandoffVersion: 1},
 			} {
@@ -1643,16 +1645,20 @@ func reviewStuckNotices(t *testing.T, pool *pgxpool.Pool) []record.Notice {
 const reviewClaim claim.Token = "legion-legion-legion-208-reviewer"
 
 // seedRoundOneRows seeds LEGION-208's implementer and reviewer rows as a first review round holds
-// them. The implementer's row names the claim its completion carried. The reviewer's names none
-// yet: the reviewer submits its review before it completes, and only a completion writes a row's
-// claim (record.PhaseRow.Claim, which the engine's completion handler writes). The reviewer's
+// them. The implementer's row names the claim its completion carried. The reviewer's row holds the
+// entry the round's start raised, with its task, raised before any review of the round
+// (record.PhaseRow.Entry, EntryTask and EntryRaisedAt), as every round's row does: only a review
+// submitted after that entry moves the commit the reviewer read (workflow's review). It names no
+// claim yet: the reviewer submits its review before it completes, and only a completion writes a
+// row's claim (record.PhaseRow.Claim, which the engine's completion handler writes). The reviewer's
 // claim is recorded as the daemon records it, under the token the daemon names it by
 // (reviewClaim) and with the session its agent registered, the session reviewBody's footer names.
 // A test of a later round gives the row its claim through the reviewer's completion, or through
 // afterTheReviewersFirstCompletion when it applies none.
 func seedRoundOneRows(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
-	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleReviewer})
+	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleReviewer, Entry: 1,
+		EntryTask: "Continue root. Issue: LEGION-208. Phase: reviewing. Pull request: #42.", EntryRaisedAt: seededRaisedAt})
 	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: "implement-claim"})
 	seedClaimSession(t, pool, reviewClaim, "ses-reviewer")
 }

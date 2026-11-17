@@ -5,9 +5,12 @@
 -- submitted as the review App from the session the claims record holds for the claim the daemon
 -- starts the reviewer under, writes the head its Legion footer names (workflow's review,
 -- byReviewer); a review of any other session writes nothing, in the first round as in every later
--- one, and neither does any review while that claim records no session. No entry into a phase
--- clears it, unlike the round's decision beside it (workflow's clearHandoff), so the task of the
--- reviewer's next round names it as
+-- one, and neither does any review while that claim records no session. Only a review of the round
+-- that stands writes it: the reviewer's row holds the task of an entry, and the review was
+-- submitted after that entry was raised (phases.entry_task and phases.entry_raised_at), so a review
+-- submitted before a new generation's clear writes nothing, however late it is applied. No entry
+-- into a phase clears it, unlike the round's decision beside it (workflow's clearHandoff), so the
+-- task of the reviewer's next round names it as
 -- `Last reviewed commit: <sha>.` and the reviewer reads the difference from that commit to the
 -- head. A new generation clears it with the decision (record.Store.ClearGeneration and
 -- ClearTreeGeneration).
