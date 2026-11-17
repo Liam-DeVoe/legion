@@ -457,7 +457,7 @@ func (g *GitRepo) openPull(w http.ResponseWriter, r *http.Request) {
 	pull := PullRequest{Number: len(g.pulls) + 1, Title: open.Title, Body: open.Body, Base: open.Base, Head: branch, State: "open",
 		OpenedWith: strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")}
 	g.pulls = append(g.pulls, pull)
-	g.answerPull(w, http.StatusCreated, pull, head)
+	g.answer(w, http.StatusCreated, g.pullAnswer(pull, head))
 }
 
 // listPulls answers the list of the pull requests the fake opened that r's head and state name.
@@ -471,7 +471,10 @@ func (g *GitRepo) listPulls(w http.ResponseWriter, r *http.Request) {
 	defer g.mu.Unlock()
 	listed := []map[string]any{}
 	for _, pull := range g.pulls {
-		if head := query.Get("head"); head != "" && head != g.owner+":"+pull.Head || state != "all" && state != pull.State {
+		if head := query.Get("head"); head != "" && head != g.owner+":"+pull.Head {
+			continue
+		}
+		if state != "all" && state != pull.State {
 			continue
 		}
 		sha, err := g.head(pull.Head)
@@ -499,12 +502,7 @@ func (g *GitRepo) readPull(w http.ResponseWriter, number string) {
 		g.failed(w, "read the head of pull request "+number, err)
 		return
 	}
-	g.answerPull(w, http.StatusOK, pull, sha)
-}
-
-// answerPull writes status and pull, its head branch at sha.
-func (g *GitRepo) answerPull(w http.ResponseWriter, status int, pull PullRequest, sha string) {
-	g.answer(w, status, g.pullAnswer(pull, sha))
+	g.answer(w, http.StatusOK, g.pullAnswer(pull, sha))
 }
 
 // pullAnswer is GitHub's body of pull, its head branch at sha.
