@@ -564,7 +564,12 @@ for its jobs and gh's for `gh run view` and `gh run watch`, are, for every role,
 Legion gh wrapper's refusal, exit 2, of a call naming a repository whose owner is outside the
 project; the world answers
 every `gh` read either label's role texts name, which `gh-routes.ts`'s `WORLD_ROUTES` lists and the
-rig's tests pin against both checkouts); no request of an agent that the run's own Dispatch server
+rig's tests pin against both checkouts); no `gh` write (a GraphQL mutation, a `gh api` call sent
+with a verb other than GET, a `gh pr`, `gh run` or `gh auth` command that writes) went unanswered by
+every route and answer the world models: one the gh stand-in recorded as answered by nothing
+(`handler` `unrouted` in `calls.jsonl`) or, in a record from before it kept `handler`, one the
+catch-all write route (`^gh api `) answered a success that changed nothing, which filed no review
+thread comment and was no review submit; no request of an agent that the run's own Dispatch server
 answered with an error, 4xx or 5xx, by the server's own line of it in `<run>/logs/dispatch.log`,
 unless `health.ts`'s `DISPATCH_DECLARED` declares that answer for the scenario and the agent's role
 (the agent booted last before the request began, by the opening line each daemon stand-in writes
@@ -802,6 +807,27 @@ gets the wrapper's `the command names more than one owner, …`. A form the labe
 that this reading does not model fails the batch at `services_up`, naming it, and so does the
 pin in `gh-standin.test.ts`, which runs every form the table holds through the world.
 
+A write is answered only where the world models it, each by a route of its own that names its
+verb and the one path it writes, the world's repository and pull request read whole: the create
+of a review, its submit and its update (`PUT …/reviews/<id>`, whose new body every later read of
+that review shows, for a review the world held and one the run made alike); the pull request's
+body (a PATCH sending the body alone, or `gh pr edit` with the body alone); an inline review
+comment and the REST reply under one, a reply to a reply filed in its thread and replying to the
+thread's first comment, as GitHub files it; a comment on the conversation (the REST POST, or `gh
+pr comment`, which prints the comment's URL, its id the conversation's, from 8001); and the two
+GraphQL mutations the graph holds. Every other write — another path, a verb a read's path does
+not take (each read route takes GET alone), a mutation the graph holds no answer for, `gh pr
+review`, `ready`, `merge`, `close`, `create`, an edit of anything but the body — is refused as
+GitHub refuses an endpoint it does not serve: `gh: Not Found (HTTP 404)` on stderr, GitHub's error
+body on stdout as gh prints it, exit 1, and nothing changed; `calls.jsonl` records it `unrouted`,
+which `rig.sh health` names. Until INFRA-764 round 25, one route answered every POST, PATCH and PUT
+no route above it took with `{id:6001}` and exit 0 and changed nothing, and a reviewer's update of
+its review's body read back unchanged with no rule seeing it. The daemon stand-in's writes follow
+the daemon the same way: a backward move the workflow has no row for, or by a role not running the
+issue's phase, is refused `BACKWARD_REFUSED` in the engine's sentence and one it takes moves the
+issue; a completion naming a handoff record reads it back from the run's own Dispatch and is
+refused `HANDOFF_RECORD_NOT_FOUND` or `HANDOFF_RECORD_MISMATCH` as the daemon refuses it.
+
 Each role commits as its App's bot, `<slug>[bot]` and
 `<id>+<slug>[bot]@users.noreply.github.com`, as production gives it (`packages/daemon/internal/appauth`'s
 `AppRoleFor` and `botIdentity`): the implement App for the implementer and the merger, the review
@@ -819,10 +845,15 @@ Stated limits, each known and kept so:
   production does not have here, so the window stays out.
 - The check runs name GitHub Actions as their App, while the world holds no workflow run
   (`actions/runs` lists none, and `gh run view` refuses as for a run that is not there).
-- The REST reply route (`POST repos/<o>/<r>/pulls/<n>/comments/<id>/replies`) is answered in
-  GitHub's documented form. No recorded run made that call, since before the world gave a
-  thread's comment its `databaseId` no agent had an id to name, so its pin follows GitHub's
-  documentation rather than a recorded call.
+- The REST reply route (`POST repos/<o>/<r>/pulls/<n>/comments/<id>/replies`) follows GitHub as
+  measured on 2026-11-17 (a reply to a reply is filed in its thread, replying to the thread's
+  first comment); the `in_reply_to` of `POST …/pulls/<n>/comments` is read the same way, which is
+  not measured.
+- A daemon stand-in's completion naming a handoff record is not held to the session that wrote
+  the record (the daemon's `HANDOFF_SESSION_MISMATCH`): the session a claim registers under and the
+  one Dispatch names a record's author by are not measured to agree in the rig.
+- An endpoint written with gh's `{owner}/{repo}` placeholders is not filled in from `GH_REPO` as gh
+  fills it, so such a write is refused as one the world does not model; no recorded run made one.
 - A GET of a repository the world's workflow names (an action's tag, read to check the commit its
   `uses:` line pins) reaches the live GitHub, as it does in production, so its answer is GitHub's
   and not the world's. A run in which that read fails for a network reason is not unhealthy for

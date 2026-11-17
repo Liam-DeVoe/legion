@@ -187,6 +187,17 @@ const apiPost = (dir: string, route: string, ...rest: string[]) =>
     env: callEnv(dir),
   });
 const REVIEWS = "repos/example/widgets/pulls/1001/reviews";
+/** The body GitHub answers a 404 with, as gh prints it on stdout (indented) before `gh: Not Found
+ * (HTTP 404)` on stderr (gh-standin.ts's `notFoundBody`), naming the page `documentation`: GitHub's
+ * REST reference for an endpoint it does not serve, a served endpoint's own page for an object
+ * that endpoint does not hold. */
+const notFoundOf = (documentation = "https://docs.github.com/rest") =>
+  JSON.stringify(
+    { message: "Not Found", documentation_url: documentation, status: "404" },
+    null,
+    2
+  );
+const GITHUB_404 = notFoundOf();
 /** The create of a pending review: a body naming no `event`, which is what leaves one. */
 function createPending(dir: string, review: object): void {
   const body = path.join(dir, "pending.json");
@@ -545,7 +556,7 @@ test("a GET of a review this run created answers that review as it stands", () =
   ]);
   expect(ghCall(dir, "api", `${REVIEWS}/5001`)).toEqual({
     code: 1,
-    out: "",
+    out: notFoundOf("https://docs.github.com/rest/pulls/reviews#get-a-review-for-a-pull-request"),
     err: "gh: Not Found (HTTP 404)\n",
   });
 });
@@ -710,9 +721,11 @@ test("every body edit gh takes leaves the pull request that body, and the record
 }, 60_000);
 
 // A `body` field on a call that is no PATCH of the pull request edits nothing: a POST of that
-// path is another call, and GitHub keeps the body. Catches: the edit read off the path and the
-// field whatever the verb, which would leave a round that posted a comment there reading its
-// comment back as the pull request's body.
+// path is another call, one GitHub serves no write at and the world models none of, so it is
+// GitHub's 404 and the body stands. Catches: the edit read off the path and the field whatever
+// the verb, which would leave a round that posted a comment there reading its comment back as
+// the pull request's body; and the POST answered as a success, which the route every write fell
+// to gave it.
 test("a body field on a POST of the pull request edits no body", () => {
   const { dir } = runDir({ fixture: true });
   const posted = ghCall(
@@ -724,7 +737,7 @@ test("a body field on a POST of the pull request edits no body", () => {
     "-f",
     "body=x"
   );
-  expect(posted.code).toBe(0);
+  expect(posted).toEqual({ code: 1, out: GITHUB_404, err: "gh: Not Found (HTTP 404)\n" });
   expect(ghCall(dir, "pr", "view", "1001", "--json", "body", "--jq", ".body").out).toBe("a body");
   expect(recordedCalls(dir)[0]).not.toHaveProperty("body");
 });
@@ -754,16 +767,15 @@ test("a comment's --body-file is recorded with the file's text, in either spelli
 // is written here with the leading slash `gh api` takes either way. Catches: a GET answered as
 // the submission of the pending review, which gh never sent and GitHub never answers; a GET read
 // as the submit that leaves no pending review behind it, where the submit after it would be
-// refused 422; and a submit read as none for its leading slash, which the generic POST route
-// would then answer `{id:6001}` with no head on it — the approval at no head this endpoint exists
-// to stop.
+// refused 422; and a submit read as none for its leading slash, which would then be refused as a
+// write no route of the world models.
 test("a GET of the submit route submits nothing, and a submit with a leading slash submits", () => {
   const { dir, first } = runDir({ fixture: true });
   createPending(dir, { commit_id: first, body: "two findings" });
   for (const verb of [["-X", "GET"], ["--method=GET"], ["-XGET"]]) {
     const read = ghCall(dir, "api", ...verb, `${REVIEWS}/6001/events`, "-f", "event=APPROVE");
     expect(read.code).toBe(1);
-    expect(read.out).toBe("");
+    expect(read.out).toBe(GITHUB_404);
     expect(read.err).toBe("gh: Not Found (HTTP 404)\n");
   }
   const submitted = ghCall(
@@ -790,20 +802,17 @@ test("a submit written -XPOST is the submit --method POST is", () => {
   expect(JSON.parse(submitted.out)).toEqual({ id: 6001, commit_id: first, state: "APPROVED" });
 });
 // A call on the submit path that gh does not send as a POST submits nothing: `-X PUT` names
-// another verb, and a call with no method and no field is the GET gh sends by default. The first
-// falls to the route every write falls to, and the second is GitHub's 404, since GitHub has no
-// read there; the review stays pending for the call that does submit it. Catches: a verb read as
-// "anything but GET", which would answer the PUT as the round's submission, and one read as "a
-// POST unless it says otherwise", which would answer the bare call that way.
+// another verb, a write GitHub serves no route for there and the world models none of, and a
+// call with no method and no field is the GET gh sends by default, which GitHub has no read for
+// either; each is GitHub's 404, and the review stays pending for the call that does submit it.
+// Catches: a verb read as "anything but GET", which would answer the PUT as the round's
+// submission, one read as "a POST unless it says otherwise", which would answer the bare call
+// that way, and a PUT answered as a success, which the route every write fell to gave it.
 test("a PUT of the submit route and a bare one submit nothing", () => {
   const { dir, first } = runDir({ fixture: true });
   createPending(dir, { commit_id: first, body: "two findings" });
   const put = ghCall(dir, "api", "-X", "PUT", `${REVIEWS}/6001/events`, "-f", "event=APPROVE");
-  expect(put.code).toBe(0);
-  expect(JSON.parse(put.out)).toEqual({
-    id: 6001,
-    html_url: "https://example.invalid/pull/1001#issuecomment-6001",
-  });
+  expect(put).toEqual({ code: 1, out: GITHUB_404, err: "gh: Not Found (HTTP 404)\n" });
   const bare = ghCall(dir, "api", `${REVIEWS}/6001/events`);
   expect(bare.code).toBe(1);
   expect(bare.err).toBe("gh: Not Found (HTTP 404)\n");
@@ -937,21 +946,16 @@ test("a run with no worker fixture keeps the route's own head", () => {
 });
 
 // A run with no world has no review of its own, so the submit of one is no submit this stand-in
-// answers from its record: it falls to the routes, as every call of such a run does. Catches: a
-// stand-in that refuses it 422 as the submit of a review that is not pending, which reads a run
-// that holds no world as one that holds a world with no review in it.
-test("a run with no worker fixture leaves the submit of a review to the routes", () => {
+// answers from its record, and no route of the world models a submit with no review behind it:
+// it is refused as GitHub refuses a write the world does not model. Catches: a stand-in that
+// refuses it 422 as the submit of a review that is not pending, which reads a run that holds no
+// world as one that holds a world with no review in it; and one that answers it a success, as
+// the route every write fell to did.
+test("a run with no worker fixture refuses the submit of a review as a write it does not model", () => {
   const { dir } = runDir({ fixture: false });
   expect(
     ghCall(dir, "api", "--method", "POST", `${REVIEWS}/6001/events`, "-f", "event=APPROVE")
-  ).toEqual({
-    code: 0,
-    out: JSON.stringify({
-      id: 6001,
-      html_url: "https://example.invalid/pull/1001#issuecomment-6001",
-    }),
-    err: "",
-  });
+  ).toEqual({ code: 1, out: GITHUB_404, err: "gh: Not Found (HTTP 404)\n" });
 });
 
 /** What the stand-in answers for `gh <args...>` in run directory `dir`, as `by` if the run names
@@ -1906,21 +1910,12 @@ test("the wrapper's owner refusal a tool result shows is no push-guard refusal, 
 // moves the issue on a review of the head (daemon-standin.ts's `roundOutcome`),
 // and reading the calls again itself would be a third reader of one call beside this stand-in
 // and the score; so each call that left a review records the state and the head this stand-in
-// answered it with — a create, the submit of a pending one, a `gh pr review` the world answered —
-// and no other call records one: a `gh pr review` no route answered (gh's 404, no review on
-// GitHub) and a review of another repository's pull request among them.
+// answered it with — a create and the submit of a pending one — and no other call records one: a
+// `gh pr review`, which the world does not model and refuses (gh's 404, no review on GitHub), on
+// the world's pull request or on another repository's, among them.
 test("each call that leaves a review records the state and head it was answered with, and no other call does", () => {
   const { dir, first } = runDir({ fixture: true });
-  // The world's own `gh pr review` route, set aside for the first call, which no route answers.
-  const file = path.join(dir, "fixtures.json");
-  const fixtures = JSON.parse(readFileSync(file, "utf8")) as { routes: { match: string }[] };
-  const reviewing = fixtures.routes.findIndex((route) => route.match.includes("review|"));
-  const [shared] = fixtures.routes.splice(reviewing, 1);
-  expect(shared?.match).toBe("^gh pr (edit|comment|review|ready)");
-  writeFileSync(file, JSON.stringify(fixtures));
   answer(dir, ["pr", "review", "1001", "--approve"]);
-  fixtures.routes.splice(reviewing, 0, shared ?? { match: "" });
-  writeFileSync(file, JSON.stringify(fixtures));
   const body = path.join(dir, "review.json");
   writeFileSync(body, JSON.stringify({ commit_id: first, event: "APPROVE", body: "approved" }));
   expect(apiPost(dir, REVIEWS, "--input", body).exitCode).toBe(0);
@@ -1934,7 +1929,7 @@ test("each call that leaves a review records the state and head it was answered 
     { state: "APPROVED", head: first },
     { state: "PENDING", head: first },
     { state: "CHANGES_REQUESTED", head: first },
-    { state: "APPROVED", head: first },
+    undefined,
     undefined,
     undefined,
   ]);
@@ -2090,14 +2085,14 @@ test("a comparison the run's remote cannot resolve is 404, as GitHub answers it"
 });
 
 // Catches: a comparison read off the path alone, whatever verb the call names. The comparison
-// is GitHub's read of two refs, and a call that writes to that path is another call: it falls
-// to the routes, where the route every write falls to answers it, and a stand-in that answered
-// it with the two refs' diff would tell a caller a write it never made had succeeded. The verb
-// is read here as the score reads it on the same call (score.ts's `methodOf`), so each spelling
-// gh takes is that write: written against the flag, in lower case, and as a field with no
-// method at all, which gh sends as a POST; and a PATCH and a PUT, the other two verbs the route
-// every write falls to answers (rig.sh's fixture_write), so a comparison answered for every verb
-// but POST fails here too.
+// is GitHub's read of two refs, and a call that writes to that path is another call: GitHub
+// serves no write there and the world models none, so it is GitHub's 404, and a stand-in that
+// answered it with the two refs' diff would tell a caller a write it never made had succeeded.
+// The verb is read here as the score reads it on the same call (score.ts's `methodOf`), so each
+// spelling gh takes is that write: written against the flag, in lower case, and as a field with
+// no method at all, which gh sends as a POST; and a PATCH and a PUT, the other two verbs the
+// route every write fell to answered with `{id:6001}`, so a comparison or a success answered for
+// any of them fails here too.
 test("a POST to the compare path is no comparison", () => {
   const { dir, first, second } = runDir({ fixture: true });
   const range = `repos/example/widgets/compare/${first}...${second}`;
@@ -2109,14 +2104,11 @@ test("a POST to the compare path is no comparison", () => {
     ["-X", "PUT"],
     ["-XPOST"],
     ["-f", "per_page=100"],
-  ]) {
-    const posted = ghCall(dir, "api", ...verb, range);
-    expect(posted.code).toBe(0);
-    expect(JSON.parse(posted.out)).toEqual({
-      id: 6001,
-      html_url: "https://example.invalid/pull/1001#issuecomment-6001",
-    });
-  }
+  ])
+    expect([verb, ghCall(dir, "api", ...verb, range)]).toEqual([
+      verb,
+      { code: 1, out: GITHUB_404, err: "gh: Not Found (HTTP 404)\n" },
+    ]);
 });
 
 // Catches: a comparison whose files carry no `patch`, which is the field a reviewer reads the
@@ -2232,7 +2224,8 @@ test("a listing's elements each carry the run's own head, the kept body and the 
  * call it wrote a route for (rig.sh's fixture_write gives the base-protection route GitHub's own
  * 404 and exit 1). The routes are chosen by the verbs they answer (`methods`), which is how
  * fixture_write names a POST route: selected by the text of their regex, no route of a world
- * ever got the refusal, and the row below could not fail. */
+ * ever got the refusal, and the row below could not fail. Each write a world models has its own
+ * POST route, the submit's among them. */
 function routeRefusal(dir: string, text: string): void {
   const file = path.join(dir, "fixtures.json");
   const fixtures = JSON.parse(readFileSync(file, "utf8")) as {
@@ -2241,7 +2234,10 @@ function routeRefusal(dir: string, text: string): void {
   const posts = fixtures.routes.filter((route) => route.methods?.includes("POST"));
   expect(posts.map((route) => route.match)).toEqual([
     "^gh api .*pulls/1001/reviews([ ?]|$)",
-    "^gh api ",
+    "^gh api .*pulls/1001/reviews/[0-9]+/events([ ?]|$)",
+    "^gh api .*pulls/1001/comments([ ?]|$)",
+    "^gh api .*pulls/1001/comments/[0-9]+/replies([ ?]|$)",
+    "^gh api .*issues/1001/comments([ ?]|$)",
   ]);
   for (const route of posts) Object.assign(route, { stderr: text, exit: 1 });
   writeFileSync(file, JSON.stringify(fixtures));
@@ -2299,15 +2295,15 @@ test("a create whose body is on stdin as JSON lines leaves a pending review", ()
 });
 
 // Catches: a create route matched on a path a call merely starts with. The create of a review
-// is `…/pulls/<n>/reviews` and nothing below it: `…/pulls/<n>/reviews/<id>/comments` posts a
-// comment under a review of its own, which creates no review and leaves none pending. A
-// stand-in that read it as a create would answer the next submit with a review object at the
-// head that comment was posted at — the approval at a head nobody approved that this endpoint
-// exists to stop.
+// is `…/pulls/<n>/reviews` and nothing below it: a POST of `…/pulls/<n>/reviews/<id>/comments`
+// is no write GitHub serves (it lists that review's comments, and takes none), so it is GitHub's
+// 404, creates no review and leaves none pending. A stand-in that read it as a create would
+// answer the next submit with a review object at the head that comment was posted at — the
+// approval at a head nobody approved that this endpoint exists to stop.
 test("a POST under a review's own path is no create of a pending review", () => {
   const { dir } = runDir({ fixture: true });
   const comment = apiPost(dir, `${REVIEWS}/5002/comments`, "-f", "body=the sentence still stands");
-  expect(comment.exitCode).toBe(0);
+  expect(comment.exitCode).toBe(1);
   const submit = apiPost(dir, `${REVIEWS}/6001/events`, "-f", "event=APPROVE");
   expect(submit.exitCode).toBe(1);
   expect(submit.stderr.toString()).toContain("Can not submit a review that is not pending.");
@@ -2699,7 +2695,13 @@ test("a thread's comment carries its databaseId and its REST comment, and a REST
     ...["api", "--method", "POST", "repos/example/widgets/pulls/1001/comments/7/replies"],
     ...["-f", "body=fixed"]
   );
-  expect(nowhere).toEqual({ code: 1, out: "", err: "gh: Not Found (HTTP 404)\n" });
+  expect(nowhere).toEqual({
+    code: 1,
+    out: notFoundOf(
+      "https://docs.github.com/rest/pulls/comments#create-a-reply-for-a-review-comment"
+    ),
+    err: "gh: Not Found (HTTP 404)\n",
+  });
   expect(comments().out.split("\n")).toHaveLength(2);
 }, 60_000);
 
@@ -2759,6 +2761,198 @@ test("a review update changes that review's body and answers it, and a write Git
       "gh: Not Found (HTTP 404)\n",
     ]);
   }
+}, 60_000);
+
+// The update of a review the run made is the same write as the update of one the world held
+// (GitHub's "Update a review for a pull request"): the body changes at every later read of that
+// review, and the answer is the review in GitHub's shape. Measured in INFRA-764 round 25
+// (runs/1e2a0aeced4b, threads-closed-text-fixes-head-4, calls.jsonl:23): the reviewer updated
+// the approval it had just made, 5002, whose body read back unchanged. Catches: an update kept
+// for the world's reviews alone, so the review the run made reads its old body back; an answer
+// short of GitHub's fields (node id, links, author association); an empty body answered 200;
+// and a record that does not say which route answered the update, which every later read of the
+// review replays.
+test("a review update of a review the run made changes its body at every read, answered in GitHub's shape", () => {
+  const { dir, first } = runDir({ fixture: true });
+  expect(
+    apiPost(dir, REVIEWS, "-f", `commit_id=${first}`, "-f", "event=APPROVE", "-f", "body=ok")
+      .exitCode
+  ).toBe(0);
+  const body = "Approved at the fix head; both threads are resolved.";
+  const updated = ghCall(dir, "api", "--method", "PUT", `${REVIEWS}/6001`, "-f", `body=${body}`);
+  expect(updated.code).toBe(0);
+  const html = "https://example.invalid/pull/1001#pullrequestreview-6001";
+  const pull = "https://api.github.com/repos/example/widgets/pulls/1001";
+  expect(JSON.parse(updated.out)).toEqual({
+    id: 6001,
+    node_id: "PRR_kwDOAAAAAc4AAE6001",
+    user: { login: WORLD_LOGIN },
+    body,
+    state: "APPROVED",
+    html_url: html,
+    pull_request_url: pull,
+    _links: { html: { href: html }, pull_request: { href: pull } },
+    submitted_at: expect.any(String),
+    commit_id: first,
+    author_association: "NONE",
+  });
+  expect(ghCall(dir, "api", `${REVIEWS}/6001`, "--jq", ".body").out).toBe(body);
+  expect(ghCall(dir, "api", REVIEWS, "--jq", ".[].body").out).toBe(body);
+  const empty = ghCall(dir, "api", "--method", "PUT", `${REVIEWS}/6001`, "-f", "body=");
+  expect(empty).toEqual({
+    code: 1,
+    out: "",
+    err: "gh: Unprocessable Entity (HTTP 422)\nA review is updated with a body.\n",
+  });
+  expect(ghCall(dir, "api", `${REVIEWS}/6001`, "--jq", ".body").out).toBe(body);
+  expect(recordedCalls(dir).map((call) => [call.handler, call.exit])).toEqual([
+    ["review create", 0],
+    ["review-update", 0],
+    ["review read", 0],
+    ["reviews", 0],
+    ["review-update", 1],
+    ["review read", 0],
+  ]);
+}, 60_000);
+
+// GitHub files a REST reply to a reply in that reply's own thread, and names the thread's first
+// comment as the one it replies to. Measured on 2026-11-17 at 17:28Z on cybermonklabs/legion#2827:
+// `POST …/pulls/2827/comments/4505026306/replies`, 4505026306 itself a reply to 4504802154,
+// answered exit 0 with a comment whose `in_reply_to_id` was 4504802154. Catches: a world that
+// refuses a reply to a reply, a refusal production does not give (the docs' "Replies to replies
+// are not supported" is none); one that files it with `in_reply_to_id` naming the reply; and one
+// whose GraphQL `replyTo` names anything but the thread's first comment.
+test("a REST reply to a reply is filed in its thread, replying to the thread's first comment", () => {
+  const dir = worldDir("review_world");
+  const reply = (to: number) =>
+    ghCall(
+      dir,
+      ...["api", "--method", "POST", `repos/example/widgets/pulls/1001/comments/${to}/replies`],
+      ...["-f", "body=Not a defect: the two tests name different cases."],
+      ...["--jq", "[.id, .in_reply_to_id] | @csv"]
+    );
+  expect(reply(7001)).toEqual({ code: 0, out: "9001,7001", err: "" });
+  expect(reply(9001)).toEqual({ code: 0, out: "9002,7001", err: "" });
+  expect(
+    ghCall(
+      dir,
+      ...["api", "repos/example/widgets/pulls/1001/comments"],
+      ...["--jq", "[.[] | [.id, .in_reply_to_id]] | @json"]
+    ).out
+  ).toBe("[[7001,null],[9001,7001],[9002,7001]]");
+  const replies = ghCall(
+    dir,
+    ...threadsQuery(
+      "query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){pullRequest(number:$n){reviewThreads(first:100){nodes{comments(first:20){nodes{databaseId replyTo{databaseId}}}}}}}}",
+      "--jq",
+      "[.data.repository.pullRequest.reviewThreads.nodes[0].comments.nodes[] | [.databaseId, .replyTo.databaseId]] | @json"
+    )
+  );
+  expect(replies.out).toBe("[[7001,null],[9001,7001],[9002,7001]]");
+}, 60_000);
+
+// A write the world does not model is refused as GitHub refuses an endpoint it does not serve,
+// changes nothing, and is recorded as answered by nothing (`handler` `unrouted`), which `rig.sh
+// health` names (its unmodelled-write rule). Catches each default that answered such a write a
+// success: the route `gh pr (edit|comment|review|ready)`, which answered any of those on any pull
+// request with any flags and a comment URL of no comment; read routes, which took DELETE and,
+// with the catch-all gone, POST; the PATCH route, which took a PATCH of the state as an edit of
+// the body; a write route reading another repository's pull request of the same number; a
+// mutation the world's graph holds no answer for; and `gh pr merge`, `close`, `create` and
+// `ready`, which the world never modelled.
+test("every write the world does not model is refused 404, changes nothing, and is recorded unrouted", () => {
+  const dir = worldDir("review_world");
+  const prBody = () => ghCall(dir, "pr", "view", "1001", "--json", "body", "--jq", ".body").out;
+  const before = prBody();
+  const unmodelled: [string[], string][] = [
+    [["pr", "comment", "999", "--body", "a note"], ""],
+    [["pr", "comment", "1001", "--edit-last", "--body", "a note"], ""],
+    [["pr", "review", "1001", "--approve"], ""],
+    [["pr", "review", "1001", "--comment", "--body", "a note"], ""],
+    [["pr", "ready", "1001"], ""],
+    [["pr", "merge", "1001", "--squash"], ""],
+    [["pr", "close", "1001"], ""],
+    [["pr", "create", "--title", "t", "--body", "b"], ""],
+    [["pr", "edit", "1001", "--title", "a new title"], ""],
+    [["pr", "edit", "1001", "--body", "a new body", "--add-label", "bug"], ""],
+    [["api", "-X", "DELETE", `${REVIEWS}/4001`], GITHUB_404],
+    [["api", "-X", "POST", `${REVIEWS}/4001`, "-f", "body=x"], GITHUB_404],
+    [["api", "-X", "PATCH", "repos/example/widgets/pulls/1001", "-f", "state=closed"], GITHUB_404],
+    [
+      ["api", "-X", "POST", "repos/example/other/pulls/1001/reviews", "-f", "event=APPROVE"],
+      GITHUB_404,
+    ],
+    [
+      [
+        "api",
+        "-X",
+        "POST",
+        "repos/example/widgets/git/refs",
+        "-f",
+        "ref=refs/heads/x",
+        "-f",
+        "sha=0",
+      ],
+      GITHUB_404,
+    ],
+    [
+      [
+        "api",
+        "graphql",
+        "-f",
+        'query=mutation{minimizeComment(input:{subjectId:"PRRC_kwDOAAAAAc4AAC7001",classifier:OUTDATED}){minimizedComment{isMinimized}}}',
+      ],
+      GITHUB_404,
+    ],
+  ];
+  for (const [argv, out] of unmodelled)
+    expect([argv, ghCall(dir, ...argv)]).toEqual([
+      argv,
+      { code: 1, out, err: "gh: Not Found (HTTP 404)\n" },
+    ]);
+  expect(prBody()).toBe(before);
+  expect(ghCall(dir, "api", `${REVIEWS}/4001`, "--jq", ".id").out).toBe("4001");
+  expect(
+    recordedCalls(dir)
+      .filter((call) => call.exit === 1)
+      .map((call) => [call.route, call.handler])
+  ).toEqual(unmodelled.map(() => [null, "unrouted"]));
+}, 60_000);
+
+// GitHub answers a comment on the pull request's conversation with the comment it made, and `gh
+// pr comment` prints that comment's URL; the world keeps each (gh-standin.ts's `conversation`)
+// and numbers them from 8001 in the order the run made them, as every read of the conversation
+// lists them. The worker skill posts a conversation comment with `gh pr comment`
+// (skills/legion-worker/SKILL.md). Catches: a comment answered with a URL of no comment — the
+// shared route printed `#issuecomment-1` whatever the run had posted — or the REST create
+// answered `{id:6001}`, an id no read of the conversation lists; and an empty comment answered
+// 200, which GitHub refuses.
+test("gh pr comment and the REST create of a conversation comment answer the comment the conversation keeps", () => {
+  const { dir } = runDir({ fixture: true });
+  expect(ghCall(dir, "pr", "comment", "1001", "--body", "a note")).toEqual({
+    code: 0,
+    out: "https://example.invalid/pull/1001#issuecomment-8001",
+    err: "",
+  });
+  const posted = ghCall(
+    dir,
+    ...["api", "-X", "POST", "repos/example/widgets/issues/1001/comments", "-f", "body=a second"],
+    ...["--jq", "[.id, .html_url, .body]"]
+  );
+  expect([posted.code, JSON.parse(posted.out)]).toEqual([
+    0,
+    [8002, "https://example.invalid/pull/1001#issuecomment-8002", "a second"],
+  ]);
+  expect(
+    ghCall(dir, "api", "repos/example/widgets/issues/1001/comments", "--jq", "[.[].id] | @csv").out
+  ).toBe("8001,8002");
+  expect(
+    ghCall(dir, "api", "-X", "POST", "repos/example/widgets/issues/1001/comments", "-f", "body=")
+  ).toEqual({
+    code: 1,
+    out: "",
+    err: "gh: Unprocessable Entity (HTTP 422)\nA comment on the conversation is created with a body.\n",
+  });
 }, 60_000);
 
 // `gh pr view --json files` is one of gh's own JSON fields for a pull request: the files the pull
@@ -2851,7 +3045,8 @@ test("the contents read answers the file at the commit from the run's own remote
   });
   expect(read(raw(fix, "nothing.ts"))).toEqual({
     code: 1,
-    out: "",
+    // This row reads stdout as gh wrote it, so the newline gh ends an indented body with stays.
+    out: `${notFoundOf("https://docs.github.com/rest/repos/contents#get-repository-content")}\n`,
     err: "gh: Not Found (HTTP 404)\n",
   });
   const key = routeOf(raw(head))?.key ?? "";
@@ -2880,7 +3075,11 @@ test("a contents read with no ref answers the default branch's file, and .conten
   const shown = (ref: string, file: string) =>
     spawnChecked(["git", "-C", remote, "show", `${ref}:${file}`]).stdout.toString();
   const workflow = content(".github/workflows/greet.yml");
-  expect(workflow).toEqual({ code: 1, out: "", err: "gh: Not Found (HTTP 404)\n" });
+  expect(workflow).toEqual({
+    code: 1,
+    out: notFoundOf("https://docs.github.com/rest/repos/contents#get-repository-content"),
+    err: "gh: Not Found (HTTP 404)\n",
+  });
   const atHead = content(`.github/workflows/greet.yml?ref=${head}`);
   expect([atHead.code, decoded(atHead)]).toEqual([0, shown(head, ".github/workflows/greet.yml")]);
   const docs = content("docs/cli.md");

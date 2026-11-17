@@ -2790,9 +2790,12 @@ $entries"
   # each).
   local protection='[]'
   [ -n "$guard" ] || protection=$(resolution_protection_routes)
-  extra=$(jq -n --arg url "$worker_pr_url" --argjson number "$worker_pr" \
-    --arg login "$world_login" --argjson protection "$protection" '$protection + [
+  extra=$(jq -n --arg url "$worker_pr_url" --argjson number "$worker_pr" --arg repo "$worker_repo" \
+    --arg login "$world_login" --argjson protection "$protection" '
+    ($repo | gsub("(?<c>[.+*?()|\\[\\]{}^$\\\\])"; "\\\(.c)")) as $repo_re
+    | $protection + [
     {match:("^gh api .*pulls/" + ($number|tostring) + "/reviews([ ?]|$)"), methods:["POST"],
+     endpoint:("repos/" + $repo_re + "/pulls/" + ($number|tostring) + "/reviews"),
      stdout:{id:5002, html_url:($url+"#pullrequestreview-5002"), user:{login:$login}}}
   ]')
   fixture_write "$extra" '"APPROVED"' "$reviews" '{}' "$(jq '[.[] | {id, isResolved:false, path, line,
@@ -3115,20 +3118,27 @@ $2
 # every role (GH_DECLARED's NO_RUN) since a role that meets one meets production, and the combined
 # status reads `pending`, as GitHub's does for a head with none.
 #
-# The route every call that creates something falls to is chosen by the call's verb and not by a
-# regex over its text (`methods`, which the stand-in reads with the score's own reader): gh sends
-# a call carrying a field or an `--input` as a POST, so a create written `-f commit_id=<head>`,
-# `--method=POST`, `-XPOST` or in lower case is the create `--method POST` is. Written out as
-# `(-X|--method) ?POST`, it sent each of those spellings to a GET route below it, which answered
-# a create with the list of reviews already there and left the run no pending review to submit.
-# Two writes have routes of their own ahead of it, since GitHub answers neither with what it
-# answers other creates with. The create of a review is answered with the review (id 6001, its
-# URL and the user whose token the run calls with), where a world names no create route of its
-# own; the stand-in adds the state and the head the call gives it, refuses the creates GitHub
-# refuses, and answers a later read of that review by its id (gh-standin.ts's `reviewCreate` and
-# `reviewRead`). A PATCH of the pull request is answered with the pull request, carrying the body
-# the PATCH left, as GitHub answers it: the write route answered it `{id:6001, html_url}`, and 23
-# recorded PATCH calls read `.body` back as null (review 5887659447, finding 6).
+# A write is answered only where the world models it, each by a route of its own that names its
+# verb (`methods`, read with the score's own reader: gh sends a call carrying a field or an
+# `--input` as a POST, so a create written `-f commit_id=<head>`, `--method=POST`, `-XPOST` or in
+# lower case is the create `--method POST` is) and the one path it writes, the world's repository
+# and pull request read whole (`endpoint`, gh-call.ts's `routeFor`): the create of a review, its
+# submit, its update (`PUT …/reviews/<id>`), the pull request's body (a PATCH, or `gh pr edit`
+# with the body alone), an inline review comment, the REST reply under one, a comment on the
+# conversation (the REST POST, or `gh pr comment`) and the two GraphQL mutations the graph holds.
+# Each is answered as GitHub answers it from the world's state (gh-standin.ts): the create with
+# the review (id 6001, its URL and the user whose token the run calls with, where a world names
+# no create route of its own), whose state, head and body the stand-in adds from the call
+# (`reviewCreate`, `reviewRead`); the PATCH with the pull request carrying the body it left. Every
+# other write — another path, another verb on a read's path (each read route takes GET alone), a
+# mutation the graph holds no answer for, `gh pr review`, `ready`, `merge`, `close`, `create` and
+# an edit of anything but the body — matches no route and is refused as GitHub refuses an
+# endpoint it does not serve, `gh: Not Found (HTTP 404)`, which `rig.sh health` names (its
+# unmodelled-write rule). One route answered every POST, PATCH and PUT no route above it took
+# with `{id:6001, html_url}` and exit 0, and changed nothing: 23 recorded PATCH calls read `.body`
+# back from it as null (review 5887659447, finding 6), and in INFRA-764 round 25 a reviewer's
+# update of its review's body (`PUT …/reviews/5002`, runs/1e2a0aeced4b, calls.jsonl:23) was
+# answered so, the body stayed as it was, and no rule saw it, since a route had matched.
 #
 # fixture_write EXTRA DECISION REVIEWS [MERGE_STATES] writes MERGE_STATES, a JSON object from a
 # head's SHA to the merge state GitHub reports for the pull request while it is at that head for a
@@ -3201,28 +3211,39 @@ fixture_write() {
        squash_merge_commit_title:"COMMIT_OR_PR_TITLE", squash_merge_commit_message:"COMMIT_MESSAGES",
        merge_commit_title:"MERGE_MESSAGE", merge_commit_message:"PR_TITLE",
        permissions:{admin:false, maintain:false, push:true, triage:true, pull:true}} as $repository
+    | ("repos/" + $repo_re + "/pulls/" + $n) as $pulls
     | {mergeStates:$states, routes:($extra + [
       {match:"^gh pr view", stdout:$pr},
       {match:"^gh pr list", stdout:[$pr]},
-      {match:"^gh pr (edit|comment|review|ready)", stdout:($url+"#issuecomment-1")},
-      {match:"^gh api .*graphql", graph:{
+      {match:"^gh pr edit( |$)", stdout:$url},
+      {match:"^gh pr comment( |$)", answer:"pr-comment"},
+      {match:"^gh api .*graphql", endpoint:"graphql", graph:{
         query:{viewer:{login:$login},
           repository:{__args:{owner:$owner, name:$name}, name:$name, nameWithOwner:$repo,
             defaultBranchRef:{name:$base},
             pullRequest:{__args:{number:$number}, reviewThreads:$seeded, timelineItems:[],
               isInMergeQueue:false, mergeQueueEntry:null}}},
         mutation:{resolveReviewThread:{}, addPullRequestReviewThreadReply:{}}}},
-      {match:("^gh api .*pulls/" + $n + "/reviews([ ?]|$)"), methods:["POST"],
+      {match:("^gh api .*pulls/" + $n + "/reviews([ ?]|$)"), methods:["POST"], endpoint:($pulls + "/reviews"),
        stdout:{id:6001, html_url:($url+"#pullrequestreview-6001"), user:{login:$login}}},
-      {match:("^gh api .*pulls/" + $n + "([ ?]|$)"), methods:["PATCH"], stdout:$pr},
-      {match:"^gh api ", methods:["POST","PATCH","PUT"], stdout:{id:6001, html_url:($url+"#issuecomment-6001")}},
-      {match:("^gh api .*pulls/" + $n + "/reviews/[0-9]+/comments([ ?]|$)"), answer:"review-comments"},
-      {match:("^gh api .*pulls/" + $n + "/reviews/[0-9]+([ ?]|$)"), answer:"review", stdout:$reviews},
-      {match:("^gh api .*pulls/" + $n + "/reviews([ ?]|$)"), answer:"reviews", stdout:$reviews},
-      {match:("^gh api .*pulls/" + $n + "/comments([ ?]|$)"), answer:"review-comments"},
-      {match:("^gh api .*issues/" + $n + "/comments([ ?]|$)"), answer:"issue-comments", stdout:[]},
-      {match:("^gh api .*/rules/branches/" + $base), stdout:[]},
-      {match:("^gh api .*/branches/" + $base + "/protection"),
+      {match:("^gh api .*pulls/" + $n + "/reviews/[0-9]+/events([ ?]|$)"), methods:["POST"],
+       endpoint:($pulls + "/reviews/[0-9]+/events"), answer:"review-submit"},
+      {match:("^gh api .*pulls/" + $n + "/reviews/[0-9]+([ ?]|$)"), methods:["PUT"],
+       endpoint:($pulls + "/reviews/[0-9]+"), answer:"review-update", stdout:$reviews},
+      {match:("^gh api .*pulls/" + $n + "([ ?]|$)"), methods:["PATCH"], endpoint:$pulls, stdout:$pr},
+      {match:("^gh api .*pulls/" + $n + "/comments([ ?]|$)"), methods:["POST"], endpoint:($pulls + "/comments"),
+       answer:"review-comment"},
+      {match:("^gh api .*pulls/" + $n + "/comments/[0-9]+/replies([ ?]|$)"), methods:["POST"],
+       endpoint:($pulls + "/comments/[0-9]+/replies"), answer:"comment-reply"},
+      {match:("^gh api .*issues/" + $n + "/comments([ ?]|$)"), methods:["POST"],
+       endpoint:("repos/" + $repo_re + "/issues/" + $n + "/comments"), answer:"conversation-comment"},
+      {match:("^gh api .*pulls/" + $n + "/reviews/[0-9]+/comments([ ?]|$)"), methods:["GET"], answer:"review-comments"},
+      {match:("^gh api .*pulls/" + $n + "/reviews/[0-9]+([ ?]|$)"), methods:["GET"], answer:"review", stdout:$reviews},
+      {match:("^gh api .*pulls/" + $n + "/reviews([ ?]|$)"), methods:["GET"], answer:"reviews", stdout:$reviews},
+      {match:("^gh api .*pulls/" + $n + "/comments([ ?]|$)"), methods:["GET"], answer:"review-comments"},
+      {match:("^gh api .*issues/" + $n + "/comments([ ?]|$)"), methods:["GET"], answer:"issue-comments", stdout:[]},
+      {match:("^gh api .*/rules/branches/" + $base), methods:["GET"], stdout:[]},
+      {match:("^gh api .*/branches/" + $base + "/protection"), methods:["GET"],
        stdout:{url:$protection_url,
          required_status_checks:{url:($protection_url + "/required_status_checks"), strict:false,
            contexts:$required, contexts_url:($protection_url + "/required_status_checks/contexts"),
@@ -3230,21 +3251,21 @@ fixture_write() {
          enforce_admins:{url:($protection_url + "/enforce_admins"), enabled:false},
          required_conversation_resolution:{enabled:false}, allow_force_pushes:{enabled:false},
          allow_deletions:{enabled:false}}},
-      {match:("^gh api .*/branches/" + $base),
+      {match:("^gh api .*/branches/" + $base), methods:["GET"],
        stdout:{name:$base, protected:true,
          protection:{enabled:true,
            required_status_checks:{enforcement_level:"non_admins", contexts:$required, checks:$required_checks}},
          protection_url:$protection_url}},
-      {match:"^gh api .*commits/[^/ ]+/check-runs([ ?]|$)", answer:"check-runs",
+      {match:"^gh api .*commits/[^/ ]+/check-runs([ ?]|$)", methods:["GET"], answer:"check-runs",
        stdout:{total_count:($runs|length), check_runs:$runs}},
-      {match:"^gh api .*commits/[^/ ]+/status([ ?]|$)", answer:"combined-status", stdout:{statuses:[]}},
-      {match:"^gh api .*actions/runs/[0-9]+/jobs([ ?]|$)", stderr:"gh: Not Found (HTTP 404)\n", exit:1},
-      {match:"^gh api .*actions/runs([ ?]|$)", stdout:{total_count:0, workflow_runs:[]}},
-      {match:"^gh api .*git/ref/", answer:"git-ref"},
+      {match:"^gh api .*commits/[^/ ]+/status([ ?]|$)", methods:["GET"], answer:"combined-status", stdout:{statuses:[]}},
+      {match:"^gh api .*actions/runs/[0-9]+/jobs([ ?]|$)", methods:["GET"], stderr:"gh: Not Found (HTTP 404)\n", exit:1},
+      {match:"^gh api .*actions/runs([ ?]|$)", methods:["GET"], stdout:{total_count:0, workflow_runs:[]}},
+      {match:"^gh api .*git/ref/", methods:["GET"], answer:"git-ref"},
       {match:"^gh api .*repos/[^/ ]+/[^/ ]+/contents([/?][^ ]*)?( |$)", methods:["GET"], answer:"contents"},
-      {match:("^gh api .*pulls/" + $n + "([ ?]|$)"), stdout:$pr},
-      {match:("^gh api (.* )?/?repos/" + $repo_re + "([?][^ ]*)?( |$)"), stdout:$repository},
-      {match:"^gh (api user|auth status)", stdout:{login:$login}},
+      {match:("^gh api .*pulls/" + $n + "([ ?]|$)"), methods:["GET"], stdout:$pr},
+      {match:("^gh api (.* )?/?repos/" + $repo_re + "([?][^ ]*)?( |$)"), methods:["GET"], stdout:$repository},
+      {match:"^gh (api user|auth status)", methods:["GET"], stdout:{login:$login}},
       {match:"^gh run (view|watch) ([^ ]+ )*[0-9]+( |$)", stderr:"failed to get run: HTTP 404: Not Found\n", exit:1},
       {match:"^gh run view", stderr:"run or job ID required when not running interactively\n", exit:1},
       {match:"^gh run watch", stderr:"run ID required when not running interactively\n", exit:1}
@@ -3290,18 +3311,18 @@ resolution_protection_routes() {
     | [$required[] | {context:., app_id:null}] as $checks
     | {required_conversation_resolution:{enabled:true}} as $rules
     | [
-      {match:("^gh api .*/rules/branches/" + $base),
+      {match:("^gh api .*/rules/branches/" + $base), methods:["GET"],
        stdout:[{type:"pull_request", ruleset_source_type:"Repository", ruleset_source:$repo, ruleset_id:1,
          parameters:{dismiss_stale_reviews_on_push:false, require_code_owner_review:false,
            require_last_push_approval:false, required_approving_review_count:0,
            required_review_thread_resolution:true}}]},
-      {match:("^gh api .*/branches/" + $base + "/protection"),
+      {match:("^gh api .*/branches/" + $base + "/protection"), methods:["GET"],
        stdout:($rules + {url:$url,
          required_status_checks:{url:($url + "/required_status_checks"), strict:false,
            contexts:$required, contexts_url:($url + "/required_status_checks/contexts"), checks:$checks},
          enforce_admins:{url:($url + "/enforce_admins"), enabled:false},
          allow_force_pushes:{enabled:false}, allow_deletions:{enabled:false}})},
-      {match:("^gh api .*/branches/" + $base),
+      {match:("^gh api .*/branches/" + $base), methods:["GET"],
        stdout:{name:$base, protected:true,
          protection:($rules + {enabled:true,
            required_status_checks:{enforcement_level:"non_admins", contexts:$required, checks:$checks}}),
@@ -3403,10 +3424,15 @@ worker_boot() {
   # It is given the work directory, under which daemon-pane.ts keeps what it read of the label's
   # daemon (its facts cache), which services_up filled for every boot of worker_boots
   # (label_facts), and the label's build of daemon-pane.go, which reads a fact the cache does not
-  # hold in milliseconds (daemon_pane_binary).
+  # hold in milliseconds (daemon_pane_binary). It is given the run's own Dispatch and the bearer
+  # the run's panes read it with, since a completion naming a handoff record is read back from
+  # there, as the daemon reads it (daemon-standin.ts's `handoffRecord`), and refused as the daemon
+  # refuses a record that is not there or is another issue's, phase's or version's.
   pane_build=$(build_dir "$co")/daemon-pane
   printf 'boot %s\n' "$role" >>"$R/booted"
-  start_process daemon env SKILL_SCENARIOS_WORK="$work" SKILL_SCENARIOS_DAEMON_PANE="$pane_build" bun "$here/daemon-standin.ts" 0 \
+  start_process daemon env SKILL_SCENARIOS_WORK="$work" SKILL_SCENARIOS_DAEMON_PANE="$pane_build" \
+    DISPATCH_URL="http://127.0.0.1:$dispatch_port" DISPATCH_TOKEN_FILE="$tokens/dispatch-token" \
+    bun "$here/daemon-standin.ts" 0 \
     "$R/daemon.log" "$state/secrets/boot" "$project" "$worker_key" "$R" "$role" "$phase" "$completed"
   await_start daemon "$daemon_pid" 30 "the daemon stand-in to listen" grep -q '^listening on ' "$R/logs/daemon.log"
   port=$(sed -n 's|^listening on http://127\.0\.0\.1:||p' "$R/logs/daemon.log")

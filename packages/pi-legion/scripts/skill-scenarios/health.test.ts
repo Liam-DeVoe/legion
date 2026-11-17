@@ -12,6 +12,7 @@ import {
   ownNames,
   serviceProvenance,
   unfinished,
+  unmodelledWrite,
   writtenBy,
 } from "./health";
 import { REMOVED_NAMES, systemPromptOf, vocabulary } from "./run-names";
@@ -1642,5 +1643,131 @@ describe("health: rule 17, names, traced to where an agent got them", () => {
     expect(namesOf(run).own).toEqual([
       `a thinking part in ${FILE} says "text-only": "These are text-only."`,
     ]);
+  });
+});
+
+// Rule 20: a write no route or answer of the world models. The gh stand-in records what answered
+// each call (`handler`), and a write it answered with nothing (`unrouted`) is one the world could
+// not take where GitHub would have; a record from before it kept `handler` names the route, and a
+// write the catch-all write route (`^gh api `) answered, which filed no thread comment and was
+// no review submit, was answered a success that changed nothing (INFRA-764 round 25,
+// runs/1e2a0aeced4b, calls.jsonl:23, the review update whose body stayed).
+describe("health: rule 20, unmodelled write", () => {
+  const runs = temporaryDirectories("health-unmodelled-write");
+  const REPO = "repos/example/widgets/pulls/1001";
+  /** A run of the world rig.sh's fixture_write builds, as far as the rule replays it: world.json,
+   * the graph holding one thread whose first comment is 7001, the catch-all write route the world
+   * wrote until it modelled each write, and `calls`, one line each after the record's opening
+   * line. */
+  function run(name: string, calls: object[]): string {
+    const dir = path.join(runs(), name);
+    mkdirSync(dir);
+    writeFileSync(
+      path.join(dir, "world.json"),
+      JSON.stringify({
+        key: "LWEVAL-1",
+        repo: "example/widgets",
+        pr: 1001,
+        branch: "legion/LWEVAL-1",
+        base: "main",
+        head: "0".repeat(40),
+      })
+    );
+    writeFileSync(
+      path.join(dir, "fixtures.json"),
+      JSON.stringify({
+        routes: [
+          {
+            match: "^gh api .*graphql",
+            graph: {
+              query: {
+                repository: {
+                  pullRequest: {
+                    reviewThreads: [
+                      {
+                        id: "PRRT_kwDOfix001",
+                        isResolved: false,
+                        path: "docs/cli.md",
+                        line: 5,
+                        comments: [{ databaseId: 7001, body: "This sentence is false." }],
+                      },
+                    ],
+                  },
+                },
+              },
+              mutation: { resolveReviewThread: {}, addPullRequestReviewThreadReply: {} },
+            },
+          },
+          { match: "^gh api ", methods: ["POST", "PATCH", "PUT"], stdout: { id: 6001 } },
+        ],
+      })
+    );
+    writeFileSync(
+      path.join(dir, "calls.jsonl"),
+      [{ at: "2026-11-17T12:00:00.000Z", opened: "calls.jsonl" }, ...calls]
+        .map((line) => `${JSON.stringify(line)}\n`)
+        .join("")
+    );
+    return dir;
+  }
+  /** A call of the reviewer's as the gh stand-in records it, `fields` over the defaults. */
+  const call = (argv: string[], fields: object) => ({
+    at: "2026-11-17T12:01:00.000Z",
+    as: "gh",
+    by: "reviewer",
+    argv,
+    files: {},
+    exit: 0,
+    ...fields,
+  });
+  const catchAll = { route: "^gh api " };
+  const reply = call(
+    ["api", "--method", "POST", `${REPO}/comments/7001/replies`, "-f", "body=fixed"],
+    catchAll
+  );
+  const inline = call(
+    [
+      ...["api", "--method", "POST", `${REPO}/comments`, "-f", "body=still false"],
+      ...["-f", "commit_id=abc", "-f", "path=docs/cli.md", "-F", "line=5"],
+    ],
+    catchAll
+  );
+  const submit = call(
+    ["api", "--method", "POST", `${REPO}/reviews/6001/events`, "-f", "event=APPROVE"],
+    { ...catchAll, exit: 1 }
+  );
+  const update = call(
+    ["api", "--method", "PUT", `${REPO}/reviews/5002`, "-f", "body=new"],
+    catchAll
+  );
+
+  // Catches: a rule that reads a record's route alone, which would call every REST reply, inline
+  // comment and submit under the catch-all unmodelled though the world's own answers took them;
+  // and one blind to the catch-all's own success, which read round 25's review update healthy.
+  test("a record from before handler: a write the catch-all answered and no answer of its world took", () => {
+    expect(unmodelledWrite({ dir: run("old-modelled", [reply, inline, submit]) })).toBeUndefined();
+    expect(unmodelledWrite({ dir: run("old-update", [reply, inline, submit, update]) })).toBe(
+      "unmodelled write: calls.jsonl:5, `gh api --method PUT repos/example/widgets/pulls/1001/reviews/5002 -f body=new` of the reviewer, exited 0: the route every write once fell to (`^gh api `) answered it a success that changed nothing, and no answer of its world models it"
+    );
+  });
+
+  // Catches: a rule that never reads the record's `handler`, so a write the world refused as one
+  // it does not model reads healthy (or is named by rule 7 as a read the world lacks); and one
+  // that reads a read or a modelled write as an unmodelled one.
+  test("a record with handler: a write recorded as answered by nothing", () => {
+    const refused = call(["pr", "merge", "1001", "--squash"], {
+      route: null,
+      handler: "unrouted",
+      exit: 1,
+    });
+    const read = call(["api", `${REPO}/files`], { route: null, handler: "unrouted", exit: 1 });
+    const updated = call(["api", "--method", "PUT", `${REPO}/reviews/4001`, "-f", "body=new"], {
+      route: "^gh api .*pulls/1001/reviews/[0-9]+([ ?]|$)",
+      handler: "review-update",
+    });
+    expect(unmodelledWrite({ dir: run("new-modelled", [read, updated]) })).toBeUndefined();
+    expect(unmodelledWrite({ dir: run("new-refused", [read, updated, refused]) })).toBe(
+      "unmodelled write: calls.jsonl:4, `gh pr merge 1001 --squash` of the reviewer, exited 1: no route or answer of the world models it, so it was refused 404 where GitHub takes it"
+    );
   });
 });

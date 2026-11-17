@@ -47,7 +47,8 @@
  *      every role (GH_DECLARED_EVERY_ROLE), the owners a call names read by the selector table of
  *      the wrapper of the run's label, which the world refused it by (<run>/gh-selectors.json,
  *      gh-selectors.ts's `runSelectors`). A worker run with a refused call whose selectors cannot
- *      be read is unhealthy, since which refusal it was is unknown;
+ *      be read is unhealthy, since which refusal it was is unknown. A write the stand-in refused
+ *      as one nothing of the world models is rule 20's;
  *   8. another run: no tool call of the run names a path under another run's directory
  *      (`otherRun`): a sibling under the same runs directory, an archived run, or a run of another
  *      batch, wherever it sits;
@@ -163,6 +164,14 @@
  *      it are each unhealthy: an agent that read `dispatch results` after it was told a pass
  *      stands at a head the pull request no longer has (3 of 20 recorded text-fixes runs). It is
  *      read right after rule 18;
+ *  20. unmodelled write: no `gh` write of calls.jsonl (a GraphQL mutation, a `gh api` call sent
+ *      with a verb other than GET, a `gh pr`, `gh run` or `gh auth` command that writes) went
+ *      unanswered by every route and answer the world models (`unmodelledWrite`): one the gh
+ *      stand-in recorded as answered by nothing (`handler` `unrouted`, the 404 the world refuses
+ *      an unmodelled write with) or, in a record from before it kept `handler`, one the catch-all
+ *      write route answered a success that changed nothing, which no answer of that world took.
+ *      The world could not take what the agent did, where GitHub would have. It is read right
+ *      before rule 7, which leaves such a write to it;
  * Rules 6, 8 to 13 and 17 read every transcript of the run (`<run>/sessions/**\/*.jsonl`: each
  * agent's and each subagent's) through score.ts's readers. The run's own directory is the one its
  * record names (run-names.ts's `ran`; for a run recorded before the names left the world, the one
@@ -216,8 +225,10 @@ import {
   takenCompletions,
 } from "./completion-answers";
 import { judgedOnDaemon, labelCheckout, labelRoutes, serves } from "./daemon-pane";
-import { isPost, methodOf, readWorld, reviewsRoute, submitsReview } from "./gh-call";
+import { endpointPath, isPost, methodOf, readWorld, reviewsRoute, submitsReview } from "./gh-call";
+import { routeOf } from "./gh-routes";
 import { type GhSelectors, ghTargetOf, namesOwnerOutside, runSelectors } from "./gh-selectors";
+import { graphqlOf, type Recorded, type ThreadRoute, threadCall, threadState } from "./gh-threads";
 import { githubRouteOf } from "./github-routes";
 import {
   holds,
@@ -541,13 +552,15 @@ const GH_DECLARED: Readonly<Record<string, Readonly<Record<string, readonly stri
 };
 
 /** A call of calls.jsonl as the gh stand-in records it (gh-standin.ts's `exit`); the record's
- * opening line parses as one with no `as`. */
+ * opening line parses as one with no `as`. `handler` is what answered it, which a record from
+ * before the stand-in kept it does not hold. */
 const RecordedCall = z.looseObject({
   as: z.string().optional(),
   by: z.string().optional(),
   argv: z.array(z.string()).optional(),
   route: z.string().nullable().optional(),
   review: z.unknown().optional(),
+  handler: z.string().optional(),
   exit: z.number().optional(),
 });
 type RecordedCall = z.infer<typeof RecordedCall>;
@@ -633,8 +646,13 @@ export function ghUndeclared(run: Pick<Run, "dir" | "scenario">): string | undef
   let selectors: GhSelectors | undefined | null = null;
   for (const [index, line] of readFileSync(file, "utf8").split("\n").entries()) {
     if (line.trim() === "") continue;
-    const call = RecordedCall.parse(JSON.parse(line));
+    const raw: unknown = JSON.parse(line);
+    const call = RecordedCall.parse(raw);
     if (call.as !== "gh" || call.exit === undefined || call.exit === 0) continue;
+    // A write the world answered with no route and no answer of its own is rule 20's, which
+    // names it as the write it is (`unmodelledWrite`).
+    if (call.handler === "unrouted" && writes({ ...(raw as object), argv: call.argv ?? [] }))
+      continue;
     const named = `${CALLS}:${index + 1}, \`gh ${(call.argv ?? []).join(" ").slice(0, 160)}\` of the ${call.by ?? "unnamed role"}, exited ${call.exit}`;
     if (repo !== undefined && selectors === null) {
       try {
@@ -656,6 +674,72 @@ export function ghUndeclared(run: Pick<Run, "dir" | "scenario">): string | undef
     ];
     if (declared.includes(refusal)) continue;
     return `gh refusal: ${named}: ${refusal}, which ${run.scenario} does not declare for that role`;
+  }
+  return undefined;
+}
+
+/** The regex the record names the route by that every POST, PATCH and PUT no route above it took
+ * fell to: rig.sh's fixture_write wrote it until the world modelled each write it answers, and it
+ * answered each such write `{id:6001, html_url}` and exit 0, and changed nothing. */
+const CATCH_ALL_WRITE = "^gh api ";
+
+/** Whether `call` is a write: a GraphQL mutation (`graphqlOf`), any other `gh api` call gh sends
+ * with a verb other than GET (`methodOf`: a field or an `--input` makes it a POST), and a `gh
+ * pr`, `gh run` or `gh auth` command that writes (gh-routes.ts's `routeOf`). A command of
+ * another of gh's groups is read by rule 7 alone, as every call no route answers is. */
+function writes(call: Recorded): boolean {
+  const { argv } = call;
+  if (argv[0] !== "api") return routeOf(argv)?.kind === "write";
+  if (endpointPath(argv) === "graphql") return graphqlOf(call).operation?.type === "mutation";
+  return methodOf(argv) !== "GET";
+}
+
+/** Rule 20: the first write of calls.jsonl that no route or answer of the world models (`writes`).
+ * The gh stand-in records what answered each call (gh-standin.ts's `handler`), and a write it
+ * answered with no route and no answer of its own (`unrouted`) was refused 404 where GitHub
+ * answers it: the world could not take it. A record from before the stand-in kept `handler` is
+ * read by the route that answered: a write the world's catch-all write route answered
+ * (CATCH_ALL_WRITE), which no answer of that world took either — it filed no comment in a review
+ * thread when the run's calls are replayed over the world's threads (gh-threads.ts's
+ * `threadCall`, as the stand-in answered the REST reply and the inline comment under that route),
+ * and it was no submit of a review (`submitsReview`, which the stand-in answered from the run's
+ * own record) — was answered a success that changed nothing. Measured in INFRA-764 round 25:
+ * runs/1e2a0aeced4b, calls.jsonl:23, the reviewer's update of its approval's body
+ * (`PUT …/reviews/5002`), answered `{id:6001}` and exit 0 with the body unchanged, while every
+ * rule read the run healthy since a route had matched. A record that names no route at all, as
+ * the score's own rows write one, is no reading of the world's and is not judged. */
+export function unmodelledWrite(run: Pick<Run, "dir">): string | undefined {
+  const file = path.join(run.dir, CALLS);
+  if (!existsSync(file)) return undefined;
+  const fixtures = path.join(run.dir, "fixtures.json");
+  const routes: ThreadRoute[] = existsSync(fixtures)
+    ? Fixtures.parse(JSON.parse(readFileSync(fixtures, "utf8"))).routes
+    : [];
+  const read = readWorld(run.dir);
+  const world = "world" in read ? read.world : undefined;
+  const at = { routes, world };
+  const threads = threadState(at, []);
+  for (const [index, line] of readFileSync(file, "utf8").split("\n").entries()) {
+    if (line.trim() === "") continue;
+    const call = JSON.parse(line) as Partial<Recorded> & { by?: string };
+    if (!Array.isArray(call.argv)) continue;
+    const recorded: Recorded = { ...call, argv: call.argv };
+    // The threads as the world held them before this call, moved by every call before it in the
+    // order the run made them, as the stand-in answered each.
+    const filed = threadCall(at, threads, recorded);
+    if ((call.as ?? "gh") !== "gh" || !writes(recorded)) continue;
+    const named = `${CALLS}:${index + 1}, \`gh ${call.argv.join(" ").slice(0, 160)}\` of the ${call.by ?? "unnamed role"}, exited ${call.exit}`;
+    if (call.handler === "unrouted")
+      return `unmodelled write: ${named}: no route or answer of the world models it, so it was refused 404 where GitHub takes it`;
+    const submits =
+      world !== undefined && call.argv.some((arg) => submitsReview(arg, world.repo) !== undefined);
+    if (
+      call.handler === undefined &&
+      call.route === CATCH_ALL_WRITE &&
+      filed === undefined &&
+      !submits
+    )
+      return `unmodelled write: ${named}: the route every write once fell to (\`${CATCH_ALL_WRITE}\`) answered it a success that changed nothing, and no answer of its world models it`;
   }
   return undefined;
 }
@@ -3918,6 +4002,9 @@ const RULES: readonly {
   { name: "routes", judge: unservedRoute },
   { name: "failed claim", judge: failedClaim },
   { name: "push guard", judge: guardRefusal },
+  // Rule 20, read right before its sibling: a write the world does not model, which rule 7
+  // leaves to it.
+  { name: "unmodelled write", judge: unmodelledWrite },
   { name: "gh", judge: ghUndeclared },
   // Rule 16, read right after its sibling: an agent's Dispatch call refused, as rule 7 reads a
   // refused `gh` call.

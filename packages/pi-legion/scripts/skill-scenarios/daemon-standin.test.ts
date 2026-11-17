@@ -38,20 +38,66 @@ const WORLD_BASE = "main";
  * claim's later requests carry. */
 const SECRET = "M4QZ7KWT2HXR5NBJ6YCPVD3LGE";
 
+/** The handoff word of each role's phase (phase.go's `Handoff`), which the record a role's
+ * completion names is of. */
+const HANDOFF_WORDS: Record<string, string> = {
+  planner: "plan",
+  implementer: "implement",
+  tester: "test",
+  reviewer: "review",
+};
+
+/** The run's own Dispatch as the daemon stand-in reads a handoff record from it: `GET
+ * /api/v1/handoffs/{id}` answered from `records`, as Dispatch answers it, and Dispatch's own 404
+ * HANDOFF_NOT_FOUND for an id it holds none of (dispatch/api's `getHandoff`), behind the bearer
+ * in `token`. A request with another bearer is Dispatch's 401. */
+function dispatchOf(records: Record<string, object>, token: string) {
+  return Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch(request) {
+      if (request.headers.get("authorization") !== `Bearer ${token}`)
+        return Response.json({ code: "UNAUTHORIZED", error: "no bearer" }, { status: 401 });
+      const id = /^\/api\/v1\/handoffs\/([^/]+)$/.exec(new URL(request.url).pathname)?.[1];
+      const record = id === undefined ? undefined : records[decodeURIComponent(id)];
+      return record === undefined
+        ? Response.json(
+            { code: "HANDOFF_NOT_FOUND", error: `handoff ${id} not found` },
+            { status: 404 }
+          )
+        : Response.json(record);
+    },
+  });
+}
+
 /** The stand-in, started on a port the kernel picks, with its own log and boot token file, on a
  * run directory holding `world`, which defaults to the world rig.sh builds, and in `phase` when
  * the caller names one. `completed` is the roles the run's world says completed their phase with
  * a commit (rig.sh's worker_boot COMPLETED); `checkout` is the checkout the run's built-from
  * names, whose daemon the stand-in answers as, its routes and how it takes a completion among
  * the rest, this one by default and none at all for "". Nothing of the run directory's name is
- * read: the daemon a run's label runs is its checkout's, never the label's. It prints `listening
- * on http://127.0.0.1:<port>` once the socket is open, which is what this waits for. */
+ * read: the daemon a run's label runs is its checkout's, never the label's. `records` is the
+ * handoff records the run's own Dispatch holds (`dispatchOf`), by id: by default `h-review`,
+ * the one `complete` names, version 1 of the issue's handoff of this role's phase. It prints
+ * `listening on http://127.0.0.1:<port>` once the socket is open, which is what this waits for. */
 let started = 0;
 async function standin(
   role: string,
   startIn = "",
   world = { repo: WORLD_REPO, base: WORLD_BASE },
-  { completed = "", checkout = CHECKOUT } = {}
+  {
+    completed = "",
+    checkout = CHECKOUT,
+    records = {
+      "h-review": {
+        id: "h-review",
+        issue_key: "LWEVAL-1",
+        phase: HANDOFF_WORDS[role] ?? "",
+        version: 1,
+        author: { kind: "session", id: "01a0f2cc" },
+      },
+    } as Record<string, object>,
+  } = {}
 ) {
   // One directory per start, so a second stand-in of the same role writes its own log: a test
   // that reads the log reads its own run's lines and no earlier run's.
@@ -60,6 +106,9 @@ async function standin(
   mkdirSync(dir, { recursive: true });
   const token = path.join(dir, "boot-token");
   writeFileSync(token, "rig-boot-token\n");
+  const bearer = path.join(dir, "dispatch-token");
+  writeFileSync(bearer, "the-run's-dispatch-token\n");
+  const dispatch = dispatchOf(records, "the-run's-dispatch-token");
   // The world the run keeps, in the shape fixture_write writes it: the stand-in reads the
   // repository its record names, and the branch it gives as the default, out of this file.
   writeFileSync(
@@ -78,7 +127,15 @@ async function standin(
   const log = path.join(dir, "daemon.log");
   const child = Bun.spawn(
     ["bun", DAEMON_STANDIN, "0", log, token, "skills1", "LWEVAL-1", dir, role, startIn, completed],
-    { stdout: "pipe", stderr: "pipe" }
+    {
+      stdout: "pipe",
+      stderr: "pipe",
+      env: {
+        ...process.env,
+        DISPATCH_URL: `http://127.0.0.1:${dispatch.port}`,
+        DISPATCH_TOKEN_FILE: bearer,
+      },
+    }
   );
   const reader = child.stdout.getReader();
   let printed = "";
@@ -137,7 +194,11 @@ async function standin(
       .split("\n")
       .filter((line) => line !== "")
       .map((line) => JSON.parse(line) as Record<string, unknown>);
-  return { dir, body, phase, record, complete, post, settings, logged, stop: () => child.kill() };
+  const stop = () => {
+    child.kill();
+    dispatch.stop(true);
+  };
+  return { dir, body, phase, record, complete, post, settings, logged, stop };
 }
 
 /** Runs git in `dir` under an identity of its own and no configuration of the host's. */
@@ -1400,3 +1461,122 @@ test("a refusal printout is the code and the message on two lines of their own, 
   ])
     expect([printed, refusalIn(printed)]).toEqual([printed, undefined]);
 });
+
+// The daemon reads the handoff record a completion names back from Dispatch and holds it to the
+// issue, the phase's handoff word and the version the completion reports before it records
+// anything (packages/daemon/internal/api/handoff.go's `handoffRecord`). Catches: a stand-in that
+// takes every named record as found — the success it gave a completion naming a record Dispatch
+// has not got, or one of another issue, phase or version — and one whose refusal changed what a
+// later completion is answered: each refused completion records nothing, so the one naming the
+// round's own record is still taken.
+test.skipIf(skip)(
+  "a completion naming a record Dispatch has not got, or another issue's, phase's or version's, is refused as the daemon refuses it",
+  async () => {
+    const record = (issue: string, phase: string, version: number) => ({
+      issue_key: issue,
+      phase,
+      version,
+      author: { kind: "session", id: "01a0f2cc" },
+    });
+    const daemon = await standin("reviewer", "", undefined, {
+      records: {
+        "h-review": record("LWEVAL-1", "review", 1),
+        "h-other-issue": record("LWEVAL-2", "review", 1),
+        "h-plan": record("LWEVAL-1", "plan", 1),
+      },
+    });
+    try {
+      const read = "`dispatch handoff-read --issue LWEVAL-1 --phase review`";
+      const gone = await daemon.complete(true, { handoffId: "h-gone" });
+      expect([gone.status, await gone.json()]).toEqual([
+        404,
+        {
+          code: "HANDOFF_RECORD_NOT_FOUND",
+          error: `Dispatch has no handoff record h-gone (HANDOFF_NOT_FOUND: handoff h-gone not found): name the record ${read} shows, or write one with \`dispatch handoff-write --issue LWEVAL-1 --phase review --body-file <file>\`, then complete again; this completion changed nothing`,
+        },
+      ]);
+      for (const [id, version, held] of [
+        ["h-other-issue", 1, "version 1 of LWEVAL-2's review handoff"],
+        ["h-plan", 1, "version 1 of LWEVAL-1's plan handoff"],
+        ["h-review", 2, "version 1 of LWEVAL-1's review handoff"],
+      ] as const) {
+        const named = await daemon.complete(true, { handoffId: id, handoffVersion: version });
+        expect([id, named.status, await named.json()]).toEqual([
+          id,
+          409,
+          {
+            code: "HANDOFF_RECORD_MISMATCH",
+            error: `handoff record ${id} is ${held}, and this completion is of LWEVAL-1's review handoff at version ${version}: name the record ${read} shows; this completion changed nothing`,
+          },
+        ]);
+      }
+      expect((await daemon.complete(true)).status).toBe(200);
+    } finally {
+      daemon.stop();
+    }
+  },
+  600_000
+);
+
+// The workflow takes a phase worker's move back only to a phase before the one the issue stands
+// in, and only from the role running that phase, and refuses every other move 409
+// BACKWARD_REFUSED in its own sentence (packages/daemon/internal/workflow/engine.go's
+// `backward` and `backwardRefusal`); a move it takes moves the issue there. Catches: a stand-in
+// that answers `{}` for any `to` — a move forward, to the phase the issue stands in, to
+// `admitted`, or by a role not running the phase — and so tells the agent the issue moved when
+// the daemon moved nothing; and one that answers a move it takes `{}` and moves nothing, so
+// every later read of the record still shows the phase the move left.
+test.skipIf(skip)(
+  "a backward move the workflow does not serve is refused BACKWARD_REFUSED, and one it serves moves the issue",
+  async () => {
+    /** A move of the issue back to `to` through the stand-in that `post` reaches, on a grant
+     * minted for it, as the tool's `request_backward_move` makes one. */
+    const move = async (
+      post: (route: string, payload: unknown) => Promise<Response>,
+      to: string
+    ) => {
+      const minted = await (
+        await post("/legion/v1/grants", {
+          sessionId: "01a0f2cc",
+          secret: SECRET,
+          tree: "LWEVAL-1",
+          issue: "LWEVAL-1",
+        })
+      ).json();
+      const { grantId } = z.object({ grantId: z.string() }).parse(minted);
+      const moved = await post("/legion/v1/phase/backward", {
+        grantId,
+        to,
+        reason: "the fix needs code",
+      });
+      return [moved.status, await moved.json()];
+    };
+    const refused = (why: string) => [409, { code: "BACKWARD_REFUSED", error: why }];
+    const implementer = await standin("implementer", "reviewing");
+    try {
+      expect(await move(implementer.post, "implementing")).toEqual(
+        refused(
+          "a backward move is the role running the issue's phase: reviewing of LWEVAL-1 is the reviewer's, so the implementer's move to implementing changed nothing"
+        )
+      );
+      expect(await implementer.phase()).toBe("reviewing");
+    } finally {
+      implementer.stop();
+    }
+    const reviewer = await standin("reviewer");
+    try {
+      for (const to of ["accepting", "reviewing", "admitted"])
+        expect(await move(reviewer.post, to)).toEqual(
+          refused(
+            `a backward move reaches an earlier phase, and no backward row of reviewing serves ${to}; the reviewer's move of LWEVAL-1 changed nothing`
+          )
+        );
+      expect(await reviewer.phase()).toBe("reviewing");
+      expect(await move(reviewer.post, "implementing")).toEqual([200, {}]);
+      expect(await reviewer.phase()).toBe("implementing");
+    } finally {
+      reviewer.stop();
+    }
+  },
+  600_000
+);

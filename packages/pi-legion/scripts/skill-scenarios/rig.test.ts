@@ -81,6 +81,14 @@ const GITHUB_RECORD = [
 /** The first line of a run's head watcher's record (head-watcher.ts, which start_heads starts for
  * every worker world), its logs/heads.log, and its only line while nothing was pushed. */
 const HEADS_OPENED = '{"at":"2026-11-13T17:39:59.000Z","opened":"heads.log"}\n';
+/** The body GitHub answers a request for an endpoint it does not serve with, 404, as gh prints it
+ * on stdout (indented) before `gh: Not Found (HTTP 404)` on stderr (gh-standin.ts's
+ * `notFoundBody`, measured on 2026-11-17). */
+const GITHUB_404 = JSON.stringify(
+  { message: "Not Found", documentation_url: "https://docs.github.com/rest", status: "404" },
+  null,
+  2
+);
 
 // rig.sh's install_model_route, run with the checkout's real installers: the route a label's
 // profile reaches Anthropic by, picked by LEGION_E2E_MODEL_ROUTE.
@@ -5569,8 +5577,7 @@ describe("the worlds' routes, in the order the stand-in matches them", () => {
   // Catches: a GET answered as the submission of the pending review, which gh never sent and
   // GitHub never answers; a GET read as the submit that left no pending review behind it, where
   // the submit that follows would be refused 422; and a submit read as none for its leading
-  // slash, which fixture_write's generic POST route would then answer `{id:6001}` with no head
-  // on it — the approval at no head this endpoint exists to stop.
+  // slash, which would then be refused as a write no route of the world models.
   test("a GET of the submit route submits nothing, and a submit written with a leading slash submits", () => {
     const dir = built("review_world");
     const head = headOf(dir);
@@ -5578,7 +5585,7 @@ describe("the worlds' routes, in the order the stand-in matches them", () => {
     for (const verb of [["-X", "GET"], ["--method=GET"], ["-XGET"]])
       expect(call(dir, "api", ...verb, submitRoute(6001), "-f", "event=APPROVE")).toEqual({
         code: 1,
-        out: "",
+        out: GITHUB_404,
         err: "gh: Not Found (HTTP 404)\n",
       });
     const submitted = call(
@@ -5635,17 +5642,22 @@ describe("the worlds' routes, in the order the stand-in matches them", () => {
   // The comparison the rule has a role read (review-threads.md step 2) is the run's own
   // remote's, answered before the routes, and a call that writes to that path is no comparison:
   // the stand-in reads the verb with the score's own reader (`methodOf`), so a write in any
-  // spelling gh takes falls through to the routes, where fixture_write's write route answers it.
-  // Catches: a comparison read off the path alone, which would answer a write with the two
-  // refs' diff and tell the caller its call succeeded; and a verb read by a regex of the
-  // stand-in's own, which read `--method POST` and left `--method=post` and `-XPOST` answered
-  // as comparisons.
+  // spelling gh takes falls through to the routes, where no route models it, and GitHub's 404 is
+  // the answer, as GitHub refuses a write to an endpoint it does not serve. Catches: a comparison
+  // read off the path alone, which would answer a write with the two refs' diff and tell the
+  // caller its call succeeded; a verb read by a regex of the stand-in's own, which read `--method
+  // POST` and left `--method=post` and `-XPOST` answered as comparisons; and the write answered
+  // `{id:6001}`, which the route every write fell to gave it.
   test("a comparison is the run's own remote's, and a POST to that path is no comparison", () => {
     const dir = built("review_world");
     const range = "repos/example/widgets/compare/main...legion/LWEVAL-1";
     expect(answer(dir, "api", range, "--jq", ".status")).toEqual({ code: 0, out: "ahead" });
     for (const verb of [["--method", "POST"], ["--method=post"], ["-XPOST"]])
-      expect(answer(dir, "api", ...verb, range, "--jq", ".id")).toEqual({ code: 0, out: "6001" });
+      expect(call(dir, "api", ...verb, range, "--jq", ".id")).toEqual({
+        code: 1,
+        out: GITHUB_404,
+        err: "gh: Not Found (HTTP 404)\n",
+      });
   });
 
   // The three answers the approval's world gives on its own reviews path, which a round reads
@@ -6183,6 +6195,9 @@ describe("the world's gh routes: every read a role text names, answered as GitHu
         "event=APPROVE",
       ],
     },
+    "PUT repos/{owner}/{repo}/pulls/{number}/reviews/{id}": {
+      argv: () => ["api", "--method", "PUT", `${REPO}/pulls/1001/reviews/5001`, "-f", "body=b"],
+    },
     "PATCH repos/{owner}/{repo}/pulls/{number}": {
       argv: () => ["api", "--method", "PATCH", `${REPO}/pulls/1001`, "-f", "body=the body"],
     },
@@ -6208,22 +6223,11 @@ describe("the world's gh routes: every read a role text names, answered as GitHu
         `commit_id=${head}`,
       ],
     },
-    "POST repos/{owner}/{repo}/git/refs": {
-      argv: (head) => [
-        "api",
-        "-X",
-        "POST",
-        `${REPO}/git/refs`,
-        "-f",
-        "ref=refs/heads/legion/LWEVAL-2",
-        "-f",
-        `sha=${head}`,
-      ],
+    "POST repos/{owner}/{repo}/issues/{number}/comments": {
+      argv: () => ["api", "--method", "POST", `${REPO}/issues/1001/comments`, "-f", "body=a note"],
     },
     "GH pr comment": { argv: () => ["pr", "comment", "1001", "--body", "a note"] },
     "GH pr edit": { argv: () => ["pr", "edit", "1001", "--body", "the body"] },
-    "GH pr review": { argv: () => ["pr", "review", "1001", "--approve"] },
-    "GH pr ready": { argv: () => ["pr", "ready", "1001"] },
     "GRAPHQL mutation resolveReviewThread": {
       argv: () => [
         "api",
@@ -6484,11 +6488,12 @@ describe("the world's gh routes: every read a role text names, answered as GitHu
     );
   });
 
-  // A call outside the routes the world answers stays the refusal it has always been, recorded
-  // with no route, so `rig.sh health` still reports a world that answers less than production
-  // (health.ts's UNROUTED). Catches a world that answers everything: the loose `pulls/<n>` regex
-  // answered the pull request's files with the pull request, and a GraphQL route answered every
-  // mutation with the review threads.
+  // A call outside the routes the world answers stays the refusal it has always been, GitHub's
+  // 404 with its body, recorded with no route, so `rig.sh health` still reports a world that
+  // answers less than production (health.ts's UNROUTED for a read, its unmodelled-write rule for
+  // a write). Catches a world that answers everything: the loose `pulls/<n>` regex answered the
+  // pull request's files with the pull request, and a GraphQL route answered every mutation with
+  // the review threads.
   test("a call no route of the world answers is refused, with no route on its record", () => {
     const dir = build("approved_world");
     const refused = [
@@ -6505,7 +6510,11 @@ describe("the world's gh routes: every read a role text names, answered as GitHu
       ],
     ];
     for (const argv of refused)
-      expect(gh(dir, ...argv)).toEqual({ code: 1, out: "", err: "gh: Not Found (HTTP 404)\n" });
+      expect(gh(dir, ...argv)).toEqual({
+        code: 1,
+        out: compact(GITHUB_404),
+        err: "gh: Not Found (HTTP 404)\n",
+      });
     const recorded = readFileSync(path.join(dir, "calls.jsonl"), "utf8")
       .split("\n")
       .filter((line) => line.includes('"argv"'))

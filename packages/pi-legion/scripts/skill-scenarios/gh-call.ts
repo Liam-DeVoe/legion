@@ -171,6 +171,47 @@ export function isPost(argv: readonly string[]): boolean {
   return methodOf(argv) === "POST";
 }
 
+/** The flags of `gh api` that take the argument after them as their value, when written alone. */
+const API_VALUE_FLAGS = [
+  "-X",
+  "--method",
+  "-f",
+  "-F",
+  "--field",
+  "--raw-field",
+  "-H",
+  "--header",
+  "-q",
+  "--jq",
+  "-t",
+  "--template",
+  "--input",
+  "--hostname",
+  "-p",
+  "--preview",
+  "--cache",
+];
+
+/** The endpoint `gh api <argv...>` names: its first argument that is no flag and no flag's value,
+ * or undefined for a call that names none. */
+export function endpointOf(argv: readonly string[]): string | undefined {
+  for (let index = 1; index < argv.length; index++) {
+    const arg = argv[index] ?? "";
+    if (arg.startsWith("-")) {
+      if (API_VALUE_FLAGS.includes(arg)) index++;
+      continue;
+    }
+    return arg;
+  }
+  return undefined;
+}
+
+/** The path `gh api <argv...>` sends to: its endpoint (`endpointOf`) without the leading slash
+ * gh takes either way and without its query string, "" for a call that names none. */
+export function endpointPath(argv: readonly string[]): string {
+  return (endpointOf(argv) ?? "").replace(/^\//, "").split("?")[0] ?? "";
+}
+
 /** A JSON object as a body's fields build it, with no prototype: a key the call names is the
  * caller's text, and `__proto__[x]=y` must name a field and never the prototype of every object
  * of this process. */
@@ -356,18 +397,27 @@ export function createdHead(
 
 /** One route of a world's `fixtures.json` (rig.sh's fixture_write), as far as choosing it and
  * reading its answer go: the regex it matches the whole call against, the verbs it answers when
- * it answers some and not others, and its answer. */
+ * it answers some and not others, the path it answers when it answers one path and no other,
+ * and its answer. */
 export interface Route {
   readonly match: string;
   readonly methods?: readonly string[] | undefined;
+  readonly endpoint?: string | undefined;
   readonly stdout?: unknown;
 }
 
 /** The route of `routes` that answers `<program> <argv...>`: the first whose verbs, when it names
- * any, include the call's (`methodOf`) and whose regex matches the whole call. The gh stand-in
- * answers every call by this rule, and the daemon stand-in reads what the world reports about
- * the pull request by it too (daemon-standin.ts's `roundOutcome`), so the world the agent was
- * answered from and the world the record moves on are one world. */
+ * any, include the call's (`methodOf`), whose path, when it names one, is the whole of the path
+ * a `gh api` call sends to (`endpointPath`), and whose regex matches the whole call. The gh
+ * stand-in answers every call by this rule, and the daemon stand-in reads what the world reports
+ * about the pull request by it too (daemon-standin.ts's `roundOutcome`), so the world the agent
+ * was answered from and the world the record moves on are one world.
+ *
+ * A route's regex reads the call's whole text, so on its own it answers a call whose field merely
+ * holds the path it names: `gh api graphql` matched every call whose text said "graphql", and a
+ * write route matched a write to another repository's pull request of the same number. A route
+ * that writes names the one path it models (`endpoint`, read whole), so it answers that write
+ * and no other (rig.sh's fixture_write). */
 export function routeFor<R extends Route>(
   routes: readonly R[],
   argv: readonly string[],
@@ -375,9 +425,12 @@ export function routeFor<R extends Route>(
 ): R | undefined {
   const verb = methodOf(argv);
   const joined = `${program} ${argv.join(" ")}`;
+  const path = program === "gh" && argv[0] === "api" ? endpointPath(argv) : undefined;
   return routes.find(
     (candidate) =>
       (candidate.methods === undefined || candidate.methods.includes(verb)) &&
+      (candidate.endpoint === undefined ||
+        (path !== undefined && new RegExp(`^(?:${candidate.endpoint})$`).test(path))) &&
       new RegExp(candidate.match, "s").test(joined)
   );
 }

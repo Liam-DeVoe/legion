@@ -16,7 +16,7 @@
 // are read one way.
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
-import { FIELD_FLAGS, methodOf, valueAt } from "./gh-call";
+import { endpointOf, FIELD_FLAGS, methodOf, valueAt } from "./gh-call";
 
 /** A route a text names or a call reaches: its key and whether it reads or writes. */
 export interface RouteKey {
@@ -30,41 +30,6 @@ const READ_COMMANDS: Readonly<Record<string, readonly string[]>> = {
   run: ["view", "list", "watch", "download"],
   auth: ["status"],
 };
-
-/** The flags of `gh api` that take the argument after them as their value, when written alone. */
-const API_VALUE_FLAGS = [
-  "-X",
-  "--method",
-  "-f",
-  "-F",
-  "--field",
-  "--raw-field",
-  "-H",
-  "--header",
-  "-q",
-  "--jq",
-  "-t",
-  "--template",
-  "--input",
-  "--hostname",
-  "-p",
-  "--preview",
-  "--cache",
-];
-
-/** The endpoint `gh api <argv...>` names: its first argument that is no flag and no flag's value,
- * or undefined for a call that names none. */
-export function endpointOf(argv: readonly string[]): string | undefined {
-  for (let index = 1; index < argv.length; index++) {
-    const arg = argv[index] ?? "";
-    if (arg.startsWith("-")) {
-      if (API_VALUE_FLAGS.includes(arg)) index++;
-      continue;
-    }
-    return arg;
-  }
-  return undefined;
-}
 
 /** A path segment that a text writes as a placeholder (`<n>`, `{owner}`, `$base_path`, `<approved
  * sha>...<new head>`) rather than as a value. */
@@ -659,7 +624,8 @@ export interface WorldRoute {
 /** Every route a worker world answers (rig.sh's fixture_write and the gh stand-in's own answers).
  * A route a role text names needs no evidence; a route neither label's texts name carries its
  * evidence (`Evidence`). A call outside this table is refused as `gh: Not Found (HTTP 404)`
- * (gh-standin.ts), which `rig.sh health` reports as a world missing an answer. */
+ * (gh-standin.ts), which `rig.sh health` reports as a world missing an answer, and, for a write,
+ * as a write the world does not model. */
 export const WORLD_ROUTES: readonly WorldRoute[] = [
   // Reads.
   {
@@ -798,12 +764,22 @@ export const WORLD_ROUTES: readonly WorldRoute[] = [
     evidence: { world: "submits the pending review the world's own create leaves" },
   },
   {
+    route: "PUT repos/{owner}/{repo}/pulls/{number}/reviews/{id}",
+    answer:
+      "the review with the body the call sends, which every later read of it reads; 404 for a review the pull request has not got, 422 for no body",
+    evidence: {
+      run: "round25-runs/1e2a0aeced4b/calls.jsonl:23",
+      reason: "a reviewer rewrites its approval's body after it submitted it",
+    },
+  },
+  {
     route: "PATCH repos/{owner}/{repo}/pulls/{number}",
-    answer: "the pull request with the body the call leaves",
+    answer: "the pull request with the body the call leaves; a PATCH of anything else is refused",
   },
   {
     route: "POST repos/{owner}/{repo}/pulls/{number}/comments/{id}/replies",
-    answer: "the reply, in the thread of the comment the path names, or 404",
+    answer:
+      "the reply, in the thread of the comment the path names, replying to its first comment; 404 where no thread holds it",
     evidence: { world: "the REST form of the review-thread reply" },
   },
   {
@@ -815,25 +791,23 @@ export const WORLD_ROUTES: readonly WorldRoute[] = [
       reason: "a reviewer posts an inline comment on its own",
     },
   },
-  { route: "POST repos/{owner}/{repo}/git/refs", answer: "the write route's created object" },
-  { route: "GH pr comment", answer: "the comment's URL; the comment kept for the conversation" },
+  {
+    route: "POST repos/{owner}/{repo}/issues/{number}/comments",
+    answer: "the comment on the conversation, numbered after the run's earlier ones, and kept",
+    evidence: { world: "the REST form of the conversation comment gh pr comment posts" },
+  },
+  {
+    route: "GH pr comment",
+    answer: "the comment's URL, its id the conversation's; the comment kept for the conversation",
+  },
   {
     route: "GH pr edit",
-    answer: "the pull request's URL; the body the call leaves kept",
+    answer:
+      "the pull request's URL; the body the call leaves kept; an edit of anything else refused",
     evidence: {
       run: "round17-forty/reviewer-text-findings-defect-base-4/calls.jsonl:32",
       reason: "a role writes the body's sections with gh pr edit",
     },
-  },
-  {
-    route: "GH pr review",
-    answer: "the review's URL; the review at the branch's tip",
-    evidence: { world: "the CLI form of the review create the texts name" },
-  },
-  {
-    route: "GH pr ready",
-    answer: "the pull request's URL",
-    evidence: { world: "the CLI form of marking the pull request ready, which its author may" },
   },
   {
     route: "GRAPHQL mutation resolveReviewThread",

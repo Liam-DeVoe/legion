@@ -11,6 +11,7 @@
 // stand-ins import it, and the gh stand-in is a program that answers a call when it is loaded.
 import { readFileSync } from "node:fs";
 import {
+  endpointPath,
   FIELD_FLAGS,
   FILE_FIELD_FLAGS,
   flagValue,
@@ -24,7 +25,7 @@ import {
   valueAt,
   type World,
 } from "./gh-call";
-import { argumentsOf, endpointOf, isObject, type Operation, parseGraphql } from "./gh-routes";
+import { argumentsOf, isObject, type Operation, parseGraphql } from "./gh-routes";
 
 /** A JSON object of the world's, as GitHub's schema names it: a review thread, a review comment,
  * the answer of a call. */
@@ -32,7 +33,9 @@ export type Json = Record<string, unknown>;
 
 /** One call as the gh stand-in records it (its `exit`): the call it is answering now and each call
  * the run's record holds are read by the same readers (`graphqlOf`, `threadCall`), so what a call
- * did to the world is what it is answered with and what every later read of the record finds. */
+ * did to the world is what it is answered with and what every later read of the record finds.
+ * `handler` is what answered it (gh-standin.ts's `handler`), which a record from before the
+ * stand-in kept it does not hold. */
 export interface Recorded {
   readonly at?: string;
   readonly as?: string;
@@ -41,6 +44,7 @@ export interface Recorded {
   readonly stdin?: string | undefined;
   readonly route?: string | null;
   readonly review?: { state: string; head: string } | undefined;
+  readonly handler?: string;
   readonly exit?: number;
 }
 
@@ -96,6 +100,13 @@ export function graphqlOf(call: Recorded): {
 
 /** GitHub's 404, for a read of something the world has not got. */
 export const NOT_FOUND = "gh: Not Found (HTTP 404)\n";
+/** The pages of GitHub's REST reference that name the two thread writes whose 404 the world
+ * answers for a comment it has not got, which GitHub's 404 body names as its
+ * `documentation_url` (gh-standin.ts's `notFoundBody`). */
+const REPLY_DOCS =
+  "https://docs.github.com/rest/pulls/comments#create-a-reply-for-a-review-comment";
+const COMMENT_DOCS =
+  "https://docs.github.com/rest/pulls/comments#create-a-review-comment-for-a-pull-request";
 /** The create of a review comment, or of a reply, with no body, and the create of a comment that
  * opens a thread naming no `commit_id`, no `path`, or no `line` where it is no comment on the
  * whole file (`subject_type: file`) and names no `position`: the fields GitHub's "Create a review
@@ -141,7 +152,7 @@ export function routeAnswer(
  * the review's) databaseId. */
 const THREAD_NODE = "PRRT_kwDOAAAAAc4AAD";
 const COMMENT_NODE = "PRRC_kwDOAAAAAc4AAC";
-const REVIEW_NODE = "PRR_kwDOAAAAAc4AAE";
+export const REVIEW_NODE = "PRR_kwDOAAAAAc4AAE";
 /** The databaseId of the first review comment the run makes, where the world seeds none above
  * it: rig.sh's fixture_write numbers the comments of the world's own threads from 7001. */
 const FIRST_COMMENT = 9001;
@@ -264,23 +275,25 @@ function newThread(comment: Json, side: unknown, startLine: number | null): Json
     comments: [comment],
   };
 }
-/** The reply `body` the run posts in `thread`, to its comment `to`: the thread's last comment from
- * now on, on the line and the commit the thread stands on. */
-function replyIn(
-  at: ThreadWorld,
-  state: Threads,
-  thread: Json,
-  to: Json,
-  body: string,
-  made: string
-): Json {
+/** The reply `body` the run posts in `thread`: the thread's last comment from now on, on the line
+ * and the commit the thread stands on, replying to the thread's first comment whichever comment
+ * of the thread the call named. GitHub files a reply to a reply in the reply's own thread and
+ * names the thread's first comment as the one it replies to (`in_reply_to_id`, GraphQL's
+ * `replyTo`): measured on 2026-11-17 at 17:28Z on cybermonklabs/legion#2827, `POST …/pulls/2827/
+ * comments/4505026306/replies`, 4505026306 itself a reply to 4504802154, answered exit 0 with a
+ * comment whose `in_reply_to_id` was 4504802154. The docs' "Replies to replies are not supported"
+ * is no refusal GitHub gives, and a world that refused one gave the agent a refusal production
+ * does not. The `in_reply_to` of `POST …/pulls/<n>/comments` is read the same way, which is not
+ * measured. */
+function replyIn(at: ThreadWorld, state: Threads, thread: Json, body: string, made: string): Json {
+  const first = commentsOf(thread)[0];
   const comment = newComment(at, state, {
     body,
     path: thread.path,
     line: numberOf(thread.line) ?? null,
-    commit: commitOf(commentsOf(thread)[0] ?? to),
+    commit: first === undefined ? "" : commitOf(first),
     review: undefined,
-    replyTo: to,
+    replyTo: first,
     at: made,
     pending: false,
   });
@@ -312,7 +325,7 @@ export interface FieldAnswer {
  * one answer per field of a GraphQL mutation. */
 export type ThreadAnswer =
   | { readonly rest: Json }
-  | { readonly refused: string }
+  | { readonly refused: string; readonly documentation?: string }
   | { readonly fields: readonly FieldAnswer[] };
 /** Applies `call` to `state` and says what GitHub answered it, or undefined for a call that
  * writes no thread (and for every call of a run with no world). Each call is read as GitHub
@@ -324,7 +337,8 @@ export type ThreadAnswer =
  *     otherwise, which takes a `commit_id`, a `path` and a `line` (or `subject_type: file`, or a
  *     `position`), each refused 422 without what it takes (COMMENT_BODY, COMMENT_FIELDS);
  *   - `POST …/pulls/<n>/comments/<id>/replies`: a reply in the thread of the comment `<id>`,
- *     which GitHub answers 404 where no thread holds it;
+ *     which GitHub answers 404 where no thread holds it; a reply to a reply is filed in that
+ *     thread, replying to its first comment (`replyIn`);
  *   - `resolveReviewThread` and `addPullRequestReviewThreadReply`: the thread the input names,
  *     resolved or carrying the reply, or GitHub's NOT_FOUND where no thread of the world is it.
  * A call no route answered (the record's `route` null) did nothing, and neither did a GraphQL
@@ -339,7 +353,7 @@ export function threadCall(
   const { argv } = call;
   const { repo, pr } = world;
   const made = call.at ?? "";
-  const endpoint = (endpointOf(argv) ?? "").replace(/^\//, "").split("?")[0] ?? "";
+  const endpoint = endpointPath(argv);
   if (call.review !== undefined) {
     const submits = argv.map((arg) => submitsReview(arg, repo)).find((id) => id !== undefined);
     if (submits !== undefined) {
@@ -378,8 +392,8 @@ export function threadCall(
     if (body === "") return { refused: COMMENT_BODY };
     if (sent.in_reply_to !== undefined && sent.in_reply_to !== null) {
       const found = threadOfComment(state, numberOf(sent.in_reply_to));
-      if (found === undefined) return { refused: NOT_FOUND };
-      const reply = replyIn(at, state, found.thread, found.comment, body, made);
+      if (found === undefined) return { refused: NOT_FOUND, documentation: COMMENT_DOCS };
+      const reply = replyIn(at, state, found.thread, body, made);
       return { rest: restComment(world, found.thread, reply) };
     }
     const commit = typeof sent.commit_id === "string" ? sent.commit_id : "";
@@ -408,11 +422,11 @@ export function threadCall(
   const replied = /^repos\/(.+)\/pulls\/(\d+)\/comments\/(\d+)\/replies$/.exec(endpoint);
   if (isPost(argv) && replied?.[1] === repo && Number(replied[2]) === pr) {
     const found = threadOfComment(state, Number(replied[3]));
-    if (found === undefined) return { refused: NOT_FOUND };
+    if (found === undefined) return { refused: NOT_FOUND, documentation: REPLY_DOCS };
     const sent = sentBody(call) ?? {};
     const body = typeof sent.body === "string" ? sent.body : "";
     if (body === "") return { refused: COMMENT_BODY };
-    const reply = replyIn(at, state, found.thread, found.comment, body, made);
+    const reply = replyIn(at, state, found.thread, body, made);
     return { rest: restComment(world, found.thread, reply) };
   }
   if (endpoint !== "graphql") return undefined;
@@ -463,10 +477,9 @@ export function threadCall(
       fields.push({ alias, payload: { clientMutationId, thread } });
     } else {
       const body = typeof given.body === "string" ? given.body : "";
-      const first = commentsOf(thread)[0] ?? {};
       fields.push({
         alias,
-        payload: { clientMutationId, comment: replyIn(at, state, thread, first, body, made) },
+        payload: { clientMutationId, comment: replyIn(at, state, thread, body, made) },
       });
     }
   }

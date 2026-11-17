@@ -36,8 +36,17 @@
  * An older daemon's (`issue`, main `ff2a10ef`'s among them): `phase.Handoff(issue.Phase)` and
  * `recordBacked := handoffPhase && writer == grant.Role`. A record-backed completion naming no
  * record (`handoffId` and a positive `handoffVersion`) is refused 400 HANDOFF_RECORD_REQUIRED,
- * and one naming a record is read back from Dispatch, which the stand-in takes as found (below);
- * a completion naming one of a phase that ends with none is refused 409 HANDOFF_RECORD_MISMATCH.
+ * and one naming a record is read back from the run's own Dispatch (`handoffRecord`, as
+ * handoff.go's `handoffRecord` reads it: `GET /api/v1/handoffs/{id}`) and refused where that
+ * daemon refuses it: 404 HANDOFF_RECORD_NOT_FOUND for a record Dispatch has not got, 409
+ * HANDOFF_RECORD_MISMATCH for one of another issue, phase or version, 502 DISPATCH_READ_FAILED
+ * where Dispatch does not answer, and 500 DISPATCH_UNAVAILABLE for a run that names no Dispatch
+ * (DISPATCH_URL). The daemon also holds the record to the session the claim registered
+ * (HANDOFF_SESSION_MISMATCH), which this does not: the session a claim registers under and the
+ * one Dispatch names a record's author by are not measured to agree in the rig, and holding them
+ * unmeasured would refuse what production takes. This took every named record as found, a
+ * success production does not give a completion naming a record that is not there; a
+ * completion naming one of a phase that ends with none is refused 409 HANDOFF_RECORD_MISMATCH.
  * Then the workflow (`packages/daemon/internal/workflow/engine.go`, `handoff`): a completion from
  * the role whose phase the issue stands in is taken `{}` and moves nothing, since the record
  * moves on the review, as main's engine moves it (`servedPhase`). A completion from any other
@@ -74,13 +83,17 @@
  * refusal is the workflow's. A role's phase is its first (daemon-pane.go's `phase <role>`),
  * which is narrower than the daemon, whose implementer also runs retro; no run of this rig
  * stands in retro. The body may carry every key any
- * label's contract sends (`CompleteRequest`). A backward move answers `{}` once its
- * grant redeems, as the daemon's does for a phase worker, and names no issue but this one
- * (`ISSUE_NOT_GRANTS`, 400, the daemon's refusal of a worker that moves another issue). The
- * stand-in reads no record from
- * Dispatch: the `legion` tool found the newest record of the phase on Dispatch before posting, and
- * the rig's scorer reads that record back from Dispatch and holds it to the run's session
- * (score.ts testerProof).
+ * label's contract sends (`CompleteRequest`). A backward move is the workflow's, as
+ * engine.go's `backward` and `backwardRefusal` take it: it names no issue but this one
+ * (`ISSUE_NOT_GRANTS`, 400, the daemon's refusal of a worker that moves another issue), and is
+ * refused 409 BACKWARD_REFUSED, in the engine's own sentence, for a phase no backward row of the
+ * issue's phase serves — any but an earlier one of the workflow's line (phase.go's `Order`) —
+ * and for a role that does not run the issue's phase (phase.go's `RoleFor`). Taken, it answers
+ * `{}` and moves the issue to that phase, clearing the completion of the role the move starts
+ * there (engine.go's `transition` and `clearHandoff`), so every later read of the record and
+ * every later completion read the phase it moved to; it answered `{}` for any `to` and moved
+ * nothing, a success the daemon gives no move it refuses. The tree's linger (`TREE_LINGERING`)
+ * is not modelled, since no tree of the rig leaves the workflow.
  *
  * Every request appends one JSON line to the log file: `{at, method, path, status, role, code?,
  * grantId?, sessionId?, mintedGrantId?, handoffId?, handoffVersion?, to?, reason?, phase?,
@@ -98,7 +111,9 @@
  *
  * Usage: `bun daemon-standin.ts <port> <log file> <boot token file> <project> <issue> <run dir>
  * <role> [phase] [completed]`. The daemon whose routes it answers is the one of the checkout
- * <run dir>/built-from names (`ROUTES`).
+ * <run dir>/built-from names (`ROUTES`). The run's own Dispatch, which a completion's handoff
+ * record is read back from, is the one DISPATCH_URL names, read with the bearer in the file
+ * DISPATCH_TOKEN_FILE names (rig.sh's worker_boot gives both, the ones the run's panes read).
  * The state document holds that one issue, on the repository and default branch of the run's own
  * world, which it reads from <run dir>/world.json, as the gh stand-in does: a record naming
  * another repository sends the agent's review to one the world has not got, and a record naming
@@ -522,6 +537,138 @@ function resolveGrant(grantId: string): Response | undefined {
   return undefined;
 }
 
+/** The workflow's line of working phases, in the order it advances them (phase.go's `Order`):
+ * the only phases a move back is read against, each with a backward row to every phase before
+ * it (workflow/table.go's `backwardRows`, from phase.go's `BackwardPairs`). */
+const WORKFLOW_ORDER = [
+  "planning",
+  "implementing",
+  "testing",
+  "reviewing",
+  "accepting",
+  "retro",
+  "merging",
+];
+
+/** The role that works `phase` (phase.go's `RoleFor`), "" for a phase no role works. */
+function roleFor(phase: string): string {
+  switch (phase) {
+    case "planning":
+      return "planner";
+    case "implementing":
+    case "retro":
+      return "implementer";
+    case "testing":
+      return "tester";
+    case "reviewing":
+      return "reviewer";
+    case "admitted":
+    case "accepting":
+      return "architect";
+    case "merging":
+      return "merger";
+  }
+  return "";
+}
+
+/** Why the workflow refuses this role's move of the issue standing in `phase` back to `to`, in
+ * the engine's own sentence (engine.go's `backwardRefusal`), or undefined where it takes it: a
+ * target no backward row of `phase` serves — anything but an earlier phase of WORKFLOW_ORDER —
+ * and a role that does not run `phase`. The contract refuses a move naming no target before it
+ * is sent, so the engine's first case is never reached here. Both labels' daemons of INFRA-764
+ * round 25 (the checkouts its runs' built-from name) word it so. */
+function backwardRefusal(phase: string, to: string): string | undefined {
+  const at = WORKFLOW_ORDER.indexOf(phase);
+  const back = WORKFLOW_ORDER.indexOf(to);
+  if (back < 0 || at < 0 || back >= at)
+    return `a backward move reaches an earlier phase, and no backward row of ${phase} serves ${to}; the ${role}'s move of ${issue} changed nothing`;
+  if (roleFor(phase) !== role)
+    return `a backward move is the role running the issue's phase: ${phase} of ${issue} is the ${roleFor(phase)}'s, so the ${role}'s move to ${to} changed nothing`;
+  return undefined;
+}
+
+/** The run's own Dispatch (rig.sh's worker_boot names it) and the file holding the bearer the
+ * run reads it with, which a completion's handoff record is read back from (`handoffRecord`). */
+const DISPATCH_URL = process.env.DISPATCH_URL ?? "";
+const DISPATCH_TOKEN_FILE = process.env.DISPATCH_TOKEN_FILE ?? "";
+/** A handoff record as Dispatch answers `GET /api/v1/handoffs/{id}`, as far as the daemon reads
+ * it (dispatch/client.go's `handoffResponse`). */
+const HandoffRecord = z.looseObject({
+  issue_key: z.string(),
+  phase: z.string(),
+  version: z.number(),
+});
+/** A refusal Dispatch answers in its error body, `{code, error}` (dispatch/api's `errorBody`). */
+const DispatchError = z.looseObject({ code: z.string().optional(), error: z.string().optional() });
+
+/** The refusal of a completion naming handoff record `id` at `version`, read back from the run's
+ * own Dispatch as the daemon reads it (handoff.go's `handoffRecord`), or undefined where the
+ * record is this issue's, of the phase's handoff word and at that version. A record Dispatch
+ * answers 404 for, or refuses with a code that says the id names nothing it holds
+ * (dispatch.PermanentRefusal: a 4xx with a code, but 401, 403, 408, 429 and a contended
+ * parent), is HANDOFF_RECORD_NOT_FOUND, 404; any other answer, or none, DISPATCH_READ_FAILED,
+ * 502; a record of another issue, phase or version HANDOFF_RECORD_MISMATCH, 409; and a run that
+ * names no Dispatch DISPATCH_UNAVAILABLE, 500. Each sentence is the daemon's, the Dispatch error
+ * in it as Go prints one (`<code>: <message>`). */
+async function handoffRecord(id: string, version: number): Promise<Response | undefined> {
+  const write = `\`dispatch handoff-write --issue ${issue} --phase ${HANDOFF_WORD} --body-file <file>\``;
+  const read = `\`dispatch handoff-read --issue ${issue} --phase ${HANDOFF_WORD}\``;
+  if (DISPATCH_URL === "") return failure(500, "DISPATCH_UNAVAILABLE", "Dispatch is unavailable");
+  const unanswered = (why: string) =>
+    failure(
+      502,
+      "DISPATCH_READ_FAILED",
+      `Dispatch did not answer the read of handoff record ${id} (${why}): complete again once Dispatch answers; this completion changed nothing`
+    );
+  let answer: Response;
+  try {
+    const token =
+      DISPATCH_TOKEN_FILE === "" ? "" : (await Bun.file(DISPATCH_TOKEN_FILE).text()).trim();
+    answer = await fetch(`${DISPATCH_URL}/api/v1/handoffs/${encodeURIComponent(id)}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  } catch (error) {
+    return unanswered(error instanceof Error ? error.message : String(error));
+  }
+  const text = await answer.text();
+  if (!answer.ok) {
+    let refusal: z.infer<typeof DispatchError> = {};
+    try {
+      refusal = DispatchError.parse(JSON.parse(text));
+    } catch {
+      refusal = { error: text.trim() };
+    }
+    const code = refusal.code ?? "";
+    const message = refusal.error || answer.statusText;
+    const why = code === "" ? message : `${code}: ${message}`;
+    const { status } = answer;
+    const permanent =
+      code !== "" &&
+      code !== "ISSUE_CHANGED" &&
+      status >= 400 &&
+      status < 500 &&
+      ![401, 403, 408, 429].includes(status) &&
+      !(status === 409 && code === "PARENT_CONTENDED");
+    if (!permanent && status !== 404) return unanswered(why);
+    return failure(
+      404,
+      "HANDOFF_RECORD_NOT_FOUND",
+      `Dispatch has no handoff record ${id} (${why}): name the record ${read} shows, or write one with ${write}, then complete again; this completion changed nothing`
+    );
+  }
+  const record = HandoffRecord.safeParse(JSON.parse(text));
+  if (!record.success)
+    return unanswered(`a handoff record no reader can take: ${record.error.message}`);
+  const held = record.data;
+  if (held.issue_key === issue && held.phase === HANDOFF_WORD && held.version === version)
+    return undefined;
+  return failure(
+    409,
+    "HANDOFF_RECORD_MISMATCH",
+    `handoff record ${id} is version ${held.version} of ${held.issue_key}'s ${held.phase} handoff, and this completion is of ${issue}'s ${HANDOFF_WORD} handoff at version ${version}: name the record ${read} shows; this completion changed nothing`
+  );
+}
+
 /** `POST /legion/v1/claims/turn-outcome` (`turnOutcome` in packages/daemon/internal/api/claims.go):
  * a body of neither caller or of both, a sequence or a generation of 0, and an outcome neither
  * `clean` nor `refused` are refused 400 by the body's contract; a boot token that is not the
@@ -584,10 +731,10 @@ function turnOutcome(body: unknown): Response {
  * to that is a sentence its supervisor builds in an unexported function, which this does not
  * restate. Such a call is answered 404, which health reads as a world the daemon would not have
  * served, so the run is unhealthy and never scored. */
-function handle(
+async function handle(
   path: string,
   body: unknown
-): { response: Response; mintedGrantId?: string; phase?: string } {
+): Promise<{ response: Response; mintedGrantId?: string; phase?: string }> {
   switch (path) {
     case "/legion/v1/claims/turn-outcome":
       return { response: turnOutcome(body) };
@@ -670,9 +817,8 @@ function handle(
           ? HANDOFF_WORD !== "" && (phase === ROLE_PHASE || namesRecord)
           : phase === ROLE_PHASE && HANDOFF_WORD !== "";
       if (recordBacked) {
-        // A record it names is read back from Dispatch and held to the issue, the word, the
-        // version and the session (`handoffRecord`), which the stand-in takes as found: the
-        // scorer reads the record back instead (the module doc).
+        // A record it names is read back from the run's own Dispatch and held to the issue, the
+        // word and the version (`handoffRecord`).
         if (handoffId === undefined || handoffVersion === undefined) {
           const write = `\`dispatch handoff-write --issue ${issue} --phase ${HANDOFF_WORD} --body-file <file>\``;
           return {
@@ -684,6 +830,8 @@ function handle(
             ),
           };
         }
+        const unread = await handoffRecord(handoffId, handoffVersion);
+        if (unread !== undefined) return { phase, response: unread };
       } else if (!RECORD_PHASES.includes(of) && namesRecord) {
         return {
           phase,
@@ -745,6 +893,14 @@ function handle(
           ),
         };
       }
+      // The workflow (engine.go's `backward`): a move it refuses changes nothing; one it takes
+      // moves the issue to the phase it names and clears the completion of the role it starts
+      // there (`transition`'s `clearHandoff`), so that role's next completion is of that phase.
+      const { to } = parsed.data;
+      const why = backwardRefusal(served(), to);
+      if (why !== undefined) return { response: failure(409, "BACKWARD_REFUSED", why) };
+      servedPhase = to;
+      COMPLETED_ROWS.delete(roleFor(to));
       return { response: json(200, {}) };
     }
     default:
@@ -770,7 +926,7 @@ const server = Bun.serve({
     const { response, mintedGrantId, phase } = !serves(ROUTES, request.method, path)
       ? { response: json(404, { error: `no route for ${request.method} ${path}` }) }
       : request.method === "POST"
-        ? handle(path, body)
+        ? await handle(path, body)
         : request.method === "GET" && path === "/legion/v1/state"
           ? { response: json(200, stateIn(served())) }
           : { response: json(404, { error: `no route for ${request.method} ${path}` }) };
