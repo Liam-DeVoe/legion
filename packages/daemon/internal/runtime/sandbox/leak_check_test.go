@@ -5,12 +5,15 @@ import (
 	"context"
 	"errors"
 	"maps"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
@@ -353,5 +356,33 @@ func TestTwoStartsOnOneConnectionPushTheLeakCheckOnce(t *testing.T) {
 	frames := g.sent(spec.Claim)
 	if got := countOf(frames, shimwire.TypeLauncherLeakCheck); got != pushed || countOf(frames, shimwire.TypeLauncherStart) != 2 {
 		t.Fatalf("the launcher was sent %v, want the check's %d slices once and two starts", frameTypes(frames), pushed)
+	}
+}
+
+// A role's environment, as the runtime builds it for a deployment that names a shared leak check,
+// carries the deployment's checker under the role's own name (leakguard.CheckerVar) and neither of
+// the daemon's two variables (leakguard.RepositoryVar, leakguard.SHA256Var), so a configuration
+// loaded in the role — `legion start --check-config` in a pod, which reads the process
+// environment — loads with no refusal of a leak_check half-set.
+func TestARolesEnvironmentLoadsAConfigurationWithNoLeakCheckRefusal(t *testing.T) {
+	r, err := configure(testOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, plain := r.launchEnvironment(launchOf(t, r, workerSpec(t)))
+	env := map[string]string{}
+	for _, pair := range plain {
+		name, value, _ := strings.Cut(pair, "=")
+		env[name] = value
+	}
+	if env[leakguard.CheckerVar] != testLeakCheck.CheckerSHA256 {
+		t.Fatalf("the role is told %s=%q, want the deployment's checker %q", leakguard.CheckerVar, env[leakguard.CheckerVar], testLeakCheck.CheckerSHA256)
+	}
+	file := filepath.Join(t.TempDir(), "legion.yaml")
+	if err := os.WriteFile(file, []byte("project: DEMO\nstate_dir: /var/lib/legion\npostgres_dsn: postgres://legion@127.0.0.1:5432/legion\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := config.Load(file, func(name string) string { return env[name] }); err != nil {
+		t.Fatalf("a configuration loaded in the role's environment is refused: %v", err)
 	}
 }

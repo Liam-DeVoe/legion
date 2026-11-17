@@ -11,7 +11,7 @@ import (
 // running without one means. It is a plain Info line and not a warning: a deployment with no
 // check of its own, a turnkey install among them, is one the daemon runs as designed.
 const leakCheckNotConfigured = "daemon: the deployment leak check is not configured (" +
-	leakguard.RepositoryVar + " and " + leakguard.CheckerVar + ", or leak_check.repository and " +
+	leakguard.RepositoryVar + " and " + leakguard.SHA256Var + ", or leak_check.repository and " +
 	"leak_check.checker_sha256 in legion.yaml): role pods start without it, and no write is refused for its absence"
 
 // logLeakCheck is the boot's one line on the deployment's shared public leak check: under a

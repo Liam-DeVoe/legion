@@ -58,7 +58,7 @@ func readLeakCheck(value *yaml.Node, key string) (*fileLeakCheck, error) {
 }
 
 // resolveLeakCheck settles the deployment's shared public leak check (Config.LeakCheck): each of
-// the two values from the daemon's environment (leakguard.RepositoryVar, leakguard.CheckerVar),
+// the two values from the daemon's environment (leakguard.RepositoryVar, leakguard.SHA256Var),
 // which the file's member of the same value overrides, as postgres_dsn overrides
 // LEGION_POSTGRES_DSN. The repository must be one ghrepo.Parse takes and the sha256 64 lowercase
 // hex digits, each refused naming where it came from. The two are set together or not at all: one
@@ -68,7 +68,7 @@ func readLeakCheck(value *yaml.Node, key string) (*fileLeakCheck, error) {
 // check, which is no refusal (leakguard.Setting.Configured).
 func resolveLeakCheck(file fileConfig, env func(string) string, cfg *Config) error {
 	repository, repositoryFrom := env(leakguard.RepositoryVar), leakguard.RepositoryVar
-	sha, shaFrom := env(leakguard.CheckerVar), leakguard.CheckerVar
+	sha, shaFrom := env(leakguard.SHA256Var), leakguard.SHA256Var
 	if block := file.LeakCheck; block != nil {
 		if block.Repository != nil {
 			repository, repositoryFrom = *block.Repository, leakCheckRepositoryKey
@@ -78,7 +78,7 @@ func resolveLeakCheck(file fileConfig, env func(string) string, cfg *Config) err
 		}
 	}
 	both := fmt.Sprintf("%s and %s (or %s and %s in the daemon's environment)",
-		leakCheckRepositoryKey, leakCheckSHA256Key, leakguard.RepositoryVar, leakguard.CheckerVar)
+		leakCheckRepositoryKey, leakCheckSHA256Key, leakguard.RepositoryVar, leakguard.SHA256Var)
 	switch {
 	case repository == "" && sha == "":
 		return nil

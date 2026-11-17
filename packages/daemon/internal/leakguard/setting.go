@@ -3,15 +3,14 @@ package leakguard
 import "github.com/sjawhar/legion/daemon/internal/ghrepo"
 
 // Setting is the deployment's shared public leak check as its operator names it: the daemon's
-// `leak_check` block in legion.yaml, or RepositoryVar and CheckerVar in the daemon's environment
+// `leak_check` block in legion.yaml, or RepositoryVar and SHA256Var in the daemon's environment
 // (internal/config). Legion holds no name of it: the deployment supplies both values, and a
 // turnkey install runs with neither.
 //
 // Repository is the repository the check is published from by tag, whose `leak-check` directory
 // the daemon reads at a pod's pin and pushes to the pod's launcher (Source). CheckerSHA256 is the
-// sha256, in lowercase hex, of that check's public_leak_check.py: the program cmd/legion's rule
-// for a gh call that writes nothing was proven against (GhRequest.ProvenCheck), which the runtime
-// tells every role it starts under CheckerVar.
+// sha256, in lowercase hex, of that check's public_leak_check.py, which the runtime tells every
+// role it starts under CheckerVar.
 //
 // Both are set, or neither, which the loader holds the setting to. The zero Setting is a
 // deployment that runs no shared leak check of its own: the daemon reads and pushes none, a role
@@ -28,15 +27,22 @@ func (s Setting) Configured() bool { return !s.Repository.IsZero() }
 // `leak_check.repository` overrides.
 const RepositoryVar = "LEGION_LEAK_CHECK_REPOSITORY"
 
-// CheckerVar is the daemon's environment fallback for Setting.CheckerSHA256, which the file's
-// `leak_check.checker_sha256` overrides, and the variable the runtime tells every role it starts
-// that sha256 under (runtime/sandbox's mainEnvironment, runtime/tmux's panePairs). In a role's
-// environment it is the one sign that the deployment runs a shared leak check: a role's shim reads
-// the pod's install only under it (Installed), the guard refuses a write for want of a check only
-// under it (Guard.sharedCheck), and `legion gh` names it as the checker its read rule was proven
-// against (GhRequest.ProvenCheck). It is exported because each of those reads it, and a second copy
-// of the string in any of them is one an edit here would silently part from.
-const CheckerVar = "LEGION_LEAK_CHECK_SHA256"
+// SHA256Var is the daemon's environment fallback for Setting.CheckerSHA256, which the file's
+// `leak_check.checker_sha256` overrides. It is the daemon's own and told to no role: a role is told
+// the checker under CheckerVar, a name the daemon's configuration never reads, so a configuration
+// loaded in a role — `legion start --check-config` in a pod reads the process environment — never
+// meets one half of the daemon's setting without the other.
+const SHA256Var = "LEGION_LEAK_CHECK_SHA256"
+
+// CheckerVar is the name the runtime tells every role it starts the deployment's checker
+// (Setting.CheckerSHA256) under (runtime/sandbox's mainEnvironment, runtime/tmux's panePairs). In a
+// role's environment it is the one sign that the deployment runs a shared leak check: a role's
+// shim reads the pod's install only under it (Installed), the guard refuses a write for want of a
+// check only under it (Guard.sharedCheck), and `legion gh` trusts its read rule only where it
+// names the digest that rule was proven against (GhRequest.ProvenCheck). It is exported because
+// each of those reads it, and a second copy of the string in any of them is one an edit here would
+// silently part from.
+const CheckerVar = "LEGION_LEAK_CHECKER_SHA256"
 
 // configured is whether env names the deployment's checker (CheckerVar): the role runs under a
 // deployment that runs a shared leak check.
