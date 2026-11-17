@@ -11,6 +11,7 @@ import {
   spawnRpc,
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import { settled } from "@legion/test-fixtures/wait";
 
 // AskGate on the real Oh My Pi: the loader resolves the gate's string-literal imports of the host's
@@ -84,13 +85,15 @@ async function runSession(options: {
   if (omp === undefined) throw new Error("LEGION_TEST_OMP is unset on GitHub Actions");
   const { root, home, workspace, sessions } = await ompRoot(omp, "askgate-omp-", cleanup);
 
-  // The `dispatch` the session calls by its literal path.
+  // The `dispatch` the session calls by its literal path. The real one sets the transpiler-cache
+  // key itself: an eval cell's kernel passes its child only the names it allows, and HOME is one
+  // of them, so the key the harness gives omp does not reach the CLI that way.
   const dispatch = path.join(root, "bin", "dispatch");
   await mkdir(path.dirname(dispatch));
   await writeFile(
     dispatch,
     options.cli === "real"
-      ? `#!/bin/sh\nexec "${process.execPath}" "${CLI_ENTRY}" "$@"\n`
+      ? `#!/bin/sh\nexport BUN_RUNTIME_TRANSPILER_CACHE_PATH=${bunCacheOff.BUN_RUNTIME_TRANSPILER_CACHE_PATH}\nexec "${process.execPath}" "${CLI_ENTRY}" "$@"\n`
       : [
           "#!/bin/sh",
           'case " $* " in',

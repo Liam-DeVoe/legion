@@ -66,6 +66,9 @@ func (c cliBuild) run(t *testing.T, server *dispatchProcess, home string, args .
 	cmd.Env = []string{
 		"PATH=" + os.Getenv("PATH"),
 		"HOME=" + home,
+		// Bun keeps its runtime transpiler cache under HOME, the test's own directory here, where
+		// each run would write every module it transpiles: "0" turns that cache off.
+		"BUN_RUNTIME_TRANSPILER_CACHE_PATH=0",
 		"DISPATCH_STATE_DIR=" + home,
 		"DISPATCH_HOST=omp",
 		"DISPATCH_SESSION_ID=" + cliSession,

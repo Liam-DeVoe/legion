@@ -3,6 +3,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { dirname, join, resolve } from "node:path"
 import { sessionConfigFile } from "@legion/envoy-client/session-settings"
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer"
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment"
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories"
 import type { Server, Subprocess } from "bun"
 import { nkeys } from "nats"
@@ -746,7 +747,7 @@ async function runChannelServer(
 }> {
   const server = Bun.spawn(["bun", channelEntry], {
     cwd: env.HOME,
-    env: { PATH: process.env["PATH"] ?? "", ...env },
+    env: { ...bunCacheOff, PATH: process.env["PATH"] ?? "", ...env },
     stdin: "pipe",
     stdout: "pipe",
     stderr: "pipe",
@@ -955,6 +956,7 @@ test("the server calls the listener with the file's envoy.token and signs in to 
     server = Bun.spawn(["bun", channelEntry], {
       cwd: home,
       env: {
+        ...bunCacheOff,
         PATH: process.env["PATH"] ?? "",
         HOME: home,
         CLAUDE_CONFIG_DIR: configDirectory,

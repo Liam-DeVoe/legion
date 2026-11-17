@@ -10,6 +10,7 @@ import {
   SESSION_ANSWERS_MARKER,
   sessionAnswersFailureLine,
 } from "@legion/envoy-client/session-answers"
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment"
 import { settled, until } from "@legion/test-fixtures/wait"
 import { buildBundles } from "../scripts/build"
 
@@ -214,6 +215,7 @@ async function runHook(
   const preload = options.preload === undefined ? [] : ["--preload", options.preload]
   const run = Bun.spawn(["bun", ...preload, bundle, "answers"], {
     env: {
+      ...bunCacheOff,
       PATH: process.env["PATH"] ?? "",
       CLAUDE_PLUGIN_ROOT: packageRoot,
       ENVOY_ANSWERS_TIMING_FILE: timingFile,

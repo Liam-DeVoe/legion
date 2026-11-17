@@ -726,6 +726,9 @@ func (r *handoffRecordsLive) bun(session string, extra []string, program string,
 		"XDG_CONFIG_HOME=" + filepath.Join(r.cliHome, "config"),
 		"XDG_STATE_HOME=" + filepath.Join(r.cliHome, "state"),
 		"XDG_CACHE_HOME=" + filepath.Join(r.cliHome, "cache"),
+		// Bun keeps its runtime transpiler cache under XDG_CACHE_HOME, the test's own directory
+		// here, where each run would write every module it transpiles: "0" turns that cache off.
+		"BUN_RUNTIME_TRANSPILER_CACHE_PATH=0",
 		"ENVOY_CONFIG_FILE=" + filepath.Join(r.cliHome, "envoy.json"),
 		"DISPATCH_STATE_DIR=" + filepath.Join(r.cliHome, "dispatch-state"),
 		"DISPATCH_HOST=omp",

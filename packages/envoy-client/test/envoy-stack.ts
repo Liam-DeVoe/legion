@@ -1,6 +1,7 @@
 import { closeSync, mkdirSync, openSync, readFileSync } from "node:fs";
 import { createServer, type Server } from "node:net";
 import * as path from "node:path";
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { until } from "@legion/test-fixtures/wait";
 import type { Subprocess } from "bun";
@@ -253,7 +254,7 @@ export async function startEnvoyStack(options: EnvoyStackOptions): Promise<Envoy
     const natsLog = path.join(work, "natsd.log");
     const natsOut = openSync(natsLog, "a");
     const natsd = Bun.spawn([path.join(bin, "natsd"), ...natsArgs], {
-      env: { PATH, HOME: natsHome },
+      env: { ...bunCacheOff, PATH, HOME: natsHome },
       stdout: natsOut,
       stderr: natsOut,
     });

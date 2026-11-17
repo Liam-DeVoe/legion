@@ -1,6 +1,7 @@
 import { afterAll, expect, test } from "bun:test"
 import { writeFileSync } from "node:fs"
 import { join, resolve } from "node:path"
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment"
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
 import { sendEnvoyMessage } from "../src/envoy-client"
 
@@ -111,7 +112,12 @@ test("envoy-send sends to the listener and with the bearer its envoy.json names"
     ["bun", resolve(import.meta.dir, "../bin/envoy-send.ts"), "ses_receiver", "file", "send"],
     {
       cwd: scratch,
-      env: { PATH: process.env["PATH"] ?? "", HOME: scratch, ENVOY_CONFIG_FILE: file },
+      env: {
+        ...bunCacheOff,
+        PATH: process.env["PATH"] ?? "",
+        HOME: scratch,
+        ENVOY_CONFIG_FILE: file,
+      },
       stdout: "pipe",
       stderr: "pipe",
     },
@@ -134,7 +140,12 @@ test("envoy-send with no Envoy configured refuses, saying why, and sends nothing
     ["bun", resolve(import.meta.dir, "../bin/envoy-send.ts"), "ses_receiver", "nothing"],
     {
       cwd: scratch,
-      env: { PATH: process.env["PATH"] ?? "", HOME: scratch, ENVOY_CONFIG_FILE: missing },
+      env: {
+        ...bunCacheOff,
+        PATH: process.env["PATH"] ?? "",
+        HOME: scratch,
+        ENVOY_CONFIG_FILE: missing,
+      },
       stdout: "pipe",
       stderr: "pipe",
     },

@@ -26,6 +26,7 @@
  */
 import { mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import { settled } from "@legion/test-fixtures/wait";
 import type { Subprocess } from "bun";
 
@@ -82,6 +83,7 @@ const { PATH } = process.env;
 const child: Subprocess<"pipe", "pipe", "pipe"> = Bun.spawn(["bun", options.server], {
   cwd: options.stateDirectory,
   env: {
+    ...bunCacheOff,
     PATH: PATH ?? "",
     HOME: options.stateDirectory,
     CLAUDE_CONFIG_DIR: options.configDirectory,

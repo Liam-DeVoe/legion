@@ -2,6 +2,7 @@ import { expect, test } from "bun:test"
 import { chmod, mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment"
 
 const hookEntry = resolve(import.meta.dir, "..", "hooks", "session-hook.ts")
 
@@ -15,7 +16,7 @@ async function runHook(
   env: Record<string, string> & { readonly HOME: string },
 ): Promise<{ readonly exitCode: number; readonly stdout: string; readonly stderr: string }> {
   const run = Bun.spawn(["bun", hookEntry, "open-asks"], {
-    env: { PATH: process.env["PATH"] ?? "", BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0", ...env },
+    env: { ...bunCacheOff, PATH: process.env["PATH"] ?? "", ...env },
     stdin: new TextEncoder().encode(JSON.stringify({ cwd: env.HOME, ...input })),
     stdout: "pipe",
     stderr: "pipe",

@@ -409,6 +409,9 @@ async function runDispatch(
     const child = Bun.spawn([process.execPath, dispatchCommand, ...argv], {
       cwd,
       env: {
+        // HOME below is a directory this run made, where Bun would write its runtime transpiler
+        // cache for every large module the command loads: "0" turns that cache off.
+        BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0",
         DISPATCH_HOST: "omp",
         DISPATCH_SESSION_ID: session,
         DISPATCH_TOKEN: agentToken,

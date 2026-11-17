@@ -4,6 +4,7 @@ import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer"
 import { envoyToolSpecs } from "@legion/envoy-client/tool-contract"
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { modSocketPath } from "../hooks/mod-protocol"
@@ -60,6 +61,7 @@ test("over MCP the server offers only the Envoy tools, refuses dispatch_ask, poi
     args: [entry],
     cwd: stateDirectory,
     env: {
+      ...bunCacheOff,
       PATH: process.env["PATH"] ?? "",
       HOME: stateDirectory,
       ENVOY_NATS_URL: broker.url,
@@ -164,6 +166,7 @@ test("the session advertises its delivery modes for a mod that polls and never s
     args: [entry],
     cwd: stateDirectory,
     env: {
+      ...bunCacheOff,
       PATH: process.env["PATH"] ?? "",
       HOME: stateDirectory,
       ENVOY_NATS_URL: broker.url,

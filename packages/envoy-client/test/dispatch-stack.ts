@@ -1,5 +1,6 @@
 import { closeSync, mkdirSync, openSync } from "node:fs";
 import * as path from "node:path";
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import { ownDatabase } from "@legion/test-fixtures/postgres";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import type { Subprocess } from "bun";
@@ -104,6 +105,7 @@ export async function startDispatchStack(options: DispatchStackOptions): Promise
     child = Bun.spawn([path.join(bin, "dispatch")], {
       cwd: ENVOY_MODULE,
       env: {
+        ...bunCacheOff,
         PATH: SHELL_PATH,
         HOME: home,
         DATABASE_URL: database.url,

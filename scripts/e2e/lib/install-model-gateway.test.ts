@@ -1,6 +1,7 @@
 import { beforeAll, describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { until } from "@legion/test-fixtures/wait";
 
@@ -398,7 +399,12 @@ describe("the model gateway key command", () => {
     ];
     for (const [script, inputs] of stages) {
       const result = Bun.spawnSync(["bash", join(lib, "..", script)], {
-        env: { PATH: `${stageBin}:${process.env.PATH}`, HOME: operatorHome, ...inputs },
+        env: {
+          ...bunCacheOff,
+          PATH: `${stageBin}:${process.env.PATH}`,
+          HOME: operatorHome,
+          ...inputs,
+        },
       });
       const stderr = result.stderr.toString();
       const scratch = /the run's scratch workspace(?:, kept for review,)? is (\S+)/.exec(

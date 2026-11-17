@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { settled, timeLeft, until } from "@legion/test-fixtures/wait";
@@ -81,6 +82,7 @@ function runLast(subject: string, seconds = budgetSeconds) {
   // PATH, a home of the test's own and the config this run wrote: no NATS_NKEY_SEED or
   // NATS_NKEY_SEED_FILE of the caller's reaches the child, which this server would refuse.
   const env = {
+    ...bunCacheOff,
     PATH: process.env.PATH ?? "",
     HOME: configDirectory,
     ENVOY_CONFIG_FILE: config,

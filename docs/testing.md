@@ -385,6 +385,18 @@ These rules are how a file leaves nothing behind:
   So neither the developer's `~/.jjconfig.toml`, nor their `~/.gitconfig`, nor the system gitconfig decides a result.
   A suite whose code under test starts jj with the process's own environment puts those names on `process.env` itself, and hands `versionControlNames` to `restoreEnvironment` so the next file finds its own again.
 
+- A test that starts a process under a HOME or an `XDG_CACHE_HOME` of the test's own puts `...bunCacheOff` (`@legion/test-fixtures/bun-child-environment`) first in that process's environment;
+  a test that moves its own process's HOME also runs `Object.assign(process.env, bunCacheOff)` and puts the key back with HOME;
+  and a Go test puts `BUN_RUNTIME_TRANSPILER_CACHE_PATH=0` beside its `HOME=` or `XDG_CACHE_HOME=`.
+  Bun keeps its runtime transpiler cache under HOME (`$HOME/.bun/install/cache/@t@`, or `$XDG_CACHE_HOME/bun/@t@`), and a HOME a test made is empty, so each Bun child writes each module larger than 4 KB it transpiles into the test's directory, and the test's removal deletes it again:
+  149 files for one start of the dispatch entry, 3,083 in one run of `askgate-omp.test.ts`.
+  No row checks that work, and stalling it on purpose reproduces the two-child AskGate row's time-out.
+  Bun's own advice is to turn the cache off on a filesystem that does not last (https://bun.com/docs/runtime/environment-variables).
+  The key goes to a process that is not Bun too (a shell, `python3`, `claude`), since a Bun it starts inherits it, and a HOME that does not exist (`/nonexistent-home-for-envoy-tests`) takes it as any other does.
+  `bun scripts/bun-cache-census.ts -- <command>` runs a command under `strace` and names each Bun process it starts under a HOME or an `XDG_CACHE_HOME` of its own without `BUN_RUNTIME_TRANSPILER_CACHE_PATH=0`, and each cache file written outside the runner's own cache.
+  It is a measuring tool, run by hand over one test file at a time (`bun scripts/bun-cache-census.ts -- bun test <file>`), and no CI job runs it or its test:
+  CI's runner image has no `strace`, and a suite run under it slows until rows fail on time.
+
 - Take a port from the kernel: bind port 0, read back the port the listener reports, and hold that listener from the moment it binds, so nothing else on the machine can take the port between the question and the row that asks it (`stubBroker` in `packages/envoy-client/src/__tests__/broker-credential.test.ts`).
   Never write a port number into a test.
   The Dispatch e2e harness is the same rule at the scale of a run:

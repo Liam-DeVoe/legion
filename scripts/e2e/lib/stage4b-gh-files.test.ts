@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { scriptFunctions } from "./script-functions";
 
@@ -60,6 +61,7 @@ function judge(
   );
   const result = Bun.spawnSync(["bash", "-c", script], {
     env: {
+      ...bunCacheOff,
       PATH: process.env.PATH ?? "",
       HOME: home,
       ROOT: root,

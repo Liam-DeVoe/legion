@@ -11,6 +11,7 @@ import {
   spawnRpc,
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import { until as waitUntil } from "@legion/test-fixtures/wait";
 
 // Where a session sits in tmux, as the real Oh My Pi reports it (envoy-client's `readTmuxPlace`,
@@ -93,12 +94,15 @@ async function tmuxCommand(
 }
 
 /** The environment the case's tmux server, and with it every pane, runs under: the harness's own
- *  HOME and PATH, with tmux's directory first, since the reading runs `tmux` from inside the pane.
+ *  HOME and PATH, with tmux's directory first, since the reading runs `tmux` from inside the pane,
+ *  and Bun's transpiler cache off, as the harness's own `ompEnv` has it, since that cache would
+ *  live under the case's HOME (`@legion/test-fixtures/bun-child-environment`).
  *  `LD_LIBRARY_PATH` goes with it, as a tmux outside the system directories needs its libraries
  *  named the way whatever put it on PATH named them. */
 function paneEnvironment(home: string, binary: string): Record<string, string> {
   const named = process.env.LD_LIBRARY_PATH;
   return {
+    ...bunCacheOff,
     HOME: home,
     PATH: [path.dirname(binary), "/usr/local/bin", "/usr/bin", "/bin"].join(":"),
     ...(named === undefined ? {} : { LD_LIBRARY_PATH: named }),

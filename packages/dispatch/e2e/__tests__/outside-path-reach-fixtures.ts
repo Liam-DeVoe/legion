@@ -28,6 +28,7 @@ import { mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import { hostTool, skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 
@@ -261,6 +262,7 @@ export function reachFixtures() {
           ];
     const child = Bun.spawn(argv, {
       env: {
+        ...bunCacheOff,
         HOME: home,
         PATH: options.path ?? process.env.PATH ?? "",
         TMPDIR: tmpdir(),

@@ -84,6 +84,7 @@ import {
   subscribeLegionNotice,
 } from "@legion/pi-shared/role-claim-bridge";
 import { hostAgentRegistryMock, testAgentRoster } from "@legion/pi-shared/test/host-registry";
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import { captureEnvironment, restoreEnvironment } from "@legion/test-fixtures/environment";
 import { settled, span, until } from "@legion/test-fixtures/wait";
 import type { UserInputBuiltinCommand } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/send-user-input-handler";
@@ -557,6 +558,7 @@ restoreEnvironment([
   "ENVOY_TMUX_PLACE_CACHE_MS",
   "ENVOY_SESSION_ROLE",
   "ENVOY_SESSION_ROLE_SESSION",
+  "BUN_RUNTIME_TRANSPILER_CACHE_PATH",
 ]);
 // The directory this process was started in. A row that chdirs elsewhere is put back in
 // `afterEach`, which a row aborted at Bun's own timeout reaches where its own `finally` does not.
@@ -648,6 +650,9 @@ beforeEach(() => {
   delete process.env.ENVOY_SESSION_ROLE_SESSION;
   resetSessionRoleLoggedForTests();
   process.env.HOME = "/nonexistent-home-for-envoy-tests";
+  // Each Bun process a row or the extension starts inherits that HOME, under which Bun would keep
+  // its runtime transpiler cache (docs/testing.md, "Bun tests"): the key turns that cache off.
+  Object.assign(process.env, bunCacheOff);
   delete process.env.TMUX;
   delete process.env.TMUX_PANE;
   // The place cache refreshes itself on a timer at its lifetime, and a case here boots sessions

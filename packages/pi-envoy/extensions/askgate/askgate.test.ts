@@ -21,6 +21,7 @@ import { bearerCredential } from "@legion/envoy-client/bearer";
 import { runDispatchCli } from "@legion/envoy-client/dispatch-cli";
 import { DispatchClient, DispatchServiceError } from "@legion/envoy-client/dispatch-http";
 import { sessionDirectory } from "@legion/envoy-client/dispatch-session-directory";
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import {
   temporaryDirectories,
   temporaryDirectory,
@@ -3280,7 +3281,7 @@ console.log(JSON.stringify({ argv: process.argv.slice(2), stdin }));
     const began = Date.now();
     const result = await core.spawnDryRun("sleep 5", {
       cwd: work,
-      env: { PATH: process.env.PATH ?? "", HOME: work },
+      env: { ...bunCacheOff, PATH: process.env.PATH ?? "", HOME: work },
       timeoutMs: 100,
     });
     expect(result.timedOut).toBe(true);
@@ -4376,7 +4377,7 @@ console.log(JSON.stringify({ argv, consumed: consumeMarker([process.env.ASKGATE_
         ]);
         const run = Bun.spawnSync(["bash", "-c", command], {
           cwd: work,
-          env: { ...STUB, HOME: work, ASKGATE_POSTED: posted },
+          env: { ...bunCacheOff, ...STUB, HOME: work, ASKGATE_POSTED: posted },
         });
         expect(run.exitCode).toBe(0);
         expect(JSON.parse(fs.readFileSync(posted, "utf8"))).toMatchObject({ question: text });
@@ -4532,7 +4533,7 @@ describe("the literal grammar, widened to forms with no expansion", () => {
   /** The argv real bash gives the stand-in for `command`. */
   const bashArgv = (command: string): unknown => {
     const run = Bun.spawnSync(["bash", "-c", command], {
-      env: { PATH: `${bin}:${process.env.PATH}`, HOME: home },
+      env: { ...bunCacheOff, PATH: `${bin}:${process.env.PATH}`, HOME: home },
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -4692,7 +4693,7 @@ describe("the literal grammar, widened to forms with no expansion", () => {
     const bashArgv = (command: string) =>
       execFileSync("bash", ["-c", command.replace(/^dispatch/, "printf '%s\\0'")], {
         encoding: "utf8",
-        env: { PATH: process.env.PATH ?? "", HOME: home },
+        env: { ...bunCacheOff, PATH: process.env.PATH ?? "", HOME: home },
       })
         .split("\0")
         .filter((word) => word !== "");
@@ -5922,6 +5923,7 @@ describe("a marker the gate mints, checked by the real dispatch CLI", () => {
     );
   });
   const env = {
+    ...bunCacheOff,
     PATH: `${bin}:${process.env.PATH}`,
     HOME: work,
     DISPATCH_HOST: "omp",

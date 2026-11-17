@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 
 import { baseUrl, e2eAgentToken } from "./api";
 
@@ -39,6 +40,7 @@ export function runDispatch(
   const child = spawn("bun", [dispatchEntry, ...args], {
     cwd: home,
     env: {
+      ...bunCacheOff,
       PATH: process.env.PATH ?? "",
       HOME: home,
       DISPATCH_STATE_DIR: home,
