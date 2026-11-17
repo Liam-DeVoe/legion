@@ -28,6 +28,7 @@ import {
   presetChooser,
   presetCount,
   presetMenuItem,
+  presetRow,
   presetToggle,
   presetToggles,
   presetToolbar,
@@ -708,7 +709,8 @@ test("the five controls are toggles with an address each, one line at every widt
 // 72 of INFRA-1196's parts). Tailwind builds `max-[760px]:` as `@media not all and (min-width:
 // 760px)`, which is under 760 px alone, so the row's classes are `max-[761px]:`; with
 // `max-[760px]:` the row has no sticky box at 760 px, and this row fails on "the view row has no
-// sticky box at 760 px".
+// sticky box at 760 px", and with the one control's `max-[760px]:flex-1` it fails on "the one
+// control does not fill the row at 760 px".
 test("at 760 px the header scrolls away and the view row stays at the top of a scrolled page", async ({
   browser,
 }) => {
@@ -735,6 +737,11 @@ test("at 760 px the header scrolls away and the view row stays at the top of a s
     expect(band, "the view row has no sticky box at 760 px").not.toBeNull();
     expect(band?.top, "the view row's sticky box is not at the top of the screen").toBe("0px");
     expect(band?.height ?? 0, "the band that stays is 0 px tall at 760 px").toBeGreaterThan(0);
+    // The one control fills the row beside Outline at 760 px, as it does below.
+    expect(
+      await presetRow(page).evaluate((control) => getComputedStyle(control).flexGrow),
+      "the one control does not fill the row at 760 px"
+    ).toBe("1");
 
     await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
     await expect
@@ -747,17 +754,164 @@ test("at 760 px the header scrolls away and the view row stays at the top of a s
   });
 });
 
-// From an address that names a node (`#b-`), a pointer press on Spec and then on Decisions moves
-// to each view's address, one history entry each (decision 93 of INFRA-1196's parts). There, a
-// press whose mousedown took the focus out of the outline closed the body of the outline's row,
-// the page grew shorter under the pointer, and the press ended elsewhere and did nothing. The
-// outline is a later part's; this row holds what each press must do.
-test("from an address that names a node, a press on Spec and then Decisions moves to each view's address, one history entry each", async ({
+/** The document's `scroll-padding-top`, and against it the summed height of the bands above the
+ *  rows that stay at the top of the screen: the header's identity block and the view row's box,
+ *  each counted only while it is `position: sticky`. */
+async function topPadding(page: Page): Promise<{ padding: string; stays: number }> {
+  return page.evaluate(() => {
+    const bands = new Set<Element>();
+    const block = document.querySelector("[data-identity-block]");
+    if (block !== null) bands.add(block);
+    for (let at = document.querySelector("[data-filter-row]"); at !== null; at = at.parentElement) {
+      if (getComputedStyle(at).position === "sticky") {
+        bands.add(at);
+        break;
+      }
+    }
+    let stays = 0;
+    for (const band of bands) {
+      if (getComputedStyle(band).position === "sticky") {
+        stays += Math.round(band.getBoundingClientRect().height);
+      }
+    }
+    return { padding: getComputedStyle(document.documentElement).scrollPaddingTop, stays };
+  });
+}
+
+// What a scroll brings into view stands below everything that stays at the top of the screen
+// (decision 113 of INFRA-1196's parts): the page scrolls the document, whose
+// `scroll-padding-top` is the height of the bands above the rows that are sticky at that width,
+// the view row at 390 px and the header's identity block, where a part draws it, at 1440 px. A
+// later part's focused row lands by `scrollIntoView`, which reads that padding. With no padding
+// set the row fails at 390 px on "scroll-padding-top is not the height of what stays at 390 px".
+test("the page's scroll padding at the top is the height of what stays above the rows, at 390 and 1440 px", async ({
+  browser,
+}) => {
+  await phase(browser, seedFrame, async (page, { key }) => {
+    for (const width of [390, 1440]) {
+      await page.setViewportSize(viewportAt(width));
+      await gotoIssue(page, `/issues/${key}`);
+      if (width === 390) {
+        expect(
+          (await topPadding(page)).stays,
+          "nothing above the rows stays at the top at 390 px"
+        ).toBeGreaterThan(0);
+      }
+      await expect
+        .poll(
+          async () => {
+            const { padding, stays } = await topPadding(page);
+            return padding === `${stays}px` ? "equal" : `${padding} against ${stays}px`;
+          },
+          { message: `scroll-padding-top is not the height of what stays at ${width} px` }
+        )
+        .toBe("equal");
+    }
+  });
+});
+
+/** `window.scrollY` two frames from now, so a scroll that a focus started is read. */
+async function scrollYInTwoFrames(page: Page): Promise<number> {
+  return page.evaluate(() => {
+    const { promise, resolve } = Promise.withResolvers<number>();
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve(window.scrollY)));
+    return promise;
+  });
+}
+
+// A focus that enters the view row while it stays at the top of the screen leaves a scrolled page
+// where it is (decision 113 of INFRA-1196's parts, review 5930786767): each control in the row
+// takes a top scroll margin of minus the row's height. The row stands in the band the page's
+// `scroll-padding-top` keeps clear, so without that margin the browser scrolls the page up to
+// bring a focused control below the band, and the row does not move: this row then fails on
+// "Escape in the view menu moved the page".
+test("at 390 px a focus that enters the view row leaves a scrolled page where it is: Escape in the view menu, Tab and the Outline sheet's Close", async ({
+  browser,
+}) => {
+  await phase(browser, seedFrame, async (page, { key }) => {
+    await page.setViewportSize(viewportAt(390));
+    await gotoIssue(page, `/issues/${key}`);
+    await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+    await expect
+      .poll(() => page.evaluate(() => window.scrollY), {
+        message: "the page did not scroll at 390 px",
+      })
+      .toBeGreaterThan(0);
+    const from = await scrollYInTwoFrames(page);
+    // What makes a focus there scroll the page: the one control stands in the band the padding
+    // keeps clear.
+    const padding = await page.evaluate(
+      () => getComputedStyle(document.documentElement).scrollPaddingTop
+    );
+    const chooser = await boxOf(presetChooser(page), "the one control");
+    expect(
+      chooser.y,
+      `the one control does not stand in the ${padding} the scroll padding keeps clear`
+    ).toBeLessThan(Number.parseFloat(padding));
+    const stays = async (what: string) =>
+      expect(await scrollYInTwoFrames(page), `${what} moved the page`).toBe(from);
+    // The control is pressed where it is drawn, as a reader's pointer presses it: a locator's
+    // click first scrolls its target into view, a scroll of the test's and not of the page's.
+    const pressChooser = () =>
+      page.mouse.click(chooser.x + chooser.width / 2, chooser.y + chooser.height / 2);
+
+    await pressChooser();
+    await expect(presetMenuItem(page, "conversation")).toBeFocused();
+    await stays("opening the view menu");
+    await page.keyboard.press("Escape");
+    await expect(openMenu(page)).toHaveCount(0);
+    await expect(presetChooser(page), "Escape left the focus off the one control").toBeFocused();
+    await stays("Escape in the view menu");
+
+    await page.keyboard.press("Tab");
+    await expect(outlineControl(page), "Tab did not move on to Outline").toBeFocused();
+    await stays("Tab into Outline");
+    await page.keyboard.press("Shift+Tab");
+    await expect(presetChooser(page), "Shift+Tab did not move back").toBeFocused();
+    await stays("Shift+Tab into the one control");
+
+    await page.keyboard.press("Tab");
+    await page.keyboard.press("Enter");
+    await expect(outlineSheet(page)).toHaveCount(1);
+    await outlineSheet(page).getByRole("button", { exact: true, name: "Close" }).click();
+    await expect(outlineSheet(page)).toHaveCount(0);
+    await expect(outlineControl(page), "the sheet left the focus off Outline").toBeFocused();
+    await stays("closing the Outline sheet");
+
+    // Each control the row holds, the menu's items among them, takes the margin.
+    await pressChooser();
+    await expect(openMenu(page)).toHaveCount(1);
+    const margins = await filterRow(page).evaluate((row) =>
+      [...row.querySelectorAll("button, a[href], input, select, [tabindex]")].map(
+        (control) => getComputedStyle(control).scrollMarginTop
+      )
+    );
+    expect(margins.length, "the view row holds no control").toBeGreaterThan(0);
+    expect(
+      new Set(margins),
+      "a control of the view row takes no top scroll margin of minus the padding"
+    ).toEqual(new Set([`-${padding}`]));
+    await stays("opening the view menu again");
+  });
+});
+
+// From an address that names a node (`#b-`), a pointer press on Spec, then on Decisions, then on
+// Verification's count moves to each view's address, one history entry each, and leaves the
+// focus where it was (decision 93 of INFRA-1196's parts). There, a press whose mousedown took the
+// focus out of the outline closed the body of the outline's row, the page grew shorter under the
+// pointer, and the press ended elsewhere and did nothing. The outline is a later part's; here the
+// page's `main`, which takes the focus on a page change, holds it in the row's place. A count is
+// its button's `<label>`, whose own activation focuses the button at the click: with it, this
+// row fails on "a press on Verification's count took the focus".
+test("from an address that names a node, a press on Spec, on Decisions and on Verification's count moves to each view's address, one history entry each, and leaves the focus where it was", async ({
   browser,
 }) => {
   await phase(browser, seedFrame, async (page, { key }) => {
     await gotoIssue(page, `/issues/${key}#b-r1`);
     await expect(page).toHaveURL(new RegExp(`/issues/${key}#b-r1$`));
+    const holder = page.getByRole("main");
+    await holder.focus();
+    await expect(holder, "the page's main took no focus").toBeFocused();
     const entries = () => page.evaluate(() => window.history.length);
     const before = await entries();
     await presetToggle(page, "spec").click();
@@ -765,11 +919,21 @@ test("from an address that names a node, a press on Spec and then Decisions move
       addressOf(key, "spec")
     );
     expect(await entries(), "a press on Spec added no history entry").toBe(before + 1);
+    await expect(holder, "a press on Spec took the focus").toBeFocused();
     await presetToggle(page, "decisions").click();
     await expect(page, "a press on Decisions did not move to Decisions' address").toHaveURL(
       addressOf(key, "decisions")
     );
     expect(await entries(), "a press on Decisions added no history entry").toBe(before + 2);
+    await expect(holder, "a press on Decisions took the focus").toBeFocused();
+    await presetCount(page, "verification").click();
+    await expect(page, "a press on Verification's count did not move to its address").toHaveURL(
+      addressOf(key, "verification")
+    );
+    expect(await entries(), "a press on Verification's count added no history entry").toBe(
+      before + 3
+    );
+    await expect(holder, "a press on Verification's count took the focus").toBeFocused();
   });
 });
 

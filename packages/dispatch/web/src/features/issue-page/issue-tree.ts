@@ -22,6 +22,7 @@ import {
   BLANK_LINE,
   type Draft,
   plainWords,
+  plainWordsRaw,
   type TreeContext,
   treeContext,
   treeDrafts,
@@ -93,7 +94,9 @@ export interface NodeChip {
   /** Whether the batched reference read could not tell which of several targets a short
    *  reference names: two or more carry the id it writes short, and the read answers it gone and
    *  ambiguous (`ReferenceTarget.ambiguous`). The chip draws the reference as written
-   *  (dispatch://INFRA-1196 decision 62). Absent for every other reference. */
+   *  (dispatch://INFRA-1196 decision 62), and the page publishes the reference as ambiguous for
+   *  every link beside the tree to draw so too (`ambiguousTargets`). Absent for every other
+   *  reference. */
   readonly ambiguous?: true;
   /** Whether the batched reference read has answered for this reference. A target it answered
    *  with no text of its own (`name` empty, or `gone`) is told apart from one whose answer is
@@ -344,7 +347,9 @@ export function firstLineOf(text: string): {
  * reads as four dots. What follows a whole sentence is the node's next sentence, which its row
  * or its body holds. Whether the line ends at a sentence end is `firstLineOf`'s `sentence`,
  * since a line cut inside a sentence can end on a `.`, `!` or `?` that ends none; a line handed
- * in without it is read by its last character, a sentence's mark ending a whole sentence.
+ * in without it is read by its last character, a sentence's mark ending a whole sentence. A line
+ * cut just after an ellipsis of the author's own (`wait…`), which `firstLineOf` reads as no
+ * sentence end since it often stands inside one, draws no second: `wait……` reads as six dots.
  */
 export function drawnLine({
   cut,
@@ -355,7 +360,7 @@ export function drawnLine({
   readonly line: string;
   readonly sentence?: boolean;
 }): string {
-  return cut && !sentence ? `${line}…` : line;
+  return cut && !sentence && !line.endsWith("…") ? `${line}…` : line;
 }
 
 /** The node's own words as a reader reads them: the words of the server's reading of its text
@@ -400,10 +405,29 @@ export function nodeWords(node: TreeNode): string {
  * from.
  */
 export function lineWords(node: TreeNode): string {
-  if (node.tree !== undefined) return firstBlockWords(node.tree);
+  return lineWordsBy(node, firstBlockWords, plainWords);
+}
+
+/** The words a node's one line is cut from, as `lineWords` walks them but with no address
+ *  written short: the first block of a reading read by `firstBlockWordsRaw` and a stored block by
+ *  `plainWordsRaw`, so a bare address stays as written (dispatch://INFRA-1196 decision 140). A
+ *  caller that names each reference itself reads these, since a short form leaves it no address
+ *  to name. A `TreeNode` passes as it is, and a decision as `{ text, tree: text_tree }`. */
+export function lineWordsRaw(node: { readonly text: string; readonly tree?: DisplayTree }): string {
+  return lineWordsBy(node, firstBlockWordsRaw, plainWordsRaw);
+}
+
+/** `lineWords`' walk, the one both `lineWords` and `lineWordsRaw` read by: the first block of a
+ *  reading read to words by `firstBlock`, and a stored block read to plain words by `plain`. */
+function lineWordsBy(
+  node: { readonly text: string; readonly tree?: DisplayTree },
+  firstBlock: (reading: DisplayTree) => string,
+  plain: (markdown: string) => string
+): string {
+  if (node.tree !== undefined) return firstBlock(node.tree);
   for (const stored of node.text.split(BLANK_LINE)) {
     const block = stored.trimStart();
-    const words = plainWords(/^#{1,6} +.*/u.exec(block)?.[0] ?? block);
+    const words = plain(/^#{1,6} +.*/u.exec(block)?.[0] ?? block);
     if (!NO_WORDS.test(words)) return words;
   }
   return "";
@@ -418,9 +442,24 @@ const NO_WORDS = /^[\s*_-]*$/u;
  *  address outside code in them written as its target's short form (`withShortAddresses`); `""`
  *  for a reading none of whose blocks holds a word. */
 function firstBlockWords(reading: DisplayTree): string {
+  return firstBlockRead(reading, (block) => wordsOf(withShortAddresses(block)));
+}
+
+/** The words of the first top-level block of a reading that holds any, as `firstBlockWords`
+ *  reads them but with no address written short (`wordsOf`): a bare address stays as written
+ *  (dispatch://INFRA-1196 decision 140). A caller that names each reference itself reads these,
+ *  since a short form leaves it no address to name. `""` for a reading none of whose blocks
+ *  holds a word. */
+export function firstBlockWordsRaw(reading: DisplayTree): string {
+  return firstBlockRead(reading, wordsOf);
+}
+
+/** The words of the first top-level block of `reading` that holds any, each block read to words
+ *  by `read`; `""` for a reading none of whose blocks holds a word. */
+function firstBlockRead(reading: DisplayTree, read: (block: DisplayTree) => string): string {
   const content = reading.content;
   for (const block of Array.isArray(content) ? (content as DisplayTree[]) : []) {
-    const words = wordsOf(withShortAddresses(block));
+    const words = read(block);
     if (words.trim() !== "") return words;
   }
   return "";
@@ -475,9 +514,10 @@ export function buildIssueTree(reads: IssueTreeReads): TreeNode {
  * to now, by its address: the name a chip naming it draws (`NodeChip.name`), by the same rule
  * (`namingContext`), which the page publishes for every link beside the tree to draw
  * (`reference-names.tsx`). A link and a chip naming one target so never disagree. A target whose
- * name is `""` is left out, so a link that finds no name reads its own (`useKnownReferenceName`):
- * a target that is gone, which its chip names by `""` (`treeContext`), and another issue's block
- * the read sent no reading for.
+ * name is `""` is left out: a target that is gone, which its chip names by `""` (`treeContext`),
+ * and another issue's block the read sent no reading for, where a link that finds no name reads
+ * its own (`useKnownReferenceName`), and an ambiguous short reference, which its chip names by
+ * `""` too and the page publishes among its ambiguous references instead (`ambiguousTargets`).
  */
 export function targetNames(reads: IssueTreeReads): ReadonlyMap<string, string> {
   const context = namingContext(reads);
@@ -487,6 +527,25 @@ export function targetNames(reads: IssueTreeReads): ReadonlyMap<string, string> 
     if (name !== "") names.set(target.ref, name);
   }
   return names;
+}
+
+/**
+ * The references of the batched reference read's targets (`reads.targets`) the read answered
+ * ambiguous: each writes short an id two or more targets carry, so it names none of them, and a
+ * chip naming it says so (`NodeChip.ambiguous`). The page publishes them beside its names
+ * (`reference-names.tsx`), so a link tells an ambiguous reference from a gone one, which has no
+ * name either: it draws the first as its author wrote it and links nothing
+ * (dispatch://INFRA-1196 decision 62), where it reads the second's own. They are read by the
+ * chip's rule (`namingContext`), as `targetNames` reads the names, so the two cannot disagree,
+ * and no reference is in both: an ambiguous chip's name is `""`.
+ */
+export function ambiguousTargets(reads: IssueTreeReads): ReadonlySet<string> {
+  const context = namingContext(reads);
+  const ambiguous = new Set<string>();
+  for (const target of reads.targets ?? []) {
+    if (context.chipOf(target.ref).ambiguous === true) ambiguous.add(target.ref);
+  }
+  return ambiguous;
 }
 
 /** How many nodes a branch holds below `children`, at any depth. */

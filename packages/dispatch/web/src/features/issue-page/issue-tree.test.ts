@@ -25,17 +25,20 @@ import type {
 import { askResolutionBadge } from "../refs/actor";
 import { agentsOnlyItem } from "./issue-address";
 import {
+  ambiguousTargets,
   buildIssueTree,
   drawnLine,
   FIRST_LINE_LIMIT,
+  firstBlockWordsRaw,
   firstLineOf,
   lineWords,
+  lineWordsRaw,
   nodeWords,
   type TreeNode,
   targetNames,
 } from "./issue-tree";
 import { NODE_TYPE_NAMES, nodeStateWord, PRESET_NAMES } from "./page-words";
-import { addressesAsShortForms, blockNodeId, plainWords } from "./tree-drafts";
+import { addressesAsShortForms, blockNodeId, plainWords, plainWordsRaw } from "./tree-drafts";
 import { nodesInOrder } from "./tree-keys";
 
 /**
@@ -573,6 +576,36 @@ test("a chip of an ambiguous short reference says so, and a gone target's chip d
   ]);
 });
 
+// Decisions 62 and 89: an ambiguous short reference has no name, as a gone target has none, so
+// the page publishes neither among its names (`targetNames`); it publishes the ambiguous one
+// among the references it read as ambiguous (`ambiguousTargets`), by the chip's own rule, so a
+// link draws it as written and links nothing, where it reads a gone one's own.
+test("the page publishes an ambiguous short reference as ambiguous, and a gone target nowhere", () => {
+  const spec = artifact("artifact-spec", SPEC, "spec.md", true);
+  const plan = artifact("artifact-plan", "plan-md", "plan.md");
+  const ambiguous = `dispatch://${KEY}/artifact/plan-md#b-abcd1234`;
+  const gone = `dispatch://${KEY}/artifact/plan-md#b-t0`;
+  const named = "dispatch://CORE-7";
+  const title = "Read the names once";
+  const reads = {
+    documents: [
+      {
+        artifactId: plan.id,
+        blocks: [block("t1", "plan_task", { needs: `${ambiguous} ${gone}` })],
+      },
+    ],
+    issue: issueDetails([spec, plan]),
+    targets: [
+      { ambiguous: true, gone: true, kind: "block", name: "", ref: ambiguous },
+      { gone: true, kind: "block", name: "", ref: gone },
+      { gone: false, kind: "issue", name: title, ref: named },
+    ] satisfies ReferenceTarget[],
+  };
+
+  expect([...ambiguousTargets(reads)]).toEqual([ambiguous]);
+  expect([...targetNames(reads)]).toEqual([[named, title]]);
+});
+
 // R21: a typed block is a directive, and the reference read names a block by its stored excerpt,
 // which is its source: `:::plan_task{#t1 serves="…" needs="…"}`, its words, and the closing
 // fence. The opening line and the fence are markup, so a block's row carries its words alone,
@@ -767,6 +800,64 @@ test("a needs chip of a block the read sent no words for is named by its kind's 
     { answered: true, gone: false, label: "needs", name: NODE_TYPE_NAMES.plan_task, ref: ruled },
     { answered: true, gone: false, label: "needs", name: "", ref: foreign },
     { answered: false, gone: false, label: "needs", name: "", ref: unread },
+  ]);
+});
+
+// Decision 143: one needs chip per task needed. The server accepts a task needed by a pinned and
+// an unpinned pointer at once, and both need the one task, so it is one chip: its unpinned
+// pointer's, which names the block's current words. A task only pinned pointers name is one chip,
+// the first one's, and two tasks stay two chips, in the order their pointers first name them.
+test("a task needed by a pinned and an unpinned pointer is one needs chip", () => {
+  const spec = artifact("artifact-spec", SPEC, "spec.md", true);
+  const plan = artifact("artifact-plan", "plan-md", "plan.md");
+  const task = (id: string): string => `dispatch://${KEY}/artifact/plan-md#b-${id}`;
+  const root = buildIssueTree({
+    documents: [
+      {
+        artifactId: plan.id,
+        blocks: [
+          block("a1", "plan_task"),
+          block("a2", "plan_task"),
+          block("t1", "plan_task", { needs: `${task("a1")}@v1 ${task("a1")}` }),
+          block("t2", "plan_task", { needs: `${task("a1")}@v1 ${task("a1")}@v2` }),
+          block("t3", "plan_task", {
+            needs: `${task("a2")} ${task("a1")}@v1 ${task("a2")}@v3 ${task("a1")}`,
+          }),
+        ],
+      },
+    ],
+    issue: issueDetails([spec, plan]),
+    targets: [
+      {
+        gone: false,
+        kind: "block",
+        name: ":::plan_task{#a1}\nAdd the routes.\n:::",
+        ref: task("a1"),
+        text_tree: readingOf("Add the routes."),
+      },
+      {
+        gone: false,
+        kind: "block",
+        name: ":::plan_task{#a1}\nAdd the old routes.\n:::",
+        ref: `${task("a1")}@v1`,
+        text_tree: readingOf("Add the old routes."),
+      },
+    ],
+  });
+  const needs = (id: string) =>
+    nodeOf(root, blockNodeId("plan-md", id))?.chips.map(({ label, name, ref }) => ({
+      label,
+      name,
+      ref,
+    }));
+
+  expect(needs("t1")).toEqual([{ label: "needs", name: "Add the routes.", ref: task("a1") }]);
+  expect(needs("t2")).toEqual([
+    { label: "needs", name: "Add the old routes.", ref: `${task("a1")}@v1` },
+  ]);
+  expect(needs("t3")).toEqual([
+    { label: "needs", name: "", ref: task("a2") },
+    { label: "needs", name: "Add the routes.", ref: task("a1") },
   ]);
 });
 
@@ -999,6 +1090,27 @@ test("a stored text read to plain words drops the markers of a quote and of a li
   }
 });
 
+// R21: an author's own private-use character - an icon font's, a pasted terminal glyph - is a
+// word of the text and no stand-in. The stand-ins what markdown reads literally is held as are
+// chosen for each text from the private-use code points it does not hold, so U+E02A and U+E05F,
+// which once stood in for an escaped `*` and `_`, read as written outside code, inside a code
+// span and beside an escape, and a text holding one still reads its escapes and code spans as
+// it did. One holding the first code points a stand-in would take reads past them.
+test("a stored text read to plain words keeps the author's private-use characters as written", () => {
+  const star = "\ue02a";
+  const low = "\ue05f";
+  for (const [stored, words] of [
+    [`an icon ${star} and ${low} here`, `an icon ${star} and ${low} here`],
+    [`Run \`a${star}b${low}c\` now`, `Run a${star}b${low}c now`],
+    [`\\*${star} and ${low}\\_`, `*${star} and ${low}_`],
+    [`${star} \\*not emphasis\\* and \`a*b\``, `${star} *not emphasis* and a*b`],
+    ["\ue000\\! and `\ue020!`", "\ue000! and \ue020!"],
+  ] as const) {
+    expect(plainWords(stored), stored).toBe(words);
+    expect(plainWordsRaw(stored), stored).toBe(words);
+  }
+});
+
 // Ruling 1 and row 20 of the differences: a line that is a whole sentence ends on its own mark,
 // so a cut after it draws no ellipsis - "Thread 1 opens here.…" reads as four dots - and a cut
 // that ended inside a sentence draws one.
@@ -1014,6 +1126,20 @@ test("a first line draws its ellipsis only where the cut ended inside a sentence
   // A token cut hard at the limit whose last kept character is a dot ends no sentence, so its
   // line draws the ellipsis all the same.
   expect(drawnLine(firstLineOf(`${"x".repeat(99)}.yyyy more words here`)).endsWith("…")).toBe(true);
+});
+
+// Ruling 1: a line cut just after an ellipsis of the author's own draws no second one, since
+// `wait……` reads as six dots. The ellipsis is no sentence end, since it often stands inside one,
+// so a cut that ended inside a sentence on any other character still draws one.
+test("a first line cut after the author's own ellipsis draws no second one", () => {
+  const words = `${"word ".repeat(19)}wait…`;
+  const trailing = firstLineOf(`${words} and then more words follow here.`);
+  expect(trailing).toEqual({ cut: true, line: words, sentence: false });
+  expect(drawnLine(trailing)).toBe(words);
+  expect(drawnLine({ cut: true, line: "Hold on, wait…" })).toBe("Hold on, wait…");
+  const plain = firstLineOf(`${"word ".repeat(30)}and the end.`);
+  expect(plain.sentence).toBe(false);
+  expect(drawnLine(plain)).toBe(`${plain.line}…`);
 });
 
 // A decision's reading opens with its own `##` heading, and the words of the whole reading join
@@ -2731,5 +2857,58 @@ test("a string that only looks like an address stays as written in a node's line
   ] as const) {
     const task = nodeOf(planTasks([words], read), blockNodeId("plan-md", "t1"));
     expect(task === undefined ? "" : lineWords(task), sent).toBe(line);
+  }
+});
+
+// Decision 140: a caller that names each reference itself, by the name the page publishes for
+// it, reads a node's words before any address in them is written short, or it finds no address
+// left to name. The first block of a reading (`firstBlockWordsRaw`) and a stored text read to
+// plain words (`plainWordsRaw`) keep each bare address and each autolink's URL as written, and
+// the marks still go; a node's line and `plainWords` read the same words short, as they did.
+test("the raw words of a reading and of a stored text keep each address as written", () => {
+  const reading = "Do it as dispatch://CORE-2 says.";
+  const task = nodeOf(planTasks([reading], true), blockNodeId("plan-md", "t1"));
+  expect(task?.tree === undefined ? "" : firstBlockWordsRaw(task.tree)).toBe(reading);
+  expect(task === undefined ? "" : lineWords(task)).toBe("Do it as CORE-2 says.");
+  const stored = "Do it as **dispatch://CORE-2** says, see <dispatch://CORE-3>.";
+  expect(plainWordsRaw(stored)).toBe("Do it as dispatch://CORE-2 says, see dispatch://CORE-3.");
+  expect(plainWords(stored)).toBe("Do it as CORE-2 says, see CORE-3.");
+});
+
+// Decision 140: a caller that names each reference itself cuts a node's line from words in which
+// no address is written short (`lineWordsRaw`), or it finds no address left to name. It walks a
+// node as `lineWords` does - the first block of its reading, and where it has none, the first
+// block of its stored text that holds words, a heading to its own line - and keeps each bare
+// address as written on both paths, where `lineWords` reads it short. A decision passes as its
+// read sends it, `{ text, tree: text_tree }`, with no node built for it.
+test("a node's raw line keeps each bare address as written, from a reading and from stored text", () => {
+  const words = "Do it as dispatch://CORE-2 says.";
+  const short = "Do it as CORE-2 says.";
+  for (const [sent, read] of [
+    ["a reading", true],
+    ["no reading", false],
+  ] as const) {
+    const task = nodeOf(planTasks([words], read), blockNodeId("plan-md", "t1"));
+    expect(task?.tree === undefined, sent).toBe(!read);
+    expect(task === undefined ? "" : lineWordsRaw(task), sent).toBe(words);
+    expect(task === undefined ? "" : lineWords(task), sent).toBe(short);
+  }
+  const spec = artifact("artifact-spec", SPEC, "spec.md", true);
+  const made = artifact("artifact-decisions", "decisions-md", "decisions.md");
+  const ruled = decision("d1", "---\n\nDo it as **dispatch://CORE-2** says.", []);
+  const headed = decision("d2", "## Title\n\nDo it as **dispatch://CORE-2** says.", []);
+  const root = buildIssueTree({
+    decisions: decisions([ruled, headed]),
+    issue: issueDetails([spec, made]),
+  });
+  for (const [row, raw, line] of [
+    [ruled, words, short],
+    [headed, "Title", "Title"],
+  ] as const) {
+    const node = nodeOf(root, blockNodeId("decisions-md", row.block_id));
+    expect(node?.tree, row.block_id).toBeUndefined();
+    expect(node === undefined ? "" : lineWordsRaw(node), row.block_id).toBe(raw);
+    expect(node === undefined ? "" : lineWords(node), row.block_id).toBe(line);
+    expect(lineWordsRaw({ text: row.text, tree: row.text_tree }), row.block_id).toBe(raw);
   }
 });
