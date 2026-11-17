@@ -449,7 +449,7 @@ The guards and their readings, each read up to the date its item names or up to 
 - `envoy-go`: 20 minutes for the unit step, against `cmd/broker`'s 477.995 s; 10 minutes for each plain run of what the race build cannot run, against `internal/dispatch/docs`'s 49.044 s; 10 and 5 minutes for natslive's `internal/testnats` and `internal/bus` (3.538 s and 5.029 s); 300 s for the integration step (7.683 s).
 
 - `envoy-go-race`: 30 minutes, against `internal/dispatch/store`'s 664.278 s.
-  `envoy-go-race-api`: 50 minutes, against `internal/dispatch/api`'s 1471.384 s.
+  `envoy-go-race-api`: 60 minutes, against `internal/dispatch/api`'s 1508.156 s and its step's 1643 s, up to 2026-11-17T10:27Z.
   `envoy-go-race-docs`: 65 minutes, against `internal/dispatch/docs`'s 1881.151 s.
   `envoy-go-docs-finalizers`: 45 minutes, against `internal/dispatch/docs`'s 1261.698 s.
 
@@ -481,11 +481,11 @@ Each `bun test` step of a job of `ci.yaml` that runs no package script passes th
   The two suites of the real CLI against a real Dispatch take 120,000 ms each, against their `beforeAll`s, which build and start that server: 52,389.38 ms for the design-gate advice and 45,890.03 ms for the moved-approval advice.
 
 A command a person or an issue pod runs takes its reading from the machines that run it, which are slower than CI's.
-`packages/envoy/internal/dispatch/api` took up to 1471.384 s under `-race` in `envoy-go-race-api`, and a plain run is faster (about 600 s on a workstation), so every command that runs that package, on its own or in a pattern that includes it (`./...`, `./internal/dispatch/...`), passes `-timeout 50m`:
+`packages/envoy/internal/dispatch/api` took up to 1508.156 s under `-race` in `envoy-go-race-api`, and a plain run is faster (about 600 s on a workstation), so every command that runs that package, on its own or in a pattern that includes it (`./...`, `./internal/dispatch/...`), passes `-timeout 60m`:
 
 ```sh
 cd packages/envoy
-go test -timeout 50m ./internal/dispatch/api
+go test -timeout 60m ./internal/dispatch/api
 ```
 
 A Legion issue pod does not run that whole package: `skills/legion-worker/references/tools.md` says what the pod runs and where the rest goes.

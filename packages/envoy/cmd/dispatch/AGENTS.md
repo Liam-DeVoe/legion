@@ -907,12 +907,12 @@ requires a user sets `NATS_NKEY_SEED_FILE` too.
 ```sh
 cd packages/envoy
 export DISPATCH_TEST_DATABASE_URL='postgres://postgres:dispatch@127.0.0.1:55432/dispatch?sslmode=disable'
-go test -timeout 50m ./internal/dispatch/api
+go test -timeout 60m ./internal/dispatch/api
 go test -timeout 60m $(go list ./internal/dispatch/... ./cmd/dispatch/... | grep -v '/internal/dispatch/api$')
 go vet ./...
 ```
 
-`internal/dispatch/api` runs first and on its own, with 50 minutes: it took up to 1471.384 s under
+`internal/dispatch/api` runs first and on its own, with 60 minutes: it took up to 1508.156 s under
 `-race` in CI's `envoy-go-race-api`, and a plain run is faster (about 600 s on a workstation).
 The second command's slowest package is `internal/dispatch/docs`, whose plain run took 1690 s in
 an issue pod, so it takes the 60 minutes `docs/testing.md` gives that package ("Go's package
