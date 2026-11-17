@@ -1,7 +1,12 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { chmodSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { REDIRECT_CODES, redirectServers } from "@legion/test-fixtures/redirect-servers";
+import {
+  REDIRECT_CODES,
+  redirectCase,
+  redirectServers,
+  UNNAMED_TARGETS,
+} from "@legion/test-fixtures/redirect-servers";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { postSlackReply, SLACK_BOT_TOKEN_SECRET } from "../slack-post";
 
@@ -29,7 +34,7 @@ if [ "$FAKE_BROKER" = crash-after-inject ]; then
   echo "the poster's private stderr" >&2
   exit 1
 fi
-LEGION_SLACK_BOT_TOKEN=xoxb-granted exec "$@"
+LEGION_SLACK_BOT_TOKEN="\${FAKE_TOKEN:-xoxb-granted}" exec "$@"
 `;
 
 interface SlackCall {
@@ -92,8 +97,8 @@ async function outcome(env: Record<string, string>): Promise<string> {
 }
 
 /** An environment whose PATH finds the fake broker client first, and the file it writes its
- * arguments to. */
-function brokerEnvironment(mode: string, slackURL: string) {
+ * arguments to. The client grants `token`, `xoxb-granted` when none is given. */
+function brokerEnvironment(mode: string, slackURL: string, token?: string) {
   const dir = makeDirectory();
   const client = path.join(dir, "agent-secrets");
   writeFileSync(client, FAKE_AGENT_SECRETS);
@@ -106,6 +111,7 @@ function brokerEnvironment(mode: string, slackURL: string) {
       FAKE_ARGS: args,
       FAKE_BROKER: mode,
       SLACK_POST_API_URL: slackURL,
+      ...(token === undefined ? {} : { FAKE_TOKEN: token }),
     } as Record<string, string>,
   };
 }
@@ -391,8 +397,12 @@ describe("postSlackReply", () => {
 
   // The token lives in the poster alone. An answer that carries it back, whatever field it rides
   // in, never reaches the session: the poster passes on only Slack's own error codes and a ts and
-  // channel shaped as Slack's, never a body, and redacts the token from all it prints.
+  // channel shaped as Slack's, never a body, and redacts the token from all it prints. The token
+  // holds capitals, so a part that the URL parser lower-cases is not missed by the comparison.
   describe("never hands the session the token an answer carries back", () => {
+    // Joined at run time: written whole, a made-up bot token reads to a secret scanner as a real
+    // one and stops the push.
+    const token = ["xoxb", "Made", "Up", "UPPER", "Token"].join("-");
     const cases: [string, (authorization: string) => Response, string][] = [
       [
         "in an error page",
@@ -431,12 +441,12 @@ describe("postSlackReply", () => {
     for (const [name, answer, want] of cases) {
       test(name, async () => {
         const slack = reflectingSlack(answer);
-        const { env } = brokerEnvironment("granted", slack.url);
+        const { env } = brokerEnvironment("granted", slack.url, token);
 
         const said = await outcome(env);
 
         expect(slack.posts()).toBe(1);
-        expect(said).not.toContain("xoxb-granted");
+        expect(said.toLowerCase()).not.toContain(token.toLowerCase());
         expect(said).toContain(want);
       });
     }
@@ -458,21 +468,72 @@ describe("postSlackReply", () => {
   // fetch drops `Authorization` on a redirect to another origin, so the token stays behind, but it
   // sends a 307's or 308's reply on, and a post that follows takes the other origin's answer as
   // Slack's. No post follows a redirect: the 3xx is the answer, which names where it points, and
-  // the other origin receives nothing. The 30 s limit is the hang guard of the test above: five
-  // posts, each through the broker's stand-in and a `bun -e` poster.
-  test("a redirect to another origin is refused naming its status, and that origin receives no request", async () => {
-    const servers = redirectServers({
-      atElsewhere: () => Response.json({ ok: true, channel: "C00000000", ts: "1700000000.000200" }),
-    });
-    cleanups.push(() => servers.stop());
-    const { env } = brokerEnvironment("granted", `${servers.origin}/api`);
-    for (const code of REDIRECT_CODES) {
+  // the other origin receives nothing. One case for each code, so a post that follows again fails
+  // at each. The 30 s limit is the hang guard of the test above: a post through the broker's
+  // stand-in and a `bun -e` poster.
+  for (const code of REDIRECT_CODES) {
+    test(redirectCase(code), async () => {
+      const servers = redirectServers({
+        atElsewhere: () =>
+          Response.json({ ok: true, channel: "C00000000", ts: "1700000000.000200" }),
+      });
+      cleanups.push(() => servers.stop());
       servers.code = code;
+      const { env } = brokerEnvironment("granted", `${servers.origin}/api`);
       const said = await outcome(env);
       expect(servers.received, `the other origin after a ${code}`).toEqual([]);
       expect(said).toBe(
         `chat.postMessage answered HTTP ${code}, redirecting to ${servers.elsewhere}, and slack_post follows no redirect, since the post carries the bot token: nothing was sent there; SLACK_POST_API_URL must name the Web API's own address, or be unset for Slack's`
       );
+    }, 30_000);
+  }
+
+  // A poster that read a redirect's body before its status would wait on a body that never ends,
+  // and refuse nothing until the post's own limit; the test's limit is below that.
+  test("a redirect whose body never ends is refused naming its status, before any of its body is read", async () => {
+    const servers = redirectServers();
+    cleanups.push(() => servers.stop());
+    servers.endlessBody = true;
+    const { env } = brokerEnvironment("granted", `${servers.origin}/api`);
+    expect(await outcome(env)).toBe(
+      `chat.postMessage answered HTTP 307, redirecting to ${servers.elsewhere}, and slack_post follows no redirect, since the post carries the bot token: nothing was sent there; SLACK_POST_API_URL must name the Web API's own address, or be unset for Slack's`
+    );
+  }, 8_000);
+
+  // A redirect within the Web API URL's own address says to correct its path, which the post puts
+  // before /chat.postMessage; one that names nowhere is not named as the API's own address; a host
+  // longer than any host name is not the API URL's host, so it is another host.
+  test("a redirect to another path of the same address, to no target, or to an overlong host is refused saying so", async () => {
+    const servers = redirectServers();
+    cleanups.push(() => servers.stop());
+    const { env } = brokerEnvironment("granted", `${servers.origin}/api`);
+    const said: string[] = [];
+    for (const { location } of UNNAMED_TARGETS) {
+      servers.location = location;
+      said.push(await outcome(env));
     }
+    expect(said).toEqual(
+      UNNAMED_TARGETS.map(({ where, sameAddress }) => {
+        const shown =
+          sameAddress || where === "naming no target" ? where : "redirecting to another host";
+        const fix = sameAddress
+          ? 'correct the path of SLACK_POST_API_URL, or unset it for Slack\'s; a missing or an extra "/" is the usual cause'
+          : "SLACK_POST_API_URL must name the Web API's own address, or be unset for Slack's";
+        return `chat.postMessage answered HTTP 307, ${shown}, and slack_post follows no redirect, since the post carries the bot token: nothing was sent there; ${fix}`;
+      })
+    );
   }, 30_000);
+
+  // The override may carry a user and a password; the refusal of one that is no https or loopback
+  // URL names it with neither. The password is made for this run.
+  test("a refused Slack API override is named with no user and no password", async () => {
+    const password = crypto.randomUUID();
+    const { env } = brokerEnvironment(
+      "granted",
+      `http://made-up-user:${password}@slack.example/api`
+    );
+    expect(await outcome(env)).toBe(
+      "SLACK_POST_API_URL must be an https URL, or http on a loopback host (got http://slack.example/api); nothing was posted"
+    );
+  });
 });

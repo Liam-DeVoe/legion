@@ -2,7 +2,13 @@ import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { LegionReadyRequest } from "@legion/contracts/legion-api";
-import { REDIRECT_CODES, redirectServers } from "@legion/test-fixtures/redirect-servers";
+import {
+  REDIRECT_CODES,
+  type RedirectServers,
+  redirectCase,
+  redirectServers,
+  UNNAMED_TARGETS,
+} from "@legion/test-fixtures/redirect-servers";
 import {
   createLegionDaemonClient,
   daemonUnreachable,
@@ -646,51 +652,114 @@ test("a 502 refusal keeps its stable code through a key no schema names, and is 
   expect(waits).toEqual([]);
 });
 
-// fetch would send a 307's or 308's body on to the origin a redirect names, and the body of a
-// registration carries the pane's boot token, the body of an exit the claim's token and secret. So
-// no call follows a redirect: the 3xx is the answer, a refusal naming it, which is never retried,
-// and the call fails rather than taking the other origin's answer as the daemon's.
-test("a redirect to another origin is refused naming its status, and that origin receives no request", async () => {
-  const servers = redirectServers({
+/** The two calls whose bodies carry a credential, each to the daemon at `origin`, with made-up
+ * credentials: the registration's boot token, and the exit's claim token and secret. */
+function credentialedCalls(origin: string) {
+  const client = createLegionDaemonClient(origin);
+  return [
+    [
+      "/legion/v1/claims/register",
+      () => client.register({ ...registration, bootToken: "made-up-boot-token" }),
+    ],
+    [
+      "/legion/v1/claims/exit",
+      () =>
+        client.exit({
+          claimToken: "made-up-claim-token",
+          sessionId: "ses_architect_208",
+          secret: "made-up-claim-secret",
+          generation: 1,
+          reason: "a made-up exit",
+        }),
+    ],
+  ] as const;
+}
+
+/** The two servers, with an answer at the other origin a client that followed would take as the
+ * daemon's. */
+function daemonRedirects(): RedirectServers {
+  return redirectServers({
     atElsewhere: (request) =>
       new URL(request.url).pathname.endsWith("/register")
         ? Response.json(daemonFixture("register.json"))
         : new Response(null, { status: 204 }),
   });
-  const client = createLegionDaemonClient(servers.origin);
-  try {
-    for (const code of REDIRECT_CODES) {
-      servers.code = code;
-      const calls = [
-        [
-          "/legion/v1/claims/register",
-          () => client.register({ ...registration, bootToken: "made-up-boot-token" }),
-        ],
-        [
-          "/legion/v1/claims/exit",
-          () =>
-            client.exit({
-              claimToken: "made-up-claim-token",
-              sessionId: "ses_architect_208",
-              secret: "made-up-claim-secret",
-              generation: 1,
-              reason: "a made-up exit",
-            }),
-        ],
-      ] as const;
-      for (const [route, call] of calls) {
-        const refusal = await call().then(
-          () => undefined,
-          (error: unknown) => error
-        );
+}
+
+/** What the call refused with, or undefined when it answered. */
+async function refusalOf(call: () => Promise<unknown>): Promise<unknown> {
+  return await call().then(
+    () => undefined,
+    (error: unknown) => error
+  );
+}
+
+const FIX = "LEGION_DAEMON_URL must name the daemon's own address";
+
+// fetch would send a 307's or 308's body on to the origin a redirect names, and the body of a
+// registration carries the pane's boot token, the body of an exit the claim's token and secret. So
+// no call follows a redirect: the 3xx is the answer, a refusal naming it, which is never retried,
+// and the call fails rather than taking the other origin's answer as the daemon's. One case for
+// each code, so a client that follows again fails at each.
+for (const code of REDIRECT_CODES) {
+  test(redirectCase(code), async () => {
+    const servers = daemonRedirects();
+    servers.code = code;
+    try {
+      for (const [route, call] of credentialedCalls(servers.origin)) {
+        const refusal = await refusalOf(call);
         expect(servers.received, `the other origin after a ${code} of ${route}`).toEqual([]);
         expect(refusal, `${route} after a ${code}`).toBeInstanceOf(LegionDaemonApiError);
         expect((refusal as LegionDaemonApiError).message).toBe(
-          `POST ${route} failed with ${code}: redirecting to ${servers.elsewhere}, and a call to the daemon follows no redirect: LEGION_DAEMON_URL must name the daemon's own address`
+          `POST ${route} failed with ${code}: redirecting to ${servers.elsewhere}, and a call to the daemon follows no redirect: ${FIX}`
         );
         expect(daemonUnreachable(refusal)).toBeUndefined();
       }
+    } finally {
+      servers.stop();
     }
+  });
+}
+
+// A call that read a redirect's body before its status would wait on a body that never ends, and
+// refuse nothing; the test's limit is that wait's bound.
+test("a redirect whose body never ends is refused naming its status, before any of its body is read", async () => {
+  const servers = daemonRedirects();
+  servers.endlessBody = true;
+  try {
+    const refused: unknown[] = [];
+    for (const [, call] of credentialedCalls(servers.origin)) {
+      refused.push(((await refusalOf(call)) as Error).message);
+    }
+    expect(refused).toEqual(
+      credentialedCalls(servers.origin).map(
+        ([route]) =>
+          `POST ${route} failed with 307: redirecting to ${servers.elsewhere}, and a call to the daemon follows no redirect: ${FIX}`
+      )
+    );
+  } finally {
+    servers.stop();
+  }
+}, 10_000);
+
+// A redirect within the daemon's own address says to correct the path of the URL, which the
+// client puts before each route; one that names nowhere is not named as the daemon's own address;
+// a host longer than any host name is never printed.
+test("a redirect to another path of the same address, to no target, or to an overlong host is refused saying so", async () => {
+  const servers = daemonRedirects();
+  try {
+    const said: string[] = [];
+    for (const { location } of UNNAMED_TARGETS) {
+      servers.location = location;
+      const [[, register]] = credentialedCalls(servers.origin);
+      said.push(((await refusalOf(register)) as Error).message);
+    }
+    expect(said).toEqual(
+      UNNAMED_TARGETS.map(
+        ({ where, sameAddress }) =>
+          `POST /legion/v1/claims/register failed with 307: ${where}, and a call to the daemon follows no redirect: ${sameAddress ? 'correct the path of LEGION_DAEMON_URL; a missing or an extra "/" is the usual cause' : FIX}`
+      )
+    );
   } finally {
     servers.stop();
   }

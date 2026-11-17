@@ -34,7 +34,7 @@ import {
 } from "@legion/contracts/legion-api";
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import { messageFor } from "@legion/envoy-client/errors";
-import { redirectOrigin } from "@legion/envoy-client/redirect";
+import { redirectedTo, redirectTarget, SAME_ADDRESS_CAUSE } from "@legion/envoy-client/redirect";
 import type { z } from "zod";
 
 /**
@@ -423,21 +423,26 @@ export function createLegionDaemonClient(
           }),
       ...(signal === undefined ? {} : { signal }),
     });
-    const text = await response.text();
-    if (response.ok) return { status: response.status, text };
     // No call follows a redirect, since fetch would send a 307's or 308's body, which carries the
     // pane's boot token or the claim's secret, on to the origin it names: a 3xx is a refusal naming
-    // where it points (`@legion/envoy-client/redirect`).
-    if (response.status >= 300 && response.status <= 399) {
-      const target = redirectOrigin(response, `${endpoint}${path}`);
+    // where it points (`@legion/envoy-client/redirect`), read from its status before any of its
+    // body, which a redirect need never finish.
+    const target = redirectTarget(response, `${endpoint}${path}`);
+    if (target !== undefined) {
+      const fix =
+        target.kind === "the same origin"
+          ? `correct the path of LEGION_DAEMON_URL; ${SAME_ADDRESS_CAUSE}`
+          : "LEGION_DAEMON_URL must name the daemon's own address";
       throw new LegionDaemonApiError(
         method,
         path,
         response.status,
         undefined,
-        `${target === undefined ? "a redirect" : `redirecting to ${target}`}, and a call to the daemon follows no redirect: LEGION_DAEMON_URL must name the daemon's own address`
+        `${redirectedTo(target)}, and a call to the daemon follows no redirect: ${fix}`
       );
     }
+    const text = await response.text();
+    if (response.ok) return { status: response.status, text };
     const refusal = parseBody(LegionErrorResponse, text);
     if ("value" in refusal) {
       throw new LegionDaemonApiError(

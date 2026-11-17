@@ -5,6 +5,7 @@ import {
   type paths,
 } from "@legion/contracts";
 import type { Cookie } from "@playwright/test";
+import { redirectedTo, redirectTarget } from "../../envoy-client/src/redirect";
 import {
   type Body,
   type Op,
@@ -240,6 +241,13 @@ export async function userHeaders(
   return { Cookie: `${cookie.name}=${cookie.value}`, Origin: dashboardOrigin };
 }
 
+/** One call to Dispatch, as the agent bearer or as `options.login`'s session cookie: its JSON
+ *  answer, or nothing for a 204; a refusal names the route and Dispatch's answer. It follows no
+ *  redirect, since fetch would send the call's body, and the proof or key it can hold, on to the
+ *  origin a 307's or 308's `Location` names, and take that origin's answer as Dispatch's: a 3xx is
+ *  a refusal naming where it points (`packages/envoy-client/src/redirect.ts`, which a relative
+ *  path reaches, since Playwright's Node takes no package's `bun` entry), read from its status
+ *  before any of its body. */
 async function request<T>(
   path: string,
   method: string,
@@ -265,12 +273,20 @@ async function request<T>(
   }
   if (options.process !== undefined) Object.assign(headers, pinnedTo(options.process));
 
-  const response = await fetch(new URL(path, options.baseUrl ?? baseUrl), {
+  const url = new URL(path, options.baseUrl ?? baseUrl);
+  const response = await fetch(url, {
     body: payload === undefined ? undefined : JSON.stringify(payload),
     headers,
     method,
+    redirect: "manual",
   });
 
+  const target = redirectTarget(response, url.href);
+  if (target !== undefined) {
+    throw new Error(
+      `${method} ${path} failed: ${response.status}, ${redirectedTo(target)}, and the e2e client follows no redirect, since it carries ${as === "agent" ? "the agent bearer" : "the session cookie"}: PLAYWRIGHT_BASE_URL, or DISPATCH_E2E_PORT where it is unset, must name Dispatch's own address`
+    );
+  }
   if (!response.ok) {
     throw new Error(`${method} ${path} failed: ${response.status} ${await response.text()}`);
   }

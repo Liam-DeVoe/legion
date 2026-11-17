@@ -9,6 +9,8 @@
  */
 
 import { BlockList, isIP } from "node:net";
+import { withoutUserinfo } from "./errors";
+import { type RedirectTarget, redirectedTo, redirectTarget, SAME_ADDRESS_CAUSE } from "./redirect";
 
 /** The broker's agent secret holding the Legion Slack app's bot token (`xoxb-…`). */
 export const SLACK_BOT_TOKEN_SECRET = "LEGION_SLACK_BOT_TOKEN";
@@ -102,15 +104,17 @@ const SLACK_ERROR_CODES = [
  * and prints one JSON line and nothing else, to stdout alone: `{ts, channel}` for a posted reply,
  * each shaped as Slack's ids are; `{refused}` with one of Slack's own error codes, or `{refused:
  * null}` for any other; `{unanswered: true}` when Slack did not answer (the reply may have been
- * posted); `{invalid}`, a fixed description, for an answer that is not Slack's; `{redirected, to}`
- * for a 3xx, which it does not follow, since fetch would send the reply on to the origin its
- * `Location` names and take that origin's answer as Slack's: its status, and `to`, that origin
- * when it is on the API URL's own host, `another host` when it is elsewhere (a host the answer
- * chose, lower-cased by the URL parser, could carry the token past the cut below), or empty when
- * the header names no http(s) origin. No part of a response body crosses, and the line has the
- * token cut out of it before it is written. */
+ * posted); `{invalid}`, a fixed description, for an answer that is not Slack's; `{redirected,
+ * target}` for a 3xx, read from its status before any of its body, which it does not follow,
+ * since fetch would send the reply on to the origin its `Location` names and take that origin's
+ * answer as Slack's: its status, and where it pointed as `redirectTarget` reads it, whose source
+ * the poster runs as its own, except that another origin is `{kind: "another host"}` unless it is
+ * on the API URL's own host (a host the answer chose, lower-cased by the URL parser, could carry
+ * the token past the cut below). No part of a response body crosses, and the line has the token
+ * cut out of it before it is written. */
 const POSTER = `
 const codes = ${JSON.stringify(Object.fromEntries(SLACK_ERROR_CODES.map((code) => [code, true])))};
+const redirectTarget = ${String(redirectTarget)};
 const token = process.env.LEGION_SLACK_BOT_TOKEN || "";
 const out = (value) => {
   let line = JSON.stringify(value);
@@ -137,16 +141,11 @@ try {
       signal: AbortSignal.timeout(10000),
     });
     status = response.status;
-    if (status >= 300 && status <= 399) {
-      const location = response.headers.get("Location");
-      let to = "";
-      try {
-        const target = location === null ? undefined : new URL(location, base + "/chat.postMessage");
-        if (target && (target.protocol === "http:" || target.protocol === "https:")) {
-          to = target.hostname === new URL(base).hostname ? target.origin : "another host";
-        }
-      } catch {}
-      out({ redirected: status, to });
+    const target = redirectTarget(response, base + "/chat.postMessage");
+    if (target !== undefined) {
+      const onApiHost =
+        target.kind !== "another origin" || new URL(target.origin).hostname === new URL(base).hostname;
+      out({ redirected: status, target: onApiHost ? target : { kind: "another host" } });
       process.exit(0);
     }
     raw = await response.text();
@@ -196,7 +195,7 @@ interface PosterLine {
   readonly unanswered?: true;
   readonly invalid?: string;
   readonly redirected?: number;
-  readonly to?: string;
+  readonly target?: unknown;
 }
 
 const MAY_HAVE_POSTED =
@@ -336,7 +335,7 @@ export async function postSlackReply(
   const override = env[SLACK_POST_API_URL_VARIABLE];
   if (override !== undefined && override !== "" && !allowedAPIURL(override)) {
     throw new Error(
-      `${SLACK_POST_API_URL_VARIABLE} must be an https URL, or http on a loopback host (got ${override}); nothing was posted`
+      `${SLACK_POST_API_URL_VARIABLE} must be an https URL, or http on a loopback host (got ${withoutUserinfo(override)}); nothing was posted`
     );
   }
   const { PATH: searchPath = "" } = env;
@@ -406,9 +405,15 @@ export async function postSlackReply(
     );
   }
   if (line.redirected !== undefined) {
-    const where = line.to === undefined || line.to === "" ? "" : `, redirecting to ${line.to}`;
+    const target = posterTarget(line.target);
+    const where =
+      target.kind === "another host" ? "redirecting to another host" : redirectedTo(target);
+    const fix =
+      target.kind === "the same origin"
+        ? `correct the path of ${SLACK_POST_API_URL_VARIABLE}, or unset it for Slack's; ${SAME_ADDRESS_CAUSE}`
+        : `${SLACK_POST_API_URL_VARIABLE} must name the Web API's own address, or be unset for Slack's`;
     throw new Error(
-      `chat.postMessage answered HTTP ${Number(line.redirected)}${where}, and slack_post follows no redirect, since the post carries the bot token: nothing was sent there; ${SLACK_POST_API_URL_VARIABLE} must name the Web API's own address, or be unset for Slack's`
+      `chat.postMessage answered HTTP ${Number(line.redirected)}, ${where}, and slack_post follows no redirect, since the post carries the bot token: nothing was sent there; ${fix}`
     );
   }
   if (line.refused === null) {
@@ -437,6 +442,19 @@ function posterLine(stdout: string): PosterLine | undefined {
   } catch {
     return undefined;
   }
+}
+
+/** Where the poster's `{redirected}` line says the redirect pointed: one of `redirectTarget`'s
+ * kinds, or another host; any other value names no target. */
+function posterTarget(value: unknown): RedirectTarget | { readonly kind: "another host" } {
+  if (typeof value !== "object" || value === null || !("kind" in value))
+    return { kind: "no target" };
+  if (value.kind === "another host" || value.kind === "the same origin")
+    return { kind: value.kind };
+  if (value.kind === "another origin" && "origin" in value && typeof value.origin === "string") {
+    return { kind: "another origin", origin: value.origin };
+  }
+  return { kind: "no target" };
 }
 
 /** https anywhere, or http on a loopback host, which a stand-in on this machine is. */

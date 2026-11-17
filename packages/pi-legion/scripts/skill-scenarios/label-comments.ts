@@ -39,7 +39,7 @@ import { mkdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs"
 import path from "node:path";
 import type { Comment } from "@legion/contracts";
 import { messageFor, withoutUserinfo } from "@legion/envoy-client/errors";
-import { redirectOrigin } from "@legion/envoy-client/redirect";
+import { redirectedTo, redirectTarget, SAME_ADDRESS_CAUSE } from "@legion/envoy-client/redirect";
 import {
   backoffMs,
   byCreatedAt,
@@ -280,7 +280,6 @@ async function label(
     if (attempt > 1) await sleep(Math.max(wait, backoffMs(attempt - 1)));
     wait = 0;
     let response: Response;
-    let text: string;
     try {
       response = await fetchImpl(`${route.url}/v1/messages`, {
         method: "POST",
@@ -293,22 +292,32 @@ async function label(
         body,
         signal: AbortSignal.timeout(MODEL_TIMEOUT_MS),
       });
-      // A connection that fails while the body arrives is a failed call, as one before the headers.
-      text = await response.text();
     } catch (error) {
       last = `the model call failed: ${messageFor(error)}`;
       continue;
     }
     // No model call follows a redirect, since fetch would send the key's `x-api-key` header, and a
     // 307's or 308's comment, on to the origin it names: a 3xx is the answer, a refusal naming
-    // where it points (`@legion/envoy-client/redirect`), and it is not asked again.
-    if (response.status >= 300 && response.status <= 399) {
-      const target = redirectOrigin(response, `${route.url}/v1/messages`);
-      const where = target === undefined ? "" : `, redirecting to ${target}`;
-      const fix = route.gateway ? ": give --gateway the gateway's own address" : "";
+    // where it points (`@legion/envoy-client/redirect`), read from its status before any of its
+    // body, which a redirect need never finish, and it is not asked again.
+    const target = redirectTarget(response, `${route.url}/v1/messages`);
+    if (target !== undefined) {
+      const fix = !route.gateway
+        ? ""
+        : target.kind === "the same origin"
+          ? `: correct the path of --gateway; ${SAME_ADDRESS_CAUSE}`
+          : ": give --gateway the gateway's own address";
       throw new Error(
-        `the model at ${withoutUserinfo(route.url)} answered ${response.status}${where}, and a model call follows no redirect, since it carries the key${fix}`
+        `the model at ${withoutUserinfo(route.url)} answered ${response.status}, ${redirectedTo(target)}, and a model call follows no redirect, since it carries the key${fix}`
       );
+    }
+    let text: string;
+    try {
+      // A connection that fails while the body arrives is a failed call, as one before the headers.
+      text = await response.text();
+    } catch (error) {
+      last = `the model call failed: ${messageFor(error)}`;
+      continue;
     }
     if (!response.ok) {
       last = modelError(response.status, text);

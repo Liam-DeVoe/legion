@@ -1,6 +1,6 @@
 import type { RequestCredential } from "@legion/envoy-client/bearer"
 import { withoutUserinfo } from "@legion/envoy-client/errors"
-import { redirectOrigin } from "@legion/envoy-client/redirect"
+import { redirectedTo, redirectTarget } from "@legion/envoy-client/redirect"
 import ky from "ky"
 
 /** How long one send may take, the credential's trade included. */
@@ -23,33 +23,43 @@ export type SendEnvoyMessageOptions = {
  * too (`RequestCredential.headers`): a broker credential waiting on a pod's missing registration
  * stops at it, naming the session, while its trade goes on in the background. A send follows no
  * redirect, since fetch would send the broker's DPoP proof and the message on to the origin it
- * names (`@legion/envoy-client/redirect`): a 3xx fails the send, naming where it points.
+ * names (`@legion/envoy-client/redirect`): a 3xx fails the send, naming where it points. The
+ * Envoy URL may carry a user and a password, which the send keeps; each line it fails with names
+ * the URL with neither (`withoutUserinfo`).
  */
 export async function sendEnvoyMessage(options: SendEnvoyMessageOptions): Promise<void> {
   const url = new URL("/v1/messages/send", options.baseUrl)
+  const shown = withoutUserinfo(url.href)
   const timeout = AbortSignal.timeout(SEND_TIMEOUT_MS)
   const deadline =
     options.signal === undefined ? timeout : AbortSignal.any([options.signal, timeout])
   const headers =
     (await options.credential?.headers("POST", url.toString(), undefined, deadline)) ?? {}
-  const response = await ky.post(url, {
-    json: {
-      target_session: options.targetSession,
-      message: options.message,
-    },
-    headers,
-    retry: 0,
-    timeout: false,
-    signal: deadline,
-    redirect: "manual",
-    // A 3xx is refused below, with where it points; every other status that is no success is
-    // ky's HTTPError, as before.
-    throwHttpErrors: (status) => status < 300 || status > 399,
-  })
-  if (response.status >= 300 && response.status <= 399) {
-    const target = redirectOrigin(response, url.toString())
+  let response: Response
+  try {
+    response = await ky.post(url, {
+      json: {
+        target_session: options.targetSession,
+        message: options.message,
+      },
+      headers,
+      retry: 0,
+      timeout: false,
+      signal: deadline,
+      redirect: "manual",
+      // A 3xx is refused below, with where it points; every other status that is no success is
+      // ky's HTTPError, as before.
+      throwHttpErrors: (status) => status < 300 || status > 399,
+    })
+  } catch (error) {
+    // ky's HTTPError names the request by its URL, user and password included.
+    if (error instanceof Error) error.message = error.message.replaceAll(url.href, shown)
+    throw error
+  }
+  const target = redirectTarget(response, url.href)
+  if (target !== undefined) {
     throw new Error(
-      `POST ${withoutUserinfo(url.toString())} answered ${response.status}${target === undefined ? "" : `, redirecting to ${target}`}, and a send follows no redirect: set the Envoy URL (ENVOY_URL, or envoy.json's envoy.url) to the listener's own address`,
+      `POST ${shown} answered ${response.status}, ${redirectedTo(target)}, and a send follows no redirect: set the Envoy URL (ENVOY_URL, or envoy.json's envoy.url) to the listener's own address`,
     )
   }
 }

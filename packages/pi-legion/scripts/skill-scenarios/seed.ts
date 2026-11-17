@@ -87,7 +87,7 @@ import type {
   Handoff,
   HandoffSummary,
 } from "@legion/contracts";
-import { redirectOrigin } from "@legion/envoy-client/redirect";
+import { redirectedTo, redirectTarget } from "@legion/envoy-client/redirect";
 import { z } from "zod";
 import {
   answerAsk,
@@ -654,7 +654,8 @@ export async function implementHandoff(
  * answer once it accepted the request; a refusal names the route and Dispatch's answer. It
  * follows no redirect, since fetch would send a 307's or 308's body on to the origin it names, and
  * take that origin's answer as the scratch Dispatch's: a 3xx is a refusal naming where it points
- * (`@legion/envoy-client/redirect`). */
+ * (`@legion/envoy-client/redirect`), read from its status before any of its body. seed.ts's other
+ * calls go through e2e/api.ts, whose `request` refuses a redirect as this does. */
 async function agentFetch(
   method: "GET" | "POST",
   route: string,
@@ -670,14 +671,14 @@ async function agentFetch(
     },
     ...(input === undefined ? {} : { body: JSON.stringify(input) }),
   });
-  if (response.ok) return response;
-  if (response.status < 300 || response.status > 399) {
-    throw new Error(`${method} ${route} failed: ${response.status} ${await response.text()}`);
+  const target = redirectTarget(response, url.href);
+  if (target !== undefined) {
+    throw new Error(
+      `${method} ${route} failed: ${response.status}, ${redirectedTo(target)}, and seed.ts follows no redirect, since it carries the agent bearer: DISPATCH_E2E_PORT must name the port of rig.sh's scratch Dispatch itself`
+    );
   }
-  const target = redirectOrigin(response, url.toString());
-  throw new Error(
-    `${method} ${route} failed: ${response.status}${target === undefined ? "" : `, redirecting to ${target}`}, and seed.ts follows no redirect, since it carries the agent bearer: DISPATCH_E2E_PORT must name the port of rig.sh's scratch Dispatch itself`
-  );
+  if (response.ok) return response;
+  throw new Error(`${method} ${route} failed: ${response.status} ${await response.text()}`);
 }
 
 /** `capture-handoffs <file> <run dir>`: every handoff record of the run's issue, the seeded

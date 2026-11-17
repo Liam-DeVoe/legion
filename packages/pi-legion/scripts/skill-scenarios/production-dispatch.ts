@@ -24,7 +24,7 @@ import type { RequestCredential } from "@legion/envoy-client/bearer";
 import { type DispatchEnvironment, dispatchSettings } from "@legion/envoy-client/dispatch-config";
 import { envoyConfigPath, readEnvoyConfig } from "@legion/envoy-client/envoy-config";
 import { messageFor } from "@legion/envoy-client/errors";
-import { redirectOrigin } from "@legion/envoy-client/redirect";
+import { redirectedTo, redirectTarget, SAME_ADDRESS_CAUSE } from "@legion/envoy-client/redirect";
 
 /** The HTTP call this module and the tools make. The global `fetch` is one. */
 export type Fetch = (url: string, init: RequestInit) => Promise<Response>;
@@ -169,7 +169,8 @@ export class ProductionDispatch {
    * a connection that fails after the headers is a failed connection too. Its errors name the
    * path and the query, never the server or the token. It follows no redirect, since fetch would
    * send a broker credential's DPoP proof on to the origin it names: a 3xx is a refusal naming
-   * that origin (`@legion/envoy-client/redirect`), and it is not tried again. */
+   * that origin (`@legion/envoy-client/redirect`), read from its status before any of its body,
+   * which a redirect need never finish, and it is not tried again. */
   async #get<T>(segments: readonly string[], query?: Record<string, string>): Promise<T> {
     const shown = describe(segments, query);
     const url = new URL(`${this.#base}${shown}`);
@@ -177,10 +178,9 @@ export class ProductionDispatch {
     for (let attempt = 1; attempt <= READ_TRIES; attempt++) {
       if (attempt > 1) await this.#sleep(backoffMs(attempt - 1));
       let response: Response;
-      let text: string;
       try {
-        // One deadline for the credential and the read: a broker credential waiting on a pod's
-        // missing registration stops at it, naming the session.
+        // One deadline for the credential and the read, its body included: a broker credential
+        // waiting on a pod's missing registration stops at it, naming the session.
         const deadline = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
         response = await this.#fetch(url.toString(), {
           method: "GET",
@@ -191,6 +191,22 @@ export class ProductionDispatch {
           },
           signal: deadline,
         });
+      } catch (error) {
+        last = `failed: ${messageFor(error)}`;
+        continue;
+      }
+      const target = redirectTarget(response, url.toString());
+      if (target !== undefined) {
+        const fix =
+          target.kind === "the same origin"
+            ? `correct the path of the Dispatch URL (DISPATCH_URL, or envoy.json's dispatch.serverUrl); ${SAME_ADDRESS_CAUSE}`
+            : "set the Dispatch URL (DISPATCH_URL, or envoy.json's dispatch.serverUrl) to Dispatch's own address";
+        throw new Error(
+          `GET ${shown} answered ${response.status}, ${redirectedTo(target)}, and a read follows no redirect, since it carries the Dispatch credential: ${fix}`
+        );
+      }
+      let text: string;
+      try {
         text = await response.text();
       } catch (error) {
         last = `failed: ${messageFor(error)}`;
@@ -202,12 +218,6 @@ export class ProductionDispatch {
         } catch {
           throw new Error(`GET ${shown} answered ${response.status} with a body that is not JSON`);
         }
-      }
-      if (response.status >= 300 && response.status <= 399) {
-        const target = redirectOrigin(response, url.toString());
-        throw new Error(
-          `GET ${shown} answered ${response.status}${target === undefined ? "" : `, redirecting to ${target}`}, and a read follows no redirect, since it carries the Dispatch credential: set the Dispatch URL (DISPATCH_URL, or envoy.json's dispatch.serverUrl) to Dispatch's own address`
-        );
       }
       if (transient(response.status)) {
         last = `answered ${response.status}`;

@@ -1,7 +1,14 @@
 import { afterAll, expect, test } from "bun:test"
 import { writeFileSync } from "node:fs"
+import { createServer, type Server } from "node:net"
 import { join, resolve } from "node:path"
-import { REDIRECT_CODES, redirectServers } from "@legion/test-fixtures/redirect-servers"
+import {
+  REDIRECT_CODES,
+  type RedirectServers,
+  redirectCase,
+  redirectServers,
+  UNNAMED_TARGETS,
+} from "@legion/test-fixtures/redirect-servers"
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
 import { sendEnvoyMessage } from "../src/envoy-client"
 
@@ -155,29 +162,74 @@ const madeUpBroker = {
   secret: () => "made-up-access-token",
 }
 
+/** The send to the first of `servers`, with the made-up broker credential: what it refused with,
+ * or undefined when it sent. */
+async function sendRefusal(servers: RedirectServers): Promise<unknown> {
+  return await sendEnvoyMessage({
+    baseUrl: servers.origin,
+    credential: madeUpBroker,
+    targetSession: "ses_receiver",
+    message: "a made-up message",
+  }).then(
+    () => undefined,
+    (error: unknown) => error,
+  )
+}
+
+const FIX = "set the Envoy URL (ENVOY_URL, or envoy.json's envoy.url) to the listener's own address"
+
 // fetch would send the broker's DPoP proof on to the origin a redirect names, and a 307's or 308's
 // message with it (it drops `Authorization` alone), so a send follows no redirect: the 3xx is the
-// answer, and the send fails naming it.
-test("a redirect to another origin is refused naming its status, and that origin receives no request", async () => {
-  const servers = redirectServers({ atElsewhere: () => new Response(null, { status: 202 }) })
-  try {
-    for (const code of REDIRECT_CODES) {
-      servers.code = code
-      const refusal = await sendEnvoyMessage({
-        baseUrl: servers.origin,
-        credential: madeUpBroker,
-        targetSession: "ses_receiver",
-        message: "a made-up message",
-      }).then(
-        () => undefined,
-        (error: unknown) => error,
-      )
+// answer, and the send fails naming it. One case for each code, so a send that follows again fails
+// at each.
+for (const code of REDIRECT_CODES) {
+  test(redirectCase(code), async () => {
+    const servers = redirectServers({ atElsewhere: () => new Response(null, { status: 202 }) })
+    servers.code = code
+    try {
+      const refusal = await sendRefusal(servers)
       expect(servers.received, `the other origin after a ${code}`).toEqual([])
       expect(refusal, `the send after a ${code}`).toBeInstanceOf(Error)
       expect((refusal as Error).message).toBe(
-        `POST ${servers.origin}/v1/messages/send answered ${code}, redirecting to ${servers.elsewhere}, and a send follows no redirect: set the Envoy URL (ENVOY_URL, or envoy.json's envoy.url) to the listener's own address`,
+        `POST ${servers.origin}/v1/messages/send answered ${code}, redirecting to ${servers.elsewhere}, and a send follows no redirect: ${FIX}`,
       )
+    } finally {
+      servers.stop()
     }
+  })
+}
+
+// A send that read a redirect's body before its status would wait on a body that never ends, and
+// refuse nothing; the test's limit is that wait's bound.
+test("a redirect whose body never ends is refused naming its status, before any of its body is read", async () => {
+  const servers = redirectServers()
+  servers.endlessBody = true
+  try {
+    expect(((await sendRefusal(servers)) as Error).message).toBe(
+      `POST ${servers.origin}/v1/messages/send answered 307, redirecting to ${servers.elsewhere}, and a send follows no redirect: ${FIX}`,
+    )
+  } finally {
+    servers.stop()
+  }
+}, 10_000)
+
+// A redirect within the listener's own address, or one that names nowhere, is not named as the
+// address the send already has, and a host longer than any host name is never printed. The send's
+// path is its own whatever the URL's, so each says to set the URL to the listener's.
+test("a redirect to another path of the same address, to no target, or to an overlong host is refused saying so", async () => {
+  const servers = redirectServers()
+  try {
+    const said: string[] = []
+    for (const { location } of UNNAMED_TARGETS) {
+      servers.location = location
+      said.push(((await sendRefusal(servers)) as Error).message)
+    }
+    expect(said).toEqual(
+      UNNAMED_TARGETS.map(
+        ({ where }) =>
+          `POST ${servers.origin}/v1/messages/send answered 307, ${where}, and a send follows no redirect: ${FIX}`,
+      ),
+    )
   } finally {
     servers.stop()
   }
@@ -220,3 +272,89 @@ test("envoy-send answered with a redirect exits 1 naming it, and prints no Sent"
     servers.stop()
   }
 })
+
+// A listener URL may carry a user and a password, which the send keeps; no line it prints does. The
+// password is made for this run, so no line of the test holds a credential.
+test("envoy-send prints no user and no password of its Envoy URL, whatever the listener answers", async () => {
+  const password = crypto.randomUUID()
+  const answering = (status: number) =>
+    Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response("no", { status }) })
+  const servers = [401, 403, 404, 500].map((status) => ({ status, server: answering(status) }))
+  // A listener that drops each connection unanswered, and a port nothing listens on.
+  const listen = async (server: Server) => {
+    const listening = Promise.withResolvers<void>()
+    server.listen(0, "127.0.0.1", listening.resolve)
+    await listening.promise
+    const address = server.address()
+    if (address === null || typeof address === "string") throw new Error("no port")
+    return address.port
+  }
+  const dropping = createServer((socket) => socket.destroy())
+  const dropped = await listen(dropping)
+  const closed = createServer()
+  const refused = await listen(closed)
+  closed.close()
+  const statusText = {
+    401: "Unauthorized",
+    403: "Forbidden",
+    404: "Not Found",
+    500: "Internal Server Error",
+  }
+  try {
+    const printed: Record<string, { exit: number; holdsUserinfo: boolean; line: unknown }> = {}
+    const want: typeof printed = {}
+    for (const [answer, port, wanted] of [
+      ...servers.map(
+        ({ status, server }) =>
+          [
+            String(status),
+            server.port,
+            `Claude Envoy send failed: Request failed with status code ${status} ${statusText[status as keyof typeof statusText]}: POST http://127.0.0.1:${server.port}/v1/messages/send\n`,
+          ] as const,
+      ),
+      // Bun's own words for a failed connection, which name no URL.
+      [
+        "a dropped connection",
+        dropped,
+        expect.stringMatching(/^Claude Envoy send failed: ECONNRESET: /),
+      ] as const,
+      [
+        "a refused connection",
+        refused,
+        expect.stringMatching(/^Claude Envoy send failed: ECONNREFUSED: /),
+      ] as const,
+    ]) {
+      const file = join(scratch, `userinfo-envoy-${answer}.json`)
+      const url = `http://made-up-user:${password}@127.0.0.1:${port}`
+      writeFileSync(
+        file,
+        JSON.stringify({ envoy: { enabled: true, url, token: "made-up-bearer" } }),
+      )
+      const send = Bun.spawn(
+        ["bun", resolve(import.meta.dir, "../bin/envoy-send.ts"), "ses_receiver", "userinfo"],
+        {
+          cwd: scratch,
+          env: { PATH: process.env["PATH"] ?? "", HOME: scratch, ENVOY_CONFIG_FILE: file },
+          stdout: "pipe",
+          stderr: "pipe",
+        },
+      )
+      const [exit, stdout, stderr] = await Promise.all([
+        send.exited,
+        new Response(send.stdout).text(),
+        new Response(send.stderr).text(),
+      ])
+      const output = `${stdout}${stderr}`
+      printed[answer] = {
+        exit,
+        holdsUserinfo: output.includes(password) || output.includes("made-up-user"),
+        line: output.replaceAll(password, "<the password>"),
+      }
+      want[answer] = { exit: 1, holdsUserinfo: false, line: wanted }
+    }
+    expect(printed).toEqual(want)
+  } finally {
+    for (const { server } of servers) server.stop(true)
+    dropping.close()
+  }
+}, 30_000)
