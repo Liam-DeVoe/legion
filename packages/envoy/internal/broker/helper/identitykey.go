@@ -13,11 +13,25 @@ import (
 
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/fileowner"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // identityKeyPEMType is the PEM block a P-256 key is kept in, the one `agent-secrets keygen`
 // writes a session key as, so one reader of a PKCS#8 PEM reads either.
 const identityKeyPEMType = "PRIVATE KEY"
+
+// IdentityKeyNamed is how every message names the identity key file: where it lives under HOME,
+// never by its path. The file holds the key this machine's launcher credential is bound to, so
+// no message repeats the path it was read from, and an os error about it prints through
+// redact.File, which drops every path.
+const IdentityKeyNamed = "the helper's identity key (~/.config/agent-secrets/identity-key.pem under HOME)"
+
+// identityKeyError is err, from a call on the identity key file or its directory, as a message
+// may print it: what the helper was doing to IdentityKeyNamed, and the call's operation and
+// reason alone (redact.File). It unwraps to err, so errors.Is(err, os.ErrNotExist) still holds.
+func identityKeyError(doing string, err error) error {
+	return fmt.Errorf("%s %s: %w", doing, IdentityKeyNamed, redact.File(err))
+}
 
 // LoadOrMakeIdentityKey is the key a machine that proves an identity of its own trades with: the
 // one its launcher credential is bound to, and the one the broker names that credential by, since
@@ -37,8 +51,9 @@ const identityKeyPEMType = "PRIVATE KEY"
 //
 // It is written 0600 in a directory made 0700, as the machine login beside it is (MachineFile),
 // which is the storage a person already chose for the key a machine logs in with. A key file
-// that others may read, or that another user owns, is refused naming path and the fix, and so is
-// one that is not a P-256 PKCS#8 key: the cure is to remove it, after which this makes a new one.
+// that others may read, or that another user owns, is refused naming the fix, and so is one that
+// is not a P-256 PKCS#8 key: the cure is to remove it, after which this makes a new one. Every
+// error names the file as IdentityKeyNamed, and none holds path or the key parser's words.
 //
 // The file is made by linking a finished temporary file into place, which never overwrites, so
 // two helpers starting at once settle on one key rather than each holding one the other wrote
@@ -71,29 +86,29 @@ func LoadOrMakeIdentityKey(path string) (key *ecdsa.PrivateKey, made bool, err e
 func loadIdentityKey(path string) (*ecdsa.PrivateKey, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, err
+		return nil, identityKeyError("read", err)
 	}
 	info, err := os.Stat(path)
 	if err != nil {
-		return nil, err
+		return nil, identityKeyError("stat", err)
 	}
 	if perm := info.Mode().Perm(); perm&0o077 != 0 {
-		return nil, fmt.Errorf("identity key %s is mode %04o, which lets others read the key this machine's launcher credential is bound to; run: chmod 600 %s", path, perm, path)
+		return nil, fmt.Errorf("%s is mode %04o, which lets others read the key this machine's launcher credential is bound to; run chmod 600 on it", IdentityKeyNamed, perm)
 	}
 	if uid, ok := fileowner.Of(info); ok && uid != os.Getuid() {
-		return nil, fmt.Errorf("identity key %s is owned by uid %d, not this user (uid %d); remove it, or run the helper as its owner, and chmod 600 it", path, uid, os.Getuid())
+		return nil, fmt.Errorf("%s is owned by uid %d, not this user (uid %d); remove it, or run the helper as its owner, and chmod 600 it", IdentityKeyNamed, uid, os.Getuid())
 	}
 	block, _ := pem.Decode(data)
 	if block == nil || block.Type != identityKeyPEMType {
-		return nil, fmt.Errorf("identity key %s is no %s PEM block; remove it and the helper makes a new key", path, identityKeyPEMType)
+		return nil, fmt.Errorf("%s is no %s PEM block; remove it and the helper makes a new key", IdentityKeyNamed, identityKeyPEMType)
 	}
 	parsed, err := x509.ParsePKCS8PrivateKey(block.Bytes)
 	if err != nil {
-		return nil, fmt.Errorf("identity key %s: %w; remove it and the helper makes a new key", path, err)
+		return nil, fmt.Errorf("%s is not a PKCS#8 key; remove it and the helper makes a new key", IdentityKeyNamed)
 	}
 	key, _ := parsed.(*ecdsa.PrivateKey)
 	if key == nil || key.Curve == nil || key.Curve.Params().Name != "P-256" {
-		return nil, fmt.Errorf("identity key %s is not a P-256 ECDSA key; remove it and the helper makes a new key", path)
+		return nil, fmt.Errorf("%s is not a P-256 ECDSA key; remove it and the helper makes a new key", IdentityKeyNamed)
 	}
 	return key, nil
 }
@@ -105,6 +120,11 @@ func keepIdentityKey(path string, key *ecdsa.PrivateKey) (kept bool, err error) 
 	if err != nil {
 		return false, err
 	}
+	defer func() {
+		if err != nil {
+			err = identityKeyError("keep", err)
+		}
+	}()
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return false, err

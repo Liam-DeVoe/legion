@@ -46,9 +46,15 @@ func cmdEnroll(args []string, stdout, stderr io.Writer) int {
 	service := flags.String("service", "", "--pod: the broker-side service this pod's service account is bound to")
 	// PrintDefaults appends the default itself, so neither usage names it twice.
 	podTokenFile := flags.String("pod-token-file", defaultPodTokenFile, "--pod: a pod's projected service-account token file")
-	out := flags.String("out", os.Getenv("AGENT_SECRETS_KEY_DIR"), "--pod: the directory holding key.pem and enrollment; AGENT_SECRETS_KEY_DIR when not given")
+	// --out's default, AGENT_SECRETS_KEY_DIR, is read after Parse rather than given to the flag:
+	// PrintDefaults, which -h and every usage error print, would print it, and it is the
+	// directory of key.pem, a file that holds a credential.
+	out := flags.String("out", "", "--pod: the directory holding key.pem and enrollment; AGENT_SECRETS_KEY_DIR when not given")
 	if err := flags.Parse(flagArgs); err != nil {
 		return exitUsage(err)
+	}
+	if !flagGiven(flags, "out") {
+		*out = os.Getenv("AGENT_SECRETS_KEY_DIR")
 	}
 	if len(positional) > 0 {
 		fmt.Fprintf(stderr, "agent-secrets enroll: unexpected argument %q\n", positional[0])

@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/fileowner"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // The slots of an airlock name, spelled as the broker's answer spells them
@@ -218,15 +219,17 @@ func prepareAirlock(environ []string, release *AirlockRelease, grantID string, e
 	files := airlockFiles{bundle: filepath.Join(dir, "ca-bundle.pem"), wgetrc: filepath.Join(dir, "wgetrc")}
 	// Each file is written under the build directory and names the paths the command will read,
 	// which are the ones under dir: the wgetrc carries the bundle's path to wget, and a path
-	// under the build directory would be gone by the time the command read it.
+	// under the build directory would be gone by the time the command read it. A write that fails
+	// says which file and the system's reason (redact.File), never the file's path: the wgetrc
+	// holds whatever the command's own WGETRC held, a password among it.
 	if err := writeFileAtomic(filepath.Join(build, "ca-bundle.pem"), trustBundle(environ, release.CACertificate), 0o600); err != nil {
-		return airlockFiles{}, fmt.Errorf("write the trust bundle: %w", err)
+		return airlockFiles{}, fmt.Errorf("write the trust bundle: %w", redact.File(err))
 	}
 	if err := writeFileAtomic(filepath.Join(build, "wgetrc"), wgetrcFor(environ, files.bundle), 0o600); err != nil {
-		return airlockFiles{}, fmt.Errorf("write the wgetrc: %w", err)
+		return airlockFiles{}, fmt.Errorf("write the wgetrc: %w", redact.File(err))
 	}
 	if err := writeFileAtomic(filepath.Join(build, "expires"), []byte(expiresText(expiresAt)), 0o600); err != nil {
-		return airlockFiles{}, fmt.Errorf("write the airlock expiry: %w", err)
+		return airlockFiles{}, fmt.Errorf("write the airlock expiry: %w", redact.File(err))
 	}
 	if err := os.Rename(build, dir); err != nil {
 		// The final name is this grant's, so what holds it is a run of this same grant that
@@ -237,7 +240,7 @@ func prepareAirlock(environ []string, release *AirlockRelease, grantID string, e
 		// this grant finished — is this run's failure to report, and the command is not run
 		// on files it cannot trust.
 		if _, statErr := os.Stat(filepath.Join(dir, "expires")); statErr != nil {
-			return airlockFiles{}, fmt.Errorf("put the airlock directory in place: %w", err)
+			return airlockFiles{}, fmt.Errorf("put the airlock directory in place: %w", redact.File(err))
 		}
 	}
 	return files, nil
@@ -488,14 +491,16 @@ func airlockVars(environ []string, release *AirlockRelease, files airlockFiles) 
 // airlockProxyURL is the proxy URL the command gets: the broker's own, with this grant's proxy
 // password as the password of its credential. net/url writes the credential, so a password
 // holding a character that must be percent-encoded is encoded once and exactly, and the URL
-// parses back into the same password.
+// parses back into the same password. A proxy URL it cannot use is refused without the URL, and
+// without net/url's words, which quote it whole: it is the broker's answer, and beside an
+// AGENT_SECRETS_URL that is not clean whoever answers can put that address's credential in it.
 func airlockProxyURL(release *AirlockRelease) (string, error) {
 	parsed, err := url.Parse(release.ProxyURL)
 	if err != nil {
-		return "", fmt.Errorf("the broker's airlock proxy URL %q cannot be read: %w", release.ProxyURL, err)
+		return "", errors.New("the broker's airlock proxy URL (proxy_url) is not a URL")
 	}
 	if parsed.Host == "" {
-		return "", fmt.Errorf("the broker's airlock proxy URL %q names no host", release.ProxyURL)
+		return "", errors.New("the broker's airlock proxy URL (proxy_url) names no host")
 	}
 	parsed.User = url.UserPassword(airlockProxyUser, release.ProxyPassword)
 	return parsed.String(), nil

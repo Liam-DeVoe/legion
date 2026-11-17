@@ -69,6 +69,51 @@ func unitValue(name string, getenv func(string) string) string {
 	return getenv(name)
 }
 
+// unitEscapingRule is install's needsEscaping in words: the rule a value it refuses broke. A
+// refusal names the variable and this rule, never the value, since the value may be a secret a
+// person pasted in place of a path, an account or a URL.
+const unitEscapingRule = `a character a unit's Environment= line would need escaped (a space, a tab, a line break, ", ', \, %, $ or ;)`
+
+// parseInstallFlags is fs.Parse(args) with nothing of args printed or returned. The flag package
+// writes a failure to the flag set's output before it returns it, and the failure's text holds
+// the argument it could not read (bad flag syntax: <arg>, flag provided but not defined:
+// -<name>, invalid value "<v>" for flag -<name>), where a --url's credential, or a secret
+// pasted where a flag goes, would print. So the flag set writes nothing, and a failure is this
+// function's own words: which of install's flags the argument was for, where it was for one, and
+// the flags install takes otherwise. -h and -help still print the flags, whose texts and defaults
+// hold nothing from args, and answer flag.ErrHelp.
+func parseInstallFlags(fs *flag.FlagSet, args []string) error {
+	fs.SetOutput(io.Discard)
+	err := fs.Parse(args)
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, flag.ErrHelp):
+		fs.SetOutput(os.Stderr)
+		fmt.Fprintln(os.Stderr, "Usage of install:")
+		fs.PrintDefaults()
+		return err
+	}
+	// The flag package quotes a value it could not set with %q, so the text after the last quote
+	// is its own: " for -<name>: <reason>" or " for flag -<name>: <reason>". Only a name install
+	// defined is ever read out of it.
+	msg := err.Error()
+	tail := msg[strings.LastIndex(msg, `"`)+1:]
+	var named, problem string
+	fs.VisitAll(func(f *flag.Flag) {
+		switch {
+		case msg == "flag needs an argument: -"+f.Name:
+			named, problem = f.Name, "needs a value"
+		case strings.HasPrefix(tail, " for -"+f.Name+": "), strings.HasPrefix(tail, " for flag -"+f.Name+": "):
+			named, problem = f.Name, "was given a value it does not take"
+		}
+	})
+	if named != "" {
+		return fmt.Errorf("install --%s %s (the argument is not printed)", named, problem)
+	}
+	return errors.New("install takes only --url URL and --restart-with-sessions, and an argument is neither (it is not printed)")
+}
+
 // install writes the helper's systemd user unit for the binary at exe (symlinks resolved), the
 // broker URL from --url or AGENT_SECRETS_URL, and every other AGENT_SECRETS_* variable of its
 // environment the unit's helper needs (unitVariables): the socket install probes, the operator
@@ -100,11 +145,12 @@ func install(args []string, getenv func(string) string, exe string, stdout io.Wr
 	fs := flag.NewFlagSet("install", flag.ContinueOnError)
 	url := fs.String("url", "", "the broker's base URL (default $AGENT_SECRETS_URL)")
 	restartWithSessions := fs.Bool("restart-with-sessions", false, "restart the helper even when sessions are registered")
-	if err := fs.Parse(args); err != nil {
+	if err := parseInstallFlags(fs, args); err != nil {
 		return err
 	}
+	urlSetting := "--url"
 	if *url == "" {
-		*url = getenv("AGENT_SECRETS_URL")
+		*url, urlSetting = getenv("AGENT_SECRETS_URL"), "AGENT_SECRETS_URL"
 	}
 	// Every trailing slash, the one rule the clients read the address by, and before the check
 	// below: a URL of nothing but slashes is no broker URL at all and is refused here rather
@@ -115,7 +161,7 @@ func install(args []string, getenv func(string) string, exe string, stdout io.Wr
 	}
 	const needsEscaping = " \t\r\n\"'\\%$;"
 	if strings.ContainsAny(*url, needsEscaping) {
-		return fmt.Errorf("broker URL %q holds characters a unit's Environment= line would need escaped", redact.URL(*url))
+		return fmt.Errorf("the broker URL holds %s (%s names %s)", unitEscapingRule, urlSetting, redact.URL(*url))
 	}
 	environment := "Environment=AGENT_SECRETS_URL=" + *url + "\n"
 	for _, v := range unitVariables {
@@ -124,11 +170,11 @@ func install(args []string, getenv func(string) string, exe string, stdout io.Wr
 			continue
 		}
 		if strings.ContainsAny(value, needsEscaping) {
-			return fmt.Errorf("%s %q holds characters a unit's Environment= line would need escaped", v.name, value)
+			return fmt.Errorf("%s holds %s; its value is not printed", v.name, unitEscapingRule)
 		}
 		// The unit's helper runs in another working directory than install does.
 		if v.path && !filepath.IsAbs(value) {
-			return fmt.Errorf("%s %q is a relative path, which the unit's helper would resolve from another directory; set it to an absolute path", v.name, value)
+			return fmt.Errorf("%s is a relative path, which the unit's helper would resolve from another directory; set it to an absolute path (its value is not printed)", v.name)
 		}
 		environment += "Environment=" + v.name + "=" + value + "\n"
 	}

@@ -34,6 +34,7 @@ import (
 	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/broker/record"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // defaultPodTokenFile is where a Legion pod and a hand-launched session pod both mount their
@@ -70,14 +71,17 @@ func (p podIdentity) String() string {
 // Reading the UID from the token rather than taking it as a flag is what spares the pod a
 // downwardAPI entry for its own UID: the one thing the broker will accept is already in the file
 // the pod must read anyway.
+//
+// A token it cannot read is refused in fixed text naming --pod-token-file, never in the decoder's
+// words, which describe the token: the file holds a credential.
 func podClaims(token string) (podIdentity, error) {
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 {
-		return podIdentity{}, errors.New("the projected service-account token is not a JWT")
+		return podIdentity{}, errors.New("the projected service-account token in the file --pod-token-file names is not a JWT")
 	}
 	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
-		return podIdentity{}, fmt.Errorf("the projected token's claims are not base64url: %w", err)
+		return podIdentity{}, errors.New("the claims of the projected token in the file --pod-token-file names are not base64url")
 	}
 	var claims struct {
 		Subject    string `json:"sub"`
@@ -88,7 +92,7 @@ func podClaims(token string) (podIdentity, error) {
 		} `json:"kubernetes.io"`
 	}
 	if err := json.Unmarshal(payload, &claims); err != nil {
-		return podIdentity{}, fmt.Errorf("the projected token's claims are not JSON: %w", err)
+		return podIdentity{}, errors.New("the claims of the projected token in the file --pod-token-file names are not JSON")
 	}
 	id := podIdentity{Subject: claims.Subject, PodUID: claims.Kubernetes.Pod.UID}
 	if id.PodUID == "" {
@@ -135,7 +139,9 @@ func (c *client) CreatePodEnrollment(ctx context.Context, signer proofSigner, ru
 		EnrollmentID string `json:"enrollment_id"`
 	}
 	if err := json.Unmarshal(raw, &result); err != nil {
-		return "", false, fmt.Errorf("decode enrollment response: %w", err)
+		// The decoder's words quote the answer, so they print as the address lets the broker's
+		// own words print (brokeraddr.Address.Words).
+		return "", false, fmt.Errorf("decode enrollment response: %s", c.baseURL.Words(err.Error()))
 	}
 	if result.EnrollmentID == "" {
 		return "", false, errors.New("the broker's enrollment answered no enrollment_id")
@@ -321,7 +327,8 @@ func (c *client) TokenLogin(ctx context.Context, token, request string) (string,
 		CredentialID string `json:"credential_id"`
 	}
 	if err := json.Unmarshal(raw, &result); err != nil {
-		return "", fmt.Errorf("decode token login response: %w", err)
+		// As CreatePodEnrollment's decoder error: the answer's words, through Words.
+		return "", fmt.Errorf("decode token login response: %s", c.baseURL.Words(err.Error()))
 	}
 	if result.CredentialID == "" {
 		return "", errors.New("the broker's token login answered no credential_id")
@@ -331,14 +338,15 @@ func (c *client) TokenLogin(ctx context.Context, token, request string) (string,
 
 // enrollSessionKey is the session key in dir: the one already there, so re-running enroll on a dir
 // keeps the key whose enrollment the broker holds live, or a new one written exactly as keygen
-// writes it (PKCS8 PEM, 0600, in a 0700 directory, renamed into place).
+// writes it (PKCS8 PEM, 0600, in a 0700 directory, renamed into place). dir is the directory
+// --out names, and its errors name key.pem by that flag (outKeyFile), never by its path.
 func enrollSessionKey(dir string) (*ecdsa.PrivateKey, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
 	path := filepath.Join(dir, keyFile)
 	if exists(path) {
-		return loadKey(path)
+		return loadOutKey(path)
 	}
 	key, err := proof.NewKey()
 	if err != nil {
@@ -349,9 +357,30 @@ func enrollSessionKey(dir string) (*ecdsa.PrivateKey, error) {
 		return nil, err
 	}
 	if err := writeFileAtomic(path, pemBytes, 0o600); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("write %s: %w", outKeyFile, redact.File(err))
 	}
 	return key, nil
+}
+
+// outKeyFile is how a message of enroll --pod names the session key it keeps: by the flag that
+// names its directory, since the key's path is the path of a file that holds a credential.
+const outKeyFile = "key.pem in the directory --out (or AGENT_SECRETS_KEY_DIR) names"
+
+// loadOutKey is loadKey for the key.pem in the directory --out names, saying outKeyFile where
+// loadKey says the key's path: the system's reason it cannot be read prints through redact.File,
+// and content that is no PKCS#8 key is refused in fixed text, never in the parser's words about
+// the key's bytes.
+func loadOutKey(path string) (*ecdsa.PrivateKey, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", outKeyFile, redact.File(err))
+	}
+	key, err := parseKeyPEM(data, outKeyFile)
+	if errors.Unwrap(err) != nil {
+		// parseKeyPEM's one wrapped error is the PKCS#8 parser's; its others are fixed text.
+		return nil, fmt.Errorf("%s: not a PKCS#8 private key", outKeyFile)
+	}
+	return key, err
 }
 
 // enrollLockFile is the lock a pod's self-enrollment is serialized on, in the key dir it writes.

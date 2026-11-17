@@ -1,0 +1,63 @@
+// packages/envoy/cmd/agent-secrets/airlock_redact_linux_test.go
+//
+// A write of a grant's airlock files that fails, made to fail the one way an unprivileged test can
+// count on: Linux refuses a path of PATH_MAX (4096) bytes or more with ENAMETOOLONG, so a root
+// whose build directory still fits, and whose files do not, fails the first file write and
+// nothing before it.
+package main
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+// TestAnAirlockFileThatCannotBeWrittenNamesNoPath: when the trust bundle cannot be written, the
+// refusal names the file by what it is and gives the system's reason, and not the file's path
+// under the root, which the wgetrc beside it shares: a wgetrc holds whatever the command's own
+// WGETRC held, a password among it. A root whose files fit still takes them.
+func TestAnAirlockFileThatCannotBeWrittenNamesNoPath(t *testing.T) {
+	const secret = "xdg-hunter2pw-airlock-write-3f71"
+	// The root is base/agent-secrets/airlock; its build directory, root/.building-<1 to 10
+	// digits>, is at most len(root)+21 bytes, and the trust bundle's temporary file in it at least
+	// len(root)+29. A root of 4070 bytes keeps the first under 4096 and puts the second over it.
+	const rootLen = 4070
+	base := filepath.Join(t.TempDir(), secret)
+	for remaining := rootLen - len("/agent-secrets/airlock") - len(base); remaining > 0; remaining = rootLen - len("/agent-secrets/airlock") - len(base) {
+		n := remaining - 1
+		if remaining > 201 {
+			n = 150
+		}
+		base += "/" + strings.Repeat("d", n)
+	}
+	if err := os.MkdirAll(base, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	_, err := prepareAirlock([]string{"XDG_RUNTIME_DIR=" + base}, testRelease("AIRLOCK_ME", nil, nil), "grant-one", nil)
+	if err == nil {
+		t.Fatal("prepareAirlock wrote the trust bundle at a path longer than PATH_MAX")
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Errorf("the refusal %q holds the path %q", err, secret)
+	}
+	for _, want := range []string{"write the trust bundle", "open: file name too long"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal %q does not say %q", err, want)
+		}
+	}
+
+	t.Run("control: a root whose files fit", func(t *testing.T) {
+		fits := filepath.Join(t.TempDir(), secret)
+		if err := os.MkdirAll(fits, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		files, err := prepareAirlock([]string{"XDG_RUNTIME_DIR=" + fits}, testRelease("AIRLOCK_ME", nil, nil), "grant-one", nil)
+		if err != nil {
+			t.Fatalf("prepareAirlock: %v", err)
+		}
+		if _, err := os.Stat(files.bundle); err != nil {
+			t.Fatalf("the trust bundle: %v", err)
+		}
+	})
+}

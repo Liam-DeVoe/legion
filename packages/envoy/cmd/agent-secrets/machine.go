@@ -19,6 +19,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/sjawhar/envoy/internal/broker/helper"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // cmdMachineLogin implements "machine login". It asks agent-secrets-helper to start a machine
@@ -48,7 +49,10 @@ func cmdMachineLogin(args []string, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintf(stdout, "machine login code: %s\n", resp.Code)
 	if base := approveURL(); base != "" {
-		fmt.Fprintf(stdout, "enter it at %s/credentials/machine — approve only if the code matches this terminal\n", base)
+		// The page prints as internal/redact's URL prints it - whole when it is a plain http(s)
+		// URL, redact.NotPrinted otherwise - beside the setting that names its origin, which is
+		// where a person who pasted a credential in place of Dispatch's address finds it.
+		fmt.Fprintf(stdout, "enter it at %s (AGENT_SECRETS_APPROVE_URL names its origin) — approve only if the code matches this terminal\n", redact.URL(base+"/credentials/machine"))
 	} else if resp.VerificationURI != "" {
 		fmt.Fprintf(stdout, "enter it at %s — approve only if the code matches this terminal\n", resp.VerificationURI)
 	} else {

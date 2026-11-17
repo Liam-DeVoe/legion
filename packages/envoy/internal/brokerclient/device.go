@@ -16,6 +16,7 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/sjawhar/envoy/internal/broker/oauthwire"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // SignInScopes are the only scopes a person's sign-in asks for: who they are and their address.
@@ -65,23 +66,41 @@ type SignIn struct {
 // discover reads the issuer's discovery document once per DeviceFlow and builds the x/oauth2
 // client from it. An issuer that names no device authorization endpoint serves no device grant,
 // which is a refusal of its own: a person cannot sign in there with no browser.
+//
+// go-oidc's own error quotes the issuer, the issuer the document names and the body of an answer
+// that is not a success, so none of its text prints: a document the issuer did not serve prints
+// as its status (redact.Answered), one that does not read as this issuer's as fixed text, and a
+// request that failed as its class (redact.Class).
 func (d *DeviceFlow) discover(ctx context.Context) (*oauth2.Config, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.config != nil {
 		return d.config, nil
 	}
-	provider, err := gooidc.NewProvider(d.context(ctx), d.Issuer)
-	if err != nil {
-		return nil, fmt.Errorf("read the sign-in issuer %s: %w", d.Issuer, err)
+	answered := &statusOf{}
+	provider, err := gooidc.NewProvider(withStatusOf(ctx, d.HTTP, answered), d.Issuer)
+	switch {
+	case err != nil && answered.status/100 > 2:
+		return nil, fmt.Errorf("read %s: %s", d.issuer(), redact.Answered(answered.status, nil))
+	case err != nil && answered.status != 0:
+		return nil, fmt.Errorf("read %s: its discovery document names another issuer or is not one", d.issuer())
+	case err != nil:
+		return nil, fmt.Errorf("read %s: %w", d.issuer(), redact.Class(err))
 	}
 	endpoint := provider.Endpoint()
 	if endpoint.DeviceAuthURL == "" || endpoint.TokenURL == "" {
-		return nil, fmt.Errorf("the sign-in issuer %s names no device_authorization_endpoint or token_endpoint, so it serves no device sign-in", d.Issuer)
+		return nil, fmt.Errorf("%s names no device_authorization_endpoint or token_endpoint, so it serves no device sign-in", d.issuer())
 	}
 	endpoint.AuthStyle = oauth2.AuthStyleInParams
 	d.config = &oauth2.Config{ClientID: d.ClientID, ClientSecret: d.ClientSecret, Endpoint: endpoint, Scopes: SignInScopes}
 	return d.config, nil
+}
+
+// issuer is the issuer as a message names it: by its variable, and by its URL only as
+// internal/redact's allow-list prints it, whole when it is a plain URL and not at all when it
+// carries a user name, a password, a query or anything else a credential can sit in.
+func (d *DeviceFlow) issuer() string {
+	return "the sign-in issuer (" + SignInIssuerVar + " names " + redact.URL(d.Issuer) + ")"
 }
 
 // context is ctx carrying the HTTP client x/oauth2 and go-oidc send their requests with.
@@ -92,6 +111,38 @@ func (d *DeviceFlow) context(ctx context.Context) context.Context {
 	return context.WithValue(ctx, oauth2.HTTPClient, d.HTTP)
 }
 
+// withStatusOf is ctx carrying the client x/oauth2 and go-oidc send their requests with: client
+// (an empty one, which is http.DefaultClient's settings, where it is nil), timeout and all, with
+// its transport wrapped so answered records the status of each answer it carries. A library
+// whose error quotes an answer's body is printed by that status (redact.Answered) instead.
+func withStatusOf(ctx context.Context, client *http.Client, answered *statusOf) context.Context {
+	wrapped := http.Client{}
+	if client != nil {
+		wrapped = *client
+	}
+	answered.base = wrapped.Transport
+	if answered.base == nil {
+		answered.base = http.DefaultTransport
+	}
+	wrapped.Transport = answered
+	return context.WithValue(ctx, oauth2.HTTPClient, &wrapped)
+}
+
+// statusOf is a transport that records the status of the last answer it carried, which is all a
+// refusal may say of an answer whose library error quotes its body. One call at a time uses it.
+type statusOf struct {
+	base   http.RoundTripper
+	status int
+}
+
+func (s *statusOf) RoundTrip(request *http.Request) (*http.Response, error) {
+	response, err := s.base.RoundTrip(request)
+	if err == nil {
+		s.status = response.StatusCode
+	}
+	return response, err
+}
+
 // Start asks the issuer for a device code and a user code: what the person types in, and where.
 func (d *DeviceFlow) Start(ctx context.Context) (*oauth2.DeviceAuthResponse, error) {
 	config, err := d.discover(ctx)
@@ -100,10 +151,10 @@ func (d *DeviceFlow) Start(ctx context.Context) (*oauth2.DeviceAuthResponse, err
 	}
 	answer, err := config.DeviceAuth(d.context(ctx))
 	if err != nil {
-		return nil, fmt.Errorf("ask %s for a sign-in code: %w", d.Issuer, err)
+		return nil, fmt.Errorf("ask %s for a sign-in code: %w", d.issuer(), redact.Class(err))
 	}
 	if answer.DeviceCode == "" || answer.UserCode == "" {
-		return nil, fmt.Errorf("%s answered no device code to poll or no code for the person to type", d.Issuer)
+		return nil, fmt.Errorf("%s answered no device code to poll or no code for the person to type", d.issuer())
 	}
 	return answer, nil
 }
@@ -117,7 +168,7 @@ func (d *DeviceFlow) Wait(ctx context.Context, authorization *oauth2.DeviceAuthR
 	}
 	token, err := config.DeviceAccessToken(d.context(ctx), authorization)
 	if err != nil {
-		return nil, fmt.Errorf("wait for the sign-in at %s: %w", d.Issuer, err)
+		return nil, fmt.Errorf("wait for the sign-in at %s: %w", d.issuer(), redact.Class(err))
 	}
 	return d.signIn(token, true)
 }
@@ -141,9 +192,9 @@ func (d *DeviceFlow) Refresh(ctx context.Context, refreshToken string) (*SignIn,
 	if err != nil {
 		var refused *oauth2.RetrieveError
 		if errors.As(err, &refused) && refused.ErrorCode == "invalid_grant" {
-			return nil, fmt.Errorf("%s %w; run: %s", d.Issuer, ErrSignInEnded, SignInCommand)
+			return nil, fmt.Errorf("%s: %w; run: %s", d.issuer(), ErrSignInEnded, SignInCommand)
 		}
-		return nil, fmt.Errorf("renew the sign-in at %s: %w", d.Issuer, err)
+		return nil, fmt.Errorf("renew the sign-in at %s: %w", d.issuer(), redact.Class(err))
 	}
 	// A refresh answers no new refresh token, so the kept one stays the one to keep.
 	return d.signIn(token, false)
@@ -154,10 +205,10 @@ func (d *DeviceFlow) Refresh(ctx context.Context, refreshToken string) (*SignIn,
 func (d *DeviceFlow) signIn(token *oauth2.Token, needRefresh bool) (*SignIn, error) {
 	idToken, _ := token.Extra("id_token").(string)
 	if idToken == "" {
-		return nil, fmt.Errorf("%s answered no id_token: the sign-in asked for the %q scope and must be answered one", d.Issuer, "openid")
+		return nil, fmt.Errorf("%s answered no id_token: the sign-in asked for the %q scope and must be answered one", d.issuer(), "openid")
 	}
 	if needRefresh && token.RefreshToken == "" {
-		return nil, fmt.Errorf("%s answered no refresh token, so this machine could not renew the sign-in without the person again", d.Issuer)
+		return nil, fmt.Errorf("%s answered no refresh token, so this machine could not renew the sign-in without the person again", d.issuer())
 	}
 	person, err := PersonOf(idToken)
 	if err != nil {
@@ -169,17 +220,18 @@ func (d *DeviceFlow) signIn(token *oauth2.Token, needRefresh bool) (*SignIn, err
 // PersonOf is the `email` claim of an ID token: whose sign-in a record is. It verifies nothing —
 // the broker checks the signature, the audience, the domain and email_verified, and refuses a
 // token that fails any of them — so what it reads is a label on a local record and never a
-// decision.
+// decision. The token is a credential, and go-jose's and encoding/json's errors quote the parts
+// of it they could not read, so a token that does not parse is refused in fixed text.
 func PersonOf(idToken string) (string, error) {
 	parsed, err := jose.ParseSigned(idToken, idTokenAlgorithms)
 	if err != nil {
-		return "", fmt.Errorf("read the identity token the sign-in answered: %w", err)
+		return "", errors.New("the identity token the sign-in answered is not a signed JWT this client reads")
 	}
 	var claims struct {
 		Email string `json:"email"`
 	}
 	if err := json.Unmarshal(parsed.UnsafePayloadWithoutVerification(), &claims); err != nil {
-		return "", fmt.Errorf("read the identity token's claims: %w", err)
+		return "", errors.New("the identity token the sign-in answered carries claims that are not a JSON object of strings")
 	}
 	if !strings.Contains(claims.Email, "@") {
 		return "", errors.New("the identity token carries no email claim of an address's shape, so it names no person")

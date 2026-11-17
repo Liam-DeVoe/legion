@@ -199,7 +199,7 @@ func Error(err error, raw string) error {
 	if printable {
 		return err
 	}
-	text := class(err)
+	text := class(err, "the broker")
 	if ue != nil {
 		text = ue.Op + " " + strconv.Quote(Call(raw, ue.URL)) + ": " + text
 	}
@@ -216,7 +216,7 @@ func Cause(err error, raw string) error {
 	ue, printable := printable(err, raw)
 	switch {
 	case !printable:
-		return &classified{class(err), err}
+		return &classified{class(err, "the broker"), err}
 	case ue != nil:
 		return ue.Err
 	default:
@@ -293,8 +293,9 @@ type classified struct {
 func (c *classified) Error() string { return c.text }
 func (c *classified) Unwrap() error { return c.err }
 
-// class names the kind of failure err is, in fixed text.
-func class(err error) string {
+// class names the kind of failure err is, in fixed text; server is who answered an HTTP status,
+// "the broker" for Error and Cause and "the server" for Class.
+func class(err error, server string) string {
 	var ue *url.Error
 	var dns *net.DNSError
 	var timeout interface{ Timeout() bool }
@@ -311,7 +312,7 @@ func class(err error) string {
 	case tlsFailure(err):
 		return "TLS failed"
 	case errors.As(err, &re) && re.Response != nil:
-		return fmt.Sprintf("the broker answered HTTP %d", re.Response.StatusCode)
+		return fmt.Sprintf("%s answered HTTP %d", server, re.Response.StatusCode)
 	default:
 		return "the request failed"
 	}

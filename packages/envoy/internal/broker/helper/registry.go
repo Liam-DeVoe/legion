@@ -15,7 +15,14 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/broker/proof"
+	"github.com/sjawhar/envoy/internal/redact"
 )
+
+// RecordsNamed is how every message names the records file: by the setting that names it, never
+// by its path. A named session's record holds that session's signing key, and the default path
+// sits beside the machine file, so its path repeats AGENT_SECRETS_MACHINE_FILE's value; an os
+// error about the file prints through redact.File, which drops every path.
+const RecordsNamed = "the session records AGENT_SECRETS_STATE_FILE names (default sessions.json beside the machine file)"
 
 // Session is one registered host process and the broker identity the helper holds for it. Key
 // never leaves this process beyond the records file, which holds it only for a session that has
@@ -530,14 +537,15 @@ func nonEmpty(ids ...string) []string {
 
 // PrivateKey reads a record's signing key, nil when it has none and an error when what it has is
 // not a P-256 PKCS#8 key (a records file edited or truncated): the caller then makes a fresh key,
-// as it did before records carried one at all.
+// as it did before records carried one at all. The error is this package's own words, never the
+// base64 or x509 parser's, since the key is the records file's content.
 func (rec Record) PrivateKey() (*ecdsa.PrivateKey, error) {
 	if rec.Key == "" {
 		return nil, nil
 	}
 	parsed, err := decodeKeyDER(rec.Key)
 	if err != nil {
-		return nil, fmt.Errorf("session %s: key: %w", rec.RuntimeID, err)
+		return nil, fmt.Errorf("session %s: its recorded key is not a base64 PKCS#8 key", rec.RuntimeID)
 	}
 	key, ok := parsed.(*ecdsa.PrivateKey)
 	if !ok {
@@ -1015,7 +1023,8 @@ func (r *Registry) record(s *Session, cur identity) (Record, error) {
 
 // Save writes every live session's record and every dormant one, atomically, 0600 in a directory
 // it makes 0700: a record of a named session holds that session's signing key, so nothing but
-// this user may read the file or list the directory. After Close it writes nothing.
+// this user may read the file or list the directory. After Close it writes nothing. A write that
+// fails is an error naming the file as RecordsNamed.
 //
 // Live and dormant are snapshotted under ONE registry lock. Read in two, a retire landing
 // between them would put the same session in the file twice — live and dormant at once, so a
@@ -1057,7 +1066,10 @@ func (r *Registry) Save() error {
 	if err != nil {
 		return err
 	}
-	return writeFileOwnerOnly(r.path, data)
+	if err := writeFileOwnerOnly(r.path, data); err != nil {
+		return fmt.Errorf("write %s: %w", RecordsNamed, redact.File(err))
+	}
+	return nil
 }
 
 // LoadDormant takes the dormant records out of recs and keeps them, so a session that comes back
@@ -1084,18 +1096,20 @@ func (r *Registry) Close() {
 	r.closed = true
 }
 
-// LoadRecords reads what Save wrote; no file means no sessions.
+// LoadRecords reads what Save wrote; no file means no sessions. An error names the file as
+// RecordsNamed, and holds neither path nor the decoder's words about the file's content (a time
+// error quotes the value it could not read).
 func LoadRecords(path string) ([]Record, error) {
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("read %s: %w", RecordsNamed, redact.File(err))
 	}
 	var recs []Record
 	if err := json.Unmarshal(data, &recs); err != nil {
-		return nil, fmt.Errorf("%s: %w", path, err)
+		return nil, fmt.Errorf("%s do not read as a JSON list of session records", RecordsNamed)
 	}
 	return recs, nil
 }

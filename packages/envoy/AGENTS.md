@@ -5975,6 +5975,16 @@ So beside such an address every refusal those programs print is its status — w
 What a program takes from an answer and shows its reader prints as it came, whatever the address; among those outputs, `agent-secrets --json` writes a 2xx body verbatim, `agent-secrets machine login` prints the `user_code` and `verification_uri` the broker answered, `login-status` prints that `user_code`, a pending secret request's line names the `approve_url` its answer carries (`cmd/agent-secrets/client.go`), and the helper's log lines name the `credential_id` of the machine login the broker issued (`internal/broker/helper/broker.go`).
 Every call of theirs to the broker that carries a token or a proof — the trade, the helper's refresh, device authorization and renew, and every `agent-secrets` call — goes out on a client from `internal/redirects`' `Refused`, so a 3xx answered for the broker comes back as the non-2xx it is and its target is sent nothing;
 a redirect's body is not printed either, since net/http writes the target into the body of one it answers a GET with.
+The same holds for every other setting of `agent-secrets`, `agent-secrets-helper` and the token client whose value is a URL or the path of a file that holds a credential, and for every server other than the broker they call.
+A URL setting (`AGENT_SECRETS_SIGNIN_ISSUER`, `AGENT_SECRETS_APPROVE_URL`) prints only through `redact.URL`, beside its variable's name, as `(AGENT_SECRETS_SIGNIN_ISSUER names <URL>)`.
+A request to a server other than the broker (the sign-in issuer and the endpoints its discovery document names) prints its failure as `redact.Class`: the classes above, with `the server answered HTTP <n>` for an answer, followed by that answer's OAuth error code only where the code is one the OAuth specifications or Google's API statuses register.
+No other text of such an answer prints: `redact.Answered` reads a refusal's status and registered code out of a body and prints nothing else of it, and go-oidc's discovery error, which quotes the issuer and the body, prints as the status the transport recorded (`brokerclient`'s `statusOf`), since a server can put anything in a description, an echo of a request that carried a credential among them.
+A file that holds a credential is named by its variable or flag and never by its path, which for a person who pasted the credential itself into the variable is the credential: the token file `AGENT_SECRETS_MACHINE_TOKEN_FILE` names, the sign-in client's secret file `AGENT_SECRETS_SIGNIN_CLIENT_SECRET_FILE` names, the sign-in store (`AGENT_SECRETS_SIGNIN_DIR`), `key.pem` in the directory `--out` or `AGENT_SECRETS_KEY_DIR` names, `--pod-token-file`, and the helper's machine file, identity key, operator file and session records (`AGENT_SECRETS_STATE_FILE`, whose records hold each named session's private key).
+A call on such a file prints its operation and the system's reason alone (`redact.File`, `open: no such file or directory`), and a file whose content does not parse prints as fixed text, since encoding/json's, time's and x509's errors quote the value they could not read.
+The one exception is the renewal command `agent-secrets enroll --pod` prints on success, which names the `--pod-token-file` it just read: the broker accepted the token that file held, so its path is no credential pasted in its place.
+A value refused from the environment (an `AGENT_SECRETS_MACHINE_IDENTITY` kind, an `AGENT_SECRETS_PROJECTS` that is no list) is named by its variable and the rule it broke and never echoed, since a refused value is where a credential pasted into the wrong variable shows up;
+`agent-secrets-helper install` refuses a value a unit line cannot hold, and a flag that does not parse, the same way.
+A decoder's error for a broker answer a program cannot read prints through the address's `Words`, as a refusal's words do.
 `agent-secrets` refuses an id that `url.PathEscape` would change (`pathID`) before any call, never escaping it:
 the proof signs the URL as built and the broker rebuilds the htu from the decoded path.
 That refusal is a `refusedBeforeCall`, which `refusalText` prints with no `asked the broker` ending.
@@ -6451,9 +6461,9 @@ Until a save lands, the helper retries only the save every 15 s (`retrySave`) an
 When even the unlink fails (a read-only filesystem) the helper logs at ERROR that a restart before the disk is writable again presents a spent token, which the broker revokes as a reuse, ending the machine's sessions.
 A refresh that finds the credential already dropped returns `errNoOutcome`, which the loop treats as no outcome (`retrySchedule.after`):
 it neither resets the backoff nor clears `unknown`.
-`LoadMachineFile` refuses a file whose mode grants group or other any access, or that another user owns, naming it and `chmod 600`.
+`LoadMachineFile` refuses a file whose mode grants group or other any access, or that another user owns, naming it by its setting (`AGENT_SECRETS_MACHINE_FILE`, never its path) and `chmod 600`.
 `serve` first takes an exclusive flock on `<socket>.lock` (0600, beside the socket;
-`claimSocket`), then one on `<machine file>.lock` (`claimMachineFile`), and holds both for its lifetime, so a second `serve` on the socket, or on the machine file with any socket, exits 2 naming it, before any refresh;
+`claimSocket`), then one on `<machine file>.lock` (`claimMachineFile`), and holds both for its lifetime, so a second `serve` on the socket, or on the machine file with any socket, exits 2 naming it (the machine file by its setting), before any refresh;
 with the socket lock held it refuses a path at the socket that is not a unix socket or that a helper still answers on, and removes a socket only when a dial is refused.
 It then runs `Broker.Start` before it listens:
 Start first removes any `.machine-*.json.tmp` an interrupted save left beside the file, and a kept file is refreshed once, within 5 s, before it is installed, so the socket still listens inside `register`'s 10 s wait (answered:
@@ -6461,7 +6471,7 @@ saved and installed `issued` with no code, or, when the save failed, installed a
 `invalid_grant`: dropped and the file deleted, so a login the broker answered as ended is never resumed;
 an outcome the helper did not learn, the 5 s bound passing among them:
 the kept login installed as `issued`, though the broker may have ended it, and retried by the loop).
-A file that is there but is not exactly one machine login stops `serve`, naming the file.
+A file that is there but is not exactly one machine login stops `serve`, naming the file by its setting.
 The refresh loop refreshes at half the time left until the held credential's expiry, at most every 24 h, rescheduled whenever a credential is installed;
 a refresh the broker did not answer (any transport error:
 a refused, unanswered or unresolved dial, a timeout, a lost answer, a cancelled request) or answered 5xx is retried every 15 s, with no backoff (`retrySchedule`), and so is every refresh after it until the broker settles one (a success or `invalid_grant`), answered 4xx and 429s between included (its `unknown` flag);
