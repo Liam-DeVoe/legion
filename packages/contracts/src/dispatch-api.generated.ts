@@ -2708,7 +2708,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Each finished issue of the project, one whose status is done and whose closed_at is set, newest close first, its close within [since, until) where ?since= and ?until= (RFC 3339) name either bound: {project, issues: [{issue, title, closed_at, plan, ratings, started_at, ended_at, duration_seconds, failed_steps}]}. plan is the plan of the issue's newest run as the Legion daemon wrote it {id, issue, generation, source, artifact_id, version, tasks: [{id, steps}]}, null for an issue with none; ratings is the rating of each of its retros, in the order they ran, {rating, reason, step_id, ended_at}; started_at is the earliest start of its step records, ended_at the latest end and duration_seconds the whole seconds between them, each null where no record holds one, and duration_seconds null too where that end is before that start, a time Dispatch cannot count; failed_steps counts its step records of kind step that failed. It writes nothing. 404 PROJECT_NOT_FOUND for a project Dispatch does not hold, 400 INVALID_QUERY for a bound that is no RFC 3339 time or a since not before its until. */
+    /** @description Each finished issue of the project, one whose status is done and whose closed_at is set, newest close first, its close within [since, until) where ?since= and ?until= (RFC 3339) name either bound: {project, issues: [{issue, title, closed_at, plan, ratings, started_at, ended_at, duration_seconds, failed_steps, experiment, variant}]}. plan is the plan of the issue's newest run as the Legion daemon wrote it {id, issue, generation, source, artifact_id, version, tasks: [{id, steps}]}, null for an issue with none; ratings is the rating of each of its retros, in the order they ran, {rating, reason, step_id, ended_at}; started_at is the earliest start of its step records, ended_at the latest end and duration_seconds the whole seconds between them, each null where no record holds one, and duration_seconds null too where that end is before that start, a time Dispatch cannot count; failed_steps counts its step records of kind step that failed; experiment and variant are the experiment a draw put the issue in and the variant it drew there, as the step records of its newest run name them, each null where they name none. It writes nothing. 404 PROJECT_NOT_FOUND for a project Dispatch does not hold, 400 INVALID_QUERY for a bound that is no RFC 3339 time or a since not before its until. */
     get: operations["getApiV1ProjectsByKeyPlans"];
     put?: never;
     post?: never;
@@ -4837,6 +4837,7 @@ export interface components {
       duration_seconds: null | number;
       /** Format: date-time */
       ended_at: null | string;
+      experiment: null | string;
       failed_steps: number;
       issue: string;
       plan: components["schemas"]["PlanRecord"] | null;
@@ -4844,6 +4845,7 @@ export interface components {
       /** Format: date-time */
       started_at: null | string;
       title: string;
+      variant: null | string;
     };
     GoingAction: {
       action: string;

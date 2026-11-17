@@ -916,3 +916,32 @@ func readPlansOf(t *testing.T, handler http.Handler, issue string) int {
 	}
 	return 0
 }
+
+// The read of a project's finished issues answers the experiment and the variant the records of
+// each issue's newest run name, as the experiment route wrote them, and null for an issue whose
+// records name none.
+func TestTheReadOfAProjectNamesEachIssuesVariant(t *testing.T) {
+	handler := newTestHandler(t)
+	drawn := createTestIssue(t, handler, "LEG", "An issue of an experiment")
+	plain := createAdvancingIssue(t, handler, map[string]any{"project": "LEG", "title": "Rotate the signing key"}, "alice").Key
+	id := recordRuns(t, handler, "LEG", drawn, run{kind: "step", role: "implementer", place: 2, started: new(at(0))})[0]
+	recordRuns(t, handler, "LEG", plain, run{kind: "step", role: "implementer", place: 2, started: new(at(0))})
+	body := withFields(stepIdentity(daemonSession("LEG")), map[string]any{"experiment": "planning", "variant": "b"})
+	if written := putExperiment(t, handler, drawn, id, body); written.Code != http.StatusOK {
+		t.Fatalf("write the variant of %s: status=%d body=%s, want 200", drawn, written.Code, written.Body.String())
+	}
+	closeIssue(t, handler, drawn)
+	closeIssue(t, handler, plain)
+
+	got := map[string]string{}
+	for _, issue := range readPlans(t, handler, "LEG", "").Issues {
+		named := "null/null"
+		if issue.Experiment != nil && issue.Variant != nil {
+			named = *issue.Experiment + "/" + *issue.Variant
+		}
+		got[issue.Issue] = named
+	}
+	if want := map[string]string{drawn: "planning/b", plain: "null/null"}; !maps.Equal(got, want) {
+		t.Fatalf("the read names the variants %v, want %v", got, want)
+	}
+}

@@ -159,6 +159,10 @@ func (s *server) listProjectPlans(w http.ResponseWriter, r *http.Request) {
 			plan := planRecord(*issue.Plan)
 			listed.Plan = &plan
 		}
+		if issue.Experiment != nil {
+			drawn := *issue.Experiment
+			listed.Experiment, listed.Variant = &drawn.Experiment, &drawn.Variant
+		}
 		for place, rating := range issue.Ratings {
 			listed.Ratings[place] = model.PlanRating(rating)
 		}

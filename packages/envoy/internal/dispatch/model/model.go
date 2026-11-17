@@ -3202,7 +3202,9 @@ type PlanRating struct {
 // work started before Legion wrote plans or that Legion never ran), the rating of each of its
 // retros in the order they ran, the earliest start and the latest end of its step records and the
 // whole seconds between them (each null where no record holds one, and the seconds null too where
-// that end is before that start), and its count of step records of kind step that failed.
+// that end is before that start), its count of step records of kind step that failed, and the
+// experiment a draw put it in and the variant it drew there, as the step records of its newest run
+// name them (each null where they name none).
 type FinishedIssue struct {
 	Issue           string       `json:"issue"`
 	Title           string       `json:"title"`
@@ -3213,6 +3215,8 @@ type FinishedIssue struct {
 	EndedAt         *time.Time   `json:"ended_at"`
 	DurationSeconds *int64       `json:"duration_seconds"`
 	FailedSteps     int          `json:"failed_steps"`
+	Experiment      *string      `json:"experiment"`
+	Variant         *string      `json:"variant"`
 }
 
 // ProjectPlans is GET /api/v1/projects/{key}/plans: each finished issue of the project, newest
