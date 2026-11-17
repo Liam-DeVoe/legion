@@ -1,6 +1,7 @@
 import { useState } from "react";
 
 import { ApiError, writeRequest } from "../../../api/client";
+import type { Body } from "../../../api/paths";
 import { useKeyedWrite } from "../../writes/useKeyedWrite";
 import { type ANSWER_LINES, CONTROL_LABELS } from "../page-words";
 import type { RoomFacts } from "./room-target";
@@ -93,14 +94,21 @@ export function criterionMarkdown(parent: string, text: string): string {
   ].join("\n");
 }
 
-/** `POST /api/v1/artifacts/{id}/edits` on the tree artifact `tree`: one insert of `markdown` at
- *  the artifact's end. */
+/** The edits route's body that appends `markdown` to an artifact: one insert at its end. The
+ *  page's write sends it, and a seed that writes a criterion as the page does sends the same
+ *  body, typed as the route's own. */
+export function criterionEdits(markdown: string): Body<"/api/v1/artifacts/{id}/edits", "post"> {
+  return { ops: [{ after: "end", markdown, op: "insert" }] };
+}
+
+/** `POST /api/v1/artifacts/{id}/edits` on the tree artifact `tree`, with `criterionEdits`'s body
+ *  for `markdown`. */
 export function criterionRequest(tree: string, markdown: string) {
   return writeRequest(
     "post",
     "/api/v1/artifacts/{id}/edits",
     { id: tree },
-    { ops: [{ after: "end", markdown, op: "insert" }] }
+    criterionEdits(markdown)
   );
 }
 

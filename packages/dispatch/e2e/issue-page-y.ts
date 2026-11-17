@@ -1,9 +1,8 @@
 import { expect, type Locator, type Page } from "@playwright/test";
 
-import type { Body } from "../web/src/api/paths";
 import {
+  criterionEdits,
   criterionMarkdown,
-  criterionRequest,
 } from "../web/src/features/issue-page/model-rows/criterion-write";
 import type { NodeType } from "../web/src/features/issue-page/page-words";
 import {
@@ -268,10 +267,11 @@ export function criterionRefusal(page: Page): Locator {
 // ---------------------------------------------------------------------------------------------
 
 /**
- * The page's own write of a criterion: the body `criterionRequest` (`criterion-write.ts`) builds
- * for `criterionMarkdown(parent, text)`, appended to issue `key`'s tree artifact `tree`, the tree
- * read's `tree`, by `POST /api/v1/artifacts/{tree}/edits` as the reader. It answers the tree
- * read's id for the criterion once the read holds it, under no node in particular.
+ * The page's own write of a criterion: the body `criterionEdits` (`criterion-write.ts`) builds
+ * for `criterionMarkdown(parent, text)`, the one the page's request sends, appended to issue
+ * `key`'s tree artifact `tree`, the tree read's `tree`, by `POST /api/v1/artifacts/{tree}/edits`
+ * as the reader. It answers the tree read's id for the criterion once the read holds it, under
+ * no node in particular.
  */
 export async function writeCriterionApi(
   key: string,
@@ -279,12 +279,7 @@ export async function writeCriterionApi(
   parent: string,
   text: string
 ): Promise<string> {
-  // The request's body is typed `unknown`, since a kept write is read back from storage; it is
-  // the edits route's body, which `criterionRequest` builds through `writeRequest`.
-  const { body } = criterionRequest(tree, criterionMarkdown(parent, text));
-  await editArtifact(tree, body as Body<"/api/v1/artifacts/{id}/edits", "post">, {
-    login: READER,
-  });
+  await editArtifact(tree, criterionEdits(criterionMarkdown(parent, text)), { login: READER });
   const name = "the criterion written through the edits route";
   const words = text.split("\n")[0]?.trim() ?? text;
   return placedId(await awaitPlaced(key, [{ name, supertag: "criterion", words }]), name);
