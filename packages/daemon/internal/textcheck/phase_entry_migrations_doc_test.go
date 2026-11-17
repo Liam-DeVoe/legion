@@ -16,8 +16,10 @@ import (
 // list leaves out is one nobody told them about, and a name it carries that no migration has
 // sends them looking for a way back that does not exist. Every change that adds a migration of the
 // daemon puts one more above the phase entry, so these tests hold the list to the embedded
-// migrations in both directions. The sentence that opens the list carries no count: every such
-// change would have to edit it, and nothing here checks a count.
+// migrations in both directions. The sentence that opens the list carries no count and no
+// contract number: every change that adds a migration would have to edit the one, and every
+// change of the daemon API contract the other, and the list it opens is held to the migrations
+// of the tree it ships in, which is all the sentence says.
 //
 // The migrations are read through migrations.All, the set the daemon's binary embeds and its
 // Migrate applies, rather than through a copy. That package is the migrations themselves and the
@@ -38,12 +40,11 @@ const (
 	// phaseEntryListEnd opens the line after the list, the one that names the identifier of the
 	// phase entry's block.
 	phaseEntryListEnd = "The `20261111225552` is the identifier of "
+	// phaseEntryListOpening is the sentence that opens the list, the whole of its line.
+	phaseEntryListOpening = "The migrations recorded above this one are these."
 )
 
 var (
-	// phaseEntryListOpening is the sentence that opens the list. It names the contract of the
-	// release it speaks of and no count.
-	phaseEntryListOpening = regexp.MustCompile(`^The migrations recorded above this one at contract \d+ are these\.$`)
 	// migrationNameInGuide is a migration's name as the guide writes it: the file's name without
 	// `.up.sql`.
 	migrationNameInGuide = regexp.MustCompile(`\b\d{14}_\w+`)
@@ -107,8 +108,8 @@ func TestTheGuidesListAboveThePhaseEntryNamesOnlyThoseMigrations(t *testing.T) {
 // opening sentence and the line that ends it.
 func TestTheListCountsNoMigrationNamedOnlyInAnHTMLComment(t *testing.T) {
 	const (
-		opening = "The migrations recorded above this one at contract 146 are these.\n"
-		end     = "The `20261111225552` is the identifier of `20261111225552_phase_entry.up.sql`.\n"
+		opening = phaseEntryListOpening + "\n"
+		end     = phaseEntryListEnd + "`20261111225552_phase_entry.up.sql`.\n"
 	)
 	for _, list := range []struct {
 		shape, entries string
@@ -147,8 +148,8 @@ func TestTheListCountsNoMigrationNamedOnlyInAnHTMLComment(t *testing.T) {
 // take, and two mentions in passing.
 func TestTheListDescribesOnlyTheMigrationsThatOpenAnEntryOrAClause(t *testing.T) {
 	const (
-		opening = "The migrations recorded above this one at contract 146 are these.\n"
-		end     = "The `20261111225552` is the identifier of `20261111225552_phase_entry.up.sql`.\n"
+		opening = phaseEntryListOpening + "\n"
+		end     = phaseEntryListEnd + "`20261111225552_phase_entry.up.sql`.\n"
 	)
 	for _, list := range []struct {
 		shape, entry        string
@@ -224,7 +225,7 @@ func phaseEntryListIn(t *testing.T, name, text string) (described, named []strin
 	lines := strings.Split(text, "\n")
 	start := -1
 	for i, line := range lines {
-		if !phaseEntryListOpening.MatchString(line) {
+		if line != phaseEntryListOpening {
 			continue
 		}
 		if start >= 0 {
@@ -234,8 +235,8 @@ func phaseEntryListIn(t *testing.T, name, text string) (described, named []strin
 		start = i
 	}
 	if start < 0 {
-		t.Fatalf("%s carries no line matching %s: that sentence, which carries no count, opens the list "+
-			"of the migrations recorded above %s after that migration's way back", name,
+		t.Fatalf("%s carries no line %q: that sentence, which carries no count and no contract number, "+
+			"opens the list of the migrations recorded above %s after that migration's way back", name,
 			phaseEntryListOpening, phaseEntryMigration)
 	}
 	end := slices.IndexFunc(lines[start+1:], func(line string) bool { return strings.HasPrefix(line, phaseEntryListEnd) })
