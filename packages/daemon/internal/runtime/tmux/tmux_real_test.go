@@ -413,7 +413,7 @@ func (c *stubConn) Shutdown(context.Context) error { return c.writer.WriteFrame(
 
 func (c *stubConn) Sequence() uint64 { return c.seq }
 
-func (c *stubConn) AdoptWorkingCopy(context.Context, runtime.GitIdentity, time.Duration) error {
+func (c *stubConn) AdoptWorkingCopy(context.Context, runtime.GitIdentity, string, time.Duration) error {
 	return errors.New("the stream stub does not adopt working copies")
 }
 

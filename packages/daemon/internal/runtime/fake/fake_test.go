@@ -407,7 +407,7 @@ func TestConnRecordsWhatTheDaemonAskedOfTheAgent(t *testing.T) {
 	}
 
 	identity := runtime.GitIdentity{Name: "Legion", Email: "legion@example.com"}
-	if err := conn.AdoptWorkingCopy(ctx, identity, 30*time.Second); err != nil {
+	if err := conn.AdoptWorkingCopy(ctx, identity, "", 30*time.Second); err != nil {
 		t.Fatalf("adopt: %v", err)
 	}
 	adoptions := conn.Adoptions()

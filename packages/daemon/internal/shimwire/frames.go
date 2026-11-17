@@ -21,6 +21,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/claim"
 )
 
 // The frame type names, verbatim from the shipped protocol.
@@ -522,13 +524,18 @@ type ToolExecutionEnd struct {
 // when the shim's grace runs out. The shim acts on it and never forwards it.
 type Shutdown struct{}
 
-// AdoptWorkingCopy asks the shim to run the working-copy adoption in its own workspace under the
-// given jj identity. The daemon names the identity and the budget, never a command or a path.
+// AdoptWorkingCopy asks the shim to run the working-copy adoption under the given jj identity, in
+// the working copy of the task whose branch Branch is. The daemon names the identity, the branch
+// and the budget, never a command or a path: the shim derives the working copy's directory from
+// its own workspace and the branch. Branch "" is the issue's own working copy, the shim's own
+// workspace, and is left off the wire, so a shim built before the key reads such a frame as it
+// always has.
 type AdoptWorkingCopy struct {
 	ID        string `json:"id"`
 	JJUser    string `json:"jjUser"`
 	JJEmail   string `json:"jjEmail"`
 	TimeoutMs int    `json:"timeoutMs"`
+	Branch    string `json:"branch,omitempty"`
 }
 
 // AdoptWorkingCopyResult answers AdoptWorkingCopy (worker-shim.ts:332-341).
@@ -899,7 +906,8 @@ func (f Hello) Validate() error {
 
 // Validate refuses an adoption request the shim would refuse. The daemon is its only sender, so
 // a malformed one is a bug to name rather than a condition to paper over
-// (worker-shim.ts:171-180).
+// (worker-shim.ts:171-180). A branch is "" or one claim.BranchTask reads as an issue's or a task's,
+// since the shim derives a directory from it.
 func (f AdoptWorkingCopy) Validate() error {
 	switch {
 	case f.ID == "":
@@ -908,6 +916,11 @@ func (f AdoptWorkingCopy) Validate() error {
 		return fmt.Errorf("%w: adopt-working-copy carries no jj identity", ErrMalformedFrame)
 	case f.TimeoutMs <= 0:
 		return fmt.Errorf("%w: adopt-working-copy timeoutMs is %d", ErrMalformedFrame, f.TimeoutMs)
+	}
+	if f.Branch != "" {
+		if _, _, ok := claim.BranchTask(f.Branch); !ok {
+			return fmt.Errorf("%w: adopt-working-copy branch %q is no branch of an issue or of a task of one", ErrMalformedFrame, f.Branch)
+		}
 	}
 	return nil
 }

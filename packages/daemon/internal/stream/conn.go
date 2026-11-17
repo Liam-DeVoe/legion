@@ -250,12 +250,12 @@ func (c *Conn) Shutdown(ctx context.Context) error {
 	return c.write(shimwire.Shutdown{})
 }
 
-// AdoptWorkingCopy asks the shim to set the author of its workspace's working copy. The shim
-// runs the command within timeout; the answer is awaited for that plus the RPC timeout, the
-// round trip (worker-rpc.ts:492-505).
-func (c *Conn) AdoptWorkingCopy(ctx context.Context, identity runtime.GitIdentity, timeout time.Duration) error {
+// AdoptWorkingCopy asks the shim to set the author of the working copy of the task whose branch
+// is branch, "" for the issue's own. The shim runs the command within timeout; the answer is
+// awaited for that plus the RPC timeout, the round trip (worker-rpc.ts:492-505).
+func (c *Conn) AdoptWorkingCopy(ctx context.Context, identity runtime.GitIdentity, branch string, timeout time.Duration) error {
 	id := rand.Text()
-	frame := shimwire.AdoptWorkingCopy{ID: id, JJUser: identity.Name, JJEmail: identity.Email, TimeoutMs: int(timeout.Milliseconds())}
+	frame := shimwire.AdoptWorkingCopy{ID: id, JJUser: identity.Name, JJEmail: identity.Email, TimeoutMs: int(timeout.Milliseconds()), Branch: branch}
 	if err := frame.Validate(); err != nil {
 		return fmt.Errorf("worker-stream: %s: %w", c.claim, err)
 	}
