@@ -21,9 +21,6 @@ import (
 // viewer access.Resolve gives it, the credential dropped; a reader a layer already put in the
 // request's context is answered as it is, with no second resolution; and a credential that does
 // not resolve is refused as every gate refuses one.
-//
-// The personal tokens that list a project read their list only once the server reads
-// agent_tokens.projects, so the callers whose answer turns on that are not asked here.
 func TestReaderOfAnswersEachCallersViewer(t *testing.T) {
 	seed := seedPrivateProject(t)
 	carol := seedCarol
@@ -34,6 +31,8 @@ func TestReaderOfAnswersEachCallersViewer(t *testing.T) {
 		{callerAlice, model.Viewer{Person: seedAlice, Open: true, Sees: []string{seedPublic}, AnyPrivate: true}},
 		{callerBob, model.Viewer{Person: seedBob, Restricted: true, Sees: []string{seedPrivate}, AnyPrivate: true}},
 		{callerCarol, model.Viewer{Person: seedCarol, Open: true, Sees: []string{seedPrivate, seedPublic}, AnyPrivate: true}},
+		{callerCarolPrivToken, model.Viewer{Person: seedCarol, Listed: true, Lists: []string{seedPrivate}, Sees: []string{seedPrivate}, AnyPrivate: true}},
+		{callerAlicePrivToken, model.Viewer{Person: seedAlice, Listed: true, Lists: []string{seedPrivate}, Sees: []string{}, AnyPrivate: true}},
 		{callerCarolToken, model.Viewer{Person: seedCarol, Open: true, Sees: []string{seedPublic}, AnyPrivate: true}},
 		{callerSharedToken, model.Viewer{Open: true, Sees: []string{seedPublic}, AnyPrivate: true}},
 	} {

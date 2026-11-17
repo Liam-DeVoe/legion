@@ -21,8 +21,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-// privateOffBody is A1's answer to a switch to private where the deployment names no private
-// project, byte for byte (R9).
+// privateOffBody is the answer to a switch to private where the deployment names no private
+// project, byte for byte, the bytes it answered before a deployment could name one (R9).
 const privateOffBody = `{"code":"PRIVATE_PROJECTS_OFF","error":"this deployment cannot make a project private yet: nothing was changed"}`
 
 // busCall is one call a recordingBus took: the project, what its q was (the route's transaction,
@@ -123,7 +123,7 @@ func requireRefused(t *testing.T, database *store.Store, response *httptest.Resp
 
 // TestAProjectBecomesPrivateOnlyWhenTheDeploymentAllows is c-private-needs-callout's Dispatch row
 // (K7). A deployment that names no private project answers a switch to private 409
-// PRIVATE_PROJECTS_OFF with A1's bytes; one that names others answers 409
+// PRIVATE_PROJECTS_OFF with privateOffBody's bytes; one that names others answers 409
 // PRIVATE_PROJECT_NOT_PROVISIONED and calls no writer. For a project the list names, the record
 // is written through the route's own transaction as its last step, and any refusal rolls the
 // whole write back and answers 409 PRIVATE_PROJECTS_UNAVAILABLE naming the bucket. The route
@@ -147,7 +147,7 @@ func TestAProjectBecomesPrivateOnlyWhenTheDeploymentAllows(t *testing.T) {
 		response := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/projects/PRIV/access", private, "alice")
 		for call, answer := range map[string]*httptest.ResponseRecorder{"PRIV, which alice owns": response, "HIDE, which alice cannot see": hidden} {
 			if body := strings.TrimSpace(answer.Body.String()); answer.Code != http.StatusConflict || body != privateOffBody {
-				t.Fatalf("PATCH %s private with an empty list answered %d %s, want 409 and A1's %s", call, answer.Code, body, privateOffBody)
+				t.Fatalf("PATCH %s private with an empty list answered %d %s, want 409 and %s", call, answer.Code, body, privateOffBody)
 			}
 		}
 		requireRefused(t, database, response, "PRIV", before, http.StatusConflict, "PRIVATE_PROJECTS_OFF")

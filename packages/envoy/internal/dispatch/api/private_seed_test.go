@@ -50,16 +50,16 @@ var privateCallers = []privateCaller{
 }
 
 // privateSeed is verification v16's seed on a running test server, written through the server's
-// own routes wherever a route can write it: each project and its issue are created, and each
-// access list is filled, as a person at the dashboard would. A test adds the objects it reads
-// through the routes too, as one of the callers (request), so what it reads is what the server
-// wrote rather than a copy of it.
+// own routes wherever a route can write it: each project and its issue are created, each access
+// list is filled, and each personal token is minted with its list while PRIV is still public, so
+// alice, who sees it then, may name it, as a person at the dashboard would. A test adds the objects
+// it reads through the routes too, as one of the callers (request), so what it reads is what the
+// server wrote rather than a copy of it.
 //
-// Two facts no route of this build writes are written beside the routes, each through the code
-// its route will call: PRIV is made private by access.SetVisibility, because the visibility route
-// refuses private (409 PRIVATE_PROJECTS_OFF) until a deployment allows it, and each token's list
-// is written to agent_tokens.projects, because the token routes take no list yet. A token's list
-// reaches its credential only where the server reads that column (personalTokenActor).
+// One fact no route writes here is written beside them, through the code its route calls: PRIV is
+// made private by access.SetVisibility, because the visibility route refuses private (409
+// PRIVATE_PROJECTS_OFF) until a deployment allows it. A token's list reaches its credential where
+// the server reads its agent_tokens.projects (personalTokenActor).
 type privateSeed struct {
 	handler  http.Handler
 	database *store.Store
@@ -125,13 +125,9 @@ func seedPrivateProjectWith(t *testing.T, options testServerOptions) privateSeed
 		{callerCarolToken, seedCarol, []string{}},
 	} {
 		minted := decodeBody[agentTokenResponse](t, dispatchRequest(t, handler, http.MethodPost, "/api/v1/me/agent-tokens",
-			map[string]string{"name": string(token.caller)}, token.login))
+			mintBody(string(token.caller), token.projects), token.login))
 		if minted.Token == "" {
 			t.Fatalf("mint %s: no token in the answer", token.caller)
-		}
-		if _, err := database.Pool.Exec(context.Background(), `update agent_tokens set projects = $2 where id = $1::uuid`,
-			minted.ID, token.projects); err != nil {
-			t.Fatalf("write the list of %s: %v", token.caller, err)
 		}
 		seed.tokens[token.caller] = minted.Token
 	}

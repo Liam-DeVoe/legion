@@ -510,7 +510,7 @@ func TestADeploymentReadCountsOnlyTheProjectsTheCallerSees(t *testing.T) {
 // that conversation, neither in the reply list, nor as the attempt's reply id, nor in the list's
 // count of recipients who answered. session-priv answers under the one credential that proves it
 // in PRIV (asSession): the shared token, which sees no private project, reads no conversation of
-// PRIV's session. Both routes are deployment reads (plan A, "Read classes"), so a viewer that is
+// PRIV's session. Both routes are deployment reads (readClasses), so a viewer that is
 // not open, a restricted member or a credential that lists projects, is refused them whole, the
 // same bytes for a broadcast it wrote, one it could not see and an id nobody holds.
 func TestABroadcastShowsOnlyToItsAuthorOrAViewerOfEveryRecipient(t *testing.T) {
@@ -679,7 +679,7 @@ func TestWhoamiAnswersAPersonalTokensProjects(t *testing.T) {
 	}
 }
 
-// TestTheUsersOfAPublicListedProjectAreEveryFullMember reproduces the state in which t-a-22's
+// TestTheUsersOfAPublicListedProjectAreEveryFullMember reproduces the state in which the acceptance
 // driver (packages/dispatch/e2e/acceptance/project-access.sh) reads GET /api/v1/users as bob and as
 // carol's PRIV token: its "listed callers" section runs before its "private" section, so PRIV is
 // still public, with bob and carol on its list. The driver's alice is alice@example.com, a full

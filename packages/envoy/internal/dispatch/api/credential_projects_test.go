@@ -298,26 +298,24 @@ func TestATokenListedBeforeItsPersonLostTheProjectSeesNothingOfIt(t *testing.T) 
 	}
 }
 
-// TestANamedTokenWithNoProjectUsesPublicProjectsOnly: a broker token an operator's entry named,
-// whose person is carol, reads PUB and not PRIV, writes a comment on a PUB issue, gets 404 on PRIV's
-// issue for a read and a write, and is refused 403 OAUTH_SCOPE_REQUIRED on GET /api/v1/inbox: a
-// named token holds no OAuth scope. Each named token the broker mints is held to it: the one naming
-// a project, whose list is that project, and the one naming none, whose viewer is open.
-func TestANamedTokenWithNoProjectUsesPublicProjectsOnly(t *testing.T) {
+// TestANamedTokenUsesTheProjectItNames: a broker token an operator's entry named, whose person is
+// carol and whose project is PUB, reads PUB and not PRIV, writes a comment on a PUB issue, gets 404
+// on PRIV's issue for a read and a write, and is refused 403 OAUTH_SCOPE_REQUIRED on GET
+// /api/v1/inbox: a named token holds no OAuth scope. A named token that names no project is
+// refused 401 BROKER_TOKEN_NOT_A_SESSION before anything is read: the broker verifier takes a named
+// scope with no project beside it for no session's credential (brokertoken.ErrNotASession). The
+// day the verifier admits one, that row fails here, and is to read as the open viewer it then is.
+func TestANamedTokenUsesTheProjectItNames(t *testing.T) {
 	for _, named := range []struct {
 		name    string
 		project string
 		listed  bool
-		skip    string
+		refused bool
 	}{
 		{name: "carol's named token naming PUB", project: publicProject, listed: true},
-		{name: "carol's named token naming no project",
-			skip: "needs PlanD t-d-2: this stack's brokertoken refuses a named token naming no project (Verifier.live answers ErrNotASession)"},
+		{name: "carol's named token naming no project", refused: true},
 	} {
 		t.Run(named.name, func(t *testing.T) {
-			if named.skip != "" {
-				t.Skip(named.skip)
-			}
 			rig := newBrokerTokenRig(t)
 			seedCredentialProjects(t, rig.handler, rig.database)
 			pub := issueIn(t, rig.handler, "alice", publicProject)
@@ -330,6 +328,15 @@ func TestANamedTokenWithNoProjectUsesPublicProjectsOnly(t *testing.T) {
 			rig.broker.Says(token, answer)
 			serve := func(method, path string, body any) *httptest.ResponseRecorder {
 				return rig.serve(caller.presenting(t, method, path, token, body))
+			}
+			if named.refused {
+				for _, path := range []string{"/api/v1/whoami", "/api/v1/issues/" + pub} {
+					refused := serve(http.MethodGet, path, nil)
+					if refused.Code != http.StatusUnauthorized || decodeBody[refusalAnswer](t, refused).Code != "BROKER_TOKEN_NOT_A_SESSION" {
+						t.Errorf("GET %s under %s = %d %s, want 401 BROKER_TOKEN_NOT_A_SESSION", path, named.name, refused.Code, refused.Body.String())
+					}
+				}
+				return
 			}
 
 			t.Run("GET /api/v1/inbox", func(t *testing.T) {
