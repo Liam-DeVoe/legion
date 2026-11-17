@@ -27,24 +27,22 @@ func raise(t *testing.T, tx pgx.Tx, issue string, place StepPlace, agent string,
 	return starts
 }
 
-// A start keeps, beside its count, the identity of its record: the fields each write of that
-// record carries, as the start's write names them, and no field of that write alone (its session).
-// It is what the roll forward of a rollback writes that record's end under where an earlier
-// release ended the run (store migration 20261117064152). An end of an uncounted run, ended as it
-// is written, keeps none.
+// A start keeps, beside its count, its record's write as the start named it: every identity field
+// and the moment, which is all a start writes (workflow's startStep). It is what the roll forward
+// of a rollback writes that record's end under where an earlier release ended the run (store
+// migration 20261117064152). An end of an uncounted run, ended as it is written, keeps none.
 func TestAStartKeepsTheIdentityOfItsRecord(t *testing.T) {
 	st := migratedStore(t)
 	store := NewStore()
 	testing3 := StepPlace{Task: "default", Kind: "step", Place: 3}
 	at := time.Date(2026, 11, 17, 1, 0, 0, 0, time.UTC)
-	session := "ses_tester"
 	inTx(t, st, func(tx pgx.Tx) {
 		write, err := store.RaiseStepStarts(t.Context(), tx, "LEGION-1", testing3, func(starts int64) StepRecord {
 			return StepRecord{ID: fmt.Sprintf("run %d", starts), Task: "default", Step: 3, Kind: "step", Role: "tester", Type: "testing",
-				Agent: "legion-legion-legion-1-tester", Generation: 2, StartedAt: &at, Session: &session}
+				Agent: "legion-legion-legion-1-tester", Generation: 2, StartedAt: &at}
 		})
-		if err != nil || write.ID != "run 1" || write.Session == nil {
-			t.Fatalf("RaiseStepStarts = %+v, %v; want the write run built for the count 1, its session in it", write, err)
+		if err != nil || write.ID != "run 1" {
+			t.Fatalf("RaiseStepStarts = %+v, %v; want the write run built for the count 1", write, err)
 		}
 		var kept []byte
 		if err := tx.QueryRow(t.Context(), `select record from step_starts where issue = 'LEGION-1'`).Scan(&kept); err != nil {
@@ -54,10 +52,8 @@ func TestAStartKeepsTheIdentityOfItsRecord(t *testing.T) {
 		if err := json.Unmarshal(kept, &got); err != nil {
 			t.Fatalf("decode the kept record %s: %v", kept, err)
 		}
-		want := write
-		want.Session = nil
-		if !reflect.DeepEqual(got, want) {
-			t.Fatalf("the kept record = %+v, want the start's write without its session: %+v", got, want)
+		if !reflect.DeepEqual(got, write) {
+			t.Fatalf("the kept record = %+v, want the start's write: %+v", got, write)
 		}
 		if _, err := tx.Exec(t.Context(), `update step_starts set run = 'uncounted' where issue = 'LEGION-1'`); err != nil {
 			t.Fatalf("mark the place uncounted as the roll forward does: %v", err)
