@@ -92,14 +92,15 @@ func TestTheCountOfStartsOfAStepRisesByOneAndTheEndReadsItUnchanged(t *testing.T
 				t.Fatalf("RaiseStepStarts = %d; want %d", starts, want)
 			}
 		}
-		// A start of another place, of another kind at the same place, of another task and of
-		// another issue each count apart.
+		// A start of another place, of another kind (a retro and a merge, both at the place 0), of
+		// another task and of another issue each count apart.
 		for _, other := range []struct {
 			issue string
 			place StepPlace
 		}{
 			{"LEGION-1", StepPlace{Task: "default", Kind: "step", Place: 2}},
-			{"LEGION-1", StepPlace{Task: "default", Kind: "retro", Place: 3}},
+			{"LEGION-1", StepPlace{Task: "default", Kind: "retro", Place: 0}},
+			{"LEGION-1", StepPlace{Task: "default", Kind: "merge", Place: 0}},
 			{"LEGION-1", StepPlace{Task: "a", Kind: "step", Place: 3}},
 			{"LEGION-2", testing3},
 		} {

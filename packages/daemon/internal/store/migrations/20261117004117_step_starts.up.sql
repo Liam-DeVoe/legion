@@ -55,17 +55,23 @@
 -- The tree is the one the rollback found the issue in, so a hand-over, which keeps the record of a
 -- merge it hands over open until the re-admission ends it, changes nothing here. An issue with no
 -- row in issues reads null, and a null witness against a null one reads as unchanged.
+--
+-- The table refuses a row no step has, as the outbox refuses a kind it does not name: a task
+-- named, a kind of step, retro or merge, a step at its place from 1 and a retro or a merge at 0
+-- (workflow's stepOf, and the rule Dispatch's route holds a record's place to), and a count that
+-- starts at 0.
 create table step_starts (
   issue text not null,
-  task text not null,
-  kind text not null,
+  task text not null check (task <> ''),
+  kind text not null check (kind in ('step', 'retro', 'merge')),
   place integer not null,
-  starts bigint not null,
+  starts bigint not null check (starts >= 0),
   agent text not null,
   started_at timestamptz,
   run text not null check (run in ('open', 'ended', 'uncounted')),
   record jsonb,
-  primary key (issue, task, kind, place)
+  primary key (issue, task, kind, place),
+  check (case when kind = 'step' then place >= 1 else place = 0 end)
 );
 
 create table step_starts_rollback (
