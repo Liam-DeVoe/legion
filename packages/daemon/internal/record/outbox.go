@@ -1817,16 +1817,23 @@ func validateOutboxPayload(payload OutboxPayload) error {
 			return fmt.Errorf("a merge-queue read names the pull request it reads and the head that left the queue; it names #%d at %q", value.Number, value.Head)
 		}
 	// The rest of what Dispatch takes is Dispatch's to judge, and a value it refuses ends the row
-	// with a warning (the outbox's permanentRefusal). These two it would not end: an empty id
+	// with a warning (the outbox's permanentRefusal). These three it would not: an empty id
 	// addresses the route's parent path, which Dispatch's router answers NOT_FOUND, the one answer
-	// the row retries for ever, and a write without the step's identity is refused only when it is
-	// the record's first, so the same defect would make a record on one run and none on another.
+	// the row retries for ever; a write without the step's identity is refused only when it is the
+	// record's first, so the same defect would make a record on one run and none on another; and a
+	// rating's reason without the rating goes to the step route (dispatch.HTTPClient.PutStep picks
+	// the rating route by the rating), which takes no reason and answers 200, so the reason would be
+	// lost with no line. The rating and its reason are one value, written together or not at all,
+	// so a rating without its reason, which the rating route would refuse, is refused here too.
 	case StepRecord:
 		if _, err := uuid.Parse(value.ID); err != nil {
 			return fmt.Errorf("a step record names no uuid as its id; it names %q", value.ID)
 		}
 		if value.Task == "" || value.Kind == "" || value.Role == "" {
 			return fmt.Errorf("a step record carries its task, kind and role on every write; it carries %q, %q and %q", value.Task, value.Kind, value.Role)
+		}
+		if (value.Rating == nil) != (value.RatingReason == nil) {
+			return fmt.Errorf("a step record carries the rating of the plan with its reason or neither; it carries one without the other")
 		}
 	// The rest of a plan Dispatch judges, as it judges a step record's; its id is held here for the
 	// same reason a step record's is.

@@ -392,12 +392,20 @@ func stepRecordFields(r StepRecord) string {
 // A record the workflow builds without its id or its identity is a defect of the daemon, refused
 // where it is queued: an id that is empty would address the route's parent path, which Dispatch's
 // router answers NOT_FOUND, the one answer the row retries for ever, and a record without its
-// task, kind or role is one Dispatch cannot make a node of.
+// task, kind or role is one Dispatch cannot make a node of. So is a rating without its reason, or
+// a reason without its rating: the two are written together or not at all, and a reason alone
+// would go to the step route, which takes no reason and answers 200, so it would be lost with no
+// line. A record carrying both is taken.
 func TestAStepRecordWithoutItsIDOrIdentityIsRefusedWhereItIsQueued(t *testing.T) {
 	whole := StepRecord{ID: stepRecordID, Task: "default", Step: 2, Kind: "step", Role: "implementer",
 		Type: "implementation", Agent: "legion-leg-leg-1-implementer", Generation: 1}
 	if _, err := NewOutboxRow("LEG-1", whole, time.Now()); err != nil {
 		t.Fatalf("the whole record was refused: %v", err)
+	}
+	rated := whole
+	rated.Rating, rated.RatingReason = new(3), new("The plan put the tests after the review.")
+	if _, err := NewOutboxRow("LEG-1", rated, time.Now()); err != nil {
+		t.Fatalf("the record with its rating and its reason was refused: %v", err)
 	}
 	for _, tc := range []struct {
 		name   string
@@ -409,6 +417,9 @@ func TestAStepRecordWithoutItsIDOrIdentityIsRefusedWhereItIsQueued(t *testing.T)
 		{name: "no task", change: func(r *StepRecord) { r.Task = "" }, reason: "task, kind and role"},
 		{name: "no kind", change: func(r *StepRecord) { r.Kind = "" }, reason: "task, kind and role"},
 		{name: "no role", change: func(r *StepRecord) { r.Role = "" }, reason: "task, kind and role"},
+		{name: "a reason without its rating", change: func(r *StepRecord) { r.RatingReason = new("The plan put the tests after the review.") },
+			reason: "its reason or neither"},
+		{name: "a rating without its reason", change: func(r *StepRecord) { r.Rating = new(3) }, reason: "its reason or neither"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			record := whole
