@@ -19,7 +19,7 @@ import {
   PRESET_ORDER,
   wordsIn,
 } from "../web/src/features/issue-page/page-words";
-import { blockNodeId, checkState } from "../web/src/features/issue-page/tree-drafts";
+import { blockNodeId, checkStanding } from "../web/src/features/issue-page/tree-drafts";
 import { DRAWN_LEVELS } from "../web/src/features/issue-page/tree-fold";
 import { REF_PREVIEW_OPEN_DELAY_MS } from "../web/src/features/refs/ref-preview-timing";
 import { pageFocusedRow } from "../web/src/theme/classes";
@@ -108,6 +108,8 @@ import {
   rowGaps,
   rowReference,
   rowTags,
+  SHAPE_CONTRAST,
+  shapesPainted,
   standInControlBelow,
   standInFootBox,
   tabStopRow,
@@ -200,15 +202,14 @@ async function expectFocusedRowClear(page: Page, after: string): Promise<void> {
   ).toBeLessThanOrEqual(900);
 }
 
-/** The focused row is whole on screen and above the box at the foot, read with `onScreen`, which
- *  bounds a row by the height the page publishes for that box. */
-async function expectFocusedRowAboveFoot(page: Page, after: string): Promise<void> {
+/** The focused row is whole on screen, clear below the band that stays at the top and above the
+ *  box at the foot, read with `onScreen`, which finds what stays at the top itself and bounds a
+ *  row by the height the page publishes for that box. `failure` says what the move did wrong. */
+async function expectFocusedRowOnScreen(page: Page, after: string, failure: string): Promise<void> {
   const id = await focusedRow(page);
   expect(id, `${after} left the focus on no row`).not.toBeNull();
   await expect
-    .poll(() => onScreen(nodeRow(page, id ?? "").first()), {
-      message: `${after} left the focused row under the box at the foot`,
-    })
+    .poll(() => onScreen(nodeRow(page, id ?? "").first()), { message: `${after} ${failure}` })
     .toBe(true);
 }
 
@@ -442,7 +443,7 @@ async function seededOutline(seeded: WholeIssueSeed): Promise<SeededOutline> {
   for (const check of (await getIssueResults(seeded.key)).checks ?? []) {
     const id = blockNodeId(slug(check.artifact_id), check.block_id);
     nodes.add(id);
-    if (checkState(check) !== "passed") frontier.add(id);
+    if (checkStanding(check).state !== "passed") frontier.add(id);
     for (const result of check.results ?? []) nodes.add(result.id);
   }
   for (const task of seeded.planTasks) nodes.add(blockNodeId(slug(seeded.planArtifactId), task));
@@ -1330,6 +1331,8 @@ test("an open question is unfolded and on the first screen @phone", async ({ bro
 // question waiting the page still went to it, and with none it opened with the focus on `<main>`
 // and on no row, at 1440 by 900. The row above loads the page by its address, where the
 // dashboard moves no focus, so it never met this.
+// SLOW(>=2s): a whole seeded issue, then at two sizes a load from the Inbox and one from the
+// parent's outline, each waited on until the focus lands.
 test("an issue opened by a link opens with the focus on its question, or on its first row where none waits", async ({
   browser,
 }) => {
@@ -1395,6 +1398,8 @@ test("an issue opened by a link opens with the focus on its question, or on its 
 // 900 a picture that loaded during that scroll left the caret in its last statement 17,037 px
 // below the top of the window. The seeds' statements sit near their document's top and c-keys
 // (7) writes no new line, so no row met it.
+// SLOW(>=2s): a whole seeded issue and a long document of its own, a load waited on until the
+// statement takes the focus, then Enter and each line written waited on until the caret settles.
 test("the caret Enter puts in a statement deep in its document stays on screen while the reader writes", async ({
   browser,
 }) => {
@@ -1465,6 +1470,8 @@ test("the caret Enter puts in a statement deep in its document stays on screen w
 // with a scroll of its own, so the page around it stays where it was. At e3136741 Enter on R1 of
 // the real INFRA-1196 drew the whole spec in that row, 35,635 px high, and the rows under it
 // went down by as much.
+// SLOW(>=2s): a whole seeded issue and a long spec of its own, a load waited on until the
+// statement takes the focus, then Enter waited on until the editor opens and settles at the block.
 test("a row that edits a statement is no taller than the window, and the page around it stays put", async ({
   browser,
 }) => {
@@ -1952,13 +1959,13 @@ async function expectRowLetGo(page: Page, after: string): Promise<void> {
 }
 
 // c-focus-opens.
-// SLOW(>=2s): the whole issue seeded and loaded, every row hovered, every link rested on past the
-// delay a card opens after, the rows read three times, three controls outside the outline pressed,
-// one of them the header's and one a view's, which the outline is waited for after, and the Inbox
-// loaded.
+// SLOW(>=2s): the whole issue seeded and loaded, every row and every link rested on past the
+// delay a card opens after, the rows read three times and their shapes' colours once, three
+// controls outside the outline pressed, one of them the header's and one a view's, which the
+// outline is waited for after, and the Inbox loaded.
 test("a body opens on focus and nothing opens on hover", async ({ browser }) => {
-  // The row rests the pointer on every reference the page draws, each for longer than a card
-  // takes to open elsewhere, which is a second or two of absences on top of the row's own walk.
+  // The row rests the pointer on every row and every reference the page draws, each for longer
+  // than a card takes to open elsewhere: half a second of absence each, on top of its own walk.
   test.setTimeout(120_000);
   await phase(browser, seedWholeIssue, async (page, seeded) => {
     await gotoIssue(page, `/issues/${seeded.key}`);
@@ -1986,7 +1993,23 @@ test("a body opens on focus and nothing opens on hover", async ({ browser }) => 
       await nodeBodies(page).count(),
       "the pinned body and the focused node's are not the two bodies drawn"
     ).toBe(2);
+    // A press on the pinned row's Let it close, with the focus on the row the reader moved to,
+    // closes that body and leaves the focus where it was (decision 141).
+    const movedTo = await focusedNodeId(page);
+    await pinnedBodies(page)
+      .getByRole("button", { exact: true, name: CONTROL_LABELS.let_close })
+      .click();
+    await expect
+      .poll(() => pinnedBodies(page).count(), { message: "Let it close left the body pinned" })
+      .toBe(0);
+    expect(
+      await focusedNodeId(page),
+      "a press on Let it close moved the focus off the row the reader moved to"
+    ).toBe(movedTo);
+    // From the keyboard, `o` pins the row again and a second `o` lets it close.
     await page.keyboard.press("k");
+    await page.keyboard.press("o");
+    expect(await pinnedBodies(page).count(), "o pinned no body open again").toBe(1);
     await page.keyboard.press("o");
     expect(await pinnedBodies(page).count(), "o did not close the pinned body").toBe(0);
 
@@ -2021,6 +2044,9 @@ test("a body opens on focus and nothing opens on hover", async ({ browser }) => 
     // last row, which End focuses.
     await focusRow(page, focused ?? "");
     await page.keyboard.press("End");
+    expect(await focusedNodeId(page), "End did not move to the outline's last row").toBe(
+      (await visibleIds(page)).at(-1) ?? ""
+    );
     const last = tabStopRow(page);
     await expect(rowBody(last), "End opened no body on the outline's last row").toHaveCount(1);
     const below = await standInControlBelow(page);
@@ -2061,14 +2087,20 @@ test("a body opens on focus and nothing opens on hover", async ({ browser }) => 
       await nodeBodies(page).count(),
       "a body is drawn with the keyboard focus on no control"
     ).toBe(0);
+    // The pointer rests on each row, as on each link below, past the delay a card opens after on
+    // every other page, so a body that opens for a resting pointer a moment after it arrives is
+    // drawn by the time the row reads its absence: read at once after each hover, it was not.
+    const resting = REF_PREVIEW_OPEN_DELAY_MS + 200;
     const before = await treeText(page);
     const rows = nodeRows(page);
     const count = await rows.count();
     for (let index = 0; index < count; index += 1) {
       await rows.nth(index).hover();
+      // The absence is the claim, so the pointer rests for the span a body would take to open.
+      await page.waitForTimeout(resting);
       expect(
         await nodeBodies(page).count(),
-        `the pointer over row ${index} opened a body with the focus elsewhere`
+        `the pointer resting on row ${index} opened a body with the focus elsewhere`
       ).toBe(0);
     }
     expect(await treeText(page), "the pointer crossing every row changed the tree's text").toBe(
@@ -2106,7 +2138,7 @@ test("a body opens on focus and nothing opens on hover", async ({ browser }) => 
       await links.nth(index).hover();
       // A pointer resting on the link past the delay a card opens after on every other page:
       // the absence is the claim, so the wait is the span the card would have taken to open.
-      await page.waitForTimeout(REF_PREVIEW_OPEN_DELAY_MS + 200);
+      await page.waitForTimeout(resting);
       expect(
         await page.getByRole("tooltip").count(),
         `the pointer resting on link ${index} of the issue page opened a card`
@@ -2138,13 +2170,37 @@ test("a body opens on focus and nothing opens on hover", async ({ browser }) => 
       [...new Set(types.values())].length,
       `two types draw the same shape: ${JSON.stringify([...types])}`
     ).toBe(types.size);
+    // Forced colours put the reader's own colours in place of the page's, which neither the
+    // tokens nor the words above show. Read with them on: each shape a row draws still stands
+    // out from what is behind it as a graphic must (`SHAPE_CONTRAST`), so none is drawn by a
+    // colour they take away, such as a box's background; and the states are still told apart by
+    // what the screen shows, each state's word and the outlines its shapes draw.
     await page.emulateMedia({ forcedColors: "active" });
     const forced = await drawnRows(page);
     expectRowVocabulary(forced, await rowTags(page));
+    const painted = await shapesPainted(page);
     expect(
-      [...statesDrawn(forced)],
-      "the states are told apart differently once the colours are forced"
-    ).toEqual([...states]);
+      painted.map((row) => row.id),
+      "the rows whose shapes were read are not the rows drawn"
+    ).toEqual(forced.map((row) => row.id));
+    for (const row of painted) {
+      for (const shape of row.shapes) {
+        expect(
+          shape.contrast,
+          `the ${shape.token} shape on row ${row.id} is not drawn visibly once the colours are forced`
+        ).toBeGreaterThanOrEqual(SHAPE_CONTRAST);
+      }
+    }
+    const seen = new Map<string, string>();
+    for (const [index, row] of forced.entries()) {
+      if (row.state === null) continue;
+      const outlines = painted[index]?.shapes.map((shape) => shape.outline) ?? [];
+      seen.set(`${row.type}:${row.state}`, `${row.stateWord} ${outlines.join(" + ")}`);
+    }
+    expect(
+      [...new Set(seen.values())].length,
+      `two states look the same once the colours are forced: ${JSON.stringify([...seen])}`
+    ).toBe(seen.size);
 
     // Another page keeps its hover card: this change touches no page but the issue's, and the
     // Inbox's owner link opens a card for a resting pointer as it always has.
@@ -2317,8 +2373,8 @@ test("the tree's keys move, fold, zoom and open the focused node", async ({ brow
   }
 });
 
-// SLOW(>=2s): the whole issue seeded and loaded in a context of its own, then some thirty keys
-// pressed, each followed by a read of where the focus is.
+// SLOW(>=2s): the whole issue seeded and loaded in a context of its own, then some sixty keys
+// pressed at two sizes, each followed by a read of where the focus is.
 test("Tab enters and leaves the tree at one stop and every move keeps the row on screen", async ({
   browser,
 }) => {
@@ -2365,11 +2421,35 @@ test("Tab enters and leaves the tree at one stop and every move keeps the row on
     const takeFootAway = await standInFootBox(page, 200);
     for (let step = 0; step < Math.min(order.length - 1, 12); step += 1) {
       await page.keyboard.press("j");
-      await expectFocusedRowAboveFoot(page, `move ${step + 1} with j`);
+      await expectFocusedRowOnScreen(
+        page,
+        `move ${step + 1} with j`,
+        "left the focused row under the box at the foot"
+      );
     }
     await page.keyboard.press("End");
-    await expectFocusedRowAboveFoot(page, "End");
+    await expectFocusedRowOnScreen(page, "End", "left the focused row under the box at the foot");
     await takeFootAway();
+
+    // At 760 px and below the header scrolls away and the view row stays at the top, the band
+    // part P publishes (`IDENTITY_HEIGHT_PROPERTY`): the moves up from the outline's last row
+    // take the page up under it, and each keeps the focused row whole and clear below it. Home
+    // first, so that End moves and places the last row at this size. Measured with the band read
+    // as 0 at this size by all three that place a row below it - `bringOnScreen`, G's
+    // `belowWhatStays` and the page's `scroll-padding-top`, by which a key's focus scrolls -
+    // moves with k left the row's top at 40, 13, 15 and 0 px under a band 51 px tall; at I's
+    // head without P, where nothing published the band, at 40, 13 and 0 px.
+    await page.setViewportSize({ height: 664, width: 390 });
+    await page.keyboard.press("Home");
+    await page.keyboard.press("End");
+    for (let step = 0; step < 25; step += 1) {
+      await page.keyboard.press("k");
+      await expectFocusedRowOnScreen(
+        page,
+        `move ${step + 1} with k from End at 390x664`,
+        "left the focused row off the screen or under the band that stays at the top"
+      );
+    }
   } finally {
     await context.close();
   }
@@ -2451,7 +2531,8 @@ test("the chain is reachable and only gaps that tell a node apart are drawn", as
     // The gaps the page draws are those that tell a node apart and name work somebody owes: each
     // requirement no check serves, and the plan task that serves no requirement - and no other
     // node draws any. The check whose latest result records no negative control is one of those
-    // others: dispatch://INFRA-1253 R3 refuses such a result, so the page names nothing it lacks.
+    // others: dispatch://INFRA-1253 R3 asks a negative control of a before-merge pass alone, and
+    // this check runs after the merge, so the page names nothing it lacks.
     const coverage = await getIssueCoverage(seeded.key);
     const wanted = new Map<string, string[]>();
     for (const requirement of coverage.requirements ?? []) {

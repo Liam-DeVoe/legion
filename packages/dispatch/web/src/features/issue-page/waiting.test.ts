@@ -218,8 +218,9 @@ const change: Comment = {
 
 /** Whether `reference` names a statement of the issue, as the header reads it: by the coverage
  *  read's statements, each addressed as the tree addresses it, and none while that read has not
- *  answered. */
-const nodeIdOf = treeContext({ issue }).nodeIdOf;
+ *  answered. Only the context's addresses are read here and no chip's name, so the line it names
+ *  a block by is the whole reading's words (`wordsOf`), which nothing below reads. */
+const nodeIdOf = treeContext({ issue }, wordsOf).nodeIdOf;
 function statementsOf(read: IssueCoverage | undefined): (reference: string) => boolean {
   const statements = new Set(read?.requirements?.map((one) => nodeIdOf(one.ref)));
   return (reference) => statements.has(nodeIdOf(reference));

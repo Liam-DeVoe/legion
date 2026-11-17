@@ -51,6 +51,8 @@ const SELECTORS = {
   issuePage: "[data-issue-page]",
   nodeBody: "[data-node-body]",
   nodeBullet: "[data-node-bullet]",
+  /** A shape a row draws beside its type, its state or its author (G's `NodeGlyph.tsx`). */
+  nodeGlyph: "svg[data-glyph]",
   nodeRow: "[data-node-row]",
   nodeTag: "[data-node-margin] [data-node-tag]",
   /** A row of the outline, and of no view's tree. */
@@ -354,6 +356,148 @@ export async function onScreen(scope: Locator): Promise<boolean> {
     },
     { footHeight: FOOT_HEIGHT_PROPERTY, selectors: SELECTORS }
   );
+}
+
+/** The contrast a shape has to stand out from what is behind it by to count as drawn: WCAG's
+ *  3:1 for a part of a graphic the reader needs to understand the content (success criterion
+ *  1.4.11, non-text contrast). */
+export const SHAPE_CONTRAST = 3;
+
+/** One shape a row draws (`svg[data-glyph]`, G's `NodeGlyph.tsx`), as the screen shows it. */
+export interface PaintedShape {
+  /** The highest contrast ratio (WCAG's, 1 to 21) any mark of the shape has against what is
+   *  behind that mark: 1 where it paints nothing that stands out, an empty or hidden box
+   *  included. */
+  readonly contrast: number;
+  /** The outline its paths draw, each path's `d`, which is what a reader tells it apart by. */
+  readonly outline: string;
+  /** Its `data-glyph` token, which no reader sees. */
+  readonly token: string;
+}
+
+/**
+ * How each row's shapes stand out from what is behind them, row by row in document order as
+ * G's `drawnRows` reads the rows. A shape's marks are the stroke and the fill of each outline in
+ * it and the background of its own box and of each box inside it, each weighed by its own alpha
+ * and the opacity of everything it stands in; what is behind a mark is every background under
+ * it down to the first opaque one, laid over the page's canvas.
+ *
+ * It reads the computed colours, which are what forced colours change: with them on, the
+ * browser puts one of the reader's own colours in place of each colour the page asked for,
+ * except where `forced-color-adjust` keeps the page's, so a shape drawn by a colour it replaces
+ * - a box's background, which takes the canvas's colour - is drawn no longer. A shape's token
+ * and its accessible name stay as they were, which is why `drawnRows` cannot tell.
+ */
+export function shapesPainted(
+  page: Page
+): Promise<{ readonly id: string | null; readonly shapes: readonly PaintedShape[] }[]> {
+  return page.evaluate((selectors) => {
+    type Colour = readonly [number, number, number, number];
+    // Any colour a computed style holds - `rgb()`, `oklch()`, a system colour - as sRGB, by
+    // painting it into one pixel: a value the canvas cannot paint, such as a `url()` fill, leaves
+    // the pixel transparent.
+    const pixel = document.createElement("canvas").getContext("2d", { willReadFrequently: true });
+    if (pixel === null) throw new Error("the browser draws no 2D canvas to read a colour with");
+    const rgba = (colour: string): Colour => {
+      pixel.clearRect(0, 0, 1, 1);
+      pixel.fillStyle = "transparent";
+      pixel.fillStyle = colour;
+      pixel.fillRect(0, 0, 1, 1);
+      const [red = 0, green = 0, blue = 0, alpha = 0] = pixel.getImageData(0, 0, 1, 1).data;
+      return [red, green, blue, alpha / 255];
+    };
+    const over = ([red, green, blue, alpha]: Colour, under: Colour): Colour => [
+      red * alpha + under[0] * (1 - alpha),
+      green * alpha + under[1] * (1 - alpha),
+      blue * alpha + under[2] * (1 - alpha),
+      1,
+    ];
+    // Where no box paints a background the reader sees the canvas, the system colour `Canvas`,
+    // which is also the colour forced colours give every background they replace.
+    const probe = document.body.appendChild(document.createElement("div"));
+    probe.style.backgroundColor = "Canvas";
+    const canvas = rgba(getComputedStyle(probe).backgroundColor);
+    probe.remove();
+    /** What is behind a mark drawn in `box`: the backgrounds of `box` and of each box it stands
+     *  in, down to the first opaque one, laid over the canvas. */
+    const behind = (box: Element | null): Colour => {
+      const layers: Colour[] = [];
+      for (let at = box; at !== null; at = at.parentElement) {
+        const layer = rgba(getComputedStyle(at).backgroundColor);
+        if (layer[3] === 0) continue;
+        layers.push(layer);
+        if (layer[3] === 1) break;
+      }
+      return layers.reduceRight((under, layer) => over(layer, under), canvas);
+    };
+    /** How much of `element` shows: its opacity and that of every box it stands in. */
+    const shows = (element: Element): number => {
+      let opacity = 1;
+      for (let at: Element | null = element; at !== null; at = at.parentElement) {
+        opacity *= Number.parseFloat(getComputedStyle(at).opacity);
+      }
+      return opacity;
+    };
+    const luminance = ([red, green, blue]: Colour): number => {
+      const linear = (channel: number) => {
+        const value = channel / 255;
+        return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+      };
+      return 0.2126 * linear(red) + 0.7152 * linear(green) + 0.0722 * linear(blue);
+    };
+    const contrast = (one: Colour, other: Colour): number => {
+      const [a, b] = [luminance(one), luminance(other)];
+      return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
+    };
+    const standsOut = (glyph: Element): number => {
+      const box = glyph.getBoundingClientRect();
+      if (box.width === 0 || box.height === 0) return 1;
+      let best = 1;
+      for (const part of [glyph, ...glyph.querySelectorAll("*")]) {
+        const look = getComputedStyle(part);
+        if (look.display === "none" || look.visibility !== "visible") continue;
+        const marks: { alpha: number; colour: string; under: Element | null }[] = [
+          { alpha: 1, colour: look.backgroundColor, under: part.parentElement },
+        ];
+        if (part instanceof SVGGeometryElement) {
+          if (look.fill !== "none") {
+            marks.push({
+              alpha: Number.parseFloat(look.fillOpacity),
+              colour: look.fill,
+              under: part,
+            });
+          }
+          if (look.stroke !== "none" && Number.parseFloat(look.strokeWidth) > 0) {
+            marks.push({
+              alpha: Number.parseFloat(look.strokeOpacity),
+              colour: look.stroke,
+              under: part,
+            });
+          }
+        }
+        const seen = shows(part);
+        for (const mark of marks) {
+          const [red, green, blue, alpha] = rgba(mark.colour);
+          const under = behind(mark.under);
+          const painted = over([red, green, blue, alpha * mark.alpha * seen], under);
+          best = Math.max(best, contrast(painted, under));
+        }
+      }
+      return best;
+    };
+    return [...document.querySelectorAll(`${selectors.issuePage} ${selectors.nodeRow}`)].map(
+      (row) => ({
+        id: row.getAttribute("data-node-id"),
+        shapes: [...row.querySelectorAll(selectors.nodeGlyph)].map((glyph) => ({
+          contrast: standsOut(glyph),
+          outline: [...glyph.querySelectorAll("path")]
+            .map((path) => path.getAttribute("d") ?? "")
+            .join(" "),
+          token: glyph.getAttribute("data-glyph") ?? "",
+        })),
+      })
+    );
+  }, SELECTORS);
 }
 
 /** Whether the caret is in a node's own text: the focus is inside an editable inside a row,
