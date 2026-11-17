@@ -95,7 +95,8 @@ Exit status:
   0  each call stored its result, or no check of the job had a test that ran
   1  a call of the dispatch command failed
   2  no call was made: an argument it does not take, or a commit, a spec directory, a report
-     or a tree of spec files that it cannot read or that the graph logic refuses`
+     or a tree of spec files that it cannot read, that is over a bound of the spec set, or
+     that the graph logic refuses`
 
 // prefix is the fixed text that starts every line the command prints but the usage and the JSON
 // lines.
@@ -236,8 +237,9 @@ func headCommit() (string, error) {
 // readTree reads the spec files of dir at commit (filesAt), and answers their tree and whether it
 // is one to report on: a tree that specgraph.Judge takes, or the empty tree of a directory that
 // the commit does not hold. It warns of each entry that is not a spec file, and writes each
-// problem of a refused tree, in Judge's order, and why it could not read one, on stderr. A file
-// over the size bound refuses the tree before Judge reads any file.
+// problem of a refused tree, in Judge's order, and why it could not read one, on stderr. A set
+// over a bound of notes.CheckSet, or a file over the size bound, refuses the tree before Judge
+// reads any file.
 func readTree(stderr io.Writer, dir, commit string) (specgraph.Tree, bool) {
 	set, err := filesAt(dir, commit)
 	for _, entry := range set.Rejected {

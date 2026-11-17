@@ -479,6 +479,11 @@ Failing example: A read that waits for a lock that nobody holds.
 				t.Errorf("the help names no exit status %q under \"Exit status:\":\n%s", want, got.stderr)
 			}
 		}
+		// A set over a bound of notes.CheckSet exits 2 with no call, as the row "a spec directory
+		// with … is refused by notes.CheckSet" shows, so exit status 2 names it.
+		if want := "that is over a bound of the spec set"; !strings.Contains(statuses, want) {
+			t.Errorf("exit status 2 does not name a set over a bound (%q):\n%s", want, got.stderr)
+		}
 		// R7: a commit holds one answer, so the help never says that a later result decides it.
 		if want := "At one commit, a pass and a failure of one check make its state unknown,\nand a later pass does not end the report of the failure (R7)."; !strings.Contains(got.stderr, want) || strings.Contains(got.stderr, "newest") {
 			t.Errorf("the help gives a second run's results no R7 rule %q, or says that the newest counts:\n%s", want, got.stderr)
