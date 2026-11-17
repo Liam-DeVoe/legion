@@ -1739,6 +1739,40 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/issues/{key}/steps": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description Every run of every step of the issue's workflow, task by task in the order of each task's first run, each task's runs in the order they ran: {issue, tasks: [{task, steps}]}, each step {id, issue, task, step, kind, role, type, agent, session, model, generation, attempt, started_at, ended_at, result, returned_to, report}, its attempt its place among the issue's runs of the same task, step and kind from 1. A closed issue's read too, and a key no issue carries reads as an issue with no task. */
+    get: operations["getApiV1IssuesByKeySteps"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/issues/{key}/steps/{id}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    /** @description Write one run of one step of the issue's workflow {actor, task?, step?, kind?, role?, type?, agent?, session?, model?, generation?, started_at?, ended_at?, result?, returned_to?, report?}: the Legion daemon writes it at the run's start and at its end under one id, the uuid it derives for the run. Each field the record does not hold yet is set and every field it holds is left, so a start and an end land in either order and a write sent again changes nothing; a field left out, null or empty states nothing. The first write of a run names its task, step, kind, role and generation. Only the session legion-daemon:<PROJECT> of the issue's project writes (403 STEP_WRITER otherwise); a closed issue takes a write too, and no write appends an issue event. Answers 200 with the record as it stands after the write and its attempt. A value outside its form is 400 STEP_INPUT naming the field, an id whose record is a run of another issue 409 STEP_OTHER_ISSUE, and an issue Dispatch does not know 404 ISSUE_NOT_FOUND. */
+    put: operations["putApiV1IssuesByKeyStepsById"];
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/issues/{key}/subscribers": {
     parameters: {
       query?: never;
@@ -5213,6 +5247,10 @@ export interface components {
       members: components["schemas"]["ReferenceMember"][] | null;
       truncated: boolean;
     };
+    IssueSteps: {
+      issue: string;
+      tasks: components["schemas"]["StepTask"][] | null;
+    };
     IssueSummary: {
       advances: components["schemas"]["IssueAdvance"][] | null;
       /** Format: int64 */
@@ -6062,6 +6100,54 @@ export interface components {
     StateResponse: {
       /** @enum {string} */
       state: "denied" | "cancelled" | "revoked";
+    };
+    StepRecord: {
+      agent: string;
+      attempt: number;
+      /** Format: date-time */
+      ended_at: null | string;
+      /** Format: int64 */
+      generation: number;
+      id: string;
+      issue: string;
+      /** @enum {string} */
+      kind: "step" | "retro" | "merge";
+      model: string;
+      report: null | string;
+      result: string;
+      returned_to: null | number;
+      role: string;
+      session: string;
+      /** Format: date-time */
+      started_at: null | string;
+      step: number;
+      task: string;
+      type: string;
+    };
+    StepRecordInput: {
+      actor?: components["schemas"]["Actor"] | null;
+      agent?: null | string;
+      /** Format: date-time */
+      ended_at?: null | string;
+      generation?: null | number;
+      /** @enum {null|string} */
+      kind?: "step" | "retro" | "merge" | null;
+      model?: null | string;
+      report?: null | string;
+      /** @enum {null|string} */
+      result?: "passed" | "failed" | "stopped" | null;
+      returned_to?: null | number;
+      role?: null | string;
+      session?: null | string;
+      /** Format: date-time */
+      started_at?: null | string;
+      step?: null | number;
+      task?: null | string;
+      type?: null | string;
+    };
+    StepTask: {
+      steps: components["schemas"]["StepRecord"][] | null;
+      task: string;
     };
     Subscriber: {
       /** Format: int64 */
@@ -10793,6 +10879,79 @@ export interface operations {
       };
     };
   };
+  getApiV1IssuesByKeySteps: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        key: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["IssueSteps"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  putApiV1IssuesByKeyStepsById: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        key: string;
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["StepRecordInput"];
+      };
+    };
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["StepRecord"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
   getApiV1IssuesByKeySubscribers: {
     parameters: {
       query?: {
@@ -14004,6 +14163,7 @@ export type IssueRefResolved = components["schemas"]["IssueRefResolved"];
 export type IssueReferenceSummary = components["schemas"]["IssueReferenceSummary"];
 export type IssueReferenceSummaryDocument = components["schemas"]["IssueReferenceSummaryDocument"];
 export type IssueReferences = components["schemas"]["IssueReferences"];
+export type IssueSteps = components["schemas"]["IssueSteps"];
 export type IssueSummary = components["schemas"]["IssueSummary"];
 export type IssueSummaryPage = components["schemas"]["IssueSummaryPage"];
 export type ItemBlock = components["schemas"]["ItemBlock"];
@@ -14106,6 +14266,9 @@ export type SessionAnswerAsk = components["schemas"]["SessionAnswerAsk"];
 export type SessionAnswersResponse = components["schemas"]["SessionAnswersResponse"];
 export type SlowWriteInput = components["schemas"]["SlowWriteInput"];
 export type StateResponse = components["schemas"]["StateResponse"];
+export type StepRecord = components["schemas"]["StepRecord"];
+export type StepRecordInput = components["schemas"]["StepRecordInput"];
+export type StepTask = components["schemas"]["StepTask"];
 export type Subscriber = components["schemas"]["Subscriber"];
 export type Suggestions = components["schemas"]["Suggestions"];
 export type SupersededApproval = components["schemas"]["SupersededApproval"];

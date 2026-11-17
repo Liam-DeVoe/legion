@@ -106,6 +106,7 @@ var writeClasses = map[string]writeScope{
 	"POST /api/v1/issues/{key}/results":                    scopeProject,
 	"POST /api/v1/issues/{key}/handoffs/{phase}":           scopeProject,
 	"PUT /api/v1/issues/{key}/design-gates":                scopeProject,
+	"PUT /api/v1/issues/{key}/steps/{id}":                  scopeProject,
 
 	// A result's retraction: the row belongs to the project of the issue the result was
 	// recorded on, one hop through check_results (projectOfCheckResult).
@@ -378,6 +379,7 @@ var idRoutes = map[string]idRoute{
 	"PATCH /api/v1/me/agent-tokens/{id}":            {Reason: "a personal agent token id"},
 	"PUT /api/v1/me/threads/{id}/read":              {Reason: "a thread id: the root of a conversation, and no read of the message it names"},
 	"POST /api/v1/results/{id}/retract":             {Reason: "a check result id"},
+	"PUT /api/v1/issues/{key}/steps/{id}":           {Reason: "a step record id: the uuid the Legion daemon derives for one run of one step"},
 
 	// The document test hooks, which address the live room this process holds under the
 	// document's own id and read no row of the artifacts table, so they answer no 404 of a
@@ -544,7 +546,7 @@ var routeScopes = map[string]routeScopeSet{
 // /api/v1), the OpenAPI document and the reference generated from it do not carry it. routes()
 // stamps it onto the row (apiRoute.ReadScope), and register refuses to mount a table whose list
 // names anything but a GET row it mounts (readRoutesNotMountedAsGET).
-var readScopeRoutes = []string{"GET /api/v1/projects/{key}/architecture"}
+var readScopeRoutes = []string{"GET /api/v1/projects/{key}/architecture", "GET /api/v1/issues/{key}/steps"}
 
 // routesNotMounted names every route of names that is no row of the table, sorted. The walk is
 // over the table with its test hooks in, since a hook's row is a row of the table wherever a
@@ -730,6 +732,8 @@ func (s *server) routes() []apiRoute {
 		{http.MethodPost, "/api/v1/issues/{key}/handoffs/{phase}", authBearer, fmt.Sprintf("Record a session's handoff for one phase of an issue {actor, body}: the session names itself in actor (400 ACTOR_KIND otherwise; a cookie caller is 403 HANDOFF_FORBIDDEN), phase is a lowercase slug (%s, 400 HANDOFF_INPUT otherwise), and body is one JSON object as a string (400 HANDOFF_INPUT otherwise) of at most %d bytes (413 CAP_EXCEEDED), stored exactly as sent. The record is the phase's next version, from 1; a closed issue is 409 ISSUE_CLOSED. Answers 201 {id, issue_key, phase, version, author, created_at} and appends handoff.recorded {handoff_id, phase, version}, which never carries the body.", contracts.HandoffPhasePattern, contracts.DispatchHandoffBodyMax), s.createHandoff},
 		{http.MethodGet, "/api/v1/issues/{key}/handoffs", authAny, "List an issue's handoffs, newest first, each {id, issue_key, phase, version, author, created_at} without its body; a closed issue's read too.", s.listHandoffs},
 		{http.MethodGet, "/api/v1/issues/{key}/handoffs/{phase}/latest", authAny, "The newest handoff of one phase of an issue with its body, the exact text written; 404 HANDOFF_NOT_FOUND when the phase has none. A closed issue's read too.", s.getLatestHandoff},
+		{http.MethodPut, "/api/v1/issues/{key}/steps/{id}", authAny, "Write one run of one step of the issue's workflow {actor, task?, step?, kind?, role?, type?, agent?, session?, model?, generation?, started_at?, ended_at?, result?, returned_to?, report?}: the Legion daemon writes it at the run's start and at its end under one id, the uuid it derives for the run. Each field the record does not hold yet is set and every field it holds is left, so a start and an end land in either order and a write sent again changes nothing; a field left out, null or empty states nothing. The first write of a run names its task, step, kind, role and generation. Only the session legion-daemon:<PROJECT> of the issue's project writes (403 STEP_WRITER otherwise); a closed issue takes a write too, and no write appends an issue event. Answers 200 with the record as it stands after the write and its attempt. A value outside its form is 400 STEP_INPUT naming the field, an id whose record is a run of another issue 409 STEP_OTHER_ISSUE, and an issue Dispatch does not know 404 ISSUE_NOT_FOUND.", s.putIssueStep},
+		{http.MethodGet, "/api/v1/issues/{key}/steps", authAny, "Every run of every step of the issue's workflow, task by task in the order of each task's first run, each task's runs in the order they ran: {issue, tasks: [{task, steps}]}, each step {id, issue, task, step, kind, role, type, agent, session, model, generation, attempt, started_at, ended_at, result, returned_to, report}, its attempt its place among the issue's runs of the same task, step and kind from 1. A closed issue's read too, and a key no issue carries reads as an issue with no task.", s.listIssueSteps},
 		{http.MethodPut, "/api/v1/issues/{key}/design-gates", authAny, "Publish the documents this issue's design-gate steps record {gates}: each entry {step, artifact_id}, step one of decisions, criteria and spec and artifact_id the document that step's gate recorded, or [] for an issue whose gates record none. The deployment's daemon writes it and replaces the issue's whole set, appending no issue event and notifying nobody whether the set changed or not. Answers 200 {issue, gates} with the stored set in step order. A body without gates, a step that is none of the three, a step named twice, and an artifact_id that is empty are each 400 INVALID_ISSUE; an issue Dispatch does not know is 404 ISSUE_NOT_FOUND.", s.putIssueDesignGates},
 		{http.MethodGet, "/api/v1/handoffs/{id}", authAny, "One handoff by id with its body, the exact text written; 404 HANDOFF_NOT_FOUND when there is none, 400 HANDOFF_ID_INPUT for an id that is not a uuid.", s.getHandoff},
 		{http.MethodGet, "/api/v1/messages/{id}", authAny, "Read the conversation a message belongs to by any message id in it, issue-less or not: the thread root with its deliveries and every reply, oldest first. An issue thread follows the issue's rule. A direct (issue-less) thread is read whole by a credential holding the person scope, since the conversation is that person's own; every other credential names its session in ?session= and reads only one whose root targets that session or that it replied in (403 THREAD_FORBIDDEN), a guard against reading another session's conversation by mistake, not an authorization boundary. Direct-conversation text also reaches every authenticated caller through that caller's events view on GET /ws/live; nothing in Dispatch restricts it by session.", s.getMessageThread},
