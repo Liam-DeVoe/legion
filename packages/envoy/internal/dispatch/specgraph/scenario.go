@@ -82,11 +82,11 @@ type scenarioResult struct {
 
 // The forms of the JSON files of a scenario that ReadScenario reads itself, with the type of each
 // value, as decodeJSON names them for a value of another type: the form of one element of each
-// array file, whose own form is "[<element>, …]", and the form of uncited.json. A time is written
-// as approvedForm writes it, since time.Time reads only an RFC 3339 time with an upper-case T and Z.
+// array file, whose own form is "[<element>, …]", and the form of uncited.json. A time is timeForm,
+// the one text of a time of the package's forms, as approvedForm writes it.
 const (
-	subjectForm = `{"commit":"<commit>","branch":"<branch>","deploy":"<deploy>","graph_tx":"<transaction>","now":"<RFC 3339 time with an upper-case T and Z>"}`
-	resultForm  = `{"check":"<check id>","check_version":<whole number from 1>,"kind":"<run or failing_example>","outcome":"<pass, fail or could_not_run>","commit":"<commit>","deploy":"<deploy>","graph_tx":"<transaction>","job":"<job>","leg":"<leg>","attempt":<whole number>,"at":"<RFC 3339 time with an upper-case T and Z>","seq":<whole number>,"fault_author":"<author>","test_authors":["<author>", …],"test_commit":"<commit>"}`
+	subjectForm = `{"commit":"<commit>","branch":"<branch>","deploy":"<deploy>","graph_tx":"<transaction>","now":"` + timeForm + `"}`
+	resultForm  = `{"check":"<check id>","check_version":<whole number from 1>,"kind":"<run or failing_example>","outcome":"<pass, fail or could_not_run>","commit":"<commit>","deploy":"<deploy>","graph_tx":"<transaction>","job":"<job>","leg":"<leg>","attempt":<whole number>,"at":"` + timeForm + `","seq":<whole number>,"fault_author":"<author>","test_authors":["<author>", …],"test_commit":"<commit>"}`
 	jobRunForm  = `{"job":"<job>","leg":"<leg>","commit":"<commit>","ended":<true or false>}`
 	unitForm    = `{"id":"<unit>","serves":["<statement id>", …],"needs":["<unit>", …],"waits_on":["<statement id>", …]}`
 	uncitedForm = `{"<commit>":{"<check id>":"<R48 rule>"}}`
@@ -96,7 +96,10 @@ const (
 // format does not hold, with a *ScenarioError that names the file. Each JSON file is read by
 // decodeJSON, which refuses a byte that is not UTF-8, a member that the format does not name in
 // its own letters, a member that one object gives two times, text after the value, and a value of
-// another type than the file's form needs, which it names with the form and the place of the value:
+// another type than the file's form needs, which it names with the form and the place of the value.
+// It refuses each member that the derivation reads and that a file does not set, by the functions
+// that the entry of the derivation refuses it with (Input.check), since the zero value of such a
+// member would read as a real one and turn a state toward true or hide a failure:
 //
 //   - approved.json, as ReadApproved reads it, and with no cycle of parent and support relations
 //     among the current statements (R5: "Dispatch refuses a change that makes one"). The rules of
@@ -111,7 +114,7 @@ const (
 //   - files/<commit>/: the spec files at the commit of each subject, each a *.md file directly in
 //     it, which Parse reads and Validate judges with no problem, as `spec-check tree` does, and no
 //     directory that no subject reads;
-//   - history.json, as ReadFixtureHistory reads it;
+//   - history.json, as ReadFixtureHistory reads it: each commit sets its files;
 //   - ties.json, {"<commit>":{"<check id>":["<path or pattern>", …]}}, as ReadCommitTies reads it:
 //     a check that the object of a commit does not name has a tie that is not known at that commit,
 //     and so has each check at a commit that the file does not name. A result at one commit counts
@@ -119,13 +122,18 @@ const (
 //     between them reaches the tie at either commit (changeBetween);
 //   - results.json, [{"check","check_version","kind","outcome","commit","deploy","graph_tx","job",
 //     "leg","attempt","at","seq","fault_author","test_authors","test_commit"}]: check_version
-//     names an approved version of the check, whose Digest the result carries; kind is run or
-//     failing_example, and outcome pass, fail or could_not_run; a result names at most one of the
-//     subjects commit, deploy and graph_tx, the one that it read;
-//   - jobs.json, [{"job","leg","commit","ended"}];
+//     names an approved version of the check, whose Digest the result carries, and the result is
+//     whole by that version's text (Result.fault): kind is run or failing_example, outcome pass,
+//     fail or could_not_run, it names at most one of the subjects commit, deploy and graph_tx, the
+//     one that it read, and it sets at; a run, and a failing example of a check of the code, names
+//     the subject of its check's kind, a run of a program check that names a job names the job, and
+//     a result of a program check of production or of the graph names test_commit. No two results
+//     of one check have one at and one seq;
+//   - jobs.json, [{"job","leg","commit","ended"}]: each run sets job, commit and ended;
 //   - uncited.json (optional), {"<commit>":{"<check id>":"<R48 rule>"}};
-//   - units.json (optional), [{"id","serves","needs","waits_on"}]: each id once, serves and
-//     waits_on naming current statements of the approved spec, needs naming units of the file;
+//   - units.json (optional), [{"id","serves","needs","waits_on"}]: each id once, each of serves,
+//     needs and waits_on set ([] for none), serves and waits_on naming current statements of the
+//     approved spec, needs naming units of the file;
 //   - want.txt (optional), which ReadScenario does not read.
 func ReadScenario(fsys fs.FS) (Scenario, error) {
 	var s Scenario
@@ -167,7 +175,7 @@ func ReadScenario(fsys fs.FS) (Scenario, error) {
 	if s.Results, err = readResults(fsys, s.Approved); err != nil {
 		return s, err
 	}
-	if s.JobRuns, err = readEach[JobRun](fsys, "jobs.json", "job run", jobRunForm); err != nil {
+	if s.JobRuns, err = readJobRuns(fsys); err != nil {
 		return s, err
 	}
 	if holds["uncited.json"] {
@@ -200,18 +208,13 @@ func readSubjects(fsys fs.FS) ([]ScenarioSubject, error) {
 		return nil, scenarioFault("subjects.json", "it holds no subject")
 	}
 	for i, sub := range subjects {
-		fault := ""
+		fault := subjectFault(sub.Point, sub.Now)
 		switch {
-		case sub.Commit == "":
-			fault = "it sets no commit"
+		case fault != "":
 		case !hasWord(sub.Commit):
 			fault = "it sets a commit of no letter and no digit, which names no commit"
-		case sub.Now.IsZero():
-			fault = "it sets no now"
 		case sub.Branch != "" && sub.Deploy != "":
 			fault = "it sets both branch and deploy; a subject sets exactly one of them"
-		case sub.Branch == "" && sub.Deploy == "":
-			fault = "it sets neither branch nor deploy; a subject sets exactly one of them"
 		case sub.GraphTx != "" && sub.Deploy == "":
 			fault = "it sets graph_tx with no deploy; the commit that production runs reads the graph, and the head of a branch does not"
 		case sub.Branch != "" && !hasWord(sub.Branch):
@@ -239,14 +242,21 @@ func readScenarioFiles(fsys fs.FS, subjects []ScenarioSubject) (map[string]Tree,
 		}
 		dir := path.Join("files", sub.Commit)
 		if !fs.ValidPath(dir) || strings.Count(dir, "/") != 1 {
-			return nil, scenarioFault("subjects.json", "subject %d: commit %q is no name of a directory", i+1, sub.Commit)
+			return nil, scenarioFault("subjects.json", "subject %d: commit %s is no name of a directory", i+1, quoted(sub.Commit))
 		}
 		entries, err := fs.ReadDir(fsys, dir)
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil, scenarioFault(dir, "does not exist, and subject %d reads the spec files of its commit there", i+1)
 		}
 		if err != nil {
-			return nil, &ScenarioError{File: dir, Err: err}
+			// The error of the file system names the directory, whose name is the commit, the writer's
+			// own text: one too long for a name gives an error that holds it two times. So the line
+			// names the subject, and the commit as quoted prints it, and the cause alone.
+			var pathErr *fs.PathError
+			if errors.As(err, &pathErr) {
+				err = pathErr.Err
+			}
+			return nil, scenarioFault("subjects.json", "subject %d: the spec files of its commit %s cannot be read: %v", i+1, quoted(sub.Commit), err)
 		}
 		files := map[string][]byte{}
 		for _, entry := range entries {
@@ -310,7 +320,8 @@ func readWith[T any](fsys fs.FS, name string, read func(io.Reader) (T, error)) (
 }
 
 // readResults reads results.json, each result carrying the Digest of the approved version of its
-// check that check_version names.
+// check that check_version names, and refuses a result that Result.fault refuses by that version's
+// text, and two results that sameRecordFault names.
 func readResults(fsys fs.FS, approved Approved) ([]Result, error) {
 	read, err := readEach[scenarioResult](fsys, "results.json", "result", resultForm)
 	if err != nil {
@@ -318,56 +329,71 @@ func readResults(fsys fs.FS, approved Approved) ([]Result, error) {
 	}
 	results := make([]Result, len(read))
 	for i, r := range read {
-		fault, digest, held := "", "", false
-		switch {
-		case r.Kind != ResultRun && r.Kind != ResultFailingExample:
-			fault = fmt.Sprintf("kind %q is not run or failing_example", r.Kind)
-		case r.Outcome != OutcomePass && r.Outcome != OutcomeFail && r.Outcome != OutcomeCouldNotRun:
-			fault = fmt.Sprintf("outcome %q is not pass, fail or could_not_run", r.Outcome)
-		case len(namedSubjects(r)) > 1:
-			fault = fmt.Sprintf("it names the subjects %s; a result reads one subject", strings.Join(namedSubjects(r), " and "))
-		default:
-			if digest, held = checkVersionDigest(approved, r.Check, r.CheckVersion); !held {
-				fault = fmt.Sprintf("the approved spec holds no version %d of check %q", r.CheckVersion, r.Check)
-			}
+		check, held := checkVersion(approved, r.Check, r.CheckVersion)
+		if !held {
+			return nil, scenarioFault("results.json", "result %d: the approved spec holds no version %d of check %s", i+1, r.CheckVersion, quoted(r.Check))
 		}
-		if fault != "" {
-			return nil, scenarioFault("results.json", "result %d: %s", i+1, fault)
-		}
-		results[i] = Result{Check: r.Check, CheckDigest: digest, Kind: r.Kind, Outcome: r.Outcome, Commit: r.Commit,
+		results[i] = Result{Check: r.Check, CheckDigest: check.Digest(), Kind: r.Kind, Outcome: r.Outcome, Commit: r.Commit,
 			Deploy: r.Deploy, GraphTx: r.GraphTx, Job: r.Job, Leg: r.Leg, Attempt: r.Attempt, At: r.At, Seq: r.Seq,
 			FaultAuthor: r.FaultAuthor, TestAuthors: r.TestAuthors, TestCommit: r.TestCommit}
+		if fault := results[i].fault(&check); fault != "" {
+			return nil, scenarioFault("results.json", "result %d: %s", i+1, fault)
+		}
+	}
+	if fault := sameRecordFault(results); fault != "" {
+		return nil, scenarioFault("results.json", "%s", fault)
 	}
 	return results, nil
 }
 
-// namedSubjects is the name of each subject that the result r names, of commit, deploy and
-// graph_tx, in that order.
-func namedSubjects(r scenarioResult) []string {
-	var named []string
-	for _, s := range []struct{ name, value string }{{"commit", r.Commit}, {"deploy", r.Deploy}, {"graph_tx", r.GraphTx}} {
-		if s.value != "" {
-			named = append(named, s.name)
-		}
-	}
-	return named
-}
-
-// checkVersionDigest is the Digest of version v of the check id in the approved spec, and whether
-// the approved spec holds that version of a check.
-func checkVersionDigest(approved Approved, id string, v int) (string, bool) {
+// checkVersion is the text of version v of the check id in the approved spec, and whether the
+// approved spec holds that version of a check.
+func checkVersion(approved Approved, id string, v int) (Check, bool) {
 	i := slices.IndexFunc(approved.Nodes[id].Versions, func(av ApprovedVersion) bool { return av.Version == v })
 	if i < 0 {
-		return "", false
+		return Check{}, false
 	}
 	text, problems := versionText(id, approved.Nodes[id].Versions[i])
 	if len(problems) > 0 || len(text.Checks) != 1 {
-		return "", false
+		return Check{}, false
 	}
-	return text.Checks[0].Digest(), true
+	return text.Checks[0], true
 }
 
-// readUnits reads units.json.
+// scenarioJobRun is one run of jobs.json, whose ended is nil when the run does not set it.
+type scenarioJobRun struct {
+	Job    string `json:"job"`
+	Leg    string `json:"leg"`
+	Commit string `json:"commit"`
+	Ended  *bool  `json:"ended"`
+}
+
+// readJobRuns reads jobs.json, and refuses a run that JobRun.fault refuses or that does not set
+// ended, since a run that does not say it ended would read as one that did not, which hides a leg
+// that ended with no result.
+func readJobRuns(fsys fs.FS) ([]JobRun, error) {
+	read, err := readEach[scenarioJobRun](fsys, "jobs.json", "job run", jobRunForm)
+	if err != nil {
+		return nil, err
+	}
+	runs := make([]JobRun, len(read))
+	for i, r := range read {
+		runs[i] = JobRun{Job: r.Job, Leg: r.Leg, Commit: r.Commit}
+		fault := runs[i].fault()
+		if fault == "" && r.Ended == nil {
+			fault = "it sets no ended"
+		}
+		if fault != "" {
+			return nil, scenarioFault("jobs.json", "job run %d: %s", i+1, fault)
+		}
+		runs[i].Ended = *r.Ended
+	}
+	return runs, nil
+}
+
+// readUnits reads units.json, and refuses a unit that does not set serves, needs or waits_on,
+// since one that does not would read as one with none, which hides a cycle of waits (R29); [] is
+// none.
 func readUnits(fsys fs.FS, approved Approved) ([]Unit, error) {
 	units, err := readEach[Unit](fsys, "units.json", "unit", unitForm)
 	if err != nil {
@@ -384,7 +410,15 @@ func readUnits(fsys fs.FS, approved Approved) ([]Unit, error) {
 			return nil, scenarioFault("units.json", "unit %d has no id", i+1)
 		}
 		if ids[u.ID] {
-			return nil, scenarioFault("units.json", "unit %q is in the file two times", u.ID)
+			return nil, scenarioFault("units.json", "unit %s is in the file two times", quoted(u.ID))
+		}
+		for _, member := range []struct {
+			name string
+			ids  []string
+		}{{"serves", u.Serves}, {"needs", u.Needs}, {"waits_on", u.WaitsOn}} {
+			if member.ids == nil {
+				return nil, scenarioFault("units.json", "unit %d: it sets no %s", i+1, member.name)
+			}
 		}
 		ids[u.ID] = true
 	}
@@ -395,13 +429,13 @@ func readUnits(fsys fs.FS, approved Approved) ([]Unit, error) {
 		}{{"serves", u.Serves}, {"waits_on", u.WaitsOn}} {
 			for _, id := range field.ids {
 				if !statements[id] {
-					return nil, scenarioFault("units.json", "unit %q: %s names %q, which is no current statement of the approved spec", u.ID, field.name, id)
+					return nil, scenarioFault("units.json", "unit %s: %s names %s, which is no current statement of the approved spec", quoted(u.ID), field.name, quoted(id))
 				}
 			}
 		}
 		for _, id := range u.Needs {
 			if !ids[id] {
-				return nil, scenarioFault("units.json", "unit %q: needs names %q, which is no unit of the file", u.ID, id)
+				return nil, scenarioFault("units.json", "unit %s: needs names %s, which is no unit of the file", quoted(u.ID), quoted(id))
 			}
 		}
 	}

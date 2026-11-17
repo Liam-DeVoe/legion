@@ -24,15 +24,24 @@ type Tie struct {
 // and none holds "\" or "*", except a last part "*" or "**" after a directory. It also refuses a
 // tie of no path, which would read as none: a test reads at least its own file.
 func NewTie(paths []string) (Tie, error) {
+	if err := tiePathsFault(paths); err != nil {
+		return Tie{}, err
+	}
+	return Tie{Paths: slices.Compact(slices.Sorted(slices.Values(paths))), Known: true}, nil
+}
+
+// tiePathsFault is the fault of paths that NewTie refuses, or nil. The entry of the derivation
+// refuses a known Tie by it too, since a known tie with no path would cover no change.
+func tiePathsFault(paths []string) error {
 	if len(paths) == 0 {
-		return Tie{}, errors.New("specgraph: a tie holds no path")
+		return errors.New("specgraph: a tie holds no path")
 	}
 	for _, entry := range paths {
 		if !isTieEntry(entry) {
-			return Tie{}, fmt.Errorf("specgraph: tie entry %q is not a repository path, <dir>/* or <dir>/**", entry)
+			return fmt.Errorf("specgraph: tie entry %s is not a repository path, <dir>/* or <dir>/**", quoted(entry))
 		}
 	}
-	return Tie{Paths: slices.Compact(slices.Sorted(slices.Values(paths))), Known: true}, nil
+	return nil
 }
 
 // CommitTies is the tie of each check at each commit, by commit and then by check id, since a tie
@@ -59,13 +68,13 @@ func ReadCommitTies(r io.Reader) (CommitTies, error) {
 	ties := make(CommitTies, len(paths))
 	for _, commit := range slices.Sorted(maps.Keys(paths)) {
 		if !hasWord(commit) {
-			return nil, fmt.Errorf("commit %q: a commit of no letter and no digit names no commit", commit)
+			return nil, fmt.Errorf("commit %s: a commit of no letter and no digit names no commit", quoted(commit))
 		}
 		ties[commit] = make(map[string]Tie, len(paths[commit]))
 		for _, check := range slices.Sorted(maps.Keys(paths[commit])) {
 			tie, err := NewTie(paths[commit][check])
 			if err != nil {
-				return nil, fmt.Errorf("commit %q: check %q: %w", commit, check, err)
+				return nil, fmt.Errorf("commit %s: check %s: %w", quoted(commit), quoted(check), err)
 			}
 			ties[commit][check] = tie
 		}

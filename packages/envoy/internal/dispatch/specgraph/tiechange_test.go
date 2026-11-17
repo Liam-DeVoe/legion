@@ -1,6 +1,9 @@
 package specgraph
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 // historyStub is a History that answers paths, as known, for any two commits, and counts its asks.
 type historyStub struct {
@@ -57,8 +60,11 @@ func TestBothCallersOfTheCarryRuleDecideAlike(t *testing.T) {
 			t.Parallel()
 			const check = "check-a"
 			history := &historyStub{paths: row.changed}
-			judge := newCheckJudge(Input{Subject: Point{Commit: "head"}, History: history,
+			judge, err := newCheckJudge(Input{Subject: Point{Commit: "head", Branch: "b1"}, Now: time.Unix(1, 0), History: history,
 				Ties: CommitTies{"head": {check: row.head}, "base": {check: row.base}}})
+			if err != nil {
+				t.Fatal(err)
+			}
 			carries := judge.carries(check, "base")
 			baseAsked := false
 			cause := CitationInput{Changed: row.changed, Tie: func(Check) Tie { return row.head },

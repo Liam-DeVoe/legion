@@ -99,9 +99,6 @@ func TestAGraphCheckReadsTheTransactionOfTheSubject(t *testing.T) {
 		{name: "a pass at tx1, at a deploy that names no transaction", check: g, tx: "",
 			runs: []Result{run(g, "tx1", "", OutcomePass, time.Hour)},
 			want: CheckState{State: "unknown", Reason: "subject_moved"}, statements: "unknown"},
-		{name: "a pass that names no transaction, at a deploy that names none", check: g, tx: "",
-			runs: []Result{run(g, "", "", OutcomePass, time.Hour)},
-			want: CheckState{State: "unknown", Reason: "subject_moved"}, statements: "unknown"},
 		{name: "the head of a branch that names a transaction judges no check of the graph", check: g, branch: "b", tx: "tx1",
 			runs: []Result{run(g, "tx1", "", OutcomePass, time.Hour)}, absent: true},
 	} {
@@ -119,7 +116,7 @@ func TestAGraphCheckReadsTheTransactionOfTheSubject(t *testing.T) {
 				TestCommit: "c2", At: checkStateRun.Add(5 * time.Minute), FaultAuthor: "author-b", TestAuthors: []string{"author-a"}})
 			if row.absent {
 				s.remove(checkStateCheck.ID)
-				if states := Derive(s.input()).Checks; slices.ContainsFunc(states, func(c CheckState) bool { return c.ID == row.check.ID }) {
+				if states := derive(t, s.input()).Checks; slices.ContainsFunc(states, func(c CheckState) bool { return c.ID == row.check.ID }) {
 					t.Errorf("the checks: %+v, want no state of %s", states, row.check.ID)
 				}
 				return

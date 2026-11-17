@@ -18,6 +18,23 @@ type Point struct {
 	GraphTx string `json:"graph_tx"`
 }
 
+// subjectFault is the first member of a subject, the point p and the time now that the states at
+// it are derived at, that it does not set, as a refusal names it, and "" when it sets each: its
+// commit, its now, and a branch or a deploy. With no now no time limit of a check would end, and
+// with neither a branch nor a deploy no check of production would be judged. The reader of
+// subjects.json and the entry of the derivation both refuse a subject by it.
+func subjectFault(p Point, now time.Time) string {
+	switch {
+	case p.Commit == "":
+		return "it sets no commit"
+	case now.IsZero():
+		return "it sets no now"
+	case p.Branch == "" && p.Deploy == "":
+		return "it sets neither branch nor deploy; a subject sets exactly one of them"
+	}
+	return ""
+}
+
 // Input is what the states at one subject are derived from: the spec files at Subject.Commit, the
 // approved spec, every stored result, the runs of CI jobs, the tie of each check at each commit, the
 // history of the repository, the time of the derivation, and the checks that CI refused at
@@ -111,7 +128,8 @@ const (
 //     the subject that it read"). For a program check of production or the graph, only a run whose
 //     TestCommit counts at S.Commit by the same rule, as for its failing example (R7: "The
 //     procedure is the text of the check and the code that runs it, so a change to either ends the
-//     standing of earlier results"); a run that names no TestCommit counts nowhere. No run counts:
+//     standing of earlier results"); Input.check refuses a result of such a check that names no
+//     TestCommit, as it refuses one that names no subject of its check's kind. No run counts:
 //     unknown, ci_fault when a run of C's job ended at S.Commit (R9), else subject_moved when C has
 //     a run, else no_result. A code check, or a program check of production or the graph, whose job
 //     ended at S.Commit in a leg with no run that counts: unknown, ci_fault (R7: "silence is not a
@@ -136,21 +154,31 @@ const (
 //     authors of the test: unknown, fault_by_test_author.
 //  8. The newest run of each leg passed: true, passed; each failed: false, failed (R7: "the latest
 //     counts, and a later failure cancels an earlier pass").
-func CheckStates(in Input) []CheckState {
-	return newCheckJudge(in).states()
+//
+// CheckStates gives an error, and no state, for an Input that is not whole (Input.check), so the
+// judge never reads the zero value of a member that the caller did not set as a real one.
+func CheckStates(in Input) ([]CheckState, error) {
+	j, err := newCheckJudge(in)
+	if err != nil {
+		return nil, err
+	}
+	return j.states(), nil
 }
 
 // newCheckJudge is the judge of the checks of in: the current approved text of each node, which
 // approved text of each node the files hold, the checks and statements of the files that the tree
-// rules refuse, and the results of each check.
-func newCheckJudge(in Input) *checkJudge {
-	current, _ := in.Approved.Current()
+// rules refuse, and the results of each check; or the first fault of in (Input.check).
+func newCheckJudge(in Input) (*checkJudge, error) {
+	current, _ := in.Approved.Current() // Input.check refuses each node whose block Current leaves out
+	if err := in.check(current); err != nil {
+		return nil, err
+	}
 	j := &checkJudge{in: in, current: current, holds: Compare(in.Files, in.Approved).Holds, refused: refusals(in.Files),
 		results: map[string][]Result{}, changed: map[string]changedPaths{}}
 	for _, r := range in.Results {
 		j.results[r.Check] = append(j.results[r.Check], r)
 	}
-	return j
+	return j, nil
 }
 
 // states is the state of each check that CheckStates judges, sorted by id.
@@ -297,10 +325,7 @@ func (j *checkJudge) state(c Check) CheckState {
 		return unknownCheck(reasonUncited, rule)
 	}
 
-	job := ""
-	if c.Test != nil {
-		job = c.Test.Job
-	}
+	job := checkJob(c)
 	statement, since := j.newestApproval(c.Serves)
 	digest := c.Digest()
 	var runs, faults []Result
@@ -530,6 +555,15 @@ func legsDisagree(newest map[string]Result) bool {
 // result of it names that commit as TestCommit.
 func readsProduction(c Check) bool {
 	return c.Subject == SubjectProduction || c.Subject == SubjectGraph
+}
+
+// checkJob is the job whose reports alone count for c (R6: "only the reports of that job count"),
+// "" when c's text names none.
+func checkJob(c Check) string {
+	if c.Test == nil {
+		return ""
+	}
+	return c.Test.Job
 }
 
 // newestOfEachLeg is the newest of results in each leg, by leg.

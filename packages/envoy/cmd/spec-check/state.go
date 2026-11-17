@@ -48,7 +48,10 @@ func runState(args []string, stdout, stderr io.Writer) int {
 
 	states := make([]specgraph.State, len(scenario.Subjects))
 	for i := range scenario.Subjects {
-		states[i] = specgraph.Derive(scenario.Input(i))
+		if states[i], err = specgraph.Derive(scenario.Input(i)); err != nil {
+			say(stderr, "%s: %s", dir, err)
+			return 2
+		}
 	}
 	var cycle []string
 	if scenario.Units != nil {
