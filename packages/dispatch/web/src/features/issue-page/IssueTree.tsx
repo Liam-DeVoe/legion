@@ -801,7 +801,12 @@ export function IssueTree({
             onOpenDeeper={openDeeper}
             onOvertaken={toggleOvertaken}
             onPin={pin}
-            onStop={setStop}
+            // A line of overtaken nodes takes the stop as a row does, and, as a move to a row
+            // does, the reader going on from what a key reported there (dispatch://INFRA-4063 R5).
+            onStop={(row) => {
+              setStop(row);
+              setReport(undefined);
+            }}
             // A branch opens where it is at every width (R16): below 1024 px the outline draws
             // one level under the node it is read from, so an opened branch deeper than that is
             // one counted line, which opens its nodes in place too. Zooming is `.`'s alone.

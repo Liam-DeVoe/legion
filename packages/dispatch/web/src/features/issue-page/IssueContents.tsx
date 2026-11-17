@@ -83,6 +83,10 @@ export function contentsOf(root: TreeNode, viewer: string | undefined): Contents
   ): void => {
     for (const child of node.children) {
       if (child.transcluded) continue;
+      // A node at or under an overtaken one is no entry, and no mark counts it: a later node
+      // took its place (dispatch://INFRA-4063 R3), as the view row's count reads it
+      // (`contents-entries.ts`). A proposed ask is still one, since it asks the reader.
+      if (child.closed === true) continue;
       const begunByReader =
         TURNS[child.type] === true &&
         TURNS[node.type] !== true &&
