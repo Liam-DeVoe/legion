@@ -426,31 +426,39 @@ const planRecordID = "5d6e7f80-91a2-5b3c-8d4e-5f6a7b8c9d0e"
 // A plan record is the plan one run of an issue carries out, written once when its work starts. A
 // plan of the source default names no document and no version, which the row leaves out, since
 // Dispatch refuses either on such a plan; its tasks and their steps survive Postgres in order. A
-// plan of the source owner carries both.
+// plan of the source owner carries both. The owner's tasks stand out of the order of their ids,
+// ui before api, and each one's steps out of sorted order, so a sort of either list on the way in
+// or out changes what is compared; and each case builds its plan afresh for the comparison, so a
+// sort of the queued value in place does not change the value it is held to.
 func TestAPlanRecordKeepsItsTasksInOrderThroughTheOutbox(t *testing.T) {
-	steps := []string{"planner", "implementer", "tester", "reviewer", "acceptance:owner"}
 	for _, tc := range []struct {
 		name    string
-		plan    PlanRecord
+		plan    func() PlanRecord
 		absent  []string
 		present map[string]string
 	}{
 		{
-			name:    "the default plan",
-			plan:    PlanRecord{ID: planRecordID, Generation: 2, Source: "default", Tasks: []PlanRecordTask{{ID: "default", Steps: steps}}},
+			name: "the default plan",
+			plan: func() PlanRecord {
+				return PlanRecord{ID: planRecordID, Generation: 2, Source: "default",
+					Tasks: []PlanRecordTask{{ID: "default", Steps: []string{"planner", "implementer", "tester", "reviewer", "acceptance:owner"}}}}
+			},
 			absent:  []string{"artifact_id", "version"},
 			present: map[string]string{"generation": "2", "source": `"default"`, "tasks": `[{"id":"default","steps":["planner","implementer","tester","reviewer","acceptance:owner"]}]`},
 		},
 		{
 			name: "an owner's plan of two tasks",
-			plan: PlanRecord{ID: planRecordID, Generation: 1, Source: "owner", ArtifactID: "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b", Version: 3,
-				Tasks: []PlanRecordTask{{ID: "api", Steps: []string{"implementer", "reviewer"}}, {ID: "ui", Steps: []string{"implementer:ui", "tester"}}}},
-			present: map[string]string{"artifact_id": `"6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b"`, "version": "3"},
+			plan: func() PlanRecord {
+				return PlanRecord{ID: planRecordID, Generation: 1, Source: "owner", ArtifactID: "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b", Version: 3,
+					Tasks: []PlanRecordTask{{ID: "ui", Steps: []string{"tester", "implementer:ui"}}, {ID: "api", Steps: []string{"reviewer", "implementer"}}}}
+			},
+			present: map[string]string{"artifact_id": `"6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b"`, "version": "3",
+				"tasks": `[{"id":"ui","steps":["tester","implementer:ui"]},{"id":"api","steps":["reviewer","implementer"]}]`},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			now := time.Date(2026, 11, 17, 4, 0, 0, 0, time.UTC)
-			row, err := NewOutboxRow("LEG-1", tc.plan, now)
+			row, err := NewOutboxRow("LEG-1", tc.plan(), now)
 			if err != nil {
 				t.Fatalf("queue the plan: %v", err)
 			}
@@ -487,8 +495,8 @@ func TestAPlanRecordKeepsItsTasksInOrderThroughTheOutbox(t *testing.T) {
 			if err != nil {
 				t.Fatalf("decode the stored plan: %v", err)
 			}
-			if !reflect.DeepEqual(decoded, tc.plan) {
-				t.Fatalf("decoded %#v, want %#v", decoded, tc.plan)
+			if want := tc.plan(); !reflect.DeepEqual(decoded, want) {
+				t.Fatalf("decoded %#v, want %#v", decoded, want)
 			}
 		})
 	}
