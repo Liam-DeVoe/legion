@@ -88,9 +88,9 @@ func TestTheExperimentSetsHowEachIssueIsDone(t *testing.T) {
 		t.Logf("the ten issues were drawn %v, the seed's own draws in the order of creation", arms)
 	})
 
-	// Control, run by hand: with the workflow's half of the seam taken out
-	// (engineCfg.ExperimentSource in openWorkflow), each child is drawn from
-	// experiment.CryptoSource, and the comparison fails on the first child the two disagree on.
+	// Control, run by hand: with the seam taken out (engineCfg.ExperimentSource in openWorkflow),
+	// the engine draws from experiment.CryptoSource, and so does admission, which draws with the
+	// engine's source; the comparison fails on the first issue the two disagree on.
 	t.Run("children", func(t *testing.T) {
 		declared := planningExperiment(config.ExperimentRandom, "")
 		issues := childrenUnder(t, declared)

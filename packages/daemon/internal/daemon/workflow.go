@@ -350,9 +350,9 @@ func mintAtBoot(ctx context.Context, tokens appauth.Tokens, repo ghrepo.Reposito
 // claimReady), and nil while the operator paces nothing, which is the engine's reading of the
 // pacing off — the catch-up is then due at once, as it always was.
 //
-// source is the random source every `random` experiment the engine and the admission draw is
-// drawn with (overrides.experimentSource), and nil is the engine's and the admission's own,
-// experiment.CryptoSource.
+// source is the random source every `random` experiment is drawn with (overrides.experimentSource):
+// the engine holds it, and the admission draws with the engine's (workflow.Engine's
+// ExperimentSource). nil is the engine's own, experiment.CryptoSource.
 func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, projectID, dispatchToken string, hookPrompts map[string]string, repos *repositories, log *slog.Logger, suppliedTokens appauth.Tokens, githubAPI string, reserve func(time.Time) time.Time, source func(uint64) (uint64, error)) (opened *workflowRuntime, _ error) {
 	if cfg.DispatchURL == "" {
 		return nil, nil
@@ -457,9 +457,6 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	// the memory experiment all the same, at mode off, whose draw records each new tree at no
 	// variant (config.Project.ExperimentsDeclared).
 	w.admission.UseExperiments(cfg.ExperimentsDeclared())
-	if source != nil {
-		w.admission.UseExperimentSource(source)
-	}
 	// `stalled_tree_notice_hours` is the bound the admission pass tells the controller a tree
 	// has stopped at: the loader gives six hours to a file that names no key, so the pass
 	// always runs under a number somebody chose.

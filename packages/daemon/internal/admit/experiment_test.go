@@ -27,9 +27,9 @@ var planLength = config.Experiment{
 // observations that follow write what Dispatch says and no answer at all.
 func TestARootIsDrawnForTheIssueExperimentsWhenItIsFirstRecorded(t *testing.T) {
 	pool := migratedPool(t)
-	admission := quiet(t, 1)
+	admission, source := quietDrawing(t, 1)
 	admission.UseExperiments(append(declaring(config.ExperimentOn), planLength))
-	admission.source = refusingSource(t)
+	source.next = refusingSource(t)
 	engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories,
 		Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil)
 	const root = "LEGION-1"
@@ -68,6 +68,36 @@ func TestARootIsDrawnForTheIssueExperimentsWhenItIsFirstRecorded(t *testing.T) {
 	}
 }
 
+// Admission draws each tree and issue it records with its engine's random source, the one source
+// the daemon hands in, which the engine draws each child the workflow records with too. Here the
+// engine's source draws the second arm of each `random` experiment, and the root the pass admits
+// holds those arms. The fault caught is a second source of admission's own: the engine's is then
+// read by no draw of a root.
+func TestAdmissionDrawsWithItsEnginesSource(t *testing.T) {
+	pool := migratedPool(t)
+	admission, source := quietDrawing(t, 1)
+	admission.UseExperiments(declaring(config.ExperimentRandom))
+	reads := 0
+	source.next = func(uint64) (uint64, error) {
+		reads++
+		return 1, nil
+	}
+	const root = "LEGION-1"
+	seedWaiting(t, pool, root, "A")
+
+	tick(t, pool, admission, "admit")
+
+	if reads != 2 {
+		t.Fatalf("the engine's source was read %d times by the pass that opened the root's tree, want 2, one for each `random` experiment", reads)
+	}
+	if got, want := memoryOf(t, pool, root), drawnAs("none", string(config.ExperimentRandom), &fixedNow); got != want {
+		t.Fatalf("the admitted root was drawn %s for the memory experiment, want %s", got, want)
+	}
+	if got, want := depthOf(t, pool, root), drawnAs("shallow", string(config.ExperimentRandom), &fixedNow); got != want {
+		t.Fatalf("the admitted root was drawn %s for the %s experiment, want %s", got, depthExperiment, want)
+	}
+}
+
 // planningExperiment sets how each issue it draws is done: its arm `a` takes the plan the issue's
 // owner gives, and its arm `b` runs the project's default steps. At mode on it gives every issue
 // `b`.
@@ -93,9 +123,9 @@ func TestADrawRecordsThePlanOfItsArm(t *testing.T) {
 	} {
 		t.Run(string(tc.mode), func(t *testing.T) {
 			pool := migratedPool(t)
-			admission := quiet(t, 1)
+			admission, source := quietDrawing(t, 1)
 			admission.UseExperiments(append(declaring(""), planningExperiment(tc.mode)))
-			admission.source = refusingSource(t)
+			source.next = refusingSource(t)
 			engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories,
 				Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil)
 			const root = "LEGION-1"
