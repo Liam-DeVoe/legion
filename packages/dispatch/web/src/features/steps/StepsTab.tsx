@@ -1,5 +1,5 @@
 import { focusManager, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Fragment, type ReactNode, useEffect, useState } from "react";
+import { Fragment, type ReactNode, useEffect, useSyncExternalStore } from "react";
 
 import { issueStepsQuery } from "../../api/queries";
 import { ownQuery } from "../../api/query-refresh";
@@ -237,8 +237,8 @@ const CATCH_UP_READS_MS = [2_000, 5_000, 15_000, 45_000, 120_000, 300_000] as co
  */
 function useCatchUp(issueKey: string, shown: boolean): void {
   const queryClient = useQueryClient();
-  const [visible, setVisible] = useState(() => focusManager.isFocused());
-  useEffect(() => focusManager.subscribe(setVisible), []);
+  // Whether the page is shown, as TanStack reads `visibilitychange` for its own refetch on focus.
+  const visible = useSyncExternalStore(focusManager.subscribe, () => focusManager.isFocused());
   useEffect(() => {
     if (!shown || !visible) {
       return;
