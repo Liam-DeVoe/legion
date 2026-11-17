@@ -17,7 +17,9 @@ import (
 // its next recompute. dave, a full member PRIV's list names, holds a timeline. He is taken off the
 // list in a write that appends no event, so the live event feed carries nothing that could move
 // what he sees; only the announcement does. A pull request of acme/secret, PRIV's repository, then
-// reaches dave's page in no frame.
+// reaches dave's page in no frame. A pull request of acme/widgets, PUB's, written after it, does:
+// the read that names it has read acme/secret#7's row as well, and would name it too were it made
+// for the reader dave had before. The test ends on that frame, and fails when no frame names it.
 //
 // Control: the hub does not listen on access.ChangedChannel. dave's page is sent acme/secret#7
 // with the next delta, read for the reader he had before, and the test fails naming it.
@@ -66,10 +68,12 @@ func TestADeliveryViewIsReadAgainForItsReaderOnAnAccessChange(t *testing.T) {
 	secret := hubPR(7, now.Add(-time.Hour))
 	secret.Repo, secret.URL = "acme/secret", "https://github.com/acme/secret/pull/7"
 	upsertPR(t, seed.database, secret)
+	upsertPR(t, seed.database, hubPR(8, now.Add(-time.Hour)))
 
-	// Every frame dave's page is sent in the next three seconds, snapshot or delta, names no pull
-	// request of acme/secret.
-	deadline := time.After(3 * time.Second)
+	// Every frame dave's page is sent, snapshot or delta, names no pull request of acme/secret,
+	// up to the first that names acme/widgets#8, written after acme/secret#7: a read that names
+	// acme/widgets#8 has read acme/secret#7's row as well.
+	deadline := time.After(10 * time.Second)
 	for {
 		select {
 		case frame := <-conn.frames:
@@ -99,8 +103,11 @@ func TestADeliveryViewIsReadAgainForItsReaderOnAnAccessChange(t *testing.T) {
 			if slices.Contains(ids, "acme/secret#7") {
 				t.Fatalf("dave, no longer on PRIV's list, was sent acme/secret#7, a pull request of PRIV: %.300s", raw)
 			}
+			if slices.Contains(ids, "acme/widgets#8") {
+				return
+			}
 		case <-deadline:
-			return
+			t.Fatal("no frame dave's page was sent within 10s named acme/widgets#8, a pull request of PUB he sees")
 		}
 	}
 }
