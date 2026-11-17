@@ -372,13 +372,13 @@ func (s *server) getLanding(w http.ResponseWriter, r *http.Request) {
 //   - A not-found (landingNotFound): an issue key that is no issue, a slug that is no document of
 //     the project, a slug that names a file, which has no text and no blocks. Each is the
 //     caller's own miss, which the route answers 404 or 400 NOT_DOCUMENT and writes no line for;
-//     logged, every visit to an issue that was never filed or a document since renamed wrote one.
+//     logged, every visit to an issue that was never filed or a document since renamed would
+//     write one.
 //   - A part read once the request's own context had ended (ctx is the request's): the page went
 //     away, and every part not yet read fails on that alone. The head read above the parts skips
-//     such a request for the same reason (getLanding). Logged, one closed tab wrote a line for
-//     each part the landing had not reached: TestLandingWarnsOfNoPartACancelledRequestLeftOut,
-//     run against the handler before this change, read eight of them from one issue landing
-//     cancelled at its first listener read.
+//     such a request for the same reason (getLanding). Logged, one closed tab would write a line
+//     for each part the landing had not reached: eight from one issue landing cancelled at its
+//     first listener read, which TestLandingWarnsOfNoPartACancelledRequestLeftOut refuses.
 //
 // Every other failure is logged: a service's refusal, a query that failed, a broker answer that
 // did not decode. A part whose service did not answer within landingServiceBound is logged once,
