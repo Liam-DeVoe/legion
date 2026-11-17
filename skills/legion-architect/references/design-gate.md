@@ -446,7 +446,8 @@ records nothing, and its code and message name what Dispatch shows.
 A view's Design decides how the root builds each of the ancestor's requirements. This holds also
 where it changes a Design line of a version of the root that a person approved before the root
 became a view: such a line is no requirement, and it does not go up to the ancestor. The message
-the daemon posts on the root when its step opens on the basis names that approval, so the person
+the daemon posts on the root when its step opens on the basis names the ancestor's approval that
+opened the step and says that no person approved the version the root registered, so the person
 can still ask for the root's own approval.
 
 ### How to write the view
