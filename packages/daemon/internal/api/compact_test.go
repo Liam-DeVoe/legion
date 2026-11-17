@@ -557,7 +557,7 @@ func TestACompactionIsRefusedForAClaimWhoseLaunchIsInFlight(t *testing.T) {
 
 	recorder := h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(token)+"/compact", nil)
 
-	assertFailure(t, recorder, http.StatusConflict, claimUnsettled)
+	refused(t, recorder, http.StatusConflict, claimUnsettled)
 }
 
 // A role the deployment runs on Claude Code has no Oh My Pi session to compact, and the daemon
@@ -615,11 +615,11 @@ func TestTheControllersCompactNeedsAControllerGrantAndAClaim(t *testing.T) {
 	}
 	decodeInto(t, minted, &worker)
 
-	assertFailure(t, h.request(http.MethodPost, "/legion/v1/claims/compact",
+	refused(t, h.request(http.MethodPost, "/legion/v1/claims/compact",
 		ClaimRequest{GrantID: worker.GrantID, Issue: "LEGION-209", Role: string(claim.RoleImplementer)}, nil),
 		http.StatusForbidden, "CONTROLLER_REQUIRED")
 
-	assertFailure(t, h.request(http.MethodPost, "/legion/v1/claims/compact",
+	refused(t, h.request(http.MethodPost, "/legion/v1/claims/compact",
 		ClaimRequest{GrantID: controllerGrant(t, h).GrantID, Issue: "LEGION-777", Role: string(claim.RoleTester)}, nil),
 		http.StatusNotFound, "NO_CLAIM")
 }

@@ -94,7 +94,7 @@ func TestAClaimWhoseLaunchInstallsNoPluginIsServedOnItsOldContract(t *testing.T)
 
 			if !tc.served {
 				wantRefusal(t, ready, http.StatusConflict, claim.StalePluginContract(stale, DaemonAPIVersion).Message)
-				wantFailure(t, grants, http.StatusConflict, "STALE_PLUGIN_CONTRACT")
+				refused(t, grants, http.StatusConflict, "STALE_PLUGIN_CONTRACT")
 				return
 			}
 			if ready.Code != http.StatusNoContent {
@@ -256,8 +256,8 @@ func TestStaleClaimInATurnIsServedWhileItsRelaunchIsHeld(t *testing.T) {
 
 			if !tc.inTurn {
 				wantRefusal(t, ready, http.StatusConflict, claim.StalePluginContract(stale, DaemonAPIVersion).Message)
-				wantFailure(t, grants, http.StatusConflict, "STALE_PLUGIN_CONTRACT")
-				wantFailure(t, completed, http.StatusConflict, "STALE_PLUGIN_CONTRACT")
+				refused(t, grants, http.StatusConflict, "STALE_PLUGIN_CONTRACT")
+				refused(t, completed, http.StatusConflict, "STALE_PLUGIN_CONTRACT")
 				return
 			}
 			if ready.Code != http.StatusNoContent {
@@ -293,7 +293,7 @@ func TestUndecodableGrantsBodyRefusesAStaleClaimButNamesTheFieldForACurrentOne(t
 	stale := DaemonAPIVersion - 1
 	h.makeStale(t, staleToken, staleSession, staleCurrent.Secret, stale)
 	staleRecorder := h.request(http.MethodPost, "/legion/v1/grants", body(staleSession, staleCurrent.Secret), nil)
-	wantFailure(t, staleRecorder, http.StatusConflict, "STALE_PLUGIN_CONTRACT")
+	refused(t, staleRecorder, http.StatusConflict, "STALE_PLUGIN_CONTRACT")
 
 	_, currentBoot := h.launch("LEGION-209", claim.RoleImplementer)
 	currentSession := "ses_current"
@@ -363,7 +363,7 @@ func TestUndecodableHandoffCompleteBodyRefusesAStaleClaimButNamesTheFieldForACur
 	staleBody := fmt.Sprintf(`{"grantId":%q,"summary":"implemented","commit":"aabbcc","push":true}`, staleGrant)
 
 	staleRecorder := h.request(http.MethodPost, "/legion/v1/handoff/complete", staleBody, nil)
-	wantFailure(t, staleRecorder, http.StatusConflict, "STALE_PLUGIN_CONTRACT")
+	refused(t, staleRecorder, http.StatusConflict, "STALE_PLUGIN_CONTRACT")
 
 	seedIssueAt(t, h, "LEGION-209", phase.Implementing)
 	current := newLiveClaim(t, h, "LEGION-209", claim.RoleImplementer)
@@ -389,7 +389,7 @@ func TestNulHandoffCompleteBodyRefusesAStaleClaimButNamesTheStringForACurrentOne
 	staleGrant := stale.grant(t)
 	endTurn(t, h, stale.token)
 	h.makeStale(t, stale.token, stale.session, stale.secret, DaemonAPIVersion-1)
-	wantFailure(t, h.complete(HandoffCompleteRequest{GrantID: staleGrant, Summary: "implemented" + nulText, Commit: "aabbcc"}),
+	refused(t, h.complete(HandoffCompleteRequest{GrantID: staleGrant, Summary: "implemented" + nulText, Commit: "aabbcc"}),
 		http.StatusConflict, "STALE_PLUGIN_CONTRACT")
 
 	seedIssueAt(t, h, "LEGION-209", phase.Implementing)

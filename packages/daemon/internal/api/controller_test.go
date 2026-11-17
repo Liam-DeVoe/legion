@@ -292,7 +292,7 @@ func TestTheRegisteredControllerMintsControllerGrants(t *testing.T) {
 		{"ses_other", registration.Secret},
 		{"ses_controller", "not-the-registration-secret"},
 	} {
-		wantFailure(t, h.controllerSessionGrant(attempt.session, attempt.secret), http.StatusForbidden, "INVALID_SESSION_SECRET")
+		refused(t, h.controllerSessionGrant(attempt.session, attempt.secret), http.StatusForbidden, "INVALID_SESSION_SECRET")
 	}
 }
 
@@ -313,10 +313,10 @@ func TestASecondControllerSecretRevokesTheFirst(t *testing.T) {
 	second := h.mintedSecret()
 
 	wantRefusal(t, h.register(first, "ses_first"), claim.InvalidBootToken.Status, claim.InvalidBootToken.Message)
-	wantFailure(t, h.controllerSessionGrant("ses_first", registration.Secret), http.StatusForbidden, "INVALID_SESSION_SECRET")
+	refused(t, h.controllerSessionGrant("ses_first", registration.Secret), http.StatusForbidden, "INVALID_SESSION_SECRET")
 	status := h.request(http.MethodPost, "/legion/v1/issues/status",
 		IssueStatusRequest{GrantID: earlier.GrantID, Issue: "LEGION-208", Status: "backlog"}, nil)
-	wantFailure(t, status, http.StatusForbidden, "GRANT_UNAVAILABLE")
+	refused(t, status, http.StatusForbidden, "GRANT_UNAVAILABLE")
 	if len(statuses.writes) != 0 {
 		t.Fatalf("Dispatch writes = %+v, want none from a revoked controller grant", statuses.writes)
 	}
@@ -424,20 +424,6 @@ func TestALaunchedControllersBootTokenNeverRegistersAsTheOperatorsCapability(t *
 	wantRefusal(t, h.register(first, "ses_stale"), claim.InvalidBootToken.Status, claim.InvalidBootToken.Message)
 }
 
-// wantFailure holds a response to the status and the stable code of one credential or workflow
-// refusal.
-func wantFailure(t *testing.T, recorder *httptest.ResponseRecorder, status int, code string) {
-	t.Helper()
-	if recorder.Code != status {
-		t.Fatalf("status = %d, want %d; body %s", recorder.Code, status, recorder.Body)
-	}
-	var failure Failure
-	decodeInto(t, recorder, &failure)
-	if failure.Code != code || failure.Error == "" {
-		t.Fatalf("failure = %+v, want code %s and a sentence", failure, code)
-	}
-}
-
 // Every credential and workflow route refuses a missing field in the one shape its other
 // refusals take — a stable code beside the sentence — while the claim routes keep their
 // sentence alone.
@@ -494,19 +480,19 @@ func TestControllerGitHubCredential(t *testing.T) {
 			t.Fatalf("expiresAt %q does not parse: %v", answer.ExpiresAt, err)
 		}
 	}
-	wantFailure(t, h.request(http.MethodPost, "/legion/v1/controller/github-credential", ControllerCredentialRequest{Secret: secret, Default: "../x"}, nil),
+	refused(t, h.request(http.MethodPost, "/legion/v1/controller/github-credential", ControllerCredentialRequest{Secret: secret, Default: "../x"}, nil),
 		http.StatusBadRequest, "INVALID_DEFAULT_OWNER")
 	outside := h.request(http.MethodPost, "/legion/v1/controller/github-credential", ControllerCredentialRequest{Secret: secret, Default: "outside-project"}, nil)
 	if body := outside.Body.String(); !strings.Contains(body, `\"outside-project\"`) || strings.Contains(body, "token-for") {
 		t.Errorf("a default outside the project answered %s, want a refusal naming it and no token", body)
 	}
-	wantFailure(t, outside, http.StatusBadRequest, "DEFAULT_OWNER_OUTSIDE_PROJECT")
+	refused(t, outside, http.StatusBadRequest, "DEFAULT_OWNER_OUTSIDE_PROJECT")
 
-	wantFailure(t, h.controllerGitHubCredential("not-the-capability"), http.StatusForbidden, "INVALID_CONTROLLER_CAPABILITY")
+	refused(t, h.controllerGitHubCredential("not-the-capability"), http.StatusForbidden, "INVALID_CONTROLLER_CAPABILITY")
 
 	superseded := secret
 	h.mintedSecret()
-	wantFailure(t, h.controllerGitHubCredential(superseded), http.StatusForbidden, "INVALID_CONTROLLER_CAPABILITY")
+	refused(t, h.controllerGitHubCredential(superseded), http.StatusForbidden, "INVALID_CONTROLLER_CAPABILITY")
 }
 
 // A project with no GitHub owner answers the credential route's GITHUB_OWNER_UNCONFIGURED, which
@@ -519,7 +505,7 @@ func TestControllerGitHubCredentialWithoutAnOwner(t *testing.T) {
 		Controller: h.store, Grants: credential.New(nil), Tokens: handoffTokens{}, GitHubRepositories: func() []ghrepo.Repository { return nil },
 	}).Handler
 	secret := h.mintedSecret()
-	wantFailure(t, h.controllerGitHubCredential(secret), http.StatusInternalServerError, "GITHUB_OWNER_UNCONFIGURED")
+	refused(t, h.controllerGitHubCredential(secret), http.StatusInternalServerError, "GITHUB_OWNER_UNCONFIGURED")
 }
 
 // A daemon that launches its own controller (`controller: daemon`) refuses the credential route
@@ -528,7 +514,7 @@ func TestControllerGitHubCredentialRefusesADaemonThatLaunchesItsOwnController(t 
 	h := newControllerCredentialHarness(t, tokenSource{}, false)
 	secret := h.mintedSecret()
 	h.serve(true)
-	wantFailure(t, h.controllerGitHubCredential(secret), http.StatusConflict, "CONTROLLER_LAUNCHED")
+	refused(t, h.controllerGitHubCredential(secret), http.StatusConflict, "CONTROLLER_LAUNCHED")
 }
 
 // A daemon with no GitHub token source configured answers the credential route's usual failure,
@@ -536,7 +522,7 @@ func TestControllerGitHubCredentialRefusesADaemonThatLaunchesItsOwnController(t 
 func TestControllerGitHubCredentialWithoutATokenSource(t *testing.T) {
 	h := newControllerCredentialHarness(t, nil, false)
 	secret := h.mintedSecret()
-	wantFailure(t, h.controllerGitHubCredential(secret), http.StatusInternalServerError, "GITHUB_TOKEN_SOURCE_UNAVAILABLE")
+	refused(t, h.controllerGitHubCredential(secret), http.StatusInternalServerError, "GITHUB_TOKEN_SOURCE_UNAVAILABLE")
 }
 
 // A failed GitHub App token mint answers the credential route's usual GITHUB_TOKEN_FAILED, never
@@ -544,7 +530,7 @@ func TestControllerGitHubCredentialWithoutATokenSource(t *testing.T) {
 func TestControllerGitHubCredentialWhenTheMintFails(t *testing.T) {
 	h := newControllerCredentialHarness(t, failingTokens{}, false)
 	secret := h.mintedSecret()
-	wantFailure(t, h.controllerGitHubCredential(secret), http.StatusBadGateway, "GITHUB_TOKEN_FAILED")
+	refused(t, h.controllerGitHubCredential(secret), http.StatusBadGateway, "GITHUB_TOKEN_FAILED")
 }
 
 // serveSteps replaces the harness's server with one over the same store whose deployment gates
@@ -620,9 +606,9 @@ func TestControllerGitHubCredentialWhenTheDefaultOwnerIsRefused(t *testing.T) {
 	h := newControllerCredentialHarness(t, refusingTokens{owner: "acme"}, false)
 	secret := h.mintedSecret()
 
-	refused := h.request(http.MethodPost, "/legion/v1/controller/github-credential", ControllerCredentialRequest{Secret: secret, Default: "acme"}, nil)
-	body := refused.Body.String()
-	wantFailure(t, refused, http.StatusInternalServerError, "DEFAULT_OWNER_UNREACHABLE")
+	refusal := h.request(http.MethodPost, "/legion/v1/controller/github-credential", ControllerCredentialRequest{Secret: secret, Default: "acme"}, nil)
+	body := refusal.Body.String()
+	refused(t, refusal, http.StatusInternalServerError, "DEFAULT_OWNER_UNREACHABLE")
 	if !strings.Contains(body, "acme") || !strings.Contains(body, "widgets") || strings.Contains(body, "token-for") {
 		t.Errorf("the refusal is %s, want it to name the owner and its repositories and carry no token", body)
 	}
@@ -649,9 +635,9 @@ func TestControllerGitHubCredentialWhenGitHubIsRateLimited(t *testing.T) {
 	h := newControllerCredentialHarness(t, rateLimitedTokens{owner: "acme"}, false)
 	secret := h.mintedSecret()
 
-	refused := h.request(http.MethodPost, "/legion/v1/controller/github-credential", ControllerCredentialRequest{Secret: secret, Default: "acme"}, nil)
-	wantFailure(t, refused, http.StatusBadGateway, "GITHUB_TOKEN_FAILED")
-	if body := refused.Body.String(); strings.Contains(body, "token-for") {
+	refusal := h.request(http.MethodPost, "/legion/v1/controller/github-credential", ControllerCredentialRequest{Secret: secret, Default: "acme"}, nil)
+	refused(t, refusal, http.StatusBadGateway, "GITHUB_TOKEN_FAILED")
+	if body := refusal.Body.String(); strings.Contains(body, "token-for") {
 		t.Errorf("the refusal is %s, want it to carry no token", body)
 	}
 }

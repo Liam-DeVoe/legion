@@ -488,7 +488,7 @@ func TestAnOldPluginOutsideATurnIsRefusedStale(t *testing.T) {
 			c.State, c.UpdateRound, c.PluginContract, PlanRatingContract-1)
 	}
 
-	assertFailure(t, h.complete(HandoffCompleteRequest{GrantID: grantID, Summary: "retro done", Commit: "c0ffee"}),
+	refused(t, h.complete(HandoffCompleteRequest{GrantID: grantID, Summary: "retro done", Commit: "c0ffee"}),
 		http.StatusConflict, "STALE_PLUGIN_CONTRACT")
 	if got := facts.recorded(); len(got) != 0 {
 		t.Fatalf("facts after the refusal = %#v, want none applied", got)

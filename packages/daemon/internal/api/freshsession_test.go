@@ -796,7 +796,7 @@ func TestAFreshSessionRefusesTheControllersOwnClaim(t *testing.T) {
 
 	recorder := h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(token)+"/retry", RetryRequest{FreshSession: true})
 
-	assertFailure(t, recorder, http.StatusConflict, "NOT_THE_CONTROLLER")
+	refused(t, recorder, http.StatusConflict, "NOT_THE_CONTROLLER")
 }
 
 // A fresh session is refused for a claim no launch has registered yet: its suspension would be
@@ -831,11 +831,11 @@ func TestTheControllersFreshSessionNeedsAControllerGrantAndAClaim(t *testing.T) 
 	}
 	decodeInto(t, minted, &worker)
 
-	assertFailure(t, h.request(http.MethodPost, "/legion/v1/claims/fresh-session",
+	refused(t, h.request(http.MethodPost, "/legion/v1/claims/fresh-session",
 		ClaimRequest{GrantID: worker.GrantID, Issue: "LEGION-209", Role: string(claim.RoleImplementer)}, nil),
 		http.StatusForbidden, "CONTROLLER_REQUIRED")
 
-	assertFailure(t, h.request(http.MethodPost, "/legion/v1/claims/fresh-session",
+	refused(t, h.request(http.MethodPost, "/legion/v1/claims/fresh-session",
 		ClaimRequest{GrantID: controllerGrant(t, h).GrantID, Issue: "LEGION-777", Role: string(claim.RoleTester)}, nil),
 		http.StatusNotFound, "NO_CLAIM")
 }
