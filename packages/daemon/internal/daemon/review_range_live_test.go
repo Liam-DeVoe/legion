@@ -222,15 +222,10 @@ func (r *reviewRangeLive) roundOne(issue *reviewRangeIssue) string {
 }
 
 // requestChanges publishes the reviewer's request for changes at issue's first head, its footer
-// naming the session the reviewer's claim registered (requestChangesAs).
+// naming the session the reviewer's claim registered, and waits for the issue to move back to
+// implementing; the reviewer's turn then ends, as a worker's does after its review.
 func (r *reviewRangeLive) requestChanges(issue *reviewRangeIssue) {
-	r.requestChangesAs(issue, issue.reviewer.session)
-}
-
-// requestChangesAs publishes the review App's request for changes at issue's first head, its
-// footer naming session, and waits for the issue to move back to implementing; the reviewer's
-// turn then ends, as a worker's does after its review.
-func (r *reviewRangeLive) requestChangesAs(issue *reviewRangeIssue, session string) {
+	session := issue.reviewer.session
 	r.seq++
 	r.reviewID++
 	r.publishReviewAs(session, issue.number, "changes_requested", issue.first, r.seq, r.reviewID)
