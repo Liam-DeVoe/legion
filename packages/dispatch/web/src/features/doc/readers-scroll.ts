@@ -142,17 +142,28 @@ const INPUTS_SPACE_PRESSES: Record<string, true> = {
  * scrolls nothing, which the keepers learn when their window closes having seen no scroll
  * (`watchTheReadersScroll`).
  *
- * That a press's first movement comes in time, and that standing down at it cuts no drag, was
- * measured on this pod, three runs with no write and three with one pixel written in the frame
- * after the drag's first scroll, as a keeper would write it. In Chromium 156 a touch drag sent
- * through `Input.dispatchTouchEvent` reached the page as a `touchmove` 28 to 31 ms before its
- * first scroll in 6 runs of 6, and ended 545 to 589 px down with no write and 486 to 581 px with
- * it, the drag carrying on past the write. In Playwright's WebKit 27.2, whose driver sends no
- * touch drag, so that WebKit's own touch drag was not drivable here, a mouse drag on a box's
- * scroll bar (headless WPE draws the page itself none) reported its `pointerdown`, scrolled 11
- * to 15 ms after it, and ended at 25,761 px in 6 runs of 6 with the write and without: a write
- * does not cut a scroll-bar drag, whose thumb follows the pointer, so the stand-down there costs
- * nothing either way.
+ * Whether a script's write cuts a press's drag was measured on this pod on a probe page, three
+ * runs an arm, the offset read every frame: the drag alone; the drag with one pixel written one
+ * frame after its first scroll, as a keeper would write it; and the drag under the keepers as
+ * shipped, with one pixel growing above the reader in that frame. In Playwright's WebKit 27.2 a
+ * mouse drag of the page's own scroll bar - drawn as a classic bar through `::-webkit-scrollbar`,
+ * since headless WPE's overlay bar takes no press - ended at 4,997 px in 3 runs of 3 alone and in
+ * 3 of 3 with the write, the thumb following the pointer past it. In Chromium 156 a touch drag
+ * sent through `Input.dispatchTouchEvent` and held still before it lifted ended 285 px down in 3
+ * runs of 3 alone and 286 px in 3 of 3 with the write, which it carried along; lifted while
+ * moving, it flung on to 332 to 373 px in 6 runs of 8 alone and to 346 to 363 px in 7 of 8 with
+ * the write. A write between the press and its first movement, which the keepers may still make,
+ * cut neither: the drag ended at 4,997 px in WebKit and 286 px down in Chromium, 3 runs of 3 each.
+ * Under the keepers as shipped, which answered the same growth with no input by a one-pixel write
+ * each time, the keepers had stood down when the growth landed and wrote nothing in 12 runs of
+ * 12, 6 in each engine, and the drags ran their length: to 4,978 to 4,998 px in WebKit, where the
+ * growth with no keeper left them too, 285 px when held in Chromium, and into a fling in 3 swipes
+ * of 3. Neither a scroll-bar drag in WebKit nor a touch drag in Chromium was cut by a one-pixel
+ * write, so for those two inputs the stand-down at a press's first movement is measured to cost
+ * nothing and to protect nothing. Why a press is unknown until it moves is the other half: a
+ * press or a tap that moves nothing must not stand the keepers down (above), which is what the
+ * table's entries for `pointerdown` and `touchstart` hold. WebKit's own touch drag could not be
+ * driven here, since Playwright's WebKit sends no touch drag.
  *
  * Any other scroll is none of the reader's inputs, and no entry: the page's own place-keeping,
  * the browser's scroll anchoring, a find-in-page jump, an assistive tool. Each watch reads it for
