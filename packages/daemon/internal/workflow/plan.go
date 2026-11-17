@@ -518,10 +518,9 @@ func (e *Engine) stopUnreturned(ctx context.Context, tx pgx.Tx, issue record.Iss
 // the task's own state is the truer answer. A stop in a lingering tree changes nothing and says
 // so.
 //
-// An owner stops a task that it wrote (R16), so the stop of a task of an issue whose group takes
-// no plan from its owner (groupOf, takesNoPlan) is answered PLAN_NOT_TAKEN before anything else is
-// read: Legion took no plan from that owner, so it wrote none of the issue's tasks. The task goes
-// on as it stood.
+// An issue whose group takes no plan from its owner (groupOf, takesNoPlan) takes no stop of its
+// tasks from that owner either: the experiment decides how the issue is done. The stop is
+// answered PLAN_NOT_TAKEN before anything else is read, and the task goes on as it stood.
 func (e *Engine) taskStopped(ctx context.Context, tx pgx.Tx, fact intake.TaskStopped) (intake.Result, error) {
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil {

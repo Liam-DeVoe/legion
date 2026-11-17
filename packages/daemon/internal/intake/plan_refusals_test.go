@@ -59,7 +59,7 @@ func TestThePlanRefusalsSayWhy(t *testing.T) {
 				"Legion takes no plan from its owner for this issue. This plan changed nothing."}},
 		{"a stop of a task of an issue whose group runs the default steps", TaskNotStopped("LEGION-208", "planning", "b", "default"), Refusal{Status: http.StatusConflict,
 			Code: "PLAN_NOT_TAKEN", Message: "LEGION-208 is in the variant b of the experiment planning, whose issues run the project's default steps. " +
-				"Its owner wrote no task of this issue, and an owner stops only a task that it wrote. This stop changed nothing."}},
+				"Legion takes no plan from its owner for this issue, so its owner stops none of its tasks. This stop changed nothing."}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if tc.got == nil || !reflect.DeepEqual(*tc.got, tc.want) {

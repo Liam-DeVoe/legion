@@ -1482,12 +1482,12 @@ func PlanNotTaken(issue, experiment, variant, group string) *Refusal {
 }
 
 // TaskNotStopped is the 409 PLAN_NOT_TAKEN refusal of stop_task for a task of issue, which was
-// drawn into variant of experiment, whose arm's `plan` (group) is `default` or `owner-alone`. An
-// owner stops a task that it wrote (R16), and Legion took no plan from this issue's owner, so the
-// owner wrote none of its tasks; the code is the one register_plan answers for the same issue.
+// drawn into variant of experiment, whose arm's `plan` (group) takes no plan from the issue's
+// owner: the experiment decides how the issue is done, so Legion takes no stop of one of its
+// tasks from that owner either, and the code is the one register_plan answers for the same issue.
 func TaskNotStopped(issue, experiment, variant, group string) *Refusal {
 	return &Refusal{Status: 409, Code: "PLAN_NOT_TAKEN", Message: GroupClause(issue, experiment, variant, group) +
-		" Its owner wrote no task of this issue, and an owner stops only a task that it wrote. This stop changed nothing."}
+		" Legion takes no plan from its owner for this issue, so its owner stops none of its tasks. This stop changed nothing."}
 }
 
 // PlanOfDoneTask is the 409 TASK_DONE refusal of a version that changes task of issue, which is

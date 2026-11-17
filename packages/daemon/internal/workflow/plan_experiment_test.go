@@ -365,11 +365,11 @@ func TestAnIssueWithNoGroupRunsAsBuilt(t *testing.T) {
 	}
 }
 
-// An owner can stop a task that it wrote (R16), and the owner of an issue whose group runs the
-// project's default steps wrote none: Legion took no plan from it. Its stop_task is answered 409
-// PLAN_NOT_TAKEN with the sentence that names the group, and the task goes on running. The
-// control is the same issue drawn into the arm whose owner gives the plan, whose owner gave none:
-// it runs the default task, and its owner's stop of that task is taken.
+// Legion takes no plan from the owner of an issue whose group runs the project's default steps,
+// and so no stop of its tasks either: its stop_task is answered 409 PLAN_NOT_TAKEN with the
+// sentence that names the group and that reason, and the task goes on running. The control is the
+// same issue drawn into the arm whose owner gives the plan, whose owner gave none: it runs the
+// default task, which its owner did not write, and its owner's stop of that task is taken.
 func TestTheGroupDefaultStopsNoTask(t *testing.T) {
 	t.Run("the group default refuses the stop, and the task runs on", func(t *testing.T) {
 		pool := migratedPool(t)
@@ -380,7 +380,7 @@ func TestTheGroupDefaultStopsNoTask(t *testing.T) {
 
 		result := applyFacts(t, pool, engine)("stop", ownersStop(t, root.Key, plan.DefaultTask))
 		want := &intake.Refusal{Status: 409, Code: "PLAN_NOT_TAKEN", Message: inPlanningB(root.Key) +
-			" Its owner wrote no task of this issue, and an owner stops only a task that it wrote. This stop changed nothing."}
+			" Legion takes no plan from its owner for this issue, so its owner stops none of its tasks. This stop changed nothing."}
 		if !reflect.DeepEqual(result.Refusal, want) {
 			t.Fatalf("the owner's stop of default = %+v, want the refusal %+v", result.Refusal, want)
 		}
