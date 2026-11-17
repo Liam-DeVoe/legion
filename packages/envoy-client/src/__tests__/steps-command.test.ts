@@ -31,6 +31,8 @@ const implementer: StepRecord = {
   result: "passed",
   returned_to: null,
   report: "9b2e4d6f-8a1c-4e3b-a5d7-c9f1e3b5d7a9",
+  rating: null,
+  rating_reason: null,
 };
 
 /** The tester's run of step 3, still running: no end, no result, and no model answered yet. */
@@ -52,6 +54,8 @@ const tester: StepRecord = {
   result: "",
   returned_to: null,
   report: null,
+  rating: null,
+  rating_reason: null,
 };
 
 /** A merge GitHub already made: no merger started, so no agent, no model and no start. */
@@ -73,6 +77,8 @@ const mergedByGitHub: StepRecord = {
   result: "passed",
   returned_to: null,
   report: null,
+  rating: null,
+  rating_reason: null,
 };
 
 /** A second run of a review of another task, sent back to step 1 of that task. */
@@ -94,6 +100,8 @@ const docsReview: StepRecord = {
   result: "failed",
   returned_to: 1,
   report: null,
+  rating: null,
+  rating_reason: null,
 };
 
 const config = {
