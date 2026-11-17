@@ -44,7 +44,8 @@ EOF
   child list, each child's title and whole spec. Its mandate: *"You did not write this list. Argue
   that each child should not exist. Name every child that is a to-do, a fix found in review, a
   proof of the root's acceptance, or a part of the architect's own work, and say where it folds:
-  the root's pull request or an open child's. Weigh each separate pull request against combining
+  an open child's pull request, or the root's own where the root has no child. Weigh each
+  separate pull request against combining
   its work. Size pull requests to deliver the work most efficiently and reliably, with no preference on their number.
   Each round tests a large pull request whole again; one failure holds all the work, and the request merges late.
   It can also conflict with the default branch.
@@ -157,7 +158,9 @@ nothing.
 
 An issue with children carries no code of its own: every change of it goes into a child, and its
 pull request merges only after its children, carrying their merges
-(dispatch://INFRA-3320/ask/86ef35c1-9daf-44b8-a077-16d39f1807fe).
+(dispatch://INFRA-3320/ask/86ef35c1-9daf-44b8-a077-16d39f1807fe). A fix found in its work goes
+into a child too: its own pull request carries no change, so in place means an open child's pull
+request, or a new child.
 Where an issue whose branch already carries code needs children, that code becomes a child's too:
 file a child for it, whose work starts from those commits.
 
