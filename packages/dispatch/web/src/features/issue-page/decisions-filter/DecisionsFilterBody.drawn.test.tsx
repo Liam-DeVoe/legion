@@ -709,7 +709,8 @@ test("a part that holds nothing is not drawn, and an empty issue says so once", 
     await waitFor(() =>
       expect(document.activeElement).toBe(answered.getByRole("tree", { name: CONTROL_LABELS.tree }))
     );
-    // Each element that takes the focus while the tree grows and the read answers.
+    // The question's row is the one element that takes the focus while the tree grows and the
+    // read answers, so the foot's control never takes it on the way.
     const tookFocus: (EventTarget | null)[] = [];
     const recordFocus = (event: Event) => {
       tookFocus.push(event.target);
@@ -729,7 +730,15 @@ test("a part that holds nothing is not drawn, and an empty issue says so once", 
     } finally {
       document.removeEventListener("focusin", recordFocus);
     }
-    expect(tookFocus).not.toContain(footControl(answered));
+    expect(
+      tookFocus.map((target) =>
+        target === rowOf(answered, "q-open")
+          ? "the question's row"
+          : target === footControl(answered)
+            ? "the foot's control"
+            : "another element"
+      )
+    ).toEqual(["the question's row"]);
     await waitFor(() => expect(focusedRow(answered)).toBe("q-open"));
     answered.unmount();
   } finally {

@@ -43,21 +43,15 @@ import { type DecisionsEntry, type DecisionsParts, decisionsParts } from "./deci
  * whether a decision stands in the review list or in the reader's own, so a failed read of
  * either still lets an issue that holds nothing say so.
  *
- * The seam says too, beside the parts, which of those two reads was refused before it first
- * answered (`unreadable`), which of them is being read now (`retrying`), and asks one of them
- * alone again (`retry`). The body draws a line with a Retry for each refused read, in place of
+ * The seam says too which of those two reads was refused before it first answered
+ * (`unreadable`), which of them is being read now (`retrying`), and asks one of them alone again
+ * (`retry`). The body draws a line with a Retry for each refused read, in place of
  * the entries that read would give, and a Retry pressed while its read runs again asks nothing
  * more. How a read stands and how it is asked again belong to the read, and only this module
  * names one, so they are read here and the body knows a read only by the word its line is drawn
  * for. A read whose refetch fails over an answer it already holds keeps that answer, which the
  * view still draws from, so it is not among the refused; nor are the comments and the blocks,
  * which only move a decision between parts.
- *
- * These four stand beside the parts and not in them, so the parts are worked out from the
- * reads' answers and the tree alone. A fetch that starts or ends, a refetch the page makes in
- * the background too, or a read refused before it holds an answer leaves every entry where it
- * stood, so the parts keep their identity and nothing the body works out from them is worked
- * out again.
  *
  * The hook is the module's one export and its answer's type is its own, so the read that
  * replaces this module has one name to give the view and nothing else of it to keep.
@@ -69,8 +63,7 @@ type DecisionsRead = "decisions" | "asks";
 
 /** The seam's answer: the view's parts, and beside them whether the reads that say which
  *  entries there are hold their answers, which of them was refused and which runs now, and how
- *  to ask one again. The parts alone are worked out from the reads' answers and the tree, so
- *  they keep their identity while only how a read stands changes. */
+ *  to ask one again. */
 interface DecisionsEntries {
   /** Which entry stands in which part, each part in the order it is drawn. Another person's
    *  decisions stand in `yours`, so `others` is empty. */
@@ -174,8 +167,9 @@ export function useDecisionsEntries({
   // `shaped` tie resolves to the node it names (`tree-drafts.ts`). `nodeIdOf` names no block by
   // a line, so the line rule it is handed is the reading's words, as G's tests hand it.
   const nodeIdOf = useMemo(() => treeContext({ issue }, wordsOf).nodeIdOf, [issue]);
-  // From the model's inputs alone: how a read stands is no input of the model, and the parts
-  // keep their identity while only that changes.
+  // From the model's inputs alone: how a read stands is no input of the model, so while only
+  // that changes the parts keep their identity and nothing the body works out from them is
+  // worked out again.
   const parts = useMemo<DecisionsParts>(() => {
     const model = decisionsParts({
       asks,
