@@ -1,4 +1,12 @@
-import { type ReactNode, useId, useMemo } from "react";
+import {
+  type ReactNode,
+  type RefObject,
+  useId,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { Link, useParams } from "react-router-dom";
 
 import type { GraphReferences } from "../../../api/types";
@@ -39,23 +47,47 @@ export function RunPage(): ReactNode {
   const { id } = useParams();
   const { notFound, query } = useRun(id);
   useDocumentTitle(`${RUN_WORD} · Dispatch`, !notFound);
+  // A retry of a read that holds no answer takes its failure away as it starts, and the focus
+  // on its Retry would fall to the page's body with it, where no keyboard action may leave it
+  // (decision 162 of dispatch://INFRA-1196). So the line of a Retry the reader pressed stays
+  // drawn, its Retry disabled, until the read that Retry sent ends. An answer then replaces the
+  // line and the focus goes to the page's heading, as the history's Retry hands it to its own
+  // (`IssueHistory.tsx`); a read that fails again leaves the line, and its Retry has the focus.
+  // Only a focus left on the body moves.
+  const [pressed, setPressed] = useState(false);
+  const retrying = pressed && query.isFetching;
+  const heading = useRef<HTMLHeadingElement>(null);
+  const failure = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    if (!pressed || query.isFetching) return;
+    setPressed(false);
+    const active = document.activeElement;
+    if (active !== null && active !== document.body) return;
+    (heading.current ?? failure.current?.querySelector("button"))?.focus({ preventScroll: true });
+  });
   if (notFound) {
     return <NotFoundPage />;
   }
+  const failed = query.isError || retrying;
   return (
     <div data-issue-page="">
       <NoTooltips>
-        {query.isError ? (
-          <DetailsErrorLine
-            error={query.error}
-            message={ANSWER_LINES.run_unreadable}
-            onRetry={() => void query.refetch()}
-            retrying={query.isFetching}
-          />
+        {failed ? (
+          <div ref={failure}>
+            <DetailsErrorLine
+              error={query.error}
+              message={ANSWER_LINES.run_unreadable}
+              onRetry={() => {
+                setPressed(true);
+                void query.refetch();
+              }}
+              retrying={retrying}
+            />
+          </div>
         ) : null}
         {query.data !== undefined ? (
-          <RunAnswer answer={query.data} />
-        ) : query.isError ? null : (
+          <RunAnswer answer={query.data} heading={heading} />
+        ) : failed ? null : (
           <p className={`text-sm ${pageQuietText}`} {...pageChrome}>
             {ANSWER_LINES.loading_older}
           </p>
@@ -65,15 +97,27 @@ export function RunPage(): ReactNode {
   );
 }
 
-/** The run as its read answered it. */
-function RunAnswer({ answer }: { answer: GraphReferences }): ReactNode {
+/** The run as its read answered it. `heading` is the page's `h1`, which takes the focus a
+ *  Retry hands on. */
+function RunAnswer({
+  answer,
+  heading,
+}: {
+  answer: GraphReferences;
+  heading: RefObject<HTMLHeadingElement | null>;
+}): ReactNode {
   const view = useMemo(() => runView(answer), [answer]);
   const questionHeading = useId();
   const changedHeading = useId();
   return (
     <article className={`flex min-w-0 max-w-3xl flex-col gap-6 ${pageInkText}`}>
       <header className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-        <h1 className="text-xl font-semibold" {...pageChrome}>
+        <h1
+          className="text-xl font-semibold outline-none"
+          ref={heading}
+          tabIndex={-1}
+          {...pageChrome}
+        >
           {RUN_WORD}
         </h1>
         {view.at === null ? null : (
@@ -106,13 +150,14 @@ function RunAnswer({ answer }: { answer: GraphReferences }): ReactNode {
         ) : (
           <ul className="flex min-w-0 flex-col gap-0.5">
             {view.changed.map((node) => {
-              // A node is named by its first line, beside its kind's word; a node whose read
-              // carries no words is named by the word alone, which is then its link.
+              // A node is named by its first line, beside its kind's word where the page has
+              // one; a node whose read carries no words is named by the word alone, which is
+              // then its link. A node with neither is no entry (`runView`).
               const named = node.line !== "";
               const text = named ? node.line : node.kind;
               return (
                 <li className="flex min-w-0 items-baseline gap-2 text-sm" key={node.key}>
-                  {named ? (
+                  {named && node.kind !== "" ? (
                     <span className={`shrink-0 text-xs ${pageQuietText}`} {...pageChrome}>
                       {node.kind}
                     </span>

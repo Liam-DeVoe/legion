@@ -14,7 +14,9 @@ import {
 
 import { graphNode } from "../../../__tests__/graph-fixture";
 import type { GraphEdge, GraphReferences } from "../../../api/types";
+import { drawnLine, firstLineOf } from "../issue-tree";
 import { EMPTY_STATE_LINES, NODE_REFERENCES_WORDS, STATE_LINES, sentenceCase } from "../page-words";
+import { plainWords } from "../tree-drafts";
 import { type RunFrame, runView } from "./run-page";
 
 const RUN = "3f2b8c1e-5d4a-4b6f-9e2d-1a7c0b9e8f43";
@@ -40,11 +42,14 @@ function answerOf(frames: readonly RunFrame[], edges: readonly GraphEdge[] = [])
   };
 }
 
+/** The words of the issue's node the run changed, as its edge's excerpt carries them. */
+const CHANGED_ISSUE_TEXT = "Ship the **release** on Friday. Then rest.";
+
 /** An edge from the issue CORE-1, which the run changed. */
 const CHANGED_ISSUE: GraphEdge = {
   created_at: "2026-11-17T09:00:05Z",
   direction: "in",
-  excerpt: { text: "Ship the **release** on Friday. Then rest." },
+  excerpt: { text: CHANGED_ISSUE_TEXT },
   kind: "changed_by_run",
   node: graphNode({ id: "CORE-1", issue_key: "CORE-1", kind: "issue", ref: "dispatch://CORE-1" }),
   source_seq: null,
@@ -91,7 +96,7 @@ test("the view holds the question, the time, each frame in order with its drawin
       href: "/issues/CORE-1",
       key: "dispatch://CORE-1",
       kind: sentenceCase(NODE_REFERENCES_WORDS.kinds.issue),
-      line: "Ship the release on Friday.",
+      line: drawnLine(firstLineOf(plainWords(CHANGED_ISSUE_TEXT))),
     },
   ]);
 
@@ -125,4 +130,37 @@ test("the view holds the question, the time, each frame in order with its drawin
   ]);
   // A frame of a name the page does not know draws nothing.
   expect(lines([frame(1, "progress", { text: "searching" })])).toEqual([]);
+});
+
+test("a changed node is named by the page's words alone, and an edge the page does not know is left out", () => {
+  const riskText = "Drop the **release** if the checks fail. Then wait.";
+  const risk: GraphEdge = {
+    ...CHANGED_ISSUE,
+    excerpt: { text: riskText },
+    node: graphNode({ id: "4d1e2f3a-6b5c-4d7e-8f90-a1b2c3d4e5f6", kind: "risk" }),
+  };
+  // A node of a kind the page has no word for, whose read carries no words either: the page
+  // could name it by nothing.
+  const silent: GraphEdge = {
+    ...risk,
+    excerpt: undefined,
+    node: graphNode({ id: "7a8b9c0d-1e2f-4a3b-8c4d-5e6f7a8b9c0d", kind: "risk" }),
+  };
+  // An edge kind, and a node kind at its other end, that a newer build answers with.
+  const newerEdge: GraphEdge = { ...CHANGED_ISSUE, kind: "rewrote" as GraphEdge["kind"] };
+  const newerNode: GraphEdge = {
+    ...CHANGED_ISSUE,
+    node: graphNode({ id: "9f8e7d6c", kind: "widget" as GraphEdge["node"]["kind"] }),
+  };
+
+  // Only the risk is drawn: by its first line, with no kind word, since the page has no word for
+  // its kind and the kind's schema token is none.
+  expect(runView(answerOf([], [newerEdge, risk, newerNode, silent])).changed).toEqual([
+    {
+      href: undefined,
+      key: "risk:4d1e2f3a-6b5c-4d7e-8f90-a1b2c3d4e5f6",
+      kind: "",
+      line: drawnLine(firstLineOf(plainWords(riskText))),
+    },
+  ]);
 });

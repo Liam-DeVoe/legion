@@ -1,5 +1,6 @@
 import { expect, type Locator, type Page } from "@playwright/test";
 
+import type { IssueTreeAnswer } from "../web/src/api/client";
 import { type Body, type Result, routeUrl } from "../web/src/api/paths";
 import { PROPERTY_LABELS } from "../web/src/features/issue-page/page-structure";
 import {
@@ -268,4 +269,34 @@ export function referenceReads(traffic: ApiRequests): ReferenceRead[] {
       const query = new URL(path, baseUrl).searchParams;
       return { kind: query.get("kind"), to: query.get("to") };
     });
+}
+
+/**
+ * Whether the server answers alice, who asked the run `run`, the run's own read
+ * (`GET /api/v1/references?to=<address>&kind=changed_by_run`), which INFRA-1950 adds: a 200 says
+ * this stack serves runs, and any other answer says it does not yet.
+ */
+export async function runReadServed(run: string): Promise<boolean> {
+  const path = routeUrl(REFERENCES_ROUTE, {}, { kind: "changed_by_run", to: runReference(run) });
+  const response = await fetch(new URL(path, baseUrl), { headers: await userHeaders("alice") });
+  await response.body?.cancel();
+  return response.status === 200;
+}
+
+/**
+ * Whether the server's tree read of the issue `key` (`GET /api/v1/issues/{key}/tree`,
+ * INFRA-1253's t16a) answers alice with a 200 that holds a command bar run, a node of the
+ * `interaction` supertag (`run-references/run-references.ts`), which the run context of
+ * INFRA-1950 writes.
+ */
+export async function treeRunServed(key: string): Promise<boolean> {
+  const response = await fetch(new URL(routeUrl("/api/v1/issues/{key}/tree", { key }), baseUrl), {
+    headers: await userHeaders("alice"),
+  });
+  if (response.status !== 200) {
+    await response.body?.cancel();
+    return false;
+  }
+  const tree = (await response.json()) as IssueTreeAnswer;
+  return tree.nodes.some((node) => node.supertag === "interaction");
 }

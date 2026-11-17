@@ -982,8 +982,100 @@ test("Referenced by counts the reader's runs once both reads answer, and is a co
     await waitFor(() =>
       expect(getIssueTree, "Retry did not read the tree again").toHaveBeenCalledTimes(treeReads + 1)
     );
+    view.unmount();
+
+    // The tree read is out as the reader opens the list: the list's own read answers, and the
+    // control holds its count until the tree read answers too, with the reader's run in it.
+    const treeRead = Promise.withResolvers<TreeAnswer>();
+    getIssueTree.mockImplementation(() => treeRead.promise);
+    view = renderDetails();
+    const reading = view.queryClient;
+    await act(async () => {
+      await reading.resetQueries({ exact: true, queryKey: issueTreeKey(issue.key) });
+    });
+    act(() => {
+      void reading.prefetchQuery(issueTreeQuery(issue.key));
+    });
+    const holding = await screen.findByRole("button", { name: PROPERTY_LABELS.referenced_by });
+    await user.click(holding);
+    const opened = await screen.findByRole("region", { name: "Referenced by" });
+    await within(opened).findByRole("link", { name: "Comment · CORE-2" });
+    expect(
+      holding.textContent,
+      "Referenced by counted the list's rows before the tree read answered"
+    ).toBe(PROPERTY_LABELS.referenced_by);
+    await act(async () => {
+      treeRead.resolve({
+        ...EMPTY_TREE,
+        nodes: [
+          {
+            attributes: {},
+            author: { id: "alice", kind: "user" },
+            id: run,
+            made_at: "2026-11-17T09:00:00Z",
+            parent: issue.key,
+            rank: null,
+            state: "live",
+            supertag: "interaction",
+            text: question,
+            visibility: "author",
+          },
+        ],
+        tuples: [{ from: issue.key, kind: "changed_by_run", to: run }],
+      });
+    });
+    expect(
+      await screen.findByRole("button", { name: counted(2) }),
+      "Referenced by does not count the reader's run once the tree read answers"
+    ).toBe(holding);
   } finally {
     view.unmount();
+    getIssueTree.mockRestore();
+    getReferences.mockRestore();
+    restore();
+  }
+});
+
+// A Retry of the tree read that holds no answer goes with its line as the read starts again,
+// and the focus on it fell to the page's body (decision 162 of dispatch://INFRA-1196): it goes
+// to Referenced by's own control instead.
+test("the tree read's Retry hands the focus to Referenced by's control when its line goes", async () => {
+  const user = userEvent.setup();
+  const { restore } = stubIssueApi();
+  const reference = buildDispatchReference({ key: "CORE-1", kind: "issue" });
+  const getReferences = spyOn(api, "getReferences").mockResolvedValue({
+    edges: [],
+    node: graphNode({ id: "CORE-1", issue_key: "CORE-1", kind: "issue", ref: reference }),
+  });
+  const getIssueTree = spyOn(api, "getIssueTree").mockRejectedValue(new ApiError(500, {}));
+  const { queryClient, unmount } = renderDetails();
+
+  try {
+    // The outline's tree read failed, as the case above makes it fail.
+    await act(async () => {
+      await queryClient.resetQueries({ exact: true, queryKey: issueTreeKey(issue.key) });
+      await queryClient.prefetchQuery(issueTreeQuery(issue.key));
+    });
+    const toggle = await screen.findByRole("button", { name: PROPERTY_LABELS.referenced_by });
+    await user.click(toggle);
+    const line = (await screen.findByText(ANSWER_LINES.references_unreadable)).parentElement;
+    if (line === null) throw new Error("the tree read's failure stands in no line");
+    const retry = within(line).getByRole("button", { name: CONTROL_LABELS.retry });
+
+    const treeRead = Promise.withResolvers<TreeAnswer>();
+    getIssueTree.mockImplementation(() => treeRead.promise);
+    act(() => retry.focus());
+    await user.keyboard("{Enter}");
+    await act(async () => {
+      treeRead.resolve(EMPTY_TREE);
+    });
+    await waitFor(() => expect(screen.queryByText(ANSWER_LINES.references_unreadable)).toBeNull());
+    expect(
+      document.activeElement,
+      "the Retry's line went and left the focus on the page's body"
+    ).toBe(toggle);
+  } finally {
+    unmount();
     getIssueTree.mockRestore();
     getReferences.mockRestore();
     restore();

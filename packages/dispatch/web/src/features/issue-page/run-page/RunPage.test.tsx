@@ -12,7 +12,7 @@ import {
   GOING_EVENT_TEXT,
 } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 
@@ -21,6 +21,7 @@ import { ApiError, api } from "../../../api/client";
 import type { GraphEdge, GraphReferences } from "../../../api/types";
 import { RUN_PATH } from "../../refs/routes";
 import { NotFoundPage } from "../../shell/NotFoundPage";
+import { drawnLine, firstLineOf } from "../issue-tree";
 import {
   ANSWER_LINES,
   CONTROL_LABELS,
@@ -30,6 +31,7 @@ import {
   sentenceCase,
   wordsIn,
 } from "../page-words";
+import { plainWords } from "../tree-drafts";
 import { RunPage } from "./RunPage";
 import type { RunFrame } from "./run-page";
 
@@ -198,12 +200,47 @@ test("a failed read other than 404 draws its one sentence with Retry", async () 
   await waitFor(() => expect(getReferences.mock.calls.length).toBeGreaterThan(asked));
 });
 
+// A retry of a read that holds no answer drops the read's failure as it starts, so the line and
+// the Retry the reader's focus is on went with it, and the focus fell to the page's body
+// (decision 162 of dispatch://INFRA-1196).
+test("a Retry the reader pressed keeps its line until the read lands, then hands the focus to the heading", async () => {
+  const user = userEvent.setup();
+  const { getReferences } = draw(() => Promise.reject(new ApiError(500, {})));
+  expect(await screen.findByRole("alert")).toHaveTextContent(ANSWER_LINES.run_unreadable);
+  const landing = Promise.withResolvers<GraphReferences>();
+  getReferences.mockImplementation(() => landing.promise);
+  const asked = getReferences.mock.calls.length;
+  const retry = screen.getByRole("button", { name: CONTROL_LABELS.retry });
+  act(() => retry.focus());
+  await user.keyboard("{Enter}");
+  await waitFor(() => expect(getReferences).toHaveBeenCalledTimes(asked + 1));
+
+  // The read is out: the line and its Retry stay, the Retry disabled and holding the focus, and
+  // no loading line stands in their place.
+  expect(screen.getByRole("alert"), "the line went while its retry was out").toHaveTextContent(
+    ANSWER_LINES.run_unreadable
+  );
+  expect(retry, "Retry went while the read it sent was out").toBeInTheDocument();
+  expect(retry, "Retry is not disabled while the read it sent is out").toBeDisabled();
+  expect(document.activeElement, "Retry lost the focus while its read was out").toBe(retry);
+  expect(screen.queryByText(ANSWER_LINES.loading_older)).toBeNull();
+
+  // The read answers: the answer replaces the line, and the focus goes to the page's heading.
+  await act(async () => {
+    landing.resolve(answerOf([]));
+  });
+  const heading = await screen.findByRole("heading", { level: 1, name: RUN_WORD });
+  expect(screen.queryByRole("alert")).toBeNull();
+  expect(document.activeElement, "the answer left the focus off the page's heading").toBe(heading);
+});
+
 test("the answered page draws the question as typed, the time and what it changed", async () => {
   const question = "**not bold** [x](y)";
+  const excerpt = "Ship the **release** on Friday. Then rest.";
   const changed: GraphEdge = {
     created_at: "2026-11-17T09:00:05Z",
     direction: "in",
-    excerpt: { text: "Ship the **release** on Friday. Then rest." },
+    excerpt: { text: excerpt },
     kind: "changed_by_run",
     node: graphNode({ id: "CORE-1", issue_key: "CORE-1", kind: "issue", ref: "dispatch://CORE-1" }),
     source_seq: null,
@@ -230,8 +267,27 @@ test("the answered page draws the question as typed, the time and what it change
   expect(within(what).getByRole("listitem")).toHaveTextContent(
     sentenceCase(NODE_REFERENCES_WORDS.kinds.issue)
   );
-  expect(within(what).getByRole("link", { name: "Ship the release on Friday." })).toHaveAttribute(
-    "href",
-    "/issues/CORE-1"
-  );
+  expect(
+    within(what).getByRole("link", { name: drawnLine(firstLineOf(plainWords(excerpt))) })
+  ).toHaveAttribute("href", "/issues/CORE-1");
+});
+
+// A node of a kind the page has no word for is named by its line alone: no schema token
+// stands where its kind's word would.
+test("a changed node of a kind the page has no word for is named by its line alone", async () => {
+  const excerpt = "Drop the release if the checks fail.";
+  const risk: GraphEdge = {
+    created_at: "2026-11-17T09:00:05Z",
+    direction: "in",
+    excerpt: { text: excerpt },
+    kind: "changed_by_run",
+    node: graphNode({ id: "4d1e2f3a-6b5c-4d7e-8f90-a1b2c3d4e5f6", kind: "risk" }),
+    source_seq: null,
+  };
+  draw(() => Promise.resolve(answerOf([], [risk])));
+  await screen.findByRole("heading", { level: 1, name: RUN_WORD });
+  const what = screen.getByRole("region", { name: RUN_PAGE_WORDS.what_changed });
+  const entry = within(what).getByRole("listitem");
+  expect(entry.textContent).toBe(drawnLine(firstLineOf(plainWords(excerpt))));
+  expect(wordsIn(entry.textContent ?? "")).not.toContain("risk");
 });

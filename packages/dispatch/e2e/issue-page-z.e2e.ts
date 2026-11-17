@@ -20,10 +20,12 @@ import {
   referenceReads,
   referencesControl,
   retryBeside,
+  runReadServed,
   runReference,
   runRowsOf,
   seedRunIssue,
   treeReadFailure,
+  treeRunServed,
 } from "./issue-page-z";
 import { expect, test } from "./test";
 import { watchApiRequests } from "./traffic";
@@ -40,7 +42,10 @@ import { asUser } from "./users";
  * builds serves none of the three yet - INFRA-1950's run header on a write, INFRA-1253's tree
  * read (`GET /api/v1/issues/{key}/tree`) and the run's read by its address
  * (`GET /api/v1/references?to=dispatch://interaction/<id>&kind=changed_by_run`) reach it with
- * those branches - and these rows pass once they have.
+ * those branches. So each row asks the server, once the seed is written, for the reads it needs,
+ * and while one is not served the row is skipped with an annotation that says what it owes
+ * (decision 170): a skip, never a pass, and no tag, so the row runs once those branches reach
+ * the stack.
  */
 
 // SLOW(>=2s): three issues, a run and its three writes seeded, then three loads of the issue:
@@ -55,6 +60,10 @@ test("a command bar run that changed the issue is a reference for the person who
   browser,
 }) => {
   await phase(browser, seedRunIssue, async (page, seeded) => {
+    test.skip(
+      !(await treeRunServed(seeded.key)),
+      "owed: the run's row in Details' Referenced by needs INFRA-1253's t16a tree read with the run context of its R8 and INFRA-1950's R4 (the issue PATCH's changed_by_run tuple and the run's whole words) on this branch's stack"
+    );
     const traffic = watchApiRequests(page);
     await gotoIssue(page, seeded.path);
     await openDetails(page);
@@ -169,6 +178,12 @@ test("a command bar run that changed the issue is a reference for the person who
 // draws.
 test("the run's page is its asker's alone", async ({ browser }) => {
   await phase(browser, seedRunIssue, async (page, seeded) => {
+    // The row reads the run's page by its own read, then opens it from the issue's run row,
+    // which the tree read draws: it needs both served.
+    test.skip(
+      !((await runReadServed(seeded.run)) && (await treeRunServed(seeded.key))),
+      "owed: the run's own page and the run row that opens it need INFRA-1253's t16a tree read with the run context of its R8 and INFRA-1950's R4 (the issue PATCH's changed_by_run tuple and the run's whole words) on this branch's stack"
+    );
     const traffic = watchApiRequests(page);
     const address = buildRunPath(seeded.run);
     await page.goto(address);

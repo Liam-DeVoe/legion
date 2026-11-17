@@ -13,6 +13,7 @@ import { queryOptions, type UseQueryResult, useQuery } from "@tanstack/react-que
 import { ApiError, api } from "../../../api/client";
 import { queryRetry } from "../../../api/query-client";
 import type { GraphEdge, GraphReferences } from "../../../api/types";
+import { drawsEdge } from "../../refs/ReferencedBy";
 import { referencesQuery } from "../../refs/reference-target";
 import { buildReferencePath, parseNodeReference } from "../../refs/routes";
 import { storeAddressReference } from "../../refs/store-address";
@@ -111,7 +112,8 @@ export type RunPart =
 export interface RunChange {
   /** The node's address, which makes it one entry however many edges name it. */
   readonly key: string;
-  /** The page's word for the node's kind, sentence-cased. */
+  /** The page's word for the node's kind, sentence-cased; `""` where the page has none, since a
+   *  kind's schema token is no word a reader reads. */
   readonly kind: string;
   /** The first line of the node's words, as every place that draws one line for a node draws
    *  it; `""` where the read carries none. */
@@ -197,21 +199,28 @@ function partsOf(frames: readonly RunFrame[]): RunPart[] {
 }
 
 /** The nodes `edges` name, once each, in the read's order: each by its kind's word, the first
- *  line of its words, and the page its address opens. */
+ *  line of its words, and the page its address opens. An edge of a kind, or to a node of a kind,
+ *  that this page does not know is left out, as every list of a node's references leaves it
+ *  (`drawsEdge`), and so is a node with neither a word for its kind nor a line, which the page
+ *  could name by nothing. */
 function changedOf(edges: readonly GraphEdge[]): RunChange[] {
-  const kinds: Readonly<Record<string, string>> = NODE_REFERENCES_WORDS.kinds;
-  const types: Readonly<Record<string, string>> = NODE_TYPE_NAMES;
+  const kinds: Readonly<Partial<Record<string, string>>> = NODE_REFERENCES_WORDS.kinds;
+  const types: Readonly<Partial<Record<string, string>>> = NODE_TYPE_NAMES;
   const changed = new Map<string, RunChange>();
   for (const edge of edges) {
+    if (!drawsEdge(edge)) continue;
     const { id, kind, ref } = edge.node;
     const key = ref ?? `${kind}:${id}`;
     if (changed.has(key)) continue;
+    const word = kinds[kind] ?? types[kind];
+    const line = drawnLine(firstLineOf(plainWords(edge.excerpt?.text ?? "")));
+    if (word === undefined && line === "") continue;
     const route = ref === undefined ? undefined : parseNodeReference(ref);
     changed.set(key, {
       href: route === undefined ? undefined : buildReferencePath(route),
       key,
-      kind: sentenceCase(kinds[kind] ?? types[kind] ?? kind),
-      line: drawnLine(firstLineOf(plainWords(edge.excerpt?.text ?? ""))),
+      kind: word === undefined ? "" : sentenceCase(word),
+      line,
     });
   }
   return [...changed.values()];
