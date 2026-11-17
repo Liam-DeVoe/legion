@@ -10,6 +10,12 @@ import (
 // issueBranchPrefix begins the GitHub branch of every issue Legion works.
 const issueBranchPrefix = "legion/"
 
+// JoinBranchSuffix ends the join branch of a task that needs several tasks, its branch and this
+// suffix: the branch the work of its needs is joined on, from which the task's branch starts, so
+// that the task's pull request shows its own work alone. A join branch is no task's branch
+// (notSlugs), and this is the one source of its name.
+const JoinBranchSuffix = ".join"
+
 // IssueBranch is the GitHub branch issue is worked on, legion/<KEY>: the jj bookmark of its
 // workspace, the branch the daemon creates for it, and the head branch of its pull request.
 func IssueBranch(issue string) string { return issueBranchPrefix + issue }
@@ -39,6 +45,9 @@ var notSlugs = []string{
 	// copy of a task of this slug, `<key>.removing`, is the path the issue's own working copy is
 	// renamed to and deleted from.
 	"removing",
+	// The join branch of the task that holds the issue's own branch is legion/<KEY>.join
+	// (JoinBranchSuffix), so a task of this slug would work on that task's join.
+	strings.TrimPrefix(JoinBranchSuffix, "."),
 }
 
 // laterGive is the part of a task's branch after the issue key for a later give of a slug in one

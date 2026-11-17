@@ -27,30 +27,36 @@ var besideWorkingCopies = map[string]bool{
 // task's branch without legion/ (`<key>` or `<key>.<part>`), and this package renames a working copy
 // it removes to a sibling, its directory and a suffix. A task whose branch were another task's
 // branch and that suffix would have its working copy at the other's renamed path, and the removal
-// of the other would delete the task's work. So claim.BranchTask takes no such branch, from the
-// issue's own branch, a slug's first give or a later give. Each suffix constant is read from this
-// package's source, so a new one is either put to this rule or named in besideWorkingCopies as one
-// that lands beside no working copy.
+// of the other would delete the task's work. A task with several needs joins them on a branch of
+// its own beside its branch, its branch and claim.JoinBranchSuffix, and a task whose branch were
+// that join branch would work on the other's join. So claim.BranchTask takes no such branch, from
+// the issue's own branch, a slug's first give or a later give. Each suffix constant is read from
+// this package's source, so a new one is either put to this rule or named in besideWorkingCopies
+// as one that lands beside no working copy, and the join suffix is read from claim, its one
+// source.
 func TestNoTaskBranchIsAnotherWithASuffixOfAWorkingCopy(t *testing.T) {
 	suffixes := suffixConstants(t)
 	if len(suffixes) == 0 {
 		t.Fatal("read no suffix constant from this package's source: the read is blind, not clean")
 	}
+	checked := map[string]string{"claim.JoinBranchSuffix": claim.JoinBranchSuffix}
 	for name, suffix := range suffixes {
 		beside, known := besideWorkingCopies[name]
 		if !known {
 			t.Errorf("%s (%q) is a suffix of this package that besideWorkingCopies does not name: say whether it lands beside a working copy", name, suffix)
 			continue
 		}
-		if !beside {
-			continue
+		if beside {
+			checked[name] = suffix
 		}
+	}
+	for name, suffix := range checked {
 		if part := strings.TrimPrefix(suffix, "."); claim.IsTaskSlug(part) {
-			t.Errorf("claim.IsTaskSlug takes %q, which %s puts on a working copy's directory", part, name)
+			t.Errorf("claim.IsTaskSlug takes %q, which %s puts beside a task's branch or working copy", part, name)
 		}
 		for _, branch := range []string{claim.IssueBranch("ACME-1"), claim.TaskBranch("ACME-1", "d"), claim.TaskBranchOfGive("ACME-1", "d", 2)} {
 			if _, part, ok := claim.BranchTask(branch + suffix); ok {
-				t.Errorf("claim.BranchTask takes %q (task part %q), whose working copy is the working copy of %s renamed by %s", branch+suffix, part, branch, name)
+				t.Errorf("claim.BranchTask takes %q (task part %q), which is %s with the suffix %s", branch+suffix, part, branch, name)
 			}
 		}
 	}
