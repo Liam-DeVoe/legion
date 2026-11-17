@@ -1,9 +1,6 @@
 {
   "session_id": "ses_fixture_placeholder",
-  "publish": [
-    "_INBOX.*.ses_fixture_placeholder.>",
-    "agentstream.ses_fixture_placeholder.frames"
-  ],
+  "publish": ["_INBOX.*.ses_fixture_placeholder.>", "agentstream.ses_fixture_placeholder.frames"],
   "subscribe": [
     "notifications.envoy.deliver.ses_fixture_placeholder",
     "agentstream.ses_fixture_placeholder.control"

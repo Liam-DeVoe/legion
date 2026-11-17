@@ -762,7 +762,8 @@ RULES = {
     f"{ENVOY}/internal/dispatch/text/whitespace_fixture_test.go": reads(
         (f"{FIX}/go-unicode-isspace.json", "internal/dispatch/text/whitespace_fixture_test.go:34 os.ReadFile (goSpaceFixturePath :17, ../../../../contracts/fixtures)")),
     f"{ENVOY}/natsgrant/session_fixture_test.go": reads(
-        (f"{FIX}/session-grant.json", "natsgrant/session_fixture_test.go:53 readJSON (sessionFixturePath :22, ../../contracts/fixtures): the fixture must be natsgrant.Session of its placeholder id")),
+        (f"{FIX}/session-grant.json", "natsgrant/session_fixture_test.go:132,138 readJSON and os.ReadFile (sessionFixturePath :23, ../../contracts/fixtures): the fixture must be natsgrant.Session of its placeholder id, in biome's layout"),
+        ("biome.json", "natsgrant/session_fixture_test.go:51 readJSON (biomeConfigPath :27, ../../../biome.json): the fixture's layout is biome's formatter.indentWidth and formatter.lineWidth")),
     f"{ENVOY}/internal/smoke/rdsbundle_test.go": [
         run(ENVOY, ["./internal/smoke/systemroots"], "internal/smoke/rdsbundle_test.go:36-41 cmdtest.BuildCommand ./systemroots CGO_ENABLED=0 GOOS=linux",
             mode="build", env={"CGO_ENABLED": "0", "GOOS": "linux"}),
