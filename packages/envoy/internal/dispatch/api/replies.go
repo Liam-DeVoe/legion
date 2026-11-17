@@ -670,60 +670,70 @@ func (s *server) readMyReplyRows(
 	defer rows.Close()
 	read := []model.MyReplyRow{}
 	for rows.Next() {
-		var row model.MyReplyRow
-		var issueKey, issueTitle, project, slug, name, replyID *string
-		var subject, body string
-		var author, anchor []byte
-		var isAnswer bool
-		var readThrough time.Time
-		var projectKey string
-		// The version is a Reply row's alone, so this scan is the one place that sets it: an
-		// Agent row carries none and sends none (model.MyReplyRow.Version).
-		var version int64
-		if err := rows.Scan(
-			&row.ThreadID, &row.Kind, &row.Ref,
-			&issueKey, &issueTitle, &project, &slug, &name,
-			&subject, &replyID, &isAnswer, &author, &body, &row.Reply.CreatedAt,
-			&row.Priority, &projectKey, &readThrough, &row.Unread, &row.UnreadCount, &anchor,
-			&row.DismissedAt, &version,
-		); err != nil {
-			return nil, fmt.Errorf("scan my reply: %w", err)
+		row, err := scanMyReplyRow(rows)
+		if err != nil {
+			return nil, err
 		}
-		row.Reply.Kind = "reply"
-		if isAnswer {
-			row.Reply.Kind = "answer"
-		}
-		if issueKey != nil {
-			row.Issue = &model.OpenAskIssue{Key: *issueKey, Title: *issueTitle}
-		} else if project != nil {
-			row.Document = &model.OpenAskDocument{Project: *project, Slug: *slug, Name: *name}
-		}
-		row.Project = &projectKey
-		row.ReadThrough = &readThrough
-		row.Version = &version
-		row.Subject = contracts.OneLineSummary(subject)
-		if replyID != nil {
-			row.Reply.ID = *replyID
-		}
-		if author != nil {
-			if err := json.Unmarshal(author, &row.Reply.Author); err != nil {
-				return nil, fmt.Errorf("decode my reply author: %w", err)
-			}
-		}
-		if len(anchor) > 0 {
-			var value model.Anchor
-			if err := model.DecodeAnchor(anchor, &value); err != nil {
-				return nil, fmt.Errorf("decode my reply anchor: %w", err)
-			}
-			row.Anchor = &value
-		}
-		row.Reply.FirstLine = contracts.OneLineSummary(body)
 		read = append(read, row)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("list my replies: %w", err)
 	}
 	return read, nil
+}
+
+// scanMyReplyRow decodes one Reply row myRepliesPageRest selects: the row listMyReplies answers,
+// and the thread row of an entry GET /api/v1/me/inbox answers.
+func scanMyReplyRow(scanned pgx.Row) (model.MyReplyRow, error) {
+	var row model.MyReplyRow
+	var issueKey, issueTitle, project, slug, name, replyID *string
+	var subject, body string
+	var author, anchor []byte
+	var isAnswer bool
+	var readThrough time.Time
+	var projectKey string
+	// The version is a Reply row's alone, so this scan is the one place that sets it: an
+	// Agent row carries none and sends none (model.MyReplyRow.Version).
+	var version int64
+	if err := scanned.Scan(
+		&row.ThreadID, &row.Kind, &row.Ref,
+		&issueKey, &issueTitle, &project, &slug, &name,
+		&subject, &replyID, &isAnswer, &author, &body, &row.Reply.CreatedAt,
+		&row.Priority, &projectKey, &readThrough, &row.Unread, &row.UnreadCount, &anchor,
+		&row.DismissedAt, &version,
+	); err != nil {
+		return model.MyReplyRow{}, fmt.Errorf("scan my reply: %w", err)
+	}
+	row.Reply.Kind = "reply"
+	if isAnswer {
+		row.Reply.Kind = "answer"
+	}
+	if issueKey != nil {
+		row.Issue = &model.OpenAskIssue{Key: *issueKey, Title: *issueTitle}
+	} else if project != nil {
+		row.Document = &model.OpenAskDocument{Project: *project, Slug: *slug, Name: *name}
+	}
+	row.Project = &projectKey
+	row.ReadThrough = &readThrough
+	row.Version = &version
+	row.Subject = contracts.OneLineSummary(subject)
+	if replyID != nil {
+		row.Reply.ID = *replyID
+	}
+	if author != nil {
+		if err := json.Unmarshal(author, &row.Reply.Author); err != nil {
+			return model.MyReplyRow{}, fmt.Errorf("decode my reply author: %w", err)
+		}
+	}
+	if len(anchor) > 0 {
+		var value model.Anchor
+		if err := model.DecodeAnchor(anchor, &value); err != nil {
+			return model.MyReplyRow{}, fmt.Errorf("decode my reply anchor: %w", err)
+		}
+		row.Anchor = &value
+	}
+	row.Reply.FirstLine = contracts.OneLineSummary(body)
+	return row, nil
 }
 
 // threadReadInput is the body of PUT /api/v1/me/threads/{id}/read.

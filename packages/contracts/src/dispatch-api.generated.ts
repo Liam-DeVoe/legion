@@ -2015,6 +2015,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/me/inbox": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description Everything tied to the caller's own person, in one statement: each node that holds a current relation to their person node (or to a session the server proved theirs) at either end, once, with every relation kind that ties it to them - {kind, direction (inbound, a tuple into the person; outbound, one from them), at} - and its moment, newest first. The kinds are the store's, so a kind a later write appends is an entry the day it is appended; the identity tuple gives none, and a node the caller may not see is in no entry and no count. ?kind= (a comma list of relation kinds, repeatable) narrows to the entries of those kinds and widens nothing. ?state= is the page's own narrowing - unread, inbox or dismissed - read from the lists the Inbox reads (GET /api/v1/me/replies' states, and under inbox GET /api/v1/inbox's open asks waiting on the caller); with none the entries are the walk of the tuples. Where an entry's node is a row the page draws (under no state, the inbox state's), it carries exactly one of ask (the Inbox's ask row with its thread), thread (a Reply row) or agent (an Agent row, with the conversation it draws). A narrowing never leaves in the answer an entry it cannot judge: ?project= narrows every entry by its node's own project, and a node the store holds no project of is then in none; ?issue= or ?artifact= (not both) keeps the rows the page draws of that owner and drops every other entry, an Agent row among them, since no attribute every node carries says which issue or document it belongs to. An absent limit answers every entry; a named one is 1-200 from ?offset=, and ?cursor= (the next_cursor of the page before it) resumes after the last entry it answered. Any other query key, an identity selector (login, person, assignee, session) among them, is 400 INVALID_QUERY naming it. The read is at the event horizon notifications read at. {person, as_of (the database time of the statement), horizon, total (every entry, taken after the visibility predicate), limit (0 when none was named), offset, next_cursor (while entries follow the page), entries}. */
+    get: operations["getApiV1MeInbox"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/me/inbox/dismiss": {
     parameters: {
       query?: never;
@@ -5302,6 +5319,60 @@ export interface components {
     };
     MarkdownRoundTripResponse: {
       markdown: string;
+    };
+    MeInboxAgent: {
+      anchor?: components["schemas"]["Anchor"];
+      conversation: components["schemas"]["MessageRead"];
+      /** Format: date-time */
+      dismissed_at?: string;
+      document?: components["schemas"]["OpenAskDocument"];
+      issue?: components["schemas"]["OpenAskIssue"];
+      kind: string;
+      priority?: number;
+      project?: string;
+      /** Format: date-time */
+      read_through?: string;
+      ref: string;
+      reply: components["schemas"]["MyReplyReply"];
+      session?: components["schemas"]["MyReplySession"];
+      subject: string;
+      thread_id: string;
+      unread: boolean;
+      unread_count: number;
+      unread_reply_ids?: string[];
+      version?: number;
+    };
+    MeInboxEntry: {
+      agent?: components["schemas"]["MeInboxAgent"];
+      ask?: components["schemas"]["InboxRow"];
+      /** Format: date-time */
+      moment: string;
+      node: components["schemas"]["MeInboxNode"];
+      relations: components["schemas"]["MeInboxRelation"][] | null;
+      thread?: components["schemas"]["MyReplyRow"];
+    };
+    MeInboxNode: {
+      id: string;
+      kind: string;
+    };
+    MeInboxRelation: {
+      /** Format: date-time */
+      at: string;
+      /** @enum {string} */
+      direction: "inbound" | "outbound";
+      kind: string;
+    };
+    MeInboxResponse: {
+      /** Format: date-time */
+      as_of: string;
+      entries: components["schemas"]["MeInboxEntry"][] | null;
+      /** Format: int64 */
+      horizon: number;
+      limit: number;
+      next_cursor?: string;
+      offset: number;
+      person: string;
+      total: number;
     };
     MessageDelivery: {
       accepted_as: null | string;
@@ -11436,6 +11507,44 @@ export interface operations {
       };
     };
   };
+  getApiV1MeInbox: {
+    parameters: {
+      query?: {
+        limit?: number;
+        offset?: number;
+        kind?: string;
+        state?: "unread" | "inbox" | "dismissed";
+        cursor?: string;
+        issue?: string;
+        artifact?: string;
+        project?: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["MeInboxResponse"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
   postApiV1MeInboxDismiss: {
     parameters: {
       query?: {
@@ -13943,6 +14052,11 @@ export type LiveWritePauseState = components["schemas"]["LiveWritePauseState"];
 export type MachineLookupRequest = components["schemas"]["MachineLookupRequest"];
 export type MarkdownRoundTripInput = components["schemas"]["MarkdownRoundTripInput"];
 export type MarkdownRoundTripResponse = components["schemas"]["MarkdownRoundTripResponse"];
+export type MeInboxAgent = components["schemas"]["MeInboxAgent"];
+export type MeInboxEntry = components["schemas"]["MeInboxEntry"];
+export type MeInboxNode = components["schemas"]["MeInboxNode"];
+export type MeInboxRelation = components["schemas"]["MeInboxRelation"];
+export type MeInboxResponse = components["schemas"]["MeInboxResponse"];
 export type MessageDelivery = components["schemas"]["MessageDelivery"];
 export type MessageRead = components["schemas"]["MessageRead"];
 export type MessageReplyInput = components["schemas"]["MessageReplyInput"];

@@ -76,6 +76,10 @@ type routeShape struct {
 	// OpaqueRequest is why this route's body carries no schema, for a route that reads the bytes
 	// whole rather than modelling them; empty for every other route, and never beside Request.
 	OpaqueRequest string
+	// RefusesUndeclared is a route that refuses every query key its Params does not declare by
+	// name, the `session` every other operation carries among them (GET /api/v1/me/inbox, which
+	// answers for the credential's own person alone), so the document gives it no `session`.
+	RefusesUndeclared bool
 }
 
 // --- the query-parameter structs -------------------------------------------------------------
@@ -84,10 +88,11 @@ type routeShape struct {
 // it is read from. They are declarations: the handlers keep their own reads. Two keys of the API
 // are named by no struct here. `session` is read by actingPerson (server.go) on every route that
 // resolves a person, so it belongs to the whole API rather than to any one operation and the
-// emitter adds it everywhere; the delivery facet of the same name is left out with it. `cursor`
-// on GET /api/v1/issues is read only to refuse it (400 INVALID_QUERY, issue_page.go), and naming
-// it would offer a client a parameter that cannot work. No struct here is ever a request body,
-// and the emitter reads only each field's `query` and `enum` tags and the Go type it carries.
+// emitter adds it everywhere but on the one route that refuses it (RefusesUndeclared); the
+// delivery facet of the same name is left out with it. `cursor` on GET /api/v1/issues is read
+// only to refuse it (400 INVALID_QUERY, issue_page.go), and naming it would offer a client a
+// parameter that cannot work. No struct here is ever a request body, and the emitter reads only
+// each field's `query` and `enum` tags and the Go type it carries.
 
 // projectArtifactsQuery is GET /api/v1/projects/{key}/artifacts's query.
 type projectArtifactsQuery struct {
@@ -333,6 +338,33 @@ type myRepliesQuery struct {
 	Issue string `query:"issue"`
 	// Artifact narrows the rows to one document's threads, by document id.
 	Artifact string `query:"artifact"`
+}
+
+// meInboxQuery is GET /api/v1/me/inbox's query, the whole of it: the route refuses any other key
+// by name (parseMeInboxRequest, over meInboxQueryKeys, which
+// TestTheOneReadsDeclaredKeysAreItsParamsStruct holds to these tags), so it is the one row of the
+// document that takes no `session` (RefusesUndeclared).
+type meInboxQuery struct {
+	// Limit is the page size, 1 to 200; an absent one is every entry.
+	Limit int `query:"limit"`
+	// Offset is where that page starts.
+	Offset int `query:"offset"`
+	// Kind narrows the entries to those of these relation kinds, as one comma list; it widens
+	// nothing, and a kind no tuple holds answers no entry.
+	Kind string `query:"kind"`
+	// State is the page's own narrowing: unread, inbox or dismissed. With none the entries are
+	// the walk of the tuples.
+	State string `query:"state" enum:"unread,inbox,dismissed"`
+	// Cursor resumes after the last entry of the page before it: that page's next_cursor.
+	Cursor string `query:"cursor"`
+	// Issue keeps the rows the page draws of one issue and no other entry, since no attribute
+	// every node carries says which issue it belongs to; with Artifact it is 400 INVALID_QUERY.
+	Issue string `query:"issue"`
+	// Artifact keeps the rows the page draws of one document, by document id, and no other entry.
+	Artifact string `query:"artifact"`
+	// Project narrows every entry to the nodes of one project, by the node's own project; a
+	// node the store holds no project of is in no answer under it.
+	Project string `query:"project"`
 }
 
 // searchRouteQuery is GET /api/v1/search's query. The name carries `route` because search.go
@@ -722,6 +754,9 @@ var routeShapes = map[string]routeShape{
 	"GET /api/v1/me/answers":           {Status: http.StatusOK, Response: model.MyAnswersResponse{}, Params: myAnswersQuery{}},
 	"GET /api/v1/people/{login}/nodes": {Status: http.StatusOK, Response: personNodes{}, Params: myAnswersQuery{}},
 	"GET /api/v1/me/replies":           {Status: http.StatusOK, Response: model.MyRepliesResponse{}, Params: myRepliesQuery{}},
+	"GET /api/v1/me/inbox": {
+		Status: http.StatusOK, Response: meInboxResponse{}, Params: meInboxQuery{}, RefusesUndeclared: true,
+	},
 	"PUT /api/v1/me/threads/{id}/read": {Status: http.StatusNoContent, Request: threadReadInput{}},
 	"POST /api/v1/me/inbox/read": {
 		Status: http.StatusOK, Response: inboxReadResponse{}, Request: inboxReadRequest{},

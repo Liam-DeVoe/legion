@@ -1273,10 +1273,26 @@ func (s *server) indexMessage(ctx context.Context, tx pgx.Tx, message model.Mess
 	return refs.ReplaceCountedItem(ctx, tx, refs.ItemMessage, message.ID, message.Body, s.deps.ServerURL, message.CreatedAt)
 }
 
+// messageReplyChainsQuery is every message transitively replying to one of the seeds $1 names
+// (uuid[]), oldest first, each row the reply's messageColumns and then the seed it hangs under.
+// GET /api/v1/me/inbox splices it into its one statement over the roots of its page.
+const messageReplyChainsQuery = `
+		with recursive replies as (
+			select id, issue_key, author, body, target, in_reply_to, broadcast_id, created_at, replies_to_block, in_reply_to as seed_id
+			from messages where in_reply_to = any($1::uuid[])
+			union all
+			select m.id, m.issue_key, m.author, m.body, m.target, m.in_reply_to, m.broadcast_id, m.created_at, m.replies_to_block, r.seed_id
+			from messages m join replies r on m.in_reply_to = r.id
+		)
+		select ` + messageColumns + `, seed_id::text
+		from replies
+		order by created_at, id
+	`
+
 // loadMessageReplyChains reads, for each seed message, every message transitively replying to
-// it, oldest first, in one recursive query; each reply carries its own deliveries. A seed with
-// no replies maps to an empty (never nil) slice. Seeds must not be replies of one another: a
-// reply is grouped under exactly one seed.
+// it, oldest first, in one recursive query (messageReplyChainsQuery); each reply carries its own
+// deliveries. A seed with no replies maps to an empty (never nil) slice. Seeds must not be
+// replies of one another: a reply is grouped under exactly one seed.
 func (s *server) loadMessageReplyChains(ctx context.Context, q queryer, seedIDs []string) (map[string][]model.Message, error) {
 	chains := make(map[string][]model.Message, len(seedIDs))
 	for _, id := range seedIDs {
@@ -1285,18 +1301,7 @@ func (s *server) loadMessageReplyChains(ctx context.Context, q queryer, seedIDs 
 	if len(seedIDs) == 0 {
 		return chains, nil
 	}
-	rows, err := q.Query(ctx, `
-		with recursive replies as (
-			select id, issue_key, author, body, target, in_reply_to, broadcast_id, created_at, replies_to_block, in_reply_to as seed_id
-			from messages where in_reply_to = any($1::uuid[])
-			union all
-			select m.id, m.issue_key, m.author, m.body, m.target, m.in_reply_to, m.broadcast_id, m.created_at, m.replies_to_block, r.seed_id
-			from messages m join replies r on m.in_reply_to = r.id
-		)
-		select `+messageColumns+`, seed_id::text
-		from replies
-		order by created_at, id
-	`, seedIDs)
+	rows, err := q.Query(ctx, messageReplyChainsQuery, seedIDs)
 	if err != nil {
 		return nil, err
 	}

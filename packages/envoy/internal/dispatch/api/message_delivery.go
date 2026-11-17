@@ -1309,6 +1309,14 @@ func scanMessageDelivery(row pgx.Row, extra ...any) (model.MessageDelivery, erro
 	return delivery, nil
 }
 
+// messageDeliveriesQuery is every delivery attempt of the messages $1 names (uuid[]), each
+// message's in attempt order, one row per attempt (scanMessageDelivery). GET /api/v1/me/inbox
+// splices it into its one statement over the messages of its page.
+const messageDeliveriesQuery = `
+		select ` + messageDeliveryColumns + `
+		from message_deliveries where message_id = any($1::uuid[]) order by message_id, attempt
+	`
+
 // loadMessageDeliveries reads every delivery attempt of the given messages in one query, keyed
 // by message id and ordered by attempt within each; a message with no attempts maps to an empty
 // (never nil) slice.
@@ -1320,10 +1328,7 @@ func (s *server) loadMessageDeliveries(ctx context.Context, q queryer, messageID
 	if len(messageIDs) == 0 {
 		return deliveries, nil
 	}
-	rows, err := q.Query(ctx, `
-		select `+messageDeliveryColumns+`
-		from message_deliveries where message_id = any($1::uuid[]) order by message_id, attempt
-	`, messageIDs)
+	rows, err := q.Query(ctx, messageDeliveriesQuery, messageIDs)
 	if err != nil {
 		return nil, err
 	}

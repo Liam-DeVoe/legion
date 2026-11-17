@@ -128,6 +128,7 @@ DELETE /api/v1/me/asks/{id}/snooze any
 PUT /api/v1/me/asks/{id}/snooze any
 GET /api/v1/me/documents/{id}/read any
 PUT /api/v1/me/documents/{id}/read any
+GET /api/v1/me/inbox any
 POST /api/v1/me/inbox/dismiss any
 POST /api/v1/me/inbox/read any
 PUT /api/v1/me/issues/{key}/state any

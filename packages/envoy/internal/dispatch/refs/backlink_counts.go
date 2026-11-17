@@ -100,19 +100,41 @@ func QueueBacklinkCounts(b *pgx.Batch, who model.Actor, toKind string, ids, excl
 // falls to 0.06 ms a read.
 func backlinkCountStatement(who model.Actor, toKind string, ids, excludeKinds []string) (string, []any, error) {
 	one := len(ids) == 1
-	statement, ok := backlinkCountSQL(toKind, excludeKinds, one)
-	if !ok {
-		return "", nil, fmt.Errorf("count %s backlinks: no arms declared for that node kind", toKind)
+	statement, rest, err := backlinkCountRead(who, toKind, excludeKinds, one)
+	if err != nil {
+		return "", nil, err
 	}
 	var addresses any = ids
 	if one {
 		addresses = ids[0]
 	}
-	args := []any{addresses, nodeKinds, VisibilityArg(who)}
-	if len(excludeKinds) > 0 {
-		args = append(args, excludeKinds)
+	return statement, append([]any{addresses}, rest...), nil
+}
+
+// BacklinkCountRead is the statement BacklinkCounts runs over an array of addresses, and the
+// arguments it binds after them: $1 is the addresses (text[]), and rest are $2 onwards - the node
+// kinds this build reads, the acting credential and, when excludeKinds is not empty, those kinds.
+// Each row it answers is one address that has an inbound edge and its count, as scanBacklinkCounts
+// reads them. It is exported for a reader that counts inside a statement of its own, binding $1
+// to its own addresses and the rest to placeholders of its own (api's GET /api/v1/me/inbox), so
+// the count it splices in is this one. A kind the arm table does not declare is refused, as
+// BacklinkCounts refuses it.
+func BacklinkCountRead(who model.Actor, toKind string, excludeKinds []string) (statement string, rest []any, err error) {
+	return backlinkCountRead(who, toKind, excludeKinds, false)
+}
+
+// backlinkCountRead is backlinkCountStatement less its first argument, the addresses, for one
+// address bound as itself or for an array of them (one).
+func backlinkCountRead(who model.Actor, toKind string, excludeKinds []string, one bool) (string, []any, error) {
+	statement, ok := backlinkCountSQL(toKind, excludeKinds, one)
+	if !ok {
+		return "", nil, fmt.Errorf("count %s backlinks: no arms declared for that node kind", toKind)
 	}
-	return statement, args, nil
+	rest := []any{nodeKinds, VisibilityArg(who)}
+	if len(excludeKinds) > 0 {
+		rest = append(rest, excludeKinds)
+	}
+	return statement, rest, nil
 }
 
 // scanBacklinkCounts reads the rows the count statement returns into counts, which a node with no

@@ -344,36 +344,47 @@ func (s *server) readMyAgentRows(
 	defer rows.Close()
 	read := []model.MyReplyRow{}
 	total := 0
+	var extra []any
+	if counted {
+		extra = append(extra, &total)
+	}
 	for rows.Next() {
-		row := model.MyReplyRow{Kind: myReplyKindAgent, Reply: model.MyReplyReply{Kind: "reply"}}
-		var session, subject, body string
-		var author []byte
-		var repliedAt time.Time
-		scanned := []any{
-			&row.ThreadID, &session, &repliedAt, &row.DismissedAt, &subject,
-			&row.Reply.ID, &author, &body, &row.Reply.CreatedAt,
-			&row.UnreadCount, &row.UnreadReplyIDs,
+		row, err := scanMyAgentRow(rows, extra...)
+		if err != nil {
+			return nil, 0, err
 		}
-		if counted {
-			scanned = append(scanned, &total)
-		}
-		if err := rows.Scan(scanned...); err != nil {
-			return nil, 0, fmt.Errorf("scan my agent thread: %w", err)
-		}
-		if err := json.Unmarshal(author, &row.Reply.Author); err != nil {
-			return nil, 0, fmt.Errorf("decode my agent reply author: %w", err)
-		}
-		row.Ref = "/agents/" + session + "/live"
-		row.Subject = contracts.OneLineSummary(subject)
-		row.Reply.FirstLine = contracts.OneLineSummary(body)
-		row.Unread = row.UnreadCount > 0
-		row.Session = &model.MyReplySession{ID: session}
 		read = append(read, row)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, 0, fmt.Errorf("list my agent threads: %w", err)
 	}
 	return read, total, nil
+}
+
+// scanMyAgentRow decodes one Agent row myAgentRowColumns selects, extra receiving the columns
+// after them: the row listMyReplies answers, and the agent row of an entry GET /api/v1/me/inbox
+// answers. Its session is named by its id until nameAgentSessions names it.
+func scanMyAgentRow(scanned pgx.Row, extra ...any) (model.MyReplyRow, error) {
+	row := model.MyReplyRow{Kind: myReplyKindAgent, Reply: model.MyReplyReply{Kind: "reply"}}
+	var session, subject, body string
+	var author []byte
+	var repliedAt time.Time
+	if err := scanned.Scan(append([]any{
+		&row.ThreadID, &session, &repliedAt, &row.DismissedAt, &subject,
+		&row.Reply.ID, &author, &body, &row.Reply.CreatedAt,
+		&row.UnreadCount, &row.UnreadReplyIDs,
+	}, extra...)...); err != nil {
+		return model.MyReplyRow{}, fmt.Errorf("scan my agent thread: %w", err)
+	}
+	if err := json.Unmarshal(author, &row.Reply.Author); err != nil {
+		return model.MyReplyRow{}, fmt.Errorf("decode my agent reply author: %w", err)
+	}
+	row.Ref = "/agents/" + session + "/live"
+	row.Subject = contracts.OneLineSummary(subject)
+	row.Reply.FirstLine = contracts.OneLineSummary(body)
+	row.Unread = row.UnreadCount > 0
+	row.Session = &model.MyReplySession{ID: session}
+	return row, nil
 }
 
 // nameAgentSessions names the session of every Agent row on the page. A session's name is the
