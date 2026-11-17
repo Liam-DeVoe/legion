@@ -24,9 +24,10 @@
 // SOFTWARE.
 
 // Package rules holds the ASD-STE100 structure rules a writing check applies to each prose
-// sentence: the hard rules of upstream ste-lint.py that are true by reading alone. Each rule reads
-// one prose.Sentence, so it sees only prose, never code, quotes or addresses, and counts within
-// one sentence, never across a line.
+// sentence: the hard rules of upstream ste-lint.py that are true by reading alone, and
+// key-pointer (keypointer.go), a rule of this package's own. Each rule reads one prose.Sentence,
+// so it sees only prose, never code or quotes and a bare address only as prose.URLToken, and
+// counts within one sentence, never across a line.
 package rules
 
 import (
@@ -63,6 +64,7 @@ func All() []Rule {
 		{ID: "nominalization", Check: nominalization},
 		{ID: "long-sentence", Check: longSentence},
 		{ID: "dangling-conjunction", Check: danglingConjunction},
+		{ID: "key-pointer", Check: keyPointer},
 	}
 }
 

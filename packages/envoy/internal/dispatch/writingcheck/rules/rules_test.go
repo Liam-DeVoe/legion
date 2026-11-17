@@ -81,7 +81,7 @@ func TestCarriedAndLeftOutRules(t *testing.T) {
 	for _, rule := range All() {
 		carried = append(carried, rule.ID)
 	}
-	if want := []string{"semicolon", "phrasal-verb", "nominalization", "long-sentence", "dangling-conjunction"}; !reflect.DeepEqual(carried, want) {
+	if want := []string{"semicolon", "phrasal-verb", "nominalization", "long-sentence", "dangling-conjunction", "key-pointer"}; !reflect.DeepEqual(carried, want) {
 		t.Fatalf("All() = %v, want %v", carried, want)
 	}
 	var left []string

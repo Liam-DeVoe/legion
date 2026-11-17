@@ -3497,6 +3497,10 @@ A request that names a model the list does not hold is refused 400 `TEST_MODEL_R
 The writing check reads the prose of an agent's write before the server stores it and records what it finds (`internal/dispatch/writingcheck`, `internal/dispatch/api/writing_check.go`); the write goes on whatever it finds.
 It runs on every server with the bundle's structure rules (`writingcheck.EnabledRules`) and no detector, and no setting turns it on or off.
 The bundle ships `semicolon` and `long-sentence` off (`writingcheck.MeasuredOff`): over 600 drawn agent writes they matched 62.2% and 79.1%, and the ceiling for one rule is 5%; `GET /api/v1/writing-check` lists them in `rules_left_out` with that reason.
+That ceiling was set for the refusals the check made then.
+The bundle also ships `key-pointer`, which finds a sentence whose subject is an issue key, a pull request number or a link, and a sentence that holds a possessive key (`BET-1323's`).
+That measurement did not measure it: it came later, and it finds 356 of the 2169 development texts of INFRA-3231's harness dataset (16.4%).
+The check records its findings, as it records every rule's, and the write goes on.
 The reviewer applies the structure rules and the detector as its `structure` and `detector` rule sets (`DISPATCH_REVIEWER_RULES`, above).
 
 ### What the check reads

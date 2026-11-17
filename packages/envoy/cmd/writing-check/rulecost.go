@@ -33,6 +33,7 @@ var rulePlants = map[string]string{
 	"nominalization":       "The team performed an evaluation of the new cache.",
 	"long-sentence":        "The new release adds a cache for the search page, a retry for the upload path, a limit for the export queue, and a log line for each failed request in the nightly batch job.",
 	"dangling-conjunction": "- The parser reads the input file and",
+	"key-pointer":          "BET-12 adds a retry to the upload path.",
 }
 
 // stratum is one family's part of a stratified draw: the writes of the input, the writes drawn,

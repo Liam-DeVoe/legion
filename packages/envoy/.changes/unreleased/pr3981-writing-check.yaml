@@ -2,9 +2,11 @@ kind: Added
 body: |-
   Dispatch's server now reads the prose of each agent write that a person reads, before it stores
   the write, and records what it finds. It refuses no write: the write goes on whatever it finds.
-  The check applies three STE100 structure rules: `phrasal-verb`, `nominalization` and
-  `dangling-conjunction`. `semicolon`, `long-sentence` and the phrase detector stay off. No setting
-  turns the check on or off.
+  The check applies three STE100 structure rules, `phrasal-verb`, `nominalization` and
+  `dangling-conjunction`, and `key-pointer`, which finds a sentence whose subject is an issue key,
+  a pull request number or a link, and a sentence that holds a possessive key (`BET-1323's`).
+  `semicolon`, `long-sentence` and the phrase detector stay off. No setting turns the check on or
+  off.
   It reads a write by an agent session, and a write a person's credential makes for such a
   session. It does not read a person's own write, the Legion daemon's write or a write Dispatch
   makes. The server decides who reads the text from the record, never from the text, and a write

@@ -318,7 +318,8 @@ type AlertRoute struct {
 }
 
 // RuleCosts is the measurement that chose the structure rules: the drawn writes' manifest, its
-// seed and size, the ceiling a rule must stay under, and each rule's share.
+// seed and size, the ceiling a rule had to stay under, and each rule's share. key-pointer came
+// after it and is not in it (writingcheck's bundle.go).
 type RuleCosts struct {
 	ManifestSHA256 string     `yaml:"manifest_sha256"`
 	Seed           int64      `yaml:"seed"`

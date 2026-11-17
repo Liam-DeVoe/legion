@@ -48,7 +48,7 @@ func (s *stubReader) Calls() int64 {
 
 // everyRule is every rule package rules carries: the checker's tests are about the checker, not
 // about which rules the bundle ships, so they name the rules they apply.
-var everyRule = []string{"semicolon", "phrasal-verb", "nominalization", "long-sentence", "dangling-conjunction"}
+var everyRule = []string{"semicolon", "phrasal-verb", "nominalization", "long-sentence", "dangling-conjunction", "key-pointer"}
 
 func on(r Reader) Config {
 	return Config{Enabled: true, Rules: everyRule, Detector: true, Reader: r}
