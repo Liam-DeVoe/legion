@@ -302,9 +302,10 @@ func TestNoStateEventOfAHiddenProjectReachesAnOpenViewer(t *testing.T) {
 		}
 		return counted
 	}
-	// Each caller's socket is read through a pin of its own, written after carol's three writes.
-	markAgentState(t, threads.handler, seedAlice)
-	markAgentState(t, threads.handler, seedCarol)
+	// Each caller's socket is read through a pin of its own, written after carol's three writes, on
+	// a session that acts in no project: s1 acts in PRIV, which alice does not see.
+	markAgentState(t, threads.handler, seedAlice, "s-marker")
+	markAgentState(t, threads.handler, seedCarol, "s-marker")
 	socketEvents := func(caller privateCaller, login string) []privateLogRow {
 		var logged []privateLogRow
 		for _, event := range liveEventsThrough(t, sockets[caller], "feed", agentStateOf(login)) {
