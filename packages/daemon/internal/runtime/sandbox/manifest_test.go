@@ -385,7 +385,10 @@ func TestEveryGuaranteedIssueAndControllerPodCarriesBothStopEvictionAnnotations(
 // keeps both, and so does one whose equal request and limit are spelled apart (3000m against 3,
 // 19456Mi against 19Gi). The controller's pod of each of these deployments keeps both throughout:
 // its own reservation is the Guaranteed default here, and its kind would keep them anyway
-// (TestABurstableControllerPodKeepsBothStopEvictionAnnotations).
+// (TestABurstableControllerPodKeepsBothStopEvictionAnnotations). A microVM issue pod reads the same
+// issue reservation as a gVisor one and takes the same rule: the rule is about whether the pod can
+// be ended cheaply, which its request decides and its runtime class does not, so each reservation
+// is read in a gVisor project and in a microVM one.
 func TestABurstableIssuePodCarriesNoSafeToEvictAnnotation(t *testing.T) {
 	for name, tc := range map[string]struct {
 		issue    config.Reservation
@@ -404,24 +407,34 @@ func TestABurstableIssuePodCarriesNoSafeToEvictAnnotation(t *testing.T) {
 			CPU: "3", CPURequest: "3000m", Memory: "19Gi", MemoryRequest: "19456Mi", EphemeralStorage: "80Gi", EphemeralStorageRequest: "6Gi",
 		}, true},
 	} {
-		t.Run(name, func(t *testing.T) {
-			opts := goldenOptions()
-			opts.Resources.Issue = requirementsOf(tc.issue)
-			r, err := configure(opts)
-			if err != nil {
-				t.Fatalf("configure with the issue pod reserving %+v: %v", tc.issue, err)
-			}
-			want := stopEvictionAnnotations(podShape(r, issuePod{}, nil), tc.extended)
-			for role, spec := range map[string]runtime.SpawnSpec{"root": rootSpec(t), "implementer": childSpec(t)} {
-				if got := podAnnotations(t, r, spec); !maps.Equal(got, want) {
-					t.Errorf("the issue pod of the %s's launch carries %v, want exactly %v", role, got, want)
+		for sandboxName, sandbox := range map[string]SandboxConfig{
+			"gVisor":  {},
+			"microVM": {Type: SandboxMicroVM, MicroVM: testMicroVM()},
+		} {
+			t.Run(name+"/"+sandboxName, func(t *testing.T) {
+				opts := goldenOptions()
+				opts.Resources.Issue = requirementsOf(tc.issue)
+				opts.Sandbox = sandbox
+				r, err := configure(opts)
+				if err != nil {
+					t.Fatalf("configure with the issue pod reserving %+v: %v", tc.issue, err)
 				}
-			}
-			controller := stopEvictionAnnotations(podShape(r, controllerPod{}, nil), true)
-			if got := podAnnotations(t, r, controllerSpec(t)); !maps.Equal(got, controller) {
-				t.Errorf("the controller's pod carries %v, want exactly %v", got, controller)
-			}
-		})
+				for role, spec := range map[string]runtime.SpawnSpec{"root": rootSpec(t), "implementer": childSpec(t)} {
+					l := launchOf(t, r, spec)
+					if (l.microVM != nil) != (sandbox.Type == SandboxMicroVM) {
+						t.Fatalf("the %s's launch in a %s project runs in a microVM: %v", role, sandboxName, l.microVM != nil)
+					}
+					want := stopEvictionAnnotations(podShape(r, l.kind, l.microVM), tc.extended)
+					if got := r.podTemplate(l).Metadata.Annotations; !maps.Equal(got, want) {
+						t.Errorf("the issue pod of the %s's launch carries %v, want exactly %v", role, got, want)
+					}
+				}
+				controller := stopEvictionAnnotations(podShape(r, controllerPod{}, nil), true)
+				if got := podAnnotations(t, r, controllerSpec(t)); !maps.Equal(got, controller) {
+					t.Errorf("the controller's pod carries %v, want exactly %v", got, controller)
+				}
+			})
+		}
 	}
 }
 
