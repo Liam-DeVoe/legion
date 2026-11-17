@@ -7,54 +7,87 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/sessiontiming"
 )
 
 // TestTheIdleRigRoleProcessRegistersThroughABusyListener: the rig's role process registers with
-// the Envoy listener whatever answer the listener's load makes it give, as a plugin does. A
-// listener whose bus did not answer within its own budget answers 503 with Retry-After, and the
-// process calls again after that wait; an answer that comes later than any deadline the process's
-// client keeps is one the process waits for. Either way the registration lands. The process used
-// to end at either one, and its pod was never ready: on a machine at load5 1,100 to 2,000 the
-// listener answered POST /v1/interests/subscribe after the 20 s the client gave it.
+// the Envoy listener whatever answer the listener's load makes it give, as a plugin does, on both
+// of its registration calls (subscribe and roles/set). A call the listener did not answer, or
+// answered 5xx, is made again: after the answer's Retry-After, or after sessiontiming's
+// CallRetryDelay when the answer names none. An answer that comes later than any deadline the
+// process's client keeps is one the process waits for. A 4xx is a refusal, and the process does
+// not call again. The process used to end at the first failure of either call, and its pod was
+// never ready: on a machine at load5 1,100 to 2,000 the listener answered
+// POST /v1/interests/subscribe after the 20 s the client gave it.
 func TestTheIdleRigRoleProcessRegistersThroughABusyListener(t *testing.T) {
-	t.Run("a 503 asking for another call", func(t *testing.T) {
-		listener := &idleRigBusyListener{first: func(w http.ResponseWriter, _ *idleRigRoleProcess) {
-			w.Header().Set("Retry-After", "1")
-			http.Error(w, `{"error":"the bus did not answer"}`, http.StatusServiceUnavailable)
-		}}
-		p := listener.start(t)
-		if err := p.subscribe(nil); err != nil {
-			t.Fatalf("subscribe through a listener that answered 503 first: %v, want the registration landed on the call after", err)
-		}
-		calls := listener.callTimes()
-		if len(calls) != 2 {
-			t.Fatalf("the listener was called %d times, want 2: the 503 and the call after it", len(calls))
-		}
-		if gap := calls[1].Sub(calls[0]); gap < time.Second {
-			t.Errorf("the second call came %s after the first, want the 1 s the 503's Retry-After asked for", gap)
-		}
-	})
-	t.Run("an answer held past the client's own deadline", func(t *testing.T) {
-		listener := &idleRigBusyListener{first: func(w http.ResponseWriter, p *idleRigRoleProcess) {
-			// A second, and the client's whole deadline on top when it keeps one: an answer later
-			// than anything this process gives a call itself.
-			time.Sleep(time.Second + p.client.Timeout)
-			idleRigBusyListenerRegistered(w, p)
-		}}
-		p := listener.start(t)
-		if err := p.subscribe(nil); err != nil {
-			t.Fatalf("subscribe through a listener that held its answer: %v, want the registration landed", err)
-		}
-		if calls := listener.callTimes(); len(calls) != 1 {
-			t.Errorf("the listener was called %d times, want once: the call it held", len(calls))
-		}
-	})
+	subscribe := func(p *idleRigRoleProcess) error { return p.subscribe(nil) }
+	claimRole := func(p *idleRigRoleProcess) error { return p.claimRole() }
+	const (
+		subscribePath = "/v1/interests/subscribe"
+		rolesPath     = "/v1/roles/set"
+	)
+	for _, row := range []struct {
+		name string
+		call func(*idleRigRoleProcess) error
+		path string
+		// first answers the listener's first call; every later call lands.
+		first func(w http.ResponseWriter, r *http.Request, p *idleRigRoleProcess)
+		// calls is how many calls the listener takes, and gap the least time between the first
+		// and the second when there are two.
+		calls int
+		gap   time.Duration
+		// refused says the call ends with the first answer's error.
+		refused bool
+	}{
+		{name: "subscribe, a 503 with Retry-After", call: subscribe, path: subscribePath,
+			first: idleRigBusyListenerAnswers(http.StatusServiceUnavailable, "1"), calls: 2, gap: time.Second},
+		{name: "subscribe, a 502 with no Retry-After", call: subscribe, path: subscribePath,
+			first: idleRigBusyListenerAnswers(http.StatusBadGateway, ""), calls: 2, gap: sessiontiming.CallRetryDelay},
+		{name: "subscribe, no answer at all", call: subscribe, path: subscribePath,
+			first: idleRigBusyListenerHangsUp, calls: 2, gap: sessiontiming.CallRetryDelay},
+		{name: "subscribe, an answer held past the client's own deadline", call: subscribe, path: subscribePath,
+			first: func(w http.ResponseWriter, r *http.Request, p *idleRigRoleProcess) {
+				// A second, and the client's whole deadline on top when it keeps one: an answer
+				// later than anything this process gives a call itself.
+				time.Sleep(time.Second + p.client.Timeout)
+				idleRigBusyListenerLands(w, r, p)
+			}, calls: 1},
+		{name: "subscribe, a 409 refusal", call: subscribe, path: subscribePath,
+			first: idleRigBusyListenerAnswers(http.StatusConflict, ""), calls: 1, refused: true},
+		{name: "roles set, a 503 with Retry-After", call: claimRole, path: rolesPath,
+			first: idleRigBusyListenerAnswers(http.StatusServiceUnavailable, "1"), calls: 2, gap: time.Second},
+		{name: "roles set, a 400 refusal", call: claimRole, path: rolesPath,
+			first: idleRigBusyListenerAnswers(http.StatusBadRequest, ""), calls: 1, refused: true},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			listener := &idleRigBusyListener{path: row.path, first: row.first}
+			p := listener.start(t)
+			err := row.call(p)
+			switch {
+			case row.refused && err == nil:
+				t.Fatalf("%s answered a refusal first, and the call reported no error; want the refusal", row.path)
+			case !row.refused && err != nil:
+				t.Fatalf("%s: %v, want the call landed on the listener's answer after the first", row.path, err)
+			}
+			calls := listener.callTimes()
+			if len(calls) != row.calls {
+				t.Fatalf("the listener took %d calls of %s, want %d", len(calls), row.path, row.calls)
+			}
+			if row.calls == 2 {
+				if gap := calls[1].Sub(calls[0]); gap < row.gap {
+					t.Errorf("the second call came %s after the first, want at least %s", gap, row.gap)
+				}
+			}
+		})
+	}
 }
 
-// idleRigBusyListener is an Envoy listener's POST /v1/interests/subscribe that answers its first
-// call with first and every later one with the registration the role process asks for.
+// idleRigBusyListener is an Envoy listener's registration route path that answers its first call
+// with first and every later one as a listener that took the call.
 type idleRigBusyListener struct {
-	first func(w http.ResponseWriter, p *idleRigRoleProcess)
+	path  string
+	first func(w http.ResponseWriter, r *http.Request, p *idleRigRoleProcess)
 
 	process *idleRigRoleProcess
 	mu      sync.Mutex
@@ -66,7 +99,7 @@ type idleRigBusyListener struct {
 func (l *idleRigBusyListener) start(t *testing.T) *idleRigRoleProcess {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || r.URL.Path != "/v1/interests/subscribe" {
+		if r.Method != http.MethodPost || r.URL.Path != l.path {
 			http.NotFound(w, r)
 			return
 		}
@@ -75,10 +108,10 @@ func (l *idleRigBusyListener) start(t *testing.T) *idleRigRoleProcess {
 		first, p := len(l.calls) == 1, l.process
 		l.mu.Unlock()
 		if first {
-			l.first(w, p)
+			l.first(w, r, p)
 			return
 		}
-		idleRigBusyListenerRegistered(w, p)
+		idleRigBusyListenerLands(w, r, p)
 	}))
 	t.Cleanup(server.Close)
 	for name, value := range map[string]string{
@@ -103,9 +136,37 @@ func (l *idleRigBusyListener) callTimes() []time.Time {
 	return append([]time.Time(nil), l.calls...)
 }
 
-// idleRigBusyListenerRegistered is the listener's answer to a registration it took: the session's
-// own consumer, relayed on its deliver subject.
-func idleRigBusyListenerRegistered(w http.ResponseWriter, p *idleRigRoleProcess) {
+// idleRigBusyListenerAnswers is a first answer of status, with Retry-After when retryAfter is set.
+func idleRigBusyListenerAnswers(status int, retryAfter string) func(http.ResponseWriter, *http.Request, *idleRigRoleProcess) {
+	return func(w http.ResponseWriter, _ *http.Request, _ *idleRigRoleProcess) {
+		if retryAfter != "" {
+			w.Header().Set("Retry-After", retryAfter)
+		}
+		http.Error(w, fmt.Sprintf(`{"error":"the listener answered %d"}`, status), status)
+	}
+}
+
+// idleRigBusyListenerHangsUp closes the call's connection with no answer at all, as a listener
+// that went away mid-call does: the client reads the end of the connection, not a status.
+func idleRigBusyListenerHangsUp(w http.ResponseWriter, _ *http.Request, _ *idleRigRoleProcess) {
+	hijacker, ok := w.(http.Hijacker)
+	if !ok {
+		panic("the test server's ResponseWriter takes no hijack")
+	}
+	conn, _, err := hijacker.Hijack()
+	if err != nil {
+		panic(err)
+	}
+	_ = conn.Close()
+}
+
+// idleRigBusyListenerLands is the listener's answer to a call it took: for a registration, the
+// session's own consumer, relayed on its deliver subject; for a role claim, an empty 200.
+func idleRigBusyListenerLands(w http.ResponseWriter, r *http.Request, p *idleRigRoleProcess) {
 	w.Header().Set("Content-Type", "application/json")
+	if r.URL.Path != "/v1/interests/subscribe" {
+		fmt.Fprint(w, `{}`)
+		return
+	}
 	fmt.Fprintf(w, `{"delivery":{"mode":%q,"subject":%q}}`, idleRigDeliveryConsumer, idleRigDeliverSubjectPrefix+p.session)
 }
