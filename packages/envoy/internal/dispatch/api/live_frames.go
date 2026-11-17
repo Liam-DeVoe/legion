@@ -105,8 +105,9 @@ type LiveUnsubscribe struct {
 }
 
 // DeliveryLiveSnapshot is a subscription's first answer: exactly the matching GET route's body
-// for the resolved window, the change position it reflects, when that change was recorded (nil
-// while the log is empty), and the revision of every key the body holds.
+// for the resolved window, the change position it reflects, the newest change of a repository its
+// reader sees, when that change was recorded (nil while there is none: deliveryShownChange), and
+// the revision of every key the body holds.
 type DeliveryLiveSnapshot struct {
 	Type      string           `json:"type"`
 	Sub       string           `json:"sub"`
@@ -149,8 +150,9 @@ type DeliveryLiveFreshness struct {
 }
 
 // LiveEventsStart opens every events subscription, before any LiveEventFrame: Since is the decimal
-// id the subscription starts after, the page's resume clamped to the feed's head, or the head when
-// the page sent none. ReplayComplete is true when the page resumed from an id at or below the
+// id the subscription starts after, the page's resume clamped to the feed's head, or, when the page
+// sent none, the head as its caller reads it, the newest event the caller can see
+// (viewerEventHead). ReplayComplete is true when the page resumed from an id at or below the
 // head: the subscription replays every event after it before it goes live, so the page missed
 // nothing and owes no refresh for the gap. A subscription that names no resume, and one whose
 // resume is above the head (an id of a log this one replaced), was replayed nothing it missed and

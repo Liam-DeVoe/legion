@@ -617,7 +617,7 @@ type queryer interface {
 // started the relay, or at once under the test hooks.
 func Register(mux *http.ServeMux, lifetime context.Context, deps Deps) Background {
 	s := register(mux, lifetime, deps)
-	return Background{Wait: s.waitBackground, ResumeDeliveries: s.resumeOwedDeliveries, EventHead: s.eventFeedHead, EventHorizon: s.horizon}
+	return Background{Wait: s.waitBackground, ResumeDeliveries: s.resumeOwedDeliveries, EventHead: s.personEventHead, EventHorizon: s.horizon}
 }
 
 // Background is the work a registered server does beside answering its requests, for the process
@@ -629,9 +629,10 @@ type Background struct {
 	// process that died left owed is sent, once, under its own attempt number. The maintenance loop
 	// runs it (RunMaintenanceSweep).
 	ResumeDeliveries func(context.Context) error
-	// EventHead is the event_head GET /auth/whoami answers (eventFeedHead): an id at or below which
-	// every event is already final, which a page resumes its first events subscription from.
-	EventHead func(context.Context) (int64, error)
+	// EventHead is the event_head GET /auth/whoami answers a person (personEventHead): an id at or
+	// below which every event is already final, which a page resumes its first events subscription
+	// from, read as the highest id of an event that person can see (viewerEventHead).
+	EventHead func(ctx context.Context, person string) (int64, error)
 	// EventHorizon answers the server's one events.Horizon (horizon(), event_stream_relay.go),
 	// built on the first call: the safe horizon every reader that pages the event log by a global
 	// id cursor reads up to. The suggestion outcome sweep takes it (RunSuggestionOutcomeSweep) so

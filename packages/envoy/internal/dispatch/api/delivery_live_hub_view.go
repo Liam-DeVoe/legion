@@ -1,13 +1,20 @@
 package api
 
 import (
+	"context"
+	"errors"
+	"fmt"
 	"net/url"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // parseDeliveryLiveView resolves a subscribed view as the matching GET route reads its query, or
@@ -88,4 +95,33 @@ func deliveryReaderKey(reader model.Actor) string {
 	}
 	return "all=" + strconv.FormatBool(viewer.All) + ",open=" + strconv.FormatBool(viewer.Open) +
 		",sees=" + strings.Join(viewer.Sees, ",")
+}
+
+// deliveryShownChange is the change position a view read through seq, recorded at at, names to
+// its reader (a snapshot's and a delta's seq and changed_at): the newest change at or below seq
+// of a repository the reader sees (access.RepositoryClause), or of the delivery settings, which
+// every reader of a view reads, with when it was recorded, and 0 with no time when there is none.
+// It is a head the reader reads of the change log, so a change of a repository the reader does
+// not see moves it no more than a session group's change, which names no repository, does. A
+// resume gives it back only to ask whether the log still keeps it (Subscribe), which a position
+// below the newest answers as truly. An open reader of a deployment that holds no private project
+// is named seq and at themselves, as every reader was before a project could be private (R9).
+func deliveryShownChange(ctx context.Context, q queryer, reader model.Actor, seq int64, at *time.Time) (int64, *time.Time, error) {
+	if viewer := reader.Viewer; viewer != nil && viewer.Open && !viewer.AnyPrivate {
+		return seq, at, nil
+	}
+	var shown int64
+	var shownAt time.Time
+	err := q.QueryRow(ctx, `
+		select c.seq, c.at from delivery_changes c
+		where c.seq <= $1 and (c.kind = 'settings' or (c.repo is not null and `+access.RepositoryClause("c.repo", "$2")+`))
+		order by c.seq desc limit 1
+	`, seq, refs.VisibilityArg(reader)).Scan(&shown, &shownAt)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return 0, nil, nil
+	case err != nil:
+		return 0, nil, fmt.Errorf("read the newest delivery change the reader sees: %w", err)
+	}
+	return shown, &shownAt, nil
 }

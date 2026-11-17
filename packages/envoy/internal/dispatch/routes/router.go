@@ -83,11 +83,12 @@ type AppContext struct {
 	// and empty otherwise. Only BuildAppContext sets it, from DevSignInOrigin, so no caller can
 	// turn the route on without the origin check.
 	devSignInHost string
-	// eventHead reads the event_head GET /auth/whoami answers: nil for a context with a Store, whose
-	// router reads it through the API server it registers (api.Background's EventHead, an id at or
-	// below which every event is final), and, for a context with no Store, nothing, since it has no
-	// event log to read (whoami then answers 503). A test sets it to answer a head of its own.
-	eventHead func(context.Context) (int64, error)
+	// eventHead reads the event_head GET /auth/whoami answers a person: nil for a context with a
+	// Store, whose router reads it through the API server it registers (api.Background's EventHead,
+	// an id at or below which every event is final, read as the highest id of an event the person
+	// can see), and, for a context with no Store, nothing, since it has no event log to read (whoami
+	// then answers 503). A test sets it to answer a head of its own.
+	eventHead func(ctx context.Context, person string) (int64, error)
 }
 
 // AppContextOptions is the explicit-injection bundle main.go assembles
@@ -247,9 +248,9 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 	}
 	// A context with a Store reads its head through the API server New registers (api.Background's
 	// EventHead), which holds the event horizon it is read from.
-	var eventHead func(context.Context) (int64, error)
+	var eventHead func(context.Context, string) (int64, error)
 	if apiDeps.Store == nil {
-		eventHead = func(context.Context) (int64, error) { return 0, errNoEventLog }
+		eventHead = func(context.Context, string) (int64, error) { return 0, errNoEventLog }
 	}
 	return &AppContext{
 		SigningKey:     opts.SigningKey,
@@ -300,9 +301,10 @@ type router struct {
 	// assets keeps what the asset store answered, for every request of the process
 	// (serveRetainedAsset).
 	assets *assetCache
-	// eventHead is what GET /auth/whoami answers as event_head: the context's own (AppContext's
-	// eventHead) when it names one, else the registered API server's (api.Background's EventHead).
-	eventHead func(context.Context) (int64, error)
+	// eventHead is what GET /auth/whoami answers a person as event_head: the context's own
+	// (AppContext's eventHead) when it names one, else the registered API server's
+	// (api.Background's EventHead).
+	eventHead func(ctx context.Context, person string) (int64, error)
 }
 
 // New returns an http.Handler that serves all dispatch routes, and the API server's background
@@ -529,8 +531,8 @@ type whoamiAnswer struct {
 }
 
 // authWhoami answers the signed-in person and event_head, the decimal id at or below which every
-// event is final (api.Background's EventHead), read after the sign-in check and before the answer
-// is written. The page starts every read
+// event is final, read as the highest id of an event that person can see (api.Background's
+// EventHead), after the sign-in check and before the answer is written. The page starts every read
 // the event feed keeps current only once whoami has answered, and resumes its first events
 // subscription from event_head, so a change committed while it loads is replayed rather than
 // missed. A head it cannot answer is a 503, never a whoami without it: a page that took a missing
@@ -548,7 +550,7 @@ func (r *router) authWhoami(w http.ResponseWriter, req *http.Request) {
 	if !ok {
 		return
 	}
-	head, err := r.eventHead(req.Context())
+	head, err := r.eventHead(req.Context(), email)
 	if err != nil {
 		// A read the page's own leaving cut short says nothing of the database.
 		if req.Context().Err() == nil {

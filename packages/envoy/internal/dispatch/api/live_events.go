@@ -200,7 +200,18 @@ func (s *server) feedEvents(ctx context.Context, stream liveStreamer, sub string
 		endEventsAfterFailure(ctx, stream, sub, "read the event log", err)
 		return
 	}
-	if stream.SendWait(ctx, liveEventsStart(sub, replay.start, replay.complete)) != nil {
+	// The since events_start names is a head the caller reads: a since the page sent comes back as
+	// it was, and every other, the relay's cursor or a replaced log's unbroken id, is read as the
+	// highest id of an event in the caller's gap (viewerEventHead), so no event of a project the
+	// caller does not see moves it.
+	start := replay.start
+	if since == nil || start != *since {
+		if start, err = viewerEventHead(ctx, s.deps.Store.Pool, reader, start); err != nil {
+			endEventsAfterFailure(ctx, stream, sub, "read the caller's head of the event log", err)
+			return
+		}
+	}
+	if stream.SendWait(ctx, liveEventsStart(sub, start, replay.complete)) != nil {
 		return
 	}
 	if !sendReplayedEvents(ctx, stream, sub, replay.events) {

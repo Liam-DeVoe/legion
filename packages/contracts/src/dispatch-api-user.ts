@@ -16,8 +16,9 @@ export interface AuthenticatedUser {
    *  answer is the one it always was. */
   readonly member_kind?: "restricted";
   /** The decimal id at or below which every event is final (committed or rolled back for good)
-   *  when Dispatch answered. Every read the page makes after this answer holds every event at or
-   *  below it, so the event feed resumes from it on its first
+   *  when Dispatch answered, read as the newest event this person can see, so no event of a
+   *  project they cannot see moves it. Every read the page makes after this answer holds every
+   *  event at or below it, so the event feed resumes from it on its first
    *  subscription and replays exactly what committed since. Always answered: a server that cannot
    *  answer the head answers a 503 rather than a whoami without one (`EVENT_HEAD_UNAVAILABLE` while
    *  no event id is proven final yet, which ends on its own; `EVENT_HEAD_READ_FAILED` when its

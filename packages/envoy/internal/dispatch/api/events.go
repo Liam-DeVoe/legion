@@ -433,6 +433,43 @@ func (s *server) eventFeedHead(ctx context.Context) (int64, error) {
 	return 0, ErrEventHeadUnproven
 }
 
+// personEventHead is the event_head GET /auth/whoami answers person (Background.EventHead):
+// eventFeedHead's id, read as the head that person's browser reads of the log (viewerEventHead),
+// so no event of a project the person does not see moves it.
+func (s *server) personEventHead(ctx context.Context, person string) (int64, error) {
+	through, err := s.eventFeedHead(ctx)
+	if err != nil {
+		return 0, err
+	}
+	reader, err := s.readerFor(ctx, model.BrowserActor(person))
+	if err != nil {
+		return 0, fmt.Errorf("resolve what %s sees: %w", person, err)
+	}
+	return viewerEventHead(ctx, s.deps.Store.Pool, reader, through)
+}
+
+// viewerEventHead is the head of the event log reader reads at through, an id at or below which
+// every event is final (eventFeedHead, or the relay's published cursor): the highest id at or
+// below through of an event in reader's gap (eventGapSQL), one it may read or an access change
+// that took a project from it, and 0 when there is none. No event of a project reader does not
+// see moves it, and a resume from it is replayed exactly what a resume from through would be,
+// since no event between the two is one the gap holds. An open viewer of a deployment that holds
+// no private project reads every event (every project is public, every session and party it may
+// see), so it reads through itself, without the read: the head every caller read before a project
+// could be private (R9, TestWhoamiCarriesTheNewestEventID).
+func viewerEventHead(ctx context.Context, q queryer, reader model.Actor, through int64) (int64, error) {
+	if viewer := reader.Viewer; viewer != nil && viewer.Open && !viewer.AnyPrivate {
+		return through, nil
+	}
+	var head int64
+	if err := q.QueryRow(ctx, `
+		select coalesce((select e.id from events e where e.id <= $1 and `+eventGapSQL("e", "$2")+` order by e.id desc limit 1), 0)
+	`, through, refs.VisibilityArg(reader)).Scan(&head); err != nil {
+		return 0, fmt.Errorf("read the caller's head of the event log: %w", err)
+	}
+	return head, nil
+}
+
 func (s *server) readEventRows(ctx context.Context, who model.Actor, query string, arguments ...any) ([]model.Event, error) {
 	rows, err := s.deps.Store.Pool.Query(ctx, query, arguments...)
 	if err != nil {

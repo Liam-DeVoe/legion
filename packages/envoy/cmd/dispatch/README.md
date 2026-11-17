@@ -3858,6 +3858,7 @@ Each item below names a path with its method and identity, then its purpose.
 - `/auth/whoami` (GET; cookie or trusted header)
 
   Return the resolved person, `{kind: "user", login, event_head}` with `login` their lowercase email and `event_head` an event id at or below which every event is final, read when the sign-in check answered.
+  It is the highest id of an event the person can see, so no event of a project they do not see moves it; an open person of a deployment that holds no private project reads the log's head itself.
   The page starts its events subscription from that id.
   The sign-in check comes first: a caller who is not signed in is `401 NO_IDENTITY` and the head is never read.
   A signed-in caller is `503 EVENT_HEAD_UNAVAILABLE` while no event id is proven final yet, which ends on its own and which the page asks again for, and `503 EVENT_HEAD_READ_FAILED` when the head cannot be read, which the page retries twice and then shows as an error.
@@ -4008,6 +4009,8 @@ Each item below names a path with its method and identity, then its purpose.
   When the caller's projects moved, other than by a project just made, the subscription ends as `behind`.
   An events subscription resumes after a decimal event id;
   its `events_start` says `replay_complete: true` when that id is at or below the log's head and the gap fits the replay's bounds (at most 256 events whose frames total at most 1 MiB), so every event after it is replayed before it goes live and a client may skip the refresh it would owe the gap, and `false` with no resume, past either bound, across a `project.access_changed` or `access_group.changed`, or above the head (a log that was reset).
+  Its `since` is the resume as the page sent it, and otherwise the newest event the caller can see, as `event_head` is.
+  A delivery view's `seq` and `changed_at` are the newest change of a repository the caller sees, so a change of a repository it does not see moves neither.
   An events subscription that falls 64 events behind the relay catches up from the log within the same bounds and goes on;
   past them, across an access change, or once the log is reset, it ends as `behind` and the page subscribes again.
   An agent view holds at most 8 MiB of queued frames and ends as `behind` past that.
