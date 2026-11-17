@@ -303,9 +303,7 @@ func (c *Conn) BundleWorkspace(ctx context.Context, issue string, timeout time.D
 		if !answer.OK {
 			return runtime.WorkspaceBundle{}, &RefusedError{Claim: c.claim, Command: shimwire.TypeBundleWorkspace, Reason: answer.Error}
 		}
-		return runtime.WorkspaceBundle{
-			Bundle: answer.Bundle, Head: answer.Head, Tips: answer.Tips, Bookmarks: answer.Bookmarks, At: answer.At,
-		}, nil
+		return runtime.BundleOf(answer.Saved()), nil
 	case shimwire.Response:
 		// A shim that does not answer the frame itself forwards it, and OMP refuses a command
 		// it does not know.

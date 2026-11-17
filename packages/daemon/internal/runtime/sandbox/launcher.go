@@ -646,9 +646,7 @@ func (d *launchers) memoryKilled(s *launcherSession, report shimwire.LauncherMem
 // which another bundle of the same issue never is, since another release is another sequence
 // (internal/launcher's bundleRestore.receive).
 func bundleFrames(issue string, b runtime.WorkspaceBundle) ([]shimwire.LauncherBundle, error) {
-	return shimwire.SplitWorkspaceBundle("restore-"+issue, b.Release, shimwire.WorkspaceBundle{
-		Bundle: b.Bundle, Head: b.Head, Tips: b.Tips, Bookmarks: b.Bookmarks, At: b.At,
-	})
+	return shimwire.SplitWorkspaceBundle("restore-"+issue, b.Release, b.Wire())
 }
 
 // bundleWaiter names the request one slice's answer belongs to, of a launcher_bundle sequence or

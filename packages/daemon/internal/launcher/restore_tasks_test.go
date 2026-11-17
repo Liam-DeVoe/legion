@@ -1,14 +1,18 @@
 package launcher
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/testbin"
+	"github.com/sjawhar/legion/daemon/internal/testpg"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
@@ -59,6 +63,65 @@ func TestTheRestorePutsEachTasksWorkingCopyBack(t *testing.T) {
 	notice := f.restoreInto(ws, saved, 1)
 	f.requireRestored(ws, saved)
 	f.requireTasksRestored(ws, saved, notice)
+}
+
+// The daemon keeps a release's save in its store until the pod that replaces the released one
+// takes it (store.PutWorkspaceBundle, store.TakeWorkspaceBundleForRestore), and the working copy
+// of each task crosses the store with the rest: the shim's answer becomes the daemon's bundle and
+// the daemon's bundle the launcher's through the one conversion each way the daemon's own path
+// takes (runtime.BundleOf, runtime.WorkspaceBundle.Wire), and the restore puts each task's
+// working copy back on its commit. A save a shim of the release before made names no working copy
+// of a task, and its restore is the issue's working copy alone, as before.
+func TestARestoreThroughTheStorePutsBackEachWorkingCopyTheSaveNamed(t *testing.T) {
+	testbin.RequireJJFilters(t)
+	for _, tc := range []struct {
+		name  string
+		tasks bool
+	}{
+		{name: "a save that names the working copies of two tasks", tasks: true},
+		{name: "a save of a shim of the release before, which names no working copy of a task", tasks: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			st := testpg.CloneStore(t, "legion_launcher_restore")
+			f := newTaskBundleFixture(t)
+			answered := f.bundleWorkspaceOne()
+			if !tc.tasks {
+				answered.WorkingCopies = nil
+			}
+			saved := runtime.BundleOf(answered)
+			saved.PodUID = "pod-the-release-took-the-work-off"
+			if err := st.PutWorkspaceBundle(ctx, bundleIssue, bundleRelease, saved); err != nil {
+				t.Fatalf("save the released workspace's bundle: %v", err)
+			}
+			taken, take, err := st.TakeWorkspaceBundleForRestore(ctx, bundleIssue, "pod-that-replaces-it", time.Now().Add(time.Minute))
+			if err != nil || take != runtime.WorkspaceBundleSend {
+				t.Fatalf("the replacement pod's take answered %v (%v), want the bundle sent", take, err)
+			}
+
+			ws := f.secondPod("ws2")
+			notice := f.restoreInto(ws, taken.Wire(), 1)
+			f.requireRestored(ws, answered)
+			if tc.tasks {
+				f.requireTasksRestored(ws, answered, notice)
+				return
+			}
+			for _, branch := range bundleTasks {
+				if dir := f.taskDir(ws, branch); exists(dir) {
+					t.Fatalf("the restore of a save that named no working copy of a task made %s", dir)
+				}
+			}
+			if strings.Contains(notice, "tasks") {
+				t.Fatalf("the restore of a save that named no working copy of a task wrote %q", notice)
+			}
+		})
+	}
+}
+
+// exists is whether anything is at path.
+func exists(path string) bool {
+	_, err := os.Lstat(path)
+	return err == nil
 }
 
 // newTaskBundleFixture is the bundle fixture whose released pod is laid out as provisioning lays
