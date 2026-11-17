@@ -17,13 +17,20 @@
 -- and only a tree row is carried, which no experiment that sets plan draws (config's readExperiment
 -- holds such an experiment to unit issue).
 --
--- Rolling back onto a release before this migration needs nothing taken off. That release names
--- the columns of experiment_assignments in each statement it runs — its record.Store's
+-- Rolling back onto a release before this migration takes `plan` out of `legion.yaml` first, with
+-- the daemon stopped and before the earlier image is pinned (docs/kubernetes.md, "Rolling back the
+-- release whose experiment sets how each issue is done"). That release's loader knows no `plan`
+-- of a variant and refuses the file naming it (`unknown key
+-- projects.<KEY>.experiments.<name>.variants.<arm>.plan`, its config's describedMembers), so its
+-- daemon does not start while one arm names it: take the key out of every arm that names it, or
+-- the experiment out of the file. The database needs nothing taken off. That release names the
+-- columns of experiment_assignments in each statement it runs — its record.Store's
 -- assignmentColumns, PutAssignments and CarryAssignments — so it boots with the column in place,
 -- reads no word of it, and writes '' into it at each draw. What the roll back costs: an issue
--- drawn into `default` before the roll back has its plan read by no code while that release runs,
--- so the plan its owner gives is taken and run. Rolling forward again costs the window the other
--- way: an issue that release drew while it ran reads '' afterwards and runs as with no experiment.
+-- drawn into `default` before the roll back has its group read by no code while that release
+-- runs, so the plan its owner gives is taken and run. Rolling forward again costs the window the
+-- other way: an issue that release drew while it ran reads '' afterwards and runs as with no
+-- experiment.
 alter table experiment_assignments
     add column plan text not null default ''
         check (plan in ('', 'owner', 'default', 'owner-alone'));

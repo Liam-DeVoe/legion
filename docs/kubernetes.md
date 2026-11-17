@@ -2053,6 +2053,19 @@ delete from outbox where kind = 'supervise' and payload->>'op' = 'step_stop';
 
 Each deleted row costs the stop of one step's process: that process runs on until its issue closes, and the way back above drops the task's stop with the plan rows.
 
+#### Rolling back the release whose experiment sets how each issue is done
+
+This release lets a variant of an experiment name `plan` (`projects.<KEY>.experiments.<name>.variants[].plan`), and its migration `20261117192018_experiment_assignment_plan.up.sql` adds the column `experiment_assignments.plan`, where each draw records the word of the arm it drew.
+
+**`plan` must come out of `legion.yaml` before the earlier image is pinned.**
+The loader refuses a key it does not know, naming it (`unknown key projects.<KEY>.experiments.<name>.variants.<arm>.plan`), and the earlier release's loader knows no `plan` of a variant, so that daemon refuses to start while one arm names it.
+Take the key out of every arm that names it, or the experiment out of the file, and `legion start --check-config` on the earlier image reads the file clean.
+
+The column needs no statement.
+An earlier image names the columns of `experiment_assignments` in each statement it runs (`assignmentColumns`, `PutAssignments` and `CarryAssignments` in `internal/record/store.go`), so it boots with the column in place, reads no word of it, and every row it inserts takes the default, the empty word.
+What the rollback costs: an issue drawn into an arm whose `plan` is `default` before the rollback has its group read by no code while the earlier release runs, so the plan its owner gives is taken and run.
+Rolling forward again costs the window the other way: an issue the earlier release drew while it ran reads the empty word afterwards and runs as an issue with no experiment does.
+
 #### Rolling back the release whose update round ends at its bound
 
 This release's migration `20261113110610_drop_claim_update_answer_marks` takes two columns off `claims`: `update_answered_by_turn_end` and `update_reasked_for_push_check`, which the two `alter` statements below add back.
@@ -2628,7 +2641,7 @@ The migrations recorded above this one are these.
 20261114061900_phase_entry_verbatim adds `phases.entry_verbatim` and touches none of the six, and the contract 146 block above reverses it too, so that the roll-forward can add it again.
 20261116234034_phase_reviewed_head adds `phases.reviewed_head` and touches none of the six, so the block holds over it; a rollback past it runs that migration's own way back too ([Rolling back the release that keeps the commit a reviewer last read](#rolling-back-the-release-that-keeps-the-commit-a-reviewer-last-read)), so that the roll-forward adds the column again at its default.
 20261117034837_issue_plans adds the tables `issue_plans`, `plan_tasks` and `plan_steps` and the columns `phases.step_task`, `phases.step_place` and `pull_requests.task`, and touches none of the six, so the block holds over it; a rollback past it runs that migration's own way back too ([Rolling back the release whose owner's plan picks the steps](#rolling-back-the-release-whose-owners-plan-picks-the-steps)), so that the roll-forward creates the tables again empty and adds the columns again at their defaults.
-20261117192018_experiment_assignment_plan adds `experiment_assignments.plan` and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release names in no statement.
+20261117192018_experiment_assignment_plan adds `experiment_assignments.plan` and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release names in no statement; a rollback past it takes `plan` out of `legion.yaml` first ([Rolling back the release whose experiment sets how each issue is done](#rolling-back-the-release-whose-experiment-sets-how-each-issue-is-done)).
 The `20261111225552` is the identifier of `20261111225552_phase_entry.up.sql`, whose header carries this same block;
 where that file carries another identifier in the release you roll back from, use that one.
 The SQL was run on 2026-11-13 at 04:00Z against PostgreSQL 18.6, on a scratch database that `internal/store`'s own `Migrate` took to the head of the branch the run was made on, as that head stood at that time, applying 133 migrations and leaving 133 versions recorded, the highest 20261112180548, and that held four outbox rows:
