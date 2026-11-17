@@ -23,15 +23,17 @@ import (
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-func newInteractionHandler(t *testing.T, makeDocs func(*store.Store) docs.API) (http.Handler, *store.Store) {
+// newInteractionHandler is a registered server on a database of its own, with alice and bob
+// signed in; each of configure sets what a test needs beyond that on its DepsInput.
+func newInteractionHandler(t *testing.T, makeDocs func(*store.Store) docs.API, configure ...func(*DepsInput)) (http.Handler, *store.Store) {
 	t.Helper()
-	handler, database, _ := newInteractionDeps(t, makeDocs)
+	handler, database, _ := newInteractionDeps(t, makeDocs, configure...)
 	return handler, database
 }
 
 // newInteractionDeps is newInteractionHandler, answering also the Deps it registered, for a test
 // that must run one request on a connection of its own (oneConnectionHandler).
-func newInteractionDeps(t *testing.T, makeDocs func(*store.Store) docs.API) (http.Handler, *store.Store, Deps) {
+func newInteractionDeps(t *testing.T, makeDocs func(*store.Store) docs.API, configure ...func(*DepsInput)) (http.Handler, *store.Store, Deps) {
 	t.Helper()
 	database := storetest.Open(t)
 	var docsAPI docs.API
@@ -39,13 +41,17 @@ func newInteractionDeps(t *testing.T, makeDocs func(*store.Store) docs.API) (htt
 		docsAPI = makeDocs(database)
 	}
 	seedPeople(t, database, "alice", "bob")
-	deps, err := NewDeps(DepsInput{
+	input := DepsInput{
 		Store:       database,
 		Identity:    headerIdentity(database),
 		AgentTokens: sharedAgentTokens(t, "agent-token"),
 		Docs:        docsAPI,
 		ServerURL:   "https://dispatch.example",
-	})
+	}
+	for _, set := range configure {
+		set(&input)
+	}
+	deps, err := NewDeps(input)
 	if err != nil {
 		t.Fatalf("new API dependencies: %v", err)
 	}

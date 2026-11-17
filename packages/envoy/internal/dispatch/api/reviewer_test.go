@@ -902,6 +902,137 @@ func TestAHeldIssuesAnswerSaysWhenItCouldNotSearch(t *testing.T) {
 	}
 }
 
+// framesAbout are the frames the writer was sent about the held text id whose body holds marker.
+func (rig *reviewRig) framesAbout(id, marker string) []string {
+	var bodies []string
+	for _, frame := range rig.listener.frames() {
+		if body, _ := frame["body"].(string); frame["id"] == id && strings.Contains(body, marker) {
+			bodies = append(bodies, body)
+		}
+	}
+	return bodies
+}
+
+// waitOneFrameAbout waits for the frame about the held text id whose body holds marker, and
+// answers its body once no second one has come.
+func (rig *reviewRig) waitOneFrameAbout(id, marker string) string {
+	rig.t.Helper()
+	pollUntil(rig.t, 20*time.Second, "the frame about "+id, func() bool { return len(rig.framesAbout(id, marker)) > 0 })
+	time.Sleep(200 * time.Millisecond)
+	bodies := rig.framesAbout(id, marker)
+	if len(bodies) != 1 {
+		rig.t.Fatalf("%d frames about %s, want one: %q", len(bodies), id, bodies)
+	}
+	return bodies[0]
+}
+
+// closeRigIssue closes the rig's issue as alice.
+func (rig *reviewRig) closeRigIssue() {
+	rig.t.Helper()
+	if closed := dispatchRequest(rig.t, rig.handler, http.MethodPatch, "/api/v1/issues/"+rig.issue, map[string]string{"status": "done"}, "alice"); closed.Code != http.StatusOK {
+		rig.t.Fatalf("close the issue: %d %s", closed.Code, closed.Body.String())
+	}
+}
+
+// A held ask whose issue is closed before it posts is not posted, and its writer is told once,
+// with the refusal; the comment held beside it fails with it, and its writer is told which held
+// text it waited on. Each held text's detail records that its writer was told.
+func TestAHeldTextNotPostedIsToldToItsWriter(t *testing.T) {
+	rig := newReviewRig(t, ReviewerConfig{Asks: ReviewHold, WriterWindow: time.Minute}, nil)
+	ask := rig.held(rig.asWriter(http.MethodPost, "/api/v1/issues/"+rig.issue+"/asks", map[string]any{
+		"question": "Ship the reviewer?\n" + vacuousPhrase, "options": writtenOptions,
+	}), "the held ask")
+	rig.waitHeld(ask.ID, heldAwaitingWriter)
+	comment := rig.held(rig.asWriter(http.MethodPost, "/api/v1/issues/"+rig.issue+"/comments", map[string]any{
+		"body": "The exporter test passes now.", "ask_id": ask.ID,
+	}), "the comment on the held ask")
+	if comment.Held.WaitsOn != ask.ID {
+		t.Fatalf("the comment waits on %q, want %s", comment.Held.WaitsOn, ask.ID)
+	}
+	rig.closeRigIssue()
+	if posted := rig.asWriter(http.MethodPost, "/api/v1/held/"+ask.ID+"/post", map[string]any{"reason": "As written."}); posted.Code != http.StatusOK {
+		t.Fatalf("the writer's post: %d %s", posted.Code, posted.Body.String())
+	}
+	if failed := rig.waitHeld(ask.ID, heldFailed); !strings.Contains(failed.detail, "ISSUE_CLOSED") || !strings.HasSuffix(failed.detail, "; its writer was told") {
+		t.Fatalf("the failed ask's detail reads %q", failed.detail)
+	}
+	body := rig.waitOneFrameAbout(ask.ID, "did not post")
+	if !strings.Contains(body, "your held ask "+ask.ID) || !strings.Contains(body, "Its post was refused: ISSUE_CLOSED: issue is closed") {
+		t.Fatalf("the failed ask's frame reads %q", body)
+	}
+	if failed := rig.waitHeld(comment.ID, heldFailed); !strings.Contains(failed.detail, ask.ID) || !strings.HasSuffix(failed.detail, "; its writer was told") {
+		t.Fatalf("the failed comment's detail reads %q", failed.detail)
+	}
+	body = rig.waitOneFrameAbout(comment.ID, "did not post")
+	if !strings.Contains(body, "your held comment "+comment.ID) || !strings.Contains(body, "It waited on the held text "+ask.ID) {
+		t.Fatalf("the failed comment's frame reads %q", body)
+	}
+}
+
+// A held text not posted whose writer session has gone sends no frame, and its detail says why.
+func TestAHeldTextNotPostedTellsNoWriterThatHasGone(t *testing.T) {
+	rig := newReviewRig(t, ReviewerConfig{Asks: ReviewHold, WriterWindow: time.Minute}, nil)
+	ask := rig.held(rig.asWriter(http.MethodPost, "/api/v1/issues/"+rig.issue+"/asks", map[string]any{
+		"question": "Ship the reviewer?\n" + vacuousPhrase, "options": writtenOptions,
+	}), "the held ask")
+	rig.waitHeld(ask.ID, heldAwaitingWriter)
+	rig.closeRigIssue()
+	rig.listener.stop(heldWriter)
+	// The sweep posts a text whose writer has gone, and the post is refused.
+	rig.served.sweepHeld(t.Context())
+	if failed := rig.waitHeld(ask.ID, heldFailed); !strings.HasSuffix(failed.detail, "; its writer was not told: its writer session has gone") {
+		t.Fatalf("the failed ask's detail reads %q", failed.detail)
+	}
+	if bodies := rig.framesAbout(ask.ID, "did not post"); len(bodies) != 0 {
+		t.Fatalf("a writer that has gone was sent %q", bodies)
+	}
+}
+
+// A held issue a near copy of which is filed while it is held posts all the same, marked as forced
+// past that copy, with its near_copy_checks row saying so, and its writer is told once, with the
+// copy's key and title; a held issue with no near copy sends no such frame.
+func TestAHeldIssueThatBecameANearCopyPostsAndTellsItsWriter(t *testing.T) {
+	rig := newReviewRig(t, ReviewerConfig{Issues: ReviewHold, WriterWindow: time.Minute}, nil)
+	const title = "Astrolabe calibration drifts after a reseat"
+	spec := duplicateSpecAstrolabe + "\n\n" + vacuousPhrase
+	held := rig.held(rig.asWriter(http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": "RVW", "title": title, "spec": spec,
+	}), "the held issue")
+	other := rig.held(rig.asWriter(http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": "RVW", "title": "Orchard pickers cannot log a crate", "spec": duplicateSpecHarvest + "\n\n" + vacuousPhrase,
+	}), "the other held issue")
+	rig.waitHeld(held.ID, heldAwaitingWriter)
+	rig.waitHeld(other.ID, heldAwaitingWriter)
+	copied := requireCreatedIssue(t, createIssueRequest(t, rig.handler, map[string]any{"project": "RVW", "title": title, "spec": spec}))
+	for _, id := range []string{held.ID, other.ID} {
+		if posted := rig.asWriter(http.MethodPost, "/api/v1/held/"+id+"/post", map[string]any{"reason": "As written."}); posted.Code != http.StatusOK {
+			t.Fatalf("the writer's post of %s: %d %s", id, posted.Code, posted.Body.String())
+		}
+		rig.waitHeld(id, heldPosted)
+	}
+	if forced := createdEventPayload(t, rig.handler, held.ID).Forced; forced == nil || !slices.Equal(forced.Past, []string{copied.Key}) {
+		t.Fatalf("%s's issue.created records forced %+v, want past %s", held.ID, forced, copied.Key)
+	}
+	var outcomes []string
+	pollUntil(t, 10*time.Second, "the near_copy_checks row of "+held.ID, func() bool {
+		outcomes = nearCopyOutcomesOf(t, rig.database, held.ID)
+		return len(outcomes) > 0
+	})
+	if !slices.Equal(outcomes, []string{nearCopyForced}) {
+		t.Fatalf("the near_copy_checks rows of %s = %v, want one, forced", held.ID, outcomes)
+	}
+	body := rig.waitOneFrameAbout(held.ID, "near copy")
+	if !strings.Contains(body, copied.Key+": "+title) {
+		t.Fatalf("the near-copy frame reads %q, want %s and its title", body, copied.Key)
+	}
+	if detail := rig.heldRow(held.ID).detail; !strings.HasSuffix(detail, "posted as a near copy of "+copied.Key+"; its writer was told") {
+		t.Fatalf("%s's detail reads %q", held.ID, detail)
+	}
+	if bodies := rig.framesAbout(other.ID, "near copy"); len(bodies) != 0 {
+		t.Fatalf("%s, no near copy, sent %q", other.ID, bodies)
+	}
+}
+
 // The draft route answers the reviewer's findings, its rewrite and each call's deployment, and
 // writes nothing.
 func TestTheReviewerDraftRouteAnswersAndWritesNothing(t *testing.T) {

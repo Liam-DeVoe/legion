@@ -100,3 +100,48 @@ func spokenDuration(d time.Duration) string {
 	}
 	return strings.Join(parts, " ")
 }
+
+// PostFailedFrame is the turn the writer session gets when Dispatch did not post its held text
+// after all: the post was refused, or the held text it waited on was not posted. From
+// prompts/writer-findings.md.
+type PostFailedFrame struct {
+	// ID is the held text's id, and Kind its kind as held_texts records it: a text's kind, or
+	// "request" for a write kept whole beside a held text.
+	ID   string
+	Kind Kind
+	// Code and Message are the refusal its post met; both empty where WaitedOn is set.
+	Code, Message string
+	// WaitedOn is the held text this one waited on, which was not posted; "" for a refusal of its
+	// own.
+	WaitedOn string
+}
+
+// Body is the frame's text. A write kept whole is named a write.
+func (f PostFailedFrame) Body() (string, error) {
+	kind := f.Kind.spoken()
+	if f.Kind == "request" {
+		kind = "write"
+	}
+	return render("writer-post-failed", struct{ ID, Kind, Code, Message, WaitedOn string }{
+		ID: f.ID, Kind: kind, Code: f.Code, Message: f.Message, WaitedOn: f.WaitedOn,
+	})
+}
+
+// NearCopy is an open issue a held issue turned out a near copy of when it posted.
+type NearCopy struct {
+	Key, Title string
+}
+
+// NearCopyFrame is the turn the writer session gets when its held issue posted as a near copy of
+// open issues, which the near-copy gate run again at the post found (Copies): a post refuses
+// nothing, so the writer is told, to fold one issue into the other. From
+// prompts/writer-findings.md.
+type NearCopyFrame struct {
+	ID     string
+	Copies []NearCopy
+}
+
+// Body is the frame's text.
+func (f NearCopyFrame) Body() (string, error) {
+	return render("writer-near-copy", f)
+}

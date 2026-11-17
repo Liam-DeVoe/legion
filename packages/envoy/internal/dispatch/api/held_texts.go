@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/reviewer"
@@ -767,8 +768,8 @@ func (s *server) postReady() {
 // postHeld posts the held text id, which is decided: it takes the row for the post, runs the
 // kind's create path with the stored request (the reviewer's rewrite in its wording where the
 // outcome is rewrite_posted), the recorded actor and the reserved id, and reports whether it
-// posted. A post the create path refuses fails the held text with the refusal; any other failure
-// leaves it for the sweep to post again.
+// posted. A post the create path refuses fails the held text with the refusal, and its writer is
+// told (failHeld); any other failure leaves it for the sweep to post again.
 //
 // A keyed route reaches it, since POST /api/v1/held/{id}/post posts before it answers, so each of
 // its writes commits in a transaction of the shared pool, as every write a keyed route reaches
@@ -796,10 +797,8 @@ func (s *server) postHeld(ctx context.Context, id string) bool {
 	case errors.Is(err, errHeldNotPosting):
 		return false
 	case errors.As(err, &refused) && refused.status < http.StatusInternalServerError:
-		if failErr := s.failHeldPost(ctx, row.id, "the post was refused: "+refused.message); failErr != nil {
-			slog.Warn("dispatch: fail a held text", "text", row.id, "error", failErr)
-		}
 		slog.Warn("dispatch: a held text's post was refused", "text", row.id, "code", refused.code, "error", refused.message)
+		s.failHeld(ctx, row, refused)
 		return false
 	default:
 		if ctx.Err() == nil {
@@ -833,16 +832,115 @@ func (s *server) claimHeldPost(ctx context.Context, id string) (heldRow, error) 
 	return row, nil
 }
 
-// failHeldPost fails the held text id, still posting, with detail: its post was refused.
-func (s *server) failHeldPost(ctx context.Context, id, detail string) error {
+// failHeld fails row, a held text still posting whose post was answered refused, and tells its
+// writer the text was not posted, with the refusal (tellNotPosted). Every held text that waits on
+// it fails with it at once, and each of their writers is told too (failOrphanedHeld).
+func (s *server) failHeld(ctx context.Context, row heldRow, refused *apiError) {
+	failed, err := s.failHeldPost(ctx, row.id, "the post was refused: "+refused.code+": "+refused.message)
+	if err != nil {
+		slog.Warn("dispatch: fail a held text", "text", row.id, "error", err)
+		return
+	}
+	if failed {
+		s.tellNotPosted(ctx, row.writer, reviewer.PostFailedFrame{
+			ID: row.id, Kind: reviewer.Kind(row.kind), Code: refused.code, Message: refused.message,
+		})
+	}
+	if err := s.failOrphanedHeld(ctx); err != nil && ctx.Err() == nil {
+		slog.Warn("dispatch: fail the held texts that wait on a failed one", "error", err)
+	}
+}
+
+// failHeldPost fails the held text id, still posting, with detail: its post was refused. It
+// reports whether this call failed it, so its writer is told once.
+func (s *server) failHeldPost(ctx context.Context, id, detail string) (bool, error) {
+	tx, err := s.begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback(ctx)
+	tag, err := tx.Exec(ctx, `
+		update held_texts set state = 'failed', detail = $2, claimed_at = null, updated_at = now()
+		where id = $1 and state = 'posting'`, id, detail)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() == 1, tx.Commit(ctx)
+}
+
+// tellNotPosted tells writer, the session that wrote the held text frame names, that Dispatch did
+// not post it (reviewer.PostFailedFrame), through tellWriter.
+func (s *server) tellNotPosted(ctx context.Context, writer string, frame reviewer.PostFailedFrame) {
+	body, err := frame.Body()
+	if err != nil {
+		slog.Warn("dispatch: write the frame of a held text not posted", "text", frame.ID, "error", err)
+		return
+	}
+	s.tellWriter(ctx, systemFrame{
+		id: frame.ID, body: body, writer: writer, key: "held-not-posted:" + frame.ID, mode: "steer",
+		expects: contracts.ExpectsReplyNone,
+	}, "")
+}
+
+// tellNearCopy tells the writer of row, a held issue that posted, that it posted as a near copy of
+// copies, the issues the gate run again at its post found (recheckNearCopy), so it can fold one
+// into the other (reviewer.NearCopyFrame), through tellWriter; nothing where copies is empty.
+func (s *server) tellNearCopy(ctx context.Context, row heldRow, copies []model.DuplicateCandidate) {
+	if len(copies) == 0 {
+		return
+	}
+	frame := reviewer.NearCopyFrame{ID: row.id}
+	keys := make([]string, 0, len(copies))
+	for _, candidate := range copies {
+		frame.Copies = append(frame.Copies, reviewer.NearCopy{Key: candidate.Key, Title: candidate.Title})
+		keys = append(keys, candidate.Key)
+	}
+	body, err := frame.Body()
+	if err != nil {
+		slog.Warn("dispatch: write the frame of a held issue posted as a near copy", "text", row.id, "error", err)
+		return
+	}
+	s.tellWriter(ctx, systemFrame{
+		id: row.id, body: body, writer: row.writer, key: "held-near-copy:" + row.id, mode: "steer",
+		expects: contracts.ExpectsReplyNone,
+	}, "posted as a near copy of "+strings.Join(keys, ", "))
+}
+
+// tellWriter sends frame, a notice about the held text frame.id that wants no reply, to its writer
+// session, as the findings frame is sent (sendSystemFrame), and adds to the held text's detail
+// about, where given, and whether its writer was told: a text with no writer session, or whose
+// writer session has gone, gets no frame, and a send that failed is named with its error.
+func (s *server) tellWriter(ctx context.Context, frame systemFrame, about string) {
+	told := "its writer was told"
+	switch gone, known := s.writerGone(ctx, frame.writer); {
+	case frame.writer == "":
+		told = "its writer was not told: it has no writer session"
+	case gone && known:
+		told = "its writer was not told: its writer session has gone"
+	default:
+		if err := s.sendSystemFrame(ctx, frame); err != nil {
+			slog.Warn("dispatch: tell a held text's writer", "text", frame.id, "session", frame.writer, "error", err)
+			told = "its writer was not told: " + err.Error()
+		}
+	}
+	note := told
+	if about != "" {
+		note = about + "; " + told
+	}
+	if err := s.noteHeld(ctx, frame.id, note); err != nil {
+		slog.Warn("dispatch: record what a held text's writer was told", "text", frame.id, "error", err)
+	}
+}
+
+// noteHeld adds note to the held text id's detail.
+func (s *server) noteHeld(ctx context.Context, id, note string) error {
 	tx, err := s.begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback(ctx)
 	if _, err := tx.Exec(ctx, `
-		update held_texts set state = 'failed', detail = $2, claimed_at = null, updated_at = now()
-		where id = $1 and state = 'posting'`, id, detail); err != nil {
+		update held_texts set detail = concat_ws('; ', detail, $2::text), updated_at = now() where id = $1`, id, note); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
@@ -893,6 +991,7 @@ func (s *server) runHeldPost(ctx context.Context, row heldRow) error {
 		if err != nil || number < 1 {
 			return errorf(http.StatusUnprocessableEntity, "HELD_REQUEST", "held issue %s names no number of project %s", row.id, create.Project)
 		}
+		create, copies := s.recheckNearCopy(ctx, create)
 		tx, err := s.begin(ctx)
 		if err != nil {
 			return err
@@ -906,6 +1005,7 @@ func (s *server) runHeldPost(ctx context.Context, row heldRow) error {
 			return err
 		}
 		s.announceIssue(ctx, written)
+		s.tellNearCopy(ctx, row, copies)
 	case commentCreate:
 		if _, err := s.writeComment(ctx, create, row.actor, row.id, held); err != nil {
 			return err
@@ -981,18 +1081,59 @@ func withRewrite(write reviewedWrite, rewrite reviewer.Text) reviewedWrite {
 	return write
 }
 
-// failOrphanedHeld fails each held text that waits on one that failed, which can never post.
+// failOrphanedHeld fails each held text that waits on one that failed, which can never post, and
+// tells each one's writer it was not posted, naming the held text it waited on (tellNotPosted).
 func (s *server) failOrphanedHeld(ctx context.Context) error {
 	for range 10 {
-		tag, err := s.deps.Store.Pool.Exec(ctx, `
-			update held_texts h
-			set state = 'failed', detail = 'the held text it waits on, ' || p.id || ', failed to post',
-				claimed_at = null, updated_at = now()
-			from held_texts p
-			where p.id = h.depends_on and p.state = 'failed' and h.state not in ('posted', 'failed')`)
-		if err != nil || tag.RowsAffected() == 0 {
+		orphans, err := s.failWaitingOnFailed(ctx)
+		if err != nil || len(orphans) == 0 {
 			return err
+		}
+		for _, orphan := range orphans {
+			s.tellNotPosted(ctx, orphan.writer, reviewer.PostFailedFrame{
+				ID: orphan.id, Kind: reviewer.Kind(orphan.kind), WaitedOn: orphan.waitedOn,
+			})
 		}
 	}
 	return nil
+}
+
+// heldOrphan is a held text failWaitingOnFailed failed: its id, kind and writer, and the held text
+// it waited on.
+type heldOrphan struct {
+	id, kind, writer, waitedOn string
+}
+
+// failWaitingOnFailed fails, in one statement, each held text that waits on one that failed, and
+// answers them: each is failed by this call alone, so its writer is told once.
+func (s *server) failWaitingOnFailed(ctx context.Context) ([]heldOrphan, error) {
+	tx, err := s.begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+	rows, err := tx.Query(ctx, `
+		update held_texts h
+		set state = 'failed', detail = 'the held text it waits on, ' || p.id || ', failed to post',
+			claimed_at = null, updated_at = now()
+		from held_texts p
+		where p.id = h.depends_on and p.state = 'failed' and h.state not in ('posted', 'failed')
+		returning h.id, h.kind, coalesce(h.writer, ''), p.id`)
+	if err != nil {
+		return nil, err
+	}
+	var orphans []heldOrphan
+	for rows.Next() {
+		var orphan heldOrphan
+		if err := rows.Scan(&orphan.id, &orphan.kind, &orphan.writer, &orphan.waitedOn); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		orphans = append(orphans, orphan)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return orphans, tx.Commit(ctx)
 }

@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -818,6 +820,53 @@ func (outcome nearCopyOutcome) tell(suggestions *model.Suggestions) {
 	suggestions.TitleMatches = outcome.TitleMatches
 	suggestions.LikelyDuplicate = outcome.LikelyDuplicate
 	suggestions.NearCopyCheck = outcome.NearCopyCheck
+}
+
+// recheckNearCopy runs the near-copy gate once more for create, a held issue, at its post: against
+// the project as it now stands, so an issue filed while it was held is read, and against its title
+// and spec as they now stand, after an edit or a Rewrite. Nobody waits on a post to be refused, so
+// a near copy found here refuses nothing: the issue posts as a create forced past it posts, its
+// issue.created event recording the issues it went past (forced) and its near_copy_checks row this
+// answer, under the id the hold chose. copies are the near copies the hold's own record did not
+// already name, which its writer is told of (tellNearCopy). Where the gate finds none, or does not
+// answer, create is left as the hold settled it.
+func (s *server) recheckNearCopy(ctx context.Context, create issueCreate) (issueCreate, []model.DuplicateCandidate) {
+	if create.NearCopy == nil || create.NearCopy.check == nil {
+		return create, nil
+	}
+	ancestors := []string{}
+	if create.Parent != "" {
+		chain, err := refs.IssueAncestors(ctx, s.deps.Store.Pool, create.Parent)
+		if err != nil {
+			slog.Warn("dispatch: read a held issue's ancestors for its near-copy check at the post",
+				"project", create.Project, "error", err)
+			return create, nil
+		}
+		ancestors = append([]string{create.Parent}, chain...)
+	}
+	spec := ""
+	if create.Spec != nil {
+		spec = *create.Spec
+	}
+	// Run as a forced create's, which settles every record of a create that goes in past a refusal.
+	outcome := s.runNearCopyGate(ctx, create.Project, create.Title, spec, ancestors, true)
+	if len(outcome.TitleMatches) == 0 {
+		return create, nil
+	}
+	var named []string
+	if create.Forced != nil {
+		named = create.Forced.Past
+	}
+	copies := slices.DeleteFunc(slices.Clone(outcome.TitleMatches), func(candidate model.DuplicateCandidate) bool {
+		return slices.Contains(named, candidate.Key)
+	})
+	// The row keeps whether the create asked for force, which the run above does not.
+	check := *outcome.Check
+	check.force = create.NearCopy.check.force
+	recorded := *create.NearCopy
+	recorded.row.title, recorded.row.spec, recorded.check = create.Title, spec, &check
+	create.NearCopy, create.Forced = &recorded, outcome.Forced
+	return create, copies
 }
 
 // respondWithExistingExternalIssue answers a create naming a GitHub issue Dispatch already holds

@@ -34,3 +34,29 @@ If you do neither in {{.TimeLeft}}, Dispatch posts {{if .PostsRewrite}}the rewri
 If a finding is correct, change the text{{with .EditCommand}}: run `{{.}}`{{end}}.
 {{- end}}
 {{end}}
+
+{{define "writer-post-failed"}}
+Dispatch did not post your held {{.Kind}} {{.ID}}. Nothing of it was written, and no person can see it.
+{{- if .WaitedOn}}
+It waited on the held text {{.WaitedOn}}, and Dispatch did not post that text either.
+{{- else}}
+Its post was refused: {{.Code}}: {{.Message}}
+{{- end}}
+
+## What to do now
+
+If the {{.Kind}} is still needed, write it again.
+{{end}}
+
+{{define "writer-near-copy"}}
+Dispatch posted your held issue {{.ID}}. When it posted, Dispatch checked it again and found that it is a near copy of {{if eq (len .Copies) 1}}an open issue{{else}}open issues{{end}}:
+{{range .Copies}}
+- {{.Key}}: {{.Title}}
+{{- end}}
+
+Nobody waits on a post, so Dispatch did not refuse it. Its record says it went past {{if eq (len .Copies) 1}}that issue{{else}}those issues{{end}}.
+
+## What to do now
+
+If {{.ID}} and {{if eq (len .Copies) 1}}that issue{{else}}one of those issues{{end}} are the same work, fold one into the other: move what one holds into the other, then close the one you emptied.
+{{end}}
