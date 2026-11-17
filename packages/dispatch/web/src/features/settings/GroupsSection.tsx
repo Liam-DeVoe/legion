@@ -116,7 +116,7 @@ export function GroupsSection(): ReactNode {
       </h2>
       <p className={`mt-1 text-sm ${textSecondaryOnCanvas}`}>
         A group is a named list of full members that a project's Access tab can name. Its owner, the
-        person who made it, is the only one who edits or deletes it.
+        person who made it or was given it, is the only one who edits or deletes it.
       </p>
 
       {groups.isPending ? <p className={`mt-6 ${textMutedOnCanvas}`}>Loading groups…</p> : null}

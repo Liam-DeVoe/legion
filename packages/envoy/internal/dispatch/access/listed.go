@@ -17,12 +17,12 @@ func PersonDirectlyListedSQL(personParam string) string {
 }
 
 // Listed reports whether some project names email directly, compared in its stored form: trimmed
-// and lowercase.
+// and lowercase. Its error, as MemberKind's, never names the email.
 func Listed(ctx context.Context, q Querier, email string) (bool, error) {
 	var listed bool
 	login := model.CanonicalLogin(email)
 	if err := q.QueryRow(ctx, `select `+PersonDirectlyListedSQL("$1"), login).Scan(&listed); err != nil {
-		return false, fmt.Errorf("read whether any project names %s: %w", login, err)
+		return false, fmt.Errorf("read whether any project names a person directly: %w", err)
 	}
 	return listed, nil
 }

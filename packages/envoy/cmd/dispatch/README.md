@@ -2608,7 +2608,7 @@ No write clears an owner: an update that would is refused with `check_violation`
 
 Migration `20261116015736_project_access` gives each project its default assignee as owner where that person has signed in.
 A project created after it is owned by the person `POST /api/v1/projects` creates it for, and an insert that names no owner takes its default assignee as owner (`projects_owner_from_default`).
-A project whose default assignee had never signed in when the migration ran keeps no owner, and the boot refuses to serve while any project has none, naming each one, its default assignee and both repairs (`store.EnsureProjectOwners`, run right after `DISPATCH_DEFAULT_PROJECT`'s check):
+A project whose default assignee had never signed in when the migration ran keeps no owner, and the boot refuses to serve while any project has none, naming each one by its key, and both repairs, and no person's email, since it writes the refusal to its log (`store.EnsureProjectOwners`, run right after `DISPATCH_DEFAULT_PROJECT`'s check):
 set `DISPATCH_PROJECT_OWNER_FALLBACK` to the lowercase email of a full member who has signed in, and the next boot makes that person the owner of every such project;
 or give each one an owner with the command above.
 The migration's census answers `0`, because a census that counts refuses the deploy and these projects are repaired after it.

@@ -63,7 +63,8 @@ func TestEveryProjectHasAnOwner(t *testing.T) {
 
 // The boot refuses a database where a project still has no owner, naming every such project and
 // both repairs: when the operator's setting is empty, and when it names somebody who is not a full
-// member, because an owner is always a full member.
+// member, because an owner is always a full member. The refusal names no person's email, neither
+// the default assignees' nor the setting's, since the boot writes it to its log.
 func TestTheBootNamesEveryProjectItCannotGiveAnOwner(t *testing.T) {
 	ctx := context.Background()
 	for _, setting := range []struct{ name, fallback string }{
@@ -99,6 +100,11 @@ func TestTheBootNamesEveryProjectItCannotGiveAnOwner(t *testing.T) {
 			for _, named := range []string{"LOST", "STRAY", "DISPATCH_PROJECT_OWNER_FALLBACK", "envoy-dispatch project-owner"} {
 				if !strings.Contains(err.Error(), named) {
 					t.Errorf("EnsureProjectOwners(%q) = %q, want it to name %s", setting.fallback, err, named)
+				}
+			}
+			for _, email := range []string{"gone@example.com", "left@example.com", "nobody@example.com", "outsider@other.example", "@"} {
+				if strings.Contains(err.Error(), email) {
+					t.Errorf("EnsureProjectOwners(%q) = %q, which names %q: the boot logs it", setting.fallback, err, email)
 				}
 			}
 			if stranded := projectsWithNoOwner(t, store); len(stranded) != 2 {

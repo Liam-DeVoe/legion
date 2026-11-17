@@ -42,7 +42,7 @@ func Answer(ctx context.Context, q Querier, key, person string) (model.AccessAns
 		return model.AccessAnswer{}, fmt.Errorf("%w: %s", ErrProjectNotFound, key)
 	}
 	if err != nil {
-		return model.AccessAnswer{}, fmt.Errorf("read the membership answer of %s for %s: %w", key, login, err)
+		return model.AccessAnswer{}, fmt.Errorf("read the membership answer of project %s: %w", key, err)
 	}
 	return answer, nil
 }
