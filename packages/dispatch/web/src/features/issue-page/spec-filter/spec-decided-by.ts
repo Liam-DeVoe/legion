@@ -71,8 +71,8 @@ import { statementStandings } from "../verification-filter/statement-state";
 export type SpecSaid = "agent" | "person" | "you";
 
 /** The mark at the right of a statement's row: how its checks stand, each at the commit the
- *  server names for it (decision 152), in the Verification filter's own reading, or that no check
- *  serves it (R10, R17). */
+ *  server names for it, in the Verification filter's own reading, or that no check serves it
+ *  (R10, R17). */
 export type SpecMark = StatementState | "no_check";
 
 /** The decision that shaped a run of statements, as the left column draws it (R5). */
@@ -134,12 +134,20 @@ export interface SpecStatement {
 /** One run of statements that one decision shaped, which the bracket in the left column ties
  *  together (R5: "the same decision stands in a column beside the statements it shaped"). */
 export interface SpecRun {
-  /** The decision that shaped every statement of the run; absent where none did (R35). */
+  /** The decision that shaped every statement of the run; absent where none did (R35), and
+   *  where the one that did waits on the asks read (`waiting`). */
   readonly decision?: SpecDecision;
   readonly statements: readonly SpecStatement[];
-  /** Whether the run has no decision drawn because a person's decision shaped it that waits on
-   *  the asks read (`specDecidedBy`'s `asksHeld`), so its cell cannot say that none did. */
-  readonly waiting?: true;
+  /** The reference of the person's decision that heads the run and waits on the asks read
+   *  (`specDecidedBy`'s `asksHeld`): the run is that decision's, so its cell says nothing until
+   *  the read is in, and cannot say that none shaped it. */
+  readonly waiting?: string;
+}
+
+/** A person's decision that waits on the asks read, by its reference: one of a statement's ties,
+ *  which keeps its place among them and is drawn as nothing until the read is in. */
+interface WaitingTie {
+  readonly waiting: string;
 }
 
 /** The node a group of statements hangs under, which the filter draws as no row of its own
@@ -210,7 +218,7 @@ export function specDecidedBy({
 }): SpecReading {
   const nodes = nodesById(root);
   const asks = asksById(nodes);
-  const { shaped, waiting } = shapedBy({
+  const shaped = shapedBy({
     asks,
     asksHeld,
     decisions,
@@ -222,26 +230,31 @@ export function specDecidedBy({
   const standings = statementStandings(root, checks);
   const groups: {
     parent?: SpecParent;
-    runs: { decision?: SpecDecision; statements: SpecStatement[]; waiting?: true }[];
+    runs: { decision?: SpecDecision; statements: SpecStatement[]; waiting?: string }[];
   }[] = [];
   // Every row the Spec filter kept, in the order it draws them: the view's nodes but its root.
-  // A statement is a requirement of the issue's own spec (`isStatement`, decision 152).
+  // A statement is a requirement of the issue's own spec (`isStatement`).
   const rows = nodesInOrder(view).slice(1);
   for (const node of rows.filter(isStatement)) {
     const parent = parentOf(node, nodes, nameOf);
     const under = answerUnder(parent, nodes, reader, nameOf);
     // The answered question the statement hangs under first, then each tie, each decision once.
-    const ties = [
+    // The first heads the statement's run and every other is named after "informed by". A
+    // person's decision that waits on the asks read keeps its place: where it is first it heads
+    // the run, which draws nothing for it until the read is in, and no later decision moves up
+    // in its place. The others that informed the statement are named after "informed by" all the
+    // same, since what they say does not wait on that read; a waiting one among them is named
+    // by nothing until it is in.
+    const ties: readonly (SpecDecision | WaitingTie)[] = [
       ...(under === undefined ? [] : [under]),
-      ...(shaped.get(node.id) ?? []).filter((made) => made.id !== under?.id),
+      ...(shaped.get(node.id) ?? []).filter((made) => "waiting" in made || made.id !== under?.id),
     ];
-    const decision = ties.at(0);
-    // A statement no decision is drawn for, which a person's decision shaped that waits on the
-    // asks read, stands in a run of its own kind, whose cell says nothing yet.
-    const waits = decision === undefined && waiting.has(node.id);
+    const head = ties.at(0);
+    const decision = head === undefined || "waiting" in head ? undefined : head;
+    const waits = head !== undefined && "waiting" in head ? head.waiting : undefined;
     const standing = standings.get(node.id);
     const statement: SpecStatement = {
-      alsoShapedBy: ties.slice(1),
+      alsoShapedBy: ties.slice(1).filter((tie): tie is SpecDecision => !("waiting" in tie)),
       mark:
         node.gaps.includes("no_check") || standing === undefined || !standing.covered
           ? "no_check"
@@ -251,7 +264,7 @@ export function specDecidedBy({
     const fresh = {
       ...(decision === undefined ? {} : { decision }),
       statements: [statement],
-      ...(waits ? { waiting: true as const } : {}),
+      ...(waits === undefined ? {} : { waiting: waits }),
     };
     const group = groups.at(-1);
     if (group === undefined || group.parent?.id !== parent?.id) {
@@ -259,7 +272,7 @@ export function specDecidedBy({
       continue;
     }
     const run = group.runs.at(-1);
-    if (run === undefined || run.decision?.id !== decision?.id || run.waiting !== fresh.waiting) {
+    if (run === undefined || run.decision?.id !== decision?.id || run.waiting !== waits) {
       group.runs.push(fresh);
       continue;
     }
@@ -316,8 +329,8 @@ function asksById(nodes: ReadonlyMap<string, TreeNode>): ReadonlyMap<string, Tre
 }
 
 /** The decisions that shaped each statement, by the statement's node id, in the order the
- *  decisions read answers them, and the statements a person's decision shaped while the asks
- *  read holds no answer (`specDecidedBy`'s `asksHeld`), which is drawn for none of them. */
+ *  decisions read answers them: each drawn, but a person's while the asks read holds no answer
+ *  (`specDecidedBy`'s `asksHeld`), which keeps its place as a tie that waits. */
 function shapedBy({
   asks,
   asksHeld,
@@ -334,36 +347,29 @@ function shapedBy({
   nodeIdOf: (reference: string) => string | undefined;
   nodes: ReadonlyMap<string, TreeNode>;
   reader: string | undefined;
-}): {
-  readonly shaped: ReadonlyMap<string, readonly SpecDecision[]>;
-  readonly waiting: ReadonlySet<string>;
-} {
-  const shaped = new Map<string, SpecDecision[]>();
-  const waiting = new Set<string>();
+}): ReadonlyMap<string, readonly (SpecDecision | WaitingTie)[]> {
+  const shaped = new Map<string, (SpecDecision | WaitingTie)[]>();
+  const idOf = (tie: SpecDecision | WaitingTie) => ("waiting" in tie ? tie.waiting : tie.id);
   for (const decision of decisions?.decisions ?? []) {
     // A replaced decision draws no line (R5): it is drawn where it sits in the outline, and a
     // statement it shaped is no longer standing on it.
     if (decision.replaced) continue;
     const links = decision.links ?? [];
     if (links.length === 0) continue;
-    const made =
+    const made: SpecDecision | WaitingTie =
       decision.kind === "person" && !asksHeld
-        ? undefined
+        ? { waiting: decision.ref }
         : decisionOf(decision, { asks, nameOf, nodeIdOf, nodes, reader });
     for (const link of links) {
       const id = link.to.ref === undefined ? undefined : nodeIdOf(link.to.ref);
       if (id === undefined) continue;
-      if (made === undefined) {
-        waiting.add(id);
-        continue;
-      }
       const held = shaped.get(id) ?? [];
       // A decision that names one statement in two of its blocks is one decision of it.
-      if (!held.some((one) => one.id === made.id)) held.push(made);
+      if (!held.some((one) => idOf(one) === idOf(made))) held.push(made);
       shaped.set(id, held);
     }
   }
-  return { shaped, waiting };
+  return shaped;
 }
 
 /** One decision as the column draws it: a person's by the answer they gave, an agent's by its
@@ -494,14 +500,14 @@ function parentOf(
   const parent = nodes.get(line.id);
   // Read from the node and not from `line.line`, which `presets.ts` cuts by the same rule
   // (`parentLineOf`) from words that write each bare address as its short form (`lineWords`):
-  // the heading names each reference by the page's name wherever it knows one (decision 140),
-  // and counts it against the line's limit as the name it draws.
+  // the heading names each reference by the page's name wherever it knows one, and counts it
+  // against the line's limit as the name it draws.
   const words = parent === undefined ? "" : namedFirstLine(lineWordsRaw(parent), nameOf);
   return {
     ...(parent?.at === undefined ? {} : { at: parent.at }),
     ...(parent?.author === undefined ? {} : { by: parent.author }),
     id: line.id,
-    // A parent with no words is named by its kind's word, never by its id (decision 66).
+    // A parent with no words is named by its kind's word, never by its id.
     line: words === "" ? NODE_TYPE_NAMES[line.type] : words,
     type: line.type,
   };

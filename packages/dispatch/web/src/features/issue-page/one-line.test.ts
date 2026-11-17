@@ -205,9 +205,9 @@ test("a private-use character the author wrote is drawn as written, never as a r
   );
 });
 
-// R1 and R3 (ruling 1): a line cut inside its sentence draws one ellipsis. A name the page gives
-// a statement is cut by `chipWords` and so can end with its own ellipsis, and a cut that falls
-// at the space right after the name drew a second one. Found by the tester on a running build at
+// R1 and R3: a line cut inside its sentence draws one ellipsis. A name the page gives a statement
+// is cut by `chipWords` and so can end with its own ellipsis, and a cut that falls at the space
+// right after the name drew a second one. Found by the tester on a running build at
 // 0058727e, where a comment that read "Does it hold, as dispatch://ACME-1/spec#b-r-home
 // says? I think so." drew its entry in the Outline sheet as "Does it hold, as R5. A spec node
 // shows the……".

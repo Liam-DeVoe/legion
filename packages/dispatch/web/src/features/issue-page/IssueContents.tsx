@@ -52,22 +52,22 @@ export interface ContentsEntry {
 }
 
 /**
- * The entries of the list, read off the tree the outline draws: each node part D's rule makes an
- * entry (`isContentsEntry`) - an ask, and a comment or message the reader wrote that begins a
- * thread - each under the nearest such entry above it in the tree, in the tree's own order, so
- * the list holds as many entries as the view row's Conversation count says (`contentsEntries`).
- * The issue itself is no entry: the header is the issue (the architect's ruling 5), as the
- * outline draws no row of it. A node drawn under a second parent is listed once, at its own
- * place, and counted once: a transcluded copy and the branch under it are the same nodes as at
- * the edited place, so they are neither listed nor counted again.
+ * The entries of the list, read off the tree the outline draws: each node the Contents rule
+ * makes an entry (`isContentsEntry`) - an ask, and a comment or message the reader wrote that
+ * begins a thread - each under the nearest such entry above it in the tree, in the tree's own
+ * order, so the list holds as many entries as the view row's Conversation count says
+ * (`contentsEntries`). The issue itself is no entry: the header is the issue, as the outline
+ * draws no row of it. A node drawn under a second parent is listed once, at its own place, and
+ * counted once: a transcluded copy and the branch under it are the same nodes as at the edited
+ * place, so they are neither listed nor counted again.
  *
  * Each entry's marks count its own branch: every node under it that sits under no entry nearer
  * to it, so a node counts once, on the entry whose branch it is read in (the prototype's
  * `branchCounts`): its statements, its decisions waiting for the reader's review, its child
  * issues, and its statements a check under them failed. A statement and a check are what the
- * filter row counts as one (`isStatement`, `isCheck`, decision 152): a `requirement` or `check`
- * block of any other document is counted as neither. What sits under the issue and under no
- * entry is counted on none, since the issue has no entry; the filter row's signals count it.
+ * filter row counts as one (`isStatement`, `isCheck`): a `requirement` or `check` block of any
+ * other document is counted as neither. What sits under the issue and under no entry is counted
+ * on none, since the issue has no entry; the filter row's signals count it.
  */
 export function contentsOf(root: TreeNode, viewer: string | undefined): ContentsEntry[] {
   const tally = (): Record<ContentsMark, number> => ({
@@ -145,17 +145,17 @@ const ROW_TEXT_REM = 0.875;
 const MARK_TEXT_REM = 0.75;
 
 /**
- * The Contents list (R14, the prototype's `#left`): its heading with the
- * Focus branch toggle, and one row per entry, each its node's first line by R1's rule, cut from
- * its first block's words with each bare address as written (`lineWordsRaw`) at a word to the
- * row's width, with each reference in it named once the line is cut (`referenceStandIns`): by
- * the page's name for it, and by its short form only where the page knows none (decision 140);
- * a node with no words is named by its kind's word. `slots/contents.tsx` draws it under the
- * issue's three sentences, in part D's pane from 1024 px up and in its Outline sheet below that
- * (`contents-frame.tsx`). It is one tab stop, as the outline is: the arrow keys move inside it,
- * the right and left arrows unfold and fold an entry, and Enter or a press goes to that node in
- * the outline. The entry the reader is in - the one holding the node the focus is on, or last
- * was on - is marked by a rule and a ground of its own.
+ * The Contents list (R14, the prototype's `#left`): its heading with the Focus branch toggle,
+ * and one row per entry, each its node's first line by R1's rule, cut from its first block's
+ * words with each bare address as written (`lineWordsRaw`) at a word to the row's width, with
+ * each reference in it named once the line is cut (`referenceStandIns`): by the page's name for
+ * it, and by its short form only where the page knows none; a node with no words is named by its
+ * kind's word. `slots/contents.tsx` draws it under the issue's three sentences, in the Contents
+ * pane from 1024 px up and in its Outline sheet below that (`contents-frame.tsx`). It is one tab
+ * stop, as the outline is: the arrow keys move inside it, the right and left arrows unfold and
+ * fold an entry, and Enter or a press goes to that node in the outline. The entry the reader is
+ * in - the one holding the node the focus is on, or last was on - is marked by a rule and a
+ * ground of its own.
  */
 export function ContentsList({
   focusBranch,

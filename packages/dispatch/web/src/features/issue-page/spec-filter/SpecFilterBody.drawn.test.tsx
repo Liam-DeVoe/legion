@@ -548,10 +548,9 @@ test("an agent's decision draws its own words, how sure it was and how it stands
   }
 });
 
-// R5: the decisions read holds no author for a
-// decision, so a cell, a group's heading and a because line draw none - no name, no shape, and no
-// dot where it would stand - and only the focused cell says "Author unknown". An agent is named
-// by its role's word (ruling 6).
+// R5: the decisions read holds no author for a decision, so a cell, a group's heading and a
+// because line draw none - no name, no shape, and no dot where it would stand - and only the
+// focused cell says "Author unknown". An agent is named by its role's word, as a row names one.
 test("a decision with no author draws none, and says Author unknown with the focus", () => {
   const planner: Actor = {
     id: "session-planner",
@@ -729,7 +728,7 @@ test("the focus on a decision draws the person's whole answer, character for cha
     issueTree([
       answeredAsk("ask-1", { text: stored }),
       statement("r1"),
-      // The tree names every block a decision links as a chip on it, as part F's model does
+      // The tree names every block a decision links as a chip on it, as the page's model does
       // (`tree-drafts.ts`).
       decisionNode("d1", {
         chips: [{ answered: true, gone: false, name: "r1", ref: statementRef("r1") }],
@@ -833,8 +832,8 @@ test("a focus on the tree goes on to its tab-stop row", () => {
   }
 });
 
-// Where the view draws no row, part D's `reachPart` puts the focus on the tree itself, and it
-// stays there: the focus is in the view, never on the document's body.
+// Where the view draws no row, the page keymap's `reachPart` puts the focus on the tree itself,
+// and it stays there: the focus is in the view, never on the document's body.
 test("a view with no statement holds the focus on its tree", () => {
   const { read, view } = drawBody(issueTree([]));
   try {
@@ -891,8 +890,8 @@ test("each statement carries how it stands, by a shape with its own name", () =>
   }
 });
 
-// Ruling 1 and ruling 6: a statement's own words carry its number where the spec wrote one, and
-// are drawn as the outline draws an agent's words - whole here, where no layout cuts them.
+// A statement's own words carry its number where the spec wrote one, and are drawn as the
+// outline draws an agent's words - whole here, where no layout cuts them.
 test("a statement's words are drawn as its author wrote them", () => {
   const words =
     "**R1.** Every node's words are on the page without opening it; an agent's long words " +
@@ -1033,7 +1032,7 @@ test("a gap the mark does not say is drawn after the statement's words, and no c
 });
 
 // R5, review finding 4590606091: `w` on a statement goes to the cell beside it, which draws the
-// decision its run is headed by. Part F's model hangs a person's decision under the question it
+// decision its run is headed by. The page's model hangs a person's decision under the question it
 // answers, at the tree's end, and an agent's under the issue, before the statements, so the
 // first decision of the tree's order that names r4 is the agent's, which only informed it and
 // heads no run.
@@ -1330,7 +1329,7 @@ test("a read that fails again over the answer the page holds keeps every mark an
   }
 });
 
-// The architect's decision 98 on R35 and R5: an issue that holds no statement says so while its
+// The architect's decision on R35 and R5: an issue that holds no statement says so while its
 // coverage and blocks are asked again and when that ask fails, and a cell that says no decision
 // shaped its statement still says so when the decisions read fails again: only a read that failed
 // with nothing held says it failed (review 5928280634 on pull request 4234, the reviewer's
@@ -1863,6 +1862,59 @@ test("a decision with no words is named by its kind's word, never by an empty qu
       NODE_TYPE_NAMES.ask,
       NODE_TYPE_NAMES.decision,
     ]);
+  } finally {
+    view.unmount();
+    read.mockRestore();
+  }
+});
+
+// R7 and R9: a pressed Retry that brings the reads in hands the focus to the view's first row,
+// and where the view draws no row - an issue with no statement - to its tree, as a focus on the
+// tree rests there; it never leaves the focus on nothing.
+test("a Retry that brings in a view with no row leaves the focus on the tree", async () => {
+  const user = userEvent.setup();
+  const { read, view } = drawBody(issueTree([]), [], { coverage: "failed" });
+  try {
+    const alert = await waitFor(() => alertSaying(view, ANSWER_LINES.statements_unreadable));
+    const retry = within(alert).getByRole("button", { name: "Retry" });
+    await waitFor(() => expect(document.activeElement).toBe(retry));
+    read.coverage.mockResolvedValue(coverageRead([]));
+    await user.keyboard("{Enter}");
+    await waitFor(() =>
+      expect(view.container.querySelector("[data-spec-empty]")?.textContent).toBe(
+        EMPTY_STATE_LINES.spec
+      )
+    );
+    await waitFor(() =>
+      expect(document.activeElement).toBe(view.container.querySelector("[data-spec-tree]"))
+    );
+  } finally {
+    view.unmount();
+    read.mockRestore();
+  }
+});
+
+// R20: the view sends no request of its own, and a read refused before it answered is asked
+// again by its Retry and by nothing else: the view turned off and on again over a refused read
+// asks for it no more times.
+test("the body drawn again over a refused read asks for it no more times", async () => {
+  const { client, read, redraw, view } = drawBody(issueTree([statement("r1")]), [], {
+    coverage: "failed",
+  });
+  try {
+    await waitFor(() =>
+      expect(client.getQueryState(issueCoverageQuery(KEY).queryKey)?.status).toBe("error")
+    );
+    const before = read.coverage.mock.calls.length;
+    redraw(false);
+    redraw(true);
+    // A task's turn, in which a read asked for on the new body's mount would be sent.
+    await act(async () => {
+      const { promise, resolve } = Promise.withResolvers<void>();
+      setTimeout(resolve, 0);
+      await promise;
+    });
+    expect(read.coverage.mock.calls.length).toBe(before);
   } finally {
     view.unmount();
     read.mockRestore();

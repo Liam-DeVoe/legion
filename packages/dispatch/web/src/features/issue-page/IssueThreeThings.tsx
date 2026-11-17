@@ -17,30 +17,28 @@ const LABELS = [
 
 /**
  * The issue's three sentences under "In short", each after its label - what it is, why it
- * matters, done when (R1, R8, the architect's ruling 5).
+ * matters, done when (R1, R8).
  *
  * Where the approved pictures draw them: with no view on, in `slots/contents.tsx`
- * (`look="contents"`), which part D's frame draws at the head of the Contents pane from 1024 px
- * up and in the Outline sheet below that (never above the outline, where they cost a phone's
- * first screen 160 px to 239 px); under the Spec view, as its first group (`look="spec"`,
- * `spec-filter/`). Under Verification, Plan and Decisions
- * they are not drawn. The two rows the spec named under them, "How it gets done" and "What you
- * will be shown", are not drawn at any width: the Plan and Verification controls' signals say
- * the same (ruling 5).
+ * (`look="contents"`), which the page's frame draws at the head of the Contents pane from
+ * 1024 px up and in the Outline sheet below that (never above the outline, where they cost a
+ * phone's first screen 160 px to 239 px); under the Spec view, as its first group
+ * (`look="spec"`, `spec-filter/`). Under Verification, Plan and Decisions they are not drawn.
+ * The two rows the spec named under them, "How it gets done" and "What you will be shown", are
+ * not drawn at any width: the Plan and Verification controls' signals say the same.
  *
  * The sentences are the spec's summary as its author wrote them, read from the server's reading
  * of the summary node's whole text (`TreeNode.tree`, the batched reference read's `text_tree`)
- * and never from the node's
- * stored excerpt (`TreeNode.text`), which is the block's source cut at 480 runes: the reading
- * holds no fence, list marker or emphasis mark to leave out and ends nowhere a cut fell. The
- * tree the page already draws carries it (part I's `specSummary`), so the head reads no
- * document and costs no request of its own (R20). It draws at most the three sentences the
- * requirement names, and an author who wrote two gets two, with nothing drawn in the place of a
- * third (`summarySentences`). A reference the sentences cite is named in plain words, by the
- * one name the page gives it everywhere (`referenceStandIns`, with the `nameOf` its slot makes
- * once over the whole tree), once the sentences are split. Who wrote the sentences and when
- * ("from your comment of 5 Nov" in the pictures) waits on a read that holds them, and the model
- * holds neither for any issue, so the head draws no author.
+ * and never from the node's stored excerpt (`TreeNode.text`), which is the block's source cut at
+ * 480 runes: the reading holds no fence, list marker or emphasis mark to leave out and ends
+ * nowhere a cut fell. The tree the page already draws carries it (`specSummary`), so the head
+ * reads no document and costs no request of its own (R20). It draws at most the three sentences
+ * the requirement names, and an author who wrote two gets two, with nothing drawn in the place
+ * of a third (`summarySentences`). A reference the sentences cite is named in plain words, by
+ * the one name the page gives it everywhere (`referenceStandIns`, with the `nameOf` its slot
+ * makes once over the whole tree), once the sentences are split. Who wrote the sentences and
+ * when ("from your comment of 5 Nov" in the pictures) waits on a read that holds them, and the
+ * model holds neither for any issue, so the head draws no author.
  *
  * Until the reads that carry the summary answer, the head says nothing about it: the tree is
  * drawn before the spec's blocks arrive, and its summary node before the batched reference read

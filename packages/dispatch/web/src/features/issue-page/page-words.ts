@@ -632,13 +632,13 @@ export const ANSWER_LINES = freeze({
   statements_unreadable: "Could not load the statements.",
   /** What the Spec view says when the results could not be read, so it marks no statement. */
   results_unreadable: "Could not load the results.",
-  /** What the Spec view says over its columns when the issue's questions and their answers could
-   *  not be read, so it draws no decision a person made. */
-  answers_unreadable: "Could not load the answers.",
   /** What the list of what references the focused row says while its read, which the reader
    *  opened, is out, and when it failed (`node-references/NodeReferences.tsx`). */
   references_loading: "Loading references…",
   references_unreadable: "Could not load the references.",
+  /** What the Spec view says over its columns when the issue's questions and their answers could
+   *  not be read, so it draws no decision a person made. */
+  answers_unreadable: "Could not load the answers.",
   /** What a decision's Change form says when Dispatch refused its send, whatever the server
    *  answered: the reader's words stay in the field, to send again (`DecisionActions.tsx`). */
   change_not_sent: "Could not send the change.",

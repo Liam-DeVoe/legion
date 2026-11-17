@@ -14,7 +14,7 @@ import { CONTROL_LABELS, type NodeType } from "./page-words";
 /**
  * The Contents list's entries (R14): each question and each thread the
  * reader began, nested under the nearest entry above it, over a tree built by hand. The issue
- * itself is no entry: the header is the issue (the architect's ruling 5).
+ * itself is no entry: the header is the issue.
  */
 
 /** One node of a hand-built tree. A requirement here is one of the issue's own spec, which the

@@ -632,7 +632,7 @@ test("a person's quote is the first sentence of their answer's plain words", () 
   expect(groups[1]?.runs[0]?.decision?.quote).toBe("Keep snake_case as is.");
 });
 
-// R5, of the tester's finding 1's kind, found by J's implementer in test round 2: a person's quote
+// R5, of the tester's finding 1's kind, found by the implementer in test round 2: a person's quote
 // draws a private-use character they wrote of their own - an icon from an icon font or a
 // terminal - as they wrote it, and never as the punctuation that a code span's characters are
 // held as while the marks are taken off.
@@ -645,9 +645,8 @@ test("a private-use character in a person's answer is quoted as written, beside 
   expect(groups[0]?.runs[0]?.decision?.quote).toBe("Keep \ue02a and \ue05f, and a*b too.");
 });
 
-// R5, review finding 4590606160, decision 51: a leading label is no sentence end, so an answer
-// that opens with a numbered label is quoted with the sentence after it, never as the label
-// alone.
+// R5, review finding 4590606160: a leading label is no sentence end, so an answer that opens with
+// a numbered label is quoted with the sentence after it, never as the label alone.
 test("a first sentence that opens with a numbered label holds the sentence after it", () => {
   expect(firstSentenceOf("1. Keep the old page. 2. Then drop it.")).toBe("1. Keep the old page.");
   expect(firstSentenceOf("R1. stands as written.")).toBe("R1. stands as written.");
@@ -656,7 +655,7 @@ test("a first sentence that opens with a numbered label holds the sentence after
   expect(firstSentenceOf("R12345. Then more.")).toBe("R12345.");
 });
 
-/** The page's name for the statement r2, which opens with its label as an INFRA spec's does. */
+/** The page's name for the statement r2, which opens with its label ("R2."). */
 const LABELLED = (reference: string) =>
   reference === statementRef("r2") ? "R2. Every address…" : undefined;
 

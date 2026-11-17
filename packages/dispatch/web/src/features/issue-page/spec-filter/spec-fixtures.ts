@@ -140,8 +140,8 @@ export function decisionsRead(made: readonly Decision[]): IssueDecisions {
 export const statementRef = (block: string) => `dispatch://${KEY}/spec#b-${block}`;
 
 /** One statement of the spec, by its block id, with its number in its own words as the spec
- *  writes one: a requirement of the issue's own spec, which part F's model marks a statement
- *  (`isStatement`, decision 152). */
+ *  writes one: a requirement of the issue's own spec, which the page's model marks a statement
+ *  (`isStatement`). */
 export function statement(block: string, partial: Partial<TreeNode> = {}): TreeNode {
   return node({
     counts: { checks: 1, planTasks: 1 },
@@ -193,7 +193,7 @@ export function decisionNode(block: string, partial: Partial<TreeNode> = {}): Tr
 }
 
 /** A question asked of the issue, as the asks read answers it, which the reader answered with
- *  `text`: what part F's model builds the answered question's node from. */
+ *  `text`: what the page's model builds the answered question's node from. */
 export function askRead(id: string, text: string): TreeAsk {
   return {
     anchor: null,
@@ -218,7 +218,7 @@ export function askRead(id: string, text: string): TreeAsk {
 }
 
 /** The coverage read over the statements `blocks`, in that order, each served by a check: what
- *  part F's model builds each statement's node from. */
+ *  the page's model builds each statement's node from. */
 export function coverageRead(blocks: readonly string[]): IssueCoverage {
   return {
     gaps: [],

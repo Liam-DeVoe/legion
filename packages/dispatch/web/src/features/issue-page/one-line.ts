@@ -23,9 +23,9 @@ export const LEADING_LABEL = /^(?=\S*\d)\S{0,4}\.(?=\s|$)/u;
 
 /**
  * What the Contents pane reads once for every entry it draws on one line (R1, R14): how wide its
- * list is, and what an entry needs to say how wide its own words are
- * drawn. The outline's rows draw their words whole (the architect's ruling 1 on R1); an entry of
- * the list is one of the places the page draws one line for a node.
+ * list is, and what an entry needs to say how wide its own words are drawn. The outline's rows
+ * draw their words whole; an entry of the list is one of the places the page draws one line for
+ * a node.
  *
  * An entry cuts its node's first line at a word to the room its own box leaves it, and no entry
  * may read its own layout to learn that room: that is a layout read per entry, and again on

@@ -49,7 +49,7 @@ export function ViewSpecSlot({ issue, route }: SlotProps): ReactNode {
           context={view.context}
           emptyLine={address.filter === "" ? EMPTY_STATE_LINES.spec : EMPTY_STATE_LINES.no_match}
           // The words filter's Escape comes before the view is left; turning the view off with
-          // Escape is part N's step of the key table.
+          // Escape is a later step of the page's key table.
           holdsEscape={address.filter !== ""}
           issue={issue}
           reader={viewer}

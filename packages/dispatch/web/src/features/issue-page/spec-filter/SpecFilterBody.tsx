@@ -113,15 +113,14 @@ const NOTHING = (): void => {};
  *   cites is the author's own.
  *
  * After its column heads the body draws the issue's three sentences under their labels, as the
- * picture's first group (ruling 5 of build-rulings-md: "Under Spec: the first group"), in the
- * statements' column, as the prototype's `renderSpec` puts them.
+ * picture's first group, in the statements' column, as the prototype's `renderSpec` puts them.
  *
  * It is the outline under the Spec filter, so it is one `role="tree"` named as the outline is,
  * with the outline's keys (`useTreeKeymap.ts`): the statements are its rows, the focused one is
  * its one tab stop, the arrows and `j`/`k` move between them, `w` moves to the decision beside
  * a statement, the arrows and `j`/`k` move on from that decision to the statement after or
  * before its run, and Enter goes to a statement in the conversation, where it is edited. `r`
- * replies to a statement once part L makes a statement a target of the outline's writer, which
+ * replies to a statement once a statement can be a target of the outline's writer, which
  * the body already passes to the keymap. The focus on a statement puts its facts in Details, as
  * a row of the outline does, and the focus on a decision puts that decision's; an address
  * naming a statement (`/spec#b-<block>`) puts the focus on it (R10, R19).
@@ -405,15 +404,17 @@ export function SpecFilterBody({
   }, [firstUnreadable]);
   // Whether the reader pressed a Retry while it held the focus, until the reads are held. The
   // Retry is drawn no more once its read answers, which leaves the focus on nothing, so the
-  // view's first row - the tree's one tab stop - takes it, unless something else holds it by
-  // then.
+  // view's first row - the tree's one tab stop - takes it, and the tree itself where the view
+  // draws no row, as a focus on the tree rests there; unless something else holds it by then.
   const retried = useRef(false);
   useEffect(() => {
     if (!readsHeld || !retried.current) return;
     retried.current = false;
     const active = document.activeElement;
     if (active !== null && active !== document.body) return;
-    tree.current?.querySelector<HTMLElement>(TAB_STOP_ROW)?.focus({ preventScroll: true });
+    (tree.current?.querySelector<HTMLElement>(TAB_STOP_ROW) ?? tree.current)?.focus({
+      preventScroll: true,
+    });
   }, [readsHeld]);
 
   useTreeKeymap({
@@ -483,7 +484,7 @@ export function SpecFilterBody({
         </span>
       </div>
       {/* The issue's three sentences, the first group, in the statements' column, as the
-          prototype's `renderSpec` puts them after the column heads (ruling 5). */}
+          prototype's `renderSpec` puts them after the column heads. */}
       <div className="mt-[18px] ml-[300px] min-w-0 max-[901px]:ml-0">
         <IssueThreeThings
           hasSpec={spec !== undefined}
@@ -504,8 +505,8 @@ export function SpecFilterBody({
         className="flex min-w-0 flex-col"
         data-spec-tree=""
         onBlur={releaseFocus}
-        // A focus on the tree itself - part D's `reachPart` after `t s` lands here - goes on to
-        // the tab-stop row; where the view draws no row it stays here.
+        // A focus on the tree itself - the page's `t s` lands here - goes on to the tab-stop
+        // row; where the view draws no row it stays here.
         onFocus={(event) => {
           if (event.target !== event.currentTarget) return;
           event.currentTarget.querySelector<HTMLElement>('[data-node-row][tabindex="0"]')?.focus();
@@ -742,8 +743,8 @@ function Legend(): ReactNode {
 }
 
 /** Who made something, by a name and a shape, as every other row of the page draws an author
- *  (R9): never an identifier, and an agent by its role's word, as a row names one (ruling 6,
- *  `NodeRow.tsx`). Where the model holds no author it draws nothing: only the focused cell says
+ *  (R9): never an identifier, and an agent by its role's word, as a row names one
+ *  (`NodeRow.tsx`). Where the model holds no author it draws nothing: only the focused cell says
  *  so (`UnknownAuthor`). */
 function Author({ actor }: { actor: Actor | undefined }): ReactNode {
   const agentText = useAgentText();
@@ -878,9 +879,9 @@ function Group({
           <DecisionCell
             decision={run.decision}
             focused={openCell !== undefined && openCell === run.statements[0]?.node.id}
-            // A run a person's decision shaped that the asks read has not brought yet waits as
-            // a run does before the decisions read answers: its cell says nothing.
-            known={known && run.waiting !== true}
+            // A run a person's decision heads that the asks read has not brought yet waits as a
+            // run does before the decisions read answers: its cell says nothing.
+            known={known && run.waiting === undefined}
             onFocus={(cell, itself) =>
               onCellFocus(cell, run.decision, itself ? run.statements[0]?.node.id : undefined)
             }
@@ -945,12 +946,12 @@ function GroupHeading({ parent }: { parent: SpecParent }): ReactNode {
  *
  * A person's words are quoted, their first sentence in plain words; an agent's are drawn whole
  * as a row draws a node's words (`RowText`), each reference by its name, and cut as an agent's
- * are at six lines (ruling 1). The focus on the cell draws a person's whole answer character
- * for character under its first sentence (R5: "The focus on the line draws the whole answer word
- * for word"), an agent's words whole, and "Author unknown" where the model holds no author;
- * `w` on a statement is how a keyboard reader puts it there. The focused cell's words are placed
- * on screen and below the column heads (`useOnScreenUnderHeads`): they are what it draws, and
- * they stay at the top of a run taller than the screen while the cell's own box runs past it.
+ * are at six lines. The focus on the cell draws a person's whole answer character for character
+ * under its first sentence (R5: "The focus on the line draws the whole answer word for word"),
+ * an agent's words whole, and "Author unknown" where the model holds no author; `w` on a
+ * statement is how a keyboard reader puts it there. The focused cell's words are placed on
+ * screen and below the column heads (`useOnScreenUnderHeads`): they are what it draws, and they
+ * stay at the top of a run taller than the screen while the cell's own box runs past it.
  */
 function DecisionCell({
   decision,
@@ -1136,11 +1137,11 @@ function WholeOf({ decision }: { decision: SpecDecision }): ReactNode {
  * line naming the decision that shaped it, and its mark at the right of the row (R5, R6, R17,
  * R34). Its words are cut as an agent's are on every row of the page, at six lines where more
  * than 20 words would be hidden, with a row's own "more · N words" opening the rest in place
- * (`MoreWords`; ruling 1 and ruling 6 of build-rulings-md: a statement of twenty lines opened
- * every view on a wall of text); the focused statement draws them whole. The row draws its own
- * box rather than `CutWords`, so its chips stand after its last word while the words are whole,
- * and beside "more" while they are cut, as a row of the outline draws them, which `CutWords`,
- * drawing its words and nothing after them, cannot.
+ * (`MoreWords`: a statement of twenty lines opened every view on a wall of text); the focused
+ * statement draws them whole. The row draws its own box rather than `CutWords`, so its chips
+ * stand after its last word while the words are whole, and beside "more" while they are cut, as
+ * a row of the outline draws them, which `CutWords`, drawing its words and nothing after them,
+ * cannot.
  */
 function Statement({
   context,
@@ -1181,8 +1182,8 @@ function Statement({
   const edged = { ...node, gaps: node.gaps.filter((gap) => gap !== "no_check") };
   const edges = edged.alsoUnder.length > 0 || edged.chips.length > 0 || edged.gaps.length > 0;
   // The chips at the end of the words, on their line, as a row of the outline draws its trail
-  // (`NodeRow.tsx`, ruling 5); where the words are cut they stand beside "more" instead, so a
-  // cut never hides one.
+  // (`NodeRow.tsx`); where the words are cut they stand beside "more" instead, so a cut never
+  // hides one.
   const trail = edges ? (
     <span
       className={`ml-1.5 inline-flex max-w-full flex-wrap items-baseline gap-x-2 align-baseline text-xs leading-6 ${pageQuietText}`}
