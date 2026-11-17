@@ -548,6 +548,27 @@ check "exits 1" "$(is "$status" 1)"
 check "names the job and the name" \
   "$(contains "$out" "release.yaml's job publish, which holds listed decision readers, has 2 steps named \`legion: Write the changelog into the release body\`")"
 
+# publish's version and tag outputs carry its release on to worker_image_release, whose own if:
+# reads the tag: both are pinned, and an if: that reads them is a reader (the review's N3).
+echo "case: publish's tag output emptied (N3), and worker_image_release's if: changed"
+root=$(written publish-tag)
+replace "$root/.github/workflows/release.yaml" $'      tag: "${{ steps.legion_release.outputs.tag }}"\n' $'      tag: \'\'\n'
+run_check "$root"
+check "exits 1 on tag: '' (N3)" "$(is "$status" 1)"
+check "names the output and the module's value" \
+  "$(contains "$out" "publish's output tag is \`\`, where $plan_file names \`\${{ steps.legion_release.outputs.tag }}\` for it in JOB_OUTPUTS")"
+root=$(written worker-release-if)
+replace "$root/.github/workflows/release.yaml" "needs.publish.outputs.tag != ''\"" "false\""
+run_check "$root"
+check "exits 1 on worker_image_release's if: changed" "$(is "$status" 1)"
+check "names its if:" "$(contains "$out" "the job's own if: of worker_image_release has the if: \`always() && .*false\`, where $readers_rule")"
+root=$(written publish-reader-new)
+printf '      - name: Extra\n        if: needs.publish.outputs.version != %s\n        run: echo extra\n' "''" \
+  >> "$root/.github/workflows/release.yaml"
+run_check "$root"
+check "exits 1 on a new reader of publish's version" "$(is "$status" 1)"
+check "names it" "$(contains "$out" "the step \`Extra\` of publish has the if: \`needs.publish.outputs.version != ''\`, which reads a checked version step's decision")"
+
 echo "case: a new step that reads release"
 root=$(written reader-new)
 printf '      - name: Announce the release\n        if: steps.confirm.outputs.release == %s\n        run: echo released\n' "'true'" \

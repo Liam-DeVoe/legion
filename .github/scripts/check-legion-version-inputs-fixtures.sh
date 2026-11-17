@@ -19,13 +19,15 @@
 hand_args='    -- packages/daemon/ .github/go-release-targets.json'
 handoff='.github/scripts/release-push.sh version legion-v $LEGION_VERSION_ARGS $LEGION_GO_INPUTS'
 
-# step <kind> <name> [<steps before>]: a step of release_version_inputs.py as YAML lines of a
-# fixture job's steps: `version <job>:<step id>`, one of VERSION_STEPS with its if:, env: and its
-# run: as a `|` block; `before <name>`, one of STEPS_BEFORE_VERSION_STEPS; `outputs <job>`, the
-# job's DECISION outputs; or `readers release|listener:<job> <steps before>`, the job's
-# DECISION_READERS after that many steps, each at its position when the module names it by one,
-# with `run: "true"` fillers between. Every fixture's jobs are built from these, so each starts
-# pinned as the check requires and each case below changes one piece of it.
+# step <kind> <name> [<steps before>]: a piece of release_version_inputs.py as YAML lines of a
+# fixture: `version <job>:<step id>`, one of VERSION_STEPS with its if:, env: and its run: as a
+# `|` block; `before <name>`, one of STEPS_BEFORE_VERSION_STEPS; `outputs release|listener:<job>`,
+# the job's JOB_OUTPUTS; `job-head release|listener:<job>`, the job's own if: and needs:;
+# `chain release|listener`, the jobs whose entry is their own if: alone; or `readers
+# release|listener:<job> <steps before>`, the job's DECISION_READERS after that many steps, each at
+# its position when the module names it by one, with `run: "true"` fillers between. Every
+# fixture's jobs are built from these, so each starts pinned as the check requires and each case
+# of the harness changes one piece of it.
 step() {
   PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$script_dir" python3 - "$@" <<'PY'
 import json
@@ -38,8 +40,9 @@ if kind == "version":
     spec = next(s for s in plan.VERSION_STEPS if f"{s.job}:{s.step_id}" == name)
     fields = {"id": spec.step_id, "if": spec.if_, "env": spec.env, "run": spec.run}
 elif kind == "outputs":
-    spec = next(s for s in plan.VERSION_STEPS if s.job == name)
-    print("\n".join(["    outputs:", *(f"      {k}: {json.dumps(v)}" for k, v in spec.outputs.items())]))
+    workflow, job = name.split(":")
+    wanted = plan.JOB_OUTPUTS[({"release": plan.RELEASE, "listener": plan.LISTENER}[workflow], job)]
+    print("\n".join(["    outputs:", *(f"      {k}: {json.dumps(v)}" for k, v in wanted.items())]))
     sys.exit(0)
 elif kind == "job-head":
     # The job's own if: when DECISION_READERS names one (position 0), and its needs: when JOB_NEEDS
@@ -105,8 +108,9 @@ PY
 legion_step=$(step version legion_build:version)
 envoy_build_step=$(step version release_build:version)
 envoy_confirm_step=$(step version release_publish:confirm)
-legion_outputs=$(step outputs legion_build)
-envoy_build_outputs=$(step outputs release_build)
+legion_outputs=$(step outputs release:legion_build)
+envoy_build_outputs=$(step outputs listener:release_build)
+publish_outputs=$(step outputs release:publish)
 checkout_step=$(step before checkout)
 checkout_sha_step=$(step before "checkout of the event's commit")
 determine_step=$(step before "Determine latest")
@@ -224,6 +228,7 @@ $release_chain
   publish:
     runs-on: ubuntu-24.04
 $publish_job_head
+$publish_outputs
     steps:
 $publish_readers
 EOF

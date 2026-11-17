@@ -19,17 +19,20 @@ accounts for are one plan, kept here.
   VERSION_STEPS                each step that hands a line's paths to release-push.sh, with the
                                variables that hold those paths, the run: it must be, character for
                                character after YAML has read it, its env:, key for key, its if:,
-                               its job's runs-on:, and the job outputs: that hand its decision on.
+                               and its job's runs-on:.
                                Exact text is the rule because shell that reads like the command may
                                not run it: an escaped `\\$`, a `${{ }}` line GitHub renders into an
                                assignment, or any added line can keep the paths from
                                release-push.sh, and a reader of shell finds one more such form
                                each time. The runner is pinned because a self-hosted one runs its
-                               own hooks and environment before the job's first step. The if: and
-                               the outputs are pinned because the decision is the step's only
-                               product: an `if: false`, or a job output `skip: "true"` in place of
-                               the step's, throws away what the step computed, and the release
+                               own hooks and environment before the job's first step. The if: is
+                               pinned because the decision is the step's only product: an `if:
+                               false` throws away what the step computed, and the release
                                downstream is skipped all the same.
+  JOB_OUTPUTS                  the job outputs that carry a decision on: each build job's version
+                               and skip, and publish's version and tag, as written here. A job
+                               output `skip: "true"`, or publish's `tag: ''`, throws the decision
+                               away as an `if: false` does.
   STEPS_BEFORE_VERSION_STEPS   every step that may run before one of those in its job: an action
                                at its pin with its with:, or a run: text, and in each case its
                                env:, all exactly. Any other step is code this check does not read,
@@ -106,6 +109,20 @@ RUNNER = "ubuntu-24.04"
 DECISION = {
     "version": "${{ steps.version.outputs.version }}",
     "skip": "${{ steps.version.outputs.skip }}",
+}
+# publish's: the version and tag of the legion release it made, which worker_image_release reads
+# to tag the worker image and name it in the release body.
+PUBLISHED = {
+    "version": "${{ steps.legion_release.outputs.version }}",
+    "tag": "${{ steps.legion_release.outputs.tag }}",
+}
+# Each job output that carries a decision on, as written here; another value throws it away (an
+# output `skip: "true"`, or publish's `tag: ''`, which skips worker_image_release). The job's other
+# outputs carry other steps' results and stay free. An if: that reads one of these is a reader.
+JOB_OUTPUTS = {
+    (RELEASE, "legion_build"): DECISION,
+    (RELEASE, "publish"): PUBLISHED,
+    (LISTENER, "release_build"): DECISION,
 }
 
 
@@ -205,14 +222,19 @@ DECISION_READERS = {
     (LISTENER, "build"): (Reader(None, position=0),),
     (LISTENER, "docker"): (Reader(None, position=0),),
     (LISTENER, "image_index"): (Reader(None, position=0),),
+    # The job that reads publish's tag output: the worker image is tagged with the legion version,
+    # and named in the release body, only when its own if: reads the tag.
+    (RELEASE, "worker_image_release"): (
+        Reader("always() && needs.worker_image.result == 'success' && (needs.publish.result == 'success' || "
+               "needs.publish.result == 'failure') && needs.publish.outputs.tag != ''", position=0),
+    ),
 }
 
 
 class VersionStep(NamedTuple):
     """A step that hands a line's paths to release-push.sh: where it is, the workflow-level
     variables that hold the paths, its whole run: text, its env: and its if: (None for a step with
-    none), its job's runs-on:, and the job outputs that must carry its decision as written here
-    (None for a job whose steps read the decision themselves)."""
+    none), and its job's runs-on:. The job outputs that carry its decision on are JOB_OUTPUTS'."""
 
     workflow: str
     job: str
@@ -222,18 +244,17 @@ class VersionStep(NamedTuple):
     env: dict[str, str] | None = None
     runs_on: str = RUNNER
     if_: str | None = None
-    outputs: dict[str, str] | None = None
 
 
 VERSION_STEPS = (
     VersionStep(RELEASE, "legion_build", "version", (LEGION_ARGS, LEGION_BLOCK), (
         "# shellcheck disable=SC2086 # the two are the argument list, split on purpose\n"
         '.github/scripts/release-push.sh version legion-v $LEGION_VERSION_ARGS $LEGION_GO_INPUTS >> "$GITHUB_OUTPUT"\n'
-    ), outputs=DECISION),
+    )),
     VersionStep(LISTENER, "release_build", "version", (ENVOY_ARGS,), (
         "# shellcheck disable=SC2086 # $LEGION_ENVOY_VERSION_ARGS is the argument list, split on purpose\n"
         '.github/scripts/release-push.sh version legion-envoy-v $LEGION_ENVOY_VERSION_ARGS >> "$GITHUB_OUTPUT"\n'
-    ), outputs=DECISION),
+    )),
     # The confirm step's decision, release=true, stays in its own job, whose later steps read it.
     VersionStep(LISTENER, "release_publish", "confirm", (ENVOY_ARGS,), (
         "status=0\n"

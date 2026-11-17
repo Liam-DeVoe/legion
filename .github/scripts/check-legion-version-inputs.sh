@@ -468,15 +468,6 @@ def version_step(doc, spec):
         problem(f"{spec.job}'s runs-on: is {rendered(job.get('runs-on'))}, where {PLAN} names `{spec.runs_on}` for it: "
                 f"another runner, a self-hosted one above all, can run its own hooks and set its own environment "
                 f"before {where}, none of which this check reads", path)
-    outputs = job.get("outputs")
-    if spec.outputs is not None and not isinstance(outputs, dict):
-        problem(f"{spec.job}'s outputs: is {rendered(outputs)}, not a literal mapping holding {', '.join(spec.outputs)} as "
-                f"{PLAN} names them, so no one can read what it hands on of {where}'s decision", path)
-    for key, want in (spec.outputs or {}).items() if isinstance(outputs, dict) else ():
-        if outputs.get(key) != want:
-            problem(f"{spec.job}'s output {key} is {rendered(outputs.get(key))}, where {PLAN} names `{want}` for it: the "
-                    f"publish steps read needs.{spec.job}.outputs.{key} as {where}'s decision, so another value throws "
-                    f"that decision away (a `skip: \"true\"` skips the release the step chose)", path)
     steps = job.get("steps") if isinstance(job.get("steps"), list) else []
     found = [i for i, step in enumerate(steps) if isinstance(step, dict) and step.get("id") == spec.step_id]
     if len(found) != 1 or not isinstance(steps[found[0]].get("run"), str):
@@ -580,8 +571,9 @@ def decision_readers(path, doc):
     jobs = doc.get("jobs") if isinstance(doc, dict) else None
     jobs = jobs if isinstance(jobs, dict) else {}
     specs = [spec for spec in plan.VERSION_STEPS if spec.workflow == path]
-    anywhere = [re.compile(rf"\bneeds\.{re.escape(s.job)}\.outputs\.(?:{'|'.join(map(re.escape, s.outputs))})\b",
-                           re.IGNORECASE) for s in specs if s.outputs]
+    outputs = {job: wanted for (workflow, job), wanted in plan.JOB_OUTPUTS.items() if workflow == path}
+    anywhere = [re.compile(rf"\bneeds\.{re.escape(job)}\.outputs\.(?:{'|'.join(map(re.escape, wanted))})\b",
+                           re.IGNORECASE) for job, wanted in outputs.items()]
     held = {}    # (job, selector) -> the if: it holds, for the job itself and each of its steps
     index = {}   # (job, selector) -> the step's 1-based place in its job, 0 for the job itself
     keys = {}    # (job, selector) -> the step's keys, for each step
@@ -691,6 +683,28 @@ def decision_readers(path, doc):
                 break
 
 
+def job_outputs(path, doc):
+    """Rule 3's outputs for the workflow `path`: each job of JOB_OUTPUTS has a literal outputs:
+    mapping, and each output that carries a decision on holds the value the module names."""
+    jobs = doc.get("jobs") if isinstance(doc, dict) else None
+    jobs = jobs if isinstance(jobs, dict) else {}
+    for (workflow, job_name), wanted in sorted(plan.JOB_OUTPUTS.items()):
+        if workflow != path:
+            continue
+        job = jobs.get(job_name)
+        outputs = job.get("outputs") if isinstance(job, dict) else None
+        if not isinstance(outputs, dict):
+            problem(f"{job_name}'s outputs: is {rendered(outputs)}, not a literal mapping holding {', '.join(wanted)} as "
+                    f"{PLAN} names them, so no one can read what it hands on of the release decision", path)
+            continue
+        for key, want in wanted.items():
+            if outputs.get(key) != want:
+                problem(f"{job_name}'s output {key} is {rendered(outputs.get(key))}, where {PLAN} names `{want}` for it "
+                        f"in JOB_OUTPUTS: later jobs read needs.{job_name}.outputs.{key} as the release decision, so "
+                        f"another value throws it away (a `skip: \"true\"`, or publish's `tag: ''`, skips what the "
+                        f"decision chose)", path)
+
+
 def version_steps(path, doc):
     """Rule 3 for the workflow `path`: its env: is a literal mapping of WORKFLOW_ENV_KEYS' variables
     alone, its defaults: none or bash, each of its VERSION_STEPS is held by version_step, and
@@ -709,6 +723,7 @@ def version_steps(path, doc):
     for spec in plan.VERSION_STEPS:
         if spec.workflow == path:
             version_step(doc, spec)
+    job_outputs(path, doc)
     decision_readers(path, doc)
 
 
