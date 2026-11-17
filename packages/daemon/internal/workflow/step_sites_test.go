@@ -449,6 +449,68 @@ func TestAMergeEventEndsAHeldMergeStep(t *testing.T) {
 	}
 }
 
+// A parked tree hands over only an unheld member with an open pull request. The other merge
+// workers are retired when its linger closes, so their records end rather than staying running.
+func TestALingerCloseEndsAMergeThatItDoesNotHandOver(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		held     bool
+		closedPR bool
+		wantEnd  bool
+	}{
+		{name: "closed pull request", closedPR: true, wantEnd: true},
+		{name: "held merger", held: true, wantEnd: true},
+		{name: "open merger is handed over"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			root := stepRoot(t, pool, phase.Reviewing)
+			stepChild(t, pool, "LEGION-209", phase.Retro, nil)
+			seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-209", Repo: "sjawhar/legion", Number: 43,
+				Branch: "legion/LEGION-209", HeadSHA: "head-43", Failing: []string{}})
+			engine := stepEngine(nil)
+			move(t, pool, engine, "LEGION-209", TriggerRetroCompleted, "", record.PhaseRow{})
+			if tc.held {
+				child := issueRecord(t, pool, "LEGION-209")
+				child.Phase, child.Hold = phase.Held, &record.Hold{From: phase.Merging}
+				seedIssue(t, pool, *child)
+			}
+			apply := applyFacts(t, pool, engine)
+			apply("park-root", intake.DispatchIssue{Key: root.Key, ResolvedRepo: "sjawhar/legion", Seq: 2, Type: "issue.updated",
+				Status: "backlog", Title: "root", Rank: "U"})
+			if tc.closedPR {
+				apply("close-unmerged", intake.PullRequestClosed{Repo: "sjawhar/legion", Number: 43, HeadSHA: "head-43"})
+			}
+			if writes := stepWrites(t, pool, "LEGION-209"); len(writes) != 2 || !isStart(writes[1]) || writes[1].Kind != "merge" {
+				t.Fatalf("before expiry the merge must still be open: %+v", writes)
+			}
+			apply("expire-linger", intake.LingerExpired{Issue: root.Key, Generation: root.Generation})
+			apply("expire-linger-again", intake.LingerExpired{Issue: root.Key, Generation: root.Generation})
+			writes := stepWrites(t, pool, "LEGION-209")
+			wantWrites := 2
+			if tc.wantEnd {
+				wantWrites++
+			}
+			if len(writes) != wantWrites {
+				t.Fatalf("after expiry the merge writes = %+v, want %d rows", writes, wantWrites)
+			}
+			if tc.wantEnd {
+				assertEnd(t, writes[2], "merge", 0, 3, "stopped", nil)
+				if writes[2].ID != writes[1].ID {
+					t.Fatalf("merge end id %s differs from its start %s", writes[2].ID, writes[1].ID)
+				}
+			}
+			applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+				handover, err := engine.store.Handover(ctx, tx, "LEGION-209")
+				if err == nil && (handover != nil) == tc.wantEnd {
+					t.Fatalf("handover = %+v, want a handover only for the open, unheld merger", handover)
+				}
+				return err
+			})
+		})
+	}
+}
+
 // A root's close stops every member's running step, each keyed on the phase that member stands in,
 // and the root's own.
 func TestALingeringRootEndsEachMembersStep(t *testing.T) {
