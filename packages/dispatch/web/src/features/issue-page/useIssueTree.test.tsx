@@ -4,6 +4,8 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 
 import { api } from "../../api/client";
+import { DispatchQueryClient } from "../../api/query-client";
+import { refreshQueries } from "../../api/query-refresh";
 import type {
   Artifact,
   Comment,
@@ -28,6 +30,7 @@ import {
   type TreeTuple,
   viewKey,
 } from "./tree-read/tree-read";
+import { ViewReadProvider } from "./tree-read/view-read";
 import { useIssueTree } from "./useIssueTree";
 
 /**
@@ -1043,5 +1046,54 @@ test("a held view answer reaches presetView through root.views", async () => {
     view.unmount();
   } finally {
     for (const stub of stubs) stub.mockRestore();
+  }
+});
+
+/** The stage of the issue as the page mounts it: the view reads' provider, which holds the
+ *  page's one refresh subscription, around the hook, on the app's own query client. */
+function stageWrapper(client: QueryClient, preset: "conversation" | "spec" = "conversation") {
+  return ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={client}>
+      <ViewReadProvider issue={issue} preset={preset}>
+        {children}
+      </ViewReadProvider>
+    </QueryClientProvider>
+  );
+}
+
+// The reader leaves the issue, someone comments on it, and the event of that comment refreshes
+// the issue's comments while no stage of the issue is mounted. When the reader comes back, the
+// comments are read again because the event marked them stale, and the tree has to be read
+// again too: otherwise the outline draws the tree as it stood when the reader left, without the
+// comment the comments read now holds, until some later event reaches the tree.
+test("an event while the reader is away is drawn when the reader comes back", async () => {
+  const stubs = stubTreeReads(async (refs) => namedTargets(refs));
+  const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  const wrapper = stageWrapper(client);
+  try {
+    const first = renderHook(() => useIssueTree(issue).root, { wrapper });
+    await waitFor(() => expect(taskWords(first.result.current)).toBe(TASK_WORDS));
+    first.unmount();
+
+    (api.getIssueTree as Mock<typeof api.getIssueTree>).mockResolvedValue(treeAnswer([comment]));
+    (api.listComments as Mock<typeof api.listComments>).mockResolvedValue([comment]);
+    act(() => {
+      refreshQueries(client, [{ queryKey: ["comments", KEY] }]);
+    });
+
+    const back = renderHook(() => useIssueTree(issue).root, { wrapper });
+    await waitFor(() => expect(api.listComments).toHaveBeenCalledTimes(2));
+    await waitFor(
+      () =>
+        expect(
+          nodesInOrder(back.result.current).some((node) => node.id === comment.id),
+          "the comment is a row"
+        ).toBe(true),
+      { timeout: 3_000 }
+    );
+    back.unmount();
+  } finally {
+    for (const stub of stubs) stub.mockRestore();
+    client.clear();
   }
 });
