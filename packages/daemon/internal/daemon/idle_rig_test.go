@@ -226,8 +226,8 @@ func (r *idleWakeRig) listenerReports() map[string]string {
 // the listener's own start is behind it and the next one is five minutes off — longer than any
 // run of this rig. The daemon has opened its consumers by the moment it reports itself ready
 // (intake.OpenConsumers runs before it serves), so the listener is started again here, on the
-// same port, which publishes a fresh report that the consumer does see and leaves every URL
-// already handed out valid.
+// socket the test holds for it, which publishes a fresh report that the consumer does see and
+// leaves every URL already handed out valid: the port stays the test's between the two.
 func (r *idleWakeRig) awaitListenerReady() {
 	r.t.Helper()
 	defer func() {
@@ -237,9 +237,9 @@ func (r *idleWakeRig) awaitListenerReady() {
 				r.listenerReports(), r.project, r.cfg.Project)
 		}
 	}()
-	port := r.listener.port
+	socket, port := r.listener.socket, r.listener.port
 	r.listener.stop()
-	r.listener = startIdleRigListenerOn(r.t, r.natsURL, "idlerig", port)
+	r.listener = startIdleRigListenerOn(r.t, r.natsURL, "idlerig", socket, port)
 	testwait.Eventually(r.t, "the daemon reading the Envoy listener's ready report", func() bool {
 		var found bool
 		if err := r.pool.QueryRow(context.Background(),

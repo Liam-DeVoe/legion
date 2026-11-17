@@ -870,19 +870,47 @@ func TestABootServesAHeldDefaultBranchToAnAdmissionReadAfterTheHoldsReset(t *tes
 // GitHub refuses the boot's read of the project's repository with a 403 naming no call left until a
 // reset half an hour away, and then answers. The boot waits the limit out, says so once, reads
 // once more and comes up, where before it exited after its appauth stage with GitHub's refusal.
-// The wait is the daemon's fake clock's, which the test moves past it (fireLimitWait).
+// The wait is the daemon's fake clock's, which the test moves past it (fireLimitWait). A boot that
+// reads again before its wait has ended shows it whatever moment the machine runs that read: a read
+// that reaches the stand-in before the move does so at the fake clock's reading before the wait's
+// end, which the stand-in records; and a read still in flight at the move has its own bound
+// (appMintAttempt, armed on the same clock as the read began) ended by the move, so it fails and
+// the boot leaves the repository out (waitOutLimits' unread) rather than serving it. A read that
+// begins only once the clock has moved is a read after the wait on the daemon's own clock.
 func TestABootThroughASpentRateLimitComesUp(t *testing.T) {
 	var reset atomic.Int64
-	github := newLimitedGitHub(t, map[string]string{"acme/widgets": "acme/widgets@main"}, spendsOnce("acme/widgets", limitAhead, &reset))
-	logs := &syncBuffer{}
 	clk := clocktest.New(time.Now())
+	var readsMu sync.Mutex
+	var readAt []time.Time
+	spends := spendsOnce("acme/widgets", limitAhead, &reset)
+	github := newLimitedGitHub(t, map[string]string{"acme/widgets": "acme/widgets@main"}, func(w http.ResponseWriter, repo string, read int) bool {
+		readsMu.Lock()
+		readAt = append(readAt, clk.Now())
+		readsMu.Unlock()
+		return spends(w, repo, read)
+	})
+	logs := &syncBuffer{}
 	boot := bootOnGitHub(t, workflowConfig(t, workflowNATS(t)), &workflowTokenRecorder{}, github.url, clk, slog.New(slog.NewJSONHandler(logs, nil)))
 	requireResetWait(t, "acme/widgets", fireLimitWait(t, clk, logs, github, "acme/widgets"))
+	// fireLimitWait moved the clock to the wait's end, and nothing else moves it.
+	waitEnd := clk.Now()
 	if err := boot.readyOrExit(t); err != nil {
 		t.Fatalf("boot = %v, want it to wait out GitHub's rate limit and come up", err)
 	}
 	if reads := github.readsOf("acme/widgets"); reads != 2 {
 		t.Fatalf("GitHub was read for acme/widgets %d times, want the refused read and one more once the wait to its reset ended", reads)
+	}
+	readsMu.Lock()
+	again := readAt[1]
+	readsMu.Unlock()
+	if again.Before(waitEnd) {
+		t.Fatalf("the boot read acme/widgets again at %s on its clock, before its wait ended at %s: it read inside GitHub's limit", again, waitEnd)
+	}
+	stage := loggedLines(t, testwait.Next(t, "the boot's stage line naming the repositories it serves", logs.Stream(), func(line string) bool {
+		return strings.Contains(line, `"stage":"repositories"`)
+	}), `"stage":"repositories"`)
+	if accepted, _ := stage[0]["accepted"].([]any); !slices.Contains(accepted, any("acme/widgets")) {
+		t.Fatalf("the boot serves %v and leaves out %v, want acme/widgets served on its read once the wait ended", stage[0]["accepted"], stage[0]["refused"])
 	}
 	if waits := loggedLines(t, logs.String(), waitLine); len(waits) != 1 || waits[0]["repo"] != "acme/widgets" || waits[0]["rateLimitReset"] != strconv.FormatInt(reset.Load(), 10) {
 		t.Fatalf("wait lines = %v, want one naming acme/widgets and GitHub's reset", waits)
