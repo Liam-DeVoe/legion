@@ -47,25 +47,51 @@ type citationCase struct {
 	changed    []string
 	allChanged bool
 	ties       map[string]Tie
+	baseTies   map[string]Tie // the ties at the base commit; nil: no baseTie at all
+	asked      []string       // the checks whose base tie Citations asked for
 }
 
 // newCitationCase is the base of TestCitations: check-a, whose test is in the code once and whose
-// tie is a/* and fixtures/a.json; go-checks ran and its report holds TestA as a pass; nothing
-// changed since the base commit.
+// tie is a/* and fixtures/a.json, at the head and at the base commit; go-checks ran and its report
+// holds TestA as a pass; nothing changed since the base commit.
 func newCitationCase(t *testing.T) *citationCase {
 	t.Helper()
-	tie, err := NewTie([]string{"a/*", "fixtures/a.json"})
-	if err != nil {
-		t.Fatal(err)
-	}
+	tie := mustTie(t, "a/*", "fixtures/a.json")
 	return &citationCase{
 		tree: Tree{Checks: []Check{citationCheck}},
 		code: citationCode,
 		jobs: citationJobs,
 		reports: []JobReport{{Job: "go-checks", Ran: true, HasReport: true,
 			Tests: []TestOutcome{{Package: "example.com/citations/a", Test: "TestA", Outcome: "pass"}}}},
-		ties: map[string]Tie{citationCheck.ID: tie},
+		ties:     map[string]Tie{citationCheck.ID: tie},
+		baseTies: map[string]Tie{citationCheck.ID: tie},
 	}
+}
+
+// mustTie is the known tie of paths.
+func mustTie(t *testing.T, paths ...string) Tie {
+	t.Helper()
+	tie, err := NewTie(paths)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tie
+}
+
+// citations runs Citations over the case, with a baseTie that answers baseTies and records each
+// check it is asked for.
+func (c *citationCase) citations() CitationFaults {
+	var baseTie func(Check) Tie
+	if c.baseTies != nil {
+		baseTie = func(check Check) Tie {
+			c.asked = append(c.asked, check.ID)
+			if tie, ok := c.baseTies[check.ID]; ok {
+				return tie
+			}
+			return Tie{Why: "no tie at the base"}
+		}
+	}
+	return Citations(c.tree, c.code, c.jobs, c.reports, c.changed, c.allChanged, c.ties, baseTie)
 }
 
 // test sets the test part of check-a.
@@ -209,14 +235,100 @@ func TestCitations(t *testing.T) {
 			c.changed = []string{"a/a.go"}
 			c.reports = nil
 		}},
+		// D1: a run that go test replayed from its cache did not run at the commit, and R8 decides.
+		{name: "code of the tie changed and go test replayed the test from its cache", change: func(c *citationCase) {
+			c.changed = []string{"a/a.go"}
+			c.outcome(outcomeCached)
+		}, want: fault(notRun, "test-not-run: a/a.go changed, and go-checks did not run example.com/citations/a TestA (its report holds a result that go test replayed from its cache, which did not run at this commit)")},
+		{name: "no code of the tie changed and go test replayed the test from its cache", change: func(c *citationCase) {
+			c.changed = []string{"docs/x.md"}
+			c.outcome(outcomeCached)
+		}},
+		// D2: a changed path counts when the tie holds it at either end, the base commit or this one.
+		{name: "the change deleted the test's testdata directory, which only the tie at the base holds", change: func(c *citationCase) {
+			c.baseTies[citationCheck.ID] = known("a/*", "a/testdata/**", "fixtures/a.json")
+			c.changed = []string{"a/testdata/answer.json"}
+			c.outcome("skip")
+		}, want: fault(notRun, "test-not-run: a/testdata/answer.json changed (the tie at the base commit holds it), and go-checks did not run example.com/citations/a TestA (its report shows it skipped)")},
+		{name: "the change renamed a package directory of the tie: the tie at this commit holds the new path", change: func(c *citationCase) {
+			c.baseTies[citationCheck.ID] = known("a/*", "dep/*")
+			c.ties[citationCheck.ID] = known("a/*", "lib/*")
+			c.changed = []string{"dep/x.go", "lib/x.go"}
+			c.outcome("skip")
+		}, want: fault(notRun, "test-not-run: lib/x.go changed, and go-checks did not run example.com/citations/a TestA (its report shows it skipped)")},
+		{name: "the change deleted a package directory that only the tie at the base holds", change: func(c *citationCase) {
+			c.baseTies[citationCheck.ID] = known("a/*", "dep/*")
+			c.ties[citationCheck.ID] = known("a/*")
+			c.changed = []string{"dep/x.go"}
+			c.outcome("skip")
+		}, want: fault(notRun, "test-not-run: dep/x.go changed (the tie at the base commit holds it), and go-checks did not run example.com/citations/a TestA (its report shows it skipped)")},
+		{name: "the change deleted a test file of the test's package", change: func(c *citationCase) {
+			c.changed = []string{"a/b_test.go"}
+			c.outcome("skip")
+		}, want: fault(notRun, "test-not-run: a/b_test.go changed, and go-checks did not run example.com/citations/a TestA (its report shows it skipped)")},
+		{name: "a read moves out of the tie: only the tie at the base holds it", change: func(c *citationCase) {
+			c.ties[citationCheck.ID] = known("a/*")
+			c.changed = []string{"fixtures/a.json"}
+			c.outcome("skip")
+		}, want: fault(notRun, "test-not-run: fixtures/a.json changed (the tie at the base commit holds it), and go-checks did not run example.com/citations/a TestA (its report shows it skipped)")},
+		{name: "the tie at the base is unknown", change: func(c *citationCase) {
+			c.baseTies[citationCheck.ID] = Tie{Why: "go list failed at the base"}
+			c.changed = []string{"docs/x.md"}
+			c.outcome("skip")
+		}, want: fault(notRun, "test-not-run: its tie at the base commit is unknown (go list failed at the base), and go-checks did not run example.com/citations/a TestA (its report shows it skipped)")},
+		{name: "no tie at the base is given", change: func(c *citationCase) {
+			c.baseTies = nil
+			c.changed = []string{"docs/x.md"}
+			c.outcome("skip")
+		}, want: fault(notRun, "test-not-run: its tie at the base commit is unknown (no tie at the base commit was given), and go-checks did not run example.com/citations/a TestA (its report shows it skipped)")},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
 			c := newCitationCase(t)
 			row.change(c)
-			got := Citations(c.tree, c.code, c.jobs, c.reports, c.changed, c.allChanged, c.ties)
-			if !slices.Equal(got, row.want) {
+			if got := c.citations(); !slices.Equal(got, row.want) {
 				t.Errorf("Citations =\n%+v\nwant\n%+v", got, row.want)
+			}
+		})
+	}
+}
+
+// known is the known tie of paths, sorted.
+func known(paths ...string) Tie {
+	return Tie{Paths: slices.Sorted(slices.Values(paths)), Known: true}
+}
+
+// The tie at the base is a checkout of the base commit in production, so Citations asks for it only
+// when it decides: the check's test did not run, and the tie at this commit covers no changed path.
+func TestCitationsAsksForTheBaseTieOnlyWhenItDecides(t *testing.T) {
+	t.Parallel()
+	for _, row := range []struct {
+		name   string
+		change func(c *citationCase)
+		asked  bool
+	}{
+		{"the test ran", func(c *citationCase) { c.changed = []string{"docs/x.md"} }, false},
+		{"nothing changed", func(c *citationCase) { c.outcome("skip") }, false},
+		{"the tie at this commit covers a changed path", func(c *citationCase) {
+			c.changed = []string{"a/a.go"}
+			c.outcome("skip")
+		}, false},
+		{"no base commit", func(c *citationCase) {
+			c.allChanged = true
+			c.outcome("skip")
+		}, false},
+		{"the test did not run, and the tie at this commit covers no changed path", func(c *citationCase) {
+			c.changed = []string{"docs/x.md"}
+			c.outcome("skip")
+		}, true},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			c := newCitationCase(t)
+			row.change(c)
+			c.citations()
+			if want := map[bool][]string{true: {citationCheck.ID}}[row.asked]; !slices.Equal(c.asked, want) {
+				t.Errorf("Citations asked for the base tie of %q, want %q", c.asked, want)
 			}
 		})
 	}
@@ -232,7 +344,7 @@ func TestCitationFaultsUncited(t *testing.T) {
 	untested.ID, untested.Test = "check-c", nil
 	sound.ID = "check-d"
 	c.tree.Checks = []Check{citationCheck, renamed, untested, sound}
-	got := Citations(c.tree, c.code, c.jobs, c.reports, c.changed, c.allChanged, c.ties)
+	got := c.citations()
 	if ids := []string{}; len(got) != 2 || got[0].Check != "check-b" || got[1].Check != "check-c" {
 		for _, f := range got {
 			ids = append(ids, f.Check+" "+f.Rule)

@@ -662,7 +662,8 @@ def apply_rules(session: Session, rules: dict, source: str, seen: set) -> list:
 
 def test_reads(workdir: str, pkgs: list, env: dict) -> tuple:
     """What `go test <pkgs>` run in workdir reads, by the closure each gate is held to, with
-    ci_job_reads.RULES applied: (sorted globs, problem messages). go-test-reads.sh prints it, and
+    ci_job_reads.RULES applied and the patterns below that no file that exists decides:
+    (sorted globs, problem messages). go-test-reads.sh prints it, and
     packages/envoy/cmd/spec-check reads it as the tie of a check of The Spec."""
     import ci_job_reads as data
     session = Session()
@@ -677,19 +678,40 @@ def test_reads(workdir: str, pkgs: list, env: dict) -> tuple:
             cause = " ".join((pkg.get("Error") or {}).get("Err", "").split())[:300]
             session.problems.append(error(None, f"go list finds no directory of {pkg.get('ImportPath')} for {why}, so "
                                                 f"its closure is unknown: {cause}"))
-    # closure() names the files of a package directory that holds test files one by one, as of the
-    # commit it lists. A tie is read at the commit whose changes it judges, so a file deleted from
-    # such a directory would be no read of it, and the test would not run again on that change
-    # (R8). The tie reads each first-party package directory whole, `<dir>/*`: those of every
-    # `-deps` listing the closure made, the go commands its RULES rows start included, which
-    # Session.listing keeps under keys ("list", …, deps).
+    # closure() reads the files of a package as of the commit it lists: those of a directory that
+    # holds test files one by one, testdata only while the directory exists, and a wildcard
+    # //go:embed pattern as the paths it matches there. A tie is read at the commit whose changes
+    # it judges, so a file deleted from any of them would be no read of it, and the test would not
+    # run again on that change (R8). So the tie holds each as a pattern of the commit's text, which
+    # no file that exists decides: each first-party package directory whole, `<dir>/*`, of every
+    # `-deps` listing the closure made, the go commands its RULES rows start included;
+    # `<dir>/testdata/**` of each package a test run names; and the directory under the literal
+    # part of each wildcard embed pattern, whole, of the packages whose patterns closure() reads.
+    # Session.listing keeps each listing under the key ("list", workdir, pkgs, tags, mode, race,
+    # env, overlay, deps).
     for key, listed in session.cache.items():
-        if key[0] != "list" or not key[-1]:
+        if key[0] != "list":
             continue
+        mode, deps = key[4], key[8]
         for pkg in listed:
             d = rel(pkg["Dir"]) if pkg.get("Dir") and not pkg.get("Standard") else None
-            if d is not None and (REPO / d).is_dir():
-                reads.append(Read(f"{d}/*", f"{why} (the package directory, whole)"))
+            if d is None:
+                continue
+            if deps:
+                if (REPO / d).is_dir():
+                    reads.append(Read(f"{d}/*", f"{why} (the package directory, whole)"))
+                embeds = pkg.get("EmbedPatterns") or []
+            elif mode in ("test", "vet"):
+                if mode == "test":
+                    reads.append(Read(f"{d}/testdata/**", f"{why} (the testdata of a package it tests, whole)"))
+                embeds = (pkg.get("TestEmbedPatterns") or []) + (pkg.get("XTestEmbedPatterns") or [])
+            else:
+                embeds = []
+            for pattern in embeds:
+                parts = pattern.removeprefix("all:").split("/")
+                wild = next((i for i, part in enumerate(parts) if any(c in part for c in "*?[\\")), None)
+                if wild is not None:
+                    reads.append(Read("/".join([d, *parts[:wild], "**"]), f"{why} (the directory of embed {pattern}, whole)"))
     return sorted({r.glob for r in reads if r.glob}), [p.message for p in session.problems]
 
 

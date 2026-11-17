@@ -36,14 +36,23 @@ func testPart(selector, job string) string {
 // goReport is a go test -json report of TestA of package a with outcome, pass, fail or skip, or a
 // run with no end for "", as go test of Go 1.27 writes it: the run and its end each with go test's
 // own line, a frame, before the end event (testdata/gotest/pass.jsonl of specgraph is one such
-// report). A report of a Go before 1.27 has no frame, and ReadGoTestJSON refuses it.
+// report). A report of a Go before 1.27 has no frame, and ReadGoTestJSON refuses it. "cached" is
+// a pass that go test replayed from its cache, with the package's summary line that says so
+// (testdata/gotest/cached/cached.jsonl of specgraph).
 func goReport(outcome string) string {
 	const pkg = `"Package":"example.com/citations/a","Test":"TestA"`
 	report := `{"Action":"run",` + pkg + `}` + "\n" +
 		`{"Action":"output",` + pkg + `,"Output":"=== RUN   TestA\n","OutputType":"frame"}` + "\n"
+	end := outcome
+	if outcome == "cached" {
+		end = "pass"
+	}
 	if outcome != "" {
-		report += `{"Action":"output",` + pkg + `,"Output":"--- ` + strings.ToUpper(outcome) + `: TestA (0.01s)\n","OutputType":"frame"}` + "\n" +
-			`{"Action":"` + outcome + `",` + pkg + `,"Elapsed":0.01}` + "\n"
+		report += `{"Action":"output",` + pkg + `,"Output":"--- ` + strings.ToUpper(end) + `: TestA (0.01s)\n","OutputType":"frame"}` + "\n" +
+			`{"Action":"` + end + `",` + pkg + `,"Elapsed":0.01}` + "\n"
+	}
+	if outcome == "cached" {
+		report += `{"Action":"output","Package":"example.com/citations/a","Output":"ok  \texample.com/citations/a\t(cached)\n"}` + "\n"
 	}
 	return report
 }
@@ -53,21 +62,23 @@ func needsOf(result string) string {
 	return `{"changes":{"result":"success","outputs":{}},"go-checks":{"result":"` + result + `","outputs":{}}}`
 }
 
-// citationRun is the input of one run of citations: a copy of testdata/citations/repo with spec.md
-// in its .dispatch/spec, and the files of the flags.
+// citationRun is the input of one run of citations: a git repository whose base commit holds a
+// copy of testdata/citations/repo with spec.md in its .dispatch/spec, and whose head commit, HEAD,
+// has the same tree, and the files of the flags.
 type citationRun struct {
 	spec       string
-	changed    string            // changed.txt; ignored with allChanged
+	changed    string            // the paths of changed.txt, after its base line; ignored with allChanged
 	allChanged bool              // --all-changed in place of --changed
 	reports    map[string]string // each directory of reports/ by name, with its report.jsonl
 	needs      string
-	ties       string // ties.json, or "" for no --ties
+	ties       string // the ties of the head, {"<check>":[…]}, or "" for no --ties
+	baseTies   string // the ties of the base, as ties; "" for the head's, "-" for none of the base
 	extra      []string
 }
 
 // newCitationRun is the base: the check's test is TestA of package a, run by go-checks; nothing
 // changed; go-checks succeeded and its report holds TestA as a pass; the tie is a/* and
-// fixtures/a.json.
+// fixtures/a.json, at the head and at the base.
 func newCitationRun() citationRun {
 	return citationRun{
 		spec:    citedSpec(testPart("example.com/citations/a TestA", "go-checks")),
@@ -77,9 +88,10 @@ func newCitationRun() citationRun {
 	}
 }
 
-// citationFiles is where one run's files are.
+// citationFiles is where one run's files are, and the base and head commits of its repository.
 type citationFiles struct {
 	root, repo, dir, changed, reports, needs, ties, json string
+	base, head                                           string
 }
 
 // write writes the run's files in a directory of the test's own and answers where they are.
@@ -99,7 +111,10 @@ func (r citationRun) write(t *testing.T) citationFiles {
 	if r.spec != "" {
 		writeFile(t, filepath.Join(f.dir, "spec.md"), []byte(r.spec))
 	}
-	writeFile(t, f.changed, []byte(r.changed))
+	gitIn(t, f.repo, "init", "-q")
+	f.base = commitAll(t, f.repo, "", "base")
+	f.head = commitAll(t, f.repo, f.base, "head")
+	writeFile(t, f.changed, []byte("base "+f.base+"\n"+r.changed))
 	if r.reports != nil {
 		if err := os.Mkdir(f.reports, 0o755); err != nil {
 			t.Fatal(err)
@@ -112,7 +127,17 @@ func (r citationRun) write(t *testing.T) citationFiles {
 		writeFile(t, filepath.Join(f.reports, name, "report.jsonl"), []byte(report))
 	}
 	writeFile(t, f.needs, []byte(r.needs))
-	writeFile(t, f.ties, []byte(r.ties))
+	if r.ties != "" {
+		ties := `{"` + f.head + `":` + r.ties
+		switch r.baseTies {
+		case "":
+			ties += `,"` + f.base + `":` + r.ties
+		case "-":
+		default:
+			ties += `,"` + f.base + `":` + r.baseTies
+		}
+		writeFile(t, f.ties, []byte(ties+"}"))
+	}
 	return f
 }
 
@@ -129,6 +154,36 @@ func (r citationRun) args(f citationFiles, workflow string) []string {
 		args = append(args, "--ties", f.ties)
 	}
 	return append(args, r.extra...)
+}
+
+// gitIn runs git in dir, reading no configuration of this machine, and answers its output.
+func gitIn(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	cmd.Env = append(cmd.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1",
+		"GIT_AUTHOR_NAME=ACME", "GIT_AUTHOR_EMAIL=ci@example.com", "GIT_COMMITTER_NAME=ACME", "GIT_COMMITTER_EMAIL=ci@example.com")
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git %q in %s: %v\n%s%s", args, dir, err, out, stderr.String())
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// commitAll commits every file of dir's working tree, on parent ("" for none), with git's plumbing
+// (write-tree, commit-tree), makes it HEAD and answers it: a git wrapper that checks a commit's
+// text then has no say over a fixture's commit.
+func commitAll(t *testing.T, dir, parent, message string) string {
+	t.Helper()
+	gitIn(t, dir, "add", "-A")
+	args := []string{"commit-tree", gitIn(t, dir, "write-tree"), "-m", message}
+	if parent != "" {
+		args = append(args, "-p", parent)
+	}
+	commit := gitIn(t, dir, args...)
+	gitIn(t, dir, "update-ref", "HEAD", commit)
+	return commit
 }
 
 // TestCitationsCommand runs the built binary over each fixture of specgraph's TestCitations
@@ -194,7 +249,7 @@ func TestCitationsCommand(t *testing.T) {
 		{name: "the tie unknown, nothing changed, the test did not run", change: func(r *citationRun) {
 			r.ties = "{}"
 			r.reports["spec-report--go-checks"] = ""
-		}, rule: "test-not-run", detail: notRun + "its tie is unknown (no tie was derived for the check), and go-checks did not run example.com/citations/a TestA (its report does not hold it)"},
+		}, rule: "test-not-run", detail: notRun + "its tie is unknown (--ties holds no tie of the check at commit {head}), and go-checks did not run example.com/citations/a TestA (its report does not hold it)"},
 		{name: "no base commit, the test ran and passed", change: func(r *citationRun) {
 			r.allChanged = true
 		}},
@@ -213,6 +268,26 @@ func TestCitationsCommand(t *testing.T) {
 		{name: "code of the tie changed and the test ran", change: func(r *citationRun) {
 			r.changed = "a/a.go\n"
 		}},
+		// D1: a pass that go test replayed from its cache did not run at this commit.
+		{name: "code of the tie changed and go test replayed the test from its cache", change: func(r *citationRun) {
+			r.changed = "a/a.go\n"
+			r.reports["spec-report--go-checks"] = goReport("cached")
+		}, rule: "test-not-run", detail: notRun + "a/a.go changed, and go-checks did not run example.com/citations/a TestA (its report holds a result that go test replayed from its cache, which did not run at this commit)"},
+		{name: "no code of the tie changed and go test replayed the test from its cache", change: func(r *citationRun) {
+			r.changed = "docs/x.md\n"
+			r.reports["spec-report--go-checks"] = goReport("cached")
+		}},
+		// D2: a changed path counts when the tie at either end holds it.
+		{name: "the change deleted the test's testdata directory, which only the tie at the base holds", change: func(r *citationRun) {
+			r.baseTies = `{"` + citedCheck + `":["a/*","a/testdata/**","fixtures/a.json"]}`
+			r.changed = "a/testdata/answer.json\n"
+			r.reports["spec-report--go-checks"] = goReport("skip")
+		}, rule: "test-not-run", detail: notRun + "a/testdata/answer.json changed (the tie at the base commit holds it), and go-checks did not run example.com/citations/a TestA (its report shows it skipped)"},
+		{name: "--ties holds no ties of the base commit", change: func(r *citationRun) {
+			r.baseTies = "-"
+			r.changed = "docs/x.md\n"
+			r.reports["spec-report--go-checks"] = goReport("skip")
+		}, rule: "test-not-run", detail: notRun + "its tie at the base commit is unknown (--ties holds no ties of commit {base}), and go-checks did not run example.com/citations/a TestA (its report shows it skipped)"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
@@ -223,10 +298,11 @@ func TestCitationsCommand(t *testing.T) {
 			want := result{stdout: "spec-check: " + f.dir + ": 1 program check; each is cited\n"}
 			wantJSON := "[]\n"
 			if row.rule != "" {
+				detail := strings.NewReplacer("{head}", f.head, "{base}", f.base).Replace(row.detail)
 				want = result{code: 1,
 					stdout: "spec-check: " + f.dir + ": 1 program check; 1 refused\n",
-					stderr: "spec-check: " + filepath.Join(f.dir, "spec.md") + ":5: " + citedCheck + ": " + row.detail + "\n"}
-				wantJSON = `[{"check":"` + citedCheck + `","rule":"` + row.rule + `","detail":"` + strings.ReplaceAll(row.detail, `"`, `\"`) + `"}]` + "\n"
+					stderr: "spec-check: " + filepath.Join(f.dir, "spec.md") + ":5: " + citedCheck + ": " + detail + "\n"}
+				wantJSON = `[{"check":"` + citedCheck + `","rule":"` + row.rule + `","detail":"` + strings.ReplaceAll(detail, `"`, `\"`) + `"}]` + "\n"
 			}
 			expect(t, got, want)
 			if content, err := os.ReadFile(f.json); err != nil || string(content) != wantJSON {
@@ -257,10 +333,14 @@ func TestCitationsCommand(t *testing.T) {
 		r.ties = ""
 		f := r.write(t)
 		script := filepath.Join(f.repo, ".github", "scripts", "go-test-reads.sh")
-		detail := notRun + "its tie is unknown (specgraph: " + script + ": fork/exec " + script + ": no such file or directory), and go-checks did not run example.com/citations/a TestA (its report shows it skipped)"
-		expect(t, runBinary(t, binary, "", r.args(f, workflow)...), result{code: 1,
-			stdout: "spec-check: " + f.dir + ": 1 program check; 1 refused\n",
-			stderr: "spec-check: " + filepath.Join(f.dir, "spec.md") + ":5: " + citedCheck + ": " + detail + "\n"})
+		// The words after the script's path are os/exec's and the system's, so the row reads ours.
+		prefix := "spec-check: " + filepath.Join(f.dir, "spec.md") + ":5: " + citedCheck + ": " + notRun + "its tie is unknown (specgraph: " + script + ": "
+		suffix := "), and go-checks did not run example.com/citations/a TestA (its report shows it skipped)\n"
+		got := runBinary(t, binary, "", r.args(f, workflow)...)
+		if got.code != 1 || got.stdout != "spec-check: "+f.dir+": 1 program check; 1 refused\n" ||
+			!strings.HasPrefix(got.stderr, prefix) || !strings.HasSuffix(got.stderr, suffix) || strings.Count(got.stderr, "\n") != 1 {
+			t.Errorf("exit %d, stdout %q, stderr %q; want exit 1, the count line, and one line %q…%q", got.code, got.stdout, got.stderr, prefix, suffix)
+		}
 	})
 
 	t.Run("a test that the code cannot be searched for is refused, naming go's answer", func(t *testing.T) {
@@ -340,70 +420,136 @@ func TestCitationsCommand(t *testing.T) {
 	})
 
 	// An input that the command cannot read exits 2 with one line naming it, nothing on stdout, and
-	// no --json file.
+	// no --json file. The line starts with the words of the command (line); where a library's words
+	// follow them (more), the row reads the command's alone, since a library may word its errors
+	// otherwise in another version or process.
 	for _, row := range []struct {
 		name   string
 		change func(t *testing.T, f citationFiles)
 		line   func(f citationFiles) string
+		more   bool
 	}{
 		{"needs.json that is no JSON", func(t *testing.T, f citationFiles) { writeFile(t, f.needs, []byte("x")) },
-			func(f citationFiles) string {
-				return f.needs + ": cannot be read: invalid character 'x' looking for beginning of value"
-			}},
+			func(f citationFiles) string { return f.needs + ": cannot be read: " }, true},
 		{"needs.json with no result of an awaited job", func(t *testing.T, f citationFiles) {
 			writeFile(t, f.needs, []byte(`{"changes":{"result":"success","outputs":{}}}`))
 		}, func(f citationFiles) string {
 			return f.needs + `: holds no result of job "go-checks", which spec-citations waits for`
-		}},
+		}, false},
 		{"needs.json with a job that spec-citations does not wait for", func(t *testing.T, f citationFiles) {
 			writeFile(t, f.needs, []byte(`{"changes":{"result":"success"},"go-checks":{"result":"success"},"envoy-go":{"result":"success"}}`))
 		}, func(f citationFiles) string {
 			return f.needs + `: holds job "envoy-go", which spec-citations does not wait for`
-		}},
+		}, false},
 		{"needs.json with a job of no result", func(t *testing.T, f citationFiles) {
 			writeFile(t, f.needs, []byte(`{"changes":{"result":"success"},"go-checks":{"outputs":{}}}`))
 		}, func(f citationFiles) string {
 			return f.needs + `: job "go-checks" has no result`
-		}},
+		}, false},
 		{"a report that is no go test report", func(t *testing.T, f citationFiles) {
 			writeFile(t, filepath.Join(f.reports, "spec-report--go-checks", "report.jsonl"), []byte("ok  \texample.com/citations/a\n"))
 		}, func(f citationFiles) string {
 			return filepath.Join(f.reports, "spec-report--go-checks", "report.jsonl") +
-				": cannot be read: specgraph: the go test report holds no event at byte 0: invalid character 'o' looking for beginning of value"
-		}},
+				": cannot be read: specgraph: the go test report holds no event at byte 0: "
+		}, true},
 		{"a report directory with no report.jsonl", func(t *testing.T, f citationFiles) {
 			removeAll(t, filepath.Join(f.reports, "spec-report--go-checks", "report.jsonl"))
 		}, func(f citationFiles) string {
-			path := filepath.Join(f.reports, "spec-report--go-checks", "report.jsonl")
-			return path + ": cannot be read: open " + path + ": no such file or directory"
-		}},
+			return filepath.Join(f.reports, "spec-report--go-checks", "report.jsonl") + ": cannot be read: "
+		}, true},
 		{"an entry of reports that is no report artifact", func(t *testing.T, f citationFiles) {
 			writeFile(t, filepath.Join(f.reports, "notes.txt"), []byte("A note.\n"))
 		}, func(f citationFiles) string {
 			return filepath.Join(f.reports, "notes.txt") + ": is no directory named spec-report--<job> or spec-report--<job>--<leg>"
-		}},
+		}, false},
 		{"a ties file with an entry in another form", func(t *testing.T, f citationFiles) {
-			writeFile(t, f.ties, []byte(`{"`+citedCheck+`":["p/*.go"]}`))
+			writeFile(t, f.ties, []byte(`{"`+f.head+`":{"`+citedCheck+`":["p/*.go"]}}`))
 		}, func(f citationFiles) string {
-			return f.ties + `: check "` + citedCheck + `": specgraph: tie entry "p/*.go" is not a repository path, <dir>/* or <dir>/**`
-		}},
+			return f.ties + `: commit "` + f.head + `": check "` + citedCheck + `": specgraph: tie entry "p/*.go" is not a repository path, <dir>/* or <dir>/**`
+		}, false},
+		{"a ties file in the form by check, with no commit", func(t *testing.T, f citationFiles) {
+			writeFile(t, f.ties, []byte(`{"`+citedCheck+`":["a/*"]}`))
+		}, func(f citationFiles) string { return f.ties + ": " }, true},
+		{"a ties file that names a commit by a short name", func(t *testing.T, f citationFiles) {
+			writeFile(t, f.ties, []byte(`{"`+f.head[:12]+`":{"`+citedCheck+`":["a/*"]}}`))
+		}, func(f citationFiles) string {
+			return f.ties + `: commit "` + f.head[:12] + `": not a full object name of 40 or 64 lower-case hex digits`
+		}, false},
+		// Of the commits of one file, the first in sorted order is judged first, so a refusal names
+		// the same commit on each run, though a map holds the ten in no order.
+		{"a ties file of ten commits by short names names the first in sorted order", func(t *testing.T, f citationFiles) {
+			var entries []string
+			for _, commit := range strings.Fields("c9 c8 c7 c6 c5 c4 c3 c2 c1 c0") {
+				entries = append(entries, `"`+commit+`":{"`+citedCheck+`":["a/*"]}`)
+			}
+			writeFile(t, f.ties, []byte("{"+strings.Join(entries, ",")+"}"))
+		}, func(f citationFiles) string {
+			return f.ties + `: commit "c0": not a full object name of 40 or 64 lower-case hex digits`
+		}, false},
 		{"a changed list with an empty line", func(t *testing.T, f citationFiles) {
-			writeFile(t, f.changed, []byte("a/a.go\n\ndocs/x.md\n"))
+			writeFile(t, f.changed, []byte("base "+f.base+"\na/a.go\n\ndocs/x.md\n"))
 		}, func(f citationFiles) string {
-			return f.changed + ":2: an empty line, where a path was due"
-		}},
+			return f.changed + ":3: an empty line, where a path was due"
+		}, false},
+		{"a changed list with no base line", func(t *testing.T, f citationFiles) {
+			writeFile(t, f.changed, []byte("a/a.go\n"))
+		}, func(f citationFiles) string {
+			return f.changed + `:1: no base line "base <commit>", which spec-check changed writes first`
+		}, false},
+		{"a changed list whose base is a short name", func(t *testing.T, f citationFiles) {
+			writeFile(t, f.changed, []byte("base "+f.base[:12]+"\na/a.go\n"))
+		}, func(f citationFiles) string {
+			return f.changed + `:1: no base line "base <commit>", which spec-check changed writes first`
+		}, false},
+		{"an empty changed list", func(t *testing.T, f citationFiles) {
+			writeFile(t, f.changed, nil)
+		}, func(f citationFiles) string {
+			return f.changed + `:1: no base line "base <commit>", which spec-check changed writes first`
+		}, false},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
 			r := newCitationRun()
 			f := r.write(t)
 			row.change(t, f)
-			expect(t, runBinary(t, binary, "", r.args(f, workflow)...), result{code: 2, stderr: "spec-check: " + row.line(f) + "\n"})
+			got := runBinary(t, binary, "", r.args(f, workflow)...)
+			if line := "spec-check: " + row.line(f); row.more {
+				if got.code != 2 || got.stdout != "" || !strings.HasPrefix(got.stderr, line) || strings.Count(got.stderr, "\n") != 1 {
+					t.Errorf("exit %d, stdout %q, stderr %q; want exit 2 and one line that starts %q", got.code, got.stdout, got.stderr, line)
+				}
+			} else {
+				expect(t, got, result{code: 2, stderr: line + "\n"})
+			}
 			if _, err := os.Stat(f.json); err == nil {
 				t.Errorf("an input it could not read, and a --json file at %s", f.json)
 			}
 		})
 	}
+	t.Run("a commit that two ties files hold", func(t *testing.T) {
+		t.Parallel()
+		r := newCitationRun()
+		f := r.write(t)
+		second := filepath.Join(f.root, "second.json")
+		writeFile(t, second, []byte(`{"`+f.head+`":{"`+citedCheck+`":["a/*"]}}`))
+		r.extra = []string{"--ties", second}
+		expect(t, runBinary(t, binary, "", r.args(f, workflow)...), result{code: 2,
+			stderr: "spec-check: " + second + ": commit " + f.head + ": " + f.ties + " holds its ties too\n"})
+	})
+	t.Run("the ties of the head and of the base in two files", func(t *testing.T) {
+		t.Parallel()
+		r := newCitationRun()
+		r.changed = "a/testdata/answer.json\n"
+		r.reports["spec-report--go-checks"] = goReport("skip")
+		r.baseTies = "-"
+		f := r.write(t)
+		second := filepath.Join(f.root, "base.json")
+		writeFile(t, second, []byte(`{"`+f.base+`":{"`+citedCheck+`":["a/*","a/testdata/**"]}}`))
+		r.extra = []string{"--ties", second}
+		expect(t, runBinary(t, binary, "", r.args(f, workflow)...), result{code: 1,
+			stdout: "spec-check: " + f.dir + ": 1 program check; 1 refused\n",
+			stderr: "spec-check: " + filepath.Join(f.dir, "spec.md") + ":5: " + citedCheck + ": " + notRun +
+				"a/testdata/answer.json changed (the tie at the base commit holds it), and go-checks did not run example.com/citations/a TestA (its report shows it skipped)\n"})
+	})
 	t.Run("a workflow with no spec-citations job", func(t *testing.T) {
 		t.Parallel()
 		r := newCitationRun()
@@ -433,6 +579,139 @@ func TestCitationsCommand(t *testing.T) {
 			expect(t, runBinary(t, binary, "", row.args...), result{code: 2, stderr: "spec-check: " + row.line + "\n" + usage + "\n"})
 		}
 	})
+}
+
+// stubReads is a .github/scripts/go-test-reads.sh that answers reads for every package, as the
+// repository's own script answers at one commit.
+func stubReads(reads string) []byte {
+	return []byte("#!/bin/sh\necho '{\"reads\":" + reads + ",\"problems\":[]}'\n")
+}
+
+// gitCase is a git repository that holds a copy of testdata/citations/repo, the spec file of the
+// check on TestA and a go-test-reads.sh, and the files of a citations run over it but its list.
+type gitCase struct{ repo, reports, needs, json, tmp string }
+
+func newGitCase(t *testing.T, reads string) gitCase {
+	t.Helper()
+	root := t.TempDir()
+	g := gitCase{repo: filepath.Join(root, "repo"), reports: filepath.Join(root, "reports"), needs: filepath.Join(root, "needs.json"),
+		json: filepath.Join(root, "out", "faults.json"), tmp: filepath.Join(root, "tmp")}
+	if err := os.CopyFS(g.repo, os.DirFS(fixture(t, "citations", "repo"))); err != nil {
+		t.Fatal(err)
+	}
+	for _, dir := range []string{filepath.Join(g.repo, ".dispatch", "spec"), filepath.Join(g.repo, ".github", "scripts"),
+		filepath.Join(g.reports, "spec-report--go-checks"), g.tmp} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeFile(t, filepath.Join(g.repo, ".dispatch", "spec", "spec.md"), []byte(citedSpec(testPart("example.com/citations/a TestA", "go-checks"))))
+	g.script(t, reads)
+	writeFile(t, filepath.Join(g.reports, "spec-report--go-checks", "report.jsonl"), []byte(goReport("skip")))
+	writeFile(t, g.needs, []byte(needsOf("success")))
+	gitIn(t, g.repo, "init", "-q")
+	return g
+}
+
+// script writes the repository's go-test-reads.sh, which answers reads.
+func (g gitCase) script(t *testing.T, reads string) {
+	t.Helper()
+	path := filepath.Join(g.repo, ".github", "scripts", "go-test-reads.sh")
+	writeFile(t, path, stubReads(reads))
+	if err := os.Chmod(path, 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// cite runs changed from base to HEAD, then citations over its list with no --ties, as the job runs
+// them, with TMPDIR at g.tmp; it fails the test unless changed exits 0 and the checkout of the base
+// is gone after the run.
+func (g gitCase) cite(t *testing.T, binary, workflow, base string) result {
+	t.Helper()
+	list := runBinary(t, binary, "", "changed", "--repo", g.repo, "--base", base)
+	if list.code != 0 {
+		t.Fatalf("changed: exit %d, stderr %q", list.code, list.stderr)
+	}
+	changed := filepath.Join(filepath.Dir(g.reports), "changed.txt")
+	writeFile(t, changed, []byte(list.stdout))
+	got := runBinaryIn(t, binary, "", []string{"TMPDIR=" + g.tmp}, "citations", "--dir", filepath.Join(g.repo, ".dispatch", "spec"), "--repo", g.repo,
+		"--workflow", workflow, "--changed", changed, "--reports", g.reports, "--needs", g.needs, "--json", g.json)
+	if left, err := os.ReadDir(g.tmp); err != nil || len(left) != 0 {
+		t.Errorf("the run left %v in its TMPDIR (%v); want the checkout of the base removed", left, err)
+	}
+	return got
+}
+
+// D2: without --ties, citations derives the tie at the base commit from a checkout of that commit
+// with the base's own go-test-reads.sh, so a file that the change deleted counts when the base's
+// tie holds it. The head deletes a/testdata and its script answers a/* alone; at the base the
+// script answers a/* and a/testdata/**. The control is the same change where the base's script
+// answers a/* alone: the deleted file is then no read of the test at either end, and it is cited.
+func TestCitationsReadsTheTieAtTheBaseCommit(t *testing.T) {
+	t.Parallel()
+	binary := cmdtest.Build(t, "spec-check")
+	workflow := fixture(t, "citations", "workflow.yaml")
+	for _, row := range []struct {
+		name, baseReads string
+		want            func(dir string) result
+	}{
+		{"the base's tie holds the deleted testdata", `["a/*","a/testdata/**"]`, func(dir string) result {
+			return result{code: 1, stdout: "spec-check: " + dir + ": 1 program check; 1 refused\n",
+				stderr: "spec-check: " + filepath.Join(dir, "spec.md") + ":5: " + citedCheck + ": test-not-run: a/testdata/answer.json changed " +
+					"(the tie at the base commit holds it), and go-checks did not run example.com/citations/a TestA (its report shows it skipped)\n"}
+		}},
+		{"control: the base's tie does not hold it", `["a/*"]`, func(dir string) result {
+			return result{stdout: "spec-check: " + dir + ": 1 program check; each is cited\n"}
+		}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			g := newGitCase(t, row.baseReads)
+			if err := os.MkdirAll(filepath.Join(g.repo, "a", "testdata"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			writeFile(t, filepath.Join(g.repo, "a", "testdata", "answer.json"), []byte("{\"answer\": 42}\n"))
+			base := commitAll(t, g.repo, "", "base")
+			removeAll(t, filepath.Join(g.repo, "a", "testdata"))
+			g.script(t, `["a/*"]`)
+			commitAll(t, g.repo, base, "delete the testdata")
+			expect(t, g.cite(t, binary, workflow, base), row.want(filepath.Join(g.repo, ".dispatch", "spec")))
+		})
+	}
+}
+
+// D3: a carried result stands at the commit that the list starts from, so the base of changed is
+// the merge base with the default branch, never the branch's push before. Push 1 adds t.Skip to
+// TestA, push 2 changes docs alone. From the merge base the list holds a/a_test.go, and the skipped
+// test is refused at push 2; from push 1, the control, the list holds the docs alone, and the check
+// reads as cited although its test has not run since a/a_test.go changed.
+func TestCitationsFromTheMergeBase(t *testing.T) {
+	t.Parallel()
+	binary := cmdtest.Build(t, "spec-check")
+	workflow := fixture(t, "citations", "workflow.yaml")
+	g := newGitCase(t, `["a/*"]`)
+	if err := os.MkdirAll(filepath.Join(g.repo, "docs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(g.repo, "docs", "readme.md"), []byte("The answer.\n"))
+	main := commitAll(t, g.repo, "", "main")
+	gitIn(t, g.repo, "update-ref", "refs/heads/main", main)
+	test := filepath.Join(g.repo, "a", "a_test.go")
+	content, err := os.ReadFile(test)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, test, []byte(strings.Replace(string(content), "func TestA(t *testing.T) {\n", "func TestA(t *testing.T) {\n\tt.Skip(\"flaky\")\n", 1)))
+	push1 := commitAll(t, g.repo, main, "skip TestA")
+	writeFile(t, filepath.Join(g.repo, "docs", "readme.md"), []byte("The answer, again.\n"))
+	push2 := commitAll(t, g.repo, push1, "docs")
+	if mergeBase := gitIn(t, g.repo, "merge-base", "main", push2); mergeBase != main {
+		t.Fatalf("merge base %s, want main %s", mergeBase, main)
+	}
+	dir := filepath.Join(g.repo, ".dispatch", "spec")
+	expect(t, g.cite(t, binary, workflow, main), result{code: 1, stdout: "spec-check: " + dir + ": 1 program check; 1 refused\n",
+		stderr: "spec-check: " + filepath.Join(dir, "spec.md") + ":5: " + citedCheck + ": test-not-run: a/a_test.go changed, and go-checks did not run example.com/citations/a TestA (its report shows it skipped)\n"})
+	expect(t, g.cite(t, binary, workflow, push1), result{stdout: "spec-check: " + dir + ": 1 program check; each is cited\n"})
 }
 
 // TestChanged runs changed in a scratch git repository: commit A holds a/data.json and a/a.go, B is
@@ -482,14 +761,19 @@ func TestChanged(t *testing.T) {
 	if got := git("diff", "--name-only", a, b); got != "docs/data.json\n" {
 		t.Fatalf("git diff --name-only A B = %q; the control wants docs/data.json alone", got)
 	}
+	// The first line names the base by its full object name, whatever name --base gave it.
 	expect(t, runBinary(t, binary, "", "changed", "--repo", repo, "--base", a, "--head", b), result{
-		stdout: "a/data.json\ndocs/data.json\n",
+		stdout: "base " + a + "\na/data.json\ndocs/data.json\n",
 		stderr: "spec-check: " + repo + ": 2 paths changed from " + a + " to " + b + "\n"})
 	// --head defaults to HEAD, which is B.
 	expect(t, runBinary(t, binary, "", "changed", "--repo", repo, "--base", a), result{
-		stdout: "a/data.json\ndocs/data.json\n",
+		stdout: "base " + a + "\na/data.json\ndocs/data.json\n",
 		stderr: "spec-check: " + repo + ": 2 paths changed from " + a + " to HEAD\n"})
+	expect(t, runBinary(t, binary, "", "changed", "--repo", repo, "--base", "HEAD~1"), result{
+		stdout: "base " + a + "\na/data.json\ndocs/data.json\n",
+		stderr: "spec-check: " + repo + ": 2 paths changed from HEAD~1 to HEAD\n"})
 	expect(t, runBinary(t, binary, "", "changed", "--repo", repo, "--base", b), result{
+		stdout: "base " + b + "\n",
 		stderr: "spec-check: " + repo + ": 0 paths changed from " + b + " to HEAD\n"})
 
 	unknown := strings.Repeat("0", 39) + "1"

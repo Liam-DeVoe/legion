@@ -69,7 +69,9 @@ func ScriptTestReads(repoRoot string) TestReads {
 // runner other than go, a selector ParseSelector refuses, an error of reads, or an answer that
 // NewTie refuses (R18: "A tie that Dispatch cannot derive reads as unknown, not as none"). Checks
 // of one package ask reads once. In production workdir is "." at the repository root, where the
-// root go.work takes the envoy and daemon import paths, and env is empty.
+// root go.work takes the envoy and daemon import paths, and env is empty. A symbolic link in a tie
+// whose target is outside it is the same case as a test that reads a file outside its package: the
+// tie holds what the rows of ci_job_reads.py record, and a row for the target names it.
 func GoTies(checks []Check, workdir string, env []string, reads TestReads) map[string]Tie {
 	type answer struct {
 		tie Tie

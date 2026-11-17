@@ -1,0 +1,56 @@
+package specgraph
+
+import (
+	"reflect"
+	"strings"
+	"testing"
+)
+
+// R48 with R8: a test that did not run at the commit has no result there, and go test can answer
+// a run of a package from its test cache. Go 1.27 marks such a package in one place, its summary
+// line "ok  \t<import path>\t(cached)", with what came after the elapsed time after it, and it
+// replays the run's events as they were, frames and all. Each report is a real run of Go 1.27.3
+// that testdata/gotest/cached/make-reports.sh makes: each run of a replayed package reads cached,
+// in each form of the line, and a package of the same report that ran again reads its outcome. The
+// control is first.jsonl, the first run of the same package, which reads pass and skip.
+func TestARunThatGoTestReplaysFromItsCacheIsCached(t *testing.T) {
+	t.Parallel()
+	const cached = "example.com/acme/gotest/cached "
+	readReports(t, []reportRow{
+		{"cached/first.jsonl", []string{cached + "TestA pass", cached + "TestB skip"}},
+		{"cached/cached.jsonl", []string{cached + "TestA cached", cached + "TestB cached"}},
+		{"cached/cached-cover.jsonl", []string{cached + "TestA cached", cached + "TestB cached"}},
+		{"cached/cached-two.jsonl", []string{cached + "TestA cached", cached + "TestB cached", "example.com/acme/gotest/fresh TestFresh pass"}},
+	})
+	// The form " [no tests to run]" holds no run, so it gives no entry.
+	if got := readReport(t, "cached/cached-norun.jsonl"); len(got) != 0 {
+		t.Errorf("ReadGoTestJSON(cached/cached-norun.jsonl) = %q, want no entry", outcomes(got))
+	}
+}
+
+// The summary line has no marker, so a test can print it. For its own package that reads as not
+// run, the safe direction; for another package it marks nothing.
+func TestAPrintedCachedLineMarksOnlyItsOwnPackage(t *testing.T) {
+	t.Parallel()
+	run := func(pkg, line string) string {
+		event := `{"Action":"output","Package":"` + pkg + `","Test":"TestA","Output":"` + line + `\n"}` + "\n"
+		return `{"Action":"run","Package":"` + pkg + `","Test":"TestA"}` + "\n" +
+			`{"Action":"output","Package":"` + pkg + `","Test":"TestA","Output":"=== RUN   TestA\n","OutputType":"frame"}` + "\n" +
+			event +
+			`{"Action":"output","Package":"` + pkg + `","Test":"TestA","Output":"--- PASS: TestA (0.00s)\n","OutputType":"frame"}` + "\n" +
+			`{"Action":"pass","Package":"` + pkg + `","Test":"TestA","Elapsed":0}` + "\n"
+	}
+	for _, row := range []struct {
+		name, report string
+		want         []string
+	}{
+		{"its own package's line", run("p", `ok  \tp\t(cached)`), []string{"p TestA cached"}},
+		{"another package's line", run("p", `ok  \tq\t(cached)`), []string{"p TestA pass"}},
+		{"a line of its own package that ran", run("p", `ok  \tp\t0.01s`), []string{"p TestA pass"}},
+	} {
+		got, err := ReadGoTestJSON(strings.NewReader(row.report))
+		if err != nil || !reflect.DeepEqual(outcomes(got), row.want) {
+			t.Errorf("%s: ReadGoTestJSON = %q, %v; want %q", row.name, outcomes(got), err, row.want)
+		}
+	}
+}

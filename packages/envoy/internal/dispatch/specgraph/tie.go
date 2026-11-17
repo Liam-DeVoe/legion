@@ -56,6 +56,39 @@ func ReadTies(r io.Reader) (map[string]Tie, error) {
 	return ties, nil
 }
 
+// CommitTies is ties by commit: the id of a commit, then the id of a check, then its tie at that
+// commit. A commit that it does not hold has no known tie, and a check that a commit's ties do not
+// hold has a tie at that commit that is not known. Each entry of a tie is a path or a pattern of
+// the three forms of Tie.
+type CommitTies map[string]map[string]Tie
+
+// ReadCommitTies reads ties by commit, {"<commit id>": {"<check id>": ["<path or pattern>", …]}},
+// with decodeJSON, so it refuses what that reader refuses. A commit id has a letter or a digit, as
+// a scenario names its commits; a reader that needs full object names, as spec-check citations
+// does, checks them after the read. Each tie is as NewTie takes it, and a refusal names its commit
+// and its check.
+func ReadCommitTies(r io.Reader) (CommitTies, error) {
+	var paths map[string]map[string][]string
+	if err := decodeJSONFrom(r, &paths); err != nil {
+		return nil, err
+	}
+	ties := make(CommitTies, len(paths))
+	for _, commit := range slices.Sorted(maps.Keys(paths)) {
+		if !hasWord(commit) {
+			return nil, fmt.Errorf("commit %q: names no commit: it has no letter and no digit", commit)
+		}
+		ties[commit] = make(map[string]Tie, len(paths[commit]))
+		for _, check := range slices.Sorted(maps.Keys(paths[commit])) {
+			tie, err := NewTie(paths[commit][check])
+			if err != nil {
+				return nil, fmt.Errorf("commit %q: check %q: %w", commit, check, err)
+			}
+			ties[commit][check] = tie
+		}
+	}
+	return ties, nil
+}
+
 // isTieEntry is whether entry has one of the three forms of a tie.
 func isTieEntry(entry string) bool {
 	parts := strings.Split(entry, "/")

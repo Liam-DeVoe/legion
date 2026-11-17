@@ -21,7 +21,7 @@
 //	spec-check state --scenario <dir> [--json]
 //	  (each subject of <dir>/subjects.json: commit, branch or deploy, and graph_tx with a deploy)
 //	spec-check citations --dir <dir> --repo <root> --workflow <file> (--changed <file> | --all-changed)
-//	    --reports <dir> --needs <file> [--ties <file>] [--json <file>] [--allow-empty]
+//	    --reports <dir> --needs <file> [--ties <file>...] [--json <file>] [--allow-empty]
 //	spec-check changed --repo <root> --base <commit> [--head <commit>]
 //
 // tree judges one directory. It exits 0 for a valid tree, with the count line "spec-check: <dir>:
@@ -126,26 +126,41 @@
 // the repository at <root> (specgraph.Citations, R48): its test is not in the code (GoCode, go list
 // in <root>), the code cannot be searched for it, its selector picks two tests, its job is not in
 // the workflow or spec-citations does not wait for it, or code that its test reads changed and the
-// job did not run the test. --changed names the paths that changed since the base commit, in the
-// form changed prints; --all-changed says that there is no base commit. --reports holds one
+// job did not run the test. A result that go test replayed from its cache, the package's line "ok
+// <package> (cached)", is no run at the commit. --changed is the list that changed prints: its
+// first line, "base <commit>", names the commit where each result that the commit carries stands,
+// which for a change's branch is its merge base with the default branch and never the branch's
+// push before, since a list from that push holds no change of the pushes before it; the paths
+// after it changed since that commit. --all-changed says that there is no base commit. A path of
+// the list is a change of a check's code when the tie at the commit or the tie at the base holds
+// it, so a file that the change deleted, or moved out of the tie, counts. --reports holds one
 // directory per report artifact of the run, spec-report--<job> or spec-report--<job>--<leg>, each
 // with the go test -json report.jsonl; --needs holds toJSON(needs) of the spec-citations job, the
-// result of each job it waits for. The tie of each check is what <root>'s
-// .github/scripts/go-test-reads.sh says its test reads (GoTies), or with --ties the ties of a file
-// in the form of a scenario's ties.json (ReadTies). Each refused check is one line on standard
-// error, "spec-check: <dir>/<file>:<line>: <check>: <detail>", where the detail begins with the
-// rule, with "spec-check: <dir>: <n> program checks; <k> refused" on standard output, exit 1; none
-// is "spec-check: <dir>: <n> program checks; each is cited", exit 0. --json writes the faults to a
+// result of each job it waits for. The tie of each check at the commit is what <root>'s
+// .github/scripts/go-test-reads.sh says its test reads (GoTies), and at the base what the base's
+// own script says, in a checkout of the base commit that the command makes in a new temporary
+// directory when a check needs it and removes when it ends. --ties, which may be given more than
+// once, names a file of ties by commit, {"<commit>":{"<check>":["<path or pattern>",...]}}
+// (ReadCommitTies), each commit by its full object name; with it, the ties at the commit are the
+// files' ties of the commit that HEAD of <root> names (exit 2 when git cannot read it) and those
+// at the base the files' ties of the base line's commit. A commit or a check that the files do not
+// hold reads as a tie that is not known, and a commit key that is no full object name, or that two
+// of the files hold, is exit 2. Each refused check is one line on standard error, "spec-check:
+// <dir>/<file>:<line>: <check>: <detail>", where the detail begins with the rule, with
+// "spec-check: <dir>: <n> program checks; <k> refused" on standard output, exit 1; none is
+// "spec-check: <dir>: <n> program checks; each is cited", exit 0. --json writes the faults to a
 // file as one line of JSON, as checks and state write theirs, [{"check","rule","detail"}], [] for
 // none, making its directory. With --allow-empty, a directory that does not exist or holds no spec
 // file is "spec-check: <dir>: holds no spec file; no check to cite", exit 0. A spec file that does
 // not parse is exit 2 with its problems.
 //
-// changed prints the paths whose content differs between the trees of two commits of the git
-// clone at <root>, both paths of a move (GitHistory), sorted, one a line on standard output, with
-// "spec-check: <root>: <n> paths changed from <base> to <head>" on standard error; --head is HEAD
-// when not given. A commit that git cannot read and a path that holds a line break are exit 2 with
-// one line naming them.
+// changed prints the line "base <commit>", with the full object name of the base, then the paths
+// whose content differs between the trees of the two commits of the git clone at <root>, both
+// paths of a move (GitHistory), sorted, one a line on standard output, with "spec-check: <root>:
+// <n> paths changed from <base> to <head>" on standard error; --head is HEAD when not given. The
+// base is the commit where each result that the head carries stands, which for a change's branch
+// is its merge base with the default branch, and never the branch's push before. A commit that git
+// cannot read and a path that holds a line break are exit 2 with one line naming them.
 //
 // Every subcommand exits 2 for a directory it cannot read, a file it cannot read or arguments it
 // does not take, with one line naming the case, or the usage, and for a file or a device on
@@ -192,7 +207,7 @@ const usage = `usage: spec-check tree --dir <dir> [--allow-empty] [--retired <fi
        spec-check state --scenario <dir> [--json]
          (each subject of <dir>/subjects.json: commit, branch or deploy, and graph_tx with a deploy)
        spec-check citations --dir <dir> --repo <root> --workflow <file> (--changed <file> | --all-changed)
-           --reports <dir> --needs <file> [--ties <file>] [--json <file>] [--allow-empty]
+           --reports <dir> --needs <file> [--ties <file>...] [--json <file>] [--allow-empty]
        spec-check changed --repo <root> --base <commit> [--head <commit>]`
 
 // prefix is the fixed text that starts every line the command prints but the usage, the JSON of

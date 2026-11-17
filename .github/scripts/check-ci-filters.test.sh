@@ -833,6 +833,21 @@ reads_hold() {
   python3 -c 'import json, sys; print(str(sys.argv[1] in json.loads(sys.argv[2])["reads"]).lower())' "$1" "$out" 2>/dev/null ||
     echo false
 }
+# reads_cover <path>: true when an entry of the reads of the last answer covers path, as a tie of
+# spec-check covers it: the path itself, `<dir>/*` of its directory, or `<dir>/**` above it.
+reads_cover() {
+  python3 -c '
+import json, posixpath, sys
+path = sys.argv[1]
+def covers(entry):
+    if entry.endswith("/**"):
+        return path.startswith(entry[:-2])
+    if entry.endswith("/*"):
+        return posixpath.dirname(path) == entry[:-2]
+    return entry == path
+print(str(any(covers(e) for e in json.loads(sys.argv[2])["reads"])).lower())' "$1" "$out" 2>/dev/null ||
+    echo false
+}
 # problems_name <text>: true when a problem of the last answer holds text.
 problems_name() {
   python3 -c 'import json, sys; print(str(any(sys.argv[1] in p for p in json.loads(sys.argv[2])["problems"])).lower())' "$1" "$out" 2>/dev/null ||
@@ -843,12 +858,44 @@ check "exits 0" "$(is "$status" 0)"
 check "reads the file of the fixture's RULES row for mod/lib/lib_test.go" "$(reads_hold fixtures/data.json)"
 check "reads the package it tests" "$(reads_hold 'mod/lib/*')"
 check "reads the workspace file" "$(reads_hold go.work)"
+# The tie holds a pattern that no file that exists decides, so a change that deletes the files is
+# still a change of the tie: the testdata of the package it tests, which the fixture does not have,
+# and the directory of a wildcard embed pattern whole, beside each file that the pattern matches.
+check "reads the testdata of the package it tests, a directory that does not exist" "$(reads_hold 'mod/lib/testdata/**')"
+check "and no testdata of a package it does not test" "$(is "$(reads_hold 'mod/other/testdata/**')" false)"
+mkdir -p "$root/mod/lib/static" "$root/mod/lib/golden"
+echo 'a' > "$root/mod/lib/static/a.txt"
+echo '{}' > "$root/mod/lib/golden/b.json"
+printf 'package lib\n\nimport "embed"\n\n//go:embed static/*.txt\nvar assets embed.FS\n' > "$root/mod/lib/assets.go"
+printf 'package lib\n\nimport "embed"\n\n//go:embed golden/*.json\nvar golden embed.FS\n' > "$root/mod/lib/golden_test.go"
+run_reads mod ./lib
+check "with two wildcard embed patterns it exits 0" "$(is "$status" 0)"
+check "reads the file that the package's pattern matches" "$(reads_hold mod/lib/static/a.txt)"
+check "and the directory of the package's pattern, whole" "$(reads_hold 'mod/lib/static/**')"
+check "reads the file that the test's pattern matches" "$(reads_hold mod/lib/golden/b.json)"
+check "and the directory of the test's pattern, whole" "$(reads_hold 'mod/lib/golden/**')"
+rm -r "$root/mod/lib/static" "$root/mod/lib/golden" "$root/mod/lib/assets.go" "$root/mod/lib/golden_test.go"
 replace "$root/.github/scripts/ci_job_reads.py" \
   'RULES = {"mod/lib/lib_test.go": [Read("fixtures/data.json", "lib_test.go reads ../../fixtures/data.json")]}' 'RULES = {}'
 run_reads mod ./lib
 check "the control: with no RULES row it still exits 0" "$(is "$status" 0)"
 check "and still reads the package it tests" "$(reads_hold 'mod/lib/*')"
 check "and no longer reads fixtures/data.json" "$(is "$(reads_hold fixtures/data.json)" false)"
+# The stated limit of a link: a symbolic link in the testdata of the package to a directory
+# outside it is the same case as a test that reads a file outside its package. The tie covers the
+# link's path and not the target's files, until a RULES row names them.
+mkdir -p "$root/fixtures/shared" "$root/mod/lib/testdata"
+echo '{"answer": 42}' > "$root/fixtures/shared/answer.json"
+ln -s ../../../fixtures/shared "$root/mod/lib/testdata/shared"
+run_reads mod ./lib
+check "with a link in testdata to a directory outside the package it exits 0" "$(is "$status" 0)"
+check "the reads cover the file at the link's path" "$(reads_cover mod/lib/testdata/shared/answer.json)"
+check "and not the file of the target, which no RULES row names" "$(is "$(reads_cover fixtures/shared/answer.json)" false)"
+replace "$root/.github/scripts/ci_job_reads.py" 'RULES = {}' \
+  'RULES = {"mod/lib/lib_test.go": [Read("fixtures/shared/answer.json", "lib_test.go reads testdata/shared, a link to ../../fixtures/shared")]}'
+run_reads mod ./lib
+check "a RULES row for the target makes the reads cover it" "$(reads_cover fixtures/shared/answer.json)"
+rm -r "$root/mod/lib/testdata" "$root/fixtures/shared"
 run_reads mod ./gone
 check "a package that is gone exits 1" "$(is "$status" 1)"
 check "with a problem that names it" "$(problems_name ./gone)"

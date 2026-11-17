@@ -17,6 +17,10 @@ const (
 	outputEnd   = maxOutput - outputStart
 )
 
+// outcomeCached is the Outcome of each run of a package whose result go test replayed from its
+// test cache (TestOutcome).
+const outcomeCached = "cached"
+
 // TestOutcome is one run of one top-level Go test, as a go test -json report gives it: its
 // package, its name, its outcome and its output.
 //
@@ -33,6 +37,15 @@ const (
 //     not ended, and for that other run, since the report then cannot say whose end an end event
 //     is: two parallel tests of one name, in package p and in p_test, and a test that prints a run
 //     line of its own name with the marker.
+//
+// Every run of a package whose result go test replayed from its test cache is "cached", whatever
+// its end event: such a run is an earlier run's account, and the test did not run at the commit
+// of the report. go test then prints its summary line of the package with "(cached)" in place of
+// the elapsed time, "ok  \t<import path>\t(cached)", and what came after the time after it, as
+// "\tcoverage: 50.0% of statements" under -cover or " [no tests to run]", and replays the run's
+// events as they were. The cache does not see a file that a test reads through a child process,
+// so such a test can fail when it runs. The line has no marker, so a test that prints it for its
+// own package makes its package's runs cached too, which reads as not run.
 //
 // In the two forms of report that ReadGoTestJSON reads, what a test prints with no marker decides
 // no outcome, go test's kill line and its end lines included. A test's pass stays when a goroutine
@@ -186,11 +199,14 @@ func (r *run) output() string {
 // reads as a run of no tests: MatchTests then gives no entry for a check, and a reporter must read
 // a check with no entry as a check with no result, which R9 of the spec reads as unknown and never
 // true. Events of a package and not of a test (no Test), events of a test that never started, and
-// the actions that end no test (start, pause, cont, attr and the rest) are passed over.
+// the actions that end no test (start, pause, cont, attr and the rest) are passed over, but for
+// go test's summary line of a package replayed from its test cache, which makes each run of that
+// package "cached" (TestOutcome).
 func ReadGoTestJSON(r io.Reader) ([]TestOutcome, error) {
 	var runs []*run
 	names := map[[2]string]*nameRuns{} // package and top-level name
 	framed := false                    // the report holds a frame
+	cached := map[string]bool{}        // the packages whose summary line says (cached)
 	decoder := json.NewDecoder(r)
 	for {
 		var e event
@@ -203,6 +219,9 @@ func ReadGoTestJSON(r io.Reader) ([]TestOutcome, error) {
 			return nil, fmt.Errorf("specgraph: the go test report holds no event at byte %d: a value with no Action", decoder.InputOffset())
 		}
 		framed = framed || e.OutputType == "frame"
+		if e.Action == "output" && strings.HasPrefix(e.Output, "ok  \t"+e.Package+"\t(cached)") {
+			cached[e.Package] = true
+		}
 		if e.Test == "" {
 			continue
 		}
@@ -252,6 +271,9 @@ func ReadGoTestJSON(r io.Reader) ([]TestOutcome, error) {
 	for _, this := range runs {
 		if this.ends != 1 || !this.counted || this.overlap {
 			this.outcome.Outcome = "could_not_run"
+		}
+		if cached[this.outcome.Package] {
+			this.outcome.Outcome = outcomeCached
 		}
 		this.outcome.Output = this.output()
 		outcomes = append(outcomes, this.outcome)
