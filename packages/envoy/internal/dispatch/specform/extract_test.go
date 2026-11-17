@@ -62,12 +62,21 @@ func TestExtractReadsEachFormOfText(t *testing.T) {
 		{Node: "dispatch-inbox", Kind: KindName, Body: "Inbox", Where: fixtureWhere},
 		{Node: "dispatch-inbox", Kind: KindPurpose, Body: "It shows a person what waits on that person.", Where: fixtureWhere},
 	}
+	// No text of the fixture holds code font, so the page shows each one as its body. The run and
+	// the negative_control of a check are attributes, which a text holds as they are written.
+	for index, text := range want {
+		if text.Kind != KindProcedure && text.Kind != KindFailingExample {
+			want[index].Held.Shown = text.Body
+		}
+	}
 	if !reflect.DeepEqual(got.Texts, want) {
 		t.Errorf("Texts =\n%#v\nwant\n%#v", got.Texts, want)
 	}
 	terms := []Term{
-		{Name: "session", Definition: "One conversation of an agent.", Where: fixtureWhere},
-		{Name: "work unit", Definition: "One piece of work that one owner runs.", Where: fixtureWhere},
+		{Name: "session", Definition: "One conversation of an agent.", Where: fixtureWhere,
+			NameHeld: Held{Shown: "session"}, DefinitionHeld: Held{Shown: "One conversation of an agent."}},
+		{Name: "work unit", Definition: "One piece of work that one owner runs.", Where: fixtureWhere,
+			NameHeld: Held{Shown: "work unit"}, DefinitionHeld: Held{Shown: "One piece of work that one owner runs."}},
 	}
 	if !reflect.DeepEqual(got.Terms, terms) {
 		t.Errorf("Terms = %#v, want %#v", got.Terms, terms)
@@ -225,8 +234,10 @@ func TestALineUnderTermsThatIsNoTermLineIsAFinding(t *testing.T) {
 		t.Errorf("Texts =\n%#v\nwant\n%#v", got.Texts, []Text{prose, drift})
 	}
 	terms := []Term{
-		{Name: "lease", Definition: "The right of one session to one work unit for a time.", Where: where},
-		{Name: "session", Definition: "One conversation of an agent.", Where: where},
+		{Name: "lease", Definition: "The right of one session to one work unit for a time.", Where: where,
+			NameHeld: Held{Shown: "lease"}, DefinitionHeld: Held{Shown: "The right of one session to one work unit for a time."}},
+		{Name: "session", Definition: "One conversation of an agent.", Where: where,
+			NameHeld: Held{Shown: "session"}, DefinitionHeld: Held{Shown: "One conversation of an agent."}},
 	}
 	if !reflect.DeepEqual(got.Terms, terms) {
 		t.Errorf("Terms = %#v, want %#v", got.Terms, terms)
