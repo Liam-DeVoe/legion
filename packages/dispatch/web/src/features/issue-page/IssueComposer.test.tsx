@@ -1340,6 +1340,71 @@ test("r on a statement keeps the box on a refused reply, and the send carries th
   });
 });
 
+// The same rule for a reply: a reply Dispatch refused holds the box on the comment it answers
+// when the reader presses `a` on an open question, so the refused words are never sent as a
+// comment on the issue once the answer line is done.
+test("a on an open question keeps the box on a refused reply", async () => {
+  const user = userEvent.setup();
+  stub(
+    spyOn(api, "createComment").mockRejectedValue(
+      new ApiError(400, { code: "INVALID_INPUT", error: "The reply was refused." })
+    )
+  );
+  const page = renderPage();
+  await page.press(user, "comment-1", "r");
+  await waitFor(() => expect(writeField()).toHaveFocus());
+  await user.keyboard("My reply to bob{Enter}");
+  await waitFor(() =>
+    expect(within(composerBox()).getByRole("alert")).toHaveTextContent("The reply was refused.")
+  );
+
+  // `a` on the open question: the box stays on bob's comment, with no answer line.
+  await page.press(user, "ask-1", "a");
+  expect(targetWords()).toBe(`${CONTROL_LABELS.replying_to} bob Earlier words`);
+  expect(composerBox().querySelector("form[data-answering]")).toBeNull();
+  expect(page.writer().answer).toBeUndefined();
+  expect(page.writer().reply?.id).toBe("comment-1");
+  await waitFor(() => expect(writeField()).toHaveFocus());
+  expect(writeField().value).toBe("My reply to bob");
+});
+
+// Ending a refused reply in the box lets it go, as ending a statement does: the target line's
+// control takes the reply off the held send, its refusal and its words kept, so `r` on another
+// row then aims the box at that row.
+test("a refused reply let go with the target line's control frees a Reply on another row", async () => {
+  const user = userEvent.setup();
+  stub(
+    spyOn(api, "createComment").mockRejectedValue(
+      new ApiError(400, { code: "INVALID_INPUT", error: "The reply was refused." })
+    )
+  );
+  const page = renderPage();
+  await page.press(user, "comment-1", "r");
+  await waitFor(() => expect(writeField()).toHaveFocus());
+  await user.keyboard("My reply to bob{Enter}");
+  await waitFor(() =>
+    expect(within(composerBox()).getByRole("alert")).toHaveTextContent("The reply was refused.")
+  );
+
+  // The target line's control: the box writes on the issue.
+  await user.click(
+    within(composerBox()).getByRole("button", { name: CONTROL_LABELS.write_on_issue })
+  );
+  await waitFor(() => expect(targetWords()).toBeNull());
+
+  // `r` on the question the reader answered: a reply to it, the refused words kept.
+  await page.press(user, "ask-2", "r");
+  await waitFor(() => expect(targetWords()).toContain("Question ask-2?"));
+  expect(page.writer().reply?.id).toBe("ask-2");
+  await waitFor(() => expect(writeField()).toHaveFocus());
+  expect(writeField().value).toBe("My reply to bob");
+
+  // The refusal is still held, with no reply left on it.
+  const held = heldSends(page.client).get(["issue-composer", KEY]);
+  expect(held?.status).toBe("refused");
+  expect(held?.request.replyTo).toBeNull();
+});
+
 // The reading list's `issue-page-composer-target`: the target line and the answer's options draw
 // a stored text as its plain words - formatting gone, a reference read as the name it reads as -
 // never as the characters it is stored as.
