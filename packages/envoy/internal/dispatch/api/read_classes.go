@@ -286,6 +286,10 @@ func scopeReadRefusal(scopes []string, holds func(string) bool) *readRefusal {
 	return nil
 }
 
+// codeDeploymentReadRefused refuses a read of a row of the deployment to a viewer that is not open
+// (deploymentReadRefusal).
+const codeDeploymentReadRefused = "DEPLOYMENT_READ_REFUSED"
+
 // deploymentReadRefusal is the refusal of a read of a row of the deployment (readclass.Deployment
 // among classes) to a viewer that is not open, or nil: 403 DEPLOYMENT_READ_REFUSED, naming the
 // row, which withinReadScope answers over HTTP and the live socket as a view's error frame. A nil
@@ -294,7 +298,7 @@ func deploymentReadRefusal(method, pattern string, classes []readclass.Class, vi
 	if !slices.Contains(classes, readclass.Deployment) || (viewer != nil && viewer.Open) {
 		return nil
 	}
-	return &readRefusal{code: "DEPLOYMENT_READ_REFUSED", message: fmt.Sprintf(
+	return &readRefusal{code: codeDeploymentReadRefused, message: fmt.Sprintf(
 		"%s %s reads the whole deployment, which only a caller that sees every public project reads: this caller is a restricted member, or its credential lists the projects it may use",
 		method, pattern)}
 }

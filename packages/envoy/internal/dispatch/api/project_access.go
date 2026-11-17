@@ -290,7 +290,7 @@ func (s *server) ownerWrite(w http.ResponseWriter, r *http.Request, group string
 	if !ok {
 		return
 	}
-	if !who.Viewer.All && !slices.Contains(who.Viewer.Sees, key) {
+	if !viewerSees(who.Viewer, key) {
 		s.writeAccessError(w, fmt.Errorf("%w: %s", access.ErrProjectNotFound, key))
 		return
 	}

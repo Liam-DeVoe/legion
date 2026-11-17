@@ -178,7 +178,10 @@ func (s *server) listPersonNodes(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	reader, ok := s.readerOf(w, r)
+	// The acting credential is marshalled once and bound by both reads: it is one value for the
+	// request, and the two statements name the same reader. Its author is the person the request
+	// acts for, as it always was, and its viewer is what the caller sees (readerAs).
+	caller, ok = s.readerAs(w, r, caller)
 	if !ok {
 		return
 	}
@@ -188,10 +191,6 @@ func (s *server) listPersonNodes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	login := model.CanonicalLogin(r.PathValue("login"))
-	// The acting credential is marshalled once and bound by both reads: it is one value for
-	// the request, and the two statements name the same reader. Its author is the person the
-	// request acts for, as it always was, and its viewer is what the caller sees.
-	caller.Viewer = reader.Viewer
 	seen := refs.VisibilityArg(caller)
 	var held bool
 	if err := s.deps.Store.Pool.QueryRow(r.Context(), personPageHeldQuery, login, seen).Scan(&held); err != nil {
