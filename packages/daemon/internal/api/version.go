@@ -2066,7 +2066,51 @@ package api
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
 //
-// 150: dispatch://INFRA-3583 -- the project release. The shim answers a new frame from the daemon,
+// 151: dispatch://INFRA-3729 -- issue pods in GKE Sandbox microVMs, which is four shapes of the
+// launcher wire and one of the state. The launcher's command line gains `--microvm` and, with
+// `runtime.kubernetes.sandbox.microvm.metadata` set, `--metadata-workload-pool` and
+// `--metadata-identity-provider`, which a microVM issue pod's container passes (sandbox's
+// issuePod.launcherContainer). The daemon's answer to an issue pod launcher's hello gains
+// `kernelKills` (`shimwire.LauncherHelloAck.KernelKills`), set on every issue pod's answer and on
+// no controller pod's. `launcher_memory_kill` gains `cause` (`shimwire.LauncherMemoryKill.Cause`,
+// a `shimwire.MemoryKillCause`): empty for the gVisor guard's own kill, as 144 sends it; `kernel`
+// for a command of a role that a microVM pod's own kernel stopped; and `kernel-protected` for one
+// of the processes that run a role's session (its agent, shim, role-init or a helper) that the
+// kernel stopped all the same. The launcher's guest watch names both (memoryguard.Guest), and the
+// daemon tells that role with a note of its own for each (workflow's kernelKillNote and
+// kernelProtectedKillNote) under the same event id `memory-guard-kill:<id>:<sequence>`. The
+// state's settings block carries the new `runtime.kubernetes.sandbox` key as
+// `settings.runtime.kubernetes.sandbox`, which the plugin parses loosely (35 above), so that key
+// alone would bump nothing.
+//
+// The skew is safe in both directions. An older launcher refuses an unknown flag and exits, so a
+// daemon of this release must never render the microVM flags into a pod whose image predates
+// them: the image probe pairs a daemon with an image by this number (`runtime/sandbox/probe.go`),
+// as it did for 39, 48 and 144, which is why the flags carry one. A gVisor pod's command line is
+// unchanged. An older daemon sends no `kernelKills`, and a microVM pod's launcher then sends no
+// kill report, since it sends one only on a connection whose answer carried `kernelKills`
+// (`internal/launcher`'s manager.serve), so such a daemon never tells a role of the kernel's kill
+// in the guard's words, and the launcher's own line in the pod's log keeps what it would have
+// said. An older launcher ignores `kernelKills`, as it ignored `memoryGuard` (144), and sends no
+// `cause`. `kernelKills` is set on every issue pod's acknowledgement, a gVisor pod's included, so
+// only the controller pod's acknowledgement is the bytes 144 writes, where the member is left
+// out; the guard's report is those bytes too, since `cause` is left out when empty.
+//
+// An earlier loader refuses the `runtime.kubernetes.sandbox` key by name, so a file that sets it
+// takes the block out before an earlier image is pinned (docs/kubernetes.md, "Issue pods in
+// microVMs").
+// (This change took 151, the lowest number above main's 144 that no open pull request declared,
+// read on 2026-11-15 in each open head's own copy of this file: #3659 holds 145, #3711
+// 146, #4017 147, #4049 and #3519 148, #2731 149 and #3730 150. It keeps 151 at the forward merge
+// of 2026-11-16 that brings main in at 47a901c14da2, which carries #3711's INFRA-2614 at 146, the
+// entry right above and the number the base now carries: 151 is still above it, and a reading of
+// `const DaemonAPIVersion` at refs/pull/<n>/head for every open pull request, made between
+// 2026-11-16T19:30:30Z and 19:35:10Z, gave 151 to this change alone (147 #4017, 148 #3519, 149
+// #2230, 150 #4049 and #4065, 152 #3730, 153 #4115). That is a reading and never the rule: read
+// main's own number and every open head again at the next forward merge rather than from this
+// line.)
+//
+// 157: dispatch://INFRA-3583 -- the project release. The shim answers a new frame from the daemon,
 // `read-unpushed` (shimwire.ReadUnpushed: `id`, `issue`, `timeoutMs`), with
 // `read-unpushed-result` (shimwire.ReadUnpushedResult: `id`, `ok`, `commits`,
 // `workingCopyChanged`, `error`): how many commits of the issue's workspace no remote branch or tag
@@ -2087,7 +2131,7 @@ package api
 // api.ReleasedClaimEnds), each a `z.enum` in `packages/contracts/src/legion-api.ts`, which refuses
 // a word it does not name, so a word added later bumps this number. `GET /legion/v1/state` gains
 // `projectRelease`, that same body for the project's newest release, absent while none was
-// recorded; a caller from a pod whose claims record a contract below 150 is served the state
+// recorded; a caller from a pod whose claims record a contract below 157 is served the state
 // without it (api's stateNarrowings, withoutProjectRelease), as a caller below 133 is served it
 // without `mergeWait`, and the bands compose. A claim's `suspendedBy` on the operator routes takes
 // `project_release`, a claim the release stopped, which the daemon's next boot starts again. The
@@ -2097,13 +2141,14 @@ package api
 // claim's round columns. While a release holds every start, the operator's spawn, retry, resume
 // and deliver, and either door's fresh session and compaction, answer 409 with the code
 // `PROJECT_RELEASED` and the sentence api.ProjectReleaseHeldSentence. The number is the census an
-// implementer of dispatch://INFRA-3583 read on 2026-11-15, at the forward merge of main c6d12afd,
-// of `const DaemonAPIVersion` at the head of every one of the 105 open pull requests of this
-// repository, read between 2026-11-15T22:16:33Z and 22:19:29Z: main declares 144 (INFRA-3557's
-// entry above), and no open head declares above it but #3659 at 145, #3711 at 146, #4017 at 147,
-// #3519 at 148 and #2731 at 149, so 150 is the lowest number above the base's that no other open
-// head declares. Read the base's own number and every open head again at the next merge rather
-// than from this entry, as
+// implementer of dispatch://INFRA-3583 read on 2026-11-17, at the forward merge of main d9299f7a, of
+// `const DaemonAPIVersion` at the head of every one of the 193 open pull requests of this
+// repository, read between 2026-11-17T11:28:01Z and 11:32:59Z: main declares 151 (INFRA-3729's
+// entry above), and no open head declares above it but #3730 at 152, #4115 at 153, #3659 at 154,
+// #4273 at 155 and #4065 at 156, so 157 is the lowest number above the base's that no other open
+// head declares. This change first took 150, the lowest free number at the forward merge of
+// 2026-11-15, and moved here once main reached 151. Read the base's own number and every open
+// head again at the next merge rather than from this entry, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.
-const DaemonAPIVersion = 150
+const DaemonAPIVersion = 157

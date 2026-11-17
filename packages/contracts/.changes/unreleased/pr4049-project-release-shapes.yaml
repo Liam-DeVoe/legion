@@ -1,9 +1,9 @@
 kind: Changed
 body: |-
-  The daemon API contract is 150. `legion-api.ts` gains `LegionProjectReleaseRequest` and
+  The daemon API contract is 157. `legion-api.ts` gains `LegionProjectReleaseRequest` and
   `LegionProjectReleaseResponse`, the bodies of `POST` and `GET /legion/v1/operator/project/release`,
   and the state's optional `projectRelease`, the project's newest project release, which a caller
-  in a pod below contract 150 is not served. Its `outcome`, `endedBy` and a stopped claim's `ended`
+  in a pod below contract 157 is not served. Its `outcome`, `endedBy` and a stopped claim's `ended`
   are enums of the words the daemon writes, `LEGION_RELEASE_OUTCOMES`,
   `LEGION_PROJECT_RELEASE_ENDERS` and `LEGION_RELEASED_CLAIM_ENDS`, each held to the daemon's own
   list in `fixtures/daemon-api/project-release-words.json`. A claim's `suspendedBy` gains

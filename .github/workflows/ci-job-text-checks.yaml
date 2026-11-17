@@ -108,8 +108,8 @@ jobs:
         working-directory: packages/envoy
       # The three pure pins of packages/daemon's supervise package: they hold the package to its
       # own source — a row or a named ignore for every event in every state, one event type per
-      # kind, and each of the two hand-kept rosters (ClaimStates, SuspendSources) to the constants
-      # of its type — which packageSets() reads by parsing every non-test .go file of the package
+      # kind, and the hand-kept roster of suspend sources (SuspendSources) to the constants of
+      # its type — which packageSets() reads by parsing every non-test .go file of the package
       # (internal/supervise/table_test.go:45-89). They open no database and start no process, so
       # they belong here rather than in the daemon's Postgres-backed Go suite; they sit in a
       # package of machine-driving tests, so this step selects them by name, and the daemon-go
@@ -118,7 +118,7 @@ jobs:
       # texts, so a pin added or renamed reaches both or fails the ci-filters job naming this
       # step. The three other tests of table_test.go drive a machine and stay in that plain step.
       - name: Test the supervise package's three pure pins (no database)
-        run: go test -count=1 -run '^(TestClaimStatesAndSuspendSourcesNameEveryConstant|TestNoTwoEventTypesShareAKind|TestTheTableHasARowOrANamedIgnoreForEveryEventInEveryState)$' ./internal/supervise/
+        run: go test -count=1 -run '^(TestNoTwoEventTypesShareAKind|TestSuspendSourcesNameEveryConstant|TestTheTableHasARowOrANamedIgnoreForEveryEventInEveryState)$' ./internal/supervise/
         working-directory: packages/daemon
 
       - name: Report ci-ok when this job decides a merge-group run

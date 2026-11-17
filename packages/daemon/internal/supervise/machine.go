@@ -68,18 +68,20 @@ const (
 	StateRetired ClaimState = "retired"
 )
 
-// claimStates is every ClaimState, in the order declared above: the roster of the set, which
-// nothing in Go can read off the constants themselves. It is kept by hand, and
-// TestClaimStatesAndSuspendSourcesNameEveryConstant reads this package's constants of the type
-// from its source and fails while one of them is missing here.
-var claimStates = []ClaimState{StateQueued, StateLaunchUncertain, StateLaunching, StateShimConnected, StateRegistered,
-	StateReady, StateWorking, StateIdle, StateSuspended, StateFailed, StateRetired}
+// allStates is every ClaimState, in the order the constants above declare them.
+// TestStatesIsEveryDeclaredStateOnce holds it to the constants the compiler sees in this package,
+// so a state added above and left out here fails that test.
+var allStates = []ClaimState{
+	StateQueued, StateLaunchUncertain, StateLaunching, StateShimConnected, StateRegistered, StateReady,
+	StateWorking, StateIdle, StateSuspended, StateFailed, StateRetired,
+}
 
-// ClaimStates is every ClaimState, in the order declared above (claimStates). A project release's
-// words for how a claim ended are built from it (api.ReleasedClaimEnds). It is a copy, so no
-// caller changes the package's own roster.
-func ClaimStates() []ClaimState {
-	return slices.Clone(claimStates)
+// States is every state a claim can be in, in the order they are declared: the one list a test
+// outside this package walks to cover each state, and the list a project release's words for how
+// a claim ended are built from (api.ReleasedClaimEnds). It is a copy, so no caller changes the
+// package's own list.
+func States() []ClaimState {
+	return slices.Clone(allStates)
 }
 
 // SuspendSource is who suspended a claim. The daemon resumes a suspended claim by rule on the
@@ -126,8 +128,8 @@ const (
 )
 
 // suspendSources is every SuspendSource, in the order declared above: the roster of the set, kept
-// by hand and held to the constants as claimStates is
-// (TestClaimStatesAndSuspendSourcesNameEveryConstant).
+// by hand and held to the constants of its type (TestSuspendSourcesNameEveryConstant), as
+// allStates is to its own.
 var suspendSources = []SuspendSource{SuspendedByUnknown, SuspendedByOperator, SuspendedByDaemon, SuspendedByExit,
 	SuspendedByReleased, SuspendedByProjectRelease}
 

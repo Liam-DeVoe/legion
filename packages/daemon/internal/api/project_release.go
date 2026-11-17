@@ -180,7 +180,7 @@ func ReleasedClaimEndOf(c supervise.Claim) ReleasedClaimEnd {
 }
 
 // ReleasedClaimEnds is every ReleasedClaimEnd, in order: each claim state but suspended
-// (supervise.ClaimStates), each suspension source (supervise.SuspendSources), and
+// (supervise.States), each suspension source (supervise.SuspendSources), and
 // ReleasedClaimUnrecorded. TestProjectReleaseWordsGolden writes it to
 // `packages/contracts/fixtures/daemon-api/project-release-words.json`, and
 // `packages/contracts/src/legion-api.test.ts` holds that file equal to
@@ -191,7 +191,7 @@ var ReleasedClaimEnds = releasedClaimEnds()
 
 // releasedClaimEnds builds ReleasedClaimEnds.
 func releasedClaimEnds() []ReleasedClaimEnd {
-	states, sources := supervise.ClaimStates(), supervise.SuspendSources()
+	states, sources := supervise.States(), supervise.SuspendSources()
 	ends := make([]ReleasedClaimEnd, 0, len(states)+len(sources))
 	for _, state := range states {
 		if state != supervise.StateSuspended {
