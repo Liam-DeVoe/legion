@@ -2789,8 +2789,9 @@ jobs:
               - 'packages/daemon/internal/prompts/roles/architect-root.md'
               - 'packages/daemon/internal/workflow/design_approved_wake_extract.txt'
               - 'packages/daemon/internal/runtime/sandbox/reclaim_doc_extract.txt'
-              # The store's migrations, which phase_entry_migrations_doc_test.go reads through
-              # migrations.All to hold the guide's list of those above the phase entry to them.
+              # The store's migrations, which the text checks read through migrations.All to hold
+              # the guide to them: its list of those above the phase entry, and its way back of the
+              # step records, to the block the roll forward's header carries.
               - 'packages/daemon/internal/store/migrations/*.up.sql'
               # The seven copies of shipped texts that readExtract (waiting_line_texts_test.go:380)
               # reads to hold them to the texts themselves: the waiting line's four, the two way
