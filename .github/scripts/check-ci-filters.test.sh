@@ -28,8 +28,9 @@
 # does not read, which the write mode writes, no paths-filter step's filters string may come
 # near the 131,072-byte cap the kernel puts on the environment variable Actions hands it in,
 # every output of the changes job must name the paths-filter step its own filter is declared in,
-# and a listed block's patterns are passed over by rule 9 only while its marker names a check a
-# job of CI runs.
+# a listed block's patterns are passed over by rule 9 only while its marker names a check a
+# job of CI runs, and a job of any workflow that runs the results action must make its
+# `go test -json` report in a run: step of its own with no -v.
 #
 # Each case builds a miniature repository under a temporary directory - a go.work binding one
 # module, a ci.yaml whose `changes` job gates one job, a root package.json with one workspace, and
@@ -2221,6 +2222,60 @@ mv "$root/.github/workflows/scan.yaml" "$root/.github/workflows/scan.yml"
 run_check "$root"
 check "and reads the .yml spelling GitHub reads too" \
   "$(contains "$out" "::error file=.github/workflows/scan.yml::")"
+
+echo "case: a job that runs the results action makes its go test -json report with no -v"
+# Under -v, go runs the test binary with -test.v=true, whose frame lines carry no mark, so a test
+# can print a line that reads as its own pass, and the report the action reads cannot be told
+# from one made without -v. The action's own directory is no part of the rule: it reads the
+# `uses:` of the job's steps.
+root=$(fixture report-no-verbose)
+cat > "$root/.github/workflows/results.yaml" <<'YAML'
+name: Results
+on: push
+jobs:
+  go-checks:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Run the tests the checks name
+        run: |
+          set -o pipefail
+          # A comment that says go test -v is no command.
+          go test -json -count=1 -vet=off -run '^(TestA|TestB)$' ./mod/... | tee "$RUNNER_TEMP/go-test.json"
+      - uses: ./.github/actions/dispatch-results
+        with:
+          report: ${{ runner.temp }}/go-test.json
+          project: ACME
+YAML
+run_check "$root"
+check "passes with no -v, a -vet flag and a commented -v" "$(is "$status" 0)"
+check "and says what it read" \
+  "$(contains "$out" '^report: ./.github/actions/dispatch-results: run by 1 job(s), which hold 1 go test command(s)$')"
+replace "$root/.github/workflows/results.yaml" "go test -json -count=1" "go test -json -v -count=1"
+run_check "$root"
+check "fails with -v" "$(is "$status" 1)"
+check "naming the file, the job, the step, the line and the flag" \
+  "$(contains "$out" "::error file=.github/workflows/results.yaml::.github/workflows/results.yaml job go-checks step \"Run the tests the checks name\" runs \`go test -json -v -count=1 -vet=off -run '^(TestA|TestB)\$' ./mod/... | tee \"\$RUNNER_TEMP/go-test.json\"\`, which passes \`-v\`")"
+check "and why the report cannot carry it" \
+  "$(contains "$out" 'a test can print a line that reads as its own pass and the report cannot be told from one made without -v')"
+for spelling in "-v=true" "--v" "-test.v" "-test.v=true" "--test.v=test2json"; do
+  replace "$root/.github/workflows/results.yaml" "go test -json -v -count=1" "go test -json $spelling -count=1"
+  run_check "$root"
+  check "fails with $spelling" "$(contains "$out" "which passes \`$spelling\`")"
+  replace "$root/.github/workflows/results.yaml" "go test -json $spelling -count=1" "go test -json -v -count=1"
+done
+replace "$root/.github/workflows/results.yaml" "go test -json -v -count=1 -vet=off -run '^(TestA|TestB)\$' ./mod/..." \
+  $'go -C mod test -json -count=1 \\\n            ./... -args -test.v=true'
+run_check "$root"
+check "fails with -test.v after -args on a continued line of go -C" "$(contains "$out" "which passes \`-test.v=true\`")"
+replace "$root/.github/workflows/results.yaml" $'go -C mod test -json -count=1 \\\n            ./... -args -test.v=true' \
+  "go run ./tools/make-report"
+run_check "$root"
+check "fails when no step of the job runs go test" \
+  "$(contains "$out" "::error file=.github/workflows/results.yaml::.github/workflows/results.yaml job go-checks runs ./.github/actions/dispatch-results, and no run: step of it runs \`go test\` where this check reads it")"
+replace "$root/.github/workflows/results.yaml" "go run ./tools/make-report" "go test -json -v ./mod/..."
+replace "$root/.github/workflows/results.yaml" "      - uses: ./.github/actions/dispatch-results" "      - uses: ./.github/actions/other"
+run_check "$root"
+check "and holds no job that does not run the action" "$(is "$status" 0)"
 
 # ci_job_reads.py builds envoy-go's plain step - the tests a race build cannot run at all or at
 # full size - by reading packages/envoy's own source rather than from a list a table could hold,

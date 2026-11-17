@@ -1,11 +1,12 @@
 """The rules about ci.yaml that stand on their own: what no `if:` of it may say, what every job's
 `if:` must say, what ci-caches.yaml must save
 for the entries ci.yaml restores and which packages its race build must compile, which workspaces
-ci_job_reads.py's WORKSPACES must name, and
-that no other workflow of this repository runs on a merge group.
+ci_job_reads.py's WORKSPACES must name,
+that no other workflow of this repository runs on a merge group, and that a job of any workflow
+that runs the results action makes its go test -json report with no -v.
 None of them
 reads a filter, a gate or the closure of a go command, so none belongs in the filter-coverage
-engine beside them; check-ci-filters.sh's header numbers them 10, 12, 11, 13, 14 and 16, and
+engine beside them; check-ci-filters.sh's header numbers them 10, 12, 11, 13, 14, 16 and 20, and
 ci_filter_coverage.main()
 is what runs them, over the documents it already loaded - the rerun-guard rule over ci.yaml
 alone, since the `if:` it reads is the caller job's; the cache rule over ci.yaml and every
@@ -14,8 +15,8 @@ ci.yaml and the called files that are ci.yaml's alone (ci_only_documents says wh
 others) - the workspace rule over the
 root manifest and the WORKSPACES table main() hands it, and the race-fill rule over ci-caches.yaml
 and the DAEMON_RACE_PACKAGES list main() hands it the same way, since what this module imports is
-the engine's names, never the data's, and the merge-group rule over the workflow directory, which
-it reads itself.
+the engine's names, never the data's, and the merge-group rule and the report rule over the
+workflow directory, which they read themselves.
 
 It sits beside that engine (and workflow_paths.py, the path model) in the repository it checks,
 and imports the engine's names for the two workflow files, the repository root, the checks
@@ -27,6 +28,7 @@ a module Python has finished loading by then.
 
 import json
 import re
+import shlex
 from collections import defaultdict
 from functools import cache
 
@@ -44,6 +46,7 @@ from ci_filter_coverage import (
     read_repository_text,
     script_lines,
     squash,
+    step_label,
     where_if,
 )
 from workflow_paths import events
@@ -78,7 +81,7 @@ WORKFLOW_SUFFIXES = (".yaml", ".yml")
 @cache
 def directory_workflows() -> dict:
     """Every workflow of this repository, as {its repository-relative path: the parsed document},
-    in path order. The two rules that walk the directory read this one answer: parsing each file
+    in path order. The rules that walk the directory read this one answer: parsing each file
     for each of them is a second read of every workflow in the repository."""
     try:
         paths = sorted(p for p in (REPO / WORKFLOW_DIR).iterdir() if p.suffix in WORKFLOW_SUFFIXES)
@@ -460,3 +463,88 @@ def check_one_merge_group_workflow(problems: list) -> None:
                                     f"the queue refused to enqueue with `Required status check \"ci-ok\" is expected` while a "
                                     f"green ci-ok sat in another workflow's check suite. Run this work on pull_request, or "
                                     f"move it into {WORKFLOW}"))
+
+
+# ------------------------------------------- the report the results step reads
+# The action that reads a job's `go test -json` report and writes one result for each check whose
+# test ran (packages/envoy/cmd/ci-report). Under an explicit -v, go runs the test binary with
+# -test.v=true in place of -test.v=test2json, so its frame lines carry no mark: a test can print a
+# line that reads as its own pass, and a report of `go test -json -v` cannot be told from one of
+# `go test -json` by its content. A -v that GOFLAGS carries reaches no such binary: under -json, go
+# drops v and test.v from the flags it forwards from GOFLAGS (cmd/go/internal/test/testflag.go,
+# go1.27.3, the -json branch of testFlags), so only the command line can carry it.
+RESULTS_ACTION = "./.github/actions/dispatch-results"
+VERBOSE = re.compile(r"--?(?:test\.)?v(?:=.*)?")
+SHELL_OPERATOR = re.compile(r"[();<>|&]+")
+
+
+def go_test_commands(script: str) -> list:
+    """Each `go test` command of a run: script, as (its line, its arguments up to the end of the
+    command), with a line a backslash continues read as one line and comments aside; a line that
+    holds `go test` (RACE_TEST's spelling of one, -race or not) and that shlex cannot split is
+    (its line, None)."""
+    commands = []
+    for line in script_lines(script.replace("\\\n", " ")):
+        lexer = shlex.shlex(line, posix=True, punctuation_chars=True)
+        try:
+            words = list(lexer)
+        except ValueError:
+            if RACE_TEST.search(line):
+                commands.append((line, None))
+            continue
+        for i, word in enumerate(words):
+            if word.rsplit("/", 1)[-1] != "go":
+                continue
+            rest = words[i + 3:] if words[i + 1:i + 2] == ["-C"] else words[i + 1:]
+            if rest[:1] != ["test"]:
+                continue
+            arguments = []
+            for argument in rest[1:]:
+                if SHELL_OPERATOR.fullmatch(argument):
+                    break
+                arguments.append(argument)
+            commands.append((line, arguments))
+    return commands
+
+
+def check_report_steps(problems: list) -> list:
+    """A job of any workflow that runs RESULTS_ACTION makes its report with no -v. Each `go test`
+    command in a run: script of the job is held to no -v in any spelling (-v, -v=<value>,
+    -test.v, -test.v=<value>, with one dash or two, before the packages or after -args), since
+    the report the action reads is one of them; and a job with no `go test` command where this
+    rule reads it is refused too, since the flags of a report made elsewhere are flags this rule
+    cannot see. It reads the job's own steps alone: a report made in another job and handed over
+    as an artifact is refused until this rule follows it there. Returns its one report line,
+    which says how many jobs and commands it read, so a run that read none says so."""
+    jobs = commands = 0
+    for path, document in directory_workflows().items():
+        for job_id, job in ((document or {}).get("jobs") or {}).items():
+            steps = [s for s in (job or {}).get("steps") or [] if isinstance(s, dict)]
+            if not any(str(s.get("uses", "")).split("@")[0].rstrip("/") == RESULTS_ACTION for s in steps):
+                continue
+            jobs += 1
+            found = False
+            for step in steps:
+                for line, arguments in go_test_commands(str(step.get("run", ""))):
+                    found = True
+                    commands += 1
+                    where = f"{path} job {job_id} step \"{step_label(step)}\" runs `{line}`"
+                    if arguments is None:
+                        problems.append(error(path, f"{where}, which this check cannot split into words, so it "
+                                                    f"cannot read whether its go test passes -v: the job runs "
+                                                    f"{RESULTS_ACTION}, which reads the job's go test -json report"))
+                        continue
+                    verbose = [a for a in arguments if VERBOSE.fullmatch(a)]
+                    if verbose:
+                        problems.append(error(path, f"{where}, which passes {', '.join(f'`{a}`' for a in verbose)}: the "
+                                                    f"job runs {RESULTS_ACTION}, which reads the job's go test -json "
+                                                    f"report, and under -v go runs the test binary with -test.v=true, "
+                                                    f"whose frame lines carry no mark, so a test can print a line that "
+                                                    f"reads as its own pass and the report cannot be told from one "
+                                                    f"made without -v. Remove the -v"))
+            if not found:
+                problems.append(error(path, f"{path} job {job_id} runs {RESULTS_ACTION}, and no run: step of it runs "
+                                            f"`go test` where this check reads it: the report the action reads is "
+                                            f"held to no -v, so the go test -json command that makes it is a line "
+                                            f"of a run: step of the same job"))
+    return [f"{RESULTS_ACTION}: run by {jobs} job(s), which hold {commands} go test command(s)"]

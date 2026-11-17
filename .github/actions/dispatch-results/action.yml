@@ -17,7 +17,11 @@ description: >-
 inputs:
   report:
     description: >-
-      The path of the job's `go test -json` report. A relative path is read from the checkout.
+      The path of the job's `go test -json` report. A relative path is read from the checkout. The
+      command that makes it passes no -v: under -v a test can print a line that reads as its own
+      pass, and such a report cannot be told from one made without -v, so rule 20 of
+      .github/scripts/check-ci-filters.sh refuses a job that runs this action and a `go test`
+      with -v.
     required: true
   project:
     description: The key of the Dispatch project that the results are for.
