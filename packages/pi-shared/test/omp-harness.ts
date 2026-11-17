@@ -238,6 +238,12 @@ export async function sendRelayFrame(frame: RelayFrame): Promise<RelayTake> {
   let reply: { readonly answered: string } | { readonly error: unknown } | undefined;
   let lastError: unknown;
   const send = () => {
+    // nats.js reads a timeout as whole milliseconds: it refuses one below 1 at once with an error
+    // of its own ("timeout", ErrorCode.InvalidOption) and takes 0 as its default of a second. So a
+    // send is made only while a whole millisecond of the row is left, and none once less is,
+    // which leaves the deadline to end the wait with the server's last answer as its cause.
+    const left = Math.floor(timeLeft());
+    if (left < 1) return;
     const headers = frame.newHeaders();
     headers.set(RelayHeader.subject, frame.subject);
     headers.set(RelayHeader.streamSeq, String(frame.seq));
@@ -245,7 +251,7 @@ export async function sendRelayFrame(frame: RelayFrame): Promise<RelayTake> {
     headers.set(RelayHeader.delivered, String(frame.delivered ?? 1));
     headers.set(RelayHeader.storedAt, frame.storedAt ?? new Date().toISOString());
     const request = frame.connection
-      .request(deliverSubject(frame.sessionID), frame.payload, { timeout: timeLeft(), headers })
+      .request(deliverSubject(frame.sessionID), frame.payload, { timeout: left, headers })
       .then(
         (answer) => ({ answered: new TextDecoder().decode(answer.data) }),
         (error: unknown) => ({ error })
