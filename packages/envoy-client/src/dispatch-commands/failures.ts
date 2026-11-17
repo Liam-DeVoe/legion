@@ -166,15 +166,13 @@ function dispatchNotFound(error: unknown): error is DispatchServiceError {
 }
 
 /**
- * A document reference its owner holds no single document for: the refusal of the read that
- * resolves it, after the read answered. Its message names the reference and lists the owner's
- * documents. It is an answer about the document, so a refusal that meets it passes it on as it is
- * (`refuseMissingOfRef`), where any other failure of that read is named as a failed read.
+ * A document reference its owner holds no single document for: no document, or more than one
+ * under a filename they share. Its message names the reference and the documents that bear on it.
+ * It is the answer of a read that answered, so it is an answer about the document.
  */
 export class DocumentReferenceError extends Error {}
 
-/** A document reference that names no document of its owner. `readDocumentBlocks` tells it apart
- *  from every other refusal, as the first upload of a file. */
+/** A document reference that names no document of its owner. */
 export class DocumentNotFoundError extends DocumentReferenceError {}
 
 /**
@@ -182,15 +180,15 @@ export class DocumentNotFoundError extends DocumentReferenceError {}
  * `404 NOT_FOUND`: its `not found` names neither the item nor its owner, so a reader cannot tell
  * an item that is not there from an issue or a document that is not (dispatch://INFRA-1523).
  * `readOwner` reads the reference's own owner, and its answer decides the refusal: an issue
- * Dispatch itself does not hold is refused in those words, a document reference that names no
- * document of its owner meets that read's own refusal, and an owner that stands names the item it
- * holds no row of.
+ * Dispatch itself does not hold is refused in those words, a document reference its owner holds
+ * no single document for meets that read's own refusal, and an owner that stands names the item
+ * it holds no row of.
  *
  * A refusal names only what it read. `<owner> holds no <kind> <id>` is an answer about the owner,
  * so it is written only where the read of the owner answered. Where that read failed instead - a
- * gateway, a 5xx, a router's no-route answer, a transport error - the refusal names the failed
- * read and its failure and says nothing of whether the owner holds the item, since nothing was
- * read of the owner.
+ * gateway, a 5xx, a router's no-route answer, a transport error, or a refusal of Dispatch's own
+ * that is no answer about whether the owner holds the item - the refusal names the failed read
+ * and its failure and says nothing of whether the owner holds the item.
  */
 export async function refuseMissingOfRef(
   error: unknown,
