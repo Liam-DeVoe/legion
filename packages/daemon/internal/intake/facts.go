@@ -217,14 +217,15 @@ type RepoMappingChanged struct {
 
 func (RepoMappingChanged) isFact() {}
 
-// MergeHoldsChanged is an event of the daemon's own project's merge holds document
+// MergeHoldsChanged is an event that changes the daemon's own project's merge holds document
 // (record.MergeHoldsDocument), which Dispatch publishes on
-// notifications.dispatch.document.<Project>.merge-holds-md.<type> for each artifact.* event of the
-// document: the controller created it, added a hold, changed one or lifted one. Event is the
-// Dispatch event's id, which ApplyFact records the fact under, so a delivery of the same event
-// again applies nothing. The workflow tells the architect of each issue in accepting and the
-// merger of each issue in merging (workflow's mergeHoldsChanged): a role that a hold stops waits
-// on nothing else, since a Dispatch document event does not wake a released pod.
+// notifications.dispatch.document.<Project>.merge-holds-md.<type>: its creation, a new version,
+// its rename or its removal (the decoder's mergeHoldsChangeTypes), as when the controller created
+// it, added a hold, changed one or lifted one. Event is the Dispatch event's id, which ApplyFact
+// records the fact under, so a delivery of the same event again applies nothing. The workflow
+// tells the architect of each issue in accepting and the merger of each issue in merging
+// (workflow's mergeHoldsChanged): a role that a hold stops waits on nothing else, since a
+// Dispatch document event does not wake a released pod.
 type MergeHoldsChanged struct {
 	Project string
 	Event   string

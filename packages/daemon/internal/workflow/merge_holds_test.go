@@ -3,10 +3,12 @@ package workflow
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"slices"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -75,6 +77,45 @@ func TestAMergeHoldsChangeTellsTheArchitectInAcceptingAndTheMergerInMerging(t *t
 	apply("dispatch-72", intake.MergeHoldsChanged{Project: "OTHER", Event: "dispatch-72"})
 	if got := mergeHoldsDeliveries(t, pool); !slices.Equal(got, want) {
 		t.Fatalf("another project's merge holds change left %v, want %v: it writes nothing", got, want)
+	}
+}
+
+// A root whose pull request merged stands in merging until every issue under it leaves the
+// workflow (closeMerged), and a merge hold stops nothing there (PhaseFinished), so a merge holds
+// change writes its merger no row, and MergingNow, which the row's executor reads before each
+// attempt, says the issue left merging. The control is a root in merging whose pull request is
+// still open: it gets its row, and MergingNow says it works merging.
+func TestAMergeHoldsChangeTellsNoMergerWhosePullRequestMerged(t *testing.T) {
+	pool := migratedPool(t)
+	for i, state := range []record.PullRequestState{record.PullRequestMerged, record.PullRequestOpen} {
+		key := fmt.Sprintf("LEGION-%d", 208+i)
+		seedIssue(t, pool, record.Issue{Key: key, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: key,
+			Project: "LEGION", Title: key, Phase: phase.Merging, Generation: 1, Status: "retro", Rank: "U"})
+		seedPR(t, pool, record.PullRequest{State: state, Issue: key, Repo: "sjawhar/legion", Number: 42 + i,
+			Branch: "legion/" + key, HeadSHA: "head", Failing: []string{}})
+	}
+
+	engine := testEngine(config.DesignGateRootIssues, nil)
+	if _, err := intake.ApplyFact(t.Context(), pool, "dispatch", "dispatch-71", intake.MergeHoldsChanged{Project: "LEGION", Event: "dispatch-71"},
+		engine, admissionStub{}); err != nil {
+		t.Fatalf("apply the merge holds change: %v", err)
+	}
+	if got, want := mergeHoldsDeliveries(t, pool), []string{"merge_holds_changed LEGION-209"}; !slices.Equal(got, want) {
+		t.Fatalf("the merge holds change wrote %v, want %v: a row for the open pull request's merger alone", got, want)
+	}
+
+	for key, want := range map[string]string{"LEGION-208": "the pull request is merged", "LEGION-209": ""} {
+		var left string
+		if err := pgx.BeginFunc(t.Context(), pool, func(tx pgx.Tx) error {
+			var err error
+			_, left, err = MergingNow(t.Context(), record.NewStore(), tx, key)
+			return err
+		}); err != nil {
+			t.Fatalf("read the merging phase of %s: %v", key, err)
+		}
+		if left != want {
+			t.Fatalf("MergingNow(%s) says %q, want %q", key, left, want)
+		}
 	}
 }
 

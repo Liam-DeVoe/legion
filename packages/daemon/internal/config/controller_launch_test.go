@@ -94,7 +94,9 @@ func TestTheControllersPodIsSizedOnlyWhereTheDaemonLaunchesIt(t *testing.T) {
 // launches the controller reads: under `controller: operator` the key would name the account of
 // no pod, so it is refused, naming why, as resources.controller is. A file that names none settles
 // it empty, which leaves the controller on service_account. Like service_account, it may be
-// neither blank nor a ${…} placeholder nothing expands.
+// neither blank nor a ${…} placeholder nothing expands. And it must be a ServiceAccount's name:
+// no pod at boot runs as it (the image probe's runs as service_account), so the loader is the one
+// place before the controller's launch that can refuse a name the API server would.
 func TestTheControllersServiceAccountIsReadOnlyWhereTheDaemonLaunchesIt(t *testing.T) {
 	const named = "    pod: {service_account: legion-worker, controller_service_account: legion-controller}\n"
 	cfg, err := LoadForValidation(writeConfigFile(t, "controller: daemon\n"+kubernetesFile+named), noEnv)
@@ -121,6 +123,8 @@ func TestTheControllersServiceAccountIsReadOnlyWhereTheDaemonLaunchesIt(t *testi
 		"blank":                {"controller: daemon\n" + kubernetesFile + "    pod: {controller_service_account: \" \"}\n", "runtime.kubernetes.pod.controller_service_account must not be empty"},
 		"a placeholder": {"controller: daemon\n" + kubernetesFile + "    pod: {controller_service_account: \"${CONTROLLER_SERVICE_ACCOUNT}\"}\n",
 			`runtime.kubernetes.pod.controller_service_account "${CONTROLLER_SERVICE_ACCOUNT}" is an unfilled placeholder: put the ServiceAccount the controller's pod runs as in its place`},
+		"no ServiceAccount's name": {"controller: daemon\n" + kubernetesFile + "    pod: {controller_service_account: Legion_Controller}\n",
+			`runtime.kubernetes.pod.controller_service_account "Legion_Controller" is no ServiceAccount's name`},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := LoadForValidation(writeConfigFile(t, tc.body), noEnv)

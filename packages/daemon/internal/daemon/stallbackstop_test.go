@@ -616,6 +616,98 @@ func TestTheStallBackstopTellsTheControllerOfATreeArchitectsStallOnlyWhenItFaile
 	}
 }
 
+// A worker's stall is its issue's architect's alone, whatever its end: the controller is copied
+// on a tree architect's own stall that failed its claim, since nobody inside the tree is left to
+// act on that one (enqueueStallNotice), and a worker's architect is there to act on the worker's.
+// So every end that tells an owner writes the architect's notice and nothing for the controller,
+// the ends that left the claim working and the one that failed it alike, for a worker on the
+// tree's root issue and for one on a child.
+func TestTheStallBackstopTellsTheControllerNothingOfAWorkersStall(t *testing.T) {
+	for _, tc := range []struct {
+		name, issue string
+	}{
+		{"a worker on the tree's root issue", "LEGION-230"},
+		{"a worker on a child issue", "LEGION-231"},
+	} {
+		for _, end := range supervise.ProcessEnds() {
+			if !end.TellsOwner() {
+				continue
+			}
+			t.Run(tc.name+", "+string(end), func(t *testing.T) {
+				rig := newBackstopRig(t)
+				worker := rig.claim(claim.RoleTester, tc.issue, backstopBound+time.Hour, true)
+				worker.Tree = "LEGION-230"
+				stop := supervise.StallBackstopStop{Step: worker.Step, LastStep: worker.Step.LastStep(), Bound: backstopBound, End: end}
+				if end == supervise.EndFailed {
+					stop.LaunchFailures = 3
+				}
+				if told := rig.s.tellStallBackstopped(context.Background(), worker, stop); !told {
+					t.Fatal("the worker's stall reports its owner untold, want it told")
+				}
+				rows := rig.written(tc.issue)
+				if len(rows) != 1 {
+					t.Fatalf("rows = %+v, want the architect's notice alone: a worker's stall is its architect's whatever its end", rows)
+				}
+				if notice, isNotice := rows[0].(record.Notice); !isNotice || notice.Kind != stallBackstopNotice || notice.Role != claim.RoleTester {
+					t.Fatalf("rows = %+v, want a worker-stalled notice of the tester to its architect", rows)
+				}
+			})
+		}
+	}
+}
+
+// The same rule holds on the retried path: a tree architect's stall notice whose first write the
+// store refuses is kept and written by the next sweep (oweStallNotice, tellStallsOwed), and that
+// write is the one enqueueStallNotice makes, so the controller is copied when the end failed the
+// claim and for no other end. The copy is written once: the sweep after the one that wrote it
+// finds nothing owed and tries no write.
+func TestARetriedStallNoticeOfATreeArchitectCopiesTheControllerOnlyWhenItFailedTheClaim(t *testing.T) {
+	for _, end := range supervise.ProcessEnds() {
+		if !end.TellsOwner() {
+			continue
+		}
+		t.Run(string(end), func(t *testing.T) {
+			rig := newBackstopRig(t)
+			root := rig.claim(claim.RoleArchitect, "LEGION-232", backstopBound+time.Hour, true)
+			stop := supervise.StallBackstopStop{Step: root.Step, LastStep: root.Step.LastStep(), Bound: backstopBound, End: end}
+			if end == supervise.EndFailed {
+				stop.LaunchFailures = 3
+			}
+			rig.refusing(errors.New("the store is down"))
+			rig.s.stallBackstopped(root, stop)
+			rig.awaitOwed(root.Token)
+			if rows := rig.written("LEGION-232"); len(rows) != 0 {
+				t.Fatalf("rows while the store refused = %+v, want none", rows)
+			}
+
+			rig.refusing(nil)
+			rig.sweep(nil)
+			rig.sweep(nil)
+
+			if tried := rig.attemptsMade(); tried != 2 {
+				t.Fatalf("supervision tried %d writes, want 2: the refused one and the next sweep's", tried)
+			}
+			rows := rig.written("LEGION-232")
+			want := 1
+			if end == supervise.EndFailed {
+				want = 2
+			}
+			if len(rows) != want {
+				t.Fatalf("rows after the retry = %+v, want %d: the architect's notice, and the controller's copy only for an end that failed the claim", rows, want)
+			}
+			notice, isNotice := rows[0].(record.Notice)
+			if !isNotice || notice.Kind != stallBackstopNotice {
+				t.Fatalf("rows = %+v, want a worker-stalled notice to the architect first", rows)
+			}
+			if end == supervise.EndFailed {
+				if controllers, isController := rows[1].(record.ControllerNotice); !isController || !reflect.DeepEqual(record.Notice(controllers), notice) {
+					t.Fatalf("rows = %+v, want the controller's copy of the architect's notice second", rows)
+				}
+			}
+		})
+	}
+}
+
 // The owner is told what happened, never what the sweep asked for. The sweep reads the claims
 // before any machine decides, so a claim whose agent moved in between is one whose turn the
 // machine's own fence leaves alone (supervise's backstopStalledTurn): nothing was ended, and a

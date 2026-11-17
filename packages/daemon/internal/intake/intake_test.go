@@ -727,10 +727,13 @@ func TestTheDispatchConsumerHearsTheProjectsMappingSubject(t *testing.T) {
 }
 
 // Dispatch publishes each event of a project document on
-// notifications.dispatch.document.<KEY>.<slug>.<type>. The decoder reads every artifact.* event of
-// the daemon's own project's merge holds document as the project's merge holds change, under the
-// Dispatch event's id. An event of another document, of another project's merge holds document, or
-// of another kind on the document, such as a comment, is no fact. A payload that names another
+// notifications.dispatch.document.<KEY>.<slug>.<type>. The decoder reads each event that changes
+// the daemon's own project's merge holds document (its creation, a new version, its rename and its
+// removal) as the project's merge holds change, under the Dispatch event's id. A person's edit
+// settling (artifact.human_edited, which follows that edit's own artifact.version), an approval
+// and a request for changes are no fact, since each would tell every role a second time or of no
+// change of a hold; nor is an event of another document, of another project's merge holds
+// document, or of another kind on the document, such as a comment. A payload that names another
 // project or another type than its subject, or no document, is refused.
 func TestAMergeHoldsDocumentEventIsTheProjectsMergeHoldsChange(t *testing.T) {
 	change := MergeHoldsChanged{Project: "CAPTURE", Event: "dispatch-71"}
@@ -740,7 +743,11 @@ func TestAMergeHoldsDocumentEventIsTheProjectsMergeHoldsChange(t *testing.T) {
 	}{
 		{"a new version of the document", "CAPTURE", "merge-holds-md", "artifact.version", change},
 		{"the document's creation", "CAPTURE", "merge-holds-md", "artifact.created", change},
-		{"a person's edit of the document", "CAPTURE", "merge-holds-md", "artifact.human_edited", change},
+		{"the document's rename", "CAPTURE", "merge-holds-md", "artifact.renamed", change},
+		{"the document's removal", "CAPTURE", "merge-holds-md", "artifact.removed", change},
+		{"a person's edit of the document settling", "CAPTURE", "merge-holds-md", "artifact.human_edited", nil},
+		{"an approval of the document", "CAPTURE", "merge-holds-md", "artifact.approved", nil},
+		{"a request for changes to the document", "CAPTURE", "merge-holds-md", "artifact.changes_requested", nil},
 		{"another document of the project", "CAPTURE", "runbook-md", "artifact.version", nil},
 		{"another project's merge holds", "OTHER", "merge-holds-md", "artifact.version", nil},
 		{"a comment on the document", "CAPTURE", "merge-holds-md", "comment.created", nil},

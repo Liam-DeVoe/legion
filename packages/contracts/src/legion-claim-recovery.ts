@@ -28,15 +28,19 @@ const nonEmptyString = z.string().min(1);
  * retry of one, and a `fresh_session` of a claim it holds suspended. Only the operator lifts the
  * operator's suspension; nothing of the claim changes.
  *
- * The same six operations take an architect's grant for the claims of its own tree alone
+ * The same six operations take an architect's grant for the claims of the issues it owns alone
  * (contract 156): an issue the daemon does not record is `ISSUE_NOT_FOUND` (404), one of another
- * tree `ISSUE_OUTSIDE_TREE` (403), and the architect's own claim `OWN_CLAIM` (403). Each is
- * refused `SUSPENDED_BY_OPERATOR` (409) for a claim the operator's suspension holds and
- * `SUSPENDED_BY_CONTROLLER` (409) for one the controller's holds, held or landed, and the
- * architect's resume, suspend, stop and `fresh_session` are refused `SUSPENDED_BY_DAEMON` (409) for
- * a claim the daemon suspended: an architect's resume lifts an architect's suspension alone, and its
- * suspend and stop reach a released claim and no other suspension of the daemon's. Its suspension
- * is recorded as `architect`, which the controller's resume lifts too.
+ * tree `ISSUE_OUTSIDE_TREE` (403), one of its own tree it does not own (for a sub-architect, its
+ * tree's root and a sibling's issues) `ISSUE_NOT_OWNED` (403), and the architect's own claim
+ * `OWN_CLAIM` (403). Each is refused `SUSPENDED_BY_OPERATOR` (409) for a claim the operator's
+ * suspension holds and `SUSPENDED_BY_CONTROLLER` (409) for one the controller's holds, held or
+ * landed, and the architect's resume, suspend, stop and `fresh_session` are refused
+ * `SUSPENDED_BY_DAEMON` (409) for a claim the daemon suspended: an architect's resume lifts an
+ * architect's suspension alone, and its suspend and stop reach a released claim and no other
+ * suspension of the daemon's. The architect's retry and `fresh_session` of a claim that failed or
+ * that a stop retired are refused `ISSUE_OUT_OF_WORKFLOW` (409) while the claim's issue is out of
+ * the workflow or its tree lingers, since the daemon's own rules start that work again. Its
+ * suspension is recorded as `architect`, which the controller's resume lifts too.
  *
  * `fresh_session` has that claim leave the session it recorded behind and start again in a new
  * one, the effect `legion claims retry --fresh-session` runs for an operator. It reaches a claim

@@ -378,8 +378,11 @@ func DefaultResources() PodResources {
 // one (controller_service_account, which only `controller: daemon` reads). It passes through as
 // written: the loader refuses a shape no pod could carry, the Sandbox runtime a name or path of
 // Legion's own or the worker image's (sandbox.CheckPod), and the API server the rest when it
-// creates the image probe's pod, which carries it, at boot. Its fields are sandbox.Pod's, one for
-// one, since the daemon converts the one into the other.
+// creates the image probe's pod at boot, which carries all of it but controller_service_account:
+// that pod runs as service_account (sandbox's probeManifest), so the API server would first read
+// the controller's account at the controller's launch, and the loader checks that name itself
+// (readPod). Its fields are sandbox.Pod's, one for one, since the daemon converts the one into the
+// other.
 type PodConfig struct {
 	Env                      map[string]string
 	Volumes                  []corev1.Volume
@@ -1161,7 +1164,11 @@ func ReadPodFile(path string) (PodConfig, error) {
 // readPod reads `runtime.kubernetes.pod`, refusing a shape no pod could carry, and a
 // ServiceAccount, the pods' or the controller's, still holding a ${…} placeholder: nothing in
 // Legion expands one, as the token projection says, so the API server would refuse every pod for
-// an account that does not exist.
+// an account that does not exist. It refuses a controller_service_account that is no
+// ServiceAccount's name too, a DNS-1123 subdomain as the API server requires, as readClaimSource
+// refuses a claim's: no pod at boot runs as that account, so the API server would refuse the name
+// only at the controller's launch, after load, --check-config and boot had all passed it.
+// service_account needs no such check, since the image probe's pod runs as it at boot.
 func readPod(value *yaml.Node) (PodConfig, error) {
 	if value == nil {
 		return PodConfig{}, nil
@@ -1195,6 +1202,9 @@ func readPod(value *yaml.Node) (PodConfig, error) {
 	}
 	if err := unfilledPlaceholder(podKey+".controller_service_account", pod.ControllerServiceAccount, "the ServiceAccount the controller's pod runs as"); err != nil {
 		return PodConfig{}, err
+	}
+	if name := pod.ControllerServiceAccount; name != "" && len(validation.IsDNS1123Subdomain(name)) != 0 {
+		return PodConfig{}, fmt.Errorf("%s.controller_service_account %q is no ServiceAccount's name: a ServiceAccount is named with lowercase letters, digits, '-' and '.', starting and ending with a letter or digit, in at most 253 characters", podKey, name)
 	}
 	return pod, nil
 }

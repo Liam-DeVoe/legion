@@ -2145,7 +2145,10 @@ package api
 // refused a claim the operator's own suspension holds (`409 SUSPENDED_BY_OPERATOR`) and one the
 // controller's holds (`409 SUSPENDED_BY_CONTROLLER`), held or landed, and its resume, suspend, stop
 // and fresh session a claim the daemon suspended (`409 SUSPENDED_BY_DAEMON`; its suspend and stop
-// reach a released claim). The operator claim routes'
+// reach a released claim). Its retry and fresh session of a claim that failed or that a stop
+// retired are refused `409 ISSUE_OUT_OF_WORKFLOW` while the claim's issue is out of the workflow
+// or its tree lingers (refuseStartOfStoppedWork), nothing of the claim changed, since the daemon's
+// own rules start that work again. The operator claim routes'
 // and the four routes' `suspendedBy` and `suspensionHeldBy` gain the value `architect`; no shape
 // moves. (This change took 136, from a census of `const DaemonAPIVersion` at refs/pull/<n>/head of
 // every open pull request that changes version.go or whose file list GitHub cut at 100, taken at
@@ -2155,10 +2158,11 @@ package api
 // number above the base's that no open head declared. At the forward merge that brought main in
 // at b2e42742, which declares 144, the number moved to 150, the lowest number above 144 that no
 // open pull request declared, as .github/scripts/check-daemon-api-contract.sh named it. At the
-// forward merge that brought main in at 467e5371, which declares 146 (the entry right
-// above this one), it moved to 156, which that check named at 2026-11-17T07:04:26Z as the lowest
-// number above 146 that no open pull request declared: 147 (#4017), 148 (#3519), 149 (#2230), 150
-// (#4049 and this change's own #4065), 151 (#4106), 152 (#3730), 153 (#4115), 154 (#3659) and 155
-// (#4273). Read the base's own number and every open head again at the next merge rather than from
-// this entry.)
+// forward merge that brought main in at 467e5371, which declares 146, it moved to 156, which that
+// check named at 2026-11-17T07:04:26Z as the lowest number above 146 that no open pull request
+// declared: 147 (#4017), 148 (#3519), 149 (#2230), 150 (#4049 and this change's own #4065), 151
+// (#4106), 152 (#3730), 153 (#4115), 154 (#3659) and 155 (#4273). It keeps 156 at the forward
+// merge of 2026-11-17 that brought main in at d9299f7a, which carries #4106's INFRA-3729 at 151,
+// the entry right above this one and the number the base now carries: 156 is still above it. Read
+// the base's own number and every open head again at the next merge rather than from this entry.)
 const DaemonAPIVersion = 156

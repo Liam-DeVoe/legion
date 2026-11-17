@@ -181,11 +181,13 @@ export interface LegionDaemonClient {
    * suspension (`SUSPENDED_BY_OPERATOR`); a claim stored working is refused (`CLAIM_IN_A_TURN`).
    * The answer is the claim as the resume left it.
    *
-   * An architect's grant reaches the claims of its own tree alone, through all six of these
-   * claim operations: another tree's claim is refused (`ISSUE_OUTSIDE_TREE`), and so is the
-   * architect's own (`OWN_CLAIM`), a claim the controller's suspension holds
-   * (`SUSPENDED_BY_CONTROLLER`), and, for its resume, suspend, stop and `fresh_session`, a claim
-   * the daemon suspended (`SUSPENDED_BY_DAEMON`). */
+   * An architect's grant reaches the claims of the issues it owns alone, through all six of these
+   * claim operations: another tree's claim is refused (`ISSUE_OUTSIDE_TREE`), and so is a claim of
+   * an issue of its tree it does not own (`ISSUE_NOT_OWNED`), the architect's own (`OWN_CLAIM`), a
+   * claim the controller's suspension holds (`SUSPENDED_BY_CONTROLLER`), for its resume, suspend,
+   * stop and `fresh_session` a claim the daemon suspended (`SUSPENDED_BY_DAEMON`), and, for its
+   * retry and `fresh_session`, a failed or retired claim whose issue is out of the workflow or
+   * whose tree lingers (`ISSUE_OUT_OF_WORKFLOW`). */
   readonly resumeClaim: (
     input: z.input<typeof LegionClaimRequest>
   ) => Promise<z.output<typeof LegionClaimOperationResponse>>;

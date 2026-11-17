@@ -23,9 +23,9 @@ import (
 //
 // Each attempt first reads whether the issue still works merging (mergingNow), and the row
 // finishes undelivered, with one log line naming why, once it does not: the issue stands in
-// another phase, it is out of the workflow, or its tree lingers. The rest is the delivery every
-// merger's row makes (tellMerger): it ends on a failed or retired merger, and holds a released
-// merger while the root's design gate is closed.
+// another phase, it is out of the workflow, its tree lingers, or its pull request has merged. The
+// rest is the delivery every merger's row makes (tellMerger): it ends on a failed or retired
+// merger, and holds a released merger while the root's design gate is closed.
 func (r *outbox) mergeHoldsChanged(ctx context.Context, row record.OutboxRow, payload record.MergeHoldsChanged) error {
 	if r.notices == nil {
 		return errors.New("merge-holds change executor has no Envoy publisher")

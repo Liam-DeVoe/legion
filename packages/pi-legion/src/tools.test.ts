@@ -282,6 +282,10 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "fresh_session are refused for a claim the daemon suspended (SUSPENDED_BY_DAEMON). Its retry " +
   "of such a claim is refused too, since retry reaches no suspended claim. Its suspend takes " +
   "over a claim the daemon released, and its stop retires one. " +
+  "An architect's retry and fresh_session are refused for a claim that failed or that a stop " +
+  "retired while the claim's issue is parked or closed, or its tree's root is parked, closed or " +
+  "signed off (ISSUE_OUT_OF_WORKFLOW). The daemon's own rules start that work again when the " +
+  "issue and its tree are back in the workflow. " +
   "Each refusal says what the claim does now and which operation reaches each state. It " +
   "names no moment to come back at: ask again later, and read the claim's state in " +
   "read_state. " +

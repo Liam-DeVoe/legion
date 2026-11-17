@@ -549,7 +549,7 @@ func (r *fleetRig) rows(kind record.OutboxKind) []record.OutboxRow {
 // assertNoRootLeftTheWorkflow is the fleet round's second promise: the round moves no root out of
 // the workflow. No root waits on a person, none is parked — its phase done at backlog, or a
 // Dispatch status write that would park it — and no architect of either issue is suspended or
-// holds a suspension for its turn. The controller is told of no root waiting on a person either.
+// holds a suspension for its turn.
 func (r *fleetRig) assertNoRootLeftTheWorkflow(issues ...string) {
 	r.t.Helper()
 	writes := r.statusWrites()

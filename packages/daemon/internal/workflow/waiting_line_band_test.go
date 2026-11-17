@@ -19,7 +19,7 @@ import (
 // that puts its prose on a single line, so a text wrapped across a line break reads as one
 // written out on a single line. (INFRA-1100.)
 //
-// The eight texts outside packages/daemon are read out of waiting_line_words_extract.txt, the
+// The seven texts outside packages/daemon are read out of waiting_line_words_extract.txt, the
 // copy of their sentences committed beside this package, and never out of the files themselves:
 // a test that reads a shipped text puts that text in this job's filter — a declared read applies
 // to every compiled source file of a run — and an edit of AGENTS.md or a skill page would then

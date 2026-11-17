@@ -1358,8 +1358,8 @@ func MergeHoldsChangedReason(project string) string {
 // The row is held as a merge-queue removal is held (MergeQueueRemoval): it wakes a released merger
 // and waits until the merger's session holds its role, and while the root's design gate is closed
 // it neither wakes nor tells a released merger. It ends undelivered when the issue has left
-// merging (its phase is not merging, it is out of the workflow, or its tree lingers), and when the
-// merger's claim is failed or retired.
+// merging (its phase is not merging, it is out of the workflow, its tree lingers, or its pull
+// request has merged), and when the merger's claim is failed or retired.
 type MergeHoldsChanged struct {
 	Project string `json:"project"`
 }
