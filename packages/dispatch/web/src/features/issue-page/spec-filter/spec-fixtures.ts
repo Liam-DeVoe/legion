@@ -7,48 +7,37 @@ import type {
   IssueDecisions,
   IssueDetails,
 } from "../../../api/types";
+import {
+  artifact,
+  DECISIONS_SLUG,
+  KEY,
+  node,
+  READER,
+  READER_ACTOR,
+  SPEC_SLUG,
+} from "../decisions-filter/decisions-fixtures";
 import type { TreeAsk, TreeNode } from "../issue-tree";
-import type { NodeType } from "../page-words";
 
 /**
  * What the Spec filter's two unit tests are given: one issue, one tree and one decisions read,
  * built by hand, so the model and the body are read without a server
  * (`spec-decided-by.test.ts`, `SpecFilterBody.drawn.test.tsx`). A case that needs the tree as
- * part F's model places its nodes builds it with `buildIssueTree` from the reads below
+ * the page's model places its nodes builds it with `buildIssueTree` from the reads below
  * (`askRead`, `coverageRead`) instead.
+ *
+ * The issue's key, the reader, a document, a node and the issue's tree are the Decisions
+ * filter's own fixtures (`decisions-filter/decisions-fixtures.ts`), the same in value and in
+ * what they build. What is here differs from that module's fixture of the same name, and is the
+ * Spec view's own: the issue's decisions document is `artifact-dec`, which `decisionsRead` names
+ * as its document, and its `artifacts` is typed as present, so a case can add a document; a
+ * statement is marked a statement, carries its counts and opens with its number; a `shaped` tie
+ * names a requirement; a decision is given its kind and waits for no review.
  *
  * The addresses are the ones this issue would answer with: a statement is a block of the spec,
  * a decision a block of `decisions.md`, and an ask its own id, so a tie resolves through the
  * page's own rule for addressing a node (`tree-drafts.ts`'s `treeContext`) rather than through
  * a rule written here.
  */
-
-export const KEY = "CORE-1";
-export const SPEC_SLUG = "spec";
-export const DECISIONS_SLUG = "decisions-md";
-
-/** Who is reading, whose own words read as theirs (R34). */
-export const READER = "alice";
-
-export const READER_ACTOR: Actor = { id: READER, kind: "user" };
-
-/** One document of the issue. */
-export function artifact(id: string, slug: string, primary = false): Artifact {
-  return {
-    created_at: "2026-11-05T00:00:00Z",
-    created_by: READER_ACTOR,
-    id,
-    issue_key: KEY,
-    kind: "doc",
-    name: slug,
-    primary,
-    project: "CORE",
-    ref_key: `artifact:${id}`,
-    session_id: null,
-    slug,
-    versions: [],
-  };
-}
 
 /** The issue, with its spec and its decisions document, which is all the addressing rule reads
  *  of it. Its `artifacts` is typed as present, so a case can add a document to the list. */
@@ -100,25 +89,7 @@ export function issueDetails(): IssueDetails & { artifacts: Artifact[] } {
   };
 }
 
-/** One node of the tree, with the fields a case needs on it. */
-export function node(partial: Partial<TreeNode> & { id: string; type: NodeType }): TreeNode {
-  return {
-    alsoUnder: [],
-    children: [],
-    chips: [],
-    facts: [],
-    gaps: [],
-    held: 0,
-    question: false,
-    replaced: false,
-    text: partial.id,
-    transcluded: false,
-    waiting: false,
-    ...partial,
-  };
-}
-
-/** One `shaped` tie, from a decision to the node its link names (dispatch://INFRA-1150 R1). */
+/** One `shaped` tie, from a decision to the node its link names. */
 export function shaped(ref: string): DecisionLink {
   return {
     created_at: "2026-11-14T10:00:00Z",
@@ -167,11 +138,6 @@ export function decisionsRead(made: readonly Decision[]): IssueDecisions {
 
 /** The address of one statement, which is one block of the issue's spec. */
 export const statementRef = (block: string) => `dispatch://${KEY}/spec#b-${block}`;
-
-/** The issue with `children` under it. */
-export function issueTree(children: readonly TreeNode[]): TreeNode {
-  return node({ children: [...children], id: KEY, type: "issue" });
-}
 
 /** One statement of the spec, by its block id, with its number in its own words as the spec
  *  writes one: a requirement of the issue's own spec, which part F's model marks a statement

@@ -12,14 +12,14 @@ import type { TreeNode } from "./issue-tree";
 import { CONTROL_LABELS, type NodeType } from "./page-words";
 
 /**
- * The Contents list's entries (dispatch://INFRA-1196 R14): each question and each thread the
+ * The Contents list's entries (R14): each question and each thread the
  * reader began, nested under the nearest entry above it, over a tree built by hand. The issue
  * itself is no entry: the header is the issue (the architect's ruling 5).
  */
 
-/** One node of a hand-built tree. A requirement here is one of the issue's own spec, which part
- *  F's model marks a statement (`isStatement`, decision 152 of dispatch://INFRA-1196), so the list
- *  counts it as the filter row does. */
+/** One node of a hand-built tree. A requirement here is one of the issue's own spec, which the
+ *  page's model marks a statement (`isStatement`), so the list counts it as the filter row
+ *  does. */
 function node(
   id: string,
   type: NodeType,

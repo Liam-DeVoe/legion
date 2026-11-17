@@ -5,11 +5,10 @@ import { createIssue, createProject, getArtifact } from "./api";
 import { PROJECT } from "./issue-layout-seed-support";
 
 /**
- * How part J's rows read the new issue page's Spec view and its Contents slot
- * (dispatch://INFRA-3939, part J of dispatch://INFRA-1196, `e2e/issue-page-j.e2e.ts`): the
- * readers that D's `e2e/issue-page.ts` (the page's root and its frame), G's `e2e/issue-page-g.ts`
- * (one node's row, and the tree as rows) and I's `e2e/issue-page-i.ts` (the outline) do not hold
- * (decision 2 of the parts), and the one seed of the part's own. No later part changes this file.
+ * How the Spec view's rows read the new issue page's Spec view and its Contents slot
+ * (`e2e/issue-page-j.e2e.ts`): the readers that `e2e/issue-page.ts` (the page's root and its
+ * frame), `e2e/issue-page-g.ts` (one node's row, and the tree as rows) and `e2e/issue-page-i.ts`
+ * (the outline) do not hold, and the one seed of the view's own.
  *
  * What part J draws, beyond what those files name:
  *
@@ -104,9 +103,6 @@ export async function seedChildWithSpec(): Promise<ChildWithSpecSeed> {
 // ---------------------------------------------------------------------------------------------
 // The readers.
 // ---------------------------------------------------------------------------------------------
-
-/** The iPhone 13's screen less the browser's own bars, the smallest phone the page is read on. */
-export const IPHONE_13 = { height: 664, width: 390 } as const;
 
 /** The issue's three sentences under "In short", wherever they are drawn. */
 export function threeThings(page: Page): Locator {

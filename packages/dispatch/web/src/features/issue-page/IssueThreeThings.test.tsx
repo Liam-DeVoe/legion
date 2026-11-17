@@ -9,20 +9,19 @@ import type { Artifact, ArtifactBlock, Decision, IssueDetails } from "../../api/
 import { MarginProvider } from "../margin/margin-context";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { buildDispatchReference } from "../refs/routes";
-import { wordsOf } from "../refs/tree-fragment";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { useKeymapScope } from "../shell/keymap";
 import { IssueThreeThings } from "./IssueThreeThings";
 import { IssueTree } from "./IssueTree";
 import { buildIssueTree, type TreeNode } from "./issue-tree";
-import { useReferenceNames } from "./one-line";
+import { useIssueNames } from "./one-line";
 import { EMPTY_STATE_LINES, type NodeType } from "./page-words";
 import { specSummary } from "./spec-summary";
-import { blockNodeId, blockWords, treeContext } from "./tree-drafts";
+import { blockNodeId, blockWords } from "./tree-drafts";
 
 /**
  * The head of the page draws the issue in plain language: at most three bullets, each one spoken
- * sentence of the spec's summary (dispatch://INFRA-1196 R5), out of the server's reading of the
+ * sentence of the spec's summary (R5), out of the server's reading of the
  * summary node's text (its `tree`), which the tree the page already holds carries - the head
  * reads no document of its own (R20).
  *
@@ -39,8 +38,7 @@ beforeAll(async () => {
 const KEY = "CORE-1";
 
 /** A node of the tree with nothing on it but its kind, and `fields`. A requirement here is one
- *  of the issue's own spec, which part F's model marks a statement (`isStatement`, decision 152
- *  of dispatch://INFRA-1196). */
+ *  of the issue's own spec, which the page's model marks a statement (`isStatement`). */
 function treeNode(id: string, type: NodeType, fields: Partial<TreeNode> = {}): TreeNode {
   return {
     alsoUnder: [],
@@ -72,23 +70,32 @@ function summaryNode(text: string): TreeNode {
 }
 
 /** The head as a slot draws it: what the summary cites named once over `root`, the whole tree
- *  the summary is a node of (`slots/contents.tsx`). */
+ *  the summary is a node of (`slots/contents.tsx`), for an issue that has a spec unless `hasSpec`
+ *  says not. */
 function Head({
+  hasSpec = true,
   look,
   reading,
   root,
   summary,
 }: {
+  hasSpec?: boolean;
   look: "contents" | "spec";
   reading: boolean;
   root: TreeNode;
   summary: TreeNode | undefined;
 }): ReactNode {
-  // Only the context's addresses are read here and no chip's name, so the line it names a block
-  // by is the whole reading's words (`wordsOf`), which nothing here reads.
-  const nodeIdOf = useMemo(() => treeContext({ issue: issueDetails() }, wordsOf).nodeIdOf, []);
-  const nameOf = useReferenceNames(root, nodeIdOf);
-  return <IssueThreeThings look={look} nameOf={nameOf} reading={reading} summary={summary} />;
+  const issue = useMemo(() => issueDetails(), []);
+  const { nameOf } = useIssueNames(issue, root);
+  return (
+    <IssueThreeThings
+      hasSpec={hasSpec}
+      look={look}
+      nameOf={nameOf}
+      reading={reading}
+      summary={summary}
+    />
+  );
 }
 
 /** The sentences the head draws, in order, and the label before each. `reading` is whether the
@@ -256,6 +263,29 @@ test("a spec with no summary draws the page's own line and no bullet", () => {
     );
   } finally {
     unmount();
+  }
+});
+
+// R5 and R8: an issue with no spec has no summary to say is missing, so the head says nothing of
+// one, where a spec with no summary says it has none.
+test("an issue with no spec says nothing of a summary", () => {
+  const view = render(
+    <MemoryRouter initialEntries={["/issues/CORE-1"]}>
+      <Head
+        hasSpec={false}
+        look="contents"
+        reading={false}
+        root={treeNode(KEY, "issue")}
+        summary={undefined}
+      />
+    </MemoryRouter>
+  );
+  try {
+    expect(screen.getByTestId("issue-three-things").textContent).not.toContain(
+      EMPTY_STATE_LINES.spec_summary
+    );
+  } finally {
+    view.unmount();
   }
 });
 

@@ -31,7 +31,7 @@ import {
   type TreeNode,
 } from "./issue-tree";
 import { NodeGlyph } from "./NodeGlyph";
-import { oneLineCut, referenceStandIns, useOneLineBox } from "./one-line";
+import { CAP, oneLineCut, referenceStandIns, useOneLineBox } from "./one-line";
 import { authorText, PROPERTY_LABELS, pageChrome } from "./page-structure";
 import {
   CONTENTS_MARK_WORDS,
@@ -145,7 +145,7 @@ const ROW_TEXT_REM = 0.875;
 const MARK_TEXT_REM = 0.75;
 
 /**
- * The Contents list (dispatch://INFRA-1196 R14, the prototype's `#left`): its heading with the
+ * The Contents list (R14, the prototype's `#left`): its heading with the
  * Focus branch toggle, and one row per entry, each its node's first line by R1's rule, cut from
  * its first block's words with each bare address as written (`lineWordsRaw`) at a word to the
  * row's width, with each reference in it named once the line is cut (`referenceStandIns`): by
@@ -334,10 +334,7 @@ export function ContentsList({
   return (
     <>
       <div className="flex shrink-0 items-center justify-between gap-2 pt-2.5 pr-2.5 pb-0.5 pl-3.5">
-        <h2
-          className={`text-xs leading-4 font-semibold tracking-[0.08em] uppercase ${pageQuietText}`}
-          {...pageChrome}
-        >
+        <h2 className={CAP} {...pageChrome}>
           {CONTROL_LABELS.contents}
         </h2>
         <button

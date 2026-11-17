@@ -15,7 +15,7 @@ function alone(text: string, room: number) {
 
 /**
  * R1, R14: a Contents entry draws its node's first line on one line, and no entry truncates a
- * word, at every width the pane is drawn at (dispatch://INFRA-1196). The cut is made in pixels,
+ * word, at every width the pane is drawn at. The cut is made in pixels,
  * against the room the entry's own box leaves the line, so the ellipsis is part of what has to
  * fit.
  */
@@ -134,11 +134,10 @@ test("a first word no line of the row holds is drawn whole, wrapping inside itse
 });
 
 /**
- * Reading (b) of dispatch://INFRA-3939's plan, the tester's F20: a plain line the page draws is
- * no link, so it names each reference in plain words - a block by the page's name for it, an
- * issue by its key, and anything the page has no name for by its short form (decision 140 of
- * dispatch://INFRA-1196) - and drops a typed block's source line, which is markup and no word
- * of the text. No address, block id or fence is left.
+ * The tester's F20: a plain line the page draws is no link, so it names each reference in plain
+ * words - a block by the page's name for it, an issue by its key, and anything the page has no
+ * name for by its short form - and drops a typed block's source line, which is markup and no
+ * word of the text. No address, block id or fence is left.
  */
 test("a plain line names each reference and drops a typed block's source line", () => {
   const block = "dispatch://KEY-1/spec#b-r1";
@@ -196,7 +195,7 @@ test("a line is cut with each reference still unnamed, and each is named after t
 // A reference stands in by a private-use character while the line is cut, and a text may hold
 // that character of its own: an icon a reader pasted from a terminal or an icon font is one
 // (U+E000 to U+F8FF). Found by the tester on a running build at 0058727e, where a comment that
-// read "<U+E000> dispatch://INFRA-3570 then" drew its Contents entry as "INFRA-3570 INFRA-3570…":
+// read "<U+E000> dispatch://ACME-7 then" drew its Contents entry as "ACME-7 ACME-7…":
 // the author's own character was drawn as the reference's name.
 test("a private-use character the author wrote is drawn as written, never as a reference's name", () => {
   const references = referenceStandIns(() => undefined);
@@ -209,7 +208,7 @@ test("a private-use character the author wrote is drawn as written, never as a r
 // R1 and R3 (ruling 1): a line cut inside its sentence draws one ellipsis. A name the page gives
 // a statement is cut by `chipWords` and so can end with its own ellipsis, and a cut that falls
 // at the space right after the name drew a second one. Found by the tester on a running build at
-// 0058727e, where a comment that read "Does it hold, as dispatch://INFRA-1196/spec#b-r-home
+// 0058727e, where a comment that read "Does it hold, as dispatch://ACME-1/spec#b-r-home
 // says? I think so." drew its entry in the Outline sheet as "Does it hold, as R5. A spec node
 // shows the……".
 test("a line cut right after a name that ends with an ellipsis draws one ellipsis", () => {

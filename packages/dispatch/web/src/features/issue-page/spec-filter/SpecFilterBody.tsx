@@ -1,4 +1,4 @@
-import { type QueryStatus, useQuery } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import {
   Fragment,
   type KeyboardEvent,
@@ -39,7 +39,6 @@ import {
   type DispatchReferenceRoute,
   parseNodeReference,
 } from "../../refs/routes";
-import { wordsOf } from "../../refs/tree-fragment";
 import { appKeymap } from "../../shell/keymap";
 import { agentRoleWord } from "../agent-role";
 import { CutWords } from "../CutWords";
@@ -52,7 +51,7 @@ import { NodeGlyph } from "../NodeGlyph";
 import { MoreWords, NodeEdges, useClamp, useRowOnScreen } from "../NodeRow";
 import { chipWords } from "../node-row-chip";
 import { shortDay } from "../node-time";
-import { useReferenceNames } from "../one-line";
+import { CAP, useIssueNames } from "../one-line";
 import { useTakeOutlineRequest } from "../outline-request";
 import { useOutlineWriter } from "../outline-writer";
 import { authorText, KEY_REPORTS, pageChrome } from "../page-structure";
@@ -71,7 +70,6 @@ import {
 import { usePressFocus } from "../press-focus";
 import { RowText, useOutOfTabOrder } from "../RowText";
 import { specSummary } from "../spec-summary";
-import { treeContext } from "../tree-drafts";
 import type { DrawnRow } from "../tree-fold";
 import { nodesInOrder } from "../tree-keys";
 import { useTreeKeymap } from "../useTreeKeymap";
@@ -84,13 +82,14 @@ import {
   type SpecStatement,
   specDecidedBy,
 } from "./spec-decided-by";
+import { treeRead } from "./tree-read";
 
 /** What a key that folds, zooms, cycles or opens a branch does here, where the columns hold
  *  none: every statement is drawn whole (R2: "a filter draws every branch it kept open"). */
 const NOTHING = (): void => {};
 
 /**
- * The Spec filter's body (dispatch://INFRA-1196 R5, R17, R22, R35, the prototype's `.spec`).
+ * The Spec filter's body (R5, R17, R22, R35, the prototype's `.spec`).
  *
  * It is the approved picture `page-v3-spec-1440.png`: a legend of the four marks a statement
  * carries, then two columns, Decided by and Statement. In the left column stands, once per run
@@ -219,14 +218,11 @@ export function SpecFilterBody({
   )
     .map(({ failed, line }) => ({ failed: failed.filter(failedWithNothing), line }))
     .filter(({ failed }) => failed.length > 0);
-  // How this issue addresses a node, which is the one rule the tree was built with, so a
-  // `shaped` tie resolves to the node it names (`tree-drafts.ts`). Only the context's addresses
-  // are read here and no chip's name, so the line it names a block by is the whole reading's
-  // words (`wordsOf`), which nothing here reads.
-  const nodeIdOf = useMemo(() => treeContext({ issue }, wordsOf).nodeIdOf, [issue]);
   // How a reference a plain line cites is named - in the three sentences, a quote, a question,
-  // a group's heading - read once over the whole tree (`referenceStandIns`).
-  const nameOf = useReferenceNames(root, nodeIdOf);
+  // a group's heading - read once over the whole tree (`referenceStandIns`), and how this issue
+  // addresses a node, which is the one rule the tree was built with, so a `shaped` tie resolves
+  // to the node it names (`tree-drafts.ts`).
+  const { nameOf, nodeIdOf } = useIssueNames(issue, root);
   const { groups, others } = useMemo(
     () =>
       specDecidedBy({
@@ -490,6 +486,7 @@ export function SpecFilterBody({
           prototype's `renderSpec` puts them after the column heads (ruling 5). */}
       <div className="mt-[18px] ml-[300px] min-w-0 max-[901px]:ml-0">
         <IssueThreeThings
+          hasSpec={spec !== undefined}
           look="spec"
           nameOf={nameOf}
           // The sentences are the spec's summary, so they wait on the spec's blocks alone.
@@ -585,9 +582,6 @@ export function SpecFilterBody({
   );
 }
 
-/** A column heading, in the prototype's `.cap`. */
-const CAP = `text-xs leading-4 font-semibold tracking-[0.08em] uppercase ${pageQuietText}`;
-
 /** A link inside a line of words, which the hair-coloured underline marks as one. */
 const INLINE_LINK = "dispatch-inline-link underline decoration-page-hair underline-offset-[3px]";
 
@@ -617,50 +611,26 @@ function issueAsksQuery(key: string) {
   return { queryFn: () => api.listIssueAsks(key, "all"), queryKey: ["asks", key] };
 }
 
-/**
- * `read` as an observer of the key the page's tree fills (`useIssueTree.ts`), which sends no
- * request of its own: it is never enabled, so drawing it, drawing it again once its answer has
- * aged, or the window taking the focus asks for nothing, and the body draws whatever the tree's
- * own read holds. Its `refetch` still fetches, which is what a Retry asks. Its age and its
- * fetch on focus are set as the page sets them for a read another surface fills
- * (`refetchFailedOnFocus`), though TanStack reads neither for an observer it never enables.
- * The contents slot watches the spec's blocks with it too.
- */
-export function treeRead<T extends object>(read: T) {
-  return {
-    ...read,
-    enabled: false,
-    refetchOnWindowFocus: refetchFailedOnFocus,
-    staleTime: Number.POSITIVE_INFINITY,
-  } as const;
-}
-
-/**
- * Window focus fetches a read again only while it is in error, so a read that failed recovers
- * on the open page while a healthy one stays quiet. A copy of `refs/reference-target.ts`'s own,
- * which that module keeps to itself; the body imports it in place of this copy once that module
- * exports it.
- */
-const refetchFailedOnFocus = (query: { readonly state: { readonly status: QueryStatus } }) =>
-  query.state.status === "error" ? "always" : false;
-
 /** How far below the view's column heads a statement or cell is put where it has to be scrolled
- *  to: the clearance `bringOnScreen` leaves below the band (`identity-block.ts`'s private
- *  `CLEARANCE`), which this part imports once that module exports it (decision 94). */
+ *  to: the clearance `bringOnScreen` leaves below the band. A copy of `identity-block.ts`'s
+ *  private `CLEARANCE`, imported in its place once that module exports it. */
 const HEADS_CLEARANCE = 8;
 
 /**
  * Places the focused statement or cell on screen by the page's one rule (`useRowOnScreen`,
  * `bringOnScreen`), and then below the view's own column heads, which stay at the top under the
- * band and which that rule does not know of (R4; R11 of dispatch://INFRA-1196: the focused row
- * is never under a sticky header). The rule clears the band alone, so on the tester's build a
- * statement the arrows moved up to stood with its top 27 px down, under heads 31 px tall. Where
- * the item stands under the heads it is scrolled down by the rest, by the rule's own clearance,
- * again whenever it grows - after the rule has placed it, since its observer is made first - and
- * never while a press inside it is held, as the rule holds its own placing. At 901 px and below
- * the heads are not drawn, and the rule alone places it.
+ * band and which that rule does not know of (R4; R11: the focused row is never under a sticky
+ * header). The rule clears the band alone, so on the tester's build a statement the arrows moved
+ * up to stood with its top 27 px down, under heads 31 px tall. Where the item stands under the
+ * heads it is scrolled down by the rest, by the rule's own clearance, again whenever it grows -
+ * after the rule has placed it, since its observer is made first - and never while a press
+ * inside it is held, as the rule holds its own placing. At 901 px and below the heads are not
+ * drawn, and the rule alone places it.
  *
- * Answers the item's own `onPointerDown`, as `useRowOnScreen` does.
+ * Answers the item's own `onPointerDown`, as `useRowOnScreen` does. Its press listeners and its
+ * resize observer repeat `NodeRow.tsx`'s `useRowOnScreen`'s own, to run one more placing step
+ * after that hook's under the same press and on the same growth: it is that hook alone once the
+ * hook takes an optional placing step of a caller's, run after its own.
  */
 function useOnScreenUnderHeads(item: RefObject<HTMLElement | null>, focused: boolean): () => void {
   const placeByRule = useRowOnScreen(item, focused);
@@ -774,7 +744,7 @@ function Legend(): ReactNode {
 /** Who made something, by a name and a shape, as every other row of the page draws an author
  *  (R9): never an identifier, and an agent by its role's word, as a row names one (ruling 6,
  *  `NodeRow.tsx`). Where the model holds no author it draws nothing: only the focused cell says
- *  so (`UnknownAuthor`, reading (c) of dispatch://INFRA-3939's plan). */
+ *  so (`UnknownAuthor`). */
 function Author({ actor }: { actor: Actor | undefined }): ReactNode {
   const agentText = useAgentText();
   const kind = authorKind(actor);
@@ -809,8 +779,12 @@ function Day({ at }: { at: string }): ReactNode {
   );
 }
 
-/** Words quoted from a person or an agent, between the page's own curly quotes. */
-function Quote({ words }: { words: string }): ReactNode {
+/** A decision's words quoted from a person or an agent, between the page's own curly quotes. A
+ *  decision with no words is named by its kind's word, as `Informed` names one, so no quote and
+ *  no link to it is empty. */
+function Quote({ decision }: { decision: SpecDecision }): ReactNode {
+  if (decision.quote === "") return <span {...pageChrome}>{NODE_TYPE_NAMES[decision.type]}</span>;
+  const words = decision.quote;
   return (
     <>
       <span {...pageChrome}>“</span>
@@ -1060,7 +1034,7 @@ function DecisionCell({
                 className={`min-w-0 text-sm leading-[21px] [overflow-wrap:anywhere] ${pageInkText}`}
                 data-spec-quote=""
               >
-                <Quote words={decision.quote} />
+                <Quote decision={decision} />
               </p>
             ) : (
               // A block, since a text drawn from its reading holds paragraphs, lists and links.
@@ -1145,7 +1119,7 @@ function WholeOf({ decision }: { decision: SpecDecision }): ReactNode {
   if (route === undefined) return null;
   return (
     <Link
-      className={`dispatch-inline-link self-start text-left font-semibold underline decoration-page-hair underline-offset-[3px] ${pageInkText}`}
+      className={`${INLINE_LINK} self-start text-left font-semibold ${pageInkText}`}
       data-spec-whole=""
       tabIndex={-1}
       to={buildReferencePath(route)}
@@ -1165,8 +1139,8 @@ function WholeOf({ decision }: { decision: SpecDecision }): ReactNode {
  * (`MoreWords`; ruling 1 and ruling 6 of build-rulings-md: a statement of twenty lines opened
  * every view on a wall of text); the focused statement draws them whole. The row draws its own
  * box rather than `CutWords`, so its chips stand after its last word while the words are whole,
- * and beside "more" while they are cut, as a row of the outline draws them (departure 3 of
- * dispatch://INFRA-3939's plan).
+ * and beside "more" while they are cut, as a row of the outline draws them, which `CutWords`,
+ * drawing its words and nothing after them, cannot.
  */
 function Statement({
   context,
@@ -1354,8 +1328,7 @@ function OtherRow({
  * came from, as the link to the whole of that decision, who decided and when, and then every
  * other decision that informed it, each a link to it. A statement no decision shaped draws no
  * line here: its cell says so beside it (R35). The quote is plain words, an agent's its first
- * line: the link is one line, and a text drawn with its own links stands in none (departure 2
- * of dispatch://INFRA-3939's plan).
+ * line: the link is one line, and a text drawn with its own links can stand inside no link.
  */
 function Because({
   decision,
@@ -1366,7 +1339,7 @@ function Because({
 }): ReactNode {
   if (decision === undefined && statement.alsoShapedBy.length === 0) return null;
   const route = routeOf(decision);
-  const quoted = decision === undefined ? null : <Quote words={decision.quote} />;
+  const quoted = decision === undefined ? null : <Quote decision={decision} />;
   return (
     <p
       className={`mb-0.5 min-w-0 text-xs leading-[18px] [overflow-wrap:anywhere] ${pageQuietText}`}
@@ -1420,10 +1393,9 @@ function Because({
 }
 
 /** One other decision that shaped the statement, named by its own words as a chip names its
- *  target (`chipWords`), as a link to it, then when it was made (reading (c) of
- *  dispatch://INFRA-3939's plan): the model holds no short name for a decision, and a block id
- *  is an identifier (R22). A decision with no words is named by its kind's word, so no link is
- *  empty (decision 66). */
+ *  target (`chipWords`), as a link to it, then when it was made: the model holds no short name
+ *  for a decision, and a block id is an identifier (R22). A decision with no words is named by
+ *  its kind's word, so no link is empty. */
 function Informed({ decision }: { decision: SpecDecision }): ReactNode {
   const route = routeOf(decision);
   const words = chipWords(decision.quote);

@@ -22,6 +22,7 @@ import { MarginProvider } from "../../margin/margin-context";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
 import { KeymapProvider } from "../../shell/KeymapProvider";
 import { useKeymapScope } from "../../shell/keymap";
+import { artifact, issueTree, KEY, node, READER } from "../decisions-filter/decisions-fixtures";
 import { FocusedNodeProvider, useFocusedNode } from "../focused-node";
 import type { OutlineRequest } from "../IssueTree";
 import { buildIssueTree, type TreeNode } from "../issue-tree";
@@ -44,25 +45,20 @@ import { check, checkNode, result } from "../verification-filter/verification-fi
 import { SpecFilterBody } from "./SpecFilterBody";
 import {
   answeredAsk,
-  artifact,
   askRead,
   coverageRead,
   decision,
   decisionNode,
   decisionsRead,
   issueDetails,
-  issueTree,
-  KEY,
-  node,
-  READER,
   shaped,
   statement,
   statementRef,
 } from "./spec-fixtures";
 
 /**
- * What the Spec filter's body draws, read as a reader reads it (dispatch://INFRA-1196 R5, R17,
- * R22, R35, the approved picture `page-v3-spec-1440.png`).
+ * What the Spec filter's body draws, read as a reader reads it (R5, R17, R22, R35, the approved
+ * picture `page-v3-spec-1440.png`).
  *
  * Which decision shaped which statement is read in `spec-decided-by.test.ts`; these rows are
  * about what the page says and what a reader can reach: the legend's words, the two columns'
@@ -513,9 +509,9 @@ test("the column says no decision shaped a statement only once the decisions are
 });
 
 // R5: an agent's decision draws its own words whole in its cell, as a row draws a node's words
-// (`RowText`, in a block: departure 2 of dispatch://INFRA-3939's plan), while the line under the
-// statement quotes their first line, and the one word the model holds for how sure it was; R2:
-// wherever a decision is drawn, one waiting for review says so.
+// (`RowText`, in a block, since a text drawn with its own links stands in no link), while the
+// line under the statement quotes their first line, and the one word the model holds for how
+// sure it was; R2: wherever a decision is drawn, one waiting for review says so.
 test("an agent's decision draws its own words, how sure it was and how it stands", () => {
   const text = "One batched read names every address. The page asks the server once.";
   const made = decisionNode("d1", { state: "waiting_review", text, unsure: true, waiting: true });
@@ -552,7 +548,7 @@ test("an agent's decision draws its own words, how sure it was and how it stands
   }
 });
 
-// Reading (c) of dispatch://INFRA-3939's plan, R5: the decisions read holds no author for a
+// R5: the decisions read holds no author for a
 // decision, so a cell, a group's heading and a because line draw none - no name, no shape, and no
 // dot where it would stand - and only the focused cell says "Author unknown". An agent is named
 // by its role's word (ruling 6).
@@ -560,7 +556,7 @@ test("a decision with no author draws none, and says Author unknown with the foc
   const planner: Actor = {
     id: "session-planner",
     kind: "session",
-    origin: { session_title: "Legion planner · INFRA-1" },
+    origin: { session_title: "Legion planner · ACME-1" },
   };
   const day = shortDay("2026-11-13T07:00:00Z");
   const { read, view } = drawBody(
@@ -640,7 +636,7 @@ test("a decision with no author draws none, and says Author unknown with the foc
   }
 });
 
-// R5, the tester's F20 and reading (b) of dispatch://INFRA-3939's plan: an agent's words that cite
+// R5 and the tester's F20: an agent's words that cite
 // a statement and quote a typed block draw the statement by its name, never its address, and
 // none of the block's source lines: whole in the cell through `RowText`, and as one line of plain
 // words on the because line.
@@ -801,7 +797,7 @@ test("an address naming a statement puts the focus on it", async () => {
   }
 });
 
-// Departure 1 of dispatch://INFRA-3939's plan: the page acts on each of the Contents list's asks
+// The page acts on each of the Contents list's asks
 // once, whichever outline or body took it (`outline-request.tsx`), so a body drawn again - the
 // view turned off and on again - does not move the reader back to an ask it already went to.
 test("a body drawn again does not act on a request the page already took", async () => {
@@ -1003,7 +999,7 @@ test("the body draws one tree, named as the outline is, of the statements and th
 
 // R10, R17: a gap the mark does not already say is drawn with the statement's words, in the
 // few words the page knows it by: while the words are whole it stands in the trail after their
-// last word, a direct child of the words' box (departure 3 of dispatch://INFRA-3939's plan), and
+// last word, a direct child of the words' box, and
 // nowhere else in the row. The one for a statement no check serves is the mark at the right of
 // the row, and is not said twice: that statement draws no trail at all.
 test("a gap the mark does not say is drawn after the statement's words, and no check is not said twice", () => {
@@ -1530,7 +1526,7 @@ test("a press on a decision's cell or away from it changes what the body draws o
   }
 });
 
-// R11 of dispatch://INFRA-1196: the focused row is never under a sticky header. The view's column
+// R11: the focused row is never under a sticky header. The view's column
 // heads stay at the top under the band, and the page's rule for placing a focused row clears the
 // band alone (`bringOnScreen`), so a statement the keys moved to stood with its first line under
 // the heads (the tester's reading of row (7) of `issue-page-j.e2e.ts` on a running build at
@@ -1832,6 +1828,41 @@ test("a second decision is named on a statement's line by its words cut to a chi
   );
   try {
     expect(textsOf(view, "[data-spec-informed]")).toEqual(["Name each tie by the words of…"]);
+  } finally {
+    view.unmount();
+    read.mockRestore();
+  }
+});
+
+// R5 and R22: a decision with no words - an answer with no words and no option, an agent's
+// section with no text - is named by its kind's word wherever the view quotes it, in its cell
+// and in the link on its statement's line, so no quote and no link is drawn empty.
+test("a decision with no words is named by its kind's word, never by an empty quote", () => {
+  const { read, view } = drawBody(
+    issueTree([
+      answeredAsk("ask-1", { text: "" }),
+      statement("r1"),
+      statement("r2"),
+      decisionNode("d1"),
+      decisionNode("d2", { text: "" }),
+    ]),
+    [
+      decision({
+        asks: ["ask-1"],
+        block_id: "d1",
+        kind: "person",
+        links: [shaped(statementRef("r1"))],
+      }),
+      decision({ block_id: "d2", kind: "agent", links: [shaped(statementRef("r2"))], text: "" }),
+    ]
+  );
+  try {
+    expect(view.container.textContent).not.toContain("“”");
+    expect(textsOf(view, "[data-spec-quote]")[0]).toBe(NODE_TYPE_NAMES.ask);
+    expect(textsOf(view, "[data-spec-because-link]")).toEqual([
+      NODE_TYPE_NAMES.ask,
+      NODE_TYPE_NAMES.decision,
+    ]);
   } finally {
     view.unmount();
     read.mockRestore();

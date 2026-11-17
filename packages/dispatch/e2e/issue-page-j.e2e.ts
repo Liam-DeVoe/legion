@@ -79,7 +79,6 @@ import {
   contentsLineFaults,
   decidedByCells,
   focusBranchControl,
-  IPHONE_13,
   ownWords,
   rowAuthor,
   seedChildWithSpec,
@@ -88,6 +87,7 @@ import {
   threeThings,
 } from "./issue-page-j";
 import { withIssuePage } from "./issue-page-option";
+import { IPHONE_13 } from "./issue-page-p";
 import { TYPEFACE, typefaceAddress, typefaceStatuses } from "./issue-page-typeface";
 import { expect, test } from "./test";
 import { expectLoadSettled, watchApiRequests } from "./traffic";
@@ -95,16 +95,15 @@ import { assertPageFits } from "./unclipped";
 import { asUser } from "./users";
 
 /**
- * Part J's rows of the new issue page (dispatch://INFRA-3939, part J of dispatch://INFRA-1196):
- * the issue's three sentences, the Contents list and the Spec view, read on the real stack,
- * because they read the server's stored decisions, asks, coverage and results. Each row turns
- * the new page on for alice with `withIssuePage` through D's `phase`, seeds what it reads with
- * the seeds of `e2e/issue-layout-seed.ts`, and reads the page through D's `e2e/issue-page.ts`,
- * G's `e2e/issue-page-g.ts`, I's `e2e/issue-page-i.ts`, the typeface's
- * `e2e/issue-page-typeface.ts` and this part's `e2e/issue-page-j.ts`.
+ * The Spec view's rows of the new issue page: the issue's three sentences, the Contents list and
+ * the Spec view, read on the real stack, because they read the server's stored decisions, asks,
+ * coverage and results. Each row turns the new page on for alice with `withIssuePage` through
+ * the page's `phase`, seeds what it reads with the seeds of `e2e/issue-layout-seed.ts`, and
+ * reads the page through `e2e/issue-page.ts`, `e2e/issue-page-g.ts`, `e2e/issue-page-i.ts`, the
+ * typeface's `e2e/issue-page-typeface.ts` and this view's own `e2e/issue-page-j.ts`.
  *
  * The rows come from the checkpoint's `e2e/issue-layout.e2e.ts`, each under the title its
- * check names (`verification.md` of dispatch://INFRA-3939, c-rows).
+ * check names in the view's `verification.md` (c-rows).
  */
 
 // c-three-things, as the architect's ruling 5 reads R8 (build-rulings-md): the three sentences
@@ -113,7 +112,8 @@ import { asUser } from "./users";
 // group; under Verification, Plan and Decisions they are not drawn; no Contents pane is drawn
 // under a view; and the two rows "How it gets done" and "What you will be shown" are drawn
 // nowhere. Partial on today's data: who wrote the sentences and when they were last read back
-// are dispatch://INFRA-1278, so the head draws neither and this test never asserts an author.
+// wait on a read that holds them, so the head draws neither and this test never asserts an
+// author.
 // SLOW(>=2s): two seeded issues and twelve loads of the page, each read for its head and the
 // page's own draw.
 test("the three sentences stand with their labels in the Contents pane, the Spec filter and the Outline sheet @phone", async ({
@@ -171,7 +171,7 @@ test("the three sentences stand with their labels in the Contents pane, the Spec
       "the Contents pane is not at the left of the outline"
     ).toBeLessThanOrEqual((outline?.x ?? 0) + 1);
 
-    // Who wrote the sentences and when they were last read back wait on dispatch://INFRA-1278,
+    // Who wrote the sentences and when they were last read back wait on a read that holds them,
     // and no issue holds either, so the head draws no author and no gap for them.
     expect(
       await rowAuthor(threeThings(page)).count(),
@@ -613,11 +613,10 @@ test("a choice in the Outline sheet leaves the focused row below the sticky view
 // came from, and one line on each statement's own row (R5), drawn with the focus elsewhere and
 // the pointer off the page; the tester's F7 is read here too - the line is a link to the
 // decision, and `w` moves the focus to it - and F20: no text of the view is a raw address or a
-// fence. Partial on today's data: a statement carries no `from` (dispatch://INFRA-1098 item 21),
-// so no statement hangs under an answered ask and the body draws one group with no heading; a
-// criterion is dispatch://INFRA-1253's; an agent decision's level of uncertainty and its reason
-// are dispatch://INFRA-1150's; and the versions of a view's query are dispatch://INFRA-1253 R8,
-// so this row reads the live Spec view.
+// fence. Partial on today's data: a statement carries no `from` yet, so no statement hangs under
+// an answered ask and the body draws one group with no heading; a criterion, an agent decision's
+// level of uncertainty and its reason, and the versions of a view's query wait on reads of their
+// own, so this row reads the live Spec view.
 // SLOW(>=2s): the whole seeded issue, its decisions and answer read back, and the pointer and
 // the focus moved across the view, each waited on until it redraws.
 test("a spec node shows the decisions that shaped it at every version", async ({ browser }) => {
@@ -1184,7 +1183,7 @@ test("the Spec view stands as the approved picture draws it @phone", async ({ br
       })
       .toBe(true);
 
-    // R11 of dispatch://INFRA-1196: the focused row is never under a sticky header, and the
+    // R11: the focused row is never under a sticky header, and the
     // view's column heads stay at the top as one (R4). Each move up the statements scrolls the
     // one it reaches into view, which must leave it below the heads, not behind them. Found by
     // the tester on a running build at 8caa4357, where each statement the arrows moved up to

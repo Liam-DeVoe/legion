@@ -2,7 +2,7 @@ import type { Actor, CheckBlock, Decision, DisplayTree, IssueDecisions } from ".
 import { parseNodeReference } from "../../refs/routes";
 import type { TextSource } from "../../refs/text-references";
 import { drawnLine, firstLineOf, isStatement, lineWordsRaw, type TreeNode } from "../issue-tree";
-import { referenceStandIns } from "../one-line";
+import { LEADING_LABEL, referenceStandIns } from "../one-line";
 import {
   isReader,
   NODE_TYPE_NAMES,
@@ -15,8 +15,8 @@ import { nodesInOrder } from "../tree-keys";
 import { statementStandings } from "../verification-filter/statement-state";
 
 /**
- * What decided each statement of the Spec filter, and the mark each statement carries
- * (dispatch://INFRA-1196 R5, R17, R22, R35).
+ * What decided each statement of the Spec filter, and the mark each statement carries (R5, R17,
+ * R22, R35).
  *
  * The Spec filter draws two columns: the statements, and beside each run of statements one
  * decision shaped, that decision in the words it came from (R5). This module is that reading of
@@ -30,15 +30,15 @@ import { statementStandings } from "../verification-filter/statement-state";
  *    line is drawn whether or not" other decisions apply, so it heads the statement's run and
  *    its parent line and its decision line stay one line.
  * 2. **Each `shaped` tie.** A decision whose link names the statement shaped it
- *    (`Decision.links[].to`, dispatch://INFRA-1150 R1). The first decision of the statement
+ *    (`Decision.links[].to`). The first decision of the statement
  *    heads its run; every other one is named at the end of the statement's own line, since R5
  *    draws "the decisions that informed it" and a statement may rest on several. A replaced
  *    decision draws no line at all (R5).
  * 3. **Nothing.** A statement no decision shaped is drawn as such, which is what makes a
  *    missing tie visible (R35).
  *
- * What a person's decision quotes is the person's own answer, never a restatement of it
- * (dispatch://INFRA-1150 R4): the first sentence of the answer's plain words (`plainWordsRaw`,
+ * What a person's decision quotes is the person's own answer, never a restatement of it: the
+ * first sentence of the answer's plain words (`plainWordsRaw`,
  * `firstSentenceOf`), with each reference in it named in plain words once the sentence is cut
  * (`referenceStandIns`), or, where they wrote none, the options they chose; the whole answer is
  * carried beside it as stored, for the focus on the line to draw character for character (R5).
@@ -49,21 +49,21 @@ import { statementStandings } from "../verification-filter/statement-state";
  * An agent's decision carries its own text whole, which the cell draws as a row draws a node's
  * words (`RowText`), and is quoted by its first line, by R1's one-line rule (`lineWordsRaw`,
  * `firstLineOf`), with each reference named once the line is cut: the line under a statement
- * quotes it as one link, and a text drawn with its own links cannot stand inside one
- * (departure 2 of dispatch://INFRA-3939's plan). With it goes the one word the model holds for
+ * quotes it as one link, and a text drawn with its own links cannot stand inside one. With it
+ * goes the one word the model holds for
  * how sure it was (`Decision.unsure`).
  *
- * Every line and quote here is read with each bare address as its author wrote it (F's
- * `lineWordsRaw` and `plainWordsRaw`, not `lineWords` and `plainWords`, which write one as its
+ * Every line and quote here is read with each bare address as its author wrote it
+ * (`lineWordsRaw` and `plainWordsRaw`, not `lineWords` and `plainWords`, which write one as its
  * short form), so that `referenceStandIns` names it by the page's name wherever the page knows
- * one, and by its short form only where it does not (decision 140 of dispatch://INFRA-1196).
+ * one, and by its short form only where it does not.
  *
- * Whether a statement's words changed after the decision beside it is the model's half, on
- * dispatch://INFRA-1150's branch: the view draws nothing of it.
+ * Whether a statement's words changed after the decision beside it is the model's to say, and
+ * the model says nothing of it yet, so the view draws nothing of it.
  *
  * One part of R5 today's reads do not hold, which the body draws nothing in the place of: an
- * agent's level of uncertainty and its reason. The decisions read answers one boolean, `unsure`
- * (dispatch://INFRA-1150); the level and the reason arrive with it.
+ * agent's level of uncertainty and its reason. The decisions read answers one boolean,
+ * `unsure`; the level and the reason arrive with the work that adds them to that read.
  */
 
 /** Whose words a run of statements came from, which the column's heading says: the reader's own,
@@ -272,9 +272,9 @@ export function specDecidedBy({
  * The first sentence of `text`, word for word: everything up to the first full stop, question
  * mark or exclamation mark followed by a space or the end of the text, and the whole text where
  * it holds none, with no limit of characters (R5). Line breaks inside it are spaces, because
- * the line it is drawn on is one line. A leading label is no sentence end (decision 51 of
- * dispatch://INFRA-1196): a first word of at most five characters that ends in `.` and holds a
- * digit (`R1.`, `12.`) opens the sentence, as part F's `firstLineOf` reads one.
+ * the line it is drawn on is one line. A leading label is no sentence end (`LEADING_LABEL`): a
+ * first word of at most five characters that ends in `.` and holds a digit (`R1.`, `12.`) opens
+ * the sentence, as `firstLineOf` reads one.
  *
  * It is not `firstLineOf`, which cuts a row's first line at 100 characters (R1): a person's
  * answer is quoted word for word, and a sentence of theirs is as long as they wrote it.
@@ -286,12 +286,10 @@ export function firstSentenceOf(text: string): string {
   return rest === undefined ? whole : `${label}${rest}`;
 }
 
-/** A leading label (decision 51): a first word of at most five characters, holding a digit and
- *  ending in `.`, which part F's `firstLineOf` reads with the same pattern. */
-export const LEADING_LABEL = /^(?=\S*\d)\S{0,4}\.(?=\s|$)/u;
-
 /** Every node of the tree by its id, the first placement of a node drawn under more than one
- *  parent, which is where it is edited (`TreeNode.transcluded`). */
+ *  parent, which is where it is edited (`TreeNode.transcluded`). It is the reading of
+ *  `decisions-filter/decisions-parts.ts`'s `placements` with no parent line beside each node,
+ *  which that module keeps to itself; this reads it from there once that module exports it. */
 function nodesById(root: TreeNode): ReadonlyMap<string, TreeNode> {
   const nodes = new Map<string, TreeNode>();
   const walk = (node: TreeNode): void => {
@@ -304,7 +302,9 @@ function nodesById(root: TreeNode): ReadonlyMap<string, TreeNode> {
 
 /** Each ask of the tree by the id a decision names it with (`Decision.asks`), which is the ask's
  *  own id and not the id of the row it is drawn as: an ask the server indexed from a block of a
- *  document is drawn as that block (`tree-drafts.ts`'s `addAsks`). */
+ *  document is drawn as that block (`tree-drafts.ts`'s `addAsks`). An ask node's id is read as
+ *  `decisions-filter/decisions-parts.ts`'s `askIdOf` reads it, which that module keeps to
+ *  itself; this reads it from there once that module exports it. */
 function asksById(nodes: ReadonlyMap<string, TreeNode>): ReadonlyMap<string, TreeNode> {
   const asks = new Map<string, TreeNode>();
   for (const node of nodes.values()) {
@@ -385,14 +385,18 @@ function decisionOf(
   }
 ): SpecDecision {
   const node = nodes.get(nodeIdOf(decision.ref) ?? "");
-  // A person's decision is their answer to a question (dispatch://INFRA-1150 R3), so the words
-  // the column quotes are the answer's own and never the decision's restatement of them (R4).
+  // A person's decision is their answer to a question, so the words the column quotes are the
+  // answer's own and never the decision's restatement of them (R4). It is the same rule as
+  // `decisions-filter/decisions-parts.ts`'s `isReading` - a person's section that names an
+  // answered ask of this issue - which that module keeps to itself; this reads it from there
+  // once that module exports it.
   const answered = (decision.asks ?? [])
     .map((ask) => asks.get(ask))
     .find((ask) => ask?.answer !== undefined);
-  if (decision.kind === "person" && answered?.answer !== undefined) {
+  const answer = answered?.answer;
+  if (decision.kind === "person" && answered !== undefined && answer !== undefined) {
     return {
-      ...answerDecision(answered, reader, nameOf),
+      ...answerDecision(answered, answer, reader, nameOf),
       ...(node === undefined ? {} : { node: node.id }),
     };
   }
@@ -432,11 +436,10 @@ function decisionOf(
  *  whole answer as stored wherever it is not what the quote draws. */
 function answerDecision(
   ask: TreeNode,
+  answer: NonNullable<TreeNode["answer"]>,
   reader: string | undefined,
   nameOf: (reference: string) => string | undefined
 ): SpecDecision {
-  const answer = ask.answer;
-  if (answer === undefined) throw new Error("an answered ask with no answer");
   // A link the person wrote reads as its words and a mark as nothing (`plainWordsRaw`), so the
   // quote is their words and none of the markdown they were stored in. Each reference is named
   // after the sentence is cut, so a name that opens with a label ("R2.") ends none of it.
@@ -476,7 +479,7 @@ function answerUnder(
   if (parent === undefined) return undefined;
   const node = nodes.get(parent.id);
   if (node === undefined || node.type !== "ask" || node.answer === undefined) return undefined;
-  return answerDecision(node, reader, nameOf);
+  return answerDecision(node, node.answer, reader, nameOf);
 }
 
 /** The node a statement hangs under, where the filter draws it as no row (R2), with who made it

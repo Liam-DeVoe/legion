@@ -1,19 +1,12 @@
 import { type ReactNode, useMemo } from "react";
 
 import type { DisplayTree } from "../../api/types";
-import {
-  pageInkBg,
-  pageInkText,
-  pageLineBorder,
-  pageMutedText,
-  pageQuietText,
-} from "../../theme/classes";
+import { pageInkBg, pageInkText, pageLineBorder, pageMutedText } from "../../theme/classes";
 import { wordsOf } from "../refs/tree-fragment";
 import { drawnLine, firstLineOf, type TreeNode } from "./issue-tree";
-import { referenceStandIns } from "./one-line";
+import { CAP, LEADING_LABEL, referenceStandIns } from "./one-line";
 import { authorText, pageChrome } from "./page-structure";
 import { CONTROL_LABELS, EMPTY_STATE_LINES } from "./page-words";
-import { LEADING_LABEL } from "./spec-filter/spec-decided-by";
 
 /** Each sentence's label, in the order the summary holds them (R8). */
 const LABELS = [
@@ -24,8 +17,7 @@ const LABELS = [
 
 /**
  * The issue's three sentences under "In short", each after its label - what it is, why it
- * matters, done when (dispatch://INFRA-1196 R8, the architect's ruling 5; R1 of
- * dispatch://INFRA-3939).
+ * matters, done when (R1, R8, the architect's ruling 5).
  *
  * Where the approved pictures draw them: with no view on, in `slots/contents.tsx`
  * (`look="contents"`), which part D's frame draws at the head of the Contents pane from 1024 px
@@ -37,8 +29,8 @@ const LABELS = [
  * the same (ruling 5).
  *
  * The sentences are the spec's summary as its author wrote them, read from the server's reading
- * of the summary node's whole text (`TreeNode.tree`, the batched reference read's `text_tree`;
- * decision 46 of dispatch://INFRA-1196/artifact/part-decisions-md) and never from the node's
+ * of the summary node's whole text (`TreeNode.tree`, the batched reference read's `text_tree`)
+ * and never from the node's
  * stored excerpt (`TreeNode.text`), which is the block's source cut at 480 runes: the reading
  * holds no fence, list marker or emphasis mark to leave out and ends nowhere a cut fell. The
  * tree the page already draws carries it (part I's `specSummary`), so the head reads no
@@ -47,20 +39,25 @@ const LABELS = [
  * third (`summarySentences`). A reference the sentences cite is named in plain words, by the
  * one name the page gives it everywhere (`referenceStandIns`, with the `nameOf` its slot makes
  * once over the whole tree), once the sentences are split. Who wrote the sentences and when
- * ("from your comment of 5 Nov" in the pictures) is dispatch://INFRA-1278, and the model holds
- * neither for any issue, so the head draws no author.
+ * ("from your comment of 5 Nov" in the pictures) waits on a read that holds them, and the model
+ * holds neither for any issue, so the head draws no author.
  *
  * Until the reads that carry the summary answer, the head says nothing about it: the tree is
  * drawn before the spec's blocks arrive, and its summary node before the batched reference read
  * sends that node's reading, and a summary not read yet is no spec without one. Only a spec the
- * reads have answered for with no summary node says it has none.
+ * reads have answered for with no summary node says it has none, and an issue with no spec at
+ * all says nothing of a summary.
  */
 export function IssueThreeThings({
+  hasSpec,
   look,
   nameOf,
   reading,
   summary,
 }: {
+  /** Whether the issue has a primary spec, which is what can hold a summary: an issue with none
+   *  has no summary to say is missing. */
+  hasSpec: boolean;
   /** Where it is drawn: the Contents slot, which the pane and the Outline sheet draw alike, or
    *  the Spec view's first group. */
   look: "contents" | "spec";
@@ -85,10 +82,7 @@ export function IssueThreeThings({
       }`}
       data-testid="issue-three-things"
     >
-      <h2
-        className={`text-xs leading-4 font-semibold tracking-[0.08em] uppercase ${pageQuietText}`}
-        {...pageChrome}
-      >
+      <h2 className={CAP} {...pageChrome}>
         {CONTROL_LABELS.in_short}
       </h2>
       {sentences.length > 0 ? (
@@ -118,7 +112,7 @@ export function IssueThreeThings({
             </li>
           ))}
         </ul>
-      ) : !reading && summary === undefined ? (
+      ) : hasSpec && !reading && summary === undefined ? (
         // A summary node whose reading has not come, or holds no words, is a summary all the
         // same, so only a spec with no summary node says it has none.
         <p className={`mt-1.5 mb-1 text-sm leading-5 ${pageMutedText}`} {...pageChrome}>
@@ -138,7 +132,7 @@ const BULLETS = 3;
 const SENTENCE_END = /[.!?][)\]"'\u201d\u2019]*(?=$|\s+[^\s\p{Ll}])/u;
 
 /** How many characters of `words` its leading label takes: a first word that opens its
- *  sentence and ends none (decision 51 of dispatch://INFRA-1196). */
+ *  sentence and ends none (`LEADING_LABEL`). */
 function labelLength(words: string): number {
   return LEADING_LABEL.exec(words)?.[0].length ?? 0;
 }

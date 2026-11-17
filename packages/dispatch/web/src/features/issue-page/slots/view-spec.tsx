@@ -15,7 +15,7 @@ import { SpecFilterBody } from "../spec-filter/SpecFilterBody";
 import { useIssueTree } from "../useIssueTree";
 
 /**
- * Filled by INFRA-1196 part J, "The Spec view": what the stage draws in place of the outline
+ * The Spec view's slot: what the stage draws in place of the outline
  * with Spec on (`slots/stage.tsx`). It is `SpecFilterBody` over the issue's one tree as the Spec
  * view leaves it (`presetView`), at the width the approved picture draws it (the prototype's
  * `.spec`, 1080 px), and reads everything else itself: the tree (`useIssueTree`), who is reading,
