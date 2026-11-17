@@ -56,7 +56,7 @@ const (
 	idleBound      = 30 * time.Second
 )
 
-// poolConns is the most connections the store's pool holds (MaxConns) when the DSN names no
+// PoolConns is the most connections the store's pool holds (MaxConns) when the DSN names no
 // pool_max_conns of its own. pgxpool's default is max(4, runtime.NumCPU()), and NumCPU in a
 // container is the host's CPU count, not the pod's CPU limit, so an unsized pool held as many
 // connections as the node had CPUs: a different number on every node, and 288 on a large dev
@@ -65,7 +65,7 @@ const (
 // daemon's DSN (legion/main.go), chosen after LINUX's daemon failed six boots in a row on
 // 2026-10-26 with about 880 claims deciding at once, while its instance served 41-48
 // connections. A DSN whose settings name pool_max_conns keeps that number (poolsetting.Named).
-const poolConns = 32
+const PoolConns = 32
 
 // Store is the daemon's handle on its database. The pool is the guarded one (Pool): the pgx pool
 // it wraps is this package's alone, so no caller can ask for a connection past the refusal a
@@ -76,7 +76,7 @@ type Store struct {
 
 // Open connects to dsn and waits for the server to answer, so a daemon that
 // gets a Store has a database and one that does not is told where it failed.
-// Its pool holds at most poolConns connections, on every machine, unless dsn names a
+// Its pool holds at most PoolConns connections, on every machine, unless dsn names a
 // pool_max_conns of its own. Every connection of the pool carries the idle bound (idleBound)
 // unless dsn names a value of its own, so a deployment can raise or lower it without a release.
 //
@@ -95,7 +95,7 @@ func Open(ctx context.Context, dsn string) (*Store, error) {
 		return nil, ConnectError(dsn, err)
 	}
 	if !poolsetting.Named(dsn) {
-		config.MaxConns = poolConns
+		config.MaxConns = PoolConns
 	}
 	if _, named := config.ConnConfig.RuntimeParams[idleBoundParam]; !named {
 		// Milliseconds with no unit, which is the unit this setting counts in: the one spelling

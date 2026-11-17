@@ -7,9 +7,12 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/sjawhar/envoy/poolsetting"
+
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // keyDescriptor is one row of the loader's key table: a top-level key of `legion.yaml`, what the
@@ -137,7 +140,7 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: "postgres_dsn", Default: "`LEGION_POSTGRES_DSN` in the daemon's environment", RequiredBy: "when `LEGION_POSTGRES_DSN` is unset in the daemon's environment",
-			Description: "The daemon's own record database, as a `postgres://…` connection string; the agents' conversations live in another database, which `runtime.kubernetes.session_store` names.",
+			Description: fmt.Sprintf("The daemon's own record database, as a `postgres://…` connection string; the agents' conversations live in another database, which `runtime.kubernetes.session_store` names. The daemon holds at most %d connections to it, whatever the host's processor count, unless the string names `%s`.", store.PoolConns, poolsetting.Key),
 			Read:        reads(readString, func(f *fileConfig, v *string) { f.PostgresDSN = v }),
 		},
 		{
