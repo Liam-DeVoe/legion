@@ -1071,6 +1071,7 @@ jobs:
               - '!packages/daemon/internal/omplaunch/**/*_test.go'
               - '!packages/daemon/internal/ompsessions/**/*_test.go'
               - '!packages/daemon/internal/phase/**/*_test.go'
+              - '!packages/daemon/internal/plan/**/*_test.go'
               - '!packages/daemon/internal/podsafety/**/*_test.go'
               - '!packages/daemon/internal/procgroup/**/*_test.go'
               - '!packages/daemon/internal/projection/**/*_test.go'
