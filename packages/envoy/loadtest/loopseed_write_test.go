@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -364,6 +365,24 @@ func TestLoopSeedWriteKeyStable(t *testing.T) {
 	// Its replies are written under it, so the thread's whole record is there after the resume.
 	if got := w.meta().Written; len(got) == 0 {
 		t.Fatal("the second run recorded no write")
+	}
+}
+
+// TestWorkerPoolHoldsOneConnectionPerWorker: the pool loop-seed-write's and replay-seed's workers
+// write through holds as many connections as -workers names, on every machine. pgxpool.New's own
+// size, max(4, runtime.NumCPU()), is 288 on a 288-CPU machine and 4 on four CPUs, which no worker
+// count here is. The pool dials nothing until it is used, so the address is never reached.
+func TestWorkerPoolHoldsOneConnectionPerWorker(t *testing.T) {
+	for _, workers := range []int{1, 3, 8, 17} {
+		pool, err := workerPool(context.Background(), "postgres://u:p@127.0.0.1:1/db", workers)
+		if err != nil {
+			t.Fatalf("workerPool with %d workers: %v", workers, err)
+		}
+		got := pool.Config().MaxConns
+		pool.Close()
+		if got != int32(workers) {
+			t.Errorf("workerPool with %d workers holds %d connections (runtime.NumCPU() = %d), want %d", workers, got, runtime.NumCPU(), workers)
+		}
 	}
 }
 
