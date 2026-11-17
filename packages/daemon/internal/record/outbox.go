@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"math"
 	"regexp"
 	"slices"
@@ -122,6 +123,13 @@ func LaneOf(kind OutboxKind) OutboxLane {
 // LaneKinds is the kinds lane runs, in a fixed order; nil for a lane that is not one.
 func LaneKinds(lane OutboxLane) []OutboxKind {
 	return slices.Clone(laneKinds[lane])
+}
+
+// OutboxLanes is every lane an issue's rows run on, in name order: the lanes laneKinds holds, so
+// a reader that needs every lane, or every kind, takes them from here rather than from a list of
+// its own, which a new lane would leave short.
+func OutboxLanes() []OutboxLane {
+	return slices.Sorted(maps.Keys(laneKinds))
 }
 
 // LaneKey names one lane of one issue.

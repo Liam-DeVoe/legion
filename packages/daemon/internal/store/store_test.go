@@ -823,7 +823,7 @@ func TestTheOutboxCheckAdmitsEveryKindWhicheverOrderTheMigrationsRan(t *testing.
 	// lane and forgotten in a hand-kept list is exactly the omission this case exists to catch,
 	// and it is how phase_ended came to be missing from two of this release's rewrites.
 	var kinds []record.OutboxKind
-	for _, lane := range []record.OutboxLane{record.LaneLifecycle, record.LaneBoard, record.LaneRoleMessage, record.LaneClaim, record.LaneRecord} {
+	for _, lane := range record.OutboxLanes() {
 		kinds = append(kinds, record.LaneKinds(lane)...)
 	}
 	insert := "insert into outbox (kind, issue, payload, attempts, next_at, last_error) values ($1, 'LEGION-208', '{}', 0, now(), '')"
