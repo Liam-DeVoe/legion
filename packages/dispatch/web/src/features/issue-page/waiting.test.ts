@@ -612,6 +612,26 @@ test("a Change under its decision node is counted without the decisions document
   expect(waits(answerOf([statement, decisionNode(row)]))).toEqual([1, ["noded"]]);
 });
 
+// The count and the tree find a decision node's Change in the same place, the comment the tree
+// read hangs under the node, so they agree while the comments read has not answered yet, or
+// answered before the Change was written: the count does not call the decision waiting on the
+// reader while the outline draws it waiting on its agent.
+test("the count and the tree agree on a decision node's Change the comments read does not hold", () => {
+  const bare: IssueDetails = { ...issue, artifacts: [spec], decisions_artifact_id: "" };
+  const row = waitingDecision("noded", ["r1"]);
+  const read: IssueDecisions = { decisions: [row], document: null, open_questions: [] };
+  const asked: Comment = { ...change, anchor: null, id: "c-noded" };
+  const tree = answerOf([statement, decisionNode(row), commentNode(asked, "noded")]);
+  for (const comments of [undefined, []]) {
+    expect([
+      waitingOnReader(bare, "alice", read, isStatement, comments, tree).decisions,
+      waitingIn(
+        buildIssueTree({ comments, coverage, decisions: read, issue: bare, tree, viewer: "alice" })
+      ),
+    ]).toEqual([0, []]);
+  }
+});
+
 /** An intro of the decisions document that holds none of the quotes below. */
 const PLAIN_INTRO = "The decisions this issue made.";
 
