@@ -1448,12 +1448,12 @@ function FocusedRowAt({ top }: { top: number }): ReactNode {
 }
 
 // Decision 113: a focused row stands below everything that stays at the top of the screen. At
-// 760 px and below the view row stays there and publishes its height (`slots/view-row.tsx`),
-// which the page's `scroll-padding-top` holds, while a header that publishes no band of its own
-// leaves `bringOnScreen` nothing to clear: so a focused row 10 px from the top lay under the view
-// row. It is scrolled to 8 px below it, and a row already below it is left where it is.
+// 760 px and below the view row stays there, and the page's `scroll-padding-top` is its height
+// (`styles.css`, `slots/view-row.tsx`), while a header that publishes no band of its own leaves
+// `bringOnScreen` nothing to clear: so a focused row 10 px from the top lay under the view row.
+// It is scrolled to 8 px below it, and a row already below it is left where it is.
 test("a focused row under the view row that stays is placed below it, and one below it is left", () => {
-  document.documentElement.style.setProperty("--issue-view-row-height", "44px");
+  document.documentElement.style.setProperty("scroll-padding-top", "44px");
   const scrollBy = spyOn(window, "scrollBy").mockImplementation(() => {});
   try {
     const under = render(<FocusedRowAt top={10} />);
