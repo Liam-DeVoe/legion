@@ -4602,29 +4602,48 @@ Each item below names a path with its method and identity, then its purpose.
     - How the rules read a name: `#<n>`, `pull request number <n>`, `<owner>/<repo>#<n>` and the address of a pull request name a pull request.
       The host of that address is `github.com` or `www.github.com` in any case, and a host that only ends in `github.com` is another host.
       `incident #<n>`, `incident number <n>`, a key such as `INC-<n>` and `incident <date>` name an incident.
-      Each of these forms, a key, an id, an email address and a handle is a whole word.
-      A letter, a digit or `_` right before it or right after it makes it part of a longer word, which names nothing.
-      So the colour `#12abcd` names no pull request, and the package `@types/node` names no person.
-      A colour of three digits, such as `#123`, has the form of a number of a pull request, so write the colour in words.
       A bare number after the words is a count and names nothing, so `each pull request 10 minutes after its checks pass` breaks no rule.
       So `as pull request 12 shows` breaks no rule either, because a name needs a form that only a name has.
       The finding of each rule lists the forms that it reads.
-      A person's name is the name of one person who signed in: the parts of that person's email, in order, each with a capital letter.
+
+    - How the rules read a person and a record: a person's name is the name of one person who signed in.
+      It is the parts of that person's email, in order, each with a capital letter.
       A name has two parts or more, and each part has three letters or more, so the person `ada@example.com` has no name that the rules read.
       So with the person `ada.lovelace@example.com`, `Ada Lovelace` names a person, and `Ada` alone does not.
       Parts of the emails of two people are no name.
       A part that is a word of an approved component name or term is no part of a name.
       An email address names a person, and the last part of its domain is letters, so `checker@v1.2.3` is no address.
-      A word that starts with `@` is the handle of a person, also in code font, so write a name of the system without `@`.
-      A bare key such as `ACME-12` or a bare id such as a UUID names a record of Dispatch, also when no record has it.
+      A word that starts with `@` is the handle of a person, also in code font, unless a `/` or an `@` follows it.
+      So `@media` and `@import` name a person, and the way out is to write a name of the system without `@`.
+      A bare key of a project of Dispatch, such as `ACME-12`, names a record of Dispatch, also when no record has that key.
+      A key of another project, such as `UTF-8` or `SHA-256`, names nothing.
+      A bare id such as a UUID names a record of Dispatch too, also when no record has it.
       Its rule is `dispatch-link`, so write such a value by its kind, as in "the UUID of the request", not by its characters.
       The rules also read the name of a term (kind `term`).
+
+    - When a form is a whole word: each form of a name above, a key and an id among them, is a whole word.
+      A character of a word right before it or right after it makes it part of a longer word, which names nothing.
+      A character of a word is a letter, a mark, a decimal digit or `_`, of any script, so `#12abcd` and `#12é` name no pull request.
+      Some forms also continue with other characters: `@` before a handle, and `/` or `@` after it.
+      So the package `@types/node` names no person.
+      `.`, `-` or `/` before `<owner>/<repo>#<n>`, and `.` or `-` before the host of a pull request's address, continue them too.
+      A `:` that no white space follows continues an email address, so the SSH address `git@github.com:owner/repo.git` names no person.
+      An email address and a handle take the characters of a word beside them into their own parts.
+      So `xada@example.com` is an email address too.
+      A key of Dispatch, an id, a number, and the owner and the repository on GitHub are ASCII.
+      So a letter of another script in one of them makes it no form.
+      A colour made only of digits, such as `#123` or `#000000`, has the form of a number of a pull request.
+      So write such a colour in words.
+      A form right beside a letter of a script that writes no space between words, as in `见#12`, is part of a longer word.
+      So it names nothing, and the reviewer of R25 reads such a text.
 
     - How the rules read a term line: a term line is `- **<term>**: <definition>` under a heading `Terms`.
       Each other paragraph, list item or table row under that heading breaks the form (rule `term-line`).
       So a decision block under that heading breaks the form at its question line.
       A decision block stands above the heading `Terms`, and after the person's answer, the chosen definition goes under the heading as a term line.
-      The finding names the line by its text, and it says where a decision block goes.
+      The finding names the line by its text, and it names two ways out.
+      A line that defines no term, such as an example or a note, moves out from under the heading `Terms`.
+      A decision block goes above the heading.
 
     - When Dispatch cannot read a version: a browser edit through the socket of a document can store a version that today's parser refuses.
       An earlier release can store one too.

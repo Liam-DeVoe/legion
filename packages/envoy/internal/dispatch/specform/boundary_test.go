@@ -25,11 +25,15 @@ func referenceNames(t *testing.T, body string) []string {
 	return names
 }
 
-// Each form of a reference rule is a whole word: a letter, a digit or "_" right before it or right
-// after it joins it to a longer word, which names nothing, and so do the characters that the form
-// names below. For each form, the form alone, joined to a word on its left and joined to a word on
-// its right. Where a letter is part of the form itself (the local part and the domain of an email
-// address), the joined text is a longer form of the same kind.
+// Each form of a reference rule is a whole word: a character of a word (a letter, a mark, a decimal
+// digit or connector punctuation such as "_", of any script) right before it or right after it
+// joins it to a longer word, which names nothing, and so do the characters that continue the form
+// (wordForm). For each form, the form alone, joined to a word on its left and joined to a word on
+// its right, with an ASCII letter and with a letter of another script, and a letter of another
+// script inside it. Where a letter is part of the form itself (an email address, a handle, the key
+// of an incident), the joined text is a longer form of the same kind. A form whose alphabet is ASCII
+// by the rule of its system (a key of Dispatch, an id, the owner and the repository of GitHub, a
+// number) holds no letter of another script, so such a letter inside it makes it no form.
 func TestEachReferenceFormIsAWholeWord(t *testing.T) {
 	const id = "0195f3c2-7b1d-7c3e-9a4f-2b6d8e1f0a37"
 	for _, test := range []struct {
@@ -83,10 +87,75 @@ func TestEachReferenceFormIsAWholeWord(t *testing.T) {
 		{"a handle", "x@legion", nil},
 		{"a handle", "@legion/core", nil},
 		{"a handle, an npm scope", "@types/node", nil},
+		{"a key, ASCII by Dispatch's rule", "ACMÉ-12", nil},
+		{"a key, ASCII by Dispatch's rule", "éACME-12", nil},
+		{"a key, ASCII by Dispatch's rule", "ACME-12é", nil},
+		{"an id, hexadecimal", "0195f3c2-7b1d-7c3e-9a4f-2b6d8e1f0é37", nil},
+		{"an id, hexadecimal", "é" + id, nil},
+		{"an id, hexadecimal", id + "é", nil},
+		{"an incident's key", "incident sév-12", []string{"incident incident sév-12"}},
+		{"an incident's key", "éincident sev-12", nil},
+		{"an incident's key", "incident sev-12é", nil},
+		{"incident number", "incident number 12é", nil},
+		{"INC-<n>", "éINC-12", nil},
+		{"INC-<n>", "INC-12é", nil},
+		{"pull request number", "éPR number 12", nil},
+		{"pull request #", "PR #12é", nil},
+		{"<owner>/<repo>#<n>, ASCII by GitHub's rule", "acmé/widgets#12", nil},
+		{"<owner>/<repo>#<n>, ASCII by GitHub's rule", "éacme/widgets#12", nil},
+		{"<owner>/<repo>#<n>, ASCII by GitHub's rule", "acme/widgets#12é", nil},
+		{"#<n>", "é#12", nil},
+		{"#<n>", "#12é", nil},
+		{"#<n>, the stated limit: a script with no space between words", "见#12", nil},
+		{"#<n>, the stated limit: a colour of digits only", "#000000", []string{"pull-request #000000"}},
+		{"the address of a pull request, ASCII by GitHub's rule", "github.com/ö/r/pull/12", nil},
+		{"the address of a pull request", "égithub.com/o/r/pull/12", nil},
+		{"the address of a pull request", "github.com/o/r/pull/12é", nil},
+		{"the address of a pull request, the stated limit: a script with no space between words",
+			"参见github.com/acme/widgets/pull/12", nil},
+		{"an email address", "josé.garcia@example.com", []string{"person josé.garcia@example.com"}},
+		{"an email address", "ada@exämple.com", []string{"person ada@exämple.com"}},
+		{"an email address", "éada@example.com", []string{"person éada@example.com"}},
+		{"an email address", "ada@example.comé", []string{"person ada@example.comé"}},
+		{"an email address, a letter with a combining mark", "jose\u0301@example.com", []string{"person jose\u0301@example.com"}},
+		{"an email address, then a colon and a space", "ada@example.com: she", []string{"person ada@example.com"}},
+		{"an email address, then a colon at the end", "ada@example.com:", []string{"person ada@example.com"}},
+		{"an SSH address: a colon that no white space follows continues it", "git@github.com:owner/repo.git", nil},
+		{"a handle", "@josé", []string{"person @josé"}},
+		{"a handle", "é@legion", nil},
+		{"a handle, a letter with a combining mark", "@jose\u0301", []string{"person @jose\u0301"}},
+		{"a handle, the stated limit: a word that starts with @", "@media", []string{"person @media"}},
 	} {
 		if got := referenceNames(t, test.body); !slices.Equal(got, test.want) {
 			t.Errorf("%s: %q gives %q, want %q", test.form, test.body, got, test.want)
 		}
+	}
+}
+
+// No form can read a word otherwise than wordClass does: newWordForm refuses a form, a left or a
+// right that holds a notion of a word of the regular expressions, each of which reads ASCII only.
+// The control: the same form with wordClass is taken.
+func TestNoFormHoldsAnotherNotionOfAWord(t *testing.T) {
+	refuses := func(form, left, right string) (refused bool) {
+		defer func() { refused = recover() != nil }()
+		newWordForm(form, left, right)
+		return false
+	}
+	for _, test := range []struct{ form, left, right string }{
+		{`[\w.+-]+@example\.com`, "", ""},
+		{`\bACME-[0-9]+`, "", ""},
+		{`#[0-9]+\B`, "", ""},
+		{`@[^\W]+`, "", ""},
+		{`@[[:word:]]+`, "", ""},
+		{`#[0-9]+`, `\w`, ""},
+		{`#[0-9]+`, "", `\w`},
+	} {
+		if !refuses(test.form, test.left, test.right) {
+			t.Errorf("newWordForm(%q, %q, %q) is taken, want a refusal", test.form, test.left, test.right)
+		}
+	}
+	if refuses(`[`+wordClass+`.+\-]+@example\.com`, "", "") {
+		t.Error("the control: a form built on wordClass is refused")
 	}
 }
 
