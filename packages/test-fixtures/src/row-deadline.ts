@@ -22,14 +22,36 @@ import { markRow } from "./deadline";
 // Under `jest.useFakeTimers()` no mark is taken: `performance.now()` then reads the fake clock,
 // which starts at 0 and moves only as the test advances it (measured on Bun 1.4.4), so a mark
 // taken then could lie anywhere before or after Bun's own; the last real mark stays.
+//
+// Bun refuses a hook registered inside a concurrent row (`describe.concurrent`, `test.concurrent`,
+// `--concurrent`): "Cannot call afterEach() here. It cannot be called inside a concurrent test."
+// Measured on Bun 1.4.4, the refusal is thrown at the call, and caught it fails nothing. Such a
+// row runs beside its siblings, so no mark of its own could tell its body's end from theirs: it
+// keeps the mark its `beforeEach` took, and its first `afterEach` counts from the row's start. A
+// mark is one per process, so a concurrent sibling that starts later moves it on: a wait of the
+// earlier row can then end after that row's guard, which Bun's own timeout then reports in its
+// place.
 
 function mark(): void {
   if (!jest.isFakeTimers()) markRow();
 }
 
+/**
+ * Whether error is Bun's refusal of a hook registered inside a concurrent row, read by Bun 1.4.4's
+ * wording of it. A Bun that words it otherwise has its refusal thrown again, so every concurrent
+ * row fails loudly rather than running unmarked.
+ */
+function concurrentRefusal(error: unknown): boolean {
+  return error instanceof Error && error.message.includes("inside a concurrent test");
+}
+
 beforeAll(mark);
 beforeEach(() => {
   mark();
-  afterEach(mark);
+  try {
+    afterEach(mark);
+  } catch (error) {
+    if (!concurrentRefusal(error)) throw error;
+  }
 });
 afterEach(mark);

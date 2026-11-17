@@ -145,6 +145,46 @@ describe("a describe", () => {
   );
 });
 
+// Bun refuses a hook registered inside a concurrent row, so the preload must mark such a row
+// without one: a preload that registered its afterEach there failed every concurrent row in
+// milliseconds with Bun's refusal, before its body ran. The rows and their describe's afterEach
+// pass, and a wait in a concurrent row still ends before the row's guard.
+test("concurrent rows run under the preload, and a wait of one ends before its guard", () => {
+  const file = `
+let after = 0;
+describe.concurrent("concurrent rows", () => {
+  afterEach(() => {
+    after++;
+  });
+  test("a concurrent row", async () => {
+    await span(10, "the row's own work");
+  });
+  test("a concurrent sibling", async () => {
+    await span(10, "the sibling's own work");
+  });
+});
+test("the describe's afterEach ran once for each concurrent row", () => {
+  if (after !== 2) throw new Error(\`the describe's afterEach ran \${after} times, want 2\`);
+});
+`;
+  const passing = runBunTest({ "concurrent.test.ts": file }, [GUARD, "--preload", PRELOAD]);
+  expect(passing.output).not.toContain("cannot be called inside a concurrent test");
+  expect(passing.output).toContain(" 3 pass");
+  expect(passing.exitCode).toBe(0);
+
+  const waiting = `
+describe.concurrent("a concurrent row that waits", () => {
+  test("a concurrent row with one wait", async () => {
+    await until("the concurrent row's fact", () => false);
+  });
+});
+`;
+  expectGaveUpBeforeTheGuard(
+    runBunTest({ "waiting.test.ts": waiting }, [GUARD, "--preload", PRELOAD]),
+    "the concurrent row's fact"
+  );
+});
+
 // Without `--isolate` Bun runs a preload's `beforeAll` once, before the first file of the process
 // (measured on Bun 1.4.4), so a later file's `beforeAll` counts from the last row of the file
 // before it: as above, that row's own work is not counted against the hook.
