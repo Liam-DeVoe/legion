@@ -1365,8 +1365,9 @@ These arrive as messages on the Dispatch issue:
   round, so an approval or request for changes from anyone else leaves it undecided too. A review
   from the review App decides a round only when it comes from the reviewer's own session: the
   daemon reads the review's Legion footer
-  (`<!-- legion: {"session":"…","phase":"review","head":"…"} -->`) and requires the session it
-  names to match the session recorded on the reviewer's claim. That footer also names the head the
+  (`<!-- legion: {"session":"…","phase":"review","head":"…","entry":…} -->`) and requires the
+  session it names to match the session recorded on the reviewer's claim. That footer also names
+  the head the
   review read, and a review the review App submitted decides the round only when that head is the
   pull request's current head, compared exactly, whether the daemon heard of the review from its
   webhook or read it from GitHub's list. GitHub rewrites a review's `commit_id` to the current

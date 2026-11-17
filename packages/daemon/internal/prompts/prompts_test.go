@@ -653,7 +653,12 @@ func TestTheComposedPushingPromptsPinTheReadOfThePullRequestHead(t *testing.T) {
 // GitHub happens to show at the moment of submission, since a review of an unread head is the
 // fault the rule exists to stop — the read that tells the reviewer a push landed under it
 // (`--json headRefOid`), the reason GitHub's own `commit_id` cannot stand in for the footer, and
-// what a wrong head costs. This shows the text is loaded, never that a reviewer follows it.
+// what a wrong head costs. The same footer names the entry of the reviewer's round, the number its
+// task names as ` Review entry: <n>.`, as a bare JSON number, since only a review whose footer
+// names the entry on the reviewer's row moves the commit a later round reads from: the shape with
+// the entry in both the template and the rule, where the number comes from, and that a review with
+// no entry, or another one, still decides the round. This shows the text is loaded, never that a
+// reviewer follows it.
 func TestTheComposedReviewerPromptWritesTheHeadItReviewedInItsFooter(t *testing.T) {
 	composer, err := New(t.TempDir())
 	if err != nil {
@@ -661,16 +666,30 @@ func TestTheComposedReviewerPromptWritesTheHeadItReviewedInItsFooter(t *testing.
 	}
 	text := foldWhitespace(composedText(t, composer, claim.RoleReviewer, false))
 	for _, phrase := range []string{
-		`"phase":"review","head":"<the head you reviewed>"`,
-		`\"phase\":\"review\",\"head\":\"<head-sha>\"`,
+		`"phase":"review","head":"<the head you reviewed>","entry":<entry>} -->`,
+		`\"phase\":\"review\",\"head\":\"<head-sha>\",\"entry\":<entry>} -->`,
+		"beside its session, its phase and its `\"entry\":<entry>`",
 		"gh pr view <n> --repo <owner>/<repo> --json headRefOid --jq .headRefOid",
 		"the head whose diff and checks you read",
 		"rather than renaming the footer to a head you have not read",
 		"GitHub rewrites `commit_id` to the pull request's current head",
 		"A review whose footer names another head, or no head, decides no round",
+		"The footer's `entry` is the number your newest task names as `Review entry: <n>.`, written bare, as a JSON number:",
+		"by it Legion tells a review of this round from a review of an earlier round, and only a review of this round moves the commit a later round reads from",
+		"Where your newest task names no entry, write no `entry` into the footer: the review still decides the round.",
+		"A review with no entry, or with another one, still decides the round, and the next round then reads more: from an older commit, or the whole change.",
+		"The `<entry>` is the number your newest task names as `Review entry: <n>.`; a review with no entry, or with another one, decides the round as any other, but moves no commit",
 	} {
 		if !strings.Contains(text, phrase) {
 			t.Errorf("the composed reviewer prompt omits %q", phrase)
+		}
+	}
+	for _, retired := range []string{
+		`"phase":"review","head":"<the head you reviewed>"} -->`,
+		`\"phase\":\"review\",\"head\":\"<head-sha>\"} -->`,
+	} {
+		if strings.Contains(text, retired) {
+			t.Errorf("the composed reviewer prompt still says %q, a footer with no entry", retired)
 		}
 	}
 }

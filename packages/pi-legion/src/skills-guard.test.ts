@@ -579,6 +579,44 @@ test("a later review round reads from the commit its task names, and the pair re
   expect(scopedToTheRange).toEqual([]);
 });
 
+// The reviewer's review names the entry of its round in its Legion footer, the number its task
+// names as ` Review entry: <n>.`, because a review moves the commit a later round reads from only
+// when its footer names the entry on the reviewer's row: a review of an earlier round, from
+// before a new generation or a carried hand-over's promotion entered the reviewer again, names
+// another. A review with no entry still decides its round, so the skill says so rather than
+// leaving the entry to read as a condition of the decision. A comment and another role's review
+// carry none, since no other role's task names one. The daemon's prompts carry the same footer;
+// prompts_test.go pins the composed reviewer prompt.
+test("the reviewer's review footer names the entry of its round", () => {
+  const worker = collapsed(path.join(staged, "legion-worker", "SKILL.md"));
+  const mergeGate = collapsed(path.join(staged, "legion-worker", "references", "merge-gate.md"));
+  const withEntry =
+    '`<!-- legion: {"session":"<session-id>","phase":"review","head":"<the head you reviewed>","entry":<entry>} -->`';
+  const gaps = [
+    ...[
+      withEntry,
+      "where `<entry>` is the number its newest task names as `Review entry: <n>.`",
+      "A comment, and a review of any other role, carry no entry, since no other role's task names one.",
+      "The daemon tells a review of the reviewer's round from a review of an earlier round by that entry",
+      "a review with no entry, or with another one, still decides the round, and the next round then reads more: from an older commit, or the whole change.",
+    ]
+      .filter((sentence) => !worker.includes(sentence))
+      .map((s) => `legion-worker/SKILL.md lacks: ${s}`),
+    ...[
+      withEntry,
+      "That `entry` is the number your newest task names as `Review entry: <n>.`, written bare, as a JSON number:",
+      "by it the daemon tells a review of this round from a review of an earlier round, and only a review of this round moves the commit a later round reads from",
+      "A review with no entry, or with another one, still decides the round, and the next round then reads more: from an older commit, or the whole change.",
+    ]
+      .filter((sentence) => !mergeGate.includes(sentence))
+      .map((s) => `merge-gate.md lacks: ${s}`),
+    ...['"head":"<the head you reviewed>"} -->`),']
+      .filter((sentence) => mergeGate.includes(sentence))
+      .map((s) => `merge-gate.md says: ${s}`),
+  ];
+  expect(gaps).toEqual([]);
+});
+
 // R6: a pipe's status is the last command's, so `$?` after `cmd | tail` reads the pager's
 // (dispatch://INFRA-334). The sentence goes in the always-loaded prompts and agent definitions,
 // because skills/legion-worker/references/tools.md loads only on a tool or test question.
