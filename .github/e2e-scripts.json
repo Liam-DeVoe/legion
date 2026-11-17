@@ -31,7 +31,7 @@
       "apt": [],
       "bun": false,
       "evidence_variable": "BEHIND_ENTRY_FENCE_EVIDENCE_DIR",
-      "timeout_minutes": 25,
+      "timeout_minutes": 76,
       "why_hosted": "Run it from a checkout on a Linux host with go, awk and python3, as LEGION_TEST_PG_DSN=... bash scripts/e2e/behind-entry-fence.sh; CI's service satisfies it, and the script starts no container, installing the nats-server it needs with go install",
       "jj": true
     },
@@ -81,7 +81,7 @@
       "apt": [],
       "bun": false,
       "evidence_variable": "MERGE_WAIT_READABLE_EVIDENCE_DIR",
-      "timeout_minutes": 25,
+      "timeout_minutes": 76,
       "why_hosted": "Run it from a checkout on a Linux host with go, awk and python3, as LEGION_TEST_PG_DSN=... bash scripts/e2e/merge-wait-readable.sh; CI's service satisfies it, and the script starts no container, installing the nats-server it needs with go install",
       "jj": true
     },
@@ -91,7 +91,7 @@
       "apt": [],
       "bun": false,
       "evidence_variable": "PHASE_ENTRY_CONVERGE_EVIDENCE_DIR",
-      "timeout_minutes": 20,
+      "timeout_minutes": 71,
       "why_hosted": "Run it from a checkout on a Linux host with go, awk and python3, as LEGION_TEST_PG_DSN=... bash scripts/e2e/phase-entry-converge.sh; the proof needs a real PostgreSQL, which CI's service is, and a real nats-server, which it installs with go install, and it starts no container; a measured run took 88 seconds, most of it building the driver",
       "jj": true
     },
