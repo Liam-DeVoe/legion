@@ -709,11 +709,17 @@ func (m *sessionRelays) wanted(sessionID string) (bool, relayCancelReason) {
 // for the relays that gaining the durable binding starts together, so a relay whose consumer a
 // restart would keep unchanged starts pulling with no call of its own (sessionRelays.restart). It
 // returns nil when the list fails, and each relay then reads its own consumer; a list the NATS
-// user may not make is logged once.
+// user may not make is logged once. A list whose connection was lost (bus.ErrConnectionLost) is
+// made again once the connection is back, inside the list's budget (bus.Reconnected): it holds
+// nothing while it waits, and the session consumers' client answers a list made while its
+// connection is down with that error at once.
 func (m *sessionRelays) listConsumers() map[string]*jetstream.ConsumerInfo {
 	ctx, cancel := context.WithTimeout(m.ctx, sessionConsumerCallTimeout)
 	defer cancel()
 	listed, err := m.delivery.consumers.ListSessionConsumers(ctx)
+	for bus.Reconnected(ctx, err) {
+		listed, err = m.delivery.consumers.ListSessionConsumers(ctx)
+	}
 	switch {
 	case err == nil:
 		return listed
