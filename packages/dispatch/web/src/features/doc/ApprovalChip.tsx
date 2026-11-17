@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { type ReactNode, useId, useRef, useState } from "react";
+import { type ReactNode, useEffect, useId, useRef, useState } from "react";
 
 import { api, type CreateArtifactReviewInput, isCapExceeded } from "../../api/client";
 import { inboxQuery } from "../../api/queries";
@@ -39,19 +39,18 @@ import { AgentName } from "../refs/AgentName";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
+import { focusOnDocument } from "../shell/roving";
 import { useDialog } from "../shell/useDialog";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 
 /**
  * Each colour the chip, its two actions and its two dialogs draw inside `NoTooltips`, the new
- * issue page's (dispatch://INFRA-3935 R6, decision 56 of
- * dispatch://INFRA-1196/artifact/part-decisions-md), by the role `main`'s colour has: a dialog is
- * the page's paper inside its hairline rule over the icon rail's dark, the one page colour dark
- * in both schemes; its heading and a review are the ink, the reviewer's reason and a label the
- * muted grey, Close and a pending read the quiet grey, a refusal the failed red; Approve and the
- * dialog's Request changes are filled with the ink, as the header's one filled control is, and
- * the other actions are the header's control. The reason box keeps `main`'s focus rule, the
- * application's one focus indicator (decision 58 of the same artifact).
+ * issue page's, by the role `main`'s colour has: a dialog is the page's paper inside its hairline
+ * rule over the icon rail's dark, the one page colour dark in both schemes; its heading and a
+ * review are the ink, the reviewer's reason and a label the muted grey, Close and a pending read
+ * the quiet grey, a refusal the failed red; Approve and the dialog's Request changes are filled
+ * with the ink, as the header's one filled control is, and the other actions are the header's
+ * control. The reason box keeps `main`'s focus rule, the application's one focus indicator.
  *
  * They stand in this table, not beside `main`'s classes, because `theme/text-on-background.test.ts`
  * pairs each text class with the nearest enclosing ground of the same file across both branches
@@ -82,7 +81,7 @@ export function approvalVersion(approval: ArtifactApproval): number {
 
 /** The chip's words. `latest` is the issue page's word for the latest version, given inside
  *  `NoTooltips` alone: there a stale chip draws the latest version, which its `title` says
- *  everywhere else (dispatch://INFRA-1196 R19, R22). */
+ *  everywhere else. */
 function approvalLabel(approval: ArtifactApproval, latest?: string): string {
   // A plan is approved by its plan review, never by a person, and its chip says so.
   const approved = approval.kind === "plan_review" ? "Approved by plan review" : "Approved";
@@ -249,9 +248,13 @@ function RequestChangesDialog({
             htmlFor={reasonId}
           >
             Reason
+            {/* Inside `NoTooltips`, while the write is out, the text box is read-only and the
+                submit `aria-disabled`, a press of it doing nothing: `disabled` drops the focus to
+                the body in a browser, and Tab would then leave the dialog. Outside both are
+                `disabled` while the write is out, as on `main`. */}
             <textarea
               className={`mt-1 block w-full rounded-lg border px-2 py-1.5 text-sm font-normal outline-none ${page === null ? inputClasses(false) : ON_PAGE.reasonBox}`}
-              disabled={saving}
+              disabled={page === null && saving}
               id={reasonId}
               onChange={(event) => setReason(event.target.value)}
               onKeyDown={(event) =>
@@ -263,6 +266,7 @@ function RequestChangesDialog({
                   },
                 })
               }
+              readOnly={page !== null && saving}
               ref={textareaRef}
               value={reason}
             />
@@ -276,17 +280,32 @@ function RequestChangesDialog({
           )}
           <div className="flex items-center justify-end gap-2">
             <button
+              // Inside `NoTooltips`, while the write is out, Cancel is `aria-disabled` and a press
+              // of it does nothing, so the focus a reader put on it stays there. Outside it is
+              // `disabled` while the write is out, as on `main`.
+              aria-disabled={(page !== null && saving) || undefined}
               className={`rounded-lg border px-3 py-1.5 text-sm font-medium ${page === null ? `${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}` : ON_PAGE.action}`}
-              disabled={saving}
-              onClick={onClose}
+              disabled={page === null && saving}
+              onClick={() => {
+                if (saving) {
+                  return;
+                }
+                onClose();
+              }}
               type="button"
             >
               Cancel
             </button>
             <button
+              aria-disabled={(page !== null && saving) || undefined}
               className={`rounded-lg px-3 py-1.5 text-sm font-medium ${page === null ? `${primaryButtonBg} ${primaryButtonEnabledHoverBg} ${primaryButtonDisabled}` : ON_PAGE.filled}`}
-              disabled={trimmed === "" || saving}
-              onClick={() => onSubmit(trimmed)}
+              disabled={trimmed === "" || (page === null && saving)}
+              onClick={() => {
+                if (saving) {
+                  return;
+                }
+                onSubmit(trimmed);
+              }}
               type="button"
             >
               {saving ? "Submitting…" : "Request changes"}
@@ -299,8 +318,7 @@ function RequestChangesDialog({
 }
 
 /** The chip's actions: `together`, in one box that does not wrap; otherwise with no box around
- *  them, each its parent's own item, as on `main` (`keepActionsTogether`, dispatch://INFRA-3935
- *  R10). */
+ *  them, each its parent's own item, as on `main` (`keepActionsTogether`). */
 function ActionsGroup({
   children,
   together,
@@ -321,10 +339,9 @@ export interface ApprovalChipProps {
    *  `actionsOn` names two or more documents. Inside `NoTooltips` each action's name then begins
    *  with the action's own words and says its document, "Approve the spec", "Approve v5 of the
    *  spec" for a stale approval, "Request changes to the spec", so no two actions of the line
-   *  share a name and a voice user says what they read (WCAG 2.5.3, decision 99 of
-   *  dispatch://INFRA-1196/artifact/part-decisions-md). Not given, the default, and everywhere
-   *  outside `NoTooltips`, where no caller passes it today and the words to join them are not
-   *  loaded, each action is named by its words alone, as on `main` (dispatch://INFRA-3935 R1). */
+   *  share a name and a voice user says what they read (WCAG 2.5.3). Not given, the default, and
+   *  everywhere outside `NoTooltips`, where no caller passes it today and the words to join them
+   *  are not loaded, each action is named by its words alone, as on `main`. */
   actionsDocument?: string;
   artifact: Artifact;
   /** `header`: shown on the document header, with an approval-state chip.
@@ -336,15 +353,13 @@ export interface ApprovalChipProps {
   layout?: "contents" | "inline";
   /** Whether Approve and Request changes sit in one box that does not wrap, so in a parent's line
    *  that wraps the two stay together as one item beside the chip. `ApprovalSteps` passes it at
-   *  `layout="contents"`, which part P's header uses (dispatch://INFRA-3935 R10, decision 86 of
-   *  dispatch://INFRA-1196/artifact/part-decisions-md). Off, the default, each action is its own
-   *  item, as on `main`. */
+   *  `layout="contents"`, which the new issue page's header uses. Off, the default, each action is
+   *  its own item, as on `main`. */
   keepActionsTogether?: boolean;
   /** `compact` draws the chip and its two actions at the size of the new issue page header's
-   *  other pills and controls (the prototype's `.pill` and `.hbtn`, dispatch://INFRA-1196 R13):
-   *  12 px type, and 24 px tall at every width for the chip and for each action, since each is
-   *  a target and a 24 px target holds at every width (decision 43 of its part-decisions-md).
-   *  `default` is every other host's. */
+   *  other pills and controls (the prototype's `.pill` and `.hbtn`): 12 px type, and 24 px tall at
+   *  every width for the chip and for each action, since each is a target and a 24 px target
+   *  holds at every width. `default` is every other host's. */
   size?: "compact" | "default";
   /** Called beside the chip's own refreshes once the server has recorded the reader's review, so
    *  a host that selected the approval request learns it was reviewed here. */
@@ -380,25 +395,53 @@ export function ApprovalChip({
     onSettled: () => submitGuard.release(),
     write: (input, bounds) => api.createArtifactReview(artifact.id, input, bounds),
     onSuccess: () => {
-      setRequestChangesOpen(false);
+      // Outside `NoTooltips` the dialog closes as the write lands and the reads the write makes
+      // stale go on after it, as on `main`. Inside, `onSuccess` returns those reads, which
+      // TanStack Query awaits before the write stops pending: Approve, Request changes and the
+      // dialog stay refused, and keep the focus, until the new approval is read, and only then
+      // does the dialog close and give the focus back to the button that opened it.
+      if (page === null) setRequestChangesOpen(false);
       onReviewed?.();
-      void queryClient.invalidateQueries({ queryKey: ["artifact-reviews", artifact.id] });
-      void queryClient.invalidateQueries({ queryKey: ["artifact", artifact.id] });
-      void queryClient.invalidateQueries({ queryKey: inboxQuery().queryKey });
-      if (artifact.issue_key === null) {
-        void queryClient.invalidateQueries({
-          queryKey: ["project", artifact.project, "artifacts"],
-        });
-        void queryClient.invalidateQueries({
-          queryKey: ["artifact-ref", `${artifact.project}/${artifact.slug}`],
-        });
-        return;
-      }
-      void queryClient.invalidateQueries({ queryKey: ["issue", artifact.issue_key] });
-      void queryClient.invalidateQueries({ queryKey: ["artifacts", artifact.issue_key] });
-      void queryClient.invalidateQueries({ queryKey: ["asks", artifact.issue_key] });
+      const rereads = [
+        queryClient.invalidateQueries({ queryKey: ["artifact-reviews", artifact.id] }),
+        queryClient.invalidateQueries({ queryKey: ["artifact", artifact.id] }),
+        queryClient.invalidateQueries({ queryKey: inboxQuery().queryKey }),
+        ...(artifact.issue_key === null
+          ? [
+              queryClient.invalidateQueries({
+                queryKey: ["project", artifact.project, "artifacts"],
+              }),
+              queryClient.invalidateQueries({
+                queryKey: ["artifact-ref", `${artifact.project}/${artifact.slug}`],
+              }),
+            ]
+          : [
+              queryClient.invalidateQueries({ queryKey: ["issue", artifact.issue_key] }),
+              queryClient.invalidateQueries({ queryKey: ["artifacts", artifact.issue_key] }),
+              queryClient.invalidateQueries({ queryKey: ["asks", artifact.issue_key] }),
+            ]),
+      ];
+      if (page === null) return;
+      return Promise.all(rereads).then(() => setRequestChangesOpen(false));
     },
   });
+
+  // Inside `NoTooltips` a press of Approve is remembered until its write stops pending, which is
+  // once the new approval is read (`onSuccess` returns its reads). Approve is never `disabled`
+  // there, so while it is drawn it keeps the focus and nothing moves it. Once an approval that
+  // reads approved has taken Approve off the page, a focus that fell with it to the document
+  // (`focusOnDocument`) goes to the chip; a focus anywhere else is left where it is. The press is
+  // forgotten whenever the write stops pending, approved or not. It is state, not a ref, so the
+  // render the press makes reads the write pending, and a write that ends before its own pending
+  // render is drawn still ends the press.
+  const [approvePressed, setApprovePressed] = useState(false);
+  const approveButton = useRef<HTMLButtonElement>(null);
+  const chipButton = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (!approvePressed || review.isPending) return;
+    setApprovePressed(false);
+    if (approveButton.current === null && focusOnDocument()) chipButton.current?.focus();
+  }, [approvePressed, review.isPending]);
 
   if (approval === undefined || approval.state === "draft") {
     return null;
@@ -427,9 +470,10 @@ export function ApprovalChip({
         aria-haspopup="dialog"
         className={approvalPillClassName(approval.state, size, page !== null)}
         // Inside `NoTooltips`, the document whose approval this is, which an approval request's
-        // own address puts the focus on (dispatch://INFRA-1196 R20).
+        // own address puts the focus on.
         data-approval-artifact={page === null ? undefined : artifact.id}
         onClick={() => setReviewsOpen(true)}
+        ref={chipButton}
         title={
           tooltips && approval.state === "stale"
             ? `Approved at version ${approval.version}; the latest version is ${approval.latest_version}`
@@ -446,28 +490,52 @@ export function ApprovalChip({
             // two outline buttons made a reader choose before reading either. At the new issue
             // page header's size it is filled with that page's ink, not the application's blue.
             <button
+              // Inside `NoTooltips`, while the write is out, Approve is `aria-disabled` and a press
+              // of it does nothing, so it keeps the focus: a `disabled` button drops it to the
+              // body in a browser. Outside it is `disabled` while the write is out, as on `main`.
+              aria-disabled={(page !== null && review.isPending) || undefined}
               aria-label={actionNames?.approve}
               className={
                 size === "compact"
-                  ? `inline-flex min-h-6 shrink-0 items-center rounded-[7px] border px-2.5 text-xs leading-5 font-medium disabled:cursor-not-allowed disabled:opacity-50 md:min-h-0 md:py-px ${pageInkBorder} ${pageInkFill} ${focusVisibleRing}`
+                  ? `inline-flex min-h-6 shrink-0 items-center rounded-[7px] border px-2.5 text-xs leading-5 font-medium refused:cursor-not-allowed refused:opacity-50 md:min-h-0 md:py-px ${pageInkBorder} ${pageInkFill} ${focusVisibleRing}`
                   : `min-h-11 rounded-lg px-3 py-2 text-sm font-medium md:min-h-8 md:py-1 ${page === null ? `${primaryButtonBg} ${primaryButtonEnabledHoverBg} ${primaryButtonDisabled}` : ON_PAGE.filled}`
               }
-              disabled={review.isPending}
-              onClick={() => submitGuard.guard(() => review.mutate({ state: "approved" }))}
+              disabled={page === null && review.isPending}
+              onClick={() => {
+                if (review.isPending) {
+                  return;
+                }
+                submitGuard.guard(() => {
+                  if (page !== null) setApprovePressed(true);
+                  review.mutate({ state: "approved" });
+                });
+              }}
+              ref={approveButton}
               type="button"
             >
               {approveLabel}
             </button>
           )}
           <button
+            // Inside `NoTooltips`, while the write is out, this button is `aria-disabled` and a
+            // press of it does nothing: the dialog it opens gives the focus back to it once a
+            // change request lands and its new approval is read, and a `disabled` button takes no
+            // focus, which then falls to the body. Outside it is `disabled` while the write is
+            // out, as on `main`.
+            aria-disabled={(page !== null && review.isPending) || undefined}
             aria-label={actionNames?.requestChanges}
             className={
               size === "compact"
                 ? pageHeaderControl
                 : `min-h-11 rounded-lg border px-3 py-2 text-sm font-medium md:min-h-8 md:py-1 ${page === null ? `${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}` : ON_PAGE.action}`
             }
-            disabled={review.isPending}
-            onClick={() => setRequestChangesOpen(true)}
+            disabled={page === null && review.isPending}
+            onClick={() => {
+              if (review.isPending) {
+                return;
+              }
+              setRequestChangesOpen(true);
+            }}
             type="button"
           >
             {requestChangesLabel}
@@ -481,6 +549,11 @@ export function ApprovalChip({
         <RequestChangesDialog
           error={review.isError ? review.error : null}
           onClose={() => {
+            // Inside `NoTooltips` Escape, the backdrop and Cancel close nothing while the write is
+            // out: `reset` would let go of the write, and Approve and Request changes could be
+            // pressed again before it lands. Outside they close the dialog at any time, as on
+            // `main`.
+            if (page !== null && review.isPending) return;
             review.reset();
             setRequestChangesOpen(false);
           }}
