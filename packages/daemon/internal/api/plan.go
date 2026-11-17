@@ -85,8 +85,8 @@ func writeRefusal(w http.ResponseWriter, refusal *intake.Refusal) {
 
 // registerPlan is register_plan (R5, R14). It authorizes the owner (planOwner), reads the
 // document's approval for the version Dispatch has and the issue carrying it (documentOfIssue),
-// reads the plan's blocks at the version given (planAt), reads each need as the task it names
-// (plan.ResolveNeeds), and refuses with one reason for each cause of a plan this release does not
+// reads the plan's blocks at the version given, each need as the task it names (planAt, through
+// plan.FromBlocks), and refuses with one reason for each cause of a plan this release does not
 // carry out (plan.Supported) or no release can (plan.Validate); each of those answers records
 // nothing. A plan both take is recorded as intake.PlanGiven, its needs as task ids, whose rules of
 // a later version (R16) are the workflow's.

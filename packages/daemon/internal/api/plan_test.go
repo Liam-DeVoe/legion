@@ -201,7 +201,7 @@ func needing(block dispatch.DocumentBlock, needs string) dispatch.DocumentBlock 
 // the first plan), and a word that names no task gets R14's reason rather than the reason of a
 // need this release does not carry out yet; the plan recorded is the one both checks read. The
 // fault is a route that checks, and records, the words as the blocks write them; the control is
-// the route without the call, which answers `task b needs dispatch://LEGION-208/artifact/plan-md#b-a.`
+// a FromBlocks that keeps each word whole, which answers `task b needs dispatch://LEGION-208/artifact/plan-md#b-a.`
 // and `task b needs x.`, each as not carried out yet, and a and b as two tasks that no task needs.
 func TestRegisterPlanReadsEachNeedAsTheTaskItNames(t *testing.T) {
 	h, facts, statuses := planHarness(t)
