@@ -2085,6 +2085,13 @@ package api
 // fact (`intake.HandoffComplete.PlanRating`, `PlanReason`). `readBody` refuses an unknown field, so
 // a plugin sending them to a daemon below 155 would have every retro refused; the bump is why the
 // two never meet. No shape of `GET /legion/v1/state` moves, so no caller is served a narrower one.
+// The decoder of every request body (`decodeJSON`) also refuses a body any string of which, a
+// member's name and an earlier copy of a repeated member included, holds U+0000, which
+// PostgreSQL's text and jsonb cannot hold: 400 `invalid request body` naming the string's place and
+// where in it the character stands (`unstorableJSON`), or first the stale-caller 409 where the
+// route can name a stale caller (`readBody`'s identity check), as for any body that does not
+// decode. A route that stored such a string answered 500 before, and one that only compared it
+// took it; every route now refuses it before it reads the body.
 // (This entry took 155 on 2026-11-17 over main's 146. A reading of `const DaemonAPIVersion` at
 // refs/pull/<n>/head for each of the 79 open pull requests of this repository whose file list
 // named this file or was cut short, of 163 open, made between 2026-11-17T01:16:24Z and 01:16:50Z,
