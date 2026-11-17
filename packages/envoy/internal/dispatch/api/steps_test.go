@@ -395,6 +395,8 @@ func TestAStepWriteRefusesItsBadValues(t *testing.T) {
 		{"a retro at a step's place", "", with(start, map[string]any{"kind": "retro"}), "step"},
 		{"a role that is no role", "", with(start, map[string]any{"role": "Implementer"}), "role"},
 		{"a type that is no type", "", with(start, map[string]any{"type": "Review"}), "type"},
+		{"a retro with a type", "", with(start, map[string]any{"kind": "retro", "step": 0}), "type"},
+		{"a merge with a type", "", with(start, map[string]any{"kind": "merge", "step": 0, "role": "merger"}), "type"},
 		{"a report that is no uuid", "", with(start, map[string]any{"result": "passed", "ended_at": stepEnd, "report": "plan-1"}), "report"},
 		{"a task that is no task id", "", with(start, map[string]any{"task": "Default"}), "task"},
 		{"an id that is no uuid", "not-a-uuid", start, "id"},

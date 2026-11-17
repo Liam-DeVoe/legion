@@ -37,8 +37,9 @@ var (
 //
 // The write that finds no node makes it, whichever of the two it is, and states the `part_of`
 // relation to the issue; it must name the step's whole identity (task, kind, step, role and
-// generation), or it is refused ErrStepInput and writes nothing. The write that sets the report
-// states the `reports` relation to that handoff.
+// generation), or it is refused ErrStepInput and writes nothing. A write that names a type for a
+// node of kind retro or merge is refused ErrStepInput too, since neither has one. The write that
+// sets the report states the `reports` relation to that handoff.
 //
 // Two writes of one id at one time take turns: the insert that makes the node comes before the
 // read of what it holds, and that read locks the row (for update), so the second write waits for
@@ -95,6 +96,17 @@ func PutStep(ctx context.Context, tx pgx.Tx, write StepWrite, actor model.Actor,
 		}
 		if issue != write.Issue {
 			return Step{}, fmt.Errorf("%w: step %s is part of %s, and this write names %s", ErrStepOtherIssue, id, issue, write.Issue)
+		}
+		var kind string
+		if raw, holds := held[AttributeKind]; holds {
+			if err := json.Unmarshal(raw, &kind); err != nil {
+				return Step{}, fmt.Errorf("decode the kind of step %s: %w", id, err)
+			}
+		}
+		if write.Type != nil {
+			if err := typeOfKind(kind, *write.Type); err != nil {
+				return Step{}, err
+			}
 		}
 	}
 
@@ -212,8 +224,12 @@ func (write StepWrite) attributes() (string, []attribute, error) {
 	if role := text(AttributeRole, write.Role); role != "" && !roleForm.MatchString(role) {
 		return "", nil, inputError("role %q is not a role: a lowercase letter, then lowercase letters, digits and hyphens, at most 32", role)
 	}
-	if typ := text(AttributeType, write.Type); typ != "" && !roleForm.MatchString(typ) {
+	typ := text(AttributeType, write.Type)
+	if typ != "" && !roleForm.MatchString(typ) {
 		return "", nil, inputError("type %q is not a type of work: a lowercase letter, then lowercase letters, digits and hyphens, at most 32, or empty", typ)
+	}
+	if err := typeOfKind(kind, typ); err != nil {
+		return "", nil, err
 	}
 	text(AttributeAgent, write.Agent)
 	text(AttributeSession, write.Session)
@@ -276,6 +292,15 @@ func (write StepWrite) missingIdentity() []string {
 		missing = append(missing, AttributeGeneration)
 	}
 	return missing
+}
+
+// typeOfKind refuses a type for a run of kind retro or merge: no plan names either, so neither
+// has a type, as neither has a place but 0.
+func typeOfKind(kind, typ string) error {
+	if typ != "" && kind != "" && kind != StepKindStep {
+		return inputError("type %q is no type of a %s: no plan names it, so it has none", typ, kind)
+	}
+	return nil
 }
 
 func inputError(format string, args ...any) error {

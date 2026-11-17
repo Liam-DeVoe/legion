@@ -630,6 +630,8 @@ func TestAStepWriteRefusesAValueOutsideItsForm(t *testing.T) {
 		"result":             func(write *StepWrite) { write.Result, write.EndedAt = new("done"), new(minute(1)) },
 		"ended_at":           func(write *StepWrite) { write.EndedAt = new(minute(1)) },
 		"result without end": func(write *StepWrite) { write.Result = new(ResultPassed) },
+		"type of a retro":    func(write *StepWrite) { write.Kind, write.Place = new(StepKindRetro), new(0) },
+		"type of a merge":    func(write *StepWrite) { write.Kind, write.Place = new(StepKindMerge), new(0) },
 		"returned_to": func(write *StepWrite) {
 			write.ReturnedTo, write.Result, write.EndedAt = new(2), new(ResultPassed), new(minute(1))
 		},
@@ -656,6 +658,35 @@ func TestAStepWriteRefusesAValueOutsideItsForm(t *testing.T) {
 	}
 	if log := wholeLog(t, pool); len(log) != 0 {
 		t.Errorf("the refused writes left %d tuples, want none", len(log))
+	}
+}
+
+// A retro and a merge have no type, since no plan names them: a write that names one is refused,
+// whether it names the kind itself or comes to a node that holds it, and the node keeps no type.
+func TestARetroOrAMergeTakesNoType(t *testing.T) {
+	pool := storetest.Open(t).Pool
+	for _, kind := range []string{StepKindRetro, StepKindMerge} {
+		t.Run(kind, func(t *testing.T) {
+			id := uuid.NewString()
+			start := startOf(implementer(id), minute(0))
+			start.Kind, start.Place, start.Type = new(kind), new(0), nil
+			put(t, pool, start, minute(0))
+			before := wholeLog(t, pool)
+
+			later := StepWrite{ID: id, Issue: "LEG-1", Type: new("review")}
+			_, err := tryPut(pool, later, minute(1))
+			if !errors.Is(err, ErrStepInput) || !strings.Contains(err.Error(), "type") {
+				t.Fatalf("a type written to the %s answered %v, want %v naming the type", kind, err, ErrStepInput)
+			}
+			if after := wholeLog(t, pool); !reflect.DeepEqual(after, before) {
+				t.Errorf("the refused write moved the log from %d tuples to %d", len(before), len(after))
+			}
+			for _, step := range issueSteps(t, pool, "LEG-1") {
+				if step.ID == id && step.Type != "" {
+					t.Errorf("the %s holds type %q, want none", kind, step.Type)
+				}
+			}
+		})
 	}
 }
 
