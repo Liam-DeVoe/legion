@@ -125,7 +125,7 @@ Every inverted pair except p9 scored above the merge threshold on both backends:
 The one pair that really is the same, p5, is the one difflib refused: it scored 0.467 and was `flagged`, while the model scored 0.950 and called it `agreed` [s-row-p5-difflib, s-row-p5-model].
 
 So the backend chosen changes the verdict, and the choice is made silently.
-On the nine pairs the two backends disagreed on the verdict word for p4, p5 and p6 [s-backends-disagree].
+In one run with the pinned model loaded, the two backends gave different verdict words for p4, p5 and p6, and the same word for each of the other six pairs [s-backends-disagree].
 A reader of ACCORD's output cannot tell which backend produced a number, because no output names it [s-scorer-no-backend-record].
 
 Per-row evidence rows carry a predicate, not a sentence, because the model run is not bit-identical across machines: each difflib row carries a bound on the score against the threshold it crosses, and each model row carries the set the verdict word must fall in.

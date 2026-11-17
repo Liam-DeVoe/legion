@@ -1168,8 +1168,8 @@ dispatch_get() {
 # env_functions makes env.sh's functions and lists those of this shell, so that check.sh
 # and env.sh share each rule they both read: the command that reads a Dispatch record
 # (ioc_env_record_command), a clone (ioc_env_clone), the table of tool caches and its
-# export (ioc_env_cache_table, ioc_env_caches), the variables uv and pip enforce the locks
-# by (IOC_ENV_ENFORCED), the environments and their locks (IOC_ENV_FROZEN, read by
+# export (ioc_env_cache_table, ioc_env_caches), the variables it sets or clears for uv and
+# pip (IOC_ENV_ENFORCED), the environments and their locks (IOC_ENV_FROZEN, read by
 # ioc_env_frozen_labels and ioc_env_frozen_entry), the stamp of an environment
 # (ioc_env_unstamp), the reader of a lock (ioc_env_lock_py), the check of what an
 # environment holds (ioc_env_frozen), and the values env.sh reads from rows of claims.jsonl
@@ -1409,7 +1409,7 @@ prepare_env() {
 #   ;                                 48  ends a pipeline
 #   newline                            3  an unquoted newline, ending a pipeline as ; does
 #   >                                  6  writes the output to a file
-#   2>                                10  writes the error output to a file
+#   2>                                11  writes the error output to a file
 #   2>&1                               5  sends the error output where the output goes
 #   {                                 24  opens a group
 #   }                                 24  closes a group
@@ -1428,9 +1428,9 @@ prepare_env() {
 #   assignment before a command       24  NAME=value, set in that command's environment
 #   assignment alone                   6  NAME=value with no command word
 #   command substitution in a word    13  $( ) in a word, its code admitted by this table
-#   assigns ACCORD_MODEL_DIR          11  a name the rows assign
+#   assigns ACCORD_MODEL_DIR          12  a name the rows assign
 #   assigns GOFLAGS                    1  a name the rows assign
-#   assigns IOC_EXPECT_STATUS          9  the declared status, the last prefix of one command
+#   assigns IOC_EXPECT_STATUS          8  the declared status, the last prefix of one command
 #   assigns UV_REQUIRE_HASHES          4  0, before a uv pip install of local sources alone
 #   assigns VIRTUAL_ENV                3  a name the rows assign
 #   assigns W                          1  a name the rows assign
@@ -1455,11 +1455,11 @@ prepare_env() {
 #   program git                      313  wrapped in a function that records its status
 #   program go                         2  wrapped in a function that records its status
 #   program grep                     188  wrapped in a function that records its status
-#   program jq                        43  wrapped in a function that records its status
+#   program jq                        44  wrapped in a function that records its status
 #   program mkdir                      1  wrapped in a function that records its status
 #   program mktemp                     1  wrapped in a function that records its status
 #   program printf                    10  wrapped in a function that records its status
-#   program python3                   37  wrapped in a function that records its status
+#   program python3                   36  wrapped in a function that records its status
 #   program rm                         2  wrapped in a function that records its status
 #   program sed                      229  wrapped in a function that records its status
 #   program sh                         1  wrapped in a function that records its status
@@ -1515,12 +1515,12 @@ prepare_env() {
 # The names the gate records with, which no row may touch. The list below is the reader's
 # RESERVED, which reader_py builds from PROGRAM_VARIABLES and RUNNER_PREFIXES, the two
 # variables the shims and the runner are written from, and from env.sh's IOC_ENV_ENFORCED,
-# the variables env.sh exports for uv and pip to enforce the locks by; --admitted holds
-# these lines as it holds the table, and fails a name the runner or a shim records with
-# that no prefix covers. A row is refused by name when it assigns one, alone, before a
-# command, in an argument such as export's, or as a for loop's variable; when it reads one
-# other than IOC_EXPECT_STATUS with $ in an argument, an assignment, a for loop's words or
-# a redirection target, such as >"$__ioc_failed", a program variable as a command word
+# the variables env.sh sets or clears for uv and pip; --admitted holds these lines as it
+# holds the table, and fails a name the runner or a shim records with that no prefix
+# covers. A row is refused by name when it assigns one, alone, before a command, in an
+# argument such as export's, or as a for loop's variable; when it reads one other than
+# IOC_EXPECT_STATUS with $ in an argument, an assignment, a for loop's words or a
+# redirection target, such as >"$__ioc_failed", a program variable as a command word
 # excepted; and when it passes one to printf as an argument of its own. The one other
 # assignment admitted is UV_REQUIRE_HASHES=0 before the one install the header above
 # reader_py states. A word is read without its quotes, so a quoted pattern that holds a
@@ -1535,9 +1535,23 @@ prepare_env() {
 #   IOC_MASLAB_WHEEL_CTL                  a program variable, which points at its shim
 #   IOC_TC_PY                             a program variable, which points at its shim
 #   IOC_EXPECT_STATUS                     the declared status, the last prefix of one command
-#   UV_REQUIRE_HASHES                     a variable uv or pip enforces the locks by
-#   UV_BUILD_CONSTRAINT                   a variable uv or pip enforces the locks by
-#   PIP_REQUIRE_HASHES                    a variable uv or pip enforces the locks by
+#   UV_REQUIRE_HASHES                     a variable env.sh sets or clears for uv or pip
+#   UV_BUILD_CONSTRAINT                   a variable env.sh sets or clears for uv or pip
+#   PIP_REQUIRE_HASHES                    a variable env.sh sets or clears for uv or pip
+#   UV_NO_CONFIG                          a variable env.sh sets or clears for uv or pip
+#   PIP_CONFIG_FILE                       a variable env.sh sets or clears for uv or pip
+#   UV_INDEX_URL                          a variable env.sh sets or clears for uv or pip
+#   UV_EXTRA_INDEX_URL                    a variable env.sh sets or clears for uv or pip
+#   UV_INDEX                              a variable env.sh sets or clears for uv or pip
+#   UV_DEFAULT_INDEX                      a variable env.sh sets or clears for uv or pip
+#   UV_FIND_LINKS                         a variable env.sh sets or clears for uv or pip
+#   UV_INDEX_STRATEGY                     a variable env.sh sets or clears for uv or pip
+#   UV_NO_INDEX                           a variable env.sh sets or clears for uv or pip
+#   UV_CONFIG_FILE                        a variable env.sh sets or clears for uv or pip
+#   PIP_INDEX_URL                         a variable env.sh sets or clears for uv or pip
+#   PIP_EXTRA_INDEX_URL                   a variable env.sh sets or clears for uv or pip
+#   PIP_FIND_LINKS                        a variable env.sh sets or clears for uv or pip
+#   PIP_NO_INDEX                          a variable env.sh sets or clears for uv or pip
 #
 # What the table is checked against. The classifier is a parser of the forms the rows use,
 # so a spelling it misreads into an admitted entry, one that no row writes, is outside what
@@ -1824,11 +1838,15 @@ github_budget() {
 # Three guarantees hold the lock: uv's, this reader's, and the check of what each
 # environment holds after it is built and after every row that installs into it. uv's:
 # env.sh exports UV_REQUIRE_HASHES=1, UV_BUILD_CONSTRAINT (the hashed
-# evidence/build-constraints.txt) and PIP_REQUIRE_HASHES=1 into every row's environment,
-# and the reader reserves the three names, so no row assigns, unsets or re-points them.
-# Measured with uv 0.13.5 and the three
-# set, once with a package no lock hashes (requests==2.32.3, or setuptools as a build
-# backend) and once with a local build under an unhashed -b:
+# evidence/build-constraints.txt) and PIP_REQUIRE_HASHES=1 into every row's environment.
+# It sets uv's and pip's other settings there too, whatever the caller's shell held:
+# UV_NO_CONFIG=1 and PIP_CONFIG_FILE=/dev/null, so neither reads a configuration file, and
+# it unsets every variable that would point either at another source of packages, change
+# which index a package is taken from, keep it from its index or name a configuration file
+# (IOC_ENV_ENFORCED in env.sh lists all seventeen). The reader reserves each of those
+# names, so no row assigns, unsets or re-points one. Measured with uv 0.13.5 and the three
+# hash variables set, once with a package no lock hashes (requests==2.32.3, or setuptools
+# as a build backend) and once with a local build under an unhashed -b:
 #
 #   spelling                   package no lock hashes       build under an unhashed -b
 #   uv pip install -c/-r/-e/-b refused: "all requirements  refused: "all requirements
@@ -1978,7 +1996,7 @@ github_budget() {
 # ENVIRONMENTS, and env.sh's reader of a lock.
 reader_py() {
     local v label
-    # env.sh's IOC_ENV_ENFORCED, the variables uv and pip enforce the locks by, which the
+    # env.sh's IOC_ENV_ENFORCED, the variables it sets or clears for uv and pip, which the
     # reader reserves; its IOC_ENV_FROZEN, the environments a row may install into, which
     # the gate checks after the row; and ioc_env_lock_py, the one reader of a hashed lock.
     # env.sh read for its functions defines them and prepares nothing.
@@ -2342,16 +2360,16 @@ def foreign_character(text):
 
 # The names the gate records with, which no row may touch: every name of the runner, which
 # starts with one of RUNNER_PREFIXES, the program variables, the declared status, and the
-# variables uv and pip enforce the locks by, ENFORCED, env.sh's IOC_ENV_ENFORCED. A row
-# may write the declared status only as the last prefix of one command, UV_REQUIRE_HASHES
-# only as the prefix 0 of the install hash_exemption reads, and a program variable only as
-# a command word.
+# variables env.sh sets or clears for uv and pip, ENFORCED, env.sh's IOC_ENV_ENFORCED. A
+# row may write the declared status only as the last prefix of one command,
+# UV_REQUIRE_HASHES only as the prefix 0 of the install hash_exemption reads, and a program
+# variable only as a command word.
 EXPECT_STATUS = "IOC_EXPECT_STATUS"
 RESERVED = {
     **{prefix + "*": "a name the runner or a shim records with" for prefix in RUNNER_PREFIXES},
     **{name: "a program variable, which points at its shim" for name in PROGRAM_VARIABLES},
     EXPECT_STATUS: "the declared status, the last prefix of one command",
-    **{name: "a variable uv or pip enforces the locks by" for name in ENFORCED},
+    **{name: "a variable env.sh sets or clears for uv or pip" for name in ENFORCED},
 }
 
 def reserved(name):

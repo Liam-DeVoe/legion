@@ -202,8 +202,8 @@ Their `handoff`-like completion parser is not a parallel: `verification_status` 
 
 ## What I could not settle
 
-I could not run their code [m-rt-no-execution].
+I could not run their code: in the pod of this reading `pydantic` was absent and installing it failed, and no record of that attempt is left.
 
-The pod has no `pydantic`, and the install failed, so no behaviour row below measures their kernel at run time [m-rt-no-execution].
+No row of this tree runs their kernel's governance functions, `ingress_governance_valid` and `emit_scheduled_egress`, so none measures what they decide under the shipped `KernelConfig` defaults [m-rt-no-execution].
 
 Every claim about their behaviour is therefore a reading of the source, marked `project-code`, and not a measurement.

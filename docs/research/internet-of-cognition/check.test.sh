@@ -2663,6 +2663,78 @@ honest_result "m-rt-no-execution as claims.jsonl holds it passes for a reader wh
 pydantic_run reader-lacks-it "$WORK/empty-home"
 honest_result "m-rt-no-execution as claims.jsonl holds it passes for a reader whose python3 finds no pydantic" replay-command "$PYDANTIC_OUT"
 
+# 101. The replay's uv and pip read no setting of the caller's (the tester's note of test
+# round 31). At f7a6cb36ba a caller's shell that exported UV_EXTRA_INDEX_URL, as a torch
+# user's shell often does, reached every install the replay makes: uv looked for a package
+# at that index first and failed, and the replay failed as though the evidence were wrong.
+# env.sh now sets uv's and pip's settings itself (IOC_ENV_ENFORCED): it unsets each of the
+# twelve variables of CALLER_SETTINGS, each of which points uv or pip at another source of
+# packages, changes which index a package is taken from, keeps them from their index or
+# names a configuration file, and it exports UV_NO_CONFIG=1 and PIP_CONFIG_FILE=/dev/null;
+# check.sh reserves each of those names. The case runs env.sh's ioc_env_main, as --replay's
+# env.sh step runs it, offline, from a shell that exports each of the twelve at an address
+# that does not exist or at a configuration file of the case's own, beside UV_NO_CONFIG=0
+# and a PIP_CONFIG_FILE of its own, with every other step of ioc_env_main, each of which
+# clones, reads a source or builds, taken as done. The environment it leaves, which every
+# row inherits, holds none of the twelve, and holds UV_NO_CONFIG=1 and
+# PIP_CONFIG_FILE=/dev/null. And a row that assigns UV_EXTRA_INDEX_URL before an install is
+# refused by name, as a name the gate records with. At f7a6cb36ba the environment held all
+# twelve, and the row was refused only as an assignment to a name the evaluator does not
+# admit.
+CALLER_SETTINGS='UV_INDEX_URL UV_EXTRA_INDEX_URL UV_INDEX UV_DEFAULT_INDEX UV_FIND_LINKS UV_INDEX_STRATEGY UV_NO_INDEX UV_CONFIG_FILE PIP_INDEX_URL PIP_EXTRA_INDEX_URL PIP_FIND_LINKS PIP_NO_INDEX'
+CALLER_INDEX=http://ioc-case-101.invalid/simple
+# caller_settings_env; prints the environment env.sh's ioc_env_main leaves, run from a shell
+# that exports each of CALLER_SETTINGS, UV_NO_CONFIG=0 and a PIP_CONFIG_FILE of the case's
+# own, with every step it runs but ioc_env_caches and ioc_env_enforce taken as done, and
+# ends with ioc_env_main's status.
+caller_settings_env() {
+    local dir="$WORK/caller-settings"
+    mkdir -p "$dir/cache"
+    printf '[global]\nindex-url = %s\n' "$CALLER_INDEX" >"$dir/pip.conf"
+    printf 'index-url = "%s"\n' "$CALLER_INDEX" >"$dir/uv.toml"
+    (
+        for name in $CALLER_SETTINGS; do
+            case "$name" in
+            UV_INDEX) value="case-101=$CALLER_INDEX" ;;
+            UV_FIND_LINKS | PIP_FIND_LINKS) value="$CALLER_INDEX/links" ;;
+            UV_INDEX_STRATEGY) value=unsafe-best-match ;;
+            UV_NO_INDEX | PIP_NO_INDEX) value=1 ;;
+            UV_CONFIG_FILE) value="$dir/uv.toml" ;;
+            *) value="$CALLER_INDEX" ;;
+            esac
+            export "$name=$value"
+        done
+        export UV_NO_CONFIG=0 PIP_CONFIG_FILE="$dir/pip.conf" IOC_CACHE="$dir/cache" IOC_CLONES="$dir/clones"
+        IOC_ENV_FUNCTIONS_ONLY=1
+        # shellcheck source=env.sh
+        . "$HERE/env.sh" || exit 1
+        for step in $(declare -f ioc_env_main | grep -oE '\bioc_env_[a-z_]+' | sort -u); do
+            case "$step" in
+            ioc_env_main | ioc_env_caches | ioc_env_enforce | ioc_env_refuse) ;;
+            *) eval "$step() { return 0; }" ;;
+            esac
+        done
+        ioc_env_main || exit 1
+        env
+    )
+}
+settings="$(caller_settings_env 2>&1)"
+status=$?
+held=""
+for name in $CALLER_SETTINGS; do
+    printf '%s\n' "$settings" | grep -q "^$name=" && held="$held $name"
+done
+if [ "$status" = 0 ] && [ -z "$held" ] && printf '%s\n' "$settings" | grep -qxF UV_NO_CONFIG=1 &&
+    printf '%s\n' "$settings" | grep -qxF PIP_CONFIG_FILE=/dev/null; then
+    case_passed "the environment env.sh gives a row holds none of the caller's uv and pip settings, and holds UV_NO_CONFIG=1 and PIP_CONFIG_FILE=/dev/null"
+else
+    case_failed "the environment env.sh gives a row holds none of the caller's uv and pip settings, and holds UV_NO_CONFIG=1 and PIP_CONFIG_FILE=/dev/null" \
+        "ioc_env_main ended $status; the caller's settings it still holds:${held:- none}; $(printf '%s\n' "$settings" | grep -E '^(UV_NO_CONFIG|PIP_CONFIG_FILE)=' | tr '\n' ' ')$(printf '%s\n' "$settings" | grep '^env\.sh' | head -1)"
+fi
+planted_run caller-index-assigned "true || UV_EXTRA_INDEX_URL=$CALLER_INDEX uv pip install -r \"\$IOC_EVID/ioc-venv.lock\"; printf 'ran once\\n'"
+case_result "a row that assigns UV_EXTRA_INDEX_URL before an install is refused by name, as a name the gate records with" \
+    "replay-command: f-behaviour-1 runs UV_EXTRA_INDEX_URL=[^ ]*, an assignment to UV_EXTRA_INDEX_URL, a name the gate records with" "$PLANTED_OUT"
+
 # ==== the summary of check.test.sh begins below this line, where cases_copy cuts it ====
 # The summary, by the three endings and their precedence (check.sh's header): run_ending
 # reads every case this file counted, the ones that could not run among them, and this
