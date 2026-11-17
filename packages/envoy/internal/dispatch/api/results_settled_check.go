@@ -256,7 +256,7 @@ func (s *server) checkBlocksOf(ctx context.Context, q queryer, artifact model.Ar
 
 // storedCheckOrder is the id of each `check` block of document artifactID's newest stored
 // version, in document order, the first holder of a repeated id alone, as the block index keeps
-// it. A document with no stored markdown version names none.
+// it (typedBlocksOf). A document with no stored markdown version names none.
 func storedCheckOrder(ctx context.Context, q queryer, artifactID string) ([]string, error) {
 	var markdown string
 	err := q.QueryRow(ctx, `
@@ -275,18 +275,6 @@ func storedCheckOrder(ctx context.Context, q queryer, artifactID string) ([]stri
 		return nil, fmt.Errorf("read the check blocks of the newest version of document %s: %w", artifactID, err)
 	}
 	var order []string
-	seen := map[string]struct{}{}
-	pmdoc.Walk(tree, func(node *pmdoc.Node) bool {
-		if node.Type != "check" {
-			return true
-		}
-		if id, _ := node.Attrs[pmdoc.BlockIDAttr].(string); id != "" {
-			if _, repeated := seen[id]; !repeated {
-				seen[id] = struct{}{}
-				order = append(order, id)
-			}
-		}
-		return true
-	})
+	typedBlocksOf(tree, "check", func(_ *pmdoc.Node, id string) { order = append(order, id) })
 	return order, nil
 }

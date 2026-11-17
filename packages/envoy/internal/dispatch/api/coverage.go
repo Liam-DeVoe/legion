@@ -145,11 +145,9 @@ func (s *server) requirementBlocksIn(ctx context.Context, artifactID string) ([]
 }
 
 // typedBlocksIn walks the live markdown of one document and hands visit each block of blockType
-// in document order, with its block id. The markdown is read live and parsed; nothing is
-// written. A rendering can repeat an id; the block index keys one row per id, and so does this,
-// so only the first holder of an id is visited. Its reader is the requirements of a spec
-// (requirementBlocksIn); the results routes read a check from the block index alone
-// (results_settled_check.go).
+// in document order, with its block id (typedBlocksOf). The markdown is read live and parsed;
+// nothing is written. Its reader is the requirements of a spec (requirementBlocksIn); the results
+// routes read a check from the block index alone (results_settled_check.go).
 func (s *server) typedBlocksIn(ctx context.Context, artifactID, blockType string, visit func(node *pmdoc.Node, id string)) error {
 	markdown, err := s.deps.Docs.Text(ctx, artifactID)
 	if err != nil {
@@ -159,6 +157,14 @@ func (s *server) typedBlocksIn(ctx context.Context, artifactID, blockType string
 	if err != nil {
 		return fmt.Errorf("read the %s blocks of document %s: %w", blockType, artifactID, err)
 	}
+	typedBlocksOf(tree, blockType, visit)
+	return nil
+}
+
+// typedBlocksOf hands visit each block of blockType in tree, in document order, with its block
+// id. A rendering can repeat an id; the block index keys one row per id, and so does this, so
+// only the first holder of an id is visited, and a block with no id is not.
+func typedBlocksOf(tree *pmdoc.Node, blockType string, visit func(node *pmdoc.Node, id string)) {
 	seen := map[string]struct{}{}
 	pmdoc.Walk(tree, func(node *pmdoc.Node) bool {
 		if node.Type != blockType {
@@ -175,7 +181,6 @@ func (s *server) typedBlocksIn(ctx context.Context, artifactID, blockType string
 		visit(node, id)
 		return true
 	})
-	return nil
 }
 
 // servingCounts is how many `check` and `plan_task` blocks serve one requirement.
