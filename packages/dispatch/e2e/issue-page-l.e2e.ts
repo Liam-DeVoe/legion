@@ -5,7 +5,7 @@ import {
   CONTROL_LABELS,
   PRESET_NAMES,
 } from "../web/src/features/issue-page/page-words";
-import { getArtifactBlocks, getIssueEvents, getMyState, listComments } from "./api";
+import { createAsk, getArtifactBlocks, getIssueEvents, getMyState, listComments } from "./api";
 import { seedReplyNesting } from "./issue-layout-seed";
 import { gotoIssue, phase } from "./issue-page";
 import {
@@ -841,6 +841,141 @@ test("the box stays at the foot, grows as it is typed and writes both kinds @pho
     await expectFormOnOutline(page, "at 761x900");
     await expect(composerKind(page, "comment"), "a kind is not drawn at 761x900").toBeVisible();
     await expect(composerKind(page, "ask"), "a kind is not drawn at 761x900").toBeVisible();
+  });
+});
+
+// The box stands 8 px above the screen's foot in every state it rests in, and the
+// reach it publishes for the focused row and the read mark is its own height. A box that grows
+// and then shrinks while the page stands at the outline's end is the case to read: a reply aimed
+// at the last row and ended with the target line's own control, the pointer's way out of a reply.
+// SLOW(>=2s): forty comments seeded, a reply aimed and ended, and the page scrolled to its end
+// twice, each place polled until the box has settled.
+test("the box that shrinks at the outline's end stands 8 px above the foot again", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await phase(browser, seedFortyComments, async (page, seeded) => {
+    const at = `at ${DESKTOP.width}x${DESKTOP.height}`;
+    await page.setViewportSize({ height: DESKTOP.height, width: DESKTOP.width });
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectIssuePageDrawn(page);
+    await expect(composerField(page), `the box is not drawn ${at}`).toBeVisible();
+    const last = (await drawnRows(page)).at(-1)?.id ?? "";
+    await focusRow(page, last);
+    await page.keyboard.press("r");
+    await expect(
+      composerTarget(page),
+      `r on the last row draws no target line ${at}`
+    ).toBeVisible();
+
+    // The reader scrolls to the page's end with the reply open, and ends the reply with the
+    // target line's control.
+    const toTheEnd = async () => {
+      await page.mouse.move(DESKTOP.width / 2, DESKTOP.height / 2);
+      await page.mouse.wheel(0, 100_000);
+      await expect
+        .poll(() =>
+          page.evaluate(
+            () => document.documentElement.scrollHeight - window.innerHeight - window.scrollY
+          )
+        )
+        .toBeLessThanOrEqual(1);
+    };
+    await toTheEnd();
+    await composer(page).getByRole("button", { name: CONTROL_LABELS.write_on_issue }).click();
+    await expect(composerTarget(page), `the reply did not end ${at}`).toHaveCount(0);
+
+    // The reach the box publishes is its own height once it has shrunk back to one line, and
+    // the line stands 8 px above the foot at the outline's end.
+    const reach = () =>
+      composer(page).evaluate((section) => ({
+        height: Math.round(section.getBoundingClientRect().height),
+        published: Math.round(
+          Number.parseFloat(
+            document.documentElement.style.getPropertyValue("--issue-composer-height")
+          )
+        ),
+      }));
+    await expect
+      .poll(async () => (await reach()).height, { message: `the box is not one line again ${at}` })
+      .toBeLessThan(60);
+    await toTheEnd();
+    await expectFormAtFoot(page, `${at}, at the outline's end after the reply ended`);
+    const settled = await reach();
+    expect(
+      settled.published,
+      `the box publishes a reach of ${settled.published} px while it is ${settled.height} px tall ${at}`
+    ).toBe(settled.height);
+  });
+});
+
+// The answer line's options, Decline to answer and Send answer stand inside the box and inside
+// the screen at every width, however many options the question offers: on a phone the controls
+// stand under the field, and a row of them that is wider than the line wraps. A question of four
+// options whose labels are a few words each, as the questions on real issues are, is the case to
+// read.
+// SLOW(>=2s): forty comments and a question of four options seeded, and the answer line opened
+// at two widths.
+test("the answer line's options and Send answer stand inside the box and the screen @phone", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  const seed = async () => {
+    const forty = await seedFortyComments();
+    const question = await createAsk(
+      forty.key,
+      {
+        options: [
+          { label: "B, a document switcher (recommended)" },
+          { label: "A, one scroll with no switcher" },
+          { label: "C, four tabs, Decisions first, as your message named" },
+          { label: "Other" },
+        ],
+        question: "Which layout does the issue page take?",
+      },
+      { actor: { id: "e2e-box-asker", kind: "session" as const }, as: "agent" as const }
+    );
+    return { ...forty, fourOptions: question.id };
+  };
+  await phase(browser, seed, async (page, seeded) => {
+    for (const size of [DESKTOP, PHONE]) {
+      const at = `at ${size.width}x${size.height}`;
+      await page.setViewportSize({ height: size.height, width: size.width });
+      await gotoIssue(page, `/issues/${seeded.key}`);
+      await expectIssuePageDrawn(page);
+      await expect(composerField(page), `the box is not drawn ${at}`).toBeVisible();
+      await focusRow(page, seeded.fourOptions);
+      await page.keyboard.press("a");
+      await expect(composerField(page), `a put no caret in the box ${at}`).toBeFocused();
+      await expect(
+        composer(page).locator("[data-answer-option]"),
+        `the answer line draws no option ${at}`
+      ).toHaveCount(4);
+
+      // Each control the answer line draws ends inside the box and inside the screen.
+      const outside = await composer(page).evaluate((section) => {
+        const edge = Math.min(
+          section.getBoundingClientRect().right,
+          document.documentElement.clientWidth
+        );
+        return [...section.querySelectorAll<HTMLElement>("button")]
+          .filter((control) => control.getClientRects().length > 0)
+          .filter((control) => control.getBoundingClientRect().right > edge + 0.5)
+          .map((control) =>
+            (control.getAttribute("aria-label") ?? control.textContent ?? "").trim()
+          );
+      });
+      expect(outside, `a control of the answer line ends past the box or the screen ${at}`).toEqual(
+        []
+      );
+      const sideways = await page.evaluate(
+        () => document.documentElement.scrollWidth - document.documentElement.clientWidth
+      );
+      expect(sideways, `the answer line makes the page scroll sideways ${at}`).toBeLessThanOrEqual(
+        0
+      );
+      await page.keyboard.press("Escape");
+    }
   });
 });
 
