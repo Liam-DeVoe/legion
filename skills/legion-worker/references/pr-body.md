@@ -159,7 +159,7 @@ a root — it was recorded at the child's head — and a child never records the
 a root's check. A child carrying part of a root's requirement proves it with a check on its own
 Verification document whose `serves` names that requirement. A root's own checks are proven at
 its own head, or, for an `after_merge` check, on the branch the root's pull request merged into
-or on the repository's default branch, after its children's merges.
+or on the repository's default branch, after the merges of every child its checks need.
 
 **An issue with no `before_merge` check is a named gap.** One with no Verification document, or
 with none holding a `before_merge` check, has no evidence of its own. The tester names the gap

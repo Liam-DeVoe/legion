@@ -177,7 +177,7 @@ request, asking nothing of you. Your acceptance comes before it: the reviewer's 
 issue to `accepting`, where you read the tester's handoff, `dispatch results --issue <issue>` at
 the approved head and the reviewer's approval of the head by SHA (the daemon refuses a sign-off
 while an issue beneath it is still in the workflow, `SIGNOFF_CHILD_IN_WORKFLOW`; a parent's
-head carries its children's merges, `skill://legion-architect`, section 4).
+head carries the merges of every child its checks need, `skill://legion-architect`, section 4).
 Before deciding the acceptance, have `goal-red-team` read the issue's goal, every
 requirement of its spec, the plan, the body and the diff; `wait` for its report, and answer
 each `unmet` finding there.
@@ -191,7 +191,7 @@ checks proves nothing for the root, and a child that carries part of a root requ
 that part with a check on the child's own Verification document whose `serves` names the
 requirement, which clears the root's coverage flag for it. The root's own checks are proven at
 the root's own head, or, for an `after_merge` check, on the branch the root's pull request merged
-into or on the repository's default branch, after its children's merges.
+into or on the repository's default branch, after the merges of every child its checks need.
 An issue with no Verification document, or with one that holds no `before_merge` check, is a gap
 the tester and the reviewer name and neither refuses, so your acceptance is the only gate on it:
 name that gap in your acceptance comment and decide there how each delivered item is proven at

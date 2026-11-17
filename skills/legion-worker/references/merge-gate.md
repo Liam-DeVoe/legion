@@ -119,7 +119,7 @@ as the fingerprint decides (*The reviewer*, below, and
   A check carrying `ci_check` is CI's: the one result that `dispatch results` derives from the named run decides it (`skill://legion-worker/references/ci-checks.md`). While that run has not concluded, wait for it by its name, and do not approve or request changes for that check. Wait the same way where GitHub could not be read. When no run of that name answers after the head's checks settle, tell the architect as a finding and request no changes for it.
   A check whose `run` is a whole test suite and has no pass standing at the head has wrong words, which the architect rewrites: tell the architect as a finding, wait for the rewrite with a `WAITING` line naming it, and request no changes for it. One that has a pass standing at the head is a finding for the architect too, and its pass decides the check, so the review goes on.
   An issue with no Verification document, or whose Verification document holds no `before_merge` check, is a gap you name in the review body, never a review that asks for changes: say which of the two it is, and tell the architect, who writes the checks. Your own findings and the checks that do exist still decide the review, and on an issue that has none the architect's acceptance is the gate.
-  A result proves the head it was recorded at. A result a child recorded against a root's check proves nothing for the root, since it was recorded at the child's head, and a child never records the result that proves a root's check. A child that carries part of a root's requirement proves it with a check on the child's own Verification document whose `serves` names that requirement, at the child's own head. A root's own checks are proven at the root's own head, or, for an `after_merge` check, on the branch the root's pull request merged into or on the repository's default branch, after its children's merges.
+  A result proves the head it was recorded at. A result a child recorded against a root's check proves nothing for the root, since it was recorded at the child's head, and a child never records the result that proves a root's check. A child that carries part of a root's requirement proves it with a check on the child's own Verification document whose `serves` names that requirement, at the child's own head. A root's own checks are proven at the root's own head, or, for an `after_merge` check, on the branch the root's pull request merged into or on the repository's default branch, after the merges of every child its checks need.
   On a docs-only PR the `Thermo` line still records the simplify pass and the defects it
   reported, and its pair half reads `thermonuclear pair: not run (docs-only)`.
   Submit **one review per round** —
@@ -230,9 +230,9 @@ it there until that answer comes clean.
   not accept while the issue holds a finding ask no controller took (`findings.md`, "When no
   controller takes it"). Approval is gated by the `before_merge` checks of the issue's own
   Verification document at its head, so a child's result against a root's check proves nothing:
-  a root's checks are proven at its own head, after its children's merges. No `after_merge` result is
-  asked here: it is recorded after the close, where the project opens a check (*The production
-  check after the close*, below).
+  a root's checks are proven at its own head, after the merges of every child its checks need. No
+  `after_merge` result is asked here: it is recorded after the close, where the project opens a
+  check (*The production check after the close*, below).
   CI red at the head in `accepting` moves nothing, as it moves nothing anywhere: the daemon names
   the checks GitHub reported and leaves the decision to the roles it told. Read the head's checks
   on GitHub yourself before you accept, and send a red head back with `request_backward_move`.

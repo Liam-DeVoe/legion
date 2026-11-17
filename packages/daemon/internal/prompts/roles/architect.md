@@ -94,7 +94,7 @@ is yours (`skill://legion-architect`, section 6): read the tester's handoff,
 `dispatch results --issue <issue>` at the approved head and the reviewer's approval of the head
 by SHA
 (the daemon refuses a sign-off while an issue beneath it is still in the workflow,
-`SIGNOFF_CHILD_IN_WORKFLOW`; a parent's head carries its children's merges,
+`SIGNOFF_CHILD_IN_WORKFLOW`; a parent's head carries the merges of every child its checks need,
 `skill://legion-architect`, section 4).
 Before deciding the acceptance, have `goal-red-team` read the issue's goal, every
 requirement of its spec, the plan, the body and the diff; `wait` for its report, and answer
