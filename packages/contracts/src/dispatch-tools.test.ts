@@ -353,16 +353,21 @@ describe("dispatchToolSpecs", () => {
     }
   });
 
+  // An empty key is the value where this rule and `dispatch_search`'s differ: a search takes `""`
+  // as no project, and a key in the request path cannot be empty.
   test("dispatch_related takes a project key and refuses anything else by name", () => {
     const schema = schemaFor("dispatch_related");
 
     expect(schema.safeParse({ project: "CORE", text: "a draft spec" }).success).toBe(true);
     expect(schema.safeParse({ title: "no project" }).success).toBe(false);
-    const lower = schema.safeParse({ project: "core", title: "Retry deliveries" });
-    expect(lower.success).toBe(false);
-    expect(lower.error?.issues.map((issue) => issue.message)).toEqual([
-      `project is not a project key: ${PROJECT_KEY_RULE}`,
-    ]);
+    for (const project of ["core", ""]) {
+      const refused = schema.safeParse({ project, title: "Retry deliveries" });
+      expect(refused.success, JSON.stringify(project)).toBe(false);
+      expect(
+        refused.error?.issues.map((issue) => issue.message),
+        JSON.stringify(project)
+      ).toEqual([`project is not a project key: ${PROJECT_KEY_RULE}`]);
+    }
   });
 
   test("dispatch_plans takes a project key, an optional since and until, and nothing else", () => {
@@ -379,11 +384,15 @@ describe("dispatchToolSpecs", () => {
     expect(schema.safeParse({}).success).toBe(false);
     expect(schema.safeParse({ project: "INFRA", issue: "INFRA-1" }).success).toBe(false);
     expect(schema.safeParse({ project: "INFRA", since: 1 }).success).toBe(false);
-    const lower = schema.safeParse({ project: "infra" });
-    expect(lower.success).toBe(false);
-    expect(lower.error?.issues.map((issue) => issue.message)).toEqual([
-      `project is not a project key: ${PROJECT_KEY_RULE}`,
-    ]);
+    // An empty key would send `GET /api/v1/projects//plans`, so it is refused like any other.
+    for (const project of ["infra", ""]) {
+      const refused = schema.safeParse({ project });
+      expect(refused.success, JSON.stringify(project)).toBe(false);
+      expect(
+        refused.error?.issues.map((issue) => issue.message),
+        JSON.stringify(project)
+      ).toEqual([`project is not a project key: ${PROJECT_KEY_RULE}`]);
+    }
   });
 
   test("dispatch_search rejects a one-character query and a limit above 50", () => {
