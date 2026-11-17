@@ -43,9 +43,8 @@ import {
 } from "./page-words";
 
 /**
- * F's rules for the drafts `buildIssueTree` places (dispatch://INFRA-1196 R4,
- * `dispatch://INFRA-1196/artifact/plan-md#b-t13`), which the tree read keeps
- * (dispatch://INFRA-4062 R1): how this issue addresses a node and names what a reference points
+ * The outline's rules for the drafts `buildIssueTree` places (root R4), which the tree read
+ * keeps: how this issue addresses a node and names what a reference points
  * at (`treeContext`), a node's words read to plain words, and how a check stands
  * (`checkStanding`).
  *

@@ -388,8 +388,8 @@ function viewNode(
   };
 }
 
-// dispatch://INFRA-4062 R4: once the Spec view read is held on the issue's node, Spec draws the
-// nodes its query took of R2's kinds, each as the tree's node of that id. The memo callout the
+// Once the Spec view read is held on the issue's node, Spec draws the nodes its query took of
+// R2's kinds, each as the tree's node of that id. The memo callout the
 // view answers first is no row, and a decision and a constraint the view answers as context are
 // never rows: each is a line of the row its tie names, a decision by its `shaped` tuple and a
 // constraint by the row's `constrained_by` tuple. The control counts the view's own statements.
@@ -434,4 +434,36 @@ test("a view answer's decisions and constraints are lines, never rows", () => {
     ],
   ]);
   expect(filterSignals(root, "").spec.count).toBe(2);
+});
+
+// Two documents of an issue that has not converted can hold one block id, and each block is a row
+// of its own document's id: a filter draws the view's node as the tree's node of that same
+// document, never as the other document's block that shares its read id, though the tree holds
+// that one first.
+test("a view draws its own document's block where two documents share a block id", () => {
+  const view = (supertag: string, slug: string): TreeAnswer => ({
+    converted: false,
+    cursor: null,
+    nodes: [
+      viewNode("a1", supertag, "query", {
+        document: { artifact_id: `artifact-${slug}`, position: 0, slug },
+      }),
+    ],
+    tree: null,
+    tuples: [],
+    view_of: null,
+  });
+  const tree = (views: TreeNode["views"]) =>
+    node(
+      "CORE-1",
+      "issue",
+      [
+        node("plan-md#b-a1", "plan_task", [], { readId: "a1", text: "The plan's step." }),
+        node("spec#b-a1", "requirement", [], { readId: "a1", text: "The spec's statement." }),
+      ],
+      { views }
+    );
+
+  expect(drawn(tree({ spec: view("requirement", "spec") }), "spec")).toEqual(["spec#b-a1"]);
+  expect(drawn(tree({ plan: view("plan_task", "plan-md") }), "plan")).toEqual(["plan-md#b-a1"]);
 });

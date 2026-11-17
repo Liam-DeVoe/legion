@@ -33,18 +33,18 @@ import { issueHeader } from "./issue-page-p";
 import { type ApiRequest, type ApiRequests, expectLoadSettled } from "./traffic";
 
 /**
- * What part T of dispatch://INFRA-1196 (dispatch://INFRA-4062) reads of the rows of the new issue
- * page, and how it names each row so that two runs, and two heads, can be compared row by row.
- * This is T's own helper file (decision 2 of dispatch://INFRA-1196/artifact/part-decisions-md):
- * it reuses G's readers and locators (`e2e/issue-page-g.ts`) and copies none of them.
+ * What the rows of the new issue page read once the page draws its outline from the tree read,
+ * and how each row is named so that two runs, and two heads, can be compared row by row. These
+ * rows keep their helpers in this file of their own, as every set of the page's rows does: it
+ * reuses the readers and locators of `e2e/issue-page-g.ts` and copies none of them.
  *
- * `drawnRowReadings` reads every `[data-node-row]` of `[data-issue-page]` as G's `NodeRow.tsx`
+ * `drawnRowReadings` reads every `[data-node-row]` of `[data-issue-page]` as `NodeRow.tsx`
  * draws it, in drawing order, with one `page.evaluate` for all the rows and, where it reads the
  * bodies, one more for each row once the focus is on it:
  *
  * - `id` is `data-node-id`, `rowKey` is `data-row-key` (null on a view's row, which draws none),
  *   and `level` is `aria-level`; the row a row sits under is the nearest row before it one level
- *   up (`parentIndex`), as G's `parentOfRow` finds it.
+ *   up (`parentIndex`), as `parentOfRow` in `e2e/issue-page-g.ts` finds it.
  * - `words` are `[data-node-words]` without their trail (`[data-node-trail]`: the chips, the gap
  *   words and a count), a child's facts and any control; a folded row's one line,
  *   `[data-node-first-line]`, where it draws no words.
@@ -63,7 +63,7 @@ import { type ApiRequest, type ApiRequests, expectLoadSettled } from "./traffic"
  * - `counts`: what a folded row counts (`[data-node-count]`), then the body's line of what the
  *   coverage read counts for a requirement.
  * - `body`: what the row draws while it has the focus beyond its line, read with the focus on it
- *   as G's keys put it there (`focusRow` does it by id, which a node drawn under two parents
+ *   as the tree's keys put it there (`focusRow` does it by id, which a node drawn under two parents
  *   shares, so this moves it by place): who made the node where the line names nobody ("Author
  *   unknown") or names an agent by its role's word (its whole title), the words drawn whole, an
  *   ask's options with their own words and its answer, and every other line `[data-node-body]`
@@ -81,9 +81,9 @@ import { type ApiRequest, type ApiRequests, expectLoadSettled } from "./traffic"
  * merged; `decisionsReadOf` keeps the decisions read; `viewNodeIds` names the rows root R2 lets a
  * view draw. `treeReads` and `blocksReads` count what a load or a press sent. Each row's gate is
  * one `owedUnless` call on a probe (`treeReadGate`, `convertedGate`, `decisionsViewGate`,
- * `decisionNodesGate`, `partUGate`, `footLineGate`): where the gate is not on T's base the row
- * skips, naming the gate and the decisions that make it owed, and never passes (INFRA-1196
- * decision 170, reading decisions 127 and 135).
+ * `decisionNodesGate`, `partUGate`, `footLineGate`): where the gate is not on this branch's base
+ * the row skips, naming the gate in an `owed` annotation, and never passes, since a row cannot
+ * pass on code the base does not hold yet.
  */
 
 /** A row's kind: the model's token for it, and the tag its group draws (a typed kind's word, or a
@@ -205,7 +205,7 @@ const COUNTS_LEAD = `${CONTROL_LABELS.serving_checks}:`;
 /**
  * Every row of the page in drawing order (the head comment says what each field is read from).
  * With `bodies` (the default) it then puts the focus on each row in turn and reads what its body
- * draws, and ends with the focus on no row, as G's `unfoldEveryBranch` does. A row that is not
+ * draws, and ends with the focus on no row, as `unfoldEveryBranch` does. A row that is not
  * the row read before the focus moved fails the reading, since the bodies would then be another
  * page's.
  */
@@ -412,7 +412,7 @@ const ID_SHAPE = /^\S+$/;
  * list holds it, since a list is the seed's account of the nodes it wrote and a single field
  * says what a node is for; among lists, or among single fields, by the first path of the walk.
  *
- * A block of a document is drawn under F's node id `<slug>#b-<block id>` (G's `blockNode`), so
+ * A block of a document is drawn under the node id `<slug>#b-<block id>` (`blockNode`), so
  * each id is named in that form too for each of `slugs`, the slugs of the issue's documents
  * (the seeds of `e2e/issue-layout-seed.ts` return the documents' ids and not their slugs). An id
  * no document holds a block of gets names no row draws, which name nothing.
@@ -447,9 +447,9 @@ export function seedKeys(seeded: object, slugs: readonly string[]): ReadonlyMap<
 /** Where a row's time comes from: when its node was made, or when a decision last changed. */
 export type TimeSource = "changed" | "made";
 
-/** The source of a drawn time, by the kind of row (F's rule, plan-md's "The tree read's
- *  members": `made_at` for an ask, a comment, a message and a result, and the decisions read's
- *  `changed_at` for a decision). F draws no time for a document block or a child issue. */
+/** The source of a drawn time, by the kind of row (the plan's "The tree read's members":
+ *  `made_at` for an ask, a comment, a message and a result, and the decisions read's
+ *  `changed_at` for a decision). The page draws no time for a document block or a child issue. */
 const TIME_SOURCES: Readonly<Partial<Record<string, TimeSource>>> = {
   ask: "made",
   comment: "made",
@@ -570,7 +570,7 @@ function timeSourceOf(reading: RowReading, key: string): TimeSource | null {
   if (source === undefined) {
     throw new Error(
       `the row ${key} draws a time on a ${reading.kind.type ?? "row of no kind"}, and no read ` +
-        "F draws a time from is known for that kind, so the time cannot be written as its source"
+        "it draws a time from is known for that kind, so the time cannot be written as its source"
     );
   }
   return source;
@@ -777,10 +777,10 @@ export async function heldAnswer(watch: TreeAnswerWatch, what: string): Promise<
   return answer;
 }
 
-/** Root R2's rows of each filter (dispatch://INFRA-1196 R2): the kinds a view draws as rows of
- *  its own, the nodes its query took, and as context, the nodes it holds to place them. Spec
- *  draws the statements; Verification each statement as context, with the checks under it and
- *  their results; Plan the plan tasks; Decisions the questions and the decisions. */
+/** Root R2's rows of each filter: the kinds a view draws as rows of its own, the nodes its query
+ *  took, and as context, the nodes it holds to place them. Spec draws the statements;
+ *  Verification each statement as context, with the checks under it and their results; Plan the
+ *  plan tasks; Decisions the questions and the decisions. */
 export const R2_ROW_KINDS: Readonly<
   Record<TreeView, { readonly context: readonly string[]; readonly query: readonly string[] }>
 > = {
@@ -807,9 +807,9 @@ export interface ViewNodeId {
 /**
  * The rows root R2 lets `filter` draw of its view read `answer`: each node of this issue of the
  * filter's own kinds that the view's query took, and each of its context kinds the view holds as
- * context, by the id `treeIdOf` gives it (the id its row carries, F's form), once each, in the
- * answer's order. `reads` are the issue read and the asks read, which `treeIdOf` names an
- * issue's documents and an ask's block by.
+ * context, by the id `treeIdOf` gives it (the id its row carries), once each, in the answer's
+ * order. `reads` are the issue read and the asks read, which `treeIdOf` names an issue's
+ * documents and an ask's block by.
  */
 export function viewNodeIds(
   answer: IssueTreeAnswer,
@@ -830,7 +830,7 @@ export function viewNodeIds(
 }
 
 /** What `filter`'s control counts of its view read `answer`: the nodes of its main kind the
- *  view's query took, each once (R2, dispatch://INFRA-4062 R4). */
+ *  view's query took, each once (root R2). */
 export function viewCount(answer: IssueTreeAnswer, filter: TreeView): number {
   const kinds = R2_COUNTED_KINDS[filter];
   return new Set(
@@ -886,7 +886,7 @@ export function blocksReads(requests: readonly ApiRequest[]): string[] {
 }
 
 /** The decisions read the page received: today's (`GET /api/v1/issues/{key}/decisions`), or once
- *  INFRA-1253's t16c moves it, the tree read's view `?view=decisions`. */
+ *  the model moves it onto the tree read, the tree read's view `?view=decisions`. */
 export type DecisionsRead =
   | { readonly answer: IssueDecisions; readonly kind: "decisions" }
   | { readonly answer: IssueTreeAnswer; readonly kind: "view" };
@@ -975,22 +975,24 @@ export function decisionsAreNodes(
 }
 
 // ---------------------------------------------------------------------------------------------
-// The gates: a row, or a clause in a row of its own, whose gate is not on T's base skips.
+// The gates: a row, or a clause in a row of its own, whose gate is not on this branch's base
+// skips.
 // ---------------------------------------------------------------------------------------------
 
-/** One gate a row waits on: whether its probe found it on T's base, and what the row owes while
- *  it is not, naming the gate, what the probe read and the decisions that make it owed. */
+/** One gate a row waits on: whether its probe found it on this branch's base, and what the row
+ *  owes while it is not, naming the gate, what the probe read and how an owed row counts. */
 export interface Gate {
   readonly met: boolean;
   readonly owed: string;
 }
 
-/** The decisions every owed row cites (INFRA-1196's 61, 127 and 135, as decision 170 reads them). */
-const OWED_BY = "decisions 61, 127, 135";
+/** How every owed row counts, which its `owed` annotation says after naming its gate: a row cannot
+ *  pass on code the base does not hold yet, and a failure there would say nothing of the page. */
+export const OWED_BY = "a row whose gate is not on the base counts as skipped, never as passed";
 
 /**
  * Goes on where `gate` is met; where it is not, records an `owed` annotation naming it and skips
- * the row, which then counts as skipped and never as passed (INFRA-1196 decision 170). Call it
+ * the row, which then counts as skipped and never as passed (`OWED_BY` says why). Call it
  * first thing a gate can be read, before the row asserts anything it waits on.
  */
 export function owedUnless(gate: Gate): void {
@@ -999,17 +1001,19 @@ export function owedUnless(gate: Gate): void {
   test.skip(true, gate.owed);
 }
 
-/** G1: INFRA-1253's t16a, the tree read, which answers 404 for issue `key` while the route is
- *  absent. Read through the signed-in page's own request context. */
+/** The model's tree read, which answers 404 for issue `key` while the route is absent. Read
+ *  through the signed-in page's own request context. */
 export async function treeReadGate(page: Page, key: string): Promise<Gate> {
   const response = await page.request.get(treePath(key));
   return {
     met: response.status() !== 404,
-    owed: `owed on G1: INFRA-1253's t16a (the tree read answers 404 here); ${OWED_BY}`,
+    owed:
+      "owed until the model's tree read is on this branch's base: the route answers 404 here; " +
+      OWED_BY,
   };
 }
 
-/** G3: INFRA-1253's T12b, an issue born converted, which issue `key`'s tree read says it is. */
+/** The model's issues born converted: issue `key`'s tree read says it is one. */
 export async function convertedGate(page: Page, key: string): Promise<Gate> {
   const path = treePath(key);
   const response = await page.request.get(path);
@@ -1017,54 +1021,58 @@ export async function convertedGate(page: Page, key: string): Promise<Gate> {
   const { converted } = (await response.json()) as IssueTreeAnswer;
   return {
     met: converted === true,
-    owed: `owed on G3: INFRA-1253's T12b (the tree read answers converted: false here); ${OWED_BY}`,
+    owed:
+      "owed until the model's issues born converted are on this branch's base: the tree read " +
+      `answers converted: false here; ${OWED_BY}`,
   };
 }
 
-/** G2: INFRA-1253's t16b and t16c, the decisions read moved onto the tree read: what the page
- *  sent, `requests`, holds a read of issue `key`'s tree with `view=decisions`. */
+/** The model's decisions read moved onto the tree read: what the page sent, `requests`, holds a
+ *  read of issue `key`'s tree with `view=decisions`. */
 export function decisionsViewGate(requests: readonly ApiRequest[], key: string): Gate {
   return {
     met: treeReads(requests, key, "decisions") > 0,
     owed:
-      "owed on G2: INFRA-1253's t16b and t16c (the page reads its decisions here with no " +
-      `view=decisions read of the tree); ${OWED_BY}`,
+      "owed until the model's decisions view of the tree read is on this branch's base: the " +
+      `page reads its decisions here with no view=decisions read of the tree; ${OWED_BY}`,
   };
 }
 
-/** What the G5 probe and part U's read: the seed's decisions are sections of `decisions.md`. */
+/** What `decisionNodesGate` and `partUGate` read where they are not met: the seed's decisions
+ *  are sections of `decisions.md`. */
 const DECISIONS_ARE_SECTIONS =
   "the seed's decisions are sections of decisions.md here, not nodes of the tree read";
 
-/** G5: INFRA-1150's T7, T8, T11 and T12 and part U's seed commit, which make the seeds'
- *  decisions nodes of the tree read (`decisionsAreNodes`). */
+/** The decisions work that makes each decision a node of the tree read, and the seeds that then
+ *  write their decisions so (`decisionsAreNodes`). */
 export function decisionNodesGate(answer: IssueTreeAnswer, read: DecisionsRead | undefined): Gate {
   return {
     met: decisionsAreNodes(answer, read),
     owed:
-      "owed on G5: INFRA-1150's T7, T8, T11 and T12 and part U's seed commit " +
-      `(${DECISIONS_ARE_SECTIONS}); ${OWED_BY}`,
+      "owed until decisions are nodes of the tree read, and the seeds write theirs so, on this " +
+      `branch's base: ${DECISIONS_ARE_SECTIONS}; ${OWED_BY}`,
   };
 }
 
-/** Part U, dispatch://INFRA-4097, once INFRA-1150's T8 is on T's base: the page draws the
- *  decisions from the tree read's nodes, which the seeds then write (`decisionsAreNodes`). */
+/** The page drawing the decisions from the tree read's nodes, which waits on the decisions work
+ *  that makes them nodes reaching this branch's base, the seeds then writing them so
+ *  (`decisionsAreNodes`). */
 export function partUGate(answer: IssueTreeAnswer, read: DecisionsRead | undefined): Gate {
   return {
     met: decisionsAreNodes(answer, read),
     owed:
-      "owed on part U, dispatch://INFRA-4097, once INFRA-1150's T8 is on T's base " +
-      `(${DECISIONS_ARE_SECTIONS}); decisions 61, 109, 127, 135`,
+      "owed until the page draws the decisions from the tree read's nodes, once decisions are " +
+      `nodes of the tree read on this branch's base: ${DECISIONS_ARE_SECTIONS}; ${OWED_BY}`,
   };
 }
 
 /** How many frames the page's writer looks for its line in after a Reply (`outline-writer.tsx`:
- *  ten after the first), and one more, as G's rows wait them out. */
+ *  ten after the first), and one more, as the rows of `e2e/issue-page-g.e2e.ts` wait them out. */
 const WRITER_FRAMES = 12;
 
-/** Part L's line at the foot of the outline, which a row's Reply puts the caret in: once a Reply
- *  was pressed, the focus is on a field the reader types in, inside the page. Part L draws the
- *  line (`slots/foot.tsx` draws nothing until it does), and it is not under T's base. */
+/** The line at the foot of the outline, which a row's Reply puts the caret in: once a Reply was
+ *  pressed, the focus is on a field the reader types in, inside the page. The work that draws
+ *  the line is not on this branch's base (`slots/foot.tsx` draws nothing until it is). */
 export async function footLineGate(page: Page): Promise<Gate> {
   for (let passed = 0; passed < WRITER_FRAMES; passed += 2) await nextFrames(page);
   const met = await page.evaluate(() => {
@@ -1079,8 +1087,8 @@ export async function footLineGate(page: Page): Promise<Gate> {
   return {
     met,
     owed:
-      "owed on part L's line at the foot of the outline (a Reply puts the caret in no line here: " +
-      `part L, which draws it, is not on T's base); ${OWED_BY}`,
+      "owed until the line at the foot of the outline is on this branch's base: a Reply puts " +
+      `the caret in no line here; ${OWED_BY}`,
   };
 }
 
@@ -1088,13 +1096,13 @@ export async function footLineGate(page: Page): Promise<Gate> {
 // What the page draws beside the rows.
 // ---------------------------------------------------------------------------------------------
 
-/** The status control of the header part P draws (`header[data-issue-header]`), the one place the
+/** The status control of the page's header (`header[data-issue-header]`), the one place the
  *  new page draws the issue's own status: the outline draws no row for the issue. */
 export function headerStatus(page: Page): Locator {
   return issueHeader(page).getByRole("combobox", { exact: true, name: "Status" });
 }
 
-/** One node a filter draws: a row, or a check's result inside its row (part V's Verification). */
+/** One node a filter draws: a row, or a check's result inside its row (the Verification view). */
 export interface DrawnNode {
   /** Whether it is drawn as context (`data-node-context`). */
   readonly context: boolean;
@@ -1103,7 +1111,7 @@ export interface DrawnNode {
 }
 
 /** Every node the page draws with its id and its kind (`[data-node-id][data-node-type]`), in
- *  drawing order: each row, and each result part V draws inside its check's row. */
+ *  drawing order: each row, and each result the Verification view draws inside its check's row. */
 export function drawnNodes(page: Page): Promise<DrawnNode[]> {
   return page.evaluate(() =>
     Array.from(

@@ -83,11 +83,11 @@ export function ViewPlanSlot({ issue, route }: SlotProps): ReactNode {
   // background read fails, which TanStack marks as no success while it keeps the data. So no
   // such read takes the view down, with the reader's press of "Steps" and the focus (R6, R7),
   // and the view drawn again on a return to Plan draws the blocks held. The tree read is
-  // `useIssueTree`'s, so the view sends no request of its own (dispatch://INFRA-3938 R2); an
-  // issue with neither document waits on it too, since its tasks are the tree read's as well.
+  // `useIssueTree`'s, so the view sends no request of its own; an issue with neither document
+  // waits on it too, since its tasks are the tree read's as well.
   //
-  // The reading is part F's `IssueTreeView.blocksHeld`, true while the tree read holds an answer,
-  // as decision 98 of dispatch://INFRA-1196 asks: the view keeps no reading of its own.
+  // The reading is `IssueTreeView.blocksHeld`, true while the tree read holds an answer, so a
+  // refetch that fails keeps the text the view drew: the view keeps no reading of its own.
   return (
     <NoTooltips>
       {/* The view's box, the prototype's `.plan`: at most 1300 px, in the middle of the column,

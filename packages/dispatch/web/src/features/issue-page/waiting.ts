@@ -21,7 +21,8 @@ import type { TreeAnswer } from "./tree-read/tree-read";
  * A decision is a decision node of the tree read (`decisionNodes`), and one the reader asked to
  * change waits on its agent and is not counted, by the outline's one rule
  * (`decisionNodeChanges`): its Change is a comment the tree read (`tree`) hangs under its node,
- * so the count matches no quote and reads no block of a document.
+ * whether or not the comments read holds that comment yet, so the count matches no quote and
+ * reads no block of a document.
  */
 export interface WaitingOnReader {
   /** The open asks other than an approval request whose turn is the reader's. */
@@ -58,6 +59,8 @@ export function waitingOnReader(
         issue.primary_artifact_id
     );
   const asks = open.length - approvals.length;
+  // The decision nodes a Change waits on, by the node's id: from the tree read alone, as the
+  // outline finds them, so the two agree while the comments read is out or older.
   const changes = tree === undefined ? undefined : decisionNodeChanges(tree);
   const reviewing =
     viewer === undefined
