@@ -508,8 +508,11 @@ func requireOneAuthorRule(t *testing.T) {
 	if written, err := graphstore.VisibilityFor("", bearer); err != nil || written != graphstore.VisibilityProject {
 		t.Errorf("a node written on the shared bearer = %q, %v; want %q", written, err, graphstore.VisibilityProject)
 	}
-	// The going routes call the one rule. Read from the source, because what is under test is
-	// that no second copy of the rule exists to drift from it.
+	// The going routes call the one rule for the asker, and hold a run's owner to the
+	// credential that asked it (graphstore.NamesCredential beside model.Actor.SameCredential),
+	// which is no second copy of the rule: an interaction compares the whole credential. Read
+	// from the source, because what is under test is that no second copy of the rule exists to
+	// drift from it.
 	source, err := os.ReadFile("going_routes.go")
 	if err != nil {
 		t.Fatalf("read the going routes: %v", err)
@@ -517,8 +520,11 @@ func requireOneAuthorRule(t *testing.T) {
 	if strings.Contains(string(source), "func goingActorNamesSomebody") {
 		t.Error("the going routes keep a copy of the author rule")
 	}
-	if calls := strings.Count(string(source), "graphstore.ProvesAuthor("); calls != 2 {
-		t.Errorf("the going routes call the one author rule %d time, want both the asker's test and the run's author's", calls)
+	if calls := strings.Count(string(source), "graphstore.ProvesAuthor("); calls != 1 {
+		t.Errorf("the going routes call the one author rule %d time(s), want once, the asker's test", calls)
+	}
+	if calls := strings.Count(string(source), "graphstore.NamesCredential("); calls != 1 {
+		t.Errorf("the going routes hold a run's author to a named credential %d time(s), want once, the run owner's test", calls)
 	}
 }
 
