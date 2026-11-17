@@ -17,6 +17,7 @@ import {
 import { realClock, tick } from "../../../__tests__/fake-clock";
 import { answerRequests } from "../../../__tests__/network";
 import { userOnFakeClock } from "../../../__tests__/user";
+import { trackQueryFetches } from "../../../api/query-refresh";
 import { buildDispatchReference } from "../../refs/routes";
 import { SEND_DEADLINE_MS } from "../../writes/keyed-write";
 import { writesOf } from "../../writes/write-store";
@@ -27,7 +28,7 @@ import { issueDetails, node, READER_ACTOR, statementRef } from "../spec-filter/s
 import { TreeRows } from "../TreeRows";
 import type { DrawnRow } from "../tree-fold";
 import { nodesInOrder, rowKeyOf } from "../tree-keys";
-import { type TreeAnswer, type TreeAnswerNode, useTreeRead } from "../tree-read/tree-read";
+import { type TreeAnswer, type TreeAnswerNode, useTreeRead, viewKey } from "../tree-read/tree-read";
 import { lensActFor } from "./LensMenu";
 
 /**
@@ -248,13 +249,16 @@ function treeAnswer(lenses: number): TreeAnswer {
 }
 
 /** Answers every tree read of this issue, the first with its statement alone and each one after
- *  it with one lens more, and counts them. */
-function answerTreeReads(): { readonly reads: number } {
+ *  it with one lens more, and counts them. Each read after the first answers once `later` has
+ *  settled, where the test holds them back. */
+function answerTreeReads(later?: Promise<void>): { readonly reads: number } {
   const asked = { reads: 0 };
   answerRequests(
-    http.get(`/api/v1/issues/${KEY}/tree`, () => {
+    http.get(`/api/v1/issues/${KEY}/tree`, async () => {
       asked.reads += 1;
-      return Response.json(treeAnswer(asked.reads - 1));
+      const lenses = asked.reads - 1;
+      if (lenses > 0) await later;
+      return Response.json(treeAnswer(lenses));
     })
   );
   return asked;
@@ -714,6 +718,59 @@ test("a 201 lands on the outline the reader still stands on", async () => {
     );
   } finally {
     out.resolve();
+    view.unmount();
+  }
+});
+
+// A 201 reads the tree again and lets go of every view of the issue the cache holds, since a view
+// read before the pick does not hold the lens it made. The page lands on the new lens's row only
+// once the tree read the pick made has answered: until then the menu says the pick is out and the
+// address stays where it was. The client records when each read begins, as the page's event feed
+// has it do, so the pick's read keeps to the scheduler's interval.
+test("a 201 lets go of the held views and lands once the tree is read again", async () => {
+  const user = userEvent.setup();
+  const [read] = buildIssueTree({ issue: ISSUE, tree: treeAnswer(0) }).children;
+  if (read?.reference === undefined) throw new Error("the tree read draws no statement");
+  answerCatalogue(() => Response.json(schema(CATALOGUE)));
+  const reread = Promise.withResolvers<void>();
+  const tree = answerTreeReads(reread.promise);
+  const bodies = answerInvocations(() => Response.json(invoked("trade-off"), { status: 201 }));
+  const client = signedIn();
+  trackQueryFetches(client);
+  client.setQueryData(viewKey(KEY, "spec"), treeAnswer(0));
+  const address: Address = { at: "", go: undefined };
+  const view = renderAt(
+    <>
+      <TreeReadRows />
+      <Where address={address} />
+    </>,
+    undefined,
+    client
+  );
+  try {
+    const control = await focusedAct(view, read.id);
+    const rows = view.container.querySelectorAll("[data-node-row]").length;
+    expect(tree.reads).toBe(1);
+    await user.click(control);
+    await user.click((await drawnItems(view))[0] as HTMLElement);
+    await waitFor(() => expect(tree.reads).toBe(2));
+    await letRequestsSettle();
+    expect(bodies).toEqual([{ kind: "trade-off", on: read.reference }]);
+    expect(menuLine(view), "the menu stopped saying the pick is out").toBe(LENS_ANSWERS.examining);
+    expect(address.at, "the page landed before the tree was read again").toBe(`/issues/${KEY}`);
+
+    reread.resolve();
+    await waitFor(() => expect(address.at).toBe(`/issues/${KEY}?node=${invoked("trade-off").id}`));
+    expect(client.getQueryData(viewKey(KEY, "spec")), "the held view outlived the 201").toBe(
+      undefined
+    );
+    expect(tree.reads, "the 201 read the tree more than once").toBe(2);
+    await waitFor(() =>
+      expect(view.container.querySelectorAll("[data-node-row]")).toHaveLength(rows + 1)
+    );
+    expect(menuOf(view)).toBeNull();
+  } finally {
+    reread.resolve();
     view.unmount();
   }
 });

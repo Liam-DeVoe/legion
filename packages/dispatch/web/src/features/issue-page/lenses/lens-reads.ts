@@ -1,14 +1,20 @@
 import type { LensInvoked } from "@legion/contracts";
-import { queryOptions, useMutationState, useQueryClient } from "@tanstack/react-query";
+import {
+  type QueryClient,
+  queryOptions,
+  useMutationState,
+  useQueryClient,
+} from "@tanstack/react-query";
 import { useLayoutEffect, useRef } from "react";
 import { type Location, type NavigateFunction, useLocation, useNavigate } from "react-router-dom";
 
 import { api, writeRequest } from "../../../api/client";
+import { type RefreshTarget, refreshQueries } from "../../../api/query-refresh";
 import { buildIssuePath, parseIssuePath } from "../../refs/routes";
 import { useKeyedWrite } from "../../writes/useKeyedWrite";
 import { issueAddress } from "../issue-address";
 import { LENS_WORDS } from "../page-words";
-import { issueTreeKey } from "../tree-read/tree-read";
+import { dropViews, issueTreeKey } from "../tree-read/tree-read";
 
 /**
  * The one module of the issue page that names the lens read, the lens catalogue and the
@@ -98,6 +104,44 @@ function onOutlineOf(issueKey: string, { pathname, search }: Location): boolean 
   );
 }
 
+/**
+ * Reads the tree of the issue `issueKey` again through the app's refresh scheduler
+ * (`refreshQueries`), drops every view of the issue the cache holds (`dropViews`), and answers
+ * once the tree has been read: when the first read of it that begins from the refresh on has
+ * settled. The scheduler answers nothing itself and may begin that read later than its call: once
+ * a read already out has settled, or a second after the last read began. Where nothing observes
+ * the tree, the scheduler reads nothing and only marks it stale, to be read when a page draws it,
+ * and an observer that holds its answer for good (`isStatic`) reads nothing either, so this
+ * answers at once; and it answers as soon as the tree is let go, or its last observer goes, while
+ * it waits, since no read comes then. It never answers with a timer of its own.
+ */
+function readTreeAgain(queryClient: QueryClient, issueKey: string): Promise<void> {
+  const cache = queryClient.getQueryCache();
+  const tree: RefreshTarget = { exact: true, queryKey: issueTreeKey(issueKey) };
+  const query = cache.find(tree);
+  const { promise, resolve } = Promise.withResolvers<void>();
+  if (query === undefined || !query.isActive() || query.isStatic()) {
+    resolve();
+  } else {
+    // Subscribed before the refresh, since the scheduler can begin the read within its call.
+    let began = false;
+    const unsubscribe = cache.subscribe((event) => {
+      if (event.query !== query) return;
+      if (event.type === "updated" && event.action.type === "fetch") began = true;
+      // A read settles when it answers, fails or is called off, each of which leaves the query
+      // idle; data written into the cache while the read is out leaves it fetching.
+      const settled = began && query.state.fetchStatus === "idle";
+      if (settled || event.type === "removed" || !query.isActive()) {
+        unsubscribe();
+        resolve();
+      }
+    });
+  }
+  refreshQueries(queryClient, [tree]);
+  dropViews(queryClient, issueKey);
+  return promise;
+}
+
 /** What the menu of one node needs of the lenses invoked on it. */
 export interface LensInvocation {
   /** Invokes a lens of kind `kind` on the node (`useInvokeLens`). */
@@ -121,11 +165,16 @@ export interface LensInvocation {
  * that made it: the menu is drawn only while its row has the focus, and a row that lost the focus
  * while its pick was out says the refusal once it is focused again.
  *
- * A landing reads the tree read again, and that read alone, and waits for it. Then, where
- * Dispatch answered the lens it made and the reader still stands on this issue's outline, it
- * replaces the address with the outline's own at that lens's row (`?node=`), keeping the words
- * filter (`?q=`) and dropping every other part of the address, so the page lands on the new row
- * and a reload lands there too. The address is the one that stands as the read answers
+ * A landing reads the tree again through the app's refresh scheduler, as the page does for a
+ * write it sees, so it never calls off a read already out and keeps to one start a second: the
+ * write and the event it raises read the tree once or twice, never more. It drops every view of
+ * the issue the cache holds, since a view read before the write does not hold the lens it made
+ * and would be drawn older than the tree; the one an observer draws is read again. It waits for
+ * the tree's read (`readTreeAgain`), so the tree holds the lens's row when the address names it.
+ * Then, where Dispatch answered the lens it made and the reader still stands on this issue's
+ * outline, it replaces the address with the outline's own at that lens's row (`?node=`), keeping
+ * the words filter (`?q=`) and dropping every other part of the address, so the page lands on the
+ * new row and a reload lands there too. The address is the one that stands as the read answers
  * (`standing`), whichever row has the focus then. A reader who has left the outline, for another
  * page, another issue or one of this issue's views, is left where they went, and so is one who
  * has come back to it since: the outline drawn again keeps an address of its own.
@@ -165,7 +214,7 @@ export function useInvokeLens(
     },
     invoke: async (kind) => {
       const invoked = await made.mutateAsync(kind);
-      await queryClient.invalidateQueries({ queryKey: issueTreeKey(issueKey), exact: true });
+      await readTreeAgain(queryClient, issueKey);
       const now = standing.current;
       if (invoked !== null && now !== undefined && onOutlineOf(issueKey, now.location)) {
         const filter = new URLSearchParams(now.location.search).get("q");
