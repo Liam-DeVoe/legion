@@ -383,7 +383,7 @@ with no workspace, on a copy of the module's `go.mod`. A workspace that does not
 or that holds a replace, is refused. It reads go's JSON with `jq`. Nothing else of nats-server
 changes, the repository's own files are never written, and no other build sees a hook.
 The hold points are `write.preIO`, `write.preRename` (2.15.1 alone: 2.10.29 writes `o.dat` in
-place), `flush.encoded`, `store.create`, `api.worker`, `client.publish` and `stream.apply`;
+place), `flush.encoded`, `store.create`, `api.worker`, `client.publish`, `meta.apply` and `stream.apply`;
 `hooks.go` says where each one is. A server's shutdown reports `server.shutdown` before it stops
 anything and `server.down` once it has waited for its goroutines: the hook releases every hold on
 that server at the first and parks none of its goroutines until the second, so a `Stop` with an

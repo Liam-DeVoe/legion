@@ -130,10 +130,26 @@ index 2ab5873..5816479 100644
  				r.jsub.icb(r.sub, client, r.acc, r.subject, r.reply, r.msg)
  				if dur := time.Since(start); dur >= readLoopReportThreshold {
 diff --git a/server/jetstream_cluster.go b/server/jetstream_cluster.go
-index 61f3478..947d2b5 100644
+index 61f3478..2fc8923 100644
 --- a/server/jetstream_cluster.go
 +++ b/server/jetstream_cluster.go
-@@ -3041,6 +3041,7 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
+@@ -1950,6 +1950,7 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, ru *recoveryUpdates) (bo
+ 					js.srv.Errorf("JetStream cluster failed to decode consumer assignment: %q", buf[1:])
+ 					return didSnap, didRemoveStream, didRemoveConsumer, err
+ 				}
++				measureMeta(js.srv, ca, isRecovering, "meta.apply")
+ 				if isRecovering {
+ 					js.setConsumerAssignmentRecovering(ca)
+ 					key := ca.recoveryKey()
+@@ -1970,6 +1971,7 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, ru *recoveryUpdates) (bo
+ 					js.srv.Errorf("JetStream cluster failed to decode compressed consumer assignment: %q", buf[1:])
+ 					return didSnap, didRemoveStream, didRemoveConsumer, err
+ 				}
++				measureMeta(js.srv, ca, isRecovering, "meta.apply")
+ 				if isRecovering {
+ 					js.setConsumerAssignmentRecovering(ca)
+ 					key := ca.recoveryKey()
+@@ -3041,6 +3043,7 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
  					continue
  				}
  

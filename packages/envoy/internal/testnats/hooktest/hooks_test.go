@@ -485,6 +485,43 @@ func TestForcedOrderHoldsAPublishBeforeItIsMatched(t *testing.T) {
 	}
 }
 
+// Every member of an R3 cluster applies a consumer's assignment from the meta layer before it
+// creates the consumer. Held on all three, the create gets no answer; released, it is answered.
+func TestForcedOrderHoldsAConsumerAssignmentBeforeItsServersApplyIt(t *testing.T) {
+	cluster := testnats.StartCluster(t, 3)
+	hooks := testnats.Hook(t)
+	conn := testnats.Connect(t, cluster.URL())
+	t.Cleanup(conn.Close)
+	js, err := conn.JetStream(natsgo.MaxWait(reachWithin))
+	if err != nil {
+		t.Fatalf("JetStream: %v", err)
+	}
+	if _, err := js.AddStream(&natsgo.StreamConfig{Name: "META", Subjects: []string{"meta.>"}, Replicas: 3}); err != nil {
+		t.Fatalf("create the stream: %v", err)
+	}
+	create := func(name string) <-chan error {
+		return answer(func() error {
+			_, err := js.AddConsumer("META", &natsgo.ConsumerConfig{Durable: name, AckPolicy: natsgo.AckExplicitPolicy})
+			return err
+		})
+	}
+	answered(t, create("M"), "the unheld create of M")
+
+	holds := make([]*testnats.Hold, len(cluster.Servers))
+	for i, srv := range cluster.Servers {
+		holds[i] = hooks.Hold(testnats.MetaApply, testnats.OnServer(srv), testnats.Stream("META"), testnats.Consumer("N"))
+	}
+	done := create("N")
+	for _, hold := range holds {
+		t.Logf("held %s", hold.Reached(t))
+	}
+	unanswered(t, done, "the create of N")
+	for _, hold := range holds {
+		hold.Release()
+	}
+	answered(t, done, "the create of N")
+}
+
 func TestForcedOrderHoldsACommittedEntryBeforeItsLeaderStoresIt(t *testing.T) {
 	cluster := testnats.StartCluster(t, 3)
 	hooks := testnats.Hook(t)

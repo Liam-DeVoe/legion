@@ -149,10 +149,26 @@ index 6b6f3ce..3e031d2 100644
  		seq = req.Seq
  	}
 diff --git a/server/jetstream_cluster.go b/server/jetstream_cluster.go
-index 69725b5..bd4751a 100644
+index 69725b5..85bf1ce 100644
 --- a/server/jetstream_cluster.go
 +++ b/server/jetstream_cluster.go
-@@ -6021,6 +6021,7 @@ func (js *jetStream) applyStreamMsgOp(mset *stream, op entryOp, mbuf []byte, isR
+@@ -3858,6 +3858,7 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, ru *recoveryUpdates) (bo
+ 					js.srv.Errorf("JetStream cluster failed to decode consumer assignment: %q", buf[1:])
+ 					return isRecovering, didSnap, err
+ 				}
++				measureMeta(js.srv, ca, isRecovering, "meta.apply")
+ 				if isRecovering {
+ 					if isCatchup {
+ 						js.setConsumerAssignmentCatchup(ca)
+@@ -3874,6 +3875,7 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, ru *recoveryUpdates) (bo
+ 					js.srv.Errorf("JetStream cluster failed to decode compressed consumer assignment: %q", buf[1:])
+ 					return isRecovering, didSnap, err
+ 				}
++				measureMeta(js.srv, ca, isRecovering, "meta.apply")
+ 				if isRecovering {
+ 					if isCatchup {
+ 						js.setConsumerAssignmentCatchup(ca)
+@@ -6021,6 +6023,7 @@ func (js *jetStream) applyStreamMsgOp(mset *stream, op entryOp, mbuf []byte, isR
  	if !isRecovering {
  		mt = mset.getAndDeleteMsgTrace(lseq)
  	}

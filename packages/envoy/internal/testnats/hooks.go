@@ -61,6 +61,10 @@ const (
 	// ClientPublish is a publish past its permission checks, before the server matches it
 	// against any subscription.
 	ClientPublish Point = "client.publish"
+	// MetaApply is one consumer assignment the JetStream meta layer is about to apply on one
+	// server (applyMetaEntries), before that server creates or updates the consumer. A lone
+	// server has no meta layer and no such point.
+	MetaApply Point = "meta.apply"
 	// StreamApply is one committed entry of a clustered stream on one server, before that server
 	// stores it (applyStreamMsgOp). A stream with no Raft group, a lone server's, has no such
 	// point.
@@ -77,7 +81,7 @@ const (
 )
 
 // HoldPoints are the hold points, in the order above.
-var HoldPoints = []Point{WritePreIO, WritePreRename, FlushEncoded, StoreCreate, APIWorker, ClientPublish, StreamApply}
+var HoldPoints = []Point{WritePreIO, WritePreRename, FlushEncoded, StoreCreate, APIWorker, ClientPublish, MetaApply, StreamApply}
 
 // missing are the hold points a hooked server version does not have, each with the reason.
 var missing = map[string]map[Point]string{
@@ -197,8 +201,8 @@ func Consumer(name string) Match {
 	return Match{"consumer " + name, func(e Event) bool { return e.Consumer == name }}
 }
 
-// Stream takes the events of the stream named name: a StreamApply of it, or a file store point
-// of one of its consumers.
+// Stream takes the events of the stream named name: a StreamApply of it, a MetaApply of one of its
+// consumers, or a file store point of one of its consumers.
 func Stream(name string) Match {
 	return Match{"stream " + name, func(e Event) bool {
 		if e.Stream != "" {

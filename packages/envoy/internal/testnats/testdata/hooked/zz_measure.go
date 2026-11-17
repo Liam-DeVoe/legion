@@ -16,7 +16,7 @@ type MeasureEvent struct {
 	Point string
 	// Gen is the consumer file store's generation, one per ConsumerStore call; 0 if none.
 	Gen uint64
-	// Name is the consumer's name, at a file store point.
+	// Name is the consumer's name, at a file store point and at meta.apply.
 	Name string
 	// Store is the stream's store directory at a file store point, and the server's own store
 	// directory (Options.StoreDir) at a server point.
@@ -42,13 +42,13 @@ type MeasureEvent struct {
 	// Subject is the request's subject at api.worker, the message's at client.publish and
 	// stream.apply.
 	Subject string
-	// Stream is the stream's name at stream.apply.
+	// Stream is the stream's name at stream.apply and meta.apply.
 	Stream string
 	// Client is the publishing connection's name at client.publish, and Kind its kind (CLIENT,
 	// JETSTREAM, SYSTEM, ACCOUNT).
 	Client string
 	Kind   string
-	// Recovering is set at stream.apply while the server replays its log at start.
+	// Recovering is set at stream.apply and meta.apply while the server replays its log at start.
 	Recovering bool
 }
 
@@ -113,6 +113,16 @@ func measureApply(s *Server, mset *stream, subject string, seq uint64, recoverin
 	}
 	measure(&MeasureEvent{Point: point, Server: s.Name(), Store: s.getOpts().StoreDir, Account: mset.accName(),
 		Stream: mset.name(), Subject: subject, Seq: seq, Recovering: recovering})
+}
+
+// measureMeta reports one consumer assignment the meta layer is about to apply on this server
+// (applyMetaEntries), before the server creates or updates the consumer it assigns.
+func measureMeta(s *Server, ca *consumerAssignment, recovering bool, point string) {
+	if MeasureHook.Load() == nil {
+		return
+	}
+	measure(&MeasureEvent{Point: point, Server: s.Name(), Store: s.getOpts().StoreDir, Account: ca.Client.serviceAccount(),
+		Stream: ca.Stream, Name: ca.Name, Recovering: recovering})
 }
 
 // measureServer reports a point of the server's own life: server.shutdown when its Shutdown
