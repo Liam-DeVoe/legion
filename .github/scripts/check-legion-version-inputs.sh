@@ -50,8 +50,9 @@
 #      bash` runs); every step before it one of STEPS_BEFORE_VERSION_STEPS on every key but name,
 #      id, if, timeout-minutes and continue-on-error; the workflow's env: a literal mapping of
 #      WORKFLOW_ENV_KEYS' variables alone, so a BASH_ENV, PATH, LD_PRELOAD, GIT_DIR or GH_REPO is
-#      refused as one more unlisted name; the job with no env:, no container:, no reusable
-#      workflow, and, as the workflow, no defaults but `run: {shell: bash}`; and the step under
+#      refused as one more unlisted name; the job on the module's runs-on: (a self-hosted runner
+#      runs its own hooks first), with no env:, no container:, no reusable workflow, and, as the
+#      workflow, no defaults but `run: {shell: bash}`; and the step under
 #      `bash` itself (`bash --rcfile x -i {0}` sources x first). An expression in place of any of
 #      those mappings is refused, since no one can read what it sets;
 #   4. a path go names for the legion-envoy archives that no path of $LEGION_ENVOY_VERSION_ARGS
@@ -457,6 +458,10 @@ def version_step(doc, spec):
     if "container" in job:
         problem(f"{spec.job} runs in a container:, so {where} runs under that image's bash and environment, which "
                 f"this check does not read; run the job on the runner itself", path)
+    if job.get("runs-on") != spec.runs_on:
+        problem(f"{spec.job}'s runs-on: is {rendered(job.get('runs-on'))}, where {PLAN} names `{spec.runs_on}` for it: "
+                f"another runner, a self-hosted one above all, can run its own hooks and set its own environment "
+                f"before {where}, none of which this check reads", path)
     if "env" in job:
         problem(f"{spec.job}'s env: is {rendered(job['env'])}, and a job's env: reaches every step of it up to {where}: "
                 f"a job holding a checked version step sets no env: of its own, since {PLAN} pins each step's env: "

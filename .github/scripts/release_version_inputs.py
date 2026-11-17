@@ -18,12 +18,13 @@ accounts for are one plan, kept here.
                                .github/agent-secrets-client-targets.json under CGO_ENABLED=0.
   VERSION_STEPS                each step that hands a line's paths to release-push.sh, with the
                                variables that hold those paths, the run: it must be, character for
-                               character after YAML has read it, and its env:, key for key. Exact
-                               text is the rule because shell that reads like the command may not
-                               run it: an escaped `\\$`, a `${{ }}` line GitHub renders into an
-                               assignment, or any added line can keep the paths from
-                               release-push.sh, and a reader of shell finds one more such form
-                               each time.
+                               character after YAML has read it, its env:, key for key, and its
+                               job's runs-on:. Exact text is the rule because shell that reads like
+                               the command may not run it: an escaped `\\$`, a `${{ }}` line
+                               GitHub renders into an assignment, or any added line can keep the
+                               paths from release-push.sh, and a reader of shell finds one more
+                               such form each time. The runner is pinned because a self-hosted one
+                               runs its own hooks and environment before the job's first step.
   STEPS_BEFORE_VERSION_STEPS   every step that may run before one of those in its job: an action
                                at its pin with its with:, or a run: text, and in each case its
                                env:, all exactly. Any other step is code this check does not read,
@@ -63,9 +64,15 @@ WORKFLOW_ENV_KEYS = {
 }
 
 
+# The GitHub-hosted runner each checked job runs on: its image is GitHub's, with no hook or
+# environment of anyone else's before the job's first step.
+RUNNER = "ubuntu-24.04"
+
+
 class VersionStep(NamedTuple):
     """A step that hands a line's paths to release-push.sh: where it is, the workflow-level
-    variables that hold the paths, its whole run: text, and its env: (None for a step with none)."""
+    variables that hold the paths, its whole run: text, its env: (None for a step with none) and
+    its job's runs-on:."""
 
     workflow: str
     job: str
@@ -73,6 +80,7 @@ class VersionStep(NamedTuple):
     variables: tuple[str, ...]
     run: str
     env: dict[str, str] | None = None
+    runs_on: str = RUNNER
 
 
 VERSION_STEPS = (

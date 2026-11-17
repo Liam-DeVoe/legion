@@ -452,6 +452,20 @@ run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "names its with:" "$(contains "$out" "step 1 of legion_build, $before_rule.*its with: is \`{\"fetch-depth\": 0, \"persist-credentials\": false, \"ref\": \"refs/heads/elsewhere\"}\`")"
 
+echo "case: the version step's job runs on a self-hosted runner"
+root=$(written self-hosted)
+replace "$root/.github/workflows/release.yaml" $'    runs-on: ubuntu-24.04\n' $'    runs-on: [self-hosted, linux]\n'
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the runner and the module's" \
+  "$(contains "$out" "legion_build's runs-on: is \`\[\"self-hosted\", \"linux\"\]\`, where $plan_file names \`ubuntu-24.04\` for it")"
+root=$(written self-hosted-confirm)
+replace "$root/.github/workflows/release-envoy-listener.yaml" $'  release_publish:\n    runs-on: ubuntu-24.04\n' \
+  $'  release_publish:\n    runs-on: self-hosted\n'
+run_check "$root"
+check "exits 1 on the listener's confirm job" "$(is "$status" 1)"
+check "names it" "$(contains "$out" "release_publish's runs-on: is \`self-hosted\`")"
+
 echo "case: the version step's job runs in a container"
 root=$(written container)
 replace "$root/.github/workflows/release.yaml" $'    runs-on: ubuntu-24.04\n' $'    runs-on: ubuntu-24.04\n    container: debian:trixie-slim\n'
