@@ -40,7 +40,10 @@ async function stderrWhileGoWaits(call: string): Promise<string> {
   );
   const child = Bun.spawn([process.execPath, caller], {
     cwd: dir,
-    env: { ...process.env, PATH: pathWith(dir) },
+    // TMPDIR is the test's own directory: goOutputSync makes its scratch directory there, and the
+    // SIGKILL below ends the caller before its cleanup runs, so the directory goes with `dir`
+    // rather than staying in the caller's temporary directory.
+    env: { ...process.env, PATH: pathWith(dir), TMPDIR: dir },
     stdout: "ignore",
     stderr: "pipe",
   });
