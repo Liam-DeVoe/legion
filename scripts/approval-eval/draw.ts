@@ -89,14 +89,14 @@ import {
  * dispatch://INFRA-3189 v8, "Grouping"), and puts each group under item 6, over every case of the
  * corpus in it and not only the drawn ones. A group in which any ask of anyone opened before the
  * reserve's cut (a) gives no case to any slice. A group holding a case the reserve does not hold,
- * or one whose root at its ask's opening the rule does not pick (b), one with an ask a scorer's
- * record names (c, `--scorer-records`), or one with an ask a session of the claim's round opened
- * (d, `--round-sessions`), goes to a development slice whole, and the reserved cases it holds are
- * named there. Only the other groups may go into report, and they try it first. `draw.json` counts
- * the groups under each outcome, lists each near-duplicate join, and lists, for each group with
- * any, the parent changes made after its first ask opened, with the actor that made each. A draw
- * that reads no reserve groups by issue as before, and `draw.json` records that its report slice
- * is no final test.
+ * or one whose root at its ask's opening the rule of its time did not hold (b), one with an ask a
+ * scorer's record names (c, `--scorer-records`), or one with an ask a session of the claim's round
+ * opened (d, `--round-sessions`), goes to a development slice whole, and the reserved cases it
+ * holds are named there. Only the other groups may go into report, and they try it first.
+ * `draw.json` counts the groups under each outcome, lists each near-duplicate join, and lists, for
+ * each group with any, the parent changes made after its first ask opened, with the actor that
+ * made each. A draw that reads no reserve groups by issue as before, and `draw.json` records that
+ * its report slice is no final test.
  *
  * What is pinned and what is live. The cases are the corpus's, and each document is read at the
  * version the corpus pins, so those are the same bytes on every run. The one live reading is
@@ -952,6 +952,16 @@ async function draw(flags: Flags): Promise<number> {
     `the rule's calls  ${asked} asked, ${cached} from the cache, ` +
       `${holds.length - asked - cached} settled by the issue's facts`
   );
+  // Which model each answer of the rule says served it, over every case it read: admitted, held
+  // and unreadable alike, and whether or not a cache was kept.
+  const servedModels: Record<string, number> = {};
+  for (const hold of holds) {
+    const name = hold.source === "issue-facts" ? "the issue's facts" : (hold.servedModel ?? "none");
+    servedModels[name] = (servedModels[name] ?? 0) + 1;
+  }
+  for (const [name, count] of Object.entries(servedModels).sort()) {
+    console.log(`  served by ${name.padEnd(30)}${count}`);
+  }
   console.log(
     `the rule's tokens ${holds.reduce((total, one) => total + (one.inputTokens ?? 0), 0)} read, ` +
       `${holds.reduce((total, one) => total + (one.outputTokens ?? 0), 0)} written`
@@ -1022,6 +1032,13 @@ async function draw(flags: Flags): Promise<number> {
       cached,
       inputTokens: holds.reduce((total, one) => total + (one.inputTokens ?? 0), 0),
       outputTokens: holds.reduce((total, one) => total + (one.outputTokens ?? 0), 0),
+      servedModels,
+      // One line per case the rule read, so each answer's served model is kept with the draw.
+      answers: rendered.cases.map((one) => ({
+        caseId: one.row.caseId,
+        source: one.hold.source,
+        servedModel: one.hold.servedModel,
+      })),
       renderingCheck: renderingCheckOf(rendered.checks, DRAW_GUARD),
     },
     excluded: {
