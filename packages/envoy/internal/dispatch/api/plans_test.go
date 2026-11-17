@@ -433,35 +433,38 @@ func TestAProjectCredentialWritesNoPlanOrRatingOfAnotherProject(t *testing.T) {
 	}
 }
 
-// Each rating outside its form is refused 400 STEP_INPUT naming its field, and writes nothing: the
-// rating 1 to 5 and the reason not blank and at most 2,000 code points, both named. A body naming
-// neither is the rating route's own refusal, since the store takes a step write with no rating; the
-// same body on the step route lands, which is its control. A rating with no reason reaches the
-// store, which refuses the reason in its own words, and so it reaches it only after the issue's
-// lookup: the same body for an issue Dispatch does not hold is 404 ISSUE_NOT_FOUND. A reason of
-// exactly 2,000 code points is taken, which is the control of the bound.
+// Each rating outside its form is refused 400 STEP_INPUT in the words of the check that refuses it,
+// and writes nothing: the rating 1 to 5 and the reason not blank and at most 2,000 code points,
+// each the store's refusal. A body naming no rating is the rating route's own refusal, since the
+// store takes a step write with no rating; the same body on the step route lands, which is its
+// control. Every row names its refusal's words, since the route's own refusal names both rating
+// and rating_reason, so a value the route dropped on its way to the store is seen. A rating with no
+// reason reaches the store only after the issue's lookup: the same body for an issue Dispatch does
+// not hold is 404 ISSUE_NOT_FOUND. A reason of exactly 2,000 code points is taken, which is the
+// control of the bound.
 func TestARatingWriteRefusesItsBadValues(t *testing.T) {
 	handler := newTestHandler(t)
 	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	retro := retroIdentity(daemonSession("LEG"), 1)
 	noReason := withStepFields(retro, map[string]any{"rating": 3})
 	noRating := withStepFields(retro, map[string]any{"rating_reason": "Why."})
+	const routesOwn = "rating is required: the rating route writes a retro's rating, 1 to 5, with its rating_reason"
 
 	for _, row := range []struct {
-		name  string
-		body  map[string]any
-		field string
+		name    string
+		body    map[string]any
+		refusal string
 	}{
-		{"a rating of 0", withStepFields(retro, map[string]any{"rating": 0, "rating_reason": "Why."}), "rating"},
-		{"a rating of 6", withStepFields(retro, map[string]any{"rating": 6, "rating_reason": "Why."}), "rating"},
-		{"no rating", noRating, "rating"},
-		{"neither a rating nor a reason", retro, "rating"},
+		{"a rating of 0", withStepFields(retro, map[string]any{"rating": 0, "rating_reason": "Why."}), "rating 0 is no rating"},
+		{"a rating of 6", withStepFields(retro, map[string]any{"rating": 6, "rating_reason": "Why."}), "rating 6 is no rating"},
+		{"no rating", noRating, routesOwn},
+		{"neither a rating nor a reason", retro, routesOwn},
 		{"no reason", noReason, "rating_reason is left out or blank: a rating carries one sentence of why"},
-		{"a blank reason", withStepFields(retro, map[string]any{"rating": 3, "rating_reason": " \n "}), "rating_reason"},
-		{"a reason of 2,001 code points", withStepFields(retro, map[string]any{"rating": 3, "rating_reason": strings.Repeat("é", 2001)}), "rating_reason"},
+		{"a blank reason", withStepFields(retro, map[string]any{"rating": 3, "rating_reason": " \n "}), "rating_reason is left out or blank: a rating carries one sentence of why"},
+		{"a reason of 2,001 code points", withStepFields(retro, map[string]any{"rating": 3, "rating_reason": strings.Repeat("é", 2001)}), "rating_reason holds 2001 characters"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			requireStepRefusal(t, row.name, putRating(t, handler, issue, uuid.NewString(), row.body), http.StatusBadRequest, codeStepInput, row.field)
+			requireStepRefusal(t, row.name, putRating(t, handler, issue, uuid.NewString(), row.body), http.StatusBadRequest, codeStepInput, row.refusal)
 		})
 	}
 	if steps := stepsOf(t, handler, issue); len(steps) != 0 {
