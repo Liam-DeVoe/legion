@@ -91,8 +91,8 @@ func assertTheExtractIsTheGuidesBlock(t *testing.T, extract, heading, mark strin
 		extract, wayBackGuide, wayBackBlockDifference(copied, guide))
 }
 
-// wayBackBlockOfTheGuide is a way back as docs/kubernetes.md shows it (wayBackBlockIn): the
-// content of the one fenced block a reader sees holding mark, in the section heading opens.
+// wayBackBlockOfTheGuide is a way back as docs/kubernetes.md carries it (wayBackBlockIn): the
+// content of the one fenced block holding mark, in the section heading opens.
 // extract is the committed copy of that block, which a failure names. A guide with no such block
 // stops the test rather than skipping it: an absence here would read exactly like a pass, and
 // what this check guards is the copy an operator runs at a rollback.
@@ -106,20 +106,17 @@ func wayBackBlockOfTheGuide(t *testing.T, heading, mark, extract string) string 
 	return block
 }
 
-// wayBackBlockIn reads text where a reader sees it, every HTML comment taken out (htmlComment, as
-// the guide's list of migrations is read), and answers the content of the fenced block holding
-// mark, without its fence lines. That block must be the only one of the text that holds mark, and
-// stand in the section heading opens: from that heading's line to the next heading of its level or
-// above, where a line inside a fenced block opens no section. Each other text is refused, naming
-// why: one with no such heading or with two, one where no block a reader sees holds mark, one
-// where a second block holds it, which an operator could take for the way back, and one whose
-// block stands outside the section, which is not the block the section tells them to run.
+// wayBackBlockIn answers the content of text's fenced block holding mark, without its fence lines.
+// That block must be the only one of the text that holds mark, and stand in the section heading
+// opens: from that heading's line to the next heading of its level or above, where a line inside
+// a fenced block opens no section. Each other text is refused, naming why: one with no such
+// heading or with two, one where no block holds mark, one where a second block holds it, which an
+// operator could take for the way back, and one whose block stands outside the section, which is
+// not the block the section tells them to run. A block an HTML comment hides from the rendered
+// guide is not this reader's to refuse: scripts/semantic-line-breaks.guides.test.ts refuses every
+// raw HTML block of docs/kubernetes.md, a comment among them.
 func wayBackBlockIn(text, heading, mark string) (string, error) {
-	// Each comment gives way to the line ends it spans, so every line number below is the text's.
-	visible := htmlComment.ReplaceAllStringFunc(text, func(comment string) string {
-		return strings.Repeat("\n", strings.Count(comment, "\n"))
-	})
-	lines := strings.Split(visible, "\n")
+	lines := strings.Split(text, "\n")
 	// section is the line of the heading and end the line of the next heading at its level or above,
 	// one past the text where there is none; holding is the opening line of each block holding mark.
 	section, level, end := 0, 0, len(lines)+1
@@ -159,8 +156,7 @@ func wayBackBlockIn(text, heading, mark string) (string, error) {
 	case section == 0:
 		return "", fmt.Errorf("carries no heading %q, whose section shows the way back", heading)
 	case len(holding) == 0:
-		return "", fmt.Errorf("carries no fenced block holding %q that a reader sees: a block inside an "+
-			"HTML comment counts for nothing, since the rendered guide does not show it", mark)
+		return "", fmt.Errorf("carries no fenced block holding %q", mark)
 	case len(holding) > 1:
 		return "", fmt.Errorf("carries %d fenced blocks holding %q, opening at lines %v: an operator cannot "+
 			"tell which is the way back, so keep the one under %q alone", len(holding), mark, holding, heading)
@@ -172,12 +168,12 @@ func wayBackBlockIn(text, heading, mark string) (string, error) {
 }
 
 // The reader takes the way back an operator reads under its heading, and nothing else in its
-// place. The block a reader sees in its section is taken, past a shell comment of another block
-// there, which opens no section. The same block hidden in an HTML comment, closed or never
-// closed, deleted, moved to the next section, or given a copy before its section or beside it is
-// refused, as is a guide without that heading or with it twice. Each case is a guide as
-// docs/kubernetes.md writes one: the section, the one before it and the one after it.
-func TestTheWayBackReaderTakesTheOneVisibleBlockOfItsSection(t *testing.T) {
+// place. The block in its section is taken, past a shell comment of another block there, which
+// opens no section. The same block deleted, moved to the next section, or given a copy before
+// its section or beside it is refused, as is a guide without that heading or with it twice. Each
+// case is a guide as docs/kubernetes.md writes one: the section, the one before it and the one
+// after it.
+func TestTheWayBackReaderTakesTheOneBlockOfItsSection(t *testing.T) {
 	const (
 		heading = "Rolling back the release that rates each plan"
 		mark    = "delete from outbox where kind = 'plan_record';"
@@ -190,13 +186,9 @@ func TestTheWayBackReaderTakesTheOneVisibleBlockOfItsSection(t *testing.T) {
 		shell = "```sh\n# Stop the daemon first.\nkubectl -n legion scale deployment/legion --replicas=0\n```\n\n"
 	)
 	for _, guide := range []struct{ shape, text, refusal string }{
-		{"the block a reader sees in its section", before + opening + fenced + after, ""},
+		{"the block in its section", before + opening + fenced + after, ""},
 		{"the block past a shell comment of another block", before + opening + shell + fenced + after, ""},
-		{"the block inside an HTML comment", before + opening + "<!--\n" + fenced + "-->\n" + after,
-			"that a reader sees"},
-		{"the block inside an HTML comment never closed", before + opening + "<!--\n" + fenced + after,
-			"that a reader sees"},
-		{"the block deleted", before + opening + after, "that a reader sees"},
+		{"the block deleted", before + opening + after, "no fenced block"},
 		{"the block moved to the next section", before + opening + after + "\n" + fenced, "outside the section"},
 		{"a copy of the block before its section", fenced + "\n" + before + opening + fenced + after,
 			"2 fenced blocks"},

@@ -21,7 +21,7 @@ import (
 // lane's filter, as the phase entry's way back does (way_back_doc_test.go).
 //
 // The migration is read through migrations.All, as phase_entry_migrations_doc_test.go reads them,
-// and the guide's block is the one a reader sees under that heading holding the one line only that
+// and the guide's block is the one under that heading that holds the one line only that
 // rollback's block holds (wayBackBlockOfTheGuide). The header's block is read here by a parse of
 // its own, which shares no code with internal/store's: two readers that agree with each other
 // while both drift are what a copy of a document is most at risk of.
