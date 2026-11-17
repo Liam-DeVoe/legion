@@ -22,7 +22,7 @@ import (
 // What it proves: the page has the copy's heading as a line of its own, and the section under it,
 // to the next `## ` heading, holds the copy's table as one passage of whole lines and no table
 // row outside it - which is every row the product half's parse of the page used to take - both as
-// the page is written and as it renders (heldAsEachReaderReads), so that a heading or a row an
+// the page is written and as it renders (refusalTableOfThePage), so that a heading or a row an
 // HTML comment holds, which the rendered page does not show, fails rather than passing as the
 // table. What it does not: that a row's text is a refusal the daemon prints, which is the product
 // half's.
@@ -45,9 +45,7 @@ func TestTheTroubleshootingRefusalsExtractIsTheGuidesRefusalTable(t *testing.T) 
 			"page's `## ` heading, a blank line and the table's rows, which cmd/legion's "+
 			"TestTheTroubleshootingTableHoldsEveryRefusalToAMessageTheLoaderProduces reads", troubleshootingRefusalsExtract)
 	}
-	err := heldAsEachReaderReads(troubleshootingGuide, shippedText(t, troubleshootingGuide), func(text string) error {
-		return refusalTableIn(text, heading, rows)
-	})
+	err := refusalTableOfThePage(shippedText(t, troubleshootingGuide), heading, rows)
 	if err != nil {
 		t.Errorf("%s is no longer the table under %q in %s, which cmd/legion's "+
 			"TestTheTroubleshootingTableHoldsEveryRefusalToAMessageTheLoaderProduces reads it for: %v\n"+
@@ -93,9 +91,7 @@ func TestTheRefusalTableIsHeldWhereAReaderSeesIt(t *testing.T) {
 			heading + "\n\n" + command + "\n\n" + rows[0] + "\n" + rows[1] + "\n| `another refusal` | Fix it too. |\n",
 			errNotTheRefusalTable},
 	} {
-		err := heldAsEachReaderReads("troubleshooting.md", page.text, func(text string) error {
-			return refusalTableIn(text, heading, rows)
-		})
+		err := refusalTableOfThePage(page.text, heading, rows)
 		if !errors.Is(err, page.err) {
 			t.Errorf("%s: holding the table answers the error %v, want %v: %q", page.shape, err, page.err, page.text)
 		}
@@ -106,10 +102,16 @@ func TestTheRefusalTableIsHeldWhereAReaderSeesIt(t *testing.T) {
 // stand in it.
 var errNotTheRefusalTable = errors.New("the copy's heading and table do not stand in it")
 
-// refusalTableIn holds rows, the copy's table, to text, a page: it has heading as a line of its
-// own, and the section under it, to the next `## ` heading, holds rows as one passage of whole lines
-// and no table row outside it. A failure prints the heading and the rows the section carries, so
-// the fix is a paste.
+// refusalTableOfThePage holds rows, the copy's table, to page, a Markdown page, in both its
+// readings (bothReadings): as written, and as it renders (visibleMarkdown).
+func refusalTableOfThePage(page, heading string, rows []string) error {
+	return bothReadings(refusalTableIn(page, heading, rows), refusalTableIn(visibleMarkdown(page), heading, rows))
+}
+
+// refusalTableIn holds rows, the copy's table, to text, one reading of a page: it has heading as a
+// line of its own, and the section under it, to the next `## ` heading, holds rows as one passage
+// of whole lines and no table row outside it. A failure prints the heading and the rows the
+// section carries, so the fix is a paste.
 func refusalTableIn(text, heading string, rows []string) error {
 	lines := strings.Split(text, "\n")
 	at := slices.Index(lines, heading)

@@ -286,6 +286,9 @@ func (l phaseEntryListing) strays(above []string) []string {
 	return slices.Compact(strays)
 }
 
+// errHidden is why a check refuses a line it reads the guide by: only an HTML comment holds it.
+var errHidden = errors.New("only an HTML comment holds it, and the rendered guide shows none of it")
+
 // readPhaseEntryList reads the list in text, the guide called name, where a reader sees it
 // (visibleMarkdown): the lines after its opening sentence, up to the line phaseEntryListEnd opens.
 // It answers the migrations the list describes and every migration name it carries. A text with

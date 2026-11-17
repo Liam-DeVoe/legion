@@ -33,10 +33,10 @@ import (
 // 4000-line document would otherwise satisfy the check while the remedy itself stays silent about
 // it, which is the same miss wearing a pass.
 //
-// Both tests hold the paragraph as it is written and as it renders (heldAsEachReaderReads): an
-// operator who follows the rendered guide never sees a marker or a bullet inside an HTML comment,
-// and one who reads the file sees every bullet a comment holds, so a comment in the paragraph's
-// lists fails both tests rather than deciding them.
+// Both tests hold the paragraph as it is written and as it renders (visibleMarkdown,
+// bothReadings): an operator who follows the rendered guide never sees a marker or a bullet inside
+// an HTML comment, and one who reads the file sees every bullet a comment holds, so a comment in
+// the paragraph's lists fails both tests rather than deciding them.
 const (
 	reclaimParagraphStart = "The remedy for a volume near full is manual"
 	reclaimParagraphEnd   = "As for the rest:"
@@ -64,9 +64,7 @@ const (
 // otherwise never reach the renderer's own check, which reads the copy and not the guide.
 func TestTheReclaimExtractIsTheGuidesReclaimParagraph(t *testing.T) {
 	extractDeleted, extractExempt := reclaimExtractLists(t)
-	err := heldAsEachReaderReads(kubernetesGuide, reclaimGuide(t), func(text string) error {
-		return reclaimParagraphIsTheExtract(text, extractDeleted, extractExempt)
-	})
+	err := reclaimParagraphIsTheExtract(reclaimGuide(t), extractDeleted, extractExempt)
 	if err != nil {
 		t.Errorf("docs/kubernetes.md's reclaim paragraph: %v\nthe extract is the copy internal/runtime/sandbox "+
 			"checks the renderer against, so the guide answers for the runtime only while the two are equal; "+
@@ -88,7 +86,7 @@ func TestTheReclaimExtractIsTheGuidesReclaimParagraph(t *testing.T) {
 // is about. It reads the guide rather than the extract, since the paragraph is what an operator
 // follows.
 func TestTheReclaimParagraphNeverDeletesWhatItExempts(t *testing.T) {
-	if err := heldAsEachReaderReads(kubernetesGuide, reclaimGuide(t), reclaimParagraphKeepsWhatItExempts); err != nil {
+	if err := reclaimParagraphKeepsWhatItExempts(reclaimGuide(t)); err != nil {
 		t.Errorf("docs/kubernetes.md's reclaim paragraph: %v", err)
 	}
 }
@@ -127,14 +125,12 @@ func TestTheReclaimParagraphIsReadWhereAnOperatorSeesIt(t *testing.T) {
 			reclaimParagraphText(deleteBullet+"\n- `/legion/scratch`", exemptBullet), errNotTheReclaimExtract,
 			errReclaimDeletesAnExemption},
 	} {
-		err := heldAsEachReaderReads(kubernetesGuide, guide.text, func(text string) error {
-			return reclaimParagraphIsTheExtract(text, extractDeleted, extractExempt)
-		})
+		err := reclaimParagraphIsTheExtract(guide.text, extractDeleted, extractExempt)
 		if !errors.Is(err, guide.isTheExtract) {
 			t.Errorf("%s: holding the lists to the extract answers the error %v, want %v: %q", guide.shape, err,
 				guide.isTheExtract, guide.text)
 		}
-		if err := heldAsEachReaderReads(kubernetesGuide, guide.text, reclaimParagraphKeepsWhatItExempts); !errors.Is(err, guide.keepsExempted) {
+		if err := reclaimParagraphKeepsWhatItExempts(guide.text); !errors.Is(err, guide.keepsExempted) {
 			t.Errorf("%s: holding the delete list off the exemptions answers the error %v, want %v: %q", guide.shape,
 				err, guide.keepsExempted, guide.text)
 		}
@@ -151,13 +147,21 @@ func reclaimParagraphText(deleted, exempt string) string {
 		reclaimParagraphEnd + " a role mid-build rebuilds what it loses.\n"
 }
 
-// errNotTheReclaimExtract is why reclaimParagraphIsTheExtract refuses a text: its lists are not the
+// errNotTheReclaimExtract is why reclaimListsAreTheExtracts refuses a text: its lists are not the
 // extract's.
 var errNotTheReclaimExtract = errors.New("its lists are not the extract's")
 
-// reclaimParagraphIsTheExtract holds the two lists of text's reclaim paragraph (reclaimListsIn) to
-// the extract's, path for path, and names each list the two disagree on.
-func reclaimParagraphIsTheExtract(text string, extractDeleted, extractExempt map[string]bool) error {
+// reclaimParagraphIsTheExtract holds the two lists of guide's reclaim paragraph to the extract's in
+// both readings of the guide (bothReadings): as written, and as it renders (visibleMarkdown).
+func reclaimParagraphIsTheExtract(guide string, extractDeleted, extractExempt map[string]bool) error {
+	return bothReadings(reclaimListsAreTheExtracts(guide, extractDeleted, extractExempt),
+		reclaimListsAreTheExtracts(visibleMarkdown(guide), extractDeleted, extractExempt))
+}
+
+// reclaimListsAreTheExtracts holds the two lists of the reclaim paragraph of text, one reading of
+// the guide (reclaimListsIn), to the extract's, path for path, and names each list the two
+// disagree on.
+func reclaimListsAreTheExtracts(text string, extractDeleted, extractExempt map[string]bool) error {
 	documentedDeleted, documentedExempt, err := reclaimListsIn(text)
 	if err != nil {
 		return err
@@ -181,15 +185,22 @@ func reclaimParagraphIsTheExtract(text string, extractDeleted, extractExempt map
 	return errors.Join(disagree...)
 }
 
-// errReclaimDeletesAnExemption is why reclaimParagraphKeepsWhatItExempts refuses a text: a
-// delete-list path holds a path the same paragraph exempts.
+// errReclaimDeletesAnExemption is why reclaimListsKeepTheExemptions refuses a text: a delete-list
+// path holds a path the same paragraph exempts.
 var errReclaimDeletesAnExemption = errors.New("a delete-list bullet is a segment too coarse")
 
-// reclaimParagraphKeepsWhatItExempts holds the delete list of text's reclaim paragraph
-// (reclaimListsIn) off its exemptions: no delete-list path, up to treeRoot, is a path an exemption
-// holds back or one of its ancestors. The exemptions are walked in order, so that a reading's
-// failure is the same text every time it is the same failure.
-func reclaimParagraphKeepsWhatItExempts(text string) error {
+// reclaimParagraphKeepsWhatItExempts holds the delete list of guide's reclaim paragraph off its
+// exemptions in both readings of the guide (bothReadings): as written, and as it renders
+// (visibleMarkdown).
+func reclaimParagraphKeepsWhatItExempts(guide string) error {
+	return bothReadings(reclaimListsKeepTheExemptions(guide), reclaimListsKeepTheExemptions(visibleMarkdown(guide)))
+}
+
+// reclaimListsKeepTheExemptions holds the delete list of the reclaim paragraph of text, one reading
+// of the guide (reclaimListsIn), off its exemptions: no delete-list path, up to treeRoot, is a path
+// an exemption holds back or one of its ancestors. The exemptions are walked in order, so that a
+// reading's failure is the same text every time it is the same failure.
+func reclaimListsKeepTheExemptions(text string) error {
 	deleted, exempt, err := reclaimListsIn(text)
 	if err != nil {
 		return err

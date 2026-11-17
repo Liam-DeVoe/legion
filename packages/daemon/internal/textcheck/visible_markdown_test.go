@@ -1,47 +1,9 @@
 package textcheck
 
 import (
-	"errors"
-	"fmt"
-	"path"
 	"strings"
+	"testing"
 )
-
-// errHidden is why a check refuses a line it reads the guide by: only an HTML comment holds it.
-var errHidden = errors.New("only an HTML comment holds it, and the rendered guide shows none of it")
-
-// errCommented is why a check refuses a Markdown text whose two readings disagree on it
-// (heldAsEachReaderReads): an HTML comment holds what the check reads, or stands inside it.
-var errCommented = errors.New("the text as written and as the rendered page shows it disagree on " +
-	"it, so an HTML comment decides it: take the comment out of what the check reads")
-
-// heldAsEachReaderReads holds check to text, the file called name, as each of its readers reads it:
-// as written, which an agent or an editor reads, and, for a Markdown file, as the rendered page
-// shows it (visibleMarkdown), which a person reads. A check that passes in one reading and fails in
-// the other, or fails differently in each, reads what an HTML comment hides from the page or what
-// a comment stands inside of, and is refused for it (errCommented), naming each reading that
-// fails. Where both fail alike, the written one answers, so a text whose comments stand outside
-// what the check reads fails as it always did. Outside Markdown an HTML comment hides nothing, and
-// the text has the one reading.
-func heldAsEachReaderReads(name, text string, check func(text string) error) error {
-	written := check(text)
-	if path.Ext(name) != ".md" {
-		return written
-	}
-	shown := check(visibleMarkdown(text))
-	const asWritten, asShown = "as written, HTML comments and all", "as the rendered page shows it, its HTML comments hidden"
-	switch {
-	case written == nil && shown == nil:
-		return nil
-	case written == nil:
-		return fmt.Errorf("%s: %w: %w", asShown, shown, errCommented)
-	case shown == nil:
-		return fmt.Errorf("%s: %w: %w", asWritten, written, errCommented)
-	case written.Error() != shown.Error():
-		return fmt.Errorf("%s: %w; %s: %w: %w", asWritten, written, asShown, shown, errCommented)
-	}
-	return written
-}
 
 // visibleMarkdown is text as the rendered page shows it: each HTML comment outside a fenced block
 // is blanked, its newlines kept, so that every line keeps its number. A comment never closed runs
@@ -75,4 +37,33 @@ func visibleMarkdown(text string) string {
 		lines[i] = shown.String()
 	}
 	return strings.Join(lines, "\n")
+}
+
+// visibleMarkdown hides what the rendered page hides and keeps every line's number: a comment
+// around a fenced block hides the block, its fences among it; a comment around a list hides the
+// list; a comment inside a line hides that part of it; a comment never closed hides the rest of
+// the text. A "<!--" inside a fenced block opens no comment, so the block and the lines after it
+// stay as written.
+func TestVisibleMarkdownShowsWhatTheRenderedPageShows(t *testing.T) {
+	for _, text := range []struct{ shape, written, shown string }{
+		{"a comment around a fenced block",
+			"Run this:\n<!--\n```sh\nlegion start\n```\n-->\nThen this.",
+			"Run this:\n\n\n\n\n\nThen this."},
+		{"a comment around a list",
+			"The list:\n<!--\n- one\n- two\n-->\nAfter it.",
+			"The list:\n\n\n\n\nAfter it."},
+		{"a comment inside a line",
+			"Shown <!-- hidden --> and shown.",
+			"Shown  and shown."},
+		{"a comment never closed",
+			"Shown. <!-- hidden\nhidden too.",
+			"Shown. \n"},
+		{"a comment's opening inside a fenced block",
+			"```html\n<!--\n```\nShown.",
+			"```html\n<!--\n```\nShown."},
+	} {
+		if shown := visibleMarkdown(text.written); shown != text.shown {
+			t.Errorf("%s: the page shows %q, want %q", text.shape, shown, text.shown)
+		}
+	}
 }
