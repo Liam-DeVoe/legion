@@ -484,3 +484,57 @@ func TestDeleteCommentWithAnOrphanedSuggestionStands(t *testing.T) {
 		t.Fatalf("the deleted comment's anchor = %#v, want the orphaning recorded", stored.Anchor)
 	}
 }
+
+// R3 of dispatch://INFRA-1523: every read that quotes a deleted post gives no part of its body.
+// An accept names the document version it makes after the suggestion's body
+// (Docs.NamedVersion), so that name is a copy of the body; the tester found it served by the
+// document read after the delete (test round at 55e4dfdf). The red row of that round.
+func TestADeletedAcceptedSuggestionLeavesNoPartOfItsBodyInTheDocumentRead(t *testing.T) {
+	_, handler, _ := browserDocumentService(t)
+	issue := createInteractionIssue(t, handler, "TEST", "Delete an accepted suggestion", "The quick brown fox")
+	const phrase = "zarquonacceptedrationale"
+	comment := createThreadComment(t, handler, issue.Key, map[string]any{
+		"body": "Say this instead, " + phrase + ".", "anchor": map[string]any{"artifact": "spec", "quote": "quick"},
+		"suggestion": map[string]string{"replace_with": "slow"},
+	}, "alice")
+	accepted := dispatchRequest(t, handler, http.MethodPost, "/api/v1/comments/"+comment.ID+"/accept", map[string]any{}, "alice")
+	if accepted.Code != http.StatusOK {
+		t.Fatalf("accept: status=%d body=%s", accepted.Code, accepted.Body.String())
+	}
+	// The positive control: before the delete the document read does carry the body, so the
+	// absence below is the delete's doing and not a read that never held it.
+	if before := dispatchRequest(t, handler, http.MethodGet, "/api/v1/artifacts/"+issue.PrimaryArtifactID, nil, "alice"); !strings.Contains(before.Body.String(), phrase) {
+		t.Fatalf("the document read before the delete holds no %q, so this row cannot fail: %s", phrase, before.Body.String())
+	}
+
+	deleteThreadComment(t, handler, comment.ID, "alice")
+
+	if after := dispatchRequest(t, handler, http.MethodGet, "/api/v1/artifacts/"+issue.PrimaryArtifactID, nil, "alice"); strings.Contains(after.Body.String(), phrase) {
+		t.Fatalf("GET /api/v1/artifacts/%s after the delete still gives the deleted comment's text %q: %s",
+			issue.PrimaryArtifactID, phrase, after.Body.String())
+	}
+}
+
+// R3 of dispatch://INFRA-1523 again: a resolve sent under an Idempotency-Key keeps its first
+// answer, which holds the comment's body, and a repeat of that key replays it. After the author
+// deletes the comment, that replay is a read of the post that gives its body and no mark; the
+// tester found it within the key's lifetime (test round at 55e4dfdf). The red row of that round.
+func TestAKeyedReplayAfterTheDeleteGivesNoPartOfTheBody(t *testing.T) {
+	handler, _ := newTestHandlerWithStore(t)
+	issue := createInteractionIssue(t, handler, "TEST", "Replay a resolve of a deleted comment", "before")
+	const phrase = "zarquonkeyedresolve"
+	comment := createThreadComment(t, handler, issue.Key, map[string]any{"body": "Resolve me, " + phrase + "."}, "alice")
+	target := "/api/v1/comments/" + comment.ID + "/resolve"
+	first := keyedRequest(t, handler, http.MethodPost, target, map[string]any{}, "alice", "resolve-then-delete")
+	if first.Code != http.StatusOK || !strings.Contains(first.Body.String(), phrase) {
+		t.Fatalf("the first resolve: status=%d body=%s, want 200 with the body, so this row can fail", first.Code, first.Body.String())
+	}
+
+	deleteThreadComment(t, handler, comment.ID, "alice")
+
+	again := keyedRequest(t, handler, http.MethodPost, target, map[string]any{}, "alice", "resolve-then-delete")
+	if strings.Contains(again.Body.String(), phrase) {
+		t.Fatalf("the repeat of the key after the delete (status %d) gives the deleted comment's text %q: %s",
+			again.Code, phrase, again.Body.String())
+	}
+}
