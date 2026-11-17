@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -61,29 +62,9 @@ func (s *server) putProjectGatedSteps(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if input.Steps == nil {
-		writeError(w, r, apicode.InvalidProject, fmt.Sprintf(
-			"steps is required: the design-gate steps this deployment gates (%s), in the order it gates them, or [] for a deployment that gates none",
-			strings.Join(model.GatedStepsKnown, ", ")))
+	steps, ok := validGatedSteps(w, r, "steps", input.Steps)
+	if !ok {
 		return
-	}
-	// A nil list and an empty one are the same publish, and the column is not null: the empty
-	// array, which reads as a deployment that gates nothing.
-	steps := *input.Steps
-	if steps == nil {
-		steps = []string{}
-	}
-	for index, step := range steps {
-		if !slices.Contains(model.GatedStepsKnown, step) {
-			writeError(w, r, apicode.InvalidProject, fmt.Sprintf(
-				"%q is not a design-gate step: steps names %s", step, strings.Join(model.GatedStepsKnown, ", ")))
-			return
-		}
-		if slices.Contains(steps[:index], step) {
-			writeError(w, r, apicode.InvalidProject, fmt.Sprintf(
-				"%q is named twice: steps names each design-gate step once, in the order this deployment gates them", step))
-			return
-		}
 	}
 
 	project, err := s.loadProject(r.Context(), s.deps.Store.Pool, r.PathValue("key"))
@@ -98,29 +79,76 @@ func (s *server) putProjectGatedSteps(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
-	if err := tx.QueryRow(r.Context(), `
-		update projects set gated_steps = $2
-		where key = $1 and gated_steps is distinct from $2
-		returning gated_steps
-	`, project.Key, steps).Scan(&project.GatedSteps); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			// The deployment published the list the row already holds. Nothing changed, so
-			// nothing is written and no event is appended; the answer is still the stored row.
-			WriteJSON(w, http.StatusOK, projectGatedSteps{Project: project.Key, Steps: steps})
-			return
-		}
+	event, err := s.writeProjectGatedSteps(r.Context(), tx, actor, &project, steps)
+	if err != nil {
 		s.writeHandlerError(w, r, err)
 		return
 	}
-	event, err := s.appendEvent(r.Context(), tx, projectOwner(project.Key).event("project.updated", actor, project))
-	if err != nil {
-		s.writeHandlerError(w, r, err)
+	if event == nil {
+		// The deployment published the list the row already holds. Nothing changed, so
+		// nothing is written and no event is appended; the answer is still the stored row.
+		WriteJSON(w, http.StatusOK, projectGatedSteps{Project: project.Key, Steps: steps})
 		return
 	}
 	if err := tx.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, r, err)
 		return
 	}
-	s.publish(r.Context(), event)
+	s.publish(r.Context(), *event)
 	WriteJSON(w, http.StatusOK, projectGatedSteps{Project: project.Key, Steps: project.GatedSteps})
+}
+
+// validGatedSteps is the list of design-gate steps a publish sent in member, or false once it has
+// written the refusal (400 INVALID_PROJECT): a body that names no list, a step that is none of
+// the three, and a step named twice. A null list and an empty one are the same publish, the empty
+// array. PUT /api/v1/projects/{key}/gated-steps (steps) and PATCH /api/v2/projects/{key}
+// (gated_steps) hold the list to it alike.
+func validGatedSteps(w http.ResponseWriter, r *http.Request, member string, sent *[]string) ([]string, bool) {
+	if sent == nil {
+		writeError(w, r, apicode.InvalidProject, fmt.Sprintf(
+			"%s is required: the design-gate steps this deployment gates (%s), in the order it gates them, or [] for a deployment that gates none",
+			member, strings.Join(model.GatedStepsKnown, ", ")))
+		return nil, false
+	}
+	// A nil list and an empty one are the same publish, and the column is not null: the empty
+	// array, which reads as a deployment that gates nothing.
+	steps := *sent
+	if steps == nil {
+		steps = []string{}
+	}
+	for index, step := range steps {
+		if !slices.Contains(model.GatedStepsKnown, step) {
+			writeError(w, r, apicode.InvalidProject, fmt.Sprintf(
+				"%q is not a design-gate step: %s names %s", step, member, strings.Join(model.GatedStepsKnown, ", ")))
+			return nil, false
+		}
+		if slices.Contains(steps[:index], step) {
+			writeError(w, r, apicode.InvalidProject, fmt.Sprintf(
+				"%q is named twice: %s names each design-gate step once, in the order this deployment gates them", step, member))
+			return nil, false
+		}
+	}
+	return steps, true
+}
+
+// writeProjectGatedSteps stores steps as project's gated steps in tx where they differ from the
+// list the row holds, setting project.GatedSteps to the stored list, and appends project.updated,
+// answering the event for the caller to publish once tx commits. A list the row already holds
+// writes nothing and answers no event.
+func (s *server) writeProjectGatedSteps(ctx context.Context, tx pgx.Tx, actor model.Actor, project *model.Project, steps []string) (*model.Event, error) {
+	if err := tx.QueryRow(ctx, `
+		update projects set gated_steps = $2
+		where key = $1 and gated_steps is distinct from $2
+		returning gated_steps
+	`, project.Key, steps).Scan(&project.GatedSteps); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	event, err := s.appendEvent(ctx, tx, projectOwner(project.Key).event("project.updated", actor, *project))
+	if err != nil {
+		return nil, err
+	}
+	return &event, nil
 }

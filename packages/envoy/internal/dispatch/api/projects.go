@@ -13,13 +13,20 @@ import (
 )
 
 // projectListQuery counts every project's open asks in one grouped read, in place of a subquery
-// per project row. An ask belongs to the project of its issue, else of its document, as the
-// inbox reads it; a project with no open ask has no row of that count, which the coalesce reads
-// as the 0 the subquery answered. It is named here rather than written inside the handler so
-// the plan test explains the statement the route runs.
+// per project row (projectOpenAsksJoin). It is named here rather than written inside the handler
+// so the plan test explains the statement the route runs.
 const projectListQuery = `
 		select p.key, p.name, coalesce(open_asks.total, 0), p.gated_steps, p.created_at
-		from projects p
+		from projects p` + projectOpenAsksJoin + `
+		order by p.key
+	`
+
+// projectOpenAsksJoin joins each project row `p` to its open asks' count, open_asks.total, in one
+// grouped read: an ask belongs to the project of its issue, else of its document, as the inbox
+// reads it, and a project with no open ask has no row of that count, which a coalesce reads as 0.
+// GET /api/v1/projects and the /api/v2 reads of projects (projectV2Query) read the count through
+// it alike.
+const projectOpenAsksJoin = `
 		left join (
 			select coalesce(i.project_key, ar.project_key) as project_key, count(*) as total
 			from asks a
@@ -28,9 +35,7 @@ const projectListQuery = `
 			where a.state = 'open'
 			  and (i.key is null or i.closed_at is null)
 			group by coalesce(i.project_key, ar.project_key)
-		) open_asks on open_asks.project_key = p.key
-		order by p.key
-	`
+		) open_asks on open_asks.project_key = p.key`
 
 func (s *server) listProjects(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
@@ -85,6 +90,12 @@ func (s *server) createProject(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, r, err)
 		return
 	}
+	s.createProjectFrom(w, r, input)
+}
+
+// createProjectFrom creates the project input names, the work POST /api/v1/projects and POST
+// /api/v2/projects both do once each has read its body.
+func (s *server) createProjectFrom(w http.ResponseWriter, r *http.Request, input createProjectInput) {
 	actor, ok := s.requireActor(w, r, input.Actor)
 	if !ok {
 		return

@@ -103,9 +103,11 @@ func TestV2DeclaredAuthority(t *testing.T) {
 	t.Run("a project's fields", func(t *testing.T) {
 		route := tour.requireMounted(t, http.MethodPatch, "/projects/{key}")
 		project := tour.project(t)
+		// A bearer names its session in actor, as the gated steps' own rule for a bearer writes it
+		// (patchProjectV2Input, as projectGatedStepsInput), beside the route map's {gated_steps}.
 		gated := tour.send(t, route, tourRequest{
 			Path: map[string]string{"key": project}, Query: asSession,
-			Body: map[string]any{"gated_steps": []string{"spec"}}, As: scopeless,
+			Body: map[string]any{"gated_steps": []string{"spec"}, "actor": map[string]any{"kind": "session", "id": tourSession}}, As: scopeless,
 		}, "")
 		if gated.Code != http.StatusOK {
 			t.Errorf("the session token publishing gated steps: %d %s, want 200", gated.Code, gated.Body.String())

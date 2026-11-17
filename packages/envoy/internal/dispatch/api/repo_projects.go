@@ -90,6 +90,16 @@ func (s *server) putRepoProject(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, r, err)
 		return
 	}
+	s.putRepoProjectFrom(w, r, repo, input, false)
+}
+
+// putRepoProjectFrom maps repo as input says, the work both versions' PUT does once each has read
+// the path's repository and the body. answersUnchanged is /api/v2's no-op rule (decision 8 of the
+// plan of dispatch://INFRA-4071): a mapping records no setter, so a PUT the mapping would be left
+// exactly as it stands by - its project, its default and its rename - answers the mapping as it
+// stands, whoever sends it, and takes no lock and writes no row and no event. /api/v1 writes it
+// as it always has.
+func (s *server) putRepoProjectFrom(w http.ResponseWriter, r *http.Request, repo string, input putRepoProjectInput, answersUnchanged bool) {
 	actor, ok := s.requireActor(w, r, input.Actor)
 	if !ok {
 		return
@@ -107,6 +117,18 @@ func (s *server) putRepoProject(w http.ResponseWriter, r *http.Request) {
 	if err := s.deps.Store.Pool.QueryRow(r.Context(), "select key from projects where key = $1", input.Project).Scan(new(string)); err != nil {
 		s.writeHandlerError(w, r, err)
 		return
+	}
+	if answersUnchanged {
+		stored, err := scanRepoProject(s.deps.Store.Pool.QueryRow(r.Context(),
+			`select `+repoProjectColumns+` from repo_projects where repo = $1`, repo))
+		switch {
+		case err == nil && repoProjectWriteChangesNothing(stored, input, renamedTo):
+			WriteJSON(w, http.StatusOK, stored)
+			return
+		case err != nil && !errors.Is(err, pgx.ErrNoRows):
+			s.writeHandlerError(w, r, err)
+			return
+		}
 	}
 	actorJSON, err := encodeJSON(actor)
 	if err != nil {
@@ -205,6 +227,23 @@ func (s *server) putRepoProject(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, mapping)
 }
 
+// repoProjectWriteChangesNothing reports whether a PUT of input, whose renamed_to parseRepoRename
+// read as renamedTo, would leave the stored mapping exactly as it stands: the same project, the
+// default it would store (a body naming none keeps the stored one while the project is unchanged)
+// and the rename it would store (a body naming none keeps the stored pair).
+func repoProjectWriteChangesNothing(stored model.RepoProject, input putRepoProjectInput, renamedTo *string) bool {
+	isDefault := stored.Default
+	if input.Default != nil {
+		isDefault = *input.Default
+	}
+	if input.RenamedTo == nil {
+		renamedTo = stored.RenamedTo
+	}
+	sent := putRepoProjectInput{Project: input.Project, Default: &isDefault, RenamedTo: renamedTo, Actor: input.Actor}
+	current := putRepoProjectInput{Project: stored.Project, Default: &stored.Default, RenamedTo: stored.RenamedTo, Actor: input.Actor}
+	return putChangesNothing(sent, current, noSetterRecorded, "")
+}
+
 // deleteRepoProject removes a mapping no issue names as its repository; one that issues name is
 // refused (409 REPO_PROJECT_IN_USE).
 func (s *server) deleteRepoProject(w http.ResponseWriter, r *http.Request) {
@@ -221,6 +260,13 @@ func (s *server) deleteRepoProject(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, r, err)
 		return
 	}
+	s.deleteRepoProjectAs(w, r, actor, repo)
+}
+
+// deleteRepoProjectAs removes repo's mapping as actor, the work both versions' DELETE does once
+// each has settled who sends it and which repository the path names: 204, for a mapping that
+// does not exist too, or 409 REPO_PROJECT_IN_USE.
+func (s *server) deleteRepoProjectAs(w http.ResponseWriter, r *http.Request, actor model.Actor, repo string) {
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, r, err)

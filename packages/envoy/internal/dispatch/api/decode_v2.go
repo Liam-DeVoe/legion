@@ -90,6 +90,7 @@ import (
 // The decoder reads both against the row's List bounds: Limit is an integer from 1 to List.Max,
 // List.Default where the query names none (50 and 200 for a row whose List is zero, the bounds of
 // a list that had none), and Offset an integer of 0 or more, 0 where the query names none. A row
+// whose List is Counts takes a limit of 0 too, which its handler answers with no item. A row
 // whose List is Whole - a catalogue read whole, as the route index is - takes any limit of 1 or
 // more, and its Limit stays 0 where the query names none, which pageOf reads as every item.
 type pageQuery struct {
@@ -743,11 +744,15 @@ func (field queryField) decodeLimit(values []string, present bool, into reflect.
 		return nil
 	}
 	limit, err := strconv.ParseInt(soleValue(values), 10, 0)
+	least := int64(1)
+	if bounds.Counts {
+		least = 0
+	}
 	switch {
 	case bounds.Whole && (len(values) != 1 || err != nil || limit < 1):
 		return errorf(apicode.InvalidLimit, "limit must be one integer of 1 or more")
-	case !bounds.Whole && (len(values) != 1 || err != nil || limit < 1 || limit > int64(most)):
-		return errorf(apicode.InvalidLimit, "limit must be one integer from 1 to %d", most)
+	case !bounds.Whole && (len(values) != 1 || err != nil || limit < least || limit > int64(most)):
+		return errorf(apicode.InvalidLimit, "limit must be one integer from %d to %d", least, most)
 	}
 	into.SetInt(limit)
 	return nil

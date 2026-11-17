@@ -248,7 +248,8 @@ func TestTheV2DecoderRefusesABadTime(t *testing.T) {
 }
 
 // A limit is held to the row's bounds, naming the bound (R1.4): a row that names none takes 50 and
-// 200, and a catalogue read whole takes any limit of 1 or more, answering every item without one.
+// 200, a list whose bounds count (listBounds.Counts) takes 0 as well and nothing below it, and a
+// catalogue read whole takes any limit of 1 or more, answering every item without one.
 func TestTheV2DecoderRefusesALimitAboveTheMaximum(t *testing.T) {
 	bounded := widgetListRoute(listBounds{Default: 20, Max: 100})
 	assertQueryRefused(t, bounded, "/api/v2/widgets?limit=101", apicode.InvalidLimit, "100")
@@ -264,6 +265,16 @@ func TestTheV2DecoderRefusesALimitAboveTheMaximum(t *testing.T) {
 	assertQueryRefused(t, unbounded, "/api/v2/widgets?limit=201", apicode.InvalidLimit, "200")
 	if query, err := decodeQuery(t, unbounded, "/api/v2/widgets"); err != nil || query.Limit != defaultListLimit {
 		t.Fatalf("a row with no bounds answered limit %d, %v; want %d", query.Limit, err, defaultListLimit)
+	}
+
+	counting := widgetListRoute(listBounds{Default: 20, Max: 100, Counts: true})
+	for _, value := range []string{"-1", "101", "ten"} {
+		assertQueryRefused(t, counting, "/api/v2/widgets?limit="+value, apicode.InvalidLimit, "from 0 to 100")
+	}
+	for target, want := range map[string]int{"/api/v2/widgets": 20, "/api/v2/widgets?limit=0": 0, "/api/v2/widgets?limit=100": 100} {
+		if query, err := decodeQuery(t, counting, target); err != nil || query.Limit != want {
+			t.Errorf("%s on a list whose bounds count decoded limit %d, %v; want %d", target, query.Limit, err, want)
+		}
 	}
 
 	whole := widgetListRoute(listBounds{Whole: true})

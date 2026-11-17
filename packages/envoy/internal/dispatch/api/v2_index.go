@@ -60,11 +60,14 @@ type routeIndexPosition struct {
 }
 
 // routeIndexList is a list's limit bounds in the index (listBounds): the limit a request that
-// names none is answered with, and the largest it may name. Both are null for a catalogue read
-// whole, which answers every item when no limit is named and takes any limit.
+// names none is answered with, the largest it may name, and the least, which is 0 for a list
+// whose limit 0 answers its total and what stands beside items alone (listBounds.Counts) and 1 for
+// every other. The first two are null for a catalogue read whole, which answers every item when
+// no limit is named and takes any limit of 1 or more.
 type routeIndexList struct {
 	DefaultLimit *int `json:"default_limit"`
 	MaxLimit     *int `json:"max_limit"`
+	MinLimit     int  `json:"min_limit"`
 }
 
 // routeIndexV2 is the body GET /api/v2 answers: the list envelope of R1.4, with the agent-facing
@@ -96,9 +99,12 @@ func routeIndexV2Entries(routes []apiRoute) []routeIndexV2Entry {
 		}
 		switch {
 		case route.List.Whole:
-			entry.List = &routeIndexList{}
+			entry.List = &routeIndexList{MinLimit: 1}
 		case route.List != (listBounds{}):
-			entry.List = &routeIndexList{DefaultLimit: &route.List.Default, MaxLimit: &route.List.Max}
+			entry.List = &routeIndexList{DefaultLimit: &route.List.Default, MaxLimit: &route.List.Max, MinLimit: 1}
+			if route.List.Counts {
+				entry.List.MinLimit = 0
+			}
 		}
 		entries[index] = entry
 	}

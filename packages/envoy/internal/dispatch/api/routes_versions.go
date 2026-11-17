@@ -208,6 +208,11 @@ type listBounds struct {
 	// Whole marks a fixed catalogue a request that names no limit reads whole, every item on one
 	// page, as the route index and the going actions are (R1.4); Default and Max are 0 there.
 	Whole bool
+	// Counts marks a list whose limit may also be 0: a read of the total and of what stands beside
+	// items, and no item, as GET /api/v2/priorities answers the two fault counts alone. Default and
+	// Max are named as on any bounded list, and the handler answers limit 0 with no item itself,
+	// since pageOf reads a limit of 0 as a catalogue's every item.
+	Counts bool
 }
 
 // bodyKind is how a route's request body is written, which is how the v2 decoder reads it.

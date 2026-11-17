@@ -1,12 +1,14 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
 // A project's default assignee is the last step of the chain that decides who a question
@@ -99,17 +101,8 @@ func (s *server) putProjectDefaultAssignee(w http.ResponseWriter, r *http.Reques
 		s.writeHandlerError(w, r, err)
 		return
 	}
-	// encoding/json leaves the string empty for an absent key and for a null alike, and both
-	// are the same refusal: a project names a person or the write does not happen.
-	if strings.TrimSpace(input.Assignee) == "" {
-		writeError(w, r, apicode.InvalidProject,
-			"assignee is required: a project always names the person its unowned work lands on, "+
-				"so give a person's email; the default cannot be cleared")
-		return
-	}
-	assignee, err := s.allowedLogin(r.Context(), input.Assignee)
-	if err != nil {
-		s.writeHandlerError(w, r, err)
+	assignee, ok := s.allowedDefaultAssignee(w, r, "assignee", input.Assignee)
+	if !ok {
 		return
 	}
 
@@ -119,32 +112,7 @@ func (s *server) putProjectDefaultAssignee(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	defer tx.Rollback(r.Context())
-	// The default this write moves from, read under the project row's own lock in the
-	// transaction that replaces it: two of these at once then name the pair each really moved,
-	// and the update below takes no lock this read has not already taken. The level is `for no
-	// key update`, which serialises this write against the other writers of the row and still
-	// lets a foreign key take its key share, as the room lock's rule requires of every lock on
-	// projects (TestNoForUpdateOnOwnerTables, docs/persistence.go's lockDocumentRoom). An
-	// unknown project is 404 NOT_FOUND here (pgx.ErrNoRows, writeHandlerError), before anything
-	// is written.
-	var previous string
-	if err := tx.QueryRow(r.Context(), `
-		select default_assignee from projects where key = $1 for no key update
-	`, key).Scan(&previous); err != nil {
-		s.writeHandlerError(w, r, err)
-		return
-	}
-	if _, err := tx.Exec(r.Context(), `update projects set default_assignee = $2 where key = $1`, key, assignee); err != nil {
-		s.writeHandlerError(w, r, err)
-		return
-	}
-	stored := projectDefaultAssignee{Project: key, Assignee: assignee}
-	event, err := s.appendEvent(r.Context(), tx, projectOwner(key).event(
-		"settings.project_default_assignee.updated", actor, projectDefaultAssigneeUpdated{
-			projectDefaultAssignee: stored,
-			ThreadLogins:           movedLogins(nil, previous, assignee),
-		},
-	))
+	event, err := s.writeProjectDefaultAssignee(r.Context(), tx, actor, key, assignee)
 	if err != nil {
 		s.writeHandlerError(w, r, err)
 		return
@@ -154,5 +122,55 @@ func (s *server) putProjectDefaultAssignee(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	s.publish(r.Context(), event)
-	WriteJSON(w, http.StatusOK, stored)
+	WriteJSON(w, http.StatusOK, projectDefaultAssignee{Project: key, Assignee: assignee})
+}
+
+// allowedDefaultAssignee is the login a write of a project's default assignee stores for the
+// value it was sent in member, or false once it has written the refusal: a value that is blank is
+// 400 INVALID_PROJECT, and one that is no person who has signed in 400 ASSIGNEE_NOT_ALLOWED
+// (allowedLogin). PUT /api/v1/projects/{key}/default-assignee (assignee) and PATCH
+// /api/v2/projects/{key} (default_assignee) hold the value to it alike.
+func (s *server) allowedDefaultAssignee(w http.ResponseWriter, r *http.Request, member, sent string) (string, bool) {
+	// encoding/json leaves the string empty for an absent key and for a null alike, and both
+	// are the same refusal: a project names a person or the write does not happen.
+	if strings.TrimSpace(sent) == "" {
+		writeError(w, r, apicode.InvalidProject,
+			member+" is required: a project always names the person its unowned work lands on, "+
+				"so give a person's email; the default cannot be cleared")
+		return "", false
+	}
+	assignee, err := s.allowedLogin(r.Context(), sent)
+	if err != nil {
+		s.writeHandlerError(w, r, err)
+		return "", false
+	}
+	return assignee, true
+}
+
+// writeProjectDefaultAssignee moves the project key's default assignee to assignee in tx and
+// appends settings.project_default_assignee.updated, answering the event for the caller to publish
+// once tx commits. An unknown project is pgx.ErrNoRows, before anything is written.
+func (s *server) writeProjectDefaultAssignee(ctx context.Context, tx pgx.Tx, actor model.Actor, key, assignee string) (model.Event, error) {
+	// The default this write moves from, read under the project row's own lock in the
+	// transaction that replaces it: two of these at once then name the pair each really moved,
+	// and the update below takes no lock this read has not already taken. The level is `for no
+	// key update`, which serialises this write against the other writers of the row and still
+	// lets a foreign key take its key share, as the room lock's rule requires of every lock on
+	// projects (TestNoForUpdateOnOwnerTables, docs/persistence.go's lockDocumentRoom). An
+	// unknown project is 404 NOT_FOUND on /api/v1 (pgx.ErrNoRows, writeHandlerError).
+	var previous string
+	if err := tx.QueryRow(ctx, `
+		select default_assignee from projects where key = $1 for no key update
+	`, key).Scan(&previous); err != nil {
+		return model.Event{}, err
+	}
+	if _, err := tx.Exec(ctx, `update projects set default_assignee = $2 where key = $1`, key, assignee); err != nil {
+		return model.Event{}, err
+	}
+	return s.appendEvent(ctx, tx, projectOwner(key).event(
+		"settings.project_default_assignee.updated", actor, projectDefaultAssigneeUpdated{
+			projectDefaultAssignee: projectDefaultAssignee{Project: key, Assignee: assignee},
+			ThreadLogins:           movedLogins(nil, previous, assignee),
+		},
+	))
 }

@@ -12,6 +12,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -145,7 +146,7 @@ func (s *server) listPriorities(w http.ResponseWriter, r *http.Request) {
 			projects = append(projects, named)
 		}
 	}
-	body, err := s.readPriorities(r.Context(), projects, query.Get("summary") == "true")
+	body, _, err := s.readPriorities(r.Context(), projects, query.Get("summary") == "true")
 	if err != nil {
 		s.writeHandlerError(w, r, err)
 		return
@@ -177,6 +178,12 @@ func (s *server) createPriority(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, r, err)
 		return
 	}
+	s.createPriorityFrom(w, r, input)
+}
+
+// createPriorityFrom writes the priority input names, the work both versions' POST does once each
+// has read its body.
+func (s *server) createPriorityFrom(w http.ResponseWriter, r *http.Request, input createPriorityInput) {
 	actor, ok := s.requireActor(w, r, input.Actor)
 	if !ok {
 		return
@@ -285,6 +292,12 @@ func (s *server) patchPriority(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, r, err)
 		return
 	}
+	s.patchPriorityFrom(w, r, input)
+}
+
+// patchPriorityFrom writes what input names of the path's priority, the work both versions'
+// PATCH does once each has read its body.
+func (s *server) patchPriorityFrom(w http.ResponseWriter, r *http.Request, input patchPriorityInput) {
 	actor, ok := s.requireActor(w, r, input.Actor)
 	if !ok {
 		return
@@ -384,6 +397,12 @@ func (s *server) deletePriority(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	s.deletePriorityAs(w, r, actor)
+}
+
+// deletePriorityAs writes the path's priority gone as actor, the work both versions' DELETE does
+// once each has settled who sends it.
+func (s *server) deletePriorityAs(w http.ResponseWriter, r *http.Request, actor model.Actor) {
 	id := r.PathValue("id")
 	tx, err := s.begin(r.Context())
 	if err != nil {
@@ -449,16 +468,26 @@ func (s *server) priorityHistory(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, apicode.PriorityNotFound, fmt.Sprintf("no priority of the id %q", id))
 		return
 	}
-	tuples, err := prioritystore.Timeline(r.Context(), s.deps.Store.Pool, id)
+	acts, err := priorityActsOf(r.Context(), s.deps.Store.Pool, id)
 	if err != nil {
 		s.writeHandlerError(w, r, err)
 		return
+	}
+	WriteJSON(w, http.StatusOK, acts)
+}
+
+// priorityActsOf is every act stated about the priority id, newest first (prioritystore.Timeline),
+// as both versions' history of one priority answers it.
+func priorityActsOf(ctx context.Context, q prioritystore.Queryer, id string) ([]model.PriorityAct, error) {
+	tuples, err := prioritystore.Timeline(ctx, q, id)
+	if err != nil {
+		return nil, err
 	}
 	acts := make([]model.PriorityAct, 0, len(tuples))
 	for _, tuple := range tuples {
 		acts = append(acts, priorityActFrom(tuple, id))
 	}
-	WriteJSON(w, http.StatusOK, acts)
+	return acts, nil
 }
 
 // priorityActFrom is one tuple of the log as the history answers it. An attribute tuple holds its

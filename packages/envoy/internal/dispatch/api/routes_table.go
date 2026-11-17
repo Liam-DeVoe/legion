@@ -552,15 +552,17 @@ var routeScopes = map[string]routeScopeSet{
 // DPoP proof as spent (store.DPoPProofs) and caches Dispatch rebuilds from what it already holds:
 // the display trees a read with Dispatch-Trees: 1 stores (displayTreeReader.storeOf) and the
 // stored listener roster (route_roster). TestTheReadOnlyListedRouteWritesOnlyItsProofAndCaches
-// holds the route listed today to that.
+// holds every route listed to that.
 //
 // It is a list beside the table and not a value of routeScopes: a scope there is one the caller
 // must hold, and no person holds read, so the list says what a credential that holds read alone
 // may still call rather than what a route requires. For the same reason the route index (GET
 // /api/v1), the OpenAPI document and the reference generated from it do not carry it. routes()
 // stamps it onto the row (apiRoute.ReadScope), and register refuses to mount a table whose list
-// names anything but a GET row it mounts (readRoutesNotMountedAsGET).
-var readScopeRoutes = []string{"GET /api/v1/projects/{key}/architecture"}
+// names anything but a GET row it mounts (readRoutesNotMountedAsGET). A project's architecture is
+// listed in both versions: its /api/v2 route reads what its /api/v1 route reads, the project held
+// to exist first.
+var readScopeRoutes = []string{"GET /api/v1/projects/{key}/architecture", "GET /api/v2/projects/{key}/architecture"}
 
 // routesNotMounted names every route of names that is no row of the table, sorted. The walk is
 // over the table with its test hooks in, since a hook's row is a row of the table wherever a
@@ -660,7 +662,7 @@ func (s *server) routes() []apiRoute {
 		route.Successor = row.Successor
 		routes = append(routes, route)
 	}
-	for _, row := range slices.Concat(s.v2IndexRows(), s.v2Infra979Rows(), s.v2LogRows(), s.v2AskRows(), s.v2DocumentRows(), s.v2ThreadRows(), s.v2IssueRows(), s.v2RoleHolderRows()) {
+	for _, row := range slices.Concat(s.v2IndexRows(), s.v2Infra979Rows(), s.v2LogRows(), s.v2AskRows(), s.v2DocumentRows(), s.v2ThreadRows(), s.v2IssueRows(), s.v2RoleHolderRows(), s.v2ProjectRows()) {
 		routes = append(routes, mountRow(row)...)
 	}
 	if s.deps.TestHooksEnabled {

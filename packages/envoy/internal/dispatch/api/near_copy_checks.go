@@ -320,10 +320,7 @@ func (s *server) getNearCopyCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("id")
-	var check model.NearCopyCheck
-	err = scanNearCopyCheck(pool.QueryRow(r.Context(), `
-		select `+nearCopyCheckColumns+`, spec from near_copy_checks where id = $1::uuid
-	`, id), &check)
+	check, err := readNearCopyCheck(r.Context(), pool, id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeError(w, r, apicode.NearCopyCheckNotFound, "near-copy check "+id+" not found")
 		return
@@ -333,4 +330,14 @@ func (s *server) getNearCopyCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	WriteJSON(w, http.StatusOK, check)
+}
+
+// readNearCopyCheck reads the one row of the uuid id with its spec, the row both versions' read of
+// one near-copy check answers, or pgx.ErrNoRows where no row has that id.
+func readNearCopyCheck(ctx context.Context, q queryer, id string) (model.NearCopyCheck, error) {
+	var check model.NearCopyCheck
+	err := scanNearCopyCheck(q.QueryRow(ctx, `
+		select `+nearCopyCheckColumns+`, spec from near_copy_checks where id = $1::uuid
+	`, id), &check)
+	return check, err
 }

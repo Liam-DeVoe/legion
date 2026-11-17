@@ -105,12 +105,21 @@ type putArchitectureSourceInput struct {
 // the branch of the source it already is. A re-save keeps the source's id and its components and
 // resets its sync bookkeeping, so the next sync re-imports from the new branch.
 func (s *server) putArchitectureSource(w http.ResponseWriter, r *http.Request) {
-	key := r.PathValue("key")
 	var input putArchitectureSourceInput
 	if err := decodeJSON(r, &input); err != nil {
 		s.writeHandlerError(w, r, err)
 		return
 	}
+	s.putArchitectureSourceFrom(w, r, input, false)
+}
+
+// putArchitectureSourceFrom saves the source input names, the work both versions' PUT does once
+// each has read its body. answersUnchanged is /api/v2's no-op rule (decision 8 of the plan of
+// dispatch://INFRA-4071): a source records no setter, so a save of the branch an enabled source
+// already has answers that source as it stands, whoever sends it, and writes nothing - no access
+// check, no reset of its bookkeeping, no event. /api/v1 re-saves it as it always has.
+func (s *server) putArchitectureSourceFrom(w http.ResponseWriter, r *http.Request, input putArchitectureSourceInput, answersUnchanged bool) {
+	key := r.PathValue("key")
 	actor, ok := s.requireActor(w, r, input.Actor)
 	if !ok {
 		return
@@ -128,6 +137,20 @@ func (s *server) putArchitectureSource(w http.ResponseWriter, r *http.Request) {
 	if err := s.deps.Store.Pool.QueryRow(r.Context(), "select key from projects where key = $1", key).Scan(new(string)); err != nil {
 		s.writeHandlerError(w, r, err)
 		return
+	}
+	if answersUnchanged {
+		stored, err := querySources(r.Context(), s.deps.Store.Pool, `where project_key = $1 and repo = $2`, key, owner+"/"+name)
+		if err != nil {
+			s.writeHandlerError(w, r, err)
+			return
+		}
+		// A disabled source is enabled by the save, which is a change.
+		sent := putArchitectureSourceInput{Branch: branch, Actor: input.Actor}
+		if len(stored) == 1 && stored[0].Enabled &&
+			putChangesNothing(sent, putArchitectureSourceInput{Branch: stored[0].Branch, Actor: input.Actor}, noSetterRecorded, "") {
+			WriteJSON(w, http.StatusOK, stored[0])
+			return
+		}
 	}
 
 	// The access check, of the repository and of the branch, runs before any write: a value that
@@ -222,6 +245,13 @@ func (s *server) deleteArchitectureSource(w http.ResponseWriter, r *http.Request
 	if !ok {
 		return
 	}
+	s.deleteArchitectureSourceAs(w, r, actor)
+}
+
+// deleteArchitectureSourceAs removes the path's source as actor, the work both versions' DELETE
+// does once each has settled who sends it: 204, or 404 SOURCE_NOT_FOUND for a source the project
+// does not have.
+func (s *server) deleteArchitectureSourceAs(w http.ResponseWriter, r *http.Request, actor model.Actor) {
 	key := r.PathValue("key")
 	owner, name, err := sourcePathRepo(r)
 	if err != nil {

@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -152,6 +153,12 @@ func TestV2Retries(t *testing.T) {
 		{"a repository's mapping by any caller", "/repositories/{owner}/{repo}", func(t *testing.T) (tourRequest, tourCaller) {
 			return tourRequest{
 				Path: map[string]string{"owner": "tour", "repo": uuid.NewString()}, Body: map[string]any{"project": tour.project(t)}, As: alice,
+			}, bob
+		}},
+		{"an architecture source by any caller", "/projects/{key}/architecture-sources/{owner}/{repo}", func(t *testing.T) (tourRequest, tourCaller) {
+			owner, name, _ := strings.Cut(tour.architectureRepo(t), "/")
+			return tourRequest{
+				Path: map[string]string{"key": tour.project(t), "owner": owner, "repo": name}, Body: map[string]any{"branch": "main"}, As: alice,
 			}, bob
 		}},
 		{"a suggestion's accept by the person who accepted it", "/comments/{id}/state", func(t *testing.T) (tourRequest, tourCaller) {
