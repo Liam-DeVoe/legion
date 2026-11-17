@@ -391,9 +391,6 @@ func (s *supervision) awaitStream(ctx context.Context, token claim.Token) {
 // runs out its bound says so in one line naming the claim and how long it waited, and the request
 // goes on.
 func (s *supervision) awaitStreamWithin(ctx context.Context, token claim.Token, bound time.Duration) {
-	if s.stream == nil {
-		return
-	}
 	started := time.Now()
 	done := s.stream.Drain(token)
 	if s.plan.streamWaitBegan != nil {
