@@ -303,6 +303,24 @@ func TestProjectReleaseExitsOneWhenTheWaitEndsFirst(t *testing.T) {
 	}
 }
 
+// A read of the release that --wait cuts leaves the release the daemon already answered as it
+// stands: the command prints that release and exits 1 saying the release goes on, as it does when
+// the wait ends between two reads. Each read here takes longer than the whole wait, so the wait
+// ends inside the first read on every run; TestProjectReleaseExitsOneWhenTheWaitEndsFirst meets
+// the same cut only when a read happens to start just before its wait ends.
+func TestProjectReleasePrintsTheReleaseItHoldsWhenTheWaitCutsARead(t *testing.T) {
+	running := releaseView(time.Hour, []api.ReleasedSandbox{{Name: releasedCleanPod.Name, Kind: "issue", Issue: "LEGION-208", Outcome: api.ReleaseWaiting}},
+		[]api.ReleasedClaim{{Token: releasedArchitect.Token, Issue: "LEGION-208", Role: legionclaim.RoleArchitect, Session: "ses_architect"}})
+	d := releaseDaemon(t, &scriptedRelease{views: []api.ProjectReleaseResponse{running}, readTakes: 3 * time.Second})
+	code, out, errb := d.projectRelease(append(d.reach(), "--wait", "300ms")...)
+	if code != 1 || !strings.Contains(errb, releaseGoesOn) {
+		t.Fatalf("legion project release --wait 300ms whose read outlasts the wait = %d, stderr %q; want 1 saying %q", code, errb, releaseGoesOn)
+	}
+	if !strings.Contains(out, "sandbox legion-legion-legion-208 issue LEGION-208 waiting") {
+		t.Fatalf("legion project release printed %q (stderr %q), want the release the daemon answered at its start, as it stands", out, errb)
+	}
+}
+
 // A dry run whose request is not answered within --wait exits 1 saying that a dry run records and
 // starts nothing, not that a release goes on in the daemon: nothing was started.
 func TestProjectReleaseDryRunTheWaitEndsSaysNothingStarted(t *testing.T) {
