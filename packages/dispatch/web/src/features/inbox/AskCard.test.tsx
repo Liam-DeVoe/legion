@@ -554,6 +554,36 @@ test("a first approval request shows no earlier approval and no diff control", a
   }
 });
 
+// The compact card - the margin's, the review sheet's - marks its approval options for the keys
+// as the full one does, and its Request changes opens the reason behind its disclosure. Escape
+// there lets go of the pick and leaves the box open on what was typed, so a focus a host moves
+// on the same key is not dropped by a box unmounting under it.
+test("a compact approval card marks its options, and Escape in its reason drops the Request changes pick", async () => {
+  const user = userEvent.setup();
+  const ask = approvalAsk();
+  const { view } = renderCard(
+    <AskCard ask={ask} documentLink={false} initialThread={thread(ask)} variant="compact" />
+  );
+  const card = within(view.container);
+  try {
+    const approve = await card.findByRole("radio", { name: "Approve" });
+    expect(approve).toHaveAttribute("data-ask-approval", "approve");
+    const requestChanges = card.getByRole("radio", { name: "Request changes" });
+    expect(requestChanges).toHaveAttribute("data-ask-approval", "request-changes");
+
+    await user.click(requestChanges);
+    const reason = card.getByLabelText("Reason (required)");
+    expect(reason).toHaveFocus();
+    await user.paste("Name the rollback path.");
+    await user.keyboard("{Escape}");
+    expect((requestChanges as HTMLInputElement).checked).toBe(false);
+    expect(card.getByLabelText("Reason")).toHaveValue("Name the rollback path.");
+    expect(card.getByLabelText("Reason")).toBeInTheDocument();
+  } finally {
+    view.unmount();
+  }
+});
+
 test("the diff cuts every decision block, so answers alone leave nothing changed", async () => {
   const user = userEvent.setup();
   const ask = approvalAsk(earlierApproval);

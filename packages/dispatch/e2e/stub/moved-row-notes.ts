@@ -36,6 +36,8 @@ export const movedRowNotes: Record<string, string> = {
     "the bands are the table's status groups, collapsed through their heading buttons; what the row asserts - no rows, the keys doing nothing, the two shortcuts greyed, and both restored when one group opens - is main's",
   "keyboard-palette.stub.e2e.ts › a List row's own row runs on the row that opened the palette, and its movement keys are no rows @pr":
     "the row is read inside the issues table; everything the palette does in it is main's",
+  "keyboard-palette.stub.e2e.ts › the Inbox offers the selection's snooze and Clear the selection, but not the key that marks a row @pr":
+    "renamed from \"the Inbox offers the selection's snooze but not the keys that mark and clear it\": the bar's Clear selection is a row of the palette now (dispatch://INFRA-2160, R11), so off the row, with the mark made, the row reads it offered with its Esc where main read it absent. The snooze, the absent mark key, the Escape that leaves the row and the bulk Snooze menu it opens are main's",
   "polish.stub.e2e.ts › project filters stay collapsed until needed and margin asks use the compact composer @pr":
     "the project list half is the table: there is no collapsed filter strip to open, so the row asserts the table is drawn with no popover open, picks a label in the column filter and reads the trigger's own name. The board, inbox, margin and agents halves, and every screenshot, are main's",
   "project.stub.e2e.ts › a 1,000-character table search stays inside the page @phone @pr":

@@ -46,6 +46,7 @@ export function AssignToMe({
       <button
         aria-label={`Assign ${issueKey} to me`}
         className={`min-h-11 shrink-0 rounded-lg px-2 py-1 text-xs font-medium md:min-h-8 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`}
+        data-inbox-action="assign-to-me"
         {...heldPress(write.pending, () => write.submit(viewer))}
         type="button"
       >

@@ -87,6 +87,7 @@ export function ThreadRowCard({ thread }: { thread: MyReplyRow }): ReactNode {
         </Link>
         <button
           className={`min-h-11 font-medium ${linkText} ${linkHoverText}`}
+          data-inbox-action="mark-read"
           {...heldPress(markRead.isPending, () => markRead.mutate())}
           type="button"
         >

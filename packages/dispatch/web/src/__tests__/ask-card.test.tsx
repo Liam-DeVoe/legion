@@ -1220,6 +1220,96 @@ test("an approval-kind ask names the reason Request changes needs, focuses its f
   }
 });
 
+// The Inbox's `a` and Shift+R pick an approval request's two options by their marks; a question's
+// options, whatever their labels, carry none.
+test("an approval-kind ask marks its Approve and Request changes options for the keys", async () => {
+  const approval = ask({
+    kind: "approval",
+    options: [{ label: "Approve" }, { label: "Request changes" }],
+  });
+  const question = ask({
+    id: "ask-2",
+    options: [{ label: "Approve" }, { label: "Request changes" }],
+  });
+  const { view } = renderCard(
+    <>
+      <AskCard ask={approval} getAskThread={emptyThread(approval)} />
+      <AskCard ask={question} getAskThread={emptyThread(question)} />
+    </>
+  );
+
+  try {
+    const approvalCard = view.getByTestId("ask-ask-1");
+    expect(await within(approvalCard).findByRole("radio", { name: "Approve" })).toHaveAttribute(
+      "data-ask-approval",
+      "approve"
+    );
+    expect(within(approvalCard).getByRole("radio", { name: "Request changes" })).toHaveAttribute(
+      "data-ask-approval",
+      "request-changes"
+    );
+    const questionCard = view.getByTestId("ask-ask-2");
+    for (const name of ["Approve", "Request changes", "Other"]) {
+      expect(within(questionCard).getByRole("radio", { name })).not.toHaveAttribute(
+        "data-ask-approval"
+      );
+    }
+  } finally {
+    view.unmount();
+  }
+});
+
+// Escape in the reason Request changes asks for lets go of the pick and sends nothing; what was
+// typed stays in the box. It neither stops the key nor takes it, so the Inbox's own Escape still
+// puts the focus back on the row.
+test("Escape in an approval's Request changes reason drops that pick and sends nothing", async () => {
+  const user = userEvent.setup();
+  const submitted: AnswerAskInput[] = [];
+  const input = ask({
+    kind: "approval",
+    options: [{ label: "Approve" }, { label: "Request changes" }],
+  });
+  const { view } = renderCard(
+    <AskCard
+      ask={input}
+      answerAsk={async (_id, submission) => {
+        submitted.push(submission);
+        return answered(input, submission.selected, submission.text ?? null);
+      }}
+      getAskThread={emptyThread(input)}
+    />
+  );
+  const reachedPage: KeyboardEvent[] = [];
+  const listen = (event: KeyboardEvent) => reachedPage.push(event);
+  window.addEventListener("keydown", listen);
+
+  try {
+    const requestChanges = await view.findByRole("radio", { name: "Request changes" });
+    await user.click(requestChanges);
+    const reasonField = view.getByLabelText("Reason (required)");
+    expect(reasonField).toHaveFocus();
+    await user.paste("Needs another pass");
+    await user.keyboard("{Escape}");
+    expect((requestChanges as HTMLInputElement).checked).toBe(false);
+    const field = view.getByLabelText("Reason");
+    expect(field).toHaveValue("Needs another pass");
+    expect(view.getByRole("button", { name: "Answer" }).hasAttribute("disabled")).toBe(true);
+    // The key went on to the page, untaken.
+    expect(reachedPage.filter((event) => event.key === "Escape")).toHaveLength(1);
+    expect(reachedPage.find((event) => event.key === "Escape")?.defaultPrevented).toBe(false);
+    expect(submitted).toEqual([]);
+
+    // Escape in the box with Approve picked lets go of nothing.
+    await user.click(view.getByRole("radio", { name: "Approve" }));
+    await user.click(field);
+    await user.keyboard("{Escape}");
+    expect((view.getByRole("radio", { name: "Approve" }) as HTMLInputElement).checked).toBe(true);
+  } finally {
+    window.removeEventListener("keydown", listen);
+    view.unmount();
+  }
+});
+
 test("a Done / Can't question is an ordinary question: Other stays, Can't needs no reason", async () => {
   const user = userEvent.setup();
   const submitted: AnswerAskInput[] = [];

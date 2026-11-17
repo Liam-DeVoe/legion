@@ -78,6 +78,7 @@ export function EarlierApproval({ approval }: { approval: AskApproval }): ReactN
       <DisclosureToggle
         expanded={diffOpen}
         label={diffOpen ? "Hide diff" : "Show diff"}
+        marks={{ "data-inbox-action": "earlier-approval-diff" }}
         onToggle={() => setDiffOpen((open) => !open)}
         textClassName={textMutedOnSurface}
       />

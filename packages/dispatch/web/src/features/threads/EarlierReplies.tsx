@@ -11,7 +11,9 @@ import { earlierRepliesLabel } from "./thread-layout";
  * so the two cannot drift; what folds at all is `threadLayout`'s (`thread-layout.ts`), and the
  * fold is drawn furthest from the newest message, under the root in Oldest first and at the
  * foot of the thread in Newest first. Each host lists its replies its own way, so it is handed
- * the id the button names and gives back the list wearing it. Nothing folded, no control.
+ * the id the button names and gives back the list wearing it. Nothing folded, no control. The
+ * Inbox's command bar presses the button by its mark (`data-inbox-action`), inside the item in
+ * hand.
  */
 export function EarlierReplies({
   count,
@@ -37,6 +39,7 @@ export function EarlierReplies({
         aria-controls={foldId}
         aria-expanded={open}
         className={`min-h-11 text-sm font-medium ${linkText} ${linkHoverText}`}
+        data-inbox-action="earlier-replies"
         onClick={onToggle}
         type="button"
       >

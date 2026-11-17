@@ -91,6 +91,7 @@ export function SnoozeControl({
         <button
           aria-label={`Un-snooze ${label}`}
           className={secondaryButtonCompact}
+          data-inbox-action="unsnooze"
           {...heldPress(write.pending, () => write.submit(null))}
           type="button"
         >

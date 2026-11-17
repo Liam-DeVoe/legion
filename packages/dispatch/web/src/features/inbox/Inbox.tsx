@@ -68,12 +68,14 @@ import {
 } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { type KeymapScope, PANEL_ATTRIBUTE, useKeymap, useKeymapScope } from "../shell/keymap";
+import type { KeymapActionId } from "../shell/keymap-catalogue";
 import { linkHref, openInNewTab } from "../shell/new-tab";
 import { closestMatching, focusedMatching, roveFocus } from "../shell/roving";
 import { READING_PANE_QUERY, useMediaQuery } from "../shell/useDialog";
 import { ViewportAnchor } from "../shell/ViewportAnchor";
 import { THREAD_ORDER_LABELS, THREAD_ORDERS, useThreadOrder } from "../threads/thread-order";
 import { AskCard } from "./AskCard";
+import type { AskApprovalAction } from "./AskOptionRow";
 import { InboxOwnerLink, ThreadOwnerLine } from "./AskOwnerLink";
 import { AssignToMe } from "./AssignToMe";
 import { formatAskAge } from "./ask-age";
@@ -1366,6 +1368,97 @@ export function Inbox({
   };
   // The bar is reached through its own ref, which holds wherever the header draws it.
   const bulkPicker = () => bulkBarRef.current?.querySelector<HTMLElement>(BULK_PICKER_SELECTOR);
+  /** The approval request's Approve, or its Request changes, that `a` and Shift+R press (R7).
+   *  Beside the column it is the chip's own button in the column's head, which the head draws
+   *  once the document's read returns (`ReadingPaneHead`) and which counts only while it takes
+   *  a press; else - below the column's width, in the drawer, and in the card the column falls
+   *  back to where it cannot read the document - it is the request's own option of the card in
+   *  hand (`data-ask-approval`, `AskCard`). Null on any other item and before the read returns,
+   *  which the `?` help shows as not available. Inside an ask card in the column the reader is
+   *  answering that card, the rule Snooze holds to, so the keys stand down there. */
+  const approvalControl = (action: AskApprovalAction): HTMLElement | null => {
+    if (paneShown && !outsideAskCard()) return null;
+    const enabled = ':not([aria-disabled="true"])';
+    return (
+      (paneShown
+        ? inHand(`[data-inbox-pane-head] [data-approval-action="${action}"]${enabled}`)
+        : null) ?? inAnswerHand(`[data-ask-approval="${action}"]${enabled}`)
+    );
+  };
+  /** Presses what `approvalControl` found. The head's button is pressed as it is: Approve sends
+   *  the review, Request changes opens its box with the focus in the reason (`ApprovalChip`). A
+   *  card's option is picked, the pick flushed so that the card's form reads it: Approve is then
+   *  sent at once, and Request changes leaves the reader in the reason its pick asks for - which
+   *  the card focuses as the pick draws it, and which is focused here for a pick already made,
+   *  whose field draws nothing new. */
+  const pressApproval = (action: AskApprovalAction) => {
+    const control = approvalControl(action);
+    if (!(control instanceof HTMLInputElement)) {
+      control?.click();
+      return;
+    }
+    flushSync(() => control.click());
+    if (action === "approve") {
+      control.form?.requestSubmit();
+      return;
+    }
+    control.closest("[data-ask-card]")?.querySelector<HTMLElement>("[data-ask-answer]")?.focus();
+  };
+  /** The control a command bar action presses (R11), while it takes a press: a disabled one -
+   *  Ask back with nothing typed - is no action to offer. */
+  const pressable = (control: HTMLElement | null | undefined) =>
+    control?.matches(":disabled") === false ? control : null;
+  /** A control of the item in hand: its row, or the column with its head. */
+  const itemControl = (selector: string) => pressable(inHand(selector));
+  /** A control of the item's own card (`answerHand`), never one of another card the column's
+   *  document draws; where no open card of the item is drawn - a thread, an approval's document,
+   *  an answered question's record - one anywhere in the item in hand. */
+  const cardControl = (selector: string) =>
+    pressable(answerHand() === null ? inHand(selector) : inAnswerHand(selector));
+  /** A control of the column's head alone. */
+  const headControl = (selector: string) => pressable(inHand(`[data-inbox-pane-head] ${selector}`));
+  /** The command bar's own actions for the item in hand and the bar of selected rows (R11), with
+   *  no default key (a person can give one, R14): each presses the control the page draws for it,
+   *  found by its mark. A chosen row runs once the palette has closed and given the focus back
+   *  (`SearchPalette`), so the item in hand is the one the bar opened over - in card mode the row
+   *  the focus is back on. */
+  const commandBarActions: readonly (readonly [KeymapActionId, () => HTMLElement | null])[] = [
+    ["inbox.assign-to-me", () => itemControl('[data-inbox-action="assign-to-me"]')],
+    ["inbox.unsnooze", () => itemControl('[data-inbox-action="unsnooze"]')],
+    ["inbox.mark-read", () => itemControl('[data-inbox-action="mark-read"]')],
+    ["inbox.earlier-replies", () => cardControl('[data-inbox-action="earlier-replies"]')],
+    ["inbox.asker-handles", () => cardControl('[data-inbox-action="asker-handles"]')],
+    ["inbox.copy-session-id", () => cardControl('[data-inbox-action="copy-session-id"]')],
+    ["inbox.copy-session-title", () => cardControl('[data-inbox-action="copy-session-title"]')],
+    ["inbox.copy-tmux-target", () => cardControl('[data-inbox-action="copy-tmux-target"]')],
+    ["inbox.hand-on", () => cardControl('[data-inbox-action="hand-on"]')],
+    ["inbox.referenced-by", () => cardControl('[data-inbox-action="referenced-by"]')],
+    [
+      "inbox.earlier-approval-diff",
+      () => cardControl('[data-inbox-action="earlier-approval-diff"]'),
+    ],
+    ["inbox.ask-back", () => cardControl('[data-inbox-action="ask-back"]')],
+    ["inbox.ask-back-instead", () => cardControl('[data-inbox-action="ask-back-instead"]')],
+    ["inbox.answer-anyway", () => cardControl('[data-inbox-action="answer-anyway"]')],
+    ["inbox.cancel", () => cardControl('[data-inbox-action="cancel"]')],
+    ["inbox.decline", () => cardControl('[data-inbox-action="decline"]')],
+    ["inbox.recipients", () => cardControl('[data-inbox-action="recipients"]')],
+    ["inbox.change-answer", () => cardControl('[data-inbox-action="change-answer"]')],
+    ["inbox.previous-versions", () => cardControl('[data-inbox-action="previous-versions"]')],
+    ["inbox.earlier-answers", () => cardControl('[data-inbox-action="earlier-answers"]')],
+    ["inbox.open-at-section", () => headControl('[data-inbox-action="open-at-section"]')],
+    ["inbox.skip-to-answer", () => headControl('[data-inbox-action="skip-to-answer"]')],
+    ["inbox.next-change", () => headControl('[data-inbox-action="next-change"]')],
+    ["inbox.show-reviews", () => headControl('[data-inbox-action="show-reviews"]')],
+    [
+      "inbox.select-all",
+      () => pressable(bulkBarRef.current?.querySelector<HTMLElement>("[data-inbox-select-all]")),
+    ],
+    [
+      "inbox.bulk-dismiss",
+      () => pressable(bulkBarRef.current?.querySelector<HTMLElement>("[data-inbox-bulk-dismiss]")),
+    ],
+  ];
   useKeymapScope(keymapScope);
   useKeymap(keymapScope, [
     // Movement is what the arrow keys are for; a palette row that moves the cursor helps nobody.
@@ -1433,6 +1526,22 @@ export function Inbox({
         options?.[event.key === "0" ? 9 : Number(event.key) - 1]?.click();
       },
       when: () => inAnswerHand(OPTION_SELECTOR) !== null,
+    },
+    {
+      // The approval request in hand, approved with one press (R7): the column head's Approve,
+      // or the card's Approve option, picked and sent.
+      action: "inbox.approve",
+      run: () => pressApproval("approve"),
+      when: () => approvalControl("approve") !== null,
+    },
+    {
+      // The head's Request changes opens its box with the focus in the reason, where Ctrl or
+      // Cmd+Enter sends and Escape closes it sending nothing (`ApprovalChip`); the card's option
+      // puts the focus in its reason field, where Escape lets go of the pick (`AskCard`) and
+      // `back` below puts the focus back on the row.
+      action: "inbox.request-changes",
+      run: () => pressApproval("request-changes"),
+      when: () => approvalControl("request-changes") !== null,
     },
     {
       // The thread in hand's reply box (R18), from where Enter would start.
@@ -1591,14 +1700,15 @@ export function Inbox({
       // Escape is one level out, and the selection is the outermost thing a row press made:
       // `back` takes the reader off the row first, and this clears what they marked. It is
       // offered exactly while the bar's Clear is, a pick in flight and a refusal the reader has
-      // since unticked the rows of included - the keyboard that raised them dismisses them. Not a
-      // palette row: in the palette Escape closes the palette, so the row would name a key that
-      // does something else there.
+      // since unticked the rows of included - the keyboard that raised them dismisses them. It is
+      // the bar's Clear selection in the command bar too (R11), offered from the row the reader
+      // marked: on a row Escape is `back`'s, which is registered first and holds wherever the
+      // focus is in a row, so the key still clears nothing until the reader is off the row.
       action: "inbox.clear-selection",
       run: clearSelection,
       // A popover of the bar's takes Escape first: one press closes it, and dropping what the
       // reader marked at the same time would be two undos for one key.
-      when: () => focusedRow() === null && bulkBarShown && !barOpen,
+      when: () => bulkBarShown && !barOpen,
     },
     {
       // The box is one key away from anywhere on the page, and `f` is not `inEditable`: inside
@@ -1620,6 +1730,12 @@ export function Inbox({
       run: () => (paneSelection.selectedRow() ?? rows()[0])?.focus(),
       when: () => searchRef.current !== null && document.activeElement === searchRef.current,
     },
+    // The command bar's own actions for the item in hand and the selection (R11).
+    ...commandBarActions.map(([action, control]) => ({
+      action,
+      run: () => control()?.click(),
+      when: () => control() !== null,
+    })),
   ]);
 
   if (inbox.isPending || whoAmI.isPending) {

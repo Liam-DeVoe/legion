@@ -24,6 +24,7 @@ import { ISSUE_TAB_LABELS } from "./features/issue/issue-tab-list";
 import { MarginColumn } from "./features/margin/MarginColumn";
 import { MarginProvider } from "./features/margin/margin-context";
 import { DEFAULT_MARGIN_WIDTH } from "./features/margin/margin-width";
+import { PRIORITIES_PATH } from "./features/priorities/priority-routes";
 import { AgentRegistryPoller } from "./features/refs/agent-registry";
 import { LinkClickHost } from "./features/refs/link-open";
 import { TextAskCard } from "./features/refs/markdown-cards";
@@ -564,6 +565,11 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
     { action: "global.go-inbox", run: () => navigate("/") },
     { action: "global.go-agents", run: () => navigate("/agents") },
     { action: "global.go-settings", run: () => navigate("/settings") },
+    // The other pages the navigation always shows, which are command bar rows with no key of
+    // their own (R11): the sidebar's own addresses.
+    { action: "global.go-priorities", run: () => navigate(PRIORITIES_PATH) },
+    { action: "global.go-delivery", run: () => navigate("/delivery") },
+    { action: "global.go-pipeline", run: () => navigate("/pipeline") },
     {
       action: "global.go-documents",
       run: () => {

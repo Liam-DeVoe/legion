@@ -197,7 +197,9 @@ function Excerpt({ text }: { text: string }): ReactNode {
 /** The control every host uses: the count comes from the list response the page already read,
  *  so a card or a header costs no graph request until the reader opens its panel. A count of
  *  zero is a fact, not an affordance: it renders as plain text, since opening it would only say
- *  nothing references the node. `controls` names the panel the host renders when expanded.
+ *  nothing references the node. `controls` names the panel the host renders when expanded. The
+ *  Inbox's command bar presses the button by its mark (`data-inbox-action`), inside the item in
+ *  hand.
  *
  *  A block of a document has no such count - no listing the tabs read carries one - so `count`
  *  is left out there and the control offers itself without one, the panel's own read being the
@@ -228,6 +230,7 @@ export function ReferencedByToggle({
       aria-controls={controls}
       aria-expanded={expanded}
       className={`flex min-h-11 shrink-0 items-center gap-2 rounded-lg px-2 py-1 text-sm font-medium ${linkText} ${linkHoverText}`}
+      data-inbox-action="referenced-by"
       onClick={onToggle}
       type="button"
     >

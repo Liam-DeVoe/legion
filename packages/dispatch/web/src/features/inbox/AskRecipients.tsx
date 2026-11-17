@@ -323,6 +323,7 @@ export function AskRecipients({
       <DisclosureToggle
         expanded={open}
         label={counted ? reachLabel({ count, unknownRoute }) : "Recipients"}
+        marks={{ "data-inbox-action": "recipients" }}
         onToggle={() => setOpen((shown) => !shown)}
         textClassName={textMutedOnSurface}
       />

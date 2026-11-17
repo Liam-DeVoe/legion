@@ -82,7 +82,10 @@ export interface ReadingPaneHeadProps {
  * — `[data-inbox-snooze]`, `[data-inbox-owner]` and the copy-ref control — and the keys find
  * them here. The `<header>` of this head and of the thread's (`ThreadPaneHead`) carries
  * `data-inbox-pane-head`, so a key that looks for a control of the head alone finds it there and
- * never a control of the same kind inside the document the column draws under it.
+ * never a control of the same kind inside the document the column draws under it: `a` and
+ * Shift+R press the approval's Approve and Request changes (`data-approval-action`) there, and
+ * the command bar presses Open page, Skip to the answer and Next change by their own marks
+ * (`data-inbox-action`).
  */
 export function ReadingPaneHead({
   artifact,
@@ -113,7 +116,11 @@ export function ReadingPaneHead({
     <header className="flex flex-wrap items-center gap-x-2 gap-y-1" data-inbox-pane-head="">
       <InboxOwnerLink ask={ask} rowOwner />
       {page === undefined ? null : (
-        <Link className={`text-sm ${linkText} ${linkHoverText}`} to={page}>
+        <Link
+          className={`text-sm ${linkText} ${linkHoverText}`}
+          data-inbox-action="open-at-section"
+          to={page}
+        >
           Open page
         </Link>
       )}
@@ -133,12 +140,22 @@ export function ReadingPaneHead({
       />
       {reference === undefined ? null : <CopyRefButton route={reference} />}
       {onSkipToAnswer === undefined ? null : (
-        <button className={secondaryButtonCompact} onClick={onSkipToAnswer} type="button">
+        <button
+          className={secondaryButtonCompact}
+          data-inbox-action="skip-to-answer"
+          onClick={onSkipToAnswer}
+          type="button"
+        >
           Skip to the answer
         </button>
       )}
       {onNextChange === undefined ? null : (
-        <button className={secondaryButtonCompact} onClick={onNextChange} type="button">
+        <button
+          className={secondaryButtonCompact}
+          data-inbox-action="next-change"
+          onClick={onNextChange}
+          type="button"
+        >
           Next change
         </button>
       )}

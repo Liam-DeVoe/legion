@@ -9,6 +9,8 @@
  *  each write at the server's own route, so they run on the real stack. They import nothing this
  *  tree adds to or changes in `web/src`: what they need from the app they read off the page or
  *  work out in `e2e/keyboard-complete.ts`. */
+import { setTimeout as sleep } from "node:timers/promises";
+
 import { setLiveSessions } from "./agents";
 import {
   answerAsk,
@@ -26,6 +28,7 @@ import {
   patchIssue,
   putRepoProject,
   requestApproval,
+  snoozeAsk,
   withOpenedAsk,
 } from "./api";
 import { recordClipboard } from "./clipboard";
@@ -41,7 +44,13 @@ import {
   seedQuestionColumn,
   waitOutPlacement,
 } from "./inbox-pane-scroll";
-import { replyRowId, seedCommentThread, THREAD_SESSION } from "./inbox-threads";
+import {
+  agentRowId,
+  replyRowId,
+  seedAgentThread,
+  seedCommentThread,
+  THREAD_SESSION,
+} from "./inbox-threads";
 import {
   answerWrites,
   asker,
@@ -55,11 +64,14 @@ import {
   OTHER_SITE,
   reloaded,
   returnMornings,
+  reviewWrites,
   type SeededApproval,
+  seedApprovalAtVersionTwo,
   seedTallAsks,
   snoozedUntil,
   snoozeWrites,
   unsnoozeWrites,
+  versionReviewWrites,
 } from "./keyboard-complete";
 import { openIssue } from "./keyboard-issue";
 import type { KeyedWrite } from "./keyed-writes";
@@ -2469,4 +2481,516 @@ test("k-new-tab: Shift+O on the Inbox opens the item o opens in a new page, besi
   await expect(inDrawer, "k-new-tab: in the drawer, j focuses a row").toHaveCount(1);
   await shiftOOpens(context, page, await ownerAddress(inDrawer), "in the drawer");
   await expect(drawer(page), "k-new-tab: the drawer stays open").toBeVisible();
+});
+
+// ---------------------------------------------------------------------------
+// k-approval-keys (R7), the Inbox's part: on the approval request in hand `a` approves the version
+// it shows with one press and Shift+R opens Request changes with the focus in its reason, beside
+// the reading pane, in card mode and in the drawer; before the document's read returns, and on a
+// question, both send nothing.
+// ---------------------------------------------------------------------------
+
+/** How late the reading pane's read of the first request's document is served, in milliseconds. */
+const LATE_READ_MS = 1000;
+
+/** The reason the rows' Request changes gives. */
+const ROLLBACK_REASON = "Name the rollback path.";
+
+/** Every review a page sends of one approval request, on each route a review can take: the
+ *  versioned route `a`, Shift+R and Approve post to, the route with no version the merge base's
+ *  Approve posts to, and the ask's answer, which a card sends. */
+interface ReviewsSent {
+  readonly answers: KeyedWrite<unknown>[];
+  readonly unversioned: KeyedWrite<unknown>[];
+  readonly versioned: KeyedWrite<unknown>[];
+}
+
+function watchReviews(page: Page, approvals: readonly SeededApproval[]): ReviewsSent[] {
+  return approvals.map((approval) => ({
+    answers: answerWrites(page, approval.askId),
+    unversioned: reviewWrites(page, approval.artifactId),
+    versioned: versionReviewWrites(page, approval.artifactId, approval.version),
+  }));
+}
+
+/** How many reviews the watched lists hold together, on every route. */
+function reviewCount(reviews: readonly ReviewsSent[]): number {
+  return countOf(reviews.flatMap((sent) => [sent.answers, sent.unversioned, sent.versioned]));
+}
+
+/** The lines of the `?` help's Inbox section. */
+function inboxKeyHelp(page: Page): Locator {
+  return page
+    .getByRole("dialog", { name: "Keyboard shortcuts" })
+    .getByRole("region", { exact: true, name: "Inbox" })
+    .getByRole("listitem");
+}
+
+// SLOW(>=2s): three approval requests seeded at version 2, one document's read held for a second,
+// two reviews read back, and the help opened once.
+test("k-approval-keys: beside the reading pane a approves the version the request shows once its document is read, Shift+R opens Request changes, and on a question both send nothing", async ({
+  page,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const approvals: SeededApproval[] = [];
+  for (const title of ["Ledger handover", "Mirror replay", "Clock audit"]) {
+    approvals.push(await seedApprovalAtVersionTwo("CORE", title));
+  }
+  const [first, second] = approvals;
+  if (first === undefined || second === undefined) throw new Error("three requests were seeded");
+  const question = await createAsk(
+    first.issueKey,
+    { question: "Which ledger does the handover read?" },
+    asker
+  );
+  const reviews = watchReviews(page, approvals);
+  const questionAnswers = answerWrites(page, question.id);
+  const sent = () => reviewCount(reviews) + questionAnswers.length;
+  const step = (text: string) => `k-approval-keys: the reading pane: ${text}`;
+  const head = inboxPane(page).locator("header").first();
+  const approve = head.getByRole("button", { exact: true, name: "Approve" });
+  const dialog = page.getByRole("dialog", { name: "Request changes" });
+
+  // The first request's document is read late, and `a` is pressed while that read is out.
+  const documentPath = `/api/v1/artifacts/${first.artifactId}`;
+  const documentRead = `**${documentPath}`;
+  await page.route(documentRead, async (route) => {
+    // Served late on purpose: a key pressed while the read is out must find nothing to press.
+    await sleep(LATE_READ_MS);
+    await route.continue().catch(() => undefined);
+  });
+  const requested = page.waitForRequest(
+    (request) => new URL(request.url()).pathname === documentPath
+  );
+  await page.setViewportSize(WIDE);
+  await page.goto(inboxAt(first.askId));
+  await expect(selectedRow(page), step("the first request is selected")).toHaveAttribute(
+    "data-inbox-row",
+    first.askId
+  );
+  const firstRow = page.locator(`[data-inbox-row="${first.askId}"]`);
+  await firstRow.focus();
+  await requested;
+  await page.keyboard.press("a");
+  await expect(
+    approve,
+    step("the head draws no Approve yet, so a was pressed before the document's read returned")
+  ).toHaveCount(0);
+  expect(sent(), step("a before the document's read returns sends nothing")).toBe(0);
+  await expect(approve, step("the read returns and the head draws Approve")).toBeVisible();
+  await page.unroute(documentRead);
+  await expect(firstRow, step("the focus is still on the request's row")).toBeFocused();
+  await page.keyboard.press("a");
+  await expect
+    .poll(() => reviews[0]?.versioned.length, { message: step("a sends one review of version 2") })
+    .toBe(1);
+  expect(reviews[0]?.versioned[0]?.input, step("the review approves")).toEqual({
+    state: "approved",
+  });
+  expect(sent(), step("a sends that one review and nothing else")).toBe(1);
+  await expect(dialog, step("a opens no dialog")).toHaveCount(0);
+
+  // The second request: Shift+R opens Request changes with the focus in its reason, Escape closes
+  // it sending nothing, and a reason sent with Ctrl+Enter is one change request.
+  await selectRow(page, second.askId);
+  await expect(approve, step("the second request's head draws Approve")).toBeVisible();
+  await page.keyboard.press("Shift+R");
+  await expect(dialog, step("Shift+R opens Request changes")).toBeVisible();
+  await expect(
+    dialog.getByLabel("Reason"),
+    step("Shift+R puts the focus in the reason field")
+  ).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(dialog, step("Escape closes Request changes")).toHaveCount(0);
+  expect(sent(), step("Escape sends nothing")).toBe(1);
+  await page.keyboard.press("Shift+R");
+  await expect(
+    dialog.getByLabel("Reason"),
+    step("Shift+R again puts the focus in the reason field")
+  ).toBeFocused();
+  await page.keyboard.type(ROLLBACK_REASON);
+  await page.keyboard.press("Control+Enter");
+  await expect
+    .poll(() => reviews[1]?.versioned.length, {
+      message: step("Ctrl+Enter sends one review of version 2"),
+    })
+    .toBe(1);
+  expect(
+    reviews[1]?.versioned[0]?.input,
+    step("the review requests changes, with the reason")
+  ).toEqual({ reason: ROLLBACK_REASON, state: "changes_requested" });
+  expect(sent(), step("Ctrl+Enter sends that one review and nothing else")).toBe(2);
+
+  // On the question there is nothing to approve: both keys send nothing, and `?` shows both not
+  // available.
+  await selectRow(page, question.id);
+  await expect(inboxPane(page).getByTestId(`ask-${question.id}`)).toBeVisible();
+  await page.keyboard.press("a");
+  await page.keyboard.press("Shift+R");
+  await expect(dialog, step("on the question Shift+R opens nothing")).toHaveCount(0);
+  expect(sent(), step("on the question a and Shift+R send nothing")).toBe(2);
+  await page.keyboard.press("?");
+  for (const label of ["Approve", "Request changes"]) {
+    await expect(
+      inboxKeyHelp(page).filter({ hasText: new RegExp(`^${label}`) }),
+      step(`on the question the ? help shows ${label} not available`)
+    ).toHaveAttribute("data-enabled", "false");
+  }
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("dialog", { name: "Keyboard shortcuts" })).toHaveCount(0);
+});
+
+/** The steps of k-approval-keys where `place` draws the approval request as a card, with
+ *  Approve and Request changes as its options: Shift+R picks Request changes, Escape in its
+ *  reason lets go of it, and `a` approves with one press, through the ask's answer. */
+async function approvalCardSteps(page: Page, place: "card mode" | "the drawer"): Promise<void> {
+  await createProject({ key: "CORE", name: "Core" });
+  const approval = await seedApprovalAtVersionTwo("CORE", "Clock audit");
+  const reviews = watchReviews(page, [approval]);
+  const step = (text: string) => `k-approval-keys: ${place}: ${text}`;
+  const inbox = await openInboxAt(page, place, 1);
+  const row = rowOf(inbox, approval.askId);
+  // Each option's name is its label and the description the server writes under it.
+  const requestChanges = row.getByRole("radio", { name: /^Request changes/ });
+  await expect(
+    row.getByRole("radio", { name: /^Approve/ }),
+    step("the request's card draws Approve")
+  ).toBeVisible();
+  await row.focus();
+
+  await page.keyboard.press("Shift+R");
+  await expect(requestChanges, step("Shift+R picks Request changes")).toBeChecked();
+  await expect(
+    row.locator("[data-ask-answer]"),
+    step("Shift+R puts the focus in the reason field")
+  ).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(requestChanges, step("Escape lets go of Request changes")).not.toBeChecked();
+  await expect(row, step("Escape puts the focus back on the row")).toBeFocused();
+  expect(reviewCount(reviews), step("Shift+R and Escape send nothing")).toBe(0);
+
+  await page.keyboard.press("a");
+  await expect
+    .poll(() => reviews[0]?.answers.length, { message: step("a sends one answer") })
+    .toBe(1);
+  expect(reviews[0]?.answers[0]?.input, step("the answer approves")).toMatchObject({
+    selected: ["Approve"],
+  });
+  expect(reviewCount(reviews), step("a sends that one review and nothing else")).toBe(1);
+}
+
+// SLOW(>=2s): an approval request seeded at version 2, then picked twice and answered.
+test("k-approval-keys: in card mode a approves the request in hand with one press, and Shift+R picks Request changes, whose reason Escape lets go of", async ({
+  page,
+}) => {
+  await approvalCardSteps(page, "card mode");
+});
+
+// SLOW(>=2s): an approval request seeded at version 2, then picked twice and answered.
+test("k-approval-keys: in the drawer a approves the request in hand with one press, and Shift+R picks Request changes, whose reason Escape lets go of", async ({
+  page,
+}) => {
+  await approvalCardSteps(page, "the drawer");
+});
+
+// t11: the issue-page steps of k-approval-keys go here - `a` on the header's Approve of an issue
+// whose spec waits on the reader, Shift+R opening its Request changes, nothing from a turn of the
+// Conversation tab, and nothing on an issue whose Verification document alone waits.
+
+// ---------------------------------------------------------------------------
+// k-every-action (R11), a first form for the Inbox: every button and menu trigger the Inbox draws
+// for an item - on its row, its card, the reading pane's head and the bar of selected rows - is
+// an action of the spec's keys table or of the command bar's list, and each such action has its
+// key in the `?` help under Inbox, or is a row of ⌘K with the item in hand, its key beside it
+// where it has one.
+// ---------------------------------------------------------------------------
+
+/** One action of the spec's Design ("The keys" and the command bar's actions), as the page names
+ *  it: its label in `?` and in ⌘K, and the key both show beside it, where it has one. */
+interface InboxAction {
+  readonly label: string;
+  readonly key?: string;
+}
+
+/** The row's table: the name of each control the Inbox draws for an item, by a pattern, and the
+ *  action it is. A key reads as `?` and ⌘K draw it: `b` or `h` as `borh`, Escape as `Esc`. */
+const INBOX_ACTIONS: readonly (readonly [RegExp, InboxAction])[] = [
+  [/^Approve( v\d+)?$/, { key: "a", label: "Approve" }],
+  [/^Request changes$/, { key: "Shift+R", label: "Request changes" }],
+  // The bar's Snooze selected asks is the same action, on every marked ask.
+  [/^Snooze /, { key: "borh", label: "Snooze the focused ask, or every selected ask" }],
+  [/^Un-snooze /, { label: "Un-snooze" }],
+  [/^Priority of /, { key: "p", label: "Open the priority menu" }],
+  [/^Assign \S+ to me$/, { label: "Assign to me" }],
+  [/^Copy reference/, { key: "y", label: "Copy the row's reference" }],
+  [/^(Dismiss|Move to Inbox): /, { key: "e", label: "Dismiss, or Move to Inbox" }],
+  [/^Mark read$/, { label: "Mark read" }],
+  [/^Show (\d+ earlier|fewer) repl/, { label: "Show earlier replies" }],
+  // The asker's button, which names the session by the short form of its id.
+  [new RegExp(`^session:${asker.actor.id.slice(0, 8)}`), { label: "Show the asker's handles" }],
+  [/^Hand this question to/, { label: "Hand on" }],
+  [/^Referenced by/, { label: "Referenced by" }],
+  [/^(Show|Hide) diff$/, { label: "Show the earlier approval's diff" }],
+  // Answer is Ctrl+Enter in the answer box, and the note's disclosure is Enter's: both are the
+  // answer box Enter puts the caret in.
+  [
+    /^(Answer|Add a note or answer in your own words)$/,
+    { key: "Enter", label: "Answer the ask in hand" },
+  ],
+  [/^Ask back$/, { label: "Ask back" }],
+  [/^Decline to answer$/, { label: "Decline" }],
+  // Recipients names how many it reaches once the ask's thread is read.
+  [/^(Recipients|Reaches \d+)$/, { label: "Recipients" }],
+  [/^Skip to the answer$/, { label: "Skip to the answer" }],
+  [/^Next change$/, { label: "Next change" }],
+  [/^(Awaiting approval|Approved|Changes requested)/, { label: "Show the reviews" }],
+  [
+    /^(Dismiss|Move to Inbox) selected threads$/,
+    { label: "Dismiss, or Move to Inbox, the selected items" },
+  ],
+  [/^Select all$/, { label: "Select all" }],
+  [/^Clear selection$/, { key: "Esc", label: "Clear the selection" }],
+  // A thread's reply box, which `r` puts the caret in: its Send is Ctrl+Enter there, and its own
+  // controls are reached by Tab from it.
+  [/^(Send|Cancel reply)$/, { key: "r", label: "Reply in the thread of the item in hand" }],
+];
+
+/** The names of the buttons and menu triggers `scope` shows that take a press now: each one's
+ *  `aria-label`, else its text. A disabled one - Ask back with nothing typed, Answer with nothing
+ *  picked - is no action of the item in hand until it takes a press; the question the reader asks
+ *  back on reads Ask back once it does. */
+function controlNames(scope: Locator): Promise<string[]> {
+  return scope
+    .locator('button, [role="button"]')
+    .evaluateAll((nodes) =>
+      nodes
+        .filter((node) => node.getClientRects().length > 0 && !node.matches(":disabled"))
+        .map((node) =>
+          (node.getAttribute("aria-label") ?? node.textContent ?? "").replace(/\s+/g, " ").trim()
+        )
+    );
+}
+
+/** The labels of the `?` help's Inbox section, opened over the item in hand and closed again. */
+async function inboxHelpLabels(page: Page): Promise<string[]> {
+  await page.keyboard.press("?");
+  const help = page.getByRole("dialog", { name: "Keyboard shortcuts" });
+  await expect(help).toBeVisible();
+  const labels = await inboxKeyHelp(page).evaluateAll((items) =>
+    items.map((item) => item.querySelector("span")?.textContent?.trim() ?? "")
+  );
+  await page.keyboard.press("Escape");
+  await expect(help).toHaveCount(0);
+  return labels;
+}
+
+/** The text of each row of ⌘K's Actions, its label and the key drawn beside it, opened over the
+ *  item in hand and closed again. */
+async function commandBarRows(page: Page): Promise<string[]> {
+  await page.keyboard.press("Control+k");
+  const bar = page.getByRole("dialog", { name: "Search" });
+  const rows = bar.getByRole("group", { exact: true, name: "Actions" }).getByRole("option");
+  await expect(rows.first()).toBeVisible();
+  const texts = await rows.evaluateAll((options) =>
+    options.map((option) => (option.textContent ?? "").replace(/\s+/g, ""))
+  );
+  await page.keyboard.press("Escape");
+  await expect(bar).toHaveCount(0);
+  return texts;
+}
+
+/** Holds every control `names` names to the table, and each action they are to `?` and ⌘K, read
+ *  over the item in hand, for the step `step`. */
+async function expectEveryAction(
+  page: Page,
+  names: readonly string[],
+  step: (text: string) => string
+): Promise<void> {
+  const actions = new Map<string, InboxAction>();
+  for (const name of names) {
+    const action = INBOX_ACTIONS.find(([pattern]) => pattern.test(name))?.[1];
+    // Soft, so one run names every control the table does not.
+    expect
+      .soft(
+        action,
+        step(`the control "${name}" is an action of the keys table or of the command bar`)
+      )
+      .toBeDefined();
+    if (action !== undefined) actions.set(action.label, action);
+  }
+  const help = await inboxHelpLabels(page);
+  const bar = await commandBarRows(page);
+  const squeezed = (text: string) => text.replace(/\s+/g, "");
+  for (const action of actions.values()) {
+    const listed = bar.includes(squeezed(action.label + (action.key ?? "")));
+    expect
+      .soft(
+        listed || (action.key !== undefined && help.includes(action.label)),
+        step(`${action.label}: ? lists its key under Inbox, or ⌘K lists it with the item in hand`)
+      )
+      .toBe(true);
+    if (action.key !== undefined) {
+      expect
+        .soft(
+          bar.includes(squeezed(action.label)),
+          step(`${action.label}: ⌘K shows its key ${action.key} beside it`)
+        )
+        .toBe(false);
+    }
+  }
+}
+
+/** k-every-action's items: a question nobody holds, a question with options the reader can ask
+ *  back on, an approval request, a snoozed question, a reply thread and an agent thread. */
+interface EveryActionSeed {
+  readonly unassigned: string;
+  readonly askBack: string;
+  readonly approval: string;
+  readonly snoozed: string;
+  readonly reply: string;
+  readonly agent: string;
+}
+
+async function seedEveryAction(): Promise<EveryActionSeed> {
+  await setLiveSessions([THREAD_SESSION]);
+  await createProject({ key: "CORE", name: "Core" });
+  const question = async (title: string, input: Parameters<typeof createAsk>[1]) =>
+    (
+      await createAsk(
+        (
+          await createIssue({ force: true, project: "CORE", title })
+        ).key,
+        input,
+        asker
+      )
+    ).id;
+  const unassigned = await question("Lease rollout", { question: "Who takes the lease rollout?" });
+  const askBack = await question("Mirror replay", {
+    options: SHIP_OR_HOLD,
+    question: "Ship the mirror replay?",
+  });
+  const approval = (await seedApprovalAtVersionTwo("CORE", "Clock audit")).askId;
+  const snoozed = await question("Key rotation", { question: "Rotate the keys this week?" });
+  await snoozeAsk(snoozed, new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString());
+  const threadIssue = await createIssue({ force: true, project: "CORE", title: "Replay budget" });
+  const reply = replyRowId(
+    await seedCommentThread(threadIssue.key, "How far back does a replay go?", "One hour.")
+  );
+  const agent = agentRowId(
+    await seedAgentThread({ body: "Is the mirror caught up?", replies: ["It is, as of noon."] })
+  );
+  return { agent, approval, askBack, reply, snoozed, unassigned };
+}
+
+/** Every step of k-every-action's first form where `place` draws the Inbox. */
+async function everyActionSteps(
+  page: Page,
+  place: "the reading pane" | "card mode"
+): Promise<void> {
+  const seed = await seedEveryAction();
+  const step = (text: string) => `k-every-action: ${place}: ${text}`;
+  // Every project names a default assignee, so no seed makes a question nobody holds: the Inbox's
+  // reads answer as if the first one were.
+  await page.route("**/api/v1/inbox", async (route) => {
+    const response = await route.fetch();
+    const rows = (await response.json()) as { id: string }[];
+    await route.fulfill({
+      json: rows.map((row) =>
+        row.id === seed.unassigned ? { ...row, waiting_on_person: null } : row
+      ),
+      response,
+    });
+  });
+  await page.setViewportSize(place === "card mode" ? NARROW : WIDE);
+  await page.goto("/?assignee=everyone");
+  await expect(page.locator(`[data-inbox-row="${seed.unassigned}"]`)).toBeVisible();
+  await page.getByRole("button", { name: /^Later \(1\)/ }).click();
+  const pane = inboxPane(page);
+  const row = (id: string) => page.locator(`[data-inbox-row="${id}"]`);
+
+  const items = [
+    [seed.unassigned, "the question nobody holds"],
+    [seed.askBack, "the question the reader asks back on"],
+    [seed.approval, "the approval request"],
+    [seed.snoozed, "the snoozed question"],
+    [seed.reply, "the reply thread"],
+    [seed.agent, "the agent thread"],
+  ] as const;
+  for (const [id, what] of items) {
+    await expect(row(id), step(`${what} is listed`)).toBeVisible();
+    if (place === "the reading pane") {
+      await selectRow(page, id);
+    }
+    if (id === seed.askBack) {
+      // Ask back takes a press once a question is typed in the answer box.
+      const card = place === "the reading pane" ? pane.getByTestId(`ask-${id}`) : row(id);
+      await card.locator("[data-ask-answer]").fill("Which format does it ship in?");
+    }
+    await row(id).focus();
+    const names = await controlNames(row(id));
+    if (place === "the reading pane") {
+      await expect(pane.locator("header").first(), step(`${what}'s head is drawn`)).toBeVisible();
+      names.push(...(await controlNames(pane.locator("header").first())));
+      const card = pane.getByTestId(`ask-${id}`);
+      if ((await card.count()) > 0) names.push(...(await controlNames(card)));
+      const thread = pane.locator("[data-inbox-thread-body]");
+      if ((await thread.count()) > 0) names.push(...(await controlNames(thread.first())));
+    }
+    await expectEveryAction(page, names, (text) => step(`${what}: ${text}`));
+  }
+
+  // With two items marked, the bar of selected rows.
+  for (const id of [seed.reply, seed.askBack]) {
+    if (place === "the reading pane") await selectRow(page, id);
+    await row(id).focus();
+    await page.keyboard.press("x");
+  }
+  const bar = page.getByRole("toolbar", { name: "Selected rows" });
+  await expect(bar, step("x marks two items")).toContainText("2 selected");
+  await expectEveryAction(page, await controlNames(bar), (text) =>
+    step(`the bar of selected rows: ${text}`)
+  );
+}
+
+// SLOW(>=2s): six items of four kinds seeded, each read with ? and ⌘K, then two marked.
+test("k-every-action: beside the reading pane every control of an item is a key or a command bar action of the item in hand", async ({
+  page,
+}) => {
+  await everyActionSteps(page, "the reading pane");
+});
+
+// SLOW(>=2s): six items of four kinds seeded, each read with ? and ⌘K, then two marked.
+test("k-every-action: in card mode every control of an item is a key or a command bar action of the item in hand", async ({
+  page,
+}) => {
+  await everyActionSteps(page, "card mode");
+});
+
+// SLOW(>=2s): the command bar opened six times over a project page, each row followed.
+test("k-every-action: on a project page the command bar goes to every page the navigation always shows", async ({
+  page,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const bar = page.getByRole("dialog", { name: "Search" });
+  for (const [label, address] of [
+    ["Go to Inbox", "/"],
+    ["Go to Agents", "/agents"],
+    ["Go to Priorities", "/priorities"],
+    ["Go to Delivery", "/delivery"],
+    ["Go to Pipeline", "/pipeline"],
+    ["Go to Settings", "/settings"],
+  ] as const) {
+    await page.goto("/projects/CORE");
+    await expect(page.getByRole("button", { exact: true, name: "Board" })).toBeVisible();
+    await page.locator("body").focus();
+    await page.keyboard.press("Control+k");
+    const go = bar
+      .getByRole("group", { exact: true, name: "Actions" })
+      .getByRole("option", { name: new RegExp(`^${label}`) });
+    await expect(go, `k-every-action: on a project page ⌘K lists ${label}`).toHaveCount(1);
+    await go.click();
+    await expect(page, `k-every-action: ${label} moves the page to ${address}`).toHaveURL(
+      new RegExp(`${address === "/" ? "/$" : `${address}$`}`)
+    );
+  }
 });

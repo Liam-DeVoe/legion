@@ -1,7 +1,12 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useId, useRef, useState } from "react";
 
-import { api, type CreateArtifactReviewInput, isCapExceeded } from "../../api/client";
+import {
+  api,
+  apiErrorCodeIn,
+  type CreateArtifactReviewInput,
+  isCapExceeded,
+} from "../../api/client";
 import { inboxQuery } from "../../api/queries";
 import type { Artifact, ArtifactApproval } from "../../api/types";
 import { heldPress } from "../../components/held-press";
@@ -36,6 +41,17 @@ import { useKeyedWrite } from "../writes/useKeyedWrite";
 export function approvalVersion(approval: ArtifactApproval): number {
   return approval.version ?? approval.latest_version;
 }
+
+/** One review the reader pressed: what it says, and the version of the document the page read,
+ *  which is the version it approves or asks changes of. A Retry sends that same version again. */
+interface ReviewPress {
+  readonly input: CreateArtifactReviewInput;
+  readonly version: number;
+}
+
+/** Dispatch's refusal of a review whose version moved after the page read it (`409
+ *  REVIEW_VERSION_MOVED`): its words name the version a review would now record. */
+const VERSION_MOVED: ReadonlySet<string> = new Set(["REVIEW_VERSION_MOVED"]);
 
 function approvalLabel(approval: ArtifactApproval): string {
   // A plan is approved by its plan review, never by a person, and its chip says so.
@@ -197,8 +213,12 @@ function RequestChangesDialog({
           {error === null ? null : (
             <p className={`text-sm ${dangerText}`} role="alert">
               {/* A reason Dispatch refused for its length says so in its own words, which name
-                  the block and the bound; any other failure is worth another try. */}
-              {isCapExceeded(error) ? error.message : "Could not request changes. Try again."}
+                  the block and the bound, and so does a version that moved after the page read
+                  it, naming the version a review would now record; any other failure is worth
+                  another try. */}
+              {isCapExceeded(error) || apiErrorCodeIn(error, VERSION_MOVED)
+                ? error.message
+                : "Could not request changes. Try again."}
             </p>
           )}
           <div className="flex items-center justify-end gap-2">
@@ -241,7 +261,12 @@ export interface ApprovalChipProps {
 /**
  * The document approval indicator: a small badge summarizing `artifact.approval`, clickable to
  * open a popover of every human review (`ArtifactReview`). On the document header only, it also
- * carries the Approve / Request changes actions that write a new review.
+ * carries the Approve / Request changes actions that write a new review, of the version the page
+ * read: a version that moved after the read is refused, and the refusal is shown here.
+ *
+ * The two actions carry `data-approval-action` (`approve`, `request-changes`), which the keys
+ * that press them find them by (the Inbox's `a` and Shift+R), and the badge `data-inbox-action`
+ * (`show-reviews`), which the Inbox's command bar presses it by.
  */
 export function ApprovalChip({
   artifact,
@@ -257,10 +282,19 @@ export function ApprovalChip({
   const submitGuard = useSubmitGuard();
 
   const review = useKeyedWrite({
-    label: (input: CreateArtifactReviewInput) =>
+    label: ({ input }: ReviewPress) =>
       `${input.state === "approved" ? "Approval" : "Change request"} on ${artifact.name}`,
+    onError: (error) => {
+      // The document moved after the page read it: the page reads it again, so the next press
+      // reviews the version a review would now record, which the reader then has in front of
+      // them, and never one they did not read.
+      if (apiErrorCodeIn(error, VERSION_MOVED)) {
+        void queryClient.invalidateQueries({ queryKey: ["artifact", artifact.id] });
+      }
+    },
     onSettled: () => submitGuard.release(),
-    write: (input, bounds) => api.createArtifactReview(artifact.id, input, bounds),
+    write: ({ input, version }, bounds) =>
+      api.createArtifactVersionReview(artifact.id, version, input, bounds),
     onSuccess: () => {
       setRequestChangesOpen(false);
       onReviewed?.();
@@ -288,6 +322,16 @@ export function ApprovalChip({
 
   const approveLabel =
     approval.state === "stale" ? `Approve v${approval.latest_version}` : "Approve";
+  /** Sends the review of the version the page read: the latest, which Approve names when the
+   *  approval it follows is stale, and which the reading pane draws. */
+  const send = (input: CreateArtifactReviewInput) =>
+    submitGuard.guard(() => review.mutate({ input, version: approval.latest_version }));
+  // An Approve the server refused because the version moved, in its words; the dialog shows its
+  // own press's refusal itself.
+  const movedRefusal =
+    !requestChangesOpen && review.isError && apiErrorCodeIn(review.error, VERSION_MOVED)
+      ? review.error.message
+      : null;
 
   return (
     <div
@@ -296,6 +340,7 @@ export function ApprovalChip({
       <button
         aria-haspopup="dialog"
         className={approvalPillClassName(approval.state)}
+        data-inbox-action="show-reviews"
         onClick={() => setReviewsOpen(true)}
         title={
           approval.state === "stale"
@@ -313,9 +358,8 @@ export function ApprovalChip({
             // two outline buttons made a reader choose before reading either.
             <button
               className={`min-h-11 rounded-lg px-3 py-2 text-sm font-medium md:min-h-8 md:py-1 ${primaryButtonBg} ${primaryButtonEnabledHoverBg} ${primaryButtonDisabled}`}
-              {...heldPress(review.isPending, () =>
-                submitGuard.guard(() => review.mutate({ state: "approved" }))
-              )}
+              data-approval-action="approve"
+              {...heldPress(review.isPending, () => send({ state: "approved" }))}
               type="button"
             >
               {approveLabel}
@@ -323,11 +367,17 @@ export function ApprovalChip({
           )}
           <button
             className={`min-h-11 rounded-lg border px-3 py-2 text-sm font-medium md:min-h-8 md:py-1 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`}
+            data-approval-action="request-changes"
             {...heldPress(review.isPending, () => setRequestChangesOpen(true))}
             type="button"
           >
             Request changes
           </button>
+          {movedRefusal === null ? null : (
+            <p className={`basis-full text-sm ${dangerText}`} role="alert">
+              {movedRefusal}
+            </p>
+          )}
         </>
       ) : null}
       {reviewsOpen ? (
@@ -341,9 +391,7 @@ export function ApprovalChip({
             review.reset();
             setRequestChangesOpen(false);
           }}
-          onSubmit={(reason) =>
-            submitGuard.guard(() => review.mutate({ reason, state: "changes_requested" }))
-          }
+          onSubmit={(reason) => send({ reason, state: "changes_requested" })}
         />
       ) : null}
     </div>

@@ -12,17 +12,20 @@ import { dangerText, linkHoverText, linkText, successText } from "../theme/class
  *
  *  `value` may be a function of the click, for a button whose modifier keys choose what it
  *  copies; such a button names itself through `label`, since the default `Copy <what> <value>`
- *  needs one value to print. */
+ *  needs one value to print. `marks` are the host's own handles on the button, by which its
+ *  keys find and press it (the Inbox's command bar, `data-inbox-action`). */
 export function CopyButton({
   children,
   className,
   label,
+  marks,
   value,
   what,
 }: {
   children?: ReactNode;
   className?: string;
   label?: string;
+  marks?: Readonly<Record<`data-${string}`, string>>;
   value: string | ((event: MouseEvent<HTMLButtonElement>) => string);
   what: string;
 }): ReactNode {
@@ -38,6 +41,7 @@ export function CopyButton({
       <button
         aria-label={name}
         className={`inline-flex min-h-11 shrink-0 items-center rounded-lg md:min-h-8 ${shape} ${linkText} ${linkHoverText} ${className ?? ""}`}
+        {...marks}
         onClick={(event) => copy(typeof value === "string" ? value : value(event))}
         title={name}
         type="button"

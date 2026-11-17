@@ -73,7 +73,7 @@ import {
   type AskFrame,
   OrphanedAnchorNotice,
 } from "./AskCompletionCard";
-import { AskChoiceRow } from "./AskOptionRow";
+import { type AskApprovalAction, AskChoiceRow } from "./AskOptionRow";
 import { AskRecipients } from "./AskRecipients";
 import { AskThread } from "./AskThread";
 import { AskThreadDisclosure } from "./AskThreadDisclosure";
@@ -162,6 +162,14 @@ const URGENCY_NOTCH_TEXT: Record<AskUrgency, string> = {
   high: badgeHigh.text,
   low: badgeLow.text,
   med: badgeMed.text,
+};
+
+/** The mark of each of an approval request's two options, by its label: the labels are the
+ *  server's own (`docs.ApprovalOptionApprove`, `docs.ApprovalOptionRequestChanges`), and the
+ *  Inbox's `a` and Shift+R find the inputs by the mark (`data-ask-approval`). */
+const APPROVAL_ACTIONS: Readonly<Record<string, AskApprovalAction>> = {
+  Approve: "approve",
+  "Request changes": "request-changes",
 };
 
 /** Moves focus from inside the form to the nearest focusable ancestor (in the Inbox, the row, so
@@ -288,6 +296,8 @@ function AskHandOn({ ask, assignee }: { ask: Ask; assignee: string | null }): Re
           emptyMessage={people.isPending ? "Loading people…" : "Nobody matches that."}
           keysOnTrigger
           label="Hand this question to"
+          // The Inbox's command bar presses the trigger by this mark (its Hand on action).
+          marks={{ trigger: { "data-inbox-action": "hand-on" } }}
           mode="single"
           onOpenChange={setOpen}
           onPick={(login) => {
@@ -365,6 +375,7 @@ export function AskCard({
     clarification,
     completed,
     displayedAsk,
+    dropReasonPick,
     edits,
     isApproval,
     isSubmitting,
@@ -614,7 +625,14 @@ export function AskCard({
               ? undefined
               : (event) => upload.drop(event, uploadOwner)
           }
-          onKeyDown={(event) => submitOnModifiedEnter(event, { disabled: uploading })}
+          onKeyDown={(event) => {
+            // Escape in the reason an approval's Request changes asks for lets go of that pick,
+            // and sends nothing: the Inbox's own Escape then puts the focus back on the row,
+            // which is why this neither stops the key nor calls `preventDefault`. The box
+            // stays, with what was typed in it, so nothing under the reader's focus unmounts.
+            if (event.key === "Escape" && reasonRequired) dropReasonPick();
+            submitOnModifiedEnter(event, { disabled: uploading });
+          }}
           onPaste={
             uploadOwner === undefined || held
               ? undefined
@@ -658,6 +676,7 @@ export function AskCard({
     <fieldset aria-label="Question-shaped answer" className="flex gap-2">
       <button
         className={`min-h-11 rounded-lg px-3 py-2 text-sm font-semibold ${primaryButtonBg} ${primaryButtonEnabledHoverBg} ${primaryButtonDisabled}`}
+        data-inbox-action="ask-back-instead"
         {...heldPress(held, sendClarification)}
         ref={focusOnMount}
         type="button"
@@ -666,6 +685,7 @@ export function AskCard({
       </button>
       <button
         className={`min-h-11 rounded-lg border px-3 py-2 text-sm font-medium refused:cursor-not-allowed refused:opacity-50 ${borderDefault} ${textSecondaryOnSurface} ${cardHoverBorder}`}
+        data-inbox-action="answer-anyway"
         {...heldPress(held, () => sendAnswer(answerText))}
         type="button"
       >
@@ -679,6 +699,7 @@ export function AskCard({
         {changing ? (
           <button
             className={`min-h-11 rounded-lg border px-3 py-2 text-sm font-medium refused:cursor-not-allowed refused:opacity-50 ${borderDefault} ${textSecondaryOnSurface} ${cardHoverBorder}`}
+            data-inbox-action="cancel"
             {...heldPress(held, cancelChanging)}
             type="button"
           >
@@ -687,6 +708,7 @@ export function AskCard({
         ) : (
           <button
             className={`min-h-11 rounded-lg border px-3 py-2 text-sm font-medium refused:cursor-not-allowed refused:opacity-50 ${borderDefault} ${textSecondaryOnSurface} ${cardHoverBorder}`}
+            data-inbox-action="ask-back"
             disabled={trimmedAnswer === "" || uploading}
             {...heldPress(held, sendClarification)}
             type="button"
@@ -844,6 +866,7 @@ export function AskCard({
                     <button
                       aria-expanded={handlesOpen}
                       className={`flex min-w-0 items-center gap-1 ${textMutedHoverToSecondary}`}
+                      data-inbox-action="asker-handles"
                       onClick={() => setHandlesOpen((open) => !open)}
                       type="button"
                     >
@@ -866,17 +889,29 @@ export function AskCard({
           {!handlesOpen ? null : (
             <span className="flex basis-full flex-wrap items-center gap-x-1.5">
               {sessionAuthor === undefined ? null : (
-                <CopyButton value={sessionAuthor.id} what="session ID">
+                <CopyButton
+                  marks={{ "data-inbox-action": "copy-session-id" }}
+                  value={sessionAuthor.id}
+                  what="session ID"
+                >
                   ID
                 </CopyButton>
               )}
               {sessionTitle === undefined || sessionTitle === "" ? null : (
-                <CopyButton value={sessionTitle} what="session title">
+                <CopyButton
+                  marks={{ "data-inbox-action": "copy-session-title" }}
+                  value={sessionTitle}
+                  what="session title"
+                >
                   title
                 </CopyButton>
               )}
               {tmuxTarget === undefined ? null : (
-                <CopyButton value={tmuxTarget} what="tmux target">
+                <CopyButton
+                  marks={{ "data-inbox-action": "copy-tmux-target" }}
+                  value={tmuxTarget}
+                  what="tmux target"
+                >
                   {tmuxTarget}
                 </CopyButton>
               )}
@@ -910,6 +945,7 @@ export function AskCard({
             <legend className="sr-only">Answer options</legend>
             {(displayedAsk.options ?? []).map((option, index) => (
               <AskChoiceRow
+                approval={isApproval ? APPROVAL_ACTIONS[option.label] : undefined}
                 checked={selected.includes(option.label)}
                 digit={digitOf(index)}
                 held={held}

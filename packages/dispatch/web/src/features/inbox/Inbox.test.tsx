@@ -5575,3 +5575,274 @@ test("a row the reader defers hands the selection to the next one, and the last 
     snoozeAsk.mockRestore();
   }
 });
+
+// ----------------------------------------------------------------------------------------
+// R7 and R11: `a` and Shift+R on the approval request in hand, and the command bar's own actions
+// for the item in hand.
+// ----------------------------------------------------------------------------------------
+
+/** An approval request of `SPEC_DOCUMENT` at version 4, which the column draws as that document,
+ *  and which a card draws as the request's two options. */
+function approvalRow(id: string, key: string): InboxRow {
+  return inboxIssue(id, key, "Approve spec.md (version 4)?", {
+    approval: {
+      artifact_id: "artifact-1",
+      documents: null,
+      name: "spec.md",
+      requested_version: 4,
+      version: 4,
+    },
+    approval_artifact: { name: "spec.md", primary: true, project: "CORE", slug: "spec" },
+    kind: "approval",
+    options: [{ label: "Approve" }, { label: "Request changes" }],
+  });
+}
+
+/** `SPEC_DOCUMENT` at version 4, with the approval request open on it. */
+const SPEC_AWAITING: Artifact = {
+  ...SPEC_DOCUMENT,
+  approval: { latest_version: 4, state: "awaiting" },
+  versions: [
+    {
+      authors: [{ id: "alice", kind: "user" }],
+      created_at: "2026-09-10T00:00:00Z",
+      named: false,
+      number: 4,
+      summary: null,
+    },
+  ],
+};
+
+/** Whether the `?` help shows the Inbox's action `id` as available now. */
+function offered(id: string): boolean | undefined {
+  return appKeymap.describe().find((entry) => entry.scope === "inbox" && entry.id === id)?.enabled;
+}
+
+/** The command bar's rows of the Inbox as it would open now, by label, each with its keys. */
+function barRows(): Map<string, readonly string[]> {
+  return new Map(
+    appKeymap
+      .actions()
+      .filter((action) => action.scope === "inbox")
+      .map((action) => [action.label, action.keys] as const)
+  );
+}
+
+test("a and Shift+R press the column head's Approve and Request changes, and do nothing before the document's read returns or on another item", async () => {
+  const user = userEvent.setup();
+  const narrow = widenToReadingPane();
+  const rows = [
+    approvalRow("ask-approval", "CORE-1"),
+    inboxIssue("ask-b", "CORE-2", "Which format?"),
+  ];
+  const fake = fakeDocumentRuntime({ text: "The live document" });
+  const reads = mockDocumentColumnReads(rows);
+  const read = Promise.withResolvers<Artifact>();
+  reads.getArtifact.mockImplementation(() => read.promise);
+  const getArtifactVersion = spyOn(api, "getArtifactVersion").mockResolvedValue({
+    authors: [],
+    created_at: "2026-09-10T00:00:00Z",
+    markdown: "# Spec\n",
+    named: false,
+    number: 4,
+    summary: null,
+  });
+  // The review stays out, so the request stays in hand for the steps after it.
+  const review = spyOn(api, "createArtifactVersionReview").mockImplementation(
+    () => new Promise(() => {})
+  );
+  const { unmount } = renderInbox("/?item=ask-approval", { runtime: fake.runtime });
+
+  try {
+    const pane = await screen.findByTestId("inbox-pane");
+    await waitFor(() => expect(reads.getArtifact).toHaveBeenCalled());
+    const row = shortRow("ask-approval");
+    act(() => row.focus());
+    // Before the read returns the head draws no Approve: both keys are not available, and
+    // pressing them sends and opens nothing.
+    expect(offered("approve")).toBe(false);
+    expect(offered("request-changes")).toBe(false);
+    await user.keyboard("a");
+    await user.keyboard("{Shift>}R{/Shift}");
+    expect(review).not.toHaveBeenCalled();
+    expect(screen.queryByRole("dialog", { name: "Request changes" })).not.toBeInTheDocument();
+
+    await act(async () => read.resolve(SPEC_AWAITING));
+    const head = pane.querySelector<HTMLElement>("[data-inbox-pane-head]");
+    if (head === null) throw new Error("the column drew no head");
+    await within(head).findByRole("button", { name: "Approve" });
+    expect(offered("approve")).toBe(true);
+    expect(offered("request-changes")).toBe(true);
+    expect(barRows().get("Approve")).toEqual(["a"]);
+    expect(barRows().get("Request changes")).toEqual(["Shift+R"]);
+
+    // Shift+R opens the box with the focus in its reason, and Escape closes it sending nothing.
+    await user.keyboard("{Shift>}R{/Shift}");
+    const dialog = screen.getByRole("dialog", { name: "Request changes" });
+    await waitFor(() => expect(within(dialog).getByLabelText("Reason")).toHaveFocus());
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog", { name: "Request changes" })).not.toBeInTheDocument();
+    expect(review).not.toHaveBeenCalled();
+
+    // `a` approves the version the column shows, and opens no box.
+    act(() => row.focus());
+    await user.keyboard("a");
+    await waitFor(() => expect(review).toHaveBeenCalledTimes(1));
+    expect(review).toHaveBeenCalledWith("artifact-1", 4, { state: "approved" }, keyedAttempt);
+    expect(screen.queryByRole("dialog", { name: "Request changes" })).not.toBeInTheDocument();
+
+    // On a question there is nothing to approve.
+    await user.keyboard("j");
+    await waitFor(() => expect(selectedIds()).toEqual(["ask-b"]));
+    await within(screen.getByTestId("inbox-pane")).findByTestId("ask-ask-b");
+    expect(offered("approve")).toBe(false);
+    expect(offered("request-changes")).toBe(false);
+    await user.keyboard("a");
+    await user.keyboard("{Shift>}R{/Shift}");
+    expect(review).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("dialog", { name: "Request changes" })).not.toBeInTheDocument();
+  } finally {
+    unmount();
+    narrow();
+    reads.restore();
+    getArtifactVersion.mockRestore();
+    review.mockRestore();
+  }
+});
+
+test("on a card a picks Approve and sends it, and Shift+R picks Request changes, whose reason Escape lets go of back to the row", async () => {
+  const user = userEvent.setup();
+  const rows = [
+    inboxIssue("ask-b", "CORE-2", "Which format?"),
+    approvalRow("ask-approval", "CORE-1"),
+  ];
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const getAsk = mockAskReads(rows);
+  // The answer stays out, so the card stays for the steps after it.
+  const answerAsk = spyOn(api, "answerAsk").mockImplementation(() => new Promise(() => {}));
+  const { unmount } = renderInbox();
+
+  try {
+    const card = await screen.findByTestId("ask-ask-approval");
+    const row = shortRow("ask-approval");
+
+    // On a question there is nothing to approve.
+    await screen.findByTestId("ask-ask-b");
+    act(() => shortRow("ask-b").focus());
+    expect(offered("approve")).toBe(false);
+    expect(offered("request-changes")).toBe(false);
+    await user.keyboard("a");
+    expect(answerAsk).not.toHaveBeenCalled();
+
+    act(() => row.focus());
+    expect(offered("approve")).toBe(true);
+    await user.keyboard("{Shift>}R{/Shift}");
+    const requestChanges = within(card).getByRole("radio", { name: "Request changes" });
+    expect((requestChanges as HTMLInputElement).checked).toBe(true);
+    expect(within(card).getByLabelText("Reason (required)")).toHaveFocus();
+    await user.keyboard("{Escape}");
+    expect((requestChanges as HTMLInputElement).checked).toBe(false);
+    expect(row).toHaveFocus();
+    expect(answerAsk).not.toHaveBeenCalled();
+
+    await user.keyboard("a");
+    await waitFor(() => expect(answerAsk).toHaveBeenCalledTimes(1));
+    expect(answerAsk.mock.calls[0]?.[0]).toBe("ask-approval");
+    expect(answerAsk.mock.calls[0]?.[1]).toEqual({
+      expected_edited_at: null,
+      selected: ["Approve"],
+    });
+  } finally {
+    unmount();
+    answerAsk.mockRestore();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+  }
+});
+
+test("the command bar offers the card's own actions for the row in hand, and runs them on it", async () => {
+  const user = userEvent.setup();
+  const rows = [
+    inboxIssue("ask-a", "CORE-1", "Which approach?", {
+      options: [{ label: "Ship" }, { label: "Hold" }],
+    }),
+    inboxIssue("ask-b", "CORE-2", "Which format?"),
+  ];
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const getAsk = mockAskReads(rows);
+  const { unmount } = renderInbox();
+
+  try {
+    const card = await screen.findByTestId("ask-ask-a");
+    const row = shortRow("ask-a");
+    act(() => row.focus());
+    let offeredRows = barRows();
+    for (const label of ["Decline", "Hand on", "Show the asker's handles"]) {
+      expect(offeredRows.get(label)).toEqual([]);
+    }
+    // Ask back takes a press only once something is typed, and is no action before that; nor
+    // are the actions of a control the row does not draw.
+    for (const label of ["Ask back", "Mark read", "Un-snooze", "Clear the selection"]) {
+      expect(offeredRows.has(label)).toBe(false);
+    }
+    act(() => within(card).getByLabelText("Your answer").focus());
+    await user.paste("Which format do we ship in?");
+    act(() => row.focus());
+    expect(barRows().get("Ask back")).toEqual([]);
+
+    // Chosen, Decline presses the card's own Decline to answer.
+    const decline = appKeymap.actions().find((action) => action.label === "Decline");
+    act(() => decline?.run());
+    expect(await screen.findByRole("dialog", { name: "Decline to answer" })).toBeInTheDocument();
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog", { name: "Decline to answer" })).not.toBeInTheDocument();
+
+    // With a row marked, the bar's Select all and Clear selection are rows too; Clear shows the
+    // Escape that clears the selection off the row.
+    act(() => row.focus());
+    await user.keyboard("x");
+    await screen.findByText("1 selected");
+    offeredRows = barRows();
+    expect(offeredRows.get("Select all")).toEqual([]);
+    expect(offeredRows.get("Clear the selection")).toEqual(["Escape"]);
+    const clear = appKeymap.actions().find((action) => action.label === "Clear the selection");
+    act(() => clear?.run());
+    await waitFor(() => expect(screen.queryByText("1 selected")).not.toBeInTheDocument());
+  } finally {
+    unmount();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+  }
+});
+
+test("beside the column the command bar presses the column head's Open page", async () => {
+  const narrow = widenToReadingPane();
+  const rows = [inboxIssue("ask-a", "CORE-1", "Which approach?")];
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const getAsk = mockAskReads(rows);
+  const getIssue = mockIssueReads();
+  const { unmount } = renderInbox("/?item=ask-a");
+
+  try {
+    const pane = await screen.findByTestId("inbox-pane");
+    await within(pane).findByTestId("ask-ask-a");
+    act(() => shortRow("ask-a").focus());
+    const open = within(pane).getByRole("link", { name: "Open page" });
+    // The Inbox here is drawn at every address and writes its own back, so the press is read
+    // off the link itself rather than off the address it would leave for.
+    let pressed = 0;
+    open.addEventListener("click", () => {
+      pressed += 1;
+    });
+    expect(barRows().get("Open page at the section")).toEqual([]);
+    const row = appKeymap.actions().find((action) => action.label === "Open page at the section");
+    act(() => row?.run());
+    expect(pressed).toBe(1);
+  } finally {
+    unmount();
+    narrow();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+    getIssue.mockRestore();
+  }
+});

@@ -2,7 +2,7 @@ import { expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { realClock, tick } from "./__tests__/fake-clock";
 import { graphNode } from "./__tests__/graph-fixture";
@@ -13,6 +13,7 @@ import { ApiError, api, NetworkError } from "./api/client";
 import { liveSocketFor } from "./api/live-socket";
 import type { AuthenticatedUser } from "./api/types";
 import { AuthGate } from "./app";
+import { appKeymap } from "./features/shell/keymap";
 // The Answers, document and project pages are lazy routes of the app. A page module's first
 // compile is not what a wait is for, so the modules are loaded here, with the test file, and no
 // wait measures that load.
@@ -1077,5 +1078,77 @@ test("a live socket refused once the person is signed out takes the page to sign
   } finally {
     teardown();
     sockets.restore();
+  }
+});
+
+/** The address the app is at, for a test that moves it. */
+function LocationProbe() {
+  const location = useLocation();
+  return <output data-testid="location">{location.pathname}</output>;
+}
+
+// R11: every page the navigation always shows is a command bar row, "Go to" and its name, with
+// no key of its own where it has none, and each moves the page to its address.
+test("the command bar's Go to rows reach every page the navigation always shows", async () => {
+  const originalMatchMedia = window.matchMedia;
+  window.matchMedia = (() =>
+    ({
+      addEventListener: () => {},
+      addListener: () => {},
+      dispatchEvent: () => true,
+      matches: false,
+      media: "",
+      onchange: null,
+      removeEventListener: () => {},
+      removeListener: () => {},
+    }) as MediaQueryList) as typeof window.matchMedia;
+  const whoAmI = spyOn(api, "whoAmI").mockResolvedValue({
+    event_head: "0",
+    kind: "user",
+    login: "alice",
+  });
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue([]);
+  const getMyState = spyOn(api, "getMyState").mockResolvedValue({});
+  const listIssues = spyOn(api, "listIssues").mockResolvedValue([]);
+  const listProjects = spyOn(api, "listProjects").mockResolvedValue([]);
+
+  try {
+    for (const [label, keys, address] of [
+      ["Go to Inbox", ["g i"], "/"],
+      ["Go to Agents", ["g a"], "/agents"],
+      ["Go to Priorities", [], "/priorities"],
+      ["Go to Delivery", [], "/delivery"],
+      ["Go to Pipeline", [], "/pipeline"],
+      ["Go to Settings", ["g s"], "/settings"],
+    ] as const) {
+      const view = render(
+        <MemoryRouter initialEntries={["/answers-elsewhere"]}>
+          <QueryClientProvider
+            client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
+          >
+            <AuthGate />
+            <LocationProbe />
+          </QueryClientProvider>
+        </MemoryRouter>
+      );
+      try {
+        await screen.findByText("Signed in as alice");
+        const row = appKeymap.actions().find((action) => action.label === label);
+        expect(row?.keys).toEqual(keys);
+        act(() => row?.run());
+        // Read at once and left at once: the move is the row's, and the page it reaches is that
+        // page's own test's to draw.
+        expect(screen.getByTestId("location").textContent).toBe(address);
+      } finally {
+        view.unmount();
+      }
+    }
+  } finally {
+    getInbox.mockRestore();
+    getMyState.mockRestore();
+    listIssues.mockRestore();
+    listProjects.mockRestore();
+    whoAmI.mockRestore();
+    window.matchMedia = originalMatchMedia;
   }
 });

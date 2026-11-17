@@ -385,7 +385,8 @@ export const KEYMAP_CATALOGUE = {
     label: "Clear the selection",
     keys: [],
     fixedKeys: ["Escape"],
-    palette: false,
+    // The bar's Clear selection, a row of the command bar too (R11), which shows its Escape.
+    palette: true,
     surface: "inbox",
   },
   "inbox.filter": {
