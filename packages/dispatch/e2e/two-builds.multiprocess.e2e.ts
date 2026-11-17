@@ -342,6 +342,12 @@ function visits(seed: Seeded): readonly Visit[] {
       ],
       url: "/answers",
     },
+    {
+      // The heading is the page's own: the walk stores no comparison run for the figures under it.
+      route: "/inbox/comparison",
+      shows: (page) => [heading(page, "Inbox comparison")],
+      url: "/inbox/comparison",
+    },
     { route: "/agents", shows: (page) => [heading(page, "Agents")], url: "/agents" },
     {
       // The preview is the headless renderer's: without it the bold is literal asterisks.

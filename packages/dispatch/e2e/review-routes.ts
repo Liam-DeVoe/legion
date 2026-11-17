@@ -125,6 +125,14 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     ready: (page) => [page.getByRole("heading", { name: "Answered by you" })],
   },
   {
+    kind: "excluded",
+    name: "inbox-comparison",
+    pattern: "/inbox/comparison",
+    reason:
+      "The comparison's page exists in one branch alone and is deleted with the comparison " +
+      "before a release, so no release serves it to review (e2e/one-inbox.e2e.ts reads it).",
+  },
+  {
     kind: "reviewed",
     layers: bothLayers,
     name: "agents",

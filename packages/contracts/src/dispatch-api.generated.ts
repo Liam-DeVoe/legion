@@ -1323,6 +1323,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/inbox/comparison": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description The gate of the one read (GET /api/v1/me/inbox) over the three reads it replaces: the newest run of `envoy-dispatch inbox-compare`, read from its stored row alone, as counts - {run: {id, ran_at, difference_count (the rows an old read answered and the one read did not), people_checked (every person the database holds), people_uncovered (those the run did not reach), shapes (each corpus shape the gate requires, {shape, rows}), missing_shapes, met (no difference, nobody uncovered and every shape held)}}, or {run: null} before any run. It answers nobody's rows. The comparison runs in the branch alone, over a test database, and is deleted with this route before a release. */
+    get: operations["getApiV1InboxComparison"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/issues": {
     parameters: {
       query?: never;
@@ -4943,6 +4960,25 @@ export interface components {
     };
     HoldPersistenceInput: {
       duration: string;
+    };
+    InboxComparisonResponse: {
+      run: components["schemas"]["InboxComparisonRun"] | null;
+    };
+    InboxComparisonRun: {
+      difference_count: number;
+      /** Format: int64 */
+      id: number;
+      met: boolean;
+      missing_shapes: string[] | null;
+      people_checked: number;
+      people_uncovered: number;
+      /** Format: date-time */
+      ran_at: string;
+      shapes: components["schemas"]["InboxComparisonShape"][] | null;
+    };
+    InboxComparisonShape: {
+      rows: number;
+      shape: string;
     };
     InboxDismissRequest: {
       artifact?: string;
@@ -9725,6 +9761,38 @@ export interface operations {
       };
     };
   };
+  getApiV1InboxComparison: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["InboxComparisonResponse"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
   getApiV1Issues: {
     parameters: {
       query?: {
@@ -14273,6 +14341,9 @@ export type GraphReferences = components["schemas"]["GraphReferences"];
 export type Handoff = components["schemas"]["Handoff"];
 export type HandoffSummary = components["schemas"]["HandoffSummary"];
 export type HoldPersistenceInput = components["schemas"]["HoldPersistenceInput"];
+export type InboxComparisonResponse = components["schemas"]["InboxComparisonResponse"];
+export type InboxComparisonRun = components["schemas"]["InboxComparisonRun"];
+export type InboxComparisonShape = components["schemas"]["InboxComparisonShape"];
 export type InboxDismissRequest = components["schemas"]["InboxDismissRequest"];
 export type InboxDismissResponse = components["schemas"]["InboxDismissResponse"];
 export type InboxIssue = components["schemas"]["InboxIssue"];

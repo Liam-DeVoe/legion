@@ -2315,9 +2315,11 @@ checkout's `git rev-parse HEAD` through `-ldflags "-X main.buildCommit=…"`, an
 builds nothing where git names no commit), and a running server keeps the
 inode it started from. The script
 unsets inherited `DISPATCH_*`/`ENVOY_*`/`NATS_*` variables, supplies a fresh App
-key, passes no cookie signing key (the server generates one for its process, as
-`DISPATCH_DEV_SIGNIN` requires, or in two-process mode derives one from the
-`DISPATCH_DEV_SIGNIN_SHARED_KEY` the script passes on), and gives the server no caller Home or XDG
+key, passes no cookie signing key (under `DISPATCH_DEV_SIGNIN` the server derives one from the
+`DISPATCH_DEV_SIGNIN_SHARED_KEY` the script passes: the run's `DISPATCH_E2E_DEV_SIGNIN_SHARED_KEY`,
+which two-process mode sets, and otherwise the fixed `e2e-dev-signin`, so a second build a check
+boots over the same database shares the key set a live server process requires of it, a value as
+public as the agent bearer `e2e-token`), and gives the server no caller Home or XDG
 directory. A caller's environment or `~/.config/legion/envoy.json` /
 `~/.local/share/dispatch/{app.json,signing-key}` therefore cannot point the
 test server at a live Envoy, dashboard origin or GitHub App (every Legion pane

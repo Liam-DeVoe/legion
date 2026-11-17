@@ -3225,6 +3225,26 @@ So exit 0 always means the check compared something.
 it connects peers to documents' rooms as people, each named in the server's identity header (`-identity-header`, `X-Dispatch-User` by default, on a server run with `DISPATCH_IDENTITY=header:<name>` and `DISPATCH_IDENTITY_HEADER_TRUSTED=1`, since a room admits no agent token), and types inside existing paragraphs at a set rate (`browsertype -h` lists its flags).
 A paragraph whose text holds a `-protect` value (repeatable) is never edited, so the text a load generator's own writes quote stays as it wrote it.
 
+## Inbox comparison
+
+`envoy-dispatch inbox-compare --old-url <base server> --new-url <this server> [--exclude <login>]...` is dispatch://INFRA-1152's comparison of the one read, `GET /api/v1/me/inbox`, with the three reads it replaces (`internal/dispatch/inboxcompare`).
+It reads every person of the `people` table from `DATABASE_URL`, the database both servers serve, and signs each in on both through dev sign-in (`GET /auth/_dev/signin`).
+It refuses an address whose host is not on this machine, and a server that answers that sign-in with anything but a session cookie, so it never reads a deployment's rows.
+On the old URL, the build of the release before, it asks `GET /api/v1/inbox?assignee=me`, `GET /api/v1/me/replies?kind=reply,agent&state=inbox` and `GET /api/v1/agents/{session_id}/messages` for each session the person started a conversation with; on the new URL it asks the one read.
+Each old row stands for a node: an Inbox ask row for its ask, a Reply row for its thread's root, an Agent row for its root message, and in a person's own conversation the root they wrote and each reply the session wrote under it.
+A node an old row stands for that the one read answers no entry of is a difference, named by its person, its arm (the old read), its kind and its row, and counted per person and per arm, so agreement in one arm cancels nothing in another.
+A person `--exclude` names, or one either server answered anything but rows for, is uncovered.
+The run names each corpus shape the gate requires that it found none of: an Inbox ask row, a Reply row of an ask, of a comment thread and of an issue message thread, an Agent row, a session's reply in a conversation, a person with rows and one with none, and a comment reply chain at the outbox walk's bound held by a person it reached.
+A run missing a shape is refused as proof: it prints no zero count as a pass.
+
+Every run stores one row in `inbox_comparison_runs` (migration `20261117132340`), which nothing updates: its difference count, the people checked (every person the database holds) and uncovered, each required shape with the rows the run found of it, and the differences themselves.
+`GET /api/v1/inbox/comparison` (needs the `person` scope) answers the newest row's counts and shapes and whether it meets the gate, and none of its differences; the page `/inbox/comparison` states them.
+The gate is met when that run reads no difference, nobody uncovered and every shape.
+
+It prints one `PASS:` or `FAIL:` line per assertion, then `inbox-compare: run=<id> difference_count=… people_checked=… people_uncovered=… missing_shapes=<names|none> gate=<met|not-met>`.
+Exit 0 when the run meets the gate, 1 when it does not, and 2 when it could not run and stored no row.
+It runs in the INFRA-1152 branch alone (`packages/dispatch/e2e/acceptance/one-inbox-routes.sh`, `e2e/one-inbox.e2e.ts`), and the commit that moves every caller off the three reads deletes it with its table, its route and its page.
+
 ## Reference graph
 
 Mentions (`dispatch://` references and same-origin dashboard URLs) in document versions, ask questions, comment bodies, and issue messages are indexed into `refs` on every write;

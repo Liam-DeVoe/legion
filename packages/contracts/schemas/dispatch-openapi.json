@@ -5100,6 +5100,48 @@
         ]
       }
     },
+    "/api/v1/inbox/comparison": {
+      "get": {
+        "description": "The gate of the one read (GET /api/v1/me/inbox) over the three reads it replaces: the newest run of `envoy-dispatch inbox-compare`, read from its stored row alone, as counts - {run: {id, ran_at, difference_count (the rows an old read answered and the one read did not), people_checked (every person the database holds), people_uncovered (those the run did not reach), shapes (each corpus shape the gate requires, {shape, rows}), missing_shapes, met (no difference, nobody uncovered and every shape held)}}, or {run: null} before any run. It answers nobody's rows. The comparison runs in the branch alone, over a test database, and is deleted with this route before a release.",
+        "operationId": "getApiV1InboxComparison",
+        "parameters": [
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InboxComparisonResponse"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-oauth-scopes": [
+          "person"
+        ]
+      }
+    },
     "/api/v1/issues": {
       "get": {
         "description": "List issues; filters project, status (repeatable: the issues standing in any of those statuses; a blank value names none, and a value is matched as written, so a status the lifecycle does not hold matches no issue: alone it answers none, and beside another status it adds nothing), parent, label, priority (repeatable: 0-3, or none for unset), advances (repeatable: a priority id, none for the work that advances no live priority or any for the work that advances one, own or inherited; several are a union), open, updated_since, closed_since and closed_before (RFC3339; the issues closed at or after closed_since and before closed_before, so an open issue matches neither), route_status (live, no_holder or unknown; open issues only); ?pinned=true needs the person scope, since the pins are one person's. A malformed updated_since, closed_since or closed_before is 400 INVALID_UPDATED_SINCE, INVALID_CLOSED_SINCE or INVALID_CLOSED_BEFORE, and a closed_before at or before closed_since 400 INVALID_CLOSED_WINDOW. Each issue carries closed_at, when it was closed or null while it is open, and progress: {tasks, children}, its spec's task-list items and its direct children as {done, total}, each null when it has none. ?moved=true adds moved_at and moved_by to each issue standing in backlog or icebox: when it was moved there and who moved it, read from its newest issue.updated event that set one of the two statuses, as GET /api/v1/priorities' parked work reads them; an issue standing elsewhere, or whose events do not reach back to the move, carries neither, and a listing without moved=true carries neither on any issue. Pages with limit (1-250) and offset (0 or more; alone it pages 50): a paged answer is {issues, total, limit, offset}, total counting every issue the filters match; without either it is every matching issue as an array. cursor is 400 INVALID_QUERY.",
@@ -20613,6 +20655,92 @@
         },
         "required": [
           "duration"
+        ],
+        "type": "object"
+      },
+      "InboxComparisonResponse": {
+        "properties": {
+          "run": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/InboxComparisonRun"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "run"
+        ],
+        "type": "object"
+      },
+      "InboxComparisonRun": {
+        "properties": {
+          "difference_count": {
+            "type": "integer"
+          },
+          "id": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "met": {
+            "type": "boolean"
+          },
+          "missing_shapes": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "people_checked": {
+            "type": "integer"
+          },
+          "people_uncovered": {
+            "type": "integer"
+          },
+          "ran_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "shapes": {
+            "items": {
+              "$ref": "#/components/schemas/InboxComparisonShape"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "ran_at",
+          "difference_count",
+          "people_checked",
+          "people_uncovered",
+          "shapes",
+          "missing_shapes",
+          "met"
+        ],
+        "type": "object"
+      },
+      "InboxComparisonShape": {
+        "properties": {
+          "rows": {
+            "type": "integer"
+          },
+          "shape": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "shape",
+          "rows"
         ],
         "type": "object"
       },

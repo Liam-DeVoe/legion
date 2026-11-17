@@ -567,6 +567,9 @@ func TestEveryRouteThatWasABrowsersAloneNamesThePersonScope(t *testing.T) {
 		// The one read of what is tied to a person is no older row either: it answers for the
 		// credential's own person alone, so a credential that proves none has nothing to read.
 		"GET /api/v1/me/inbox",
+		// The comparison's gate is no older row either: it states the newest run's counts to a
+		// person, as the page that draws them does, and a credential that proves none reads none.
+		"GET /api/v1/inbox/comparison",
 		"PUT /api/v1/me/threads/{id}/read",
 		// The Inbox's Mark all read is no older row either: it writes the person's own read
 		// marks, so it is theirs as the two rows above it are.

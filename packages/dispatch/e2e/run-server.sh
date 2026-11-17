@@ -98,7 +98,7 @@ else
 fi
 
 # This process's own web dist, sign-in and embedder, read before the sweep below: web/dist and
-# dev sign-in with a cookie key of its own unless two-process mode or DISPATCH_E2E_SIGNIN gave
+# dev sign-in with the harness's one cookie key unless two-process mode or DISPATCH_E2E_SIGNIN gave
 # it others (above). The dev embedder is the development embedder of the server, which hashes a
 # text's words into a vector in the process, so meaning search answers with no AWS or Azure
 # account. It is off unless DISPATCH_E2E_EMBEDDER=1 asks for it, and it goes only with dev
@@ -121,9 +121,14 @@ case "${DISPATCH_E2E_SIGNIN:-}" in
       signin_env+=(DISPATCH_DEV_EMBEDDER=1)
       dev_embedder=1
     fi
-    if [ -n "${DISPATCH_E2E_DEV_SIGNIN_SHARED_KEY:-}" ]; then
-      signin_env+=(DISPATCH_DEV_SIGNIN_SHARED_KEY="$DISPATCH_E2E_DEV_SIGNIN_SHARED_KEY")
-    fi
+    # The cookie key is the run's DISPATCH_E2E_DEV_SIGNIN_SHARED_KEY where it gives one, as
+    # two-process mode does, and otherwise the harness's fixed `e2e-dev-signin`. A second build
+    # served over the same database - the base build a check boots beside this one - must share
+    # this server's key set, since a server process refuses to start beside a live one whose keys
+    # it does not hold (processes.Register), so the key is one every caller of the harness can
+    # name. It is as public as the agent bearer e2e-token below: dev sign-in already mints any
+    # person's cookie for any loopback peer.
+    signin_env+=(DISPATCH_DEV_SIGNIN_SHARED_KEY="${DISPATCH_E2E_DEV_SIGNIN_SHARED_KEY:-e2e-dev-signin}")
     ;;
   oidc)
     : "${DISPATCH_E2E_SIGNIN_ISSUER_PORT:?DISPATCH_E2E_SIGNIN_ISSUER_PORT must name the dev OIDC issuer (e2e/run-signin-issuer.sh) DISPATCH_E2E_SIGNIN=oidc signs in at}"
@@ -367,9 +372,9 @@ done
 # throwaway App credentials: a fresh RSA key per run (nothing secret to
 # commit) beside a fake client id. Identity is the production cookie: the server
 # mints it for the email a test names at its dev sign-in route
-# (DISPATCH_DEV_SIGNIN=1) with a signing key it generates for this process
-# alone, or in two-process mode derives from the shared key above, so no
-# signing key is passed and nothing reaches the caller's persistent data dir;
+# (DISPATCH_DEV_SIGNIN=1) with a signing key it derives from the shared key
+# above, so no signing key is passed and nothing reaches the caller's persistent
+# data dir;
 # under DISPATCH_E2E_SIGNIN=oidc it mints it at /auth/callback, signed with the
 # run's DISPATCH_SIGNING_KEY, which keeps the data dir out of it too.
 # DISPATCH_INSECURE_COOKIE=1 keeps the cookie usable over plain HTTP in every

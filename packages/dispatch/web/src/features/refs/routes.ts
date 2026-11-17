@@ -1145,6 +1145,10 @@ export function routeIsInbox(pathname: string): boolean {
 /** The signed-in person's answers and ask replies (`AnswersPage`), linked from the Inbox page. */
 export const ANSWERS_PATH = "/answers";
 
+/** The comparison's page (`ComparisonPage`): the gate of the one read over the three reads it
+ *  replaces, which this branch deletes with the comparison before a release. */
+export const INBOX_COMPARISON_PATH = "/inbox/comparison";
+
 /** One person's page (`PersonPage`), linked from the signed-in login in the rail. */
 export const PERSON_PATH = "/people/:login";
 

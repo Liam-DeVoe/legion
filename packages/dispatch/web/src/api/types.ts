@@ -163,6 +163,7 @@ export type {
   Handoff,
   HandoffSummary,
   IDCandidate,
+  InboxComparisonResponse,
   InboxDismissRequest,
   InboxDismissResponse,
   InboxDismissSeen,

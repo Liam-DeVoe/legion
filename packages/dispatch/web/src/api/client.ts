@@ -1219,6 +1219,14 @@ export class DispatchApiClient {
     return this.read("/api/v1/inbox", {}, { project });
   }
 
+  /** `GET /api/v1/inbox/comparison`: the newest run of `envoy-dispatch inbox-compare` as
+   *  counts alone - its differences, the people it checked and those it did not reach, the corpus
+   *  shapes it found and whether it meets the gate - with `run` null before any run. Needs the
+   *  `person` scope. */
+  getInboxComparison() {
+    return this.read("/api/v1/inbox/comparison", {});
+  }
+
   /** `PUT /api/v1/me/asks/{id}/snooze`: fold this inbox row away for the caller until
    *  `snoozedUntil` (RFC3339). Needs the `person` scope, like the inbox itself. */
   async snoozeAsk(id: string, snoozedUntil: string, bounds: WriteBounds) {

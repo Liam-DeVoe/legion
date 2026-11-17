@@ -6,6 +6,7 @@ import {
   AGENT_ARTIFACT_PATH,
   AGENT_LIVE_PATH,
   ANSWERS_PATH,
+  INBOX_COMPARISON_PATH,
   PERSON_PATH,
 } from "../../web/src/features/refs/routes";
 import { walkRoutes } from "../two-builds-routes";
@@ -20,6 +21,7 @@ const pathConstants: Record<string, string> = {
   AGENT_ARTIFACT_PATH,
   AGENT_LIVE_PATH,
   ANSWERS_PATH,
+  INBOX_COMPARISON_PATH,
   PERSON_PATH,
 };
 
