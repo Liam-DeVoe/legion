@@ -227,8 +227,9 @@ mint_token() {
 #                 the run made (GET /api/v1/related-checks)
 #   since         the start of a window that ends at the read, an RFC 3339 instant
 #                 (GET /api/v1/agents/{session_id}/answers); and, as a decimal event id, the
-#                 cursor the live socket's events_start frame names, which is the event log's
-#                 head, so it counts every event of the server, a hidden one's included
+#                 cursor the live socket's events_start frame names, which is the newest event
+#                 the caller can see (viewerEventHead), so no event of a project it does not see
+#                 moves it
 #   from          the default start of a delivery window, seven days before the read
 #                 (GET /api/v1/delivery/timeline, /measures)
 #   last_seen     a session's last heartbeat as the listener reports it, in epoch milliseconds
