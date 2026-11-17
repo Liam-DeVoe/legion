@@ -61,10 +61,10 @@ const (
 // container is the host's CPU count, not the pod's CPU limit, so an unsized pool held as many
 // connections as the node had CPUs: a different number on every node, and 288 on a large dev
 // machine, past a Postgres of 100 connections (dispatch://INFRA-3904). 32 is what every deployed
-// daemon already runs with: agent-infra's legion program writes pool_max_conns=32 into each
-// daemon's DSN (legion/main.go), chosen after LINUX's daemon failed six boots in a row on
-// 2026-10-26 with about 880 claims deciding at once, while its instance served 41-48
-// connections. A DSN whose settings name pool_max_conns keeps that number (poolsetting.Named).
+// daemon already runs with: its deployment writes pool_max_conns=32 into each daemon's DSN, chosen
+// after LINUX's daemon failed six boots in a row on 2026-10-26 with about 880 claims deciding at
+// once, while its instance served 41-48 connections. A DSN whose settings name pool_max_conns keeps
+// that number (poolsetting.Named).
 const PoolConns = 32
 
 // Store is the daemon's handle on its database. The pool is the guarded one (Pool): the pgx pool
