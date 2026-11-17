@@ -301,8 +301,7 @@ test("a single pick's listbox is not multiselectable, and only its current value
   const user = userEvent.setup();
   const view = render(<SingleHost initial="docs" options={["api", "docs", "frontend"]} />);
   try {
-    // Named for the list whatever it shows, and the value it shows is what it says it holds.
-    const trigger = screen.getByRole("button", { name: "Epic", description: "docs" });
+    const trigger = screen.getByRole("button", { name: /^Epic\b/ });
     expect(trigger).toHaveTextContent("docs");
     await user.click(trigger);
     expect(screen.getByRole("listbox", { name: "Epic options" })).not.toHaveAttribute(
@@ -318,12 +317,74 @@ test("a single pick's listbox is not multiselectable, and only its current value
   }
 });
 
+// INFRA-3135, round 12: axe's `label-content-name-mismatch` (WCAG 2.5.3, Label in Name) failed on
+// every single pick that showed a value: its trigger was named "Assignee of CORE-1" while it
+// showed "alice", so the words on it were not in its name. Its name is the list's name, or the
+// host's own, then what it shows, leaving out words the host hides from assistive technology,
+// and no description repeats the value; a trigger that shows the list's name says it once.
+test("a single pick's trigger is named for its list and then for what it shows", () => {
+  const view = render(
+    <>
+      <SingleHost initial="docs" options={["api", "docs"]} />
+      <MultiSelect
+        emptyMessage="Nothing here."
+        label="Issue"
+        mode="single"
+        onOpenChange={() => undefined}
+        onPick={() => undefined}
+        open={false}
+        options={["CORE-1"]}
+        searchLabel="Search issues"
+        triggerAriaLabel="Choose issue"
+        value="CORE-1"
+      >
+        Issue: CORE-1
+      </MultiSelect>
+      <MultiSelect
+        chevron={false}
+        emptyMessage="Nothing here."
+        label="Repository"
+        mode="single"
+        onOpenChange={() => undefined}
+        onPick={() => undefined}
+        open={false}
+        options={["acme/widgets"]}
+        searchLabel="Search repositories"
+        value="acme/widgets"
+      >
+        <span aria-hidden="true">acme/widgets</span>
+        <span className="sr-only">acme/widgets, inherited</span>
+      </MultiSelect>
+      <MultiSelect
+        emptyMessage="Nothing here."
+        label="Project"
+        mode="single"
+        onOpenChange={() => undefined}
+        onPick={() => undefined}
+        open={false}
+        options={["CORE"]}
+        searchLabel="Search projects"
+      />
+    </>
+  );
+  try {
+    const picked = screen.getByRole("button", { name: "Epic docs" });
+    expect(picked).toHaveTextContent(/^docs$/);
+    expect(picked).not.toHaveAccessibleDescription();
+    expect(screen.getByRole("button", { name: "Choose issue Issue: CORE-1" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Repository acme/widgets, inherited" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Project" })).toHaveTextContent(/^Project$/);
+  } finally {
+    view.unmount();
+  }
+});
+
 // INFRA-3135, round 12: below 1280 px every button is a flex box (`styles.css`), whose own text
 // ends in no ellipsis, so a trigger cut a long value mid-word; and no trigger showed that it
 // opens a list. In both modes the trigger's text is an element of its own that truncates - a
-// single pick's carries its whole value as its title and is still the trigger's description -
-// with a hidden chevron after it; a host whose children are a look of their own, a badge, draws
-// them alone. `e2e/table-controls.e2e.ts` reads the ellipsis and the chevron in a browser.
+// single pick's carries its whole value as its title and is still what the trigger's name ends
+// in - with a hidden chevron after it; a host whose children are a look of their own, a badge,
+// draws them alone. `e2e/table-controls.e2e.ts` reads the ellipsis and the chevron in a browser.
 test("a trigger's text truncates in its own element before a hidden chevron, unless its host draws a look of its own", () => {
   const view = render(
     <>
@@ -346,7 +407,7 @@ test("a trigger's text truncates in its own element before a hidden chevron, unl
     </>
   );
   try {
-    const single = screen.getByRole("button", { name: "Epic", description: "docs" });
+    const single = screen.getByRole("button", { name: /^Epic\b/ });
     for (const trigger of [single, screen.getByRole("button", { name: "Labels" })]) {
       const chevron = trigger.querySelector("svg");
       expect(chevron).toHaveAttribute("aria-hidden", "true");
@@ -354,7 +415,7 @@ test("a trigger's text truncates in its own element before a hidden chevron, unl
     }
     expect(single.querySelector(".truncate")).toHaveAttribute("title", "docs");
 
-    const badge = screen.getByRole("button", { name: "Assignee", description: "bob" });
+    const badge = screen.getByRole("button", { name: /^Assignee\b/ });
     expect(badge.querySelector("svg")).toBeNull();
     expect(badge.querySelector(".truncate")).toBeNull();
     expect(screen.getByTestId("badge").parentElement?.parentElement).toBe(badge);
@@ -400,7 +461,7 @@ test("Escape, Tab and an outside press close a single pick with nothing picked a
   const user = userEvent.setup();
   const view = render(<SingleHost initial="api" options={["api", "docs"]} />);
   try {
-    const trigger = screen.getByRole("button", { name: "Epic" });
+    const trigger = screen.getByRole("button", { name: /^Epic\b/ });
     await user.click(trigger);
     await user.keyboard("{ArrowDown}");
     await user.keyboard("{Escape}");
@@ -469,7 +530,7 @@ test("where the engine still names a removed text box focused, Tab out of it put
   const restore = keepRemovedFocus();
   const view = render(<SingleHost initial="api" options={["api", "docs"]} />);
   try {
-    const trigger = screen.getByRole("button", { name: "Epic" });
+    const trigger = screen.getByRole("button", { name: /^Epic\b/ });
     for (const shift of [false, true]) {
       await user.click(trigger);
       expect(screen.getByRole("combobox", { name: "Search epics" })).toHaveFocus();
@@ -522,7 +583,7 @@ test("a single pick opens with its picked value active, so Enter keeps it and th
   const user = userEvent.setup();
   const view = render(<SingleHost initial="docs" options={["api", "docs", "frontend"]} />);
   try {
-    const trigger = screen.getByRole("button", { name: "Epic" });
+    const trigger = screen.getByRole("button", { name: /^Epic\b/ });
     await user.click(trigger);
     expect(screen.getByRole("combobox", { name: "Search epics" })).toHaveAttribute(
       "aria-activedescendant",
@@ -549,7 +610,7 @@ test("every close tells the host what closed the list: a pick, Escape, Tab, a pr
   const user = userEvent.setup();
   const view = render(<SingleHost initial="api" options={["api", "docs"]} />);
   try {
-    const trigger = screen.getByRole("button", { name: "Epic" });
+    const trigger = screen.getByRole("button", { name: /^Epic\b/ });
     await user.click(trigger);
     await user.click(screen.getByRole("option", { name: "docs" }));
     await user.click(trigger);

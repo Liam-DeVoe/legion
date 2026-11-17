@@ -5,7 +5,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
-import { listOf, openList, pick, rows, textBoxes } from "../../__tests__/list-picks";
+import { listOf, openList, pick, pickNamed, rows, textBoxes } from "../../__tests__/list-picks";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { ApiError, api } from "../../api/client";
 import type { Issue, IssueDetails, IssueSummary, RepoProject } from "../../api/types";
@@ -168,14 +168,15 @@ function renderControl(
   };
 }
 
-/** The control's name: its trigger's, and its listbox's with ` options` after it. */
+/** The control's label: what its trigger's name starts with, before the words that read the
+ *  badge, and its listbox's name with ` options` after it. */
 const REPOSITORY = "Repository of CORE-1";
 
 function trigger(): HTMLButtonElement {
-  return screen.getByRole("button", { name: REPOSITORY }) as HTMLButtonElement;
+  return screen.getByRole("button", { name: pickNamed(REPOSITORY) }) as HTMLButtonElement;
 }
 
-/** The visible badge; the trigger's description repeats its text in a span of its own. */
+/** The visible badge; the trigger's name repeats its text from a span of its own. */
 const badge = 'span[aria-hidden="true"]';
 
 test("RepoControl lists the project's mapped repositories, shows the resolved one, and patches repo", async () => {
@@ -207,7 +208,7 @@ test("RepoControl lists the project's mapped repositories, shows the resolved on
     await waitFor(() =>
       expect(queryClient.getQueryData<IssueDetails>(detailKey)?.last_seq).toBe(2)
     );
-    expect(trigger()).toHaveAccessibleDescription("acme/gadgets");
+    expect(trigger()).toHaveAccessibleName(`${REPOSITORY} acme/gadgets`);
     expect(screen.getByText("acme/gadgets", { selector: badge })).toBeTruthy();
     expect(queryClient.getQueryData<IssueSummary[]>(listKey)?.[0]?.repo).toBe("acme/gadgets");
   } finally {
@@ -225,7 +226,7 @@ test("RepoControl sends null for Inherit", async () => {
   const { unmount, user } = renderControl({ repo: "acme/gadgets", resolvedRepo: "acme/gadgets" });
   try {
     // The issue's own repository is selectable before the mapping list has loaded.
-    expect(trigger()).toHaveAccessibleDescription("acme/gadgets");
+    expect(trigger()).toHaveAccessibleName(`${REPOSITORY} acme/gadgets`);
     await pick(user, REPOSITORY, "Inherit");
     await waitFor(() =>
       expect(patchIssue).toHaveBeenCalledWith("CORE-1", { repo: null }, keyedAttempt)
@@ -237,9 +238,9 @@ test("RepoControl sends null for Inherit", async () => {
   }
 });
 
-// The badge is decoration for sighted readers (aria-hidden); the trigger names the repository the
-// issue resolves to in its description, so a screen reader hears the target as well as Inherit.
-test("RepoControl describes the repository the issue resolves to", async () => {
+// The badge is decoration for sighted readers (aria-hidden); the trigger's name goes on to the
+// repository the issue resolves to, so a screen reader hears the target as well as Inherit.
+test("RepoControl's name goes on to the repository the issue resolves to", async () => {
   for (const [own, want] of [
     [
       { repo: null, resolvedRepo: "acme/widgets" },
@@ -251,8 +252,8 @@ test("RepoControl describes the repository the issue resolves to", async () => {
     const { unmount } = renderControl({ ...own });
     try {
       expect(
-        await screen.findByRole("button", { name: "Repository of CORE-1" })
-      ).toHaveAccessibleDescription(want);
+        await screen.findByRole("button", { name: pickNamed("Repository of CORE-1") })
+      ).toHaveAccessibleName(`Repository of CORE-1 ${want}`);
     } finally {
       unmount();
     }
@@ -284,7 +285,9 @@ test("RepoControl shows nothing for an issue whose project maps no repository", 
       expect(queryClient.getQueryData<RepoProject[]>(["repo-projects"])).toEqual(others)
     );
     await act(async () => {});
-    expect(screen.queryByRole("button", { name: "Repository of CORE-1" })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: pickNamed("Repository of CORE-1") })
+    ).not.toBeInTheDocument();
     expect(screen.queryByText("Repository:")).not.toBeInTheDocument();
   } finally {
     unmount();
@@ -349,8 +352,8 @@ test("RepoControl rolls back and shows the server's refusal", async () => {
         "acme/gadgets is not mapped to project CORE (Settings → Repositories → Projects)"
       )
     ).toBeTruthy();
-    expect(trigger()).toHaveAccessibleDescription(
-      "acme/widgets, inherited or the project's default"
+    expect(trigger()).toHaveAccessibleName(
+      `${REPOSITORY} acme/widgets, inherited or the project's default`
     );
     expect(screen.getByText("acme/widgets", { selector: badge })).toBeTruthy();
   } finally {
@@ -374,7 +377,7 @@ test("the issue header's Repository list holds a text box that narrows the repos
   const { unmount, user } = renderControl({ repo: null, resolvedRepo: "acme/widgets" });
   try {
     const before = new Set(textBoxes());
-    await user.click(screen.getByRole("button", { name: "Repository of CORE-1" }));
+    await user.click(screen.getByRole("button", { name: pickNamed("Repository of CORE-1") }));
     // The mappings are read once the reader reaches for the control.
     await waitFor(() =>
       expect(screen.queryAllByRole("option", { name: "acme/gadgets" }).length).toBeGreaterThan(0)
@@ -403,7 +406,7 @@ test("the issue header's Repository list holds a text box that narrows the repos
     );
     expect(screen.queryByRole("listbox", { name: "Repository of CORE-1 options" })).toBeNull();
     expect(trigger()).toHaveFocus();
-    await waitFor(() => expect(trigger()).toHaveAccessibleDescription("acme/gadgets"));
+    await waitFor(() => expect(trigger()).toHaveAccessibleName(`${REPOSITORY} acme/gadgets`));
 
     await user.keyboard("{Enter}");
     await screen.findByRole("listbox", { name: "Repository of CORE-1 options" });

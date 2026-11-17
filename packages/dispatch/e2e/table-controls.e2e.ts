@@ -5263,14 +5263,17 @@ const TEXT_BOXES = [
   '[role="textbox"]',
 ].join(", ");
 
-/** The control named `name` that opens a list: the list's own button. A native select, which is
- *  what several of these lists were before each held a text box, is found by the same name, so a
- *  page that still draws one fails on that list by name rather than on a trigger not found. A
- *  pattern finds a trigger whose name begins with its label and may go on to the value it shows. */
-function listTrigger(scope: Locator | Page, name: string | RegExp): Locator {
-  return scope
-    .getByRole("button", { exact: true, name })
-    .or(scope.getByRole("combobox", { exact: true, name }));
+/** The control labelled `label` that opens a list: the list's own button. A native select, which
+ *  is what several of these lists were before each held a text box, is found by the same label, so
+ *  a page that still draws one fails on that list by name rather than on a trigger not found. A
+ *  label finds a trigger named by it alone or by it and then what the trigger shows, as a single
+ *  pick's is (`MultiSelect`); a pattern finds a trigger whose name it matches. */
+function listTrigger(scope: Locator | Page, label: string | RegExp): Locator {
+  const name =
+    typeof label === "string"
+      ? new RegExp(`^${label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?: |$)`)
+      : label;
+  return scope.getByRole("button", { name }).or(scope.getByRole("combobox", { name }));
 }
 
 /** The panel a list's trigger names in `aria-controls` while the list stands open: the list is
@@ -5585,7 +5588,7 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
     },
     {
       // Its value is the badge: the trigger's words of its own, which say whether the issue
-      // inherits it, are its description and are never shown.
+      // inherits it, are what its name goes on to after its label and are never shown.
       name: "the issue header's Repository",
       trigger: repository,
       value: async () => (await repository.locator('[aria-hidden="true"]').innerText()).trim(),

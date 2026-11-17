@@ -195,7 +195,7 @@ test("merging an epic moves open descendants through closed intermediates and pr
       .getByRole("row")
       .filter({ has: page.getByRole("button", { name: /Source epic/ }) });
     await group.getByRole("button", { name: "Epic actions ▾" }).click();
-    await page.getByRole("button", { name: "Merge into another epic", exact: true }).click();
+    await page.getByRole("button", { name: "Merge into another epic" }).click();
     await page.getByRole("option", { name: target.title, exact: true }).click();
     await page.getByRole("button", { name: "Merge…" }).click();
     await page
@@ -233,7 +233,7 @@ test("selection actions move, remove and create an epic, whose name can then cha
       page.getByRole("checkbox", { name: `Select ${key}`, exact: true }).check();
     await select(first.key);
     await select(second.key);
-    await page.getByRole("button", { name: "Move to epic", exact: true }).click();
+    await page.getByRole("button", { name: "Move to epic" }).click();
     await page.getByRole("option", { name: target.title, exact: true }).click();
     await page.getByRole("button", { name: "Move", exact: true }).click();
     await expect
@@ -864,7 +864,7 @@ test("a refused merge move leaves the source open without a close reason", async
     // source's rather than at whichever heading comes first.
     const heading = page.locator("tr", { has: page.getByRole("link", { name: /Merge source/ }) });
     await heading.getByRole("button", { name: "Epic actions ▾" }).click();
-    await page.getByRole("button", { name: "Merge into another epic", exact: true }).click();
+    await page.getByRole("button", { name: "Merge into another epic" }).click();
     await page.getByRole("option", { name: target.title, exact: true }).click();
     await page.getByRole("button", { name: "Merge…" }).click();
     await page
@@ -1047,7 +1047,7 @@ test("reload mid merge moves current open descendants then records one reason an
       has: page.getByRole("link", { name: /Source workflow/ }),
     });
     await heading.getByRole("button", { name: "Epic actions ▾" }).click();
-    await page.getByRole("button", { name: "Merge into another epic", exact: true }).click();
+    await page.getByRole("button", { name: "Merge into another epic" }).click();
     await page.getByRole("option", { name: target.title, exact: true }).click();
     await page.getByRole("button", { name: "Merge…" }).click();
     await page
@@ -1128,7 +1128,7 @@ test("an arrow key on the merge list's trigger closes no epic, and the confirmed
     await page.goto("/projects/CORE/issues?group=epic");
     const heading = page.locator("tr", { has: page.getByRole("link", { name: /Arrow source/ }) });
     await heading.getByRole("button", { name: "Epic actions ▾" }).click();
-    const trigger = page.getByRole("button", { name: "Merge into another epic", exact: true });
+    const trigger = page.getByRole("button", { name: "Merge into another epic" });
     await trigger.focus();
     await page.keyboard.press("ArrowDown");
     // Nothing must follow the keystroke: a merge the arrow key had started would leave the page

@@ -6,6 +6,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { pickNamed } from "../../__tests__/list-picks";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { ApiError, api, NetworkError } from "../../api/client";
 import type { Issue, IssueDetails, IssueSummary } from "../../api/types";
@@ -996,7 +997,7 @@ test("IssuePage mounts the header without reading who has signed in until the as
   ]);
   const { unmount } = renderIssuePage();
   try {
-    const control = await screen.findByRole("button", { name: "Assignee of CORE-1" });
+    const control = await screen.findByRole("button", { name: pickNamed("Assignee of CORE-1") });
     await screen.findByRole("heading", { level: 1 });
     expect(listUsers).not.toHaveBeenCalled();
     // Focus has no user-event form; the control is reached for, never pressed.

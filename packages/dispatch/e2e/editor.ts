@@ -61,7 +61,7 @@ export async function openSpecAndAwaitHeadingIds(
  *  answers the list, which its text box narrows: its options are the document's versions and
  *  its current text. */
 export async function openVersions(page: Page): Promise<Locator> {
-  await page.getByRole("button", { exact: true, name: "Version" }).click();
+  await page.getByRole("button", { name: /^Version(?: |$)/ }).click();
   return page.getByRole("listbox", { name: "Version options" });
 }
 

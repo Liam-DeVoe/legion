@@ -4,6 +4,7 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
+import { pickNamed } from "../../__tests__/list-picks";
 import { ApiError, api } from "../../api/client";
 import { boardMoveMutationKey, projectIssuesQuery } from "../../api/queries";
 import type { CreateIssueInput, Issue, IssueDetails, IssueSummary } from "../../api/types";
@@ -800,7 +801,7 @@ test("a refused merge move leaves the source open and does not post the close re
   const source = (await screen.findByRole("link", { name: "CORE-1 · Source" })).closest("tr");
   if (!source) throw new Error("The source epic has no heading row");
   await user.click(within(source).getByRole("button", { name: "Epic actions ▾" }));
-  await user.click(screen.getByRole("button", { name: "Merge into another epic" }));
+  await user.click(screen.getByRole("button", { name: pickNamed("Merge into another epic") }));
   await user.click(screen.getByRole("option", { name: "Target" }));
   await user.click(screen.getByRole("button", { name: "Merge…" }));
   await user.click(
@@ -1331,7 +1332,7 @@ test("Finish retries a refused action's writes eight at a time", async () => {
   );
   if (!heading) throw new Error("The source epic has no heading row");
   await user.click(within(heading).getByRole("button", { name: "Epic actions ▾" }));
-  await user.click(screen.getByRole("button", { name: "Merge into another epic" }));
+  await user.click(screen.getByRole("button", { name: pickNamed("Merge into another epic") }));
   await user.click(screen.getByRole("option", { name: "Merge target" }));
   await user.click(screen.getByRole("button", { name: "Merge…" }));
   await user.click(
@@ -1623,7 +1624,7 @@ test("a resumed merge whose discarded reason never landed posts it before closin
   const source = (await screen.findByRole("link", { name: "CORE-1 · Source" })).closest("tr");
   if (!source) throw new Error("The source epic has no heading row");
   await user.click(within(source).getByRole("button", { name: "Epic actions ▾" }));
-  await user.click(screen.getByRole("button", { name: "Merge into another epic" }));
+  await user.click(screen.getByRole("button", { name: pickNamed("Merge into another epic") }));
   await user.click(screen.getByRole("option", { name: "Target" }));
   await user.click(screen.getByRole("button", { name: "Merge…" }));
   await user.click(
@@ -1689,7 +1690,7 @@ test("an arrow key on the move or merge list's trigger writes nothing", async ()
   const source = (await screen.findByRole("link", { name: "CORE-1 · Source" })).closest("tr");
   if (!source) throw new Error("The source epic has no heading row");
   await user.click(within(source).getByRole("button", { name: "Epic actions ▾" }));
-  const merge = screen.getByRole("button", { name: "Merge into another epic" });
+  const merge = screen.getByRole("button", { name: pickNamed("Merge into another epic") });
   merge.focus();
   await user.keyboard("{ArrowDown}");
   expect(send).not.toHaveBeenCalled();
@@ -1697,7 +1698,7 @@ test("an arrow key on the move or merge list's trigger writes nothing", async ()
   await user.keyboard("{Escape}");
 
   await user.click(await screen.findByRole("checkbox", { name: "Select CORE-3" }));
-  const move = screen.getByRole("button", { name: "Move to epic" });
+  const move = screen.getByRole("button", { name: pickNamed("Move to epic") });
   move.focus();
   await user.keyboard("{ArrowDown}");
   expect(send).not.toHaveBeenCalled();

@@ -5,7 +5,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
-import { listOf, openList, pick, rows, textBoxes } from "../../__tests__/list-picks";
+import { listOf, openList, pick, pickNamed, rows, textBoxes } from "../../__tests__/list-picks";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { ApiError, api } from "../../api/client";
 import { projectDefaultAssigneesQuery } from "../../api/queries";
@@ -167,11 +167,12 @@ function renderControl() {
   };
 }
 
-/** The control's name: its trigger's, and its listbox's with ` options` after it. */
+/** The control's label: what its trigger's name starts with, before the badge's words, and its
+ *  listbox's name with ` options` after it. */
 const ASSIGNEE = "Assignee of CORE-1";
 
 function trigger(): HTMLButtonElement {
-  return screen.getByRole("button", { name: ASSIGNEE }) as HTMLButtonElement;
+  return screen.getByRole("button", { name: pickNamed(ASSIGNEE) }) as HTMLButtonElement;
 }
 
 test("AssigneeControl reads who has signed in only once the reader reaches for it, then lists Unassigned first", async () => {
@@ -180,7 +181,7 @@ test("AssigneeControl reads who has signed in only once the reader reaches for i
     // Mounted with the badge showing, nothing has been requested: a fresh issue load costs no
     // read of who has signed in.
     expect(screen.getByText("alice", { selector: "span" })).toBeTruthy();
-    expect(trigger()).toHaveAccessibleDescription("alice");
+    expect(trigger()).toHaveAccessibleName(`${ASSIGNEE} alice`);
     expect(listUsers).not.toHaveBeenCalled();
 
     // A focus with no press before it: user-event has no form for a bare focus.
@@ -201,7 +202,7 @@ test("AssigneeControl reassigns optimistically on every surface and merges the s
   try {
     await user.hover(trigger());
     await pick(user, ASSIGNEE, "bob");
-    await waitFor(() => expect(trigger()).toHaveAccessibleDescription("bob"));
+    await waitFor(() => expect(trigger()).toHaveAccessibleName(`${ASSIGNEE} bob`));
     expect(patchIssue).toHaveBeenCalledWith("CORE-1", { assignee: "bob" }, keyedAttempt);
     expect(queryClient.getQueryData<IssueSummary[]>(listKey)?.[0]?.assignee).toBe("bob");
     expect(queryClient.getQueryData<InboxRow[]>(inboxKey)?.[0]?.issue?.assignee).toBe("bob");
@@ -228,7 +229,7 @@ test("AssigneeControl sends null for Unassigned", async () => {
     await waitFor(() =>
       expect(patchIssue).toHaveBeenCalledWith("CORE-1", { assignee: null }, keyedAttempt)
     );
-    await waitFor(() => expect(trigger()).toHaveAccessibleDescription("Unassigned"));
+    await waitFor(() => expect(trigger()).toHaveAccessibleName(`${ASSIGNEE} Unassigned`));
     expect(screen.getByText("Unassigned", { selector: "span" })).toBeTruthy();
   } finally {
     unmount();
@@ -305,7 +306,7 @@ test("AssigneeControl rolls back and shows the server's refusal when the person 
     await pick(user, ASSIGNEE, "bob");
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent('"bob" has not signed in to Dispatch');
-    expect(trigger()).toHaveAccessibleDescription("alice");
+    expect(trigger()).toHaveAccessibleName(`${ASSIGNEE} alice`);
     expect(queryClient.getQueryData<IssueSummary[]>(listKey)).toEqual([summary]);
     expect(queryClient.getQueryData<InboxRow[]>(inboxKey)).toEqual([inboxRow]);
   } finally {
@@ -332,7 +333,7 @@ test("AssigneeControl keeps focus while a save is in flight and saves a pick mad
     expect(trigger()).toHaveFocus();
 
     await pick(user, ASSIGNEE, "Unassigned");
-    expect(trigger()).toHaveAccessibleDescription("Unassigned");
+    expect(trigger()).toHaveAccessibleName(`${ASSIGNEE} Unassigned`);
     expect(patchIssue).toHaveBeenCalledTimes(1);
     await act(async () => {
       first.resolve({ ...issue, assignee: "bob" });
@@ -340,7 +341,7 @@ test("AssigneeControl keeps focus while a save is in flight and saves a pick mad
     });
     await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(2));
     expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { assignee: null }, keyedAttempt);
-    expect(trigger()).toHaveAccessibleDescription("Unassigned");
+    expect(trigger()).toHaveAccessibleName(`${ASSIGNEE} Unassigned`);
     await act(async () => {
       second.resolve({ ...issue, assignee: null });
       await second.promise;
@@ -365,7 +366,7 @@ test("the issue header's Assignee list holds a text box that narrows its people,
   const { unmount, user } = renderControl();
   try {
     const before = new Set(textBoxes());
-    await user.click(screen.getByRole("button", { name: "Assignee of CORE-1" }));
+    await user.click(screen.getByRole("button", { name: pickNamed("Assignee of CORE-1") }));
     // The people are read once the reader reaches for the control.
     await waitFor(() =>
       expect(screen.queryAllByRole("option", { name: /^bob\b/ }).length).toBeGreaterThan(0)
@@ -394,7 +395,7 @@ test("the issue header's Assignee list holds a text box that narrows its people,
     );
     expect(screen.queryByRole("listbox", { name: "Assignee of CORE-1 options" })).toBeNull();
     expect(trigger()).toHaveFocus();
-    await waitFor(() => expect(trigger()).toHaveAccessibleDescription("bob"));
+    await waitFor(() => expect(trigger()).toHaveAccessibleName(`${ASSIGNEE} bob`));
 
     await user.keyboard("{Enter}");
     await screen.findByRole("listbox", { name: "Assignee of CORE-1 options" });
